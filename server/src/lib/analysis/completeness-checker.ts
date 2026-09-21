@@ -146,7 +146,7 @@ export class CompletenessChecker {
       { role: "user", content: parts.join("\n") },
     ];
 
-    log.info("Running completeness checklist over %d segment(s)", usable.length);
+    log.info("Running completeness checklist", { segments: usable.length });
 
     const response = await this.provider.chat(messages, {
       model: this.model,
@@ -155,7 +155,7 @@ export class CompletenessChecker {
     });
 
     const { gaps } = parseCompleteness(response.content);
-    log.info("Completeness checklist found %d gap(s)", gaps.length);
+    log.info("Completeness checklist complete", { gaps: gaps.length });
 
     return { gaps, usage: response.usage ?? zeroUsage() };
   }

@@ -182,11 +182,10 @@ export async function runCrossDocDetection(
   const contradictionCount = findings.filter((f) => f.kind === "contradiction").length;
   const completenessGapCount = findings.length - contradictionCount;
 
-  log.info(
-    "Cross-doc detection: %d contradiction(s), %d completeness gap(s)",
-    contradictionCount,
-    completenessGapCount,
-  );
+  log.info("Cross-doc detection complete", {
+    contradictions: contradictionCount,
+    completenessGaps: completenessGapCount,
+  });
 
   return {
     findings,

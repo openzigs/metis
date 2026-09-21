@@ -99,6 +99,18 @@ export function zodErrorToFriendly(err: ZodError): {
   };
 }
 
+/**
+ * True for the `SyntaxError` body-parser (`express.json()`) raises when a
+ * request body is not valid JSON — including a body that was JSON-encoded
+ * twice (a JSON string at top level, which the strict parser refuses).
+ */
+export function isJsonParseError(err: unknown): err is SyntaxError {
+  return (
+    err instanceof SyntaxError &&
+    (err as SyntaxError & { type?: unknown }).type === "entity.parse.failed"
+  );
+}
+
 export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   const correlationId = (req as unknown as { correlationId?: string }).correlationId;
 
@@ -121,6 +133,28 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
         message: friendly.message,
         details: { fields: friendly.fields },
       },
+      correlationId,
+    };
+    res.status(400).json(body);
+    return;
+  }
+
+  // #21 — a request body the JSON parser rejects is the CLIENT's error. The
+  // body-parser `SyntaxError` carries `type: "entity.parse.failed"` and
+  // `status: 400`; without this branch it fell through to the 500 below, was
+  // logged as "Unexpected error" and hid genuine server faults. The parser's
+  // own message quotes a fragment of the request body, so it is neither
+  // echoed to the client NOR logged: a malformed login body
+  // would otherwise put a fragment of a password into the log.
+  if (isJsonParseError(err)) {
+    log.warn("Malformed JSON request body → 400", {
+      correlationId,
+      method: req.method,
+      path: req.path,
+    });
+    const body: ApiResponse = {
+      success: false,
+      error: { code: "INVALID_JSON", message: "Request body is not valid JSON" },
       correlationId,
     };
     res.status(400).json(body);
