@@ -104,7 +104,7 @@ jobs:
         # daemon (e.g. after nightly maintenance cleanup). QEMU is only needed
         # for the tag-triggered multi-arch (amd64 + arm64) release builds.
         if: github.event_name == 'push'
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
         with:
           platforms: linux/amd64,linux/arm64
           # Disable the action's built-in binfmt image cache. The old shared
@@ -114,7 +114,7 @@ jobs:
           cache-image: false
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           # Unique, image-scoped, run-scoped builder name. Combined with the
           # scoped cleanup step above, this guarantees the 4 matrix jobs (which
