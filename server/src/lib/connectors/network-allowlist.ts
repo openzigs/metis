@@ -333,7 +333,22 @@ export function makePinnedLookup(
   | undefined {
   if (!pinnedAddress) return undefined;
   const fam = family ?? (isIP(pinnedAddress) === 6 ? 6 : 4);
-  return (_hostname, _options, cb) => {
+  return (_hostname, options, cb) => {
+    // Node's `net.connect` asks for EVERY address (`{ all: true }`) whenever
+    // `autoSelectFamily` is on, which is the default from Node 20. That form
+    // expects an array of `{ address, family }` back; answering with the
+    // single-address form makes Node read `undefined` as the IP and fail with
+    // "Invalid IP address: undefined" — which broke every GitHub connector
+    // test and ingest on Node 22. Answer in whichever shape was asked for.
+    if (options && typeof options === "object" && (options as { all?: unknown }).all === true) {
+      (
+        cb as unknown as (
+          err: Error | null,
+          addresses: { address: string; family: number }[],
+        ) => void
+      )(null, [{ address: pinnedAddress, family: fam }]);
+      return;
+    }
     cb(null, pinnedAddress, fam);
   };
 }
