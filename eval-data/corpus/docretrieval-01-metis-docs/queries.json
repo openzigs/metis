@@ -1,0 +1,308 @@
+{
+  "corpusId": "docretrieval-01-metis-docs",
+  "snapshotCommit": "953bfe7034cd7a4f7e3c5ca82b03642a0cdebcf7",
+  "description": "Document-retrieval ground truth for epic #1156 / issue #1160. Ten real METIS documents snapshotted verbatim from docs/, with hand-authored natural-language questions each anchored to a UNIQUE VERBATIM TEXT SPAN (`quote`) in its source document. Ground truth is deliberately span-anchored rather than chunk-indexed so it stays valid at every chunk size — the whole point of the chunk-size sweep.",
+  "queries": [
+    {
+      "id": "dq-ops-01",
+      "question": "Why does the monitoring scrape URL come back with a not-found status instead of returning data after a deploy?",
+      "doc": "OPERATIONS.md",
+      "quote": "The third call should return Prometheus-format text. If you see `404`, `METRICS_TOKEN` is unset and the route is intentionally disabled (fail-closed).",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-ops-02",
+      "question": "What is the relationship between correlationId and traceId in the production request logs, and which response header exposes it?",
+      "doc": "OPERATIONS.md",
+      "quote": "Each request line carries both `correlationId` and `traceId` (alias of the same ULID, mirrored as `X-Trace-Id` on the response).",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-ops-03",
+      "question": "Which dump commands does the backup script use for SQLite versus Postgres?",
+      "doc": "OPERATIONS.md",
+      "quote": "For SQLite, the script uses `sqlite3 .backup` for an online-consistent copy. For Postgres, it uses `pg_dump --format=custom`.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-ops-04",
+      "question": "While swapping the encryption key, how can entries protected with the previous key still be read part-way through the migration?",
+      "doc": "OPERATIONS.md",
+      "quote": "The vault module supports a version byte on every ciphertext, so historical rows with the old key remain readable while you migrate.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-ops-05",
+      "question": "A spike in `pr_review.dlq` audit rows appeared — what does it mean and where do I find the underlying failure?",
+      "doc": "OPERATIONS.md",
+      "quote": "Spike in `pr_review.dlq` audit rows → jobs are exceeding `maxAttempts` (3). Look at the `errorMessage` metadata field for the underlying failure (judge LLM 5xx, Octokit rate-limit, etc.).",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-ops-06",
+      "question": "How much recent data are we allowed to lose if we have to cut over to the standby region?",
+      "doc": "OPERATIONS.md",
+      "quote": "| **RPO** (Recovery Point Objective) | **≤ 5 min** | Maximum tolerable *data loss* on failover — the age of the last durably-replicated write. |",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-sec-01",
+      "question": "What cookie attributes are set on the refresh token, and is it rotated?",
+      "doc": "SECURITY.md",
+      "quote": "**Refresh token** — opaque ULID stored in an `httpOnly`, `Secure`, `SameSite=Strict` cookie. Rotated on every refresh.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-sec-02",
+      "question": "Can an administrator read the real values of sensitive configuration variables through the app's settings API?",
+      "doc": "SECURITY.md",
+      "quote": "The `/api/settings/env` admin endpoint returns `[REDACTED]` for known secret env names and `[unset]` for missing ones — it never echoes raw values.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-sec-03",
+      "question": "What audit event fires when a denylisted MCP image is admitted by an override, and what fields does it carry?",
+      "doc": "SECURITY.md",
+      "quote": "Every admission emits a `mcp.image_denylist_overridden` WARN-level audit event with the CVE id, the actor (or `system` at provision time), the source (`registration` vs `provision`), and the affected `image@version`.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-sec-04",
+      "question": "What stops a hostile name server from swapping in a different destination after the address checks have already passed?",
+      "doc": "SECURITY.md",
+      "quote": "an `undici.Agent` is built with a custom `connect.lookup` that returns the FIRST validated address regardless of which hostname undici asks for.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-sec-05",
+      "question": "Which file paths and placeholder strings are on the gitleaks allow-list?",
+      "doc": "SECURITY.md",
+      "quote": "Allow-list is restricted to `*.env.example`, `docs/**.md`, `README.md`, `CHANGELOG.md`, and explicit placeholder strings (`replace-me-…`, `your-…-here`, `example-…`).",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-eks-01",
+      "question": "Does the Helm chart bring its own relational database, or do I have to supply one myself?",
+      "doc": "EKS_DEPLOYMENT.md",
+      "quote": "The chart explicitly does **not** ship Postgres. Use AWS RDS (or any other managed Postgres) and pass the `DATABASE_URL` via External Secrets.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-eks-02",
+      "question": "Why does the high-scale rate-limit backend specify Valkey instead of Redis?",
+      "doc": "EKS_DEPLOYMENT.md",
+      "quote": "Uses **Valkey** (Linux-Foundation BSD fork of Redis — e.g. **ElastiCache / MemoryDB for Valkey**, ~20–33% cheaper than Redis OSS), **not** Redis Ltd's relicensed Redis (RSALv2/SSPL; Redis 8 → AGPLv3).",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-eks-03",
+      "question": "How does the shared store for the login handshake keep a one-time value from being replayed while still working whichever pod handles the return leg?",
+      "doc": "EKS_DEPLOYMENT.md",
+      "quote": "State is consumed atomically via `DELETE … RETURNING` so a `state` is single-use **cluster-wide** (replay-safe) and the callback succeeds on whichever pod it lands on.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-eks-04",
+      "question": "With `VECTOR_STORE=pgvector`, where do the vectors live and why does that remove the LanceDB corruption mode?",
+      "doc": "EKS_DEPLOYMENT.md",
+      "quote": "Vectors live in one `rag_vectors` table; Postgres serializes concurrent writers, so the LanceDB corruption mode is gone.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-eks-05",
+      "question": "What SQL statement creates the replication role on the primary Postgres for the DR standby?",
+      "doc": "EKS_DEPLOYMENT.md",
+      "quote": "Create the replication role on the primary: `CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD '…';`",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-dbi-01",
+      "question": "Can the analysis ever change a customer's database or fire off the SQL it prints?",
+      "doc": "DATABASE_IMPACT_ANALYSIS.md",
+      "quote": "Introspection never runs\n  DDL and never fetches a routine body; suggested DDL is a review artifact with no\n  execution path; nothing ever writes to a customer database.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-dbi-02",
+      "question": "What happens to a connection that lacks the minimum identity of host + databaseName, and can two null-host connections be merged?",
+      "doc": "DATABASE_IMPACT_ANALYSIS.md",
+      "quote": "a connection lacking the minimum identity (**host + databaseName**,\n  `hasResourceIdentity`) is left unlinked — a null-host connection is **never**\n  given a guessed link",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-dbi-03",
+      "question": "Is the AFFECTED SCHEMA block's token cost carved out of the consuming agent's budget or added on top of it?",
+      "doc": "DATABASE_IMPACT_ANALYSIS.md",
+      "quote": "(8) and truncated at `DEFAULT_AFFECTED_SCHEMA_TOKEN_BUDGET` (1200 ≈ 4 chars per\n  token), keeping the highest-confidence rows; its cost is carved **out** of the\n  consuming agent's budget, never added on top.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-dbi-04",
+      "question": "If an analyst forces the feature on for a project that has nothing indexed, are they told why nothing happened?",
+      "doc": "DATABASE_IMPACT_ANALYSIS.md",
+      "quote": "with no schema data is **never a silent no-op** — it resolves\n`enabled: true, ran: false, reason: \"skipped-no-schema-data\"`, and the UI (§5.2\nbelow) surfaces an actionable \"connect a database or re-ingest\" hint",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-dbi-05",
+      "question": "Why is the generated statement for a table that doesn't exist yet wrapped in SQL comment markers?",
+      "doc": "DATABASE_IMPACT_ANALYSIS.md",
+      "quote": "A `CREATE TABLE` for a missing table is emitted\nas a commented-out template precisely so a copy-paste cannot accidentally run it.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-dbi-06",
+      "question": "Which findings does the schema reconciliation gate cap at could-not-verify?",
+      "doc": "DATABASE_IMPACT_ANALYSIS.md",
+      "quote": "reconciliation `table-not-found` / `column-not-found`, or a cross-project claim\nwhose canonical identity did not resolve — is capped at `could-not-verify`.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-lls-01",
+      "question": "Is there anywhere in the impact pipeline that calls a model without going through the AIProvider abstraction?",
+      "doc": "IMPACT_ANALYSIS_LLM_STAGES.md",
+      "quote": "The pipeline reaches an LLM **only** through the `AIProvider` abstraction\n(`server/src/lib/ai/types.ts`) — never a raw SDK. So the authoritative check is:",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-lls-02",
+      "question": "What happened to accuracy when a model was used to choose the starting code symbols rather than to prune the results?",
+      "doc": "IMPACT_ANALYSIS_LLM_STAGES.md",
+      "quote": "An LLM **seeder** — one that picks the code symbols BM25 will expand from — was\nbuilt (#931) and measured: table precision fell **0.42 → 0.29**.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-lls-03",
+      "question": "What structurally prevents these stages from returning a table or column name that does not exist?",
+      "doc": "IMPACT_ANALYSIS_LLM_STAGES.md",
+      "quote": "**integer index** into an array the deterministic pipeline built. The model's own\n  spelling of a name is never used, so fabrication is structurally impossible\n  rather than filtered after the fact.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-lls-04",
+      "question": "If I analyse ten changed requirements in one run, does every provider call multiply by ten?",
+      "doc": "IMPACT_ANALYSIS_LLM_STAGES.md",
+      "quote": "Four of the five calls are **per changed requirement**\n(table filter, additive DDL, clause reconcile, item narrative); the fifth, the run\noverview, happens **once per run** regardless of requirement count.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-lls-05",
+      "question": "What did the measurement show IMPACT_LLM_ENTITY_SEEDS did to macro table precision?",
+      "doc": "IMPACT_ANALYSIS_LLM_STAGES.md",
+      "quote": "It is the one stage with a **measured cost to output quality**: macro table\nprecision **0.7626 → 0.6909**, lower in **34 of 34** pairwise comparisons on\nnon-overlapping spreads.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-dpo-01",
+      "question": "If UPLOAD_DIR or LANCEDB_PATH point outside the default directories, does backup.sh still pick those files up?",
+      "doc": "DATA_PORTABILITY.md",
+      "quote": "If your deployment sets `UPLOAD_DIR` or `LANCEDB_PATH` to paths outside those directories, `backup.sh` silently misses them.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-dpo-02",
+      "question": "What stops me from restoring an instance when the master decryption key isn't set in the environment?",
+      "doc": "DATA_PORTABILITY.md",
+      "quote": "`pnpm import` blocks with exit code 2 if `VAULT_MASTER_KEY` is absent in the environment, unless `--no-vault-key` is explicitly passed.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-dpo-03",
+      "question": "How does the logical reload handle deferredFks for self-referential and cyclic relations?",
+      "doc": "DATA_PORTABILITY.md",
+      "quote": "cycle/self-reference FK columns are recorded in `logical-manifest.json` as `deferredFks`, loaded as `NULL` on the first insert, then restored by a second `UPDATE` pass.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-dpo-04",
+      "question": "What can go wrong if I just copy the vector directory across instead of rebuilding it on the new host?",
+      "doc": "DATA_PORTABILITY.md",
+      "quote": "If the embedding model or ONNX runtime version differs between A and B, the vector space is not comparable and semantic search will silently return wrong results.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-tms-01",
+      "question": "What does the bot endpoint answer with when that workspace has never had its bot set up?",
+      "doc": "integrations/teams.md",
+      "quote": "A workspace with **no installed credentials → 403** (`TEAMS_NOT_INSTALLED`). We\n  never run an auth-disabled adapter that would accept unsigned activities.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-tms-02",
+      "question": "Where in mirrorMessageToTeams is the non-`metis` origin checked, and why before the link lookup?",
+      "doc": "integrations/teams.md",
+      "quote": "the very first check in\n  `mirrorMessageToTeams` returns early on any non-`metis` origin, BEFORE any link\n  lookup, so a Teams-sourced message is never echoed back into the channel it\n  arrived from.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-tms-03",
+      "question": "Somebody posts in a bridged channel but their chat account was never tied to a METIS account — what happens to that post?",
+      "doc": "integrations/teams.md",
+      "quote": "When the resolver returns\n   `null`, ingestion is **skipped** and a one-time, per-conversation, best-effort\n   hint is posted back to the channel inviting the user to link their METIS\n   account. No message is created.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-tms-04",
+      "question": "Which permission does the Approve button check, and is a `reader` allowed to use it?",
+      "doc": "integrations/teams.md",
+      "quote": "permission the REST route enforces via `requirePermission(\"issue.draft\")`. A\n  `reader` (or an actor with **no** assigned role) is refused.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-lsv-01",
+      "question": "Why won't METIS accept a hosted vendor endpoint as the address for its local model provider?",
+      "doc": "ops/local-serving.md",
+      "quote": "and **rejects every public host**\n— including `api.openai.com`, `*.azure.com`, `*.anthropic.com` — so document\ncontent can never egress.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-lsv-02",
+      "question": "Why does this Mac run Ollama on Metal instead of MLX?",
+      "doc": "ops/local-serving.md",
+      "quote": "MLX only activates at **≥ 32 GB** unified RAM, and a model should fit in roughly\n60–70% of RAM. **24 GB is below the MLX threshold**, so the Mac path is **Ollama\non Metal**",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-lsv-03",
+      "question": "Does setting NCCL_P2P_DISABLE=1 reliably work around the PCIe P2P hang, and what if it doesn't?",
+      "doc": "ops/local-serving.md",
+      "quote": "`NCCL_P2P_DISABLE=1` before launch sometimes works around the P2P hang at a\n> throughput cost; if it doesn't, fall back.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-lsv-04",
+      "question": "How much input will Ollama actually accept before I change anything, and why does that break the shipped 48000 facts budget?",
+      "doc": "ops/local-serving.md",
+      "quote": "Ollama defaults to a **2,048-token** context unless you set\n> `OLLAMA_CONTEXT_LENGTH` (or `num_ctx` per request). If you leave it at 2,048 the\n> effective window is tiny — the `48000` cap will massively overflow it.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-dmo-01",
+      "question": "What exactly does gen-postgres-schema.sh change when it produces the Postgres copy of the schema?",
+      "doc": "data-model.md",
+      "quote": "which strips the sqlite header, prepends an autogen warning, and rewrites the\ndatasource provider. The resulting file is byte-identical to the SQLite source\nexcept for the datasource block.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "dq-dmo-02",
+      "question": "Can the admin config API change the database connection string or the listening port at runtime, or is a restart needed?",
+      "doc": "data-model.md",
+      "quote": "**Tier 1 — Bootstrap** (`.env` only): `DATABASE_URL`, `VAULT_MASTER_KEY`, `JWT_SECRET`, `PORT`, `NODE_ENV`. Restart required to change. Writes to bootstrap keys via the API are rejected with `400 BOOTSTRAP_KEY`.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-dmo-03",
+      "question": "Why is the rule about extracted findings scoring exactly 1.0 checked in application code rather than by the database itself?",
+      "doc": "data-model.md",
+      "quote": "The Prisma layer cannot enforce this directly because SQLite (dev) does not\nexpose the CHECK-constraint round-trip Prisma needs for cross-driver parity;",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "dq-dmo-04",
+      "question": "How does /speckit.taskstoissues avoid creating duplicate GitHub issues when it is run again?",
+      "doc": "data-model.md",
+      "quote": "Idempotency table for `/speckit.taskstoissues` — records the GitHub issue number created for each `(projectId, featureSlug, taskId)` so re-runs upsert instead of duplicating.",
+      "phrasing": "lexical"
+    }
+  ]
+}

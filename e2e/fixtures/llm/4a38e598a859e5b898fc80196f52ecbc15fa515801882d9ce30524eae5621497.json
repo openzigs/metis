@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "key": "4a38e598a859e5b898fc80196f52ecbc15fa515801882d9ce30524eae5621497",
+  "request": {
+    "promptPreview": "Requirement: Secure user sign-in\nDescription: Users must be able to sign in securely to the portal.\n\nClarifications:\nQ: Which authentication method and factors must the secure sign-in use?\nA: Use OAut",
+    "messageCount": 2,
+    "options": {
+      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "disableTools": true
+    }
+  },
+  "response": {
+    "content": "{\"resolvedFields\":[\"authentication-method\"],\"updatedDescription\":\"Users must sign in using OAuth2 PKCE with mandatory MFA (clarified-235). All sign-in flows require the MFA challenge before a session is issued.\",\"remainingUncertainty\":0}",
+    "usage": {
+      "promptTokens": 64,
+      "completionTokens": 64,
+      "totalTokens": 128,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0
+    },
+    "model": "e2e-replay-235",
+    "provider": "offline-stub",
+    "offline": false
+  },
+  "recordedAt": "2026-06-17T06:24:27.168Z"
+}

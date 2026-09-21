@@ -1,0 +1,61 @@
+# ==============================================================================
+# METIS — Local LDAP test harness (Issue #525, Epic #517).
+#
+# Runs OpenLDAP as a local directory so a developer can exercise METIS's LDAP
+# login (bind + search) AND group→role mapping WITHOUT a corporate directory.
+#
+# WHY OpenLDAP (vs lldap):
+#   METIS's LDAP provider reads the `memberOf` attribute and extracts each group's
+#   CN with the regex /^CN=([^,]+)/i (ldap-provider.ts:108-115). OpenLDAP returns
+#   `memberOf` as full group DNs (`cn=metis-admins,ou=groups,...`), which that
+#   regex turns into the bare group NAME used for role mapping — a clean fit. The
+#   provider also lets us OVERRIDE the user search filter (AUTH_LDAP_SEARCH_FILTER)
+#   to match OpenLDAP's `inetOrgPerson`/`uid` schema, so a standard OpenLDAP tree
+#   exercises every code path the provider has. The directory is seeded
+#   DETERMINISTICALLY from scripts/ldap-harness/bootstrap.ldif (NOT manual edits).
+#
+# Unlike OIDC (#521) / SAML (#523) — which are configured via the METIS admin API
+# — LDAP is ENV-DRIVEN: the active login provider is selected by `AUTH_MODE=ldap`
+# and reads `AUTH_LDAP_*` env vars. So you run your METIS server with the
+# AUTH_LDAP_* block this harness prints (see docs/auth/ldap-local-testing.md), NOT
+# AUTH_MODE=mock.
+#
+#   make ldap-up        # start OpenLDAP (LDIF seed), print the AUTH_LDAP_* block,
+#                       # run the bind+search smoke check
+#   make ldap-down      # stop OpenLDAP
+#
+# or directly:
+#
+#   bash scripts/ldap-harness/up.sh
+# ==============================================================================
+
+services:
+  ldap-idp:
+    # bitnami/openldap is an actively maintained, env- + LDIF-seedable OpenLDAP.
+    image: bitnami/openldap:2.6
+    container_name: metis-openldap-ldap-idp
+    ports:
+      # Host 4400 -> container 1389 (bitnami's non-privileged LDAP port). 4400 is
+      # chosen so it never collides with the METIS server (:4000), the SAML mock
+      # IdP (:4500), or Keycloak (:4600).
+      - "4400:1389"
+    environment:
+      # Root suffix / baseDN of the directory tree (matches the LDIF + the
+      # AUTH_LDAP_BASE_DN the harness prints).
+      LDAP_ROOT: ${LDAP_ROOT:-dc=metis,dc=local}
+      # Service-account (root) bind. The provider binds with this to SEARCH for
+      # the user before re-binding as the user to verify the password.
+      LDAP_ADMIN_USERNAME: ${LDAP_ADMIN_USERNAME:-admin}
+      LDAP_ADMIN_PASSWORD: ${LDAP_ADMIN_PASSWORD:-adminpassword}
+      LDAP_PORT_NUMBER: "1389"
+      # Provision the directory from our custom LDIF (org units, two users with
+      # passwords, two groups, explicit memberOf) instead of the bitnami sample.
+      LDAP_CUSTOM_LDIF_DIR: /ldifs
+      # Allow anonymous bind off; the provider always binds as the admin DN.
+      LDAP_ALLOW_ANON_BINDING: "no"
+    volumes:
+      - ./scripts/ldap-harness/bootstrap.ldif:/ldifs/bootstrap.ldif:ro
+    # No container healthcheck: readiness is gated where it matters — from the
+    # HOST, scripts/ldap-harness/up.sh + scripts/seed-ldap.mjs perform a real
+    # bind+search against ldap://localhost:4400 before proceeding, which is the
+    # true "METIS can authenticate against this directory" signal.

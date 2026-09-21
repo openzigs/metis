@@ -1,0 +1,294 @@
+// VERBATIM EXCERPT of METIS server/prisma/schema.prisma at snapshotCommit.
+// Only the `model` blocks below were copied; their bodies are unmodified.
+// This file is read by the PRODUCTION ORM extractor (`parsePrismaModels` in
+// server/src/lib/code-graph/orm-extractor.ts) to materialise the corpus's
+// `table` / `column` CodeSymbol rows, exactly as ingest does for a real project.
+
+model Workspace {
+  id                 String    @id @default(cuid())
+  name               String
+  slug               String    @unique
+  logoUrl            String?
+  /// Epic #47 (#49) — workspace-level monthly spend budget in integer cents.
+  /// Null = no budget configured (alert rules that reference the budget are
+  /// skipped). Drives the 50/80/100% FinOps alert thresholds.
+  monthlyBudgetCents Int?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  deletedAt          DateTime?
+
+  members           WorkspaceMember[]
+  invites           WorkspaceInvite[]
+  projects          Project[]
+  usageDaily        WorkspaceUsageDaily[]
+  /// Epic #47 (#48) — persisted cost forecasts (per workspace + per project).
+  costForecasts     CostForecast[]
+  /// Epic #47 (#49) — budget alert threshold rules.
+  alertRules        AlertRule[]
+  /// Epic #47 (#49) — alert fire history (idempotency + audit).
+  alertEvents       AlertEvent[]
+  /// Epic #47 (#50) — outbound alert delivery channels (email + webhook).
+  alertChannels     AlertChannel[]
+  /// Epic #295 Phase 4 (#307) — shared physical-DB registry for this workspace.
+  databaseResources DatabaseResource[]
+  /// Epic #547 Phase 0 (#548) — Teams app installations for this workspace.
+  teamsInstallations TeamsAppInstallation[]
+  /// Epic #547 Phase 1 (#549) — thread↔channel links for this workspace.
+  teamsChannelLinks  TeamsChannelLink[]
+  /// Epic #547 Phase 1 (#549) — AAD→METIS identity bindings for this workspace.
+  teamsUserIdentities TeamsUserIdentity[]
+  /// Issue #67 — one-way Teams notification targets for this workspace.
+  teamsNotificationTargets TeamsNotificationTarget[]
+  /// Issue #580 — PagerDuty sev-1 service configs for this workspace.
+  pagerDutyServiceConfigs PagerDutyServiceConfig[]
+  /// Issue #579 — Slack app installations for this workspace.
+  slackInstallations SlackAppInstallation[]
+  /// Issue #579 — Slack→METIS identity bindings for this workspace.
+  slackUserIdentities SlackUserIdentity[]
+
+  @@index([slug])
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        String   @default("member") // owner|admin|member
+  joinedAt    DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+  @@map("workspace_members")
+}
+
+model WorkspaceInvite {
+  id          String    @id @default(cuid())
+  workspaceId String
+  email       String
+  role        String    @default("member") // owner|admin|member
+  token       String    @unique
+  invitedById String
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy User      @relation("WorkspaceInviter", fields: [invitedById], references: [id])
+
+  @@index([workspaceId])
+  @@index([email])
+  @@index([token])
+  @@map("workspace_invites")
+}
+
+model WorkspaceUsageDaily {
+  id          String   @id @default(cuid())
+  workspaceId String
+  date        DateTime
+  tokensUsed  Int      @default(0)
+  costCents   Int      @default(0)
+  sessions    Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, date])
+  @@index([workspaceId, date])
+  @@map("workspace_usage_daily")
+}
+
+model UserRole {
+  userId String
+  roleId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  assignedAt DateTime @default(now())
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String
+  targetType String
+  targetId   String
+  argsHash   String?
+  resultHash String?
+  metadata   String? // JSON-encoded
+  ts         DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId, ts])
+  @@index([targetType, targetId])
+  @@index([ts])
+  @@map("audit_logs")
+}
+
+model ConfigAudit {
+  id               String   @id @default(cuid())
+  key              String
+  oldValueRedacted String
+  newValueRedacted String
+  actorId          String
+  scope            String   @default("global")
+  ts               DateTime @default(now())
+
+  @@index([key, ts])
+  @@index([actorId, ts])
+  @@map("config_audit")
+}
+
+model RuntimeConfig {
+  key         String   @id
+  value       String
+  valueType   String // string | int | bool | json | csv
+  scope       String   @default("global")
+  updatedById String
+  updatedAt   DateTime @updatedAt
+
+  updatedBy User @relation(fields: [updatedById], references: [id])
+
+  @@index([scope])
+  @@map("runtime_config")
+}
+
+model TokenUsage {
+  id               String   @id @default(cuid())
+  projectId        String
+  sessionId        String?
+  provider         String
+  model            String
+  inputTokens      Int      @default(0)
+  outputTokens     Int      @default(0)
+  cacheReadTokens  Int      @default(0)
+  cacheWriteTokens Int      @default(0)
+  totalTokens      Int      @default(0)
+  costCents        Int      @default(0)
+  createdAt        DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@map("token_usages")
+}
+
+model CostForecast {
+  id                     String   @id @default(cuid())
+  workspaceId            String
+  /// Null for a workspace-level forecast; set for a per-project forecast.
+  projectId              String?
+  scope                  String // workspace | project
+  /// Month-to-date actual cost in integer cents at compute time.
+  monthToDateCents       Int      @default(0)
+  /// Blended OLS+EWMA projected month-end cost in integer cents.
+  projectedMonthEndCents Int      @default(0)
+  /// Forecast daily run-rate in integer cents (blended estimator output).
+  dailyRunRateCents      Int      @default(0)
+  /// OLS slope (cents/day) — surfaced for trend display.
+  slopeCentsPerDay       Float    @default(0)
+  /// Final EWMA level (cents/day).
+  ewmaCents              Float    @default(0)
+  /// Number of observation days used in this forecast.
+  sampleDays             Int      @default(0)
+  /// MAPE of the in-window backtest (fraction; 0.15 == 15%). Null when the
+  /// window is too short to backtest.
+  backtestMape           Float?
+  computedAt             DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, scope, computedAt])
+  @@index([projectId, computedAt])
+  @@map("cost_forecasts")
+}
+
+model AlertRule {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  name         String
+  /// Percentage threshold (0–1000). 50/80/100 are the built-in presets;
+  /// custom rules may use any positive value.
+  thresholdPct Int
+  /// "mtd" | "projected" — which spend figure the threshold evaluates.
+  basis        String    @default("projected")
+  /// Cooldown in seconds before this rule may fire again. Default 3600 (1h).
+  cooldownSec  Int       @default(3600)
+  enabled      Boolean   @default(true)
+  /// Last time this rule fired (idempotency state). Null = never fired.
+  lastFiredAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  events    AlertEvent[]
+
+  @@index([workspaceId, enabled])
+  @@map("alert_rules")
+}
+
+model AlertEvent {
+  id          String   @id @default(cuid())
+  workspaceId String
+  ruleId      String
+  /// Spend figure (cents) that tripped the rule at fire time.
+  spendCents  Int
+  /// Budget (cents) the threshold was evaluated against.
+  budgetCents Int
+  /// Computed ratio spend/budget at fire time (fraction).
+  ratio       Float
+  /// "mtd" | "projected" — copied from the rule for the historical record.
+  basis       String
+  /// Delivery summary: JSON array of { channelId, type, ok, error? }.
+  deliveries  String   @default("[]")
+  firedAt     DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  rule      AlertRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, firedAt])
+  @@index([ruleId, firedAt])
+  @@map("alert_events")
+}
+
+model AlertChannel {
+  id          String   @id @default(cuid())
+  workspaceId String
+  type        String // email | webhook | slack | pagerduty
+  /// Email address (email) or destination URL (webhook).
+  target      String
+  /// HMAC signing secret for webhooks (null for email). Stored encrypted.
+  secret      String?
+  /// JSON config blob (type-specific). Default "{}".
+  config      String   @default("{}")
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, enabled])
+  @@map("alert_channels")
+}

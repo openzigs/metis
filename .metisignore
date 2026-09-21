@@ -1,0 +1,28 @@
+# Code-graph ingest exclusions for the METIS repo itself (dogfood).
+# NOTE: a repo-level .metisignore REPLACES DEFAULT_METISIGNORE, so the standard
+# build/vendor excludes are repeated here.
+
+# ── standard defaults ──
+node_modules/
+.git/
+.next/
+dist/
+build/
+out/
+coverage/
+.venv/
+__pycache__/
+vendor/
+*.min.js
+*.generated.ts
+*.generated.js
+
+# ── METIS dev artifacts (not real source) ──
+.claude/
+graphify-out/
+*.db
+*.db.sqlite-backup
+*.sqlite
+*.sqlite3
+.env
+.env.*

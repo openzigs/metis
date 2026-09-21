@@ -1,0 +1,23 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "View order status",
+    "description": "A customer views the current status of an order.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Delivery estimate",
+    "description": "A customer should see an estimated delivery date.",
+    "priority": "medium"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Reorder past purchase",
+    "description": "A customer may reorder a previous purchase in one click.",
+    "priority": "low"
+  }
+]

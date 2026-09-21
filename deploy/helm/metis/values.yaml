@@ -1,0 +1,790 @@
+# =============================================================================
+# METIS Helm chart — default values.
+#
+# Sub-issues delivered:
+#   #366 chart skeleton           #370 RBAC + IRSA
+#   #367 PVC story (CRITICAL)     #371 HPA + PDB + NetworkPolicy
+#   #368 Secrets / ESO            #373 multi-arch CI (workflow only)
+#   #369 Ingress                  #372 EKS + checklist docs
+#
+# DEFAULTS are tuned for a small EKS install. Override via -f values-prod.yaml.
+# Every `secretKeyRef` lands in the `metis-secrets` Secret (see secret.yaml /
+# external-secret.yaml). Sensitive values MUST NOT be inlined here.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Global / image
+# -----------------------------------------------------------------------------
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  registry: ghcr.io
+  repository: openzigs
+  # `tag` defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# Common labels applied to every rendered object.
+commonLabels: {}
+commonAnnotations: {}
+
+# Pod-level scheduling defaults — overridable per-component below.
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# -----------------------------------------------------------------------------
+# Server (the API + Socket.IO process).
+#
+# Multi-replica by default (replicaCount: 2). Every formerly per-pod stateful
+# dependency now has a shared/replica-safe backend, wired below via `scaling`
+# (Postgres-backed DB / rate-limit / SSO-state / vector-store / scheduler leader
+# election) and `uploads` (S3). Configure those for a CORRECT N>1 deployment —
+# see docs/EKS_DEPLOYMENT.md §9b–§9f. With the default in-memory/SQLite/LanceDB
+# backends a single replica is still the only correct topology, so keep
+# replicaCount: 1 if you have not set up the shared backends yet.
+#
+# The chart no longer hard-fails on replicaCount > 1; instead `assertScalingBackends`
+# warns (and can be made to fail) when N>1 is requested without the shared backends.
+# -----------------------------------------------------------------------------
+server:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: metis-server
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 4000
+  resources:
+    limits:
+      memory: 1024Mi
+      cpu: "2000m"
+    requests:
+      memory: 256Mi
+      cpu: "200m"
+  env:
+    NODE_ENV: production
+    LOG_LEVEL: info
+    EMBEDDINGS_MODE: sidecar
+    EMBEDDINGS_URL: http://{{ .Release.Name }}-embeddings:5050
+    # Epic #294 — SQL lineage sidecar (metis-sql-lineage). Feature-gated:
+    # SQL_LINEAGE_MODE=in-process makes the server skip the sidecar (graceful
+    # degradation). SQL_LINEAGE_TOKEN is injected from the secret (keyMap).
+    SQL_LINEAGE_MODE: sidecar
+    SQL_LINEAGE_URL: http://{{ .Release.Name }}-sql-lineage:5070
+    COPILOT_NATIVE_MODE: in-process
+    COPILOT_NATIVE_BASE_URL: http://{{ .Release.Name }}-copilot:5060
+  probes:
+    liveness:
+      path: /healthz
+      periodSeconds: 15
+      initialDelaySeconds: 20
+    readiness:
+      path: /readyz
+      periodSeconds: 10
+      initialDelaySeconds: 5
+  topologySpreadConstraints: []  # only effective when replicaCount > 1
+
+# -----------------------------------------------------------------------------
+# Horizontal-scaling backends (epic #518 / issue #540).
+#
+# These select the SHARED, replica-safe backends that make server.replicaCount > 1
+# correct. Each maps 1:1 to a verified server env var (grepped from source):
+#   scaling.database.url   → DATABASE_URL                (#539, prisma.ts)
+#   scaling.rateLimitBackend → DISCUSSION_RATE_LIMIT_BACKEND (#541, rate-limit-store.ts)
+#   scaling.ssoStateBackend  → SSO_STATE_BACKEND          (#542, sso-state-store.ts)
+#   scaling.vectorStore      → VECTOR_STORE               (#543, vector-store.ts)
+#   scaling.leaderElection   → SCHEDULER_LEADER_ELECTION  (#544, leader-election.ts)
+# (uploads.* → UPLOAD_STORAGE_BACKEND / UPLOAD_S3_* lives in the `uploads` block.)
+#
+# DEFAULTS below are the safe single-replica defaults (empty → server falls back
+# to in-memory / embedded SQLite / per-pod LanceDB). For N>1 set ALL of them to
+# the Postgres-backed values plus uploads.backend=s3 — see values-prod.yaml and
+# docs/EKS_DEPLOYMENT.md §9b–§9f. Only non-empty values are injected as env, so
+# leaving a key blank preserves the server's own fail-safe default.
+# -----------------------------------------------------------------------------
+scaling:
+  # When true, `helm template/install` fails-closed if replicaCount > 1 without
+  # the hard-required shared backends (Postgres DATABASE_URL + vectorStore=pgvector
+  # + uploads.backend=s3). DEFAULT false so a bare `helm install` (and chart lint)
+  # renders cleanly; the rendered NOTES still WARN when N>1 lacks the backends.
+  # values-prod.yaml sets enforce=true so production misconfiguration fails loud.
+  enforce: false
+  database:
+    # DATABASE_URL (#539). postgres://… / postgresql://… selects the Postgres
+    # Prisma adapter (REQUIRED for N>1); file:/sqlite: (or empty) → embedded
+    # SQLite on an RWO PVC (single-replica only). In production this is sourced
+    # from the Secret (keyMap.DATABASE_URL), so leave `url` empty here and set
+    # it via secrets/externalSecrets. Set inline ONLY for local/dev clusters.
+    url: ""
+  # DISCUSSION_RATE_LIMIT_BACKEND (#541): memory (per-pod) | shared | postgres | valkey.
+  # Use "postgres" for N>1 — the cap then holds across every replica.
+  rateLimitBackend: ""
+  # SSO_STATE_BACKEND (#542): memory (per-pod) | postgres. Use "postgres" for N>1
+  # so the OIDC/SAML handshake survives a callback landing on a different replica.
+  ssoStateBackend: ""
+  # VECTOR_STORE (#543): empty/lancedb (per-pod, NOT N>1 safe) | pgvector.
+  # Use "pgvector" for N>1. REQUIRES the pgvector extension to be available in
+  # the target Postgres: Amazon RDS/Aurora ships it (CREATE EXTENSION vector);
+  # self-hosted needs an image that bundles it (e.g. pgvector/pgvector:pg16).
+  # No Prisma migration — the rag_vectors table + HNSW index self-provision.
+  vectorStore: ""
+  # SCHEDULER_LEADER_ELECTION (#544): empty (always-leader / single-process) |
+  # postgres. Use "postgres" for N>1 so the in-process cron + interval jobs run
+  # on exactly one replica (lease in an UNLOGGED cluster_leader_lease table; no
+  # migration). Ignored unless DATABASE_URL is Postgres (fail-safe).
+  leaderElection: ""
+
+# -----------------------------------------------------------------------------
+# Uploads object store (#546 → UPLOAD_STORAGE_BACKEND / UPLOAD_S3_*).
+#
+# local (default): document blobs on the server's RWO PVC under UPLOAD_DIR —
+#   correct only for ONE replica (an RWO PVC is single-node; replica B can't read
+#   what replica A wrote).
+# s3: blobs written to an S3 bucket with a content-hash key layout shared by every
+#   replica. REQUIRED for N>1. Works against any S3-compatible store (MinIO) via
+#   `endpoint`. Credentials use the AWS SDK default provider chain — NEVER inline a
+#   key here; on EKS use IRSA (set serviceAccount.annotations eks.amazonaws.com/role-arn
+#   to a role granting s3:GetObject/PutObject/DeleteObject/ListBucket on the bucket).
+# -----------------------------------------------------------------------------
+uploads:
+  backend: ""                  # "" / local | s3  (→ UPLOAD_STORAGE_BACKEND)
+  s3:
+    bucket: ""                 # UPLOAD_S3_BUCKET   (required when backend=s3)
+    region: ""                 # UPLOAD_S3_REGION   (required when backend=s3; or AWS_REGION)
+    prefix: ""                 # UPLOAD_S3_PREFIX   (optional key prefix, e.g. "uploads")
+    endpoint: ""               # UPLOAD_S3_ENDPOINT (optional; S3-compatible store, forces path-style)
+
+# -----------------------------------------------------------------------------
+# Disaster Recovery — cross-region replication + failover (Epic #70).
+#
+# The chart does NOT provision cross-region replication itself: on AWS the
+# Postgres standby is an RDS/Aurora cross-Region read replica (operator-side),
+# uploads are covered by S3 Cross-Region Replication (CRR) on the uploads bucket,
+# and DNS cutover is a Route53 record swap. This block only carries the KNOBS the
+# METIS server + drill tooling read. See docs/DR_RUNBOOK.md and docs/OPERATIONS.md
+# §10 (RPO/RTO) for the full procedure, and docs/EKS_DEPLOYMENT.md §10 for the
+# infra/IAM/network setup.
+#
+# Because Postgres also hosts the pgvector store (#543), a single Postgres
+# streaming-replication stream covers BOTH application data and RAG vectors —
+# there is no separate vector-store replication path.
+# -----------------------------------------------------------------------------
+disasterRecovery:
+  # Informational only (rendered into NOTES + labels). The active/primary region
+  # this release is deployed to, and the region its standby lives in.
+  region: ""                   # e.g. us-east-1  (primary/active region)
+  standbyRegion: ""            # e.g. us-west-2  (standby/DR region)
+  # Standby replication-lag budget for `pnpm dr:check`. Injected as the server
+  # env DR_MAX_REPLICATION_LAG_SECONDS; empty → server default (600s / 10 min,
+  # matching the epic's RPO alarm). `dr:check` exits non-zero above this.
+  maxReplicationLagSeconds: ""
+
+# -----------------------------------------------------------------------------
+# UI (Next.js). Stateless — scales freely.
+# -----------------------------------------------------------------------------
+ui:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: metis-ui
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 3000
+  resources:
+    limits:
+      memory: 512Mi
+      cpu: "1000m"
+    requests:
+      memory: 128Mi
+      cpu: "100m"
+  env:
+    NODE_ENV: production
+  probes:
+    liveness:
+      path: /
+      periodSeconds: 15
+      initialDelaySeconds: 20
+    readiness:
+      path: /
+      periodSeconds: 10
+      initialDelaySeconds: 5
+
+# =============================================================================
+# Embeddings sidecar (ONNX / transformers.js) — hardened for EKS by issue #786.
+#
+# WHAT IT SERVES (epic #780, flipped in #783)
+#   Alibaba-NLP/gte-modernbert-base · 768 dims · CLS pooling · **q8** · 8192 ctx
+#   The model + dtype are BAKED INTO THE IMAGE (#784) and the runtime is
+#   HF_HUB_OFFLINE=1, so an air-gapped VPC needs zero HuggingFace egress.
+#
+# ---------------------------------------------------------------------------
+# RESOURCES — sized against MEASURED numbers, not against the weights file
+# ---------------------------------------------------------------------------
+# The intuitive way to size this pod ("the weights are ~150 MB, so give it
+# ~512 MiB") is wrong by a factor of five. Measured on the shipped q8 default
+# (darwin/arm64 dev host, node 20, @huggingface/transformers 3.8.1 — see the PR
+# for #786 and docs/EMBEDDINGS_BACKENDS.md):
+#
+#   bare node process ............................................  79 MiB
+#   + transformers.js + the q8 ONNX session (weights 143 MiB) .... 570 MiB   [MEASURED]
+#   + ONE 8192-token row in flight ............................... +36 MiB   [MEASURED]
+#
+# So the RESIDENT floor is ~570 MiB — the ONNX arena and the dequantized graph,
+# not the weights file — and the VARIABLE part scales with
+# `batch × longest-row-tokens`, because the pipeline pads every row in a batch
+# to the longest one. That is why `/embed` is capped at 64 texts (#786): the
+# worst case a single request can now demand is
+#
+#   64 rows × 8192 tokens × ~36 MiB/row  ≈  2.3 GiB   [EXTRAPOLATED from batch=1]
+#
+# Hence: requests cover the resident floor (what the scheduler must reserve),
+# limits cover floor + worst-case batch (what an OOMKill would cost mid-ingest).
+# Real-world batches are far smaller — METIS chunks are a few hundred tokens, so
+# a typical 64-text batch needs ~150 MiB — but the limit has to survive the
+# pathological one, and memory limits are a ceiling, not a reservation: setting
+# 3Gi here does not take 3Gi from the cluster.
+#
+# The fp32 profile (opt-in, quality-motivated) is documented in
+# docs/EMBEDDINGS_BACKENDS.md. It is NOT a values-only change: transformers.js
+# resolves a DIFFERENT weights file per dtype, and the image only contains what
+# it baked — fp32 needs `--build-arg EMBED_DTYPE=fp32` and a reindex.
+#
+# ---------------------------------------------------------------------------
+# PROBES — why this shape yields a STALLED ROLLOUT, never a crash-loop
+# ---------------------------------------------------------------------------
+#   startupProbe  → /readyz   While it has not yet passed, kubelet runs NEITHER
+#                             liveness NOR readiness. This is the only thing that
+#                             stops the livenessProbe from counting failures
+#                             against a pod that is merely loading its model.
+#                             Budget = periodSeconds × failureThreshold = 900 s.
+#   readinessProbe→ /readyz   503 until the ONNX session is warm (#786 added the
+#                             route; the chart had been probing a path the sidecar
+#                             answered with a 404, so the pod could never be Ready
+#                             and the Service had no endpoints).
+#   livenessProbe → /healthz  "Is the process wedged?" — NOTHING to do with the
+#                             model. Pointing liveness at /readyz is the classic
+#                             footgun: a model that cannot load (missing baked
+#                             weights, bad EMBED_MODEL) is a PERMANENT condition,
+#                             and liveness would answer it by killing the pod
+#                             forever.
+#
+# Failure chain for a model that never warms:
+#   1. /readyz 503s. Pod stays Running-but-NotReady; /healthz keeps returning 200,
+#      so kubelet never kills it and the logs stay readable.
+#   2. No Ready pod ⇒ no Service endpoint ⇒ maxUnavailable:0 means the OLD
+#      ReplicaSet is never scaled down. Serving traffic is untouched.
+#   3. At progressDeadlineSeconds (600 s) the Deployment is marked
+#      ProgressDeadlineExceeded — the rollout FAILS, loudly, and `kubectl rollout
+#      status` exits non-zero. That happens 5 minutes BEFORE the 900 s startup
+#      budget expires, so the failure is diagnosed as a stalled rollout, not as a
+#      CrashLoopBackOff.
+#
+# ---------------------------------------------------------------------------
+# SCHEDULING — never musl, only arches that onnxruntime-node actually ships
+# ---------------------------------------------------------------------------
+# onnxruntime-node has NO musl build (verified: v1.21.0 ships
+# bin/napi-v3/linux/{x64,arm64}, both linking GLIBC_2.17, and declares no `libc`
+# field — so it INSTALLS on Alpine and only crashes at require() time). Alpine is
+# an IMAGE property, so no node label can defend it: Dockerfile.embeddings stays
+# on node:20-bookworm-slim and `server/tests/embeddings-image-arch.test.ts` fails
+# CI if anyone changes that. What the chart CAN do is keep the pod off an
+# architecture with no prebuilt binding at all — hence the affinity below.
+# arm64/Graviton is genuinely supported: build-images.yml publishes
+# linux/amd64,linux/arm64 on release tags (also asserted by that test).
+# =============================================================================
+embeddings:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: metis-embeddings-svc
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 5050
+  resources:
+    # -------------------------------------------------------------------------
+    # requests — the STEADY-STATE WARM working set, not the cold floor.
+    #
+    # THE ARENA RATCHETS. ONNX Runtime allocates through a BFC arena that does
+    # not return memory to the OS. Once a real batch has inflated it, the pod's
+    # RSS stays near that high-water mark for the REST OF THE POD'S LIFE — it
+    # never falls back to the ~570 MiB measured floor. So the floor is only the
+    # floor *before the first batch*, and sizing `requests` from it is a trap:
+    #
+    #   * QoS. requests≪limits is Burstable, and kubelet ranks Burstable pods for
+    #     eviction by usage ABOVE requests. A sidecar durably resident at 1.5 GiB
+    #     against a 768Mi request is the single most evictable pod on the node —
+    #     it gets killed to protect pods that are actually misbehaving.
+    #   * Scheduling. The scheduler only reserves what you request, so nodes get
+    #     packed as if the sidecar were small; it then grows into memory that was
+    #     promised to something else.
+    #
+    # RULE: keep requests ≥ limits/2 for this component. That covers the measured
+    # floor plus a realistic arena high-water for METIS-sized chunks, and keeps
+    # the pod out of the worst eviction bucket. requests==limits (Guaranteed QoS,
+    # non-evictable) is better still and is what values-prod.yaml does.
+    #
+    # BASIS: REASONED, not measured. The 570 MiB floor and the 36 MiB/row are
+    # MEASURED — but on darwin/arm64, which if anything UNDER-states linux RSS
+    # (macOS compresses memory; glibc's per-thread malloc arenas do not). The
+    # error bar points up, which is another reason not to shave this.
+    # -------------------------------------------------------------------------
+    requests:
+      memory: 1536Mi
+      cpu: "1000m"
+    # -------------------------------------------------------------------------
+    # limits — resident floor + the worst-case 64×8192-token batch. Do NOT lower
+    # memory without lowering the /embed cap (MAX_EMBED_TEXTS_PER_REQUEST) with
+    # it; they are the same number seen from two ends.
+    #
+    # cpu: the request, not the limit, is the number that bites. ONE 8192-token
+    # row costs 11.5 s of CPU (MEASURED). METIS's default chunk is 2048 chars
+    # (DEFAULT_RAG_CHUNK_SIZE) ≈ 512 tokens ≈ 1/16 of the context, so — scaling
+    # LINEARLY in sequence length, which over-states it, since attention is
+    # quadratic — a realistic 64-chunk batch is ~64 × 11.5/16 ≈ 46 CPU-seconds.
+    # Under node contention CFS throttles a container toward its REQUEST:
+    #
+    #   at 250m → ~184 s wall  → blows EMBEDDINGS_TIMEOUT_MS (120 s) outright
+    #   at 1000m → ~46 s wall  → fits, with ~2.6× headroom
+    #   at 2000m → ~23 s wall  → comfortable
+    #
+    # i.e. at the old 250m request the likely production failure was never an
+    # OOMKill — it was the CLIENT TIMEOUT, on a pod nowhere near its memory
+    # limit. #787's staging reindex is exactly this sustained-batch workload.
+    # -------------------------------------------------------------------------
+    limits:
+      memory: 3Gi
+      cpu: "2000m"
+  env:
+    NODE_ENV: production
+    EMBEDDINGS_PORT: "5050"
+    EMBEDDINGS_HOST: 0.0.0.0
+    # ---------------------------------------------------------------------
+    # Model knobs. EMPTY = "use the value baked into the image", which is the
+    # only value whose weights are guaranteed to be present under
+    # HF_HUB_OFFLINE=1. Empty keys are NOT emitted into the pod spec at all
+    # (see metis.renderEnv), so leaving them blank cannot blank the image's own
+    # ENV. Set one ONLY together with a matching image build.
+    # ---------------------------------------------------------------------
+    # EMBED_MODEL — the model /embed serves when a request omits `model`.
+    # Overriding this REQUIRES an image built with the same
+    # `--build-arg EMBED_MODEL=…` (or a BAKE_EMBED_MODELS list containing it),
+    # or the pod boots and then fails its first embed: the runtime is offline and
+    # can only load what was baked. Default (baked): Alibaba-NLP/gte-modernbert-base.
+    EMBED_MODEL: ""
+    # EMBED_DTYPE — fp32 | q8. Same rule, harder: transformers.js resolves a
+    # DIFFERENT weights FILE per dtype (model.onnx vs model_quantized.onnx), so
+    # flipping this alone points the runtime at a file the image never baked.
+    # fp32 = `--build-arg EMBED_DTYPE=fp32` + a reindex. Default (baked): q8.
+    EMBED_DTYPE: ""
+    # EMBED_POOLING_MAP — per-model pooling override, `<model>=cls|mean,…` (#782).
+    # The built-in map already binds gte-modernbert*/granite* → cls. Changing the
+    # pooling of an ALREADY-INDEXED model silently leaves new queries searching an
+    # old-pooled corpus: it is an index-contract change, so reindex with it.
+    EMBED_POOLING_MAP: ""
+    # HF_HUB_OFFLINE — the image sets "1" (air-gapped: baked weights only, zero
+    # HuggingFace egress). Set "0" ONLY for a non-baked image that must download
+    # at runtime, which then also needs egress to huggingface.co or an HF_ENDPOINT
+    # mirror allowed through the NetworkPolicy.
+    HF_HUB_OFFLINE: ""
+    # HF_ENDPOINT — internal HuggingFace mirror for corp networks. Ignored while
+    # offline (an air-gapped process must not fetch from anywhere, mirror included).
+    HF_ENDPOINT: ""
+  probes:
+    # Liveness: process health ONLY. Never point this at /readyz — see the header.
+    liveness:
+      path: /healthz
+      periodSeconds: 15
+      timeoutSeconds: 5
+      failureThreshold: 3
+      # Irrelevant in practice: the startupProbe already gates liveness entirely.
+      initialDelaySeconds: 0
+    readiness:
+      path: /readyz
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+      initialDelaySeconds: 0
+    # Cold start budget = periodSeconds × failureThreshold = 10 × 90 = 900 s.
+    # Deliberately generous: it covers a first-ever image pull onto a cold node
+    # plus the ONNX graph build, on a CPU that may be throttled to its request.
+    # It is longer than progressDeadlineSeconds (600 s) ON PURPOSE, so a model
+    # that will never load surfaces as a FAILED ROLLOUT before kubelet would
+    # restart the container.
+    startup:
+      path: /readyz
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 90
+      initialDelaySeconds: 5
+  # Fail the rollout (rather than hang on it) if no new pod reports Ready in 10
+  # minutes. See the failure chain in the header.
+  progressDeadlineSeconds: 600
+  # Surge before drain: never remove a serving pod until its replacement is warm.
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+  # Keep the pod off any node whose architecture has no onnxruntime-node prebuilt
+  # binding. amd64 and arm64 (Graviton) are both published; nothing else is.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values: [amd64, arm64]
+              - key: kubernetes.io/os
+                operator: In
+                values: [linux]
+
+# -----------------------------------------------------------------------------
+# Copilot SDK sidecar. Disabled by default — enable for `copilot-native` mode.
+# -----------------------------------------------------------------------------
+copilot:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: metis-copilot-svc
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 5060
+  resources:
+    limits:
+      memory: 768Mi
+      cpu: "1000m"
+    requests:
+      memory: 192Mi
+      cpu: "100m"
+  env:
+    NODE_ENV: production
+    COPILOT_NATIVE_PORT: "5060"
+    COPILOT_NATIVE_HOST: 0.0.0.0
+    COPILOT_NATIVE_SESSION_TTL_MS: "1800000"
+  probes:
+    liveness:
+      path: /healthz
+      periodSeconds: 15
+      initialDelaySeconds: 20
+    readiness:
+      path: /readyz
+      periodSeconds: 10
+      initialDelaySeconds: 5
+
+# -----------------------------------------------------------------------------
+# SQL lineage sidecar (metis-sql-lineage) — Epic #294. Pure-Python sqlglot
+# parser; small footprint, fast startup, NO model weights. Probes hit /healthz
+# (no /readyz — the service has no warmup). SQL_LINEAGE_TOKEN comes from the
+# shared secret (keyMap) and is injected into every deployment, including this.
+# -----------------------------------------------------------------------------
+sqlLineage:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: metis-sql-lineage
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 5070
+  resources:
+    limits:
+      memory: 512Mi
+      cpu: "1000m"
+    requests:
+      memory: 128Mi
+      cpu: "100m"
+  env:
+    SQL_LINEAGE_PORT: "5070"
+    SQL_LINEAGE_HOST: 0.0.0.0
+  probes:
+    liveness:
+      path: /healthz
+      periodSeconds: 15
+      initialDelaySeconds: 10
+    readiness:
+      path: /healthz
+      periodSeconds: 10
+      initialDelaySeconds: 5
+
+# -----------------------------------------------------------------------------
+# Persistence — CRITICAL (sub-issue #367).
+# Without a bound PVC, every server pod restart wipes uploads + LanceDB.
+# Default profile: EBS gp3 RWO. Toggle persistence.efs.enabled for RWX.
+# -----------------------------------------------------------------------------
+persistence:
+  enabled: true
+  reclaimPolicy: Retain   # protects against accidental `helm uninstall` data loss
+  uploads:
+    size: 10Gi
+    storageClassName: gp3
+    mountPath: /app/server/data/uploads
+  lancedb:
+    size: 5Gi
+    storageClassName: gp3
+    mountPath: /app/server/data/lancedb
+  # EFS RWX toggle. NO LONGER required for multi-replica: the recommended N>1
+  # path puts uploads on S3 (uploads.backend=s3) and vectors in pgvector
+  # (scaling.vectorStore=pgvector), so neither the uploads nor the LanceDB PVC
+  # is shared across pods. Enable EFS only if you deliberately keep uploads on a
+  # filesystem volume and need RWX across nodes.
+  efs:
+    enabled: false
+    storageClassName: efs-sc
+
+# -----------------------------------------------------------------------------
+# Backup CronJob (portability follow-up).
+#
+# OPT-IN: disabled by default. When `backup.enabled=true`, a CronJob runs on
+# `backup.schedule` inside a copy of the server image, mounts the SAME uploads +
+# LanceDB PVCs the server uses (read access), dumps the DB, and writes a
+# timestamped tarball to the backup volume (`backup.persistence`).
+#
+# MASTER-KEY CAVEAT: the backup contains the DB + uploads + LanceDB ONLY. The
+# vault master key (VAULT_MASTER_KEY) is deliberately NOT included — it must be
+# transported/stored out-of-band (e.g. AWS Secrets Manager). Without it, the
+# encrypted connector secrets in a restored DB are undecryptable. This mirrors
+# the export.mjs invariant: the key never travels inside the backup artifact.
+# -----------------------------------------------------------------------------
+backup:
+  enabled: false                 # opt-in; no CronJob is rendered when false
+  schedule: "0 3 * * *"          # cron expression (UTC) — daily at 03:00
+  retentionDays: 30              # prune backup tarballs older than N days (0 disables)
+  # concurrencyPolicy: skip a new run if the previous one is still going.
+  concurrencyPolicy: Forbid
+  # successful/failed job history kept by the controller.
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  # restartPolicy for the backup pod (OnFailure retries within backoffLimit).
+  restartPolicy: OnFailure
+  backoffLimit: 2
+  # Command run inside the container. Defaults to archiving the mounted data
+  # dirs + a sqlite copy via the bundled scripts/backup.sh path. Override for a
+  # postgres deployment or to ship the artifact off-site (e.g. aws s3 cp).
+  # NOTE: backup.sh is NOT in the production server image; the default command
+  # below tars the mounted data volumes directly so it works with the shipped
+  # image. Set `backup.command` to invoke `pnpm export` / a custom script if
+  # your image includes the script path.
+  command:
+    - /bin/sh
+    - -c
+    - >-
+      set -e;
+      ts="$(date -u +%Y%m%dT%H%M%SZ)";
+      out="/backup/metis-backup-${ts}.tar.gz";
+      tar -czf "$out" -C /app/server/data uploads lancedb 2>/dev/null || tar -czf "$out" -C /app/server/data .;
+      echo "[backup] wrote $out";
+      if [ "${BACKUP_RETENTION_DAYS:-30}" -gt 0 ]; then
+        find /backup -maxdepth 1 -name 'metis-backup-*.tar.gz' -type f -mtime +"${BACKUP_RETENTION_DAYS}" -print -delete || true;
+      fi
+  # Backup artifact volume. When persistence.enabled, a dedicated PVC is created
+  # for the tarballs; otherwise an emptyDir is used (NON-DURABLE — for testing
+  # only). Ship tarballs off-site via `backup.command` for real durability.
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClassName: gp3
+    mountPath: /backup
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # Extra env injected into the backup container (e.g. AWS_REGION, S3 bucket).
+  # DB access config is inherited from the shared secret (DATABASE_URL etc.).
+  env: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -----------------------------------------------------------------------------
+# Secrets — three modes (sub-issue #368):
+#   1. externalSecrets.enabled=true → ExternalSecret pulls from AWS Secrets Manager
+#   2. secrets.create=true          → plain Secret (placeholders or `secrets.values`)
+#   3. secrets.create=false         → BYO Secret (chart references `existingSecret`)
+#
+# Required keys: JWT_SECRET, VAULT_MASTER_KEY, EMBEDDINGS_TOKEN,
+# SQL_LINEAGE_TOKEN, COPILOT_NATIVE_TOKEN, DATABASE_URL, OPENAI_API_KEY (or
+# equivalent AI provider), GITHUB_TOKEN, METRICS_TOKEN.
+# -----------------------------------------------------------------------------
+secrets:
+  create: false
+  existingSecret: ""              # defaults to `<release>-secrets` when empty
+  values: {}                       # ONLY for dev/test — never commit prod values
+  # Map of envVarName -> secretKey within `metis-secrets` (override to rename keys).
+  keyMap:
+    JWT_SECRET: JWT_SECRET
+    VAULT_MASTER_KEY: VAULT_MASTER_KEY
+    EMBEDDINGS_TOKEN: EMBEDDINGS_TOKEN
+    SQL_LINEAGE_TOKEN: SQL_LINEAGE_TOKEN
+    COPILOT_NATIVE_TOKEN: COPILOT_NATIVE_TOKEN
+    DATABASE_URL: DATABASE_URL
+    OPENAI_API_KEY: OPENAI_API_KEY
+    GITHUB_TOKEN: GITHUB_TOKEN
+    METRICS_TOKEN: METRICS_TOKEN
+
+externalSecrets:
+  enabled: false
+  secretStoreName: aws-secrets-manager
+  secretStoreKind: ClusterSecretStore   # SecretStore | ClusterSecretStore
+  refreshInterval: 1h
+  remoteRefPrefix: metis/                # e.g. metis/JWT_SECRET in AWS Secrets Manager
+
+# -----------------------------------------------------------------------------
+# Ingress (sub-issue #369). Switch between alb | nginx | traefik.
+# Routes:
+#   /api/*      → server svc (4000)
+#   /socket.io/* → server svc (4000)  (websocket upgrade)
+#   /            → ui svc (3000)
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: alb                  # alb | nginx | traefik
+  host: metis.example.com
+  pathType: Prefix
+  websocket:
+    enabled: true
+  alb:
+    scheme: internet-facing       # internet-facing | internal
+    certificateArn: ""
+    listenPorts: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    sslRedirect: "443"
+    stickinessSeconds: 3600
+    extraAnnotations: {}
+  nginx:
+    extraAnnotations: {}
+  traefik:
+    extraAnnotations: {}
+  tls:
+    certManager:
+      enabled: false
+      clusterIssuer: letsencrypt-prod
+    secretName: ""                # for BYO TLS Secret
+
+# -----------------------------------------------------------------------------
+# ServiceAccount + RBAC + IRSA (sub-issue #370).
+# Two distinct permission scopes:
+#   - k8s RBAC into `metis-mcp` namespace (so server can spawn k8s-sse MCPs)
+#   - AWS IRSA (so server + ESO can call Secrets Manager)
+# -----------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""                        # defaults to `<release>-server`
+  annotations: {}                  # set eks.amazonaws.com/role-arn here for IRSA
+
+rbac:
+  create: true
+  scope: namespaced               # namespaced | cluster
+  mcpNamespace: metis-mcp
+
+# -----------------------------------------------------------------------------
+# Autoscaling (sub-issue #371). UI scales freely; server is locked to 1 today.
+# -----------------------------------------------------------------------------
+autoscaling:
+  ui:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  server:
+    # Enabled by default now that the shared backends (Postgres/pgvector/S3 +
+    # leader election) make N>1 correct — see the `scaling` / `uploads` blocks
+    # and docs/EKS_DEPLOYMENT.md §9. The HPA only takes effect once those shared
+    # backends are configured (otherwise the scaling guard keeps you at 1).
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  # Embeddings HPA — OFF by default, deliberately (#786).
+  #
+  # The sidecar is stateless, so horizontal scaling is CORRECT; it is just
+  # expensive and rarely the right lever. Each replica carries a ~570 MiB
+  # resident ONNX session and pays a cold start before it can serve, so scaling
+  # out is slow to help and scaling in throws a warm session away. CPU is
+  # nonetheless the right SIGNAL — embedding is pure CPU, so utilisation tracks
+  # queue depth honestly (unlike the server, where it does not).
+  #
+  # Turn it on when embedding is a sustained bottleneck (ingest of large repos,
+  # a #787 reindex), not to absorb bursts — the /embed batch cap plus the client's
+  # sequential slicing already bound a burst's memory.
+  #
+  #   autoscaling.embeddings.enabled: true
+  #   autoscaling.embeddings.minReplicas: 2      # also becomes the PDB floor
+  #   autoscaling.embeddings.maxReplicas: 4
+  #   targetCPUUtilizationPercentage: 70         # ~70% of the 2000m limit
+  #
+  # NOTE: `minReplicas` becomes the replica FLOOR the PDB is computed against
+  # (see pdb.yaml). minReplicas: 1 + pdb.embeddings.minAvailable: 1 would block
+  # node drains, so the PDB is simply not rendered in that combination.
+  #
+  # Requires metrics-server in the cluster. Sizing must respect the memory
+  # REQUEST (768Mi/pod), not the limit — 4 replicas reserve ~3 GiB.
+  embeddings:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 70
+
+# -----------------------------------------------------------------------------
+# PodDisruptionBudgets — keep node drains safe.
+#
+# A PDB is only RENDERED when the component's replica floor exceeds its
+# `minAvailable` (see templates/pdb.yaml). `minAvailable: 1` against a single
+# replica is not a conservative choice — it is a node that can never be drained,
+# which stalls every EKS node-group upgrade and spot reclaim. So the values below
+# express the INTENT ("keep one pod up during a drain") and the template refuses
+# to emit a budget that could not be satisfied.
+# -----------------------------------------------------------------------------
+pdb:
+  enabled: true
+  ui:
+    minAvailable: 1
+  server:
+    # With the multi-replica default (replicaCount: 2) keep at least 1 server pod
+    # available during a node drain. At replicaCount: 1 the PDB is not rendered at
+    # all, so `kubectl drain` is never blocked (brief outage — see K8S_PROD_CHECKLIST).
+    minAvailable: 1
+  embeddings:
+    # Honoured only once the sidecar runs >1 replica (values-prod.yaml does).
+    # At the single-replica default this renders NOTHING, by design.
+    minAvailable: 1
+
+# -----------------------------------------------------------------------------
+# NetworkPolicy (deny-default). Cilium FQDN policies optional.
+# -----------------------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  ingressNamespaceSelector:
+    kubernetes.io/metadata.name: ingress-nginx
+  egress:
+    aiGateways:
+      - api.openai.com
+      - generativelanguage.googleapis.com
+    githubHosts:
+      - api.github.com
+    # CIDRs allowed for managed-DB egress (e.g. RDS subnets). Empty = no egress.
+    databaseCidrs: []
+  cilium:
+    enabled: false
+
+# -----------------------------------------------------------------------------
+# Prometheus ServiceMonitor (opt-in — requires prometheus-operator CRDs).
+# Folded in from the former charts/metis tree during the #540 reconciliation.
+# Scrapes the server /metrics endpoint using METRICS_TOKEN (from the Secret).
+# -----------------------------------------------------------------------------
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  bearerTokenSecretRef:
+    name: ""              # blank → falls back to the chart-managed Secret name
+    key: METRICS_TOKEN
+  labels: {}

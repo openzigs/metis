@@ -1,0 +1,39 @@
+{
+  "id": "reqmap-01-precision-recall",
+  "title": "Requirement→code mapping precision/recall vs replayed PRs",
+  "kind": "requirement-code-mapping",
+  "note": "Self-contained fixture (Issue #738, Epic #726). repo/ files are parsed by METIS's own parseSource to build an in-memory code graph. Each case is a 'replayed PR': a requirement description whose changedFiles are the files the real PR actually touched (the RELEVANT set). The eval runs the B2 deterministic path (mapRequirementToCode + blastRadius via computeProjectImpact) and scores the predicted affected-file set (the RETRIEVED set) against changedFiles. edges[] snapshot the call sites the blast radius walks (getEdgesTo => upstream callers), so a changed caller file can be recovered transitively. Everything is offline: no network, no DB, no LLM, no embedder. Symbol names carry the discriminating tokens because BM25 indexes name/qualifiedName (not filePath).",
+  "edges": [
+    { "from": "handleCheckout", "to": "calculateProcessingFee", "kind": "calls" },
+    { "from": "handleCheckout", "to": "createOrder", "kind": "calls" },
+    { "from": "createOrder", "to": "reserveStockForOrder", "kind": "calls" },
+    { "from": "createOrder", "to": "sendOrderConfirmationEmail", "kind": "calls" }
+  ],
+  "cases": [
+    {
+      "id": "PR-101",
+      "requirement": "Change the payment processing fee to a tiered fee schedule and update every checkout call site.",
+      "changedFiles": ["payments/fee-calculator.ts", "checkout/checkout-handler.ts"]
+    },
+    {
+      "id": "PR-102",
+      "requirement": "Send an order confirmation email to the customer whenever a new order is created.",
+      "changedFiles": ["notification/email-notifier.ts", "orders/order-service.ts"]
+    },
+    {
+      "id": "PR-103",
+      "requirement": "Support partial refunds and notify the customer by email about each refund.",
+      "changedFiles": ["payments/refund-service.ts", "notification/email-notifier.ts"]
+    },
+    {
+      "id": "PR-104",
+      "requirement": "Reserve inventory stock when an order is placed and release the reserved stock when the order is cancelled.",
+      "changedFiles": ["inventory/stock-service.ts", "orders/order-service.ts"]
+    },
+    {
+      "id": "PR-105",
+      "requirement": "Validate the user session during checkout before creating the order.",
+      "changedFiles": ["auth/session-validator.ts", "checkout/checkout-handler.ts"]
+    }
+  ]
+}

@@ -1,0 +1,325 @@
+name: SAST
+
+# Replaces CodeQL (which requires paid GitHub Advanced Security on private
+# repos). Semgrep community rulesets are 100% free for any repo visibility.
+#
+# What this covers:
+#   semgrep  — OWASP Top 10, injection, path traversal, JWT misuse,
+#              secret leaks, Node.js / TypeScript-specific issues
+#   audit    — known CVEs in the dependency tree via OSV-Scanner, which reads
+#              pnpm-lock.yaml directly against the OSV database (issue #816).
+#              Replaces `pnpm audit`, whose registry endpoints npm retired
+#              (HTTP 410 Gone) on 2026-07-14.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    # Sundays at 04:00 UTC (same cadence as the old CodeQL weekly scan).
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: sast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Dependabot PRs don't have access to secrets and semgrep scan is noise-free
+    # enough that we skip it for automated dependency bumps.
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Semgrep
+        # Container jobs are Linux-only. This dates from a macOS runner, where we
+        # install into an isolated virtualenv. This sidesteps the PEP 668
+        # "externally-managed-environment" guard on Homebrew's Python and keeps
+        # the runner's global site-packages clean.
+        #
+        # The Semgrep ENGINE is PINNED (issue #586). The 2026-06 breakage was an
+        # unpinned `pip install semgrep` silently jumping to a newer CLI whose
+        # bundled p/default snapshot absorbed new supply-chain rules, turning main
+        # red with zero code changes. Pinning the version makes engine + bundled
+        # ruleset behaviour reproducible; bump SEMGREP_VERSION deliberately.
+        env:
+          SEMGREP_VERSION: "1.168.0"
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/semgrep-venv"
+          "${RUNNER_TEMP}/semgrep-venv/bin/pip" install --quiet --upgrade pip
+          "${RUNNER_TEMP}/semgrep-venv/bin/pip" install --quiet "semgrep==${SEMGREP_VERSION}"
+
+      - name: Run Semgrep
+        # Community packs — no token or account required:
+        #   p/default   → general security best-practices (incl. supply-chain /
+        #                 CI-config rules: mutable action tags, dependabot cooldown,
+        #                 pnpm trust policy)
+        #   p/nodejs    → Node.js injection, prototype pollution, path traversal
+        #   p/jwt       → JWT library misuse
+        #   p/secrets   → hard-coded credentials / API keys
+        # --error exits non-zero on any ERROR-severity finding, failing the PR.
+        #
+        # issue #586: the 5 supply-chain rule families that previously broke this
+        # job are now RE-ENABLED (no --exclude-rule). The underlying findings are
+        # resolved deliberately in config:
+        #   * github-actions-mutable-action-tag → every `uses:` is SHA-pinned
+        #   * dependabot-missing-cooldown        → cooldown blocks in dependabot.yml
+        #   * pnpm-block-exotic-sub-dependencies → blockExoticSubdeps in pnpm-workspace.yaml
+        #   * pnpm-missing-minimum-release-age   → minimumReleaseAge in pnpm-workspace.yaml
+        #   * pnpm-trust-policy                  → trustPolicy in pnpm-workspace.yaml
+        # If Semgrep flags any of these again, FIX THE CONFIG — do not re-add an
+        # exclusion.
+        run: |
+          "${RUNNER_TEMP}/semgrep-venv/bin/semgrep" scan \
+            --config=p/default \
+            --config=p/nodejs \
+            --config=p/jwt \
+            --config=p/secrets \
+            --error \
+            --json-output=semgrep.json \
+            --no-rewrite-rule-ids
+
+      - name: Upload findings artifact
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: semgrep-findings
+          path: semgrep.json
+          retention-days: 3
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install OSV-Scanner (pinned + checksum-verified)
+        # CLI form, not google/osv-scanner-action, is deliberate (issue #816):
+        # osv-scanner has NO native severity threshold — it exits non-zero on
+        # ANY advisory of any severity. The old gate (`pnpm audit
+        # --audit-level=high`) failed ONLY on High+Critical, and the current
+        # lockfile carries 5 pre-existing Medium transitives. Wrapping the
+        # action would therefore go red on those Mediums, inverting the old
+        # intent; per-advisory `osv-scanner.toml` ignores would need constant
+        # churn as new Mediums appear. The CLI + explicit CVSS threshold below
+        # reproduces the old High+Critical intent exactly and honestly.
+        #
+        # Pinning: the binary is fetched by immutable release tag (v2.3.8) and
+        # its content is verified against the SHA256 published in that release
+        # (osv-scanner_SHA256SUMS) — equivalent rigor to a SHA-pinned `uses:`.
+        # osv-scanner reads pnpm-lock.yaml directly, so no Node / pnpm install
+        # is needed.
+        env:
+          OSV_VERSION: "v2.3.8"
+          OSV_SHA256: "bc98e15319ed0d515e3f9235287ba53cdc5535d576d24fd573978ecfe9ab92dc"
+        run: |
+          curl -fsSL -o osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/${OSV_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SHA256}  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner
+
+      - name: Dependency audit (fail on High + Critical)
+        # OSV-Scanner emits every advisory it finds (any severity) into
+        # osv-results.json; the threshold script below fails the job ONLY when
+        # a group's max CVSS base score lands in High (7.0–8.9) or Critical
+        # (9.0–10.0) — matching the retired `pnpm audit --audit-level=high`
+        # gate. Medium/Low advisories are printed for visibility but do NOT
+        # fail. If a genuine High/Critical surfaces, triage it; suppress an
+        # unfixable transitive only via an explicit, commented, time-boxed
+        # osv-scanner.toml ignore — never `|| true`, never a blanket skip.
+        run: |
+          set -o pipefail
+          # osv-scanner exits 1 when advisories are found; that is expected and
+          # is NOT the gate — the threshold script decides pass/fail. Any OTHER
+          # non-zero code (network/parse error) is a real failure we surface.
+          ./osv-scanner scan source --lockfile=pnpm-lock.yaml --format json \
+            > osv-results.json && rc=0 || rc=$?
+          if [ "${rc}" -gt 1 ]; then
+            echo "::error::osv-scanner failed (exit ${rc}) — scan did not complete"
+            exit "${rc}"
+          fi
+          python3 - <<'PY'
+          import datetime, json, sys
+
+          # CVSS v3 bands: High = 7.0–8.9, Critical = 9.0–10.0.
+          THRESHOLD = 7.0
+
+          # --- Time-boxed advisory waivers ---------------------------------
+          # A waiver suppresses a High/Critical advisory ONLY until `expires`.
+          # On/after that date the waiver stops suppressing and this gate goes
+          # RED again — so a waiver can never be silently forgotten. Use this
+          # ONLY when the fixed version genuinely cannot be installed yet; the
+          # correct resolution is always to upgrade and delete the entry.
+          #
+          # `minimumReleaseAge` (pnpm-workspace.yaml, issue #586) holds new
+          # versions for 7 days so a compromised release can be yanked before
+          # it enters the tree. A security release is exactly when a supply
+          # chain attack is most effective, so we do NOT bypass that gate;
+          # we wait it out behind a dated waiver instead.
+          # NOTHING IS WAIVED TODAY (#1324). The single entry that lived here,
+          # GHSA-2v37-7h3g-55p8 (nanoid), EXPIRED on 2026-08-11 and was deleted —
+          # not re-dated — once the 3.x line took 3.3.18 in pnpm-workspace.yaml.
+          # An expired waiver is the gate working as designed; extending one to
+          # clear the red is the failure it exists to prevent.
+          #
+          # An empty dict is the CORRECT steady state, and the suppression path is
+          # still covered: scripts/lib/sast-waiver-gate.test.mjs substitutes a
+          # fixture dict (its regex handles this single-line `{}` form on purpose),
+          # and scripts/lib/sast-waiver-expiry.test.mjs asserts that whatever is in
+          # here has not gone stale.
+          WAIVERS = {}
+          today = datetime.date.today()
+
+          def waiver_for(ids):
+              """Return (ghsa_id, waiver) when an advisory in `ids` has a LIVE waiver."""
+              for advisory_id in ids:
+                  w = WAIVERS.get(advisory_id)
+                  if not w:
+                      continue
+                  if today < datetime.date.fromisoformat(w["expires"]):
+                      return advisory_id, w
+              return None, None
+
+          # --- Severity resolution, and why an UNSCORED advisory breaches ----
+          # `max_severity` is the group's maximum CVSS base score as a STRING,
+          # and OSV emits "" for any group whose advisories carry no CVSS
+          # vector at all. That is not an exotic shape — it is precisely the
+          # shape of the npm supply-chain compromises this gate exists to
+          # catch. GHSA-g2q5-5433-rhrf (`rc`, embedded malware) and
+          # GHSA-73qr-pfmq-6rp8 (`coa`) are both CRITICAL with NO `severity`
+          # array, verified against api.osv.dev.
+          #
+          # `float("")` raises, and this used to set score = None and then test
+          # `score is not None and score >= THRESHOLD` — so every one of them
+          # printed [UNSCORED] and the gate exited 0. Measured by executing
+          # this exact script against that exact JSON (#1215): one CRITICAL
+          # malware advisory in, "PASS: no unwaived advisory" out.
+          #
+          # So: fall back to the qualitative label OSV does record, and treat
+          # "no signal at all" as a breach. An advisory whose severity cannot
+          # be read is UNKNOWN, not below threshold. Both paths run through
+          # `waiver_for`, so an unscored advisory is still suppressible by the
+          # same dated, commented waiver as any other — it just can no longer
+          # be suppressed by silence.
+          LABEL_FLOORS = {"CRITICAL": 9.0, "HIGH": 7.0,
+                          "MODERATE": 4.0, "MEDIUM": 4.0, "LOW": 0.1}
+
+          def label_floor(pkg, id_list):
+              """Highest qualitative severity OSV recorded for this group, or None."""
+              wanted = set(id_list)
+              best = None
+              for vuln in pkg.get("vulnerabilities", []):
+                  vuln_ids = {vuln.get("id")} | set(vuln.get("aliases") or [])
+                  if not (vuln_ids & wanted):
+                      continue
+                  label = str((vuln.get("database_specific") or {}).get("severity") or "").upper()
+                  if label in LABEL_FLOORS:
+                      best = max(best or 0.0, LABEL_FLOORS[label])
+              return best
+
+          with open("osv-results.json") as fh:
+              data = json.load(fh)
+
+          findings, breaches, waived = [], [], []
+          for result in data.get("results", []):
+              for pkg in result.get("packages", []):
+                  name = pkg["package"]["name"]
+                  version = pkg["package"]["version"]
+                  for group in pkg.get("groups", []):
+                      id_list = group.get("ids", [])
+                      ids = ",".join(id_list)
+                      raw = group.get("max_severity", "")
+                      try:
+                          score, basis = float(raw), "cvss"
+                      except (TypeError, ValueError):
+                          score = label_floor(pkg, id_list)
+                          basis = "label" if score is not None else "unknown"
+                      findings.append((name, version, ids, raw, score, basis))
+                      # `or` short-circuits, so `score` is never compared while None.
+                      if basis == "unknown" or score >= THRESHOLD:
+                          advisory_id, w = waiver_for(id_list)
+                          if w:
+                              waived.append((name, version, ids, score, advisory_id, w))
+                          else:
+                              breaches.append((name, version, ids, score, basis))
+
+          if findings:
+              print("OSV-Scanner advisories (CVSS max_severity per group):")
+              for name, version, ids, raw, score, basis in findings:
+                  if basis == "unknown":
+                      band, shown = "UNKNOWN", "none"
+                  else:
+                      band = ("CRITICAL" if score >= 9.0
+                              else "HIGH" if score >= 7.0
+                              else "MEDIUM" if score >= 4.0
+                              else "LOW")
+                      shown = raw if basis == "cvss" else f">={score} (from severity label)"
+                  print(f"  [{band}] {name}@{version}  CVSS={shown or 'n/a'}  {ids}")
+          else:
+              print("OSV-Scanner: no known advisories in pnpm-lock.yaml.")
+
+          if waived:
+              print(f"\nWAIVED: {len(waived)} High/Critical advisory(ies) suppressed "
+                    "by a time-boxed waiver:")
+              for name, version, ids, score, advisory_id, w in waived:
+                  days = (datetime.date.fromisoformat(w["expires"]) - today).days
+                  print(f"  - {name}@{version} CVSS={score} {ids}")
+                  print(f"      waiver {advisory_id} EXPIRES {w['expires']} "
+                        f"(in {days} day(s)) — this gate goes RED then")
+                  print(f"      {w['reason']}")
+              print("::warning::Time-boxed advisory waiver(s) active — upgrade "
+                    "and remove them before they expire.")
+
+          # Housekeeping: a waiver for an advisory that no longer appears is dead
+          # weight and should be deleted. Non-fatal.
+          present = {i for _, _, ids, _, _, _ in findings for i in ids.split(",") if i}
+          for advisory_id, w in WAIVERS.items():
+              if advisory_id not in present:
+                  print(f"\nNOTE: waiver {advisory_id} matches no current advisory "
+                        "— it can be deleted from WAIVERS.")
+
+          if breaches:
+              print(f"\nFAIL: {len(breaches)} advisory(ies) at or above CVSS "
+                    f"{THRESHOLD}, or of UNKNOWN severity:")
+              for name, version, ids, score, basis in breaches:
+                  if basis == "cvss":
+                      why = f"CVSS={score}"
+                  elif basis == "label":
+                      why = (f"no CVSS vector; OSV's severity label puts it at "
+                             f">= {score}")
+                  else:
+                      why = ("no CVSS vector and no severity label — UNKNOWN "
+                             "severity, which this gate treats as a breach "
+                             "rather than as below threshold (#1215). If it is "
+                             "genuinely not exploitable here, add a dated "
+                             "WAIVERS entry saying so")
+                  print(f"  - {name}@{version} {why} {ids}")
+                  for advisory_id in ids.split(","):
+                      w = WAIVERS.get(advisory_id)
+                      if w:
+                          print(f"      NOTE: waiver {advisory_id} EXPIRED on "
+                                f"{w['expires']} — upgrade now; do not extend it "
+                                "without a deliberate decision.")
+              sys.exit(1)
+
+          print(f"\nPASS: no unwaived advisory at or above CVSS {THRESHOLD} "
+                "(High/Critical). Lower-severity advisories, if any, do not "
+                "fail this gate.")
+          PY
+
+      - name: Upload OSV findings artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: osv-findings
+          path: osv-results.json
+          retention-days: 3
+          if-no-files-found: ignore

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Submit a review",
+    "description": "A customer submits a star rating and written review.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Edit a review",
+    "description": "A customer should be able to edit a review they posted.",
+    "priority": "medium"
+  },
+  {
+    "id": "R3",
+    "type": "bug",
+    "title": "Fix duplicate submissions",
+    "description": "A defect that posts duplicate reviews on retry is fixed.",
+    "priority": "high"
+  }
+]

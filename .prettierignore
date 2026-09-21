@@ -1,0 +1,26 @@
+node_modules
+dist
+.next
+coverage
+pnpm-lock.yaml
+*.md
+docs/research
+# graphify knowledge graph — gitignored, per-developer build output (#1152).
+# graph.json is minified JSON, so lint-staged's prettier would reflow it into a
+# 300k-line diff. Belt-and-braces: the path is gitignored, so it is never staged.
+graphify-out/
+# Helm chart templates use Go templating that prettier cannot parse.
+deploy/helm/**/templates/**
+deploy/helm/**/values*.yaml
+deploy/helm/**/Chart.yaml
+charts/**/templates/**
+charts/**/values*.yaml
+charts/**/Chart.yaml
+
+# Eval run envelopes (#1333). The nightly's `eval-results/<runId>.json` and
+# `eval-results/answer-correctness/*.json` are now tracked, so lint-staged would
+# otherwise run prettier over machine-written artifacts on every local commit
+# that touches them. They are byte-stable output of `JSON.stringify(_, null, 2)`
+# and must stay that way — a reformat would show as a spurious diff on history
+# nobody edited. Same reasoning as graphify-out/ above.
+eval-results/

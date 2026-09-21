@@ -1,0 +1,12 @@
+# METIS SQL Lineage sidecar — PINNED runtime dependencies.
+#
+# CRITICAL (self-hosted-runner health): every dep here is pure-Python and tiny.
+# There is NO model download at install time and NO HuggingFace/torch/transformers
+# weight bake (cf. the model-bake flake fixed in #290). sqlglot is a zero-dependency
+# pure-Python SQL parser, so `pip install -r requirements.txt` is fast and offline-safe.
+#
+# Pins are exact (==) so the Docker image and CI install the same bytes every time.
+fastapi==0.137.2
+uvicorn==0.49.0
+sqlglot==30.11.0
+pydantic==2.12.4

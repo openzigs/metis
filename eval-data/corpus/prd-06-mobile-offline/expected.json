@@ -1,0 +1,23 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Offline read access",
+    "description": "Users read previously loaded content while offline.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Queue offline actions",
+    "description": "Actions taken offline should be queued and synced later.",
+    "priority": "medium"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Conflict resolution",
+    "description": "Sync conflicts are resolved with a last-writer-wins policy.",
+    "priority": "high"
+  }
+]

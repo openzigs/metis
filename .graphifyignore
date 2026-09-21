@@ -1,0 +1,83 @@
+# .graphifyignore — exclude paths from the graphify codebase knowledge graph.
+# Syntax mirrors .gitignore. See https://github.com/safishamsi/graphify
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+
+# Next.js build outputs
+.next/
+ui/.next/
+out/
+
+# Build artefacts
+dist/
+build/
+*.tsbuildinfo
+
+# Test artefacts
+coverage/
+test-results/
+playwright-report/
+.playwright-mcp/
+e2e/test-results/
+e2e/playwright-report/
+e2e/.auth/
+
+# Prisma local databases
+**/prisma/*.db
+**/prisma/*.db-journal
+**/prisma/*.sqlite
+**/prisma/data/
+dev.db
+server/dev.db
+server/dev.db-journal
+
+# Runtime data (uploads, vector store, generated content)
+data/
+server/data/
+data/uploads/
+data/lancedb/
+backups/
+
+# Local logs and scratch captures
+logs/
+*.log
+*.jsonl
+test_output.txt
+ui_test_output.txt
+issues_output.txt
+build_output.txt
+run_log.txt
+coverage_output*.txt
+coverage_full*.txt
+server_coverage.txt
+get_summary.py
+
+# Walkthrough / UI-vision screenshot + snapshot scratch (root-level, not source)
+*.png
+uv-*.md
+uv-*.yml
+uv-*.log
+retest-*.md
+retest-*.yml
+retest-*.txt
+metis-retest-*.yml
+walkthrough-*.png
+tmp-*.md
+
+# Lock files (graph wouldn't gain useful structure)
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+# Graphify's own outputs (avoid recursive analysis)
+graphify-out/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

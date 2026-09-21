@@ -1,0 +1,23 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Per-channel opt-in",
+    "description": "Users opt in to email, SMS, and push channels independently.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Quiet hours",
+    "description": "Users should be able to define quiet hours that suppress push alerts.",
+    "priority": "medium"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Transactional override",
+    "description": "Critical transactional messages are always delivered regardless of preferences.",
+    "priority": "high"
+  }
+]

@@ -1,0 +1,30 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Initiate a return",
+    "description": "Customers initiate a return within the return window.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Automated refund",
+    "description": "Approved returns trigger an automated refund to the original method.",
+    "priority": "high"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Return label generation",
+    "description": "The system should generate a prepaid return label.",
+    "priority": "medium"
+  },
+  {
+    "id": "R4",
+    "type": "chore",
+    "title": "Migrate return reasons",
+    "description": "Legacy return reason codes may be migrated to the new taxonomy.",
+    "priority": "low"
+  }
+]

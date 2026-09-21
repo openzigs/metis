@@ -1,0 +1,320 @@
+{
+  "version": 1,
+  "id": "impact-recall-02-shared-db",
+  "title": "Cross-project shared-database impact recall fixture (storefront + reporting over one DB)",
+  "kind": "impact-recall",
+  "license": "CC0-1.0",
+  "source": "original-synthetic",
+  "projectId": "impact-recall-02-shared-db-project",
+  "workspaceId": "impact-recall-02-workspace",
+  "databaseResourceId": "impact-recall-02-shared-db",
+  "note": "Hand-authored, self-contained, CROSS-PROJECT corpus for the Impact Analysis consumer recall/precision eval (#959, epic #954). Two small applications — a storefront (org.shop.*) and a reporting/batch app (com.report.*) — run over ONE physical database and SHARE the `account` and `orders` tables (each app has its own private table too: `cart`, `report_run`). Each labeled requirement originates in the storefront and expects the reporting app to be flagged as a shared-table CONSUMER (expectedConsumers), alongside the affected tables. The graph is deliberately small and UN-polluted (mapper-only, no cross-layer service fan-out) so it isolates the cross-project signal — corpus-01 already measures single-project seed pollution. No DB, no network, no live LLM. HONEST BASELINE (pre-#955/#956, before the cross-project consumer wiring lands): the engine does not surface consumers, so consumer recall is 0.00 and precision is a VACUOUS 1.00 (nothing surfaced). This is the yardstick that makes #955/#956's lift visible; see README.md.",
+  "projects": [
+    {
+      "id": "impact-recall-02-storefront",
+      "title": "Storefront",
+      "role": "storefront"
+    },
+    {
+      "id": "impact-recall-02-reporting",
+      "title": "Reporting / batch",
+      "role": "reporting-batch"
+    }
+  ],
+  "tables": [
+    {
+      "id": "table_account",
+      "name": "account",
+      "qualifiedName": "account",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "table_orders",
+      "name": "orders",
+      "qualifiedName": "orders",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "table_cart",
+      "name": "cart",
+      "qualifiedName": "cart",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "table_report_run",
+      "name": "report_run",
+      "qualifiedName": "report_run",
+      "kind": "table",
+      "source": "mybatis"
+    }
+  ],
+  "codeSymbols": [
+    {
+      "id": "shop_account_getaccount",
+      "name": "getAccount",
+      "qualifiedName": "storefront/persistence/AccountMapper.java::AccountMapper::getAccount",
+      "kind": "method",
+      "filePath": "storefront/persistence/AccountMapper.java",
+      "language": "java",
+      "inCorpus": true,
+      "projectId": "impact-recall-02-storefront"
+    },
+    {
+      "id": "shop_account_getaccount_statement",
+      "name": "getAccount.statement",
+      "qualifiedName": "org.shop.persistence.AccountMapper.getAccount.statement",
+      "kind": "method",
+      "filePath": "storefront/persistence/AccountMapper.xml",
+      "language": "sql",
+      "inCorpus": false,
+      "projectId": "impact-recall-02-storefront"
+    },
+    {
+      "id": "shop_account_updateaccount",
+      "name": "updateAccount",
+      "qualifiedName": "storefront/persistence/AccountMapper.java::AccountMapper::updateAccount",
+      "kind": "method",
+      "filePath": "storefront/persistence/AccountMapper.java",
+      "language": "java",
+      "inCorpus": true,
+      "projectId": "impact-recall-02-storefront"
+    },
+    {
+      "id": "shop_account_updateaccount_statement",
+      "name": "updateAccount.statement",
+      "qualifiedName": "org.shop.persistence.AccountMapper.updateAccount.statement",
+      "kind": "method",
+      "filePath": "storefront/persistence/AccountMapper.xml",
+      "language": "sql",
+      "inCorpus": false,
+      "projectId": "impact-recall-02-storefront"
+    },
+    {
+      "id": "shop_order_getorder",
+      "name": "getOrder",
+      "qualifiedName": "storefront/persistence/OrderMapper.java::OrderMapper::getOrder",
+      "kind": "method",
+      "filePath": "storefront/persistence/OrderMapper.java",
+      "language": "java",
+      "inCorpus": true,
+      "projectId": "impact-recall-02-storefront"
+    },
+    {
+      "id": "shop_order_getorder_statement",
+      "name": "getOrder.statement",
+      "qualifiedName": "org.shop.persistence.OrderMapper.getOrder.statement",
+      "kind": "method",
+      "filePath": "storefront/persistence/OrderMapper.xml",
+      "language": "sql",
+      "inCorpus": false,
+      "projectId": "impact-recall-02-storefront"
+    },
+    {
+      "id": "shop_order_insertorder",
+      "name": "insertOrder",
+      "qualifiedName": "storefront/persistence/OrderMapper.java::OrderMapper::insertOrder",
+      "kind": "method",
+      "filePath": "storefront/persistence/OrderMapper.java",
+      "language": "java",
+      "inCorpus": true,
+      "projectId": "impact-recall-02-storefront"
+    },
+    {
+      "id": "shop_order_insertorder_statement",
+      "name": "insertOrder.statement",
+      "qualifiedName": "org.shop.persistence.OrderMapper.insertOrder.statement",
+      "kind": "method",
+      "filePath": "storefront/persistence/OrderMapper.xml",
+      "language": "sql",
+      "inCorpus": false,
+      "projectId": "impact-recall-02-storefront"
+    },
+    {
+      "id": "shop_cart_getcart",
+      "name": "getCart",
+      "qualifiedName": "storefront/persistence/CartMapper.java::CartMapper::getCart",
+      "kind": "method",
+      "filePath": "storefront/persistence/CartMapper.java",
+      "language": "java",
+      "inCorpus": true,
+      "projectId": "impact-recall-02-storefront"
+    },
+    {
+      "id": "shop_cart_getcart_statement",
+      "name": "getCart.statement",
+      "qualifiedName": "org.shop.persistence.CartMapper.getCart.statement",
+      "kind": "method",
+      "filePath": "storefront/persistence/CartMapper.xml",
+      "language": "sql",
+      "inCorpus": false,
+      "projectId": "impact-recall-02-storefront"
+    },
+    {
+      "id": "report_customer_listaccounts",
+      "name": "listAccounts",
+      "qualifiedName": "reporting/batch/CustomerMapper.java::CustomerMapper::listAccounts",
+      "kind": "method",
+      "filePath": "reporting/batch/CustomerMapper.java",
+      "language": "java",
+      "inCorpus": true,
+      "projectId": "impact-recall-02-reporting"
+    },
+    {
+      "id": "report_customer_listaccounts_statement",
+      "name": "listAccounts.statement",
+      "qualifiedName": "com.report.batch.CustomerMapper.listAccounts.statement",
+      "kind": "method",
+      "filePath": "reporting/batch/CustomerMapper.xml",
+      "language": "sql",
+      "inCorpus": false,
+      "projectId": "impact-recall-02-reporting"
+    },
+    {
+      "id": "report_revenue_sumorders",
+      "name": "sumOrders",
+      "qualifiedName": "reporting/batch/RevenueMapper.java::RevenueMapper::sumOrders",
+      "kind": "method",
+      "filePath": "reporting/batch/RevenueMapper.java",
+      "language": "java",
+      "inCorpus": true,
+      "projectId": "impact-recall-02-reporting"
+    },
+    {
+      "id": "report_revenue_sumorders_statement",
+      "name": "sumOrders.statement",
+      "qualifiedName": "com.report.batch.RevenueMapper.sumOrders.statement",
+      "kind": "method",
+      "filePath": "reporting/batch/RevenueMapper.xml",
+      "language": "sql",
+      "inCorpus": false,
+      "projectId": "impact-recall-02-reporting"
+    },
+    {
+      "id": "report_report_saverun",
+      "name": "saveRun",
+      "qualifiedName": "reporting/batch/ReportMapper.java::ReportMapper::saveRun",
+      "kind": "method",
+      "filePath": "reporting/batch/ReportMapper.java",
+      "language": "java",
+      "inCorpus": true,
+      "projectId": "impact-recall-02-reporting"
+    },
+    {
+      "id": "report_report_saverun_statement",
+      "name": "saveRun.statement",
+      "qualifiedName": "com.report.batch.ReportMapper.saveRun.statement",
+      "kind": "method",
+      "filePath": "reporting/batch/ReportMapper.xml",
+      "language": "sql",
+      "inCorpus": false,
+      "projectId": "impact-recall-02-reporting"
+    }
+  ],
+  "edges": [
+    {
+      "from": "storefront/persistence/AccountMapper.java::AccountMapper::getAccount",
+      "to": "org.shop.persistence.AccountMapper.getAccount.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.shop.persistence.AccountMapper.getAccount.statement",
+      "to": "account",
+      "kind": "reads"
+    },
+    {
+      "from": "storefront/persistence/AccountMapper.java::AccountMapper::updateAccount",
+      "to": "org.shop.persistence.AccountMapper.updateAccount.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.shop.persistence.AccountMapper.updateAccount.statement",
+      "to": "account",
+      "kind": "writes"
+    },
+    {
+      "from": "storefront/persistence/OrderMapper.java::OrderMapper::getOrder",
+      "to": "org.shop.persistence.OrderMapper.getOrder.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.shop.persistence.OrderMapper.getOrder.statement",
+      "to": "orders",
+      "kind": "reads"
+    },
+    {
+      "from": "storefront/persistence/OrderMapper.java::OrderMapper::insertOrder",
+      "to": "org.shop.persistence.OrderMapper.insertOrder.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.shop.persistence.OrderMapper.insertOrder.statement",
+      "to": "orders",
+      "kind": "writes"
+    },
+    {
+      "from": "storefront/persistence/CartMapper.java::CartMapper::getCart",
+      "to": "org.shop.persistence.CartMapper.getCart.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.shop.persistence.CartMapper.getCart.statement",
+      "to": "cart",
+      "kind": "reads"
+    },
+    {
+      "from": "reporting/batch/CustomerMapper.java::CustomerMapper::listAccounts",
+      "to": "com.report.batch.CustomerMapper.listAccounts.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "com.report.batch.CustomerMapper.listAccounts.statement",
+      "to": "account",
+      "kind": "reads"
+    },
+    {
+      "from": "reporting/batch/RevenueMapper.java::RevenueMapper::sumOrders",
+      "to": "com.report.batch.RevenueMapper.sumOrders.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "com.report.batch.RevenueMapper.sumOrders.statement",
+      "to": "orders",
+      "kind": "reads"
+    },
+    {
+      "from": "reporting/batch/ReportMapper.java::ReportMapper::saveRun",
+      "to": "com.report.batch.ReportMapper.saveRun.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "com.report.batch.ReportMapper.saveRun.statement",
+      "to": "report_run",
+      "kind": "writes"
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-01",
+      "text": "Add a loyalty tier column to account",
+      "expectedTables": ["account"],
+      "expectedConsumers": ["impact-recall-02-reporting"],
+      "expectedCodeSymbols": ["updateAccount"]
+    },
+    {
+      "id": "REQ-02",
+      "text": "Store a shipping method on each order",
+      "expectedTables": ["orders"],
+      "expectedConsumers": ["impact-recall-02-reporting"],
+      "expectedCodeSymbols": ["insertOrder"]
+    },
+    {
+      "id": "REQ-03",
+      "text": "Track cart contents for the storefront session",
+      "expectedTables": ["cart"],
+      "expectedCodeSymbols": ["getCart"]
+    }
+  ]
+}

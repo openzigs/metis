@@ -1,0 +1,23 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Least-privilege roles",
+    "description": "Administrators are granted least-privilege scoped roles.",
+    "priority": "critical"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Custom role builder",
+    "description": "Owners build custom roles from a permission catalog.",
+    "priority": "high"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Role change audit",
+    "description": "Role changes should be written to the audit log.",
+    "priority": "medium"
+  }
+]

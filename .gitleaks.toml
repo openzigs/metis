@@ -1,0 +1,23 @@
+# ==============================================================================
+# Gitleaks baseline configuration for METIS
+# Extends default ruleset; project-specific allowlist for example placeholders.
+# ==============================================================================
+
+title = "METIS gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow placeholder values in env examples and documentation"
+paths = [
+  '''(.*?)\.env\.example$''',
+  '''docs/.*\.md$''',
+  '''README\.md$''',
+  '''CHANGELOG\.md$''',
+]
+regexes = [
+  '''replace-me-[a-z0-9-]+''',
+  '''your-[a-z0-9-]+-here''',
+  '''example-[a-z0-9-]+''',
+]

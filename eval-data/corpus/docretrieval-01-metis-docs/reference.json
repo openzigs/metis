@@ -1,0 +1,41 @@
+{
+  "corpusId": "docretrieval-01-metis-docs",
+  "license": "CC0-1.0",
+  "licenseNote": "CC0-1.0. The corpus is a frozen snapshot of METIS's own documentation (OPERATIONS.md, SECURITY.md, data-model.md and seven others at snapshotCommit 953bfe70) and these reference answers are derived from it, so the licence is the repository owner's to set. #1382 set it: the owner has confirmed this is their own authored content, CC0-1.0 matches the other two reference.json files and the rest of eval-data/, and an unlicensed file cannot ship. Resolves E4 in #1322 and the reference.json half of #1300. (This corpus still has no entry in eval-data/manifest.json; docretrieval-* corpora are described by their own queries.json and snapshot-manifest.json.)",
+  "snapshotCommit": "953bfe7034cd7a4f7e3c5ca82b03642a0cdebcf7",
+  "note": "Issue #1319 — human-authored gold ANSWERS for this corpus's 48 questions: the one input the standard LLM-as-judge design calls for that METIS did not have. The `answers` array is EMPTY ON PURPOSE. The schema, loader, validator and answer-correctness metric all ship and are tested, but a gold answer written by a model would make the metric a measurement of the judge against itself, so none has been fabricated to fill it. Until an answer is added, `pnpm eval:answer-correctness` reports the metric as NOT REPORTED with a reason, never as a score of zero. See REFERENCE-AUTHORING.md in this directory for how to add one.",
+  "answers": [
+    {
+      "queryId": "dq-ops-04",
+      "answer": "The vault supports versioning through a byte on every portion of text, so historical rows remain readable as you migrate.",
+      "provenance": {
+        "author": "gh:mgcronin",
+        "date": "2026-08-30"
+      }
+    },
+    {
+      "queryId": "dq-ops-06",
+      "answer": "Maximum tolerable data loss on failover is 5 minutes.",
+      "provenance": {
+        "author": "gh:mgcronin",
+        "date": "2026-08-30"
+      }
+    },
+    {
+      "queryId": "dq-sec-01",
+      "answer": "The cookie attributes are httpOnly, Secure, SameSite=Strict cookies. They are rotated on every refresh.",
+      "provenance": {
+        "author": "gh:mgcronin",
+        "date": "2026-08-30"
+      }
+    },
+    {
+      "queryId": "dq-sec-02",
+      "answer": "The admin endpoint returns redacted values for known secret env names and unset for missing ones.",
+      "provenance": {
+        "author": "gh:mgcronin",
+        "date": "2026-08-30"
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+apiVersion: v2
+name: metis
+description: |
+  METIS — Master Enterprise Tool for Issue Synthesis. Production Helm chart
+  covering the four core services (server, ui, embeddings, copilot) plus
+  PVCs, Secrets, Ingress, RBAC/IRSA, HPA, PDB, and NetworkPolicy.
+type: application
+# Chart version is independent of app version. Bump on any chart-template
+# change; bump appVersion only on a new METIS release tag.
+version: 0.1.0
+# Must mirror the root package.json `version` field.
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/openzigs/metis
+sources:
+  - https://github.com/openzigs/metis
+maintainers:
+  - name: METIS Maintainers
+    url: https://github.com/openzigs/metis
+keywords:
+  - metis
+  - mcp
+  - llm
+  - rag
+  - eks
+annotations:
+  # Renderable hint for tooling like ArtifactHub / Renovate.
+  artifacthub.io/category: "ai-machine-learning"
+  artifacthub.io/license: Apache-2.0

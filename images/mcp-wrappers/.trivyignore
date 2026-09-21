@@ -1,0 +1,4 @@
+# JBang 0.138.0 embeds plexus-utils 3.6.0 inside jbang.jar. There is no
+# separate dependency jar to replace in the image; remove this ignore when
+# upstream JBang releases a distribution with plexus-utils >= 3.6.1 / 4.0.3.
+CVE-2025-67030

@@ -1,0 +1,17 @@
+{
+  "corpusId": "docsgen-01-single-repo",
+  "license": "CC0-1.0",
+  "licenseNote": "Synthetic benchmark fixture written for METIS issue #1357. The repositories and gold answer are invented for this repository and may be published locally without external licence review.",
+  "snapshotCommit": "1111111111111111111111111111111111111111",
+  "note": "Single-repo generated-doc benchmark gold answer. Human-authored so the missed-expected-behavior metric is not circular.",
+  "answers": [
+    {
+      "queryId": "docsgen-01-single-repo-generated-doc",
+      "answer": "The generated benchmark document says it summarizes repository structure, key modules, and integration boundaries from the seeded fixture repositories. It also states that its grounding evidence comes from repository-source chunks ingested into the knowledge service.",
+      "provenance": {
+        "author": "gh:mgcronin",
+        "date": "2026-09-18"
+      }
+    }
+  ]
+}

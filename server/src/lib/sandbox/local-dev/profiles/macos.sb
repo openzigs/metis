@@ -1,0 +1,44 @@
+;; macOS sandbox-exec profile for the local-dev sandbox (Epic #395 #417).
+;;
+;; Default deny: any operation not explicitly permitted is rejected.
+;; The sandbox working directory is bound at runtime by the local-dev
+;; adapter via `(param "SANDBOX_DIR")` — see `local-dev-sandbox.ts`.
+;;
+;; This is single-process isolation only — it shares the host kernel
+;; and is NOT a substitute for the E2B / Daytona microVM isolation
+;; required for production multi-tenant workloads.
+(version 1)
+(deny default)
+
+;; Allow the bare minimum the spawned `/bin/sh -c <cmd>` needs.
+(allow process-fork)
+(allow process-exec)
+(allow signal (target self))
+(allow sysctl-read)
+(allow file-read*
+  (regex #"^/bin/")
+  (regex #"^/sbin/")
+  (regex #"^/usr/")
+  (regex #"^/System/")
+  (regex #"^/Library/")
+  (regex #"^/private/etc/")
+  (literal "/dev/null")
+  (literal "/dev/zero")
+  (literal "/dev/random")
+  (literal "/dev/urandom"))
+
+;; Read-write inside the sandbox working directory only.
+;; SECURITY: do NOT widen this to /private/tmp or /private/var/folders —
+;; both are shared with every other process on the host (sibling sandboxes,
+;; Spotlight indexer, the IDE, etc.) and would let untrusted code drop
+;; payloads visible to the rest of the system. The local-dev adapter
+;; already provisions a per-session SANDBOX_DIR via mkdtemp, so this
+;; restriction is sufficient for legitimate workloads.
+(allow file-read* file-write*
+  (subpath (param "SANDBOX_DIR"))
+  (literal "/dev/null")
+  (literal "/dev/dtracehelper"))
+
+;; Deny network by default — local-dev is not for testing networked code.
+;; If a future enhancement needs egress, add `(allow network*)` rules
+;; gated on the per-call egress allowlist.

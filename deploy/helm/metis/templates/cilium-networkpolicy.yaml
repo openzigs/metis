@@ -1,0 +1,50 @@
+{{- /*
+Cilium NetworkPolicy — sub-issue #371.
+Renders only when networkPolicy.cilium.enabled=true. Provides FQDN-scoped
+egress for the AI gateway + GitHub host allowlist that the vanilla
+NetworkPolicy cannot express.
+*/ -}}
+{{- if and .Values.networkPolicy.enabled .Values.networkPolicy.cilium.enabled -}}
+{{- $fullname := include "metis.fullname" . -}}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ printf "%s-fqdn-egress" $fullname }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "netpol") | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: metis
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  egress:
+    # In-cluster DNS.
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            "k8s:k8s-app": kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+          rules:
+            dns:
+              - matchPattern: "*"
+    # Intra-namespace traffic.
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/part-of: metis
+            app.kubernetes.io/instance: {{ .Release.Name }}
+    # FQDN-scoped HTTPS to AI gateways + GitHub.
+    - toFQDNs:
+        {{- range .Values.networkPolicy.egress.aiGateways }}
+        - matchName: {{ . | quote }}
+        {{- end }}
+        {{- range .Values.networkPolicy.egress.githubHosts }}
+        - matchName: {{ . | quote }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+{{- end }}

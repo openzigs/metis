@@ -1,0 +1,30 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Email and password sign-in",
+    "description": "Registered customers sign in with an email address and password.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Self-service password reset",
+    "description": "Customers reset a forgotten password through an emailed reset link.",
+    "priority": "high"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Multi-factor authentication",
+    "description": "A one-time passcode is required as a second authentication factor.",
+    "priority": "critical"
+  },
+  {
+    "id": "R4",
+    "type": "feature",
+    "title": "Remember this device",
+    "description": "Customers should be able to mark a device as trusted for thirty days.",
+    "priority": "medium"
+  }
+]

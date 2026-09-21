@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mapper.DynamicMapper">
+
+  <sql id="baseColumns">
+    id, status
+  </sql>
+
+  <!-- Nested include: userSummaryColumns pulls in baseColumns. -->
+  <sql id="userSummaryColumns">
+    <include refid="baseColumns"/>, email
+  </sql>
+
+  <!--
+    <choose>/<when>/<otherwise> select from entirely different tables
+    depending on an OGNL condition we deliberately never evaluate — both
+    branches must be captured (union), not just the first one.
+  -->
+  <select id="findAccount" resultType="Account">
+    SELECT <include refid="userSummaryColumns"/>
+    <choose>
+      <when test="archived">
+        FROM archived_accounts
+      </when>
+      <otherwise>
+        FROM accounts
+      </otherwise>
+    </choose>
+    <if test="withProfile">
+      JOIN account_profiles ap ON ap.account_id = id
+    </if>
+    <where>
+      <if test="status != null">
+        AND status = #{status}
+      </if>
+    </where>
+  </select>
+
+  <!--
+    <foreach> loop body must be captured exactly once (no duplicate table
+    refs from a repeated body), inside a <set>/<trim>-adjacent statement.
+  -->
+  <update id="bulkTagAccounts">
+    UPDATE accounts
+    <set>
+      <if test="tag != null">tag = #{tag},</if>
+    </set>
+    WHERE id IN
+    <foreach item="item" collection="ids" open="(" separator="," close=")">
+      #{item}
+    </foreach>
+  </update>
+
+</mapper>

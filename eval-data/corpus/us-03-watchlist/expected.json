@@ -1,0 +1,23 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Add to watchlist",
+    "description": "A buyer adds a product to a personal watchlist.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Price-drop alert",
+    "description": "A buyer is alerted when a watched price drops.",
+    "priority": "high"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Share watchlist",
+    "description": "A buyer may share a watchlist with a friend.",
+    "priority": "low"
+  }
+]

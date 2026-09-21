@@ -1,0 +1,22 @@
+{
+  "name": "@metis/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "description": "Playwright end-to-end smoke suite for the METIS critical path.",
+  "type": "module",
+  "scripts": {
+    "e2e": "playwright test",
+    "e2e:headed": "playwright test --headed",
+    "e2e:ui": "playwright test --ui",
+    "test": "playwright test",
+    "report": "playwright show-report",
+    "lint": "echo 'no-op' && true",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "socket.io-client": "^4.8.3",
+    "typescript": "^6.0.3"
+  }
+}

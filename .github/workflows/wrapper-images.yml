@@ -1,0 +1,147 @@
+name: Wrapper images — multi-arch build & GHCR push
+
+# Issue #363 (Epic #359) — multi-arch (linux/amd64,linux/arm64) build of the
+# 9 MCP wrapper images at images/mcp-wrappers/*. Pushes to GHCR on tag, builds
+# only (no push) on PRs that touch the wrapper sources.
+#
+# Tagging convention: push a tag of the form `mcp-wrappers/v1.0.0` to publish.
+# Each image is published as `ghcr.io/metis-mcps/<runner>:<VERSION>` (from the
+# images/mcp-wrappers/VERSION file) plus `:latest`.
+
+on:
+  push:
+    tags:
+      - "mcp-wrappers/v*"
+  # Multi-arch wrapper builds run on wrapper release tags only — not on PRs
+  # (keeps the runner from buildx contention on every PR).
+  workflow_dispatch:
+
+concurrency:
+  group: wrapper-images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io/metis-mcps
+
+jobs:
+  build:
+    name: Build ${{ matrix.wrapper }}
+    runs-on: ubuntu-latest
+    # Dependency-only bumps (dependabot PRs) don't need multi-arch Docker
+    # validation — the CI workflow already handles that. Skip to avoid
+    # flooding the runner with BuildKit containers.
+    if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        wrapper:
+          - uvx-runner
+          - uvx-runner-sse
+          - jbang-runner
+          - jbang-runner-sse
+          - node-runner
+          - node-runner-sse
+          - npx-runner
+          - npx-runner-sse
+          - code-graph-runner-sse
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Remove orphaned BuildKit builders
+        # Builders from cancelled/failed prior runs are not always cleaned up
+        # by setup-buildx-action's post-step. Prune them before creating a new
+        # one to prevent CPU and disk exhaustion on the runner.
+        run: |
+          docker buildx ls 2>/dev/null \
+            | awk 'NR>1 && /^builder-/ {print $1}' \
+            | xargs -r docker buildx rm --force 2>/dev/null || true
+
+      - name: Read wrapper version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < images/mcp-wrappers/VERSION)"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up QEMU (multi-arch emulation)
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      # GHCR login is only required when we will push (tag triggers). On PRs
+      # we run a build-only validation for linux/amd64 and skip the login.
+      - name: Login to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (PR — single-arch validation)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: images/mcp-wrappers/${{ matrix.wrapper }}
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ env.REGISTRY }}/${{ matrix.wrapper }}:pr-${{ github.event.pull_request.number || 'manual' }}
+          cache-from: type=gha,scope=${{ matrix.wrapper }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.wrapper }},ignore-error=true
+
+      - name: Build & push (tag — multi-arch publish)
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: images/mcp-wrappers/${{ matrix.wrapper }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ matrix.wrapper }}:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ matrix.wrapper }}:latest
+          cache-from: type=gha,scope=${{ matrix.wrapper }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.wrapper }},ignore-error=true
+
+      # Smoke step — invoke the image with --help (or equivalent). Wrapper
+      # entrypoints are launchers (npx, uvx, jbang, node, mcp-proxy); they
+      # mostly support --help / -h and exit 0. We treat exit 0 OR exit 2
+      # (some launchers exit 2 on missing positional args) as a pass; any
+      # other code fails the job.
+      - name: Smoke test (PR build)
+        if: github.event_name == 'pull_request'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ matrix.wrapper }}:pr-${{ github.event.pull_request.number || 'manual' }}
+        run: |
+          set -uo pipefail
+          # The image was loaded above with `load: true` so it is in the local
+          # daemon. Run with --help and accept exit 0 or 2.
+          docker run --rm "${IMAGE}" --help
+          rc=$?
+          if [[ ${rc} -eq 0 || ${rc} -eq 2 ]]; then
+            echo "smoke OK (rc=${rc})"
+            exit 0
+          fi
+          echo "smoke FAILED (rc=${rc})" >&2
+          exit "${rc}"
+
+      - name: Verify multi-arch manifest (tag publish)
+        if: github.event_name == 'push'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ matrix.wrapper }}:${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${IMAGE}" | tee inspect.txt
+          grep -q "linux/amd64" inspect.txt
+          grep -q "linux/arm64" inspect.txt

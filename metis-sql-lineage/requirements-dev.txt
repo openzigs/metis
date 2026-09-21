@@ -1,0 +1,9 @@
+# METIS SQL Lineage sidecar — PINNED dev/test/lint dependencies.
+#
+# Used by CI (ruff lint + pytest coverage gate) and local development only.
+# Not installed into the runtime Docker image. All pure-Python, no model downloads.
+-r requirements.txt
+pytest==8.4.2
+pytest-cov==7.0.0
+httpx==0.28.1
+ruff==0.14.4

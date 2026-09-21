@@ -1,0 +1,73 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model CodeGraph {
+  id               String       @id @default(cuid())
+  projectId        String
+  repoConnectionId String?
+  commitSha        String?
+  symbolCount      Int          @default(0)
+  edgeCount        Int          @default(0)
+  languageStats    String       @default("{}")
+  lastIndexedAt    DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  symbols          CodeSymbol[]
+  edges            CodeEdge[]
+
+  @@unique([projectId, repoConnectionId])
+  @@index([projectId])
+  @@map("code_graphs")
+}
+
+model CodeSymbol {
+  id            String     @id @default(cuid())
+  codeGraphId   String
+  projectId     String
+  kind          String
+  name          String
+  qualifiedName String
+  filePath      String
+  startLine     Int
+  endLine       Int
+  language      String
+  contentHash   String
+  createdAt     DateTime   @default(now())
+  graph         CodeGraph  @relation(fields: [codeGraphId], references: [id], onDelete: Cascade)
+  fromEdges     CodeEdge[] @relation("EdgeFrom")
+  toEdges       CodeEdge[] @relation("EdgeTo")
+
+  @@index([projectId, kind])
+  @@index([projectId, qualifiedName])
+  @@index([codeGraphId, filePath])
+  @@map("code_symbols")
+}
+
+model CodeEdge {
+  id              String      @id @default(cuid())
+  codeGraphId     String
+  projectId       String
+  kind            String
+  fromSymbolId    String
+  toSymbolId      String?
+  toQualifiedName String?
+  filePath        String
+  line            Int
+  metadata        String?
+  createdAt       DateTime    @default(now())
+  graph           CodeGraph   @relation(fields: [codeGraphId], references: [id], onDelete: Cascade)
+  fromSymbol      CodeSymbol  @relation("EdgeFrom", fields: [fromSymbolId], references: [id], onDelete: Cascade)
+  toSymbol        CodeSymbol? @relation("EdgeTo", fields: [toSymbolId], references: [id], onDelete: SetNull)
+
+  @@index([fromSymbolId, kind])
+  @@index([toSymbolId, kind])
+  @@index([projectId, kind])
+  @@index([codeGraphId, filePath])
+  @@map("code_edges")
+}

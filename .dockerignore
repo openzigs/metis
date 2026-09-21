@@ -1,0 +1,17 @@
+node_modules
+dist
+.next
+coverage
+.git
+.github
+.husky
+docs
+*.md
+.env
+.env.*
+!.env.example
+.vscode
+.idea
+.DS_Store
+Dockerfile*
+docker-compose*

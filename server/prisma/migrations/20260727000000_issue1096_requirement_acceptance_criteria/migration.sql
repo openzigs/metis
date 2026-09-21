@@ -1,0 +1,18 @@
+-- Issue #1096 — persist a requirement's acceptance criteria as structured data.
+--
+-- The synthesis agent derives testable criteria (the prose in `body` referenced
+-- them), but there was nowhere to keep them: the per-criterion structure was
+-- collapsed into `body`, and the issue-draft generator papered over the absence
+-- with a fixed Given/When/Then block that read as authored. This column gives
+-- the criteria a home so drafts can render the REAL ones and say so plainly when
+-- there are none.
+--
+-- Stored as a JSON array of strings, mirroring the existing `labels` column, so
+-- no relation or join is introduced. NOT NULL with a `'[]'` default: every
+-- pre-existing row reads as "no criteria derived", which is exactly true of it,
+-- and readers never have to distinguish null from empty. Re-running an analysis
+-- recomputes the value (requirements are delete+recreated per #57).
+--
+-- The contents are model-produced text rendered only through the markdown
+-- sanitizers — never executed, never interpolated into SQL.
+ALTER TABLE "requirements" ADD COLUMN "acceptanceCriteria" TEXT NOT NULL DEFAULT '[]';

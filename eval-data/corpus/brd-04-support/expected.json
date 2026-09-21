@@ -1,0 +1,23 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Unified ticket inbox",
+    "description": "Agents work tickets from email, chat, and phone in one inbox.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "SLA timers",
+    "description": "Tickets should display SLA timers based on priority.",
+    "priority": "medium"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Escalation routing",
+    "description": "Breached tickets are escalated to a senior queue automatically.",
+    "priority": "high"
+  }
+]

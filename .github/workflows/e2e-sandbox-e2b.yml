@@ -1,0 +1,59 @@
+name: e2e-sandbox-e2b
+
+# Epic #395 #420 — live E2B sandbox e2e.
+#
+# Runs ONLY on `push: main` (post-merge) and on-demand via
+# `workflow_dispatch`, never on pull_request — to keep arbitrary fork
+# PRs from spending E2B budget. Suite is fully gated on the
+# `E2B_API_KEY` repo secret; if the secret is unset every test no-ops.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-sandbox-e2b-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: development
+      NPM_CONFIG_PRODUCTION: "false"
+      E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+      SANDBOX_PROVIDER: e2b
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Build shared packages
+        # @metis/shared must be compiled before the server can start.
+        # Without this step tsx fails with ERR_MODULE_NOT_FOUND for
+        # server/node_modules/@metis/shared/dist/index.js, breaking the
+        # Playwright webServer launch.
+        run: pnpm --filter @metis/shared run build
+
+      - name: Install Playwright browsers
+        # Fetches the browser binary only; the GitHub-hosted Ubuntu image already
+        # carries chromium's system libraries (see the same step in ci.yml).
+        run: pnpm --filter @metis/e2e exec playwright install chromium
+
+      - name: Run sandbox BA-loop e2e
+        # The spec is internally gated on E2B_API_KEY — when the secret is
+        # absent (e.g. in forks) every test in this file is skipped.
+        run: pnpm --filter @metis/e2e exec playwright test sandbox-ba-loop.spec.ts

@@ -1,0 +1,5 @@
+{{- if .Values.ui.enabled -}}
+{{ include "metis.componentDeployment" (dict "root" . "component" .Values.ui "name" "ui") }}
+---
+{{ include "metis.componentService" (dict "root" . "component" .Values.ui "name" "ui") }}
+{{- end }}

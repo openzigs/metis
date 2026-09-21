@@ -1,0 +1,193 @@
+{
+  "id": "embedretrieval-01-nl-to-code",
+  "title": "NL requirement → code symbol retrieval (issue #788 embedding-model gate)",
+  "snapshotCommit": "391f0f1266dd460b898efe389b2a35a57177f976",
+  "groundTruth": "HAND-AUTHORED. A human read each snapshotted METIS source file and, for symbols implementing a distinct capability, wrote the natural-language requirement an analyst would plausibly have written for it (requirement register, not keyword register). The relevant set is the symbol(s) that actually implement that requirement in the snapshot. There is no LLM-derived or automatically-mined labelling. The corpus is small (30 queries over 183 symbols) and was frozen BEFORE any arm was run; it was not tuned against any model's output.",
+  "queries": [
+    {
+      "id": "Q01",
+      "requirement": "The system must block a new AI call when the project has already spent more than its configured monthly budget cap.",
+      "relevant": [{ "name": "assertWithinBudget", "filePath": "finops/budget-enforcer.ts" }]
+    },
+    {
+      "id": "Q02",
+      "requirement": "The platform must smooth a noisy series of daily spend figures so that recent days count for more than older ones.",
+      "relevant": [{ "name": "ewma", "filePath": "finops/forecast-math.ts" }]
+    },
+    {
+      "id": "Q03",
+      "requirement": "Given a history of daily costs, the platform must fit a straight-line trend and use it to estimate the value on a future day.",
+      "relevant": [
+        { "name": "linearRegression", "filePath": "finops/forecast-math.ts" },
+        { "name": "predictAt", "filePath": "finops/forecast-math.ts" }
+      ]
+    },
+    {
+      "id": "Q04",
+      "requirement": "The platform must report how far off its earlier predictions turned out to be, as an average percentage error.",
+      "relevant": [{ "name": "mape", "filePath": "finops/forecast-math.ts" }]
+    },
+    {
+      "id": "Q05",
+      "requirement": "Finance must receive a monthly breakdown of what each project cost, written up as a readable document and delivered to the workspace owners.",
+      "relevant": [
+        { "name": "renderChargebackMarkdown", "filePath": "finops/chargeback-report.ts" },
+        { "name": "generateAndSendChargeback", "filePath": "finops/chargeback-report.ts" }
+      ]
+    },
+    {
+      "id": "Q06",
+      "requirement": "Spend must be attributable to individual people, not only to projects, so a team lead can see who is driving the bill.",
+      "relevant": [{ "name": "userCosts", "filePath": "finops/chargeback-report.ts" }]
+    },
+    {
+      "id": "Q07",
+      "requirement": "The statement must show whether this period's figure rose or fell relative to the previous period, expressed as a percentage.",
+      "relevant": [{ "name": "pctChange", "filePath": "finops/chargeback-report.ts" }]
+    },
+    {
+      "id": "Q08",
+      "requirement": "A user who posts into a discussion thread too many times in quick succession must be turned away once the allowance for the current rolling window is used up.",
+      "relevant": [{ "name": "evaluateWindow", "filePath": "discussions/rate-limit-store.ts" }]
+    },
+    {
+      "id": "Q09",
+      "requirement": "When several server replicas are running, exactly one of them may own the cluster-wide scheduled work; the others must stand by and take over if it dies.",
+      "relevant": [{ "name": "LeaderElector", "filePath": "scheduler/leader-election.ts" }]
+    },
+    {
+      "id": "Q10",
+      "requirement": "A recurring job must not be executed twice for the same time window even if two workers wake up at the same moment.",
+      "relevant": [{ "name": "withJobWindowLock", "filePath": "scheduler/leader-election.ts" }]
+    },
+    {
+      "id": "Q11",
+      "requirement": "Credentials belonging to a workspace must be kept encrypted at rest and only turned back into plaintext for a caller entitled to that scope.",
+      "relevant": [{ "name": "VaultService", "filePath": "vault/vault-service.ts" }]
+    },
+    {
+      "id": "Q12",
+      "requirement": "An operator must be able to tell the difference between a stored secret that cannot be unlocked and one that was never set up at all.",
+      "relevant": [
+        { "name": "VaultDecryptionError", "filePath": "vault/vault-service.ts" },
+        { "name": "VaultConfigurationError", "filePath": "vault/vault-service.ts" }
+      ]
+    },
+    {
+      "id": "Q13",
+      "requirement": "The single sign-on handshake must remember the value it issued before redirecting the browser to the identity provider, and that value must be redeemable only once.",
+      "relevant": [
+        { "name": "SSOStateStore", "filePath": "auth/sso-state-store.ts" },
+        { "name": "InMemorySSOStateStore", "filePath": "auth/sso-state-store.ts" }
+      ]
+    },
+    {
+      "id": "Q14",
+      "requirement": "An assertion coming back from the identity provider must be refused unless it answers a challenge this server actually issued.",
+      "relevant": [
+        { "name": "InMemorySamlRequestIdCache", "filePath": "auth/saml-request-id-cache.ts" }
+      ]
+    },
+    {
+      "id": "Q15",
+      "requirement": "When the corporate directory reports which teams a person belongs to, the platform must pull the plain team names out of their full directory paths.",
+      "relevant": [{ "name": "extractGroupNames", "filePath": "auth/ldap-provider.ts" }]
+    },
+    {
+      "id": "Q16",
+      "requirement": "Text typed by a user must never be able to change the meaning of the lookup expression sent to the corporate directory.",
+      "relevant": [{ "name": "escapeLDAPFilter", "filePath": "auth/ldap-provider.ts" }]
+    },
+    {
+      "id": "Q17",
+      "requirement": "Talking to the corporate directory over an unprotected connection must be impossible unless an administrator has deliberately allowed it.",
+      "relevant": [
+        { "name": "assertLDAPTlsConfigSafe", "filePath": "auth/ldap-provider.ts" },
+        { "name": "resolveLDAPTlsOptions", "filePath": "auth/ldap-provider.ts" }
+      ]
+    },
+    {
+      "id": "Q18",
+      "requirement": "An administrator must be able to prove the directory settings work before committing them.",
+      "relevant": [{ "name": "testLDAPConnection", "filePath": "auth/ldap-provider.ts" }]
+    },
+    {
+      "id": "Q19",
+      "requirement": "A message written inside the product must show up in the linked chat channel so people who live in chat do not have to open the app.",
+      "relevant": [
+        { "name": "mirrorMessageToTeams", "filePath": "teams/outbound-sync.ts" },
+        { "name": "scheduleMirrorToTeams", "filePath": "teams/outbound-sync.ts" }
+      ]
+    },
+    {
+      "id": "Q20",
+      "requirement": "Someone speaking from a chat client must be matched to their account in the product using the identity their chat tenant vouches for.",
+      "relevant": [
+        { "name": "TeamsAadIdentityResolver", "filePath": "teams/aad-identity-resolver.ts" },
+        { "name": "resolveUserFromAadObjectId", "filePath": "teams/aad-identity-resolver.ts" }
+      ]
+    },
+    {
+      "id": "Q21",
+      "requirement": "A severity-one production incident must wake up whoever is currently on call.",
+      "relevant": [{ "name": "PagerDutyEventsClient", "filePath": "pagerduty/events-client.ts" }]
+    },
+    {
+      "id": "Q22",
+      "requirement": "When the incident feed rejects a notification, the response status must be preserved so operators can tell a bad key from an outage.",
+      "relevant": [{ "name": "PagerDutyApiError", "filePath": "pagerduty/events-client.ts" }]
+    },
+    {
+      "id": "Q23",
+      "requirement": "Operations must be warned when the standby copy of the database has fallen too far behind the primary to be a usable failover.",
+      "relevant": [{ "name": "checkReplication", "filePath": "dr/replication-check.ts" }]
+    },
+    {
+      "id": "Q24",
+      "requirement": "Calls the server makes to an address supplied by a user must not be able to reach machines inside our own private network.",
+      "relevant": [
+        { "name": "validateTarget", "filePath": "net/safe-fetch.ts" },
+        { "name": "safeFetch", "filePath": "net/safe-fetch.ts" }
+      ]
+    },
+    {
+      "id": "Q25",
+      "requirement": "Looking for code by meaning and looking for it by keyword must produce one merged ranking rather than two competing lists.",
+      "relevant": [
+        { "name": "HybridCodeSearch", "filePath": "code-graph/hybrid-search.ts" },
+        { "name": "reciprocalRankFusion", "filePath": "code-graph/hybrid-search.ts" }
+      ]
+    },
+    {
+      "id": "Q26",
+      "requirement": "Word-based ranking must weigh rare words more heavily than common ones and must not simply reward the longest document.",
+      "relevant": [{ "name": "BM25Index", "filePath": "code-graph/hybrid-search.ts" }]
+    },
+    {
+      "id": "Q27",
+      "requirement": "When a search is scoped to part of the tree, only files whose path matches that pattern may be considered.",
+      "relevant": [{ "name": "matchGlob", "filePath": "code-graph/hybrid-search.ts" }]
+    },
+    {
+      "id": "Q28",
+      "requirement": "Before choosing between a large model with a reusable prefix and a small model without one, the platform must work out the point at which reuse stops paying for itself.",
+      "relevant": [
+        { "name": "breakEvenCacheReadFraction", "filePath": "ai/cache-crossover.ts" },
+        { "name": "compareCachedSonnetVsHaiku", "filePath": "ai/cache-crossover.ts" }
+      ]
+    },
+    {
+      "id": "Q29",
+      "requirement": "Every model call must have its token counts and dollar cost written down so the spend can be attributed to a project afterwards.",
+      "relevant": [{ "name": "recordUsage", "filePath": "finops/token-tracker.ts" }]
+    },
+    {
+      "id": "Q30",
+      "requirement": "Spend warnings must be re-evaluated on a timer across all workspaces and pushed out to whatever destinations each one has configured.",
+      "relevant": [
+        { "name": "tickAllWorkspaces", "filePath": "finops/alert-engine.ts" },
+        { "name": "startAlertEngine", "filePath": "finops/alert-engine.ts" }
+      ]
+    }
+  ]
+}

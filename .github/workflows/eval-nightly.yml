@@ -1,0 +1,76 @@
+# Epic #194 (C.1/C.2) — Nightly evaluation harness for SWE-bench-Pro and TAU-bench.
+#
+# Gated behind the `EVAL_NIGHTLY_ENABLED` repository variable. When unset,
+# the workflow runs but each step short-circuits with a "disabled" log line
+# so the cron entry stays registered without consuming CI minutes.
+name: Eval Nightly
+
+on:
+  schedule:
+    # 02:00 UTC daily — well outside business hours for any region we care about.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      bench:
+        description: "Which benchmark to run (defaults to both)."
+        required: false
+        default: "both"
+        type: choice
+        options:
+          - both
+          - swe-bench-pro
+          - tau-bench
+
+concurrency:
+  group: eval-nightly
+  cancel-in-progress: false
+
+jobs:
+  swe-bench-pro:
+    if: ${{ vars.EVAL_NIGHTLY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || inputs.bench == 'both' || inputs.bench == 'swe-bench-pro') }}
+    runs-on: ubuntu-latest
+    env:
+      EVAL_NIGHTLY_ENABLED: "true"
+      EVAL_BENCH_MODEL: ${{ vars.EVAL_BENCH_MODEL || 'offline-stub' }}
+      EVAL_COST_CAP_CENTS: ${{ vars.EVAL_COST_CAP_CENTS || '5000' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile --prod=false
+      - name: Build shared package
+        run: pnpm --filter @metis/shared run build
+      - name: Run SWE-bench-Pro
+        run: |
+          pnpm --filter @metis/server exec node --enable-source-maps -e "import('./dist/lib/eval/swe-bench/runner.js').then(m => m.runSweBench({ model: process.env.EVAL_BENCH_MODEL, costCapCents: Number(process.env.EVAL_COST_CAP_CENTS) }))"
+
+  tau-bench:
+    if: ${{ vars.EVAL_NIGHTLY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || inputs.bench == 'both' || inputs.bench == 'tau-bench') }}
+    runs-on: ubuntu-latest
+    env:
+      EVAL_NIGHTLY_ENABLED: "true"
+      EVAL_BENCH_MODEL: ${{ vars.EVAL_BENCH_MODEL || 'offline-stub' }}
+      EVAL_COST_CAP_CENTS: ${{ vars.EVAL_COST_CAP_CENTS || '5000' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile --prod=false
+      - name: Build shared package
+        run: pnpm --filter @metis/shared run build
+      - name: Run TAU-bench
+        run: |
+          pnpm --filter @metis/server exec node --enable-source-maps -e "import('./dist/lib/eval/tau-bench/runner.js').then(m => m.runTauBench({ model: process.env.EVAL_BENCH_MODEL, costCapCents: Number(process.env.EVAL_COST_CAP_CENTS) }))"
+
+  disabled-notice:
+    if: ${{ vars.EVAL_NIGHTLY_ENABLED != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notice
+        run: |
+          echo "EVAL_NIGHTLY_ENABLED is not set to 'true' — skipping nightly evaluation."
+          echo "Set the repository variable EVAL_NIGHTLY_ENABLED=true to enable."

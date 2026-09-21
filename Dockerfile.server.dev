@@ -1,0 +1,93 @@
+# ==============================================================================
+# METIS Server Dockerfile — DEVELOPMENT (docker compose / LOCAL_QUICKSTART)
+#
+# Why a separate dev image (issue #390):
+#
+#   - `Dockerfile.server` is ruthlessly pruned for production. It strips the
+#     Prisma CLI, the sqlite query engine, and ~110 MB of dev fat. That image
+#     can ONLY run against a Postgres backend with pre-applied migrations.
+#   - The repo's compose (LOCAL_QUICKSTART) path uses SQLite by design — the
+#     route handlers (e.g. skill-directories.ts) `JSON.stringify` into TEXT
+#     columns; switching them to Postgres `Json` requires schema work + code
+#     changes tracked in #390.
+#   - Therefore: dev compose builds this image (full deps, sqlite engine,
+#     prisma CLI present), runs `prisma migrate deploy && prisma db seed` at
+#     startup, then `node dist/index.js`. Production deployments still use
+#     `Dockerfile.server` via `docker-compose.prod.yml` overlay.
+#
+# Footprint: ~750 MB (vs 380 MB slim). Acceptable for local dev — never used
+# in production images.
+# ==============================================================================
+
+ARG NODE_VERSION=20
+
+# ----- Stage 1: deps + build -----------------------------------------------
+FROM node:${NODE_VERSION}-alpine AS builder
+WORKDIR /app
+
+ENV PNPM_HOME=/usr/local/share/pnpm
+ENV PATH="${PNPM_HOME}:${PATH}"
+
+RUN apk add --no-cache libc6-compat python3 make g++ \
+ && corepack enable \
+ && corepack prepare pnpm@10.33.0 --activate
+
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* tsconfig.base.json ./
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/ui-kit/package.json ./packages/ui-kit/
+COPY server/package.json ./server/
+COPY server/embeddings-svc/package.json ./server/embeddings-svc/
+COPY ui/package.json ./ui/
+COPY e2e/package.json ./e2e/
+
+RUN pnpm install --frozen-lockfile --filter @metis/server... --filter @metis/shared
+
+COPY tsconfig.base.json ./
+COPY packages/shared ./packages/shared
+COPY server ./server
+
+RUN pnpm --filter @metis/shared build \
+ && pnpm --filter @metis/server prisma generate \
+ && pnpm --filter @metis/server build
+
+# ----- Stage 2: runtime ----------------------------------------------------
+# Single-stage runtime — keep dev tree intact (prisma CLI, sqlite engine).
+FROM node:${NODE_VERSION}-alpine AS runner
+WORKDIR /app
+
+ENV NODE_ENV=development
+ENV PORT=4000
+ENV EMBEDDINGS_MODE=sidecar
+ENV EMBEDDINGS_URL=http://embeddings:5050
+ENV PNPM_HOME=/usr/local/share/pnpm
+ENV PATH="${PNPM_HOME}:${PATH}"
+
+RUN apk add --no-cache libc6-compat docker-cli \
+ && corepack enable \
+ && corepack prepare pnpm@10.33.0 --activate \
+ && addgroup --system --gid 1001 metis \
+ && adduser  --system --uid 1001 --ingroup metis metis \
+ && mkdir -p /app/data \
+ && chown -R metis:metis /app
+
+# Bring the entire built dev tree across — no pruning. The dev image is
+# allowed to be fat; only `Dockerfile.server` (production) is slim.
+COPY --from=builder --chown=metis:metis /app/node_modules            ./node_modules
+COPY --from=builder --chown=metis:metis /app/server                  ./server
+COPY --from=builder --chown=metis:metis /app/packages                ./packages
+COPY --from=builder --chown=metis:metis /app/package.json            ./package.json
+COPY --from=builder --chown=metis:metis /app/pnpm-workspace.yaml     ./pnpm-workspace.yaml
+COPY --from=builder --chown=metis:metis /app/tsconfig.base.json      ./tsconfig.base.json
+
+# Entrypoint: run migrations + seed on first boot, then exec the server.
+COPY --chown=metis:metis scripts/dev-server-entrypoint.sh /usr/local/bin/dev-server-entrypoint.sh
+RUN chmod +x /usr/local/bin/dev-server-entrypoint.sh
+
+USER metis
+EXPOSE 4000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD node -e "require('http').get({host:'127.0.0.1',port:process.env.PORT||4000,path:'/healthz',timeout:4000},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+
+ENTRYPOINT ["/usr/local/bin/dev-server-entrypoint.sh"]
+CMD ["node", "server/dist/index.js"]

@@ -1,0 +1,81 @@
+# Dependabot config — batched + grouped to minimize PR/CI churn.
+#
+# Rationale: previously each dependency bump opened its own PR (no grouping,
+# limit 10/ecosystem), which produced 20+ open PRs at once — each kicking off a
+# full CI run. Now: a MONTHLY cadence (batched timing) and GROUPED updates so
+# all minor/patch bumps in an ecosystem land in a SINGLE PR. Major bumps stay
+# ungrouped (one PR each) so they get individual review — they can be breaking.
+# Security updates are unaffected by the interval and still come through promptly.
+#
+# cooldown (issue #586): hold a freshly-published version for `default-days`
+# before Dependabot proposes it, so a malicious/compromised release has a window
+# to be yanked or flagged before it can land in a bump PR. Mirrors the pnpm
+# `minimumReleaseAge` gate in pnpm-workspace.yaml (10080 minutes = 7 days). Security
+# updates still bypass this and arrive promptly. DO NOT lower or delete
+# `default-days` — it refused three installs to the second on 2026-08-07, and
+# `scripts/lib/dependabot-workspace-repo.test.mjs` fails the build below 7.
+#
+# ONE npm ecosystem, at "/" — this is a pnpm workspace (issue #1283).
+#
+# `pnpm-lock.yaml` at the repository root is the ONLY lockfile in the tree, and it
+# pins every workspace member listed in pnpm-workspace.yaml, `ui` included. So the
+# root entry below is the whole npm surface: PR #1248 (the root group) bumps
+# ui/package.json and regenerates pnpm-lock.yaml in the same commit.
+#
+# There used to be a second npm entry at `directory: "/ui"`. Dependabot ran it as
+# though ui were a standalone project: it rewrote ui/package.json and had no
+# lockfile in that directory to regenerate, leaving the root lockfile stale, so
+# every CI job died on ERR_PNPM_OUTDATED_LOCKFILE. That killed PRs #1197, #1198,
+# #1199 and #1200 — all four. It was also redundant: the 25 packages #1197 bumped
+# are a strict subset of the 26 the root PR #1248 bumps in the same file.
+# Upstream agrees — dependabot-core PR #11487 ("Handle Misconfigured Dependabot for
+# PNPM Workspaces", merged 2025-02-05) names root + subdirectory entries as the
+# misconfiguration and says to declare only "/". Symptom: dependabot-core #11135.
+#
+# DO NOT re-add a per-directory entry, and DO NOT add a second lockfile to give one
+# something to update — a second lockfile in a pnpm workspace is a worse problem
+# than the one it solves. `scripts/lib/dependabot-workspace-repo.test.mjs` fails
+# the build if either happens.
+#
+# WHAT THIS COSTS, stated rather than dropped quietly. Group patterns match package
+# NAMES, not paths, and there is no directory-scoping key inside a group, so the old
+# `ui-minor-patch` batch cannot be reconstructed by name: 29 of ui's 51 dependencies
+# (react, react-dom, every @radix-ui/*, vitest, eslint, typescript, @types/node …)
+# are also declared by packages/ui-kit, server, scripts or the root, so any name
+# pattern that catches ui's copy catches theirs too. Concretely:
+#   * LOST — ui minor/patch bumps no longer arrive in their own PR; they land inside
+#     the single root-minor-patch PR alongside server and packages bumps.
+#   * LOST — the separate open-pull-requests-limit budget. The npm total goes 10 -> 5.
+#   * KEPT — "majors get individual review". root-minor-patch groups only minor and
+#     patch, so a ui major (the shape of #1198/#1199/#1200) still opens its own PR.
+version: 2
+updates:
+  # The entire pnpm workspace: root + server + ui + packages/* + scripts + e2e.
+  # `directory: "/"` is where pnpm-lock.yaml lives, which is what makes it the only
+  # directory Dependabot can produce a consistent update from. See the note above
+  # before adding a sibling entry.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      root-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # GitHub Actions used by workflows — group all bumps into one PR (low risk).
+  # This ecosystem keeps the SHA-pinned `uses:` refs (issue #586) current:
+  # Dependabot bumps the pinned SHA and refreshes the trailing `# vX.Y.Z` comment.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]

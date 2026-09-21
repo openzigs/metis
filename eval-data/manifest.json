@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "prd-01-auth-portal",
+      "title": "Customer Authentication Portal",
+      "docType": "prd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "prd-02-checkout",
+      "title": "Storefront Checkout Flow",
+      "docType": "prd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "prd-03-notifications",
+      "title": "Notification Preferences Center",
+      "docType": "prd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "prd-04-search",
+      "title": "Catalog Search Revamp",
+      "docType": "prd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "prd-05-dashboard",
+      "title": "Analytics Dashboard",
+      "docType": "prd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "brd-01-billing",
+      "title": "Subscription Billing Requirements",
+      "docType": "brd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "brd-02-compliance",
+      "title": "Data Compliance Requirements",
+      "docType": "brd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "brd-03-onboarding",
+      "title": "Merchant Onboarding Requirements",
+      "docType": "brd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "brd-04-support",
+      "title": "Customer Support Requirements",
+      "docType": "brd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "brd-05-inventory",
+      "title": "Inventory Management Requirements",
+      "docType": "brd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "us-01-profile",
+      "title": "User Story: Profile Editing",
+      "docType": "user-story",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "us-02-cart",
+      "title": "User Story: Shopping Cart",
+      "docType": "user-story",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "us-03-watchlist",
+      "title": "User Story: Price Watchlist",
+      "docType": "user-story",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "us-04-reviews",
+      "title": "User Story: Product Reviews",
+      "docType": "user-story",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "us-05-orders",
+      "title": "User Story: Order Tracking",
+      "docType": "user-story",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "prd-06-mobile-offline",
+      "title": "Mobile Offline Mode",
+      "docType": "prd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "prd-07-admin-roles",
+      "title": "Administrative Roles and Permissions",
+      "docType": "prd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "brd-06-returns",
+      "title": "Returns and Refunds Requirements",
+      "docType": "brd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "us-06-messaging",
+      "title": "User Story: In-App Messaging",
+      "docType": "user-story",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    },
+    {
+      "id": "prd-08-accessibility",
+      "title": "Accessibility Compliance",
+      "docType": "prd",
+      "source": "original-synthetic",
+      "license": "CC0-1.0"
+    }
+  ]
+}

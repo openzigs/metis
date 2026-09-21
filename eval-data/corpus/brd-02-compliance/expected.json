@@ -1,0 +1,23 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Right to erasure",
+    "description": "Personal data is erased within thirty days of a verified request.",
+    "priority": "critical"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Audit trail",
+    "description": "All access to sensitive records is recorded in an immutable audit trail.",
+    "priority": "high"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Regional data residency",
+    "description": "Customer data is stored in the customer's selected region.",
+    "priority": "high"
+  }
+]

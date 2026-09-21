@@ -1,0 +1,13 @@
+-- Issue #740 (epic #727) — per-finding verifier/critic status.
+--
+-- Adds `findings.verificationStatus` (nullable): the deterministic verifier
+-- verdict computed AFTER the #734 code-citation grounding gate and BEFORE
+-- synthesis — `confirmed` (the finding kept a grounded code citation) |
+-- `unverified` (its code-evidence claim was dropped as un-retrievable). Null for
+-- findings that make no code claim and for rows written before #740. Findings
+-- are delete+recreated with their AgentResult on every re-run, so the column is
+-- repopulated each run; a plain nullable column (no backfill) is therefore
+-- sufficient — existing rows read as `null` and the UI renders a neutral state.
+-- ADDITIVE: only a new nullable column is added, so this is non-destructive and
+-- reversible.
+ALTER TABLE "findings" ADD COLUMN "verificationStatus" TEXT;

@@ -1,0 +1,30 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Identity verification",
+    "description": "New merchants complete identity verification before listing.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Guided setup checklist",
+    "description": "Merchants should be guided by a setup checklist during onboarding.",
+    "priority": "medium"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Payout account linking",
+    "description": "Merchants link a verified payout account to receive funds.",
+    "priority": "high"
+  },
+  {
+    "id": "R4",
+    "type": "feature",
+    "title": "Sandbox catalog",
+    "description": "Merchants may explore a sandbox catalog before going live.",
+    "priority": "low"
+  }
+]

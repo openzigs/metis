@@ -1,0 +1,23 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Realtime usage tiles",
+    "description": "Administrators view realtime usage tiles for the account.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Exportable reports",
+    "description": "Administrators should be able to export reports as CSV.",
+    "priority": "medium"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Role-scoped visibility",
+    "description": "Tiles are scoped to the viewer's role and permissions.",
+    "priority": "high"
+  }
+]

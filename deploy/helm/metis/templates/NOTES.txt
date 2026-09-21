@@ -1,0 +1,58 @@
+METIS chart "{{ include "metis.fullname" . }}" deployed to namespace "{{ .Release.Namespace }}".
+
+Components enabled:
+  • server      : {{ .Values.server.enabled }} (replicas={{ .Values.server.replicaCount }})
+  • ui          : {{ .Values.ui.enabled }} (replicas={{ .Values.ui.replicaCount }})
+  • embeddings  : {{ .Values.embeddings.enabled }}
+  • sql-lineage : {{ .Values.sqlLineage.enabled }}
+  • copilot     : {{ .Values.copilot.enabled }}
+
+Persistence:
+  • enabled     : {{ .Values.persistence.enabled }}
+  • mode        : {{ if .Values.persistence.efs.enabled }}EFS RWX{{ else }}EBS gp3 RWO{{ end }}
+  • uploads     : {{ printf "%s-server-uploads" (include "metis.fullname" .) }} ({{ .Values.persistence.uploads.size }})
+  • lancedb     : {{ printf "%s-server-lancedb" (include "metis.fullname" .) }} ({{ .Values.persistence.lancedb.size }})
+
+Scaling backends (server env — required for server.replicaCount > 1):
+  • DATABASE_URL              : {{ if .Values.scaling.database.url }}set (shared Postgres){{ else }}UNSET → embedded SQLite (single-replica only){{ end }}
+  • DISCUSSION_RATE_LIMIT_BACKEND : {{ .Values.scaling.rateLimitBackend | default "memory (per-pod)" }}
+  • SSO_STATE_BACKEND         : {{ .Values.scaling.ssoStateBackend | default "memory (per-pod)" }}
+  • VECTOR_STORE              : {{ .Values.scaling.vectorStore | default "lancedb (per-pod)" }}
+  • SCHEDULER_LEADER_ELECTION : {{ .Values.scaling.leaderElection | default "unset (always-leader / single-process)" }}
+  • UPLOAD_STORAGE_BACKEND    : {{ .Values.uploads.backend | default "local (per-pod RWO PVC)" }}
+
+{{- if gt (int .Values.server.replicaCount) 1 }}
+{{- if not (and .Values.scaling.database.url (eq .Values.scaling.vectorStore "pgvector") (eq .Values.uploads.backend "s3")) }}
+
+  ⚠️  server.replicaCount={{ .Values.server.replicaCount }} but the shared backends are not all set.
+     For a correct N>1 deployment set: DATABASE_URL (postgres), VECTOR_STORE=pgvector,
+     UPLOAD_STORAGE_BACKEND=s3, DISCUSSION_RATE_LIMIT_BACKEND=postgres,
+     SSO_STATE_BACKEND=postgres, SCHEDULER_LEADER_ELECTION=postgres. See docs/EKS_DEPLOYMENT.md §9b–§9f.
+{{- end }}
+{{- end }}
+
+Secrets source:
+  {{- if .Values.externalSecrets.enabled }}
+  • External Secrets Operator → {{ .Values.externalSecrets.secretStoreKind }}/{{ .Values.externalSecrets.secretStoreName }} (refresh: {{ .Values.externalSecrets.refreshInterval }})
+  {{- else if .Values.secrets.existingSecret }}
+  • BYO Secret: {{ .Values.secrets.existingSecret }}
+  {{- else if .Values.secrets.create }}
+  • Chart-managed Secret: {{ include "metis.secretName" . }} (DEV mode)
+  {{- else }}
+  • ⚠️  No Secret created. Pods will start with optional secretKeyRefs unset.
+  {{- end }}
+
+Ingress:
+  {{- if .Values.ingress.enabled }}
+  • {{ .Values.ingress.className }} → https://{{ .Values.ingress.host }}
+  {{- else }}
+  • disabled — port-forward to test:
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ printf "%s-ui" (include "metis.fullname" .) }} 3000:{{ .Values.ui.service.port }}
+  {{- end }}
+
+Verify rollout:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ printf "%s-server" (include "metis.fullname" .) }}
+
+For the green-field EKS guide see docs/EKS_DEPLOYMENT.md.
+For the production-readiness checklist see docs/K8S_PROD_CHECKLIST.md.

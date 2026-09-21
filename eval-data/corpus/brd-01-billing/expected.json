@@ -1,0 +1,30 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Accurate proration",
+    "description": "Mid-cycle plan changes are prorated to the day.",
+    "priority": "critical"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Dunning retries",
+    "description": "Failed payments are retried on a configurable dunning schedule.",
+    "priority": "high"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Tax calculation",
+    "description": "Invoices should include jurisdiction-aware tax calculation.",
+    "priority": "medium"
+  },
+  {
+    "id": "R4",
+    "type": "chore",
+    "title": "Archive legacy invoices",
+    "description": "Invoices older than seven years may be archived to cold storage.",
+    "priority": "low"
+  }
+]

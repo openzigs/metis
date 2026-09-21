@@ -1,0 +1,30 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Guest checkout",
+    "description": "Shoppers complete a purchase without creating an account.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Multiple payment methods",
+    "description": "Card, wallet, and bank-transfer payment methods are supported.",
+    "priority": "high"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Promotion code entry",
+    "description": "Shoppers should be able to apply a promotion code before payment.",
+    "priority": "medium"
+  },
+  {
+    "id": "R4",
+    "type": "chore",
+    "title": "Deprecate legacy cart cookie",
+    "description": "The legacy cart cookie may be removed once sessions migrate.",
+    "priority": "low"
+  }
+]

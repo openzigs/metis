@@ -1,0 +1,177 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+@import "katex/dist/katex.min.css";
+
+/*
+ * The shared @metis/ui-kit package lives outside this app's auto-scanned
+ * source root, so Tailwind v4 never sees the utility classes used only in its
+ * components (e.g. dialog centering + max-height). Register it explicitly so
+ * those classes get generated.
+ */
+@source "../../../packages/ui-kit/src";
+
+/*
+ * Tailwind v4 design tokens for METIS. We expose the canonical shadcn token
+ * surface as CSS variables so utilities like `bg-background` /
+ * `text-foreground` resolve through `@theme` mappings below.
+ */
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 3.9%;
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --muted: 240 4.8% 95.9%;
+  /*
+   * A3 (#148) — darkened from `240 3.8% 46.1%` (~4.6:1, borderline) to
+   * `240 5% 40%` so meaningful muted text clears WCAG 2.2 SC 1.4.3 (≥4.5:1)
+   * with margin against the white (`0 0% 100%`) background (~5.9:1).
+   */
+  --muted-foreground: 240 5% 40%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  /*
+   * #660 (SC 1.4.11 Non-text Contrast) — darkened from `240 5.9% 90%`
+   * (~1.27:1 vs the white background, well below the 3:1 floor) to
+   * `240 6% 54%` so component boundaries and form-control (input) edges clear
+   * ≥3:1 against `--background`/`--card` (~3.75:1) and `--muted` (~3.42:1).
+   */
+  --border: 240 6% 54%;
+  --input: 240 6% 54%;
+  --ring: 240 5.9% 10%;
+  --radius: 0.5rem;
+}
+
+.dark {
+  --background: 240 10% 3.9%;
+  --foreground: 0 0% 98%;
+  --card: 240 10% 3.9%;
+  --card-foreground: 0 0% 98%;
+  --popover: 240 10% 3.9%;
+  --popover-foreground: 0 0% 98%;
+  --primary: 0 0% 98%;
+  --primary-foreground: 240 5.9% 10%;
+  --secondary: 240 3.7% 15.9%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 240 3.7% 15.9%;
+  /*
+   * A3 (#148) — dark muted text on the near-black background
+   * (`240 10% 3.9%`) already clears SC 1.4.3 comfortably (~7:1) at 64.9%
+   * lightness, so the dark token is left unchanged.
+   */
+  --muted-foreground: 240 5% 64.9%;
+  --accent: 240 3.7% 15.9%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 98%;
+  /*
+   * #660 (SC 1.4.11 Non-text Contrast) — lightened from `240 3.7% 15.9%`
+   * (~1.34:1 vs the near-black background, well below the 3:1 floor) to
+   * `240 5% 48%` so component boundaries and form-control (input) edges clear
+   * ≥3:1 against `--background`/`--card` (~4.33:1) and `--muted` (~3.24:1).
+   */
+  --border: 240 5% 48%;
+  --input: 240 5% 48%;
+  --ring: 240 4.9% 83.9%;
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+/*
+ * Tailwind v4 dropped the implicit border-color reset that v3 added via
+ * preflight. Restore it so existing utility usage like `border` keeps painting.
+ */
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: hsl(var(--border));
+  }
+  html {
+    color-scheme: light dark;
+    /*
+     * #662 — WCAG 2.2 SC 2.4.11 Focus Not Obscured (Minimum, AA). The app
+     * header is `sticky top-0 h-16` (4rem/64px). Without scroll padding, when
+     * the browser scrolls a focusable control deep in the page into view it can
+     * land fully underneath the sticky header and be ENTIRELY obscured.
+     * Reserving scroll padding equal to the header height (+ a little breathing
+     * room for the focus ring) on the root scroll container keeps keyboard
+     * focus — and same-page anchor jumps like the "Skip to main content" link —
+     * clear of the header.
+     */
+    scroll-padding-top: 4.5rem;
+  }
+  body {
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-feature-settings:
+      "rlig" 1,
+      "calt" 1;
+  }
+
+  /*
+   * A2 (#150) — WCAG 2.2 baseline keyboard focus indicator. Guarantees every
+   * focusable element shows a clearly-visible focus ring even if a component
+   * forgets its own `focus-visible` styles. The `--ring` token is near-black
+   * (light) / near-white (dark), giving a ≥3:1 non-text contrast (SC 1.4.11)
+   * against both themes, with a 2px outline + offset for visibility.
+   */
+  :where(
+    a,
+    button,
+    input,
+    select,
+    textarea,
+    summary,
+    [role="button"],
+    [role="menuitem"],
+    [role="option"],
+    [role="tab"],
+    [tabindex]:not([tabindex="-1"])
+  ):focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  /*
+   * A2 (#150) — minimum target size (SC 2.5.8). Icon-only controls must be at
+   * least 24×24 CSS px. This is a safety floor; most controls are already
+   * larger via the button `icon` size.
+   */
+  button:not([hidden]),
+  [role="button"]:not([hidden]) {
+    min-height: 24px;
+  }
+}

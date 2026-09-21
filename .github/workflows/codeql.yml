@@ -1,0 +1,79 @@
+name: CodeQL
+
+# CodeQL code scanning. Free on public repositories; UNAVAILABLE on private ones
+# without a GitHub Code Security licence, so this workflow is inert until this
+# repository is made public and will fail with a licensing error if triggered
+# before then. That is expected, not a defect.
+#
+# It COMPLEMENTS the existing SAST rather than replacing it. `sast.yml` runs
+# Semgrep (fast, pattern-based, catches project-specific shapes) and
+# OSV-Scanner (dependency advisories, which CodeQL does not do at all). CodeQL
+# adds dataflow and taint tracking — following untrusted input through call
+# chains to a sink — which neither of the others can do. Keep all three.
+#
+# Results land as code-scanning alerts in the Security tab, NOT as Actions
+# artifacts, so this consumes no artifact storage. Do not add an upload step for
+# the CodeQL database: it is large, it regenerates on every run, and it is the
+# one way this workflow could start costing storage.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Weekly. CodeQL's query packs are updated independently of this repository,
+  # so a scheduled run finds newly-described vulnerabilities in code that has
+  # not changed. A PR-only trigger would never surface those.
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+# Least privilege. `security-events: write` is what uploads the SARIF; the other
+# two are what the analysis reads. Nothing here needs write access to contents.
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    # Standard hosted runner. Larger runners are billed EVEN on public
+    # repositories, and CodeQL on a large codebase is exactly where reaching for
+    # one is tempting. Raise the timeout instead.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 3,337 tracked files.
+          - language: javascript-typescript
+            build-mode: none
+          # `metis-sql-lineage/` is a real standalone service (FastAPI app +
+          # extractor), not fixtures — 7 tracked files, plus
+          # `scripts/graphify-ast-build.py`. The Python under `eval-data/` IS
+          # fixtures and is excluded by the config.
+          - language: python
+            build-mode: none
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@e429ea58a9912cadc53f8132ad35562b54de1b30 # v3.38.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@e429ea58a9912cadc53f8132ad35562b54de1b30 # v3.38.1
+        with:
+          category: "/language:${{ matrix.language }}"

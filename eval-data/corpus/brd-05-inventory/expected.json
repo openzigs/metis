@@ -1,0 +1,30 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Realtime stock levels",
+    "description": "Stock levels are updated in realtime across warehouses.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Low-stock alerts",
+    "description": "Planners should receive low-stock alerts below a threshold.",
+    "priority": "medium"
+  },
+  {
+    "id": "R3",
+    "type": "bug",
+    "title": "Fix oversell race",
+    "description": "A concurrency race that oversells the last unit is fixed.",
+    "priority": "high"
+  },
+  {
+    "id": "R4",
+    "type": "feature",
+    "title": "Cycle-count export",
+    "description": "Planners may export a cycle-count worksheet weekly.",
+    "priority": "low"
+  }
+]

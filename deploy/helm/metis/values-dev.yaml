@@ -1,0 +1,81 @@
+# Dev / kind / k3d profile — minimal resources, persistence off, no ingress.
+# Single server replica: this profile uses the local in-process backends
+# (embedded SQLite / LanceDB / local uploads), which are correct only for one
+# replica. Multi-replica needs the shared backends (see values-prod.yaml).
+server:
+  replicaCount: 1
+  resources:
+    limits: { memory: 512Mi, cpu: "1000m" }
+    requests: { memory: 128Mi, cpu: "100m" }
+ui:
+  replicaCount: 1
+  resources:
+    limits: { memory: 256Mi, cpu: "500m" }
+    requests: { memory: 64Mi, cpu: "50m" }
+# Embeddings sidecar on a kind/k3d box (#786).
+#
+# The previous dev limit — 768Mi — was BELOW the sidecar's measured resident
+# floor (~570 MiB for the q8 gte-modernbert session) plus any batch at all, so a
+# dev cluster would OOMKill the pod on its first real embed and look like a
+# mysterious 503. Dev keeps a smaller ceiling than prod because a laptop cluster
+# cannot spare 3Gi, and it buys that back by not being asked to embed
+# 64 × 8192-token rows; if you do drive a full-size batch here, expect the kill.
+#
+# requests are HALF the limits, per the ratio rule in values.yaml: ONNX Runtime's
+# BFC arena does not return memory to the OS, so RSS ratchets up to the pod's
+# high-water batch and STAYS there. A request derived from the cold resident
+# floor would leave the sidecar permanently the most-evictable pod on the node.
+embeddings:
+  replicaCount: 1
+  resources:
+    requests: { memory: 896Mi, cpu: "500m" }
+    limits: { memory: 1792Mi, cpu: "1000m" }
+  # A laptop CPU builds the ONNX graph slowly and kind pulls the image cold, so
+  # dev keeps a shorter budget than the default profile — but it must keep the
+  # same SHAPE, i.e. the same inequality at a smaller timescale:
+  #
+  #   startup budget = initialDelaySeconds + periodSeconds × failureThreshold
+  #                  = 5 + 10 × 30 = 305 s   ← kubelet RESTARTS the container here
+  #   progressDeadlineSeconds       =  240 s ← the rollout is declared FAILED here
+  #
+  # 240 < 305, with 65 s (6½ probe periods) of margin, so ProgressDeadlineExceeded
+  # always fires BEFORE kubelet would kill a still-warming container. A model that
+  # can never load therefore surfaces as a failed rollout over a live, readable pod
+  # — not as the CrashLoopBackOff that `readiness.ts` declines to exit(1) to avoid.
+  #
+  # This was 600 s, which INVERTED the invariant: kubelet at 305 s, 295 s before
+  # the deadline. The budget was shortened from the default profile's and the
+  # deadline was copied across unchanged. `tests/render-tests.sh` now asserts
+  # budget > deadline for EVERY profile, computed from each profile's own render,
+  # so the two can no longer drift apart silently.
+  probes:
+    startup:
+      path: /readyz
+      periodSeconds: 10
+      failureThreshold: 30
+      initialDelaySeconds: 5
+  progressDeadlineSeconds: 240
+persistence:
+  # Use the local-path provisioner on kind/k3d. Ephemeral by design.
+  enabled: true
+  uploads:
+    storageClassName: standard
+  lancedb:
+    storageClassName: standard
+secrets:
+  create: true
+  values:
+    JWT_SECRET: dev-not-secret
+    VAULT_MASTER_KEY: dev-not-secret-32-bytes-padding-XXXX
+    EMBEDDINGS_TOKEN: dev-token
+ingress:
+  enabled: false
+networkPolicy:
+  enabled: false
+autoscaling:
+  ui:
+    enabled: false
+  server:
+    enabled: false
+pdb:
+  enabled: false

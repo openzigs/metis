@@ -1,0 +1,27 @@
+-- Issue #1182 — tag each knowledge chunk with the CHUNKER generation that cut it.
+--
+-- `embeddingModel` records how a chunk's text was VECTORISED. Nothing recorded
+-- how it was CUT, so a store holding two chunker generations was invisible to
+-- every existing guard: `coverageReport()` grouped on the model alone, and
+-- `pnpm embeddings:migrate status` reported "Up to date." over a corpus that was
+-- missing content. #1178 fixed a chunker that had not tiled its input for eight
+-- months, which moved every boundary WITHOUT changing a parameter — so the drift
+-- this column makes visible is real and already in production stores.
+--
+-- The value is composite: PRODUCER, algorithm version and effective parameters
+-- (`doc:v2:2048/256`). The producer matters because `knowledge_chunks` has two
+-- writers -- `docs-gen/rag-ingest.ts` cuts its own 1,500-char chunks -- and those
+-- rows are another chunker's correct output, not a stale generation of this one.
+-- The version matters for the NEXT boundary change: once both generations carry a
+-- tag, a same-parameter change (which is exactly what #1178 was) would otherwise
+-- produce two identical strings.
+--
+-- NULLABLE and deliberately NOT backfilled. NULL means the row was written
+-- before #1182 and its provenance is therefore UNRECORDED: it may be the
+-- pre-#1178 generation whose chunks did not tile, or it may be a generated-doc
+-- chunk from the other writer. Inventing a value for those rows would assert a
+-- chunking nobody measured, in the one direction that hides the problem, so
+-- they are counted as work outstanding instead. The remedy is a RE-INGEST (which re-chunks), never
+-- `embeddings:migrate reindex`, which re-embeds stored chunk text and leaves the
+-- boundaries exactly where they were.
+ALTER TABLE "knowledge_chunks" ADD COLUMN "chunkerIdentity" TEXT;

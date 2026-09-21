@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mapper.UserMapper">
+
+  <sql id="userColumns">
+    id, email, display_name
+  </sql>
+
+  <select id="findById" resultType="User">
+    SELECT <include refid="userColumns"/>
+    FROM app.users u
+    WHERE u.id = #{id}
+  </select>
+
+  <insert id="insert">
+    INSERT INTO app.users (email, display_name, created_at)
+    VALUES (#{email}, #{displayName}, now())
+  </insert>
+
+  <update id="updateEmail">
+    UPDATE app.users
+    SET email = #{email}, updated_at = now()
+    WHERE id = #{id}
+  </update>
+
+  <delete id="deleteById">
+    DELETE FROM app.users WHERE id = #{id}
+  </delete>
+
+  <select id="listWithRoles" resultType="UserRole">
+    SELECT u.id, r.name
+    FROM users u
+    JOIN user_roles ur ON ur.user_id = u.id
+    JOIN roles r ON r.id = ur.role_id
+    WHERE u.active = ${flag}
+  </select>
+
+</mapper>

@@ -1,0 +1,21 @@
+# Patterns to ignore when packaging the chart with `helm package`.
+.DS_Store
+.git/
+.gitignore
+.bzr/
+.hg/
+.hgignore
+.svn/
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.project
+.idea/
+*.tmproj
+.vscode/
+# Chart authoring artifacts that should not be embedded in the OCI bundle.
+tests/
+README.md.tmpl
+__snapshots__/

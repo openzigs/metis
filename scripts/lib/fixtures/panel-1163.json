@@ -1,0 +1,42 @@
+[
+  {
+    "lens": "over-blocking",
+    "verdict": "SOUND",
+    "objections": [],
+    "notes": "Traced verify-agent-frontmatter.mjs from the agent list through the memory gate; no existing agent is newly rejected."
+  },
+  {
+    "lens": "test-falsifiability",
+    "verdict": "OBJECTION",
+    "objections": [
+      {
+        "claim": "The store-existence probe lives in the untested runner, so replacing its body with `return agentNames` leaves every test green.",
+        "severity": "advisory",
+        "citations": [
+          "scripts/verify-agent-frontmatter.mjs:66 — the fs.existsSync filter that no test reaches"
+        ]
+      },
+      {
+        "claim": "No case covers an agent whose tools list contains Write but not Edit, so MEMORY_WRITE_TOOLS could be narrowed to [\"Edit\"] undetected.",
+        "severity": "advisory",
+        "citations": [
+          "scripts/lib/agent-frontmatter-core.test.mjs:212 (only the Edit-alone case is asserted)",
+          "scripts/lib/agent-frontmatter-core.mjs:41 — MEMORY_WRITE_TOOLS"
+        ]
+      }
+    ],
+    "notes": "Mutation-tested both changed predicates by hand; the two above survived."
+  },
+  {
+    "lens": "instruction-correctness",
+    "verdict": "OBJECTION",
+    "objections": [
+      {
+        "claim": "The prose being written permanently into two agent system prompts claims they cannot write into the tree, which is false because both hold Bash.",
+        "severity": "advisory",
+        "citations": [".claude/agents/code-review.md:4 — the tools line that grants Bash"]
+      }
+    ],
+    "notes": "Checked the issue's premise against the frontmatter of both agents named in it."
+  }
+]

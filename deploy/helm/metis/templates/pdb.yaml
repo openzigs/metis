@@ -1,0 +1,51 @@
+{{- /*
+PDB templates — sub-issue #371, hardened in #786.
+
+A PodDisruptionBudget only renders when the component's replica FLOOR is strictly
+greater than its `minAvailable`. That guard exists because the two settings
+interact badly in exactly the configuration this chart ships:
+
+  minAvailable: 1  +  replicaCount: 1  =  a node that can never be drained.
+
+`kubectl drain` (and therefore every EKS managed-node-group upgrade, every Karpenter
+consolidation, every spot reclaim) asks the PDB for permission to evict. With one
+replica and `minAvailable: 1`, evicting the only pod would take availability to 0,
+so the API server refuses — forever. The drain hangs, the node group upgrade stalls,
+and the cause is two innocuous-looking lines in different files.
+
+Rather than document a footgun and leave it armed, the budget is simply not
+rendered when it could not be satisfied: a single-replica component has no
+disruption budget to protect, so `minAvailable: 1` on it is never merely useless,
+it is actively harmful. Give the component a second replica (prod does, for
+embeddings — see values-prod.yaml) and the PDB appears.
+
+The FLOOR is the HPA's `minReplicas` when autoscaling is on (that is the smallest
+number of pods that can exist), else `replicaCount`.
+*/ -}}
+{{- if .Values.pdb.enabled -}}
+{{- $fullname := include "metis.fullname" . -}}
+{{- range $component := tuple "ui" "server" "embeddings" }}
+{{- $cfg := index $.Values.pdb $component }}
+{{- $values := index $.Values $component }}
+{{- $enabled := $values.enabled }}
+{{- $hpa := index $.Values.autoscaling $component }}
+{{- $floor := int $values.replicaCount }}
+{{- if $hpa.enabled }}
+{{- $floor = int $hpa.minReplicas }}
+{{- end }}
+{{- if and $enabled $cfg (gt $floor (int $cfg.minAvailable)) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ printf "%s-%s" $fullname $component }}
+  labels:
+    {{- include "metis.labels" (dict "root" $ "component" $component) | nindent 4 }}
+spec:
+  minAvailable: {{ $cfg.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "metis.selectorLabels" (dict "root" $ "component" $component) | nindent 6 }}
+{{- end }}
+{{- end }}
+{{- end }}

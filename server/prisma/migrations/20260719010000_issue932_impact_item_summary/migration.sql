@@ -1,0 +1,12 @@
+-- Issue #932 (Epic #929) — persist the per-item BA-readable impact summary.
+--
+-- The #932 LLM impact summarizer turns the DETERMINISTIC impact facts (affected
+-- symbols/tables, #936 relevance tiers, suggested DDL) into a BA-readable
+-- narrative + severity summary per impacted item. Until now `ImpactItem` had no
+-- narrative field; the run-level `ImpactAnalysis.summary` already existed.
+--
+-- This column is NULLABLE: legacy rows and flag-off / offline / passthrough runs
+-- write NULL and the deterministic result is unchanged (the narrative is
+-- post-hoc and non-blocking). The summary is grounded — it only ever names facts
+-- the engine already found — and is never executed as SQL.
+ALTER TABLE "impact_items" ADD COLUMN "summary" TEXT;

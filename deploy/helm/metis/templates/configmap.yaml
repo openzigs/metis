@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-config" (include "metis.fullname" .) }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "config") | nindent 4 }}
+data:
+  # Shared, non-sensitive runtime config. Sensitive values come from the
+  # Secret named in `metis.secretName` (see secret.yaml / external-secret.yaml).
+  CHART_NAME: {{ .Chart.Name | quote }}
+  CHART_VERSION: {{ .Chart.Version | quote }}
+  APP_VERSION: {{ .Chart.AppVersion | quote }}
+  RELEASE_NAMESPACE: {{ .Release.Namespace | quote }}

@@ -1,0 +1,38 @@
+[
+  {
+    "lens": "over-blocking",
+    "verdict": "OBJECTION",
+    "objections": [
+      {
+        "claim": "The narrowed gate still rejects an agent that declares a store it legitimately shares with another agent.",
+        "severity": "minor",
+        "citations": ["scripts/lib/agent-frontmatter-core.mjs:118"]
+      }
+    ],
+    "notes": "Traced every agent declaring a memory scope."
+  },
+  {
+    "lens": "test-falsifiability",
+    "verdict": "OBJECTION",
+    "objections": [
+      {
+        "claim": "The headline fix has no test that can fail: the git-backed probe is stubbed to a constant, so reverting the production change leaves the suite green.",
+        "severity": "major",
+        "citations": ["scripts/lib/agent-frontmatter-core.test.mjs:301"]
+      }
+    ],
+    "notes": "Mentally reverted the probe; the suite stayed green."
+  },
+  {
+    "lens": "instruction-correctness",
+    "verdict": "OBJECTION",
+    "objections": [
+      {
+        "claim": "The issue's claim that two tools are undeliverable is true for one of them only.",
+        "severity": "minor",
+        "citations": [".claude/agents/ui-vision.md:6"]
+      }
+    ],
+    "notes": "Checked both tool declarations against the resolved schema."
+  }
+]

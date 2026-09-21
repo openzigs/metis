@@ -1,0 +1,474 @@
+packages:
+  - scripts
+  - server
+  - server/embeddings-svc
+  - server/copilot-svc
+  - ui
+  - packages/*
+  - e2e
+
+# --- Supply-chain hardening (issue #586) ---
+# These settings reduce the blast radius of a compromised npm release.
+# Already-locked dependencies are unaffected by minimumReleaseAge (pnpm only
+# applies the age gate when RESOLVING a new/updated version), so a committed
+# lockfile + `pnpm install --frozen-lockfile` is not blocked by these values.
+#
+# minimumReleaseAge: wait this many MINUTES after a version is published before
+# pnpm will resolve it. 10080 = 7 days — long enough for a malicious release to
+# be yanked/flagged before it can enter the tree on the next bump, and the
+# minimum the Semgrep pnpm-missing-minimum-release-age rule accepts. Supported
+# since pnpm v10.16.0 (this repo runs 10.33.0). Already-locked deps are exempt.
+minimumReleaseAge: 10080
+# blockExoticSubdeps: forbid TRANSITIVE deps from resolving via exotic sources
+# (git URLs, tarball URLs, etc.); direct deps may still use them.
+blockExoticSubdeps: true
+# trustPolicy: fail the install if a package's publish-trust level DOWNGRADES
+# versus an earlier release (e.g. drops trusted-publisher/provenance evidence) —
+# a classic compromised-maintainer signal.
+trustPolicy: no-downgrade
+# trustPolicyIgnoreAfter: SCOPE the no-downgrade check to RECENTLY-published
+# versions only (value in MINUTES). A real takeover/compromise is a *fresh*
+# event, so that's exactly when blocking has value; conversely, long-established
+# versions that simply never carried provenance (e.g. undici-types@6.21.0,
+# eslint-import-resolver-typescript@3.10.1) are not a live incident and must not
+# break a cold `pnpm deploy` in the Docker image builds. 43200 = 30 days: a
+# brand-new downgrade is blocked, anything older than a month is trusted.
+# Without this, no-downgrade hard-fails installs on historical provenance gaps
+# all over the npm ecosystem — confirmed against this repo's image build.
+trustPolicyIgnoreAfter: 43200
+
+# --- Dependency overrides (issue #1213) ---
+# These lived in the root package.json `pnpm` field until #1213. THEY MUST STAY
+# HERE. pnpm 11 no longer reads the `pnpm` field of package.json at all, and the
+# failure mode is a WARNING with exit 0, not an error — measured on pnpm 11.18.0:
+#
+#   [WARN] The "pnpm" field in package.json is no longer read by pnpm.
+#          The following keys were ignored: "pnpm.overrides"
+#
+# The first `pnpm install` that regenerates the lockfile after such a bump drops
+# the lockfile's `overrides:` block entirely and every pin below silently stops
+# applying, all at once. `--frozen-lockfile` does catch the bare bump
+# (ERR_PNPM_LOCKFILE_CONFIG_MISMATCH) — but its own remedy text tells you to
+# re-run with `--no-frozen-lockfile`, which is exactly the silent path.
+#
+# `scripts/lib/pnpm-overrides-core.mjs` + its tests enforce this: the guard reads
+# the lockfile's `overrides:` block (what pnpm ACTUALLY applied) and fails if the
+# `pnpm` field ever reappears in package.json.
+#
+# Nearly every entry below closes a specific advisory; see CHANGELOG.md for the
+# GHSA behind each. Do not prune one without checking the advisory is dead.
+overrides:
+  protobufjs@<7.6.5: ^7.6.5
+  protobufjs@>=8.0.0 <8.6.6: ^8.6.6
+  # GHSA-7p8r-x3mc-p8w7 (CVSS 7.5) re-flagged 3.1.4, the version this line used to
+  # pin to. The fix, 3.1.5, published 2026-07-31T09:16Z and cleared the 7-day
+  # minimumReleaseAge window at 2026-08-07T09:16Z; #1241 bumped it immediately
+  # after and DELETED the waiver from .github/workflows/sast.yml. Verified against
+  # api.osv.dev on 2026-08-07: 3.1.5 returns ZERO vulns, so no later advisory
+  # re-covers the target — the bet #1211 lost when it pinned to a version another
+  # advisory already named, and #1240/#1273 lost again on eight and two packages.
+  #
+  # AND IT HAS NOW LOST HERE TOO (#1345). Four advisories published 2026-09-02
+  # between 15:41 and 15:44Z all cover 3.1.5 on the 3.x line — SSRF via malformed
+  # IPv6 normalization (GHSA-f65p-4m7j-42xc) and via repeated hostname
+  # percent-decoding (GHSA-fph4-wmhf-6fwf), host confusion via percent-encoded
+  # scheme normalization (GHSA-jqff-g426-hqxp) and via skipped IDN
+  # canonicalization (GHSA-5jgf-p345-68v8), each CVSS 7.5 and each
+  # `fixed 3.1.6`. Found by running the CI gate's own OSV scan locally while
+  # verifying #1345's AC1; nothing on the branch caused it and `origin/main` is
+  # red the same way. 3.1.6 published 2026-08-23T01:42Z, so it is well clear of
+  # minimumReleaseAge and needs no waiver. Verified against api.osv.dev on
+  # 2026-09-02: 3.1.6 AND 3.1.7 each return ZERO vulns, so the next age-clearing
+  # bump is safe too. Stays inside the 3.x major on purpose — ajv is the consumer
+  # and 4.x is a separate line with its own advisory band (`fixed 4.1.3`).
+  #
+  # THE SELECTOR MOVED WITH THE FLOOR — `<3.1.5` -> `<3.1.6`. A `<`-bounded
+  # selector stops matching the moment the tree resolves its own floor, so leaving
+  # `<3.1.5` here would silently disarm the override (#1208's floor-not-ceiling
+  # defect; #1213 and #1240 each had to fix a recurrence). Whenever this floor
+  # moves again, move the bound in the same edit.
+  # `scripts/lib/dependency-audit-1345-advisories.test.mjs` now asserts both.
+  fast-uri@<3.1.6: ^3.1.6
+  # GHSA-rgj7-g3m4-5g8c (CVSS 8.9, published 2026-09-08): a heap buffer overflow
+  # in libvips' TIFF loader, reachable from any untrusted image sharp decodes.
+  # OSV records `introduced 0, fixed 0.35.4`.
+  #
+  # THE SELECTOR HAD TO MOVE WITH THE FLOOR (#1208), and this line had ALREADY
+  # opened a gap. It read `sharp@<0.35.0: ^0.35.0`, which matches a consumer
+  # whose declared RANGE intersects `<0.35.0` — so it governed
+  # @huggingface/transformers (`sharp: ^0.34.1`) and, on `main`, next@16.2.11
+  # (`sharp: ^0.34.5`). It did NOT reach any consumer that had already moved to a
+  # `>=0.35.0` range, and next did exactly that at 16.3.x (`sharp: ^0.35.4`).
+  #
+  # MEASURED, not reasoned: temporarily setting this line to
+  # `sharp@<0.35.0: 0.35.2` and re-installing resolved TWO copies — 0.35.2 for
+  # transformers (overridden) and 0.35.4 for next (untouched). On `main` the gap
+  # was invisible because the old target `^0.35.0` happened to resolve into the
+  # same 0.35.x band, so the two deduped to one entry. `<0.35.4` is the
+  # advisory's own `fixed` event and covers the whole affected band, so any
+  # consumer anywhere in [0, 0.35.4) is now governed.
+  #
+  # This is ALSO why the lockfile sat on the vulnerable 0.35.3: `^0.35.0` would
+  # have accepted 0.35.4 on a fresh resolve, but a committed lockfile does not
+  # re-resolve without a manifest or override edit. Moving the floor is what
+  # forces it AND what states the requirement, instead of leaving it to luck.
+  #
+  # sharp enters via @huggingface/transformers@3.8.1 (pnpm-lock.yaml); its latest
+  # release (3.8.1 itself) still declares `sharp: ^0.34.1`, so there is no
+  # upstream bump to wait for.
+  # 0.35.4 published 2026-08-26, well clear of minimumReleaseAge, and is the
+  # latest release; verified 2026-09-20 that it returns ZERO vulns on
+  # api.osv.dev — a fix version is a bet that no later advisory covers it, and
+  # that bet has lost at #1240/#1273/#1291/#1324/#1345.
+  sharp@<0.35.4: ^0.35.4
+  axios@<1.18.0: ^1.18.0
+  tmp@<0.2.6: ^0.2.6
+  "@github/copilot@<1.0.43": ^1.0.43
+  esbuild@<0.28.1: ^0.28.1
+  vite: ^8.0.16
+  postcss@<8.5.18: ^8.5.18
+  uuid@<14.0.0: ">=14.0.0"
+  "@grpc/grpc-js@<1.14.4": ^1.14.4
+  "@opentelemetry/propagator-jaeger@<2.9.0": ^2.9.0
+  ws@<8.21.0: ^8.21.0
+  form-data@>=4.0.0 <4.0.6: ^4.0.6
+  hono@<4.12.25: ">=4.12.25"
+  "@hono/node-server@<1.19.13": ">=1.19.13"
+  # ip-address, socket.io-parser and the two undici lines were all re-flagged by
+  # the 2026-08-03 advisory batch AT THE EXACT VERSION THEY PINNED TO (#1240).
+  # Each selector's UPPER bound moves with its floor: an override whose selector
+  # still reads `<10.1.1` stops matching the moment the tree resolves 10.1.1, so
+  # the newly-vulnerable band 10.1.1..10.3.0 would sail straight past it. That is
+  # #1208's floor-not-ceiling defect wearing a different hat — #1213 already had
+  # to fix one recurrence. Selector low bounds track the ADVISORY's `introduced`
+  # event, not the previous advisory's.
+  # GHSA-mwp4-54f8-5fhr (CVSS 7.7): OSV records introduced 0, fixed 10.3.1 — i.e.
+  # every ip-address BELOW 10.3.1 is affected, which is why the selector is <10.3.1.
+  ip-address@<10.3.1: ">=10.3.1"
+  # GHSA-4cwx-7wf7-3272 (CVSS 7.4): introduced 7.0.0 / 8.0.0, fixed 7.29.0 / 8.9.0.
+  # The v7 low bound widens 7.23.0 -> 7.0.0 to match the advisory's own range; the
+  # tree resolves a single undici@7 copy so this moves nothing today, but a future
+  # transitive pinning e.g. 7.10.0 would otherwise slip the override and re-breach.
+  undici@>=7.0.0 <7.29.0: ^7.29.0
+  undici@>=8.0.0 <8.9.0: ^8.9.0
+  # GHSA-2m8v-j782-fhvr (CVSS 7.5): NEW override — socket.io-parser had none and
+  # resolved 4.2.6 via socket.io/socket.io-client. Scoped to the 4.x band on
+  # purpose: a bare `<4.2.7` selector also matches the 3.x line the advisory lists
+  # separately, and forcing a 3.x consumer across a major is not a security fix.
+  socket.io-parser@>=4.0.0 <4.2.7: ^4.2.7
+  # The three brace-expansion lines carried TWO advisories, and #1241 closed BOTH:
+  # GHSA-mh99-v99m-4gvg (#1211, fixed 1.1.17/2.1.3/3.0.3/5.0.8) and
+  # GHSA-rgw5-rvv9-x895 (#1240, fixed 1.1.18/2.1.4/3.0.6/5.0.9 — it bypasses the
+  # first one's mitigation, so 1.1.17/2.1.3/5.0.8 were obsolete on arrival). The
+  # floors below are at or above BOTH advisories' fixed versions on every line, so
+  # both `WAIVERS` entries were deleted from .github/workflows/sast.yml in the same
+  # commit. Verified against api.osv.dev on 2026-08-06: 1.1.18, 2.1.4 and 5.0.9
+  # each return ZERO vulns, so no later advisory re-covers the targets — the
+  # mistake #1211 made when it prescribed 1.1.17/2.1.3.
+  #
+  # Each line stays WITHIN its own major, which is mandatory, not tidiness:
+  # brace-expansion swapped its CJS export at the v4 boundary
+  # (`module.exports = expandTop` -> named `exports.expand`) and minimatch@3.1.5 /
+  # @5.1.9 call the module directly, so a cross-major override resolves fine and
+  # then throws `TypeError: expand is not a function` on the first glob (#1089).
+  # Re-confirmed for #1241 by EXECUTING all three installed copies.
+  # `scripts/lib/brace-expansion-overrides.test.mjs` guards it.
+  #
+  # The selectors are bare-major (`@1`, `@2`, `@5`), not `<`-bounded, so they keep
+  # matching their whole line as the floor moves — #1208's floor-not-ceiling defect
+  # cannot bite here. It CAN bite `fast-uri` above, which is `<`-bounded: #1241
+  # moved it to `fast-uri@<3.1.5: ^3.1.5`, bound and floor together, and any future
+  # bump of that line must move both again.
+  brace-expansion@1: ^1.1.18
+  brace-expansion@2: ^2.1.4
+  brace-expansion@5: ^5.0.9
+  # GHSA-hq66-cqwq-w95j (CVSS 8.6, published 2026-08-06): PDF.js executes
+  # arbitrary JavaScript on opening a malicious PDF. OSV's affected range is
+  # `introduced 5.6.83, fixed 6.2.108` — a REGRESSION band, not "everything
+  # older is worse". That matters here because the tree carries TWO pdfjs-dist
+  # copies and only one is in the band:
+  #
+  #   pdf-parse@2.4.5   -> pdfjs-dist 5.4.296   BELOW 5.6.83, unaffected
+  #   officeparser@6.1.1 -> pdfjs-dist 5.6.205  IN BAND, this is the breach
+  #
+  # Confirmed by querying api.osv.dev for each version separately (5.4.296 and
+  # 6.2.108 both return zero vulns), not by assuming the older copy inherits it.
+  #
+  # REACHABILITY — this is NOT a dead-code waiver, the vulnerable copy is on the
+  # upload path. server/src/lib/documents/parsers.ts routes `application/pdf` to
+  # pdf-parse (the SAFE 5.4.296 copy), which is what makes this look unreachable
+  # at a glance. But parsePptx (:200-204) hands officeparser a BUFFER, and
+  # officeparser's parseOffice only uses a file EXTENSION when given a path — for
+  # a Buffer it sniffs MAGIC BYTES via file-type and dispatches on that
+  # (officeparser/dist/OfficeParser.js, the `if (!ext)` fallback then
+  # `case 'pdf': parsePdf`). So a PDF uploaded as `x.pptx` is routed by OUR mime
+  # switch to parsePptx and then by OFFICEPARSER's sniffer straight into
+  # pdfjs-dist@5.6.205. Verified by execution: fileTypeFromBuffer on a PDF buffer
+  # returns {ext:'pdf'}, and parseOffice(pdfBuffer) resolves with `page` nodes —
+  # the PDF AST shape, which parsers.ts:209 already visits. The .pptx branch of
+  # the upload allowlist is therefore a PDF parser reachable by any uploader.
+  #
+  # The selector is the advisory's own band, so it moves ONLY the copy that is
+  # actually vulnerable and leaves pdf-parse's 5.4.296 exactly where it is
+  # (#1208's floor-not-ceiling rule: the upper bound tracks `fixed`, so when a
+  # later advisory covers 6.2.108 this selector must move BOTH bounds).
+  # officeparser pins pdfjs-dist to EXACTLY 5.6.205, so this override forces it
+  # across a major — #1089's "resolving is not API compatibility". Verified by
+  # EXECUTING officeparser's PDF path against the installed 6.2.108, not by
+  # reading a changelog: v6 still ships legacy/build/pdf.mjs and
+  # legacy/build/pdf.worker.mjs, and a PDF round-trips through parseOffice with
+  # its text extracted. `server/tests/parsers-pdfjs-major.test.ts` is that check,
+  # committed, so a future pdfjs bump cannot break the consumer silently.
+  #
+  # The EXECUTED round trip is the evidence; do not read it as an exhaustive API
+  # audit. officeparser touches more of pdfjs than a text extraction exercises —
+  # `pdfjs.OPS`, `page.getOperatorList`, `page.objs`/`commonObjs`,
+  # `getAnnotations`, `getMetadata` and `getAttachments` (enumerate them with
+  # `grep -n 'pdfDocument\.\|page\.\|pdfjs\.' officeparser/dist/parsers/PdfParser.js`).
+  # At least one DID change shape across the major: `getAttachments()` returns a
+  # Map in v6 where v5 returned a plain object, and officeparser still walks it
+  # with `for...in`, which yields nothing on a Map. That is inert for METIS
+  # because the enumeration is gated on `config.extractAttachments`, which
+  # defaults false and parsers.ts passes no config — but it is a live bug for
+  # anyone who turns attachment extraction on. #1273's panel caught this claim
+  # overstated; the narrow version is the one to keep.
+  #
+  # SEPARATELY, and PRE-DATING this bump: the two pdfjs copies COLLIDE, and the
+  # collision is BIDIRECTIONAL. `globalThis.pdfjsWorker` is a cross-copy global.
+  # Whichever copy loads first installs its `WorkerMessageHandler` there, and the
+  # second copy short-circuits to that handler
+  # (`if (this.#mainThreadWorkerMessageHandler) ...` in legacy/build/pdf.mjs)
+  # BEFORE it ever consults `workerSrc`. So the API and the worker come from
+  # different versions and pdfjs refuses:
+  #
+  #   pdf-parse first  -> officeparser throws API "6.2.108" vs Worker "5.4.296"
+  #   officeparser first -> pdf-parse   throws API "5.4.296" vs Worker "6.2.108"
+  #
+  # NOTE THE SECOND ROW: one pptx-disguised PDF poisons the global, and every
+  # LEGITIMATE `application/pdf` upload in that worker fails for the life of the
+  # process. Measured in both directions on this tree and on the PRE-CHANGE tree
+  # (which throws the same pair reading 5.6.205), so this bump only changes the
+  # numbers — but it is a real availability bug and deserves its own issue.
+  #
+  # `require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs')` is NOT the cause:
+  # traced, it resolves correctly to officeparser's own 6.2.108 worker, and
+  # deleting `globalThis.pdfjsWorker` makes the call succeed with that same
+  # resolution. An earlier draft of this comment blamed `require.resolve` and
+  # said the breakage was one-directional; #1273's panel disproved both. That
+  # matters practically: passing `config.pdfWorkerSrc` CANNOT fix it, because the
+  # global short-circuit runs before `workerSrc` is read.
+  #
+  # Do NOT read the crash as a mitigation for the advisory either — in a fresh
+  # worker the disguised PDF is parsed by pdfjs first and succeeds.
+  pdfjs-dist@>=5.6.83 <6.2.108: ^6.2.108
+  # GHSA-5p4m-2wfm-xmqj (CVSS 7.5): quadratic CPU in `!!omap` resolution. Closed
+  # by the PATCH 4.3.1, taken here on 2026-08-09 once it cleared the 7-day
+  # minimumReleaseAge window (published 2026-07-31T17:39Z). Its waiver in
+  # sast.yml is deleted in the same commit; verified zero vulns for 4.3.1 on
+  # api.osv.dev before bumping — a version pinned as one advisory's fix is a bet
+  # that no later advisory covers it, and that bet has lost twice (#1240, #1273).
+  #
+  # The selector is bare-major, so it keeps matching the whole 4.x line as the
+  # floor moves and needs no upper bound — unlike the `<`-bounded
+  # `fast-uri@<3.1.5` line above, where the bound must move with the floor
+  # (#1208's floor-not-ceiling defect, which recurred in #1213).
+  #
+  # Do NOT take open PR #1203, which bumps js-yaml 4.3.0 -> 5.2.2. That is a
+  # MAJOR absorbed to fix something a patch closes, and it does not even build
+  # (`'js-yaml' does not provide an export named 'default'`). The major is
+  # separate work needing its own justification.
+  #
+  # 4.3.1 DID NOT HOLD (#1363). GHSA-2883-xcg3-v3hh (CVSS 7.5, published
+  # 2026-09-08) records `introduced 4.0.0, fixed 4.3.2` — unbounded memory in
+  # anchor expansion, a billion-laughs DoS from untrusted YAML. The floor moves
+  # to 4.3.2 (published 2026-08-26, clear of minimumReleaseAge and the newest
+  # 4.x release); verified 2026-09-20 that 4.3.2 returns ZERO vulns.
+  #
+  # The `^` is new. The old exact pin meant every future patch on this line
+  # needed a manual edit; `^4.3.2` stays inside the 4.x major — which is still
+  # the point of the paragraph above — while letting a patch land on its own.
+  js-yaml@4: ^4.3.2
+
+  # nanoid, two advisories published 2026-07-29, both CVSS 8.2 (unbounded loop):
+  #   GHSA-28wg-ghj8-5hjv — non-secure generators loop on a negative size
+  #   GHSA-2v37-7h3g-55p8 — custom generators loop when size is zero
+  # Two copies were in the tree: 3.3.15 (via postcss) and 5.1.11.
+  #
+  # Each advisory has its own per-line fix, so the target is the HIGHER of the
+  # two per major: 3.x needs 3.3.17 and 5.x needs 5.1.16. Verified on
+  # api.osv.dev that 3.3.17 and 5.1.16 each return zero vulns — the fix version
+  # is itself a bet that no later advisory covers it, and that bet has lost
+  # three times now (#1240, #1273, #1291).
+  #
+  # 5.1.16 (published 2026-06-24) is mature and taken. The 3.x line sat at 3.3.16
+  # behind a dated waiver while 3.3.17 served out minimumReleaseAge; #1324 closes
+  # that out, and the waiver is DELETED from sast.yml in the same commit rather
+  # than extended.
+  #
+  # THE TARGET MOVED 3.3.17 -> 3.3.18, and that is the whole lesson of this bump.
+  # The comment above, and sast.yml's waiver, both named 3.3.17 as the fix and
+  # both verified it returned zero vulns at the time. OSV has since RE-SCOPED
+  # GHSA-2v37-7h3g-55p8: its 3.x range now reads `introduced 0, fixed 3.3.18`, so
+  # 3.3.17 is inside the advisory it was chosen to escape. Taking the previously
+  # recorded target verbatim would have left the gate red having "done the
+  # upgrade" — the same losing bet as #1240/#1273/#1291, and the reason the rule
+  # is to RE-READ api.osv.dev at bump time instead of trusting the note.
+  # Verified 2026-08-27: 3.3.18 returns ZERO vulns.
+  #
+  # Both selectors stay bare-major, so no bound has to move with the floor
+  # (contrast `fast-uri@<3.1.5`, #1208/#1213). 5.x is unaffected at 5.1.16: the
+  # advisory's second range is `introduced 4.0.0, fixed 5.1.6`.
+  nanoid@3: ^3.3.18
+  nanoid@5: ^5.1.16
+
+  # GHSA-ggr8-5vv4-36mx (CVSS 8.2, database_specific severity HIGH): deepmerge-ts
+  # exhausts the stack on a recursive object graph. OSV records `introduced 0,
+  # fixed 8.0.0`, so the ENTIRE 7.x line is affected and the 7.1.6 published
+  # 2026-08-11 does NOT close it — only a major does. Sole consumer is
+  # @prisma/config@7.8.0 (pnpm-lock.yaml), whose own latest (7.10.0, 2026-08-25)
+  # still declares deepmerge-ts 7.1.5, so there is no upstream bump to wait for.
+  #
+  # The `<8.0.0` bound is the advisory's `fixed` event, so the selector covers
+  # exactly the vulnerable band and stops matching once the tree resolves 8.x.
+  # 8.0.2 published 2026-08-21 and is still inside minimumReleaseAge, so this
+  # resolves 8.0.1 (published 2026-08-16); verified 2026-08-27 that 8.0.1 AND
+  # 8.0.2 each return zero vulns on api.osv.dev, so the next age-clearing bump is
+  # safe too. v8's breaking changes are deep Map merging, two type renames and a
+  # deepmergeInto mutation fix — @prisma/config merges plain config objects, and
+  # the gate (lint + typecheck + test + prisma generate) is what confirms it.
+  deepmerge-ts@<8.0.0: ^8.0.0
+
+  # GHSA-r292-9mhp-454m (CVSS 7.5): uncontrolled recursion in node-tar's
+  # mapHas/filesFilter — an uncatchable stack-overflow DoS from a crafted
+  # long-path archive with member selection. OSV records `introduced 0, fixed
+  # 7.5.21`. Sole consumer is onnxruntime-node@1.21.0 (pnpm-lock.yaml), which
+  # extracts the ONNX runtime binary at install time. Resolves 7.5.22 (published
+  # 2026-07-24, mature); verified 2026-08-27 that both 7.5.21 and 7.5.22 return
+  # zero vulns on api.osv.dev.
+  tar@<7.5.21: ^7.5.21
+
+  # GHSA-73wf-gq98-2v4g (CVSS 7.5) and GHSA-c83g-rgw3-j3cx (High), both published
+  # 2026-09-01 against an UNCHANGED lockfile — a crash / prototype write while
+  # parsing an untrusted `browserslist-stats.json` in `normalizeStats`, and
+  # unbounded cache growth with no eviction to eventual OOM. OSV records
+  # `introduced 0, fixed 4.28.7` for BOTH, so the `<4.28.7` bound is the shared
+  # `fixed` event and the selector covers exactly the vulnerable band (#1208).
+  # Build-time only: it enters via @babel/helper-compilation-targets@7.29.7 and
+  # update-browserslist-db, and the repo ships no browserslist-stats.json — but
+  # the gate does not know that and should not have to. Resolves 4.28.8
+  # (published 2026-08-08, well clear of minimumReleaseAge); verified 2026-09-02
+  # that 4.28.7 AND 4.28.8 each return zero vulns on api.osv.dev.
+  browserslist@<4.28.7: ^4.28.7
+
+  # GHSA-3f6p-5ww8-9rcr (CVSS 8.2, published 2026-09-01): a malicious or
+  # MITM'd server can downgrade the auth plugin to `mysql_clear_password` and
+  # harvest the password in plaintext. OSV records `introduced 0, fixed 3.22.0`.
+  #
+  # THE FLOOR IS 3.23.1, NOT THE 3.22.0 THAT ADVISORY NAMES. Re-reading
+  # api.osv.dev at bump time — the rule #1240/#1273/#1291/#1324 each learned the
+  # hard way — `mysql2@3.22.0` is itself inside GHSA-rgwj-5xj2-c3m3 (unbounded
+  # zlib inflate in the compressed-protocol handler, `introduced 0, fixed
+  # 3.23.1`, published 2026-08-31, MODERATE). Moderate does not turn
+  # `Dependency audit` red, so pinning to 3.22.0 would have closed #1345 with a
+  # green gate and a known-vulnerable target. The `<3.23.1` bound is the WIDER of
+  # the two `fixed` events, so one selector closes both.
+  #
+  # The tree carried TWO copies and only one was patched: `server/package.json`
+  # asks for ^3.22.3 (and got it), while prisma@7.8.0's driver-adapter fan-out
+  # pinned 3.15.3. METIS never connects to MySQL through the Prisma CLI's copy,
+  # which is why this is an override rather than a dependency bump. Resolves
+  # 3.24.2 (published 2026-08-24; 3.24.3 published 2026-09-02 and is still inside
+  # minimumReleaseAge); verified 2026-09-02 that 3.23.1, 3.24.2 AND 3.24.3 each
+  # return zero vulns on api.osv.dev, so the next age-clearing bump is safe too.
+  mysql2@<3.23.1: ^3.23.1
+
+  engine.io@6: 6.6.7
+  # next, TWO CRITICALS, both published 2026-09-08 and both fixed in 16.3.3
+  # (#1363) — the only Criticals in this file:
+  #   GHSA-2xp9-vwfh-vxw4  CVSS 9.5  unauthenticated RCE in the Image
+  #                                  Optimization API on AVIF input. NOT
+  #                                  Windows-specific, and METIS runs
+  #                                  next/image.
+  #   GHSA-p293-qw3h-jr36  CVSS 9.0  unauthenticated RCE on Windows-hosted
+  #                                  servers.
+  # OSV records `introduced 16.0.0, fixed 16.3.3` for both.
+  #
+  # Bound and floor both move to 16.3.3 (#1208). The old `next@<16.2.11:
+  # ^16.2.11` was not inert — `ui/package.json` declared `^16.2.9`, which
+  # intersects `<16.2.11`, so it applied — but its target `^16.2.11` had been
+  # satisfied by the committed lockfile since the day it was written, and a
+  # lockfile does not re-resolve without a manifest or override edit. So it sat
+  # on 16.2.11 while 16.3.5 existed. `ui/package.json` moves to ^16.3.3 in the
+  # same commit: that is the real pin, and this line is the backstop for any
+  # OTHER consumer. With the manifest at ^16.3.3 the selector correctly matches
+  # nothing today — that is what a healthy `<`-bounded backstop looks like.
+  #
+  # ^16.3.3 resolves 16.3.5 (published 2026-09-11, clear of the 7-day
+  # minimumReleaseAge window); verified 2026-09-20 that 16.3.3, 16.3.4 AND 16.3.5
+  # each return ZERO vulns on api.osv.dev. Stays inside 16.x: 16.3 is a patch
+  # line off the major the UI already runs.
+  next@<16.3.3: ^16.3.3
+
+  # @xmldom/xmldom, NINETEEN High advisories across two lines, all published
+  # 2026-09-08 (#1363) — DOM-clobbering and parser-confusion bugs that let
+  # crafted XML corrupt the tree a caller then trusts, plus unbounded-recursion
+  # DoS. OSV splits them into two bands, and BOTH are in this tree, so both need
+  # a selector:
+  #
+  #   0.8.13 (fixed 0.8.15) — @node-saml/node-saml, xml-crypto, xml-encryption,
+  #                           mammoth, and server/package.json's own devDep
+  #   0.9.10 (fixed 0.9.12) — officeparser@6.1.1
+  #
+  # Two advisories name 0.8.14 / 0.9.11 as their fix (GHSA-4w3w-2rp5-g8jm,
+  # GHSA-w2rr-34g9-rvrj, and GHSA-g53g-w8rj-fmg7 on the 0.9 line). Taking those
+  # is the bet #1240/#1273/#1291/#1324/#1345 each lost: 0.8.14 and 0.9.11 are
+  # themselves inside the seven advisories fixed in 0.8.15 / 0.9.12. The floors
+  # below are the WIDEST `fixed` event on each line; verified 2026-09-20 that
+  # 0.8.15, 0.9.12 AND 0.9.13 each return ZERO vulns on api.osv.dev.
+  #
+  # officeparser is at its own latest (6.1.1, 2026-04-28) and still declares
+  # 0.9.10, so there is no upstream bump to wait for — hence an override rather
+  # than a dependency bump. Both targets stay inside their own 0.x minor, which
+  # `^` already enforces for a 0.x range (^0.8.15 := >=0.8.15 <0.9.0), so the
+  # SAML/mammoth consumers are not dragged across the 0.8 -> 0.9 rewrite.
+  #
+  # Each selector's low bound is the advisories' own `introduced` event and each
+  # upper bound is the `fixed` event, so the band is exactly the vulnerable one
+  # and the selector stops matching once the tree resolves its floor (#1208).
+  "@xmldom/xmldom@>=0.7.0 <0.8.15": ^0.8.15
+  "@xmldom/xmldom@>=0.9.0 <0.9.12": ^0.9.12
+
+  # GHSA-px8p-9vwx-vf98 (published 2026-07-22): an infinite loop in fflate's
+  # inflate on a malformed stream — an uninterruptible DoS. OSV's
+  # `database_specific.severity` reads MODERATE, but the gate in
+  # .github/workflows/sast.yml discriminates on the group's CVSS `max_severity`,
+  # and the CVSS:3.1 vector scores 7.5. It therefore breaches the 7.0 threshold
+  # and is one of the 28 findings that held `Dependency audit` red, even though
+  # the issue's `pnpm audit` snapshot did not list it.
+  #
+  # OSV records a separate band per minor; the tree carries only 0.8.2, whose
+  # band is `introduced 0.8.0, fixed 0.8.3`. Sole consumer is officeparser@6.1.1,
+  # and it IS reachable: server/src/lib/documents/parsers.ts:290-294 routes the
+  # `pptx` branch to parseOffice (`.docx` goes to mammoth and `.xlsx` to exceljs,
+  # so those two do NOT reach fflate). A .pptx is a ZIP, which is what fflate
+  # inflates. 0.8.3 published 2026-05-16, is the latest release, and returns ZERO
+  # vulns (2026-09-20).
+  fflate@>=0.8.0 <0.8.3: ^0.8.3
+
+# onlyBuiltDependencies: the allowlist of packages permitted to run install
+# scripts. It shared the `pnpm` field with the overrides above and pnpm 11 drops
+# it in the same breath ("...were ignored: pnpm.overrides, pnpm.onlyBuiltDependencies"),
+# so it moves here too — otherwise the native builds below stop running.
+onlyBuiltDependencies:
+  - "@prisma/engines"
+  - better-sqlite3
+  - esbuild
+  - prisma
+  - puppeteer
+  - sharp
+  - tesseract.js
+  - tree-sitter-go
+  - tree-sitter-java
+  - tree-sitter-javascript
+  - tree-sitter-python
+  - tree-sitter-typescript

@@ -1,0 +1,97 @@
+{
+  "capturedAt": "2026-08-06",
+  "issue": 1270,
+  "command": "gh pr view <n> --repo openzigs/metis --json number,author,title,headRefName,state,files",
+  "note": "Verbatim capture of the ten dependabot PRs open and red on changelog when #1270 was filed. Hand-written approximations of a changed-path list have produced a fabricated measurement before (#1249), so the gate is proven against these bytes.",
+  "prs": {
+    "596": {
+      "author": "app/dependabot",
+      "title": "chore(deps): bump puppeteer from 24.43.1 to 25.3.0",
+      "headRefName": "dependabot/npm_and_yarn/puppeteer-25.2.0",
+      "files": ["pnpm-lock.yaml", "server/package.json"]
+    },
+    "1197": {
+      "author": "app/dependabot",
+      "title": "chore(deps): bump the ui-minor-patch group in /ui with 25 updates",
+      "headRefName": "dependabot/npm_and_yarn/ui/ui-minor-patch-e62c8bccdf",
+      "files": ["ui/package.json"]
+    },
+    "1198": {
+      "author": "app/dependabot",
+      "title": "chore(deps-dev): bump @testing-library/jest-dom from 6.9.1 to 7.0.0 in /ui",
+      "headRefName": "dependabot/npm_and_yarn/ui/testing-library/jest-dom-7.0.0",
+      "files": ["ui/package.json"]
+    },
+    "1199": {
+      "author": "app/dependabot",
+      "title": "chore(deps-dev): bump @types/node from 22.19.17 to 26.1.1 in /ui",
+      "headRefName": "dependabot/npm_and_yarn/ui/types/node-26.1.1",
+      "files": ["ui/package.json"]
+    },
+    "1200": {
+      "author": "app/dependabot",
+      "title": "chore(deps-dev): bump typescript from 6.0.3 to 7.0.2 in /ui",
+      "headRefName": "dependabot/npm_and_yarn/ui/typescript-7.0.2",
+      "files": ["ui/package.json"]
+    },
+    "1202": {
+      "author": "app/dependabot",
+      "title": "chore(deps): bump zod from 3.25.76 to 4.4.3",
+      "headRefName": "dependabot/npm_and_yarn/zod-4.4.3",
+      "files": [
+        "packages/shared/package.json",
+        "pnpm-lock.yaml",
+        "server/copilot-svc/package.json",
+        "server/embeddings-svc/package.json",
+        "server/package.json"
+      ]
+    },
+    "1203": {
+      "author": "app/dependabot",
+      "title": "chore(deps): bump js-yaml from 4.3.0 to 5.2.2",
+      "headRefName": "dependabot/npm_and_yarn/js-yaml-5.2.2",
+      "files": ["pnpm-lock.yaml", "server/package.json"]
+    },
+    "1204": {
+      "author": "app/dependabot",
+      "title": "chore(deps): bump better-sqlite3 from 12.9.0 to 13.0.1",
+      "headRefName": "dependabot/npm_and_yarn/better-sqlite3-13.0.1",
+      "files": ["pnpm-lock.yaml", "server/package.json"]
+    },
+    "1212": {
+      "author": "app/dependabot",
+      "title": "chore(deps): bump the github-actions group across 1 directory with 7 updates",
+      "headRefName": "dependabot/github_actions/github-actions-09660aaf01",
+      "files": [
+        ".github/workflows/build-images.yml",
+        ".github/workflows/chart-validate.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/dr-drill-schedule.yml",
+        ".github/workflows/e2e-sandbox-e2b.yml",
+        ".github/workflows/eval-domain-nightly.yml",
+        ".github/workflows/eval-nightly.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/sast.yml",
+        ".github/workflows/wrapper-image-scan.yml",
+        ".github/workflows/wrapper-images.yml"
+      ]
+    },
+    "1248": {
+      "author": "app/dependabot",
+      "title": "chore(deps): bump the root-minor-patch group across 1 directory with 68 updates",
+      "headRefName": "dependabot/npm_and_yarn/root-minor-patch-e3b7ef037e",
+      "files": [
+        "e2e/package.json",
+        "package.json",
+        "packages/shared/package.json",
+        "packages/ui-kit/package.json",
+        "pnpm-lock.yaml",
+        "scripts/package.json",
+        "server/copilot-svc/package.json",
+        "server/embeddings-svc/package.json",
+        "server/package.json",
+        "ui/package.json"
+      ]
+    }
+  }
+}

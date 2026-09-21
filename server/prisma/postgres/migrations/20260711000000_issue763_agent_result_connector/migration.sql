@@ -1,0 +1,11 @@
+-- Issue #763 (epic #727) — connector-scoped code-agent persistence.
+-- Postgres mirror of the SQLite migration.
+--
+-- Adds `agent_results.connectorId` (nullable): the RepoConnection a `code`
+-- AgentResult was produced for on the multi-repo agentic path, so
+-- `persistAgentResult` can scope its `replace`-delete per connector instead of
+-- clobbering the previous connector's `code` row. ADDITIVE. The ADD COLUMN is
+-- `IF NOT EXISTS` (idempotent) so replaying the full migration history over the
+-- cumulative `00000000000000_init` baseline (which already carries the column) on
+-- a fresh Postgres no-ops here rather than colliding (issue #556 guard).
+ALTER TABLE "agent_results" ADD COLUMN IF NOT EXISTS "connectorId" TEXT;

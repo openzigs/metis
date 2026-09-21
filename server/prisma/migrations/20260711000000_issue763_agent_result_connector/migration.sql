@@ -1,0 +1,13 @@
+-- Issue #763 (epic #727) — connector-scoped code-agent persistence.
+--
+-- Adds `agent_results.connectorId` (nullable): the RepoConnection a `code`
+-- AgentResult was produced for on the multi-repo agentic path. `persistAgentResult`
+-- now scopes its `replace`-delete by `(analysisId, agentKey, connectorId)` when a
+-- connector is supplied, so connector N's persist no longer DELETEs connector N-1's
+-- `code` row (findings cascade away) — the silent multi-repo data-loss bug where
+-- only the LAST connector's findings survived. Nullable: single-repo/legacy rows
+-- and the doc/synthesis/security agents carry no connector and keep whole-agentKey
+-- replace. AgentResults are delete+recreated on every re-run, so a plain nullable
+-- column (no backfill) is sufficient — existing rows read as `null`. ADDITIVE:
+-- only a new nullable column is added, so this is non-destructive and reversible.
+ALTER TABLE "agent_results" ADD COLUMN "connectorId" TEXT;

@@ -1,0 +1,83 @@
+{
+  "name": "metis",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "description": "METIS — Master Enterprise Tool for Issue Synthesis",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22.12.0",
+    "pnpm": ">=10.16.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter ./server --filter ./ui run dev",
+    "build": "pnpm db:generate && pnpm -r --filter ./packages/shared --filter ./packages/ui-kit --filter ./server --filter ./ui run build",
+    "test": "pnpm -r --filter '!@metis/e2e' run test",
+    "lint": "node scripts/lib/check-no-nul.mjs && node scripts/verify-no-company-identifiers.mjs && node scripts/verify-license-metadata.mjs && node scripts/verify-cla-workflow.mjs && eslint . --max-warnings=0",
+    "lint:no-nul": "node scripts/lib/check-no-nul.mjs",
+    "identifiers:verify": "node scripts/verify-no-company-identifiers.mjs",
+    "licenses:verify": "node scripts/verify-license-metadata.mjs",
+    "cla:verify": "node scripts/verify-cla-workflow.mjs",
+    "typecheck": "pnpm -r run typecheck",
+    "format": "prettier --write \"**/*.{ts,tsx,js,mjs,cjs,json,md,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,cjs,json,md,yml,yaml}\"",
+    "prepare": "husky || true",
+    "clean": "node scripts/lib/clean.mjs",
+    "db:generate": "pnpm --filter @metis/server prisma generate",
+    "db:migrate": "pnpm --filter @metis/server prisma migrate dev",
+    "db:seed": "pnpm --filter @metis/server prisma db seed",
+    "db:studio": "pnpm --filter @metis/server prisma studio",
+    "db:reset": "pnpm --filter @metis/server prisma migrate reset --force",
+    "mcp:test": "pnpm --filter @metis/server mcp:test",
+    "rag:eval": "pnpm --filter @metis/server rag:eval",
+    "eval:domain": "pnpm --filter @metis/server eval:domain",
+    "eval:domain:ab": "pnpm --filter @metis/server eval:domain:ab",
+    "eval:codegraph": "pnpm --filter @metis/server eval:codegraph",
+    "eval:reqmap": "pnpm --filter @metis/server eval:reqmap",
+    "eval:impact-recall": "pnpm --filter @metis/server eval:impact-recall",
+    "eval:verification": "pnpm --filter @metis/server eval:verification",
+    "eval:harvest-feedback": "pnpm --filter @metis/server eval:harvest-feedback",
+    "eval:embed-retrieval": "pnpm --filter @metis/server eval:embed-retrieval",
+    "eval:doc-retrieval": "pnpm --filter @metis/server eval:doc-retrieval",
+    "eval:answer-correctness": "pnpm --filter @metis/server eval:answer-correctness",
+    "eval:restore-corpus": "node scripts/restore-corpus-doc-snapshots.mjs",
+    "red-team": "pnpm --filter @metis/server red-team",
+    "dr:check": "pnpm --filter @metis/server dr:check",
+    "embeddings:migrate": "pnpm --filter @metis/server embeddings:migrate",
+    "review:adversarial-tally": "node scripts/adversarial-tally.mjs",
+    "verify:image-size": "node scripts/lib/verify-image-size.mjs",
+    "skills:verify": "node scripts/verify-skill-links.mjs",
+    "agents:verify": "node scripts/verify-agent-frontmatter.mjs",
+    "changelog:verify": "node scripts/verify-changelog-fragment.mjs",
+    "changelog:assemble": "node scripts/assemble-changelog.mjs",
+    "worktrees:prune": "node scripts/worktrees-prune.mjs",
+    "eval:results-guard": "node scripts/eval-results-commit-guard.mjs",
+    "bootstrap": "node scripts/bootstrap.mjs",
+    "bootstrap:up": "node scripts/bootstrap.mjs --up",
+    "bootstrap:check": "node scripts/bootstrap-check.mjs",
+    "export": "node scripts/export.mjs",
+    "import": "node scripts/import.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "eslint": "^10.3.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.8",
+    "prettier": "^3.4.2",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.2",
+    "vite": "^8.0.12"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix --max-warnings=0 --no-warn-ignored",
+      "prettier --write"
+    ],
+    "*.{js,mjs,cjs,json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
+  "dependencies": {
+    "oracledb": "^6.10.0"
+  }
+}

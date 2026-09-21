@@ -1,0 +1,151 @@
+# Epic #803 (Epic 09) — Nightly Domain Eval (BA pipeline regression suite).
+#
+# Runs the offline requirement-extraction regression against the committed
+# golden corpus (`eval-data/`), writes a result envelope to `eval-results/`,
+# commits it back (together with #1319's answer-correctness envelope), and flags
+# the build when corpus F1 drops more than the drift threshold (5%) week-over-week.
+# A Slack-style drift alert is dispatched when the `EVAL_ALERT_WEBHOOK_URL` secret
+# is configured.
+#
+# #1382 — "back" is the dedicated `eval-results` BRANCH, not `main`. #1308 decided
+# eval output does not ship and #1382 untracked it, so the envelopes can no longer
+# live on the branch that gets published. ADR 0012's reasoning for keeping them in
+# git at all is unchanged (drift history must not expire, which rules out a workflow
+# artifact); only the ref moved, the same way `cla.yml` keeps signatures on
+# `cla-signatures`. The branch is mounted AS `eval-results/` so `drift-alert` and the
+# #1333 commit guard need no new code — see docs/decisions/0015-*.md.
+name: Eval Domain Nightly
+
+on:
+  schedule:
+    # 03:00 UTC daily — staggered after the benchmark nightly (02:00 UTC).
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      fail_on_drift:
+        description: "Fail the build when corpus F1 drift breaches the threshold."
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: eval-domain-nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  domain-eval:
+    runs-on: ubuntu-latest
+    env:
+      EVAL_ALERT_WEBHOOK_URL: ${{ secrets.EVAL_ALERT_WEBHOOK_URL }}
+      GIT_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile --prod=false
+
+      # tsx resolves @metis/shared from its built dist output, so build it first.
+      - name: Build shared package
+        run: pnpm --filter @metis/shared run build
+
+      # Mount the eval-results BRANCH at `eval-results/` BEFORE the eval runs: the
+      # domain runner reads prior envelopes from that directory to pick a baseline,
+      # so a run without it would compare today's F1 against nothing and still
+      # report WITHIN_THRESHOLD. Creates the branch, empty, on the first ever run.
+      - name: Mount the eval-results branch
+        run: node scripts/eval-results-branch.mjs checkout
+
+      # #1382 untracked `eval-data/corpus/*/docs/`, and `actions/checkout` cleans
+      # ignored files, so the snapshot is absent on every run of this job — fresh or
+      # reused workspace. `pnpm eval:answer-correctness` loads that corpus
+      # UNCONDITIONALLY (server/scripts/eval-answer-correctness.ts), so without this
+      # step it fails every night, and the publish step below — which carries the
+      # default `success()` condition — is skipped. That is #1333's defect by a new
+      # route, and `scripts/lib/corpus-restore-wiring.test.mjs` asserts this ordering.
+      - name: Restore the frozen corpus snapshots
+        run: node scripts/restore-corpus-doc-snapshots.mjs
+
+      - name: Run domain eval
+        id: eval
+        continue-on-error: true
+        run: pnpm eval:domain
+
+      # Epic #1316 / #1319 — answer-correctness against the human-authored
+      # reference answers. Deliberately NOT `continue-on-error`: this step scores
+      # nothing while `reference.json` has no gold answers, so the only way it can
+      # fail is a genuinely invalid or non-human reference set, which is exactly
+      # the gate it exists to be.
+      #
+      # #1338 wired both sides of the metric, and both are LAZY. Answer generation
+      # additionally requires EMBEDDINGS_MODEL_DOWNLOAD_TESTS=1 and judging
+      # requires provider credentials; this job sets neither, so it stays offline
+      # and free even once gold answers land. It then reports NOT REPORTED with
+      # reasonCode `no-judge` rather than a mean — which is the honest output for
+      # a run that could not score, and never a zero.
+      - name: Run answer-correctness eval
+        run: pnpm eval:answer-correctness
+
+      # #1333 fixed the commit-back path, so this envelope now reaches `main`
+      # alongside the domain one. The job summary stays: it is the fastest place
+      # to read the metric without checking out the commit.
+      #
+      # Only the NEWEST envelope is echoed. Before #1333 the directory held at
+      # most this run's file, so a glob was fine; now that it is committed it
+      # accumulates one per night, and the glob would paste the entire history
+      # into every job summary.
+      - name: Report answer-correctness in the job summary
+        if: always()
+        run: |
+          newest="$(ls -t eval-results/answer-correctness/*.json 2>/dev/null | head -n 1)"
+          {
+            echo "### Answer correctness (#1319)"
+            echo ""
+            echo '```json'
+            if [ -n "$newest" ]; then cat "$newest"; else echo '{ "error": "no envelope written" }'; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Issue #1333 — this step used to be `if [ -z "$(git status --porcelain
+      # eval-results)" ]; then echo "No new..."; exit 0; fi`. `--porcelain` does
+      # not list ignored files, and `eval-results/` was gitignored on 2026-07-21
+      # (#983), so the guard saw an empty string every night, printed "No new
+      # domain eval results to commit", and exited 0 — five weeks of green jobs
+      # that committed nothing, while `drift-alert` compared against a history
+      # frozen on the day the ignore rule landed.
+      #
+      # The guard asks a question that includes ignored paths and cross-checks it
+      # against the writer's actual output directory. An empty result set FAILS: a
+      # nightly that produced no envelope is broken, not idle. Since #1382 it asks
+      # the mounted branch worktree, so its `ignored` arm additionally catches the
+      # checkout step above having been skipped. See ADR 0012, ADR 0015 and
+      # scripts/lib/eval-results-commit-core.mjs.
+      - name: Guard — the nightly must have something committable
+        if: always()
+        run: node scripts/eval-results-commit-guard.mjs
+
+      # Deliberately NOT `if: always()`. The guard above is the precondition:
+      # when it fails there is nothing committable, and a second "nothing to
+      # commit" failure here would only bury its message. `Run domain eval` is
+      # `continue-on-error`, so a DRIFTING run still reaches this step — drift
+      # history must be committed, that is the whole point of it.
+      #
+      # The push targets `refs/heads/eval-results`, never `main`. The guard above
+      # already proved there is something to stage, so a `nothing to commit` here
+      # is a real failure and is deliberately not swallowed.
+      - name: Publish results to the eval-results branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          node scripts/eval-results-branch.mjs publish
+
+      - name: Flag drift regression
+        if: ${{ steps.eval.outcome == 'failure' && (github.event_name != 'workflow_dispatch' || inputs.fail_on_drift) }}
+        run: |
+          echo "::error::Domain eval drift threshold breached — corpus F1 dropped beyond the allowed window."
+          exit 1

@@ -1,0 +1,37 @@
+{
+  "__FORMAT_EXAMPLE__": "NOT GROUND TRUTH. This file exists ONLY to exercise the reference.json schema, loader and validator in unit tests. Its answers are invented sentences about a fictional subject and its author/reviewedBy are placeholders. It must never be copied into eval-data/, referenced by an eval run, or cited as a measurement. Real gold answers are written and reviewed by people — see eval-data/corpus/docretrieval-01-metis-docs/REFERENCE-AUTHORING.md.",
+  "corpusId": "format-example",
+  "license": "CC0-1.0",
+  "licenseNote": "The example is CC0 because it is invented text with no source document. The real corpus's licence is an OPEN DECISION — see eval-data/corpus/docretrieval-01-metis-docs/reference.json.",
+  "snapshotCommit": "0000000000000000000000000000000000000000",
+  "note": "Format example for tests. Not ground truth.",
+  "answers": [
+    {
+      "queryId": "fx-01",
+      "answer": "The widget cache is flushed on every deploy and holds at most 512 entries.",
+      "provenance": {
+        "author": "gh:placeholder-author",
+        "date": "2026-08-27"
+      }
+    },
+    {
+      "queryId": "fx-02",
+      "answer": "Retries stop after three attempts. The job then moves to the dead-letter queue.",
+      "note": "Format example of a reviewed entry. Not ground truth.",
+      "provenance": {
+        "author": "gh:placeholder-author",
+        "date": "2026-08-27",
+        "reviewedBy": "gh:placeholder-reviewer",
+        "reviewedAt": "2026-08-28"
+      }
+    },
+    {
+      "queryId": "fx-03",
+      "answer": "FLAG: format example of a flagged item — the anchored quote names the retry budget, but the question asks about the dead-letter queue, so the snapshot does not answer it. Excluded from the metric, reported as a corpus finding.",
+      "provenance": {
+        "author": "gh:placeholder-author",
+        "date": "2026-08-27"
+      }
+    }
+  ]
+}

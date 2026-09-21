@@ -1,0 +1,2218 @@
+{
+  "version": 1,
+  "id": "impact-recall-01-jpetstore",
+  "title": "JPetStore-6 requirement→(code, tables) impact recall fixture (layered)",
+  "kind": "impact-recall",
+  "license": "CC0-1.0",
+  "source": "original-synthetic",
+  "projectId": "impact-recall-eval-project",
+  "note": "Hand-authored, self-contained, LAYERED JPetStore-6-style code+schema graph for the Impact Analysis recall/precision eval (#930, layered in #939). Symbols/edges model the full domain →(–)→ web-action →(calls)→ service →(calls)→ mapper →(executes)→ statement →(reads/writes)→ table chain the #928 crossing walks, so BM25 seed pollution and downstream fan-out reproduce the live-ingested project's over-broad behaviour. No DB, no network, no live LLM. #1003 added four deliberately high-ranking `src/site/**/xdoc/index.xml` documentation rows as NOISE (they must never be seeded). #1002 added REQ-11, the VOCABULARY-MISMATCH regression case: a loyalty requirement written the way a business analyst writes one, naming the account entity only as 'the shopper's saved billing and delivery details' and the order entity only as 'a purchase', so neither noun is lexically present. Under deterministic BM25 it seeds on `checkout` alone and MISSES both expected tables (macro table recall 1.00 -> 0.91) - the defect reported on requirement 3 of epic #999. NOTE: the LITERAL phrasing ('...visible on the customer's account') does NOT reproduce the miss in this corpus, because `OrderMapper.getOrder.statement` reads `account` in a join, so any order-lexical seed reaches the table by FAN-OUT; the business-vocabulary phrasing is what isolates the seeding defect.",
+  "tables": [
+    {
+      "id": "table_account",
+      "name": "account",
+      "qualifiedName": "account",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "table_profile",
+      "name": "profile",
+      "qualifiedName": "profile",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "table_signon",
+      "name": "signon",
+      "qualifiedName": "signon",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "table_product",
+      "name": "product",
+      "qualifiedName": "product",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "table_category",
+      "name": "category",
+      "qualifiedName": "category",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "table_item",
+      "name": "item",
+      "qualifiedName": "item",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "table_inventory",
+      "name": "inventory",
+      "qualifiedName": "inventory",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "table_orders",
+      "name": "orders",
+      "qualifiedName": "orders",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "table_lineitem",
+      "name": "lineitem",
+      "qualifiedName": "lineitem",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "table_orderstatus",
+      "name": "orderstatus",
+      "qualifiedName": "orderstatus",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "table_sequence",
+      "name": "sequence",
+      "qualifiedName": "sequence",
+      "kind": "table",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_account_userid",
+      "name": "userid",
+      "qualifiedName": "account.userid",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_account_email",
+      "name": "email",
+      "qualifiedName": "account.email",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_account_firstname",
+      "name": "firstname",
+      "qualifiedName": "account.firstname",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_account_lastname",
+      "name": "lastname",
+      "qualifiedName": "account.lastname",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_account_status",
+      "name": "status",
+      "qualifiedName": "account.status",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_account_addr1",
+      "name": "addr1",
+      "qualifiedName": "account.addr1",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_account_addr2",
+      "name": "addr2",
+      "qualifiedName": "account.addr2",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_account_city",
+      "name": "city",
+      "qualifiedName": "account.city",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_account_state",
+      "name": "state",
+      "qualifiedName": "account.state",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_account_zip",
+      "name": "zip",
+      "qualifiedName": "account.zip",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_account_country",
+      "name": "country",
+      "qualifiedName": "account.country",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_account_phone",
+      "name": "phone",
+      "qualifiedName": "account.phone",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_profile_userid",
+      "name": "userid",
+      "qualifiedName": "profile.userid",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_profile_langpref",
+      "name": "langpref",
+      "qualifiedName": "profile.langpref",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_profile_favcategory",
+      "name": "favcategory",
+      "qualifiedName": "profile.favcategory",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_profile_mylistopt",
+      "name": "mylistopt",
+      "qualifiedName": "profile.mylistopt",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_profile_banneropt",
+      "name": "banneropt",
+      "qualifiedName": "profile.banneropt",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_signon_username",
+      "name": "username",
+      "qualifiedName": "signon.username",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_signon_password",
+      "name": "password",
+      "qualifiedName": "signon.password",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_product_productid",
+      "name": "productid",
+      "qualifiedName": "product.productid",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_product_category",
+      "name": "category",
+      "qualifiedName": "product.category",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_product_name",
+      "name": "name",
+      "qualifiedName": "product.name",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_product_descn",
+      "name": "descn",
+      "qualifiedName": "product.descn",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_category_catid",
+      "name": "catid",
+      "qualifiedName": "category.catid",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_category_name",
+      "name": "name",
+      "qualifiedName": "category.name",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_category_descn",
+      "name": "descn",
+      "qualifiedName": "category.descn",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_item_itemid",
+      "name": "itemid",
+      "qualifiedName": "item.itemid",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_item_productid",
+      "name": "productid",
+      "qualifiedName": "item.productid",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_item_listprice",
+      "name": "listprice",
+      "qualifiedName": "item.listprice",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_item_unitcost",
+      "name": "unitcost",
+      "qualifiedName": "item.unitcost",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_item_supplier",
+      "name": "supplier",
+      "qualifiedName": "item.supplier",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_item_status",
+      "name": "status",
+      "qualifiedName": "item.status",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_item_attr1",
+      "name": "attr1",
+      "qualifiedName": "item.attr1",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_item_attr2",
+      "name": "attr2",
+      "qualifiedName": "item.attr2",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_item_attr3",
+      "name": "attr3",
+      "qualifiedName": "item.attr3",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_item_attr4",
+      "name": "attr4",
+      "qualifiedName": "item.attr4",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_item_attr5",
+      "name": "attr5",
+      "qualifiedName": "item.attr5",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_inventory_itemid",
+      "name": "itemid",
+      "qualifiedName": "inventory.itemid",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_inventory_qty",
+      "name": "qty",
+      "qualifiedName": "inventory.qty",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_orderid",
+      "name": "orderid",
+      "qualifiedName": "orders.orderid",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_userid",
+      "name": "userid",
+      "qualifiedName": "orders.userid",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_orderdate",
+      "name": "orderdate",
+      "qualifiedName": "orders.orderdate",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_shipaddr1",
+      "name": "shipaddr1",
+      "qualifiedName": "orders.shipaddr1",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_shipaddr2",
+      "name": "shipaddr2",
+      "qualifiedName": "orders.shipaddr2",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_shipcity",
+      "name": "shipcity",
+      "qualifiedName": "orders.shipcity",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_shipstate",
+      "name": "shipstate",
+      "qualifiedName": "orders.shipstate",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_shipzip",
+      "name": "shipzip",
+      "qualifiedName": "orders.shipzip",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_shipcountry",
+      "name": "shipcountry",
+      "qualifiedName": "orders.shipcountry",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_billaddr1",
+      "name": "billaddr1",
+      "qualifiedName": "orders.billaddr1",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_billaddr2",
+      "name": "billaddr2",
+      "qualifiedName": "orders.billaddr2",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_billcity",
+      "name": "billcity",
+      "qualifiedName": "orders.billcity",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_billstate",
+      "name": "billstate",
+      "qualifiedName": "orders.billstate",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_billzip",
+      "name": "billzip",
+      "qualifiedName": "orders.billzip",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_billcountry",
+      "name": "billcountry",
+      "qualifiedName": "orders.billcountry",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_courier",
+      "name": "courier",
+      "qualifiedName": "orders.courier",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_totalprice",
+      "name": "totalprice",
+      "qualifiedName": "orders.totalprice",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_billtofirstname",
+      "name": "billtofirstname",
+      "qualifiedName": "orders.billtofirstname",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_billtolastname",
+      "name": "billtolastname",
+      "qualifiedName": "orders.billtolastname",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_shiptofirstname",
+      "name": "shiptofirstname",
+      "qualifiedName": "orders.shiptofirstname",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_shiptolastname",
+      "name": "shiptolastname",
+      "qualifiedName": "orders.shiptolastname",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_creditcard",
+      "name": "creditcard",
+      "qualifiedName": "orders.creditcard",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_exprdate",
+      "name": "exprdate",
+      "qualifiedName": "orders.exprdate",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_cardtype",
+      "name": "cardtype",
+      "qualifiedName": "orders.cardtype",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orders_locale",
+      "name": "locale",
+      "qualifiedName": "orders.locale",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_lineitem_orderid",
+      "name": "orderid",
+      "qualifiedName": "lineitem.orderid",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_lineitem_linenum",
+      "name": "linenum",
+      "qualifiedName": "lineitem.linenum",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_lineitem_itemid",
+      "name": "itemid",
+      "qualifiedName": "lineitem.itemid",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_lineitem_quantity",
+      "name": "quantity",
+      "qualifiedName": "lineitem.quantity",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_lineitem_unitprice",
+      "name": "unitprice",
+      "qualifiedName": "lineitem.unitprice",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orderstatus_orderid",
+      "name": "orderid",
+      "qualifiedName": "orderstatus.orderid",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orderstatus_linenum",
+      "name": "linenum",
+      "qualifiedName": "orderstatus.linenum",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orderstatus_timestamp",
+      "name": "timestamp",
+      "qualifiedName": "orderstatus.timestamp",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_orderstatus_status",
+      "name": "status",
+      "qualifiedName": "orderstatus.status",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_sequence_name",
+      "name": "name",
+      "qualifiedName": "sequence.name",
+      "kind": "column",
+      "source": "mybatis"
+    },
+    {
+      "id": "col_sequence_nextid",
+      "name": "nextid",
+      "qualifiedName": "sequence.nextid",
+      "kind": "column",
+      "source": "mybatis"
+    }
+  ],
+  "codeSymbols": [
+    {
+      "id": "org_jpetstore_domain_account",
+      "name": "Account",
+      "qualifiedName": "domain/Account.java::Account",
+      "kind": "class",
+      "filePath": "domain/Account.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_domain_profile",
+      "name": "Profile",
+      "qualifiedName": "domain/Profile.java::Profile",
+      "kind": "class",
+      "filePath": "domain/Profile.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_domain_signon",
+      "name": "Signon",
+      "qualifiedName": "domain/Signon.java::Signon",
+      "kind": "class",
+      "filePath": "domain/Signon.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_domain_product",
+      "name": "Product",
+      "qualifiedName": "domain/Product.java::Product",
+      "kind": "class",
+      "filePath": "domain/Product.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_domain_category",
+      "name": "Category",
+      "qualifiedName": "domain/Category.java::Category",
+      "kind": "class",
+      "filePath": "domain/Category.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_domain_item",
+      "name": "Item",
+      "qualifiedName": "domain/Item.java::Item",
+      "kind": "class",
+      "filePath": "domain/Item.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_domain_inventory",
+      "name": "Inventory",
+      "qualifiedName": "domain/Inventory.java::Inventory",
+      "kind": "class",
+      "filePath": "domain/Inventory.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_domain_order",
+      "name": "Order",
+      "qualifiedName": "domain/Order.java::Order",
+      "kind": "class",
+      "filePath": "domain/Order.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_domain_lineitem",
+      "name": "LineItem",
+      "qualifiedName": "domain/LineItem.java::LineItem",
+      "kind": "class",
+      "filePath": "domain/LineItem.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_domain_cart",
+      "name": "Cart",
+      "qualifiedName": "domain/Cart.java::Cart",
+      "kind": "class",
+      "filePath": "domain/Cart.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_domain_cartitem",
+      "name": "CartItem",
+      "qualifiedName": "domain/CartItem.java::CartItem",
+      "kind": "class",
+      "filePath": "domain/CartItem.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_domain_sequence",
+      "name": "Sequence",
+      "qualifiedName": "domain/Sequence.java::Sequence",
+      "kind": "class",
+      "filePath": "domain/Sequence.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_beans_accountbean",
+      "name": "AccountBean",
+      "qualifiedName": "web/beans/AccountBean.java::AccountBean",
+      "kind": "class",
+      "filePath": "web/beans/AccountBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_beans_accountform",
+      "name": "AccountForm",
+      "qualifiedName": "web/beans/AccountForm.java::AccountForm",
+      "kind": "class",
+      "filePath": "web/beans/AccountForm.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_beans_productbean",
+      "name": "ProductBean",
+      "qualifiedName": "web/beans/ProductBean.java::ProductBean",
+      "kind": "class",
+      "filePath": "web/beans/ProductBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_beans_productform",
+      "name": "ProductForm",
+      "qualifiedName": "web/beans/ProductForm.java::ProductForm",
+      "kind": "class",
+      "filePath": "web/beans/ProductForm.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_beans_productview",
+      "name": "ProductView",
+      "qualifiedName": "web/beans/ProductView.java::ProductView",
+      "kind": "class",
+      "filePath": "web/beans/ProductView.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_beans_productsummary",
+      "name": "ProductSummary",
+      "qualifiedName": "web/beans/ProductSummary.java::ProductSummary",
+      "kind": "class",
+      "filePath": "web/beans/ProductSummary.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_beans_productdetailbean",
+      "name": "ProductDetailBean",
+      "qualifiedName": "web/beans/ProductDetailBean.java::ProductDetailBean",
+      "kind": "class",
+      "filePath": "web/beans/ProductDetailBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_beans_itembean",
+      "name": "ItemBean",
+      "qualifiedName": "web/beans/ItemBean.java::ItemBean",
+      "kind": "class",
+      "filePath": "web/beans/ItemBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_beans_itemform",
+      "name": "ItemForm",
+      "qualifiedName": "web/beans/ItemForm.java::ItemForm",
+      "kind": "class",
+      "filePath": "web/beans/ItemForm.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_beans_orderbean",
+      "name": "OrderBean",
+      "qualifiedName": "web/beans/OrderBean.java::OrderBean",
+      "kind": "class",
+      "filePath": "web/beans/OrderBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_beans_orderform",
+      "name": "OrderForm",
+      "qualifiedName": "web/beans/OrderForm.java::OrderForm",
+      "kind": "class",
+      "filePath": "web/beans/OrderForm.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_beans_categorybean",
+      "name": "CategoryBean",
+      "qualifiedName": "web/beans/CategoryBean.java::CategoryBean",
+      "kind": "class",
+      "filePath": "web/beans/CategoryBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_beans_cartbean",
+      "name": "CartBean",
+      "qualifiedName": "web/beans/CartBean.java::CartBean",
+      "kind": "class",
+      "filePath": "web/beans/CartBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_accountmapper_getaccountbyusername",
+      "name": "getAccountByUsername",
+      "qualifiedName": "persistence/AccountMapper.java::AccountMapper::getAccountByUsername",
+      "kind": "method",
+      "filePath": "persistence/AccountMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_accountmapper_getaccountbyusername_statement",
+      "name": "getAccountByUsername.statement",
+      "qualifiedName": "org.jpetstore.persistence.AccountMapper.getAccountByUsername.statement",
+      "kind": "method",
+      "filePath": "persistence/AccountMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_accountmapper_getaccount",
+      "name": "getAccount",
+      "qualifiedName": "persistence/AccountMapper.java::AccountMapper::getAccount",
+      "kind": "method",
+      "filePath": "persistence/AccountMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_accountmapper_getaccount_statement",
+      "name": "getAccount.statement",
+      "qualifiedName": "org.jpetstore.persistence.AccountMapper.getAccount.statement",
+      "kind": "method",
+      "filePath": "persistence/AccountMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_accountmapper_updateaccount",
+      "name": "updateAccount",
+      "qualifiedName": "persistence/AccountMapper.java::AccountMapper::updateAccount",
+      "kind": "method",
+      "filePath": "persistence/AccountMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_accountmapper_updateaccount_statement",
+      "name": "updateAccount.statement",
+      "qualifiedName": "org.jpetstore.persistence.AccountMapper.updateAccount.statement",
+      "kind": "method",
+      "filePath": "persistence/AccountMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_accountmapper_insertaccount",
+      "name": "insertAccount",
+      "qualifiedName": "persistence/AccountMapper.java::AccountMapper::insertAccount",
+      "kind": "method",
+      "filePath": "persistence/AccountMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_accountmapper_insertaccount_statement",
+      "name": "insertAccount.statement",
+      "qualifiedName": "org.jpetstore.persistence.AccountMapper.insertAccount.statement",
+      "kind": "method",
+      "filePath": "persistence/AccountMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_signonmapper_getsignon",
+      "name": "getSignon",
+      "qualifiedName": "persistence/SignonMapper.java::SignonMapper::getSignon",
+      "kind": "method",
+      "filePath": "persistence/SignonMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_signonmapper_getsignon_statement",
+      "name": "getSignon.statement",
+      "qualifiedName": "org.jpetstore.persistence.SignonMapper.getSignon.statement",
+      "kind": "method",
+      "filePath": "persistence/SignonMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_signonmapper_login",
+      "name": "login",
+      "qualifiedName": "persistence/SignonMapper.java::SignonMapper::login",
+      "kind": "method",
+      "filePath": "persistence/SignonMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_signonmapper_login_statement",
+      "name": "login.statement",
+      "qualifiedName": "org.jpetstore.persistence.SignonMapper.login.statement",
+      "kind": "method",
+      "filePath": "persistence/SignonMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_productmapper_getproduct",
+      "name": "getProduct",
+      "qualifiedName": "persistence/ProductMapper.java::ProductMapper::getProduct",
+      "kind": "method",
+      "filePath": "persistence/ProductMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_productmapper_getproduct_statement",
+      "name": "getProduct.statement",
+      "qualifiedName": "org.jpetstore.persistence.ProductMapper.getProduct.statement",
+      "kind": "method",
+      "filePath": "persistence/ProductMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_productmapper_getproductlistbycategory",
+      "name": "getProductListByCategory",
+      "qualifiedName": "persistence/ProductMapper.java::ProductMapper::getProductListByCategory",
+      "kind": "method",
+      "filePath": "persistence/ProductMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_productmapper_getproductlistbycategory_statement",
+      "name": "getProductListByCategory.statement",
+      "qualifiedName": "org.jpetstore.persistence.ProductMapper.getProductListByCategory.statement",
+      "kind": "method",
+      "filePath": "persistence/ProductMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_productmapper_searchproductlist",
+      "name": "searchProductList",
+      "qualifiedName": "persistence/ProductMapper.java::ProductMapper::searchProductList",
+      "kind": "method",
+      "filePath": "persistence/ProductMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_productmapper_searchproductlist_statement",
+      "name": "searchProductList.statement",
+      "qualifiedName": "org.jpetstore.persistence.ProductMapper.searchProductList.statement",
+      "kind": "method",
+      "filePath": "persistence/ProductMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_productmapper_updateproduct",
+      "name": "updateProduct",
+      "qualifiedName": "persistence/ProductMapper.java::ProductMapper::updateProduct",
+      "kind": "method",
+      "filePath": "persistence/ProductMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_productmapper_updateproduct_statement",
+      "name": "updateProduct.statement",
+      "qualifiedName": "org.jpetstore.persistence.ProductMapper.updateProduct.statement",
+      "kind": "method",
+      "filePath": "persistence/ProductMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_productmapper_insertproduct",
+      "name": "insertProduct",
+      "qualifiedName": "persistence/ProductMapper.java::ProductMapper::insertProduct",
+      "kind": "method",
+      "filePath": "persistence/ProductMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_productmapper_insertproduct_statement",
+      "name": "insertProduct.statement",
+      "qualifiedName": "org.jpetstore.persistence.ProductMapper.insertProduct.statement",
+      "kind": "method",
+      "filePath": "persistence/ProductMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_categorymapper_getcategory",
+      "name": "getCategory",
+      "qualifiedName": "persistence/CategoryMapper.java::CategoryMapper::getCategory",
+      "kind": "method",
+      "filePath": "persistence/CategoryMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_categorymapper_getcategory_statement",
+      "name": "getCategory.statement",
+      "qualifiedName": "org.jpetstore.persistence.CategoryMapper.getCategory.statement",
+      "kind": "method",
+      "filePath": "persistence/CategoryMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_categorymapper_getcategorylist",
+      "name": "getCategoryList",
+      "qualifiedName": "persistence/CategoryMapper.java::CategoryMapper::getCategoryList",
+      "kind": "method",
+      "filePath": "persistence/CategoryMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_categorymapper_getcategorylist_statement",
+      "name": "getCategoryList.statement",
+      "qualifiedName": "org.jpetstore.persistence.CategoryMapper.getCategoryList.statement",
+      "kind": "method",
+      "filePath": "persistence/CategoryMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_categorymapper_insertcategory",
+      "name": "insertCategory",
+      "qualifiedName": "persistence/CategoryMapper.java::CategoryMapper::insertCategory",
+      "kind": "method",
+      "filePath": "persistence/CategoryMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_categorymapper_insertcategory_statement",
+      "name": "insertCategory.statement",
+      "qualifiedName": "org.jpetstore.persistence.CategoryMapper.insertCategory.statement",
+      "kind": "method",
+      "filePath": "persistence/CategoryMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_categorymapper_updatecategory",
+      "name": "updateCategory",
+      "qualifiedName": "persistence/CategoryMapper.java::CategoryMapper::updateCategory",
+      "kind": "method",
+      "filePath": "persistence/CategoryMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_categorymapper_updatecategory_statement",
+      "name": "updateCategory.statement",
+      "qualifiedName": "org.jpetstore.persistence.CategoryMapper.updateCategory.statement",
+      "kind": "method",
+      "filePath": "persistence/CategoryMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_itemmapper_getitem",
+      "name": "getItem",
+      "qualifiedName": "persistence/ItemMapper.java::ItemMapper::getItem",
+      "kind": "method",
+      "filePath": "persistence/ItemMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_itemmapper_getitem_statement",
+      "name": "getItem.statement",
+      "qualifiedName": "org.jpetstore.persistence.ItemMapper.getItem.statement",
+      "kind": "method",
+      "filePath": "persistence/ItemMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_itemmapper_getitemlistbyproduct",
+      "name": "getItemListByProduct",
+      "qualifiedName": "persistence/ItemMapper.java::ItemMapper::getItemListByProduct",
+      "kind": "method",
+      "filePath": "persistence/ItemMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_itemmapper_getitemlistbyproduct_statement",
+      "name": "getItemListByProduct.statement",
+      "qualifiedName": "org.jpetstore.persistence.ItemMapper.getItemListByProduct.statement",
+      "kind": "method",
+      "filePath": "persistence/ItemMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_itemmapper_updateitem",
+      "name": "updateItem",
+      "qualifiedName": "persistence/ItemMapper.java::ItemMapper::updateItem",
+      "kind": "method",
+      "filePath": "persistence/ItemMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_itemmapper_updateitem_statement",
+      "name": "updateItem.statement",
+      "qualifiedName": "org.jpetstore.persistence.ItemMapper.updateItem.statement",
+      "kind": "method",
+      "filePath": "persistence/ItemMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_inventorymapper_getinventoryquantity",
+      "name": "getInventoryQuantity",
+      "qualifiedName": "persistence/InventoryMapper.java::InventoryMapper::getInventoryQuantity",
+      "kind": "method",
+      "filePath": "persistence/InventoryMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_inventorymapper_getinventoryquantity_statement",
+      "name": "getInventoryQuantity.statement",
+      "qualifiedName": "org.jpetstore.persistence.InventoryMapper.getInventoryQuantity.statement",
+      "kind": "method",
+      "filePath": "persistence/InventoryMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_inventorymapper_updateinventory",
+      "name": "updateInventory",
+      "qualifiedName": "persistence/InventoryMapper.java::InventoryMapper::updateInventory",
+      "kind": "method",
+      "filePath": "persistence/InventoryMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_inventorymapper_updateinventory_statement",
+      "name": "updateInventory.statement",
+      "qualifiedName": "org.jpetstore.persistence.InventoryMapper.updateInventory.statement",
+      "kind": "method",
+      "filePath": "persistence/InventoryMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_ordermapper_getorder",
+      "name": "getOrder",
+      "qualifiedName": "persistence/OrderMapper.java::OrderMapper::getOrder",
+      "kind": "method",
+      "filePath": "persistence/OrderMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_ordermapper_getorder_statement",
+      "name": "getOrder.statement",
+      "qualifiedName": "org.jpetstore.persistence.OrderMapper.getOrder.statement",
+      "kind": "method",
+      "filePath": "persistence/OrderMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_ordermapper_getordersbyusername",
+      "name": "getOrdersByUsername",
+      "qualifiedName": "persistence/OrderMapper.java::OrderMapper::getOrdersByUsername",
+      "kind": "method",
+      "filePath": "persistence/OrderMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_ordermapper_getordersbyusername_statement",
+      "name": "getOrdersByUsername.statement",
+      "qualifiedName": "org.jpetstore.persistence.OrderMapper.getOrdersByUsername.statement",
+      "kind": "method",
+      "filePath": "persistence/OrderMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_ordermapper_insertorder",
+      "name": "insertOrder",
+      "qualifiedName": "persistence/OrderMapper.java::OrderMapper::insertOrder",
+      "kind": "method",
+      "filePath": "persistence/OrderMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_ordermapper_insertorder_statement",
+      "name": "insertOrder.statement",
+      "qualifiedName": "org.jpetstore.persistence.OrderMapper.insertOrder.statement",
+      "kind": "method",
+      "filePath": "persistence/OrderMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_ordermapper_insertlineitem",
+      "name": "insertLineItem",
+      "qualifiedName": "persistence/OrderMapper.java::OrderMapper::insertLineItem",
+      "kind": "method",
+      "filePath": "persistence/OrderMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_ordermapper_insertlineitem_statement",
+      "name": "insertLineItem.statement",
+      "qualifiedName": "org.jpetstore.persistence.OrderMapper.insertLineItem.statement",
+      "kind": "method",
+      "filePath": "persistence/OrderMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_ordermapper_insertorderstatus",
+      "name": "insertOrderStatus",
+      "qualifiedName": "persistence/OrderMapper.java::OrderMapper::insertOrderStatus",
+      "kind": "method",
+      "filePath": "persistence/OrderMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_ordermapper_insertorderstatus_statement",
+      "name": "insertOrderStatus.statement",
+      "qualifiedName": "org.jpetstore.persistence.OrderMapper.insertOrderStatus.statement",
+      "kind": "method",
+      "filePath": "persistence/OrderMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_sequencemapper_getsequence",
+      "name": "getSequence",
+      "qualifiedName": "persistence/SequenceMapper.java::SequenceMapper::getSequence",
+      "kind": "method",
+      "filePath": "persistence/SequenceMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_sequencemapper_getsequence_statement",
+      "name": "getSequence.statement",
+      "qualifiedName": "org.jpetstore.persistence.SequenceMapper.getSequence.statement",
+      "kind": "method",
+      "filePath": "persistence/SequenceMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_persistence_sequencemapper_getnextid",
+      "name": "getNextId",
+      "qualifiedName": "persistence/SequenceMapper.java::SequenceMapper::getNextId",
+      "kind": "method",
+      "filePath": "persistence/SequenceMapper.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_persistence_sequencemapper_getnextid_statement",
+      "name": "getNextId.statement",
+      "qualifiedName": "org.jpetstore.persistence.SequenceMapper.getNextId.statement",
+      "kind": "method",
+      "filePath": "persistence/SequenceMapper.xml",
+      "language": "sql",
+      "inCorpus": false
+    },
+    {
+      "id": "org_jpetstore_service_accountservice_getaccount",
+      "name": "getAccount",
+      "qualifiedName": "service/AccountService.java::AccountService::getAccount",
+      "kind": "method",
+      "filePath": "service/AccountService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_accountservice_updateaccount",
+      "name": "updateAccount",
+      "qualifiedName": "service/AccountService.java::AccountService::updateAccount",
+      "kind": "method",
+      "filePath": "service/AccountService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_accountservice_insertaccount",
+      "name": "insertAccount",
+      "qualifiedName": "service/AccountService.java::AccountService::insertAccount",
+      "kind": "method",
+      "filePath": "service/AccountService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_catalogservice_getproduct",
+      "name": "getProduct",
+      "qualifiedName": "service/CatalogService.java::CatalogService::getProduct",
+      "kind": "method",
+      "filePath": "service/CatalogService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_catalogservice_getproductlistbycategory",
+      "name": "getProductListByCategory",
+      "qualifiedName": "service/CatalogService.java::CatalogService::getProductListByCategory",
+      "kind": "method",
+      "filePath": "service/CatalogService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_catalogservice_getcategory",
+      "name": "getCategory",
+      "qualifiedName": "service/CatalogService.java::CatalogService::getCategory",
+      "kind": "method",
+      "filePath": "service/CatalogService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_catalogservice_getcategorylist",
+      "name": "getCategoryList",
+      "qualifiedName": "service/CatalogService.java::CatalogService::getCategoryList",
+      "kind": "method",
+      "filePath": "service/CatalogService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_catalogservice_getitem",
+      "name": "getItem",
+      "qualifiedName": "service/CatalogService.java::CatalogService::getItem",
+      "kind": "method",
+      "filePath": "service/CatalogService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_catalogservice_getitemlistbyproduct",
+      "name": "getItemListByProduct",
+      "qualifiedName": "service/CatalogService.java::CatalogService::getItemListByProduct",
+      "kind": "method",
+      "filePath": "service/CatalogService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_catalogservice_isiteminstock",
+      "name": "isItemInStock",
+      "qualifiedName": "service/CatalogService.java::CatalogService::isItemInStock",
+      "kind": "method",
+      "filePath": "service/CatalogService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_catalogservice_updatequantity",
+      "name": "updateQuantity",
+      "qualifiedName": "service/CatalogService.java::CatalogService::updateQuantity",
+      "kind": "method",
+      "filePath": "service/CatalogService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_catalogservice_getinventorystatus",
+      "name": "getInventoryStatus",
+      "qualifiedName": "service/CatalogService.java::CatalogService::getInventoryStatus",
+      "kind": "method",
+      "filePath": "service/CatalogService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_orderservice_getorder",
+      "name": "getOrder",
+      "qualifiedName": "service/OrderService.java::OrderService::getOrder",
+      "kind": "method",
+      "filePath": "service/OrderService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_orderservice_getordersbyusername",
+      "name": "getOrdersByUsername",
+      "qualifiedName": "service/OrderService.java::OrderService::getOrdersByUsername",
+      "kind": "method",
+      "filePath": "service/OrderService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_orderservice_getnextid",
+      "name": "getNextId",
+      "qualifiedName": "service/OrderService.java::OrderService::getNextId",
+      "kind": "method",
+      "filePath": "service/OrderService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_service_orderservice_insertorder",
+      "name": "insertOrder",
+      "qualifiedName": "service/OrderService.java::OrderService::insertOrder",
+      "kind": "method",
+      "filePath": "service/OrderService.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_accountactionbean_newaccount",
+      "name": "newAccount",
+      "qualifiedName": "web/actions/AccountActionBean.java::AccountActionBean::newAccount",
+      "kind": "method",
+      "filePath": "web/actions/AccountActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_accountactionbean_editaccount",
+      "name": "editAccount",
+      "qualifiedName": "web/actions/AccountActionBean.java::AccountActionBean::editAccount",
+      "kind": "method",
+      "filePath": "web/actions/AccountActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_accountactionbean_signon",
+      "name": "signon",
+      "qualifiedName": "web/actions/AccountActionBean.java::AccountActionBean::signon",
+      "kind": "method",
+      "filePath": "web/actions/AccountActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_cartactionbean_additemtocart",
+      "name": "addItemToCart",
+      "qualifiedName": "web/actions/CartActionBean.java::CartActionBean::addItemToCart",
+      "kind": "method",
+      "filePath": "web/actions/CartActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_cartactionbean_viewcart",
+      "name": "viewCart",
+      "qualifiedName": "web/actions/CartActionBean.java::CartActionBean::viewCart",
+      "kind": "method",
+      "filePath": "web/actions/CartActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_cartactionbean_checkout",
+      "name": "checkout",
+      "qualifiedName": "web/actions/CartActionBean.java::CartActionBean::checkout",
+      "kind": "method",
+      "filePath": "web/actions/CartActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_catalogactionbean_viewproduct",
+      "name": "viewProduct",
+      "qualifiedName": "web/actions/CatalogActionBean.java::CatalogActionBean::viewProduct",
+      "kind": "method",
+      "filePath": "web/actions/CatalogActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_catalogactionbean_viewcategory",
+      "name": "viewCategory",
+      "qualifiedName": "web/actions/CatalogActionBean.java::CatalogActionBean::viewCategory",
+      "kind": "method",
+      "filePath": "web/actions/CatalogActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_catalogactionbean_viewitem",
+      "name": "viewItem",
+      "qualifiedName": "web/actions/CatalogActionBean.java::CatalogActionBean::viewItem",
+      "kind": "method",
+      "filePath": "web/actions/CatalogActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_catalogactionbean_searchproducts",
+      "name": "searchProducts",
+      "qualifiedName": "web/actions/CatalogActionBean.java::CatalogActionBean::searchProducts",
+      "kind": "method",
+      "filePath": "web/actions/CatalogActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_orderactionbean_neworder",
+      "name": "newOrder",
+      "qualifiedName": "web/actions/OrderActionBean.java::OrderActionBean::newOrder",
+      "kind": "method",
+      "filePath": "web/actions/OrderActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_orderactionbean_neworderform",
+      "name": "newOrderForm",
+      "qualifiedName": "web/actions/OrderActionBean.java::OrderActionBean::newOrderForm",
+      "kind": "method",
+      "filePath": "web/actions/OrderActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_orderactionbean_vieworder",
+      "name": "viewOrder",
+      "qualifiedName": "web/actions/OrderActionBean.java::OrderActionBean::viewOrder",
+      "kind": "method",
+      "filePath": "web/actions/OrderActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "org_jpetstore_web_actions_orderactionbean_listorders",
+      "name": "listOrders",
+      "qualifiedName": "web/actions/OrderActionBean.java::OrderActionBean::listOrders",
+      "kind": "method",
+      "filePath": "web/actions/OrderActionBean.java",
+      "language": "java",
+      "inCorpus": true
+    },
+    {
+      "id": "site_xdoc_index_en",
+      "name": "Cancel Order Order Status Shipping Order Checkout",
+      "qualifiedName": "src/site/xdoc/index.xml",
+      "kind": "module",
+      "filePath": "src/site/xdoc/index.xml",
+      "language": "xml",
+      "inCorpus": true
+    },
+    {
+      "id": "site_xdoc_index_es",
+      "name": "Cancel Order Order Status Shipping Order Checkout",
+      "qualifiedName": "src/site/es/xdoc/index.xml",
+      "kind": "module",
+      "filePath": "src/site/es/xdoc/index.xml",
+      "language": "xml",
+      "inCorpus": true
+    },
+    {
+      "id": "site_xdoc_index_ja",
+      "name": "Cancel Order Order Status Shipping Order Checkout",
+      "qualifiedName": "src/site/ja/xdoc/index.xml",
+      "kind": "module",
+      "filePath": "src/site/ja/xdoc/index.xml",
+      "language": "xml",
+      "inCorpus": true
+    },
+    {
+      "id": "site_xdoc_index_ko",
+      "name": "Cancel Order Order Status Shipping Order Checkout",
+      "qualifiedName": "src/site/ko/xdoc/index.xml",
+      "kind": "module",
+      "filePath": "src/site/ko/xdoc/index.xml",
+      "language": "xml",
+      "inCorpus": true
+    }
+  ],
+  "edges": [
+    {
+      "from": "persistence/AccountMapper.java::AccountMapper::getAccountByUsername",
+      "to": "org.jpetstore.persistence.AccountMapper.getAccountByUsername.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.AccountMapper.getAccountByUsername.statement",
+      "to": "account",
+      "kind": "reads"
+    },
+    {
+      "from": "org.jpetstore.persistence.AccountMapper.getAccountByUsername.statement",
+      "to": "profile",
+      "kind": "reads"
+    },
+    {
+      "from": "org.jpetstore.persistence.AccountMapper.getAccountByUsername.statement",
+      "to": "signon",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/AccountMapper.java::AccountMapper::getAccount",
+      "to": "org.jpetstore.persistence.AccountMapper.getAccount.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.AccountMapper.getAccount.statement",
+      "to": "account",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/AccountMapper.java::AccountMapper::updateAccount",
+      "to": "org.jpetstore.persistence.AccountMapper.updateAccount.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.AccountMapper.updateAccount.statement",
+      "to": "account",
+      "kind": "writes"
+    },
+    {
+      "from": "persistence/AccountMapper.java::AccountMapper::insertAccount",
+      "to": "org.jpetstore.persistence.AccountMapper.insertAccount.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.AccountMapper.insertAccount.statement",
+      "to": "account",
+      "kind": "writes"
+    },
+    {
+      "from": "org.jpetstore.persistence.AccountMapper.insertAccount.statement",
+      "to": "profile",
+      "kind": "writes"
+    },
+    {
+      "from": "org.jpetstore.persistence.AccountMapper.insertAccount.statement",
+      "to": "signon",
+      "kind": "writes"
+    },
+    {
+      "from": "persistence/SignonMapper.java::SignonMapper::getSignon",
+      "to": "org.jpetstore.persistence.SignonMapper.getSignon.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.SignonMapper.getSignon.statement",
+      "to": "signon",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/SignonMapper.java::SignonMapper::login",
+      "to": "org.jpetstore.persistence.SignonMapper.login.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.SignonMapper.login.statement",
+      "to": "signon",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/ProductMapper.java::ProductMapper::getProduct",
+      "to": "org.jpetstore.persistence.ProductMapper.getProduct.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.ProductMapper.getProduct.statement",
+      "to": "product",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/ProductMapper.java::ProductMapper::getProductListByCategory",
+      "to": "org.jpetstore.persistence.ProductMapper.getProductListByCategory.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.ProductMapper.getProductListByCategory.statement",
+      "to": "product",
+      "kind": "reads"
+    },
+    {
+      "from": "org.jpetstore.persistence.ProductMapper.getProductListByCategory.statement",
+      "to": "category",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/ProductMapper.java::ProductMapper::searchProductList",
+      "to": "org.jpetstore.persistence.ProductMapper.searchProductList.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.ProductMapper.searchProductList.statement",
+      "to": "product",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/ProductMapper.java::ProductMapper::updateProduct",
+      "to": "org.jpetstore.persistence.ProductMapper.updateProduct.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.ProductMapper.updateProduct.statement",
+      "to": "product",
+      "kind": "writes"
+    },
+    {
+      "from": "persistence/ProductMapper.java::ProductMapper::insertProduct",
+      "to": "org.jpetstore.persistence.ProductMapper.insertProduct.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.ProductMapper.insertProduct.statement",
+      "to": "product",
+      "kind": "writes"
+    },
+    {
+      "from": "persistence/CategoryMapper.java::CategoryMapper::getCategory",
+      "to": "org.jpetstore.persistence.CategoryMapper.getCategory.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.CategoryMapper.getCategory.statement",
+      "to": "category",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/CategoryMapper.java::CategoryMapper::getCategoryList",
+      "to": "org.jpetstore.persistence.CategoryMapper.getCategoryList.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.CategoryMapper.getCategoryList.statement",
+      "to": "category",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/CategoryMapper.java::CategoryMapper::insertCategory",
+      "to": "org.jpetstore.persistence.CategoryMapper.insertCategory.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.CategoryMapper.insertCategory.statement",
+      "to": "category",
+      "kind": "writes"
+    },
+    {
+      "from": "persistence/CategoryMapper.java::CategoryMapper::updateCategory",
+      "to": "org.jpetstore.persistence.CategoryMapper.updateCategory.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.CategoryMapper.updateCategory.statement",
+      "to": "category",
+      "kind": "writes"
+    },
+    {
+      "from": "persistence/ItemMapper.java::ItemMapper::getItem",
+      "to": "org.jpetstore.persistence.ItemMapper.getItem.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.ItemMapper.getItem.statement",
+      "to": "item",
+      "kind": "reads"
+    },
+    {
+      "from": "org.jpetstore.persistence.ItemMapper.getItem.statement",
+      "to": "inventory",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/ItemMapper.java::ItemMapper::getItemListByProduct",
+      "to": "org.jpetstore.persistence.ItemMapper.getItemListByProduct.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.ItemMapper.getItemListByProduct.statement",
+      "to": "item",
+      "kind": "reads"
+    },
+    {
+      "from": "org.jpetstore.persistence.ItemMapper.getItemListByProduct.statement",
+      "to": "product",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/ItemMapper.java::ItemMapper::updateItem",
+      "to": "org.jpetstore.persistence.ItemMapper.updateItem.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.ItemMapper.updateItem.statement",
+      "to": "item",
+      "kind": "writes"
+    },
+    {
+      "from": "persistence/InventoryMapper.java::InventoryMapper::getInventoryQuantity",
+      "to": "org.jpetstore.persistence.InventoryMapper.getInventoryQuantity.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.InventoryMapper.getInventoryQuantity.statement",
+      "to": "inventory",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/InventoryMapper.java::InventoryMapper::updateInventory",
+      "to": "org.jpetstore.persistence.InventoryMapper.updateInventory.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.InventoryMapper.updateInventory.statement",
+      "to": "inventory",
+      "kind": "writes"
+    },
+    {
+      "from": "persistence/OrderMapper.java::OrderMapper::getOrder",
+      "to": "org.jpetstore.persistence.OrderMapper.getOrder.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.OrderMapper.getOrder.statement",
+      "to": "orders",
+      "kind": "reads"
+    },
+    {
+      "from": "org.jpetstore.persistence.OrderMapper.getOrder.statement",
+      "to": "lineitem",
+      "kind": "reads"
+    },
+    {
+      "from": "org.jpetstore.persistence.OrderMapper.getOrder.statement",
+      "to": "account",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/OrderMapper.java::OrderMapper::getOrdersByUsername",
+      "to": "org.jpetstore.persistence.OrderMapper.getOrdersByUsername.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.OrderMapper.getOrdersByUsername.statement",
+      "to": "orders",
+      "kind": "reads"
+    },
+    {
+      "from": "org.jpetstore.persistence.OrderMapper.getOrdersByUsername.statement",
+      "to": "account",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/OrderMapper.java::OrderMapper::insertOrder",
+      "to": "org.jpetstore.persistence.OrderMapper.insertOrder.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.OrderMapper.insertOrder.statement",
+      "to": "orders",
+      "kind": "writes"
+    },
+    {
+      "from": "persistence/OrderMapper.java::OrderMapper::insertLineItem",
+      "to": "org.jpetstore.persistence.OrderMapper.insertLineItem.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.OrderMapper.insertLineItem.statement",
+      "to": "lineitem",
+      "kind": "writes"
+    },
+    {
+      "from": "persistence/OrderMapper.java::OrderMapper::insertOrderStatus",
+      "to": "org.jpetstore.persistence.OrderMapper.insertOrderStatus.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.OrderMapper.insertOrderStatus.statement",
+      "to": "orderstatus",
+      "kind": "writes"
+    },
+    {
+      "from": "persistence/SequenceMapper.java::SequenceMapper::getSequence",
+      "to": "org.jpetstore.persistence.SequenceMapper.getSequence.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.SequenceMapper.getSequence.statement",
+      "to": "sequence",
+      "kind": "reads"
+    },
+    {
+      "from": "persistence/SequenceMapper.java::SequenceMapper::getNextId",
+      "to": "org.jpetstore.persistence.SequenceMapper.getNextId.statement",
+      "kind": "executes"
+    },
+    {
+      "from": "org.jpetstore.persistence.SequenceMapper.getNextId.statement",
+      "to": "sequence",
+      "kind": "reads"
+    },
+    {
+      "from": "org.jpetstore.persistence.SequenceMapper.getNextId.statement",
+      "to": "sequence",
+      "kind": "writes"
+    },
+    {
+      "from": "service/AccountService.java::AccountService::getAccount",
+      "to": "persistence/AccountMapper.java::AccountMapper::getAccount",
+      "kind": "calls"
+    },
+    {
+      "from": "service/AccountService.java::AccountService::updateAccount",
+      "to": "persistence/AccountMapper.java::AccountMapper::updateAccount",
+      "kind": "calls"
+    },
+    {
+      "from": "service/AccountService.java::AccountService::insertAccount",
+      "to": "persistence/AccountMapper.java::AccountMapper::insertAccount",
+      "kind": "calls"
+    },
+    {
+      "from": "service/CatalogService.java::CatalogService::getProduct",
+      "to": "persistence/ProductMapper.java::ProductMapper::getProduct",
+      "kind": "calls"
+    },
+    {
+      "from": "service/CatalogService.java::CatalogService::getProductListByCategory",
+      "to": "persistence/ProductMapper.java::ProductMapper::getProductListByCategory",
+      "kind": "calls"
+    },
+    {
+      "from": "service/CatalogService.java::CatalogService::getCategory",
+      "to": "persistence/CategoryMapper.java::CategoryMapper::getCategory",
+      "kind": "calls"
+    },
+    {
+      "from": "service/CatalogService.java::CatalogService::getCategoryList",
+      "to": "persistence/CategoryMapper.java::CategoryMapper::getCategoryList",
+      "kind": "calls"
+    },
+    {
+      "from": "service/CatalogService.java::CatalogService::getItem",
+      "to": "persistence/ItemMapper.java::ItemMapper::getItem",
+      "kind": "calls"
+    },
+    {
+      "from": "service/CatalogService.java::CatalogService::getItemListByProduct",
+      "to": "persistence/ItemMapper.java::ItemMapper::getItemListByProduct",
+      "kind": "calls"
+    },
+    {
+      "from": "service/CatalogService.java::CatalogService::isItemInStock",
+      "to": "persistence/InventoryMapper.java::InventoryMapper::getInventoryQuantity",
+      "kind": "calls"
+    },
+    {
+      "from": "service/CatalogService.java::CatalogService::updateQuantity",
+      "to": "persistence/InventoryMapper.java::InventoryMapper::updateInventory",
+      "kind": "calls"
+    },
+    {
+      "from": "service/CatalogService.java::CatalogService::getInventoryStatus",
+      "to": "persistence/InventoryMapper.java::InventoryMapper::getInventoryQuantity",
+      "kind": "calls"
+    },
+    {
+      "from": "service/OrderService.java::OrderService::getOrder",
+      "to": "persistence/OrderMapper.java::OrderMapper::getOrder",
+      "kind": "calls"
+    },
+    {
+      "from": "service/OrderService.java::OrderService::getOrdersByUsername",
+      "to": "persistence/OrderMapper.java::OrderMapper::getOrdersByUsername",
+      "kind": "calls"
+    },
+    {
+      "from": "service/OrderService.java::OrderService::getNextId",
+      "to": "persistence/SequenceMapper.java::SequenceMapper::getNextId",
+      "kind": "calls"
+    },
+    {
+      "from": "service/OrderService.java::OrderService::insertOrder",
+      "to": "persistence/OrderMapper.java::OrderMapper::insertOrder",
+      "kind": "calls"
+    },
+    {
+      "from": "service/OrderService.java::OrderService::insertOrder",
+      "to": "persistence/OrderMapper.java::OrderMapper::insertOrderStatus",
+      "kind": "calls"
+    },
+    {
+      "from": "service/OrderService.java::OrderService::insertOrder",
+      "to": "persistence/SequenceMapper.java::SequenceMapper::getNextId",
+      "kind": "calls"
+    },
+    {
+      "from": "service/OrderService.java::OrderService::insertOrder",
+      "to": "service/AccountService.java::AccountService::getAccount",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/AccountActionBean.java::AccountActionBean::newAccount",
+      "to": "service/AccountService.java::AccountService::insertAccount",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/AccountActionBean.java::AccountActionBean::editAccount",
+      "to": "service/AccountService.java::AccountService::updateAccount",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/AccountActionBean.java::AccountActionBean::signon",
+      "to": "service/AccountService.java::AccountService::getAccount",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/CartActionBean.java::CartActionBean::addItemToCart",
+      "to": "service/CatalogService.java::CatalogService::getItem",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/CartActionBean.java::CartActionBean::addItemToCart",
+      "to": "service/CatalogService.java::CatalogService::isItemInStock",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/CartActionBean.java::CartActionBean::viewCart",
+      "to": "service/CatalogService.java::CatalogService::getItem",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/CartActionBean.java::CartActionBean::checkout",
+      "to": "service/OrderService.java::OrderService::insertOrder",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/CatalogActionBean.java::CatalogActionBean::viewProduct",
+      "to": "service/CatalogService.java::CatalogService::getProduct",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/CatalogActionBean.java::CatalogActionBean::viewProduct",
+      "to": "service/CatalogService.java::CatalogService::getItemListByProduct",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/CatalogActionBean.java::CatalogActionBean::viewCategory",
+      "to": "service/CatalogService.java::CatalogService::getCategory",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/CatalogActionBean.java::CatalogActionBean::viewCategory",
+      "to": "service/CatalogService.java::CatalogService::getProductListByCategory",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/CatalogActionBean.java::CatalogActionBean::viewItem",
+      "to": "service/CatalogService.java::CatalogService::getItem",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/CatalogActionBean.java::CatalogActionBean::viewItem",
+      "to": "service/CatalogService.java::CatalogService::getInventoryStatus",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/CatalogActionBean.java::CatalogActionBean::searchProducts",
+      "to": "service/CatalogService.java::CatalogService::getProductListByCategory",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/OrderActionBean.java::OrderActionBean::newOrder",
+      "to": "service/OrderService.java::OrderService::insertOrder",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/OrderActionBean.java::OrderActionBean::newOrderForm",
+      "to": "service/OrderService.java::OrderService::getNextId",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/OrderActionBean.java::OrderActionBean::newOrderForm",
+      "to": "service/AccountService.java::AccountService::getAccount",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/OrderActionBean.java::OrderActionBean::viewOrder",
+      "to": "service/OrderService.java::OrderService::getOrder",
+      "kind": "calls"
+    },
+    {
+      "from": "web/actions/OrderActionBean.java::OrderActionBean::listOrders",
+      "to": "service/OrderService.java::OrderService::getOrdersByUsername",
+      "kind": "calls"
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-01",
+      "text": "Add a discontinued flag to product",
+      "expectedTables": ["product"],
+      "expectedCodeSymbols": ["updateProduct"]
+    },
+    {
+      "id": "REQ-02",
+      "text": "Store a shipping method on each order",
+      "expectedTables": ["orders"],
+      "expectedCodeSymbols": ["insertOrder"]
+    },
+    {
+      "id": "REQ-03",
+      "text": "Add a status flag to account",
+      "expectedTables": ["account"],
+      "expectedCodeSymbols": ["updateAccount"]
+    },
+    {
+      "id": "REQ-04",
+      "text": "Allow a customer to login and deactivate their account",
+      "expectedTables": ["account", "signon", "profile"],
+      "expectedCodeSymbols": ["getAccountByUsername"]
+    },
+    {
+      "id": "REQ-05",
+      "text": "Track inventory stock levels for each item",
+      "expectedTables": ["inventory", "item"],
+      "expectedCodeSymbols": ["updateInventory", "getItem"]
+    },
+    {
+      "id": "REQ-06",
+      "text": "Category management for the product catalog",
+      "expectedTables": ["category"],
+      "expectedCodeSymbols": ["getCategory", "updateCategory"]
+    },
+    {
+      "id": "REQ-07",
+      "text": "Compute the checkout total for an order",
+      "expectedTables": ["orders", "lineitem"],
+      "expectedCodeSymbols": ["getOrder"]
+    },
+    {
+      "id": "REQ-08",
+      "text": "Update product details in the catalog",
+      "expectedTables": ["product"],
+      "expectedCodeSymbols": ["updateProduct"]
+    },
+    {
+      "id": "REQ-09",
+      "text": "List items by product for the storefront",
+      "expectedTables": ["item", "product"],
+      "expectedCodeSymbols": ["getItemListByProduct"]
+    },
+    {
+      "id": "REQ-10",
+      "text": "Place an order with line items from the cart",
+      "expectedTables": ["orders", "lineitem"],
+      "expectedCodeSymbols": ["insertOrder", "insertLineItem"]
+    },
+    {
+      "id": "REQ-11",
+      "text": "Introduce a loyalty programme: shoppers accumulate points whenever they complete a purchase, based on the value of that purchase, and may redeem accumulated points as a discount at checkout. The running points balance must be shown alongside the shopper's saved billing and delivery details.",
+      "expectedTables": ["account", "orders"],
+      "expectedCodeSymbols": ["updateAccount", "insertOrder"]
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Typeahead suggestions",
+    "description": "Search returns typeahead suggestions as the shopper types.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Faceted filters",
+    "description": "Results should be filterable by price, brand, and rating facets.",
+    "priority": "medium"
+  },
+  {
+    "id": "R3",
+    "type": "bug",
+    "title": "Fix empty-state ranking",
+    "description": "An incorrect ranking of zero-result queries is fixed.",
+    "priority": "high"
+  },
+  {
+    "id": "R4",
+    "type": "feature",
+    "title": "Recent searches",
+    "description": "Shoppers may revisit their five most recent searches.",
+    "priority": "low"
+  }
+]

@@ -1,0 +1,17 @@
+{
+  "corpusId": "docsgen-02-multi-repo",
+  "license": "CC0-1.0",
+  "licenseNote": "Synthetic benchmark fixture written for METIS issue #1357. The repositories and gold answer are invented for this repository and are not derived from third-party source material.",
+  "snapshotCommit": "2222222222222222222222222222222222222222",
+  "note": "Multi-repo generated-doc benchmark gold answer. Human-authored and intentionally short so recall, precision, and missed behavior remain interpretable.",
+  "answers": [
+    {
+      "queryId": "docsgen-02-multi-repo-generated-doc",
+      "answer": "The generated benchmark document says it describes repository structure, key modules, and integration boundaries across the seeded repositories. It also says the document is grounded in repository-source chunks ingested into the knowledge service.",
+      "provenance": {
+        "author": "gh:mgcronin",
+        "date": "2026-09-18"
+      }
+    }
+  ]
+}

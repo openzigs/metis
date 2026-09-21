@@ -1,0 +1,34 @@
+# CodeQL analysis configuration.
+#
+# The exclusions below are all CORPORA AND FIXTURES — code committed precisely
+# because it contains patterns a scanner should object to. Analysing them would
+# bury real findings under noise that is working as intended.
+name: "METIS CodeQL config"
+
+paths-ignore:
+  # Retrieval-eval corpora. `eval-data/corpus/<id>/repo/` holds small synthetic
+  # applications used to measure NL-to-code retrieval; they are inputs to a
+  # benchmark, not code this project ships or runs.
+  - "eval-data/**"
+
+  # Test fixtures that exist to be bad. `server/tests/fixtures/` includes
+  # SQLAlchemy models and raw queries written to exercise the SQL-lineage
+  # extractor, and `redact.test.ts` and friends deliberately embed
+  # secret-shaped strings so the redactor can be proven to remove them.
+  - "server/tests/fixtures/**"
+
+  # Build output and vendored dependencies.
+  - "**/dist/**"
+  - "**/node_modules/**"
+  - "**/.next/**"
+
+# QUERY SUITE: the DEFAULT, which is why there is no `queries:` block here.
+#
+# `security-extended` finds more at the cost of more false positives, and
+# `security-and-quality` adds maintainability rules that would be noisy on a
+# codebase this size. Both are worth revisiting once the default baseline is
+# clean AND someone is actually triaging alerts — an unread alert list is worse
+# than a smaller one that gets read, because it teaches people the Security tab
+# is noise.
+#
+# Widen deliberately, not by default.

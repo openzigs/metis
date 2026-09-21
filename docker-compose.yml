@@ -1,0 +1,271 @@
+# ==============================================================================
+# METIS Docker Compose — Development
+# Usage: docker compose up
+# ==============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Issue #390 — dev compose runs against SQLite (file-backed, in a named
+  # volume). The codebase's route handlers `JSON.stringify` into TEXT columns
+  # and the only migrations on disk are SQLite-shaped, so Postgres in dev is
+  # broken until the schema-duality cleanup lands. Production deployments
+  # use Postgres via `docker-compose.prod.yml` overlay + `Dockerfile.server`.
+  #
+  # The optional `postgres` service below is gated behind the `postgres`
+  # profile so it doesn't start by default but remains available for anyone
+  # validating a Postgres-backed build manually.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    profiles:
+      - postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: metis
+      POSTGRES_PASSWORD: metis
+      POSTGRES_DB: metis
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metis"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - metis
+
+  server:
+    build:
+      context: .
+      # Dev image keeps prisma CLI + sqlite engine. Production overlay
+      # (docker-compose.prod.yml) overrides this back to Dockerfile.server.
+      dockerfile: Dockerfile.server.dev
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      # SQLite by default (issue #390). Override via .env when targeting
+      # Postgres (also requires running with --profile postgres).
+      DATABASE_URL: ${DATABASE_URL:-file:/app/data/dev.db}
+      JWT_SECRET: ${JWT_SECRET:-docker-dev-secret-change-me}
+      # Stable vault key so secrets survive container restarts in dev.
+      VAULT_MASTER_KEY: ${VAULT_MASTER_KEY:-Wlwn9amZhmzFQX/je9t12f5R3okMFLjpKIwGsrdjCbA=}
+      CORS_ORIGIN: http://localhost:3000
+      AUTH_MODE: ${AUTH_MODE:-mock}
+      # Issue #145 — point the server at the embeddings sidecar.
+      EMBEDDINGS_MODE: sidecar
+      EMBEDDINGS_URL: http://embeddings:5050
+      EMBEDDINGS_TOKEN: ${EMBEDDINGS_TOKEN:-dev-only-change-me}
+      # Epic #294 — point the server at the SQL-lineage sidecar (metis-sql-lineage).
+      # Feature-gated: when SQL_LINEAGE_MODE != sidecar the server skips the
+      # sidecar and embedded-SQL extraction degrades gracefully (like embeddings).
+      SQL_LINEAGE_MODE: ${SQL_LINEAGE_MODE:-sidecar}
+      SQL_LINEAGE_URL: http://sql-lineage:5070
+      SQL_LINEAGE_TOKEN: ${SQL_LINEAGE_TOKEN:-dev-only-change-me}
+      # Use JSON-backed local vector store in dev (native LanceDB binary
+      # not available for linux-arm64-musl in the Alpine container).
+      VECTOR_STORE: ${VECTOR_STORE:-local}
+      # -----------------------------------------------------------------------
+      # Issue #785 — `docker compose up` now gives REAL 768-dim embeddings.
+      #
+      # This block used to be a single `AI_OFFLINE=1`, which is a GLOBAL kill
+      # switch: it stubs the LLM provider *and* (via `resolveBackendKey`, where
+      # it outranks both EMBED_BACKEND and EMBEDDINGS_MODE) pins the embedder to
+      # the 384-dim non-semantic hash stub. So the embeddings sidecar right below
+      # — a healthy container, holding the baked gte-modernbert weights, that the
+      # server waits for before it will even start — was built, scheduled, health-
+      # checked, and then never asked to embed anything. Dev compose silently
+      # indexed hash noise, which is the exact failure epic #780 exists to kill.
+      #
+      # The two concerns are now separated:
+      #   AI_PROVIDER=offline-stub  keeps the *LLM* offline (no credentials needed
+      #                             in dev — `loadAIConfig` treats this exactly
+      #                             like AI_OFFLINE for the generative path), while
+      #   AI_OFFLINE=0              lets the *embedder* resolve to the sidecar.
+      #
+      # Everything else AI_OFFLINE used to force is already pinned explicitly
+      # above/below (VECTOR_STORE=local, EMBEDDINGS_MODE=sidecar,
+      # SQL_LINEAGE_MODE=sidecar, COPILOT_NATIVE_MODE=in-process), and web search
+      # falls back to its no-op stub when no API key is set. So nothing else in
+      # dev changes behaviour.
+      #
+      # Note there is deliberately NO hash fallback here: with AI_OFFLINE unset,
+      # `EMBED_ALLOW_HASH_FALLBACK` is off, so a sidecar that fails to load now
+      # FAILS LOUD (#783) instead of quietly serving noise. That is the point.
+      #
+      # Set AI_OFFLINE=1 in your .env to get the old fully-offline behaviour back.
+      # -----------------------------------------------------------------------
+      AI_PROVIDER: ${AI_PROVIDER:-offline-stub}
+      AI_OFFLINE: ${AI_OFFLINE:-0}
+      # Explicit, so the resolution is readable rather than inferred from
+      # EMBEDDINGS_MODE. The sidecar bakes this model (Dockerfile.embeddings) and
+      # runs HF_HUB_OFFLINE=1 — so dev needs ZERO HuggingFace egress.
+      EMBED_BACKEND: ${EMBED_BACKEND:-sidecar}
+      # Issue #180 — opt-in copilot-native sidecar. When the `copilot-native`
+      # profile is active these are honoured; otherwise the server runs the
+      # SDK in-process (default).
+      COPILOT_NATIVE_MODE: ${COPILOT_NATIVE_MODE:-in-process}
+      COPILOT_NATIVE_BASE_URL: http://copilot:5060
+      COPILOT_NATIVE_TOKEN: ${COPILOT_NATIVE_TOKEN:-dev-only-change-me}
+      MCP_IMAGE_ALLOWLIST: ${MCP_IMAGE_ALLOWLIST:-ghcr.io/metis-mcps/**}
+      DOCKER_HOST: unix:///var/run/docker.sock
+      # SSRF defence allow-list for repo connectors. The shipped default is
+      # `github.com` alone; operators add their own GitHub Enterprise or internal
+      # git hosts via the env var. A site-specific hostname does not belong in a
+      # published default — it is both a company reference and an infrastructure
+      # disclosure (#1373).
+      REPO_ALLOWED_HOSTS: ${REPO_ALLOWED_HOSTS:-github.com}
+      # Alpine's docker-cli may be newer than Docker Desktop's daemon in local
+      # dev. Pin the API to Docker 20.10-compatible commands unless overridden.
+      DOCKER_API_VERSION: ${DOCKER_API_VERSION:-1.41}
+    depends_on:
+      embeddings:
+        condition: service_healthy
+      sql-lineage:
+        condition: service_healthy
+    # Local dev only: docker-stdio MCP servers are sibling containers, so the
+    # server needs the host Docker socket and a Docker CLI in its dev image.
+    # Production overlays keep their own image/runtime policy.
+    user: root
+    volumes:
+      - server_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - metis
+
+  embeddings:
+    build:
+      context: .
+      dockerfile: Dockerfile.embeddings
+    # Internal service — no host port mapping in dev. Exposed via the
+    # `metis` bridge network so `server` can reach it at `http://embeddings:5050`.
+    expose:
+      - "5050"
+    environment:
+      NODE_ENV: production
+      EMBEDDINGS_PORT: 5050
+      EMBEDDINGS_HOST: 0.0.0.0
+      EMBEDDINGS_TOKEN: ${EMBEDDINGS_TOKEN:-dev-only-change-me}
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get({host:'127.0.0.1',port:process.env.EMBEDDINGS_PORT||5050,path:'/healthz',timeout:4000},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    volumes:
+      - embeddings_cache:/var/cache/metis-embeddings
+    networks:
+      - metis
+
+  # Epic #294 — SQL lineage sidecar (metis-sql-lineage). PYTHON service
+  # (FastAPI + sqlglot) that extracts table/column/lineage usage from SQL.
+  # Internal-only; reachable at http://sql-lineage:5070 on the metis network.
+  # It NEVER executes SQL and makes NO outbound calls (egress restricted).
+  sql-lineage:
+    build:
+      context: .
+      dockerfile: Dockerfile.sql-lineage
+    expose:
+      - "5070"
+    environment:
+      SQL_LINEAGE_PORT: 5070
+      SQL_LINEAGE_HOST: 0.0.0.0
+      SQL_LINEAGE_TOKEN: ${SQL_LINEAGE_TOKEN:-dev-only-change-me}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5070/healthz',timeout=4).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    networks:
+      - metis
+
+  # Issue #180 — optional native Copilot SDK sidecar. Activated only via the
+  # `copilot-native` profile (e.g. `docker compose --profile copilot-native up`).
+  # When inactive the main server runs the SDK in-process and this container
+  # is never built or scheduled.
+  copilot:
+    build:
+      context: .
+      dockerfile: Dockerfile.copilot-svc
+    profiles:
+      - copilot-native
+    # Internal service — bind to localhost on the bridge network only.
+    expose:
+      - "5060"
+    environment:
+      NODE_ENV: production
+      COPILOT_NATIVE_PORT: 5060
+      COPILOT_NATIVE_HOST: 0.0.0.0
+      COPILOT_NATIVE_TOKEN: ${COPILOT_NATIVE_TOKEN:-dev-only-change-me}
+      COPILOT_NATIVE_SESSION_TTL_MS: ${COPILOT_NATIVE_SESSION_TTL_MS:-1800000}
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get({host:'127.0.0.1',port:process.env.COPILOT_NATIVE_PORT||5060,path:'/healthz',timeout:4000},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    volumes:
+      - copilot_data:/data
+    networks:
+      - metis
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+      # AGPL-3.0 §13 (#1296). NEXT_PUBLIC_* is inlined by `next build`, so the
+      # commit the footer shows has to be a BUILD argument. Export
+      # METIS_SOURCE_COMMIT (e.g. `export METIS_SOURCE_COMMIT=$(git rev-parse HEAD)`)
+      # before `docker compose build`; unset is fine and degrades honestly.
+      args:
+        METIS_SOURCE_COMMIT: ${METIS_SOURCE_COMMIT:-}
+        METIS_SOURCE_REPOSITORY_URL: ${METIS_SOURCE_REPOSITORY_URL:-}
+    ports:
+      - "3000:3000"
+    environment:
+      METIS_API_URL: http://server:4000/api
+      NEXT_PUBLIC_API_URL: http://localhost:4000/api
+      NEXT_PUBLIC_SOCKET_URL: http://localhost:4000
+    depends_on:
+      - server
+    volumes:
+      - ./ui/src:/app/ui/src
+    networks:
+      - metis
+
+volumes:
+  postgres_data:
+  embeddings_cache:
+  copilot_data:
+  # Issue #390 — SQLite db file lives here in dev compose.
+  server_data:
+
+networks:
+  metis:
+    driver: bridge
+  # Issue #361 — bridge network for server-spawned `runtime: docker-stdio`
+  # MCP wrapper containers. We declare it here with an explicit `name` so:
+  #   1. `docker compose up` auto-creates it (no out-of-band
+  #      `docker network create metis-mcp` step required).
+  #   2. The runtime can attach wrapper containers by the bare name
+  #      `metis-mcp` (instead of the compose-prefixed `<project>_metis-mcp`).
+  # If an operator pre-created the network manually, the explicit `name`
+  # makes compose adopt it without conflict.
+  metis-mcp:
+    name: metis-mcp
+    driver: bridge

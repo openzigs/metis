@@ -1,0 +1,19 @@
+-- Issue #1013 (Epic #999) — persist the changed requirement's own title on the
+-- impact item.
+--
+-- A run started from PASTED TEXT persists no `Requirement` row (the extractor
+-- sets `requirementId = null`), so `ImpactItem` had nowhere to keep the
+-- per-change title the extractor already derives (#964). Every export heading
+-- therefore read "Unlabelled requirement change", and #1004's workaround had to
+-- RE-DERIVE a heading from the run's source text at serialize time — sound only
+-- for a single-change, single-item, single-project run, because the engine DROPS
+-- zero-hit changes and item ordinals do not correspond to paste ordinals.
+--
+-- Snapshotting the title at write time makes the label per-item BY CONSTRUCTION,
+-- so a heading can no longer be attributed to the wrong requirement.
+--
+-- This column is NULLABLE: rows created before this migration read exactly as
+-- before (null), and the export degrades to the neutral `Requirement change
+-- N of M` rather than to a wrong label. The value is user-supplied text and is
+-- only ever rendered through the markdown/JSX sanitizers — never executed.
+ALTER TABLE "impact_items" ADD COLUMN "requirementTitle" TEXT;

@@ -1,0 +1,19 @@
+{
+  "name": "@metis/scripts",
+  "version": "0.0.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "description": "Cross-platform Node helpers for METIS repo tooling (clean, bootstrap, verify-image-size). Runnable on Windows, macOS, and Linux without a POSIX shell (Epic #183).",
+  "scripts": {
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@vitest/coverage-v8": "^4.1.5",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  }
+}

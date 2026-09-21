@@ -1,0 +1,444 @@
+{
+  "id": "verification-01-finding-verdicts",
+  "description": "Epic #1107 / Issue #1108 — labelled findings with known verdicts for the `eval:verification` harness. Each case carries exactly what a verifier sees at the seam between agent completion and synthesis: the finding text, the citations that SURVIVED the #734 grounding gate, the citations that gate DROPPED, the run's #773 absence-evidence health, and the source excerpts the agent was actually given. `expected.supported` is the ground truth — does the run's evidence actually back this finding's claim?",
+  "warning": "THIS CORPUS IS DELIBERATELY HARD-CASE ENRICHED. Six of twelve cases are unsupported, which is nothing like the base rate of a real run. The absolute precision/recall printed by this harness are therefore NOT a population estimate of production quality — they are a COMPARATIVE YARDSTICK between verifier arms measured on identical inputs. Read the deltas between arms, not the levels.",
+  "provenanceNote": "Eight of the twelve cases are drawn from real METIS failures (#773's live dogfood run of 2026-07-11, #1101's UI Vision walkthrough) with ground truth verified against files that exist in this repository at the cited lines. Four are synthesised to cover verdict paths no logged run isolated cleanly — the two document-citation branches the #734 gate never validates, and the two known over-flag mechanisms — and each says so in its own `provenance` block, so a reader can discount them individually. A corpus written by the same reasoning that writes the verifier will flatter it, so real failures were preferred wherever one existed.",
+  "cases": [
+    {
+      "id": "VC-01",
+      "hardCase": "absence-contradicted",
+      "title": "Absence claim contradicted by the very file the agent retrieved",
+      "provenance": {
+        "origin": "real",
+        "source": "#773, live dogfood run 2026-07-11, REQ-5 (drift severity classification)",
+        "groundTruth": "`computeSeverity` exists at server/src/lib/change-analysis/change-analysis-engine.ts:131 and is indexed in the code graph. The excerpt below is that function, verbatim."
+      },
+      "finding": {
+        "title": "No evidence found for drift severity classification (REQ-5)",
+        "body": "Searched the indexed code graph for severity classification of requirement drift. No implementation of a severity computation was located, so REQ-5 is a confirmed gap: severity classification must be built.",
+        "tags": ["gap", "code"]
+      },
+      "groundedCitations": [
+        {
+          "filePath": "server/src/lib/change-analysis/change-analysis-engine.ts",
+          "startLine": 128,
+          "endLine": 146,
+          "snippet": "export function computeSeverity("
+        }
+      ],
+      "droppedCitations": [],
+      "absenceConfirmable": true,
+      "evidence": [
+        {
+          "filePath": "server/src/lib/change-analysis/change-analysis-engine.ts",
+          "startLine": 128,
+          "endLine": 146,
+          "excerpt": "/**\n * Compute change severity based on change type and content delta size.\n */\nexport function computeSeverity(\n  changeType: \"added\" | \"removed\" | \"modified\",\n  bodyDelta: number,\n  priorityChanged: boolean,\n  typeChanged: boolean,\n): \"critical\" | \"high\" | \"medium\" | \"low\" {\n  if (changeType === \"removed\") return \"high\";\n  if (changeType === \"added\") {\n    return bodyDelta > 500 ? \"medium\" : \"low\";\n  }\n  if (typeChanged || priorityChanged) return \"high\";\n  if (bodyDelta > 300) return \"medium\";\n  return \"low\";\n}"
+        }
+      ],
+      "expected": {
+        "supported": false,
+        "rationale": "The finding asserts severity classification is absent while citing — and having retrieved — the file that implements it. Retrieval was healthy, so the #773 rule does not fire, and a surviving code citation makes the deterministic gate call this CONFIRMED. Reading the cited excerpt is the only way to catch it, which is precisely the semantic-support judgement the #740 design note deferred."
+      }
+    },
+    {
+      "id": "VC-02",
+      "hardCase": "absence-supported",
+      "title": "Absence claim that the run's evidence genuinely backs",
+      "provenance": {
+        "origin": "real",
+        "source": "#773 acceptance criterion 2 — 'given a run with healthy retrieval where the code genuinely lacks a feature, a gap IS still confirmed (no regression — don't make the tool useless)'",
+        "groundTruth": "No SCIM 2.0 provisioning endpoint exists anywhere in server/src/routes. The agent's searches returned the auth routers and found no provisioning surface."
+      },
+      "finding": {
+        "title": "No SCIM 2.0 user-provisioning endpoint is implemented (REQ-3)",
+        "body": "Enumerated every router under server/src/routes and searched the code graph for SCIM, provisioning and directory-sync symbols. The auth surface implements OIDC, SAML and LDAP sign-in only; there is no /scim/v2 resource, no dedicated user-provisioning handler and no SCIM schema mapping. REQ-3 is a genuine gap.",
+        "tags": ["gap", "code"]
+      },
+      "groundedCitations": [],
+      "droppedCitations": [],
+      "absenceConfirmable": true,
+      "evidence": [
+        {
+          "filePath": "server/src/routes/auth.ts",
+          "startLine": 1,
+          "endLine": 12,
+          "excerpt": "// Auth router: mock, OIDC, SAML and LDAP sign-in flows.\n// No provisioning endpoints are mounted here."
+        }
+      ],
+      "expected": {
+        "supported": true,
+        "rationale": "Retrieval was healthy and the agent enumerated the surface where the feature would live. An absence claim backed by an exhaustive, successful search is supported, and must NOT be flagged — flagging it is the regression #773's second acceptance criterion forbids."
+      }
+    },
+    {
+      "id": "VC-03",
+      "hardCase": "semantic-mismatch",
+      "title": "Cited evidence exists and was retrieved, but says the opposite of the claim",
+      "provenance": {
+        "origin": "real",
+        "source": "#1101 — the mechanism a UI Vision walkthrough exposed: input requirement R7 was dropped with no warning, and nothing downstream checks input coverage",
+        "groundTruth": "server/src/lib/analysis/requirement-coverage.ts classifies OUTPUT requirements. Its own docstring states the NR-* input id space is DISJOINT from the synthesized requirements, so it cannot observe a dropped input."
+      },
+      "finding": {
+        "title": "Input requirement coverage is already verified end-to-end (REQ-8)",
+        "body": "The requirement-coverage module confirms that every requirement the user supplies is accounted for in the analysis output, so no additional input-side accounting is needed for REQ-8.",
+        "tags": ["implemented", "code"]
+      },
+      "groundedCitations": [
+        {
+          "filePath": "server/src/lib/analysis/requirement-coverage.ts",
+          "startLine": 1,
+          "endLine": 30,
+          "snippet": "Per-requirement coverage classification (Epic #726 / #736)."
+        }
+      ],
+      "droppedCitations": [],
+      "absenceConfirmable": true,
+      "evidence": [
+        {
+          "filePath": "server/src/lib/analysis/requirement-coverage.ts",
+          "startLine": 1,
+          "endLine": 30,
+          "excerpt": "/**\n * Per-requirement coverage classification (Epic #726 / #736).\n *\n * At synthesis time each GENERATED requirement is linked to the merged findings\n * it was grounded in (`evidenceFindingIndexes`). This module turns that linkage\n * into a single, deterministic coverage label...\n *\n * A #735 candidate that maps to code but that the agent never cites produces no\n * requirement->finding linkage at all (its `NR-*` id space is DISJOINT from the\n * synthesized requirements), so it never silently upgrades a requirement's\n * coverage.\n */"
+        }
+      ],
+      "expected": {
+        "supported": false,
+        "rationale": "THE CASE A1 EXISTS FOR. The citation is honest — the agent really did retrieve that file — so the deterministic gate calls it CONFIRMED. But the cited docstring says the module grades OUTPUT requirements over a disjoint id space, which is the opposite of the claim. Only a reader of the evidence can tell the difference between 'cited a real file' and 'the file backs the claim'."
+      }
+    },
+    {
+      "id": "VC-04",
+      "hardCase": "well-grounded",
+      "title": "Well-grounded finding that must not be down-weighted",
+      "provenance": {
+        "origin": "real",
+        "source": "#773 'Counterexample proving retrieval CAN work' — an earlier dogfood run on a cost-attribution spec produced correct grounded citations and correctly identified a real gap",
+        "groundTruth": "estimateUsageCostUsd at server/src/lib/ai/token-tracker.ts:120 does price cache reads and writes with a TTL-dependent write multiplier, exactly as claimed."
+      },
+      "finding": {
+        "title": "Cache-aware cost estimation is implemented for prompt-cache traffic (REQ-2)",
+        "body": "Cost estimation already accounts for cached prompt tokens: estimateUsageCostUsd normalizes usage per provider convention, then prices cache reads and cache writes separately with a TTL-dependent write multiplier. REQ-2 is satisfied by the existing implementation.",
+        "tags": ["implemented", "code"]
+      },
+      "groundedCitations": [
+        {
+          "filePath": "server/src/lib/ai/token-tracker.ts",
+          "startLine": 120,
+          "endLine": 139,
+          "snippet": "export function estimateUsageCostUsd("
+        }
+      ],
+      "droppedCitations": [],
+      "absenceConfirmable": true,
+      "evidence": [
+        {
+          "filePath": "server/src/lib/ai/token-tracker.ts",
+          "startLine": 120,
+          "endLine": 139,
+          "excerpt": "export function estimateUsageCostUsd(\n  model: string,\n  usage: Pick<TokenUsage, \"promptTokens\" | \"completionTokens\" | \"cacheReadTokens\" | \"cacheWriteTokens\">,\n  provider: ProviderKey,\n  writeTtl: PromptCacheTtl = \"5m\",\n): number {\n  const norm = normalizeTokenUsage({ ...usage, totalTokens: 0 }, conventionForProvider(provider));\n  const cacheWriteMultiplier =\n    provider === \"anthropic\" && writeTtl === \"1h\"\n      ? CACHE_WRITE_MULTIPLIER_1H\n      : CACHE_WRITE_MULTIPLIER_5M;\n  return estimateCostUsd(model, norm.freshInputTokens, usage.completionTokens, {\n    cacheReadTokens: norm.cacheReadTokens,\n    cacheWriteTokens: norm.cacheWriteTokens,\n    cacheWriteMultiplier,\n  });\n}"
+        }
+      ],
+      "expected": {
+        "supported": true,
+        "rationale": "Every element of the claim is visible in the cited excerpt. This is the case that measures OVER-FLAGGING: down-weighting a finding this well-grounded is the failure mode that erodes reviewer trust fastest, and it costs precision without buying any recall."
+      }
+    },
+    {
+      "id": "VC-05",
+      "hardCase": "hallucinated-citation",
+      "title": "Citation the agent never retrieved — the gate's home ground",
+      "provenance": {
+        "origin": "real",
+        "source": "#734/#740 — the failure the deterministic gate was built to catch: a finding asserting `file.ts:10-20` it never retrieved",
+        "groundTruth": "server/src/lib/analysis/drift-baseline.ts does not exist in this repository."
+      },
+      "finding": {
+        "title": "Commit-SHA baselining is handled by a dedicated drift-baseline module (REQ-2)",
+        "body": "Drift detection baselines each run against the last analysed commit SHA in a dedicated baseline module, so REQ-2 is already covered.",
+        "tags": ["implemented", "code"]
+      },
+      "groundedCitations": [],
+      "droppedCitations": [
+        {
+          "filePath": "server/src/lib/analysis/drift-baseline.ts",
+          "reason": "file-not-retrieved"
+        }
+      ],
+      "absenceConfirmable": true,
+      "evidence": [],
+      "expected": {
+        "supported": false,
+        "rationale": "The finding claimed code evidence and the #734 provenance check dropped all of it. The free gate labels this `unverified` correctly and for free — this is exactly the class an LLM panel must not be paid to re-discover."
+      }
+    },
+    {
+      "id": "VC-06",
+      "hardCase": "absence-contradicted",
+      "title": "Absence claim emitted from a run whose retrieval was cut short",
+      "provenance": {
+        "origin": "real",
+        "source": "#773 — 'Investigation was cut short: nearly all tool calls either errored or returned generic/irrelevant results', yet twelve confident 'No evidence found' findings were emitted",
+        "groundTruth": "CodeGraph.commitSha exists (server/prisma/schema.prisma) and currentRepoCommitSha/graphCommitSha resolve in server/src/lib/scanner/prisma-adapter.ts:249-262."
+      },
+      "finding": {
+        "title": "No evidence found for commit-SHA baselining (REQ-2)",
+        "body": "Could not find any commit-SHA baseline persisted for a scanned repository. REQ-2 is not implemented.",
+        "tags": ["gap", "code"]
+      },
+      "groundedCitations": [
+        {
+          "filePath": "server/src/lib/scanner/prisma-adapter.ts",
+          "startLine": 244,
+          "endLine": 264,
+          "snippet": "select: { commitSha: true },"
+        }
+      ],
+      "droppedCitations": [],
+      "absenceConfirmable": false,
+      "evidence": [
+        {
+          "filePath": "server/src/lib/scanner/prisma-adapter.ts",
+          "startLine": 244,
+          "endLine": 264,
+          "excerpt": "      const graph = await prisma.codeGraph.findFirst({\n        where: { projectId },\n        orderBy: { createdAt: \"desc\" },\n        select: { commitSha: true },\n      });\n      return graph?.commitSha ?? null;"
+        }
+      ],
+      "expected": {
+        "supported": false,
+        "rationale": "An absence claim from a run whose retrieval never cleared the evidence threshold. The #773 rule catches it for free (`could-not-verify`) even though a passive-seed citation survived grounding — and the cited excerpt independently contradicts it, so both arms should agree."
+      }
+    },
+    {
+      "id": "VC-07",
+      "hardCase": "doc-only",
+      "title": "Document-grounded finding whose cited chunk backs the claim",
+      "provenance": {
+        "origin": "synthesised",
+        "source": "No logged run supplied a clean document-only positive; synthesised to cover the `null` verdict path (rule 4) on the supported side.",
+        "groundTruth": "The claim restates the cited requirement chunk without extrapolation."
+      },
+      "finding": {
+        "title": "The BRD requires dual approval for refunds above 500 USD (REQ-6)",
+        "body": "Section 4.2 of the billing BRD states that refunds above 500 USD require a second approver drawn from the finance role. REQ-6 restates this control.",
+        "tags": ["document"]
+      },
+      "groundedCitations": [
+        {
+          "documentId": "doc-brd-billing",
+          "chunkIndex": 12,
+          "filename": "billing-brd.md",
+          "snippet": "4.2 Refunds exceeding USD 500 require approval by a second approver holding the finance role."
+        }
+      ],
+      "droppedCitations": [],
+      "absenceConfirmable": true,
+      "evidence": [
+        {
+          "filePath": "billing-brd.md#chunk-12",
+          "startLine": 1,
+          "endLine": 3,
+          "excerpt": "4.2 Refunds exceeding USD 500 require approval by a second approver holding the finance role."
+        }
+      ],
+      "expected": {
+        "supported": true,
+        "rationale": "A doc-only finding that faithfully restates its chunk. The deterministic gate returns `null` (no code claim to verify) and therefore does not flag it, which is the right outcome here — but note it is right by abstention, not by judgement."
+      }
+    },
+    {
+      "id": "VC-08",
+      "hardCase": "semantic-mismatch",
+      "title": "Document-grounded finding that overstates its cited chunk",
+      "provenance": {
+        "origin": "synthesised",
+        "source": "Synthesised to expose a limitation the #740 module doc states plainly: the #734 gate never validates DOCUMENT citations, so a doc-only finding is `null` regardless of whether the chunk backs it.",
+        "groundTruth": "The cited chunk describes a notification, not an enforced control. The finding asserts enforcement."
+      },
+      "finding": {
+        "title": "Refunds above 500 USD are blocked until a second approver signs off (REQ-6)",
+        "body": "The billing BRD mandates that the system BLOCK any refund above 500 USD until a second approver has signed off, so an enforcement control is a stated requirement.",
+        "tags": ["document"]
+      },
+      "groundedCitations": [
+        {
+          "documentId": "doc-brd-billing",
+          "chunkIndex": 13,
+          "filename": "billing-brd.md",
+          "snippet": "4.3 Finance is notified of refunds exceeding USD 500."
+        }
+      ],
+      "droppedCitations": [],
+      "absenceConfirmable": true,
+      "evidence": [
+        {
+          "filePath": "billing-brd.md#chunk-13",
+          "startLine": 1,
+          "endLine": 2,
+          "excerpt": "4.3 Finance is notified of refunds exceeding USD 500. No hold is placed on the refund."
+        }
+      ],
+      "expected": {
+        "supported": false,
+        "rationale": "The chunk describes a notification and explicitly says no hold is placed; the finding claims a blocking control. The deterministic gate cannot see this at all — document citations are never validated — so it abstains with `null` and the overstatement flows into synthesis unflagged."
+      }
+    },
+    {
+      "id": "VC-09",
+      "hardCase": "well-grounded",
+      "title": "One citation dropped, one survives, and the survivor backs the claim",
+      "provenance": {
+        "origin": "real",
+        "source": "#773 — the same dogfood runs routinely mixed a resolvable file citation with an unresolvable `code-graph:` id",
+        "groundTruth": "computeImpactScore exists at server/src/lib/change-analysis/change-analysis-engine.ts:150 and does weight change type, as claimed."
+      },
+      "finding": {
+        "title": "Change impact scoring weights change type (REQ-7)",
+        "body": "Impact scoring starts from a base score and adds weight by change type — removals weigh most, modifications less — so REQ-7's change-type weighting is implemented.",
+        "tags": ["implemented", "code"]
+      },
+      "groundedCitations": [
+        {
+          "filePath": "server/src/lib/change-analysis/change-analysis-engine.ts",
+          "startLine": 148,
+          "endLine": 162,
+          "snippet": "export function computeImpactScore("
+        }
+      ],
+      "droppedCitations": [
+        {
+          "filePath": "code-graph:sym_impact_weighting",
+          "reason": "code-graph-id-unresolved"
+        }
+      ],
+      "absenceConfirmable": true,
+      "evidence": [
+        {
+          "filePath": "server/src/lib/change-analysis/change-analysis-engine.ts",
+          "startLine": 148,
+          "endLine": 162,
+          "excerpt": "export function computeImpactScore(\n  changeType: \"added\" | \"removed\" | \"modified\",\n  severity: string,\n  hasChildren: boolean,\n  bodyDelta: number,\n): number {\n  let score = 0.3; // base\n\n  // Change type weight\n  if (changeType === \"removed\") score += 0.3;\n  else if (changeType === \"modified\") score += 0.15;"
+        }
+      ],
+      "expected": {
+        "supported": true,
+        "rationale": "A PRECISION TRAP for an adversarial arm: there IS a dropped citation, which looks like a smell, but the surviving one fully backs the claim. An arm instructed to disprove findings can talk itself into flagging this; the deterministic gate correctly ranks the surviving citation above the drop."
+      }
+    },
+    {
+      "id": "VC-10",
+      "hardCase": "semantic-mismatch",
+      "title": "Surviving citation is real but tangential; the load-bearing citation was dropped",
+      "provenance": {
+        "origin": "real",
+        "source": "#773 REQ-1 — 'Evidence-snapshot persistence not confirmed', where the agent's surviving citations pointed at neighbouring modules rather than the persistence path",
+        "groundTruth": "The surviving excerpt is a type declaration; it contains no persistence logic. The claim about retention windows is backed by nothing in the run."
+      },
+      "finding": {
+        "title": "Evidence snapshots are persisted with a 90-day retention window (REQ-1)",
+        "body": "Findings persist an evidence snapshot of file paths and line numbers, and the snapshot is retained for 90 days before pruning, satisfying REQ-1's retention requirement.",
+        "tags": ["implemented", "code"]
+      },
+      "groundedCitations": [
+        {
+          "filePath": "packages/shared/src/analysis.ts",
+          "startLine": 209,
+          "endLine": 217,
+          "snippet": "export const codeCitationSchema = z.object({"
+        }
+      ],
+      "droppedCitations": [
+        {
+          "filePath": "server/src/lib/analysis/evidence-retention.ts",
+          "reason": "file-not-retrieved"
+        }
+      ],
+      "absenceConfirmable": true,
+      "evidence": [
+        {
+          "filePath": "packages/shared/src/analysis.ts",
+          "startLine": 209,
+          "endLine": 217,
+          "excerpt": "export const codeCitationSchema = z.object({\n  filePath: z.string().min(1).max(1024),\n  startLine: z.number().int().min(1),\n  endLine: z.number().int().min(1),\n  symbolId: z.string().min(1).max(256).optional(),\n  snippet: z.string().min(1).max(2048).optional(),\n  score: z.number().min(0).max(1).optional(),\n});"
+        }
+      ],
+      "expected": {
+        "supported": false,
+        "rationale": "The 90-day retention claim is supported by nothing: the file that would have backed it was dropped, and the survivor is a Zod schema describing a citation's shape. Because rule (2) fires on ANY surviving code citation, the deterministic gate calls this CONFIRMED — a surviving citation proves the agent saw some code, never that the code backs this claim."
+      }
+    },
+    {
+      "id": "VC-11",
+      "hardCase": "well-grounded",
+      "title": "All code citations dropped, but the claim is fully backed by the retrieved document",
+      "provenance": {
+        "origin": "synthesised",
+        "source": "Synthesised to measure the FALSE-POSITIVE cost of rule (3), which no logged run isolated cleanly.",
+        "groundTruth": "The code-graph id failed to resolve, but the retrieved runbook chunk states the same fact the finding claims."
+      },
+      "finding": {
+        "title": "Nightly exports run under a leader-elected scheduler (REQ-9)",
+        "body": "Scheduled exports are cluster-singleton: a lease-based leader election gates the scheduler so only one pod runs the nightly job. REQ-9 is satisfied.",
+        "tags": ["implemented", "code", "document"]
+      },
+      "groundedCitations": [
+        {
+          "documentId": "doc-ops-runbook",
+          "chunkIndex": 4,
+          "filename": "operations.md",
+          "snippet": "Scheduled jobs are gated by a lease-based leader election; exactly one pod holds the lease and runs the nightly export."
+        }
+      ],
+      "droppedCitations": [
+        {
+          "filePath": "code-graph:sym_leader_elector",
+          "reason": "code-graph-id-unresolved"
+        }
+      ],
+      "absenceConfirmable": true,
+      "evidence": [
+        {
+          "filePath": "operations.md#chunk-4",
+          "startLine": 1,
+          "endLine": 3,
+          "excerpt": "Scheduled jobs are gated by a lease-based leader election; exactly one pod holds the lease and runs the nightly export. Non-leader pods skip the job."
+        }
+      ],
+      "expected": {
+        "supported": true,
+        "rationale": "A genuine OVER-FLAG by the free gate. No code citation survived, so rule (3) labels it `unverified` — yet the retrieved runbook chunk states exactly what the finding claims. This is where the deterministic baseline pays real precision, and where an evidence-reading arm should be able to do better."
+      }
+    },
+    {
+      "id": "VC-12",
+      "hardCase": "well-grounded",
+      "title": "Grounded positive finding caught by the deliberately generous absence classifier",
+      "provenance": {
+        "origin": "synthesised",
+        "source": "Synthesised from a stated design property: `assertsAbsence` is 'deliberately generous' because over-matching 'is safe' when the label only ever downgrades. This case prices that assumption.",
+        "groundTruth": "The finding's claim — that the retry policy handles timeouts with capped exponential backoff — is fully visible in the cited excerpt. The absence phrase is a subordinate aside."
+      },
+      "finding": {
+        "title": "Outbound webhook retries use capped exponential backoff (REQ-4)",
+        "body": "The dispatcher retries failed webhook deliveries with exponential backoff capped at 30 seconds, satisfying REQ-4. Note there is no dedicated handling for 429 responses; they follow the same generic backoff path.",
+        "tags": ["implemented", "code"]
+      },
+      "groundedCitations": [],
+      "droppedCitations": [],
+      "absenceConfirmable": false,
+      "evidence": [
+        {
+          "filePath": "server/src/lib/hooks/dispatcher.ts",
+          "startLine": 40,
+          "endLine": 52,
+          "excerpt": "const delayMs = Math.min(BASE_DELAY_MS * 2 ** attempt, MAX_DELAY_MS); // MAX_DELAY_MS = 30_000\nawait sleep(delayMs);"
+        }
+      ],
+      "expected": {
+        "supported": true,
+        "rationale": "The primary claim is backed by the retrieved excerpt. But the body contains 'no dedicated', which the generous ABSENCE_PATTERNS match, and this run's retrieval was degraded — so rule (1) fires and the whole finding is labelled `could-not-verify`. The over-match is safe only if down-weighting is free; this case measures the price."
+      }
+    }
+  ]
+}

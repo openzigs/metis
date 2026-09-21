@@ -1,0 +1,129 @@
+{{- /*
+Backup CronJob — portability follow-up.
+
+OPT-IN: rendered only when `.Values.backup.enabled=true` (default false).
+Mounts the SAME uploads + LanceDB PVCs the server uses (see _components.tpl /
+pvc.yaml) plus a dedicated backup-artifact volume, and runs `backup.command` on
+`backup.schedule`.
+
+MASTER-KEY CAVEAT: the vault master key is NOT in the backup (see values.yaml).
+*/ -}}
+{{- if .Values.backup.enabled -}}
+{{- $fullname := include "metis.fullname" . -}}
+{{- $persist := .Values.persistence.enabled -}}
+{{- $backupPVC := .Values.backup.persistence.enabled -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ printf "%s-backup" $fullname }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "backup") | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: {{ .Values.backup.concurrencyPolicy | default "Forbid" }}
+  successfulJobsHistoryLimit: {{ .Values.backup.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.backup.failedJobsHistoryLimit | default 3 }}
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "metis.selectorLabels" (dict "root" . "component" "backup") | nindent 8 }}
+    spec:
+      backoffLimit: {{ .Values.backup.backoffLimit | default 2 }}
+      template:
+        metadata:
+          labels:
+            {{- include "metis.selectorLabels" (dict "root" . "component" "backup") | nindent 12 }}
+        spec:
+          serviceAccountName: {{ include "metis.serviceAccountName" . }}
+          securityContext:
+            {{- include "metis.podSecurityContext" . | nindent 12 }}
+          restartPolicy: {{ .Values.backup.restartPolicy | default "OnFailure" }}
+          {{- with .Values.image.pullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.backup.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.backup.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.backup.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: backup
+              image: {{ include "metis.image" (dict "root" . "component" .Values.server) }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                {{- include "metis.containerSecurityContext" . | nindent 16 }}
+              command:
+                {{- toYaml .Values.backup.command | nindent 16 }}
+              env:
+                - name: BACKUP_RETENTION_DAYS
+                  value: {{ .Values.backup.retentionDays | quote }}
+                {{- range $k, $v := .Values.backup.env }}
+                - name: {{ $k }}
+                  value: {{ $v | quote }}
+                {{- end }}
+                {{- include "metis.secretEnv" . | nindent 16 }}
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
+              volumeMounts:
+                - name: uploads
+                  mountPath: {{ .Values.persistence.uploads.mountPath }}
+                  readOnly: true
+                - name: lancedb
+                  mountPath: {{ .Values.persistence.lancedb.mountPath }}
+                  readOnly: true
+                - name: backup-artifacts
+                  mountPath: {{ .Values.backup.persistence.mountPath }}
+          volumes:
+            {{- if $persist }}
+            - name: uploads
+              persistentVolumeClaim:
+                claimName: {{ printf "%s-server-uploads" $fullname }}
+            - name: lancedb
+              persistentVolumeClaim:
+                claimName: {{ printf "%s-server-lancedb" $fullname }}
+            {{- else }}
+            # WARNING: persistence disabled — server data is on emptyDir and is
+            # NOT shared with this CronJob's pod. A backup here will be empty.
+            - name: uploads
+              emptyDir: {}
+            - name: lancedb
+              emptyDir: {}
+            {{- end }}
+            {{- if $backupPVC }}
+            - name: backup-artifacts
+              persistentVolumeClaim:
+                claimName: {{ printf "%s-backup" $fullname }}
+            {{- else }}
+            # NON-DURABLE: tarballs live on emptyDir and are lost when the pod
+            # exits. Ship them off-site via backup.command for real durability.
+            - name: backup-artifacts
+              emptyDir: {}
+            {{- end }}
+{{- if $backupPVC }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-backup" $fullname }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "backup") | nindent 4 }}
+  annotations:
+    # Retain backup artifacts even if `helm uninstall` is run.
+    "helm.sh/resource-policy": "keep"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.backup.persistence.storageClassName | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.persistence.size | quote }}
+{{- end }}
+{{- end }}

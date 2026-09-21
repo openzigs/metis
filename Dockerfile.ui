@@ -1,0 +1,99 @@
+# ==============================================================================
+# METIS UI Dockerfile (pnpm workspace, Next.js 15 standalone)
+# Multi-stage: deps → build → runtime. Non-root user.
+#
+# Builds the @metis/ui Next.js app and ships its .next/standalone bundle
+# in a minimal runtime image. Coupled with `output: "standalone"` in
+# ui/next.config.mjs.
+# ==============================================================================
+
+ARG NODE_VERSION=20
+
+# ----- Stage 1: install dependencies -----
+FROM node:${NODE_VERSION}-alpine AS deps
+WORKDIR /app
+
+RUN apk add --no-cache libc6-compat \
+ && corepack enable \
+ && corepack prepare pnpm@10.33.0 --activate
+
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* tsconfig.base.json ./
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/ui-kit/package.json ./packages/ui-kit/
+COPY server/package.json ./server/
+COPY ui/package.json ./ui/
+
+RUN pnpm install --frozen-lockfile \
+      --filter @metis/ui... \
+      --filter @metis/shared \
+      --filter @metis/ui-kit
+
+# ----- Stage 2: build -----
+FROM node:${NODE_VERSION}-alpine AS builder
+WORKDIR /app
+
+RUN apk add --no-cache libc6-compat \
+ && corepack enable \
+ && corepack prepare pnpm@10.33.0 --activate
+
+COPY --from=deps /app /app
+COPY tsconfig.base.json ./
+COPY packages/shared ./packages/shared
+COPY packages/ui-kit ./packages/ui-kit
+COPY ui ./ui
+
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# AGPL-3.0 §13 source offer (#1296). Next.js inlines NEXT_PUBLIC_* at `next build`,
+# so the commit the footer shows before /api/source answers has to arrive as a BUILD
+# argument -- a runtime env var on the runner stage would be read too late and is
+# silently ignored. Pass it as `--build-arg METIS_SOURCE_COMMIT=$(git rev-parse HEAD)`.
+# Empty is a supported state: the footer then links the repository and says the exact
+# commit is not identified, which is honest rather than broken.
+ARG METIS_SOURCE_COMMIT=""
+ARG METIS_SOURCE_REPOSITORY_URL=""
+ENV NEXT_PUBLIC_METIS_SOURCE_COMMIT=${METIS_SOURCE_COMMIT}
+ENV NEXT_PUBLIC_METIS_SOURCE_REPOSITORY_URL=${METIS_SOURCE_REPOSITORY_URL}
+
+RUN pnpm --filter @metis/shared build \
+ && pnpm --filter @metis/ui-kit build \
+ && pnpm --filter @metis/ui build
+
+# ----- Stage 3: runtime -----
+FROM node:${NODE_VERSION}-alpine AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Carried into the runtime image as metadata only -- the value is already inlined in
+# the bundle above. `docker inspect` can then answer "which commit is this image"
+# without unpacking it, which is the question an AGPL §13 request turns into.
+ARG METIS_SOURCE_COMMIT=""
+LABEL org.opencontainers.image.revision=${METIS_SOURCE_COMMIT}
+LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
+LABEL org.opencontainers.image.source="https://github.com/openzigs/metis"
+
+RUN addgroup --system --gid 1001 metis \
+ && adduser --system --uid 1001 --ingroup metis metis
+
+# Copy the Next.js standalone output. The standalone bundle includes the
+# minimal node_modules subset Next determined are required at runtime, plus
+# `ui/server.js` (the Next.js production server entry).
+COPY --from=builder --chown=metis:metis /app/ui/.next/standalone ./
+COPY --from=builder --chown=metis:metis /app/ui/.next/static ./ui/.next/static
+
+# Ensure the public/ directory exists even when the source app has no
+# static assets — Next.js standalone server reads it on startup.
+RUN mkdir -p ./ui/public && chown -R metis:metis ./ui/public
+
+USER metis
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "require('http').get({host:'127.0.0.1',port:process.env.PORT||3000,path:'/',timeout:4000},r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+
+CMD ["node", "ui/server.js"]

@@ -1,0 +1,1911 @@
+{
+  "id": "embedretrieval-02-nl-to-code",
+  "title": "NL requirement → code symbol retrieval, enlarged and stratified (epic #1156 / issue #1157)",
+  "snapshotCommit": "b7388a5d1a620d0155e67755a6bcf75a6c5085b3",
+  "supersedes": "embedretrieval-01-nl-to-code",
+  "notComparableTo": "A score measured on this corpus is NOT comparable to one measured on embedretrieval-01-nl-to-code. A different symbol pool and a different query set is a different SCALE, not a better or worse score. The 0.474 hybrid nDCG@10 quoted in epic #1156 belongs to embedretrieval-01 and must never be subtracted from a number measured here.",
+  "groundTruth": "HAND-AUTHORED, to the SAME standard as embedretrieval-01, which is restated here in full because it is the property the whole epic rests on. A human read each snapshotted METIS source file and, for symbols implementing a distinct capability, wrote the natural-language requirement an analyst would plausibly have written for it — REQUIREMENT REGISTER, NOT KEYWORD REGISTER. The requirement is written from the CAPABILITY, never by paraphrasing the symbol's identifier. This is not a stylistic preference: a corpus whose requirements restate identifiers is a keyword register, BM25 scores it far above what it scores in production, and every conclusion this epic draws about reranking and lexical matching inverts. The relevant set is the symbol(s) that actually implement that requirement in the snapshot. There is no LLM-derived or automatically-mined labelling, and no requirement was tuned against any model's output. Queries Q01-Q30 are carried over VERBATIM from embedretrieval-01 (their targets all survive in this larger snapshot), so the two corpora deliberately overlap on those 30 and that overlap is documented rather than hidden; Q31-Q127 are new. Q126 is the #797/#803 flagship keyword-free requirement, promoted out of a constant in weight-sweep.ts into the corpus so it is scored like everything else.",
+  "strata": "DECLARED HERE AND DERIVED, NOT ASSERTED. The requirements are hand-authored; the strata are computed FROM them by `deriveStrata` in server/src/lib/eval/embed-retrieval/corpus.ts, and corpus.test.ts fails if a value committed below disagrees with what that function returns. An editorial label would rot silently the first time a symbol was renamed. TWO DIMENSIONS. (1) `naming`: `snake` when at least one target symbol's name carries an underscore — a name production's `tokenizeCode` does not split, so `order_status` stays one term and a query saying 'order status' cannot match it. This is the stratum sub-issue #1159 is judged on, and it is why the corpus carries SQL `table`/`column` symbols at all. (2) `keywordFree`: true when the requirement shares NO word with any target's `name` + `qualifiedName`, which is the whole of what production BM25 indexes (BM25Index.buildDocumentText — CodeSymbol has no signature or docstring column, so those two fields on SearchableSymbol are structurally unreachable). No lexical channel can retrieve such a query at any depth, so this is where a cross-encoder (#1158) has to earn its latency. Overlap is measured under a GENEROUS tokenizer that splits underscores as well as camelCase — deliberately NOT the production `tokenizeCode`, which does not split underscores. Using production's would classify 'the workspace members recorded against an organisation' as keyword-free against `workspace_members`, because that tokenizer emits `workspace_members` as ONE term; that is the exact defect #1159 fixes, so the stratum would re-partition itself the moment #1159 landed and the before/after comparison would be over two different sets of queries. MEASURED COUNTS (127 queries): naming=snake 23, of which 13 target SQL table/column symbols; naming=camel 104; keywordFree=true 88; keywordFree=false 39. HONEST CAVEAT, recorded because it bears on #1159: only 10 queries are BOTH snake_case-bearing AND lexically matchable under the generous tokenizer, and that cell — not the 23 — is where the underscore-splitting fix can actually move a number. It was not enlarged after the counts were seen, because rewording requirements to grow the cell a later sub-issue is measured on is tuning the corpus to the result. READ #1159'S GAIN IN THAT CELL AS AN UPPER BOUND, NOT AN UNBIASED ESTIMATE: of those 10 queries, five carry the target table's own words verbatim and adjacent in the requirement text — Q113 `workspace_members` ('the workspace members recorded against an organisation'), Q114 `workspace_invites`, Q116 `user_roles`, Q117 `role_permissions` and Q118 `audit_logs` — so underscore-splitting has an unusually easy time on half the cell, and a measured improvement there overstates what the fix is worth on realistic analyst phrasing. They were deliberately NOT reworded: rewording after seeing the counts is tuning the corpus to the result, and there is a deeper reason too — a query sharing NO word with `user_roles` cannot be helped by underscore-splitting either, so this cell is unavoidably made of near-identifier phrasings. The five Python members of the same cell (Q101 `normalize_dialect`, Q102 `require_token`, Q105 `_statement_access`, Q106 `_is_dynamic_table`, Q107 `_attach_columns`) are the cleaner half: they share only an unavoidable domain noun with their target.",
+  "snapshot": "repo/ is a VERBATIM snapshot, at snapshotCommit EXACTLY, of 43 real METIS TypeScript files from server/src/lib/** (the 18 from embedretrieval-01 plus 25 more) and 3 real Python files from metis-sql-lineage/app/**, which supply genuine snake_case function names in a language the code graph indexes. schema/schema.prisma is a VERBATIM excerpt of 14 model blocks from server/prisma/schema.prisma; SQL table/column symbols are materialised from it by the PRODUCTION ORM extractor (extractOrm/parsePrismaModels) through the PRODUCTION identity functions (tableQualifiedName/columnQualifiedName), so their name, qualifiedName, kind and language:'sql' are what ingest would have written. Column names come out lowercase-concatenated (`monthlybudgetcents`) rather than snake_case because METIS's own schema uses @@map but no per-field @map — that is what METIS's ORM extractor genuinely produces for METIS's own schema, and it has not been doctored. The snake_case stratum therefore rests on TABLE names (workspace_members, role_permissions, alert_channels, ...), which are the ones that matter for #1159. SQL symbols are in the BM25 lexical index and have NO vector, because in production the only writer of CodeSymbolEmbedding rows is the per-parsed-file loop in ingest.ts while SchemaGraphWriter writes a CodeSymbol and nothing else — giving them vectors here would let the vector channel answer queries production cannot answer. Provenance is checked, not assumed: every snapshotted file is byte-identical to its counterpart at snapshotCommit. The 18 files inherited from embedretrieval-01 were originally taken at 391f0f1, and 17 of them had not changed since; code-graph/hybrid-search.ts HAD (368 lines then, 518 now), so it was resynced to snapshotCommit rather than left to make this line false.",
+  "queries": [
+    {
+      "id": "Q01",
+      "requirement": "The system must block a new AI call when the project has already spent more than its configured monthly budget cap.",
+      "relevant": [
+        {
+          "name": "assertWithinBudget",
+          "filePath": "finops/budget-enforcer.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q02",
+      "requirement": "The platform must smooth a noisy series of daily spend figures so that recent days count for more than older ones.",
+      "relevant": [
+        {
+          "name": "ewma",
+          "filePath": "finops/forecast-math.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q03",
+      "requirement": "Given a history of daily costs, the platform must fit a straight-line trend and use it to estimate the value on a future day.",
+      "relevant": [
+        {
+          "name": "linearRegression",
+          "filePath": "finops/forecast-math.ts"
+        },
+        {
+          "name": "predictAt",
+          "filePath": "finops/forecast-math.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q04",
+      "requirement": "The platform must report how far off its earlier predictions turned out to be, as an average percentage error.",
+      "relevant": [
+        {
+          "name": "mape",
+          "filePath": "finops/forecast-math.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q05",
+      "requirement": "Finance must receive a monthly breakdown of what each project cost, written up as a readable document and delivered to the workspace owners.",
+      "relevant": [
+        {
+          "name": "renderChargebackMarkdown",
+          "filePath": "finops/chargeback-report.ts"
+        },
+        {
+          "name": "generateAndSendChargeback",
+          "filePath": "finops/chargeback-report.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q06",
+      "requirement": "Spend must be attributable to individual people, not only to projects, so a team lead can see who is driving the bill.",
+      "relevant": [
+        {
+          "name": "userCosts",
+          "filePath": "finops/chargeback-report.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q07",
+      "requirement": "The statement must show whether this period's figure rose or fell relative to the previous period, expressed as a percentage.",
+      "relevant": [
+        {
+          "name": "pctChange",
+          "filePath": "finops/chargeback-report.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q08",
+      "requirement": "A user who posts into a discussion thread too many times in quick succession must be turned away once the allowance for the current rolling window is used up.",
+      "relevant": [
+        {
+          "name": "evaluateWindow",
+          "filePath": "discussions/rate-limit-store.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q09",
+      "requirement": "When several server replicas are running, exactly one of them may own the cluster-wide scheduled work; the others must stand by and take over if it dies.",
+      "relevant": [
+        {
+          "name": "LeaderElector",
+          "filePath": "scheduler/leader-election.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q10",
+      "requirement": "A recurring job must not be executed twice for the same time window even if two workers wake up at the same moment.",
+      "relevant": [
+        {
+          "name": "withJobWindowLock",
+          "filePath": "scheduler/leader-election.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q11",
+      "requirement": "Credentials belonging to a workspace must be kept encrypted at rest and only turned back into plaintext for a caller entitled to that scope.",
+      "relevant": [
+        {
+          "name": "VaultService",
+          "filePath": "vault/vault-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q12",
+      "requirement": "An operator must be able to tell the difference between a stored secret that cannot be unlocked and one that was never set up at all.",
+      "relevant": [
+        {
+          "name": "VaultDecryptionError",
+          "filePath": "vault/vault-service.ts"
+        },
+        {
+          "name": "VaultConfigurationError",
+          "filePath": "vault/vault-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q13",
+      "requirement": "The single sign-on handshake must remember the value it issued before redirecting the browser to the identity provider, and that value must be redeemable only once.",
+      "relevant": [
+        {
+          "name": "SSOStateStore",
+          "filePath": "auth/sso-state-store.ts"
+        },
+        {
+          "name": "InMemorySSOStateStore",
+          "filePath": "auth/sso-state-store.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q14",
+      "requirement": "An assertion coming back from the identity provider must be refused unless it answers a challenge this server actually issued.",
+      "relevant": [
+        {
+          "name": "InMemorySamlRequestIdCache",
+          "filePath": "auth/saml-request-id-cache.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q15",
+      "requirement": "When the corporate directory reports which teams a person belongs to, the platform must pull the plain team names out of their full directory paths.",
+      "relevant": [
+        {
+          "name": "extractGroupNames",
+          "filePath": "auth/ldap-provider.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q16",
+      "requirement": "Text typed by a user must never be able to change the meaning of the lookup expression sent to the corporate directory.",
+      "relevant": [
+        {
+          "name": "escapeLDAPFilter",
+          "filePath": "auth/ldap-provider.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q17",
+      "requirement": "Talking to the corporate directory over an unprotected connection must be impossible unless an administrator has deliberately allowed it.",
+      "relevant": [
+        {
+          "name": "assertLDAPTlsConfigSafe",
+          "filePath": "auth/ldap-provider.ts"
+        },
+        {
+          "name": "resolveLDAPTlsOptions",
+          "filePath": "auth/ldap-provider.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q18",
+      "requirement": "An administrator must be able to prove the directory settings work before committing them.",
+      "relevant": [
+        {
+          "name": "testLDAPConnection",
+          "filePath": "auth/ldap-provider.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q19",
+      "requirement": "A message written inside the product must show up in the linked chat channel so people who live in chat do not have to open the app.",
+      "relevant": [
+        {
+          "name": "mirrorMessageToTeams",
+          "filePath": "teams/outbound-sync.ts"
+        },
+        {
+          "name": "scheduleMirrorToTeams",
+          "filePath": "teams/outbound-sync.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q20",
+      "requirement": "Someone speaking from a chat client must be matched to their account in the product using the identity their chat tenant vouches for.",
+      "relevant": [
+        {
+          "name": "TeamsAadIdentityResolver",
+          "filePath": "teams/aad-identity-resolver.ts"
+        },
+        {
+          "name": "resolveUserFromAadObjectId",
+          "filePath": "teams/aad-identity-resolver.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q21",
+      "requirement": "A severity-one production incident must wake up whoever is currently on call.",
+      "relevant": [
+        {
+          "name": "PagerDutyEventsClient",
+          "filePath": "pagerduty/events-client.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q22",
+      "requirement": "When the incident feed rejects a notification, the response status must be preserved so operators can tell a bad key from an outage.",
+      "relevant": [
+        {
+          "name": "PagerDutyApiError",
+          "filePath": "pagerduty/events-client.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q23",
+      "requirement": "Operations must be warned when the standby copy of the database has fallen too far behind the primary to be a usable failover.",
+      "relevant": [
+        {
+          "name": "checkReplication",
+          "filePath": "dr/replication-check.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q24",
+      "requirement": "Calls the server makes to an address supplied by a user must not be able to reach machines inside our own private network.",
+      "relevant": [
+        {
+          "name": "validateTarget",
+          "filePath": "net/safe-fetch.ts"
+        },
+        {
+          "name": "safeFetch",
+          "filePath": "net/safe-fetch.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q25",
+      "requirement": "Looking for code by meaning and looking for it by keyword must produce one merged ranking rather than two competing lists.",
+      "relevant": [
+        {
+          "name": "HybridCodeSearch",
+          "filePath": "code-graph/hybrid-search.ts"
+        },
+        {
+          "name": "reciprocalRankFusion",
+          "filePath": "code-graph/hybrid-search.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q26",
+      "requirement": "Word-based ranking must weigh rare words more heavily than common ones and must not simply reward the longest document.",
+      "relevant": [
+        {
+          "name": "BM25Index",
+          "filePath": "code-graph/hybrid-search.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q27",
+      "requirement": "When a search is scoped to part of the tree, only files whose path matches that pattern may be considered.",
+      "relevant": [
+        {
+          "name": "matchGlob",
+          "filePath": "code-graph/hybrid-search.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q28",
+      "requirement": "Before choosing between a large model with a reusable prefix and a small model without one, the platform must work out the point at which reuse stops paying for itself.",
+      "relevant": [
+        {
+          "name": "breakEvenCacheReadFraction",
+          "filePath": "ai/cache-crossover.ts"
+        },
+        {
+          "name": "compareCachedSonnetVsHaiku",
+          "filePath": "ai/cache-crossover.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q29",
+      "requirement": "Every model call must have its token counts and dollar cost written down so the spend can be attributed to a project afterwards.",
+      "relevant": [
+        {
+          "name": "recordUsage",
+          "filePath": "finops/token-tracker.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q30",
+      "requirement": "Spend warnings must be re-evaluated on a timer across all workspaces and pushed out to whatever destinations each one has configured.",
+      "relevant": [
+        {
+          "name": "tickAllWorkspaces",
+          "filePath": "finops/alert-engine.ts"
+        },
+        {
+          "name": "startAlertEngine",
+          "filePath": "finops/alert-engine.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q31",
+      "requirement": "An investigation must not be allowed to declare something missing when its own searches never returned anything usable in the first place.",
+      "relevant": [
+        {
+          "name": "absenceIsConfirmable",
+          "filePath": "analysis/retrieval-health.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q32",
+      "requirement": "Before a specific obligation can be reported as unmet, the record must show that the agent actually looked for that particular obligation rather than merely searching somewhere.",
+      "relevant": [
+        {
+          "name": "absenceIsConfirmableForClaim",
+          "filePath": "analysis/retrieval-health.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q33",
+      "requirement": "The wording a user typed must be stripped of anything sensitive before it is kept as part of the audit trail for a lookup.",
+      "relevant": [
+        {
+          "name": "sanitizeQuery",
+          "filePath": "analysis/retrieval-health.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q34",
+      "requirement": "A distinctive, uncommon word in a search phrase must be treated as stronger evidence of intent than an everyday one.",
+      "relevant": [
+        {
+          "name": "isRareTerm",
+          "filePath": "analysis/retrieval-health.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q35",
+      "requirement": "Each stated obligation must be shown side by side with the problems raised against it, the places in the source those problems point at, and any covering checks.",
+      "relevant": [
+        {
+          "name": "buildTraceabilityMatrix",
+          "filePath": "analysis/traceability-matrix.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q36",
+      "requirement": "The compliance grid must be downloadable as a spreadsheet-friendly file without a stray comma or quote in a title breaking the columns apart.",
+      "relevant": [
+        {
+          "name": "serializeTraceabilityCsv",
+          "filePath": "analysis/traceability-matrix.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q37",
+      "requirement": "A title containing a vertical bar or a line break must not be able to destroy the layout of the rendered grid.",
+      "relevant": [
+        {
+          "name": "escapeMarkdownCell",
+          "filePath": "analysis/traceability-matrix.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q38",
+      "requirement": "The platform must recognise, from a file's location alone, that it holds automated checks rather than shipping behaviour.",
+      "relevant": [
+        {
+          "name": "isTestFilePath",
+          "filePath": "analysis/traceability-matrix.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q39",
+      "requirement": "Signing in must hand back both a short-lived credential for ordinary calls and a longer-lived one for renewing it.",
+      "relevant": [
+        {
+          "name": "issueTokens",
+          "filePath": "auth/jwt.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q40",
+      "requirement": "Handing in a renewal credential must produce a fresh one and permanently retire the one just used, so a stolen copy cannot be replayed.",
+      "relevant": [
+        {
+          "name": "refreshAccessToken",
+          "filePath": "auth/jwt.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q41",
+      "requirement": "An administrator must be able to end every open session belonging to one person at once, everywhere.",
+      "relevant": [
+        {
+          "name": "revokeAllUserSessions",
+          "filePath": "auth/jwt.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q42",
+      "requirement": "Records of retired credentials must be cleared out once the credential they refer to could no longer have been accepted anyway.",
+      "relevant": [
+        {
+          "name": "pruneExpiredRevocations",
+          "filePath": "auth/jwt.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q43",
+      "requirement": "Starting the server without a properly configured signing key must be refused outright anywhere other than a developer's own machine.",
+      "relevant": [
+        {
+          "name": "assertJwtSecretConfigured",
+          "filePath": "auth/jwt.ts"
+        },
+        {
+          "name": "resolveJwtSecret",
+          "filePath": "auth/jwt.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q44",
+      "requirement": "Reading back an identity-provider configuration must never return the stored credential itself, only a harmless stand-in.",
+      "relevant": [
+        {
+          "name": "toAdminOidcView",
+          "filePath": "auth/sso-config.ts"
+        },
+        {
+          "name": "toAdminSamlView",
+          "filePath": "auth/sso-config.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q45",
+      "requirement": "Saving a configuration form that was displayed with a masked credential must leave the real stored one untouched rather than overwriting it with the mask.",
+      "relevant": [
+        {
+          "name": "mergeSecretOnUpdate",
+          "filePath": "auth/sso-config.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q46",
+      "requirement": "The team memberships an identity provider asserts must be translated into the level of access the person gets inside the product.",
+      "relevant": [
+        {
+          "name": "resolveRoleFromGroups",
+          "filePath": "auth/sso-config.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q47",
+      "requirement": "An administrator must not be able to save a mapping that points at an access level which does not exist.",
+      "relevant": [
+        {
+          "name": "validateGroupMappings",
+          "filePath": "auth/sso-config.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q48",
+      "requirement": "Before any outbound connection is opened on a user's behalf, the destination must be checked against what the operator has permitted, and every address it resolves to must be checked too.",
+      "relevant": [
+        {
+          "name": "resolveAndAssertConnectorHost",
+          "filePath": "connectors/network-allowlist.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q49",
+      "requirement": "The address that was checked must be the address actually dialled, so nothing can change underneath between the check and the connection.",
+      "relevant": [
+        {
+          "name": "makePinnedLookup",
+          "filePath": "connectors/network-allowlist.ts"
+        },
+        {
+          "name": "makePinnedDispatcher",
+          "filePath": "connectors/network-allowlist.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q50",
+      "requirement": "When an operator changes the permitted destinations at runtime, the new policy must take effect without restarting the process.",
+      "relevant": [
+        {
+          "name": "subscribeAllowlistToConfig",
+          "filePath": "connectors/network-allowlist.ts"
+        },
+        {
+          "name": "rebuildConnectorAllowlists",
+          "filePath": "connectors/network-allowlist.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q51",
+      "requirement": "The credentials presented to the issue tracker must differ depending on whether it is the hosted service or a customer-run installation.",
+      "relevant": [
+        {
+          "name": "authHeader",
+          "filePath": "connectors/jira/jira-client.ts"
+        },
+        {
+          "name": "apiPrefix",
+          "filePath": "connectors/jira/jira-client.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q52",
+      "requirement": "An administrator must be able to confirm that the tracker credentials work before saving them.",
+      "relevant": [
+        {
+          "name": "testConnection",
+          "filePath": "connectors/jira/jira-client.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q53",
+      "requirement": "Tickets matching an operator-supplied filter expression must be retrievable page by page rather than all at once.",
+      "relevant": [
+        {
+          "name": "searchIssues",
+          "filePath": "connectors/jira/jira-client.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q54",
+      "requirement": "A picture attached to a ticket must be turned into words by a model that can see it, so its content becomes searchable prose.",
+      "relevant": [
+        {
+          "name": "extractImageDescription",
+          "filePath": "connectors/jira/attachment-extractor.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q55",
+      "requirement": "A spreadsheet attached to a ticket must have its cells flattened into readable text for indexing.",
+      "relevant": [
+        {
+          "name": "extractXlsx",
+          "filePath": "connectors/jira/attachment-extractor.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q56",
+      "requirement": "An attachment larger than the permitted size must be skipped rather than pulled down in full.",
+      "relevant": [
+        {
+          "name": "downloadBuffer",
+          "filePath": "connectors/jira/attachment-extractor.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q57",
+      "requirement": "A statement in generated prose that points at a source which was never actually retrieved must be flagged as unsupported.",
+      "relevant": [
+        {
+          "name": "validateCitations",
+          "filePath": "docs-gen/grounding/citation-validator.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q58",
+      "requirement": "Sentences that cannot be tied back to retrieved material must be removable from the finished text entirely.",
+      "relevant": [
+        {
+          "name": "stripUngroundedClaims",
+          "filePath": "docs-gen/grounding/citation-validator.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q59",
+      "requirement": "Each assertion in a generated section must be judged against the material it was written from, and the section given an overall score for how well it is supported.",
+      "relevant": [
+        {
+          "name": "scoreFaithfulness",
+          "filePath": "docs-gen/grounding/citation-validator.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q60",
+      "requirement": "A document whose sections failed or came out poorly supported must never be presented to the reader as complete and clean.",
+      "relevant": [
+        {
+          "name": "deriveDocStatus",
+          "filePath": "docs-gen/grounding/degraded-warnings.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q61",
+      "requirement": "Narrative prose and sections that must reconstruct structure have to be held to different standards of support, because one is expected to generalise and the other is not.",
+      "relevant": [
+        {
+          "name": "resolveSectionFaithfulnessThreshold",
+          "filePath": "docs-gen/grounding/degraded-warnings.ts"
+        },
+        {
+          "name": "tierForSection",
+          "filePath": "docs-gen/grounding/degraded-warnings.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q62",
+      "requirement": "When the writer had to work from an incomplete slice of the available material because there was too much of it, the reader must be told so.",
+      "relevant": [
+        {
+          "name": "factsTruncatedWarning",
+          "filePath": "docs-gen/grounding/degraded-warnings.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q63",
+      "requirement": "If no source files could be read at all, the resulting document must carry an explicit notice rather than silently describing nothing.",
+      "relevant": [
+        {
+          "name": "sourceUnavailableWarning",
+          "filePath": "docs-gen/grounding/degraded-warnings.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q64",
+      "requirement": "A rolling window of recent daily spend must be assembled with gaps filled in as zero, so a quiet day does not look like missing data.",
+      "relevant": [
+        {
+          "name": "densifyWindow",
+          "filePath": "finops/forecast-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q65",
+      "requirement": "The estimate must be checked against what actually happened over the same period, so its accuracy can be reported alongside it.",
+      "relevant": [
+        {
+          "name": "backtestWindow",
+          "filePath": "finops/forecast-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q66",
+      "requirement": "Every organisation's projection must be refreshed on a nightly schedule without anyone asking for it.",
+      "relevant": [
+        {
+          "name": "startForecastRecompute",
+          "filePath": "finops/forecast-service.ts"
+        },
+        {
+          "name": "recomputeAllForecasts",
+          "filePath": "finops/forecast-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q67",
+      "requirement": "The figures the platform recorded for itself must be compared against the bill the cloud provider actually issued, and a large discrepancy raised as a warning.",
+      "relevant": [
+        {
+          "name": "reconcileBedrockSpend",
+          "filePath": "finops/aws-cost-explorer.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q68",
+      "requirement": "The billing enquiry sent to the cloud provider must ask only about the one service in question, over one month, broken down by region.",
+      "relevant": [
+        {
+          "name": "buildCostAndUsageInput",
+          "filePath": "finops/aws-cost-explorer.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q69",
+      "requirement": "A pasted document describing what is changing must be broken into individually addressable items, each with its own heading.",
+      "relevant": [
+        {
+          "name": "extractChangesHeuristically",
+          "filePath": "impact-analysis/extract-changes.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q70",
+      "requirement": "The platform must work out from the wording whether an item is being introduced, altered, or taken away.",
+      "relevant": [
+        {
+          "name": "detectChangeType",
+          "filePath": "impact-analysis/extract-changes.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q71",
+      "requirement": "A proposed new field must be checked against the tables the deterministic pass already surfaced, so the model cannot invent a place to put it.",
+      "relevant": [
+        {
+          "name": "groundProposals",
+          "filePath": "impact-analysis/additive-column-proposer.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q72",
+      "requirement": "A data type suggested by the model must be forced back onto the small set the platform is willing to emit.",
+      "relevant": [
+        {
+          "name": "groundColumnType",
+          "filePath": "impact-analysis/additive-column-proposer.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q73",
+      "requirement": "A structural change that removes something, narrows it, or forbids blanks where they were previously allowed must be marked as dangerous, and anything ambiguous treated the same way.",
+      "relevant": [
+        {
+          "name": "classifyDdlRisk",
+          "filePath": "impact-analysis/ddl-risk-classifier.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q74",
+      "requirement": "Changing the declared shape of an existing field must be judged on whether the new shape can still hold everything the old one could.",
+      "relevant": [
+        {
+          "name": "columnWidthDirection",
+          "filePath": "impact-analysis/ddl-risk-classifier.ts"
+        },
+        {
+          "name": "classifyAlterColumn",
+          "filePath": "impact-analysis/ddl-risk-classifier.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q75",
+      "requirement": "A public-looking name that actually points at an internal machine must be rejected, and following a redirect must not be a way around that check.",
+      "relevant": [
+        {
+          "name": "assertSafeUrl",
+          "filePath": "mcp/http-transport.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q76",
+      "requirement": "The remote party must be given a stable identifier for the calling platform so it can refuse requests that did not come from where it expects.",
+      "relevant": [
+        {
+          "name": "MCPHttpTransport",
+          "filePath": "mcp/http-transport.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q77",
+      "requirement": "The published catalogue of available extensions must keep working from a saved copy when the upstream service is unreachable, with the staleness made visible.",
+      "relevant": [
+        {
+          "name": "fetchRegistry",
+          "filePath": "mcp/registry-client.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q78",
+      "requirement": "A hostile or compromised catalogue must not be able to exhaust memory by returning an unbounded response body.",
+      "relevant": [
+        {
+          "name": "fetchUpstream",
+          "filePath": "mcp/registry-client.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q79",
+      "requirement": "An error coming back from the catalogue must be reported to the user without leaking the internal details of the failed call.",
+      "relevant": [
+        {
+          "name": "safeRegistryErrorMessage",
+          "filePath": "mcp/registry-client.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q80",
+      "requirement": "When the code host signals that we are going too fast, the platform must wait and try again with a growing, randomised pause rather than hammering it.",
+      "relevant": [
+        {
+          "name": "buildThrottleHooks",
+          "filePath": "publishing/octokit-factory.ts"
+        },
+        {
+          "name": "nextDelayMs",
+          "filePath": "publishing/octokit-factory.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q81",
+      "requirement": "A misconfigured access token must be rejected the first time it is used, with a clear explanation, instead of failing later when a write is attempted.",
+      "relevant": [
+        {
+          "name": "verifyAuthScope",
+          "filePath": "publishing/octokit-factory.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q82",
+      "requirement": "A credential must never appear in a log line or in the text of an error, even when the address it was used against is recorded.",
+      "relevant": [
+        {
+          "name": "redactUrl",
+          "filePath": "publishing/octokit-factory.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q83",
+      "requirement": "Which engine turns text into vectors must be selectable by a single named setting, and an unrecognised name must stop startup rather than quietly picking something else.",
+      "relevant": [
+        {
+          "name": "resolveBackendKey",
+          "filePath": "rag/embedder-registry.ts"
+        },
+        {
+          "name": "createBackend",
+          "filePath": "rag/embedder-registry.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q84",
+      "requirement": "An operations screen must be able to report which engine is active, whether it needs outbound network access, and what shape of output it produces, without loading it.",
+      "relevant": [
+        {
+          "name": "capabilitiesOf",
+          "filePath": "rag/embedder-registry.ts"
+        },
+        {
+          "name": "listBackendDescriptors",
+          "filePath": "rag/embedder-registry.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q85",
+      "requirement": "After the engine changes, the operator must be told how much of the stored material is still held in the old form and therefore currently useless for meaning-based lookup.",
+      "relevant": [
+        {
+          "name": "migrationStatus",
+          "filePath": "rag/embed-migration.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q86",
+      "requirement": "Rebuilding the stored representation of every project must be refusable up front when the conditions for doing it safely are not met.",
+      "relevant": [
+        {
+          "name": "planMigration",
+          "filePath": "rag/embed-migration.ts"
+        },
+        {
+          "name": "prepareRefusal",
+          "filePath": "rag/embed-migration.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q87",
+      "requirement": "The wording of an item as it stood at an earlier revision must be reconstructable by replaying the recorded edits backwards from what it says now.",
+      "relevant": [
+        {
+          "name": "snapshotAtVersion",
+          "filePath": "reviews/baseline-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q88",
+      "requirement": "Two frozen sets of pinned revisions must be comparable, showing what was introduced, what was dropped, and what moved on.",
+      "relevant": [
+        {
+          "name": "diffPinSets",
+          "filePath": "reviews/baseline-service.ts"
+        },
+        {
+          "name": "compareBaselines",
+          "filePath": "reviews/baseline-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q89",
+      "requirement": "A sign-off record must be permitted only to move between the states the agreed process allows, and any other attempt refused as a conflict.",
+      "relevant": [
+        {
+          "name": "transition",
+          "filePath": "reviews/state-machine.ts"
+        },
+        {
+          "name": "canTransition",
+          "filePath": "reviews/state-machine.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q90",
+      "requirement": "Where several people must sign off, the overall outcome must follow the agreed rule — everyone, or a stated minimum number.",
+      "relevant": [
+        {
+          "name": "aggregateDecisions",
+          "filePath": "reviews/state-machine.ts"
+        },
+        {
+          "name": "assertValidPolicy",
+          "filePath": "reviews/state-machine.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q91",
+      "requirement": "Every step an automated worker took must be written down as it happens so the whole episode can be re-rendered later without contacting the model again.",
+      "relevant": [
+        {
+          "name": "recordStep",
+          "filePath": "replay/runs-service.ts"
+        },
+        {
+          "name": "startRun",
+          "filePath": "replay/runs-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q92",
+      "requirement": "The money spent across all the model calls made during one episode must be totalled up when it finishes.",
+      "relevant": [
+        {
+          "name": "computeRunCost",
+          "filePath": "replay/runs-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q93",
+      "requirement": "A customer-supplied callback address must be refused if it points anywhere inside our own network, both when it is saved and again when it is called.",
+      "relevant": [
+        {
+          "name": "assertWebhookEgressAllowed",
+          "filePath": "hooks/subscriptions.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q94",
+      "requirement": "When something noteworthy happens, every enabled outbound notification registered for that occurrence must be delivered.",
+      "relevant": [
+        {
+          "name": "listEnabledFor",
+          "filePath": "hooks/subscriptions.ts"
+        },
+        {
+          "name": "runWebhook",
+          "filePath": "hooks/subscriptions.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q95",
+      "requirement": "Joining two items across a boundary must be refused unless the caller can reach both sides; being able to see only one of them must not be enough.",
+      "relevant": [
+        {
+          "name": "createRequirementLink",
+          "filePath": "requirements/requirement-link-service.ts"
+        },
+        {
+          "name": "loadRequirementPair",
+          "filePath": "requirements/requirement-link-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q96",
+      "requirement": "A chain of dependencies must not be allowed to close back on itself.",
+      "relevant": [
+        {
+          "name": "dependsOnReaches",
+          "filePath": "requirements/requirement-link-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q97",
+      "requirement": "Free text typed into a search box must not be able to act as a wildcard in the pattern match sent to the store.",
+      "relevant": [
+        {
+          "name": "escapeLike",
+          "filePath": "requirements/requirement-link-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q98",
+      "requirement": "The same stored object seen from several places must collapse onto one shared identity rather than being counted repeatedly.",
+      "relevant": [
+        {
+          "name": "reconcileIdentity",
+          "filePath": "cross-project/schema-object-identity-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q99",
+      "requirement": "Following the flow of data from one store to the next must be possible to an arbitrary depth without looping forever on a cycle.",
+      "relevant": [
+        {
+          "name": "traverseLineage",
+          "filePath": "cross-project/schema-object-identity-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q100",
+      "requirement": "The recursive walk must be expressed once in a form both supported engines accept, rather than maintained twice.",
+      "relevant": [
+        {
+          "name": "buildLineageCteSql",
+          "filePath": "cross-project/schema-object-identity-service.ts"
+        },
+        {
+          "name": "detectLineageSqlEngine",
+          "filePath": "cross-project/schema-object-identity-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q101",
+      "requirement": "The caller's chosen SQL dialect name must be mapped onto one the parser recognises, falling back to a permissive default instead of refusing the request outright.",
+      "relevant": [
+        {
+          "name": "normalize_dialect",
+          "filePath": "sql-lineage/extractor.py"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q102",
+      "requirement": "Every route apart from the liveness probe must present a bearer token, checked in constant time, and the service must refuse to serve at all until a shared secret has been configured.",
+      "relevant": [
+        {
+          "name": "require_token",
+          "filePath": "sql-lineage/api.py"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q103",
+      "requirement": "The HTTP surface must be assembled with its interactive documentation and schema pages switched off entirely.",
+      "relevant": [
+        {
+          "name": "create_app",
+          "filePath": "sql-lineage/api.py"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q104",
+      "requirement": "An unauthenticated liveness endpoint must report the running version and whether a shared secret is in place.",
+      "relevant": [
+        {
+          "name": "healthz",
+          "filePath": "sql-lineage/api.py"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q105",
+      "requirement": "Each top-level statement must be classified by whether it reads existing rows, changes them, or appends new ones.",
+      "relevant": [
+        {
+          "name": "_statement_access",
+          "filePath": "sql-lineage/extractor.py"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q106",
+      "requirement": "A dynamic reference that is only a placeholder substituted at run time must never be reported as a concrete stored object.",
+      "relevant": [
+        {
+          "name": "_is_dynamic_table",
+          "filePath": "sql-lineage/extractor.py"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q107",
+      "requirement": "Columns written against a short alias must be tied back to the real object they belong to before being reported.",
+      "relevant": [
+        {
+          "name": "_attach_columns",
+          "filePath": "sql-lineage/extractor.py"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q108",
+      "requirement": "The platform must record which produced field was derived from which consumed field, in a vocabulary other tooling already understands.",
+      "relevant": [
+        {
+          "name": "_lineage_edges",
+          "filePath": "sql-lineage/extractor.py"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q109",
+      "requirement": "Calls out to stored procedures and functions must be picked out of a query so they can be turned into invocation relationships.",
+      "relevant": [
+        {
+          "name": "_collect_routine_refs",
+          "filePath": "sql-lineage/extractor.py"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q110",
+      "requirement": "Names that are only local aliases declared earlier in the same query must not be mistaken for real stored objects.",
+      "relevant": [
+        {
+          "name": "_collect_tables",
+          "filePath": "sql-lineage/extractor.py"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q111",
+      "requirement": "The service must never open a database connection or execute the text it is given; it may only read its structure.",
+      "relevant": [
+        {
+          "name": "extract_usage",
+          "filePath": "sql-lineage/extractor.py"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q112",
+      "requirement": "Projects, people and a spending limit must sit under one named tenant that also carries a short handle for use in addresses and can be retired without its history being destroyed.",
+      "relevant": [
+        {
+          "name": "workspaces",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q113",
+      "requirement": "The workspace members recorded against an organisation must each carry the level of access that person holds there, and when they joined.",
+      "relevant": [
+        {
+          "name": "workspace_members",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q114",
+      "requirement": "Workspace invites sent to an email address must carry a single-use secret, an expiry, and a record of when they were taken up.",
+      "relevant": [
+        {
+          "name": "workspace_invites",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q115",
+      "requirement": "Consumption must be rolled up once per organisation per calendar day — tokens burned, money spent, sessions opened — so the forecaster reads a pre-aggregated series rather than raw events.",
+      "relevant": [
+        {
+          "name": "workspace_usage_daily",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q116",
+      "requirement": "Which user roles a person holds must be stored separately from the person themselves, with the moment of assignment kept.",
+      "relevant": [
+        {
+          "name": "user_roles",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q117",
+      "requirement": "The individual capabilities granted by each role must be held as their own role permissions rows so a capability can be added without redefining the role.",
+      "relevant": [
+        {
+          "name": "role_permissions",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q118",
+      "requirement": "Every privileged action must leave audit logs naming who did it, what it was done to, and fingerprints of the arguments and the outcome rather than their contents.",
+      "relevant": [
+        {
+          "name": "audit_logs",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": false
+      }
+    },
+    {
+      "id": "Q119",
+      "requirement": "Changes to operator-tunable settings must be journalled with the old and new values already stripped of anything sensitive.",
+      "relevant": [
+        {
+          "name": "config_audit",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q120",
+      "requirement": "Operator-tunable settings must live somewhere they can be altered while the service is running, keyed by name and scoped, with the declared type of each value kept alongside it.",
+      "relevant": [
+        {
+          "name": "runtime_config",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q121",
+      "requirement": "Each model call must leave a row carrying the provider, the model, the counts of consumed and produced units including anything served from a reused prefix, and the resulting charge.",
+      "relevant": [
+        {
+          "name": "token_usages",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q122",
+      "requirement": "The latest projection for an organisation must be stored — spend so far, the estimated end-of-period figure, the daily rate, the fitted slope, the smoothed value and how accurate the last estimate turned out to be — so nothing has to be recomputed to display it.",
+      "relevant": [
+        {
+          "name": "cost_forecasts",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q123",
+      "requirement": "An operator must be able to define when to be warned about spending: at what proportion, measured against what, and how long to stay quiet after firing.",
+      "relevant": [
+        {
+          "name": "alert_rules",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q124",
+      "requirement": "Every warning that actually fired must be kept with the figures that triggered it and the outcome of each attempt to deliver it.",
+      "relevant": [
+        {
+          "name": "alert_events",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q125",
+      "requirement": "Where warnings are sent must be configurable per organisation, each destination carrying its own kind, address, credential and on/off switch.",
+      "relevant": [
+        {
+          "name": "alert_channels",
+          "filePath": "schema.prisma"
+        }
+      ],
+      "strata": {
+        "naming": "snake",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q126",
+      "requirement": "The system must refuse to start a new AI call once a project has burned through its allowance for the month.",
+      "relevant": [
+        {
+          "name": "assertWithinBudget",
+          "filePath": "finops/budget-enforcer.ts"
+        }
+      ],
+      "note": "The #797/#803 flagship keyword-free case, promoted from a constant in weight-sweep.ts into the corpus so it is scored like every other requirement.",
+      "strata": {
+        "naming": "camel",
+        "keywordFree": true
+      }
+    },
+    {
+      "id": "Q127",
+      "requirement": "Nobody outside a workspace may learn that one of its projects exists, so a refusal must be indistinguishable from the thing simply not being there.",
+      "relevant": [
+        {
+          "name": "assertAccessibleOrNotFound",
+          "filePath": "requirements/requirement-link-service.ts"
+        }
+      ],
+      "strata": {
+        "naming": "camel",
+        "keywordFree": false
+      }
+    }
+  ]
+}

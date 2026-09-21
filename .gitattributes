@@ -1,0 +1,85 @@
+# METIS .gitattributes — line-ending normalization (Issue #186 / Epic #183).
+#
+# Rationale: Windows clones must not corrupt shell-interpreted scripts via
+# CRLF. `scripts/*.sh` and `.husky/*` hooks use `#!/usr/bin/env sh|bash`
+# shebangs that break if checked out with CRLF. Cross-platform Node `.mjs`
+# helpers (Issues #187/#188/#189) are likewise pinned to LF for byte-stable
+# diffs across macOS/Linux/Windows. Existing LF files are unaffected; this
+# only prevents future CRLF drift on Windows checkouts.
+
+# Default: let Git decide text vs binary and normalize to LF in the repo,
+# checking out native line endings per-platform unless overridden below.
+* text=auto eol=lf
+
+# --- Shell-interpreted / LF-sensitive: MUST be LF on every platform ---------
+*.sh        text eol=lf
+*.bash      text eol=lf
+.husky/*    text eol=lf
+*.mjs       text eol=lf
+*.cjs       text eol=lf
+*.js        text eol=lf
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.json      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.md        text eol=lf
+*.env       text eol=lf
+.env.example text eol=lf
+Dockerfile* text eol=lf
+
+# --- Windows batch / PowerShell: keep CRLF (native to the interpreter) -------
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# --- Append-only history: auto-resolve by keeping both sides (Issue #1191) ---
+# `CHANGELOG.md` is append-at-one-anchor, so two branches adding entries have
+# nothing to merge and collide by construction. The union driver applies the
+# resolution that was being done by hand — keep both sides.
+#
+# MEASURED LIMIT (2026-07-31): this fixes the LOCAL `git merge origin/main`
+# only. GitHub does NOT apply .gitattributes merge drivers when computing PR
+# mergeability: with this rule present on base AND head, a PR whose sole
+# divergence was two appends to one anchor still reported CONFLICTING and the
+# squash merge refused, identical to the control with no rule. The real fix is
+# one fragment file per PR under `.changes/unreleased/` — see .changes/README.md.
+CHANGELOG.md merge=union
+
+# An agent-memory index is the same shape: every `code-issue` agent appends one
+# `- [Title](file.md) — hook` pointer, so ANY two agents run in parallel collide
+# here by construction — worktree isolation (#1147) separates their branches but
+# not this one shared file. Measured 2026-08-06: a wave of four agents produced
+# the conflict on the first two PRs to merge, and the resolution was a union both
+# times, because both sides' pointers are wanted.
+#
+# The same MEASURED LIMIT above applies — this only auto-resolves the LOCAL
+# `git merge origin/main`; `gh pr update-branch` still reports CONFLICTING and
+# the fix is still to merge locally and push. Unlike CHANGELOG.md there is no
+# fragment-file escape: the harness loads exactly one MEMORY.md per store, so
+# this is mitigation, not elimination.
+#
+# ARCHIVE.md is deliberately included — it is a pointer list too, and retiring
+# entries into it (#1206) is itself an append.
+.claude/agent-memory/**/MEMORY.md merge=union
+.claude/agent-memory/**/ARCHIVE.md merge=union
+
+# --- Binary: never normalize, never diff as text ----------------------------
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.webp      binary
+*.pdf       binary
+*.gz        binary
+*.zip       binary
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.eot       binary
+*.node      binary
+*.wasm      binary
+*.gguf      binary
+*.onnx      binary
+pnpm-lock.yaml -diff

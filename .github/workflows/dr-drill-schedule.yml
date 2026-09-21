@@ -1,0 +1,60 @@
+name: DR drill scheduler
+
+# Epic #70 / sub-issue #75 — opens a quarterly Disaster Recovery drill issue from
+# the .github/ISSUE_TEMPLATE/dr-drill.md checklist. Cron fires at 09:00 UTC on
+# the 1st of Jan/Apr/Jul/Oct; workflow_dispatch allows an on-demand drill.
+#
+# SUPPLY-CHAIN NOTE (#586): every `uses:` is pinned to a full 40-char commit SHA
+# with the human-readable tag in a trailing comment, per repo policy and the
+# active Semgrep supply-chain rules. Do NOT replace with a mutable @vN tag.
+
+on:
+  schedule:
+    # 09:00 UTC on the first day of each calendar quarter.
+    - cron: "0 9 1 1,4,7,10 *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: dr-drill-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  open-drill-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for the issue template)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Open quarterly DR drill issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Compute the calendar quarter label, e.g. 2026-Q3.
+          year="$(date -u +%Y)"
+          month="$(date -u +%-m)"
+          quarter=$(( (month - 1) / 3 + 1 ))
+          label="${year}-Q${quarter}"
+          title="[DR Drill] ${label} — Failover exercise"
+
+          # Idempotency: skip if an open drill issue for this quarter already exists.
+          existing="$(gh issue list --repo "${GITHUB_REPOSITORY}" \
+            --state open --label "type:drill" --search "${title} in:title" \
+            --json number --jq 'length')"
+          if [ "${existing}" != "0" ]; then
+            echo "An open DR drill issue for ${label} already exists — skipping."
+            exit 0
+          fi
+
+          # Body: the checklist template with its YAML front matter stripped
+          # (everything after the second `---`). awk is portable across runners.
+          body="$(awk 'f{print} /^---$/{c++; if(c==2) f=1}' .github/ISSUE_TEMPLATE/dr-drill.md)"
+
+          gh issue create --repo "${GITHUB_REPOSITORY}" \
+            --title "${title}" \
+            --label "area:dr" --label "type:drill" \
+            --body "${body}"

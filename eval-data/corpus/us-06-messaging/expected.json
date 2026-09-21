@@ -1,0 +1,23 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Start a conversation",
+    "description": "A user starts a support conversation from any screen.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Attach a screenshot",
+    "description": "A user should be able to attach a screenshot to a message.",
+    "priority": "medium"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Delivery receipts",
+    "description": "Messages display delivery and read receipts.",
+    "priority": "high"
+  }
+]

@@ -1,0 +1,41 @@
+{
+  "metric": "answer_correctness",
+  "corpusId": "docretrieval-01-metis-docs",
+  "reported": true,
+  "referenceCount": 4,
+  "aggregate": {
+    "mean": 0.531439393939394,
+    "meanPrecision": 0.4334415584415584,
+    "meanRecall": 1,
+    "scored": 4,
+    "unverifiable": 0
+  },
+  "perQuery": [
+    {
+      "queryId": "dq-ops-04",
+      "correctness": 0.25,
+      "precision": 0.14285714285714285,
+      "recall": 1
+    },
+    {
+      "queryId": "dq-ops-06",
+      "correctness": 0.16666666666666669,
+      "precision": 0.09090909090909091,
+      "recall": 1
+    },
+    {
+      "queryId": "dq-sec-01",
+      "correctness": 0.9090909090909091,
+      "precision": 0.8333333333333334,
+      "recall": 1
+    },
+    {
+      "queryId": "dq-sec-02",
+      "correctness": 0.8,
+      "precision": 0.6666666666666666,
+      "recall": 1
+    }
+  ],
+  "licensePending": true,
+  "commit": null
+}

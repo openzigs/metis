@@ -1,0 +1,11 @@
+-- Issue #853 (Epic #852) — per-project opt-in for database-aware analysis.
+--
+-- Adds `projects.databaseAwareAnalysis` (`auto` | `on` | `off`, default
+-- `auto`). This replaces the hidden global env flags
+-- (`ANALYSIS_AFFECTED_SCHEMA_MAPPING` / `ANALYSIS_SCHEMA_IMPACT`) with a
+-- single discoverable per-project intent (design #851). `auto` resolves
+-- ENABLED when the project has a connected `DatabaseConnection` OR the
+-- schema graph is non-empty — that resolution logic lands in #854. This
+-- migration is additive/backward compatible: existing rows backfill to
+-- `auto` via the column default.
+ALTER TABLE "projects" ADD COLUMN "databaseAwareAnalysis" TEXT NOT NULL DEFAULT 'auto';

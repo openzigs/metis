@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="100%" height="100%">
+  <defs>
+    <linearGradient id="zylos" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#005A8C" />
+      <stop offset="50%" stop-color="#00C9B1" />
+      <stop offset="100%" stop-color="#A7E942" />
+    </linearGradient>
+    
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    <filter id="glowStrong" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="12" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <rect width="400" height="400" fill="#030303" rx="40" />
+
+  <g stroke="#ffffff" stroke-opacity="0.05" stroke-width="1">
+    <circle cx="200" cy="170" r="140" fill="none" />
+    <circle cx="200" cy="170" r="90" fill="none" />
+    <line x1="60" y1="170" x2="340" y2="170" />
+    <line x1="200" y1="30" x2="200" y2="310" />
+    <line x1="100" y1="70" x2="300" y2="270" />
+    <line x1="300" y1="70" x2="100" y2="270" />
+  </g>
+
+  <g filter="url(#glow)">
+    
+    <polygon points="200,60 250,90 250,145 200,175 150,145 150,90" 
+             fill="none" stroke="url(#zylos)" stroke-width="3" opacity="0.5"/>
+    
+    <polygon points="200,80 230,100 230,135 200,155 170,135 170,100" 
+             fill="none" stroke="url(#zylos)" stroke-width="8" stroke-linejoin="round" />
+    
+    <circle cx="200" cy="117" r="10" fill="url(#zylos)" filter="url(#glowStrong)" />
+
+    <path d="M 50,300 L 120,190 L 200,270 L 280,190 L 350,300" 
+          fill="none" stroke="url(#zylos)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" opacity="0.4"/>
+    
+    <path d="M 80,310 L 140,210 L 200,270 L 260,210 L 320,310" 
+          fill="none" stroke="url(#zylos)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" />
+
+    <line x1="200" y1="175" x2="200" y2="270" 
+          stroke="url(#zylos)" stroke-width="6" stroke-dasharray="8 8" />
+    
+    <line x1="150" y1="145" x2="120" y2="190" stroke="url(#zylos)" stroke-width="3" />
+    <line x1="170" y1="135" x2="140" y2="210" stroke="url(#zylos)" stroke-width="4" stroke-dasharray="4 4" />
+    
+    <line x1="250" y1="145" x2="280" y2="190" stroke="url(#zylos)" stroke-width="3" />
+    <line x1="230" y1="135" x2="260" y2="210" stroke="url(#zylos)" stroke-width="4" stroke-dasharray="4 4" />
+
+    <circle cx="120" cy="190" r="5" fill="#030303" stroke="url(#zylos)" stroke-width="3" />
+    <circle cx="140" cy="210" r="6" fill="#030303" stroke="url(#zylos)" stroke-width="4" />
+    <circle cx="200" cy="270" r="8" fill="#030303" stroke="url(#zylos)" stroke-width="5" />
+    <circle cx="260" cy="210" r="6" fill="#030303" stroke="url(#zylos)" stroke-width="4" />
+    <circle cx="280" cy="190" r="5" fill="#030303" stroke="url(#zylos)" stroke-width="3" />
+
+    <circle cx="80" cy="310" r="8" fill="#030303" stroke="url(#zylos)" stroke-width="4" />
+    <circle cx="320" cy="310" r="8" fill="#030303" stroke="url(#zylos)" stroke-width="4" />
+  </g>
+</svg>

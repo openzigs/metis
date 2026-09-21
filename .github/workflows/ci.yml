@@ -1,0 +1,1073 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Every job runs on a GitHub-hosted runner. Standard runners are FREE and
+# uncapped on public repositories. Larger runners are charged EVEN on public
+# repositories, so do not reach for one to recover speed — cache instead.
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    # A wedged docker build previously held the runner for HOURS: with no
+    # `timeout-minutes`, GitHub's 6-hour default applies, and cancelling does not kill
+    # a hung `docker build` promptly. Two such builds took all four runners out of
+    # service. Normal runtime is ~17-19 min; 45 is generous but FINITE.
+    # 90, not 45. The 45 assumed a WARM Docker layer cache, which was a property
+    # of the self-hosted machine rather than of this workflow: a persistent
+    # daemon kept layers between runs. A GitHub-hosted runner is a fresh VM
+    # every time, so every build here is cold and the first migrated run was
+    # still going at 30 minutes.
+    #
+    # This is a deliberate stopgap, tracked in #3. The right fix is a cache
+    # backend that survives the VM (`type=gha`), not a bigger number — a raised
+    # timeout hides a slow build rather than making it fast. Lower this when #3
+    # lands.
+    timeout-minutes: 90
+    # #801 follow-up — the `api` job builds FOUR Docker images on the SHARED
+    # shared daemon. Run-scoped tags (#801) stopped concurrent runs from
+    # deleting each other's images, but they did not stop the two builds from
+    # CONTENDING for that one daemon: with the clobbering removed, both runs now
+    # proceed to a full build and wedge. Observed on PRs #809/#810 — "Build
+    # container images" stuck at 2h51m and 2h01m, against ~17m for the ENTIRE job
+    # normally. (Before #801 the loser failed fast instead, which hid this.)
+    #
+    # Serialize across ALL refs. The workflow-level `concurrency` above is keyed on
+    # `github.ref`, so it only dedupes pushes to the SAME branch — two different PRs
+    # still collide here. This group is deliberately ref-independent: the runner can
+    # only do one of these builds at a time anyway, so queueing is honest.
+    #
+    # `cancel-in-progress: false` — QUEUE, do not cancel. A legitimate in-flight
+    # build must be allowed to finish rather than be killed by a newer PR.
+    # NO `api-docker-build` concurrency group any more. It serialised this job
+    # across every ref because the self-hosted runners SHARED ONE Docker daemon
+    # and could only do one image build at a time — queueing was honest there.
+    # Each GitHub-hosted job gets its own VM with its own daemon, so the group
+    # would now only make independent builds wait for each other, for nothing.
+    #
+    # It is also what made `api` read as `fail` when it was merely cancelled,
+    # which is why `api-outcome` exists to disambiguate. That job is kept: a
+    # supersede by a newer push to the same ref can still cancel this one.
+    env:
+      NODE_ENV: development
+      NPM_CONFIG_PRODUCTION: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+
+      - name: Clean stale artifacts
+        run: rm -rf node_modules dist
+
+      # GitHub-hosted runner: nothing is pre-installed beyond the image, so the
+      # Node version is pinned here and Corepack provides pnpm.
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Build shared packages
+        run: pnpm --filter @metis/shared run build
+
+      - name: Lint
+        run: pnpm lint
+        env:
+          # The private-vocabulary gate's list. Fork pull requests receive no secrets,
+          # so for them the gate skips (and says so); everywhere the secret SHOULD
+          # exist, a missing one fails the step instead of passing unchecked.
+          METIS_PRIVATE_TERMS: ${{ secrets.METIS_PRIVATE_TERMS }}
+          METIS_REQUIRE_PRIVATE_TERMS: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+      # Issue #1142 — Claude Code only discovers skills under `.claude/skills/`,
+      # but the skill bodies live once in `.github/skills/` (the Copilot
+      # convention every agent file already references by path). The bridge is a
+      # committed symlink per skill. Nothing about that is self-evident from a
+      # diff, and a skill added to `.github/skills/` without a link fails
+      # SILENTLY — an undiscovered skill is indistinguishable from one the model
+      # chose not to use. That is exactly how 12 of 13 ended up invisible.
+      - name: Verify skill discovery links
+        run: pnpm skills:verify
+
+      # Issue #1146 — subagent frontmatter is paid on every delegation and
+      # fails silently: a misspelled key, a bad model alias, or a `description`
+      # that YAML truncated at an inline ` #` all load without complaint. This
+      # also pins the invariant that CLAUDE.md's agent table names exactly the
+      # agents on disk — #1145 deleted one and left a dangling reference behind.
+      - name: Verify agent frontmatter
+        run: pnpm agents:verify
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      # Issue #145 — image-size budget gate. The `metis-embeddings` sidecar is
+      # built but exempt from the cap (see docs/OPERATIONS.md > "Container
+      # Image Sizes").
+      #
+      # Budget note: the documented amd64 floor is ~329 MB, gated at ≤350 MB.
+      #
+      # This gate previously allowed 1200 MB. That was NOT the real budget — it
+      # was an arm64 allowance, because the runner was arm64 and a
+      # native pnpm install there pulled in ~650 MB of arm64-specific platform
+      # binaries (@lancedb, @github/copilot-sdk, @napi-rs/canvas) that the amd64
+      # equivalents do not carry. GitHub-hosted runners are amd64, so the build
+      # is native and the documented amd64 budget applies again. Leaving 1200
+      # here would have left the gate 3.4x looser than intended, silently
+      # passing regressions it exists to catch.
+      #
+      # Plain `docker build` uses the Docker daemon's built-in BuildKit — it
+      # needs NO external builder image (moby/buildkit). We deliberately do NOT
+      # use a docker-container buildx builder here: bootstrapping one pulls
+      # moby/buildkit:buildx-stable-1 from Docker Hub, which intermittently
+      # hangs/rate-limits and previously stalled this job for 30+ min. The daemon's layer cache still makes warm rebuilds fast; the
+      # authoritative multi-arch build with explicit cache lives in
+      # build-images.yml. This step is the image-size regression gate only.
+      #
+      # Skipped for dependabot PRs: dependency bumps almost never touch the
+      # Dockerfiles, and rebuilding 3 images per dependabot PR is the single
+      # heaviest CI cost. `build-images.yml` already
+      # skips dependabot for the same reason; image validation still runs in
+      # full on every non-dependabot PR and on `main`.
+      #
+      # Issue #509 — `--provenance=false --sbom=false` on every gate build.
+      # BuildKit adds a `mode=min` provenance attestation by DEFAULT, which wraps
+      # the result in an OCI image INDEX carrying an extra `unknown/unknown`
+      # attestation manifest. `docker image inspect <tag> --format '{{.Size}}'`
+      # then returns EMPTY for that tag (an index has no single `.Size`), so the
+      # size gate intermittently reported `metis-server:test: image not found or
+      # zero size` even though the build succeeded — the recurring image-size
+      # flake. This is a SIZE-REGRESSION gate, not a release artifact (the
+      # authoritative multi-arch + provenance build lives in build-images.yml), so
+      # disabling attestations here is correct: each build becomes a plain
+      # single-platform image whose `{{.Size}}` is reliably populated.
+      - name: Build container images
+        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+        env:
+          # #801 — run-scoped tag, STEP-scoped on purpose: at job level it also
+          # reaches `pnpm test`, whose verify-image-size mocks key on the default
+          # `:test` tag.
+          IMAGE_TAG: "ci-${{ github.run_id }}"
+        run: |
+          docker build --provenance=false --sbom=false -f Dockerfile.server     -t "metis-server:${IMAGE_TAG}"     .
+          docker build --provenance=false --sbom=false -f Dockerfile.ui         -t "metis-ui:${IMAGE_TAG}"         .
+          # BAKE_MODELS=0: this is the image-size regression gate, not the
+          # release artifact (that's build-images.yml on tag push). Baking
+          # downloads models from HuggingFace at build time, which flakes on the
+          # runner; skip it here. The sidecar downloads at runtime.
+          docker build --provenance=false --sbom=false -f Dockerfile.embeddings --build-arg BAKE_MODELS=0 -t "metis-embeddings:${IMAGE_TAG}" .
+          # Epic #294 — the metis-sql-lineage sidecar (Python + sqlglot). Pure
+          # Python, NO model bake / NO heavy native deps, so this build is fast
+          # and cannot reintroduce the model-bake flake fixed in #290.
+          docker build --provenance=false --sbom=false -f Dockerfile.sql-lineage -t "metis-sql-lineage:${IMAGE_TAG}" .
+
+      - name: Verify image size budget
+        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+        env:
+          MAX_IMAGE_MB: "350"
+          IMAGE_TAG: "ci-${{ github.run_id }}" # #801 — must match the build step
+        run: node scripts/lib/verify-image-size.mjs --no-build
+
+      - name: Clean up test images
+        if: always()
+        env:
+          # #801 — run-scoped tag, STEP-scoped on purpose: at job level it also
+          # reaches `pnpm test`, whose verify-image-size mocks key on the default
+          # `:test` tag.
+          IMAGE_TAG: "ci-${{ github.run_id }}"
+        run: |
+          # #801 — remove only THIS run's images. A bare `metis-server:test` here
+          # deleted a CONCURRENT run's image on a shared daemon.
+          docker rmi "metis-server:${IMAGE_TAG}" "metis-ui:${IMAGE_TAG}" "metis-embeddings:${IMAGE_TAG}" "metis-sql-lineage:${IMAGE_TAG}" 2>/dev/null || true
+          docker buildx prune -f --keep-storage=4g
+
+      # Issue #1067 — a CANCELLED `api` job is rendered by `gh pr checks` as
+      # `fail`, indistinguishable from a broken test suite. Observed 6 times in
+      # one session; one job was superseded after 41s having built nothing and
+      # still read as a failure, costing a ~17-minute re-run to prove nothing
+      # was wrong. The serialization above is deliberate and stays — only the
+      # REPORTING is fixed.
+      #
+      # This step covers a job cancelled while RUNNING. A job cancelled while
+      # still QUEUED never starts a runner, so no step of it can ever run — the
+      # `api-outcome` job below is what covers that case.
+      - name: Report concurrency supersede
+        if: ${{ cancelled() }}
+        run: |
+          echo "::notice title=api superseded — NOT a test failure::This api job was cancelled, not broken. See the job summary."
+          {
+            echo "### \`api\`: CANCELLED — superseded, not a test failure"
+            echo
+            echo "The \`api\` job serializes on the ref-independent concurrency group"
+            echo "\`api-docker-build\` (\`cancel-in-progress: false\`) because the shared"
+            echo "the Docker daemon can only do one of these builds at a time."
+            echo "GitHub keeps at most **one running + one pending** job per group, so a"
+            echo "third run supersedes the pending one — that supersede is what you are"
+            echo "looking at."
+            echo
+            echo "\`gh pr checks\` renders a \`cancelled\` conclusion as **fail**. Nothing in"
+            echo "the tree needs fixing: re-run this job once the runner frees up."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Issue #1067 — turns the `api` job's raw conclusion into a signal a human can
+  # read WITHOUT a manual `gh api .../jobs/<id>` call. It is the only place that
+  # can speak for an `api` job cancelled while still queued (that job never gets
+  # a runner, so it has no steps of its own to report with).
+  #
+  # Contract, visible directly in `gh pr checks`:
+  #   api-outcome pass + api fail  -> `api` was CANCELLED (superseded). Re-run it.
+  #   api-outcome fail             -> `api` genuinely FAILED. Read the log.
+  api-outcome:
+    name: api-outcome
+    runs-on: ubuntu-latest
+    needs: [api]
+    # `always()` (not `!cancelled()`) on purpose: reporting the cancellation IS
+    # this job's whole purpose, so it must survive one.
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Classify api outcome
+        env:
+          API_RESULT: ${{ needs.api.result }}
+        run: |
+          case "$API_RESULT" in
+            success)
+              echo "api: success"
+              echo "- \`api\`: **success**" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            cancelled)
+              echo "::notice title=api superseded — NOT a test failure::The api job was CANCELLED by the api-docker-build concurrency group (or by a newer push to this ref), not by a failing test. gh pr checks shows a cancelled conclusion as 'fail'. Re-run the api job; nothing in the tree needs fixing."
+              {
+                echo "### \`api\`: CANCELLED — superseded, **not** a test failure"
+                echo
+                echo "The \`api\` job queues on the ref-independent \`api-docker-build\` group"
+                echo "so the shared Docker daemon only ever runs one image build. GitHub keeps"
+                echo "at most one running + one pending job per group, so a third run"
+                echo "supersedes the pending one — often before it has built anything."
+                echo
+                echo "\`gh pr checks\` prints a \`cancelled\` conclusion as **fail**. That red"
+                echo "\`api\` line is infrastructure scheduling, not a defect. Re-run the"
+                echo "\`api\` job when the runner frees up."
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            skipped)
+              echo "api: skipped"
+              echo "- \`api\`: skipped" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error title=api FAILED — a real failure::The api job concluded '$API_RESULT'. This is NOT a concurrency supersede; read the api job log."
+              {
+                echo "### \`api\`: \`$API_RESULT\` — a real failure"
+                echo
+                echo "This is **not** a concurrency supersede. Read the \`api\` job log."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+          esac
+
+  ui:
+    runs-on: ubuntu-latest
+    # Normal runtime ~7 min. Bound it so a hang cannot hold a runner for 6 hours.
+    timeout-minutes: 30
+    env:
+      NPM_CONFIG_PRODUCTION: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+
+      - name: Clean stale artifacts
+        run: rm -rf node_modules ui/node_modules ui/.next
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Build shared packages
+        run: pnpm --filter @metis/shared run build
+
+      - name: Lint UI
+        working-directory: ui
+        run: pnpm lint
+
+      - name: Test UI
+        working-directory: ui
+        run: pnpm test
+
+      - name: Build UI
+        working-directory: ui
+        run: pnpm build
+
+  # Epic #294 (#303) — metis-sql-lineage Python sidecar checks.
+  #
+  # Issue #1191 — a PR that changes source must add ONE changelog fragment under
+  # `.changes/unreleased/`, instead of every PR appending to the same anchor in
+  # `CHANGELOG.md` (996 entries, 1.65 MB) and conflicting by construction.
+  #
+  # This is a SEPARATE job on purpose, for two reasons:
+  #  1. `lint` / `skills:verify` / `agents:verify` live in the `api` job, which
+  #     builds four Docker images and takes ~17-21 min. This gate exists to stop
+  #     wasted CI cycles, so reporting it after a 20-minute build defeats it.
+  #  2. It needs `fetch-depth: 0`. The default checkout is shallow and has no
+  #     `origin/main`, so the diff has no base — and the runner FAILS rather than
+  #     skipping in that case (a gate that passes when it cannot find its
+  #     comparison point is worse than no gate). Putting the full fetch on a job
+  #     that does nothing else keeps it off the contended `api` job.
+  #
+  # No `pnpm install`: the verifier is plain Node using only builtins, so the
+  # whole job is a checkout plus a few seconds.
+  changelog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      # `CHANGELOG_PR_AUTHOR` carries the ONE signal the diff cannot supply: who
+      # opened the PR (#1270). Dependabot has no step in which it could write a
+      # fragment, so before this the gate failed all ten open dependabot PRs and
+      # enforced nothing — a permanently-red check carries the same information
+      # as an ignored one. The exemption is the intersection of this author and a
+      # dependency-manifest path; see DEPENDENCY_MANIFEST_RULES.
+      #
+      # `github.event.pull_request.user.login` comes from the PR record, not the
+      # branch, and expands to the EMPTY STRING on `push` and `workflow_dispatch`
+      # — where the verifier's strict mode is the correct reading anyway.
+      - name: Verify changelog fragment
+        env:
+          CHANGELOG_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: node scripts/verify-changelog-fragment.mjs
+
+  # Dedicated job: lint (ruff) + unit tests (pytest) with an 80% coverage floor
+  # (--cov-fail-under=80) on the new Python service. Runs on the same
+  # macOS runner (Python 3 is pre-installed). It is intentionally LEAN and fast:
+  # sqlglot + FastAPI + uvicorn + pydantic are all pure-Python wheels with NO
+  # model downloads, so the install cannot reintroduce the build-time model-bake
+  # flake fixed in #290. The Docker image for this service is built in the `api`
+  # job's image-size gate (Dockerfile.sql-lineage).
+  sql-lineage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: metis-sql-lineage
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+
+      # NOTE: do NOT use actions/setup-python here. This dates from a macOS
+      # runner that action hardcodes the GitHub-hosted tool-cache path
+      # (/Users/runner/...), which is not writable on this runner and fails with
+      # "mkdir: /Users/runner: Permission denied". The runner image's python3
+      # in this repo uses the runner's PRE-INSTALLED tooling directly; the
+      # Semgrep job in sast.yml follows the same venv-from-system-python3
+      # pattern. The sidecar targets py311/py312 and depends only on pure-Python
+      # wheels (sqlglot, fastapi, uvicorn, pydantic), so the runner's
+      # pre-installed python3 is sufficient — nothing here must be downloaded.
+      - name: Show Python version
+        run: python3 --version
+
+      - name: Create venv and install pinned dev deps
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements-dev.txt
+
+      - name: Ruff lint
+        run: .venv/bin/ruff check .
+
+      - name: Pytest with coverage gate (>=80%)
+        run: .venv/bin/pytest --cov=app --cov-report=term-missing --cov-fail-under=80
+
+  # Issue #539 (Epic #518) — proof that the scheme-selected Prisma adapter
+  # actually connects to a REAL Postgres when given a `postgres://` DATABASE_URL.
+  #
+  # The keystone multi-replica fix changes server/src/lib/prisma.ts to pick the
+  # adapter by DATABASE_URL scheme (PrismaPg for postgres(ql)://, better-sqlite3
+  # for file:/sqlite:). The unit tests (server/src/lib/prisma.test.ts) prove the
+  # SELECTION logic; this job proves the postgres branch genuinely talks to
+  # Postgres (not SQLite) end-to-end:
+  #   1. spin up postgres:16-alpine (same image as docker-compose),
+  #   2. apply prisma/postgres migrations via `db:migrate:postgres`,
+  #   3. regenerate the Prisma client for the postgres schema,
+  #   4. run the gated integration test (RUN_INTEGRATION_TESTS=1 + a postgres
+  #      DATABASE_URL) which issues `SELECT version()` and asserts "PostgreSQL".
+  #
+  # Runs on a GitHub-hosted Linux runner; the postgres service is a Docker
+  # container the runner host provides (same Docker daemon the image-size gate
+  # uses). It is intentionally NOT a heavy job — no image builds, no UI.
+  postgres-adapter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: development
+      NPM_CONFIG_PRODUCTION: "false"
+      # DATABASE_URL is NOT set here (#754): the postgres service now binds an
+      # EPHEMERAL host port, and the `job` context that exposes it is not
+      # available in job-level `env`. The "Resolve Postgres URL" step below
+      # exports it to $GITHUB_ENV before any step needs it.
+      RUN_INTEGRATION_TESTS: "1"
+    services:
+      postgres: # postgres-adapter
+        # Issue #543 (Epic #518) — pgvector image (a drop-in superset of the
+        # stock postgres image) so the gated pgvector integration test can
+        # `CREATE EXTENSION vector`. Same user/pass/db as docker-compose.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: metis
+          POSTGRES_PASSWORD: metis
+          POSTGRES_DB: metis
+        # #754 — bind an EPHEMERAL host port, not a fixed 5432. Both postgres
+        # jobs run on the SAME runner and share one Docker daemon
+        # and one host port space, so a fixed `5432:5432` made them race:
+        # whichever container started second died with
+        #   "Bind for 0.0.0.0:5432 failed: port is already allocated".
+        # The mapping cannot simply be dropped — these jobs run on the runner
+        # host (no job-level `container:`), so the `postgres` network alias is
+        # not resolvable; they must reach it over localhost.
+        ports:
+          - 5432
+        options: >-
+          --health-cmd "pg_isready -U metis"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      # #754 — the postgres service binds an EPHEMERAL host port (see `ports:`
+      # above). The `job` context that exposes the mapped port is NOT available
+      # in job-level `env:`, so resolve DATABASE_URL here and export it for
+      # every subsequent step. Must stay ahead of any step that touches the DB.
+      - name: Resolve Postgres URL (ephemeral host port)
+        run: |
+          port='${{ job.services.postgres.ports['5432'] }}'
+          if [ -z "$port" ]; then
+            echo "::error::postgres service exposed no host port for 5432"
+            exit 1
+          fi
+          echo "DATABASE_URL=postgresql://metis:metis@localhost:${port}/metis" >> "$GITHUB_ENV"
+          echo "Postgres mapped to host port ${port}"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+
+      - name: Clean stale artifacts
+        run: rm -rf node_modules dist
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Build shared packages
+        run: pnpm --filter @metis/shared run build
+
+      # Sync the Postgres schema. `prisma.config.ts` resolves the schema +
+      # migrations dir by the DATABASE_URL scheme (postgres -> prisma/postgres),
+      # so no --schema flag is needed. We use `db push` rather than
+      # `migrate deploy` here because it syncs the schema state directly from
+      # prisma/postgres/schema.prisma — this proof job only needs a live Postgres
+      # with the schema present to exercise the scheme-selected adapter; it does
+      # not validate the (separately tracked) postgres migration history.
+      - name: Sync Postgres schema
+        working-directory: server
+        run: pnpm prisma db push
+
+      - name: Generate Prisma client for Postgres schema
+        working-directory: server
+        run: pnpm prisma generate
+
+      # Issue #876 — the regression gate for a Postgres-CAPABLE unit suite. Everything
+      # below this line runs integration suites; this step runs the DEFAULT `pnpm test`
+      # against the Postgres-generated client that was just produced. Before #876 that
+      # combination failed 219 of 952 test files at import ("The Driver Adapter
+      # @prisma/adapter-better-sqlite3 ... is not compatible with the provider postgres"),
+      # which is exactly why dev-on-Postgres needed a `prisma generate` toggle before every
+      # test run. Nothing else in CI covers it: the `api` job only ever builds the SQLite
+      # client. Without this gate, provider-agnosticism would silently rot on the next PR
+      # that lets an ambient DATABASE_URL leak into a unit test.
+      - name: Prove the unit suite runs on the Postgres-generated client
+        working-directory: server
+        run: pnpm test
+
+      - name: Prove real Postgres connection via scheme-selected adapter
+        working-directory: server
+        run: pnpm test:integration prisma-postgres-connection
+
+      # Issue #541 (Epic #518) — prove the Postgres-backed shared rate-limit
+      # store enforces the discussion AI-invocation cap CLUSTER-WIDE (not Nx)
+      # against the same real Postgres, via a genuine two-replica concurrent
+      # race. The store self-creates its UNLOGGED counter table (no migration).
+      - name: Prove cluster-wide rate-limit enforcement on real Postgres
+        working-directory: server
+        run: pnpm test:integration rate-limit-store-postgres
+
+      # Issue #542 (Epic #518) — prove the Postgres-backed SSO transaction-state
+      # store gives cross-replica login continuity (state put on one pod is
+      # consumed on another) AND consume-once replay protection against the same
+      # real Postgres. The store self-creates its UNLOGGED table (no migration).
+      - name: Prove cross-replica SSO-state continuity on real Postgres
+        working-directory: server
+        run: pnpm test:integration sso-state-store-postgres
+
+      # Issue #520 (Epic #517) — prove the Postgres-backed SAML request-id cache
+      # gives cross-replica InResponseTo / replay protection against the same real
+      # Postgres: a request id saved on one pod is visible on another, is
+      # single-use (remove makes a replay get miss), and expires past its TTL. The
+      # cache self-creates its UNLOGGED table behind an advisory lock (no migration).
+      - name: Prove cross-replica SAML request-id cache on real Postgres
+        working-directory: server
+        run: pnpm test:integration saml-request-id-cache-postgres
+
+      # Issue #543 (Epic #518) — prove the pgvector-backed RAG vector store gives
+      # retrieval parity AND multi-replica read/write safety against the same real
+      # Postgres: two separately-constructed store instances (= two pods) sharing
+      # one DB write AND read concurrently with no corruption (the LanceDB
+      # single-writer failure mode is gone). The store self-creates its table +
+      # `vector` extension + HNSW index behind an advisory lock (no migration).
+      - name: Prove multi-replica pgvector RAG store on real Postgres
+        working-directory: server
+        run: pnpm test:integration vector-store-pgvector
+
+      # Issue #798 — prove the reindex LEASE against the same real Postgres, through
+      # Prisma's real connection POOL (the bug it fixes is invisible to any test that
+      # mocks the pool). Covers: take+release are pool-agnostic (the session advisory
+      # lock this replaces leaked 8 of 8 locks here, wedging the project until the pod
+      # restarted); a SIGKILLed holder's lease expires instead of wedging the next
+      # attempt; and #787's no-partial-cutover guarantee still holds under the lease,
+      # because a FENCED run is refused at the upsert gate AND inside the swap's own
+      # transaction. The backend self-creates its UNLOGGED table (no migration).
+      - name: Prove the pool-agnostic reindex lease + fencing on real Postgres
+        working-directory: server
+        run: pnpm test:integration reindex-lease-postgres
+
+      # Issue #544 (Epic #518) — prove the Postgres-backed leader election gives
+      # EXACTLY-ONCE cluster-wide scheduling + CRASH FAILOVER against the same
+      # real Postgres: three separately-constructed elector/backend instances
+      # (= three pods) sharing one DB elect a single leader, a survivor acquires
+      # the lease after the dead leader's TTL expires, and a per-fire window is
+      # run by exactly one replica. The backend self-creates its UNLOGGED lease +
+      # window tables behind an advisory lock (no migration).
+      - name: Prove exactly-once leader election + failover on real Postgres
+        working-directory: server
+        run: pnpm test:integration leader-election-postgres
+
+  # Issue #556 (Epic #518) — prove the Postgres migration HISTORY applies from
+  # an EMPTY database via the real `prisma migrate deploy`.
+  #
+  # This is the production-deploy proof that the sibling `postgres-adapter` job
+  # deliberately does NOT cover: that job uses `prisma db push` (schema sync, no
+  # history) to exercise the runtime adapter, which masked a latent collision —
+  # the cumulative `00000000000000_init` baseline duplicated DDL that later
+  # incremental migrations re-add (first hit: `suggested_connectors.username`,
+  # 42701 column already exists). #556 made every incremental migration's
+  # structural DDL idempotent; this job is the regression gate. It runs the
+  # FULL migration chain on a clean `postgres:16-alpine` and fails if any
+  # collision returns. `prisma.config.ts` resolves the schema + migrations dir
+  # by the DATABASE_URL scheme (#539), so no --schema flag is needed.
+  postgres-migrate-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: development
+      NPM_CONFIG_PRODUCTION: "false"
+      # DATABASE_URL is resolved in the "Resolve Postgres URL" step (#754) —
+      # the postgres service binds an ephemeral host port and the `job` context
+      # exposing it is unavailable in job-level `env:`.
+    services:
+      postgres:
+        # Issue #543 (Epic #518) — pgvector image (a drop-in superset of the
+        # stock postgres image) so the gated pgvector integration test can
+        # `CREATE EXTENSION vector`. Same user/pass/db as docker-compose.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: metis
+          POSTGRES_PASSWORD: metis
+          POSTGRES_DB: metis
+        # #754 — bind an EPHEMERAL host port, not a fixed 5432. Both postgres
+        # jobs run on the SAME runner and share one Docker daemon
+        # and one host port space, so a fixed `5432:5432` made them race:
+        # whichever container started second died with
+        #   "Bind for 0.0.0.0:5432 failed: port is already allocated".
+        # The mapping cannot simply be dropped — these jobs run on the runner
+        # host (no job-level `container:`), so the `postgres` network alias is
+        # not resolvable; they must reach it over localhost.
+        ports:
+          - 5432
+        options: >-
+          --health-cmd "pg_isready -U metis"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      # #754 — the postgres service binds an EPHEMERAL host port (see `ports:`
+      # above). The `job` context that exposes the mapped port is NOT available
+      # in job-level `env:`, so resolve DATABASE_URL here and export it for
+      # every subsequent step. Must stay ahead of any step that touches the DB.
+      - name: Resolve Postgres URL (ephemeral host port)
+        run: |
+          port='${{ job.services.postgres.ports['5432'] }}'
+          if [ -z "$port" ]; then
+            echo "::error::postgres service exposed no host port for 5432"
+            exit 1
+          fi
+          echo "DATABASE_URL=postgresql://metis:metis@localhost:${port}/metis" >> "$GITHUB_ENV"
+          echo "Postgres mapped to host port ${port}"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+
+      - name: Clean stale artifacts
+        run: rm -rf node_modules dist
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Build shared packages
+        run: pnpm --filter @metis/shared run build
+
+      # The actual proof: apply the FULL postgres migration history from an
+      # empty database. Before #556 this failed with a 42701 duplicate-column
+      # collision; it must now apply every migration with zero collisions.
+      - name: Apply full Postgres migration history from scratch
+        working-directory: server
+        run: pnpm prisma migrate deploy
+
+      # The chain must be a stable no-op on a second run (no drift, no pending
+      # migrations) — proves the idempotent guards didn't change recorded state.
+      - name: Re-run migrate deploy is a clean no-op
+        working-directory: server
+        run: |
+          out="$(pnpm prisma migrate deploy 2>&1)"
+          echo "$out"
+          echo "$out" | grep -q "No pending migrations to apply"
+
+      # The deployed schema must match prisma/postgres/schema.prisma — the
+      # idempotent guards must not have skipped DDL that the baseline lacked.
+      - name: Assert deployed schema matches schema.prisma (no drift)
+        working-directory: server
+        run: pnpm prisma migrate status
+
+  # Issue #190 (Epic #183, Initiative A) — Windows regression guard.
+  #
+  # COST NOTE — historical. This billed at 2x the Linux rate while every other
+  # job ran free on a self-hosted runner, which is why it was gated off. On a
+  # PUBLIC repository standard hosted runners are free and uncapped, Windows
+  # included, so it now runs on every push and PR. It is intentionally a
+  # lean lint + typecheck + scoped-test job (no docker image builds, no
+  # Playwright) to keep that cost minimal.
+  #
+  # GATING POLICY: `lint`, `typecheck`, and the cross-platform tooling unit
+  # tests (`@metis/scripts`) + the GPU/Gemma selection tests are GATING — they
+  # pass on Windows today and guard the Epic #183 cross-platform work from
+  # regressing. The FULL `pnpm test` suite is run as NON-GATING
+  # (`continue-on-error: true`) because a set of PRE-EXISTING tests assume
+  # POSIX semantics (hardcoded `/tmp` & `/models` paths, colon-in-filename
+  # vector-store dirs, CRLF-vs-LF generated-schema parity, POSIX glob
+  # separators). Making those cross-platform is tracked as follow-up work and
+  # is explicitly OUT OF SCOPE for Epic #183 (which is additive-only and must
+  # not modify macOS/Linux behavior). The non-gating run still surfaces the
+  # Windows results in the checks UI so the remaining gap stays visible.
+  windows:
+    # ENABLED. It was gated behind `vars.WINDOWS_CI_ENABLED` only because Windows
+    # minutes billed at 2x while every other job ran free on a self-hosted runner.
+    # On a PUBLIC repository standard hosted runners are free and uncapped,
+    # Windows included, so the sole reason for the gate is gone.
+    #
+    # Turning it back on is not bookkeeping. METIS documents native Windows 11
+    # development (docs/DEVELOPMENT.md §7.6) and the epic behind that found real
+    # Windows-only defects — a `prefetch:embeddings` that exited 0 having done
+    # nothing, MAX_PATH truncation, skills materialising as plain files under
+    # `core.symlinks=false`. One such defect shipped BECAUSE this job was off:
+    # the `embeddings:smoke` step failed while its own assertion passed, and the
+    # changelog records it went unnoticed since the job "had not run since the
+    # step was added". A documented platform with no test is a promise that
+    # breaks silently.
+    # GATED OFF because it is BROKEN (#2) — not because of cost, which was the
+    # old reason and no longer applies on a public repository.
+    #
+    # It fails during `pnpm install`, before a single test runs: `better-sqlite3`
+    # finds no prebuilt binary for node 22 on win32-x64, falls back to node-gyp,
+    # and the runner image has no Visual Studio installation node-gyp
+    # recognises. That is a native-module packaging problem and says NOTHING
+    # about whether METIS works on Windows.
+    #
+    # `continue-on-error: true` was tried first and is the wrong tool: it stops
+    # the WORKFLOW failing but the job still reports `failure`, so every pull
+    # request would carry a red X forever. A permanently red check trains people
+    # to stop reading the check column, which costs more than the signal is
+    # worth. Making the failing STEP non-fatal instead would be worse still — a
+    # green check over a broken install is a fail-open, and this repository has
+    # spent real effort removing those.
+    #
+    # Set `WINDOWS_CI_ENABLED=true` to run it — it costs nothing now — and
+    # delete this gate entirely once #2 lands.
+    if: ${{ vars.WINDOWS_CI_ENABLED == 'true' }}
+    timeout-minutes: 30 # bound it — an unbounded job can hold a runner for 6h
+    runs-on: windows-latest
+    env:
+      NODE_ENV: development
+      NPM_CONFIG_PRODUCTION: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Build shared packages
+        run: pnpm --filter @metis/shared run build
+
+      # Issue #1142 — Windows is the ONLY platform where the skill-discovery
+      # mechanism can actually fail, so this is where it has to be exercised.
+      #
+      # `.claude/skills/<name>` is a symlink to `../../.github/skills/<name>`.
+      # Git stores that as a blob with mode 120000 whose contents are the target
+      # path — identical on every platform. What differs is CHECKOUT: a client
+      # with `core.symlinks=false` (the Git for Windows default when the user
+      # lacks SeCreateSymbolicLinkPrivilege) materializes that blob as a regular
+      # FILE containing the path text, and Claude Code then finds no directory
+      # to read SKILL.md from.
+      #
+      # So this step prints what this runner actually did — `core.symlinks` and
+      # the real attributes of one entry — and then asserts. The assertion is on
+      # the committed invariant (mode 120000, correct relative target, valid
+      # frontmatter), which holds regardless of checkout. A checkout that could
+      # not materialize the links is reported as a WARNING with the
+      # `git config core.symlinks true` fix, because that is a fact about the
+      # client, not a defect in the commit under test.
+      - name: Verify skill discovery links (Windows symlink behaviour)
+        shell: pwsh
+        run: |
+          $configured = git config --get core.symlinks
+          if (-not $configured) { $configured = "(unset — Git default applies)" }
+          Write-Host "core.symlinks = $configured"
+          $entry = Get-Item ".claude/skills/code-issue" -Force
+          Write-Host "attributes of .claude/skills/code-issue = $($entry.Attributes)"
+          Write-Host "LinkType = $($entry.LinkType)"
+          Write-Host "SKILL.md readable through the link = $(Test-Path '.claude/skills/code-issue/SKILL.md')"
+          pnpm skills:verify
+
+      # GATING: these pass on Windows and guard the cross-platform work.
+      - name: Lint
+        run: pnpm lint
+        env:
+          # The private-vocabulary gate's list. Fork pull requests receive no secrets,
+          # so for them the gate skips (and says so); everywhere the secret SHOULD
+          # exist, a missing one fails the step instead of passing unchecked.
+          METIS_PRIVATE_TERMS: ${{ secrets.METIS_PRIVATE_TERMS }}
+          METIS_REQUIRE_PRIVATE_TERMS: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test cross-platform tooling (scripts)
+        run: pnpm --filter @metis/scripts test
+
+      - name: Test GPU/Gemma variant selection
+        working-directory: server
+        run: pnpm exec vitest run src/lib/ai/gemma-variant.test.ts
+
+      # Issue #785 — the Windows embeddings dev path. These three suites are the
+      # ONLY place the Windows-specific logic added by #785 can actually be
+      # exercised on Windows:
+      #
+      #   • main-module      — the entry-module guard. On a Windows runner this
+      #                        finally runs against the REAL win32 `pathToFileURL`
+      #                        (off-Windows the suite must inject a win32-shaped
+      #                        stub, which tests the comparison but not the
+      #                        platform). Its predecessor silently no-op'd the
+      #                        `prefetch:embeddings` script on Windows paths.
+      #   • embed-cache      — cache-path resolution + the MAX_PATH headroom check,
+      #                        against a real `path.resolve` on win32 semantics.
+      #   • embed-smoke      — the "is my embedder REAL or the hash stub?" check.
+      #
+      # They are deliberately GATING and are cross-platform by construction (no
+      # POSIX paths, no /tmp, no colon-in-filename), so they do not inherit the
+      # pre-existing POSIX-only problems that force the full suite below to be
+      # non-gating. If one of them fails on Windows, that is a REAL finding about
+      # the Windows dev path and is exactly what this job exists to surface.
+      - name: Test Windows embeddings dev path (#785)
+        working-directory: server
+        run: pnpm exec vitest run src/lib/main-module.test.ts src/lib/rag/embed-cache.test.ts src/lib/rag/embed-smoke.test.ts
+
+      # Issue #785 — run the smoke check itself, end to end, on Windows. Uses the
+      # offline hash stub (AI_OFFLINE=1) so it needs NO model download and NO
+      # HuggingFace egress: it proves the CLI *runs* on Windows and correctly
+      # reports a stub as a stub, exiting NON-ZERO. `pnpm ... ; exit 0`-style
+      # swallowing would defeat the point, so we assert the exit code explicitly:
+      # a stub MUST be exit 1, and a crash/0 both fail the step.
+      - name: Smoke check reports the hash stub as NOT real (exit 1)
+        working-directory: server
+        shell: pwsh
+        env:
+          AI_OFFLINE: "1"
+        run: |
+          pnpm embeddings:smoke
+          if ($LASTEXITCODE -eq 1) {
+            Write-Host "OK: hash stub correctly reported as NOT real (exit 1)"
+            # `exit 0` is LOAD-BEARING, not decoration. Actions appends
+            # `exit $LASTEXITCODE` to every pwsh step, and $LASTEXITCODE is still
+            # 1 from `pnpm embeddings:smoke` — so without this the step printed
+            # its own OK line and then failed anyway, which is exactly what it
+            # did the first time the job was run after being gated off.
+            exit 0
+          } else {
+            Write-Error "Expected exit 1 for the hash stub, got $LASTEXITCODE"
+            exit 1
+          }
+
+      # NON-GATING: full suite includes pre-existing POSIX-only tests (see the
+      # GATING POLICY note above). Reported but does not block merge.
+      - name: Test (full suite — non-gating)
+        continue-on-error: true
+        run: pnpm test
+
+  # Epic #209 (#236) — generative-path e2e + coverage gate.
+  #
+  # WHY A SEPARATE JOB (not the `e2e` job below): the `e2e` job runs the FULL
+  # Playwright suite and is gated off by default (`vars.E2E_ENABLED`) because
+  # some specs (e.g. the E2B sandbox loop) need live infra/secrets unavailable
+  # on PRs. This job runs ONLY the deterministic generative loop
+  # (`clarify-loop.spec.ts`, #235) in REPLAY mode against committed LLM fixtures
+  # (#234) — `AI_REPLAY=1` + `AI_FIXTURE_DIR` are defaulted in
+  # `e2e/playwright.config.ts`, so it needs NO live LLM/AI credentials and runs
+  # on every PR. It is intentionally NOT gated on `E2E_ENABLED`.
+  #
+  # COVERAGE GATE: the generative-path harness code (`server/src/lib/ai/fixtures`,
+  # the net-new #234 record/replay seam the e2e depends on) is held to an 80%
+  # unit-coverage floor via a scoped vitest run. We scope the threshold to that
+  # module rather than wiring the full-suite `test:coverage` into CI because the
+  # repo's global vitest thresholds currently exceed the full suite's actual
+  # branch coverage (a pre-existing gap, unrelated to this epic) — enforcing the
+  # full gate here would fail on code this epic never touched. The fixtures
+  # harness sits at 100% lines/functions/statements today, so this gate is both
+  # meaningful for the generative path and deterministically green.
+  generative-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_ENV: development
+      NPM_CONFIG_PRODUCTION: "false"
+      CI: "true"
+      # Belt-and-suspenders: the config already defaults these, but pin them at
+      # the job level so the replay contract is explicit and a future config
+      # edit can't silently flip the suite to live mode.
+      AI_REPLAY: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+
+      - name: Clean stale artifacts
+        run: rm -rf node_modules ui/node_modules ui/.next
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Build shared packages
+        # @metis/shared must be compiled before the server can boot under the
+        # Playwright webServer (tsx resolves @metis/shared/dist at runtime).
+        run: pnpm --filter @metis/shared run build
+
+      # Coverage gate for the generative path (#236). Scoped to the net-new
+      # record/replay harness the generative e2e exercises. 80% floor, v8
+      # provider — consistent with server/vitest.config.ts.
+      - name: Generative-path coverage gate
+        working-directory: server
+        run: >-
+          pnpm exec vitest run --coverage
+          --coverage.include='src/lib/ai/fixtures/**/*.ts'
+          --coverage.thresholds.lines=80
+          --coverage.thresholds.branches=80
+          --coverage.thresholds.functions=80
+          --coverage.thresholds.statements=80
+          src/lib/ai/fixtures
+
+      - name: Install Playwright browsers
+        # Fetches the browser binary only. The GitHub-hosted Ubuntu image already
+        # carries chromium's system libraries (libnss3, libgbm, libasound2, …) —
+        # this job passed without `--with-deps` on the first hosted run — so the
+        # extra `apt` pass would only add time.
+        run: pnpm --filter @metis/e2e exec playwright install chromium
+
+      # Issue #1067 — the Playwright stack defaulted to the FIXED pair
+      # 4101 (API) / 3101 (UI). Each runner has its own `_work`
+      # directory but they all share one network stack, so a sibling run holding
+      # 4101 killed this job with "http://127.0.0.1:4101/healthz is already
+      # used". Observed on #1059 and #1079, both with siblings running.
+      #
+      # `reuseExistingServer: true` (what the error text suggests) would be the
+      # WRONG fix — it would run this PR's specs against a stale server from
+      # another branch, trading a loud infra failure for a quiet correctness one.
+      # Serializing the job would cost wall-clock on every PR. So: give each run
+      # its own port pair, derived from GITHUB_RUN_ID and probed for freeness.
+      # `E2E_API_PORT` / `E2E_UI_PORT` are already honoured by
+      # e2e/playwright.config.ts and e2e/fixtures/api-base.ts.
+      - name: Allocate per-run e2e ports
+        run: node scripts/allocate-e2e-ports.mjs
+
+      - name: Run generative loop e2e (replay, no live keys)
+        # Echo the resolved ports so the log proves concurrent runs got
+        # different ones (and so a collision is diagnosable from the log alone).
+        run: |
+          echo "generative-e2e stack: API=${E2E_API_PORT} UI=${E2E_UI_PORT}"
+          pnpm --filter @metis/e2e exec playwright test clarify-loop.spec.ts --project=chromium --reporter=list
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: generative-e2e-report
+          path: e2e/playwright-report
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: generative-e2e-traces
+          path: e2e/test-results
+          if-no-files-found: ignore
+          retention-days: 3
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30 # bound it — an unbounded job can hold a runner for 6h
+    # Issue #144 — gated on `E2E_ENABLED` repo variable so EMU-hosted runners
+    # can opt in once they're restored. The job is wired correctly even when
+    # disabled so a single repo-variable flip turns it on.
+    if: vars.E2E_ENABLED == 'true'
+    env:
+      NPM_CONFIG_PRODUCTION: "false"
+      CI: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Install Playwright browsers
+        # Fetches the browser binary only. The GitHub-hosted Ubuntu image already
+        # carries chromium's system libraries (libnss3, libgbm, libasound2, …) —
+        # this job passed without `--with-deps` on the first hosted run — so the
+        # extra `apt` pass would only add time.
+        run: pnpm --filter @metis/e2e exec playwright install chromium
+
+      # Issue #1067 — same fixed-port hazard as `generative-e2e` above; this job
+      # boots the identical stack from the same config, so it needs the same
+      # per-run allocation (and would collide with `generative-e2e` itself the
+      # moment `E2E_ENABLED` is flipped on).
+      - name: Allocate per-run e2e ports
+        run: node scripts/allocate-e2e-ports.mjs
+
+      - name: Run Playwright e2e suite
+        run: |
+          echo "e2e stack: API=${E2E_API_PORT} UI=${E2E_UI_PORT}"
+          pnpm --filter @metis/e2e test --reporter=list
+
+      - name: Upload Playwright report
+        # Only upload on failure to avoid accumulating report artifacts on
+        # every green run. These were filling remote GitHub Actions storage.
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: e2e/playwright-report
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-traces
+          path: e2e/test-results
+          if-no-files-found: ignore
+          retention-days: 3

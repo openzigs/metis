@@ -1,0 +1,14 @@
+{
+  "corpusId": "docsgen-01-single-repo",
+  "snapshotCommit": "1111111111111111111111111111111111111111",
+  "description": "Synthetic answer-correctness reference for the single-repo generated-doc benchmark fixture in issue #1357. The query is scored against the generated markdown, not a retrieved source document.",
+  "queries": [
+    {
+      "id": "docsgen-01-single-repo-generated-doc",
+      "question": "What does the benchmark-generated architecture document claim about its scope and evidence?",
+      "doc": "GENERATED.md",
+      "quote": "This benchmark document is generated from the seeded fixture repositories. It reports repository structure, key modules, and integration boundaries observed in the fixture. The document is grounded in repository-source chunks ingested into the knowledge service.",
+      "phrasing": "paraphrase"
+    }
+  ]
+}

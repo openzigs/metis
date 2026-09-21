@@ -1,0 +1,14 @@
+{
+  "corpusId": "docsgen-02-multi-repo",
+  "snapshotCommit": "2222222222222222222222222222222222222222",
+  "description": "Synthetic answer-correctness reference for the multi-repo generated-doc benchmark fixture in issue #1357.",
+  "queries": [
+    {
+      "id": "docsgen-02-multi-repo-generated-doc",
+      "question": "What does the benchmark-generated topology document say about the repositories and the evidence used to describe them?",
+      "doc": "GENERATED.md",
+      "quote": "This benchmark document is generated from the seeded fixture repositories. It reports repository structure, key modules, and integration boundaries observed in the fixture. The document is grounded in repository-source chunks ingested into the knowledge service.",
+      "phrasing": "paraphrase"
+    }
+  ]
+}

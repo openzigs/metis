@@ -1,0 +1,172 @@
+# ==============================================================================
+# METIS Docker Compose — Production overrides
+#
+# Layered on top of docker-compose.yml. Adds restart policies, resource hints,
+# tighter env (no source mounts), and explicit healthchecks against /healthz
+# so orchestrators can drain unhealthy containers automatically.
+#
+# Usage:
+#   docker compose --env-file .env.prod \
+#     -f docker-compose.yml -f docker-compose.prod.yml up -d
+# ==============================================================================
+
+services:
+  postgres:
+    # Issue #390 — base compose puts postgres behind a `postgres` profile so
+    # dev compose stays SQLite-only. Production needs it always-on, so we
+    # clear the profiles list here. (Empty list = service active in every
+    # invocation that includes this overlay.)
+    profiles: !override []
+    restart: unless-stopped
+    # Base file already defines a pg_isready healthcheck.
+
+  server:
+    # Production uses the slim, postgres-only Dockerfile (issue #390).
+    # Dev compose targets Dockerfile.server.dev; this overlay swaps it back.
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+      args:
+        METIS_SOURCE_COMMIT: ${METIS_SOURCE_COMMIT:-}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: info
+      # AGPL-3.0 §13 (#1296). `/source` names the commit this process runs; without
+      # it every deployment answers "this deployment's exact commit is not
+      # identified", which is the degraded form of the offer.
+      #
+      # No value, deliberately: compose's PASS-THROUGH form. It takes the variable
+      # from the environment if it is set there and OMITS it otherwise, which leaves
+      # the value `Dockerfile.server` baked in at build time intact. Writing
+      # `${METIS_SOURCE_COMMIT:-}` instead would set the variable to the empty string
+      # whenever the operator had not exported it — measured with `docker compose
+      # config`, which renders it as `""` — and an empty runtime value SHADOWS the
+      # image's own `ENV`. That turns a correctly-built image into a degraded offer
+      # at `up` time, silently, which is the exact failure this block exists to stop.
+      METIS_SOURCE_COMMIT:
+      METIS_SOURCE_REPOSITORY_URL:
+      # Production targets Postgres (issue #390). Required.
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set in .env.prod}
+      # METRICS_TOKEN must be set in .env.prod to enable /metrics scraping.
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # Issue #145 — embeddings sidecar wiring. EMBEDDINGS_TOKEN MUST be set
+      # in .env.prod; the sidecar fails closed without it.
+      EMBEDDINGS_MODE: sidecar
+      EMBEDDINGS_URL: http://embeddings:5050
+      EMBEDDINGS_TOKEN: ${EMBEDDINGS_TOKEN:?EMBEDDINGS_TOKEN must be set}
+      # Epic #294 — SQL lineage sidecar wiring. SQL_LINEAGE_TOKEN MUST be set in
+      # .env.prod; the sidecar fails closed without it.
+      SQL_LINEAGE_MODE: ${SQL_LINEAGE_MODE:-sidecar}
+      SQL_LINEAGE_URL: http://sql-lineage:5070
+      SQL_LINEAGE_TOKEN: ${SQL_LINEAGE_TOKEN:?SQL_LINEAGE_TOKEN must be set}
+      # Issue #180 — opt-in copilot-native sidecar. COPILOT_NATIVE_TOKEN is
+      # required only when COPILOT_NATIVE_MODE=sidecar; default leaves the
+      # SDK in-process so existing deployments are unaffected.
+      COPILOT_NATIVE_MODE: ${COPILOT_NATIVE_MODE:-in-process}
+      COPILOT_NATIVE_BASE_URL: http://copilot:5060
+      COPILOT_NATIVE_TOKEN: ${COPILOT_NATIVE_TOKEN:-}
+    volumes: !override []
+    depends_on:
+      postgres:
+        condition: service_healthy
+      embeddings:
+        condition: service_healthy
+      sql-lineage:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get({host:'127.0.0.1',port:process.env.PORT||4000,path:'/healthz',timeout:4000},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+        reservations:
+          memory: 256M
+
+  embeddings:
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      EMBEDDINGS_PORT: 5050
+      EMBEDDINGS_HOST: 0.0.0.0
+      EMBEDDINGS_TOKEN: ${EMBEDDINGS_TOKEN:?EMBEDDINGS_TOKEN must be set}
+    deploy:
+      resources:
+        limits:
+          # Embedding cold-start can briefly spike — leave headroom for the
+          # ONNX session + downloaded models.
+          memory: 1536M
+        reservations:
+          memory: 512M
+
+  # Epic #294 — production overrides for the SQL lineage sidecar. Pure-Python
+  # parser; modest footprint (no model weights, no native runtime).
+  sql-lineage:
+    restart: unless-stopped
+    environment:
+      SQL_LINEAGE_PORT: 5070
+      SQL_LINEAGE_HOST: 0.0.0.0
+      SQL_LINEAGE_TOKEN: ${SQL_LINEAGE_TOKEN:?SQL_LINEAGE_TOKEN must be set}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  # Issue #180 — production overrides for the optional copilot sidecar.
+  # Only scheduled when the `copilot-native` profile is active.
+  copilot:
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      COPILOT_NATIVE_PORT: 5060
+      COPILOT_NATIVE_HOST: 0.0.0.0
+      COPILOT_NATIVE_TOKEN: ${COPILOT_NATIVE_TOKEN:?COPILOT_NATIVE_TOKEN must be set when running with --profile copilot-native}
+      COPILOT_NATIVE_SESSION_TTL_MS: ${COPILOT_NATIVE_SESSION_TTL_MS:-1800000}
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 192M
+
+  ui:
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+    volumes: !override []
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get({host:'127.0.0.1',port:process.env.PORT||3000,path:'/',timeout:4000},r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+# Issue #361 — same MCP wrapper bridge network as the dev compose file. The
+# explicit `name` keeps the network name stable across project prefixes so
+# server-spawned wrapper containers (`docker run --network metis-mcp ...`)
+# can attach by the bare name. If an operator pre-created the network out
+# of band (legacy flow), compose adopts it without conflict.
+networks:
+  metis-mcp:
+    name: metis-mcp
+    driver: bridge

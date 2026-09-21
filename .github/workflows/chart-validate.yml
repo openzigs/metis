@@ -1,0 +1,138 @@
+name: chart-validate
+
+# Issue #545 (Epic #518) — local-k8s-style validation of the canonical METIS
+# Helm chart (deploy/helm/metis), run automatically on PRs that touch the chart.
+#
+# WHY A DEDICATED WORKFLOW (not a job in ci.yml): chart work is YAML/shell only
+# and orthogonal to the TS/Python build. Gating EVERY PR on a kind-cluster smoke
+# would add ~30s of cluster spin-up to builds that never touch Kubernetes. Path
+# filters scope the trigger to chart + workflow + helper-script changes, so this
+# is a GATING check on chart PRs and is simply absent (not pending) on others.
+# The required-status-check story is unchanged: this repo configures no required
+# checks on main (see CLAUDE.md), so reviewers gate on a green run by inspection.
+#
+# DETERMINISM: pins action versions, uses the runner image's PRE-INSTALLED
+# helm/kind/kubectl/docker (same pattern as the sql-lineage + image-size jobs —
+# the hosted setup-* actions assume /Users/runner paths that this runner lacks),
+# bounds every step with a timeout, and uses a per-run unique kind cluster name
+# to avoid collisions with concurrent runs. It introduces NO new host port bind
+# (kind talks to the API server over its own random host port), so it cannot hit
+# the known shared-:5432 Postgres-job flake.
+
+on:
+  pull_request:
+    paths:
+      - "deploy/helm/**"
+      - "scripts/chart-validate.sh"
+      - "scripts/kind-smoke.sh"
+      - "Makefile"
+      - ".github/workflows/chart-validate.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "deploy/helm/**"
+      - "scripts/chart-validate.sh"
+      - "scripts/kind-smoke.sh"
+      - "Makefile"
+      - ".github/workflows/chart-validate.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: chart-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # chart-lint — cluster-FREE gate: helm lint + helm template across the
+  # default/dev/prod value sets + the 109-assertion render-tests.sh golden suite.
+  # Fast (<1 min) and the authoritative template-shape gate.
+  # ---------------------------------------------------------------------------
+  chart-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+
+      # helm is NOT on the GitHub-hosted image. Install a
+      # pinned version into the runner tool-cache (setup-* tool-cache works on
+      # this Linux runner — the api/ui jobs use actions/setup-node the same way;
+      # the /Users/runner tool-cache problem noted for setup-python is macOS-only).
+      - name: Install Helm (pinned)
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.4
+
+      - name: Show helm version
+        run: helm version
+
+      - name: Lint + template + render-tests (offline)
+        run: bash scripts/chart-validate.sh
+
+  # ---------------------------------------------------------------------------
+  # kind-smoke — real-cluster install smoke. Creates a throwaway kind cluster,
+  # `helm install`s the chart (dev profile), and asserts the release's k8s
+  # objects are created. Pod-Ready is intentionally NOT gated: the METIS images
+  # are not published into the kind node, so pods stay ImagePullBackOff. This
+  # validates the CHART (admission accepts every object, the release installs),
+  # not the running app — see scripts/kind-smoke.sh header for the rationale and
+  # how to opt into a full image-loaded rollout locally.
+  # ---------------------------------------------------------------------------
+  kind-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: chart-lint
+    env:
+      # Per-run unique cluster name so concurrent runs (or a left-over cluster
+      # from a cancelled run) never collide. helm/kind-action creates a cluster
+      # with this name; scripts/kind-smoke.sh then REUSES it (it reuses any
+      # existing cluster matching KIND_CLUSTER_NAME) instead of creating its own.
+      KIND_CLUSTER_NAME: metis-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      # The action owns cluster teardown (`if: always()` below), so tell the
+      # script not to delete the cluster out from under it.
+      KEEP_CLUSTER: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+
+      # helm/kind/kubectl are NOT on the GitHub-hosted image.
+      # Install pinned versions via maintained actions (tool-cache works here —
+      # the /Users/runner problem noted for setup-python is macOS-only).
+      - name: Install Helm (pinned)
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.4
+
+      # Create the throwaway kind cluster with the maintained action (issue #545
+      # suggested helm/kind-action). Pinned action + kind + node-image + kubectl
+      # versions for determinism (the action also installs kubectl). wait bounds
+      # control-plane readiness so the job fails fast on a bad cluster.
+      - name: Create kind cluster (pinned)
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          version: v0.26.0
+          node_image: kindest/node:v1.31.4
+          kubectl_version: v1.31.4
+          cluster_name: ${{ env.KIND_CLUSTER_NAME }}
+          wait: 120s
+
+      - name: Show tool versions
+        run: |
+          helm version
+          kind version
+          kubectl version --client
+          docker version --format '{{.Server.Version}}'
+
+      - name: kind install smoke (lint + template + install + assert objects)
+        run: bash scripts/kind-smoke.sh
+
+      # The kind-action does not always tear the cluster down on shared
+      # runners, so force-delete here regardless of outcome.
+      - name: Tear down kind cluster
+        if: always()
+        run: kind delete cluster --name "${KIND_CLUSTER_NAME}" || true

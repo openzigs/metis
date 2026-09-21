@@ -1,0 +1,136 @@
+# Production EKS profile.
+#
+# Multi-replica (server.replicaCount: 2) backed by shared, replica-safe stores
+# (epic #518 / #540): Postgres (#539) for the DB + rate-limit (#541) + SSO state
+# (#542) + scheduler leader election (#544), pgvector (#543) for the vector store,
+# and S3 (#546) for uploads. DATABASE_URL is delivered via External Secrets, so
+# scaling.database.url stays empty here. scaling.enforce=true makes a misconfigured
+# N>1 install fail loud. See docs/EKS_DEPLOYMENT.md §9b–§9f.
+server:
+  replicaCount: 2
+ui:
+  replicaCount: 2
+# Embeddings sidecar — HA + headroom (#786).
+#
+# TWO replicas, so that a node drain, a spot reclaim or a rolling update never
+# leaves RAG with zero embedders: readiness now means "the ONNX session is warm",
+# and a warm-up takes real time, so a single replica is a guaranteed retrieval
+# outage every time its node is recycled. Two replicas also make the PDB below
+# meaningful — at one replica the chart deliberately renders no PDB at all,
+# because `minAvailable: 1` on a single pod blocks `kubectl drain` forever.
+#
+# GUARANTEED QoS in prod: requests == limits, deliberately.
+#
+# The usual objection is that this "wastes" 3Gi/2 CPU per replica. It buys two
+# things that prod actually needs, and neither is available at any other QoS:
+#
+#  1. NON-EVICTABLE. ONNX Runtime's BFC arena never returns memory to the OS, so
+#     the pod's RSS ratchets up to its high-water batch and stays there for the
+#     pod's whole life. Under Burstable, kubelet ranks pods for eviction by usage
+#     ABOVE request — a sidecar durably resident well over a modest request is
+#     therefore the FIRST thing evicted under node pressure, despite behaving
+#     perfectly. Guaranteed pods are evicted last. Evicting the only warm
+#     embedder is a retrieval outage that costs a full cold start to undo.
+#  2. NOT CPU-THROTTLED TO THE REQUEST. Under contention CFS squeezes a container
+#     toward its request; with requests == limits there is no gap to squeeze into.
+#     That matters because the sidecar's realistic failure mode is a CLIENT
+#     TIMEOUT, not an OOM: a 64-chunk batch is ~46 CPU-seconds (see the CPU
+#     arithmetic in values.yaml), which is ~23 s wall at 2000m and ~184 s at
+#     250m — and EMBEDDINGS_TIMEOUT_MS is 120 s. #787's reindex is precisely this
+#     sustained-batch workload.
+#
+# Memory limit is the chart's 3Gi (resident floor + a worst-case 64 × 8192-token
+# batch — arithmetic in values.yaml). If you must trade the reservation back,
+# lower requests to at most limits/2 and accept Burstable; do NOT go below that.
+embeddings:
+  replicaCount: 2
+  resources:
+    requests:
+      memory: 3Gi
+      cpu: "2000m"
+    limits:
+      memory: 3Gi
+      cpu: "2000m"
+
+# Shared backends that make server.replicaCount > 1 correct.
+scaling:
+  enforce: true
+  rateLimitBackend: postgres        # DISCUSSION_RATE_LIMIT_BACKEND (#541)
+  ssoStateBackend: postgres         # SSO_STATE_BACKEND (#542)
+  vectorStore: pgvector             # VECTOR_STORE (#543) — needs the pgvector extension
+  leaderElection: postgres          # SCHEDULER_LEADER_ELECTION (#544)
+  # database.url left empty: DATABASE_URL (postgres://…) is provided via
+  # externalSecrets (keyMap.DATABASE_URL). The pgvector extension must be
+  # available in that Postgres (RDS/Aurora: CREATE EXTENSION vector).
+
+# Uploads on S3 so every replica shares one durable store (#546). OPERATOR: set
+# the bucket/region and grant the IRSA role (serviceAccount.annotations below)
+# s3:GetObject/PutObject/DeleteObject/ListBucket on the bucket + prefix keyspace.
+uploads:
+  backend: s3
+  s3:
+    bucket: ""                      # OPERATOR: set the uploads bucket name
+    region: us-east-1               # OPERATOR: match your bucket region
+    prefix: uploads
+
+# Disaster Recovery (Epic #70). The Postgres standby (RDS/Aurora cross-Region
+# read replica) and S3 CRR on the uploads bucket are provisioned operator-side;
+# these knobs only tune the METIS server + `pnpm dr:check`. RPO ≤ 5 min /
+# RTO ≤ 30 min — see docs/OPERATIONS.md §10 and docs/DR_RUNBOOK.md.
+disasterRecovery:
+  region: us-east-1                 # OPERATOR: active/primary region
+  standbyRegion: us-west-2          # OPERATOR: standby/DR region
+  maxReplicationLagSeconds: "300"   # alarm at 5 min — below the 10-min RPO budget
+
+persistence:
+  enabled: true
+  reclaimPolicy: Retain
+  uploads:
+    size: 50Gi
+    storageClassName: gp3
+  lancedb:
+    size: 20Gi
+    storageClassName: gp3
+externalSecrets:
+  enabled: true
+  secretStoreName: aws-secrets-manager
+  secretStoreKind: ClusterSecretStore
+  refreshInterval: 1h
+  remoteRefPrefix: metis/
+secrets:
+  create: false
+ingress:
+  enabled: true
+  className: alb
+  host: metis.example.com
+  alb:
+    scheme: internet-facing
+    # OPERATOR: set certificateArn to a valid ACM cert ARN.
+    certificateArn: ""
+serviceAccount:
+  create: true
+  annotations:
+    # OPERATOR: replace with the IRSA role ARN created by `eksctl create iamserviceaccount`.
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/metis-server
+rbac:
+  create: true
+  scope: namespaced
+  mcpNamespace: metis-mcp
+autoscaling:
+  ui:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+  server:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+pdb:
+  enabled: true
+networkPolicy:
+  enabled: true
+  ingressNamespaceSelector:
+    kubernetes.io/metadata.name: ingress-nginx
+  cilium:
+    enabled: false

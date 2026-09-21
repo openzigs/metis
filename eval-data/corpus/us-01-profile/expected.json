@@ -1,0 +1,23 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Edit display name",
+    "description": "A member updates their display name from the profile page.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Upload avatar",
+    "description": "A member should be able to upload a profile avatar image.",
+    "priority": "medium"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Set pronouns",
+    "description": "A member may add pronouns shown next to their name.",
+    "priority": "low"
+  }
+]

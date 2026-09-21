@@ -1,0 +1,31 @@
+{{- /*
+Prometheus ServiceMonitor (opt-in — requires prometheus-operator CRDs).
+Scrapes the server /metrics endpoint with METRICS_TOKEN as a bearer token,
+sourced from the same Secret the deployments mount (see secret.yaml /
+external-secret.yaml). Folded in from the former charts/metis tree during the
+#540 chart reconciliation.
+*/ -}}
+{{- if .Values.serviceMonitor.enabled -}}
+{{- $bearerName := default (include "metis.secretName" .) .Values.serviceMonitor.bearerTokenSecretRef.name -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ printf "%s-server" (include "metis.fullname" .) }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "server") | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "metis.selectorLabels" (dict "root" . "component" "server") | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+      bearerTokenSecret:
+        name: {{ $bearerName }}
+        key: {{ .Values.serviceMonitor.bearerTokenSecretRef.key }}
+{{- end -}}

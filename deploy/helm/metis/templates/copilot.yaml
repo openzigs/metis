@@ -1,0 +1,5 @@
+{{- if .Values.copilot.enabled -}}
+{{ include "metis.componentDeployment" (dict "root" . "component" .Values.copilot "name" "copilot") }}
+---
+{{ include "metis.componentService" (dict "root" . "component" .Values.copilot "name" "copilot") }}
+{{- end }}

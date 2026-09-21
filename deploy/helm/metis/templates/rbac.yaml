@@ -1,0 +1,78 @@
+{{- /*
+RBAC — sub-issue #370.
+Two scopes:
+  * namespaced (default) — Role + RoleBinding in metis-mcp namespace
+  * cluster              — ClusterRole + ClusterRoleBinding (use sparingly)
+The METIS server pod uses these to manage per-MCP Deployments / Services /
+NetworkPolicies / ServiceAccounts at runtime (k8s-sse runtime, Epic #272).
+*/ -}}
+{{- if .Values.rbac.create -}}
+{{- $sa := include "metis.serviceAccountName" . -}}
+{{- if eq .Values.rbac.scope "cluster" }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ printf "%s-mcp-provisioner" (include "metis.fullname" .) }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "rbac") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [services, serviceaccounts, configmaps, secrets, pods, pods/log, events]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: ["apps"]
+    resources: [deployments]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [networkpolicies]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ printf "%s-mcp-provisioner" (include "metis.fullname" .) }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "rbac") | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ printf "%s-mcp-provisioner" (include "metis.fullname" .) }}
+{{- else }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ printf "%s-mcp-provisioner" (include "metis.fullname" .) }}
+  namespace: {{ .Values.rbac.mcpNamespace }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "rbac") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [services, serviceaccounts, configmaps, secrets, pods, pods/log, events]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: ["apps"]
+    resources: [deployments]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [networkpolicies]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ printf "%s-mcp-provisioner" (include "metis.fullname" .) }}
+  namespace: {{ .Values.rbac.mcpNamespace }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "rbac") | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ printf "%s-mcp-provisioner" (include "metis.fullname" .) }}
+{{- end }}
+{{- end }}

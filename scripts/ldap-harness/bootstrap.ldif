@@ -1,0 +1,75 @@
+# =============================================================================
+# bootstrap.ldif — deterministic seed for the local LDAP test harness
+# (Issue #525, Epic #517).
+#
+# Loaded by bitnami/openldap via LDAP_CUSTOM_LDIF_DIR=/ldifs on FIRST boot.
+# Providing a custom LDIF makes bitnami import THIS tree verbatim (instead of the
+# default user01/user02 sample), so the directory is identical on every boot.
+#
+# Layout (matches scripts/lib/ldap-harness.mjs DEFAULTS):
+#   dc=metis,dc=local                         (root suffix / baseDN)
+#   ├── ou=users                              (AUTH_LDAP_USER_SEARCH_BASE)
+#   │   ├── uid=alice  (member of metis-admins)
+#   │   └── uid=bob    (member of metis-developers)
+#   └── ou=groups
+#       ├── cn=metis-admins      (groupOfNames; alice)
+#       └── cn=metis-developers  (groupOfNames; bob)
+#
+# WHY each user carries an explicit `memberOf`:
+#   METIS's LDAP provider reads the `memberOf` attribute and extracts the CN of
+#   each group DN via the regex /^CN=([^,]+)/i (ldap-provider.ts:108-115). We
+#   stamp the FULL group DN onto each user so that regex yields the bare group
+#   NAME (`metis-admins`), which is the `claimValue` METIS maps to a role. We add
+#   `memberOf` explicitly (with objectClass extensibleObject to permit it) rather
+#   than relying on the memberof overlay, so seeding is deterministic regardless
+#   of overlay availability in the image revision.
+#
+# WHY cleartext `userPassword`:
+#   OpenLDAP (slapd) accepts a cleartext userPassword and binds against it. This
+#   is a THROWAWAY local-dev directory only — never use cleartext in production.
+# =============================================================================
+
+# --- Organizational units -----------------------------------------------------
+dn: ou=users,dc=metis,dc=local
+objectClass: organizationalUnit
+ou: users
+
+dn: ou=groups,dc=metis,dc=local
+objectClass: organizationalUnit
+ou: groups
+
+# --- Users (inetOrgPerson; extensibleObject so memberOf is permitted) ----------
+dn: uid=alice,ou=users,dc=metis,dc=local
+objectClass: inetOrgPerson
+objectClass: extensibleObject
+uid: alice
+cn: Alice Admin
+sn: Admin
+givenName: Alice
+displayName: Alice Admin
+mail: alice@metis.local
+userPassword: alicepass
+memberOf: cn=metis-admins,ou=groups,dc=metis,dc=local
+
+dn: uid=bob,ou=users,dc=metis,dc=local
+objectClass: inetOrgPerson
+objectClass: extensibleObject
+uid: bob
+cn: Bob Developer
+sn: Developer
+givenName: Bob
+displayName: Bob Developer
+mail: bob@metis.local
+userPassword: bobpass
+memberOf: cn=metis-developers,ou=groups,dc=metis,dc=local
+
+# --- Groups (groupOfNames; member is the full user DN) -------------------------
+dn: cn=metis-admins,ou=groups,dc=metis,dc=local
+objectClass: groupOfNames
+cn: metis-admins
+member: uid=alice,ou=users,dc=metis,dc=local
+
+dn: cn=metis-developers,ou=groups,dc=metis,dc=local
+objectClass: groupOfNames
+cn: metis-developers
+member: uid=bob,ou=users,dc=metis,dc=local

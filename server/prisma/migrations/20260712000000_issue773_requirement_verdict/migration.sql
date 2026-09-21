@@ -1,0 +1,14 @@
+-- Issue #773 — per-requirement three-state verdict.
+--
+-- Adds `requirements.verdict` (nullable): `implemented` | `gap-confirmed` |
+-- `could-not-verify`, computed deterministically at synthesis from the
+-- requirement's linked CODE findings and the run's retrieval health. It is NOT a
+-- synonym for `coverage` (#736): coverage says what KIND of evidence exists,
+-- while the verdict says whether we may tell a user to BUILD something. Before
+-- this, a requirement whose code search simply FAILED was surfaced as a confirmed
+-- gap — the #773 incident.
+--
+-- Requirements are delete+recreated on every analysis re-run, so a plain nullable
+-- column (no backfill) suffices: existing rows read as `null` and the UI renders a
+-- neutral state. ADDITIVE: non-destructive and reversible.
+ALTER TABLE "requirements" ADD COLUMN "verdict" TEXT;

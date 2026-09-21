@@ -1,0 +1,46 @@
+{{- /*
+PVC templates — sub-issue #367 (CRITICAL).
+Default: EBS gp3 RWO. Toggle persistence.efs.enabled=true to switch to RWX.
+Reclaim policy is set on the StorageClass — `helm.sh/resource-policy: keep`
+ensures `helm uninstall` does not delete the PVC even if the SC reclaim is Delete.
+*/ -}}
+{{- if .Values.persistence.enabled -}}
+{{- $efs := .Values.persistence.efs.enabled -}}
+{{- $accessModes := list "ReadWriteOnce" -}}
+{{- if $efs }}{{ $accessModes = list "ReadWriteMany" }}{{ end -}}
+{{- $uploadsSC := .Values.persistence.uploads.storageClassName -}}
+{{- $lancedbSC := .Values.persistence.lancedb.storageClassName -}}
+{{- if $efs }}{{ $uploadsSC = .Values.persistence.efs.storageClassName }}{{ $lancedbSC = .Values.persistence.efs.storageClassName }}{{ end -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-server-uploads" (include "metis.fullname" .) }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "server") | nindent 4 }}
+  annotations:
+    # Retain the PVC even if `helm uninstall` is run by an over-eager operator.
+    "helm.sh/resource-policy": {{ eq .Values.persistence.reclaimPolicy "Retain" | ternary "keep" "" | quote }}
+spec:
+  accessModes:
+    {{- toYaml $accessModes | nindent 4 }}
+  storageClassName: {{ $uploadsSC | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.uploads.size | quote }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-server-lancedb" (include "metis.fullname" .) }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "server") | nindent 4 }}
+  annotations:
+    "helm.sh/resource-policy": {{ eq .Values.persistence.reclaimPolicy "Retain" | ternary "keep" "" | quote }}
+spec:
+  accessModes:
+    {{- toYaml $accessModes | nindent 4 }}
+  storageClassName: {{ $lancedbSC | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.lancedb.size | quote }}
+{{- end }}

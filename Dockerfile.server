@@ -1,0 +1,366 @@
+# ==============================================================================
+# METIS Server Dockerfile (pnpm workspace)
+#
+# Issue #145 — slim runtime. Strategy:
+#
+#   1. Sidecar embeddings (`Dockerfile.embeddings`) owns `@huggingface/transformers`
+#      + `onnxruntime-node` — neither lives in this image any more.
+#   2. `@huggingface/transformers` is now a devDependency — used by tests + dev
+#      mode only.
+#   3. Multi-stage build: deps → build → prod-deps → runtime. The runtime
+#      image only carries production deps + compiled JS, never the dev tree.
+#   4. Surgical post-install prune of `@github/copilot` CLI fat (tree-sitter
+#      wasm grammars for languages we don't inspect, README/CHANGELOG).
+#
+# Base image: `node:20-alpine` (~75 MB). Native modules left in the runtime
+# tree (`argon2`, `@lancedb/vectordb`, `@github/copilot`, `@prisma/client`)
+# all ship musl variants.
+# ==============================================================================
+
+ARG NODE_VERSION=20
+
+# ----- Stage 1: deps + build (full dev tree) -------------------------------
+FROM node:${NODE_VERSION}-alpine AS builder
+WORKDIR /app
+
+ENV PNPM_HOME=/usr/local/share/pnpm
+ENV PATH="${PNPM_HOME}:${PATH}"
+
+RUN apk add --no-cache libc6-compat python3 make g++ \
+ && corepack enable \
+ && corepack prepare pnpm@10.33.0 --activate
+
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* tsconfig.base.json ./
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/ui-kit/package.json ./packages/ui-kit/
+COPY server/package.json ./server/
+COPY server/embeddings-svc/package.json ./server/embeddings-svc/
+COPY ui/package.json ./ui/
+COPY e2e/package.json ./e2e/
+
+# Install dev+prod for the server graph (and shared workspace pkg). We do
+# NOT install the embeddings sidecar — its deps stay out of this image.
+# --ignore-scripts skips the server's `postinstall: prisma generate` hook,
+# which would otherwise fail here because the Prisma schema isn't copied into
+# the build context yet. The schema is brought in below and `prisma generate`
+# runs explicitly after that. (Prisma 7 hard-fails the postinstall when the
+# schema is absent, whereas earlier majors no-op'd.)
+RUN pnpm install --frozen-lockfile --filter @metis/server... --filter @metis/shared --ignore-scripts
+
+COPY tsconfig.base.json ./
+COPY packages/shared ./packages/shared
+COPY server ./server
+
+# Build shared first, then generate Prisma client (must happen before tsc
+# because the server imports types from @prisma/client), then compile.
+RUN pnpm --filter @metis/shared build \
+ && pnpm --filter @metis/server prisma generate \
+ && pnpm --filter @metis/server build
+
+# ----- optional: bake in-process Xenova weights (issue #936) ---------------
+# When INCLUDE_XENOVA=1, download the embed model into a cache dir at BUILD
+# time so an in-process `EMBED_BACKEND=xenova` deployment runs air-gapped with
+# HF_HUB_OFFLINE=1. The cache dir is always created (empty when skipped) so the
+# runtime COPY below is unconditional. `@huggingface/transformers` is a server
+# devDependency and is present in this builder stage.
+#
+# Equivalent runtime/first-boot helper (issue #941): the inline bake below
+# mirrors `pnpm --filter @metis/server prefetch:embeddings`, which loads the
+# EMBED_BACKEND/EMBED_MODEL-configured model once to populate the cache. Use the
+# script in entrypoints or ad-hoc; use this build-time bake to ship a baked image.
+#
+# DTYPE LOCKSTEP (#781, made structural in #782): the bake reads `EMBED_DTYPE` —
+# the SAME env var the runtime reads (`resolveDtype()` in
+# server/src/lib/rag/embed-model-config.ts) — and the runner stage re-exports the
+# same build arg. transformers.js v3 resolves a different weights file per dtype,
+# so a mismatch leaves the HF_HUB_OFFLINE=1 runtime unable to find the model it
+# baked. `server/tests/embeddings-dtype-lockstep.test.ts` fails CI on drift.
+ARG INCLUDE_XENOVA=0
+ARG XENOVA_EMBED_MODEL=Alibaba-NLP/gte-modernbert-base
+ARG EMBED_DTYPE=q8
+ENV METIS_XENOVA_CACHE=/opt/metis-xenova-cache
+ENV EMBED_DTYPE=${EMBED_DTYPE}
+RUN mkdir -p "${METIS_XENOVA_CACHE}" \
+ && if [ "${INCLUDE_XENOVA}" = "1" ]; then \
+      cd /app && node -e "(async () => { \
+        const t = await import('@huggingface/transformers'); \
+        const dtype = process.env.EMBED_DTYPE; \
+        t.env.cacheDir = process.env.METIS_XENOVA_CACHE; \
+        t.env.allowRemoteModels = true; \
+        await t.pipeline('feature-extraction', process.env.XENOVA_EMBED_MODEL, { dtype }); \
+        console.log('[xenova-bake] cached ' + process.env.XENOVA_EMBED_MODEL + ' (dtype=' + dtype + ')'); \
+      })().catch((e) => { console.error('[xenova-bake] FAILED', e); process.exit(1); });" ; \
+    else \
+      echo '[xenova-bake] skipped (INCLUDE_XENOVA=0) — using embeddings sidecar'; \
+    fi
+
+# ----- Stage 2: prod install (clean, no devDeps) ---------------------------
+# Fresh stage so we get a fresh node_modules with prod-only deps. We can't
+# reuse the dev tree from the builder stage because pnpm's symlinked store
+# retains stale dev metadata even after `prune --prod`.
+FROM node:${NODE_VERSION}-alpine AS prod-deps
+WORKDIR /app
+
+ENV PNPM_HOME=/usr/local/share/pnpm
+ENV PATH="${PNPM_HOME}:${PATH}"
+
+RUN apk add --no-cache libc6-compat python3 make g++ \
+ && corepack enable \
+ && corepack prepare pnpm@10.33.0 --activate
+
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* tsconfig.base.json ./
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/ui-kit/package.json ./packages/ui-kit/
+COPY server/package.json ./server/
+COPY server/embeddings-svc/package.json ./server/embeddings-svc/
+COPY ui/package.json ./ui/
+COPY e2e/package.json ./e2e/
+
+# Bring the schema across so we can run `prisma generate` without re-installing
+# the source tree.
+COPY server/prisma ./server/prisma
+
+RUN pnpm install --prod --frozen-lockfile \
+      --filter @metis/server... --filter @metis/shared \
+      --ignore-scripts \
+ && pnpm rebuild --filter @metis/server \
+ && pnpm --filter @metis/server prisma generate \
+ && pnpm store prune \
+ && rm -rf /root/.cache /root/.npm /root/.local /tmp/* /usr/local/share/pnpm/store
+
+# Post-install prune: drop transitive dev-time fat that @prisma/client lists
+# as optional peer deps (typescript, prisma CLI, effect from @prisma/config).
+# These are NOT needed at runtime — the Prisma client has already been
+# generated above. Keeping them adds ~110 MB for nothing.
+RUN set -eux; \
+    rm -rf node_modules/.pnpm/typescript@* \
+           node_modules/.pnpm/prisma@*  \
+           node_modules/.pnpm/@prisma+config@* \
+           node_modules/.pnpm/@prisma+debug@* \
+           node_modules/.pnpm/@prisma+fetch-engine@* \
+           node_modules/.pnpm/@prisma+get-platform@* \
+           node_modules/.pnpm/@prisma+engines@* \
+           node_modules/.pnpm/@prisma+engines-version@* \
+           node_modules/.pnpm/effect@* \
+           node_modules/.pnpm/magicast@* \
+           node_modules/.pnpm/@babel+* \
+           node_modules/.pnpm/c12@* \
+           node_modules/.pnpm/citty@* \
+           node_modules/.pnpm/giget@* \
+           node_modules/.pnpm/jiti@* \
+           2>/dev/null || true; \
+    # Drop the dangling top-level prisma symlink + the .bin entries that
+    # point at it. Nothing at runtime invokes the CLI.
+    rm -rf node_modules/prisma node_modules/.bin/prisma \
+           node_modules/.bin/tsc node_modules/.bin/tsserver \
+           server/node_modules/prisma server/node_modules/.bin/prisma \
+           2>/dev/null || true
+
+# Surgical prune of unused fat from the @github/copilot CLI bundle.
+# - tree-sitter grammars for languages METIS does not inspect via the SDK
+# - README, CHANGELOG, docs, examples, test fixtures
+#
+# This block follows symlinks into the .pnpm store so it works whether the
+# package is hoisted or symlinked. We are intentionally tolerant of missing
+# files — `|| true` keeps the build green if the upstream layout shifts.
+RUN set -eux; \
+    for COPILOT_DIR in $(find node_modules -path '*/@github/copilot' -type d 2>/dev/null); do \
+      cd "$COPILOT_DIR"; \
+      rm -rf README.md CHANGELOG.md changelog.json LICENSE.md docs examples test __tests__ 2>/dev/null || true; \
+      find . -maxdepth 1 -name 'tree-sitter-*.wasm' \
+        ! -name 'tree-sitter-typescript.wasm' \
+        ! -name 'tree-sitter-tsx.wasm' \
+        ! -name 'tree-sitter-javascript.wasm' \
+        ! -name 'tree-sitter-json.wasm' \
+        ! -name 'tree-sitter-python.wasm' \
+        ! -name 'tree-sitter-go.wasm' \
+        ! -name 'tree-sitter-java.wasm' \
+        -delete 2>/dev/null || true; \
+      cd /app; \
+    done
+
+# Surgical prune of unused fat from the rest of the prod tree.
+#   - node-sql-parser ships a 45 MB UMD bundle, a 23 MB build dir, and a
+#     17 MB source map alongside the 2.4 MB CommonJS entry we actually use.
+#   - @prisma/client/runtime ships WASM query engines for every supported
+#     database (cockroachdb, mysql, sqlserver, sqlite, postgresql) plus
+#     edge/browser variants. METIS only uses postgres in prod and sqlite
+#     in dev/test; drop the rest plus all *.map source maps.
+#   - pdfjs-dist ships both a "legacy" build and a "build" directory. We
+#     only use the legacy one (CommonJS). Drop the modern build, web, and
+#     image_decoders dirs.
+#   - All packages: drop *.map, *.md, README*, CHANGELOG*, LICENSE* (kept
+#     in tarball metadata anyway).
+RUN set -eux; \
+    # node-sql-parser
+    for D in $(find node_modules/.pnpm -path '*/node-sql-parser' -type d 2>/dev/null); do \
+      rm -rf "$D/umd" "$D/build" "$D/index.js.map" "$D/README.md" 2>/dev/null || true; \
+    done; \
+    # @prisma/client/runtime — keep only postgres + sqlite + library.d.ts
+    for D in $(find node_modules/.pnpm -path '*/@prisma/client/runtime' -type d 2>/dev/null); do \
+      cd "$D"; \
+      rm -f query_engine_bg.cockroachdb.* query_engine_bg.mysql.* \
+            query_engine_bg.sqlserver.* edge*.js edge*.mjs edge*.map \
+            index-browser.* react-native.* binary.* 2>/dev/null || true; \
+      find . -name '*.map' -delete 2>/dev/null || true; \
+      cd /app; \
+    done; \
+    # pdfjs-dist — pdf-parse only uses the legacy build; drop the modern one.
+    for D in $(find node_modules/.pnpm -path '*/pdfjs-dist' -type d 2>/dev/null); do \
+      rm -rf "$D/build" "$D/web" "$D/image_decoders" "$D/wasm" \
+             "$D/standard_fonts" "$D/iccs" 2>/dev/null || true; \
+      find "$D" -name '*.map' -delete 2>/dev/null || true; \
+    done; \
+    # Universal: drop source maps, READMEs, CHANGELOGs, examples.
+    find node_modules -name '*.map' -size +50k -delete 2>/dev/null || true; \
+    find node_modules -maxdepth 5 \( \
+        -iname 'README*' -o -iname 'CHANGELOG*' -o -iname 'HISTORY*' \
+        -o -iname '*.md' -o -name 'LICENSE.txt' \
+      \) -size +1k -delete 2>/dev/null || true; \
+    find node_modules -maxdepth 5 -type d \( \
+        -name 'docs' -o -name 'examples' -o -name 'example' \
+        -o -name '__tests__' -o -name 'test' -o -name 'tests' \
+        -o -name 'doc' \
+      \) -exec rm -rf {} + 2>/dev/null || true; \
+    # Drop @github/copilot CLI from the runtime tree. The Copilot-native AI
+    # provider is **NOT supported** in this slim image — see docs/OPERATIONS.md.
+    # Other AI providers (bedrock-gateway, openai, azure, anthropic,
+    # offline-stub) work normally because the SDK is dynamically imported.
+    rm -rf node_modules/.pnpm/@github+copilot@* \
+           node_modules/.pnpm/@github+copilot-linux-* \
+           node_modules/.pnpm/@github+copilot-darwin-* \
+           node_modules/.pnpm/@github+copilot-win32-* \
+           node_modules/.pnpm/@github+copilot-sdk@* \
+           node_modules/@github/copilot* \
+           server/node_modules/@github/copilot* \
+           2>/dev/null || true; \
+    # Drop transitive test/dev fat: fast-check (testing util pulled in by
+    # effect → @prisma/config), @types/* (compile-time only), apache-arrow
+    # TypeScript sources, mysql2 (we use postgres only via prisma).
+    rm -rf node_modules/.pnpm/fast-check@* \
+           node_modules/.pnpm/@types+* \
+           node_modules/.pnpm/@apache-arrow+ts@* \
+           node_modules/.pnpm/mysql2@* \
+           2>/dev/null || true; \
+    # Drop production sqlite/sqlserver/cockroachdb/mysql query compilers
+    # from @prisma/client/runtime — production deployments use Postgres only.
+    for D in $(find node_modules/.pnpm -path '*/@prisma/client/runtime' -type d 2>/dev/null); do \
+      cd "$D"; \
+      rm -f query_compiler_bg.cockroachdb.* query_compiler_bg.mysql.* \
+            query_compiler_bg.sqlserver.* query_compiler_bg.sqlite.* \
+            query_engine_bg.sqlite.* 2>/dev/null || true; \
+      cd /app; \
+    done; \
+    # Drop apache-arrow TypeScript sources (1.1 MB) — lance only loads the
+    # compiled .js bundles. Drop lodash/fp variant (1.6 MB) — server only
+    # uses the standard build.
+    rm -rf node_modules/.pnpm/apache-arrow*/node_modules/apache-arrow/src \
+           node_modules/.pnpm/lodash*/node_modules/lodash/fp \
+           node_modules/.pnpm/lodash*/node_modules/lodash/fp.js \
+           2>/dev/null || true; \
+    # Drop pdf-parse v2 helper assets we don't need (worker scripts, demos).
+    find node_modules/.pnpm -path '*/pdf-parse/test*' -prune -exec rm -rf {} + 2>/dev/null || true; \
+    # Drop all .d.ts files — runtime doesn't need TypeScript declarations.
+    find node_modules -name '*.d.ts' -delete 2>/dev/null || true; \
+    find node_modules -name '*.d.mts' -delete 2>/dev/null || true; \
+    find node_modules -name '*.d.cts' -delete 2>/dev/null || true; \
+    find node_modules -name '*.map' -delete 2>/dev/null || true; \
+    find node_modules -name '*.ts' -not -name '*.d.ts' -delete 2>/dev/null || true; \
+    find node_modules -name 'tsconfig*.json' -delete 2>/dev/null || true; \
+    # Drop pkg .github, .vscode, benchmarks, samples
+    find node_modules -maxdepth 5 -type d \( \
+        -name '.github' -o -name '.vscode' -o -name 'benchmarks' \
+        -o -name 'samples' -o -name 'sample' \
+      \) -exec rm -rf {} + 2>/dev/null || true
+
+# ----- Stage 3: runtime ----------------------------------------------------
+FROM node:${NODE_VERSION}-alpine AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=4000
+
+# ----- AGPL-3.0 §13 source offer (#1296) -----------------------------------
+# `/source` and `/api/source` answer with the commit this process is running, read
+# from the environment on every request. Baking it into the image at build time
+# means the offer is correct for an image run with no compose file and no `-e`
+# flag, which is how images actually get run. A deploy-time `-e METIS_SOURCE_COMMIT`
+# still overrides it. Empty is a supported state: the endpoint degrades to naming
+# the repository without a commit rather than failing.
+ARG METIS_SOURCE_COMMIT=""
+ENV METIS_SOURCE_COMMIT=${METIS_SOURCE_COMMIT}
+LABEL org.opencontainers.image.revision=${METIS_SOURCE_COMMIT}
+LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
+LABEL org.opencontainers.image.source="https://github.com/openzigs/metis"
+# Default to the sidecar — `metis-embeddings` must be reachable via this URL
+# and `EMBEDDINGS_TOKEN` must match. Override at deploy time.
+ENV EMBEDDINGS_MODE=sidecar
+ENV EMBEDDINGS_URL=http://embeddings:5050
+# ----- Optional in-process offline embeddings (issue #936) -----------------
+# By default this image delegates embeddings to the sidecar (above) and does
+# NOT carry `@huggingface/transformers`. To run the embedder IN-PROCESS and fully
+# air-gapped instead, build with `--build-arg INCLUDE_XENOVA=1` (which bakes
+# the ONNX weights into TRANSFORMERS_CACHE in the builder stage) and deploy
+# with `EMBED_BACKEND=xenova`. `HF_HUB_OFFLINE=1` then forces `XenovaEmbedder`
+# to load the baked weights only — a missing cache fails loud (no silent
+# download, no hash fallback). See docs/EMBEDDINGS_BACKENDS.md.
+ENV TRANSFORMERS_CACHE=/app/.cache/huggingface
+# Issue #782 — the runtime asks for exactly the dtype the builder baked above.
+# Same build arg, so `--build-arg EMBED_DTYPE=fp32` moves BOTH in one step.
+ARG EMBED_DTYPE=q8
+ENV EMBED_DTYPE=${EMBED_DTYPE}
+
+RUN apk add --no-cache libc6-compat \
+ && addgroup --system --gid 1001 metis \
+ && adduser  --system --uid 1001 --ingroup metis metis
+
+# Oracle Instant Client for thick mode (supports pre-12c password verifiers).
+# gcompat provides glibc compatibility layer needed by Oracle's prebuilt libs.
+# The libs are downloaded once at image build and add ~35 MB to the runtime layer.
+# Set ORACLE_CLIENT_DIR=/opt/oracle/instantclient at deploy time to enable.
+#
+# TARGETARCH is injected automatically by BuildKit so multi-arch builds fetch
+# the matching client (the previous hard-coded 23.4 arm64 URL 404'd after Oracle
+# rotated it off the CDN, and shipped arm64 libs into amd64 images).
+ARG TARGETARCH
+RUN apk add --no-cache gcompat curl unzip \
+ && mkdir -p /opt/oracle \
+ && if [ "$TARGETARCH" = "arm64" ]; then \
+      OIC_URL="https://download.oracle.com/otn_software/linux/instantclient/2390000/instantclient-basiclite-linux.arm64-23.9.0.25.07.zip"; \
+    else \
+      OIC_URL="https://download.oracle.com/otn_software/linux/instantclient/2390000/instantclient-basiclite-linux.x64-23.9.0.25.07.zip"; \
+    fi \
+ && curl -fsSL "$OIC_URL" -o /tmp/ic.zip \
+ && unzip -q /tmp/ic.zip -d /opt/oracle \
+ && mv /opt/oracle/instantclient_* /opt/oracle/instantclient \
+ && rm /tmp/ic.zip \
+ && apk del curl unzip \
+ && ln -s /opt/oracle/instantclient/libclntsh.so /usr/lib/libclntsh.so
+
+# Compiled application code.
+COPY --from=builder    --chown=metis:metis /app/server/dist             ./server/dist
+COPY --from=builder    --chown=metis:metis /app/server/prisma           ./server/prisma
+COPY --from=builder    --chown=metis:metis /app/packages/shared/dist    ./packages/shared/dist
+# Baked Xenova weights (issue #936). Empty unless built with INCLUDE_XENOVA=1.
+COPY --from=builder    --chown=metis:metis /opt/metis-xenova-cache       ./.cache/huggingface
+
+# Manifests + workspace structure for module resolution.
+COPY --from=prod-deps  --chown=metis:metis /app/package.json            ./package.json
+COPY --from=prod-deps  --chown=metis:metis /app/pnpm-workspace.yaml     ./pnpm-workspace.yaml
+COPY --from=prod-deps  --chown=metis:metis /app/server/package.json     ./server/package.json
+COPY --from=prod-deps  --chown=metis:metis /app/packages/shared/package.json ./packages/shared/package.json
+
+# Prod-only node_modules. The .pnpm/ store is shared at the workspace root;
+# each workspace's node_modules/ holds the symlinks.
+COPY --from=prod-deps  --chown=metis:metis /app/node_modules            ./node_modules
+COPY --from=prod-deps  --chown=metis:metis /app/server/node_modules     ./server/node_modules
+COPY --from=prod-deps  --chown=metis:metis /app/packages/shared/node_modules ./packages/shared/node_modules
+
+USER metis
+
+EXPOSE 4000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "require('http').get({host:'127.0.0.1',port:process.env.PORT||4000,path:'/healthz',timeout:4000},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+
+CMD ["node", "server/dist/index.js"]

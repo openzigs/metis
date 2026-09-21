@@ -1,0 +1,223 @@
+name: Build core images — multi-arch
+
+# Sub-issue #373 (Epic #360) — multi-arch (linux/amd64,linux/arm64) buildx
+# of the four core METIS images:
+#   - server         → Dockerfile.server
+#   - ui             → Dockerfile.ui
+#   - embeddings-svc → Dockerfile.embeddings
+#   - copilot-svc    → Dockerfile.copilot-svc
+#
+# On a release tag (`v*`) all four images are built for both architectures
+# and pushed to GHCR with both `<tag>` and `latest` references. On a PR
+# touching the Dockerfiles, the chart, or the source tree, we build for
+# the runner's NATIVE arch only (no push) to validate compilation.
+#
+# That native arch is now linux/amd64. It used to be linux/arm64, because the
+# runner was arm64 and an emulated amd64 build segfaulted
+# `next build` (Dockerfile.ui) under QEMU with signal 11, hanging the job to
+# its 60-minute timeout. GitHub-hosted standard runners are amd64, so the
+# emulation that caused that is gone and the native build is the amd64 one.
+# The tag-publish path below still produces both architectures.
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Heavy multi-arch image builds run on release tags only — NOT on PRs.
+  # PR-time Dockerfile validation for the core images is covered by ci.yml's
+  # `api` job (native amd64 build + image-size gate), so PRs stay fast and the
+  # 4-runner box isn't flooded with concurrent buildx jobs.
+  workflow_dispatch:
+
+concurrency:
+  group: build-images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The publishing namespace follows whoever owns the repository, so a fork
+  # publishes to its own org and nothing here has to be edited when ownership
+  # moves (#1373). Today that resolves to `ghcr.io/openzigs`.
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.image.name }}
+    runs-on: ubuntu-latest
+    # Dependency-only bumps (dependabot PRs) don't need multi-arch Docker
+    # validation — the CI workflow already runs `docker build` for those.
+    # Skipping here prevents a flood of BuildKit containers on the
+    # runner when dependabot opens several PRs simultaneously.
+    if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: server, dockerfile: Dockerfile.server }
+          - { name: ui, dockerfile: Dockerfile.ui }
+          - { name: embeddings-svc, dockerfile: Dockerfile.embeddings }
+          - { name: copilot-svc, dockerfile: Dockerfile.copilot-svc }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Remove orphaned BuildKit builders
+        # Builders from cancelled/failed prior runs are not always cleaned up
+        # by setup-buildx-action's post-step. Prune ONLY this image's own stale
+        # builders from previous runs — never a blanket `builder-*` removal.
+        #
+        # Why: the 4 matrix jobs (server/ui/embeddings-svc/copilot-svc) run on
+        # runner instances that used to SHARE ONE Docker daemon on
+        # the same Mac. A blanket `docker buildx rm` of every `builder-*` would
+        # delete the builder a *sibling* job is actively using, killing its
+        # build with `graceful_stop`/`goaway` EOF. The fast images finished
+        # before being nuked; the slow UI `next build` consistently lost its
+        # builder mid-build. Scoping cleanup to this job's own image-named
+        # builder eliminates the cross-job interference.
+        run: |
+          docker buildx ls 2>/dev/null \
+            | awk 'NR>1 && /^metis-${{ matrix.image.name }}-/ {print $1}' \
+            | xargs -r docker buildx rm --force 2>/dev/null || true
+
+      - name: Resolve tag
+        id: meta
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/}"
+          else
+            version="pr-${{ github.event.pull_request.number || 'manual' }}"
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up QEMU (multi-arch emulation)
+        # PR validation builds only target the native runner arch —
+        # no QEMU emulation needed. Skip this step on PRs to avoid pulling
+        # tonistiigi/binfmt:latest from Docker Hub on every PR, which causes
+        # 30+ min hangs if the image has been evicted from the local Docker
+        # daemon (e.g. after nightly maintenance cleanup). QEMU is only needed
+        # for the tag-triggered multi-arch (amd64 + arm64) release builds.
+        if: github.event_name == 'push'
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          platforms: linux/amd64,linux/arm64
+          # Disable the action's built-in binfmt image cache. The old shared
+          # runner persists Docker images between runs, so the binfmt image
+          # stays locally without being written to remote GitHub Actions
+          # storage (which was filling up with 29 MB binfmt entries per run).
+          cache-image: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # Unique, image-scoped, run-scoped builder name. Combined with the
+          # scoped cleanup step above, this guarantees the 4 matrix jobs (which
+          # daemon) never
+          # delete each other's active builders. The `metis-<image>-` prefix is
+          # what the cleanup step matches on.
+          name: metis-${{ matrix.image.name }}-${{ github.run_id }}
+
+      # GHCR login is only required for pushes (tag triggers). On PRs we
+      # validate compilation without pushing.
+      - name: Login to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (PR — single-arch validation)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          # Skip the HuggingFace model bake on PR validation builds. Baking
+          # downloads models at build time (Dockerfile.embeddings, BAKE_MODELS=1)
+          # which is flaky and unnecessary for
+          # compilation validation — the embeddings sidecar downloads models at
+          # runtime when not baked. The tag-push build below keeps the default
+          # (BAKE_MODELS=1) so released images stay self-contained. Harmless for
+          # the other images (only Dockerfile.embeddings reads BAKE_MODELS).
+          build-args: |
+            BAKE_MODELS=0
+          # Native arch only — linux/amd64 on a GitHub-hosted runner. Building
+          # the non-native arch here would force QEMU emulation, which is what
+          # segfaulted `next build` (signal 11) on the old arm64 runner. Native
+          # validates the same Dockerfile compilation without emulation.
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ env.REGISTRY }}/metis-${{ matrix.image.name }}:${{ steps.meta.outputs.version }}
+          # Disable provenance and SBOM attestations on PR validation builds.
+          # docker/build-push-action@v7 generates provenance by default and
+          # stores it as a '*.dockerbuild' GitHub Actions artifact (~60 KB each,
+          # 4 images x many PRs = 80+ artifacts filling the storage quota).
+          # PR builds don't push to GHCR so provenance is meaningless here.
+          provenance: false
+          sbom: false
+          cache-from: type=local,src=/tmp/buildkit-cache/${{ matrix.image.name }}
+          cache-to: type=local,dest=/tmp/buildkit-cache/${{ matrix.image.name }},mode=min
+
+      - name: Build & push (tag — multi-arch publish)
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/metis-${{ matrix.image.name }}:${{ steps.meta.outputs.version }}
+            ${{ env.REGISTRY }}/metis-${{ matrix.image.name }}:latest
+          # Provenance is kept for release pushes (supply-chain hygiene) but
+          # SBOM generation is disabled — each SBOM is uploaded as a separate
+          # '*.dockerbuild' artifact adding ~60 KB per image per push.
+          provenance: true
+          sbom: false
+          cache-from: type=local,src=/tmp/buildkit-cache/${{ matrix.image.name }}
+          cache-to: type=local,dest=/tmp/buildkit-cache/${{ matrix.image.name }},mode=min
+
+      - name: Inspect manifest (tag only)
+        if: github.event_name == 'push'
+        run: |
+          docker buildx imagetools inspect \
+            ${{ env.REGISTRY }}/metis-${{ matrix.image.name }}:${{ steps.meta.outputs.version }}
+
+      - name: Delete untagged GHCR image versions (tag only)
+        # After a release push the old untagged manifest layers pile up in
+        # GHCR and count against GitHub storage. This step deletes any version
+        # that has no tags attached, keeping only the tagged releases.
+        if: github.event_name == 'push'
+        env:
+          PACKAGE: metis-${{ matrix.image.name }}
+          # Same namespace as REGISTRY, via the workflow context rather than a
+          # hardcoded org (#1373). Read into the shell through `env:` so the
+          # expansion never becomes part of the script text.
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          gh api "orgs/${OWNER}/packages/container/${PACKAGE}/versions?per_page=50" \
+            --jq '.[] | select(.metadata.container.tags | length == 0) | .id' 2>/dev/null \
+          | while read id; do
+              gh api -X DELETE "orgs/${OWNER}/packages/container/${PACKAGE}/versions/${id}" 2>/dev/null && echo "Deleted untagged version $id" || true
+            done
+
+      - name: Free disk — drop loaded image and trim daemon cache
+        # Runs after every job (success, failure, or cancellation) so the
+        # runner's shared Docker daemon doesn't accumulate
+        # PR images and build-cache blobs between runs. This trims ONLY the
+        # daemon's internal state — the shared local layer cache at
+        # /tmp/buildkit-cache/<image> (type=local) is untouched, so the next
+        # run still gets warm caching. keep-storage=4g preserves recent layers.
+        if: always()
+        run: |
+          docker rmi "${{ env.REGISTRY }}/metis-${{ matrix.image.name }}:${{ steps.meta.outputs.version }}" 2>/dev/null || true
+          docker image prune -f 2>/dev/null || true
+          docker buildx prune -f --keep-storage=4g 2>/dev/null || true

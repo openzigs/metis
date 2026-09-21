@@ -1,0 +1,18 @@
+{
+  "id": "codegraph-01-citation",
+  "title": "Code-graph citation grounding",
+  "kind": "code-graph-citation",
+  "question": "How is the payment processing fee calculated? Point me at the calculateProcessingFee function and cite the exact source location.",
+  "target": {
+    "name": "calculateProcessingFee",
+    "filePath": "payments/fee-calculator.ts",
+    "language": "ts",
+    "kind": "function"
+  },
+  "forbiddenDisclaimers": [
+    "reconstructed from the knowledge base",
+    "reconstructed from my knowledge",
+    "based on my general knowledge"
+  ],
+  "note": "Self-contained fixture: repo/ files are parsed by METIS's parseSource to build the code graph; the expected filePath:startLine-endLine is derived from the resulting CodeSymbol record, never hardcoded. No external-repo ingestion, no network."
+}

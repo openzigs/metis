@@ -1,0 +1,106 @@
+METIS — Master Enterprise Tool for Issue Synthesis
+Copyright (C) 2025-2026 Zylos Labs LLC
+
+This program is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License, version 3 only, as published by the
+Free Software Foundation.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License along with
+this program. If not, see <https://www.gnu.org/licenses/agpl-3.0.html>. A verbatim
+copy is in the LICENSE file beside this one.
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The copyright holder is Zylos Labs LLC. The repository is hosted in the `openzigs`
+GitHub organisation; that is where the code lives, not who owns it.
+
+
+------------------------------------------------------------------------------
+NETWORK USE — AGPL-3.0 SECTION 13
+------------------------------------------------------------------------------
+
+METIS is offered over a network. Section 13 therefore obliges any modified version to
+offer its remote users the Corresponding Source of the running version.
+
+This deployment satisfies that obligation through:
+
+  * `GET /source` and `GET /api/source` on the API server — an unauthenticated JSON
+    document naming the outbound licence, the repository, and the exact commit this
+    process was built from, with direct links to that commit's tree and source
+    archive.
+  * A persistent footer in the web application, on every page including the sign-in
+    page, linking to the source of the running deployment.
+
+The commit is read at runtime from `METIS_SOURCE_COMMIT` (falling back to
+`GIT_COMMIT`, then `SOURCE_COMMIT`). A deployment that leaves all three unset still
+offers the repository, but cannot name the running commit — so **set
+`METIS_SOURCE_COMMIT` at build or deploy time.** If you modify METIS and deploy it,
+point `METIS_SOURCE_REPOSITORY_URL` at the repository that holds *your* modified
+source; the offer must lead to your version, not to ours.
+
+
+------------------------------------------------------------------------------
+THIRD-PARTY SOFTWARE
+------------------------------------------------------------------------------
+
+METIS depends on third-party packages resolved by pnpm. They are not redistributed in
+this repository — `pnpm-lock.yaml` names them exactly and each carries its own licence
+in its own package. `pnpm licenses list --prod` reproduces the full list.
+
+Four entries need a recorded decision rather than a line in a list.
+
+1. jszip — dual-licensed `(MIT OR GPL-3.0-or-later)`
+   ---------------------------------------------------------------------------
+   A dual licence is an election, not an ambiguity, and leaving it unmade is the
+   defect. **Zylos Labs LLC elects the MIT arm of jszip.** Both arms are compatible
+   with an AGPL-3.0-only outbound licence, so the election costs nothing; it is
+   recorded because an unrecorded election has to be re-derived by every reader, and
+   because the GPL-3.0-or-later arm would otherwise be a live question about whether
+   part of the tree is under a copyleft we did not choose.
+
+2. @img/sharp-libvips-* — LGPL-3.0-or-later
+   ---------------------------------------------------------------------------
+   Platform-specific prebuilt libvips binaries pulled in by `sharp`. Compatible with
+   AGPL-3.0: the LGPL permits relicensing under the corresponding GPL/AGPL version.
+   The dynamic-linking question that a permissive outbound licence would have raised
+   does not arise under a copyleft core.
+
+3. @github/copilot — proprietary, "GitHub Copilot CLI License"
+   ---------------------------------------------------------------------------
+   Not declared in any METIS manifest. It arrives as a transitive dependency of
+   `@github/copilot-sdk` (MIT), which is declared in `server/` and
+   `server/copilot-svc/`, and it is present in the *production* dependency tree.
+   `pnpm licenses list --prod` reports it as `Unknown` because its manifest says
+   `SEE LICENSE IN LICENSE.md`; the actual terms are proprietary.
+
+   It does not conflict with releasing METIS under AGPL-3.0. Its section 2 says in
+   terms that "nothing in this License restricts your choice of license for your
+   application or service, including distribution under an open source license", and
+   its redistribution conditions are met by how METIS uses it: it is installed
+   unmodified from npm as a dependency of an application with material functionality
+   of its own, never repackaged or shipped standalone, and its own licence file
+   travels with it inside its package.
+
+   Two obligations follow for anyone redistributing a METIS *bundle* that includes
+   resolved `node_modules` (a container image, for example) rather than source alone:
+   the package must stay unmodified, and its `LICENSE.md` and copyright notices must
+   be retained. Distributing METIS as source does not trigger either, because the
+   package is not in this repository.
+
+4. buffers@0.1.1 — no declared licence
+   ---------------------------------------------------------------------------
+   A transitive dependency five levels down (`exceljs` -> `unzipper` -> `binary` ->
+   `buffers`) whose manifest declares no licence and which ships no licence file. It
+   is not a conflict with AGPL-3.0 — it is an absence of a grant, which is a
+   pre-existing risk that predates this licence choice and is not resolved by it.
+   Recorded here so it is not mistaken for a cleared item. Tracked separately.
+
+Verified for this release: the production dependency tree (1,129 packages) and the
+full tree including development dependencies (1,460 packages) contain **no
+`GPL-2.0-only` dependency**, which would have been genuinely incompatible with
+AGPL-3.0. They contain no AGPL, SSPL or BSL dependency either. This was checked, not
+assumed; re-check it when the lockfile changes.

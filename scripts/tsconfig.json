@@ -1,0 +1,24 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "paths": {}
+  },
+  "include": ["lib/**/*.mjs", "local-llm/**/*.mjs", "seed-saml.mjs"],
+  "exclude": [
+    "node_modules",
+    "coverage",
+    "lib/**/*.test.ts",
+    "lib/**/*.test.mjs",
+    "local-llm/**/*.test.ts"
+  ]
+}

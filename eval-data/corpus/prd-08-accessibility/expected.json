@@ -1,0 +1,23 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Keyboard navigation",
+    "description": "All interactive controls are reachable by keyboard.",
+    "priority": "critical"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Screen-reader labels",
+    "description": "Controls expose descriptive labels to screen readers.",
+    "priority": "high"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Reduced-motion mode",
+    "description": "Users should be able to enable a reduced-motion mode.",
+    "priority": "medium"
+  }
+]

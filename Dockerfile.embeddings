@@ -1,0 +1,176 @@
+# ==============================================================================
+# METIS Embeddings Sidecar Dockerfile (`metis-embeddings`)
+#
+# Issue #145 — externalises the heavy `@huggingface/transformers` +
+# `onnxruntime-node` runtime so the main `metis-server` image can stay under
+# the 250 MB budget set by epic #93.
+#
+# Base image: `node:20-bookworm-slim` (glibc) — `onnxruntime-node` ships
+# native bindings that crash on Alpine's musl. This sidecar is **exempt**
+# from the 250 MB image-size budget.
+# ==============================================================================
+
+ARG NODE_VERSION=20
+
+# ----- Stage 1: install + build --------------------------------------------
+FROM node:${NODE_VERSION}-bookworm-slim AS builder
+WORKDIR /app
+
+ENV PNPM_HOME=/usr/local/share/pnpm
+ENV PATH="${PNPM_HOME}:${PATH}"
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl python3 make g++ \
+ && rm -rf /var/lib/apt/lists/* \
+ && corepack enable \
+ && corepack prepare pnpm@10.33.0 --activate
+
+# Workspace manifest scaffolding — copy only the package.json files first so
+# the install layer stays cacheable across source-only changes.
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* tsconfig.base.json ./
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/ui-kit/package.json ./packages/ui-kit/
+COPY server/package.json ./server/
+COPY server/embeddings-svc/package.json ./server/embeddings-svc/
+COPY ui/package.json ./ui/
+COPY e2e/package.json ./e2e/
+
+RUN pnpm install --frozen-lockfile --filter @metis/embeddings-svc
+
+COPY server/embeddings-svc ./server/embeddings-svc
+RUN pnpm --filter @metis/embeddings-svc build
+
+# Use pnpm deploy to produce a fully self-contained, deduplicated tree under
+# /deploy/. This collapses the workspace's symlinked store into a flat
+# node_modules and prunes devDependencies.
+RUN pnpm --filter @metis/embeddings-svc deploy --prod --legacy /deploy
+
+# ----- Stage 1b: bake model weights (issue #935, extended by #784) ----------
+# Download the embed + rerank ONNX weights at BUILD time into a cache dir so the
+# runtime image serves them with ZERO HuggingFace egress (air-gapped option).
+# Set BAKE_MODELS=0 to skip (e.g. for a smaller image that downloads at runtime;
+# this is what the `api` CI size-gate job passes).
+# For the in-process server path, the equivalent helper is
+# `pnpm --filter @metis/server prefetch:embeddings` (issue #941), which warms the
+# EMBED_BACKEND/EMBED_MODEL-configured model into the same kind of cache.
+#
+# WHICH MODELS (#784)
+# `BAKE_EMBED_MODELS` is a comma-separated list; unset, it resolves to
+# `DEFAULT_BAKE_MODELS` in `server/embeddings-svc/src/model-config.ts` — the
+# current default (bge-small) AND `Alibaba-NLP/gte-modernbert-base`, so the
+# eval-gated default flip in #783 stays a config change instead of an image
+# rebuild. The list is resolved by the SAME compiled module the runtime uses, so
+# it cannot drift from the code; the shape of this bake is guarded by
+# `server/tests/embeddings-bake-lockstep.test.ts`.
+#
+# EMBED_MODEL LOCKSTEP (#784, made structural after review)
+# `EMBED_MODEL` is what the RUNTIME serves when an /embed request omits `model`
+# — and it is exported into the RUNNER stage below, because ARG/ENV do NOT cross
+# a `FROM`. That single value drives BOTH what this stage bakes
+# (`resolveBakeModels`) and what `app.ts` serves (`resolveEmbedModel`), the same
+# way EMBED_DTYPE already drives both. Consequently:
+#   - trimming works:  --build-arg EMBED_MODEL=Alibaba-NLP/gte-modernbert-base \
+#                      --build-arg BAKE_EMBED_MODELS=Alibaba-NLP/gte-modernbert-base
+#     bakes and serves gte only;
+#   - an UNSAFE trim fails HERE, at build time: a BAKE_EMBED_MODELS list that
+#     omits the model the runtime will serve throws out of `resolveBakeModels`,
+#     rather than producing an image that boots and then cannot load its weights
+#     under HF_HUB_OFFLINE=1.
+#
+# MIRROR (#784) — build behind a corp proxy with no huggingface.co egress by
+# passing `--build-arg HF_ENDPOINT=https://hf-mirror.corp.example`.
+#
+# DTYPE LOCKSTEP (#781, made structural in #782)
+# transformers.js v3 resolves a DIFFERENT weights file per dtype
+# (`model_quantized.onnx` for q8 vs `model.onnx` for fp32), so baking a different
+# dtype than the runtime requests leaves the air-gapped image (HF_HUB_OFFLINE=1)
+# unable to find its weights at boot. Rather than repeating a literal, the bake
+# below reads `EMBED_DTYPE` — the SAME env var the runtime reads
+# (`resolveDtype()` in `server/embeddings-svc/src/model-config.ts`) — and the
+# runner stage re-exports the same build arg. One value, two consumers.
+# `server/tests/embeddings-dtype-lockstep.test.ts` fails CI if this drifts from
+# the code default.
+ARG BAKE_MODELS=1
+ARG EMBED_MODEL=Alibaba-NLP/gte-modernbert-base
+ARG RERANK_MODEL=Xenova/ms-marco-MiniLM-L-6-v2
+ARG EMBED_DTYPE=q8
+ARG BAKE_EMBED_MODELS=
+ARG HF_ENDPOINT=
+ENV METIS_MODEL_CACHE=/opt/metis-embeddings-cache
+ENV EMBED_MODEL=${EMBED_MODEL}
+ENV RERANK_MODEL=${RERANK_MODEL}
+ENV EMBED_DTYPE=${EMBED_DTYPE}
+ENV BAKE_EMBED_MODELS=${BAKE_EMBED_MODELS}
+ENV HF_ENDPOINT=${HF_ENDPOINT}
+RUN mkdir -p "${METIS_MODEL_CACHE}" \
+ && if [ "${BAKE_MODELS}" = "1" ]; then \
+      cd /deploy && node -e "(async () => { \
+        const { pathToFileURL } = require('node:url'); \
+        const t = await import('@huggingface/transformers'); \
+        const cfg = await import(pathToFileURL('/deploy/dist/model-config.js').href); \
+        const dtype = process.env.EMBED_DTYPE; \
+        t.env.cacheDir = process.env.METIS_MODEL_CACHE; \
+        t.env.allowRemoteModels = true; \
+        const remoteHost = cfg.resolveRemoteHost(process.env); \
+        if (remoteHost) { t.env.remoteHost = remoteHost; console.log('[bake] mirror ' + remoteHost); } \
+        for (const model of cfg.resolveBakeModels(process.env)) { \
+          await t.pipeline('feature-extraction', model, { dtype }); \
+          console.log('[bake] embed ' + model + ' (dtype=' + dtype + ')'); \
+        } \
+        await t.pipeline('text-classification', process.env.RERANK_MODEL, { dtype }); \
+        console.log('[bake] rerank ' + process.env.RERANK_MODEL + ' (dtype=' + dtype + ')'); \
+        console.log('[bake] models cached at ' + process.env.METIS_MODEL_CACHE); \
+      })().catch((e) => { console.error('[bake] FAILED', e); process.exit(1); });" ; \
+    else \
+      echo '[bake] skipped (BAKE_MODELS=0) — sidecar will download at runtime'; \
+    fi
+
+# ----- Stage 2: runtime ----------------------------------------------------
+FROM node:${NODE_VERSION}-bookworm-slim AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV EMBEDDINGS_PORT=5050
+ENV EMBEDDINGS_HOST=0.0.0.0
+# Persist downloaded models on a volume so cold-starts don't repeat.
+ENV EMBEDDINGS_CACHE_DIR=/var/cache/metis-embeddings
+# Issue #935 — air-gapped by default: the runtime serves ONLY the baked weights
+# and never reaches HuggingFace. Set HF_HUB_OFFLINE=0 to allow runtime fetches.
+ENV HF_HUB_OFFLINE=1
+# Issue #782 — the runtime asks for exactly the dtype the builder baked above.
+# Same build arg, so `--build-arg EMBED_DTYPE=fp32` moves BOTH in one step.
+ARG EMBED_DTYPE=q8
+ENV EMBED_DTYPE=${EMBED_DTYPE}
+# Issue #784 — the runtime serves exactly the model the builder baked above.
+# ARG/ENV do NOT cross a `FROM`, so this re-declaration is what ties the two
+# stages together: the SAME `--build-arg EMBED_MODEL=…` picks what gets baked
+# (`resolveBakeModels`) and what `/embed` serves by default (`resolveEmbedModel`).
+# Without it the sidecar falls back to its compiled-in default, which a trimmed
+# bake list may never have downloaded — an image that boots and cannot embed.
+# The ARG default is pinned to `DEFAULT_SIDECAR_EMBED_MODEL` by
+# `server/tests/embeddings-bake-lockstep.test.ts`.
+ARG EMBED_MODEL=Alibaba-NLP/gte-modernbert-base
+ENV EMBED_MODEL=${EMBED_MODEL}
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system --gid 1001 metis \
+ && useradd  --system --uid 1001 --gid metis --create-home --home-dir /home/metis metis \
+ && mkdir -p /var/cache/metis-embeddings \
+ && chown -R metis:metis /var/cache/metis-embeddings
+
+COPY --from=builder --chown=metis:metis /deploy/dist           ./dist
+COPY --from=builder --chown=metis:metis /deploy/node_modules   ./node_modules
+COPY --from=builder --chown=metis:metis /deploy/package.json   ./package.json
+# Baked model weights (issue #935). Copied into the cache dir the runtime reads.
+COPY --from=builder --chown=metis:metis /opt/metis-embeddings-cache /var/cache/metis-embeddings
+
+USER metis
+
+EXPOSE 5050
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "require('http').get({host:'127.0.0.1',port:process.env.EMBEDDINGS_PORT||5050,path:'/healthz',timeout:4000},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+
+CMD ["node", "dist/index.js"]

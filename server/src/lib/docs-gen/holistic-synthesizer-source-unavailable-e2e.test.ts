@@ -1,0 +1,155 @@
+/**
+ * Issue #330 (end-to-end through synthesizeHolisticDocument) — when a project's
+ * code modules cannot be read from source on disk (here: no clone dir resolves),
+ * the document is NOT silently
+ * emitted clean. The synthesizer raises a LOUD document-level `source-unavailable`
+ * warning so the doc is marked `degraded` with a re-ingest remedy.
+ *
+ * This drives the ONLINE synthesis path with prisma + provider mocked. node:fs
+ * is NOT mocked; unavailable repository roots fail closed without attempting
+ * source reads relative to cwd — the missing-source condition #330 guards.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AIProvider, ChatChunk } from "../ai/types.js";
+
+const mockPrisma = {
+  project: { findUnique: vi.fn() },
+  codeSymbol: { count: vi.fn(), groupBy: vi.fn(), findMany: vi.fn() },
+  codeEdge: { findMany: vi.fn() },
+  codeGraph: { findFirst: vi.fn(), findMany: vi.fn() },
+  finding: { findMany: vi.fn() },
+  repoConnection: { findFirst: vi.fn() },
+  docsGenFactCache: { findUnique: vi.fn(), upsert: vi.fn(), update: vi.fn() },
+};
+
+vi.mock("../prisma.js", () => ({
+  prisma: {
+    project: { findUnique: (...a: unknown[]) => mockPrisma.project.findUnique(...a) },
+    codeSymbol: {
+      count: (...a: unknown[]) => mockPrisma.codeSymbol.count(...a),
+      groupBy: (...a: unknown[]) => mockPrisma.codeSymbol.groupBy(...a),
+      findMany: (...a: unknown[]) => mockPrisma.codeSymbol.findMany(...a),
+    },
+    codeEdge: { findMany: (...a: unknown[]) => mockPrisma.codeEdge.findMany(...a) },
+    codeGraph: {
+      findFirst: (...a: unknown[]) => mockPrisma.codeGraph.findFirst(...a),
+      findMany: (...a: unknown[]) => mockPrisma.codeGraph.findMany(...a),
+    },
+    finding: { findMany: (...a: unknown[]) => mockPrisma.finding.findMany(...a) },
+    repoConnection: { findFirst: (...a: unknown[]) => mockPrisma.repoConnection.findFirst(...a) },
+    docsGenFactCache: {
+      findUnique: (...a: unknown[]) => mockPrisma.docsGenFactCache.findUnique(...a),
+      upsert: (...a: unknown[]) => mockPrisma.docsGenFactCache.upsert(...a),
+      update: (...a: unknown[]) => mockPrisma.docsGenFactCache.update(...a),
+    },
+  },
+}));
+
+function makeProvider(): AIProvider {
+  return {
+    key: "bedrock-gateway",
+    model: "mock",
+    offline: false,
+    chat: vi.fn(async () => ({ content: JSON.stringify({ claims: [] }) })),
+    embed: vi.fn(),
+    models: vi.fn().mockResolvedValue(["mock"]),
+    ping: vi.fn().mockResolvedValue(true),
+    async *stream(messages): AsyncGenerator<ChatChunk> {
+      const user = String(messages[messages.length - 1]?.content ?? "");
+      if (user.includes("section group now")) {
+        yield { type: "delta", content: `## Section\n\nProse.` };
+        yield { type: "done" };
+        return;
+      }
+      yield { type: "delta", content: "PURPOSE\nmod." };
+      yield { type: "done" };
+    },
+  } as unknown as AIProvider;
+}
+
+vi.mock("../ai/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../ai/index.js")>();
+  return {
+    ...actual,
+    buildProvider: () => makeProvider(),
+    loadAIConfig: () => ({ provider: "bedrock-gateway", model: "mock" }),
+  };
+});
+
+import { synthesizeHolisticDocument } from "./holistic-synthesizer.js";
+
+const tsFn = (id: string, name: string, filePath: string) => ({
+  id,
+  codeGraphId: "graph-a",
+  qualifiedName: `${filePath}::${name}`,
+  kind: "function" as const,
+  language: "ts",
+  filePath,
+  startLine: 1,
+  endLine: 40,
+});
+
+// A real TS dir with ≥3 function symbols → qualifies as a documentable module.
+const SRC = "src/billing";
+const file = (n: number) => `${SRC}/file${n}.ts`;
+
+function seedPrisma(): void {
+  mockPrisma.project.findUnique.mockResolvedValue({ name: "proj" });
+  mockPrisma.codeGraph.findFirst.mockResolvedValue(null);
+  mockPrisma.codeGraph.findMany.mockResolvedValue([{ id: "graph-a", repoConnection: null }]);
+  mockPrisma.codeEdge.findMany.mockResolvedValue([]);
+  mockPrisma.finding.findMany.mockResolvedValue([]);
+  // No graph connector → null root → fail closed, never read cwd source.
+  mockPrisma.repoConnection.findFirst.mockResolvedValue(null);
+  mockPrisma.docsGenFactCache.findUnique.mockResolvedValue(null);
+  mockPrisma.docsGenFactCache.upsert.mockResolvedValue({});
+  // ≥4 function symbols in one dir → qualifies as a documentable module.
+  mockPrisma.codeSymbol.groupBy.mockResolvedValue([
+    { filePath: file(1), _count: { _all: 1 } },
+    { filePath: file(2), _count: { _all: 1 } },
+    { filePath: file(3), _count: { _all: 1 } },
+    { filePath: file(4), _count: { _all: 1 } },
+  ] as never);
+  mockPrisma.codeSymbol.findMany.mockResolvedValue([
+    tsFn("s1", "charge", file(1)),
+    tsFn("s2", "refund", file(2)),
+    tsFn("s3", "invoice", file(3)),
+    tsFn("s4", "credit", file(4)),
+  ] as never);
+}
+
+describe("synthesizeHolisticDocument — #330 source-unavailable", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.BEDROCK_GATEWAY_URL;
+    delete process.env.BEDROCK_GATEWAY_BASE_URL;
+    process.env.AI_OFFLINE = "0";
+    seedPrisma();
+  });
+
+  afterEach(() => {
+    process.env.AI_OFFLINE = "1";
+  });
+
+  it("raises a loud source-unavailable warning (not a silent clean doc)", async () => {
+    const result = await synthesizeHolisticDocument("p1", "architecture", "Arch");
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({
+        kind: "source-unavailable",
+        section: "Repository graph-a",
+        message: expect.stringContaining("No other repository's source was substituted"),
+      }),
+    );
+    const w = result.warnings.find(
+      (x) => x.kind === "source-unavailable" && x.severity === "error",
+    );
+    expect(w).toBeDefined();
+    expect(w!.severity).toBe("error");
+    expect(w!.message).toMatch(/[Rr]e-ingest/);
+  });
+
+  it("does NOT write the fact cache for the unreadable modules (no poisoning)", async () => {
+    await synthesizeHolisticDocument("p1", "architecture", "Arch");
+    expect(mockPrisma.docsGenFactCache.upsert).not.toHaveBeenCalled();
+  });
+});

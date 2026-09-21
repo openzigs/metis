@@ -1,0 +1,67 @@
+# ==============================================================================
+# METIS — Local OIDC test harness (Issue #521, Epic #517).
+#
+# Runs Keycloak as a local OpenID Connect Identity Provider so a developer can
+# exercise METIS's OIDC login end-to-end — including the PKCE/state/nonce flow
+# AND IdP-group→role mapping (resolveRoleFromGroups) — WITHOUT a cloud IdP.
+#
+# WHY Keycloak (vs the #523 boxyhq/mock-saml mock):
+#   - The #523 SAML mock emits ONLY an `email` attribute (no group/role claim),
+#     so it could not exercise group→role mapping. Keycloak CAN: the imported
+#     realm puts the test user in a group and a Group Membership protocol mapper
+#     emits a `groups` claim, which METIS maps to a role via groupMappings. This
+#     harness exists specifically to cover that capability.
+#   - Keycloak is actively maintained; 26.6.4 is the current stable (June 2026).
+#
+# The realm is provisioned deterministically from scripts/oidc-harness/realm-metis.json
+# via Keycloak's `--import-realm` (NOT manual admin-console clicks), so the
+# client / test user / groups / group-claim mapper are identical on every boot.
+#
+# This compose ONLY runs Keycloak. Run your METIS server the usual way (AUTH_MODE
+# stays `mock` — OIDC login does not depend on AUTH_MODE; the SSO routes read the
+# stored provider config). Then seed the provider:
+#
+#   make oidc-up        # start Keycloak (realm import), seed METIS OIDC provider
+#   make oidc-down      # stop Keycloak
+#
+# or directly:
+#
+#   bash scripts/oidc-harness/up.sh
+# ==============================================================================
+
+services:
+  oidc-idp:
+    image: quay.io/keycloak/keycloak:26.6.4
+    container_name: metis-keycloak-oidc-idp
+    # `start-dev` runs Keycloak in development mode (HTTP, no TLS, in-memory H2)
+    # — appropriate for a throwaway local IdP. `--import-realm` provisions the
+    # realm from any *.json under /opt/keycloak/data/import on first boot.
+    command: ["start-dev", "--import-realm", "--http-port=8080"]
+    ports:
+      # Host 4600 -> container 8080. Keycloak serves on 8080 internally; we
+      # publish on 4600 so it never collides with the METIS server (:4000) or
+      # the SAML mock IdP (:4500).
+      - "4600:8080"
+    environment:
+      # Bootstrap admin for the Keycloak master realm (admin console at /admin).
+      # Local-throwaway creds only — never used by METIS itself.
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      # The hostname Keycloak advertises in its discovery doc + issuer. MUST be
+      # reachable by BOTH METIS (server-to-server discovery) and the browser at
+      # the SAME URL, so the issuer in the ID token matches what METIS expects.
+      KC_HOSTNAME: ${OIDC_IDP_HOSTNAME:-http://localhost:4600}
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      # Realm import JSON — provisions the metis realm, the confidential `metis`
+      # client, test users, groups, and the `groups`-claim protocol mapper.
+      - ./scripts/oidc-harness/realm-metis.json:/opt/keycloak/data/import/realm-metis.json:ro
+    # No container healthcheck: the Keycloak image is a minimal JDK runtime with
+    # no curl/wget/nc, and a /dev/tcp or jshell probe inside it is fragile across
+    # image revisions. Readiness is gated where it actually matters — from the
+    # HOST: both scripts/oidc-harness/up.sh and scripts/seed-oidc.mjs poll the
+    # realm's OIDC discovery doc (/.well-known/openid-configuration) with curl /
+    # fetch before proceeding, which is the true "METIS can discover the realm"
+    # signal (and survives the first-boot realm-import delay).

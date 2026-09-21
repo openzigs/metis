@@ -1,0 +1,6 @@
+
+# Local vitest text dumps used during coverage debugging
+vitest_*.txt
+
+# Isolated Playwright Next.js build directories
+.next-e2e-*/

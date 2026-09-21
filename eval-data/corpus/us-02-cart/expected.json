@@ -1,0 +1,23 @@
+[
+  {
+    "id": "R1",
+    "type": "feature",
+    "title": "Add item to cart",
+    "description": "A shopper adds an item to the cart from the product page.",
+    "priority": "high"
+  },
+  {
+    "id": "R2",
+    "type": "feature",
+    "title": "Update quantities",
+    "description": "A shopper updates item quantities within the cart.",
+    "priority": "high"
+  },
+  {
+    "id": "R3",
+    "type": "feature",
+    "title": "Save cart for later",
+    "description": "A shopper should be able to save the cart for later.",
+    "priority": "medium"
+  }
+]

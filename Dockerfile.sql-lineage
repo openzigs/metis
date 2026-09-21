@@ -1,0 +1,61 @@
+# ==============================================================================
+# METIS SQL Lineage Sidecar Dockerfile (`metis-sql-lineage`)
+#
+# Epic #294 (#303) — a dedicated PYTHON sidecar that extracts SQL usage
+# (tables / columns / OpenLineage edges) via `sqlglot`. It mirrors the
+# deployment shape of `metis-embeddings` (shared-secret auth, restricted egress,
+# own image) but is Python/FastAPI/uvicorn rather than Node.
+#
+# CRITICAL — self-hosted-runner health: there is NO model download at build time
+# and NO heavy native dependency. `sqlglot` is a zero-dependency, pure-Python SQL
+# parser; FastAPI/uvicorn/pydantic are small pure-Python wheels. This image
+# therefore does NOT reintroduce the build-time model-bake flake fixed in #290.
+#
+# The sidecar NEVER executes SQL — it only parses it — and makes NO outbound
+# network calls.
+# ==============================================================================
+
+ARG PYTHON_VERSION=3.12
+
+# ----- Stage 1: install pinned deps into a venv -----------------------------
+FROM python:${PYTHON_VERSION}-slim AS builder
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Pinned runtime deps only (no dev/test/lint deps in the runtime image).
+COPY metis-sql-lineage/requirements.txt ./requirements.txt
+RUN python -m venv /opt/venv \
+ && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+
+# ----- Stage 2: runtime -----------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS runner
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:${PATH}" \
+    SQL_LINEAGE_PORT=5070 \
+    SQL_LINEAGE_HOST=0.0.0.0
+
+# Non-root runtime user (least privilege).
+RUN groupadd --system --gid 1001 metis \
+ && useradd  --system --uid 1001 --gid metis --create-home --home-dir /home/metis metis
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --chown=metis:metis metis-sql-lineage/app ./app
+
+USER metis
+
+EXPOSE 5070
+
+# `urllib` ships with the stdlib — no extra dependency for the healthcheck.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import os,urllib.request,sys; \
+url='http://127.0.0.1:%s/healthz' % os.environ.get('SQL_LINEAGE_PORT','5070'); \
+sys.exit(0 if urllib.request.urlopen(url, timeout=4).status==200 else 1)" || exit 1
+
+CMD ["python", "-m", "app.server"]

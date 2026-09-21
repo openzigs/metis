@@ -1,0 +1,89 @@
+name: Wrapper image scan
+
+# Issue #301 — Trivy CVE scan on every MCP wrapper image. Builds each image
+# with the existing build.sh per-image flow, scans for High / Critical CVEs,
+# and uploads SARIF results to the Security tab. Fails the workflow on any
+# matching finding.
+
+on:
+  # Trivy scans run on main pushes (wrapper changes) + weekly schedule, not on
+  # PRs — keeps PR feedback to ci.yml + sast.yml on the runner.
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "images/mcp-wrappers/**"
+      - ".github/workflows/wrapper-image-scan.yml"
+  schedule:
+    # Mondays at 05:00 UTC — re-scan unchanged images for newly disclosed CVEs.
+    - cron: "0 5 * * 1"
+
+concurrency:
+  group: wrapper-image-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Scan ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - uvx-runner
+          - jbang-runner
+          - node-runner
+          - npx-runner
+          - uvx-runner-sse
+          - jbang-runner-sse
+          - node-runner-sse
+          - npx-runner-sse
+          - code-graph-runner-sse
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build ${{ matrix.image }}
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < images/mcp-wrappers/VERSION)"
+          docker build \
+            --pull \
+            --tag "metis-mcps/${IMAGE}:ci-scan" \
+            --tag "metis-mcps/${IMAGE}:${version}" \
+            "images/mcp-wrappers/${IMAGE}"
+
+      - name: Trivy scan (${{ matrix.image }})
+        # Pinned by SHA per supply-chain best-practice (v0.28.0 release).
+        # Output as table (human-readable) — SARIF upload is omitted because
+        # uploading to the GitHub Security tab requires paid GitHub Advanced
+        # Security (GHAS) on private repos. The exit-code: "1" is sufficient
+        # to fail the workflow on any High/Critical finding.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: metis-mcps/${{ matrix.image }}:ci-scan
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: false
+          trivyignores: images/mcp-wrappers/.trivyignore
+          vuln-type: "os,library"
+          # Store the Trivy vulnerability DB on the runner's local disk only.
+          # `cache: true` with a custom cache-dir controls the DB cache, but
+          # trivy-action also caches the Trivy binary itself via actions/cache
+          # (writing ~39 MB 'trivy-binary-*' entries per run to remote GHA
+          cache: true
+          cache-dir: /tmp/trivy-db-cache
+
+      - name: Remove CI scan images
+        if: always()
+        run: docker rmi "metis-mcps/${{ matrix.image }}:ci-scan" 2>/dev/null || true

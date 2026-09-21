@@ -1,0 +1,29 @@
+# metis-sql-lineage — tooling config (ruff + pytest). Epic #294 (#303).
+# This service is intentionally NOT a published package; this file configures the
+# linter and test runner only. Runtime deps are pinned in requirements.txt.
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+# Sensible default set + bug-prone (B), security (S), comprehensions (C4),
+# pyupgrade (UP), isort (I). Keep it strict but pragmatic for a small service.
+select = ["E", "F", "W", "I", "B", "C4", "UP", "S"]
+ignore = [
+  "E501",  # line-length is enforced by the formatter, not the linter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may use assert (S101) and hard-coded test secrets (S105/S106).
+"tests/*" = ["S101", "S105", "S106"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+filterwarnings = [
+  # Starlette's TestClient emits a deprecation notice about httpx; it is benign
+  # for our usage and out of our control (transitive). Don't fail CI on it.
+  "ignore::DeprecationWarning",
+]
