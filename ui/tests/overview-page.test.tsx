@@ -82,6 +82,29 @@ describe("ProjectOverviewPage", () => {
     expect(screen.getByTestId("overview-markdown").textContent).not.toContain("# Overview");
   });
 
+  // #29 — exactly one page in a project is named "Overview". The generated
+  // markdown opens with its own `# Project Overview — name`, which rendered a
+  // second <h1> under the page's "Code Overview" title.
+  it("has one <h1>, the page's own, with the generated headings nested beneath it", async () => {
+    getOverviewMock.mockResolvedValue({
+      markdown: "# Project Overview — WMS\n\n## Summary\n\nbody\n\n```sh\n# not a heading\n```",
+      generatedAt: null,
+    });
+    render(<ProjectOverviewPage />, { wrapper: makeWrapper() });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { level: 2, name: "Project Overview — WMS" }),
+      ).toBeVisible(),
+    );
+    const h1s = screen.getAllByRole("heading", { level: 1 });
+    expect(h1s.map((h) => h.textContent)).toEqual(["Code Overview — WMS"]);
+    expect(screen.getByRole("heading", { level: 3, name: "Summary" })).toBeInTheDocument();
+    // Fenced code is content, not structure — it is left exactly as written.
+    const body = screen.getByTestId("overview-markdown").textContent ?? "";
+    expect(body).toContain("# not a heading");
+    expect(body).not.toContain("## not a heading");
+  });
+
   it("regenerates, fires a success toast with the symbol count, and updates the markdown", async () => {
     getOverviewMock.mockRejectedValue(new ApiError(404, "NOT_FOUND", "never generated"));
     regenMock.mockResolvedValue(withStats("# Fresh overview", 42));
@@ -128,7 +151,10 @@ describe("ProjectOverviewPage", () => {
 
     render(<ProjectOverviewPage />, { wrapper: makeWrapper() });
     await waitFor(() => expect(screen.getByTestId("overview-empty-state")).toBeInTheDocument());
-    expect(screen.getByRole("heading", { level: 1, name: /Project Overview/ })).toBeInTheDocument();
+    // #29 — exactly one project page is named "Overview"; this one is Code Overview.
+    expect(
+      screen.getByRole("heading", { level: 1, name: /^Code Overview — / }),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("overview-regenerate"));
     const alert = await screen.findByRole("alert");

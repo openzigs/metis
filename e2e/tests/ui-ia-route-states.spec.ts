@@ -87,7 +87,7 @@ test.describe("UI IA — route states & feedback (#133)", () => {
 
   // S3 #147: saving autopilot settings surfaces feedback via a Sonner toast.
   test("save feedback is delivered through a Sonner toast", async ({ page }) => {
-    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
+    await page.goto(`/projects/${projectId}/settings`, { waitUntil: "load" });
 
     const card = page.getByTestId("autopilot-settings-card");
     await expect(card).toBeVisible({ timeout: 15_000 });

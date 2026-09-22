@@ -45,7 +45,11 @@ test.describe("Project Overview viewer (#313)", () => {
     await test.step("header renders with the project name", async () => {
       await expect(page.getByTestId("project-overview-page")).toBeVisible();
       await expect(
-        page.getByRole("heading", { name: new RegExp(`Project Overview — ${project.name}`) }),
+        // #29 — the code summary is "Code Overview"; "Overview" alone names the landing page.
+        page.getByRole("heading", {
+          level: 1,
+          name: new RegExp(`Code Overview — ${project.name}`),
+        }),
       ).toBeVisible({ timeout: 20_000 });
     });
 

@@ -119,7 +119,7 @@ export class CustomAgentsEnablementSection {
 
   /** Navigate to the project settings page that hosts the enablement card. */
   async goto(projectId: string): Promise<void> {
-    await this.page.goto(`/projects/${projectId}`, { waitUntil: "load" });
+    await this.page.goto(`/projects/${projectId}/settings`, { waitUntil: "load" });
     await expect(this.card).toBeVisible({ timeout: 15_000 });
   }
 

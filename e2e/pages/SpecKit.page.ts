@@ -24,10 +24,9 @@ export class SpecKitPage {
   /** The project-level tab bar (source of truth: project-tabs.tsx). */
   readonly tabs: Locator;
   /**
-   * Phase 4 (#371/#377) — the relocated primary "Spec Kit" tab. It sits as a
-   * direct link in the tab bar BESIDE Analysis, not inside the "Docs" group
-   * dropdown. We scope the locator to the tab bar so it never matches the
-   * in-page `<h1>Spec Kit</h1>` heading.
+   * The "Spec Kit" page link. Since #28 it lives in the Analyze section's
+   * sub-nav (beside Requirements Analysis), not in the primary tab bar. Scoped
+   * to the sub-nav so it never matches the in-page `<h1>Spec Kit</h1>`.
    */
   readonly specKitTab: Locator;
   /** The BA/PM "author the intent" subtitle on the page (#372). */
@@ -41,7 +40,9 @@ export class SpecKitPage {
     this.commentsButton = page.getByTestId("spec-kit-comments-button");
     this.enableToggle = page.getByTestId("spec-kit-toggle");
     this.tabs = page.getByTestId("project-tabs");
-    this.specKitTab = this.tabs.getByRole("link", { name: "Spec Kit", exact: true });
+    this.specKitTab = page
+      .getByTestId("project-subnav")
+      .getByRole("link", { name: "Spec Kit", exact: true });
     this.subtitle = page.getByTestId("spec-kit-subtitle");
     this.onboarding = page.getByTestId("spec-kit-onboarding");
   }
@@ -55,14 +56,14 @@ export class SpecKitPage {
   }
 
   /**
-   * Phase 4 (#377) — reach the Spec Kit workspace the way a BA/PM does: open
-   * the project, then click the primary "Spec Kit" tab beside Analysis. This
-   * exercises the NEW placement (out of the "Docs" group) rather than a direct
+   * Reach the Spec Kit workspace the way a BA/PM does: open the project, click
+   * the Analyze tab, then Spec Kit in its sub-nav (#28) — rather than a direct
    * URL hit.
    */
   async openViaPrimaryTab(projectId: string): Promise<void> {
     await this.page.goto(`/projects/${projectId}`, { waitUntil: "load" });
     await expect(this.tabs).toBeVisible({ timeout: 30_000 });
+    await this.tabs.getByRole("link", { name: "Analyze", exact: true }).click();
     await this.specKitTab.click();
     await this.page.waitForURL((url) => url.pathname.endsWith("/spec-kit"), { timeout: 30_000 });
     await expect(this.root).toBeVisible({ timeout: 30_000 });

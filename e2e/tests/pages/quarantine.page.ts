@@ -23,7 +23,7 @@ export class QuarantinePage {
   }
 
   async goto(projectId: string): Promise<void> {
-    await this.page.goto(`/projects/${projectId}`);
+    await this.page.goto(`/projects/${projectId}/settings`);
     await expect(this.page.getByRole("heading", { name: "Quarantine", exact: true })).toBeVisible();
   }
 

@@ -110,8 +110,8 @@ test.describe("Epic #164 — safety + FinOps", () => {
     await expect(page.getByTestId("tile-mtd-tokens")).toContainText("0");
     await expect(page.getByTestId("usage-no-budget")).toBeVisible();
 
-    // Back to the project detail and toggle autopilot.
-    await page.goto(`/projects/${projectId}`);
+    // To the project settings (behind ⚙ since #29) and toggle autopilot.
+    await page.goto(`/projects/${projectId}/settings`);
     await expect(page.getByTestId("autopilot-settings-card")).toBeVisible();
     await page.getByTestId("autopilot-toggle").click();
     await expect(page.getByTestId("autopilot-warning")).toBeVisible();

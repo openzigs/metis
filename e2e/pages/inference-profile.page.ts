@@ -32,7 +32,7 @@ export class InferenceProfilePanel {
   }
 
   async goto(projectId: string): Promise<void> {
-    await this.page.goto(`/projects/${projectId}`);
+    await this.page.goto(`/projects/${projectId}/settings`);
     await expect(this.card).toBeVisible({ timeout: 15_000 });
   }
 

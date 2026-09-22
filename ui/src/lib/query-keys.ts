@@ -45,6 +45,13 @@ export const queryKeys = {
     all: ["documents"] as const,
     forProject: (projectId: string) => [...queryKeys.documents.all, "project", projectId] as const,
   },
+  /**
+   * AI-generated project documentation (`GET /projects/:id/docs`). Distinct from
+   * `documents` (uploaded sources); the Documentation page keys its list here.
+   */
+  generatedDocs: {
+    forProject: (projectId: string) => ["generated-docs", projectId] as const,
+  },
   analyses: {
     all: ["analyses"] as const,
     forProject: (projectId: string) => [...queryKeys.analyses.all, "project", projectId] as const,

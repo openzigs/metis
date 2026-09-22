@@ -25,7 +25,7 @@ describe("ProjectTabs — active tab branches", () => {
     expect(overviewLink).toHaveAttribute("aria-current", "page");
   });
 
-  it("marks Analysis sub-tab as active when pathname starts with analysis URL", () => {
+  it("marks the Analyze tab as active when pathname starts with analysis URL", () => {
     usePathnameMock.mockReturnValue("/projects/p1/analysis");
     const Wrapper = makeWrapper({});
     render(
@@ -33,7 +33,7 @@ describe("ProjectTabs — active tab branches", () => {
         <ProjectTabs projectId="p1" />
       </Wrapper>,
     );
-    const analysisLink = screen.getByRole("link", { name: "Analysis" });
+    const analysisLink = screen.getByRole("link", { name: "Analyze" });
     expect(analysisLink).toHaveAttribute("aria-current", "page");
     const overviewLink = screen.getByRole("link", { name: "Overview" });
     expect(overviewLink).not.toHaveAttribute("aria-current");

@@ -209,27 +209,26 @@ test.describe("Epic #370 Phase 4 — Spec Kit placement & BA/PM framing (#377)",
     await login.login(ADMIN_USER.username, ADMIN_USER.password);
   });
 
-  test("Spec Kit is a primary tab beside Analysis, not inside the Docs group", async ({ page }) => {
+  // #28 moved Spec Kit under Analyze (beside Requirements Analysis) — still a
+  // planning surface, still not documentation.
+  test("Spec Kit sits under Analyze beside Requirements Analysis, not under Docs", async ({
+    page,
+  }) => {
     const tabs = new ProjectTabsPage(page);
-    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
+    await page.goto(`/projects/${projectId}/analysis`, { waitUntil: "load" });
     await tabs.expectVisible();
 
-    // It is a direct primary link…
-    await expect(tabs.primaryLink("Spec Kit")).toBeVisible();
-    // …sitting immediately after Analysis among the inline primary links.
-    const primaryLinkNames = await tabs.nav.getByRole("link").allInnerTexts();
-    const analysisIdx = primaryLinkNames.indexOf("Analysis");
-    expect(analysisIdx).toBeGreaterThanOrEqual(0);
-    expect(primaryLinkNames[analysisIdx + 1]).toBe("Spec Kit");
+    await expect(
+      page.getByRole("navigation", { name: "Analyze pages" }).getByRole("link"),
+    ).toHaveText(["Requirements Analysis", "Impact Analysis", "Spec Kit"]);
 
-    // …and the "Docs" group no longer contains a Spec Kit entry.
-    await tabs.openGroup("Docs");
-    await expect(tabs.menuItem("Documentation")).toBeVisible();
-    await expect(tabs.menuItem("Templates")).toBeVisible();
-    await expect(page.getByRole("menuitem", { name: "Spec Kit", exact: true })).toHaveCount(0);
+    await tabs.primaryLink("Docs").click();
+    await expect(page.getByRole("navigation", { name: "Docs pages" }).getByRole("link")).toHaveText(
+      ["Documentation", "Templates"],
+    );
   });
 
-  test("clicking the primary Spec Kit tab opens the canonical /spec-kit route (no redirect)", async ({
+  test("clicking the Spec Kit link opens the canonical /spec-kit route (no redirect)", async ({
     page,
   }) => {
     const specKit = new SpecKitPage(page);

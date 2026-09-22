@@ -1,51 +1,31 @@
 "use client";
 
 /**
- * Project overview — project settings + knowledge search. Documents now live at
- * a dedicated `/projects/[id]/documents` route (N3 #141).
+ * Project Overview (#29, epic #26) — where each pipeline stage stands and what
+ * to do next, plus knowledge search. The settings form that used to live here
+ * moved behind the ⚙ tab (`/projects/[id]/settings`); the code summary is Code →
+ * Code Overview. This is the only page in a project named "Overview".
  */
-import Link from "next/link";
 import { notFound, useParams } from "next/navigation";
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { knowledgeApi, projectsApi, type RetrievedChunk } from "@/lib/projects-api";
-import { useAuth } from "@/lib/auth-context";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AiProviderPicker } from "@/components/projects/ai-provider-picker";
-import { AiModelPicker } from "@/components/projects/ai-model-picker";
-import { PrimaryRepoCard } from "@/components/projects/primary-repo-card";
-import { SafetySettingsCard } from "@/components/projects/safety-settings-card";
-import { BudgetSettingsCard } from "@/components/projects/budget-settings-card";
-import { AutopilotSettingsCard } from "@/components/projects/autopilot-settings-card";
-import { DatabaseAwareAnalysisSettingsCard } from "@/components/projects/database-aware-analysis-settings-card";
-import { SqlLineageSettingsCard } from "@/components/projects/sql-lineage-settings-card";
-import { AgentsMdCard } from "@/components/projects/agents-md-card";
-import { CustomAgentsEnablementCard } from "@/components/projects/custom-agents-enablement-card";
-import { InferenceProfileCard } from "@/components/projects/inference-profile-card";
-import { QuarantinePanel } from "@/components/projects/quarantine-panel";
-import { ChroniclePanel } from "@/components/projects/chronicle-panel";
+import { ProjectPipelineOverview } from "@/components/projects/pipeline-overview";
 
 export default function ProjectDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id ?? "";
-  const qc = useQueryClient();
-  const { user } = useAuth();
-  const canEditBudget = user?.role === "admin";
 
   const project = useQuery({
     queryKey: queryKeys.projects.detail(id),
     queryFn: () => projectsApi.get(id),
     enabled: Boolean(id),
-  });
-
-  const archive = useMutation({
-    mutationFn: () => projectsApi.archive(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.projects.all }),
   });
 
   const [query, setQuery] = useState("");
@@ -74,61 +54,21 @@ export default function ProjectDetailPage() {
     return <div className="p-6 text-destructive">Project not found.</div>;
   }
   const p = project.data;
-  const isArchived = p.status === "archived";
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="project-overview-root">
       <header className="flex items-start justify-between gap-4">
         <div>
+          <p className="text-sm font-medium text-muted-foreground">Overview</p>
           <h1 className="text-2xl font-semibold tracking-tight">{p.name}</h1>
           <p className="text-sm text-muted-foreground">
             <code>{p.slug}</code> · {p.status}
           </p>
           {p.description ? <p className="mt-2 max-w-prose">{p.description}</p> : null}
         </div>
-        {!isArchived ? (
-          <Button
-            variant="outline"
-            onClick={() => archive.mutate()}
-            disabled={archive.isPending}
-            data-testid="archive-button"
-          >
-            {archive.isPending ? "Archiving…" : "Archive"}
-          </Button>
-        ) : null}
       </header>
 
-      <Card className="space-y-4 p-4">
-        <h2 className="text-lg font-semibold">Settings</h2>
-        <AiProviderPicker projectId={id} current={p.aiProviderId} />
-        <AiModelPicker projectId={id} current={p.aiModel} />
-        <PrimaryRepoCard projectId={id} />
-        <InferenceProfileCard projectId={id} />
-        <SafetySettingsCard projectId={id} current={p.safetyMode} />
-        <BudgetSettingsCard projectId={id} current={p.monthlyTokenBudget} canEdit={canEditBudget} />
-        <AutopilotSettingsCard
-          projectId={id}
-          enabled={p.autopilotEnabled}
-          costCeilingCents={p.autopilotCostCeilingCents}
-        />
-        <DatabaseAwareAnalysisSettingsCard projectId={id} />
-        <SqlLineageSettingsCard projectId={id} />
-        <AgentsMdCard projectId={id} />
-        <CustomAgentsEnablementCard projectId={id} />
-        <p className="text-xs text-muted-foreground">
-          <Link
-            href={`/projects/${id}/settings/models`}
-            className="underline"
-            data-testid="model-settings-link"
-          >
-            Configure model preferences →
-          </Link>
-        </p>
-      </Card>
-
-      <QuarantinePanel projectId={id} />
-
-      <ChroniclePanel projectId={id} />
+      <ProjectPipelineOverview projectId={id} />
 
       <Card className="space-y-4 p-4">
         <h2 className="text-lg font-semibold">Knowledge search</h2>{" "}

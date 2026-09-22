@@ -1,8 +1,18 @@
 /**
- * N2 (#142) — Project tab restructure: ~5 primary tabs + "More" overflow menu.
+ * #28 (epic #26) — the project tab bar follows the pipeline, left to right:
+ *
+ *   Overview · Sources · Analyze · Requirements · Docs · Publish · Code · ⚙
+ *
+ * Every primary tab is a direct link (one click lands on the section), the
+ * section's other pages sit in a visible sub-nav, and the "More" overflow menu
+ * is gone. No project route moved, so every existing URL still resolves — the
+ * route-inventory test below reads the real `app/` tree to prove each one maps
+ * to a section.
  */
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { usePathname } from "next/navigation";
 import {
@@ -10,280 +20,349 @@ import {
   getProjectTabModel,
   flattenProjectTabs,
   isProjectTabActive,
+  resolveActiveProjectTab,
 } from "@/components/projects/project-tabs";
 import { makeWrapper, TEST_USER } from "./test-utils";
-import type { AuthUser } from "@/lib/auth-types";
 
 const usePathnameMock = vi.mocked(usePathname);
 
-// #469 — <ProjectTabs> now reads `useAuth()` to decide whether to show the
-// permission-gated "Skills" entry, so it must render inside an AuthProvider.
-function renderTabs(projectId = "p1", user: AuthUser | null = TEST_USER) {
+function renderTabs(projectId = "p1") {
   return render(<ProjectTabs projectId={projectId} />, {
-    wrapper: makeWrapper({ initialUser: user }),
+    wrapper: makeWrapper({ initialUser: TEST_USER }),
   });
 }
 
-describe("getProjectTabModel", () => {
-  it("exposes a small primary set (no horizontal scroll)", () => {
+const B = "/projects/p1";
+
+describe("getProjectTabModel — pipeline order (#28)", () => {
+  it("orders the primary tabs by the pipeline, left to right", () => {
     const model = getProjectTabModel("p1");
-    // #371 promoted Spec Kit to a primary tab (6→7); #486 added Discussions as a
-    // primary tab beside it (7→8). Still small enough to render without a
-    // horizontal scroller; the "More" overflow absorbs the long tail.
-    expect(model.primary.length).toBeLessThanOrEqual(8);
+    expect(model.sections.map((s) => s.label)).toEqual([
+      "Overview",
+      "Sources",
+      "Analyze",
+      "Requirements",
+      "Docs",
+      "Publish",
+      "Code",
+      "Settings",
+    ]);
   });
 
-  // #371 — Spec Kit is a planning surface, not documentation. It moved out of
-  // the "Docs" group to sit beside Analysis as its own primary tab.
-  it("surfaces Spec Kit as a primary link, not inside the Docs group", () => {
+  it("has no overflow menu — every section is a primary tab", () => {
+    const model = getProjectTabModel("p1") as unknown as Record<string, unknown>;
+    expect(model.overflow).toBeUndefined();
+  });
+
+  it("groups each section's pages as the issue specifies", () => {
     const model = getProjectTabModel("p1");
-    const docsGroup = model.primary.find((t) => t.kind === "group" && t.label === "Docs");
-    expect(docsGroup).toBeDefined();
-    // Docs no longer contains Spec Kit.
-    if (docsGroup && docsGroup.kind === "group") {
-      const docsHrefs = docsGroup.items.map((i) => i.href);
-      expect(docsHrefs).not.toContain("/projects/p1/spec-kit");
-      // Docs still renders its remaining members.
-      expect(docsHrefs).toEqual(["/projects/p1/documentation", "/projects/p1/settings/templates"]);
+    const items = Object.fromEntries(
+      model.sections.map((s) => [s.id, s.items.map((i) => [i.label, i.href])]),
+    );
+    expect(items.overview).toEqual([]);
+    expect(items.sources).toEqual([
+      ["Connections", `${B}/connections`],
+      ["Documents", `${B}/documents`],
+      ["Import", `${B}/import`],
+      ["Jira", `${B}/jira`],
+    ]);
+    expect(items.analyze).toEqual([
+      ["Requirements Analysis", `${B}/analysis`],
+      ["Impact Analysis", `${B}/impact`],
+      ["Spec Kit", `${B}/spec-kit`],
+    ]);
+    expect(items.requirements).toEqual([
+      ["Review", `${B}/requirements`],
+      ["Baselines", `${B}/baselines`],
+      ["Discussions", `${B}/discussions`],
+    ]);
+    expect(items.docs).toEqual([
+      ["Documentation", `${B}/documentation`],
+      ["Templates", `${B}/settings/templates`],
+    ]);
+    expect(items.publish).toEqual([]);
+    expect(items.code).toEqual([
+      ["Code Overview", `${B}/overview`],
+      ["Changes", `${B}/changes`],
+      ["Pull Requests", `${B}/pulls`],
+      ["Bug Rules", `${B}/rule-sets`],
+      ["Bug Scans", `${B}/scans`],
+      ["Test Coverage", `${B}/test-coverage`],
+    ]);
+    expect(items.settings).toEqual([
+      ["General", `${B}/settings`],
+      ["Models", `${B}/settings/models`],
+      ["Plugins", `${B}/plugins`],
+      ["Usage", `${B}/usage`],
+    ]);
+  });
+
+  it("lands each primary tab on the first step of its section (one click)", () => {
+    const model = getProjectTabModel("p1");
+    const hrefs = Object.fromEntries(model.sections.map((s) => [s.id, s.href]));
+    expect(hrefs).toEqual({
+      overview: B,
+      sources: `${B}/connections`,
+      analyze: `${B}/analysis`,
+      requirements: `${B}/requirements`,
+      docs: `${B}/documentation`,
+      publish: `${B}/publish`,
+      code: `${B}/overview`,
+      settings: `${B}/settings`,
+    });
+  });
+
+  it("does not link Skills from any project tab — Skills live in Library", () => {
+    const links = flattenProjectTabs(getProjectTabModel("p1"));
+    expect(links.some((l) => l.href.startsWith("/library"))).toBe(false);
+    expect(links.map((l) => l.label)).not.toContain("Skills");
+  });
+
+  it("names exactly one destination 'Overview'", () => {
+    const labels = flattenProjectTabs(getProjectTabModel("p1")).map((l) => l.label);
+    expect(labels.filter((l) => l === "Overview")).toHaveLength(1);
+    expect(labels).toContain("Code Overview");
+  });
+
+  it("keeps every pre-#28 destination reachable from the tab bar", () => {
+    const hrefs = flattenProjectTabs(getProjectTabModel("p1")).map((l) => l.href);
+    for (const suffix of [
+      "",
+      "/documents",
+      "/analysis",
+      "/spec-kit",
+      "/discussions",
+      "/overview",
+      "/changes",
+      "/pulls",
+      "/rule-sets",
+      "/scans",
+      "/test-coverage",
+      "/documentation",
+      "/settings/templates",
+      "/baselines",
+      "/connections",
+      "/jira",
+      "/import",
+      "/publish",
+      "/plugins",
+      "/usage",
+    ]) {
+      expect(hrefs).toContain(`${B}${suffix}`);
     }
-    // Spec Kit is now a primary link.
-    const specKit = model.primary.find(
-      (t) => t.kind === "link" && t.href === "/projects/p1/spec-kit",
-    );
-    expect(specKit).toBeDefined();
-    expect(specKit && specKit.kind === "link" && specKit.label).toBe("Spec Kit");
   });
 
-  it("places Spec Kit immediately after Analysis among the primary tabs", () => {
-    const model = getProjectTabModel("p1");
-    const labels = model.primary.map((t) => t.label);
-    const analysisIdx = labels.indexOf("Analysis");
-    expect(analysisIdx).toBeGreaterThanOrEqual(0);
-    expect(labels[analysisIdx + 1]).toBe("Spec Kit");
+  it("flattens without duplicate hrefs", () => {
+    const hrefs = flattenProjectTabs(getProjectTabModel("p1")).map((l) => l.href);
+    expect(new Set(hrefs).size).toBe(hrefs.length);
+  });
+});
+
+describe("resolveActiveProjectTab", () => {
+  const model = getProjectTabModel("p1");
+  const active = (p: string) => {
+    const r = resolveActiveProjectTab(p, model);
+    return r ? [r.section.id, r.item?.label ?? null] : null;
+  };
+
+  it("lights Overview only on the exact project index", () => {
+    expect(active(B)).toEqual(["overview", null]);
+    expect(active(`${B}/`)).toEqual(["overview", null]);
   });
 
-  // #486 — Discussions is a project-scoped collaborative room surfaced as a
-  // primary tab (not the global sidebar), pointing at `${base}/discussions`.
-  it("surfaces Discussions as a primary link after Spec Kit", () => {
-    const model = getProjectTabModel("p1");
-    const labels = model.primary.map((t) => t.label);
-    const specKitIdx = labels.indexOf("Spec Kit");
-    expect(specKitIdx).toBeGreaterThanOrEqual(0);
-    expect(labels[specKitIdx + 1]).toBe("Discussions");
-    const discussions = model.primary.find(
-      (t) => t.kind === "link" && t.href === "/projects/p1/discussions",
-    );
-    expect(discussions).toBeDefined();
+  it("maps section pages and their sub-paths to the owning section", () => {
+    expect(active(`${B}/documents`)).toEqual(["sources", "Documents"]);
+    expect(active(`${B}/jira`)).toEqual(["sources", "Jira"]);
+    expect(active(`${B}/spec-kit/spec.md`)).toEqual(["analyze", "Spec Kit"]);
+    expect(active(`${B}/baselines/b1`)).toEqual(["requirements", "Baselines"]);
+    expect(active(`${B}/discussions/d1`)).toEqual(["requirements", "Discussions"]);
+    expect(active(`${B}/pulls/12`)).toEqual(["code", "Pull Requests"]);
+    expect(active(`${B}/scans/s1`)).toEqual(["code", "Bug Scans"]);
+    expect(active(`${B}/test-coverage/connections`)).toEqual(["code", "Test Coverage"]);
   });
 
-  it("keeps /discussions reachable via flattenProjectTabs", () => {
-    const model = getProjectTabModel("p1");
-    const hrefs = flattenProjectTabs(model).map((l) => l.href);
-    expect(hrefs).toContain("/projects/p1/discussions");
+  it("prefers the longest match, so Templates is Docs even under /settings", () => {
+    expect(active(`${B}/settings/templates`)).toEqual(["docs", "Templates"]);
+    expect(active(`${B}/settings/models`)).toEqual(["settings", "Models"]);
+    expect(active(`${B}/settings`)).toEqual(["settings", "General"]);
   });
 
-  // #371 — the canonical URL is unchanged, so the route must remain reachable
-  // through the flattened model (guards against a lost link / accidental rename).
-  it("keeps /spec-kit reachable via flattenProjectTabs (no redirect needed)", () => {
-    const model = getProjectTabModel("p1");
-    const hrefs = flattenProjectTabs(model).map((l) => l.href);
-    expect(hrefs).toContain("/projects/p1/spec-kit");
-    // The canonical path is preserved, so no next.config redirect is required;
-    // this assertion is the guard the issue AC asks for in lieu of a redirect.
+  it("maps routes that are not in the sub-nav to their section", () => {
+    expect(active(`${B}/repositories/r1/scanner`)).toEqual(["sources", null]);
+    expect(active(`${B}/sync`)).toEqual(["publish", null]);
   });
 
-  // Epic #609 (#620) — baselines live in the overflow menu.
-  it("keeps /baselines reachable via flattenProjectTabs", () => {
-    const model = getProjectTabModel("p1");
-    const hrefs = flattenProjectTabs(model).map((l) => l.href);
-    expect(hrefs).toContain("/projects/p1/baselines");
+  it("does not match a sibling that merely shares a prefix", () => {
+    expect(active(`${B}/scanstwo`)).toBeNull();
+    expect(active("/projects/p2/analysis")).toBeNull();
   });
 
-  it("keeps every original destination reachable", () => {
-    const model = getProjectTabModel("p1");
-    const hrefs = flattenProjectTabs(model).map((l) => l.href);
-    const expected = [
-      "/projects/p1",
-      "/projects/p1/documents",
-      "/projects/p1/analysis",
-      "/projects/p1/discussions",
-      "/projects/p1/overview",
-      "/projects/p1/changes",
-      "/projects/p1/pulls",
-      "/projects/p1/rule-sets",
-      "/projects/p1/scans",
-      "/projects/p1/test-coverage",
-      "/projects/p1/documentation",
-      "/projects/p1/spec-kit",
-      "/projects/p1/settings/templates",
-      "/projects/p1/connections",
-      "/projects/p1/jira",
-      "/projects/p1/import",
-      "/projects/p1/publish",
-      "/projects/p1/plugins",
-      "/projects/p1/usage",
-    ];
-    for (const href of expected) expect(hrefs).toContain(href);
+  // The route inventory: every page.tsx under app/(authed)/projects/[id] must
+  // resolve to a tab, so no bookmarked project URL lands outside the nav.
+  it("resolves every project route on disk to a section", () => {
+    const root = path.resolve(__dirname, "../src/app/(authed)/projects/[id]");
+    const routes: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name === "page.tsx") routes.push(path.relative(root, dir));
+      }
+    };
+    walk(root);
+    expect(routes.length).toBeGreaterThan(20);
+    for (const rel of routes) {
+      const url = rel
+        ? `${B}/${rel
+            .split(path.sep)
+            .join("/")
+            .replace(/\[[^\]]+\]/g, "x")}`
+        : B;
+      expect(resolveActiveProjectTab(url, model), url).not.toBeNull();
+    }
   });
 });
 
 describe("isProjectTabActive", () => {
-  const base = "/projects/p1";
   it("matches the index only on exact path", () => {
-    expect(isProjectTabActive(base, base, base)).toBe(true);
-    expect(isProjectTabActive(`${base}/analysis`, base, base)).toBe(false);
+    expect(isProjectTabActive(B, B, B)).toBe(true);
+    expect(isProjectTabActive(`${B}/analysis`, B, B)).toBe(false);
   });
   it("matches section prefixes", () => {
-    expect(isProjectTabActive(`${base}/scans/123`, `${base}/scans`, base)).toBe(true);
-    expect(isProjectTabActive(`${base}/scanstwo`, `${base}/scans`, base)).toBe(false);
-  });
-
-  // #371 — active-state for the relocated Spec Kit primary tab.
-  it("lights Spec Kit on the canonical route and any sub-path", () => {
-    const href = `${base}/spec-kit`;
-    expect(isProjectTabActive(`${base}/spec-kit`, href, base)).toBe(true);
-    expect(isProjectTabActive(`${base}/spec-kit/spec.md`, href, base)).toBe(true);
-    // Sibling Analysis route must not light Spec Kit.
-    expect(isProjectTabActive(`${base}/analysis`, href, base)).toBe(false);
+    expect(isProjectTabActive(`${B}/scans/123`, `${B}/scans`, B)).toBe(true);
+    expect(isProjectTabActive(`${B}/scanstwo`, `${B}/scans`, B)).toBe(false);
   });
 });
 
 describe("<ProjectTabs />", () => {
-  it("renders primary link tabs and group triggers without a horizontal scroller", () => {
-    usePathnameMock.mockReturnValue("/projects/p1");
+  it("renders the eight primary tabs as links, in order, with no More menu", () => {
+    usePathnameMock.mockReturnValue(B);
     renderTabs();
-    expect(screen.getByRole("link", { name: "Overview" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Documents" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Analysis" })).toBeInTheDocument();
-    // #371 — Spec Kit is now a primary link beside Analysis, not a Docs item.
-    expect(screen.getByRole("link", { name: "Spec Kit" })).toBeInTheDocument();
-    // #486 — Discussions primary tab.
-    expect(screen.getByRole("link", { name: "Discussions" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Code" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Quality" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Docs" })).toBeInTheDocument();
-    // No overflow-x-auto scroller on the row.
-    const nav = screen.getByTestId("project-tabs");
+    const nav = screen.getByRole("navigation", { name: "Project sections" });
+    const links = within(nav).getAllByRole("link");
+    expect(links.map((l) => l.textContent?.trim())).toEqual([
+      "Overview",
+      "Sources",
+      "Analyze",
+      "Requirements",
+      "Docs",
+      "Publish",
+      "Code",
+      "Settings",
+    ]);
+    expect(screen.queryByRole("button", { name: /more project sections/i })).toBeNull();
+    expect(screen.queryByTestId("project-tabs-more")).toBeNull();
     expect(nav.querySelector(".overflow-x-auto")).toBeNull();
   });
 
-  it("marks the Code group as active when a child route is active", () => {
-    usePathnameMock.mockReturnValue("/projects/p1/changes");
+  it("renders the settings tab as a gear icon with an accessible name", () => {
+    usePathnameMock.mockReturnValue(B);
     renderTabs();
-    expect(screen.getByRole("button", { name: "Code" })).toHaveAttribute("aria-current", "page");
+    const gear = screen.getByTestId("project-tab-settings");
+    expect(gear).toHaveAccessibleName("Settings");
+    expect(gear.querySelector("svg")).not.toBeNull();
+    expect(gear).toHaveAttribute("href", `${B}/settings`);
   });
 
-  it("marks the More overflow as active when a hidden destination is active", () => {
-    usePathnameMock.mockReturnValue("/projects/p1/jira");
+  it("marks Overview as the current page on the index and shows no sub-nav", () => {
+    usePathnameMock.mockReturnValue(B);
     renderTabs();
-    expect(screen.getByRole("button", { name: /more project sections/i })).toHaveAttribute(
+    expect(screen.getByTestId("project-tab-overview")).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByTestId("project-subnav")).toBeNull();
+  });
+
+  it("shows the active section's pages in a labelled sub-nav", () => {
+    usePathnameMock.mockReturnValue(`${B}/changes`);
+    renderTabs();
+    // The section tab is marked current-within-set, the page itself as "page".
+    expect(screen.getByTestId("project-tab-code")).toHaveAttribute("aria-current", "true");
+    const sub = screen.getByRole("navigation", { name: "Code pages" });
+    const names = within(sub)
+      .getAllByRole("link")
+      .map((l) => l.textContent);
+    expect(names).toEqual([
+      "Code Overview",
+      "Changes",
+      "Pull Requests",
+      "Bug Rules",
+      "Bug Scans",
+      "Test Coverage",
+    ]);
+    expect(within(sub).getByRole("link", { name: "Changes" })).toHaveAttribute(
       "aria-current",
       "page",
     );
+    expect(within(sub).getByRole("link", { name: "Pull Requests" })).not.toHaveAttribute(
+      "aria-current",
+    );
   });
 
-  it("opens the More menu via keyboard and exposes overflow links", async () => {
-    usePathnameMock.mockReturnValue("/projects/p1");
-    const user = userEvent.setup();
+  it("marks a section tab 'page' when its landing page is the current page", () => {
+    usePathnameMock.mockReturnValue(`${B}/connections`);
     renderTabs();
-    const more = screen.getByRole("button", { name: /more project sections/i });
-    more.focus();
-    await user.keyboard("{Enter}");
-    expect(await screen.findByRole("menuitem", { name: "Connections" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Usage" })).toBeInTheDocument();
+    expect(screen.getByTestId("project-tab-sources")).toHaveAttribute("aria-current", "page");
+    expect(screen.getByTestId("project-tab-overview")).not.toHaveAttribute("aria-current");
   });
 
-  it("opens a group menu and renders its child links", async () => {
-    usePathnameMock.mockReturnValue("/projects/p1");
-    const user = userEvent.setup();
+  it("lights Docs, not Settings, on /settings/templates", () => {
+    usePathnameMock.mockReturnValue(`${B}/settings/templates`);
     renderTabs();
-    await user.click(screen.getByRole("button", { name: "Code" }));
-    expect(await screen.findByRole("menuitem", { name: "Code Overview" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Pull Requests" })).toBeInTheDocument();
+    expect(screen.getByTestId("project-tab-docs")).toHaveAttribute("aria-current", "true");
+    expect(screen.getByTestId("project-tab-settings")).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("navigation", { name: "Docs pages" })).toBeInTheDocument();
   });
 
-  // #371 — the relocated Spec Kit primary link lights up on its route.
-  it("marks the Spec Kit primary link active on /spec-kit and sub-paths", () => {
-    usePathnameMock.mockReturnValue("/projects/p1/spec-kit/spec.md");
+  it("shows no sub-nav for a single-page section", () => {
+    usePathnameMock.mockReturnValue(`${B}/publish`);
     renderTabs();
-    expect(screen.getByRole("link", { name: "Spec Kit" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByTestId("project-tab-publish")).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByTestId("project-subnav")).toBeNull();
   });
 
-  // #371 — Docs still renders with its remaining members (no Spec Kit).
-  it("keeps the Docs group with Documentation and Templates only", async () => {
-    usePathnameMock.mockReturnValue("/projects/p1");
-    const user = userEvent.setup();
+  it("renders no current tab on an unknown path", () => {
+    usePathnameMock.mockReturnValue(`${B}/nope`);
     renderTabs();
-    await user.click(screen.getByRole("button", { name: "Docs" }));
-    expect(await screen.findByRole("menuitem", { name: "Documentation" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Templates" })).toBeInTheDocument();
-    expect(screen.queryByRole("menuitem", { name: "Spec Kit" })).not.toBeInTheDocument();
-  });
-});
-
-// #469 — reachable, permission-gated entry to the per-project skill allowlist.
-describe("project skill allowlist entry (#469)", () => {
-  const PROJECT_UPDATER: AuthUser = { ...TEST_USER, permissions: ["project.update"] };
-
-  it("omits the Skills entry from the model without project.update", () => {
-    const model = getProjectTabModel("p1", { canManageSkills: false });
-    const hrefs = flattenProjectTabs(model).map((l) => l.href);
-    expect(hrefs).not.toContain("/library?projectId=p1");
-  });
-
-  it("adds a Skills entry pointing at /library?projectId when permitted", () => {
-    const model = getProjectTabModel("p1", { canManageSkills: true });
-    const docsGroup = model.primary.find((t) => t.kind === "group" && t.label === "Docs");
-    expect(docsGroup).toBeDefined();
-    if (docsGroup && docsGroup.kind === "group") {
-      const skills = docsGroup.items.find((i) => i.label === "Skills");
-      expect(skills).toBeDefined();
-      expect(skills?.href).toBe("/library?projectId=p1");
-    }
-  });
-
-  it("renders the Skills link for a user holding project.update", async () => {
-    usePathnameMock.mockReturnValue("/projects/p1");
-    const user = userEvent.setup();
-    renderTabs("p1", PROJECT_UPDATER);
-    await user.click(screen.getByRole("button", { name: "Docs" }));
-    const link = await screen.findByRole("menuitem", { name: "Skills" });
-    expect(link).toBeInTheDocument();
-    expect(link).toHaveAttribute("href", "/library?projectId=p1");
-  });
-
-  it("hides the Skills link for a user lacking project.update", async () => {
-    usePathnameMock.mockReturnValue("/projects/p1");
-    const user = userEvent.setup();
-    renderTabs("p1", { ...TEST_USER, permissions: [] });
-    await user.click(screen.getByRole("button", { name: "Docs" }));
-    expect(await screen.findByRole("menuitem", { name: "Documentation" })).toBeInTheDocument();
-    expect(screen.queryByRole("menuitem", { name: "Skills" })).not.toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Project sections" });
+    expect(nav.querySelector("[aria-current]")).toBeNull();
+    expect(screen.queryByTestId("project-subnav")).toBeNull();
   });
 });
 
 describe("<ProjectTabs /> — mobile collapse (R1 #156)", () => {
-  it("renders a single mobile dropdown trigger labeled with the current section", () => {
-    usePathnameMock.mockReturnValue("/projects/p1/changes");
+  it("labels the single mobile trigger with the current page", () => {
+    usePathnameMock.mockReturnValue(`${B}/changes`);
     renderTabs();
     const mobile = screen.getByTestId("project-tabs-mobile");
     expect(mobile).toHaveAccessibleName("Project section menu");
     expect(mobile).toHaveTextContent("Changes");
   });
 
-  it("defaults the mobile label to Overview on the index route", () => {
-    usePathnameMock.mockReturnValue("/projects/p1");
+  it("falls back to the section label, then to Overview", () => {
+    usePathnameMock.mockReturnValue(`${B}/sync`);
+    const { unmount } = renderTabs();
+    expect(screen.getByTestId("project-tabs-mobile")).toHaveTextContent("Publish");
+    unmount();
+    usePathnameMock.mockReturnValue(`${B}/nope`);
     renderTabs();
     expect(screen.getByTestId("project-tabs-mobile")).toHaveTextContent("Overview");
   });
 
-  it("lists every destination in the mobile dropdown when opened", async () => {
-    usePathnameMock.mockReturnValue("/projects/p1");
+  it("lists every destination, grouped by section, when opened", async () => {
+    usePathnameMock.mockReturnValue(`${B}/documents`);
     const user = userEvent.setup();
     renderTabs();
     await user.click(screen.getByTestId("project-tabs-mobile"));
-    // Both a primary and an overflow destination are reachable from one menu.
-    expect(await screen.findByRole("menuitem", { name: "Code Overview" })).toBeInTheDocument();
+    expect(await screen.findByRole("menuitem", { name: "Overview" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Code Overview" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Publish" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Usage" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Documents" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    // Section headings group the menu.
+    expect(within(screen.getByRole("menu")).getByText("Sources")).toBeInTheDocument();
+    const count = flattenProjectTabs(getProjectTabModel("p1")).length;
+    expect(screen.getAllByRole("menuitem")).toHaveLength(count);
   });
 });

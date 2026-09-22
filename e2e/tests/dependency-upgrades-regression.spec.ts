@@ -174,9 +174,9 @@ test.describe("Dependency Upgrades Regression (#633)", () => {
     await loginPage.goto();
     await loginPage.login(ADMIN_USER.username, ADMIN_USER.password);
 
-    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
+    await page.goto(`/projects/${projectId}/settings`, { waitUntil: "load" });
 
-    // AI provider picker is a settings control on the project detail page
+    // AI provider picker is a settings control — behind the ⚙ tab since #29
     const detailPage = new ProjectDetailPage(page);
     await expect(detailPage.aiProviderPicker).toBeVisible({ timeout: 30_000 });
     await expect(detailPage.aiProviderSelect).toBeVisible();
