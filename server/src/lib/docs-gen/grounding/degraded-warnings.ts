@@ -83,6 +83,19 @@ export interface DocWarning {
    * {@link sectionUngroundedWarning}.
    */
   tier?: DocWarningTier;
+  /**
+   * #67 — true when this `section-failed` warning's detail is METIS-authored
+   * text (a fixed `generationFailureMessage` string, or prose this codebase
+   * wrote), rather than an exception's own message.
+   *
+   * It exists so the READ path can tell a post-#67 warning from one persisted
+   * before it. A `section-failed` warning without this flag may still carry up
+   * to 300 characters of raw `String(err)` — provider response bodies, absolute
+   * paths, SQL text — so `publicDocWarnings` re-derives its detail through the
+   * fixed vocabulary before any of it reaches a client. Absent on every other
+   * warning kind, none of which is ever built from an exception.
+   */
+  detailSafe?: boolean;
 }
 
 /**
@@ -222,14 +235,31 @@ export function tierForSection(group: SectionTierSignal): DocWarningTier {
 /** Document status reflecting grounding/generation health. */
 export type DocHealthStatus = "ready" | "degraded";
 
-/** Build a warning for a section whose generation threw/failed. */
+/**
+ * Build a warning for a section whose generation threw/failed.
+ *
+ * `detail` is a contract: it must be METIS-AUTHORED text — a fixed
+ * {@link import("../generation-failure-message.js").generationFailureMessage}
+ * string, or prose this codebase wrote. It must NEVER be `String(err)` or an
+ * exception's `message` (#67): this message is persisted in the `warnings`
+ * column, returned by `GET /projects/:projectId/docs/:docId` and rendered in
+ * the UI banner, so a raw exception here puts provider response bodies, server
+ * paths and SQL text in front of a user. A caller holding an exception maps it
+ * through `generationFailureMessage` first.
+ * `docs-gen-warning-detail.enumeration.test.ts` fails on a call site that does
+ * not, so the contract is checked rather than merely documented.
+ */
 export function sectionFailedWarning(section: string, detail: string): DocWarning {
   const trimmed = detail.trim().slice(0, 300);
+  // The fixed vocabulary strings are whole sentences and end in their own full
+  // stop; appending another produced "… try again..".
+  const stop = /[.!?]$/.test(trimmed) ? "" : ".";
   return {
     kind: "section-failed",
     section,
-    message: `Section "${section}" could not be generated${trimmed ? `: ${trimmed}` : ""}.`,
+    message: `Section "${section}" could not be generated${trimmed ? `: ${trimmed}${stop}` : "."}`,
     severity: "error",
+    detailSafe: true,
   };
 }
 

@@ -342,3 +342,123 @@ describe("logger.redact — round-trips the real logged objects (#1225, #1263)",
     expect(redact(real)).toEqual(real);
   });
 });
+
+/**
+ * #68 — an `Error` in log METADATA used to serialise as `{}`.
+ *
+ * `redact()` rebuilds every object from `Object.entries(...)`, and an Error's
+ * `name` / `message` / `stack` are not own *enumerable* properties, so
+ * `log.error("…", { err })` recorded no detail at all. `errors({ stack: true })`
+ * only covers an Error passed as the log *message* or as the top-level info
+ * object, never one nested in metadata — which is the shape nearly every call
+ * site in `server/src` uses.
+ *
+ * Both directions matter on the same run: the message and stack must survive,
+ * AND a credential-named own property hung off the error must still redact.
+ */
+describe("logger.redact — an Error in metadata (#68)", () => {
+  it("serialises a top-level `err` with name, message and stack", () => {
+    const info = redactInfo({
+      level: "error",
+      message: "m",
+      err: new Error("secret detail"),
+      docId: "d",
+    });
+    const err = info.err as Record<string, unknown>;
+    expect(err.name).toBe("Error");
+    expect(err.message).toBe("secret detail");
+    expect(typeof err.stack).toBe("string");
+    expect(String(err.stack)).toContain("secret detail");
+    // The structured fields either side of it are untouched.
+    expect(info.docId).toBe("d");
+    expect(info.message).toBe("m");
+  });
+
+  it("serialises the `error` key shape too, not just `err`", () => {
+    const info = redactInfo({ level: "warn", message: "m", error: new TypeError("bad type") });
+    const err = info.error as Record<string, unknown>;
+    expect(err.name).toBe("TypeError");
+    expect(err.message).toBe("bad type");
+    expect(typeof err.stack).toBe("string");
+  });
+
+  it("serialises an Error nested inside metadata and inside an array", () => {
+    const out = redact({
+      ctx: { cause: new Error("nested boom") },
+      attempts: [new Error("first"), { inner: new Error("second") }],
+    }) as Record<string, unknown>;
+    const cause = (out.ctx as Record<string, unknown>).cause as Record<string, unknown>;
+    expect(cause.message).toBe("nested boom");
+    expect(typeof cause.stack).toBe("string");
+    const attempts = out.attempts as Array<Record<string, unknown>>;
+    expect(attempts[0].message).toBe("first");
+    expect((attempts[1].inner as Record<string, unknown>).message).toBe("second");
+  });
+
+  it("keeps an error's own enumerable properties, redacting the sensitive ones", () => {
+    const err = Object.assign(new Error("provider refused"), {
+      status: 402,
+      token: SECRET_LOOKALIKE,
+      apiKey: SECRET_LOOKALIKE,
+      requestId: "req-7",
+    });
+    const out = redact({ err }) as Record<string, Record<string, unknown>>;
+    expect(out.err.message).toBe("provider refused");
+    expect(out.err.status).toBe(402);
+    expect(out.err.requestId).toBe("req-7");
+    expect(out.err.token).toBe("[REDACTED]");
+    expect(out.err.apiKey).toBe("[REDACTED]");
+  });
+
+  it("carries a subclass's own name and nested cause", () => {
+    class AIProviderError extends Error {
+      constructor(
+        message: string,
+        readonly status: number,
+      ) {
+        super(message);
+        this.name = "AIProviderError";
+      }
+    }
+    const out = redact({
+      err: Object.assign(new AIProviderError("gateway said no", 429), {
+        cause: new Error("socket hang up"),
+      }),
+    }) as Record<string, Record<string, unknown>>;
+    expect(out.err.name).toBe("AIProviderError");
+    expect(out.err.message).toBe("gateway said no");
+    expect(out.err.status).toBe(429);
+    expect((out.err.cause as Record<string, unknown>).message).toBe("socket hang up");
+  });
+
+  it("still redacts an Error held under a credential-named key", () => {
+    const out = redact({ authorization: new Error("Bearer leak") }) as Record<string, unknown>;
+    expect(out.authorization).toBe("[REDACTED]");
+  });
+
+  it("writes message and stack through the wired winston instance", async () => {
+    const captured: Array<Record<string, unknown>> = [];
+    const transport = new winston.transports.Stream({
+      stream: new Writable({
+        write(chunk, _enc, cb) {
+          captured.push(JSON.parse(String(chunk)) as Record<string, unknown>);
+          cb();
+        },
+      }),
+      format: winston.format.json(),
+    });
+    logger.add(transport);
+    try {
+      logger.error("Doc generation failed", { err: new Error("boom"), docId: "doc-1" });
+      await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      logger.remove(transport);
+    }
+    const line = captured.find((e) => e.message === "Doc generation failed");
+    expect(line, "the logger emitted nothing").toBeDefined();
+    const err = line!.err as Record<string, unknown>;
+    expect(err.message).toBe("boom");
+    expect(String(err.stack)).toContain("boom");
+    expect(line!.docId).toBe("doc-1");
+  });
+});
