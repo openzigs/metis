@@ -177,6 +177,15 @@ export interface ChatOptions {
   /** Per-request reasoning effort hint for SDKs that support it. */
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
   /**
+   * #25 — turn the model's thinking OFF for this request. Honoured by the
+   * native Anthropic provider as `thinking: { type: "disabled" }` (which also
+   * drops any `reasoningEffort`) — the documented toggle on both the Anthropic
+   * Messages API and DeepSeek's Anthropic-compatible endpoint. Other providers
+   * ignore it. Distinct from the local provider's constructor-level
+   * `disableThinking` (Ollama `think: false`).
+   */
+  disableThinking?: boolean;
+  /**
    * Issue #113 — extra directories the provider should scan for `SKILL.md`
    * files (Copilot SDK `skillDirectories`). Phase 10 materialises loaded
    * library skills under `<copilotHome>/skills/` and forwards that path.

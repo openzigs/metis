@@ -141,6 +141,20 @@ export function modelThinksByDefault(model: string | undefined): boolean {
 }
 
 /**
+ * #25 — true when the model actually SERVED for `model` reasons by default:
+ * a documented thinking-by-default model id, or a `claude-*` name sent to an
+ * endpoint that serves it as one (DeepSeek's Anthropic API, via
+ * `ANTHROPIC_BASE_URL`).
+ */
+export function servedModelThinksByDefault(
+  model: string | undefined,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): boolean {
+  if (!model) return false;
+  return modelThinksByDefault(model) || servedAsThinkingModel(model, env);
+}
+
+/**
  * #25 — the extra OUTPUT tokens to grant a thinking-by-default model on top of
  * the answer budget: `DOCS_GEN_REASONING_ALLOWANCE_TOKENS` (db → env) or
  * {@link DEFAULT_REASONING_ALLOWANCE_TOKENS}; `0` for every other model. The
@@ -154,8 +168,7 @@ export function reasoningAllowanceTokens(
   config: ConfigService = getConfigService(),
   env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
 ): number {
-  if (!model) return 0;
-  if (!modelThinksByDefault(model) && !servedAsThinkingModel(model, env)) return 0;
+  if (!servedModelThinksByDefault(model, env)) return 0;
   const raw = config.getNumber(
     "DOCS_GEN_REASONING_ALLOWANCE_TOKENS",
     DEFAULT_REASONING_ALLOWANCE_TOKENS,

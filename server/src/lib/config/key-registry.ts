@@ -268,6 +268,14 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "#25 — extra OUTPUT tokens added to every docs-gen output cap (section, facts, DB-schema prose, claim/judge) for a model that REASONS BY DEFAULT and spends that reasoning from the same max_tokens budget as the answer. Default 32768. Applies only to models documented to think by default: DeepSeek deepseek-v4-pro / deepseek-flash, and a claude-* model name sent to DeepSeek's Anthropic endpoint (ANTHROPIC_BASE_URL on deepseek.com), which serves it as one of those models. Every other model is unaffected. The section/facts caps then describe the ANSWER budget and this is the reasoning headroom on top, still clamped to the model's output ceiling. Claim extraction and the faithfulness judge are NON-streaming calls, so on the anthropic provider their request is further clamped to the Anthropic SDK's non-streaming bound (21,333 tokens, or the SDK's lower per-model limit) — they receive less than the sum. Set 0 to opt out (e.g. when thinking has been disabled upstream).",
     sensitive: false,
   },
+  DOCS_GEN_PHASE1_REASONING: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.enum(["auto", "provider-default", "off", "low", "medium", "high"]),
+    description:
+      "#25 — how much a Phase-1 docs-gen FACT-EXTRACTION call may reason. auto (default): low effort for a model that REASONS BY DEFAULT (DeepSeek deepseek-v4-pro / deepseek-flash, or a claude-* name sent to DeepSeek's Anthropic endpoint) and nothing for every other model, so Claude on api.anthropic.com is unchanged. provider-default: send nothing (DeepSeek then thinks at its default, high). off: thinking disabled. low / medium / high: that effort for ANY model — on Claude this turns adaptive thinking on. Phase 1 is mechanical extraction: with the #41 output budget, deepseek-v4-pro at its default spent ~19,800 output tokens and ~88 s per module, mostly reasoning. Honoured by the anthropic provider (thinking + output_config.effort; DeepSeek maps medium to high); other providers ignore it. DOCS_GEN_REASONING_ALLOWANCE_TOKENS still sizes the cap.",
+    sensitive: false,
+  },
   DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS: {
     tier: "tunable",
     valueType: "int",

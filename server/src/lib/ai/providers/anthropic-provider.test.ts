@@ -47,7 +47,11 @@ vi.mock("@anthropic-ai/sdk", () => {
 });
 
 // Import AFTER vi.mock so the provider binds to the mocked SDK.
-import { AnthropicProvider, normalizeAnthropicModelId } from "./anthropic-provider.js";
+import {
+  AnthropicProvider,
+  isDeepSeekEndpoint,
+  normalizeAnthropicModelId,
+} from "./anthropic-provider.js";
 import type { ChatChunk, ChatMessage } from "../types.js";
 import { __resetConfigSingleton } from "../../config/config-service.js";
 import { SDK_MODEL_NONSTREAMING_TOKENS } from "../nonstreaming-output-bound.js";
@@ -314,6 +318,53 @@ describe("AnthropicProvider request building (non-cache paths)", () => {
     const body = lastCreateBody();
     expect(body.thinking).toEqual({ type: "adaptive" });
     expect(body.output_config).toEqual({ effort: "high" });
+  });
+
+  it("sends no thinking field at all by default (Claude behaviour unchanged, #25)", async () => {
+    await provider().chat(messages);
+    const body = lastCreateBody();
+    expect(body).not.toHaveProperty("thinking");
+    expect(body).not.toHaveProperty("output_config");
+  });
+
+  it("disableThinking sends thinking: disabled and no effort (#25)", async () => {
+    await provider().chat(messages, { disableThinking: true, reasoningEffort: "high" });
+    const body = lastCreateBody();
+    expect(body.thinking).toEqual({ type: "disabled" });
+    expect(body).not.toHaveProperty("output_config");
+  });
+
+  it("uses DeepSeek's documented enabled toggle, not adaptive, on its endpoint (#25)", async () => {
+    // https://api-docs.deepseek.com/guides/thinking_mode — the Anthropic format
+    // toggles with {"thinking": {"type": "enabled/disabled"}} and sets effort
+    // with {"output_config": {"effort": "low/high/max"}}; "adaptive" is not a
+    // documented value there.
+    const p = new AnthropicProvider({
+      apiKey: "k",
+      baseUrl: "https://api.deepseek.com/anthropic",
+    });
+    for await (const _ of p.stream(messages, { reasoningEffort: "low" })) {
+      /* drain */
+    }
+    const body = lastStreamBody();
+    expect(body.thinking).toEqual({ type: "enabled" });
+    expect(body.output_config).toEqual({ effort: "low" });
+  });
+
+  it("recognises only DeepSeek's host as the DeepSeek endpoint (#25)", () => {
+    expect(isDeepSeekEndpoint("https://api.deepseek.com/anthropic")).toBe(true);
+    expect(isDeepSeekEndpoint(" https://API.DeepSeek.com ")).toBe(true);
+    expect(isDeepSeekEndpoint("https://deepseek.com.evil.example")).toBe(false);
+    expect(isDeepSeekEndpoint("https://api.anthropic.com")).toBe(false);
+    expect(isDeepSeekEndpoint("not a url")).toBe(false);
+    expect(isDeepSeekEndpoint("")).toBe(false);
+    expect(isDeepSeekEndpoint(undefined)).toBe(false);
+  });
+
+  it("keeps adaptive thinking for a non-DeepSeek base URL (#25)", async () => {
+    const p = new AnthropicProvider({ apiKey: "k", baseUrl: "https://gateway.example.com" });
+    await p.chat(messages, { reasoningEffort: "low" });
+    expect(lastCreateBody().thinking).toEqual({ type: "adaptive" });
   });
 
   it("honours a maxTokens override", async () => {

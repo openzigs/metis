@@ -56,6 +56,10 @@ import {
   type GenerationInputSnapshot,
 } from "../lib/docs-gen/regeneration-plan.js";
 import type { RegenerationTask } from "../lib/docs-gen/incremental.js";
+import {
+  GENERATION_INTERRUPTED_MESSAGE,
+  startGenerationHeartbeat,
+} from "../lib/docs-gen/interrupted-generations.js";
 
 const log = createChildLogger("generated-docs");
 
@@ -396,6 +400,8 @@ export function generatedDocsRouter(): Router {
     res.json({
       data: {
         ...doc,
+        // #50 — lets the UI explain a restart and offer a one-click regenerate.
+        interrupted: doc.status === "failed" && doc.errorMessage === GENERATION_INTERRUPTED_MESSAGE,
         indexing: syntheticDocument
           ? {
               state: syntheticDocument.indexState,
@@ -505,6 +511,41 @@ export function generatedDocsRouter(): Router {
     res.json({ data: updated });
   });
 
+  // POST /:docId/regenerate — #50: one-click regenerate of a FAILED document in
+  // place (e.g. one interrupted by a restart). Shares /generate's rate limit.
+  r.post(
+    "/:docId/regenerate",
+    generateRateLimiter,
+    requirePermission("project.update"),
+    async (req: Request, res: Response) => {
+      const projectId = getProjectId(req);
+      const docId = getDocId(req);
+      // Compare-and-set failed → pending: a double click or a concurrent request
+      // starts exactly one generation. `pending` is what generateDocumentAsync's
+      // pre-claim failure path fences on, and what the UI shows until it claims.
+      const reset = await prisma.generatedDocument.updateMany({
+        where: { id: docId, projectId, deletedAt: null, status: "failed" },
+        data: { status: "pending", errorMessage: null },
+      });
+      if (!reset.count) {
+        const existing = await prisma.generatedDocument.findFirst({
+          where: { id: docId, projectId, deletedAt: null },
+          select: { status: true },
+        });
+        if (!existing) throw new AppError(404, "DOC_NOT_FOUND", "Generated document not found");
+        throw new AppError(
+          409,
+          "DOC_NOT_REGENERATABLE",
+          `Only a failed document can be regenerated (status: ${existing.status})`,
+        );
+      }
+      void generateDocumentAsync(docId, projectId).catch((err) => {
+        log.error("Background doc regeneration failed", { err, docId });
+      });
+      res.status(202).json({ data: { id: docId, status: "pending" } });
+    },
+  );
+
   // DELETE /:docId — soft delete
   r.delete("/:docId", requirePermission("project.update"), async (req: Request, res: Response) => {
     const projectId = getProjectId(req);
@@ -593,6 +634,9 @@ export async function generateDocumentAsync(
   let claimed = false;
   let originalHash: string | null = null;
   let pendingUpdatedAt: Date | undefined;
+  // #50 — refreshes the row while this run holds its claim; a stopped heartbeat
+  // is how the interrupted-generation sweep tells a dead run from a live one.
+  let stopHeartbeat: (() => void) | undefined;
   try {
     if (automatic?.signal.aborted) throw new Error("Regeneration aborted");
     const original = await prisma.generatedDocument.findFirst({
@@ -663,6 +707,7 @@ export async function generateDocumentAsync(
     });
     if (!acquired.count) throw new Error("Generation already running or revision changed");
     claimed = true;
+    stopHeartbeat = startGenerationHeartbeat(docId, projectId, claim);
     // #239 — broadcast the doc-generation job start so the UI flips from the
     // static "generating" badge to live status without a manual refresh.
     jobEvents.started("doc-generation", docId, projectId, "Generating documentation");
@@ -1124,5 +1169,7 @@ export async function generateDocumentAsync(
     if (failed?.count)
       jobEvents.failed("doc-generation", docId, projectId, genericFailureMessage("doc-generation"));
     if (automatic) throw err;
+  } finally {
+    stopHeartbeat?.();
   }
 }
