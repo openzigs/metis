@@ -20,13 +20,17 @@ interface UsageRow {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
-  estimatedCostUsd: number;
+  /** `null` when none of this group's usage was priced (#22). */
+  estimatedCostUsd: number | null;
+  unpricedTokens: number;
   count: number;
 }
 
 interface UsageSummary {
   totalTokens: number;
+  /** Cost of the PRICED usage only — see `unpriced` (#22). */
   totalCostUsd: number;
+  unpriced: { promptTokens: number; completionTokens: number; totalTokens: number; count: number };
   rows: UsageRow[];
 }
 
@@ -43,8 +47,9 @@ function formatTokens(n: number): string {
   return n.toLocaleString();
 }
 
-function formatCost(usd: number): string {
-  return `$${usd.toFixed(4)}`;
+/** #22 — `null` is an UNPRICED model: unknown spend, never shown as $0. */
+function formatCost(usd: number | null): string {
+  return usd === null ? "Unpriced" : `$${usd.toFixed(4)}`;
 }
 
 const usageColumns: ResponsiveColumn<UsageRow>[] = [
@@ -59,6 +64,12 @@ const usageColumns: ResponsiveColumn<UsageRow>[] = [
   },
   { key: "total", header: "Total", align: "right", cell: (row) => formatTokens(row.totalTokens) },
   { key: "cost", header: "Cost", align: "right", cell: (row) => formatCost(row.estimatedCostUsd) },
+  {
+    key: "unpriced",
+    header: "Unpriced tokens",
+    align: "right",
+    cell: (row) => formatTokens(row.unpricedTokens),
+  },
 ];
 
 export default function AdminUsagePage() {
@@ -113,14 +124,28 @@ export default function AdminUsagePage() {
       {data && (
         <>
           {/* Summary tiles */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
             <Card className="p-4">
               <p className="text-sm text-gray-500 dark:text-gray-400">Total Tokens</p>
               <p className="text-2xl font-bold">{formatTokens(data.totalTokens)}</p>
             </Card>
-            <Card className="p-4">
+            <Card className="p-4" data-testid="admin-usage-cost">
               <p className="text-sm text-gray-500 dark:text-gray-400">Estimated Cost</p>
-              <p className="text-2xl font-bold">{formatCost(data.totalCostUsd)}</p>
+              <p className="text-2xl font-bold">
+                {/* PR #41 review — all-unpriced usage is not "$0.0000" of spend. */}
+                {data.totalCostUsd === 0 && data.unpriced.totalTokens > 0
+                  ? "Unpriced"
+                  : formatCost(data.totalCostUsd)}
+              </p>
+            </Card>
+            <Card className="p-4" data-testid="admin-usage-unpriced">
+              <p className="text-sm text-gray-500 dark:text-gray-400">Unpriced Tokens</p>
+              <p className="text-2xl font-bold">{formatTokens(data.unpriced.totalTokens)}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                {formatTokens(data.unpriced.promptTokens)} in /{" "}
+                {formatTokens(data.unpriced.completionTokens)} out — not in the cost; set prices
+                with MODEL_PRICES
+              </p>
             </Card>
             <Card className="p-4">
               <p className="text-sm text-gray-500 dark:text-gray-400">Invocations</p>

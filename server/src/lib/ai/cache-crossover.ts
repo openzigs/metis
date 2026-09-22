@@ -62,6 +62,16 @@ const clampFraction = (n: number): number => {
 };
 
 /**
+ * The family keys this module prices always resolve to a published rate; a
+ * `null` here means the pricing table lost a Claude family, which must fail
+ * loudly rather than read as a $0 flow (#22).
+ */
+function priced(usd: number | null): number {
+  if (usd === null) throw new Error("cache-crossover: Claude family price missing");
+  return usd;
+}
+
+/**
  * Cost of running a flow on Sonnet WITH prompt caching. `cacheReadFraction` of
  * the input is billed at the reduced cache-read rate; the remainder is fresh
  * input. Cache WRITES are intentionally excluded: for a high-volume, warm-cache
@@ -72,16 +82,18 @@ export function sonnetCachedCostUsd(shape: FlowTokenShape): number {
   const f = clampFraction(shape.cacheReadFraction);
   const cacheReadTokens = Math.round(shape.inputTokens * f);
   const freshInput = shape.inputTokens - cacheReadTokens;
-  return estimateCostUsd(SONNET_PRICING_KEY, freshInput, shape.outputTokens, {
-    cacheReadTokens,
-  });
+  return priced(
+    estimateCostUsd(SONNET_PRICING_KEY, freshInput, shape.outputTokens, {
+      cacheReadTokens,
+    }),
+  );
 }
 
 /** Cost of running a flow on Haiku with NO caching (the current behaviour). */
 export function haikuUncachedCostUsd(
   shape: Pick<FlowTokenShape, "inputTokens" | "outputTokens">,
 ): number {
-  return estimateCostUsd(HAIKU_PRICING_KEY, shape.inputTokens, shape.outputTokens, {});
+  return priced(estimateCostUsd(HAIKU_PRICING_KEY, shape.inputTokens, shape.outputTokens, {}));
 }
 
 /** Compare cached-Sonnet against uncached-Haiku for one flow shape. */

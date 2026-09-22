@@ -150,6 +150,12 @@ export interface FaithfulnessJudgeDeps {
   responseFormat?: JsonSchemaResponseFormat;
 }
 
+/**
+ * #25 — calls per batch when the judge's response cannot be parsed: the
+ * original plus ONE retry.
+ */
+export const JUDGE_BATCH_ATTEMPTS = 2;
+
 export class FaithfulnessJudge {
   private readonly provider: AIProvider;
   private readonly model: string | undefined;
@@ -273,21 +279,37 @@ export class FaithfulnessJudge {
       { role: "user", content: userContent },
     ];
 
-    const response = await this.provider.chat(messages, {
-      model: this.model,
-      signal,
-      disableTools: true,
-      // #1226 — cap sized for THIS judge's model, never inherited from the
-      // provider's section-model default.
-      ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
-      // #390 — tag prompt-cache hit-ratio telemetry by workload.
-      callType: "grounding",
-      ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
-      // #336 — schema-constrained verdict list on the local/vLLM path when enabled.
-      ...(this.responseFormat ? { responseFormat: this.responseFormat } : {}),
-    });
+    const ask = () =>
+      this.provider.chat(messages, {
+        model: this.model,
+        signal,
+        disableTools: true,
+        // #1226 — cap sized for THIS judge's model, never inherited from the
+        // provider's section-model default.
+        ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
+        // #390 — tag prompt-cache hit-ratio telemetry by workload.
+        callType: "grounding",
+        ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
+        // #336 — schema-constrained verdict list on the local/vLLM path when enabled.
+        ...(this.responseFormat ? { responseFormat: this.responseFormat } : {}),
+      });
 
-    const rawVerdicts = this.parseRawVerdicts(response.content);
+    // #25 — an unparseable batch is retried ONCE before it is counted as
+    // unverifiable: a sampled model can emit a malformed or cut-off verdict list
+    // on one call and a clean one on the next, and each lost batch removes its
+    // claims from the section's faithfulness score. A batch that parses but
+    // matches too few claims is a different failure and is not retried.
+    let rawVerdicts: ClaimVerdict[] | null = null;
+    for (let attempt = 1; attempt <= JUDGE_BATCH_ATTEMPTS; attempt++) {
+      const response = await ask();
+      rawVerdicts = this.parseRawVerdicts(response.content);
+      if (rawVerdicts) break;
+      if (attempt < JUDGE_BATCH_ATTEMPTS && !signal?.aborted) {
+        log.warn("Faithfulness judge batch was unparseable; retrying once");
+        continue;
+      }
+      break;
+    }
     if (!rawVerdicts) {
       log.warn("Faithfulness judge batch was unparseable; treating batch as unverifiable");
       return null;

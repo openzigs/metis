@@ -507,7 +507,8 @@ async function tokenUsageTotals(projectId: string): Promise<{
       completionTokens: acc.completionTokens + row.outputTokens,
       cacheReadTokens: acc.cacheReadTokens + row.cacheReadTokens,
       cacheWriteTokens: acc.cacheWriteTokens + row.cacheWriteTokens,
-      estimatedCostUsd: acc.estimatedCostUsd + row.costCents / 100,
+      // #22 — an unpriced row (null) contributes tokens but no known cost.
+      estimatedCostUsd: acc.estimatedCostUsd + (row.costCents ?? 0) / 100,
     }),
     {
       promptTokens: 0,

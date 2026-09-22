@@ -13,6 +13,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   DEFAULT_JUDGE_MAX_BATCH,
   FaithfulnessJudge,
+  JUDGE_BATCH_ATTEMPTS,
   MIN_BATCH_MATCH_RATIO,
   normalizeClaim,
   type ClaimVerdict,
@@ -241,7 +242,9 @@ describe("FaithfulnessJudge.judge", () => {
     const provider = mockProvider("not valid json from the judge");
     const judge = new FaithfulnessJudge({ provider });
     const out = await judge.judge(["a claim"], ctx);
-    expect(provider.chat).toHaveBeenCalledTimes(1);
+    // #25 — the original call plus exactly one retry, then unverifiable.
+    expect(provider.chat).toHaveBeenCalledTimes(JUDGE_BATCH_ATTEMPTS);
+    expect(JUDGE_BATCH_ATTEMPTS).toBe(2);
     expect(out).toBeNull();
   });
 
@@ -494,8 +497,9 @@ describe("FaithfulnessJudge.judge — batching & robustness (#grounding)", () =>
         const user = String(messages[messages.length - 1]?.content ?? "");
         const cs = claimsFromPrompt(user);
         const idx = call++;
+        // Batch 0 is junk on BOTH its attempts (original + #25 retry).
         const content =
-          idx === 0
+          idx <= 1
             ? "not valid json at all"
             : JSON.stringify({
                 verdicts: cs.map((c) => ({ claim: c, supported: true, sourceIds: [] })),
@@ -513,6 +517,46 @@ describe("FaithfulnessJudge.judge — batching & robustness (#grounding)", () =>
     const out = await judge.judge(claims(10), ctx); // batch0 junk, batch1 ok
     expect(out).not.toBeNull();
     expect(out).toHaveLength(5); // only batch1 survived
+    expect(provider.chat).toHaveBeenCalledTimes(3); // batch0 ×2, batch1 ×1
+  });
+
+  it("retries an unparseable batch once and keeps its verdicts when the retry parses (#25)", async () => {
+    let call = 0;
+    const provider = mockProvider("{}");
+    (provider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+      async (messages: { content?: unknown }[]) => {
+        const cs = claimsFromPrompt(String(messages[messages.length - 1]?.content ?? ""));
+        const idx = call++;
+        return {
+          // Only the very first call is junk — batch 0's retry succeeds.
+          content:
+            idx === 0
+              ? '{"verdicts": [{"claim": "Claim number 1'
+              : JSON.stringify({
+                  verdicts: cs.map((c) => ({ claim: c, supported: true, sourceIds: [] })),
+                }),
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "mock",
+          provider: "offline-stub",
+          offline: false,
+        } satisfies ChatResponse;
+      },
+    );
+    const judge = new FaithfulnessJudge({ provider, maxBatch: 5 });
+    const out = await judge.judge(claims(10), ctx);
+    expect(provider.chat).toHaveBeenCalledTimes(3); // batch0 ×2, batch1 ×1
+    // Nothing was lost: both batches' 10 verdicts survive.
+    expect(out).toHaveLength(10);
+  });
+
+  it("does not retry when the caller has aborted (#25)", async () => {
+    const provider = mockProvider("not valid json from the judge");
+    const judge = new FaithfulnessJudge({ provider });
+    const controller = new AbortController();
+    controller.abort();
+    const out = await judge.judge(["a claim"], ctx, controller.signal);
+    expect(provider.chat).toHaveBeenCalledTimes(1);
+    expect(out).toBeNull();
   });
 });
 

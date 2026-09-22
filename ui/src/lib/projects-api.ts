@@ -188,17 +188,24 @@ export interface UsageSummary {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** Cost of the PRICED usage only (#22). */
   costCents: number;
+  /** #22 — usage from models with no configured price, reported apart. */
+  unpriced: { inputTokens: number; outputTokens: number; totalTokens: number; calls: number };
   projectedMonthlyCostCents: number;
   monthlyTokenBudget: number | null;
   monthToDateTokens: number;
+  /** MTD tokens left out of `projectedMonthlyCostCents` because unpriced. */
+  monthToDateUnpricedTokens: number;
   byProvider: Array<{
     provider: string;
     model: string;
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
-    costCents: number;
+    /** `null` when none of this model's usage was priced (#22). */
+    costCents: number | null;
+    unpricedTokens: number;
   }>;
   byDay: Array<{
     day: string;
@@ -206,6 +213,7 @@ export interface UsageSummary {
     outputTokens: number;
     totalTokens: number;
     costCents: number;
+    unpricedTokens: number;
   }>;
 }
 
@@ -303,13 +311,26 @@ export interface EnhancedUsageRow {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
-  estimatedCostUsd: number;
+  /** `null` when none of this group's usage was priced (#22). */
+  estimatedCostUsd: number | null;
+  /** #22 — tokens in this group recorded without a price. */
+  unpricedTokens: number;
+  count: number;
+}
+
+/** #22 — usage recorded while its model had no price. */
+export interface UnpricedUsageTotals {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
   count: number;
 }
 
 export interface EnhancedUsageSummary {
   totalTokens: number;
+  /** Cost of the PRICED usage only — see `unpriced`. */
   totalCostUsd: number;
+  unpriced: UnpricedUsageTotals;
   rows: EnhancedUsageRow[];
 }
 

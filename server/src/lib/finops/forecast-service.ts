@@ -92,7 +92,8 @@ export async function loadWorkspaceWindow(
   const buckets = new Map<string, number>();
   for (const r of rows) {
     const day = isoDay(r.date);
-    buckets.set(day, (buckets.get(day) ?? 0) + r.costCents);
+    // #22 — the forecast projects PRICED spend; an unpriced row adds nothing.
+    buckets.set(day, (buckets.get(day) ?? 0) + (r.costCents ?? 0));
   }
   return densifyWindow(buckets, windowStart, now);
 }
@@ -111,7 +112,8 @@ export async function loadProjectWindow(
   const buckets = new Map<string, number>();
   for (const r of rows) {
     const day = isoDay(r.createdAt);
-    buckets.set(day, (buckets.get(day) ?? 0) + r.costCents);
+    // #22 — the forecast projects PRICED spend; an unpriced row adds nothing.
+    buckets.set(day, (buckets.get(day) ?? 0) + (r.costCents ?? 0));
   }
   return densifyWindow(buckets, windowStart, now);
 }

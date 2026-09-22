@@ -22,14 +22,13 @@ describe("getRate", () => {
     expect(r.cacheWritePer1k).toBe(0.375);
   });
 
-  it("falls back to provider:default when model is unknown", () => {
+  it("falls back to provider:default for a free internal provider when model is unknown", () => {
     const r = getRate("offline-stub", "totally-made-up-model");
     expect(r).toBe(DEFAULT_RATE);
   });
 
-  it("returns the zero default for completely unknown providers", () => {
-    const r = getRate("nope", "nope");
-    expect(r).toBe(DEFAULT_RATE);
+  it("returns null (UNPRICED) for completely unknown providers, not a zero rate (#22)", () => {
+    expect(getRate("nope", "nope")).toBeNull();
   });
 
   it("registry contains the marquee models", () => {

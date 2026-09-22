@@ -186,7 +186,8 @@ async function metisBedrockCents(start: Date, end: Date): Promise<number> {
     },
     select: { costCents: true },
   });
-  return rows.reduce((sum, r) => sum + r.costCents, 0);
+  // #22 — unpriced rows (null) have no METIS-side cost to reconcile.
+  return rows.reduce((sum, r) => sum + (r.costCents ?? 0), 0);
 }
 
 export interface ReconcileOptions {
