@@ -60,6 +60,10 @@ export const DEFAULT_RATE: TokenRate = {
 //   Opus 4/4.1 : $15 in / $75 out / $1.50 cacheRead / $18.75 cacheWrite(5m)
 //   Fable 5    : $10 in / $50 out / $1 cacheRead / $12.50 cacheWrite(5m)
 //   Fable 5.1  : as Fable 5 but $0.25 cacheRead (0.025x input)
+// Re-read 2026-09-22 for #42, adding:
+//   Haiku 3.5  : $0.80 in / $4 out / $0.08 cacheRead / $1 cacheWrite(5m)
+// Every Claude row and family price is pinned to its published price by
+// `published-claude-prices.test.ts`.
 const ANTHROPIC_SONNET_4: TokenRate = {
   inputPer1k: 0.3,
   outputPer1k: 1.5,
@@ -98,6 +102,36 @@ const ANTHROPIC_FABLE_5: TokenRate = {
   cacheWritePer1k: 1.25,
 };
 const ANTHROPIC_FABLE_5_1: TokenRate = { ...ANTHROPIC_FABLE_5, cacheReadPer1k: 0.025 };
+const ANTHROPIC_HAIKU_3_5: TokenRate = {
+  inputPer1k: 0.08,
+  outputPer1k: 0.4,
+  cacheReadPer1k: 0.008,
+  cacheWritePer1k: 0.1,
+};
+// Claude 3 Haiku is no longer on Anthropic's page; $0.25 / $1.25 is the
+// Bedrock list price (AWS Price List, see below).
+const CLAUDE_3_HAIKU: TokenRate = { inputPer1k: 0.025, outputPer1k: 0.125 };
+
+// Amazon Bedrock prices (#42). Source: the AWS Price List API, offer
+// `AmazonBedrockFoundationModels`, us-east-1, publication 2026-09-11 — the
+// machine-readable form of https://aws.amazon.com/bedrock/pricing/ — read
+// 2026-09-22. Bedrock bills a geo inference profile (`us.`, `eu.`, …) or an
+// in-region call at its "Regional" SKU, which for Claude 4.5 and later is 1.1x
+// the "Global" SKU (Anthropic's pricing page: "Regional and multi-region
+// endpoints include a 10% premium over global endpoints"). The Global SKU
+// equals Anthropic's own price. Models before 4.5 have one Bedrock price.
+const BEDROCK_REGIONAL_PREMIUM = 1.1;
+
+/** A rate × `factor`, rounded clear of float noise (0.1 × 1.1 must be 0.11). */
+function scaleRate(rate: TokenRate, factor: number): TokenRate {
+  const s = (v: number) => Math.round(v * factor * 1e9) / 1e9;
+  return {
+    inputPer1k: s(rate.inputPer1k),
+    outputPer1k: s(rate.outputPer1k),
+    ...(rate.cacheReadPer1k !== undefined ? { cacheReadPer1k: s(rate.cacheReadPer1k) } : {}),
+    ...(rate.cacheWritePer1k !== undefined ? { cacheWritePer1k: s(rate.cacheWritePer1k) } : {}),
+  };
+}
 
 const RATES: ReadonlyMap<string, TokenRate> = new Map([
   // ── Anthropic direct API — BARE 4.x model ids (Issue #428) ──────────────
@@ -122,28 +156,37 @@ const RATES: ReadonlyMap<string, TokenRate> = new Map([
     { inputPer1k: 0.3, outputPer1k: 1.5, cacheReadPer1k: 0.03, cacheWritePer1k: 0.375 },
   ],
   ["anthropic:claude-3-5-sonnet", { inputPer1k: 0.3, outputPer1k: 1.5 }],
-  ["anthropic:claude-3-5-haiku", { inputPer1k: 0.1, outputPer1k: 0.5 }],
+  // Haiku 3.5 is $0.80 / $4 (pricing page); it was billed at Haiku 4.5's $1 / $5.
+  ["anthropic:claude-3-5-haiku", ANTHROPIC_HAIKU_3_5],
   ["anthropic:claude-3-opus", { inputPer1k: 1.5, outputPer1k: 7.5 }],
-  // Bedrock-hosted Claude Sonnet 4.6 (legacy id, kept for historical usage rows)
+  // Bedrock-hosted Claude 4.5+ at the Regional SKU (see BEDROCK_REGIONAL_PREMIUM).
+  // Sonnet 4.6: $3.30 / $16.50 / $0.33 / $4.125 (legacy id, kept for historical
+  // usage rows).
   [
     "bedrock-gateway:us.anthropic.claude-sonnet-4-6",
-    { inputPer1k: 0.3, outputPer1k: 1.5, cacheReadPer1k: 0.03, cacheWritePer1k: 0.375 },
+    scaleRate(ANTHROPIC_SONNET_4, BEDROCK_REGIONAL_PREMIUM),
   ],
   [
     "bedrock-gateway:anthropic.claude-sonnet-4-6",
-    { inputPer1k: 0.3, outputPer1k: 1.5, cacheReadPer1k: 0.03, cacheWritePer1k: 0.375 },
+    scaleRate(ANTHROPIC_SONNET_4, BEDROCK_REGIONAL_PREMIUM),
   ],
-  // Bedrock-hosted Claude Sonnet 5 (current default; see model-router.ts)
+  // Sonnet 5 (current default; see model-router.ts): $2.20 / $11 / $0.22 / $2.75.
+  // It was billed at Sonnet 4.x's Global $3 / $15.
   [
     "bedrock-gateway:us.anthropic.claude-sonnet-5",
-    { inputPer1k: 0.3, outputPer1k: 1.5, cacheReadPer1k: 0.03, cacheWritePer1k: 0.375 },
+    scaleRate(ANTHROPIC_SONNET_5, BEDROCK_REGIONAL_PREMIUM),
   ],
-  // Bedrock-hosted Claude Opus 4.8 — no published Bedrock rate yet; using the
-  // nearest published Opus 4.x tier as an approximation.
-  ["bedrock-gateway:us.anthropic.claude-opus-4-8", ANTHROPIC_OPUS_4],
-  // Bedrock-hosted Claude Fable 5 — no published rate; approximated from the
-  // Haiku tier pending real pricing data.
-  ["bedrock-gateway:us.anthropic.claude-fable-5", ANTHROPIC_HAIKU_4],
+  // Opus 4.8: $5.50 / $27.50 / $0.55 / $6.875.
+  [
+    "bedrock-gateway:us.anthropic.claude-opus-4-8",
+    scaleRate(ANTHROPIC_OPUS_4, BEDROCK_REGIONAL_PREMIUM),
+  ],
+  // Fable 5: $11 / $55 / $1.10 / $13.75. #42 — it was billed at Haiku 4.5's
+  // $1 / $5, about a tenth of its price.
+  [
+    "bedrock-gateway:us.anthropic.claude-fable-5",
+    scaleRate(ANTHROPIC_FABLE_5, BEDROCK_REGIONAL_PREMIUM),
+  ],
   // Bedrock-hosted Claude 3.5 Sonnet (legacy)
   [
     "bedrock-gateway:anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -153,10 +196,8 @@ const RATES: ReadonlyMap<string, TokenRate> = new Map([
     "bedrock-gateway:anthropic.claude-3-5-sonnet-20240620-v1:0",
     { inputPer1k: 0.3, outputPer1k: 1.5 },
   ],
-  [
-    "bedrock-gateway:anthropic.claude-3-5-haiku-20241022-v1:0",
-    { inputPer1k: 0.1, outputPer1k: 0.5 },
-  ],
+  // Haiku 3.5 standard (not latency-optimized) SKU: $0.80 / $4 / $0.08 / $1.
+  ["bedrock-gateway:anthropic.claude-3-5-haiku-20241022-v1:0", ANTHROPIC_HAIKU_3_5],
   ["bedrock-gateway:anthropic.claude-3-opus-20240229-v1:0", { inputPer1k: 1.5, outputPer1k: 7.5 }],
   // OpenAI
   ["openai:gpt-4o", { inputPer1k: 0.25, outputPer1k: 1.0 }],
@@ -320,18 +361,47 @@ export function getRate(provider: string, model: string): TokenRate | null {
  *
  * Fable 5 / 5.1 are $10/$50. Opus 4.5 and later are $5/$25; Opus 4 / 4.1
  * (and Claude 3 Opus) are $15/$75. Sonnet 5 is $2/$10; every earlier Sonnet
- * is $3/$15.
+ * is $3/$15. Haiku 4.5 is $1/$5, Haiku 3.5 $0.80/$4, Claude 3 Haiku $0.25/$1.25.
+ *
+ * A Bedrock geo inference profile (`us.anthropic.…`, `eu.anthropic.…`, …) or
+ * in-region id (`anthropic.…`) of a Claude 4.5+ model bills at Bedrock's
+ * Regional SKU, 1.1x the price above; a `global.anthropic.…` profile bills at
+ * the price above (#42).
  */
 export function claudeFamilyRate(model: string): TokenRate | undefined {
   const m = model.toLowerCase();
+  const base = claudeBaseFamilyRate(m);
+  if (!base) return undefined;
+  return isBedrockRegionalId(m) && isRegionallyPricedGeneration(m)
+    ? scaleRate(base, BEDROCK_REGIONAL_PREMIUM)
+    : base;
+}
+
+function claudeBaseFamilyRate(m: string): TokenRate | undefined {
   if (/fable-5[.-]1/.test(m)) return ANTHROPIC_FABLE_5_1;
   if (/fable/.test(m)) return ANTHROPIC_FABLE_5;
   if (/opus-(4-[5-9]|[5-9])/.test(m)) return ANTHROPIC_OPUS_4;
   if (/opus/.test(m)) return ANTHROPIC_OPUS_LEGACY;
   if (/sonnet-[5-9]/.test(m)) return ANTHROPIC_SONNET_5;
   if (/sonnet/.test(m)) return ANTHROPIC_SONNET_4;
+  if (/3-5-haiku/.test(m)) return ANTHROPIC_HAIKU_3_5;
+  if (/3-haiku/.test(m)) return CLAUDE_3_HAIKU;
   if (/haiku/.test(m)) return ANTHROPIC_HAIKU_4;
   return undefined;
+}
+
+/**
+ * A Bedrock model id — bare, or the tail of an inference-profile ARN — that is
+ * not a `global.` profile: a geo profile (`us.anthropic.…`) or in-region id.
+ */
+function isBedrockRegionalId(m: string): boolean {
+  const id = /(?:^|\/)((?:[a-z-]+\.)?anthropic\.claude[^/]*)$/.exec(m)?.[1];
+  return id !== undefined && !id.startsWith("global.");
+}
+
+/** Claude 4.5 and later — the generations Bedrock prices per endpoint type. */
+function isRegionallyPricedGeneration(m: string): boolean {
+  return /fable|(opus|sonnet|haiku)-(4-[5-9]|[5-9])/.test(m);
 }
 
 /**

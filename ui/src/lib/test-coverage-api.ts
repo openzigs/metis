@@ -102,6 +102,11 @@ export interface RunBudgetState {
   usedCents: number;
   limitCents: number;
   remainingCents: number;
+  /**
+   * #43 — tokens from a model METIS has no price for. They are not in
+   * `usedCents`, so a non-zero value means the spend shown is a lower bound.
+   */
+  unpricedTokens?: number;
   breakdown?: {
     embeddingTokens: number;
     judgeTokens: number;

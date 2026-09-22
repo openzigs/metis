@@ -73,6 +73,8 @@ function makeCaller(verdicts: { idx: number; isCovered: boolean; confidence: num
           raw: JSON.stringify({ verdicts }),
           promptTokens: 100,
           completionTokens: 50,
+          provider: "bedrock-gateway" as const,
+          model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
         };
       },
     },
@@ -140,6 +142,8 @@ describe("judgeAmbiguous", () => {
             "\n```",
           promptTokens: 10,
           completionTokens: 5,
+          provider: "bedrock-gateway" as const,
+          model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
         };
       },
     };
@@ -153,12 +157,20 @@ describe("judgeAmbiguous", () => {
       async call() {
         n += 1;
         if (n === 1) {
-          return { raw: "not json", promptTokens: 10, completionTokens: 5 };
+          return {
+            raw: "not json",
+            promptTokens: 10,
+            completionTokens: 5,
+            provider: "bedrock-gateway" as const,
+            model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+          };
         }
         return {
           raw: JSON.stringify({ verdicts: [{ idx: 0, isCovered: true, confidence: 0.7 }] }),
           promptTokens: 10,
           completionTokens: 5,
+          provider: "bedrock-gateway" as const,
+          model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
         };
       },
     };
@@ -183,6 +195,8 @@ describe("judgeAmbiguous", () => {
           }),
           promptTokens: 10,
           completionTokens: 5,
+          provider: "bedrock-gateway" as const,
+          model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
         };
       },
     };
@@ -208,6 +222,8 @@ describe("judgeAmbiguous", () => {
       raw: JSON.stringify({ verdicts: [{ idx: 0, isCovered: true, confidence: 0.9 }] }),
       promptTokens: 100,
       completionTokens: 50,
+      provider: "bedrock-gateway" as const,
+      model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     }));
 
     // Budget guard that trips as soon as the first batch records its spend.
@@ -248,6 +264,8 @@ describe("judgeAmbiguous", () => {
       raw: JSON.stringify({ verdicts: [{ idx: 0, isCovered: true, confidence: 0.9 }] }),
       promptTokens: 1,
       completionTokens: 1,
+      provider: "bedrock-gateway" as const,
+      model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     }));
     const cost: JudgeBudgetGuard = {
       record() {},
@@ -267,5 +285,82 @@ describe("judgeAmbiguous", () => {
     expect(call).toHaveBeenCalledTimes(3);
     expect(out.batches).toBe(3);
     expect(out.budgetExceeded).toBe(false);
+  });
+
+  it("records each batch under the provider and model that served it (#43)", async () => {
+    const pairs = [pair("a"), pair("b")];
+    const call = vi.fn(async () => ({
+      raw: JSON.stringify({ verdicts: [{ idx: 0, isCovered: true, confidence: 0.9 }] }),
+      promptTokens: 10,
+      completionTokens: 5,
+      provider: "anthropic" as const,
+      model: "deepseek-flash",
+    }));
+    const recorded: Parameters<JudgeBudgetGuard["record"]>[0][] = [];
+    const cost: JudgeBudgetGuard = {
+      record(input) {
+        recorded.push(input);
+      },
+      exceeded: () => false,
+    };
+
+    await judgeAmbiguous(pairs, {
+      caller: { call },
+      sessionId: "s",
+      userId: "u",
+      batchSize: 1,
+      cost,
+    });
+
+    expect(recorded).toEqual([
+      {
+        phase: "judge",
+        provider: "anthropic",
+        modelId: "deepseek-flash",
+        promptTokens: 10,
+        completionTokens: 5,
+      },
+      {
+        phase: "judge",
+        provider: "anthropic",
+        modelId: "deepseek-flash",
+        promptTokens: 10,
+        completionTokens: 5,
+      },
+    ]);
+  });
+
+  it("an all-unpriced run stops after the call that revealed it (#43)", async () => {
+    vi.doMock("../../../src/lib/prisma.js", () => ({ prisma: {} }));
+    const { CoverageCostTracker } = await import("../../../src/lib/testcoverage/cost-tracker.js");
+    const pairs = [pair("a"), pair("b"), pair("c")];
+    const call = vi.fn(async () => ({
+      raw: JSON.stringify({ verdicts: [{ idx: 0, isCovered: true, confidence: 0.9 }] }),
+      promptTokens: 1,
+      completionTokens: 1,
+      provider: "anthropic" as const,
+      model: "deepseek-v4-pro",
+    }));
+    const cost = new CoverageCostTracker(
+      { runId: "r", userId: "u", projectId: "p" },
+      {
+        budgetCents: 20,
+        db: { aISession: { upsert: vi.fn(async () => ({})) } } as never,
+        tracker: { record: vi.fn(), recordAndFlush: vi.fn(async () => ({})) } as never,
+      },
+    );
+
+    const out = await judgeAmbiguous(pairs, {
+      caller: { call },
+      sessionId: "s",
+      userId: "u",
+      batchSize: 1,
+      cost,
+    });
+
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(out.budgetExceeded).toBe(true);
+    expect(cost.usedCents).toBe(0);
+    expect(cost.view().unpricedTokens).toBe(2);
   });
 });

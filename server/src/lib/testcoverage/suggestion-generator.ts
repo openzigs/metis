@@ -37,6 +37,7 @@ import {
   isDuplicateOfExisting,
 } from "./dedup.js";
 export type { ExistingCaseVector } from "./dedup.js";
+import type { ProviderKey } from "../ai/types.js";
 import type { JudgeModelCaller } from "./judge.js";
 
 const log = createChildLogger("testcoverage/suggestion-generator");
@@ -93,6 +94,11 @@ export interface GenerateResult {
   promptTokens: number;
   completionTokens: number;
   rejectedDuplicates: number;
+  /**
+   * #43 — the provider and model that served the model calls, or `null` when
+   * none was made (every cluster a cache hit). Usage is recorded under these.
+   */
+  servedBy: { provider: ProviderKey; model: string } | null;
 }
 
 /**
@@ -202,6 +208,7 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
       promptTokens: 0,
       completionTokens: 0,
       rejectedDuplicates: 0,
+      servedBy: null,
     };
   }
 
@@ -216,6 +223,7 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
   let promptTokens = 0;
   let completionTokens = 0;
   let rejectedDuplicates = 0;
+  let servedBy: GenerateResult["servedBy"] = null;
   const all: GeneratedSuggestion[] = [];
 
   for (const bucket of buckets) {
@@ -250,6 +258,7 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
       modelCalls += 1;
       promptTokens += out.promptTokens;
       completionTokens += out.completionTokens;
+      servedBy = { provider: out.provider, model: out.model };
       await cache.store(cacheKey, HAIKU_MODEL_ID, SYSTEM_PROMPT_HASH, raw, input.projectId);
     }
 
@@ -339,5 +348,6 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
     promptTokens,
     completionTokens,
     rejectedDuplicates,
+    servedBy,
   };
 }

@@ -70,6 +70,8 @@ function jsonCaller(payload: unknown): JudgeModelCaller {
         raw: JSON.stringify(payload),
         promptTokens: 100,
         completionTokens: 50,
+        provider: "bedrock-gateway" as const,
+        model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
       };
     },
   };
@@ -135,6 +137,28 @@ describe("generateSuggestions", () => {
     });
     expect(out.suggestions).toEqual([]);
     expect(out.modelCalls).toBe(0);
+    expect(out.servedBy).toBeNull();
+  });
+
+  it("reports the provider and model that served its calls (#43)", async () => {
+    const out = await generateSuggestions({
+      requirements: [req("r1", vec(1, 0, 0))],
+      caller: {
+        async call() {
+          return {
+            raw: JSON.stringify({ suggestions: [sampleItem()] }),
+            promptTokens: 7,
+            completionTokens: 3,
+            provider: "anthropic" as const,
+            model: "deepseek-flash",
+          };
+        },
+      },
+      sessionId: "s",
+      userId: "u",
+      projectId: "p",
+    });
+    expect(out.servedBy).toEqual({ provider: "anthropic", model: "deepseek-flash" });
   });
 
   it("produces suggestions for an uncovered requirement", async () => {
@@ -194,7 +218,13 @@ describe("generateSuggestions", () => {
       requirements: reqs,
       caller: {
         async call() {
-          return { raw: "not valid json", promptTokens: 10, completionTokens: 5 };
+          return {
+            raw: "not valid json",
+            promptTokens: 10,
+            completionTokens: 5,
+            provider: "bedrock-gateway" as const,
+            model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+          };
         },
       },
       sessionId: "s",

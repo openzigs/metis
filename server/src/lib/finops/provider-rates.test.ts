@@ -156,10 +156,11 @@ describe("provider-rates — anthropic cost attribution (#428)", () => {
     expect(keys).toContain("anthropic:claude-3-5-sonnet-20241022");
     expect(keys).toContain("openai:gpt-4o");
     expect(keys).toContain("bedrock-gateway:us.anthropic.claude-sonnet-4-6");
-    // Pre-existing bedrock sonnet 4.6 rate is unchanged.
+    // #42 — the bedrock `us.` Sonnet 4.6 profile is at Bedrock's Regional SKU,
+    // $3.30 / $16.50 per MTok (published-claude-prices.test.ts pins every row).
     const bedrock = getRate("bedrock-gateway", "us.anthropic.claude-sonnet-4-6");
-    expect(bedrock.inputPer1k).toBe(0.3);
-    expect(bedrock.outputPer1k).toBe(1.5);
+    expect(bedrock.inputPer1k).toBe(0.33);
+    expect(bedrock.outputPer1k).toBe(1.65);
   });
 });
 
@@ -244,7 +245,7 @@ describe("provider-rates — one pricing source, unpriced is null (#22)", () => 
     // Bedrock is unaffected by the anthropic provider's base URL.
     expect(
       resolveRate("bedrock-gateway", "us.anthropic.claude-sonnet-4-6", { config, env })?.inputPer1k,
-    ).toBe(0.3);
+    ).toBe(0.33);
   });
 
   it("treats api.anthropic.com (or no base URL) as Anthropic itself", () => {

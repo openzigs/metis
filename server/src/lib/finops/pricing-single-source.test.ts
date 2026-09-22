@@ -94,8 +94,10 @@ describe("#22 — both usage tables price from one source", () => {
       input: 1_000_000,
       output: 1_000_000,
     });
-    expect(r.costCents).toBe(3000);
-    expect(r.estimatedCostUsd).toBeCloseTo(30, 10);
+    // #42 — a `us.` Bedrock profile bills at the Regional SKU, $5.50 / $27.50
+    // (AWS Price List, us-east-1): $33 for 1M in + 1M out, in both tables.
+    expect(r.costCents).toBe(3300);
+    expect(r.estimatedCostUsd).toBeCloseTo(33, 10);
   });
 
   it("applies an administrator's MODEL_PRICES to both tables", async () => {

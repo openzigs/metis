@@ -28,6 +28,9 @@ export function createProviderJudgeCaller(provider: AIProvider): JudgeModelCalle
         raw: res.content,
         promptTokens: res.usage.promptTokens,
         completionTokens: res.usage.completionTokens,
+        // #43 — what actually served the call, for recording and pricing.
+        provider: res.provider,
+        model: res.model,
       };
     },
   };

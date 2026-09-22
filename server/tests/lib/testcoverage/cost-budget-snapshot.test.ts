@@ -8,7 +8,8 @@
  *
  * Token assumptions (per Phase-2 design notes):
  *   - Embeddings run on the offline-stub provider — $0 contribution.
- *   - Judge: Haiku @ $1/M input, $5/M output. With top-K=5 candidates *and*
+ *   - Judge: Haiku 4.5 on a Bedrock `us.` profile @ $1.10/M input, $5.50/M
+ *     output (the Regional SKU, #42). With top-K=5 candidates *and*
  *     ≥60% cache hit rate (typical after warming the embedding similarity
  *     index), only ~200 judge LLM calls actually fire for a 100-req corpus.
  *   - Suggestion: Haiku, ~600 prompt / 250 completion tokens per gap. The
@@ -39,6 +40,10 @@ vi.mock("../../../src/lib/prisma.js", () => ({
 
 import { CoverageCostTracker } from "../../../src/lib/testcoverage/cost-tracker.js";
 import { __resetTokenTrackerSingleton } from "../../../src/lib/ai/token-tracker.js";
+import { HAIKU_MODEL_ID } from "../../../src/lib/ai/model-router.js";
+
+/** The default deployment: Haiku 4.5 on the Bedrock gateway (#43). */
+const BEDROCK = { provider: "bedrock-gateway", modelId: HAIKU_MODEL_ID } as const;
 
 beforeEach(() => {
   __resetTokenTrackerSingleton();
@@ -50,6 +55,7 @@ function fakeDb() {
       update: async () => ({}),
       findUnique: async () => ({}),
     },
+    aISession: { upsert: async () => ({}) },
   } as never;
 }
 
@@ -73,12 +79,12 @@ describe("Cost guardrail snapshot (PR #879)", () => {
 
     // Judge phase — Haiku, ~60% cache hit rate.
     for (let i = 0; i < JUDGE_LLM_CALLS; i += 1) {
-      tracker.record({ phase: "judge", promptTokens: 150, completionTokens: 50 });
+      tracker.record({ phase: "judge", ...BEDROCK, promptTokens: 150, completionTokens: 50 });
     }
 
     // Suggestion phase — Haiku, only for uncovered gaps.
     for (let i = 0; i < NUM_GAPS; i += 1) {
-      tracker.record({ phase: "suggestion", promptTokens: 600, completionTokens: 250 });
+      tracker.record({ phase: "suggestion", ...BEDROCK, promptTokens: 600, completionTokens: 250 });
     }
 
     const view = tracker.view();
@@ -94,7 +100,7 @@ describe("Cost guardrail snapshot (PR #879)", () => {
 
     // Warm path: embeddings + judge results are pulled from cache. Only a
     // single newly-added gap consumes LLM tokens.
-    tracker.record({ phase: "suggestion", promptTokens: 600, completionTokens: 250 });
+    tracker.record({ phase: "suggestion", ...BEDROCK, promptTokens: 600, completionTokens: 250 });
 
     const view = tracker.view();
     expect(view.usedCents).toBeLessThanOrEqual(1);

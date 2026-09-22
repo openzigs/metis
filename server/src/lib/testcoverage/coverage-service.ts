@@ -61,6 +61,8 @@ export interface CoverageRunReport {
     limitCents: number;
     usedCents: number;
     remainingCents: number;
+    /** #43 — tokens with no known price; `usedCents` is then a lower bound. */
+    unpricedTokens: number;
   };
   /**
    * True when the per-run token budget was exhausted and at least one LLM phase
@@ -316,11 +318,16 @@ export async function runCoverageScoring(
       userId: input.userId,
       projectId: input.projectId,
     });
-    cost.record({
-      phase: "suggestion",
-      promptTokens: sugResult.promptTokens,
-      completionTokens: sugResult.completionTokens,
-    });
+    // #43 — recorded under what served the calls; none made ⇒ nothing spent.
+    if (sugResult.servedBy) {
+      cost.record({
+        phase: "suggestion",
+        provider: sugResult.servedBy.provider,
+        modelId: sugResult.servedBy.model,
+        promptTokens: sugResult.promptTokens,
+        completionTokens: sugResult.completionTokens,
+      });
+    }
     rejectedDuplicates = sugResult.rejectedDuplicates;
 
     await db.suggestion.deleteMany({ where: { runId: input.runId } });
@@ -381,6 +388,7 @@ export async function runCoverageScoring(
       limitCents: view.limitCents,
       usedCents: view.usedCents,
       remainingCents: view.remainingCents,
+      unpricedTokens: view.unpricedTokens,
     },
     budgetExceeded,
     coveragePct,
@@ -393,7 +401,12 @@ function emptyReport(cost: CoverageCostTracker): CoverageRunReport {
     matcher: { requirements: 0, covered: 0, uncovered: 0, ambiguous: 0, ambiguousRatio: 0 },
     judge: { batches: 0, modelCalls: 0, cacheHits: 0, promotedToCovered: 0 },
     suggestions: { generated: 0, rejectedDuplicates: 0, lowConfidence: 0 },
-    cost: { limitCents: v.limitCents, usedCents: v.usedCents, remainingCents: v.remainingCents },
+    cost: {
+      limitCents: v.limitCents,
+      usedCents: v.usedCents,
+      remainingCents: v.remainingCents,
+      unpricedTokens: v.unpricedTokens,
+    },
     budgetExceeded: false,
     coveragePct: 0,
   };

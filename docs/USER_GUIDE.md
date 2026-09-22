@@ -3948,7 +3948,7 @@ An administrator can price such a model under **Settings → Configuration** (`/
 { "deepseek-v4-pro": { "inputPerMTok": 1.32, "outputPerMTok": 3.96, "cacheReadPerMTok": 0.044 } }
 ```
 
-`cacheReadPerMTok` and `cacheWritePerMTok` are optional and default to the input price. A price applies to usage recorded after it is saved; earlier rows keep the cost they were recorded with. When `ANTHROPIC_BASE_URL` points at a provider other than Anthropic, Anthropic's own list prices are not applied even to `claude-*` model names, because such a provider bills its own prices — set them here. If `ANTHROPIC_BASE_URL` is instead a proxy or AI gateway that relays to Anthropic (a corporate egress proxy, LiteLLM), set `ANTHROPIC_BASE_URL_BILLS_AS` to `anthropic` in the same place and the built-in Claude prices apply again. Self-hosted `local-gemma` usage is recorded at $0, since it has no per-token charge.
+`cacheReadPerMTok` and `cacheWritePerMTok` are optional and default to the input price. A price applies to usage recorded after it is saved; earlier rows keep the cost they were recorded with, except that the **Projected month** figure — like the autopilot cost ceiling below — re-prices the month's earlier unpriced rows with the current prices, so the two always agree. When `ANTHROPIC_BASE_URL` points at a provider other than Anthropic, Anthropic's own list prices are not applied even to `claude-*` model names, because such a provider bills its own prices — set them here. If `ANTHROPIC_BASE_URL` is instead a proxy or AI gateway that relays to Anthropic (a corporate egress proxy, LiteLLM), set `ANTHROPIC_BASE_URL_BILLS_AS` to `anthropic` in the same place and the built-in Claude prices apply again. Self-hosted `local-gemma` usage is recorded at $0, since it has no per-token charge.
 
 An **autopilot cost ceiling** cannot be checked against spend it cannot price, so while the month has unpriced usage a project with a ceiling refuses autopilot runs (`AUTOPILOT_COST_CEILING`, naming the unpriced token count). Pricing those models with `MODEL_PRICES` clears it — the ceiling check re-prices the month's earlier unpriced rows with the current prices — or remove the ceiling.
 
@@ -4415,10 +4415,17 @@ Phase 3 connectors (Jira, Xray, Zephyr Scale, TestRail).
 
 ### Budget guard
 
-Every run is capped by `TESTCOVERAGE_BUDGET_CENTS` (default 150¢). The
+Every run is capped by `TESTCOVERAGE_BUDGET_CENTS` (default 20¢). The
 budget tile turns amber at the warn threshold and red when the cap is
 hit. The orchestrator aborts before exceeding the limit and surfaces a
 `BUDGET_EXCEEDED` error in the run record.
+
+Judge and suggestion calls are recorded under the provider and model that
+served them. If that model has no price (see [Unpriced usage](#unpriced-usage)),
+its spend is unknown, so the run cannot show it is under the cap: after the
+call that reveals it, no further judge batches or LLM phases run, and the
+budget line reads `$x + N unpriced tokens` rather than `$0.00`. Pricing the
+model with `MODEL_PRICES` lets later runs proceed.
 
 ### Permissions
 
