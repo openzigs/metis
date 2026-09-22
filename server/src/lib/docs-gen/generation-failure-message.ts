@@ -12,6 +12,7 @@
  * in the server log, where `generateDocumentAsync` already writes it.
  */
 import { GENERATION_INTERRUPTED_MESSAGE } from "./interrupted-generations.js";
+import { sectionFailedWarning } from "./grounding/degraded-warnings.js";
 
 export const GENERATION_FAILED_MESSAGE =
   "Document generation failed. The details are in the server log; regenerate the document to try again.";
@@ -122,4 +123,41 @@ export function publicGenerationErrorMessage(
   if (errorMessage == null) return null;
   if (status !== "failed") return errorMessage;
   return generationFailureMessage(errorMessage);
+}
+
+/**
+ * #67 — the `warnings` a client may see for a generated document.
+ *
+ * A `section-failed` warning built before #67 appended up to 300 characters of
+ * `String(err)` to its message, and that column is returned verbatim by
+ * `GET /projects/:projectId/docs/:docId` and rendered by the UI banner — the
+ * same exposure {@link publicGenerationErrorMessage} closes for a *failed*
+ * row's `errorMessage`, on the *degraded* path. Those rows are still in the
+ * database, so the read path re-derives their detail through
+ * {@link generationFailureMessage}: a provider 402 stays recognisable as a
+ * balance problem, anything unrecognised collapses to the generic message.
+ *
+ * A warning built by {@link sectionFailedWarning} carries `detailSafe`, so a
+ * post-#67 warning is passed through with its METIS-authored detail intact
+ * (the DB-schema synthesizer's "N of M tables described" text, for one). The
+ * flag is the discriminator precisely because no pre-#67 row can have it.
+ *
+ * Every other warning kind is returned untouched: none of them is ever built
+ * from an exception. The value is typed `unknown` because it comes off a Prisma
+ * `Json?` column, and anything that is not an array of objects — `null`, the
+ * pre-#252 string form — passes straight through.
+ */
+export function publicDocWarnings(warnings: unknown): unknown {
+  if (!Array.isArray(warnings)) return warnings;
+  return warnings.map((warning) => {
+    if (warning == null || typeof warning !== "object" || Array.isArray(warning)) return warning;
+    const w = warning as Record<string, unknown>;
+    if (w.kind !== "section-failed" || w.detailSafe === true) return warning;
+    const section = typeof w.section === "string" ? w.section : "Document";
+    const raw = typeof w.message === "string" ? w.message : "";
+    // Only the vocabulary's own output reaches the message; the legacy text is
+    // read solely to CLASSIFY it, never echoed.
+    const { message, detailSafe } = sectionFailedWarning(section, generationFailureMessage(raw));
+    return { ...w, message, detailSafe };
+  });
 }
