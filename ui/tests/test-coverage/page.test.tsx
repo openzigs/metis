@@ -563,6 +563,39 @@ describe("TestCoveragePage", () => {
     expect(line.textContent ?? "").toMatch(/0% used/);
   });
 
+  it("says a run's unpriced usage is unpriced instead of reading as $0 spent (#43)", async () => {
+    const now = new Date().toISOString();
+    api.listRuns.mockResolvedValue([
+      {
+        id: "run-1",
+        projectId: "p1",
+        status: "succeeded",
+        triggeredById: null,
+        modelTag: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    api.getReport.mockResolvedValue({
+      runId: "run-1",
+      requirements: [],
+      testCases: [],
+      mappings: [],
+      gaps: [],
+      suggestions: [],
+      summary: { total: 0, covered: 0, gaps: 0, suggestions: 0, coveragePct: 0 },
+    });
+    api.getBudget.mockResolvedValue({
+      usedCents: 0,
+      limitCents: 20,
+      remainingCents: 20,
+      unpricedTokens: 1500,
+    });
+    renderPage();
+    const line = await screen.findByTestId("tc-budget-line");
+    expect(line.textContent ?? "").toMatch(/\+ 1,500 unpriced tokens/);
+  });
+
   it("submits a connector pull from the picker", async () => {
     api.pullFromConnector.mockResolvedValue({
       id: "imp-conn-1",

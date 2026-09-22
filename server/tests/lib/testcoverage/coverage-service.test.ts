@@ -117,6 +117,9 @@ function makeDb(opts: {
           return { count: data.length };
         }),
       },
+      aISession: {
+        upsert: vi.fn(async ({ create }: { create: { id: string } }) => create),
+      },
       testCoverageRun: {
         update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
           Object.assign(state.run, data);
@@ -154,6 +157,8 @@ const stubCaller: JudgeModelCaller = {
       }),
       promptTokens: 100,
       completionTokens: 50,
+      provider: "bedrock-gateway" as const,
+      model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     };
   },
 };
@@ -312,5 +317,33 @@ describe("runCoverageScoring", () => {
     expect(report.budgetExceeded).toBe(true);
     const suggestDone = events.find((e) => e.phase === "suggest" && e.state === "done");
     expect(suggestDone?.detail).toMatchObject({ budgetExceeded: true });
+  });
+
+  it("records suggestion usage under what served it, and reports unpriced spend as such (#43)", async () => {
+    // AI_PROVIDER=anthropic with ANTHROPIC_BASE_URL at DeepSeek: the call is
+    // served, and billed, by a model METIS has no price for.
+    const { db, state } = makeDb({
+      requirements: [{ id: "r1", title: "Login lockout", body: "lock after 5", priority: "high" }],
+    });
+    const unpricedCaller: JudgeModelCaller = {
+      call: vi.fn(async (input) => ({
+        ...(await stubCaller.call(input)),
+        provider: "anthropic" as const,
+        model: "deepseek-v4-pro",
+      })),
+    };
+    const report = await runCoverageScoring(
+      { runId: "run-unpriced", projectId: "p-1", userId: "u-1" },
+      { db: db as never, caller: unpricedCaller, budgetCents: 10_000 },
+    );
+    expect(unpricedCaller.call).toHaveBeenCalled();
+    // Not $0 of spend: 150 tokens of unknown cost, kept apart from usedCents
+    // (which holds only the priced embedding estimate).
+    expect(report.cost.unpricedTokens).toBe(150);
+    expect(state.run.suggestionTokens).toBe(150);
+    // The run's AI session exists, so its usage rows can reference it.
+    expect(db.aISession.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "testCoverageRun:run-unpriced" } }),
+    );
   });
 });

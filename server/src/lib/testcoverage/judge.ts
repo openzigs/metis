@@ -20,6 +20,7 @@ import { getEmbedder } from "../rag/embedder.js";
 import { getSemanticCache } from "../ai/semantic-cache.js";
 import { HAIKU_MODEL_ID } from "../ai/model-router.js";
 import { getTokenTracker } from "../ai/token-tracker.js";
+import type { ProviderKey } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import type { MatcherCell } from "./coverage-matcher.js";
 
@@ -63,7 +64,22 @@ export interface JudgeModelCaller {
     modelId: string;
     systemPrompt: string;
     userPrompt: string;
-  }): Promise<{ raw: string; promptTokens: number; completionTokens: number }>;
+  }): Promise<JudgeCallResult>;
+}
+
+/** One model call's output, usage, and what served it. */
+export interface JudgeCallResult {
+  raw: string;
+  promptTokens: number;
+  completionTokens: number;
+  /**
+   * #43 — the provider and model that SERVED the call (`ChatResponse.provider`
+   * / `.model`), which may differ from the requested `modelId` (an
+   * Anthropic-compatible endpoint maps `claude-haiku-*` onto its own model).
+   * Usage is recorded and priced under these.
+   */
+  provider: ProviderKey;
+  model: string;
 }
 
 /**
@@ -77,7 +93,13 @@ export interface JudgeModelCaller {
  */
 export interface JudgeBudgetGuard {
   /** Record token usage for one batch so cumulative spend advances. */
-  record(input: { phase: "judge"; promptTokens?: number; completionTokens?: number }): void;
+  record(input: {
+    phase: "judge";
+    provider: ProviderKey;
+    modelId: string;
+    promptTokens?: number;
+    completionTokens?: number;
+  }): void;
   /** True once cumulative spend has reached the per-run cap. */
   exceeded(): boolean;
 }
@@ -225,6 +247,8 @@ export async function judgeAmbiguous(
   let promptTokens = 0;
   let completionTokens = 0;
   let budgetExceeded = false;
+  /** What served the most recent model call (#43). */
+  let servedBy: { provider: ProviderKey; model: string } | null = null;
 
   const results: JudgePair[] = pairs.map((p) => ({
     ...p,
@@ -265,6 +289,7 @@ export async function judgeAmbiguous(
       modelCalls += 1;
       batchPromptTokens += out.promptTokens;
       batchCompletionTokens += out.completionTokens;
+      servedBy = { provider: out.provider, model: out.model };
       await cache.store(cacheKey, HAIKU_MODEL_ID, SYSTEM_PROMPT_HASH, raw, options.projectId);
     }
 
@@ -277,6 +302,7 @@ export async function judgeAmbiguous(
       modelCalls += 1;
       batchPromptTokens += retry.promptTokens;
       batchCompletionTokens += retry.completionTokens;
+      servedBy = { provider: retry.provider, model: retry.model };
       return retry;
     });
 
@@ -286,9 +312,11 @@ export async function judgeAmbiguous(
 
     // Record this batch's spend immediately so the budget guard reflects it
     // before the next iteration's `exceeded()` check.
-    if (options.cost && (batchPromptTokens > 0 || batchCompletionTokens > 0)) {
+    if (options.cost && servedBy && (batchPromptTokens > 0 || batchCompletionTokens > 0)) {
       options.cost.record({
         phase: "judge",
+        provider: servedBy.provider,
+        modelId: servedBy.model,
         promptTokens: batchPromptTokens,
         completionTokens: batchCompletionTokens,
       });
@@ -307,12 +335,12 @@ export async function judgeAmbiguous(
   // delegates to the TokenTracker), so a final aggregate write would
   // double-count. We use the existing TokenTracker.record API so the
   // cost-tracker (#878) can scope by `agentStep="testcoverage.judge"`.
-  if (!options.cost && modelCalls > 0) {
+  if (!options.cost && servedBy && modelCalls > 0) {
     tracker.record({
       sessionId: options.sessionId,
       userId: options.userId,
-      provider: "bedrock-gateway",
-      model: HAIKU_MODEL_ID,
+      provider: servedBy.provider,
+      model: servedBy.model,
       usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
       projectId: options.projectId,
       agentStep: "testcoverage.judge",

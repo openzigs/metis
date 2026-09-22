@@ -702,8 +702,12 @@ export default function TestCoveragePage() {
                     className="md:col-span-3 text-xs text-muted-foreground"
                     data-testid="tc-budget-line"
                   >
-                    Budget: ${safeFixed(safeNum(budget.usedCents) / 100, 2, "0.00")} spent of $
-                    {safeFixed(safeNum(budget.limitCents) / 100, 2, "0.00")} ·{" "}
+                    Budget: ${safeFixed(safeNum(budget.usedCents) / 100, 2, "0.00")}
+                    {/* #43 — unknown spend is not $0: say how much has no price. */}
+                    {safeNum(budget.unpricedTokens) > 0
+                      ? ` + ${safeNum(budget.unpricedTokens).toLocaleString("en-US")} unpriced tokens`
+                      : ""}{" "}
+                    spent of ${safeFixed(safeNum(budget.limitCents) / 100, 2, "0.00")} ·{" "}
                     {safeNum(budget.limitCents) > 0
                       ? safeFixed(
                           (safeNum(budget.usedCents) / safeNum(budget.limitCents)) * 100,

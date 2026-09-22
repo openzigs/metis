@@ -211,7 +211,10 @@ export interface UsageSummaryRow {
   /**
    * PR #41 review — month-to-date tokens left OUT of
    * `projectedMonthlyCostCents` because they were unpriced, so a view can say
-   * the projection is incomplete instead of showing a bare $0.
+   * the projection is incomplete instead of showing a bare $0. Both come from
+   * {@link projectMonthlyCostForCeiling}, so a row an administrator has since
+   * priced through `MODEL_PRICES` counts as priced here exactly as it does for
+   * the autopilot cost ceiling.
    */
   monthToDateUnpricedTokens: number;
   byProvider: Array<{
@@ -326,6 +329,9 @@ export async function summarizeUsage(
   }
 
   const mtd = await getMtdAggregate(projectId, now);
+  // #41 re-review — the projection shown is the one the cost ceiling enforces:
+  // NULL-cost rows re-priced with today's price source, the rest unpriced.
+  const projection = await projectMonthlyCostForCeiling(projectId, now);
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: { monthlyTokenBudget: true },
@@ -340,10 +346,10 @@ export async function summarizeUsage(
     totalTokens,
     costCents,
     unpriced,
-    projectedMonthlyCostCents: projectMonthlyFromMtd(mtd.cents, now),
+    projectedMonthlyCostCents: projection.projectedCents,
     monthlyTokenBudget: project?.monthlyTokenBudget ?? null,
     monthToDateTokens: mtd.tokens,
-    monthToDateUnpricedTokens: mtd.unpricedTokens,
+    monthToDateUnpricedTokens: projection.unpricedTokens,
     byProvider: Array.from(byProviderMap.values()).sort((a, b) => b.totalTokens - a.totalTokens),
     byDay: Array.from(byDayMap.values()).sort((a, b) => a.day.localeCompare(b.day)),
   };

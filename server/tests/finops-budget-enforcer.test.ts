@@ -4,12 +4,12 @@
  * Verifies the 402 throw contract, MTD aggregation, the cost projection
  * pro-rata math, and the usage summary endpoint helper.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 interface MockUsageRow {
   projectId: string;
   totalTokens: number;
-  costCents: number;
+  costCents: number | null;
   inputTokens: number;
   outputTokens: number;
   provider: string;
@@ -55,6 +55,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 import {
   assertWithinBudget,
   BudgetExceededError,
+  projectMonthlyCostForCeiling,
   projectMonthlyFromMtd,
   summarizeUsage,
 } from "../src/lib/finops/budget-enforcer.js";
@@ -169,5 +170,68 @@ describe("summarizeUsage", () => {
     expect(summary.byProvider[0]).toMatchObject({ provider: "openai" });
     expect(summary.byDay.length).toBeGreaterThanOrEqual(1);
     expect(summary.monthlyTokenBudget).toBe(5000);
+  });
+});
+
+describe("summarizeUsage — the projection the ceiling enforces (PR #41 re-review)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("re-prices rows priced since they were recorded, exactly as the ceiling does", async () => {
+    projects.set("p1", { monthlyTokenBudget: null });
+    const fixedNow = new Date(Date.UTC(2026, 4, 10, 12, 0, 0));
+    usageRows.push(
+      {
+        projectId: "p1",
+        provider: "openai",
+        model: "gpt-4o",
+        inputTokens: 1_000_000,
+        outputTokens: 0,
+        totalTokens: 1_000_000,
+        costCents: 250,
+        createdAt: new Date(Date.UTC(2026, 4, 2, 12, 0, 0)),
+      },
+      {
+        // Recorded while unpriced (#22); the administrator has priced it since.
+        projectId: "p1",
+        provider: "anthropic",
+        model: "deepseek-v4-pro",
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        totalTokens: 2_000_000,
+        costCents: null,
+        createdAt: new Date(Date.UTC(2026, 4, 3, 12, 0, 0)),
+      },
+    );
+    vi.stubEnv(
+      "MODEL_PRICES",
+      JSON.stringify({ "deepseek-v4-pro": { inputPerMTok: 1.32, outputPerMTok: 3.96 } }),
+    );
+
+    const summary = await summarizeUsage("p1", {}, fixedNow);
+    const ceiling = await projectMonthlyCostForCeiling("p1", fixedNow);
+    // 250 + 528 cents month-to-date, pro-rated over 31 days from day 10.
+    expect(ceiling.projectedCents).toBe(Math.ceil(((250 + 528) * 31) / 10));
+    expect(summary.projectedMonthlyCostCents).toBe(ceiling.projectedCents);
+    expect(summary.monthToDateUnpricedTokens).toBe(0);
+  });
+
+  it("still reports usage that no price source covers as unpriced", async () => {
+    projects.set("p1", { monthlyTokenBudget: null });
+    const fixedNow = new Date(Date.UTC(2026, 4, 10, 12, 0, 0));
+    usageRows.push({
+      projectId: "p1",
+      provider: "anthropic",
+      model: "deepseek-v4-pro",
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+      costCents: null,
+      createdAt: new Date(Date.UTC(2026, 4, 3, 12, 0, 0)),
+    });
+    const summary = await summarizeUsage("p1", {}, fixedNow);
+    expect(summary.projectedMonthlyCostCents).toBe(0);
+    expect(summary.monthToDateUnpricedTokens).toBe(15);
   });
 });

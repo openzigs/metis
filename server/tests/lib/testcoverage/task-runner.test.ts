@@ -136,7 +136,13 @@ describe("runTestCoverageJob", () => {
   it("invokes the coverage scoring service when a judge caller is wired", async () => {
     const stubCaller = {
       async call() {
-        return { raw: JSON.stringify({ suggestions: [] }), promptTokens: 0, completionTokens: 0 };
+        return {
+          raw: JSON.stringify({ suggestions: [] }),
+          promptTokens: 0,
+          completionTokens: 0,
+          provider: "bedrock-gateway" as const,
+          model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        };
       },
     };
     const reqFindMany = vi
@@ -243,6 +249,8 @@ describe("configureTestCoverageRuntime (#886)", () => {
         raw: JSON.stringify({ suggestions: [] }),
         promptTokens: 0,
         completionTokens: 0,
+        provider: "bedrock-gateway" as const,
+        model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
       }),
     };
     configureTestCoverageRuntime({
