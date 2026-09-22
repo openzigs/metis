@@ -67,6 +67,13 @@ export const MODULE_PROBES = Object.freeze([
     code: 'const { default: D } = await import("better-sqlite3"); const db = new D(":memory:"); const r = db.prepare("select 1 as x").get(); if (r.x !== 1) throw new Error("better-sqlite3 select returned " + JSON.stringify(r));',
   },
   {
+    // The server writes under the process user's home (per-session AI homes in
+    // `~/.metis-sessions`, `~/.metis/auth.json`). alpine's `adduser --system`
+    // created one; Debian's `useradd --system` does not unless asked (#39).
+    name: "home-writable",
+    code: 'const os = await import("node:os"); const fs = await import("node:fs"); const path = await import("node:path"); const d = path.join(os.homedir(), ".metis-sessions", "smoke"); fs.mkdirSync(d, { recursive: true }); fs.rmSync(d, { recursive: true });',
+  },
+  {
     // The Oracle connector in thick mode (server/src/lib/connectors/db/drivers/oracle.ts),
     // which is what the Instant Client in the image exists for.
     name: "oracle-thick",

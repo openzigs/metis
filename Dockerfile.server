@@ -385,7 +385,8 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack 
            /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
            /usr/local/bin/yarn /usr/local/bin/yarnpkg \
  && groupadd --system --gid 1001 metis \
- && useradd  --system --uid 1001 --gid metis --no-create-home --shell /usr/sbin/nologin metis
+ && useradd  --system --uid 1001 --gid metis --create-home --home-dir /home/metis \
+             --shell /usr/sbin/nologin metis
 
 # Oracle Instant Client for thick mode (supports pre-12c password verifiers).
 # Downloaded and unpacked in the `oracle-client` stage above, so curl and unzip

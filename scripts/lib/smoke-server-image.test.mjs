@@ -159,7 +159,7 @@ describe("runSmoke", () => {
     const { docker, calls } = fakeDocker();
     const { deps: d, out } = deps({ docker, fetchStatus: fakeFetch([null, 503, 200]) });
     expect(await runSmoke({ image: "img", pollMs: 1 }, d)).toBe(0);
-    expect(out.at(-1)).toMatch(/^PASS: img starts, serves \/healthz and loads 4 runtime module/);
+    expect(out.at(-1)).toMatch(/^PASS: img starts, serves \/healthz and loads 5 runtime module/);
     const execs = calls.filter((c) => c[0] === "exec");
     expect(execs).toHaveLength(MODULE_PROBES.length);
     // The container is always removed.
@@ -204,7 +204,7 @@ describe("runSmoke", () => {
     const { deps: d, errs, out } = deps({ docker, fetchStatus: fakeFetch([200]) });
     expect(await runSmoke({ image: "img", pollMs: 1 }, d)).toBe(1);
     expect(out).toContain("OK: /healthz returned 200");
-    expect(errs.join("\n")).toMatch(/1 of 4 module probe\(s\) failed: lancedb/);
+    expect(errs.join("\n")).toMatch(/1 of 5 module probe\(s\) failed: lancedb/);
     expect(errs.join("\n")).toContain("probe lancedb blew up");
   });
 

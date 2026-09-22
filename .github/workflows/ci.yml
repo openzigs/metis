@@ -255,9 +255,10 @@ jobs:
       # musl base) while every gate here was green, because nothing ever started it.
       # This starts the built image with its own CMD, polls /healthz until 200, then
       # loads inside the running container the native/lazy modules /healthz never
-      # touches (LanceDB, mysql2, better-sqlite3, Oracle thick mode). A container
-      # that exits, a /healthz that never answers, or a probe that cannot load fails
-      # the job, with the container log printed.
+      # touches (LanceDB, mysql2, better-sqlite3, Oracle thick mode) and checks the
+      # runtime user can write its home directory. A container that exits, a
+      # /healthz that never answers, or a probe that fails fails the job, with the
+      # container log printed.
       - name: Smoke-test metis-server (starts, serves /healthz)
         if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
         run: node scripts/lib/smoke-server-image.mjs --image "metis-server:ci-${{ github.run_id }}" --timeout 180

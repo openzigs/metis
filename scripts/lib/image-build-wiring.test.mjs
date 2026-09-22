@@ -119,6 +119,12 @@ describe("Dockerfile.server keeps what the server loads at boot (#39)", () => {
     expect(dockerfile).toMatch(/ldconfig/);
   });
 
+  it("gives the runtime user a home directory the server can write to", () => {
+    const runner = dockerfile.slice(dockerfile.indexOf(" AS runner"));
+    expect(runner).toMatch(/useradd[^\n]*(\\\n[^\n]*)*--create-home[^\n]*(\\\n[^\n]*)*metis$/m);
+    expect(runner).not.toMatch(/--no-create-home/);
+  });
+
   it("declares jszip as a runtime dependency, not a devDependency", () => {
     expect(pkg.dependencies.jszip).toBeDefined();
     expect(pkg.devDependencies.jszip).toBeUndefined();

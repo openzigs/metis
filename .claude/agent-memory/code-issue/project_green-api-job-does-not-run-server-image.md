@@ -8,7 +8,8 @@ metadata:
 **Resolved (#39).** The `api` job now runs `scripts/lib/smoke-server-image.mjs`
 against the image it built: it starts the image with its own CMD, polls
 `/healthz` until 200, then loads LanceDB, `mysql2`, `better-sqlite3` and Oracle
-thick mode inside the running container. A green `api` job now means the server
+thick mode inside the running container, and checks the
+runtime user can write its home (Debian `useradd --system` makes none). A green `api` job now means the server
 image boots on SQLite.
 
 **Why it mattered:** before #39, CI built and weighed the image and never

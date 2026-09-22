@@ -431,7 +431,8 @@ the general 350 MB.
 
 Every row of the #34 breakdown above now loads: the `api` job starts the image,
 waits for `/healthz`, and then loads LanceDB, `mysql2`, `better-sqlite3` and
-`oracledb` in thick mode inside the running container
+`oracledb` in thick mode inside the running container, and checks that the
+runtime user can write its home directory
 (`scripts/lib/smoke-server-image.mjs`). A size figure for an image that does not
 pass that step is not a measurement of this product.
 
