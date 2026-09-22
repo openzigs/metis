@@ -1139,6 +1139,28 @@ describe("generated-docs routes", () => {
       expect(res.body.data.title).toBe("Updated Title");
     });
 
+    it("#52 — never returns a failed document's raw error text", async () => {
+      (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+      });
+      (prisma.generatedDocument.update as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+        title: "Doc",
+        status: "failed",
+        autoUpdate: false,
+        errorMessage: "Error: secret detail at /srv/metis/server/src/x.ts",
+      });
+
+      const res = await request(app)
+        .patch("/projects/proj-1/docs/doc-1")
+        .send({ autoUpdate: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.status).toBe("failed");
+      expect(res.body.data.errorMessage).toMatch(/^Document generation failed\./);
+      expect(JSON.stringify(res.body)).not.toContain("secret detail");
+    });
+
     it("returns 400 for an invalid patch body", async () => {
       const res = await request(app).patch("/projects/proj-1/docs/doc-1").send({ title: "" });
 

@@ -7,30 +7,9 @@
 
 import Link from "next/link";
 import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { ImpactAnalysesTable } from "@/components/impact/impact-analyses-table";
 import { useImpactAnalyses } from "@/lib/impact-analysis-hooks";
-
-const STATUS_VARIANT: Record<string, "destructive" | "default" | "secondary" | "outline"> = {
-  completed: "default",
-  running: "secondary",
-  pending: "secondary",
-  failed: "destructive",
-};
-
-function formatDate(value: string | null): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
-}
 
 export default function ImpactAnalysesPage() {
   const { data, isLoading, isError } = useImpactAnalyses();
@@ -70,44 +49,7 @@ export default function ImpactAnalysesPage() {
           No impact analyses yet. Start one to map a requirement change to code.
         </Card>
       ) : (
-        <Card data-testid="impact-list-table">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Status</TableHead>
-                <TableHead>Projects</TableHead>
-                <TableHead>Impacted symbols</TableHead>
-                <TableHead>Started</TableHead>
-                <TableHead className="text-right">Completed</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {analyses.map((a) => (
-                <TableRow key={a.id} data-testid={`impact-list-row-${a.id}`}>
-                  <TableCell>
-                    <Link
-                      href={`/impact-analyses/${a.id}`}
-                      className="inline-flex items-center gap-1.5 hover:underline"
-                      data-testid={`impact-list-link-${a.id}`}
-                    >
-                      <Badge variant={STATUS_VARIANT[a.status] ?? "outline"}>{a.status}</Badge>
-                      {/* #965 — flag re-run rows so drift lineage is visible in the list. */}
-                      {a.rerunOfId ? (
-                        <Badge variant="outline" data-testid={`impact-list-rerun-${a.id}`}>
-                          re-run
-                        </Badge>
-                      ) : null}
-                    </Link>
-                  </TableCell>
-                  <TableCell>{a.projectCount}</TableCell>
-                  <TableCell>{a.totalImpactedSymbols}</TableCell>
-                  <TableCell>{formatDate(a.startedAt)}</TableCell>
-                  <TableCell className="text-right">{formatDate(a.completedAt)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Card>
+        <ImpactAnalysesTable analyses={analyses} />
       )}
     </div>
   );

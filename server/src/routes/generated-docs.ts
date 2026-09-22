@@ -60,6 +60,10 @@ import {
   GENERATION_INTERRUPTED_MESSAGE,
   startGenerationHeartbeat,
 } from "../lib/docs-gen/interrupted-generations.js";
+import {
+  generationFailureMessage,
+  publicGenerationErrorMessage,
+} from "../lib/docs-gen/generation-failure-message.js";
 
 const log = createChildLogger("generated-docs");
 
@@ -400,6 +404,8 @@ export function generatedDocsRouter(): Router {
     res.json({
       data: {
         ...doc,
+        // #52 — never the raw exception text a pre-#52 row may still hold.
+        errorMessage: publicGenerationErrorMessage(doc.status, doc.errorMessage),
         // #50 — lets the UI explain a restart and offer a one-click regenerate.
         interrupted: doc.status === "failed" && doc.errorMessage === GENERATION_INTERRUPTED_MESSAGE,
         indexing: syntheticDocument
@@ -508,7 +514,12 @@ export function generatedDocsRouter(): Router {
       where: { id: docId },
       data: parsed.data,
     });
-    res.json({ data: updated });
+    res.json({
+      data: {
+        ...updated,
+        errorMessage: publicGenerationErrorMessage(updated.status, updated.errorMessage),
+      },
+    });
   });
 
   // POST /:docId/regenerate — #50: one-click regenerate of a FAILED document in
@@ -1142,11 +1153,24 @@ export async function generateDocumentAsync(
       healthStatus === "degraded" ? "Generated with warnings" : "Documentation ready",
     );
   } catch (err) {
-    log.error("Document generation failed", { err, docId });
+    // #52 — the only record of the raw error. Logged as strings: the logger's
+    // redaction pass copies own enumerable properties, and an Error's
+    // `message` and `stack` are not, so `{ err }` logged `err: {}`.
+    log.error("Document generation failed", {
+      docId,
+      projectId,
+      error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
     const failed = claimed
       ? await prisma.generatedDocument.updateMany({
           where: { id: docId, projectId, deletedAt: null, codeGraphHash: claim },
-          data: { status: "failed", codeGraphHash: originalHash, errorMessage: String(err) },
+          // #52 — a fixed, user-safe reason; the raw error is in the log above.
+          data: {
+            status: "failed",
+            codeGraphHash: originalHash,
+            errorMessage: generationFailureMessage(err),
+          },
         })
       : pendingUpdatedAt
         ? await prisma.generatedDocument.updateMany({

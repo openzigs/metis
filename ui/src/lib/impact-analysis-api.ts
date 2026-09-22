@@ -37,7 +37,11 @@ export const impactAnalysisApi = {
   create: (body: CreateImpactAnalysisInput) =>
     apiFetch<CreateImpactAnalysisResponse>(BASE, { method: "POST", body }),
 
-  list: () => apiFetch<ImpactAnalysisSummary[]>(BASE),
+  /** #61 — `projectId` narrows the list to runs that include that project. */
+  list: (projectId?: string) =>
+    projectId
+      ? apiFetch<ImpactAnalysisSummary[]>(BASE, { params: { projectId } })
+      : apiFetch<ImpactAnalysisSummary[]>(BASE),
 
   get: (id: string) => apiFetch<ImpactAnalysisDetail>(`${BASE}/${id}`),
 

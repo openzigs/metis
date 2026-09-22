@@ -85,8 +85,9 @@ vi.mock("../src/lib/prisma.js", () => {
   return { prisma, Prisma: { DbNull: Symbol("DbNull") } };
 });
 
+const logError = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/logger.js", () => ({
-  createChildLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+  createChildLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: logError, debug: vi.fn() }),
 }));
 
 vi.mock("../src/middleware/auth.js", () => ({
@@ -161,6 +162,10 @@ import {
 import { prisma } from "../src/lib/prisma.js";
 import { jobEvents } from "../src/lib/socket/job-events.js";
 import { synthesizeDbSchemaDocument } from "../src/lib/docs-gen/db-schema-synthesizer.js";
+import {
+  GENERATION_FAILED_MESSAGE,
+  GENERATION_PROVIDER_BALANCE_MESSAGE,
+} from "../src/lib/docs-gen/generation-failure-message.js";
 
 const T0 = new Date("2026-09-22T10:00:00.000Z");
 
@@ -402,6 +407,73 @@ describe("#50 — POST /:docId/regenerate (one-click regenerate)", () => {
     expect((await request(app).post("/projects/proj-1/docs/gone/regenerate")).status).toBe(404);
     expect(doc().status).toBe("failed");
     expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
+  });
+});
+
+describe("#52 — a failed generation's raw error never reaches the client", () => {
+  const app = buildApp();
+  const SECRET =
+    'secret detail: openai returned 500 {"prompt":"customer data"} at /srv/metis/server/src/x.ts:9';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.docs.clear();
+    state.release = null;
+    state.user = ADMIN;
+  });
+
+  afterEach(() => {
+    state.release?.(new Error("test teardown"));
+    state.user = null;
+  });
+
+  async function failWith(err: Error) {
+    seed();
+    void generateDocumentAsync("doc-1", "proj-1").catch(() => undefined);
+    await vi.waitFor(() => expect(synthesizeDbSchemaDocument).toHaveBeenCalled());
+    state.release?.(err);
+    state.release = null;
+    await vi.waitFor(() => expect(doc().status).toBe("failed"));
+  }
+
+  it("stores and returns a generic message, and logs the detail server-side", async () => {
+    await failWith(new Error(SECRET));
+
+    // Read back through the same path the UI uses.
+    const res = await request(app).get("/projects/proj-1/docs/doc-1");
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe("failed");
+    expect(res.body.data.errorMessage).toBe(GENERATION_FAILED_MESSAGE);
+    expect(JSON.stringify(res.body)).not.toContain("secret detail");
+    expect(JSON.stringify(res.body)).not.toContain("/srv/metis");
+    expect(doc().errorMessage).toBe(GENERATION_FAILED_MESSAGE);
+
+    const logged = JSON.stringify(logError.mock.calls);
+    expect(logged).toContain("secret detail");
+    expect(logged).toContain("/srv/metis");
+  });
+
+  it("keeps a provider's 402 Insufficient Balance recognisable", async () => {
+    await failWith(
+      new Error('deepseek returned 402: {"error":{"message":"Insufficient Balance","code":"x9"}}'),
+    );
+    const res = await request(app).get("/projects/proj-1/docs/doc-1");
+    expect(res.body.data.errorMessage).toBe(GENERATION_PROVIDER_BALANCE_MESSAGE);
+    expect(res.body.data.errorMessage).toMatch(/402 Insufficient Balance/);
+    expect(JSON.stringify(res.body)).not.toContain("x9");
+  });
+
+  it("sanitises raw text a pre-#52 row still holds, and keeps the #53 restart message", async () => {
+    seed({ status: "failed", errorMessage: `Error: ${SECRET}` });
+    seed({ id: "restarted", status: "failed", errorMessage: GENERATION_INTERRUPTED_MESSAGE });
+
+    const legacy = await request(app).get("/projects/proj-1/docs/doc-1");
+    expect(legacy.body.data.errorMessage).toBe(GENERATION_FAILED_MESSAGE);
+    expect(JSON.stringify(legacy.body)).not.toContain("secret detail");
+
+    const restarted = await request(app).get("/projects/proj-1/docs/restarted");
+    expect(restarted.body.data.errorMessage).toBe(GENERATION_INTERRUPTED_MESSAGE);
+    expect(restarted.body.data.interrupted).toBe(true);
   });
 });
 
