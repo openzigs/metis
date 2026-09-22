@@ -394,9 +394,9 @@ What is left, measured in the amd64 image (MiB, from `du`):
 
 | Component | Size | Notes |
 |---|---|---|
-| Oracle Instant Client (basiclite 23.9, `.so` only) | ~138 | Thick mode for pre-12c password verifiers |
+| Oracle Instant Client (basiclite 23.9, `.so` only) | ~138 | Intended for thick mode (pre-12c password verifiers); does not load today (#39) |
 | Node.js 20 runtime (`/usr/local`) | ~104 | The `node` binary alone is 97 |
-| `@lancedb/vectordb-linux-x64-gnu` | ~99 | Single native library |
+| `@lancedb/vectordb-linux-x64-gnu` | ~99 | Single native library; does not load on musl today (#39) |
 | `@napi-rs/canvas` ×3 (pdf-parse and two `pdfjs-dist` versions each pin their own) | ~88 | Native, musl |
 | `tesseract.js-core` | ~44 | OCR WASM, via `officeparser` |
 | `@prisma/client` | ~41 | After the prunes |
@@ -404,20 +404,35 @@ What is left, measured in the amd64 image (MiB, from `du`):
 | Everything else in `node_modules` | ~212 | ~750 store entries |
 | Compiled server (`server/dist`) + Prisma schema | ~29 | |
 
-The first six rows are over 500 MB before any application JavaScript, so 350 MB is
-unreachable for this image without dropping features. The gate therefore holds
-`metis-server` to its own budget, **900 MB** (`DEFAULT_MAX_SERVER_IMAGE_MB` in
-`scripts/lib/verify-image-size.mjs`, overridable with `MAX_SERVER_IMAGE_MB`):
-the measured size plus ~10% headroom, as a regression guard. `metis-ui` stays
-on the general 350 MB — a larger server budget does not loosen it.
+**The 900 MB budget is a measured ceiling, not a floor, and it is provisional
+until #39 is fixed.** CI measured `metis-server` at **821 MB** (`api` run
+35673206512); the gate holds it to its own budget, **900 MB**
+(`DEFAULT_MAX_SERVER_IMAGE_MB` in `scripts/lib/verify-image-size.mjs`,
+overridable with `MAX_SERVER_IMAGE_MB`), which is that measurement plus ~10%
+headroom, as a regression guard. `metis-ui` stays on the general 350 MB — a
+larger server budget does not loosen it.
 
-Further cuts, each a feature decision rather than a prune:
+Do not cite the table above as the smallest this image can be. Two of its
+largest rows do not work in this image today (#39): the Oracle Instant Client
+fails `initOracleClient` with `DPI-1047` (`libnnz.so` is not found on the
+loader path, although the file is present), and `@lancedb/vectordb` fails to
+relocate on musl. That is ~237 MB counted as features that are not delivered.
+Fixing #39 may mean a glibc base image (larger) or dropping the Instant Client
+(~138 MB smaller); either way the budget must be re-measured then, and lowered
+if the measurement allows.
 
-- Dropping the Oracle Instant Client from the default image (~138 MB) and
-  offering it as a build argument
-- Deduplicating `@napi-rs/canvas` to one version (~55 MB) — needs `pdfjs-dist`
-  aligned across `pdf-parse` and `officeparser`
-- Moving LanceDB to `pgvector` or a sidecar (~99 MB)
+Reducible contributors still in the image, measured in review of #38:
+
+- The Oracle Instant Client (~138 MB), which does not load (#39) — the
+  strongest candidate for a build argument
+- Three copies of `@napi-rs/canvas` (~55 MB recoverable by deduplicating to one
+  version — needs `pdfjs-dist` aligned across `pdf-parse` and `officeparser`)
+- `tesseract.js-core` WASM variants (~35 MB — 12 variants ship, about 2 are used)
+- `@azure/msal-browser`, a browser library, in a server image
+- better-sqlite3 build leftovers (`build/Release/obj` and `sqlite3.a`, ~13 MB)
+
+Moving LanceDB to `pgvector` or a sidecar (~99 MB) is a feature decision
+rather than a prune.
 
 ### Enforcing the budget
 
@@ -446,21 +461,36 @@ MAX_IMAGE_MB=250 MAX_SERVER_IMAGE_MB=700 pnpm verify:image-size
 `ci.yml`'s `api` job builds the four images with `docker/build-push-action`
 and caches layers in the GitHub Actions cache (`type=gha`, one `scope` per
 image, `mode=max` so the multi-stage builders' `pnpm install` layers are cached
-too). `build-images.yml` uses the same scopes. The earlier caches — the
+too). `build-images.yml` uses the same scopes, but its release-tag build
+only reads the cache. A run can restore caches written by its own ref or by
+the default branch, so a tag run reads `main`'s cache, but a cache written
+from a tag can be restored only by that same tag — it would never be read
+again and would only spend the 10 GB repository limit. The earlier caches — the
 self-hosted daemon's layer store, and a `type=local` directory under
 `/tmp/buildkit-cache` — were properties of that machine and are empty on every
 hosted VM. Before building, both workflows delete preinstalled toolchains the
 build never uses (.NET, Android SDK, GHC, CodeQL) and the runner's cached
 Docker images.
 
-Measured on #38 (hosted `ubuntu-latest`):
+Measured on #38 (hosted `ubuntu-latest`, amd64), from the `api` job's step
+timings (`gh api repos/openzigs/metis/actions/jobs/<id>`):
 
-| | server | ui | embeddings | sql-lineage | whole `api` job |
-|---|---|---|---|---|---|
-| Cold cache | 7m19s | 3m42s | 2m11s | 18s | 28m18s |
-| Warm cache | WARM_SERVER | WARM_UI | WARM_EMB | WARM_SQL | WARM_JOB |
+| Cache | Run (job) | server | ui | embeddings | sql-lineage | four builds | whole `api` job |
+|---|---|---|---|---|---|---|---|
+| Cold — first run, empty cache | 35671126250 (106567592133) | 7m19s | 3m42s | 2m11s | 18s | 13m30s | 28m20s |
+| Partly warm — new commit, server source changed | 35673206512 attempt 1 (106574086399) | 3m03s | 2m47s | 1m49s | 6s | 7m45s | 23m22s |
+| Warm — re-run of the same commit | 35673206512 attempt 2 (106589624773) | 2m31s | 2m33s | 2m12s | 9s | 7m25s | 18m46s |
 
-Freeing disk took 1m21s and took the runner from 83 GB to 110 GB free.
+The cache roughly halves the image builds (13m30s → 7m25s) and brings the
+whole job from 28m20s to under 19 minutes, well inside its 60-minute timeout.
+It does not bring a warm build to seconds: every dependency-install layer
+restores as `CACHED`, but in the warm run the compile steps after the source
+`COPY` (`pnpm --filter @metis/server build`, `next build`) still re-ran, and
+restoring and re-exporting the `mode=max` cache costs 15–60 s per image. The
+rest of the job is not image building: `Test` took 8–11 minutes in each run.
+
+Freeing disk took 45s–1m49s across these runs; in the warm run it took the
+runner from 83 GB to 110 GB free.
 
 ### Embeddings sidecar deployment notes
 

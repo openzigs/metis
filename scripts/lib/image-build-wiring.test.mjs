@@ -120,12 +120,27 @@ describe("build-images.yml uses a cache that survives the runner (#3)", () => {
     expect(wf).not.toMatch(/type=local/);
   });
 
-  it("every build step reads and writes the gha cache", () => {
+  it("every build step reads the gha cache", () => {
     expect(
       wf.match(/cache-from: type=gha,scope=metis-\$\{\{ matrix\.image\.name \}\}/g),
     ).toHaveLength(2);
+  });
+
+  // A cache written from a tag ref can be restored only by that same tag, so a
+  // tag-push `cache-to` spends the 10 GB repository cache limit on entries no
+  // later run can read (review of #38, advisory A4).
+  it("the tag-push build reads the cache but never writes it", () => {
+    const start = wf.indexOf("- name: Build & push (tag");
+    expect(start).toBeGreaterThan(-1);
+    const next = wf.indexOf("- name:", start + 1);
+    const tagStep = wf.slice(start, next === -1 ? undefined : next);
+    expect(tagStep).toMatch(/cache-from: type=gha,scope=metis-/);
+    expect(tagStep).not.toMatch(/^\s*cache-to:/m);
+  });
+
+  it("the native validation build still writes the gha cache", () => {
     expect(
       wf.match(/cache-to: type=gha,scope=metis-\$\{\{ matrix\.image\.name \}\},mode=max/g),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
   });
 });

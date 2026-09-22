@@ -177,7 +177,9 @@ jobs:
           # #3 — `type=gha` survives the runner; the old local-path cache in
           # /tmp/buildkit-cache lived on the self-hosted box and is an empty
           # directory on every hosted VM. Same scope as ci.yml's `api` build of
-          # this image, so either warms the other's amd64 layers.
+          # this image, so the cache `main` writes warms this build's amd64
+          # layers. (The reverse holds only when this runs on `main`: GitHub
+          # caches are scoped to the ref that wrote them.)
           cache-from: type=gha,scope=metis-${{ matrix.image.name }}
           cache-to: type=gha,scope=metis-${{ matrix.image.name }},mode=max
 
@@ -197,8 +199,12 @@ jobs:
           # '*.dockerbuild' artifact adding ~60 KB per image per push.
           provenance: true
           sbom: false
+          # Read-only on purpose. A cache written from a tag ref can be
+          # restored only by that same tag, so no later run (not `main`, not
+          # the next tag) could read it, while it still counts toward the
+          # repository's 10 GB cache limit and evicts `main`'s entries. Reading
+          # works: a tag run restores the cache `main` wrote.
           cache-from: type=gha,scope=metis-${{ matrix.image.name }}
-          cache-to: type=gha,scope=metis-${{ matrix.image.name }},mode=max
 
       - name: Inspect manifest (tag only)
         if: github.event_name == 'push'
