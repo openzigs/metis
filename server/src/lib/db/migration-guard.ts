@@ -18,6 +18,7 @@
  *     that have already run `prisma migrate deploy` out-of-band).
  */
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createChildLogger } from "../logger.js";
@@ -31,6 +32,8 @@ export interface MigrationGuardOptions {
   spawn?: typeof spawnSync;
   /** Override `process.env` (test seam). */
   env?: NodeJS.ProcessEnv;
+  /** Override how the Prisma CLI entry point is located (test seam). */
+  resolvePrismaCli?: () => string;
 }
 
 export interface MigrationGuardResult {
@@ -50,6 +53,15 @@ function resolveServerRoot(): string {
   return path.resolve(here, "..", "..", "..");
 }
 
+/**
+ * The Prisma CLI's entry script, resolved from this package the way `server/dist`
+ * resolves every other dependency. `prisma` is a server `dependency`, so this is
+ * present in a dev checkout and in the production image alike.
+ */
+function resolvePrismaCliDefault(): string {
+  return createRequire(import.meta.url).resolve("prisma/build/index.js");
+}
+
 export async function ensureSchemaUpToDate(
   opts: MigrationGuardOptions = {},
 ): Promise<MigrationGuardResult> {
@@ -60,20 +72,26 @@ export async function ensureSchemaUpToDate(
   }
   const cwd = opts.cwd ?? resolveServerRoot();
   const spawn = opts.spawn ?? spawnSync;
+  let cli: string;
+  try {
+    cli = (opts.resolvePrismaCli ?? resolvePrismaCliDefault)();
+  } catch (err) {
+    throw new Error(
+      `Schema migration guard: the Prisma CLI is not installed, so pending migrations ` +
+        `cannot be applied: ${(err as Error).message}`,
+    );
+  }
   log.info("Applying pending Prisma migrations", { cwd });
-  // argv is a hardcoded constant and `shell` is enabled only on win32 (to resolve the
-  // pnpm.cmd shim); no untrusted input reaches this call, so there is no injection surface.
-  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true
-  const result = spawn("pnpm", ["exec", "prisma", "migrate", "deploy"], {
+  // #39 — run the CLI with THIS node rather than through `pnpm exec`: the production
+  // image ships no package manager, so `pnpm` failed with ENOENT and the server
+  // refused to start. It also needs no shell on any platform (the `pnpm.cmd` shim
+  // was the only reason Windows had one). argv is fixed; nothing untrusted reaches it.
+  const result = spawn(process.execPath, [cli, "migrate", "deploy"], {
     cwd,
     env,
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf-8",
-    // On Windows `pnpm` is a `.cmd` shim; spawnSync cannot resolve it without a
-    // shell and fails with ENOENT, so the server refuses to start on every
-    // Windows dev box. Use a shell on win32 only — POSIX stays shell-free (more
-    // secure). The argv is hardcoded, so there is no shell-injection surface.
-    shell: process.platform === "win32",
+    shell: false,
   });
   if (result.error) {
     throw new Error(

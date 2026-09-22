@@ -37,8 +37,9 @@ pnpm dev    # = server + ui in parallel
 ```
 
 If the server logs `Schema migration guard ... failed to spawn` on an OLD build,
-the guard couldn't run `pnpm` (Windows `.cmd`); fixed in
-`server/src/lib/db/migration-guard.ts` (`shell: process.platform === 'win32'`).
+the guard couldn't run `pnpm` (Windows `.cmd`, or no pnpm at all in the production
+image); the guard now runs the Prisma CLI with `node` directly, no shell (#39,
+`server/src/lib/db/migration-guard.ts`).
 Bypass on any build with `METIS_SKIP_MIGRATE=1` once migrations are applied (§1):
 
 ```bash

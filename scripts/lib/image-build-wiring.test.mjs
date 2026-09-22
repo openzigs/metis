@@ -51,7 +51,7 @@ describe("Dockerfile.server runs the reachability prune (#34)", () => {
     expect(run).toMatch(/--importer \/app\/server/);
   });
 
-  it.each(["prisma", "typescript", "@github/copilot", "@github/copilot-sdk"])(
+  it.each(["typescript", "@github/copilot", "@github/copilot-sdk"])(
     "never follows an edge to %s",
     (name) => {
       const run = dockerfile.slice(dockerfile.indexOf("RUN node /tmp/prune-pnpm-store.mjs"));
@@ -77,6 +77,74 @@ describe("Dockerfile.server runs the reachability prune (#34)", () => {
     for (const pattern of ["scripts", "scripts/", "scripts/lib", "*.mjs"]) {
       expect(ignored).not.toContain(pattern);
     }
+  });
+});
+
+describe("Dockerfile.server keeps what the server loads at boot (#39)", () => {
+  const dockerfile = read("Dockerfile.server");
+  const pkg = JSON.parse(read("server/package.json"));
+  const prune = dockerfile.slice(dockerfile.indexOf("RUN node /tmp/prune-pnpm-store.mjs"));
+  const pruneCmd = prune.slice(0, prune.indexOf("\n\n"));
+  const rmLines = dockerfile
+    .split("\n")
+    .filter((l) => /node_modules\/\.pnpm\/[^ ]+@\*/.test(l))
+    .join("\n");
+
+  // The migration guard runs the Prisma CLI at every boot; excluding it from the
+  // reachability walk deletes it, and the server refuses to start.
+  it("does not prune the Prisma CLI the migration guard runs", () => {
+    expect(pruneCmd.split(/\s+/).join(" ")).not.toContain("--exclude prisma ");
+    expect(rmLines).not.toMatch(/\.pnpm\/prisma@\*/);
+  });
+
+  it.each(["@prisma+debug", "mysql2"])(
+    "does not delete %s, which a runtime import needs",
+    (name) => {
+      expect(rmLines).not.toContain(`.pnpm/${name}@*`);
+    },
+  );
+
+  it("ships the prisma config the CLI reads its schema and migration paths from", () => {
+    expect(dockerfile).toMatch(/^COPY .*\/app\/server\/prisma\.config\.ts /m);
+  });
+
+  it("uses a glibc runtime base, because LanceDB ships no musl binding", () => {
+    const runner = dockerfile.split("\n").find((l) => / AS runner$/.test(l));
+    expect(runner).toBeDefined();
+    expect(runner).not.toMatch(/alpine/);
+  });
+
+  it("puts the Oracle Instant Client on the loader path", () => {
+    expect(dockerfile).toMatch(/\/opt\/oracle\/instantclient > \/etc\/ld\.so\.conf\.d\//);
+    expect(dockerfile).toMatch(/ldconfig/);
+  });
+
+  it("declares jszip as a runtime dependency, not a devDependency", () => {
+    expect(pkg.dependencies.jszip).toBeDefined();
+    expect(pkg.devDependencies.jszip).toBeUndefined();
+  });
+});
+
+describe("ci.yml `api` starts the server image it built (#39)", () => {
+  const api = jobBlock(read(".github/workflows/ci.yml"), "api");
+  const smoke = api.indexOf("- name: Smoke-test metis-server");
+  const body = api.slice(smoke, api.indexOf("\n      - name:", smoke + 1));
+
+  it("has a smoke step that runs the smoke gate against this run's image", () => {
+    expect(smoke).toBeGreaterThan(-1);
+    expect(body).toMatch(
+      /run: node scripts\/lib\/smoke-server-image\.mjs --image "metis-server:ci-\$\{\{ github\.run_id \}\}"/,
+    );
+  });
+
+  it("runs after the server build and before the images are cleaned up", () => {
+    expect(smoke).toBeGreaterThan(api.indexOf("- name: Build metis-server"));
+    expect(smoke).toBeLessThan(api.indexOf("- name: Clean up test images"));
+  });
+
+  it("is not allowed to fail quietly", () => {
+    expect(body).not.toMatch(/continue-on-error/);
+    expect(body).not.toMatch(/\|\| true/);
   });
 });
 
