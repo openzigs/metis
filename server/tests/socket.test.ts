@@ -32,6 +32,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 }));
 
 import { createSocketServer, type MetisIOServer } from "../src/lib/socket/server.js";
+import { createJobEventEmitter, _resetJobLifecycleMemory } from "../src/lib/socket/job-events.js";
 import { issueTokens } from "../src/lib/auth/jwt.js";
 
 let httpServer: http.Server;
@@ -122,6 +123,51 @@ describe("Socket.IO server", () => {
     socket.emit("unsubscribe:session", { sessionId: "s1" });
     await new Promise((r) => setTimeout(r, 50));
     expect(io.sockets.adapter.rooms.get("project:p1")).toBeUndefined();
+
+    socket.close();
+  });
+
+  /**
+   * A job shorter than the trigger round-trip emits its whole lifecycle before
+   * the client can join `job:{id}`, so the surface never learns it finished
+   * (observed on the embeddings reindex, which sat on "Reindexing…" forever).
+   * Subscribing replays the last known transition to that socket.
+   */
+  it("replays the last job:lifecycle event to a late subscriber", async () => {
+    _resetJobLifecycleMemory();
+    const { accessToken } = issueTokens({
+      userId: "u1",
+      username: "alice",
+      role: "developer",
+      permissions: ["analysis.read"],
+    });
+    const socket = ioClient(`http://127.0.0.1:${port}`, {
+      auth: { token: accessToken },
+      transports: ["websocket"],
+      reconnection: false,
+      timeout: 1500,
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.on("auth:ok", () => resolve());
+      socket.on("connect_error", (err) => reject(err));
+    });
+
+    // The job runs to completion BEFORE anyone is in the room.
+    createJobEventEmitter(io).completed(
+      "embeddings-reindex",
+      "late-job",
+      null,
+      "Reindexed 4 of 4 chunks.",
+    );
+
+    const replayed = new Promise<{ status: string; message?: string; jobId: string }>((resolve) => {
+      socket.on("job:lifecycle", resolve);
+    });
+    socket.emit("subscribe:job", { jobId: "late-job" });
+    const event = await replayed;
+    expect(event.jobId).toBe("late-job");
+    expect(event.status).toBe("completed");
+    expect(event.message).toBe("Reindexed 4 of 4 chunks.");
 
     socket.close();
   });

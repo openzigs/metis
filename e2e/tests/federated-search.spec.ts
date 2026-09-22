@@ -8,6 +8,7 @@
  */
 import { test, expect, request } from "@playwright/test";
 import { apiBase } from "../fixtures/api-base.js";
+import { primeAdminUser } from "../fixtures/seed-user.js";
 
 const API_BASE = apiBase();
 
@@ -17,16 +18,11 @@ test.describe("Cross-project federated search", () => {
   let projectId2: string;
 
   test.beforeAll(async () => {
+    // The login route takes `username` / `password` and answers with
+    // `data.accessToken`. Posting `{ email, password: "admin" }` never
+    // succeeded, so this whole file skipped itself on every run.
+    token = (await primeAdminUser(API_BASE)).accessToken;
     const ctx = await request.newContext({ baseURL: API_BASE });
-    const login = await ctx.post("/api/auth/login", {
-      data: { email: "admin@metis.local", password: "admin" },
-    });
-    if (login.status() !== 200) {
-      test.skip(true, "Requires seeded admin user");
-      return;
-    }
-    const loginBody = (await login.json()) as { token: string };
-    token = loginBody.token;
 
     // Create two test projects
     const slug1 = `fed-search-1-${Date.now()}`;
@@ -36,19 +32,15 @@ test.describe("Cross-project federated search", () => {
       headers: { Authorization: `Bearer ${token}` },
       data: { name: "Fed Search Project 1", slug: slug1 },
     });
-    if (p1.ok()) {
-      const body = (await p1.json()) as { data: { project: { id: string } } };
-      projectId1 = body.data.project.id;
-    }
+    expect(p1.status(), await p1.text()).toBe(201);
+    projectId1 = ((await p1.json()) as { data: { id: string } }).data.id;
 
     const p2 = await ctx.post("/api/projects", {
       headers: { Authorization: `Bearer ${token}` },
       data: { name: "Fed Search Project 2", slug: slug2 },
     });
-    if (p2.ok()) {
-      const body = (await p2.json()) as { data: { project: { id: string } } };
-      projectId2 = body.data.project.id;
-    }
+    expect(p2.status(), await p2.text()).toBe(201);
+    projectId2 = ((await p2.json()) as { data: { id: string } }).data.id;
 
     await ctx.dispose();
   });

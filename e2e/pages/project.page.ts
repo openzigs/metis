@@ -89,6 +89,17 @@ export class ProjectsPage {
     await this.list.getByText(slug, { exact: true }).first().click();
     await this.page.waitForURL(/\/projects\/[^/]+$/, { timeout: 10_000 });
   }
+
+  /**
+   * Open the project and walk the real tab bar to its ⚙ Settings page, where
+   * the project form and the primary-repo card live (#28 moved them off the
+   * landing page, which is now the pipeline Overview).
+   */
+  async openProjectSettings(slug: string): Promise<void> {
+    await this.openProject(slug);
+    await this.page.getByTestId("project-tabs").getByRole("link", { name: "Settings" }).click();
+    await this.page.waitForURL(/\/projects\/[^/]+\/settings$/, { timeout: 15_000 });
+  }
 }
 
 export class ProjectDetailPage {
@@ -135,6 +146,27 @@ export class ProjectDetailPage {
       "database-aware-analysis-no-schema-data-hint",
     );
     this.databaseAwareConnectLink = page.getByTestId("database-aware-analysis-connect-link");
+  }
+
+  /**
+   * Walk the real project navigation from the landing page to Sources →
+   * Documents, where the uploader lives (#28 moved it off the landing page).
+   */
+  async openDocumentsViaTabs(): Promise<void> {
+    await this.page.getByTestId("project-tabs").getByRole("link", { name: "Sources" }).click();
+    await this.page.getByTestId("project-subnav").getByRole("link", { name: "Documents" }).click();
+    await this.page.waitForURL(/\/projects\/[^/]+\/documents$/, { timeout: 15_000 });
+    await expect(this.dropzone).toBeVisible({ timeout: 30_000 });
+  }
+
+  /**
+   * Open the project's Sources → Documents page, where the uploader lives.
+   * The project landing page is the pipeline Overview (#28/#29) and carries
+   * no dropzone.
+   */
+  async gotoDocuments(projectId: string): Promise<void> {
+    await this.page.goto(`/projects/${projectId}/documents`, { waitUntil: "load" });
+    await expect(this.dropzone).toBeVisible({ timeout: 30_000 });
   }
 
   /**

@@ -21,7 +21,9 @@ export class LoginPage {
     this.title = page.getByText("Sign in to METIS", { exact: true });
     this.username = page.getByLabel("Username");
     this.password = page.getByLabel("Password");
-    this.submit = page.getByRole("button", { name: /Sign in/ });
+    // Exact match: once an SSO IdP is enabled the login page also renders
+    // "Sign in with <IdP>" buttons, which a /Sign in/ regex also matches.
+    this.submit = page.getByRole("button", { name: "Sign in", exact: true });
     this.error = page.getByRole("alert");
   }
 

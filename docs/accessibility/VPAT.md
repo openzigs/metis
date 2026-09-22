@@ -79,7 +79,7 @@ the team's chosen **manual + assertion-based harness**:
    landmark/single-`h1`, minimum hit-target size (24×24 CSS px), the mobile
    **reflow-to-cards** behaviour at 375px (WCAG 1.4.10), a ≥44px mobile touch
    target (WCAG 2.5.8), and the mobile command-palette combobox/listbox semantics.
-   (The full `e2e` job is gated behind `E2E_ENABLED`; see the caveat below.)
+   (The full `e2e` job runs on every pull request as of #62.)
 
 3. **Vitest + @testing-library component a11y tests** — per-page screen-reader
    regression tests (role / accessible-name / landmark queries) locked in for each

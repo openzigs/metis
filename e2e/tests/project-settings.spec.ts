@@ -46,8 +46,8 @@ test.describe("Project settings — AI pickers (#234)", () => {
       },
     });
     expect(res.status()).toBe(201);
-    const body = (await res.json()) as { success: boolean; data: { project: { id: string } } };
-    projectId = body.data.project.id;
+    const body = (await res.json()) as { success: boolean; data: { id: string } };
+    projectId = body.data.id;
     await api.dispose();
 
     const loginPage = new LoginPage(page);
@@ -68,9 +68,11 @@ test.describe("Project settings — AI pickers (#234)", () => {
       const options = detail.aiProviderSelect.locator("option");
       // At minimum: "Global default" + at least one provider key.
       await expect(options).not.toHaveCount(0);
+      // An <option> inside a closed <select> has no box and is never
+      // "visible" — assert it exists.
       await expect(
         detail.aiProviderSelect.locator("option", { hasText: "Global default" }),
-      ).toBeVisible();
+      ).toHaveCount(1);
     });
 
     await test.step("Select a provider and save", async () => {
@@ -101,7 +103,20 @@ test.describe("Project settings — AI pickers (#234)", () => {
 
     await test.step("Select local-gemma and save", async () => {
       await detail.aiProviderSelect.selectOption("local-gemma");
-      await detail.aiProviderSave.click();
+      await expect(detail.aiProviderSelect).toHaveValue("local-gemma");
+      // Capture the PATCH the UI sends. Asserting only on the "Saved" label
+      // cannot tell a successful save of the WRONG value from a correct one,
+      // and the picker's value is React state that the click can outrun.
+      const [patch] = await Promise.all([
+        page.waitForResponse(
+          (res) =>
+            /\/api\/projects\/[^/]+$/.test(new URL(res.url()).pathname) &&
+            res.request().method() === "PATCH",
+          { timeout: 15_000 },
+        ),
+        detail.aiProviderSave.click(),
+      ]);
+      expect(patch.request().postDataJSON()).toMatchObject({ aiProviderId: "local-gemma" });
       await expect(page.getByText("Saved")).toBeVisible({ timeout: 10_000 });
     });
 

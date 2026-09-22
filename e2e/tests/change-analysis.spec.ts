@@ -18,11 +18,15 @@
  */
 import { test, expect, request, type APIRequestContext } from "@playwright/test";
 import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user.js";
+import { seedGroundedAnalysisViaCli, seedRequirementViaCli } from "../fixtures/seed-helpers.js";
 import { apiBase } from "../fixtures/api-base.js";
 import { LoginPage } from "../pages/login.page.js";
 import { ChangeAnalysisPage } from "../pages/change-analysis.page.js";
 
 const API_BASE = apiBase();
+
+/** Admin user id, primed per test — the seeded analyses are attributed to it. */
+let adminUserId = "";
 
 /** Create an authenticated API context. */
 async function authedApi(token: string): Promise<APIRequestContext> {
@@ -44,32 +48,31 @@ async function createProject(api: APIRequestContext, suffix: string): Promise<st
 }
 
 /**
- * Trigger an analysis run via API and poll until completed.
- * Returns the analysis id. The offline-stub provider completes quickly.
+ * Seed a COMPLETED analysis straight into the e2e database.
+ *
+ * Running the real pipeline is not an option here: the deterministic harness
+ * uses the `offline-stub` provider, whose replies are hash-derived prose, so
+ * every specialist agent rejects the output as non-JSON and the run ends
+ * `failed` — and `POST /change-analyses` rejects a non-completed analysis with
+ * a 400. The same seeding seam the grounding + clarify-loop specs use gives us
+ * a completed run without faking the product's own code path.
  */
-async function seedAnalysis(api: APIRequestContext, projectId: string): Promise<string> {
-  const startRes = await api.post(`/api/projects/${projectId}/analyses`, {
-    data: { documentIds: [] },
-  });
-  // Accept both 201 and 202 since implementations vary
-  expect([201, 202]).toContain(startRes.status());
-  const startBody = await startRes.json();
-  const analysisId = (startBody.data?.id ?? startBody.id) as string;
-  expect(analysisId).toBeTruthy();
+function seedAnalysis(projectId: string): string {
+  const databaseUrl = process.env.E2E_DATABASE_URL ?? `file:${process.env.E2E_DB_FILE}`;
+  return seedGroundedAnalysisViaCli({ projectId, startedById: adminUserId, databaseUrl });
+}
 
-  // Poll until terminal state (offline-stub is fast)
-  for (let i = 0; i < 60; i++) {
-    const res = await api.get(`/api/analyses/${analysisId}`);
-    if (res.ok()) {
-      const body = await res.json();
-      const status = body.data?.status ?? body.status;
-      if (["completed", "failed", "cancelled"].includes(status)) {
-        return analysisId;
-      }
-    }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  throw new Error(`Analysis ${analysisId} did not reach terminal state in 60s`);
+/**
+ * Seed a completed analysis that OWNS a requirement. Comparing a plain run
+ * against this one yields an `added` change — without it both runs hold zero
+ * requirements, the diff is empty, and every change-review assertion below
+ * skipped itself at runtime while reporting a pass.
+ */
+function seedAnalysisWithRequirement(projectId: string): string {
+  const databaseUrl = process.env.E2E_DATABASE_URL ?? `file:${process.env.E2E_DB_FILE}`;
+  const analysisId = seedAnalysis(projectId);
+  seedRequirementViaCli({ projectId, analysisId, databaseUrl });
+  return analysisId;
 }
 
 /**
@@ -107,6 +110,7 @@ test.describe("Epic #557 — Change Analysis API", () => {
   test.beforeEach(async () => {
     const primed = await primeAdminUser(API_BASE);
     accessToken = primed.accessToken;
+    adminUserId = primed.userId;
     api = await authedApi(accessToken);
     projectId = await createProject(api, "api");
   });
@@ -168,8 +172,8 @@ test.describe("Epic #557 — Change Analysis API", () => {
   // AC #565-2, #565-7: Full trigger + retrieve lifecycle with real analyses
   test("should trigger change analysis and retrieve results", async () => {
     // Seed two analyses to compare
-    const baseId = await seedAnalysis(api, projectId);
-    const headId = await seedAnalysis(api, projectId);
+    const baseId = seedAnalysis(projectId);
+    const headId = seedAnalysis(projectId);
 
     await test.step("Trigger change analysis", async () => {
       const res = await api.post(`/api/projects/${projectId}/change-analyses`, {
@@ -213,8 +217,8 @@ test.describe("Epic #557 — Change Analysis API", () => {
 
   // AC #564-8, #564-9: Change detail includes severity, impact, diff
   test("should include severity and impact on requirement changes", async () => {
-    const baseId = await seedAnalysis(api, projectId);
-    const headId = await seedAnalysis(api, projectId);
+    const baseId = seedAnalysis(projectId);
+    const headId = seedAnalysis(projectId);
 
     const triggerRes = await api.post(`/api/projects/${projectId}/change-analyses`, {
       data: { baseAnalysisId: baseId, headAnalysisId: headId },
@@ -249,8 +253,8 @@ test.describe("Epic #557 — Change Analysis API", () => {
 
   // AC #564-7, #565-7: Review endpoint (approve/reject changes)
   test("should approve and reject individual changes via review endpoint", async () => {
-    const baseId = await seedAnalysis(api, projectId);
-    const headId = await seedAnalysis(api, projectId);
+    const baseId = seedAnalysis(projectId);
+    const headId = seedAnalysisWithRequirement(projectId);
 
     const triggerRes = await api.post(`/api/projects/${projectId}/change-analyses`, {
       data: { baseAnalysisId: baseId, headAnalysisId: headId },
@@ -269,11 +273,10 @@ test.describe("Epic #557 — Change Analysis API", () => {
       await new Promise((r) => setTimeout(r, 1000));
     }
 
-    if (changes.length === 0) {
-      // No changes to review — test still passes (offline-stub may produce none)
-      test.skip();
-      return;
-    }
+    // The head run owns a requirement the base run does not, so the diff must
+    // report it. A silent skip here is how this test passed for months while
+    // asserting nothing.
+    expect(changes.length, "seeded requirement produces an `added` change").toBeGreaterThan(0);
 
     const changeId = changes[0].id as string;
 
@@ -321,6 +324,7 @@ test.describe("Epic #557 — Publishing Destination API", () => {
   test.beforeEach(async () => {
     const primed = await primeAdminUser(API_BASE);
     accessToken = primed.accessToken;
+    adminUserId = primed.userId;
     api = await authedApi(accessToken);
     projectId = await createProject(api, "pub");
   });
@@ -450,6 +454,7 @@ test.describe("Epic #557 — Change Analysis UI", () => {
   test.beforeEach(async ({ page }) => {
     const primed = await primeAdminUser(API_BASE);
     accessToken = primed.accessToken;
+    adminUserId = primed.userId;
     const api = await authedApi(accessToken);
     projectId = await createProject(api, "ui");
     await api.dispose();
@@ -514,13 +519,8 @@ test.describe("Epic #557 — Change Analysis UI", () => {
 
   // AC #568-5, #568-8: Trigger form with real analyses populates dropdowns
   test("should populate analysis dropdowns when analyses exist", async ({ page }) => {
-    const api = await authedApi(accessToken);
-    try {
-      await seedAnalysis(api, projectId);
-      await seedAnalysis(api, projectId);
-    } finally {
-      await api.dispose();
-    }
+    seedAnalysis(projectId);
+    seedAnalysis(projectId);
 
     const ca = new ChangeAnalysisPage(page);
     await ca.goto(projectId);
@@ -532,15 +532,8 @@ test.describe("Epic #557 — Change Analysis UI", () => {
 
   // AC #568-5: Compare button enables when both selects have values
   test("should enable Compare button when base and head are selected", async ({ page }) => {
-    const api = await authedApi(accessToken);
-    let baseId: string;
-    let headId: string;
-    try {
-      baseId = await seedAnalysis(api, projectId);
-      headId = await seedAnalysis(api, projectId);
-    } finally {
-      await api.dispose();
-    }
+    const baseId = seedAnalysis(projectId);
+    const headId = seedAnalysis(projectId);
 
     const ca = new ChangeAnalysisPage(page);
     await ca.goto(projectId);
@@ -555,13 +548,7 @@ test.describe("Epic #557 — Change Analysis UI", () => {
 
   // AC #568-5: Compare button stays disabled when same base and head selected
   test("should keep Compare disabled when base equals head", async ({ page }) => {
-    const api = await authedApi(accessToken);
-    let analysisId: string;
-    try {
-      analysisId = await seedAnalysis(api, projectId);
-    } finally {
-      await api.dispose();
-    }
+    const analysisId = seedAnalysis(projectId);
 
     const ca = new ChangeAnalysisPage(page);
     await ca.goto(projectId);
@@ -574,15 +561,8 @@ test.describe("Epic #557 — Change Analysis UI", () => {
 
   // AC #568-5, #568-6, #568-8: Trigger and view analysis results
   test("should trigger change analysis and show results in list", async ({ page }) => {
-    const api = await authedApi(accessToken);
-    let baseId: string;
-    let headId: string;
-    try {
-      baseId = await seedAnalysis(api, projectId);
-      headId = await seedAnalysis(api, projectId);
-    } finally {
-      await api.dispose();
-    }
+    const baseId = seedAnalysis(projectId);
+    const headId = seedAnalysis(projectId);
 
     const ca = new ChangeAnalysisPage(page);
     await ca.goto(projectId);
@@ -606,15 +586,8 @@ test.describe("Epic #557 — Change Analysis UI", () => {
 
   // AC #568-8, #568-9: Detail panel shows stats and change cards
   test("should display analysis detail with stats when analysis selected", async ({ page }) => {
-    const api = await authedApi(accessToken);
-    let baseId: string;
-    let headId: string;
-    try {
-      baseId = await seedAnalysis(api, projectId);
-      headId = await seedAnalysis(api, projectId);
-    } finally {
-      await api.dispose();
-    }
+    const baseId = seedAnalysis(projectId);
+    const headId = seedAnalysis(projectId);
 
     // Trigger via API so we have results to view
     const triggerApi = await authedApi(accessToken);
@@ -650,15 +623,8 @@ test.describe("Epic #557 — Change Analysis UI", () => {
 
   // AC #568-9: Change cards display type, severity, impact
   test("should render change cards with type indicators and severity", async ({ page }) => {
-    const api = await authedApi(accessToken);
-    let baseId: string;
-    let headId: string;
-    try {
-      baseId = await seedAnalysis(api, projectId);
-      headId = await seedAnalysis(api, projectId);
-    } finally {
-      await api.dispose();
-    }
+    const baseId = seedAnalysis(projectId);
+    const headId = seedAnalysis(projectId);
 
     const triggerApi = await authedApi(accessToken);
     try {
@@ -699,15 +665,8 @@ test.describe("Epic #557 — Change Analysis UI", () => {
 
   // AC #568-12: Approve/reject workflow updates change status
   test("should approve and reject changes via UI buttons", async ({ page }) => {
-    const api = await authedApi(accessToken);
-    let baseId: string;
-    let headId: string;
-    try {
-      baseId = await seedAnalysis(api, projectId);
-      headId = await seedAnalysis(api, projectId);
-    } finally {
-      await api.dispose();
-    }
+    const baseId = seedAnalysis(projectId);
+    const headId = seedAnalysisWithRequirement(projectId);
 
     // Trigger and wait for completion via API
     const triggerApi = await authedApi(accessToken);
@@ -734,10 +693,7 @@ test.describe("Epic #557 — Change Analysis UI", () => {
       await checkApi.dispose();
     }
 
-    if (changes.length === 0) {
-      test.skip();
-      return;
-    }
+    expect(changes.length, "seeded requirement produces an `added` change").toBeGreaterThan(0);
 
     const ca = new ChangeAnalysisPage(page);
     await ca.goto(projectId);
@@ -765,15 +721,8 @@ test.describe("Epic #557 — Change Analysis UI", () => {
 
   // AC #568-8: Analysis history shows change type counts (+/−/~)
   test("should show change type counts in history list items", async ({ page }) => {
-    const api = await authedApi(accessToken);
-    let baseId: string;
-    let headId: string;
-    try {
-      baseId = await seedAnalysis(api, projectId);
-      headId = await seedAnalysis(api, projectId);
-    } finally {
-      await api.dispose();
-    }
+    const baseId = seedAnalysis(projectId);
+    const headId = seedAnalysis(projectId);
 
     const triggerApi = await authedApi(accessToken);
     try {
@@ -810,6 +759,7 @@ test.describe("Epic #557 — Publishing Destination Config UI", () => {
   test.beforeEach(async ({ page }) => {
     const primed = await primeAdminUser(API_BASE);
     accessToken = primed.accessToken;
+    adminUserId = primed.userId;
     const api = await authedApi(accessToken);
     projectId = await createProject(api, "pubui");
     await api.dispose();

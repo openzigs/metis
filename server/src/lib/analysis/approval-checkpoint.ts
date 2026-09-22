@@ -6,6 +6,7 @@
  * requirement can require explicit approval before ticket creation proceeds.
  */
 import { createChildLogger } from "../logger.js";
+import { AppError } from "../../middleware/error-handler.js";
 import { prisma } from "../prisma.js";
 import type { ApprovalReview, ApprovalStatus, ApprovalType } from "./types/requirements.js";
 
@@ -106,12 +107,19 @@ export async function reviewApprovalRequest(
     where: { id: requestId, analysisId },
   });
 
+  // Typed errors: a bare `Error` here reached the client as a 500 for a plain
+  // unknown-id request, which is both the wrong status and an internal-error
+  // signal for ordinary caller input.
   if (!existing) {
-    throw new Error(`Approval request ${requestId} not found`);
+    throw new AppError(404, "APPROVAL_NOT_FOUND", `Approval request ${requestId} not found`);
   }
 
   if (existing.status !== "pending") {
-    throw new Error(`Approval request ${requestId} is already ${existing.status}`);
+    throw new AppError(
+      409,
+      "APPROVAL_ALREADY_REVIEWED",
+      `Approval request ${requestId} is already ${existing.status}`,
+    );
   }
 
   log.info("Reviewing approval request", {

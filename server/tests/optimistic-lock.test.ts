@@ -64,6 +64,43 @@ describe("optimisticLock middleware", () => {
     expect(res.body.error.clientBody).toBeUndefined();
   });
 
+  // A field whose value is an array (a requirement's `labels`) is never `===`
+  // an equivalent array from the request body, so identity comparison reported
+  // it as conflicting on every 409 — and the merge modal then offered to keep a
+  // "server version" identical to what the client already sent.
+  it("does not report an array field as conflicting when the values are equal", async () => {
+    fetcher.mockResolvedValue({
+      id: "1",
+      version: 5,
+      title: "Server title",
+      labels: ["a", "b"],
+    });
+    const app = createApp(fetcher);
+    const res = await request(app)
+      .put("/items/1")
+      .send({ version: 2, title: "Client title", labels: ["a", "b"] });
+
+    expect(res.status).toBe(409);
+    const fields = (res.body.error.diff as Array<{ field: string }>).map((d) => d.field);
+    expect(fields).toContain("title");
+    expect(fields).not.toContain("labels");
+  });
+
+  it("still reports an array field whose contents genuinely differ", async () => {
+    fetcher.mockResolvedValue({ id: "1", version: 5, labels: ["a"] });
+    const app = createApp(fetcher);
+    const res = await request(app)
+      .put("/items/1")
+      .send({ version: 2, labels: ["a", "b"] });
+
+    expect(res.status).toBe(409);
+    const labelDiff = (res.body.error.diff as Array<{ field: string; server: unknown }>).find(
+      (d) => d.field === "labels",
+    );
+    expect(labelDiff).toBeDefined();
+    expect(labelDiff!.server).toEqual(["a"]);
+  });
+
   it("returns 404 when record not found", async () => {
     fetcher.mockResolvedValue(null);
     const app = createApp(fetcher);

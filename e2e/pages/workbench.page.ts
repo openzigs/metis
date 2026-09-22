@@ -22,7 +22,9 @@ export class WorkbenchPage {
   constructor(page: Page) {
     this.page = page;
     this.heading = page.getByRole("heading", { name: "Workbench" });
-    this.projectPicker = page.getByLabel("Active project");
+    // `exact` matters: the header ProjectSwitcher is labelled
+    // "Active project: <name>", which a substring match also selects.
+    this.projectPicker = page.getByLabel("Active project", { exact: true });
     this.leftPanel = page.getByTestId("workbench-left-panel");
     this.centerPanel = page.getByTestId("workbench-center-panel");
     this.rightPanel = page.getByTestId("workbench-right-panel");

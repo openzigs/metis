@@ -179,6 +179,26 @@ test.describe("Epic #708 — AI Bug Scanner", () => {
       totalTokens: number;
     }> = [];
 
+    // #708 — the CTA is gated on the repository having a code graph. Stub the
+    // gate alongside the scan routes; without it the button stays disabled and
+    // the test times out on a click it can never make.
+    await page.route(
+      `**/api/projects/${projectId}/repositories/${repoId}/scans/index-status`,
+      (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            data: {
+              indexed: true,
+              commitSha: "abcdef1234567890",
+              lastIndexedAt: new Date().toISOString(),
+              symbolCount: 10,
+            },
+          }),
+        }),
+    );
+
     await page.route(`**/api/projects/${projectId}/repositories/${repoId}/scans`, (route) => {
       const method = route.request().method();
       if (method === "GET") {
@@ -235,6 +255,9 @@ test.describe("Epic #708 — AI Bug Scanner", () => {
     await page.goto(`/projects/${projectId}/repositories/${repoId}/scanner`);
     await expect(page.getByTestId("scanner-repo-root")).toBeVisible();
     await page.getByTestId("scanner-repo-start").click();
+    // The CTA now opens a cost-warning dialog; the scan starts on confirm.
+    await expect(page.getByTestId("scanner-cost-warning-dialog")).toBeVisible();
+    await page.getByTestId("scanner-cost-warning-confirm").click();
     await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/scans/scan-1$`));
     await expect(page.getByTestId("scanner-triage-meta")).toContainText("commit abcdef12");
   });

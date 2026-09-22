@@ -21,6 +21,18 @@ import { JiraPage } from "../pages/jira.page.js";
 
 const API_BASE = apiBase();
 
+/**
+ * Assert a route is MOUNTED, without assuming what the upstream Jira does.
+ * Express answers an unknown path with `{ error: { code: "NOT_FOUND" } }`,
+ * while a real Jira 404 comes back as `JIRA_API_ERROR` — same status, very
+ * different meaning. Discriminate on the code.
+ */
+async function expectRouteMounted(res: import("@playwright/test").APIResponse): Promise<void> {
+  if (res.status() !== 404) return;
+  const body = (await res.json()) as { error?: { code?: string } };
+  expect(body.error?.code, `route is not mounted: ${JSON.stringify(body)}`).not.toBe("NOT_FOUND");
+}
+
 /** Create an authenticated API context. */
 async function authedApi(token: string): Promise<APIRequestContext> {
   return request.newContext({
@@ -242,8 +254,10 @@ test.describe("Epic #556 — Jira Connection API CRUD", () => {
     const connId = (await createRes.json()).data.id;
 
     const projectsRes = await api.get(`/api/jira/connections/${connId}/projects`);
-    // Will error since no real Jira, but the route should exist (not 404)
-    expect(projectsRes.status()).not.toBe(404);
+    // Will error since no real Jira. Assert the ROUTE exists: an upstream Jira
+    // 404 is itself surfaced as 404 (code JIRA_API_ERROR), so discriminate on
+    // the error code rather than the status.
+    await expectRouteMounted(projectsRes);
   });
 
   // AC: POST /api/jira/connections/:id/search — JQL search
@@ -270,7 +284,7 @@ test.describe("Epic #556 — Jira Connection API CRUD", () => {
     const searchRes = await api.post(`/api/jira/connections/${connId}/search`, {
       data: { jql: "project = TEST", startAt: 0, maxResults: 10 },
     });
-    expect(searchRes.status()).not.toBe(404);
+    await expectRouteMounted(searchRes);
   });
 
   // AC: GET /api/jira/connections/:id/issues/:key — issue detail
@@ -288,8 +302,8 @@ test.describe("Epic #556 — Jira Connection API CRUD", () => {
     const connId = (await createRes.json()).data.id;
 
     const issueRes = await api.get(`/api/jira/connections/${connId}/issues/TEST-1`);
-    // Route should exist (not 404). Will error since no real Jira.
-    expect(issueRes.status()).not.toBe(404);
+    // Route should exist. Will error since no real Jira.
+    await expectRouteMounted(issueRes);
   });
 
   // AC: Connection CRUD full lifecycle
@@ -697,8 +711,8 @@ test.describe("Epic #556 — Jira Issue Viewer UI", () => {
     await card.click();
 
     await expect(jira.jiraProjectSelect).toBeVisible();
-    // Default option is "Select a project…"
-    await expect(jira.jiraProjectSelect).toContainText("Select a project");
+    // Default option covers every project the connection can see.
+    await expect(jira.jiraProjectSelect).toContainText("All projects");
   });
 
   // AC3: JQL filter bar with Search button

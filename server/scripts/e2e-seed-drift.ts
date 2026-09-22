@@ -12,6 +12,7 @@
  * Outputs JSON: { driftId, publishedIssueId, projectId }
  */
 /* eslint-disable no-console -- CLI script */
+import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import * as crypto from "node:crypto";
 
@@ -28,9 +29,10 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const prisma = new PrismaClient({
-    datasources: { db: { url: databaseUrl } },
-  });
+  // Prisma 7 dropped `datasources`; the SQLite driver adapter is the
+  // supported way to point a client at the e2e database file.
+  const adapter = new PrismaBetterSqlite3({ url: databaseUrl });
+  const prisma = new PrismaClient({ adapter });
 
   try {
     // 0. Ensure we have a user row for the batch FK (startedById)

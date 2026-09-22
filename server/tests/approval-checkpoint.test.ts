@@ -191,13 +191,15 @@ describe("ApprovalCheckpoint", () => {
       expect(reviewed.status).toBe("rejected");
     });
 
-    it("throws when request not found", async () => {
+    it("throws a 404 AppError when the request is not found", async () => {
+      // A bare Error surfaced as a 500 through the route: an unknown id is
+      // ordinary caller input, not an internal failure.
       await expect(
         reviewApprovalRequest("analysis-1", "nonexistent", {
           status: "approved",
           reviewerId: "user-1",
         }),
-      ).rejects.toThrow("not found");
+      ).rejects.toMatchObject({ statusCode: 404, code: "APPROVAL_NOT_FOUND" });
     });
 
     it("throws when analysisId does not match (IDOR prevention)", async () => {
@@ -224,7 +226,7 @@ describe("ApprovalCheckpoint", () => {
           status: "rejected",
           reviewerId: "user-2",
         }),
-      ).rejects.toThrow("already approved");
+      ).rejects.toMatchObject({ statusCode: 409, code: "APPROVAL_ALREADY_REVIEWED" });
     });
   });
 

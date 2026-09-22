@@ -28,6 +28,16 @@ import type { AuthUser, LoginCredentials, LoginResponse } from "@/lib/auth-types
  */
 export const PROACTIVE_REFRESH_MS = 50 * 60 * 1000;
 
+/**
+ * Routes that render for a signed-OUT visitor. Kept in lock-step with the edge
+ * gate's public list in `src/middleware.ts` — both have to agree or the page
+ * loads and is then bounced from the client (which is exactly what happened to
+ * the invitation page).
+ */
+export function isPublicRoute(pathname: string): boolean {
+  return pathname === "/login" || pathname.startsWith("/invites/");
+}
+
 interface AuthContextValue {
   user: AuthUser | null;
   isLoading: boolean;
@@ -141,6 +151,10 @@ export function AuthProvider({
   // user back to /login instead of leaving stale UI in place.
   //
   // #411 — preserve the return route + signal WHY on every involuntary redirect:
+  //  • Public-route guard: /login and the workspace-invite landing page are
+  //    meant to be read WITHOUT a session, so an anonymous visitor's failed
+  //    refresh must not bounce them. (Bouncing the invite page made every
+  //    invitation link unusable for its only audience.)
   //  • Cold-login guard: if we are already ON /login, do NOT redirect — that
   //    would strip the `?next` the login form is holding (the documented
   //    cold-login bug where `router.replace("/login")` dropped the deep link, so
@@ -155,7 +169,7 @@ export function AuthProvider({
     setOnRefreshFailure(() => {
       setUser(null);
       queryClient.removeQueries({ queryKey: queryKeys.auth.all });
-      if (window.location.pathname === "/login") {
+      if (isPublicRoute(window.location.pathname)) {
         return;
       }
       const here = window.location.pathname + window.location.search;

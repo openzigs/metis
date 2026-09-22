@@ -53,8 +53,8 @@ test.describe("Epic #640 — Primary Repository", () => {
       await projectsPage.createProject(`No Repo Test ${slug}`, slug);
     });
 
-    await test.step("Open project and verify no primary repo", async () => {
-      await projectsPage.openProject(slug);
+    await test.step("Open project settings and verify no primary repo", async () => {
+      await projectsPage.openProjectSettings(slug);
       const primaryCard = page.getByTestId("primary-repo-card");
       await expect(primaryCard).toBeVisible();
       await expect(primaryCard.getByText("No primary repository linked.")).toBeVisible();
@@ -76,8 +76,8 @@ test.describe("Epic #640 — Primary Repository", () => {
       });
     });
 
-    await test.step("Open project and verify primary repo card", async () => {
-      await projectsPage.openProject(slug);
+    await test.step("Open project settings and verify primary repo card", async () => {
+      await projectsPage.openProjectSettings(slug);
       const primaryCard = page.getByTestId("primary-repo-card");
       await expect(primaryCard).toBeVisible();
       await expect(primaryCard.getByText(`${repoOwner}/${repoName}`)).toBeVisible();
@@ -208,7 +208,7 @@ test.describe("Epic #640 — Primary Repository", () => {
     await test.step("Navigate to project settings", async () => {
       const projectsPage = new ProjectsPage(page);
       await projectsPage.goto();
-      await projectsPage.openProject(slug);
+      await projectsPage.openProjectSettings(slug);
       const url = page.url();
       projectId = url.split("/projects/")[1].split("/")[0];
     });
@@ -239,7 +239,7 @@ test.describe("Epic #640 — Primary Repository", () => {
     await test.step("Navigate to project settings", async () => {
       const projectsPage = new ProjectsPage(page);
       await projectsPage.goto();
-      await projectsPage.openProject(slug);
+      await projectsPage.openProjectSettings(slug);
       const url = page.url();
       projectId = url.split("/projects/")[1].split("/")[0];
     });

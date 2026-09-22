@@ -203,8 +203,8 @@ WCAG-EM self-evaluation**, not a third-party conformance claim.
   - `ui/tests/contrast-tokens.test.ts` — SC 1.4.3 and SC 1.4.11.
   - `ui/src/lib/error-suggestion.ts` + form tests — SC 3.3.3.
   - `e2e/tests/ui-ia-accessibility.spec.ts` — SC 2.4.11 (focus-not-obscured),
-    role/name, landmarks, target size, mobile reflow. *(The full `e2e` job is
-    gated behind `E2E_ENABLED`; this is a manually-runnable Playwright suite.)*
+    role/name, landmarks, target size, mobile reflow. *(The full `e2e` job runs
+    on every pull request as of #62.)*
 
 ### 5.d Limitations and recommendation
 

@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -220,7 +221,11 @@ export default function WorkspaceSettingsPage() {
                   </DialogDescription>
                 </DialogHeader>
                 <DialogFooter>
-                  <Button variant="outline">Cancel</Button>
+                  {/* Without DialogClose this button was inert — the only way
+                      out of the confirmation was Esc or the ✕. */}
+                  <DialogClose asChild>
+                    <Button variant="outline">Cancel</Button>
+                  </DialogClose>
                   <Button variant="destructive" onClick={() => deleteMutation.mutate()}>
                     Delete workspace
                   </Button>

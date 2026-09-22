@@ -495,10 +495,9 @@ export default function TestCoveragePage() {
             <ul className="space-y-1">
               {imports.slice(0, 6).map((imp) => (
                 <li key={imp.id} className="text-xs">
-                  <span className="font-medium">{imp.filename ?? imp.source}</span>
+                  <span className="font-medium">{imp.label || imp.source}</span>
                   {" — "}
-                  {imp.casesUpserted} cases (parsed {imp.casesParsed}) ·{" "}
-                  {new Date(imp.createdAt).toLocaleString()}
+                  {imp.testCount} cases · {new Date(imp.createdAt).toLocaleString()}
                 </li>
               ))}
             </ul>

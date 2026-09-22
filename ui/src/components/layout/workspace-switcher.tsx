@@ -89,7 +89,12 @@ export function WorkspaceSwitcher() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" className="gap-1.5 text-sm font-medium">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="gap-1.5 text-sm font-medium"
+          data-testid="workspace-switcher"
+        >
           <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
           <span className="max-w-[120px] truncate">{active?.name ?? "Workspace"}</span>
           <ChevronsUpDown className="h-3.5 w-3.5 text-muted-foreground" />

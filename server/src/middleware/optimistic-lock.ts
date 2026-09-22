@@ -59,7 +59,14 @@ export function optimisticLock(entityLabel: string, getRecord: RecordFetcher): R
         const diff: Array<{ field: string; server: unknown; client: unknown }> = [];
         for (const field of Object.keys(clientBody)) {
           if (field === "version") continue;
-          if (field in record && record[field] !== clientBody[field]) {
+          if (!(field in record)) continue;
+          // Structural comparison: a field whose value is an array or object
+          // (e.g. a requirement's `labels`) is never `===` equal to an
+          // equivalent value from the request body, so identity comparison
+          // reported it as conflicting on EVERY conflict — and the merge modal
+          // then offered a "server version" the client never actually differed
+          // from.
+          if (JSON.stringify(record[field]) !== JSON.stringify(clientBody[field])) {
             diff.push({ field, server: record[field], client: clientBody[field] });
           }
         }

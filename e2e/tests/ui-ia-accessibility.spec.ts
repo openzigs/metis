@@ -11,7 +11,7 @@
  * which this suite does not wire up. A3 is covered by the design-token unit
  * tests / visual review and is reported as not-mapped for e2e below.
  */
-import { test, expect, type Locator } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import { apiBase } from "../fixtures/api-base.js";
 import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user.js";
 import { createProjectViaApi } from "../fixtures/project-helpers.js";
@@ -26,6 +26,23 @@ async function expectMinTarget(locator: Locator): Promise<void> {
   expect(box).not.toBeNull();
   expect(box!.width).toBeGreaterThanOrEqual(24);
   expect(box!.height).toBeGreaterThanOrEqual(24);
+}
+
+/**
+ * Open the ⌘K command palette. The shortcut is bound by a `useEffect` in
+ * `command-palette.tsx`, so a press that lands before React hydrates the shell
+ * is swallowed — retry until the dialog appears rather than pressing once and
+ * hoping (the difference between a flaky spec and a deterministic one).
+ */
+async function openCommandPalette(page: Page): Promise<void> {
+  const palette = page.getByTestId("command-palette");
+  await expect(async () => {
+    // The shortcut toggles, so never press again once the palette is open.
+    if (!(await palette.isVisible())) {
+      await page.keyboard.press("Control+KeyK");
+    }
+    await expect(palette).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
 }
 
 test.describe("UI IA — accessibility affordances (#133)", () => {
@@ -49,12 +66,21 @@ test.describe("UI IA — accessibility affordances (#133)", () => {
   // locks the integrated contract that the vitest component suite asserts in
   // isolation.
   test("login credential inputs expose H98 autocomplete purpose tokens (#659)", async ({
-    page,
+    browser,
   }) => {
-    const login = new LoginPage(page);
-    await login.goto();
-    await expect(login.username).toHaveAttribute("autocomplete", "username");
-    await expect(login.password).toHaveAttribute("autocomplete", "current-password");
+    // The describe-level beforeEach signs in, and /login bounces an already
+    // authenticated session straight to the app (#408). Assert the form from a
+    // fresh, signed-out context so the login route actually renders.
+    const context = await browser.newContext();
+    try {
+      const page = await context.newPage();
+      const login = new LoginPage(page);
+      await login.goto();
+      await expect(login.username).toHaveAttribute("autocomplete", "username");
+      await expect(login.password).toHaveAttribute("autocomplete", "current-password");
+    } finally {
+      await context.close();
+    }
   });
 
   // A1 #149: header icon-only controls have accessible names (queryable by role+name).
@@ -352,7 +378,7 @@ test.describe("UI mobile — command palette bottom sheet <768px (#61)", () => {
     await page.goto("/dashboard", { waitUntil: "load" });
 
     // Ctrl+K opens the palette (the component accepts metaKey or ctrlKey).
-    await page.keyboard.press("Control+KeyK");
+    await openCommandPalette(page);
 
     const dialog = page.getByRole("dialog", { name: "Command palette" });
     await expect(dialog).toBeVisible();
@@ -367,7 +393,7 @@ test.describe("UI mobile — command palette bottom sheet <768px (#61)", () => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto("/dashboard", { waitUntil: "load" });
 
-    await page.keyboard.press("Control+KeyK");
+    await openCommandPalette(page);
 
     await expect(page.getByRole("dialog", { name: "Command palette" })).toBeVisible();
     await expect(page.getByTestId("command-palette")).toHaveAttribute("data-variant", "dialog");

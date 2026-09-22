@@ -29,6 +29,7 @@ import {
 } from "@metis/shared";
 import { verifyAccessToken } from "../auth/jwt.js";
 import { actorCanAccessProject } from "../scheduler/project-access.js";
+import { getLastJobLifecycle } from "./job-events.js";
 import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import { wireDiscussionPresenceHandlers } from "./discussion-presence.js";
 import { createChildLogger } from "../logger.js";
@@ -261,6 +262,15 @@ function attachHandlers(
   socket.on("subscribe:job", ({ jobId }) => {
     if (!jobId || typeof jobId !== "string") return;
     void socket.join(`job:${jobId}`);
+    // Replay the job's last known transition to THIS socket. A room only
+    // delivers what is emitted while you are in it, and a client cannot
+    // subscribe until the trigger endpoint has answered — so a short job
+    // (the embeddings reindex finishes in milliseconds) emitted `started`
+    // and `completed` into an empty room and the surface never learned the
+    // job was done. Replay is idempotent: the client dedups terminal
+    // handling by job id.
+    const last = getLastJobLifecycle(jobId);
+    if (last) socket.emit("job:lifecycle", last);
   });
   socket.on("unsubscribe:job", ({ jobId }) => {
     if (!jobId || typeof jobId !== "string") return;

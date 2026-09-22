@@ -86,7 +86,7 @@ export class AnalysisPage {
 
   async goto(projectId: string): Promise<void> {
     await this.page.goto(`/projects/${projectId}/analysis`, { waitUntil: "load" });
-    await expect(this.page.getByRole("heading", { name: /^Analysis —/ })).toBeVisible({
+    await expect(this.page.getByRole("heading", { name: /^Requirements Analysis —/ })).toBeVisible({
       timeout: 30_000,
     });
     await expect(this.addDocsPanel).toBeVisible();
@@ -132,7 +132,9 @@ export class AnalysisPage {
    * most recent run and renders its findings under this heading.
    */
   get findingsHeading(): Locator {
-    return this.page.getByRole("heading", { name: "Findings" });
+    return this.page
+      .getByTestId("findings-section")
+      .getByRole("heading", { name: "Findings", exact: true });
   }
 
   /** A finding's title text (rendered exactly, one per seeded finding). */

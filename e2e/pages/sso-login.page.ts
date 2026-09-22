@@ -19,9 +19,13 @@ export class SSOLoginPage {
     this.title = page.getByText("Sign in to METIS", { exact: true });
     this.username = page.getByLabel("Username");
     this.password = page.getByLabel("Password");
-    this.submit = page.getByRole("button", { name: /Sign in/ });
+    // Exact match: once an SSO IdP is enabled the login page also renders
+    // "Sign in with <IdP>" buttons, which a /Sign in/ regex also matches.
+    this.submit = page.getByRole("button", { name: "Sign in", exact: true });
     this.ssoSection = page.locator("[class*='space-y-3']").first();
-    this.separator = page.getByText("or");
+    // `exact` matters: a substring match on "or" also hits the card
+    // description ("… Tool for Issue Synthesis").
+    this.separator = page.getByText("or", { exact: true });
   }
 
   async goto(): Promise<void> {

@@ -18,7 +18,9 @@ export class ChatPage {
   constructor(page: Page) {
     this.page = page;
     this.heading = page.getByRole("heading", { name: "Workbench" });
-    this.projectPicker = page.getByLabel("Active project");
+    // `exact` matters: the header ProjectSwitcher is labelled
+    // "Active project: <name>", which a substring match also selects.
+    this.projectPicker = page.getByLabel("Active project", { exact: true });
     this.chatInput = page.getByLabel("Message");
     this.sendButton = page.getByTestId("workbench-send");
     this.messageList = page.getByTestId("workbench-center-panel");

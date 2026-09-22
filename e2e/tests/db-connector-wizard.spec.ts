@@ -101,7 +101,11 @@ test.describe("Epic #701 — DB Connector Wizard", () => {
     const card = connections.suggestionCard("postgresql");
     await connections.clickConfigure(card);
     await expect(connections.wizardSection("review")).toBeVisible();
-    await expect(page.getByText("wiz-db.internal:5432")).toBeVisible();
+    // Scope to the dialog: the suggestion card behind it renders the same
+    // host:port string (with the database suffix).
+    await expect(
+      connections.wizardSection("review").getByText("wiz-db.internal:5432"),
+    ).toBeVisible();
 
     // Step 2 — Configure
     await connections.wizardNext().click();
@@ -155,7 +159,10 @@ test.describe("Epic #701 — DB Connector Wizard", () => {
     const toggle = connections.allowCredentialScanToggle();
     await expect(toggle).toBeVisible();
     await expect(toggle).not.toBeChecked();
-    await toggle.check();
+    // `.check()` re-clicks while the box still reads unchecked, and this one is
+    // a CONTROLLED input that only flips after the PATCH round-trips — the
+    // retry toggles it straight back off. Click once, then wait for the state.
+    await toggle.click();
     await expect(toggle).toBeChecked();
 
     // Hard-reload — the value should round-trip from the server.

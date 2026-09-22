@@ -173,9 +173,10 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
       });
 
       await test.step("Members section shows at least the owner", async () => {
-        await expect(page.getByRole("heading", { name: "Members" })).toBeVisible();
-        // Admin user should appear as owner
-        await expect(page.getByText("System Admin")).toBeVisible();
+        await expect(settings.membersTitle).toBeVisible();
+        // Admin user should appear as owner. Scope to the page body: the
+        // header account menu carries the same name.
+        await expect(page.locator("#main-content").getByText("System Admin")).toBeVisible();
       });
     });
 
@@ -188,7 +189,7 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
       });
 
       await test.step("Danger zone section is visible", async () => {
-        await expect(page.getByRole("heading", { name: "Danger Zone" })).toBeVisible();
+        await expect(settings.dangerZoneTitle).toBeVisible();
       });
 
       await test.step("Delete button is present", async () => {
@@ -210,7 +211,7 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
 
       await test.step("Click delete opens confirmation dialog", async () => {
         await settings.deleteButton.click();
-        await expect(page.getByRole("heading", { name: /Delete workspace/ })).toBeVisible();
+        await expect(page.getByText(/Delete workspace/).first()).toBeVisible();
         await expect(page.getByText("This action cannot be easily undone")).toBeVisible();
       });
 
@@ -350,10 +351,13 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
     });
 
     test("should scope project creation to active workspace", async () => {
+      const stamp = `${Date.now()}`;
       await test.step("Create a project in Workspace Alpha", async () => {
         const res = await apiCtx.post("/api/projects", {
           data: {
-            name: `ws-alpha-project-${Date.now()}`,
+            name: `ws-alpha-project-${stamp}`,
+            // POST /api/projects requires a slug.
+            slug: `ws-alpha-project-${stamp}`,
             description: "E2E: workspace scoping",
             workspaceId: workspaceAId,
           },
@@ -365,7 +369,9 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
       await test.step("Create a project in Workspace Beta", async () => {
         const res = await apiCtx.post("/api/projects", {
           data: {
-            name: `ws-beta-project-${Date.now()}`,
+            name: `ws-beta-project-${stamp}`,
+            // POST /api/projects requires a slug.
+            slug: `ws-beta-project-${stamp}`,
             description: "E2E: workspace scoping",
             workspaceId: workspaceBId,
           },

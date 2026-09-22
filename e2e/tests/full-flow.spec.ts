@@ -26,7 +26,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect, request, type APIRequestContext } from "@playwright/test";
 import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user.js";
-import { seedRequirementViaCli } from "../fixtures/seed-helpers.js";
+import { seedGroundedAnalysisViaCli, seedRequirementViaCli } from "../fixtures/seed-helpers.js";
 import { LoginPage } from "../pages/login.page.js";
 import { ProjectsPage, ProjectDetailPage } from "../pages/project.page.js";
 import { SchedulerPage } from "../pages/scheduler.page.js";
@@ -132,6 +132,7 @@ test.describe("METIS — full workbench journey (#144)", () => {
     let documentIds: string[] = [];
     await test.step("upload PDF + Markdown via the real uploader", async () => {
       const detail = new ProjectDetailPage(page);
+      await detail.openDocumentsViaTabs();
       await detail.uploadFiles([PDF_PATH, MD_PATH]);
       await detail.expectDocumentNames(["sample.pdf", "sample.md"]);
 
@@ -190,24 +191,27 @@ test.describe("METIS — full workbench journey (#144)", () => {
           (snap) => ["completed", "failed", "cancelled"].includes(snap.status),
           { timeoutMs: 90_000, intervalMs: 1000, label: "analysis terminal" },
         );
-        expect(snapshot.status, `analysis must complete (got ${snapshot.status})`).toBe(
-          "completed",
-        );
-        // The offline-stub provider returns deterministic prose, not the
-        // structured JSON the synthesis pipeline expects. Specialist
-        // agents reject non-JSON, so the natural completion has zero
-        // requirements. We seed one Requirement directly into the e2e DB
-        // (see fixtures/seed-helpers.ts) so the publish-dry-run step
-        // below has something to draft against. The flow under test —
-        // analysis lifecycle, draft generation, publish dry-run — is
-        // still real; only the LLM output is stubbed.
-        if (snapshot.requirements.length === 0) {
-          seedRequirementViaCli({
-            projectId,
-            analysisId,
-            databaseUrl: `file:${process.env.E2E_DB_FILE ?? path.join(__dirname, "..", "test-results", "stack-data", "metis-e2e.db")}`,
-          });
-        }
+        // The offline-stub provider returns deterministic PROSE, not the
+        // structured JSON the specialist agents require, so every agent
+        // rejects its output. The orchestrator's honesty gate then marks a run
+        // whose specialists ALL failed as `failed` rather than reporting a
+        // silent green — which is exactly what should happen here. Assert that
+        // contract instead of a `completed` the harness cannot reach.
+        expect(
+          snapshot.status,
+          `offline-stub: every specialist rejects the prose, so the honesty gate fails the run`,
+        ).toBe("failed");
+
+        const databaseUrl = `file:${process.env.E2E_DB_FILE ?? path.join(__dirname, "..", "test-results", "stack-data", "metis-e2e.db")}`;
+        // Draft generation needs a COMPLETED analysis carrying a requirement.
+        // Seed that snapshot through the same CLI seam the other specs use, so
+        // the publish dry-run below exercises the real publishing path.
+        analysisId = seedGroundedAnalysisViaCli({
+          projectId,
+          startedById: userId,
+          databaseUrl,
+        });
+        seedRequirementViaCli({ projectId, analysisId, databaseUrl });
       } finally {
         await api.dispose();
       }

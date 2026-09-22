@@ -977,14 +977,13 @@ jobs:
 
   # Epic #209 (#236) — generative-path e2e + coverage gate.
   #
-  # WHY A SEPARATE JOB (not the `e2e` job below): the `e2e` job runs the FULL
-  # Playwright suite and is gated off by default (`vars.E2E_ENABLED`) because
-  # some specs (e.g. the E2B sandbox loop) need live infra/secrets unavailable
-  # on PRs. This job runs ONLY the deterministic generative loop
-  # (`clarify-loop.spec.ts`, #235) in REPLAY mode against committed LLM fixtures
-  # (#234) — `AI_REPLAY=1` + `AI_FIXTURE_DIR` are defaulted in
-  # `e2e/playwright.config.ts`, so it needs NO live LLM/AI credentials and runs
-  # on every PR. It is intentionally NOT gated on `E2E_ENABLED`.
+  # WHY A SEPARATE JOB (not the `e2e` job below): this one runs ONLY the
+  # generative loop (`clarify-loop.spec.ts`, #235) in REPLAY mode against the
+  # committed LLM fixtures (#234), and pairs it with a scoped coverage gate on
+  # the record/replay harness. It is fast and narrow, so it reports on the
+  # generative path specifically rather than waiting on the full suite.
+  # (Both jobs now run on every PR: #62 removed the `E2E_ENABLED` gate that
+  # kept the full `e2e` job switched off.)
   #
   # COVERAGE GATE: the generative-path harness code (`server/src/lib/ai/fixtures`,
   # the net-new #234 record/replay seam the e2e depends on) is held to an 80%
@@ -1093,13 +1092,28 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+  # Issue #62 — the FULL Playwright suite, on every pull request.
+  #
+  # This job used to carry `if: vars.E2E_ENABLED == 'true'`. That variable was
+  # never set, so the job never ran on any PR and the suite rotted unseen: at
+  # the time #62 was filed, ~150 of 591 specs failed on `main`. The gate was
+  # added (#144) for self-hosted EMU runners that no longer exist — this
+  # workflow runs on GitHub-hosted runners, which are free on a public
+  # repository — so it is gone rather than flipped, and there is deliberately
+  # no `continue-on-error` and no `|| true`: if the suite is red, the job is
+  # red.
+  #
+  # The suite is deterministic and needs NO secrets: `e2e/playwright.config.ts`
+  # boots the API + UI itself with the `offline-stub` AI provider, an offline
+  # embedder, a per-run SQLite database, and mock auth. Specs that genuinely
+  # need a live model or live infra skip themselves WITH A REASON
+  # (`e2e/fixtures/ai-mode.ts`, the E2B sandbox spec), which the report shows.
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 30 # bound it — an unbounded job can hold a runner for 6h
-    # Issue #144 — gated on `E2E_ENABLED` repo variable so EMU-hosted runners
-    # can opt in once they're restored. The job is wired correctly even when
-    # disabled so a single repo-variable flip turns it on.
-    if: vars.E2E_ENABLED == 'true'
+    # The full suite is ~590 specs on one worker. Measured ~25 min end to end,
+    # so 45 leaves headroom for a cold Next.js compile without letting a wedged
+    # run hold a runner for GitHub's 6-hour default.
+    timeout-minutes: 45
     env:
       NPM_CONFIG_PRODUCTION: "false"
       CI: "true"
@@ -1120,6 +1134,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --prod=false
 
+      - name: Build shared packages
+        # @metis/shared must be compiled before the server can boot under the
+        # Playwright webServer (tsx resolves @metis/shared/dist at runtime).
+        run: pnpm --filter @metis/shared run build
+
       - name: Install Playwright browsers
         # Fetches the browser binary only. The GitHub-hosted Ubuntu image already
         # carries chromium's system libraries (libnss3, libgbm, libasound2, …) —
@@ -1129,15 +1148,19 @@ jobs:
 
       # Issue #1067 — same fixed-port hazard as `generative-e2e` above; this job
       # boots the identical stack from the same config, so it needs the same
-      # per-run allocation (and would collide with `generative-e2e` itself the
-      # moment `E2E_ENABLED` is flipped on).
+      # per-run allocation (and would otherwise collide with `generative-e2e`,
+      # which runs concurrently on the same PR).
       - name: Allocate per-run e2e ports
         run: node scripts/allocate-e2e-ports.mjs
 
       - name: Run Playwright e2e suite
+        # `--fail-on-flaky-tests`: the config retries once on CI, which is fine
+        # for DIAGNOSING a flake but must never hide one — a spec that only
+        # passes on the retry fails this job, so flakes get fixed rather than
+        # absorbed.
         run: |
           echo "e2e stack: API=${E2E_API_PORT} UI=${E2E_UI_PORT}"
-          pnpm --filter @metis/e2e test --reporter=list
+          pnpm --filter @metis/e2e test --reporter=list --fail-on-flaky-tests
 
       - name: Upload Playwright report
         # Only upload on failure to avoid accumulating report artifacts on

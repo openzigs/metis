@@ -9,6 +9,7 @@
  * Writes the new run id to stdout as JSON: `{"id":"run_xxx"}`.
  */
 /* eslint-disable no-console */
+import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 
@@ -25,9 +26,10 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const prisma = new PrismaClient({
-    datasources: { db: { url: databaseUrl } },
-  });
+  // Prisma 7 dropped `datasources`; the SQLite driver adapter is the
+  // supported way to point a client at the e2e database file.
+  const adapter = new PrismaBetterSqlite3({ url: databaseUrl });
+  const prisma = new PrismaClient({ adapter });
 
   try {
     const id = `run_${randomUUID()}`;

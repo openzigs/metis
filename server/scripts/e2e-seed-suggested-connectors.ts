@@ -7,9 +7,18 @@
  *
  * Outputs: JSON array of created IDs, one per line.
  */
+import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 
-const prisma = new PrismaClient();
+// Prisma 7 requires an explicit driver adapter — a bare `new PrismaClient()`
+// throws PrismaClientInitializationError.
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) {
+  // eslint-disable-next-line no-console
+  console.error("DATABASE_URL must be set");
+  process.exit(2);
+}
+const prisma = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: databaseUrl }) });
 
 interface SeedInput {
   driverType: string;

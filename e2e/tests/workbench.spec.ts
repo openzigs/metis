@@ -65,7 +65,12 @@ test.describe("Workbench project picker (#240)", () => {
     });
 
     await test.step("Verify our seeded project appears", async () => {
-      await expect(wb.projectPicker.locator("option", { hasText: projectName })).toBeVisible();
+      // An <option> inside a closed <select> has no box, so it is never
+      // "visible" — assert the option exists instead.
+      await expect(wb.projectPicker.locator("option").filter({ hasText: projectName })).toHaveCount(
+        1,
+        { timeout: 15_000 },
+      );
     });
   });
 
@@ -94,6 +99,11 @@ test.describe("Workbench project picker (#240)", () => {
     await wb.goto();
 
     await test.step("Deselect project by choosing 'none'", async () => {
+      // The page loads the project list asynchronously and auto-selects the
+      // first item. Wait for that to land, or the deselect below is overwritten
+      // the moment the list resolves.
+      await expect(wb.projectOptions().first()).toBeAttached({ timeout: 15_000 });
+      await expect(wb.projectPicker).not.toHaveValue("", { timeout: 15_000 });
       await wb.projectPicker.selectOption({ value: "" });
     });
 

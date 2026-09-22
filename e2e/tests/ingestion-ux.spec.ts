@@ -16,6 +16,11 @@ import { primeAdminUser } from "../fixtures/seed-user.js";
 import { apiBase } from "../fixtures/api-base.js";
 import { LoginPage } from "../pages/login.page.js";
 import { ConnectionsPage } from "../pages/connections.page.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
+
+const FIXTURES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "fixtures");
 
 const API_BASE = apiBase();
 
@@ -31,7 +36,11 @@ test.describe("Ingestion UX (Epic #663)", () => {
     const ctx = await request.newContext({ baseURL: API_BASE });
     const res = await ctx.post("/api/projects", {
       headers: { Authorization: `Bearer ${accessToken}` },
-      data: { name: `e2e-ingest-ux-${Date.now()}`, description: "E2E: epic #663" },
+      // POST /api/projects requires a slug.
+      data: (() => {
+        const slug = `e2e-ingest-ux-${Date.now()}`;
+        return { name: slug, slug, description: "E2E: epic #663" };
+      })(),
     });
     expect(res.ok()).toBe(true);
     const body = await res.json();
@@ -44,29 +53,57 @@ test.describe("Ingestion UX (Epic #663)", () => {
     await login.loginAsAdmin();
     // Navigate to any authed page — check Toaster exists
     await page.goto(`/projects/${projectId}/connections`);
-    await expect(page.locator("[data-sonner-toaster]")).toBeAttached();
+    // sonner v2 renders the <ol data-sonner-toaster> only while a toast is on
+    // screen; the always-mounted container is the labelled <section>.
+    await expect(page.locator('section[aria-label^="Notifications"]')).toBeAttached();
   });
 
   test("AC2: progress bar shown during deep-ingest", async ({ page }) => {
     const login = new LoginPage(page);
     await login.loginAsAdmin();
+
     const connections = new ConnectionsPage(page);
     await connections.goto(projectId);
 
-    // Add a repo connector (uses a public read-only repo that clones fast)
-    await connections.addRepoConnector({
-      label: "progress-test",
-      owner: "octocat",
-      repoName: "Hello-World",
+    // The progress block is removed again when the ingest finishes, and a
+    // three-file ingest can finish between two polls of an `expect`. Record
+    // whether it was EVER in the DOM instead of sampling for it.
+    await page.evaluate(() => {
+      const w = window as unknown as { __metisProgressSeen?: boolean };
+      w.__metisProgressSeen = Boolean(document.querySelector("[data-testid^='progress-']"));
+      new MutationObserver(() => {
+        if (document.querySelector("[data-testid^='progress-']")) {
+          w.__metisProgressSeen = true;
+        }
+      }).observe(document.body, { childList: true, subtree: true });
     });
 
-    // Click Deep Ingest and verify progress indicator appears
-    const deepIngestBtn = page.getByRole("button", { name: "Deep Ingest" });
-    await deepIngestBtn.click();
+    // Create the connector THROUGH THE UI, with the page already listening.
+    // Creating the project's first repo connector auto-ingests (#667), so this
+    // is the real deep-ingest path — and the repos list is refreshed by the
+    // same mutation, so the row that hosts the progress block exists.
+    //
+    // An UPLOADED repo (a 3-file .zip fixture) rather than a GitHub clone: the
+    // suite's contract is that no test depends on an outbound network call.
+    await page.getByTestId("repo-source-select").selectOption("upload");
+    await page.locator("#repo-label").fill("progress-test");
+    await page.getByTestId("repo-upload-input").setInputFiles({
+      name: "sample-repo.zip",
+      mimeType: "application/zip",
+      buffer: await readFile(path.join(FIXTURES_DIR, "sample-repo.zip")),
+    });
+    await page.getByTestId("add-repo-upload").click();
+    await expect(page.getByText("progress-test").first()).toBeVisible({ timeout: 30_000 });
 
-    // Progress bar should become visible (data-testid="progress-*")
-    const progressBar = page.locator("[data-testid^='progress-']");
-    await expect(progressBar).toBeVisible({ timeout: 15_000 });
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            () => (window as unknown as { __metisProgressSeen?: boolean }).__metisProgressSeen,
+          ),
+        { timeout: 60_000, message: "an ingest progress block reached the page" },
+      )
+      .toBe(true);
   });
 
   test("AC3: discovery toast shown when connections found", async ({ page }) => {
@@ -100,7 +137,9 @@ test.describe("Ingestion UX (Epic #663)", () => {
     // If connections were discovered, a toast would appear. For Hello-World
     // (no DB connections), just validate no error state.
     // The progress indicator test (AC2) already validates the socket pathway.
-    await expect(page.locator("[data-sonner-toaster]")).toBeAttached();
+    // sonner v2 renders the <ol data-sonner-toaster> only while a toast is on
+    // screen; the always-mounted container is the labelled <section>.
+    await expect(page.locator('section[aria-label^="Notifications"]')).toBeAttached();
   });
 
   test("AC4: auto-ingest flag accepted in repo creation", async ({ page }) => {
@@ -111,7 +150,10 @@ test.describe("Ingestion UX (Epic #663)", () => {
     const ctx = await request.newContext({ baseURL: API_BASE });
     const projRes = await ctx.post("/api/projects", {
       headers: { Authorization: `Bearer ${accessToken}` },
-      data: { name: `e2e-auto-ingest-${Date.now()}`, description: "auto-ingest test" },
+      data: (() => {
+        const slug = `e2e-auto-ingest-${Date.now()}`;
+        return { name: slug, slug, description: "auto-ingest test" };
+      })(),
     });
     const projBody = await projRes.json();
     const newProjectId = projBody.data.id;

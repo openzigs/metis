@@ -38,8 +38,10 @@ export class AppShellPage {
     this.mobileDrawer = page.getByTestId("sidebar-drawer");
     this.menuButton = page.getByRole("button", { name: "Open navigation" });
     this.breadcrumb = page.getByTestId("header-breadcrumb");
-    // WorkspaceSwitcher trigger — text-labeled ghost button.
-    this.workspaceCrumb = this.breadcrumb.getByRole("button", { name: /Workspace/ });
+    // WorkspaceSwitcher trigger. Its visible text is the ACTIVE workspace's
+    // name, which depends on what else the suite has created, so match the
+    // stable test id.
+    this.workspaceCrumb = this.breadcrumb.getByTestId("workspace-switcher");
     // ProjectSwitcher trigger — aria-label="Active project: <name>".
     this.projectCrumb = this.breadcrumb.getByRole("button", { name: /^Active project:/ });
     this.notificationsButton = page.getByTestId("notifications-bell");

@@ -57,7 +57,7 @@ test.describe("Product Documentation Viewer (#554)", () => {
 
     await expect(page.getByRole("heading", { name: "Documentation" })).toBeVisible();
     // Without generated docs, empty state should display
-    await expect(page.getByText("Generated documentation will appear here")).toBeVisible();
+    await expect(page.getByText("No documentation generated yet")).toBeVisible();
   });
 
   // AC #12: Loading states while docs generate for the first time
@@ -66,7 +66,7 @@ test.describe("Product Documentation Viewer (#554)", () => {
 
     // Documentation section exists but shows empty/placeholder state
     await expect(page.getByRole("heading", { name: "Documentation" })).toBeVisible();
-    await expect(page.getByText("Generated documentation will appear here")).toBeVisible();
+    await expect(page.getByText("No documentation generated yet")).toBeVisible();
   });
 
   // AC #9: "Regenerate" button triggers re-analysis (or shows regenerate CTA)

@@ -28,6 +28,9 @@ import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user.js";
 import { apiBase } from "../fixtures/api-base.js";
+// A live analysis always ends `failed` under the offline-stub provider, so the
+// shared helper seeds a COMPLETED analysis straight into the e2e database.
+import { seedCompletedAnalysis } from "../fixtures/review-helpers.js";
 import { seedRequirementViaCli } from "../fixtures/seed-helpers.js";
 import { LoginPage } from "../pages/login.page.js";
 import { HistoryTabPage } from "../pages/history-tab.page.js";
@@ -50,27 +53,6 @@ async function createProject(api: APIRequestContext, suffix: string): Promise<st
   expect(res.status()).toBe(201);
   const body = await res.json();
   return (body.data?.project?.id ?? body.data?.id ?? body.id) as string;
-}
-
-async function seedCompletedAnalysis(api: APIRequestContext, projectId: string): Promise<string> {
-  const startRes = await api.post(`/api/projects/${projectId}/analyses`, {
-    data: { documentIds: [] },
-  });
-  expect([201, 202]).toContain(startRes.status());
-  const startBody = await startRes.json();
-  const analysisId = (startBody.data?.id ?? startBody.id) as string;
-  expect(analysisId).toBeTruthy();
-
-  for (let i = 0; i < 90; i++) {
-    const res = await api.get(`/api/analyses/${analysisId}`);
-    if (res.ok()) {
-      const body = await res.json();
-      const status = body.data?.status ?? body.status;
-      if (["completed", "failed", "cancelled"].includes(status)) return analysisId;
-    }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  throw new Error(`Analysis ${analysisId} did not reach terminal state`);
 }
 
 function e2eDatabaseUrl(): string {
@@ -122,6 +104,10 @@ async function loginViaUi(
   creds: { username: string; password: string } = ADMIN_USER,
 ): Promise<void> {
   const loginPage = new LoginPage(page);
+  // Drop any existing session first. /login bounces an authenticated visitor
+  // straight back into the app (#408), so switching users mid-spec otherwise
+  // waits forever for a form that is never rendered.
+  await page.context().clearCookies();
   const maxAttempts = 3;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     await loginPage.goto();

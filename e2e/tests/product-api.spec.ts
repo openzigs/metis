@@ -139,7 +139,8 @@ test.describe("Products API (#544)", () => {
     const id = created.data.id;
 
     const delRes = await api.delete(`/api/products/${id}`);
-    expect(delRes.status()).toBe(200);
+    // DELETE answers 204 No Content.
+    expect(delRes.status()).toBe(204);
 
     // Verify it's gone
     const getRes = await api.get(`/api/products/${id}`);

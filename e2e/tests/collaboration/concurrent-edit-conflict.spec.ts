@@ -55,7 +55,9 @@ async function loginAs(
 async function runSeedScript(scriptName: string, args: string[]): Promise<{ id: string }> {
   const { spawnSync } = await import("node:child_process");
   const { resolve } = await import("node:path");
-  const repoRoot = resolve(new URL(import.meta.url).pathname, "../../../../..");
+  // This file lives at e2e/tests/collaboration/<spec>.ts, so the repo root is
+  // four levels up from the file itself — one ".." consumes the filename.
+  const repoRoot = resolve(new URL(import.meta.url).pathname, "../../../..");
   const dbFile = process.env.E2E_DB_FILE;
   if (!dbFile) throw new Error("E2E_DB_FILE not set");
   const scriptPath = resolve(repoRoot, "server", "scripts", scriptName);
@@ -76,13 +78,13 @@ async function runSeedScript(scriptName: string, args: string[]): Promise<{ id: 
 
 /**
  * Seed a single Requirement by shelling out to the server-side seed script
- * so we bypass the AI pipeline. Returns `{ id, version }`. When `analysisId`
- * is provided the requirement is linked to that analysis so it renders in the
- * analysis page's requirements list; otherwise it is created standalone.
+ * so we bypass the AI pipeline. Returns `{ id, version }`. `Requirement.analysisId`
+ * is a NOT-NULL foreign key, so a real analysis id is required — the old
+ * `"none"` sentinel simply violated the constraint.
  */
 async function seedRequirement(
   projectId: string,
-  analysisId = "none",
+  analysisId: string,
 ): Promise<{ id: string; version: number }> {
   const parsed = await runSeedScript("e2e-seed-requirement.ts", [projectId, analysisId]);
   return { id: parsed.id, version: 0 };
@@ -106,6 +108,7 @@ test.describe("Epic #728 / Issue #738 — Concurrent edit conflict (optimistic l
   let coordinatorApi: APIRequestContext;
   let adminUserId: string;
   let projectId: string;
+  let analysisId: string;
 
   test.beforeAll(async () => {
     const [adminPrimed, coordPrimed] = await Promise.all([
@@ -116,11 +119,19 @@ test.describe("Epic #728 / Issue #738 — Concurrent edit conflict (optimistic l
     coordinatorApi = coordPrimed.api;
     adminUserId = adminPrimed.userId;
 
+    const stamp = `${Date.now()}`;
     const res = await adminApi.post("/api/projects", {
-      data: { name: `collab-conflict-${Date.now()}`, description: "E2E #738" },
+      data: {
+        name: `collab-conflict-${stamp}`,
+        // POST /api/projects requires a slug.
+        slug: `collab-conflict-${stamp}`,
+        description: "E2E #738",
+      },
     });
     expect(res.status()).toBe(201);
     projectId = (await res.json()).data.id as string;
+    // Every seeded requirement needs a real analysis to hang off.
+    analysisId = await seedAnalysis(projectId, adminUserId);
   });
 
   test.afterAll(async () => {
@@ -129,7 +140,7 @@ test.describe("Epic #728 / Issue #738 — Concurrent edit conflict (optimistic l
 
   // AC2 — happy path: first PUT succeeds and increments version
   test("first PUT with correct version succeeds and increments version", async () => {
-    const { id: reqId, version } = await seedRequirement(projectId);
+    const { id: reqId, version } = await seedRequirement(projectId, analysisId);
 
     const res = await adminApi.put(`/api/requirements/${reqId}`, {
       data: { title: "Admin updated title", version },
@@ -142,7 +153,7 @@ test.describe("Epic #728 / Issue #738 — Concurrent edit conflict (optimistic l
 
   // AC2 — second PUT with stale version returns 409 VERSION_CONFLICT
   test("returns 409 VERSION_CONFLICT when second PUT uses stale version", async () => {
-    const { id: reqId, version } = await seedRequirement(projectId);
+    const { id: reqId, version } = await seedRequirement(projectId, analysisId);
 
     // User A submits first — succeeds, server now at version+1.
     const firstRes = await adminApi.put(`/api/requirements/${reqId}`, {
@@ -162,7 +173,7 @@ test.describe("Epic #728 / Issue #738 — Concurrent edit conflict (optimistic l
 
   // AC2 — 409 payload contains full server diff for 3-way merge modal
   test("409 payload contains serverVersion and clientVersion for merge modal", async () => {
-    const { id: reqId, version } = await seedRequirement(projectId);
+    const { id: reqId, version } = await seedRequirement(projectId, analysisId);
 
     // Admin bumps the server version.
     await adminApi.put(`/api/requirements/${reqId}`, {
@@ -183,30 +194,32 @@ test.describe("Epic #728 / Issue #738 — Concurrent edit conflict (optimistic l
       error: {
         code: string;
         conflict: boolean;
-        serverVersion: Record<string, unknown>;
-        clientVersion: Record<string, unknown>;
+        serverVersion: number;
+        clientVersion: number;
+        diff: Array<{ field: string; server: unknown; client: unknown }>;
       };
     };
 
-    // The payload must carry both sides for the MergeConflictModal.
+    // The payload carries both version numbers plus a FIELD-LEVEL diff — the
+    // middleware deliberately does not echo the whole server record or the whole
+    // request body (optimistic-lock.ts), so the modal gets exactly the fields
+    // that differ and nothing else.
     expect(conflictBody.error.conflict).toBe(true);
-    expect(conflictBody.error.serverVersion).toBeDefined();
-    expect(conflictBody.error.clientVersion).toBeDefined();
-    expect(typeof conflictBody.error.serverVersion.version).toBe("number");
-    expect(conflictBody.error.serverVersion.version).toBeGreaterThan(version);
-    // The server title should reflect what admin wrote.
-    expect(conflictBody.error.serverVersion.title).toBe("Server title (admin)");
-    // The client version echoes back what coordinator sent.
-    expect(conflictBody.error.clientVersion).toMatchObject({
-      title: "Coordinator title (stale)",
-      body: "Coordinator body",
-      version,
-    });
+    expect(typeof conflictBody.error.serverVersion).toBe("number");
+    expect(conflictBody.error.serverVersion).toBeGreaterThan(version);
+    expect(conflictBody.error.clientVersion).toBe(version);
+
+    const titleDiff = conflictBody.error.diff.find((d) => d.field === "title");
+    expect(titleDiff, "the conflicting title is reported field-by-field").toBeDefined();
+    // The server side reflects what admin wrote; the client side echoes the
+    // coordinator's stale submission.
+    expect(titleDiff!.server).toBe("Server title (admin)");
+    expect(titleDiff!.client).toBe("Coordinator title (stale)");
   });
 
   // AC2 — resubmit using server version resolves the conflict
   test("resubmitting with server version from 409 payload resolves the conflict", async () => {
-    const { id: reqId, version } = await seedRequirement(projectId);
+    const { id: reqId, version } = await seedRequirement(projectId, analysisId);
 
     // Admin updates first.
     await adminApi.put(`/api/requirements/${reqId}`, {
@@ -218,7 +231,7 @@ test.describe("Epic #728 / Issue #738 — Concurrent edit conflict (optimistic l
       data: { title: "Coordinator override", version },
     });
     expect(conflictRes.status()).toBe(409);
-    const serverVersion = (await conflictRes.json()).error.serverVersion.version as number;
+    const serverVersion = (await conflictRes.json()).error.serverVersion as number;
 
     // Coordinator re-submits using the server version returned in the 409.
     const resolvedRes = await coordinatorApi.put(`/api/requirements/${reqId}`, {
@@ -231,7 +244,7 @@ test.describe("Epic #728 / Issue #738 — Concurrent edit conflict (optimistic l
 
   // AC2 — update without a version field skips optimistic lock (backwards compat)
   test("PUT without version field skips optimistic lock check", async () => {
-    const { id: reqId } = await seedRequirement(projectId);
+    const { id: reqId } = await seedRequirement(projectId, analysisId);
 
     const res = await adminApi.put(`/api/requirements/${reqId}`, {
       data: { title: "No-version update" }, // no version field
@@ -255,7 +268,6 @@ test.describe("Epic #728 / Issue #738 — Concurrent edit conflict (optimistic l
     page,
   }) => {
     // Seed an analysis (so a run auto-selects) and a requirement under it.
-    const analysisId = await seedAnalysis(projectId, adminUserId);
     const { id: reqId } = await seedRequirement(projectId, analysisId);
 
     const loginPage = new LoginPage(page);

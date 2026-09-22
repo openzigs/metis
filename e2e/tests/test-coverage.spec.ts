@@ -18,6 +18,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user";
 import { apiBase } from "../fixtures/api-base";
+import { isOfflineAiStub, OFFLINE_AI_SKIP_REASON } from "../fixtures/ai-mode.js";
+// A live analysis always ends `failed` under the offline-stub provider, so the
+// shared helper seeds a COMPLETED analysis straight into the e2e database.
+import { seedCompletedAnalysis } from "../fixtures/review-helpers.js";
 import { seedRequirementViaCli } from "../fixtures/seed-helpers";
 import { LoginPage } from "../pages/login.page";
 import { TestCoveragePage } from "../pages/test-coverage.page";
@@ -42,26 +46,6 @@ function e2eDatabaseUrl(): string {
  * analysisId. Works offline (AI_OFFLINE=1) — the same pattern data-mappings
  * relies on. The requirement seeder needs a real analysisId to attach to. (#279)
  */
-async function seedCompletedAnalysis(api: APIRequestContext, projectId: string): Promise<string> {
-  const startRes = await api.post(`/api/projects/${projectId}/analyses`, {
-    data: { documentIds: [] },
-  });
-  expect([201, 202]).toContain(startRes.status());
-  const startBody = await startRes.json();
-  const analysisId = (startBody.data?.id ?? startBody.id) as string;
-  expect(analysisId).toBeTruthy();
-
-  for (let i = 0; i < 90; i++) {
-    const res = await api.get(`/api/analyses/${analysisId}`);
-    if (res.ok()) {
-      const body = await res.json();
-      const status = body.data?.status ?? body.status;
-      if (["completed", "failed", "cancelled"].includes(status)) return analysisId;
-    }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  throw new Error(`Analysis ${analysisId} did not reach terminal state`);
-}
 
 /**
  * Seed one or more requirements the canonical e2e way (#279): there is NO HTTP
@@ -159,13 +143,16 @@ test.describe("Epic #856 — Test Coverage", () => {
       expect(reportRes.status()).toBe(200);
       const report = (
         (await reportRes.json()) as Envelope<{
-          coveragePercentage: number;
+          summary: { total: number; covered: number; gaps: number; coveragePct: number };
           suggestions: unknown[];
           mappings: unknown[];
           gaps: unknown[];
         }>
       ).data;
-      expect(typeof report.coveragePercentage).toBe("number");
+      // The report nests its headline numbers under `summary` (see the
+      // /runs/:runId/report handler); there is no top-level
+      // `coveragePercentage`.
+      expect(typeof report.summary.coveragePct).toBe("number");
 
       // Download the Excel export.
       const excelRes = await ctx.post(`/api/projects/${projectId}/test-coverage/exports`, {
@@ -223,7 +210,22 @@ test.describe("Epic #856 — Test Coverage", () => {
       const ct = second.headers()["content-type"] ?? "";
       expect(ct.includes("application/zip") || ct.includes("text/plain")).toBe(true);
       const bytes = await second.body();
-      expect(bytes.byteLength).toBeGreaterThan(0);
+
+      // Gherkin export writes one feature per SUGGESTION. Suggestion
+      // generation needs a model that returns structured JSON, which the
+      // deterministic harness's offline-stub provider cannot do, so a run here
+      // legitimately produces none — and then the export is empty. Assert
+      // against the run's actual suggestion count rather than assuming.
+      const reportRes = await ctx.get(
+        `/api/projects/${projectId}/test-coverage/runs/${runId}/report`,
+      );
+      const suggestionCount = ((await reportRes.json()) as Envelope<{ suggestions: unknown[] }>)
+        .data.suggestions.length;
+      if (suggestionCount > 0) {
+        expect(bytes.byteLength).toBeGreaterThan(0);
+      } else {
+        expect(bytes.byteLength).toBe(0);
+      }
     } finally {
       await ctx.dispose();
     }
@@ -366,6 +368,9 @@ test.describe("Epic #856 — Test Coverage UI", () => {
   // export with the override checkbox also downloads. Suggestion review
   // dialog surfaces the Given/When/Then breakdown.
   test("Mode A — run → summary, matrix, gaps, suggestions, exports", async ({ page }) => {
+    // The suggestions card, its review dialog and the Gherkin export all need
+    // at least one generated suggestion.
+    test.skip(isOfflineAiStub(), OFFLINE_AI_SKIP_REASON);
     const apiCtx = await adminContext();
     try {
       const projectId = await createSeededProject(apiCtx, "run");
@@ -449,6 +454,7 @@ test.describe("Epic #856 — Test Coverage UI", () => {
   // suggestions for the uncovered requirements. We assert the user-visible
   // outcome: the suggestions card renders after the run completes.
   test("Mode B — cold start with zero test cases still produces suggestions", async ({ page }) => {
+    test.skip(isOfflineAiStub(), OFFLINE_AI_SKIP_REASON);
     const apiCtx = await adminContext();
     try {
       const projectId = await createSeededProject(apiCtx, "coldstart");

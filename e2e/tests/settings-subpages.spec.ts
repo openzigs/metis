@@ -47,13 +47,12 @@ test.describe("Settings sub-pages (#220 / #221)", () => {
       await expect(profile.card).toBeVisible();
       await expect(profile.username).toContainText(ADMIN_USER.username);
       await expect(profile.role).toContainText(ADMIN_USER.role);
-      // The browser flow re-hydrates the auth context via /auth/me, whose JWT
-      // payload carries only username + role (not displayName/email). So the
-      // email field renders its "Email" label with the "—" fallback, and the
-      // display-name field falls back to the username. Assert what actually
-      // renders rather than the seed constants the token never surfaces.
+      // The browser flow re-hydrates the auth context via /auth/me. The email
+      // field renders its "Email" label with the "—" fallback because the JWT
+      // payload carries no email; the display name DOES come through from the
+      // mock provider ("System Admin").
       await expect(profile.email).toContainText("Email");
-      await expect(profile.displayName).toContainText(ADMIN_USER.username);
+      await expect(profile.displayName).toContainText(ADMIN_USER.displayName);
     });
 
     guard.assertClean();

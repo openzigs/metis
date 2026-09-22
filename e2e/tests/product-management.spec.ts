@@ -142,35 +142,54 @@ test.describe("Product Management (#547)", () => {
 
   // AC #4: Repo assignment panel allows adding/removing repos from the product
   test("should add and remove a repo from the product", async ({ page }) => {
-    // Create a product via API
     const api = await authedApi(accessToken);
-    const slug = `e2e-repo-${Date.now()}`;
-    const createRes = await api.post("/api/products", {
-      data: { name: "E2E Repo Product", slug, description: "Repo test" },
-    });
-    const created = await createRes.json();
-    const productId = created.data.id;
+    const stamp = `${Date.now()}`;
 
-    // We need a repo connection. Create one via API if possible, or use a fake ID
-    // The product detail page accepts a repo connection ID in the form
+    // A real repo CONNECTION to attach: the dialog picks one from the list of
+    // existing connections (it no longer takes a pasted id), so a fake id can
+    // never be entered and the old version of this test timed out waiting for
+    // an input that is gone.
+    const projectRes = await api.post("/api/projects", {
+      data: { name: `Repo Host ${stamp}`, slug: `repo-host-${stamp}` },
+    });
+    expect(projectRes.status(), await projectRes.text()).toBe(201);
+    const hostProjectId = ((await projectRes.json()) as { data: { id: string } }).data.id;
+    const connRes = await api.post(`/api/projects/${hostProjectId}/connectors/repos`, {
+      data: {
+        label: `prod-repo-${stamp}`,
+        ownerOrOrg: "metis-e2e",
+        repoName: `product-repo-${stamp}`,
+      },
+    });
+    expect(connRes.status(), await connRes.text()).toBe(201);
+
+    const createRes = await api.post("/api/products", {
+      data: { name: "E2E Repo Product", slug: `e2e-repo-${stamp}`, description: "Repo test" },
+    });
+    expect(createRes.status(), await createRes.text()).toBe(201);
+    const productId = ((await createRes.json()) as { data: { id: string } }).data.id;
     await api.dispose();
 
-    // Navigate to product detail
     await page.goto(`/products/${productId}`);
     const detailPage = new ProductDetailPage(page);
     await expect(detailPage.reposHeading).toBeVisible();
+    await expect(detailPage.repoEmptyState).toBeVisible();
 
-    // Add a repo (we use a fake connection ID — the offline mode may or may not have real repos)
-    await detailPage.openAddRepoDialog();
-    await detailPage.fillRepoForm("fake-repo-connection-id", "frontend");
-    await detailPage.submitAddRepo();
+    await test.step("add the repo through the dialog", async () => {
+      await detailPage.openAddRepoDialog();
+      await detailPage.fillRepoForm(`metis-e2e/product-repo-${stamp}`, "frontend");
+      await detailPage.submitAddRepo();
+      await expect(detailPage.addRepoDialogTitle).toBeHidden({ timeout: 15_000 });
+      await expect(page.getByText(`metis-e2e/product-repo-${stamp}`)).toBeVisible({
+        timeout: 15_000,
+      });
+      await expect(page.getByText("Role: frontend")).toBeVisible();
+    });
 
-    // If the repo doesn't exist in DB, we'll get an error.
-    // The test validates the dialog interaction regardless.
-    // Check if either the dialog closes (success) or an error shows (expected for fake ID)
-    const dialogGone = detailPage.addRepoDialogTitle;
-    const errorShown = detailPage.addRepoError;
-    await expect(dialogGone.or(errorShown)).toBeVisible({ timeout: 10_000 });
+    await test.step("remove it again", async () => {
+      await page.getByRole("button", { name: "Remove repository" }).click();
+      await expect(detailPage.repoEmptyState).toBeVisible({ timeout: 15_000 });
+    });
   });
 
   // AC #6: Role selector dropdown offers the expected roles

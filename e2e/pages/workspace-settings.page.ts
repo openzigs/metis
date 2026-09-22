@@ -11,6 +11,8 @@ export class WorkspaceSettingsPage {
   readonly heading: Locator;
   readonly nameInput: Locator;
   readonly saveButton: Locator;
+  readonly membersTitle: Locator;
+  readonly dangerZoneTitle: Locator;
   readonly membersSection: Locator;
   readonly dangerZone: Locator;
   readonly deleteButton: Locator;
@@ -20,10 +22,16 @@ export class WorkspaceSettingsPage {
   constructor(page: Page) {
     this.page = page;
     this.heading = page.getByRole("heading", { name: "Workspace Settings" });
-    this.nameInput = page.getByLabel("Name");
+    // `exact` matters: a workspace whose NAME contains "name" would otherwise
+    // make the switcher button match this locator too.
+    this.nameInput = page.getByLabel("Name", { exact: true });
     this.saveButton = page.getByRole("button", { name: "Save changes" });
-    this.membersSection = page.getByRole("heading", { name: "Members" }).locator("..");
-    this.dangerZone = page.getByRole("heading", { name: "Danger Zone" }).locator("..");
+    // shadcn's CardTitle renders a <div>, not a heading element (see
+    // packages/ui-kit/src/components/card.tsx).
+    this.membersTitle = page.getByText("Members", { exact: true });
+    this.dangerZoneTitle = page.getByText("Danger Zone", { exact: true });
+    this.membersSection = this.membersTitle.locator("..");
+    this.dangerZone = this.dangerZoneTitle.locator("..");
     this.deleteButton = page.getByRole("button", { name: "Delete" }).first();
     this.transferButton = page.getByRole("button", { name: "Transfer" });
     this.confirmDeleteButton = page.getByRole("button", { name: "Delete workspace" });
@@ -38,7 +46,17 @@ export class WorkspaceSettingsPage {
   async updateName(newName: string): Promise<void> {
     await this.nameInput.clear();
     await this.nameInput.fill(newName);
-    await this.saveButton.click();
+    // Wait for the PATCH to land: the caller usually reloads straight after,
+    // which otherwise races the in-flight request.
+    await Promise.all([
+      this.page.waitForResponse(
+        (res) =>
+          /\/api\/workspaces\/[^/]+$/.test(new URL(res.url()).pathname) &&
+          res.request().method() === "PATCH",
+        { timeout: 15_000 },
+      ),
+      this.saveButton.click(),
+    ]);
   }
 
   /** Get a member row by display name. */

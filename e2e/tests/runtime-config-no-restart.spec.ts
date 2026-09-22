@@ -41,10 +41,12 @@ interface ConfigKeyView {
 }
 interface AuditEntry {
   key: string;
-  oldValue: string | null;
-  newValue: string | null;
+  /** Audit rows persist REDACTED values only (config-service.listAudit). */
+  oldValueRedacted: string;
+  newValueRedacted: string;
   actorId: string;
-  createdAt: string;
+  scope: string;
+  ts: string;
 }
 interface AuditPage {
   items: AuditEntry[];
@@ -180,8 +182,10 @@ test.describe("Epic #249 Phase 3 — runtime config takes effect without restart
       const audit = (await (
         await ctx.get("/api/admin/config/audit?limit=50")
       ).json()) as ConfigEnvelope<AuditPage>;
+      // Audit rows carry REDACTED value columns (`oldValueRedacted` /
+      // `newValueRedacted`) — there is no raw `newValue` on the wire.
       const tunableEntry = audit.data.items.find(
-        (i) => i.key === TUNABLE && i.newValue === flipped,
+        (i) => i.key === TUNABLE && i.newValueRedacted === flipped,
       );
       expect(tunableEntry, JSON.stringify(audit.data.items.slice(0, 5))).toBeDefined();
 
@@ -189,7 +193,7 @@ test.describe("Epic #249 Phase 3 — runtime config takes effect without restart
       expect(secretEntry).toBeDefined();
       // Sensitive secrets must NEVER round-trip through the audit log in
       // plaintext — Phase 2 redacts to `[REDACTED]` before persisting.
-      expect(secretEntry?.newValue).toBe("[REDACTED]");
+      expect(secretEntry?.newValueRedacted).toBe("[REDACTED]");
       // Cleanup.
       if (originalTunable === null) {
         await ctx.delete(`/api/admin/config/${TUNABLE}`);

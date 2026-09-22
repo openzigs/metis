@@ -136,6 +136,44 @@ describe("requirement comments router", () => {
   });
 
   describe("GET /requirements/:requirementId/comments", () => {
+    it("lists a soft-deleted comment as a placeholder (blank body, deleted: true)", async () => {
+      mockPrisma.requirement.findUnique.mockResolvedValue({ id: "req-1", projectId: "proj-1" });
+      mockPrisma.commentThread.findMany.mockResolvedValue([
+        {
+          id: "thread-1",
+          requirementId: "req-1",
+          title: null,
+          resolved: false,
+          createdAt: new Date("2024-01-01"),
+          updatedAt: new Date("2024-01-01"),
+          comments: [
+            {
+              id: "c-gone",
+              threadId: "thread-1",
+              authorId: "user-1",
+              body: "Deleted by its author",
+              editedAt: null,
+              deletedAt: new Date("2024-01-02"),
+              createdAt: new Date("2024-01-01"),
+              updatedAt: new Date("2024-01-02"),
+              author: { id: "user-1", username: "alice", displayName: "Alice" },
+            },
+          ],
+        },
+      ]);
+
+      const res = await request(app).get("/requirements/req-1/comments");
+
+      expect(res.status).toBe(200);
+      // The thread query must NOT filter deleted comments out — the client
+      // renders the placeholder and relies on the row still being there.
+      const where = mockPrisma.commentThread.findMany.mock.calls[0][0];
+      expect(where.include.comments.where).toBeUndefined();
+      expect(res.body.data[0].comments).toHaveLength(1);
+      expect(res.body.data[0].comments[0].deleted).toBe(true);
+      expect(res.body.data[0].comments[0].body).toBeNull();
+    });
+
     it("lists threads with non-deleted comments", async () => {
       mockPrisma.requirement.findUnique.mockResolvedValue({ id: "req-1", projectId: "proj-1" });
       mockPrisma.commentThread.findMany.mockResolvedValue([

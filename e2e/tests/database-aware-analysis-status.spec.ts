@@ -53,8 +53,8 @@ test.describe("Database-aware analysis — settings control + status indicator (
       data: { name: `DB Aware ${slug}`, slug, description: "database-aware analysis e2e" },
     });
     expect(res.status()).toBe(201);
-    const body = (await res.json()) as { data: { project: { id: string } } };
-    projectId = body.data.project.id;
+    const body = (await res.json()) as { data: { id: string } };
+    projectId = body.data.id;
     await api.dispose();
 
     const loginPage = new LoginPage(page);

@@ -13,8 +13,9 @@ export class WorkspaceSwitcherPage {
 
   constructor(page: Page) {
     this.page = page;
-    // The trigger button contains the workspace name and chevron icon
-    this.trigger = page.getByRole("button", { name: /Workspace|ChevronsUpDown/ });
+    // The trigger renders the ACTIVE workspace's name, which depends on what
+    // else the suite has created — match the stable test id instead.
+    this.trigger = page.getByTestId("workspace-switcher");
     this.dropdown = page.getByRole("menu");
     this.workspaceLabel = page.getByText("Workspaces");
   }

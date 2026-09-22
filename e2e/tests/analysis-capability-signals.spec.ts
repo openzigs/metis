@@ -23,6 +23,7 @@ import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user.js";
 import { LoginPage } from "../pages/login.page.js";
 import { AnalysisPage } from "../pages/analysis-inline.page.js";
 import { apiBase } from "../fixtures/api-base.js";
+import { seedGroundedAnalysisViaCli } from "../fixtures/seed-helpers.js";
 
 const API_BASE = apiBase();
 
@@ -37,11 +38,26 @@ test.describe("Analysis capability signals (#733)", () => {
   test.describe.configure({ timeout: 120_000 });
 
   let accessToken: string;
+  let adminUserId: string;
   let projectId: string;
+
+  /**
+   * Seed a COMPLETED, degraded analysis. A live run cannot be used: the
+   * deterministic harness runs the `offline-stub` provider, every specialist
+   * agent rejects its prose as non-JSON, and the orchestrator then marks the
+   * run `failed` BEFORE the capability record is persisted — so no banner can
+   * ever appear. The seed writes the same `metadata.capability` record the
+   * orchestrator persists for a completed run on a project with no code graph.
+   */
+  function seedDegradedRun(): string {
+    const databaseUrl = process.env.E2E_DATABASE_URL ?? `file:${process.env.E2E_DB_FILE}`;
+    return seedGroundedAnalysisViaCli({ projectId, startedById: adminUserId, databaseUrl });
+  }
 
   test.beforeEach(async ({ page }) => {
     const primed = await primeAdminUser(API_BASE);
     accessToken = primed.accessToken;
+    adminUserId = primed.userId;
 
     const slug = `e2e-capability-${Date.now()}`;
     const api = await authedApi(accessToken);
@@ -77,12 +93,11 @@ test.describe("Analysis capability signals (#733)", () => {
 
   // AC1 — a completed degraded run explains what was not analyzed on the results.
   test("completed degraded run shows the capability banner", async ({ page }) => {
+    seedDegradedRun();
     const analysis = new AnalysisPage(page);
     await analysis.goto(projectId);
 
-    await test.step("start a run with the default agents", async () => {
-      await expect(analysis.runButton).toBeEnabled();
-      await analysis.runButton.click();
+    await test.step("the most recent completed run auto-selects", async () => {
       await expect(page.getByRole("heading", { name: /^Run / })).toBeVisible({ timeout: 60_000 });
     });
 
@@ -103,6 +118,7 @@ test.describe("Analysis capability signals (#733)", () => {
   // record on the wire. That exercises the true banner→endpoint wiring without
   // fabricating the payload shape.
   test("skipped-repo banner exposes a working resume action (#741)", async ({ page }) => {
+    seedDegradedRun();
     const analysis = new AnalysisPage(page);
 
     // Inject a skipped repo into the live analysis snapshot (GET /api/analyses/:id).
@@ -110,19 +126,41 @@ test.describe("Analysis capability signals (#733)", () => {
       (url) => /\/api\/analyses\/[^/]+$/.test(url.pathname),
       async (route) => {
         if (route.request().method() !== "GET") return route.fallback();
-        const resp = await route.fetch();
-        const body = (await resp.json().catch(() => null)) as {
-          data?: { capability?: { skippedRepos?: unknown[]; reasons?: string[] } };
-        } | null;
+        // Read the upstream response ONCE into plain values. The page polls
+        // this endpoint, and holding the `APIResponse` object across an await
+        // to hand it back via `fulfill({ response })` fails with
+        // "Fetch response has been disposed" when an earlier poll is
+        // superseded.
+        let status = 200;
+        let headers: Record<string, string> = { "content-type": "application/json" };
+        let text = "";
+        try {
+          const resp = await route.fetch();
+          status = resp.status();
+          headers = resp.headers();
+          text = await resp.text();
+        } catch {
+          // The page went away mid-flight; let the request take its course.
+          return route.fallback();
+        }
+        const body = (() => {
+          try {
+            return JSON.parse(text) as {
+              data?: { capability?: { skippedRepos?: unknown[]; reasons?: string[] } };
+            };
+          } catch {
+            return null;
+          }
+        })();
         const cap = body?.data?.capability;
         if (cap && Array.isArray(cap.reasons)) {
           cap.skippedRepos = [{ connectorId: "c-extra", label: "extra-repo" }];
           if (!cap.reasons.includes("repos-skipped-budget")) {
             cap.reasons.push("repos-skipped-budget");
           }
-          return route.fulfill({ response: resp, json: body });
+          return route.fulfill({ status, headers, body: JSON.stringify(body) });
         }
-        return route.fulfill({ response: resp });
+        return route.fulfill({ status, headers, body: text });
       },
     );
 
@@ -141,8 +179,6 @@ test.describe("Analysis capability signals (#733)", () => {
     });
 
     await analysis.goto(projectId);
-    await expect(analysis.runButton).toBeEnabled();
-    await analysis.runButton.click();
 
     await test.step("the banner names the skipped repo and offers the resume action", async () => {
       await expect(analysis.capabilityBanner).toBeVisible({ timeout: 90_000 });

@@ -78,7 +78,8 @@ test.describe("Epic #594 — Token Usage Tracking & Cost Allocation", () => {
           budget: unknown;
           status: {
             allowed: boolean;
-            remainingTokens: number;
+            // `null` while the project has no budget configured.
+            remainingTokens: number | null;
             percentUsed: number;
             shouldDowngrade: boolean;
             message: string | null;
@@ -89,7 +90,11 @@ test.describe("Epic #594 — Token Usage Tracking & Cost Allocation", () => {
         // Status should be present with default "no budget" state
         const status = envelope.data.status;
         expect(typeof status.allowed).toBe("boolean");
-        expect(typeof status.remainingTokens).toBe("number");
+        // No budget configured yet, so the controller reports "no remainder"
+        // as null rather than a fabricated number.
+        expect(status.remainingTokens === null || typeof status.remainingTokens === "number").toBe(
+          true,
+        );
         expect(typeof status.percentUsed).toBe("number");
         expect(typeof status.shouldDowngrade).toBe("boolean");
       } finally {

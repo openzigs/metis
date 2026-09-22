@@ -107,11 +107,55 @@ export interface JobEventEmitter {
   docSection(event: DocSectionProgressInput): void;
 }
 
+/**
+ * Last lifecycle event per job, so a client that subscribes AFTER an event was
+ * broadcast can still learn where the job got to.
+ *
+ * A socket room only delivers what is emitted while you are in it. The UI
+ * subscribes to `job:{id}` after the trigger endpoint answers, so a job that
+ * starts (or finishes) inside that window emitted into an empty room and the
+ * surface sat on its "Running…" label forever — the embeddings reindex, whose
+ * whole run can be shorter than the round-trip, hit this every time.
+ *
+ * Bounded so a long-lived server cannot grow this without limit: insertion
+ * order is preserved by `Map`, so the oldest entry is the first key.
+ */
+const LAST_EVENT_CAP = 500;
+const lastLifecycleByJob = new Map<string, JobLifecycleEvent>();
+
+function rememberLifecycle(event: JobLifecycleEvent): void {
+  // Re-insert so the most recently touched job is the newest key.
+  lastLifecycleByJob.delete(event.jobId);
+  lastLifecycleByJob.set(event.jobId, event);
+  while (lastLifecycleByJob.size > LAST_EVENT_CAP) {
+    const oldest = lastLifecycleByJob.keys().next();
+    if (oldest.done) break;
+    lastLifecycleByJob.delete(oldest.value);
+  }
+}
+
+/**
+ * The most recent lifecycle event broadcast for a job, or `undefined` when the
+ * job is unknown to this process. Used by the socket server to replay state to
+ * a late subscriber.
+ */
+export function getLastJobLifecycle(jobId: string): JobLifecycleEvent | undefined {
+  return lastLifecycleByJob.get(jobId);
+}
+
+/** Test seam — drop the remembered events. */
+export function _resetJobLifecycleMemory(): void {
+  lastLifecycleByJob.clear();
+}
+
 /** Build an emitter bound to a specific IO server (used in server bootstrap / tests). */
 export function createJobEventEmitter(io: MetisIOServer | null): JobEventEmitter {
   const emitLifecycle = (event: JobLifecycleInput): void => {
-    if (!io) return;
     const payload: JobLifecycleEvent = { ...event, ts: Date.now() };
+    // Remember BEFORE the transport check: a late subscriber must be able to
+    // catch up even on a server whose emit failed or that had no io at the time.
+    rememberLifecycle(payload);
+    if (!io) return;
     try {
       io.to(`job:${payload.jobId}`).emit("job:lifecycle", payload);
       if (payload.projectId) {

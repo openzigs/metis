@@ -97,7 +97,7 @@ export class ProductDetailPage {
 
   // Add repo dialog
   readonly addRepoDialogTitle: Locator;
-  readonly repoConnectionInput: Locator;
+  readonly repoConnectionSearch: Locator;
   readonly repoRoleSelect: Locator;
   readonly addRepoSubmit: Locator;
   readonly addRepoError: Locator;
@@ -121,14 +121,16 @@ export class ProductDetailPage {
     this.addRepoDialogTitle = page.getByRole("heading", {
       name: "Add repository to product",
     });
-    this.repoConnectionInput = page.getByLabel("Repository Connection ID");
+    // The dialog now picks a connection from a searchable list rather than
+    // pasting an opaque id.
+    this.repoConnectionSearch = page.getByLabel("Repository Connection");
     this.repoRoleSelect = page.getByLabel("Role");
     this.addRepoSubmit = page.getByRole("button", { name: "Add Repository" });
     this.addRepoError = page.locator(".text-destructive");
 
     // Documentation section
     this.docsHeading = page.getByRole("heading", { name: "Documentation" });
-    this.docsEmptyState = page.getByText("Generated documentation will appear here");
+    this.docsEmptyState = page.getByText("No documentation generated yet");
   }
 
   async openAddRepoDialog(): Promise<void> {
@@ -136,8 +138,13 @@ export class ProductDetailPage {
     await expect(this.addRepoDialogTitle).toBeVisible();
   }
 
-  async fillRepoForm(connectionId: string, role?: string): Promise<void> {
-    await this.repoConnectionInput.fill(connectionId);
+  /**
+   * Pick a repo connection from the dialog's list by its `owner/repo` label
+   * and (optionally) choose a role.
+   */
+  async fillRepoForm(ownerAndRepo: string, role?: string): Promise<void> {
+    await this.repoConnectionSearch.fill(ownerAndRepo.split("/")[1] ?? ownerAndRepo);
+    await this.page.getByRole("button", { name: new RegExp(ownerAndRepo) }).click();
     if (role) {
       await this.repoRoleSelect.selectOption(role);
     }

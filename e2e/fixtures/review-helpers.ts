@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { request, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { apiBase } from "./api-base.js";
 import { LoginPage } from "../pages/login.page.js";
+import { seedGroundedAnalysisViaCli } from "./seed-helpers.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -98,23 +99,20 @@ export async function seedCompletedAnalysis(
   api: APIRequestContext,
   projectId: string,
 ): Promise<string> {
-  const start = await api.post(`/api/projects/${projectId}/analyses`, {
-    data: { documentIds: [] },
+  // Do NOT run the real pipeline here. The deterministic harness uses the
+  // `offline-stub` provider, whose hash-derived prose every specialist agent
+  // rejects as non-JSON, so a live run always ends `failed` — and a failed
+  // analysis is rejected downstream (draft generation 400s, change analysis
+  // 400s). Seed a COMPLETED analysis through the same CLI seam the grounding
+  // and clarify-loop specs use.
+  const meRes = await api.get("/api/auth/me");
+  expect(meRes.ok(), `resolve current user: ${await meRes.text()}`).toBeTruthy();
+  const me = (await meRes.json()) as { data: { user: { id: string } } };
+  return seedGroundedAnalysisViaCli({
+    projectId,
+    startedById: me.data.user.id,
+    databaseUrl: e2eDatabaseUrl(),
   });
-  expect([201, 202], `start analysis: ${await start.text()}`).toContain(start.status());
-  const analysisId = ((await start.json()) as { data?: { id?: string } }).data?.id;
-  expect(analysisId, "analysis id present").toBeTruthy();
-
-  for (let i = 0; i < 90; i += 1) {
-    const res = await api.get(`/api/analyses/${analysisId}`);
-    if (res.ok()) {
-      const status = ((await res.json()) as { data?: { status?: string } }).data?.status;
-      if (status && ["completed", "failed", "cancelled"].includes(status))
-        return analysisId as string;
-    }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  throw new Error(`analysis ${analysisId} did not reach a terminal state`);
 }
 
 /** Issue a REAL requirement update so the #771 service appends a version row. */

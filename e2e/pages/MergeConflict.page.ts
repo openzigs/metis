@@ -34,8 +34,9 @@ export class MergeConflictPage {
     this.modal = page.getByRole("dialog").filter({ hasText: "Merge Conflict" });
     this.heading = this.modal.getByRole("heading", { name: "Merge Conflict" });
     // Per-field diff labels — only rendered when at least one field differs.
-    this.yourVersionLabel = this.modal.getByText("Your version");
-    this.serverVersionLabel = this.modal.getByText("Server version");
+    // One label pair PER conflicting field, so narrow to the first.
+    this.yourVersionLabel = this.modal.getByText("Your version").first();
+    this.serverVersionLabel = this.modal.getByText("Server version").first();
     // Radio options carry the full descriptive label from MergeConflictModal.tsx.
     this.keepServerButton = this.modal.getByRole("radio", {
       name: /accept server version/i,
