@@ -96,6 +96,17 @@ jobs:
           fi
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
+      # #3 — a hosted runner leaves ~14 GB free, and the multi-arch publish of
+      # the larger images does not fit. Drop preinstalled toolchains no step
+      # here uses, and the runner's cached Docker images (~25 GB back).
+      - name: Free runner disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost
+          docker image prune --all --force > /dev/null
+          df -h /
+
       - name: Set up QEMU (multi-arch emulation)
         # PR validation builds only target the native runner arch —
         # no QEMU emulation needed. Skip this step on PRs to avoid pulling
@@ -163,8 +174,14 @@ jobs:
           # PR builds don't push to GHCR so provenance is meaningless here.
           provenance: false
           sbom: false
-          cache-from: type=local,src=/tmp/buildkit-cache/${{ matrix.image.name }}
-          cache-to: type=local,dest=/tmp/buildkit-cache/${{ matrix.image.name }},mode=min
+          # #3 — `type=gha` survives the runner; the old local-path cache in
+          # /tmp/buildkit-cache lived on the self-hosted box and is an empty
+          # directory on every hosted VM. Same scope as ci.yml's `api` build of
+          # this image, so the cache `main` writes warms this build's amd64
+          # layers. (The reverse holds only when this runs on `main`: GitHub
+          # caches are scoped to the ref that wrote them.)
+          cache-from: type=gha,scope=metis-${{ matrix.image.name }}
+          cache-to: type=gha,scope=metis-${{ matrix.image.name }},mode=max
 
       - name: Build & push (tag — multi-arch publish)
         if: github.event_name == 'push'
@@ -182,8 +199,12 @@ jobs:
           # '*.dockerbuild' artifact adding ~60 KB per image per push.
           provenance: true
           sbom: false
-          cache-from: type=local,src=/tmp/buildkit-cache/${{ matrix.image.name }}
-          cache-to: type=local,dest=/tmp/buildkit-cache/${{ matrix.image.name }},mode=min
+          # Read-only on purpose. A cache written from a tag ref can be
+          # restored only by that same tag, so no later run (not `main`, not
+          # the next tag) could read it, while it still counts toward the
+          # repository's 10 GB cache limit and evicts `main`'s entries. Reading
+          # works: a tag run restores the cache `main` wrote.
+          cache-from: type=gha,scope=metis-${{ matrix.image.name }}
 
       - name: Inspect manifest (tag only)
         if: github.event_name == 'push'
@@ -210,12 +231,9 @@ jobs:
             done
 
       - name: Free disk — drop loaded image and trim daemon cache
-        # Runs after every job (success, failure, or cancellation) so the
-        # runner's shared Docker daemon doesn't accumulate
-        # PR images and build-cache blobs between runs. This trims ONLY the
-        # daemon's internal state — the shared local layer cache at
-        # /tmp/buildkit-cache/<image> (type=local) is untouched, so the next
-        # run still gets warm caching. keep-storage=4g preserves recent layers.
+        # Runs after every job (success, failure, or cancellation). The layer
+        # cache that carries between runs is the GitHub Actions cache
+        # (`type=gha`, #3), which this does not touch.
         if: always()
         run: |
           docker rmi "${{ env.REGISTRY }}/metis-${{ matrix.image.name }}:${{ steps.meta.outputs.version }}" 2>/dev/null || true
