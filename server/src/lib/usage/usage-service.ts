@@ -18,13 +18,31 @@ export interface UsageRow {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
-  estimatedCostUsd: number;
+  /**
+   * Cost of this group's PRICED usage, or `null` when none of it was priced
+   * (#22 — an unpriced model is unknown spend, never $0).
+   */
+  estimatedCostUsd: number | null;
+  /** #22 — tokens in this group recorded without a price. */
+  unpricedTokens: number;
+  count: number;
+}
+
+/** #22 — usage recorded while its model had no price. */
+export interface UnpricedUsageTotals {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  /** Number of recorded model calls. */
   count: number;
 }
 
 export interface UsageSummary {
   totalTokens: number;
+  /** Cost of the PRICED usage only — see {@link unpriced}. */
   totalCostUsd: number;
+  /** #22 — unpriced usage, reported separately with its token counts. */
+  unpriced: UnpricedUsageTotals;
   rows: UsageRow[];
 }
 
@@ -112,11 +130,12 @@ export class UsageService {
    * Generate CSV string for usage data.
    */
   toCSV(rows: UsageRow[]): string {
+    // #22 — an unpriced group has an EMPTY cost cell (unknown), never 0.
     const header =
-      "dayBucket,provider,model,userId,projectId,promptTokens,completionTokens,totalTokens,estimatedCostUsd,count";
+      "dayBucket,provider,model,userId,projectId,promptTokens,completionTokens,totalTokens,estimatedCostUsd,count,unpricedTokens";
     const lines = rows.map(
       (r) =>
-        `${r.dayBucket},${r.provider},${r.model},${r.userId ?? ""},${r.projectId ?? ""},${r.promptTokens},${r.completionTokens},${r.totalTokens},${r.estimatedCostUsd.toFixed(6)},${r.count}`,
+        `${r.dayBucket},${r.provider},${r.model},${r.userId ?? ""},${r.projectId ?? ""},${r.promptTokens},${r.completionTokens},${r.totalTokens},${r.estimatedCostUsd === null ? "" : r.estimatedCostUsd.toFixed(6)},${r.count},${r.unpricedTokens}`,
     );
     return [header, ...lines].join("\n");
   }
@@ -139,8 +158,21 @@ export class UsageService {
     groupBy: GroupBy,
   ): UsageSummary {
     const map = new Map<string, UsageRow>();
+    const unpriced: UnpricedUsageTotals = {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      count: 0,
+    };
 
     for (const r of rawRows) {
+      const cost = r.estimatedCostUsd;
+      if (cost === null) {
+        unpriced.promptTokens += r.promptTokens;
+        unpriced.completionTokens += r.completionTokens;
+        unpriced.totalTokens += r.totalTokens;
+        unpriced.count += 1;
+      }
       let key: string;
       switch (groupBy) {
         case "day":
@@ -167,7 +199,8 @@ export class UsageService {
         existing.promptTokens += r.promptTokens;
         existing.completionTokens += r.completionTokens;
         existing.totalTokens += r.totalTokens;
-        existing.estimatedCostUsd += r.estimatedCostUsd ?? 0;
+        if (cost === null) existing.unpricedTokens += r.totalTokens;
+        else existing.estimatedCostUsd = (existing.estimatedCostUsd ?? 0) + cost;
         existing.count += 1;
       } else {
         map.set(key, {
@@ -180,7 +213,8 @@ export class UsageService {
           promptTokens: r.promptTokens,
           completionTokens: r.completionTokens,
           totalTokens: r.totalTokens,
-          estimatedCostUsd: r.estimatedCostUsd ?? 0,
+          estimatedCostUsd: cost,
+          unpricedTokens: cost === null ? r.totalTokens : 0,
           count: 1,
         });
       }
@@ -188,9 +222,9 @@ export class UsageService {
 
     const rows = [...map.values()].sort((a, b) => a.dayBucket.localeCompare(b.dayBucket));
     const totalTokens = rows.reduce((s, r) => s + r.totalTokens, 0);
-    const totalCostUsd = rows.reduce((s, r) => s + r.estimatedCostUsd, 0);
+    const totalCostUsd = rows.reduce((s, r) => s + (r.estimatedCostUsd ?? 0), 0);
 
-    return { totalTokens, totalCostUsd, rows };
+    return { totalTokens, totalCostUsd, unpriced, rows };
   }
 }
 

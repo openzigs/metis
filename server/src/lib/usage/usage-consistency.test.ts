@@ -81,7 +81,8 @@ function call(opts: {
       promptTokens: opts.input,
       completionTokens: opts.output,
       totalTokens: total,
-      estimatedCostUsd: costCents / 100,
+      // #22 — an unpriced call is null in BOTH tables.
+      estimatedCostUsd: costCents === null ? null : costCents / 100,
     },
   };
 }
@@ -174,5 +175,90 @@ describe("usage aggregate-vs-detail consistency (#428)", () => {
     expect(anthropicRow!.totalTokens).toBe(137_514);
     expect(anthropicRow!.costCents).toBeGreaterThan(0);
     expect(aggregate.costCents).toBeGreaterThan(0);
+  });
+
+  it("unpriced usage is reported separately with its tokens, never summed as $0 (#22)", async () => {
+    const priced = call({
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      input: 1_000_000,
+      output: 1_000_000,
+      createdAt: new Date("2026-06-25T08:00:00.000Z"),
+      agentStep: "chat",
+    });
+    const unpriced = call({
+      provider: "anthropic",
+      model: "deepseek-v4-pro",
+      input: 1_334_017,
+      output: 1_297_372,
+      createdAt: new Date("2026-06-25T09:00:00.000Z"),
+      agentStep: "docs",
+    });
+    expect(unpriced.tokenUsage.costCents).toBeNull();
+    tokenUsageFindMany.mockResolvedValue([priced.tokenUsage, unpriced.tokenUsage]);
+    aiTokenUsageFindMany.mockResolvedValue([priced.aiTokenUsage, unpriced.aiTokenUsage]);
+
+    const aggregate = await summarizeUsage(PROJECT_ID, {}, NOW);
+    // Cost is the PRICED portion only; the unpriced tokens are reported apart.
+    expect(aggregate.costCents).toBe(1800);
+    expect(aggregate.unpriced).toEqual({
+      inputTokens: 1_334_017,
+      outputTokens: 1_297_372,
+      totalTokens: 2_631_389,
+      calls: 1,
+    });
+    const ds = aggregate.byProvider.find((r) => r.model === "deepseek-v4-pro");
+    expect(ds?.costCents).toBeNull();
+    expect(ds?.unpricedTokens).toBe(2_631_389);
+    const sonnet = aggregate.byProvider.find((r) => r.model === "claude-sonnet-4-6");
+    expect(sonnet?.costCents).toBe(1800);
+    expect(sonnet?.unpricedTokens).toBe(0);
+    const day = aggregate.byDay.find((d) => d.day === "2026-06-25");
+    expect(day?.costCents).toBe(1800);
+    expect(day?.unpricedTokens).toBe(2_631_389);
+
+    const detail = await new UsageService().projectUsage(PROJECT_ID, {
+      range: "7d",
+      groupBy: "agentStep",
+    });
+    expect(detail.totalCostUsd).toBeCloseTo(18, 10);
+    expect(detail.unpriced).toEqual({
+      promptTokens: 1_334_017,
+      completionTokens: 1_297_372,
+      totalTokens: 2_631_389,
+      count: 1,
+    });
+    const docs = detail.rows.find((r) => r.agentStep === "docs");
+    expect(docs?.estimatedCostUsd).toBeNull();
+    expect(docs?.unpricedTokens).toBe(2_631_389);
+    const csv = new UsageService().toCSV(detail.rows);
+    // Unknown cost is an EMPTY cell, never 0.000000.
+    const dsLine = csv.split("\n").find((l) => l.includes("deepseek-v4-pro"));
+    expect(dsLine).toBe(
+      "2026-06-25,anthropic,deepseek-v4-pro,user-1,,1334017,1297372,2631389,,1,2631389",
+    );
+  });
+
+  it("a group mixing priced and unpriced rows keeps the priced cost and counts the rest", async () => {
+    const svc = new UsageService();
+    aiTokenUsageFindMany.mockResolvedValue([
+      {
+        ...call({ provider: "p", model: "m", input: 10, output: 0, createdAt: NOW }).aiTokenUsage,
+        estimatedCostUsd: 0.5,
+      },
+      {
+        ...call({ provider: "p", model: "m", input: 20, output: 0, createdAt: NOW }).aiTokenUsage,
+        estimatedCostUsd: null,
+      },
+      {
+        ...call({ provider: "p", model: "m", input: 30, output: 0, createdAt: NOW }).aiTokenUsage,
+        estimatedCostUsd: 0.25,
+      },
+    ]);
+    const out = await svc.projectUsage(PROJECT_ID, { groupBy: "model" });
+    expect(out.rows).toHaveLength(1);
+    expect(out.rows[0].estimatedCostUsd).toBeCloseTo(0.75, 10);
+    expect(out.rows[0].unpricedTokens).toBe(20);
+    expect(out.unpriced.count).toBe(1);
   });
 });

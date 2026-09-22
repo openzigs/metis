@@ -327,6 +327,29 @@ describe("replay/runs-service computeRunCost", () => {
     expect(cost).toEqual({ costCents: 0, totalTokens: 0 });
   });
 
+  it("attributes no cost to an unpriced model but still counts its tokens (#22)", async () => {
+    const runId = await startRun({ sessionId: "sess-U" });
+    runs[0].startedAt = new Date("2026-01-01T00:00:00Z");
+    runs[0].completedAt = new Date("2026-01-01T01:00:00Z");
+    // Priced: 10k in + 2k out of claude-3-5-sonnet = 6 cents.
+    seedUsage({
+      sessionId: "sess-U",
+      createdAt: new Date("2026-01-01T00:10:00Z"),
+      inputTokens: 10_000,
+      outputTokens: 2_000,
+    });
+    // Unpriced: before #22 the anthropic:default row billed this at Sonnet rates.
+    seedUsage({
+      sessionId: "sess-U",
+      model: "deepseek-v4-pro",
+      createdAt: new Date("2026-01-01T00:20:00Z"),
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    });
+    const cost = await computeRunCost(runId);
+    expect(cost).toEqual({ costCents: 6, totalTokens: 2_012_000 });
+  });
+
   it("aggregates in-window usage grouped by provider+model into integer cents", async () => {
     const runId = await startRun({ sessionId: "sess-A" });
     runs[0].startedAt = new Date("2026-01-01T00:00:00Z");

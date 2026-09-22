@@ -21,9 +21,20 @@ import { projectsApi } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Card } from "@/components/ui/card";
 
-function formatCents(cents: number): string {
+/** #22 — `null` is an UNPRICED model: unknown spend, never shown as $0. */
+function formatCents(cents: number | null): string {
+  if (cents === null) return "Unpriced";
   return `$${(cents / 100).toFixed(2)}`;
 }
+
+/** #22 — USD with the unpriced (`null`) case spelled out. */
+function formatUsd(usd: number | null): string {
+  return usd === null ? "unpriced" : `$${usd.toFixed(4)}`;
+}
+
+/** #22 — the note that keeps unpriced tokens out of the dollar figure, visibly. */
+const UNPRICED_HINT =
+  "Models with no configured price are not included in the cost. An administrator can set per-model prices with the MODEL_PRICES setting.";
 
 function formatTokens(n: number): string {
   return n.toLocaleString();
@@ -132,6 +143,18 @@ export default function ProjectUsagePage() {
         />
       </section>
 
+      {u.unpriced.totalTokens > 0 ? (
+        <Card className="space-y-1 p-4" data-testid="usage-unpriced">
+          <h2 className="text-sm font-semibold">Unpriced usage</h2>
+          <p className="text-sm" data-testid="usage-unpriced-tokens">
+            {formatTokens(u.unpriced.totalTokens)} tokens ({formatTokens(u.unpriced.inputTokens)}{" "}
+            input / {formatTokens(u.unpriced.outputTokens)} output) across{" "}
+            {u.unpriced.calls.toLocaleString()} call{u.unpriced.calls === 1 ? "" : "s"}.
+          </p>
+          <p className="text-xs text-muted-foreground">{UNPRICED_HINT}</p>
+        </Card>
+      ) : null}
+
       {budget != null ? (
         <Card className="space-y-2 p-4" data-testid="usage-budget-card">
           <div className="flex items-baseline justify-between">
@@ -202,7 +225,12 @@ export default function ProjectUsagePage() {
                   <td className="py-1 text-right">{formatTokens(row.inputTokens)}</td>
                   <td className="py-1 text-right">{formatTokens(row.outputTokens)}</td>
                   <td className="py-1 text-right">{formatTokens(row.totalTokens)}</td>
-                  <td className="py-1 text-right">{formatCents(row.costCents)}</td>
+                  <td className="py-1 text-right" data-testid={`provider-cost-${row.model}`}>
+                    {formatCents(row.costCents)}
+                    {row.costCents !== null && row.unpricedTokens > 0
+                      ? ` + ${formatTokens(row.unpricedTokens)} unpriced tokens`
+                      : ""}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -264,7 +292,7 @@ export default function ProjectUsagePage() {
         )}
         {enhancedUsageQuery.data && (enhancedUsageQuery.data.rows?.length ?? 0) > 0 && (
           <>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div>
                 <p className="text-xs text-muted-foreground">Total Tokens</p>
                 <p className="text-lg font-semibold">
@@ -275,6 +303,14 @@ export default function ProjectUsagePage() {
                 <p className="text-xs text-muted-foreground">Estimated Cost</p>
                 <p className="text-lg font-semibold">
                   ${enhancedUsageQuery.data.totalCostUsd.toFixed(4)}
+                </p>
+              </div>
+              <div data-testid="enhanced-unpriced">
+                <p className="text-xs text-muted-foreground" title={UNPRICED_HINT}>
+                  Unpriced Tokens
+                </p>
+                <p className="text-lg font-semibold">
+                  {formatTokens(enhancedUsageQuery.data.unpriced.totalTokens)}
                 </p>
               </div>
             </div>
@@ -303,7 +339,7 @@ export default function ProjectUsagePage() {
                       <div
                         className="w-full rounded-t bg-blue-500"
                         style={{ height: `${Math.max(pct, 2)}%` }}
-                        title={`${formatTokens(row.totalTokens)} tokens / $${row.estimatedCostUsd.toFixed(4)}`}
+                        title={`${formatTokens(row.totalTokens)} tokens / ${formatUsd(row.estimatedCostUsd)}`}
                       />
                       <span className="text-[10px] text-gray-500 truncate max-w-full">{label}</span>
                     </div>
@@ -446,7 +482,7 @@ interface ProviderRow {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
-  costCents: number;
+  costCents: number | null;
 }
 
 /**
@@ -457,7 +493,8 @@ interface ProviderRow {
 function MorphApplyPanel({ rows }: { rows: ProviderRow[] }) {
   const morphRows = rows.filter((r) => r.model.startsWith("morph:"));
   const totalTokens = morphRows.reduce((acc, r) => acc + r.totalTokens, 0);
-  const totalCost = morphRows.reduce((acc, r) => acc + r.costCents, 0);
+  // #22 — priced cost only; an unpriced morph model contributes no dollars.
+  const totalCost = morphRows.reduce((acc, r) => acc + (r.costCents ?? 0), 0);
   if (morphRows.length === 0) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="morph-apply-empty">
@@ -574,7 +611,7 @@ function BudgetGauge({
 interface AgentStepRow {
   agentStep?: string;
   totalTokens: number;
-  estimatedCostUsd: number;
+  estimatedCostUsd: number | null;
 }
 const STEP_COLORS = [
   "bg-blue-500",
@@ -600,8 +637,8 @@ function AgentStepChart({ rows, total }: { rows: AgentStepRow[]; total: number }
             <div className="flex items-baseline justify-between text-xs">
               <span className="font-medium truncate max-w-[60%]">{label}</span>
               <span className="text-muted-foreground">
-                {row.totalTokens.toLocaleString()} tokens ({share}%) · $
-                {row.estimatedCostUsd.toFixed(4)}
+                {row.totalTokens.toLocaleString()} tokens ({share}%) ·{" "}
+                {formatUsd(row.estimatedCostUsd)}
               </span>
             </div>
             <div className="h-3 w-full overflow-hidden rounded bg-muted">

@@ -1,15 +1,32 @@
 /**
- * Static rate map for `lib/finops/token-tracker.ts` (Epic #164).
+ * THE model-pricing source (Epic #164, #22).
  *
- * Rates are cents per 1k tokens. Values reflect published list prices as of
- * 2026-04 and intentionally err on the side of "slightly high" so projected
- * costs are conservative. The map is keyed by `provider:model` (case
- * sensitive). Unknown keys fall through to `DEFAULT_RATE` (zero cost) — the
- * caller still records the row for token accounting.
+ * Both usage tables are priced from here: `token_usages` (finops
+ * `recordUsage`, integer cents) and `ai_token_usages` (`TokenTracker`, USD via
+ * `estimateCostUsd` in `lib/ai/token-tracker.ts`). Before #22 each had its own
+ * table and they disagreed in opposite directions for a model neither knew:
+ * `token_usages` billed it at Claude Sonnet 4.6 rates through an
+ * `anthropic:default` fallback, `ai_token_usages` recorded `0`.
+ *
+ * Rates are cents per 1k tokens. Resolution order ({@link resolveRate}):
+ *   1. an administrator's per-model price (`MODEL_PRICES` tunable, USD/MTok);
+ *   2. the built-in list prices below — SKIPPED for the `anthropic` provider
+ *      when `ANTHROPIC_BASE_URL` points somewhere other than Anthropic, because
+ *      an Anthropic-compatible endpoint (DeepSeek, …) bills its own prices even
+ *      for a `claude-*` model name it maps onto one of its own models;
+ *   3. a Claude-family match on the model id, then a `provider:default` row —
+ *      which exists only for METIS-internal providers that genuinely cost
+ *      nothing per call (offline-stub, copilot-native);
+ *   4. otherwise `null` — UNPRICED. Never `0`, and never another model's price.
  *
  * Cost is computed as integer cents. We round half-up at the cent boundary
  * to avoid systematic under-billing.
  */
+import { getConfigService, type ConfigService } from "../config/config-service.js";
+import { MODEL_PRICES_KEY, modelPricesSchema, type ModelPrice } from "./model-prices-schema.js";
+
+export { MODEL_PRICES_KEY, modelPricesSchema, type ModelPrice };
+
 export interface TokenRate {
   /** Cents per 1,000 input tokens. */
   inputPer1k: number;
@@ -21,6 +38,10 @@ export interface TokenRate {
   cacheWritePer1k?: number;
 }
 
+/**
+ * A genuinely zero rate — for METIS-internal stubs whose calls cost nothing.
+ * It is NOT a fallback: an unknown model resolves to `null` (unpriced).
+ */
 export const DEFAULT_RATE: TokenRate = {
   inputPer1k: 0,
   outputPer1k: 0,
@@ -32,6 +53,9 @@ export const DEFAULT_RATE: TokenRate = {
 //   Sonnet 4.x : $3 in / $15 out / $0.30 cacheRead / $3.75 cacheWrite(5m)
 //   Opus 4.5+  : $5 in / $25 out / $0.50 cacheRead / $6.25 cacheWrite(5m)
 //   Haiku 4.5  : $1 in / $5 out / $0.10 cacheRead / $1.25 cacheWrite(5m)
+// Re-read 2026-09-21 for #22, adding:
+//   Sonnet 5   : $2 in / $10 out / $0.20 cacheRead / $2.50 cacheWrite(5m)
+//   Opus 4/4.1 : $15 in / $75 out / $1.50 cacheRead / $18.75 cacheWrite(5m)
 const ANTHROPIC_SONNET_4: TokenRate = {
   inputPer1k: 0.3,
   outputPer1k: 1.5,
@@ -50,6 +74,18 @@ const ANTHROPIC_HAIKU_4: TokenRate = {
   cacheReadPer1k: 0.01,
   cacheWritePer1k: 0.125,
 };
+const ANTHROPIC_SONNET_5: TokenRate = {
+  inputPer1k: 0.2,
+  outputPer1k: 1.0,
+  cacheReadPer1k: 0.02,
+  cacheWritePer1k: 0.25,
+};
+const ANTHROPIC_OPUS_LEGACY: TokenRate = {
+  inputPer1k: 1.5,
+  outputPer1k: 7.5,
+  cacheReadPer1k: 0.15,
+  cacheWritePer1k: 1.875,
+};
 
 const RATES: ReadonlyMap<string, TokenRate> = new Map([
   // ── Anthropic direct API — BARE 4.x model ids (Issue #428) ──────────────
@@ -64,8 +100,10 @@ const RATES: ReadonlyMap<string, TokenRate> = new Map([
   ["anthropic:claude-opus-4-6", ANTHROPIC_OPUS_4],
   ["anthropic:claude-opus-4-5", ANTHROPIC_OPUS_4],
   ["anthropic:claude-haiku-4-5", ANTHROPIC_HAIKU_4],
-  // Bare 4.x default fallbacks keyed by family (handles dated/suffixed ids).
-  ["anthropic:default", ANTHROPIC_SONNET_4],
+  // #22 — there is deliberately NO `anthropic:default` row. It billed every
+  // unrecognised model on the anthropic provider (e.g. `deepseek-v4-pro` via
+  // ANTHROPIC_BASE_URL) at Sonnet 4.6 rates. Dated/suffixed Claude ids are
+  // handled by `claudeFamilyRate`; anything else is unpriced.
   // Anthropic Claude 3.5 Sonnet (direct API)
   [
     "anthropic:claude-3-5-sonnet-20241022",
@@ -123,36 +161,174 @@ const RATES: ReadonlyMap<string, TokenRate> = new Map([
   ["offline-stub:default", DEFAULT_RATE],
 ]);
 
-export function getRate(provider: string, model: string): TokenRate {
-  const exact = RATES.get(`${provider}:${model}`);
-  if (exact) return exact;
-  // Issue #428 — bare anthropic ids may carry a date/version suffix
-  // (e.g. "claude-sonnet-4-5-20250929"). Match the model FAMILY so dated
-  // variants still attract a non-zero, correctly-tiered rate instead of
-  // silently falling through to DEFAULT_RATE (the original $0.00 bug).
-  if (provider === "anthropic") {
-    const family = anthropicFamilyRate(model);
-    if (family) return family;
-  }
-  // Allow callers to query the provider with no model (rare).
-  const fallback = RATES.get(`${provider}:default`);
-  return fallback ?? DEFAULT_RATE;
+/** USD per MTok → cents per 1k tokens (`$X / MTok === X / 10 cents / 1k`). */
+function toRate(p: ModelPrice): TokenRate {
+  return {
+    inputPer1k: p.inputPerMTok / 10,
+    outputPer1k: p.outputPerMTok / 10,
+    ...(p.cacheReadPerMTok !== undefined ? { cacheReadPer1k: p.cacheReadPerMTok / 10 } : {}),
+    ...(p.cacheWritePerMTok !== undefined ? { cacheWritePer1k: p.cacheWritePerMTok / 10 } : {}),
+  };
 }
 
 /**
- * Map a bare anthropic model id to its 4.x family rate by prefix. Returns
- * `undefined` for ids we don't recognise (e.g. legacy 3.x) so the caller can
- * continue its normal exact/default lookup.
+ * The administrator's override for `provider:model` or bare `model`, or
+ * `undefined`. A stored value that no longer validates is ignored (the write
+ * path validates, so this only guards a hand-edited env var) — it must never
+ * throw inside usage accounting.
  */
-function anthropicFamilyRate(model: string): TokenRate | undefined {
-  if (/^claude-opus-4/.test(model)) return ANTHROPIC_OPUS_4;
-  if (/^claude-sonnet-4/.test(model)) return ANTHROPIC_SONNET_4;
-  if (/^claude-haiku-4/.test(model)) return ANTHROPIC_HAIKU_4;
+function overrideRate(
+  provider: string | undefined,
+  model: string,
+  config: ConfigService,
+): TokenRate | undefined {
+  let raw: string | undefined;
+  try {
+    raw = config.get(MODEL_PRICES_KEY);
+  } catch {
+    return undefined;
+  }
+  if (!raw) return undefined;
+  const parsed = modelPricesSchema.safeParse(raw);
+  if (!parsed.success) return undefined;
+  const prices = parsed.data;
+  // Own keys only: a model id such as "constructor" or "toString" must not
+  // resolve to an Object.prototype member.
+  const own = (key: string) => (Object.hasOwn(prices, key) ? prices[key] : undefined);
+  const price = (provider ? own(`${provider}:${model}`) : undefined) ?? own(model);
+  return price ? toRate(price) : undefined;
+}
+
+/**
+ * True when the `anthropic` provider is pointed at a non-Anthropic endpoint
+ * (`ANTHROPIC_BASE_URL`). Such an endpoint serves and bills its OWN models —
+ * DeepSeek maps `claude-haiku-*` to `deepseek-flash`, for example
+ * (https://api-docs.deepseek.com/guides/anthropic_api) — so Anthropic's list
+ * prices must not be applied to it.
+ */
+export function isThirdPartyAnthropicEndpoint(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = env.ANTHROPIC_BASE_URL?.trim();
+  if (!raw) return false;
+  try {
+    const host = new URL(raw).hostname.toLowerCase();
+    return host !== "api.anthropic.com";
+  } catch {
+    // Unparseable → we cannot tell whose prices apply; say so by not pricing.
+    return true;
+  }
+}
+
+export interface ResolveRateOptions {
+  config?: ConfigService;
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+}
+
+/**
+ * Resolve the price for a model call, or `null` when METIS has no price for
+ * it (UNPRICED — recorded as a null cost, never as 0). See the module header
+ * for the resolution order. `provider` may be omitted by a caller that only
+ * knows the model id; it then skips provider-keyed rows.
+ */
+export function resolveRate(
+  provider: string | undefined,
+  model: string,
+  opts: ResolveRateOptions = {},
+): TokenRate | null {
+  const config = opts.config ?? getConfigService();
+  const override = overrideRate(provider, model, config);
+  if (override) return override;
+
+  if (provider === "anthropic" && isThirdPartyAnthropicEndpoint(opts.env)) return null;
+
+  if (provider) {
+    const exact = RATES.get(`${provider}:${model}`);
+    if (exact) return exact;
+  }
+  const family = claudeFamilyRate(model);
+  if (family) return family;
+  // A provider-wide row exists only for METIS-internal providers whose calls
+  // genuinely cost nothing per token (offline-stub, copilot-native). There is
+  // deliberately no such row for a paid provider (#22).
+  return (provider && RATES.get(`${provider}:default`)) || null;
+}
+
+/**
+ * Back-compat name for {@link resolveRate}. Returns `null` for an unpriced
+ * model (#22) — before, it returned a Sonnet-tier default for any anthropic id
+ * and a zero rate for everything else.
+ */
+export function getRate(provider: string, model: string): TokenRate | null {
+  return resolveRate(provider, model);
+}
+
+/**
+ * Map a Claude model id — bare, dated, or a Bedrock `us.anthropic.…-v1:0`
+ * spelling, on any provider — to its family's published rate. Returns
+ * `undefined` for an id that names no Claude family, so it stays unpriced.
+ *
+ * Opus 4.5 and later are $5/$25; Opus 4 / 4.1 (and Claude 3 Opus) are
+ * $15/$75. Sonnet 5 is $2/$10; every earlier Sonnet is $3/$15.
+ */
+export function claudeFamilyRate(model: string): TokenRate | undefined {
+  const m = model.toLowerCase();
+  if (/opus-(4-[5-9]|[5-9])/.test(m)) return ANTHROPIC_OPUS_4;
+  if (/opus/.test(m)) return ANTHROPIC_OPUS_LEGACY;
+  if (/sonnet-[5-9]/.test(m)) return ANTHROPIC_SONNET_5;
+  if (/sonnet/.test(m)) return ANTHROPIC_SONNET_4;
+  if (/haiku/.test(m)) return ANTHROPIC_HAIKU_4;
   return undefined;
 }
 
 /**
- * Compute the integer-cent cost for a usage row.
+ * The published per-family prices in USD per MTok, derived from the rates
+ * above (never restated). `cache-crossover.ts` reasons in these units.
+ */
+export function familyPricePerMTok(family: "haiku" | "sonnet" | "opus"): {
+  input: number;
+  output: number;
+} {
+  const rate =
+    family === "haiku"
+      ? ANTHROPIC_HAIKU_4
+      : family === "sonnet"
+        ? ANTHROPIC_SONNET_4
+        : ANTHROPIC_OPUS_LEGACY;
+  // Round away float noise from the ×10 (0.3 × 10 must be exactly 3).
+  const usd = (per1k: number) => Math.round(per1k * 10 * 1e6) / 1e6;
+  return { input: usd(rate.inputPer1k), output: usd(rate.outputPer1k) };
+}
+
+export interface CostUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
+/**
+ * Unrounded cost in cents. `cacheWritePer1k` overrides the rate's own
+ * cache-write price (the 1-hour prompt-cache TTL bills 2× input, #702).
+ */
+export function computeCostCentsExact(
+  rate: TokenRate,
+  usage: CostUsage,
+  opts: { cacheWritePer1k?: number } = {},
+): number {
+  const cacheRead = rate.cacheReadPer1k ?? rate.inputPer1k;
+  const cacheWrite = opts.cacheWritePer1k ?? rate.cacheWritePer1k ?? rate.inputPer1k;
+  return (
+    (usage.inputTokens * rate.inputPer1k) / 1000 +
+    (usage.outputTokens * rate.outputPer1k) / 1000 +
+    ((usage.cacheReadTokens ?? 0) * cacheRead) / 1000 +
+    ((usage.cacheWriteTokens ?? 0) * cacheWrite) / 1000
+  );
+}
+
+/**
+ * Compute the integer-cent cost for a usage row, or `null` when the rate is
+ * `null` (unpriced model, #22).
  *
  * Standard input/output tokens use the headline rate. Cache-read is usually
  * the cheapest tier (Bedrock advertises ~10% of input). Cache-write is more
@@ -160,24 +336,12 @@ function anthropicFamilyRate(model: string): TokenRate | undefined {
  * default to the input rate when the provider doesn't publish a separate
  * cache rate so we don't silently under-bill.
  */
-export function computeCostCents(
-  rate: TokenRate,
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens?: number;
-    cacheWriteTokens?: number;
-  },
-): number {
-  const cacheRead = rate.cacheReadPer1k ?? rate.inputPer1k;
-  const cacheWrite = rate.cacheWritePer1k ?? rate.inputPer1k;
-  const cents =
-    (usage.inputTokens * rate.inputPer1k) / 1000 +
-    (usage.outputTokens * rate.outputPer1k) / 1000 +
-    ((usage.cacheReadTokens ?? 0) * cacheRead) / 1000 +
-    ((usage.cacheWriteTokens ?? 0) * cacheWrite) / 1000;
+export function computeCostCents(rate: TokenRate, usage: CostUsage): number;
+export function computeCostCents(rate: TokenRate | null, usage: CostUsage): number | null;
+export function computeCostCents(rate: TokenRate | null, usage: CostUsage): number | null {
+  if (rate === null) return null;
   // Round half-up to the integer cent.
-  return Math.round(cents);
+  return Math.round(computeCostCentsExact(rate, usage));
 }
 
 /** Test-only helper. */

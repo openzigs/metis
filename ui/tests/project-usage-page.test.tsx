@@ -32,6 +32,7 @@ vi.mock("@/lib/projects-api", async () => {
       get: vi.fn(),
       getUsage: vi.fn(),
       getSafetyEvents: vi.fn(),
+      getEnhancedUsage: vi.fn(),
     },
   };
 });
@@ -42,11 +43,19 @@ import ProjectUsagePage from "@/app/(authed)/projects/[id]/usage/page";
 const get = projectsApi.get as unknown as ReturnType<typeof vi.fn>;
 const getUsage = projectsApi.getUsage as unknown as ReturnType<typeof vi.fn>;
 const getSafetyEvents = projectsApi.getSafetyEvents as unknown as ReturnType<typeof vi.fn>;
+const getEnhancedUsage = projectsApi.getEnhancedUsage as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   get.mockReset();
   getUsage.mockReset();
   getSafetyEvents.mockReset();
+  getEnhancedUsage.mockReset();
+  getEnhancedUsage.mockResolvedValue({
+    totalTokens: 0,
+    totalCostUsd: 0,
+    unpriced: { promptTokens: 0, completionTokens: 0, totalTokens: 0, count: 0 },
+    rows: [],
+  });
 });
 
 function makeUsage(overrides: Partial<Record<string, unknown>> = {}) {
@@ -58,6 +67,7 @@ function makeUsage(overrides: Partial<Record<string, unknown>> = {}) {
     outputTokens: 200,
     totalTokens: 1000,
     costCents: 50,
+    unpriced: { inputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0 },
     projectedMonthlyCostCents: 600,
     monthlyTokenBudget: 5_000,
     monthToDateTokens: 1000,
@@ -69,11 +79,26 @@ function makeUsage(overrides: Partial<Record<string, unknown>> = {}) {
         outputTokens: 200,
         totalTokens: 1000,
         costCents: 50,
+        unpricedTokens: 0,
       },
     ],
     byDay: [
-      { day: "2026-04-22", inputTokens: 100, outputTokens: 50, totalTokens: 150, costCents: 7 },
-      { day: "2026-04-23", inputTokens: 700, outputTokens: 150, totalTokens: 850, costCents: 43 },
+      {
+        day: "2026-04-22",
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+        costCents: 7,
+        unpricedTokens: 0,
+      },
+      {
+        day: "2026-04-23",
+        inputTokens: 700,
+        outputTokens: 150,
+        totalTokens: 850,
+        costCents: 43,
+        unpricedTokens: 0,
+      },
     ],
     ...overrides,
   };
@@ -102,6 +127,130 @@ describe("Project usage page", () => {
     expect(screen.getByTestId("tile-mtd-tokens")).toHaveTextContent("1,000");
     expect(screen.getByTestId("tile-projected-cost")).toHaveTextContent("$6.00");
     expect(screen.getByTestId("tile-window-cost")).toHaveTextContent("$0.50");
+  });
+
+  it("shows unpriced usage separately with its token counts, never as $0 (#22)", async () => {
+    get.mockResolvedValue({ id: "p1", name: "Demo" });
+    getUsage.mockResolvedValue(
+      makeUsage({
+        costCents: 50,
+        unpriced: {
+          inputTokens: 1_334_017,
+          outputTokens: 1_297_372,
+          totalTokens: 2_631_389,
+          calls: 3,
+        },
+        byProvider: [
+          {
+            provider: "openai",
+            model: "gpt-4o",
+            inputTokens: 800,
+            outputTokens: 200,
+            totalTokens: 1000,
+            costCents: 50,
+            unpricedTokens: 0,
+          },
+          {
+            provider: "anthropic",
+            model: "deepseek-v4-pro",
+            inputTokens: 1_334_017,
+            outputTokens: 1_297_372,
+            totalTokens: 2_631_389,
+            costCents: null,
+            unpricedTokens: 2_631_389,
+          },
+          {
+            provider: "anthropic",
+            model: "mixed-model",
+            inputTokens: 10,
+            outputTokens: 10,
+            totalTokens: 20,
+            costCents: 1,
+            unpricedTokens: 5,
+          },
+        ],
+      }),
+    );
+    getSafetyEvents.mockResolvedValue({ items: [] });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("usage-unpriced")).toBeInTheDocument();
+    });
+    // The window cost is the PRICED portion only.
+    expect(screen.getByTestId("tile-window-cost")).toHaveTextContent("$0.50");
+    expect(screen.getByTestId("usage-unpriced-tokens")).toHaveTextContent(
+      "2,631,389 tokens (1,334,017 input / 1,297,372 output) across 3 calls",
+    );
+    expect(screen.getByTestId("provider-cost-deepseek-v4-pro")).toHaveTextContent("Unpriced");
+    expect(screen.getByTestId("provider-cost-deepseek-v4-pro")).not.toHaveTextContent("$0.00");
+    expect(screen.getByTestId("provider-cost-mixed-model")).toHaveTextContent(
+      "$0.01 + 5 unpriced tokens",
+    );
+    expect(screen.getByTestId("provider-cost-gpt-4o")).toHaveTextContent("$0.50");
+  });
+
+  it("shows unpriced tokens in the detailed and agent-step views (#22)", async () => {
+    get.mockResolvedValue({ id: "p1", name: "Demo" });
+    getUsage.mockResolvedValue(makeUsage());
+    getSafetyEvents.mockResolvedValue({ items: [] });
+    getEnhancedUsage.mockResolvedValue({
+      totalTokens: 3000,
+      totalCostUsd: 0.5,
+      unpriced: { promptTokens: 1500, completionTokens: 500, totalTokens: 2000, count: 2 },
+      rows: [
+        {
+          dayBucket: "2026-04-23",
+          provider: "anthropic",
+          model: "deepseek-v4-pro",
+          agentStep: "docs",
+          promptTokens: 1500,
+          completionTokens: 500,
+          totalTokens: 2000,
+          estimatedCostUsd: null,
+          unpricedTokens: 2000,
+          count: 2,
+        },
+        {
+          dayBucket: "2026-04-23",
+          provider: "openai",
+          model: "gpt-4o",
+          agentStep: "chat",
+          promptTokens: 800,
+          completionTokens: 200,
+          totalTokens: 1000,
+          estimatedCostUsd: 0.5,
+          unpricedTokens: 0,
+          count: 1,
+        },
+      ],
+    });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("enhanced-unpriced")).toHaveTextContent("2,000");
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-step-chart")).toBeInTheDocument();
+    });
+    const chart = screen.getByTestId("agent-step-chart");
+    expect(chart).toHaveTextContent("2,000 tokens (66.7%) · unpriced");
+    expect(chart).toHaveTextContent("1,000 tokens (33.3%) · $0.5000");
+  });
+
+  it("hides the unpriced card when every model was priced", async () => {
+    get.mockResolvedValue({ id: "p1", name: "Demo" });
+    getUsage.mockResolvedValue(makeUsage());
+    getSafetyEvents.mockResolvedValue({ items: [] });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("usage-root")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("usage-unpriced")).not.toBeInTheDocument();
   });
 
   it("renders the by-provider breakdown table", async () => {

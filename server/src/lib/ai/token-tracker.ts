@@ -14,6 +14,11 @@ import { conventionForProvider, normalizeTokenUsage } from "./cache-verification
 import { resolveAnthropicCacheTtl, type PromptCacheTtl } from "./prompt-cache-ttl.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
+import {
+  computeCostCentsExact,
+  familyPricePerMTok,
+  resolveRate,
+} from "../finops/provider-rates.js";
 import type { ProviderKey, TokenUsage } from "./types.js";
 
 const log = createChildLogger("ai-token-tracker");
@@ -29,14 +34,16 @@ const sanitize = (n: unknown): number => {
 const dayBucketUTC = (date: Date): string => date.toISOString().slice(0, 10);
 
 /**
- * Epic #594 / Issue #605 — Model pricing lookup (USD per 1M tokens).
- * Input / output pricing for known Bedrock models.
+ * Epic #594 / Issue #605 — per-family price view (USD per 1M tokens) used by
+ * `cache-crossover.ts`. Since #22 it is DERIVED from the single pricing source
+ * (`lib/finops/provider-rates.ts`) rather than being a second rate table.
  */
-export const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  haiku: { input: 1, output: 5 },
-  sonnet: { input: 3, output: 15 },
-  opus: { input: 15, output: 75 },
-};
+export const MODEL_PRICING: Record<"haiku" | "sonnet" | "opus", { input: number; output: number }> =
+  {
+    haiku: familyPricePerMTok("haiku"),
+    sonnet: familyPricePerMTok("sonnet"),
+    opus: familyPricePerMTok("opus"),
+  };
 
 /**
  * Epic #696 / Issue #698 — Prompt-cache pricing multipliers, applied against the
@@ -59,14 +66,18 @@ export const CACHE_WRITE_MULTIPLIER_5M = 1.25;
 export const CACHE_WRITE_MULTIPLIER_1H = 2.0;
 
 /**
- * Estimate cost in USD for a token event based on model pricing.
+ * Estimate cost in USD for a token event, from the single pricing source
+ * (`lib/finops/provider-rates.ts` — the same one `token_usages` uses, #22).
  *
  * `promptTokens` here is the FULL-PRICED (uncached) input count — cache reads and
- * writes are billed separately at their reduced/premium multipliers. Callers that
+ * writes are billed separately at their reduced/premium rates. Callers that
  * start from a raw provider `usage` payload must first reconcile the two usage
  * conventions (the OpenAI-compatible gateway folds cache reads INTO `prompt_tokens`
  * while native Anthropic reports them separately); use {@link estimateUsageCostUsd}
- * to do that reconciliation. Returns 0 if the model is unrecognized.
+ * to do that reconciliation.
+ *
+ * Returns `null` when the model is UNPRICED (#22) — never `0`, which would read
+ * as "free" rather than "unknown".
  */
 export function estimateCostUsd(
   model: string,
@@ -77,26 +88,31 @@ export function estimateCostUsd(
     cacheWriteTokens?: number;
     /**
      * Write-multiplier to apply against the input rate (#702). Defaults to the
-     * 5-minute {@link CACHE_WRITE_MULTIPLIER_5M}; the 1-hour TTL passes
+     * rate's own 5-minute cache-write price ({@link CACHE_WRITE_MULTIPLIER_5M}
+     * for the Claude families); the 1-hour TTL passes
      * {@link CACHE_WRITE_MULTIPLIER_1H}. Legacy 3-arg / cache-only callers are
      * unaffected.
      */
     cacheWriteMultiplier?: number;
+    /** Emitting provider, when known — enables provider-keyed prices. */
+    provider?: string;
   } = {},
-): number {
-  const key = Object.keys(MODEL_PRICING).find((k) => model.toLowerCase().includes(k));
-  if (!key) return 0;
-  const pricing = MODEL_PRICING[key];
-  const cacheReadTokens = sanitize(cache.cacheReadTokens);
-  const cacheWriteTokens = sanitize(cache.cacheWriteTokens);
-  const cacheWriteMultiplier = cache.cacheWriteMultiplier ?? CACHE_WRITE_MULTIPLIER_5M;
-  return (
-    (promptTokens * pricing.input +
-      completionTokens * pricing.output +
-      cacheReadTokens * pricing.input * CACHE_READ_MULTIPLIER +
-      cacheWriteTokens * pricing.input * cacheWriteMultiplier) /
-    1_000_000
+): number | null {
+  const rate = resolveRate(cache.provider, model);
+  if (!rate) return null;
+  const cents = computeCostCentsExact(
+    rate,
+    {
+      inputTokens: sanitize(promptTokens),
+      outputTokens: sanitize(completionTokens),
+      cacheReadTokens: sanitize(cache.cacheReadTokens),
+      cacheWriteTokens: sanitize(cache.cacheWriteTokens),
+    },
+    cache.cacheWriteMultiplier !== undefined
+      ? { cacheWritePer1k: rate.inputPer1k * cache.cacheWriteMultiplier }
+      : {},
   );
+  return cents / 100;
 }
 
 /**
@@ -125,16 +141,15 @@ export function estimateUsageCostUsd(
   >,
   provider: ProviderKey,
   writeTtl: PromptCacheTtl = "5m",
-): number {
+): number | null {
   const norm = normalizeTokenUsage({ ...usage, totalTokens: 0 }, conventionForProvider(provider));
-  const cacheWriteMultiplier =
-    provider === "anthropic" && writeTtl === "1h"
-      ? CACHE_WRITE_MULTIPLIER_1H
-      : CACHE_WRITE_MULTIPLIER_5M;
+  // Only the 1-hour TTL overrides the rate's own (5-minute) cache-write price.
+  const oneHour = provider === "anthropic" && writeTtl === "1h";
   return estimateCostUsd(model, norm.freshInputTokens, usage.completionTokens, {
     cacheReadTokens: norm.cacheReadTokens,
     cacheWriteTokens: norm.cacheWriteTokens,
-    cacheWriteMultiplier,
+    ...(oneHour ? { cacheWriteMultiplier: CACHE_WRITE_MULTIPLIER_1H } : {}),
+    provider,
   });
 }
 
@@ -313,7 +328,8 @@ export class TokenTracker {
     promptHash: string | null;
     projectId: string | null;
     inferenceProfileArn: string | null;
-    estimatedCostUsd: number;
+    /** `null` = unpriced model (#22). */
+    estimatedCostUsd: number | null;
     agentStep: string | null;
     breakdown: Record<string, number> | null;
   }): Promise<void> {

@@ -19,8 +19,23 @@
  *   Haiku 4.5   $1 in / $5 out / $0.10 cacheRead / $1.25 cacheWrite(5m)
  *               → 0.1 / 0.5 / 0.01 / 0.125 cents-per-1k
  */
-import { describe, expect, it } from "vitest";
-import { getRate, computeCostCents, DEFAULT_RATE, __testRateKeys } from "./provider-rates.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  getRate,
+  computeCostCents,
+  DEFAULT_RATE,
+  __testRateKeys,
+  claudeFamilyRate,
+  isThirdPartyAnthropicEndpoint,
+  modelPricesSchema,
+  resolveRate,
+} from "./provider-rates.js";
+import { ConfigService } from "../config/config-service.js";
+
+/** A ConfigService reading only the given env — no DB, no vault, no process.env. */
+function configWith(env: Record<string, string>): ConfigService {
+  return new ConfigService({ env, vault: {} as never });
+}
 
 describe("provider-rates — anthropic cost attribution (#428)", () => {
   // The bare model ids the direct AnthropicProvider emits after
@@ -35,7 +50,7 @@ describe("provider-rates — anthropic cost attribution (#428)", () => {
   ];
 
   it.each(bareAnthropicModels)("has a non-zero input/output rate for anthropic:%s", (model) => {
-    const rate = getRate("anthropic", model);
+    const rate = getRate("anthropic", model)!;
     expect(rate).not.toBe(DEFAULT_RATE);
     expect(rate.inputPer1k).toBeGreaterThan(0);
     expect(rate.outputPer1k).toBeGreaterThan(0);
@@ -79,21 +94,17 @@ describe("provider-rates — anthropic cost attribution (#428)", () => {
     expect(cost).toBe(1800);
   });
 
-  it("bills an unknown anthropic model at a conservative non-zero default (never $0.00)", () => {
-    // Core #428 invariant: anthropic tokens must never bill at $0.00. An
-    // unrecognised anthropic id falls back to the sonnet-tier default rather
-    // than DEFAULT_RATE, so cost stays non-zero whenever tokens are non-zero.
-    const rate = getRate("anthropic", "claude-imaginary-9-9");
-    expect(rate).not.toBe(DEFAULT_RATE);
-    expect(rate.inputPer1k).toBeGreaterThan(0);
-    expect(computeCostCents(rate, { inputTokens: 50_000, outputTokens: 50_000 })).toBeGreaterThan(
-      0,
-    );
+  it("records an unrecognised anthropic id as UNPRICED, not at a Sonnet default (#22)", () => {
+    // #22 reverses #428's "never $0.00" fallback: that default billed EVERY
+    // unrecognised model on the anthropic provider — including a DeepSeek model
+    // reached through ANTHROPIC_BASE_URL — at Sonnet 4.6 rates. An unknown id is
+    // now unpriced (null), which the views show as unknown spend, not $0.
+    expect(getRate("anthropic", "claude-imaginary-9-9")).toBeNull();
+    expect(getRate("anthropic", "deepseek-v4-pro")).toBeNull();
   });
 
-  it("still falls through to DEFAULT_RATE for a genuinely unknown provider", () => {
-    const rate = getRate("totally-unknown-provider", "some-model");
-    expect(rate).toBe(DEFAULT_RATE);
+  it("records a genuinely unknown provider as UNPRICED, not as a zero rate (#22)", () => {
+    expect(getRate("totally-unknown-provider", "some-model")).toBeNull();
   });
 
   it("maps dated/suffixed anthropic ids to the correct family tier (#428)", () => {
@@ -149,5 +160,153 @@ describe("provider-rates — anthropic cost attribution (#428)", () => {
     const bedrock = getRate("bedrock-gateway", "us.anthropic.claude-sonnet-4-6");
     expect(bedrock.inputPer1k).toBe(0.3);
     expect(bedrock.outputPer1k).toBe(1.5);
+  });
+});
+
+describe("provider-rates — one pricing source, unpriced is null (#22)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("does not price the #22 measured DeepSeek run at Sonnet rates", () => {
+    // Measured in #22: 1,334,017 in + 1,297,372 out on deepseek-v4-pro were
+    // recorded as 2,349 cents — exactly Sonnet 4.6's $3/$15.
+    const rate = resolveRate("anthropic", "deepseek-v4-pro", { config: configWith({}), env: {} });
+    expect(rate).toBeNull();
+    expect(computeCostCents(rate, { inputTokens: 1_334_017, outputTokens: 1_297_372 })).toBeNull();
+  });
+
+  it("prices a model from the administrator's MODEL_PRICES (USD per MTok)", () => {
+    const config = configWith({
+      MODEL_PRICES: JSON.stringify({
+        "deepseek-v4-pro": { inputPerMTok: 1.32, outputPerMTok: 3.96, cacheReadPerMTok: 0.044 },
+      }),
+    });
+    const rate = resolveRate("anthropic", "deepseek-v4-pro", { config, env: {} });
+    expect(rate?.inputPer1k).toBeCloseTo(0.132, 12);
+    expect(rate?.outputPer1k).toBeCloseTo(0.396, 12);
+    expect(rate?.cacheReadPer1k).toBeCloseTo(0.0044, 12);
+    // No cache-write price given → none invented (falls back to input at compute time).
+    expect(rate?.cacheWritePer1k).toBeUndefined();
+    // 1M in @ $1.32 + 1M out @ $3.96 = $5.28 = 528 cents.
+    expect(computeCostCents(rate, { inputTokens: 1_000_000, outputTokens: 1_000_000 })).toBe(528);
+  });
+
+  it("prefers a provider:model price over a bare model price", () => {
+    const config = configWith({
+      MODEL_PRICES: JSON.stringify({
+        "m-1": { inputPerMTok: 1, outputPerMTok: 1 },
+        "openai:m-1": { inputPerMTok: 9, outputPerMTok: 9 },
+      }),
+    });
+    expect(resolveRate("openai", "m-1", { config, env: {} })?.inputPer1k).toBe(0.9);
+    expect(resolveRate("anthropic", "m-1", { config, env: {} })?.inputPer1k).toBe(0.1);
+    // No provider known (model-only caller): the bare key applies.
+    expect(resolveRate(undefined, "m-1", { config, env: {} })?.inputPer1k).toBe(0.1);
+  });
+
+  it("lets an administrator's price replace a built-in one", () => {
+    const config = configWith({
+      MODEL_PRICES: JSON.stringify({ "gpt-4o": { inputPerMTok: 1, outputPerMTok: 2 } }),
+    });
+    expect(resolveRate("openai", "gpt-4o", { config, env: {} })?.inputPer1k).toBe(0.1);
+  });
+
+  it("never resolves a model id to an Object.prototype member", () => {
+    const config = configWith({
+      MODEL_PRICES: JSON.stringify({ "m-1": { inputPerMTok: 1, outputPerMTok: 1 } }),
+    });
+    expect(resolveRate("openai", "constructor", { config, env: {} })).toBeNull();
+    expect(resolveRate(undefined, "toString", { config, env: {} })).toBeNull();
+  });
+
+  it("ignores a MODEL_PRICES value that does not validate rather than throwing", () => {
+    const config = configWith({ MODEL_PRICES: "{not json" });
+    expect(resolveRate("anthropic", "deepseek-v4-pro", { config, env: {} })).toBeNull();
+    expect(resolveRate("openai", "gpt-4o", { config, env: {} })?.inputPer1k).toBe(0.25);
+  });
+
+  it("does not apply Anthropic list prices behind a third-party ANTHROPIC_BASE_URL", () => {
+    // DeepSeek maps claude-haiku-* to deepseek-flash and bills its own price
+    // (https://api-docs.deepseek.com/guides/anthropic_api).
+    const env = { ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic" };
+    const config = configWith({});
+    expect(resolveRate("anthropic", "claude-haiku-4-5", { config, env })).toBeNull();
+    // ...but an administrator's price still applies there.
+    const priced = configWith({
+      MODEL_PRICES: JSON.stringify({
+        "claude-haiku-4-5": { inputPerMTok: 0.3, outputPerMTok: 1.2 },
+      }),
+    });
+    expect(resolveRate("anthropic", "claude-haiku-4-5", { config: priced, env })?.inputPer1k).toBe(
+      0.03,
+    );
+    // Bedrock is unaffected by the anthropic provider's base URL.
+    expect(
+      resolveRate("bedrock-gateway", "us.anthropic.claude-sonnet-4-6", { config, env })?.inputPer1k,
+    ).toBe(0.3);
+  });
+
+  it("treats api.anthropic.com (or no base URL) as Anthropic itself", () => {
+    expect(isThirdPartyAnthropicEndpoint({})).toBe(false);
+    expect(isThirdPartyAnthropicEndpoint({ ANTHROPIC_BASE_URL: "https://api.anthropic.com" })).toBe(
+      false,
+    );
+    expect(isThirdPartyAnthropicEndpoint({ ANTHROPIC_BASE_URL: "http://localhost:8080" })).toBe(
+      true,
+    );
+    expect(isThirdPartyAnthropicEndpoint({ ANTHROPIC_BASE_URL: "not a url" })).toBe(true);
+    expect(
+      resolveRate("anthropic", "claude-sonnet-4-6", {
+        config: configWith({}),
+        env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
+      })?.inputPer1k,
+    ).toBe(0.3);
+  });
+
+  it("reads the process-wide config and env by default", () => {
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic");
+    expect(getRate("anthropic", "claude-sonnet-4-6")).toBeNull();
+    vi.stubEnv("ANTHROPIC_BASE_URL", "");
+    vi.stubEnv(
+      "MODEL_PRICES",
+      JSON.stringify({ "x-model": { inputPerMTok: 2, outputPerMTok: 4 } }),
+    );
+    expect(getRate("anthropic", "x-model")?.outputPer1k).toBe(0.4);
+  });
+
+  it("prices each Claude family at its published rate, on any provider spelling", () => {
+    // Opus 4 / 4.1 are $15/$75; Opus 4.5+ are $5/$25 (pricing page, 2026-09-21).
+    expect(claudeFamilyRate("us.anthropic.claude-opus-4-20250514-v1:0")?.inputPer1k).toBe(1.5);
+    expect(claudeFamilyRate("claude-opus-4-1")?.outputPer1k).toBe(7.5);
+    expect(claudeFamilyRate("claude-opus-4-5")?.inputPer1k).toBe(0.5);
+    expect(claudeFamilyRate("claude-opus-5")?.inputPer1k).toBe(0.5);
+    // Sonnet 5 is $2/$10; earlier Sonnets $3/$15.
+    expect(claudeFamilyRate("claude-sonnet-5")?.inputPer1k).toBe(0.2);
+    expect(claudeFamilyRate("claude-sonnet-5")?.outputPer1k).toBe(1);
+    expect(claudeFamilyRate("claude-sonnet-4-5-20250929")?.inputPer1k).toBe(0.3);
+    expect(claudeFamilyRate("Claude-Haiku-v3")?.inputPer1k).toBe(0.1);
+    expect(claudeFamilyRate("deepseek-v4-pro")).toBeUndefined();
+    expect(claudeFamilyRate("gpt-4o")).toBeUndefined();
+  });
+
+  it("validates MODEL_PRICES writes", () => {
+    expect(
+      modelPricesSchema.safeParse('{"m": {"inputPerMTok": 1, "outputPerMTok": 2}}').success,
+    ).toBe(true);
+    expect(modelPricesSchema.safeParse({ m: { inputPerMTok: 1, outputPerMTok: 2 } }).success).toBe(
+      true,
+    );
+    expect(modelPricesSchema.safeParse("{bad").success).toBe(false);
+    expect(modelPricesSchema.safeParse({ m: { inputPerMTok: -1, outputPerMTok: 2 } }).success).toBe(
+      false,
+    );
+    // Unknown fields are rejected so a typo (outputPerMtok) cannot silently price at 0.
+    expect(modelPricesSchema.safeParse({ m: { inputPerMTok: 1, outputPerMtok: 2 } }).success).toBe(
+      false,
+    );
+    expect(modelPricesSchema.safeParse({ "": { inputPerMTok: 1, outputPerMTok: 2 } }).success).toBe(
+      false,
+    );
   });
 });

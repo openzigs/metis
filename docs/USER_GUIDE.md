@@ -3936,6 +3936,18 @@ Navigate to **Projects → [Your Project] → Usage** to view the project usage 
 4. **By provider breakdown** — Table showing usage by AI provider and model
 5. **Detailed analytics** — Time range filter (7d/30d/90d), group-by selector (day/model/user), and CSV export
 
+#### Unpriced usage
+
+METIS prices usage from published list prices for the models it knows. Usage from a model it has no price for — for example a DeepSeek model reached through `ANTHROPIC_BASE_URL` — is recorded as **unpriced**: it is left out of every dollar figure and shown separately, with its input and output token counts, in an **Unpriced usage** card, an **Unpriced tokens** figure, and as `Unpriced` in the cost column. In CSV exports its cost cell is empty and an `unpricedTokens` column carries the tokens. It is never shown as `$0.00`.
+
+An administrator can price such a model under **Settings → Configuration** (`/settings/api-keys`) with the `MODEL_PRICES` setting — a JSON object of USD-per-million-token prices keyed by model id, or `provider:model` for one provider only:
+
+```json
+{ "deepseek-v4-pro": { "inputPerMTok": 1.32, "outputPerMTok": 3.96, "cacheReadPerMTok": 0.044 } }
+```
+
+`cacheReadPerMTok` and `cacheWritePerMTok` are optional and default to the input price. A price applies to usage recorded after it is saved; earlier rows keep the cost they were recorded with. When `ANTHROPIC_BASE_URL` points at a provider other than Anthropic, Anthropic's own list prices are not applied even to `claude-*` model names, because such a provider bills its own prices — set them here.
+
 #### Time Range & Grouping
 
 Use the **range selector** to view usage over 7, 30, or 90 days. The **group-by** selector lets you aggregate by day, model, or user.

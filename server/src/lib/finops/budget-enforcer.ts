@@ -73,7 +73,8 @@ async function getMtdAggregate(
   let cents = 0;
   for (const r of rows) {
     tokens += r.totalTokens;
-    cents += r.costCents;
+    // #22 — an unpriced row (null) adds tokens but no known cost.
+    cents += r.costCents ?? 0;
   }
   return { tokens, cents };
 }
@@ -132,7 +133,13 @@ export interface UsageSummaryRow {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** Cost of the PRICED usage only — unpriced usage is in {@link unpriced}. */
   costCents: number;
+  /**
+   * #22 — usage from models METIS had no price for (`costCents` NULL). Kept
+   * apart so an unknown cost is never summed in as $0.
+   */
+  unpriced: UnpricedUsage;
   projectedMonthlyCostCents: number;
   monthlyTokenBudget: number | null;
   monthToDateTokens: number;
@@ -142,7 +149,10 @@ export interface UsageSummaryRow {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
-    costCents: number;
+    /** `null` when NONE of this model's usage was priced. */
+    costCents: number | null;
+    /** Tokens from this model's unpriced rows. */
+    unpricedTokens: number;
   }>;
   byDay: Array<{
     day: string;
@@ -150,7 +160,17 @@ export interface UsageSummaryRow {
     outputTokens: number;
     totalTokens: number;
     costCents: number;
+    unpricedTokens: number;
   }>;
+}
+
+/** #22 — token totals for usage recorded without a price. */
+export interface UnpricedUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  /** Number of recorded model calls. */
+  calls: number;
 }
 
 /**
@@ -183,33 +203,23 @@ export async function summarizeUsage(
   let outputTokens = 0;
   let totalTokens = 0;
   let costCents = 0;
-  const byProviderMap = new Map<
-    string,
-    {
-      provider: string;
-      model: string;
-      inputTokens: number;
-      outputTokens: number;
-      totalTokens: number;
-      costCents: number;
-    }
-  >();
-  const byDayMap = new Map<
-    string,
-    {
-      day: string;
-      inputTokens: number;
-      outputTokens: number;
-      totalTokens: number;
-      costCents: number;
-    }
-  >();
+  const unpriced: UnpricedUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0 };
+  const byProviderMap = new Map<string, UsageSummaryRow["byProvider"][number]>();
+  const byDayMap = new Map<string, UsageSummaryRow["byDay"][number]>();
 
   for (const r of rows) {
     inputTokens += r.inputTokens;
     outputTokens += r.outputTokens;
     totalTokens += r.totalTokens;
-    costCents += r.costCents;
+    const rowCents = r.costCents;
+    if (rowCents === null) {
+      unpriced.inputTokens += r.inputTokens;
+      unpriced.outputTokens += r.outputTokens;
+      unpriced.totalTokens += r.totalTokens;
+      unpriced.calls += 1;
+    } else {
+      costCents += rowCents;
+    }
     const pkey = `${r.provider}:${r.model}`;
     const cur = byProviderMap.get(pkey) ?? {
       provider: r.provider,
@@ -217,12 +227,14 @@ export async function summarizeUsage(
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
-      costCents: 0,
+      costCents: null,
+      unpricedTokens: 0,
     };
     cur.inputTokens += r.inputTokens;
     cur.outputTokens += r.outputTokens;
     cur.totalTokens += r.totalTokens;
-    cur.costCents += r.costCents;
+    if (rowCents === null) cur.unpricedTokens += r.totalTokens;
+    else cur.costCents = (cur.costCents ?? 0) + rowCents;
     byProviderMap.set(pkey, cur);
 
     const day = r.createdAt.toISOString().slice(0, 10);
@@ -232,11 +244,13 @@ export async function summarizeUsage(
       outputTokens: 0,
       totalTokens: 0,
       costCents: 0,
+      unpricedTokens: 0,
     };
     dcur.inputTokens += r.inputTokens;
     dcur.outputTokens += r.outputTokens;
     dcur.totalTokens += r.totalTokens;
-    dcur.costCents += r.costCents;
+    if (rowCents === null) dcur.unpricedTokens += r.totalTokens;
+    else dcur.costCents += rowCents;
     byDayMap.set(day, dcur);
   }
 
@@ -254,6 +268,7 @@ export async function summarizeUsage(
     outputTokens,
     totalTokens,
     costCents,
+    unpriced,
     projectedMonthlyCostCents: projectMonthlyFromMtd(mtd.cents, now),
     monthlyTokenBudget: project?.monthlyTokenBudget ?? null,
     monthToDateTokens: mtd.tokens,

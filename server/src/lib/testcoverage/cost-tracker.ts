@@ -110,7 +110,9 @@ export class CoverageCostTracker {
         this.suggestionTokens += total;
         break;
     }
-    this.estimatedUsd += estimateCostUsd(modelId, prompt, completion);
+    // #22 — an unpriced model (null) has no estimable cost; its tokens are
+    // still counted above.
+    this.estimatedUsd += estimateCostUsd(modelId, prompt, completion) ?? 0;
 
     tracker.record({
       sessionId: this.sessionId,

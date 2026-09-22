@@ -64,6 +64,7 @@ import {
   type TruncationDetection,
 } from "./truncation.js";
 import { resolveFactsMaxOutputTokens, resolveSectionMaxOutputTokens } from "./output-caps.js";
+import { mapSettledWithConcurrency, resolvePhase1Concurrency } from "./phase1-concurrency.js";
 import {
   loadRepositorySources,
   repositoryPathIdentity,
@@ -1152,45 +1153,46 @@ export async function synthesizeHolisticDocument(
     repositories: repositories.size,
   });
 
-  // Phase 1: extract compact facts per module (parallel, capped concurrency).
-  // Default concurrency is 3 to stay within ALB idle timeout limits when
-  // using Sonnet on large modules. Bump via DOCS_GEN_PHASE1_CONCURRENCY
-  // if your gateway supports longer timeouts.
+  // Phase 1: extract compact facts per module, keeping up to
+  // DOCS_GEN_PHASE1_CONCURRENCY extractions in flight (#25 — a worker pool, not
+  // fixed batches that each waited for their slowest module). Registry-backed
+  // (db → env), default 3; raise it for a provider/gateway that allows more.
   const facts: ModuleFacts[] = [];
-  const CONCURRENCY = Number(process.env.DOCS_GEN_PHASE1_CONCURRENCY) || 3;
+  const concurrency = resolvePhase1Concurrency();
   const phase1Start = Date.now();
-  for (let i = 0; i < modules.length; i += CONCURRENCY) {
-    const batch = modules.slice(i, i + CONCURRENCY);
-    const results = await Promise.allSettled(
-      batch.map((m) =>
-        extractModuleFacts(
-          m,
-          phase1.provider,
-          phase1.supportsCaching,
-          projectId,
-          m.repository ? (repositories.get(m.repository.codeGraphId)?.root ?? null) : null,
-          graphSummary,
-          phase1.effectiveConfigHash,
-        ),
+  const progressEvery = Math.max(concurrency * 5, 1);
+  const results = await mapSettledWithConcurrency(
+    modules,
+    concurrency,
+    (m) =>
+      extractModuleFacts(
+        m,
+        phase1.provider,
+        phase1.supportsCaching,
+        projectId,
+        m.repository ? (repositories.get(m.repository.codeGraphId)?.root ?? null) : null,
+        graphSummary,
+        phase1.effectiveConfigHash,
       ),
-    );
-    for (let j = 0; j < results.length; j++) {
-      const r = results[j];
-      if (r.status === "fulfilled" && r.value) {
-        facts.push(r.value);
-      } else if (r.status === "rejected") {
-        log.warn("Module fact extraction failed", {
-          err: String(r.reason),
-          dir: batch[j].dir,
+    (completed, total) => {
+      if (completed % progressEvery === 0 || completed === total) {
+        log.info("Phase 1 progress", {
+          completed,
+          total,
+          concurrency,
+          elapsedSec: Math.round((Date.now() - phase1Start) / 1000),
         });
       }
-    }
-    if ((i / CONCURRENCY) % 5 === 0) {
-      const elapsed = Math.round((Date.now() - phase1Start) / 1000);
-      log.info("Phase 1 progress", {
-        completed: facts.length,
-        total: modules.length,
-        elapsedSec: elapsed,
+    },
+  );
+  for (let j = 0; j < results.length; j++) {
+    const r = results[j];
+    if (r.status === "fulfilled" && r.value) {
+      facts.push(r.value);
+    } else if (r.status === "rejected") {
+      log.warn("Module fact extraction failed", {
+        err: String(r.reason),
+        dir: modules[j].dir,
       });
     }
   }

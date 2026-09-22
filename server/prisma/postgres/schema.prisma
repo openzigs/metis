@@ -656,7 +656,10 @@ model TokenUsage {
   cacheReadTokens  Int      @default(0)
   cacheWriteTokens Int      @default(0)
   totalTokens      Int      @default(0)
-  costCents        Int      @default(0)
+  /// #22 — integer cents, or NULL when the model was UNPRICED at record time
+  /// (no built-in price and no MODEL_PRICES entry). NULL is unknown spend,
+  /// never zero spend.
+  costCents        Int?
   createdAt        DateTime @default(now())
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
