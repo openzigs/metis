@@ -133,11 +133,10 @@ jobs:
       # Image Sizes").
       #
       # Budget note (#34): metis-ui is gated at ≤350 MB. metis-server is held to
-      # its OWN measured amd64 budget (900 MB, DEFAULT_MAX_SERVER_IMAGE_MB) —
-      # the old ~329 MB figure was never re-measured as the image grew. 900 MB is
-      # the measured size plus ~10% and is PROVISIONAL until #39: ~237 MB of it
-      # (Oracle client, LanceDB) does not even load in this image. The breakdown
-      # is in docs/OPERATIONS.md > "Container Image Sizes".
+      # its OWN measured amd64 budget (DEFAULT_MAX_SERVER_IMAGE_MB) — the old
+      # ~329 MB figure was never re-measured as the image grew. The budget is the
+      # measured size of an image that STARTS (#39, smoke step below) plus
+      # headroom; the breakdown is in docs/OPERATIONS.md > "Container Image Sizes".
       #
       # This gate previously allowed 1200 MB. That was NOT the real budget — it
       # was an arm64 allowance, because the runner was arm64 and a
@@ -249,6 +248,20 @@ jobs:
           MAX_IMAGE_MB: "350"
           IMAGE_TAG: "ci-${{ github.run_id }}" # #801 — must match the build step
         run: node scripts/lib/verify-image-size.mjs --no-build
+
+      # #39 — the image must RUN, not just build and weigh. `main` shipped a
+      # metis-server that exited at import time (a runtime dependency declared as a
+      # devDependency, a pruned `@prisma/debug`, a glibc-only LanceDB binding on a
+      # musl base) while every gate here was green, because nothing ever started it.
+      # This starts the built image with its own CMD, polls /healthz until 200, then
+      # loads inside the running container the native/lazy modules /healthz never
+      # touches (LanceDB, mysql2, better-sqlite3, Oracle thick mode) and checks the
+      # runtime user can write its home directory. A container that exits, a
+      # /healthz that never answers, or a probe that fails fails the job, with the
+      # container log printed.
+      - name: Smoke-test metis-server (starts, serves /healthz)
+        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+        run: node scripts/lib/smoke-server-image.mjs --image "metis-server:ci-${{ github.run_id }}" --timeout 180
 
       - name: Clean up test images
         if: always()

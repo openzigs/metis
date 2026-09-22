@@ -4,7 +4,7 @@
  * Port of `scripts/verify-image-size.sh`: builds the metis-server / metis-ui /
  * metis-embeddings images (unless `--no-build`) and asserts metis-ui stays under
  * `MAX_IMAGE_MB` (default 350) and metis-server under its own measured budget,
- * `MAX_SERVER_IMAGE_MB` (default 900, #34). The embeddings sidecar is measured
+ * `MAX_SERVER_IMAGE_MB` (default 1170, #34, #39). The embeddings sidecar is measured
  * for visibility but exempt from the budget (Issue #145).
  *
  * Runs on Windows, macOS, and Linux: `docker` is invoked via
@@ -25,18 +25,19 @@ import process from "node:process";
 export const DEFAULT_MAX_IMAGE_MB = 350;
 
 /**
- * `metis-server`'s own budget, in MB, measured on a GitHub-hosted amd64 runner (#34).
+ * `metis-server`'s own budget, in MB, measured on a GitHub-hosted amd64 runner.
  *
- * 900 MB is the measured amd64 size (821 MB) plus ~10% headroom, and it is
- * PROVISIONAL: two of the largest contributors — the Oracle Instant Client and
- * LanceDB's native library, ~237 MB together — do not load in this image (#39),
- * and three `@napi-rs/canvas` copies and tesseract's unused WASM variants are
- * still reducible. Re-measure once #39 lands. The breakdown is in
+ * #34 measured 821 MB and set 900, provisionally: that image did not start (#39).
+ * The image that starts — a glibc base, because LanceDB ships no musl binding, and
+ * the Prisma CLI the boot-time migration guard runs — measured 1,068 MB on the
+ * `api` job (run 35712009974); 1,170 is that plus ~10% headroom. CI now starts
+ * the image and polls /healthz (scripts/lib/smoke-server-image.mjs), so this
+ * budget describes an image that runs. The breakdown and the reducible contributors are in
  * docs/OPERATIONS.md > "Container Image Sizes". This is a REGRESSION gate:
  * measured size plus modest headroom, never a number raised until CI goes green.
  * `MAX_SERVER_IMAGE_MB` overrides it.
  */
-export const DEFAULT_MAX_SERVER_IMAGE_MB = 900;
+export const DEFAULT_MAX_SERVER_IMAGE_MB = 1170;
 
 /** @typedef {{ tag: string, mb: number | null, exempt: boolean, budgetMb?: number }} ImageSize */
 

@@ -323,7 +323,7 @@ The release pipeline ships three images:
 | Image | Built from | Current size | Budget |
 |---|---|---|---|
 | `metis-ui` | `Dockerfile.ui` (Next.js 15 standalone, alpine) | **~197 MB** | ≤ 350 MB ✅ |
-| `metis-server` | `Dockerfile.server` (alpine, prod-only deps, slimmed) | **~820 MB** (amd64, measured #34) | ≤ 900 MB — its own budget, see below |
+| `metis-server` | `Dockerfile.server` (`node:22-trixie-slim`, glibc, prod-only deps, slimmed) | **~1,068 MB** (amd64, measured #39) | ≤ 1,170 MB — its own budget, see below |
 | `metis-embeddings` | `Dockerfile.embeddings` (bookworm-slim, glibc) | **~423 MB** | exempt (sidecar) |
 
 > **Multi-arch (Epic #360 / sub-issue #373)**: All four core images
@@ -354,9 +354,9 @@ by combining three changes:
 3. **Aggressive `node_modules` prune** — `Dockerfile.server` now does a clean
    `pnpm install --prod --frozen-lockfile` in a dedicated `prod-deps` stage,
    then surgically removes:
-   - `typescript`, `prisma` CLI, `effect`, `fast-check`, `magicast` and the
-     rest of `@prisma/config`'s transitive tree (these get pulled in as
-     optional peer deps of `@prisma/client` even with `--prod`)
+   - `typescript` (the `prisma` CLI, `effect`, `fast-check` and the rest of
+     `@prisma/config`'s tree were deleted here too until #39 — the boot-time
+     migration guard runs that CLI, so the image could not start without it)
    - All `@types/*` packages
    - All `*.map`, `*.d.ts`, and source `*.ts` files
    - `node-sql-parser`'s 45 MB UMD bundle and 23 MB `build/` dir
@@ -394,37 +394,56 @@ What is left, measured in the amd64 image (MiB, from `du`):
 
 | Component | Size | Notes |
 |---|---|---|
-| Oracle Instant Client (basiclite 23.9, `.so` only) | ~138 | Intended for thick mode (pre-12c password verifiers); does not load today (#39) |
+| Oracle Instant Client (basiclite 23.9, `.so` only) | ~138 | Thick mode (pre-12c password verifiers); did not load in this image — loads since #39 |
 | Node.js 20 runtime (`/usr/local`) | ~104 | The `node` binary alone is 97 |
-| `@lancedb/vectordb-linux-x64-gnu` | ~99 | Single native library; does not load on musl today (#39) |
-| `@napi-rs/canvas` ×3 (pdf-parse and two `pdfjs-dist` versions each pin their own) | ~88 | Native, musl |
+| `@lancedb/vectordb-linux-x64-gnu` | ~99 | Single native library; did not load on musl — loads on the glibc base since #39 |
+| `@napi-rs/canvas` ×3 (pdf-parse and two `pdfjs-dist` versions each pin their own) | ~88 | Native (musl then; glibc since #39) |
 | `tesseract.js-core` | ~44 | OCR WASM, via `officeparser` |
 | `@prisma/client` | ~41 | After the prunes |
 | mermaid, `@kubernetes/client-node`, playwright-core, cytoscape, pdfjs-dist ×2 | ~92 | |
 | Everything else in `node_modules` | ~212 | ~750 store entries |
 | Compiled server (`server/dist`) + Prisma schema | ~29 | |
 
-**The 900 MB budget is a measured ceiling, not a floor, and it is provisional
-until #39 is fixed.** CI measured `metis-server` at **821 MB** (`api` run
-35673206512); the gate holds it to its own budget, **900 MB**
-(`DEFAULT_MAX_SERVER_IMAGE_MB` in `scripts/lib/verify-image-size.mjs`,
-overridable with `MAX_SERVER_IMAGE_MB`), which is that measurement plus ~10%
-headroom, as a regression guard. `metis-ui` stays on the general 350 MB — a
-larger server budget does not loosen it.
+#34 measured **821 MB** (`api` run 35673206512) and set a provisional 900 MB
+budget. That image did not start (#39), so neither figure described a working
+server.
 
-Do not cite the table above as the smallest this image can be. Two of its
-largest rows do not work in this image today (#39): the Oracle Instant Client
-fails `initOracleClient` with `DPI-1047` (`libnnz.so` is not found on the
-loader path, although the file is present), and `@lancedb/vectordb` fails to
-relocate on musl. That is ~237 MB counted as features that are not delivered.
-Fixing #39 may mean a glibc base image (larger) or dropping the Instant Client
-(~138 MB smaller); either way the budget must be re-measured then, and lowered
-if the measurement allows.
+### Why the server's budget is 1,170 MB (#39)
+
+The 821 MB image exited at import time and could not have run even if it had
+got further. The fixes that make it start, measured on amd64 (`du`, MiB; the
+`api` job's `docker image inspect` figure is the authoritative one):
+
+| Change | Effect | Why |
+|---|---|---|
+| Runtime base `node:20-alpine` → `node:22-trixie-slim` (glibc) | +97 | LanceDB — the default vector store — publishes `@lancedb/vectordb-linux-{x64,arm64}-gnu` only. On musl it fails to relocate (`__register_atfork: symbol not found`), which `gcompat` does not provide. The deprecated `vectordb` package the server uses (0.21) has no musl build; its successor `@lancedb/lancedb` does (`linux-{x64,arm64}-musl`), so a return to alpine means migrating the vector store to that SDK first — a code change, not an image change. Oracle's Instant Client is a glibc build too. Trixie rather than bookworm because better-sqlite3 13's prebuilt binary needs glibc ≥ 2.38 (bookworm has 2.36); Node 22 because that is the repository's `engines.node` floor and better-sqlite3 13 requires it |
+| The Prisma CLI tree is kept (`prisma`, `@prisma/studio-core`, `@prisma/engines`, `@electric-sql/pglite`, `effect`, react-dom, …) | +150 | `server/src/lib/db/migration-guard.ts` runs `prisma migrate deploy` before the server listens. It used to spawn `pnpm exec prisma`, and the runtime ships no package manager; it now runs the CLI with the server's own `node`. `prisma/build/index.js` requires studio-core and `@prisma/dev` statically, so the tree cannot be trimmed further by reachability |
+| `@napi-rs/canvas` ×3: `linux-x64-gnu` replaces `linux-x64-musl` | +9 | |
+| `@prisma/debug`, `mysql2`, `fast-check`, `jszip` restored | <2 | Runtime imports of `@prisma/driver-adapter-utils`, the MySQL connector, `effect`, and `archive-extract.ts` respectively |
+| Oracle Instant Client on the loader path (`ld.so.conf.d` + `libaio`) | <1 | `initOracleClient` failed with `DPI-1047` without it |
+
+In total the image grew from 860 to 1,111 MiB by `du` (849 → 1,101 MB of
+uncompressed layers), and the `api` job measured it at **1,067.7 MB** (run
+35712009974). The gate holds it to **1,170 MB** (`DEFAULT_MAX_SERVER_IMAGE_MB` in
+`scripts/lib/verify-image-size.mjs`, overridable with `MAX_SERVER_IMAGE_MB`) —
+that measurement plus ~10% headroom, as a regression guard. `metis-ui` stays on
+the general 350 MB.
+
+Every row of the #34 breakdown above now loads: the `api` job starts the image,
+waits for `/healthz`, and then loads LanceDB, `mysql2`, `better-sqlite3` and
+`oracledb` in thick mode inside the running container, and checks that the
+runtime user can write its home directory
+(`scripts/lib/smoke-server-image.mjs`). A size figure for an image that does not
+pass that step is not a measurement of this product.
 
 Reducible contributors still in the image, measured in review of #38:
 
-- The Oracle Instant Client (~138 MB), which does not load (#39) — the
-  strongest candidate for a build argument
+- The Oracle Instant Client (~138 MB) — the strongest candidate for a build
+  argument; only the Oracle connector's thick mode (pre-12c password verifiers)
+  uses it
+- The Prisma CLI tree (~150 MiB), kept only for the boot-time migration guard —
+  running `prisma migrate deploy` as a separate init step instead would let the
+  image drop it
 - Three copies of `@napi-rs/canvas` (~55 MB recoverable by deduplicating to one
   version — needs `pdfjs-dist` aligned across `pdf-parse` and `officeparser`)
 - `tesseract.js-core` WASM variants (~35 MB — 12 variants ship, about 2 are used)
@@ -439,7 +458,7 @@ rather than a prune.
 The `pnpm verify:image-size` script (`scripts/lib/verify-image-size.mjs`; the
 older `scripts/verify-image-size.sh` does the same) builds both **gated** images
 and asserts `metis-ui` is ≤ `MAX_IMAGE_MB` (default **350**) and `metis-server`
-is ≤ `MAX_SERVER_IMAGE_MB` (default **900**).
+is ≤ `MAX_SERVER_IMAGE_MB` (default **1,170**).
 The embeddings sidecar size is reported but not gated. The script exits
 non-zero when the budget is exceeded and is wired into CI as part of the
 `api` job.

@@ -12,22 +12,32 @@
 #   4. Surgical post-install prune of `@github/copilot` CLI fat (tree-sitter
 #      wasm grammars for languages we don't inspect, README/CHANGELOG).
 #
-# Base image: `node:20-alpine` (~75 MB). Measured runtime size and what makes it
-# up: docs/OPERATIONS.md > "Container Image Sizes" (#34). Native modules left in the runtime
-# tree (`argon2`, `@lancedb/vectordb`, `@github/copilot`, `@prisma/client`)
-# all ship musl variants.
+# Base image: `node:22-trixie-slim` (glibc), NOT alpine (#39). LanceDB — the
+# default RAG vector store — publishes its native binding for glibc only
+# (`@lancedb/vectordb-linux-{x64,arm64}-gnu`); on musl it fails to load with
+# `__register_atfork: symbol not found`, which `gcompat` does not provide. Oracle's
+# Instant Client is also a glibc build. Trixie, not bookworm: better-sqlite3 13's
+# prebuilt binary needs glibc >= 2.38 and bookworm ships 2.36 (measured: the
+# module failed to load with "GLIBC_2.38 not found"). Node 22, not 20: the repo's
+# `engines.node` is >=22.12.0, better-sqlite3 13 requires >=22, and on Node 20 its
+# binary segfaulted on first use (measured, #39). Measured runtime size and what makes it up:
+# docs/OPERATIONS.md > "Container Image Sizes" (#34, #39). CI starts this image and
+# polls /healthz (scripts/lib/smoke-server-image.mjs), so an image that cannot boot
+# fails `api` rather than passing it.
 # ==============================================================================
 
-ARG NODE_VERSION=20
+ARG NODE_VERSION=22
 
 # ----- Stage 1: deps + build (full dev tree) -------------------------------
-FROM node:${NODE_VERSION}-alpine AS builder
+FROM node:${NODE_VERSION}-trixie-slim AS builder
 WORKDIR /app
 
 ENV PNPM_HOME=/usr/local/share/pnpm
 ENV PATH="${PNPM_HOME}:${PATH}"
 
-RUN apk add --no-cache libc6-compat python3 make g++ \
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
  && corepack enable \
  && corepack prepare pnpm@10.33.0 --activate
 
@@ -99,13 +109,15 @@ RUN mkdir -p "${METIS_XENOVA_CACHE}" \
 # Fresh stage so we get a fresh node_modules with prod-only deps. We can't
 # reuse the dev tree from the builder stage because pnpm's symlinked store
 # retains stale dev metadata even after `prune --prod`.
-FROM node:${NODE_VERSION}-alpine AS prod-deps
+FROM node:${NODE_VERSION}-trixie-slim AS prod-deps
 WORKDIR /app
 
 ENV PNPM_HOME=/usr/local/share/pnpm
 ENV PATH="${PNPM_HOME}:${PATH}"
 
-RUN apk add --no-cache libc6-compat python3 make g++ \
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
  && corepack enable \
  && corepack prepare pnpm@10.33.0 --activate
 
@@ -129,38 +141,27 @@ RUN pnpm install --prod --frozen-lockfile \
  && pnpm store prune \
  && rm -rf /root/.cache /root/.npm /root/.local /tmp/* /usr/local/share/pnpm/store
 
-# Post-install prune: drop transitive dev-time fat that @prisma/client lists
-# as optional peer deps (typescript, prisma CLI, effect from @prisma/config).
-# These are NOT needed at runtime — the Prisma client has already been
-# generated above. Keeping them adds ~110 MB for nothing.
+# Post-install prune: the TypeScript compiler is a peer that nothing at runtime
+# runs (prisma.config.ts is loaded by the Prisma CLI through jiti, not tsc).
+#
+# #39 — the Prisma CLI and its tree (@prisma/config, @prisma/engines, effect, c12,
+# jiti, ...) are NO LONGER deleted here. The server applies pending migrations at
+# boot (server/src/lib/db/migration-guard.ts, #379/#380) by running that CLI, so an
+# image without it refused to start. It costs ~150 MiB (measured, #39), see
+# docs/OPERATIONS.md > "Container Image Sizes". `@prisma/debug` was also deleted
+# here: it is a runtime import of `@prisma/driver-adapter-utils`, which both
+# adapters server/src/lib/prisma.ts imports statically depend on.
 RUN set -eux; \
     rm -rf node_modules/.pnpm/typescript@* \
-           node_modules/.pnpm/prisma@*  \
-           node_modules/.pnpm/@prisma+config@* \
-           node_modules/.pnpm/@prisma+debug@* \
-           node_modules/.pnpm/@prisma+fetch-engine@* \
-           node_modules/.pnpm/@prisma+get-platform@* \
-           node_modules/.pnpm/@prisma+engines@* \
-           node_modules/.pnpm/@prisma+engines-version@* \
-           node_modules/.pnpm/effect@* \
-           node_modules/.pnpm/magicast@* \
-           node_modules/.pnpm/@babel+* \
-           node_modules/.pnpm/c12@* \
-           node_modules/.pnpm/citty@* \
-           node_modules/.pnpm/giget@* \
-           node_modules/.pnpm/jiti@* \
-           2>/dev/null || true; \
-    # Drop the dangling top-level prisma symlink + the .bin entries that
-    # point at it. Nothing at runtime invokes the CLI.
-    rm -rf node_modules/prisma node_modules/.bin/prisma \
            node_modules/.bin/tsc node_modules/.bin/tsserver \
-           server/node_modules/prisma server/node_modules/.bin/prisma \
            2>/dev/null || true
 
 # #34 — prune the store by REACHABILITY rather than by glob. `prisma` (the CLI) is
 # a server runtime dependency and a peer of @prisma/client, so `--prod` installs its
 # whole tree (@prisma/studio-core, @prisma/dev, @electric-sql/pglite, react-dom,
-# its own better-sqlite3 and mysql2 ...). Nothing at runtime runs the CLI. The
+# its own better-sqlite3 and mysql2 ...). #39: the migration guard runs that CLI
+# at boot, so it is kept — and its `build/index.js` requires studio-core and
+# @prisma/dev statically, so neither can be excluded either (measured). The
 # Copilot SDK/CLI is excluded for the reason given further down (the copilot-native
 # provider is unsupported in this image). An edge named here is never followed, at
 # any depth, and every store entry left unreached is deleted — so a new transitive
@@ -168,7 +169,7 @@ RUN set -eux; \
 COPY scripts/lib/prune-pnpm-store.mjs /tmp/prune-pnpm-store.mjs
 RUN node /tmp/prune-pnpm-store.mjs --store node_modules/.pnpm \
       --importer /app --importer /app/server --importer /app/packages/shared \
-      --exclude prisma --exclude typescript \
+      --exclude typescript \
       --exclude @github/copilot --exclude @github/copilot-sdk \
  && rm /tmp/prune-pnpm-store.mjs
 
@@ -180,9 +181,8 @@ RUN node /tmp/prune-pnpm-store.mjs --store node_modules/.pnpm \
 #     `prebuilds/` are never loaded: ~110 MB.
 #   - better-sqlite3: `deps/` is the SQLite amalgamation source and
 #     `build/Release/obj.target` the object files — compile-time only.
-#   - Any package's `prebuilds/<platform>-<arch>[/.node]`: keep only linux- and
-#     linuxmusl-<this arch> (this is alpine/musl; some packages load the glibc one
-#     through gcompat).
+#   - Any package's `prebuilds/<platform>-<arch>[/.node]`: keep only linux-<this
+#     arch> (glibc, #39; the musl builds are never loaded here).
 ARG TARGETARCH
 RUN set -eux; \
     for D in $(find node_modules/.pnpm -maxdepth 3 -type d -path '*/node_modules/tree-sitter-*' 2>/dev/null); do \
@@ -195,7 +195,7 @@ RUN set -eux; \
     done; \
     case "${TARGETARCH:-amd64}" in arm64) ARCH=arm64 ;; *) ARCH=x64 ;; esac; \
     for P in $(find node_modules/.pnpm -type d -name prebuilds 2>/dev/null); do \
-      find "$P" -mindepth 1 -maxdepth 1 ! -name "linux-${ARCH}*" ! -name "linuxmusl-${ARCH}*" \
+      find "$P" -mindepth 1 -maxdepth 1 ! -name "linux-${ARCH}*" \
         -exec rm -rf {} + 2>/dev/null || true; \
     done
 
@@ -275,13 +275,12 @@ RUN set -eux; \
            node_modules/@github/copilot* \
            server/node_modules/@github/copilot* \
            2>/dev/null || true; \
-    # Drop transitive test/dev fat: fast-check (testing util pulled in by
-    # effect → @prisma/config), @types/* (compile-time only), apache-arrow
-    # TypeScript sources, mysql2 (we use postgres only via prisma).
-    rm -rf node_modules/.pnpm/fast-check@* \
-           node_modules/.pnpm/@types+* \
+    # Drop transitive test/dev fat: @types/* (compile-time only), apache-arrow
+    # TypeScript sources. NOT mysql2 (#39): Prisma does not use it, but the MySQL
+    # connector (server/src/lib/connectors/db/drivers/mysql.ts) imports it. NOT
+    # fast-check (#39): `effect` loads it, and the Prisma CLI loads `effect`.
+    rm -rf node_modules/.pnpm/@types+* \
            node_modules/.pnpm/@apache-arrow+ts@* \
-           node_modules/.pnpm/mysql2@* \
            2>/dev/null || true; \
     # Drop production sqlite/sqlserver/cockroachdb/mysql query compilers
     # from @prisma/client/runtime — production deployments use Postgres only.
@@ -322,8 +321,29 @@ RUN set -eux; \
         -o -name 'samples' -o -name 'sample' \
       \) -exec rm -rf {} + 2>/dev/null || true
 
+# ----- Oracle Instant Client download (runtime copies the unpacked dir) ----
+# TARGETARCH is injected automatically by BuildKit so multi-arch builds fetch
+# the matching client (the previous hard-coded 23.4 arm64 URL 404'd after Oracle
+# rotated it off the CDN, and shipped arm64 libs into amd64 images).
+FROM node:${NODE_VERSION}-trixie-slim AS oracle-client
+ARG TARGETARCH
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /opt/oracle \
+ && if [ "$TARGETARCH" = "arm64" ]; then \
+      OIC_URL="https://download.oracle.com/otn_software/linux/instantclient/2390000/instantclient-basiclite-linux.arm64-23.9.0.25.07.zip"; \
+    else \
+      OIC_URL="https://download.oracle.com/otn_software/linux/instantclient/2390000/instantclient-basiclite-linux.x64-23.9.0.25.07.zip"; \
+    fi \
+ && curl -fsSL "$OIC_URL" -o /tmp/ic.zip \
+ && unzip -q /tmp/ic.zip -d /opt/oracle \
+ && mv /opt/oracle/instantclient_* /opt/oracle/instantclient \
+ && rm /tmp/ic.zip \
+ && rm -f /opt/oracle/instantclient/*.jar
+
 # ----- Stage 3: runtime ----------------------------------------------------
-FROM node:${NODE_VERSION}-alpine AS runner
+FROM node:${NODE_VERSION}-trixie-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -361,42 +381,40 @@ ENV EMBED_DTYPE=${EMBED_DTYPE}
 
 # #34 — the runtime is `node server/dist/index.js`; nothing in it runs npm, npx,
 # yarn or corepack, which the base image ships (~23 MB).
-RUN apk add --no-cache libc6-compat \
- && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
            /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
            /usr/local/bin/yarn /usr/local/bin/yarnpkg \
- && addgroup --system --gid 1001 metis \
- && adduser  --system --uid 1001 --ingroup metis metis
+ && groupadd --system --gid 1001 metis \
+ && useradd  --system --uid 1001 --gid metis --create-home --home-dir /home/metis \
+             --shell /usr/sbin/nologin metis
 
 # Oracle Instant Client for thick mode (supports pre-12c password verifiers).
-# gcompat provides glibc compatibility layer needed by Oracle's prebuilt libs.
-# The libs are downloaded once at image build and add ~138 MB to the runtime layer
-# (164 MB unpacked; the JDBC jars are dropped below — thick mode loads only the .so
-# libraries). Measured in #34.
+# Downloaded and unpacked in the `oracle-client` stage above, so curl and unzip
+# never reach this layer. The libs add ~138 MB to the runtime (164 MB unpacked; the
+# JDBC jars are dropped — thick mode loads only the .so libraries). Measured in #34.
 # Set ORACLE_CLIENT_DIR=/opt/oracle/instantclient at deploy time to enable.
 #
-# TARGETARCH is injected automatically by BuildKit so multi-arch builds fetch
-# the matching client (the previous hard-coded 23.4 arm64 URL 404'd after Oracle
-# rotated it off the CDN, and shipped arm64 libs into amd64 images).
-ARG TARGETARCH
-RUN apk add --no-cache gcompat curl unzip \
- && mkdir -p /opt/oracle \
- && if [ "$TARGETARCH" = "arm64" ]; then \
-      OIC_URL="https://download.oracle.com/otn_software/linux/instantclient/2390000/instantclient-basiclite-linux.arm64-23.9.0.25.07.zip"; \
-    else \
-      OIC_URL="https://download.oracle.com/otn_software/linux/instantclient/2390000/instantclient-basiclite-linux.x64-23.9.0.25.07.zip"; \
-    fi \
- && curl -fsSL "$OIC_URL" -o /tmp/ic.zip \
- && unzip -q /tmp/ic.zip -d /opt/oracle \
- && mv /opt/oracle/instantclient_* /opt/oracle/instantclient \
- && rm /tmp/ic.zip \
- && rm -f /opt/oracle/instantclient/*.jar \
- && apk del curl unzip \
- && ln -s /opt/oracle/instantclient/libclntsh.so /usr/lib/libclntsh.so
+# #39 — on alpine this never loaded: `initOracleClient` failed with DPI-1047
+# because the libraries are glibc builds and the directory was not on the loader
+# path. On this glibc base they need libaio (Instant Client's one system
+# dependency) and an `ld.so.conf.d` entry so `libclntsh.so` finds its siblings.
+# Trixie renamed the library for the 64-bit time_t transition (`libaio1t64`,
+# `libaio.so.1t64`); Instant Client asks for `libaio.so.1`, hence the link.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libaio1t64 \
+ && rm -rf /var/lib/apt/lists/* \
+ && LIBAIO="$(find /usr/lib -name 'libaio.so.1t64' | head -n 1)" \
+ && ln -s "$LIBAIO" "$(dirname "$LIBAIO")/libaio.so.1"
+COPY --from=oracle-client /opt/oracle/instantclient /opt/oracle/instantclient
+RUN echo /opt/oracle/instantclient > /etc/ld.so.conf.d/oracle-instantclient.conf \
+ && ldconfig
 
 # Compiled application code.
 COPY --from=builder    --chown=metis:metis /app/server/dist             ./server/dist
 COPY --from=builder    --chown=metis:metis /app/server/prisma           ./server/prisma
+# #39 — the Prisma CLI the migration guard runs reads its schema and migration
+# paths from here (it picks the SQLite or Postgres history by DATABASE_URL, #539).
+COPY --from=builder    --chown=metis:metis /app/server/prisma.config.ts ./server/prisma.config.ts
 COPY --from=builder    --chown=metis:metis /app/packages/shared/dist    ./packages/shared/dist
 # Baked Xenova weights (issue #936). Empty unless built with INCLUDE_XENOVA=1.
 COPY --from=builder    --chown=metis:metis /opt/metis-xenova-cache       ./.cache/huggingface

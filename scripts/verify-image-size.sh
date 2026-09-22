@@ -4,7 +4,7 @@
 # Builds the metis-server and metis-ui Docker images and asserts metis-ui
 # stays under MAX_IMAGE_MB and metis-server under MAX_SERVER_IMAGE_MB.
 #
-# Default budgets: 350 MB (ui), 900 MB (server — measured on amd64 in #34;
+# Default budgets: 350 MB (ui), 1170 MB (server — measured on amd64 in #34, #39;
 # the 350 MB below is unreachable for the server, see docs/OPERATIONS.md).
 #
 # Issue #93 originally targeted ≤250 MB, but the architectural floor with
@@ -23,7 +23,7 @@
 #
 # Environment variables:
 #   MAX_IMAGE_MB         Limit for metis-ui in megabytes (default 350)
-#   MAX_SERVER_IMAGE_MB  Limit for metis-server in megabytes (default 900)
+#   MAX_SERVER_IMAGE_MB  Limit for metis-server in megabytes (default 1170)
 #   SERVER_TAG    Image ref to inspect for the server (default metis-server:test)
 #   UI_TAG        Image ref to inspect for the UI     (default metis-ui:test)
 #
@@ -35,7 +35,7 @@
 set -euo pipefail
 
 MAX_IMAGE_MB=${MAX_IMAGE_MB:-350}
-MAX_SERVER_IMAGE_MB=${MAX_SERVER_IMAGE_MB:-900}
+MAX_SERVER_IMAGE_MB=${MAX_SERVER_IMAGE_MB:-1170}
 SERVER_TAG=${SERVER_TAG:-metis-server:test}
 UI_TAG=${UI_TAG:-metis-ui:test}
 # Issue #145 — the embeddings sidecar is intentionally exempt from the
