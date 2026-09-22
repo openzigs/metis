@@ -606,16 +606,16 @@ describe("ingestCodeGraph — the event loop keeps turning (#16)", () => {
   }
 
   it("never holds the loop for more than a fraction of a second while persisting", async () => {
-    // 1,500 calls in one file. Each simulated statement costs 1 ms of synchronous
-    // work (a commit), plus 5 µs per row. Persisting row-by-row with no yield
-    // would hold the loop for >= 1.5 s in one stretch.
-    const calls = Array.from({ length: 1500 }, (_, i) => `  f${i % 10}();`).join("\n");
-    const defs = Array.from({ length: 10 }, (_, i) => `function f${i}() { return ${i}; }`).join(
-      "\n",
-    );
-    const root = await makeFixture({
-      "src/big.ts": `${defs}\nexport function main() {\n${calls}\n}\n`,
-    });
+    // 300 files x 4 functions. Each simulated statement costs 1 ms of synchronous
+    // work, plus 5 us per row of a multi-row insert. However the writes are
+    // batched, the total is well over a second — so this stays green only if the
+    // ingest actually gives the event loop turns in between.
+    const tree: Record<string, string> = {};
+    for (let f = 0; f < 300; f += 1) {
+      const defs = [0, 1, 2, 3].map((k) => `function f${f}_${k}() { return ${k}; }`).join("\n");
+      tree[`src/m${f}.ts`] = `${defs}\nexport function main() { f${f}_0(); f${f}_1(); }\n`;
+    }
+    const root = await makeFixture(tree);
     const { prisma } = makePrismaMock();
     const slow = (model: any, op: string) => {
       const inner = model[op];
