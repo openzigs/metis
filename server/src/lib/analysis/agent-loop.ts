@@ -399,11 +399,14 @@ export function formatToolSchemas(tools: AgentTool[]): string {
     "",
     "## Available tools (full definitions)",
     "",
-    "These tool definitions are fixed for this session. Call one tool at a time by",
+    "These tool definitions are fixed for this session. Call a tool by",
     'responding with ONLY a JSON object: {"tool": "<name>", "args": {<parameters>}}.',
-    "After each tool result you may call another tool or, once you have finished",
-    "investigating, respond with your findings JSON directly (not wrapped in a tool",
-    "call). Validate every argument against the tool's parameter schema before use.",
+    "You may request several tools in one reply, as consecutive JSON objects or as",
+    `a JSON array of them (at most ${MAX_TOOL_CALLS_PER_REPLY} per reply); they run in order and every`,
+    "result comes back on the next turn. After the tool results you may call more",
+    "tools or, once you have finished investigating, respond with your findings JSON",
+    "directly (not wrapped in a tool call). Validate every argument against the",
+    "tool's parameter schema before use.",
     "",
     blocks.join("\n\n"),
   ].join("\n");
@@ -573,6 +576,22 @@ export function buildUserContent(userMessage: string, volatileContext: string): 
   return `${volatileContext.trimStart()}\n\n${userMessage}`;
 }
 
+/**
+ * #40 — the multi-call sentence shared by the `compact` and `full` manifests.
+ * Since #15 the loop runs every call in one reply, in order, up to
+ * {@link MAX_TOOL_CALLS_PER_REPLY}; a prompt saying "one at a time" made an
+ * obedient model spend a turn per search. The cap is interpolated so the prompt
+ * and the loop cannot drift apart. Changing this text changes the cached system
+ * prefix once (see the #40 changelog fragment).
+ */
+function multiCallInstruction(): string {
+  return (
+    "You may request several tools in one reply, as consecutive JSON objects or as a JSON array of them " +
+    `(at most ${MAX_TOOL_CALLS_PER_REPLY} per reply); they run in order and every result comes back on the next turn. ` +
+    "After receiving tool results, you may call more tools or provide your final answer."
+  );
+}
+
 function formatToolDescriptionsCompact(tools: AgentTool[]): string {
   const lines = tools.map((t) => `  ${t.name}: ${t.description}`);
   return [
@@ -583,7 +602,7 @@ function formatToolDescriptionsCompact(tools: AgentTool[]): string {
     "Use get_tool_schema to see full parameters for any tool before calling it.",
     'To call a tool, respond with ONLY a JSON object: {"tool": "<name>", "args": {<parameters>}}',
     "To provide your final answer, respond with your findings JSON directly (not wrapped in a tool call).",
-    "Call tools one at a time. After receiving a tool result, you may call another tool or provide your final answer.",
+    multiCallInstruction(),
   ].join("\n");
 }
 
@@ -606,7 +625,7 @@ function formatToolDescriptionsFull(tools: AgentTool[]): string {
     "",
     'To call a tool, respond with ONLY a JSON object: {"tool": "<name>", "args": {<parameters>}}',
     "To provide your final answer, respond with your findings JSON directly (not wrapped in a tool call).",
-    "Call tools one at a time. After receiving a tool result, you may call another tool or provide your final answer.",
+    multiCallInstruction(),
   ].join("\n");
 }
 

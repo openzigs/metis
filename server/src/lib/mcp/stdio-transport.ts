@@ -62,6 +62,21 @@ export const INHERITED_ENV_KEYS = Object.freeze([
   "DOCKER_API_VERSION",
 ] as const);
 
+/**
+ * #24 — the environment variable every sidecar carries so `scripts/restart.sh`
+ * can find the ones METIS started, and ONLY those, after their parent server is
+ * gone. It used to SIGTERM anything whose argv matched `mcp-server-`, which took
+ * down other tools' MCP servers on the same machine. restart.sh exports a tag
+ * unique to its checkout; a server started some other way marks its sidecars
+ * with the bare `metis`, which no restart.sh sweeps (they are still stopped as
+ * descendants of the server while it runs). Spread LAST so a configured server
+ * env can neither remove nor spoof it. The value identifies a checkout and is
+ * not a secret.
+ */
+function sidecarOwnerEnv(): Record<string, string> {
+  return { METIS_SIDECAR_OWNER: process.env.METIS_SIDECAR_OWNER || "metis" };
+}
+
 interface JsonRpcResponse {
   jsonrpc: "2.0";
   id: number | string | null;
@@ -103,7 +118,7 @@ export class MCPStdioTransport implements MCPTransportClient {
     const spawnFn = this.opts.spawnFn ?? spawn;
     const child = spawnFn(this.opts.command, args, {
       cwd: this.opts.cwd ? resolvePath(this.opts.cwd) : process.cwd(),
-      env: { ...inheritedEnv(), ...env },
+      env: { ...inheritedEnv(), ...env, ...sidecarOwnerEnv() },
       // shell: false is the default but make it explicit — we NEVER want a
       // shell interpreting metacharacters in args.
       shell: false,
