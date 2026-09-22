@@ -55,7 +55,7 @@ export async function createApprovalRequests(
 
   if (filtered.length === 0) return [];
 
-  log.info("Creating %d approval requests for analysis %s", filtered.length, analysisId);
+  log.info("Creating approval requests", { count: filtered.length, analysisId });
 
   const created: ApprovalRequestRow[] = [];
   for (const item of filtered) {
@@ -114,7 +114,11 @@ export async function reviewApprovalRequest(
     throw new Error(`Approval request ${requestId} is already ${existing.status}`);
   }
 
-  log.info("Reviewing approval request %s → %s by %s", requestId, review.status, review.reviewerId);
+  log.info("Reviewing approval request", {
+    requestId,
+    status: review.status,
+    reviewerId: review.reviewerId,
+  });
 
   const updated = await prisma.approvalRequest.update({
     where: { id: requestId },

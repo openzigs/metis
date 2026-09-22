@@ -30,7 +30,7 @@ export async function readDialogState(analysisId: string): Promise<Clarification
   try {
     return JSON.parse(row.state) as ClarificationState;
   } catch {
-    log.warn("Corrupt clarification dialog state for analysis %s — ignoring", analysisId);
+    log.warn("Corrupt clarification dialog state — ignoring", { analysisId });
     return undefined;
   }
 }

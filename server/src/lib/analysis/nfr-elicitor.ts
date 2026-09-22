@@ -129,7 +129,7 @@ export class NfrElicitor {
       { role: "user", content: rawInput },
     ];
 
-    log.info("Eliciting NFRs + acceptance criteria from input (%d chars)", rawInput.length);
+    log.info("Eliciting NFRs + acceptance criteria from input", { chars: rawInput.length });
 
     const response = await this.provider.chat(messages, {
       model: this.model,
@@ -138,11 +138,10 @@ export class NfrElicitor {
     });
 
     const parsed = parseNfrAcceptance(response.content);
-    log.info(
-      "Elicited %d NFR(s), %d acceptance criteria",
-      parsed.nfrs.length,
-      parsed.acceptanceCriteria.length,
-    );
+    log.info("Elicited NFRs + acceptance criteria", {
+      nfrs: parsed.nfrs.length,
+      acceptanceCriteria: parsed.acceptanceCriteria.length,
+    });
 
     return { ...parsed, usage: response.usage ?? zeroUsage() };
   }

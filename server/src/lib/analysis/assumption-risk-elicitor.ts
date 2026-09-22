@@ -127,7 +127,7 @@ export class AssumptionRiskElicitor {
       { role: "user", content: rawInput },
     ];
 
-    log.info("Eliciting assumptions + risks from input (%d chars)", rawInput.length);
+    log.info("Eliciting assumptions + risks from input", { chars: rawInput.length });
 
     const response = await this.provider.chat(messages, {
       model: this.model,
@@ -136,11 +136,10 @@ export class AssumptionRiskElicitor {
     });
 
     const parsed = parseAssumptionRisk(response.content);
-    log.info(
-      "Elicited %d assumption(s), %d risk(s)",
-      parsed.assumptions.length,
-      parsed.risks.length,
-    );
+    log.info("Elicited assumptions + risks", {
+      assumptions: parsed.assumptions.length,
+      risks: parsed.risks.length,
+    });
 
     return { ...parsed, usage: response.usage ?? zeroUsage() };
   }

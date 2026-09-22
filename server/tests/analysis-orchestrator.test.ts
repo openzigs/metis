@@ -365,13 +365,16 @@ const buildAgentJson = (agentKey: string, requirements?: Array<{ id: string; tex
  * prove the orchestrator grounds them: a retrieved `filePath` survives, a
  * fabricated one is dropped, and document citations pass through.
  */
-const buildCodeAgentJson = (citations: unknown[]) =>
+const buildCodeAgentJson = (citations: unknown[], verdict?: string) =>
   JSON.stringify({
     agentKey: "code",
     summary: "summary from code",
     findings: [
       {
         requirementId: "REQ-001",
+        // #19 — a CLEAN run verifies its requirement; with no verdict the page
+        // (and the run's health report) shows it `could-not-verify`.
+        ...(verdict ? { verdict } : {}),
         category: "architecture",
         severity: "medium",
         title: "code title",
@@ -1410,9 +1413,10 @@ describe("AnalysisOrchestrator.start", () => {
     // claims are backed by nothing — and is now reported as one.)
     const { analysisId } = await runAgenticWith(({ messages }) =>
       messages.some((m) => typeof m.content === "string" && m.content.startsWith("Tool result for"))
-        ? buildCodeAgentJson([
-            { filePath: "server/src/auth/session.ts", startLine: 12, endLine: 20 },
-          ])
+        ? buildCodeAgentJson(
+            [{ filePath: "server/src/auth/session.ts", startLine: 12, endLine: 20 }],
+            "implemented",
+          )
         : SEARCH_TOOL_CALL,
     );
     const code = codeRowOf(analysisId)!;
@@ -3070,7 +3074,15 @@ describe("AnalysisOrchestrator capability record (#733)", () => {
               JSON.stringify({ tool: "search_code_graph", query: "reset password" }),
             );
           }
-          return stubResponse(buildAgentJson("code"));
+          // #19 — …and a clean run VERIFIES its requirement, citing the code its
+          // search returned. A requirement with no verdict is `could-not-verify` on
+          // the page, and a run showing most requirements unverified is degraded.
+          return stubResponse(
+            buildCodeAgentJson(
+              [{ filePath: "server/src/auth/auth-service.ts", startLine: 10, endLine: 42 }],
+              "implemented",
+            ),
+          );
         }
         if (sysStr.includes("Sally")) return stubResponse(buildAgentJson("database"));
         if (sysStr.includes("Quinn")) return stubResponse(buildAgentJson("web"));

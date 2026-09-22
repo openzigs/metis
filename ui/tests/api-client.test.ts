@@ -57,6 +57,40 @@ describe("apiFetch", () => {
     expect(init.body).toBe(JSON.stringify({ a: 1 }));
   });
 
+  // #14 — a pre-serialised body is double-encoded by apiFetch. Fail loudly
+  // outside production rather than send a JSON string the server rejects.
+  it("rejects an already-serialised string body outside production", async () => {
+    await expect(
+      apiFetch("/things", { method: "POST", body: JSON.stringify({ a: 1 }) }),
+    ).rejects.toThrow(/already a string.*pass the plain object/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not throw on a string body in production (behaviour unchanged there)", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      fetchMock.mockResolvedValueOnce(makeResponse({ success: true, data: null }));
+      await apiFetch("/things", { method: "POST", body: "plain" });
+      const [, init] = fetchMock.mock.calls[0];
+      expect(init.body).toBe(JSON.stringify("plain"));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("allows non-string bodies (arrays, numbers, booleans, null)", async () => {
+    for (const body of [[1, 2], 0, false, null]) {
+      fetchMock.mockResolvedValueOnce(makeResponse({ success: true, data: null }));
+      await apiFetch("/things", { method: "POST", body });
+    }
+    expect(fetchMock.mock.calls.map(([, init]) => init.body)).toEqual([
+      "[1,2]",
+      "0",
+      "false",
+      "null",
+    ]);
+  });
+
   it("appends defined query params and skips undefined ones", async () => {
     fetchMock.mockResolvedValueOnce(makeResponse({ success: true, data: [] }));
     await apiFetch("/list", {

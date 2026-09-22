@@ -196,7 +196,7 @@ export class CrossDocValidator {
       { role: "user", content: buildConsistencyUserPrompt(usable, cap) },
     ];
 
-    log.info("Running cross-doc consistency check over %d segment(s)", usable.length);
+    log.info("Running cross-doc consistency check", { segments: usable.length });
 
     const response = await this.provider.chat(messages, {
       model: this.model,
@@ -205,12 +205,11 @@ export class CrossDocValidator {
     });
 
     const report = parseConsistencyReport(response.content);
-    log.info(
-      "Consistency verdict=%s contradictions=%d uncoveredAC=%d",
-      report.verdict,
-      report.contradictions.length,
-      report.uncoveredAcceptanceCriteria.length,
-    );
+    log.info("Cross-doc consistency check complete", {
+      verdict: report.verdict,
+      contradictions: report.contradictions.length,
+      uncoveredAcceptanceCriteria: report.uncoveredAcceptanceCriteria.length,
+    });
 
     return { report, usage: response.usage ?? zeroUsage() };
   }

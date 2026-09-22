@@ -120,7 +120,9 @@ export function getProxyDispatcher(targetUrl: string): Dispatcher | undefined {
   try {
     return new ProxyAgent(proxyUrl);
   } catch (err) {
-    log.warn("Invalid proxy URL %s: %s", proxyUrl, (err as Error).message);
+    // The URL itself is deliberately not logged: a proxy URL can carry
+    // `user:password@` credentials.
+    log.warn("Invalid proxy URL", { error: (err as Error).message });
     return undefined;
   }
 }
@@ -186,7 +188,10 @@ export class TavilySearchProvider implements WebSearchProvider {
       });
 
       if (!response.ok) {
-        log.warn("Tavily search failed: %d %s", response.status, response.statusText);
+        log.warn("Tavily search failed", {
+          status: response.status,
+          statusText: response.statusText,
+        });
         return [];
       }
 
@@ -201,7 +206,7 @@ export class TavilySearchProvider implements WebSearchProvider {
         score: r.score,
       }));
     } catch (err) {
-      log.warn("Tavily search error: %s", (err as Error).message);
+      log.warn("Tavily search error", { error: (err as Error).message });
       return [];
     }
   }
@@ -230,7 +235,10 @@ export class BraveSearchProvider implements WebSearchProvider {
       });
 
       if (!response.ok) {
-        log.warn("Brave search failed: %d %s", response.status, response.statusText);
+        log.warn("Brave search failed", {
+          status: response.status,
+          statusText: response.statusText,
+        });
         return [];
       }
 
@@ -246,7 +254,7 @@ export class BraveSearchProvider implements WebSearchProvider {
         snippet: r.description ?? "",
       }));
     } catch (err) {
-      log.warn("Brave search error: %s", (err as Error).message);
+      log.warn("Brave search error", { error: (err as Error).message });
       return [];
     }
   }
@@ -283,7 +291,10 @@ export class GoogleCseProvider implements WebSearchProvider {
       });
 
       if (!response.ok) {
-        log.warn("Google CSE search failed: %d %s", response.status, response.statusText);
+        log.warn("Google CSE search failed", {
+          status: response.status,
+          statusText: response.statusText,
+        });
         return [];
       }
 
@@ -297,7 +308,7 @@ export class GoogleCseProvider implements WebSearchProvider {
         snippet: r.snippet ?? "",
       }));
     } catch (err) {
-      log.warn("Google CSE search error: %s", (err as Error).message);
+      log.warn("Google CSE search error", { error: (err as Error).message });
       return [];
     }
   }
@@ -373,7 +384,7 @@ export function createSearchProvider(): WebSearchProvider {
 
     default: {
       if (selected) {
-        log.warn("Unknown WEB_SEARCH_PROVIDER=%s — using stub", selected);
+        log.warn("Unknown WEB_SEARCH_PROVIDER — using stub", { provider: selected });
         return new StubWebSearchProvider();
       }
       // Backward compatible: no explicit provider but legacy Tavily key present.
@@ -416,11 +427,10 @@ export class WebResearchAugmenter {
       return { digests: [], totalSources: 0, reviewRequired: 0 };
     }
 
-    log.info(
-      "Augmenting %d evidence needs across %d requirements",
-      allNeeds.length,
-      requirements.length,
-    );
+    log.info("Augmenting evidence needs", {
+      evidenceNeeds: allNeeds.length,
+      requirements: requirements.length,
+    });
 
     const digests: EvidenceDigest[] = [];
     // Process in batches to respect rate limits
@@ -436,12 +446,11 @@ export class WebResearchAugmenter {
     const totalSources = digests.reduce((sum, d) => sum + d.sources.length, 0);
     const reviewRequired = digests.filter((d) => d.needsHumanReview).length;
 
-    log.info(
-      "Web research complete: %d digests, %d sources, %d need review",
-      digests.length,
-      totalSources,
+    log.info("Web research complete", {
+      digests: digests.length,
+      sources: totalSources,
       reviewRequired,
-    );
+    });
 
     return { digests, totalSources, reviewRequired };
   }
@@ -501,7 +510,10 @@ export class WebResearchAugmenter {
         needsHumanReview,
       };
     } catch (err) {
-      log.warn("Failed to process evidence need %s: %s", need.id, (err as Error).message);
+      log.warn("Failed to process evidence need", {
+        evidenceNeedId: need.id,
+        error: (err as Error).message,
+      });
       return null;
     }
   }

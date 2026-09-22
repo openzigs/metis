@@ -215,12 +215,11 @@ export class FaithfulnessJudge {
     if (!evidence) return null;
 
     const batches = chunk(cleaned, this.maxBatch);
-    log.info(
-      "Judging faithfulness of %d claim(s) in %d batch(es) of up to %d",
-      cleaned.length,
-      batches.length,
-      this.maxBatch,
-    );
+    log.info("Judging faithfulness of claims", {
+      claims: cleaned.length,
+      batches: batches.length,
+      maxBatch: this.maxBatch,
+    });
 
     const all: ClaimVerdict[] = [];
     let anyVerifiable = false;
@@ -233,8 +232,10 @@ export class FaithfulnessJudge {
 
     if (!anyVerifiable) {
       log.warn(
-        "Faithfulness judge: all %d batch(es) were unverifiable; treating section as unverified",
-        batches.length,
+        "Faithfulness judge: all batches were unverifiable; treating section as unverified",
+        {
+          batches: batches.length,
+        },
       );
       return null;
     }
@@ -317,12 +318,11 @@ export class FaithfulnessJudge {
     const matched = this.alignVerdicts(rawVerdicts, batch);
     const ratio = batch.length === 0 ? 0 : matched.length / batch.length;
     if (ratio < MIN_BATCH_MATCH_RATIO) {
-      log.warn(
-        "Faithfulness judge batch matched only %d/%d claim(s) (< %d%%); treating batch as unverifiable",
-        matched.length,
-        batch.length,
-        Math.round(MIN_BATCH_MATCH_RATIO * 100),
-      );
+      log.warn("Faithfulness judge batch matched too few claims; treating batch as unverifiable", {
+        matched: matched.length,
+        claims: batch.length,
+        minMatchPercent: Math.round(MIN_BATCH_MATCH_RATIO * 100),
+      });
       return null;
     }
     return matched;

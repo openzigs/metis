@@ -107,6 +107,8 @@ import { applyFindingFaithfulness } from "./finding-faithfulness.js";
 import { applySupportPanel, collectPanelEvidence } from "./support-panel.js";
 import {
   absenceIsConfirmable,
+  assessInvestigationCoverage,
+  countUnverifiedRequirements,
   absenceIsConfirmableForClaim,
   mergeRetrievalHealth,
   noRetrievalHealth,
@@ -2346,7 +2348,6 @@ export class AnalysisOrchestrator {
             // mistake against a known capability limit, NOT evidence about retrieval.
             unavailableTools: withheldTools,
           });
-          passHealths.push(passHealth);
           // RUN-LEVEL health: did retrieval work AT ALL on this pass? This gates
           // BOTH verdict directions (an `implemented` claim from a pass whose
           // searches all failed is as unfounded as an absence claim — and worse,
@@ -2450,6 +2451,27 @@ export class AnalysisOrchestrator {
               }),
             };
           });
+          // #19 — the REPORT-side coverage check, over the gated verdicts. A pass
+          // that made one working search and then verified none of its requirements
+          // clears the (deliberately scale-free) verdict threshold above, so without
+          // this it was persisted as healthy and raised no banner. `passHealth` —
+          // the record the verdicts read — is left untouched.
+          const reportedHealth = assessInvestigationCoverage(passHealth, {
+            unverifiedRequirements: countUnverifiedRequirements(
+              validated.findings,
+              passRequirements.map((r) => r.id),
+            ),
+          });
+          if (reportedHealth.degraded && !passHealth.degraded) {
+            log.warn("Agentic code pass investigated too little to report as healthy", {
+              analysisId: input.analysisId,
+              requirementCount: passRequirements.length,
+              codeRetrievalCalls: reportedHealth.totalCalls,
+              unverifiedRequirements: reportedHealth.unverifiedRequirements ?? 0,
+              starved: reportedHealth.starved,
+            });
+          }
+          passHealths.push(reportedHealth);
           // #1109 (Epic #1107) — the multi-lens support panel runs AFTER the
           // deterministic verifier above, never instead of it: cheap signal
           // first, expensive signal only where the cheap one structurally cannot
