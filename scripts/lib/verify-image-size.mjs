@@ -23,7 +23,20 @@ import process from "node:process";
 
 export const DEFAULT_MAX_IMAGE_MB = 350;
 
-/** @typedef {{ tag: string, mb: number | null, exempt: boolean }} ImageSize */
+/**
+ * `metis-server`'s own budget, in MB, measured on a GitHub-hosted amd64 runner (#34).
+ *
+ * The general 350 MB is unreachable for the server without dropping features: the
+ * Oracle Instant Client, Node itself, LanceDB's native library, three
+ * `@napi-rs/canvas` builds (pdf-parse / pdfjs-dist) and tesseract's OCR WASM
+ * alone come to over 500 MB before a single line of application JavaScript. The
+ * breakdown and the reasoning are in docs/OPERATIONS.md > "Container Image
+ * Sizes". This is a REGRESSION gate: measured size plus modest headroom, never a
+ * number raised until CI goes green. `MAX_SERVER_IMAGE_MB` overrides it.
+ */
+export const DEFAULT_MAX_SERVER_IMAGE_MB = 1000;
+
+/** @typedef {{ tag: string, mb: number | null, exempt: boolean, budgetMb?: number }} ImageSize */
 
 /**
  * Convert a byte count to MB using the decimal convention `docker images`
@@ -62,6 +75,25 @@ export function isOverBudget(mb, budgetMb) {
 }
 
 /**
+ * The budget one image is held to (#34). An image that declares its own budget
+ * takes its env override when that is set and valid, else its documented default —
+ * never the general budget, which would silently re-impose 350 MB on the server.
+ * An image with no budget of its own takes the general budget.
+ *
+ * @param {{ budgetEnv?: string, defaultBudgetMb?: number }} image
+ * @param {number} generalBudgetMb
+ * @param {Record<string, string | undefined>} env
+ * @returns {number}
+ */
+export function resolveImageBudget(image, generalBudgetMb, env) {
+  if (image.defaultBudgetMb == null) return generalBudgetMb;
+  const raw = image.budgetEnv ? env[image.budgetEnv] : undefined;
+  if (raw == null || raw.trim().length === 0) return image.defaultBudgetMb;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n > 0 ? n : image.defaultBudgetMb;
+}
+
+/**
  * Evaluate measured image sizes against the budget. Pure: no Docker, no I/O.
  *
  * A gated image FAILS when it is missing (`mb == null`) or over budget. Exempt
@@ -74,14 +106,15 @@ export function isOverBudget(mb, budgetMb) {
 export function evaluateSizes(sizes, budgetMb) {
   /** @type {string[]} */
   const failures = [];
-  for (const { tag, mb, exempt } of sizes) {
+  for (const { tag, mb, exempt, budgetMb: ownBudgetMb } of sizes) {
     if (exempt) continue;
     if (mb == null) {
       failures.push(`${tag}: image not found or zero size`);
       continue;
     }
-    if (isOverBudget(mb, budgetMb)) {
-      failures.push(`${tag} = ${mb} MB exceeds ${budgetMb} MB`);
+    const limit = ownBudgetMb ?? budgetMb;
+    if (isOverBudget(mb, limit)) {
+      failures.push(`${tag} = ${mb} MB exceeds ${limit} MB`);
     }
   }
   return { ok: failures.length === 0, failures };
@@ -207,7 +240,13 @@ export function inspectImageBytes(tag, deps = {}) {
 const IMAGE_TAG = process.env.IMAGE_TAG?.trim() || "test";
 
 const IMAGES = Object.freeze([
-  { tag: `metis-server:${IMAGE_TAG}`, dockerfile: "Dockerfile.server", exempt: false },
+  {
+    tag: `metis-server:${IMAGE_TAG}`,
+    dockerfile: "Dockerfile.server",
+    exempt: false,
+    budgetEnv: "MAX_SERVER_IMAGE_MB",
+    defaultBudgetMb: DEFAULT_MAX_SERVER_IMAGE_MB,
+  },
   { tag: `metis-ui:${IMAGE_TAG}`, dockerfile: "Dockerfile.ui", exempt: false },
   { tag: `metis-embeddings:${IMAGE_TAG}`, dockerfile: "Dockerfile.embeddings", exempt: true },
 ]);
@@ -219,6 +258,8 @@ const IMAGES = Object.freeze([
  * @param {object} [opts]
  * @param {boolean} [opts.noBuild]
  * @param {number} [opts.budgetMb]
+ * @param {Record<string, string | undefined>} [opts.env] - environment for
+ *   per-image budget overrides (defaults to `process.env`).
  * @param {number} [opts.inspectRetries] - extra inspect attempts to ride out the
  *   post-build daemon race (#509); ignored when `deps.retries` is set.
  * @param {object} [opts.deps]
@@ -234,6 +275,7 @@ const IMAGES = Object.freeze([
  */
 export function runVerify(opts = {}) {
   const budgetMb = opts.budgetMb ?? parseBudgetMb(process.env.MAX_IMAGE_MB);
+  const env = opts.env ?? process.env;
   const deps = opts.deps ?? {};
   /* c8 ignore next 2 — default console loggers; tests inject spies */
   const log = deps.log ?? ((m) => console.log(m));
@@ -276,14 +318,22 @@ export function runVerify(opts = {}) {
   /** @type {ImageSize[]} */
   const sizes = IMAGES.map((img) => {
     const bytes = inspectImageBytes(img.tag, inspectDeps);
-    return { tag: img.tag, mb: bytes == null ? null : bytesToMb(bytes), exempt: img.exempt };
+    return {
+      tag: img.tag,
+      mb: bytes == null ? null : bytesToMb(bytes),
+      exempt: img.exempt,
+      budgetMb: resolveImageBudget(img, budgetMb, env),
+    };
   });
 
   log("");
-  log(`${"IMAGE".padEnd(30)} ${"SIZE (MB)".padStart(12)}`);
+  log(`${"IMAGE".padEnd(30)} ${"SIZE (MB)".padStart(12)} ${"BUDGET (MB)".padStart(12)}`);
   for (const s of sizes) {
-    const suffix = s.exempt ? "   (sidecar — exempt)" : "";
-    log(`${s.tag.padEnd(30)} ${String(s.mb ?? "n/a").padStart(12)}${suffix}`);
+    const budget = s.exempt ? "exempt" : String(s.budgetMb);
+    const suffix = s.exempt ? "   (sidecar)" : "";
+    log(
+      `${s.tag.padEnd(30)} ${String(s.mb ?? "n/a").padStart(12)} ${budget.padStart(12)}${suffix}`,
+    );
   }
   log("");
 
@@ -294,7 +344,7 @@ export function runVerify(opts = {}) {
     err("Image size budget exceeded. See docs/OPERATIONS.md > 'Container Image Sizes'.");
     return 1;
   }
-  log(`OK: gated images ≤ ${budgetMb} MB`);
+  log("OK: every gated image is within its budget");
   return 0;
 }
 

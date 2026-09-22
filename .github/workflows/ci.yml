@@ -20,19 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     # A wedged docker build previously held the runner for HOURS: with no
     # `timeout-minutes`, GitHub's 6-hour default applies, and cancelling does not kill
-    # a hung `docker build` promptly. Two such builds took all four runners out of
-    # service. Normal runtime is ~17-19 min; 45 is generous but FINITE.
-    # 90, not 45. The 45 assumed a WARM Docker layer cache, which was a property
-    # of the self-hosted machine rather than of this workflow: a persistent
-    # daemon kept layers between runs. A GitHub-hosted runner is a fresh VM
-    # every time, so every build here is cold and the first migrated run was
-    # still going at 30 minutes.
-    #
-    # This is a deliberate stopgap, tracked in #3. The right fix is a cache
-    # backend that survives the VM (`type=gha`), not a bigger number — a raised
-    # timeout hides a slow build rather than making it fast. Lower this when #3
-    # lands.
-    timeout-minutes: 90
+    # a hung `docker build` promptly. The image builds below now cache across runs
+    # in the GitHub Actions cache (#3), so a warm run no longer rebuilds every
+    # layer; 60 covers a COLD run (first build after a cache eviction), which is
+    # the case this number has to survive. Measured figures: docs/OPERATIONS.md >
+    # "Container Image Sizes" > "CI build cache".
+    timeout-minutes: 60
     # #801 follow-up — the `api` job builds FOUR Docker images on the SHARED
     # shared daemon. Run-scoped tags (#801) stopped concurrent runs from
     # deleting each other's images, but they did not stop the two builds from
@@ -118,6 +111,25 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # #3 — the runner ran OUT OF DISK building these ("Free space left:
+      # 55 MB"): ubuntu-latest leaves ~14 GB free after the job's own
+      # node_modules, and four images plus the builder's cache do not fit in
+      # that. Drop the preinstalled toolchains this job never uses (.NET,
+      # Android SDK, GHC, CodeQL bundles, the runner's cached Docker images) —
+      # ~25 GB back.
+      - name: Free runner disk for image builds
+        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost
+          docker image prune --all --force > /dev/null
+          df -h /
+
+      - name: Set up Buildx
+        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
       # Issue #145 — image-size budget gate. The `metis-embeddings` sidecar is
       # built but exempt from the cap (see docs/OPERATIONS.md > "Container
       # Image Sizes").
@@ -133,13 +145,17 @@ jobs:
       # here would have left the gate 3.4x looser than intended, silently
       # passing regressions it exists to catch.
       #
-      # Plain `docker build` uses the Docker daemon's built-in BuildKit — it
-      # needs NO external builder image (moby/buildkit). We deliberately do NOT
-      # use a docker-container buildx builder here: bootstrapping one pulls
-      # moby/buildkit:buildx-stable-1 from Docker Hub, which intermittently
-      # hangs/rate-limits and previously stalled this job for 30+ min. The daemon's layer cache still makes warm rebuilds fast; the
-      # authoritative multi-arch build with explicit cache lives in
-      # build-images.yml. This step is the image-size regression gate only.
+      # #3 — the builds cache across runs in the GitHub Actions cache
+      # (`type=gha`). They used to be plain `docker build`, relying on the
+      # daemon's layer cache, which was a property of the old self-hosted
+      # machine: a hosted runner is a fresh VM with an empty daemon every time,
+      # so every build was cold. `type=gha` needs a docker-container buildx
+      # builder, which is what the plain build deliberately avoided — its
+      # moby/buildkit bootstrap hung on the self-hosted daemon. That hang was a
+      # property of that daemon too; `build-images.yml` bootstraps the same
+      # builder on hosted runners. Each image caches under its own `scope`, and
+      # `mode=max` so the multi-stage builders' intermediate layers (the pnpm
+      # install) are cached, not only the final stage.
       #
       # Skipped for dependabot PRs: dependency bumps almost never touch the
       # Dockerfiles, and rebuilding 3 images per dependabot PR is the single
@@ -147,7 +163,7 @@ jobs:
       # skips dependabot for the same reason; image validation still runs in
       # full on every non-dependabot PR and on `main`.
       #
-      # Issue #509 — `--provenance=false --sbom=false` on every gate build.
+      # Issue #509 — `provenance: false` / `sbom: false` on every gate build.
       # BuildKit adds a `mode=min` provenance attestation by DEFAULT, which wraps
       # the result in an OCI image INDEX carrying an extra `unknown/unknown`
       # attestation manifest. `docker image inspect <tag> --format '{{.Size}}'`
@@ -158,26 +174,72 @@ jobs:
       # authoritative multi-arch + provenance build lives in build-images.yml), so
       # disabling attestations here is correct: each build becomes a plain
       # single-platform image whose `{{.Size}}` is reliably populated.
-      - name: Build container images
+      # `load: true` puts each image in the runner's daemon so the size gate
+      # below can `docker image inspect` it. #801 — run-scoped tag.
+      - name: Build metis-server
         if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
-        env:
-          # #801 — run-scoped tag, STEP-scoped on purpose: at job level it also
-          # reaches `pnpm test`, whose verify-image-size mocks key on the default
-          # `:test` tag.
-          IMAGE_TAG: "ci-${{ github.run_id }}"
-        run: |
-          docker build --provenance=false --sbom=false -f Dockerfile.server     -t "metis-server:${IMAGE_TAG}"     .
-          docker build --provenance=false --sbom=false -f Dockerfile.ui         -t "metis-ui:${IMAGE_TAG}"         .
-          # BAKE_MODELS=0: this is the image-size regression gate, not the
-          # release artifact (that's build-images.yml on tag push). Baking
-          # downloads models from HuggingFace at build time, which flakes on the
-          # runner; skip it here. The sidecar downloads at runtime.
-          docker build --provenance=false --sbom=false -f Dockerfile.embeddings --build-arg BAKE_MODELS=0 -t "metis-embeddings:${IMAGE_TAG}" .
-          # Epic #294 — the metis-sql-lineage sidecar (Python + sqlglot). Pure
-          # Python, NO model bake / NO heavy native deps, so this build is fast
-          # and cannot reintroduce the model-bake flake fixed in #290.
-          docker build --provenance=false --sbom=false -f Dockerfile.sql-lineage -t "metis-sql-lineage:${IMAGE_TAG}" .
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.server
+          tags: metis-server:ci-${{ github.run_id }}
+          load: true
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=metis-server
+          cache-to: type=gha,scope=metis-server,mode=max
 
+      - name: Build metis-ui
+        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.ui
+          tags: metis-ui:ci-${{ github.run_id }}
+          load: true
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=metis-ui
+          cache-to: type=gha,scope=metis-ui,mode=max
+
+      # BAKE_MODELS=0: this is the image-size regression gate, not the release
+      # artifact (that's build-images.yml on tag push). Baking downloads models
+      # from HuggingFace at build time, which flakes on the runner; skip it
+      # here. The sidecar downloads at runtime.
+      - name: Build metis-embeddings
+        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.embeddings
+          build-args: |
+            BAKE_MODELS=0
+          tags: metis-embeddings:ci-${{ github.run_id }}
+          load: true
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=metis-embeddings
+          cache-to: type=gha,scope=metis-embeddings,mode=max
+
+      # Epic #294 — the metis-sql-lineage sidecar (Python + sqlglot). Pure
+      # Python, NO model bake / NO heavy native deps, so this build is fast and
+      # cannot reintroduce the model-bake flake fixed in #290.
+      - name: Build metis-sql-lineage
+        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.sql-lineage
+          tags: metis-sql-lineage:ci-${{ github.run_id }}
+          load: true
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=metis-sql-lineage
+          cache-to: type=gha,scope=metis-sql-lineage,mode=max
+
+      # metis-server is held to its own measured budget (#34,
+      # DEFAULT_MAX_SERVER_IMAGE_MB in scripts/lib/verify-image-size.mjs);
+      # metis-ui stays on the general 350.
       - name: Verify image size budget
         if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
         env:
