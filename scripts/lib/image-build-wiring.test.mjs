@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { HELM_DEFAULT_WRITABLE_PATHS, HELM_RUN_AS } from "./smoke-server-image.mjs";
+
 /**
  * #34 and #3 — the image builds' WIRING, which no unit test of a helper can see.
  *
@@ -192,6 +194,81 @@ describe("Dockerfile.server runs where its default data paths are writable (#54)
   });
 });
 
+describe("Dockerfile.server pins the Oracle Instant Client download (#51)", () => {
+  const dockerfile = read("Dockerfile.server");
+  const stage = dockerfile.slice(
+    dockerfile.indexOf("AS oracle-client"),
+    dockerfile.indexOf("AS runner"),
+  );
+
+  it("pairs every download URL with a SHA-256", () => {
+    const urls = [...stage.matchAll(/OIC_URL="([^"]+)"/g)].map((m) => m[1]);
+    const sums = [...stage.matchAll(/OIC_SHA256="([^"]*)"/g)].map((m) => m[1]);
+    expect(urls.length).toBeGreaterThanOrEqual(2);
+    expect(sums).toHaveLength(urls.length);
+    for (const sum of sums) expect(sum).toMatch(/^[0-9a-f]{64}$/);
+    expect(new Set(sums).size).toBe(sums.length);
+  });
+
+  it("verifies the zip after downloading it and before unpacking it", () => {
+    const curl = stage.indexOf('curl -fsSL "$OIC_URL" -o /tmp/ic.zip');
+    const check = stage.indexOf('echo "${OIC_SHA256}  /tmp/ic.zip" | sha256sum -c -');
+    const unzip = stage.indexOf("unzip -q /tmp/ic.zip");
+    expect(curl).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(curl);
+    expect(unzip).toBeGreaterThan(check);
+    // Chained with `&&`, so a mismatch fails the build instead of being ignored.
+    expect(stage.slice(check, unzip + 5)).toMatch(/sha256sum -c - \\\n \&\& unzip$/);
+  });
+});
+
+describe("the image's SQLite default is writable wherever the image runs (#60)", () => {
+  const dockerfile = read("Dockerfile.server");
+  const runner = dockerfile.slice(dockerfile.indexOf("AS runner"));
+  const url = runner.match(/^ENV DATABASE_URL=(\S+)$/m)?.[1];
+
+  it("puts the SQLite file inside the runtime user's data directory, not on the root filesystem", () => {
+    expect(url).toMatch(/^file:\/app\/server\/data\/[^/]+\.db$/);
+    expect(runner).toContain("mkdir -p /app/server/data && chown metis:metis /app/server/data");
+  });
+
+  it("is a directory the Helm chart's default values mount a writable volume at", () => {
+    const dir = url?.replace(/^file:/, "").replace(/\/[^/]+$/, "");
+    expect(HELM_DEFAULT_WRITABLE_PATHS).toContain(dir);
+  });
+});
+
+describe("the smoke's helm-default arm matches the Helm chart (#60)", () => {
+  const tpl = read("deploy/helm/metis/templates/_components.tpl");
+  const values = read("deploy/helm/metis/values.yaml");
+  const helpers = read("deploy/helm/metis/templates/_helpers.tpl");
+  const persistence = values.slice(values.indexOf("\npersistence:\n"));
+
+  /** @param {string} key */
+  const valuesMountPath = (key) => {
+    const block = persistence.slice(persistence.indexOf(`\n  ${key}:\n`));
+    return block.match(/\n {4}mountPath: (\S+)/)?.[1];
+  };
+
+  it("writes to exactly the paths the chart mounts for the server container", () => {
+    const mounts = tpl.slice(tpl.indexOf("volumeMounts:"), tpl.indexOf("      volumes:"));
+    const paths = [...mounts.matchAll(/mountPath: (.+)$/gm)].map((m) => {
+      const v = m[1].trim();
+      const ref = v.match(/\.Values\.persistence\.(\w+)\.mountPath/);
+      return ref ? valuesMountPath(ref[1]) : v;
+    });
+    expect(paths.every(Boolean)).toBe(true);
+    expect([...new Set(paths)].sort()).toEqual([...HELM_DEFAULT_WRITABLE_PATHS].sort());
+  });
+
+  it("runs as the chart's user and group, with a read-only root filesystem", () => {
+    const [uid, gid] = HELM_RUN_AS.split(":");
+    expect(helpers).toContain(`runAsUser: ${uid}`);
+    expect(helpers).toContain(`runAsGroup: ${gid}`);
+    expect(helpers).toContain("readOnlyRootFilesystem: true");
+  });
+});
+
 describe("ci.yml `api` starts the server image it built (#39)", () => {
   const api = jobBlock(read(".github/workflows/ci.yml"), "api");
   const smoke = api.indexOf("- name: Smoke-test metis-server");
@@ -214,8 +291,50 @@ describe("ci.yml `api` starts the server image it built (#39)", () => {
     expect(body).not.toMatch(/\|\| true/);
   });
 
-  it("runs every database arm, not just SQLite (#45)", () => {
-    expect(body).not.toMatch(/--database (sqlite|postgres)\b/);
+  it("runs every arm, not just SQLite (#45, #60)", () => {
+    expect(body).not.toMatch(/--(database|arm)\b/);
+  });
+});
+
+describe("ci.yml `api` builds and smokes the server image for Dependabot PRs too (#51)", () => {
+  const api = jobBlock(read(".github/workflows/ci.yml"), "api");
+  /** @param {string} name */
+  const step = (name) => {
+    const at = api.indexOf(`- name: ${name}`);
+    expect(at, name).toBeGreaterThan(-1);
+    return api.slice(at, api.indexOf("\n      - name:", at + 1));
+  };
+  const skipsDependabot = /if:.*dependabot\//;
+
+  it.each([
+    "Free runner disk for image builds",
+    "Set up Buildx",
+    "Build metis-server",
+    "Smoke-test metis-server",
+  ])("%s runs on Dependabot PRs", (name) => {
+    expect(step(name)).not.toMatch(skipsDependabot);
+  });
+
+  it.each(["Build metis-ui", "Build metis-embeddings", "Build metis-sql-lineage"])(
+    "%s still skips Dependabot PRs (the heaviest CI cost, and no dependency bump boots them)",
+    (name) => {
+      expect(step(name)).toMatch(skipsDependabot);
+    },
+  );
+});
+
+describe("docker-compose.prod.yml sets its production storage explicitly (#60)", () => {
+  const prod = read("docker-compose.prod.yml");
+  const server = prod.slice(prod.indexOf("\n  server:\n"), prod.indexOf("\n  embeddings:\n"));
+
+  it("pins the vector store instead of inheriting the base file's JSON store", () => {
+    const vs = server.match(/^ {6}VECTOR_STORE: (.+)$/m)?.[1];
+    expect(vs).toBeDefined();
+    expect(vs).not.toMatch(/local/);
+  });
+
+  it("keeps the server's data directory on a named volume", () => {
+    expect(server).toMatch(/^ {6}- [a-z_]+:\/app\/server\/data$/m);
   });
 });
 
@@ -232,6 +351,12 @@ describe("ci.yml `api` image builds cache across runs (#3)", () => {
     const body = step.slice(0, step.indexOf("\n      - name:", 1));
     expect(body).toContain(`cache-from: type=gha,scope=${image}`);
     expect(body).toContain(`cache-to: type=gha,scope=${image},mode=max`);
+    // #51 — the server build also runs for Dependabot PRs, whose token usually
+    // cannot write the Actions cache; without `ignore-error` BuildKit fails the
+    // step and every Dependabot PR goes red.
+    if (image === "metis-server") {
+      expect(body).toContain(`cache-to: type=gha,scope=${image},mode=max,ignore-error=true`);
+    }
     // The size gate inspects the image in the daemon, so it must be loaded there.
     expect(body).toContain("load: true");
     // #509 — an attestation index has no `.Size`; the gate would read "missing".

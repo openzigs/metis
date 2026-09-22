@@ -348,6 +348,14 @@ RUN set -eux; \
 # TARGETARCH is injected automatically by BuildKit so multi-arch builds fetch
 # the matching client (the previous hard-coded 23.4 arm64 URL 404'd after Oracle
 # rotated it off the CDN, and shipped arm64 libs into amd64 images).
+#
+# #51 — each zip is pinned by SHA-256 and the build FAILS on a mismatch, so a
+# replaced or tampered download can never reach the image. Oracle's download page no
+# longer lists 23.9 (it lists SHA-256 for current releases only); the pins were
+# computed from the zips as served, and those match the byte size and POSIX `cksum`
+# Oracle published for 23.9 (x64: 72,900,819 bytes, cksum 423186373; arm64:
+# 65,159,765 bytes, cksum 1682780028). Moving to another release means replacing
+# BOTH the URL and the SHA-256 of that architecture.
 FROM node:${NODE_VERSION}-trixie-slim AS oracle-client
 ARG TARGETARCH
 RUN apt-get update \
@@ -356,10 +364,13 @@ RUN apt-get update \
  && mkdir -p /opt/oracle \
  && if [ "$TARGETARCH" = "arm64" ]; then \
       OIC_URL="https://download.oracle.com/otn_software/linux/instantclient/2390000/instantclient-basiclite-linux.arm64-23.9.0.25.07.zip"; \
+      OIC_SHA256="6fd71c89bad50c4ccf1cb8c9b4a177776a47ca884935b979eda3b9c7d0d4dc16"; \
     else \
       OIC_URL="https://download.oracle.com/otn_software/linux/instantclient/2390000/instantclient-basiclite-linux.x64-23.9.0.25.07.zip"; \
+      OIC_SHA256="664a88e52f04ca787184a78b90ce09d34b1af919830be6973688219550e079b3"; \
     fi \
  && curl -fsSL "$OIC_URL" -o /tmp/ic.zip \
+ && echo "${OIC_SHA256}  /tmp/ic.zip" | sha256sum -c - \
  && unzip -q /tmp/ic.zip -d /opt/oracle \
  && mv /opt/oracle/instantclient_* /opt/oracle/instantclient \
  && rm /tmp/ic.zip \
@@ -470,6 +481,16 @@ COPY --from=prod-deps  --chown=metis:metis /app/packages/shared/node_modules ./p
 # that ownership.
 RUN mkdir -p /app/server/data && chown metis:metis /app/server/data
 WORKDIR /app/server
+
+# #60 — the image's SQLite default lives INSIDE `data/`, the one directory meant to
+# be a volume. The server's own default, `file:./dev.db`, is `/app/server/dev.db`:
+# on the image's writable layer (lost when the container is recreated), and under
+# the Helm chart's `readOnlyRootFilesystem` not creatable at all, so the chart's
+# default values could not start. Both the migration guard's Prisma CLI
+# (prisma.config.ts) and the server's client (lib/prisma.ts) read this variable, so
+# they still name one file. Any DATABASE_URL set at deploy time (Postgres, or
+# another SQLite path) replaces it.
+ENV DATABASE_URL=file:/app/server/data/metis.db
 
 USER metis
 

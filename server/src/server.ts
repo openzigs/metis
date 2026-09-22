@@ -174,6 +174,57 @@ export interface CreateServerOptions extends CreateAppOptions {
 }
 
 export function createServer(opts: CreateServerOptions = {}): MetisServer {
+  // #60 — the shared-backend factories are registered BEFORE `createApp()`, because
+  // building the routers resolves some of these backends: `documentsRouter` builds
+  // the KnowledgeService, whose constructor calls `getVectorStore()`. Registered
+  // after it (as they were), `VECTOR_STORE=pgvector` — the production Helm setting —
+  // threw "the pgvector store factory was not registered" and the server exited
+  // before listening. No unit test could see it (they run under NODE_ENV=test,
+  // where this block is skipped); the image smoke's Postgres arm, which runs
+  // production's backends, did.
+  if (process.env.NODE_ENV !== "test") {
+    // Epic #518 (#541) — wire the shared Postgres-backed rate-limit store factory
+    // so `DISCUSSION_RATE_LIMIT_BACKEND=postgres` enforces the discussion
+    // AI-invocation cap cluster-wide across replicas. Registering the factory is
+    // cheap and side-effect-free; the store is only built (and Postgres only
+    // touched) if that backend is actually selected.
+    registerPostgresRateLimitStore();
+
+    // Epic #518 (#542) — wire the shared Postgres-backed SSO transaction-state
+    // store factory so `SSO_STATE_BACKEND=postgres` makes the OIDC/SAML
+    // initiate->callback handshake survive load balancing across replicas. Like
+    // the rate-limit factory above, registering is cheap and side-effect-free;
+    // the store is only built (and Postgres only touched) if that backend is
+    // selected.
+    registerPostgresSSOStateStore();
+
+    // Epic #517 (#520) — wire the shared Postgres-backed SAML request-id cache
+    // factory so `SAML_REQUEST_ID_CACHE_BACKEND=postgres` makes SAML
+    // `validateInResponseTo` replay protection work cluster-wide: the request id
+    // minted on the AuthnRequest pod is visible on the (possibly different)
+    // Response/ACS pod. Like the factories above, registering is cheap and
+    // side-effect-free; the cache is only built (and Postgres only touched) if
+    // that backend is actually selected.
+    registerPostgresSamlRequestIdCache();
+
+    // Epic #518 (#543) — wire the shared pgvector store factory so
+    // `VECTOR_STORE=pgvector` makes the RAG vector store multi-replica safe
+    // (every replica reads/writes the same vectors in Postgres instead of a
+    // per-pod LanceDB dir that concurrent writers corrupt). Like the factories
+    // above, registering is cheap and side-effect-free; the store is only built
+    // (and Postgres only touched) if that backend is actually selected.
+    registerPgVectorStore();
+
+    // Epic #518 (#546) — wire the S3 uploads-storage factory so
+    // `UPLOAD_STORAGE_BACKEND=s3` writes uploaded document blobs to an object
+    // store instead of a per-pod RWO PVC. That makes uploads multi-replica safe
+    // (any replica reads what any other wrote) — the last per-pod-locality
+    // blocker to lifting `replicaCount=1`. Like the factories above, registering
+    // is cheap and side-effect-free; the S3 client is only constructed (and the
+    // bucket config only read) if that backend is actually selected.
+    registerS3Storage();
+  }
+
   // NOTE: the embedding env (EMBED_POOLING_MAP / EMBED_POOLING / EMBED_DTYPE) is
   // validated at boot inside `createApp()` (issue #782) — the same call below.
   const app = createApp(opts);
@@ -343,47 +394,6 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
     // Epic #404 (#413) — prune expired refresh-token revocation rows so the
     // persistent revocation table stays bounded. Epic #518 (#544): this is a
     // cluster singleton, now started only on the leader (see SingletonJobs).
-
-    // Epic #518 (#541) — wire the shared Postgres-backed rate-limit store factory
-    // so `DISCUSSION_RATE_LIMIT_BACKEND=postgres` enforces the discussion
-    // AI-invocation cap cluster-wide across replicas. Registering the factory is
-    // cheap and side-effect-free; the store is only built (and Postgres only
-    // touched) if that backend is actually selected.
-    registerPostgresRateLimitStore();
-
-    // Epic #518 (#542) — wire the shared Postgres-backed SSO transaction-state
-    // store factory so `SSO_STATE_BACKEND=postgres` makes the OIDC/SAML
-    // initiate->callback handshake survive load balancing across replicas. Like
-    // the rate-limit factory above, registering is cheap and side-effect-free;
-    // the store is only built (and Postgres only touched) if that backend is
-    // selected.
-    registerPostgresSSOStateStore();
-
-    // Epic #517 (#520) — wire the shared Postgres-backed SAML request-id cache
-    // factory so `SAML_REQUEST_ID_CACHE_BACKEND=postgres` makes SAML
-    // `validateInResponseTo` replay protection work cluster-wide: the request id
-    // minted on the AuthnRequest pod is visible on the (possibly different)
-    // Response/ACS pod. Like the factories above, registering is cheap and
-    // side-effect-free; the cache is only built (and Postgres only touched) if
-    // that backend is actually selected.
-    registerPostgresSamlRequestIdCache();
-
-    // Epic #518 (#543) — wire the shared pgvector store factory so
-    // `VECTOR_STORE=pgvector` makes the RAG vector store multi-replica safe
-    // (every replica reads/writes the same vectors in Postgres instead of a
-    // per-pod LanceDB dir that concurrent writers corrupt). Like the factories
-    // above, registering is cheap and side-effect-free; the store is only built
-    // (and Postgres only touched) if that backend is actually selected.
-    registerPgVectorStore();
-
-    // Epic #518 (#546) — wire the S3 uploads-storage factory so
-    // `UPLOAD_STORAGE_BACKEND=s3` writes uploaded document blobs to an object
-    // store instead of a per-pod RWO PVC. That makes uploads multi-replica safe
-    // (any replica reads what any other wrote) — the last per-pod-locality
-    // blocker to lifting `replicaCount=1`. Like the factories above, registering
-    // is cheap and side-effect-free; the S3 client is only constructed (and the
-    // bucket config only read) if that backend is actually selected.
-    registerS3Storage();
   }
 
   // Epic #156 \u2014 wire the async background runner with a socket emitter so

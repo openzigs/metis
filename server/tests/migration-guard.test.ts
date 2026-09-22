@@ -1,9 +1,11 @@
 /**
  * Unit tests for the schema-drift startup guard (#379, #380).
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { ensureSchemaUpToDate } from "../src/lib/db/migration-guard.js";
+import { ensureSchemaUpToDate, prismaCliFromManifest } from "../src/lib/db/migration-guard.js";
 
 function fakeSpawn(result: {
   status?: number | null;
@@ -62,6 +64,21 @@ describe("ensureSchemaUpToDate", () => {
     ];
     expect(args[0]).toMatch(/[\\/]prisma[\\/]build[\\/]index\.js$/);
     expect(existsSync(args[0])).toBe(true);
+  });
+
+  it("resolves the CLI through the package's declared bin, not a hard-coded internal path (#51)", async () => {
+    const spawn = fakeSpawn({ status: 0 });
+    await ensureSchemaUpToDate({ spawn, env: {} as NodeJS.ProcessEnv });
+    const [, args] = (spawn as unknown as { mock: { calls: unknown[][] } }).mock.calls[0] as [
+      string,
+      string[],
+    ];
+    const manifestPath = createRequire(import.meta.url).resolve("prisma/package.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as {
+      bin: string | Record<string, string>;
+    };
+    const rel = typeof manifest.bin === "string" ? manifest.bin : manifest.bin.prisma;
+    expect(args[0]).toBe(path.resolve(path.dirname(manifestPath), rel));
   });
 
   it("throws a fail-loud error when the Prisma CLI is not installed", async () => {
@@ -127,4 +144,29 @@ describe("ensureSchemaUpToDate", () => {
       Object.defineProperty(process, "platform", orig);
     }
   });
+});
+
+describe("prismaCliFromManifest (#51)", () => {
+  const manifestPath = path.resolve("/opt/x/node_modules/prisma/package.json");
+
+  it("follows the bin entry wherever a Prisma release moves it", () => {
+    expect(prismaCliFromManifest(manifestPath, { bin: { prisma: "dist/cli/main.js" } })).toBe(
+      path.resolve("/opt/x/node_modules/prisma/dist/cli/main.js"),
+    );
+  });
+
+  it("accepts the string form of bin", () => {
+    expect(prismaCliFromManifest(manifestPath, { bin: "build/index.js" })).toBe(
+      path.resolve("/opt/x/node_modules/prisma/build/index.js"),
+    );
+  });
+
+  it.each([{}, { bin: {} }, { bin: { other: "x.js" } }, { bin: "" }, null])(
+    "fails loud when the manifest declares no prisma bin: %j",
+    (manifest) => {
+      expect(() => prismaCliFromManifest(manifestPath, manifest)).toThrow(
+        /declares no "prisma" bin entry/,
+      );
+    },
+  );
 });

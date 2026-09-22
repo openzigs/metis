@@ -12,6 +12,7 @@ Persistence:
   • mode        : {{ if .Values.persistence.efs.enabled }}EFS RWX{{ else }}EBS gp3 RWO{{ end }}
   • uploads     : {{ printf "%s-server-uploads" (include "metis.fullname" .) }} ({{ .Values.persistence.uploads.size }})
   • lancedb     : {{ printf "%s-server-lancedb" (include "metis.fullname" .) }} ({{ .Values.persistence.lancedb.size }})
+  • data        : {{ if .Values.persistence.data.enabled }}{{ printf "%s-server-data" (include "metis.fullname" .) }} ({{ .Values.persistence.data.size }}){{ else }}emptyDir (persistence.data.enabled=false){{ end }}
 
 Scaling backends (server env — required for server.replicaCount > 1):
   • DATABASE_URL              : {{ if .Values.scaling.database.url }}set (shared Postgres){{ else }}UNSET → embedded SQLite (single-replica only){{ end }}

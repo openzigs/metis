@@ -150,12 +150,19 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            {{- if and (eq $name "server") $root.Values.persistence.enabled }}
-            - name: uploads
-              mountPath: {{ $root.Values.persistence.uploads.mountPath }}
-            - name: lancedb
-              mountPath: {{ $root.Values.persistence.lancedb.mountPath }}
-            {{- else if eq $name "server" }}
+            {{- if eq $name "server" }}
+            {{- /*
+              #60 — the root filesystem is read-only, so every path the server writes
+              needs a volume, or the chart's DEFAULT values cannot start: its home
+              (the image user's, ~/.metis-sessions) and its data directory (the SQLite
+              default, repo archive extracts). `data` is listed before the volumes
+              nested in it. scripts/lib/smoke-server-image.mjs (`helm-default` arm)
+              boots the image under exactly these writable paths.
+            */}}
+            - name: home
+              mountPath: /home/metis
+            - name: data
+              mountPath: {{ $root.Values.persistence.data.mountPath }}
             - name: uploads
               mountPath: {{ $root.Values.persistence.uploads.mountPath }}
             - name: lancedb
@@ -165,6 +172,16 @@ spec:
         - name: tmp
           emptyDir: {}
         {{- if eq $name "server" }}
+        - name: home
+          emptyDir: {}
+        {{- if and $root.Values.persistence.enabled $root.Values.persistence.data.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ printf "%s-server-data" (include "metis.fullname" $root) }}
+        {{- else }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
         {{- if $root.Values.persistence.enabled }}
         - name: uploads
           persistentVolumeClaim:

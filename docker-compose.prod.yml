@@ -49,6 +49,15 @@ services:
       METIS_SOURCE_REPOSITORY_URL:
       # Production targets Postgres (issue #390). Required.
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set in .env.prod}
+      # #60 — the RAG vector store, set here rather than inherited: the base file's
+      # `${VECTOR_STORE:-local}` is the dev JSON store, which production was
+      # silently running. Compose runs ONE server container, so the default is
+      # LanceDB — the server's own default, single-writer-safe here, its native
+      # binding proven by the CI image smoke — on the `server_prod_data` volume
+      # below. `pgvector` needs a Postgres with the extension; the `postgres`
+      # service's postgres:16-alpine image does not ship it (pgvector/pgvector:pg16
+      # does), so point DATABASE_URL at one before setting VECTOR_STORE=pgvector.
+      VECTOR_STORE: ${VECTOR_STORE:-lancedb}
       # METRICS_TOKEN must be set in .env.prod to enable /metrics scraping.
       METRICS_TOKEN: ${METRICS_TOKEN:-}
       # Issue #145 — embeddings sidecar wiring. EMBEDDINGS_TOKEN MUST be set
@@ -67,7 +76,12 @@ services:
       COPILOT_NATIVE_MODE: ${COPILOT_NATIVE_MODE:-in-process}
       COPILOT_NATIVE_BASE_URL: http://copilot:5060
       COPILOT_NATIVE_TOKEN: ${COPILOT_NATIVE_TOKEN:-}
-    volumes: !override []
+    # No source mounts in production. #60 — the server's data directory (LanceDB
+    # vectors, uploaded documents, repository archive extracts) on a named volume,
+    # so it survives the container being recreated. A fresh named volume takes the
+    # image's ownership of /app/server/data (the runtime user, uid 1001).
+    volumes: !override
+      - server_prod_data:/app/server/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -167,6 +181,10 @@ services:
 # server-spawned wrapper containers (`docker run --network metis-mcp ...`)
 # can attach by the bare name. If an operator pre-created the network out
 # of band (legacy flow), compose adopts it without conflict.
+volumes:
+  # #60 — see the server service above.
+  server_prod_data:
+
 networks:
   metis-mcp:
     name: metis-mcp
