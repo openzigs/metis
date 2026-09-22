@@ -12,7 +12,8 @@
 #   4. Surgical post-install prune of `@github/copilot` CLI fat (tree-sitter
 #      wasm grammars for languages we don't inspect, README/CHANGELOG).
 #
-# Base image: `node:20-alpine` (~75 MB). Native modules left in the runtime
+# Base image: `node:20-alpine` (~75 MB). Measured runtime size and what makes it
+# up: docs/OPERATIONS.md > "Container Image Sizes" (#34). Native modules left in the runtime
 # tree (`argon2`, `@lancedb/vectordb`, `@github/copilot`, `@prisma/client`)
 # all ship musl variants.
 # ==============================================================================
@@ -156,6 +157,48 @@ RUN set -eux; \
            server/node_modules/prisma server/node_modules/.bin/prisma \
            2>/dev/null || true
 
+# #34 — prune the store by REACHABILITY rather than by glob. `prisma` (the CLI) is
+# a server runtime dependency and a peer of @prisma/client, so `--prod` installs its
+# whole tree (@prisma/studio-core, @prisma/dev, @electric-sql/pglite, react-dom,
+# its own better-sqlite3 and mysql2 ...). Nothing at runtime runs the CLI. The
+# Copilot SDK/CLI is excluded for the reason given further down (the copilot-native
+# provider is unsupported in this image). An edge named here is never followed, at
+# any depth, and every store entry left unreached is deleted — so a new transitive
+# dependency of an excluded package cannot sneak back in behind a stale glob.
+COPY scripts/lib/prune-pnpm-store.mjs /tmp/prune-pnpm-store.mjs
+RUN node /tmp/prune-pnpm-store.mjs --store node_modules/.pnpm \
+      --importer /app --importer /app/server --importer /app/packages/shared \
+      --exclude prisma --exclude typescript \
+      --exclude @github/copilot --exclude @github/copilot-sdk \
+ && rm /tmp/prune-pnpm-store.mjs
+
+# #34 — native-addon build leftovers and other platforms' prebuilt binaries.
+#   - tree-sitter-* grammars: the server loads ONLY the `.wasm` from each package
+#     (server/src/lib/code-graph/parsers-tree-sitter.ts, via web-tree-sitter). The
+#     C sources (`src/parser.c` is 34 MB for C#; tree-sitter-typescript has two,
+#     under `typescript/src` and `tsx/src`) and the per-platform native
+#     `prebuilds/` are never loaded: ~110 MB.
+#   - better-sqlite3: `deps/` is the SQLite amalgamation source and
+#     `build/Release/obj.target` the object files — compile-time only.
+#   - Any package's `prebuilds/<platform>-<arch>[/.node]`: keep only linux- and
+#     linuxmusl-<this arch> (this is alpine/musl; some packages load the glibc one
+#     through gcompat).
+ARG TARGETARCH
+RUN set -eux; \
+    for D in $(find node_modules/.pnpm -maxdepth 3 -type d -path '*/node_modules/tree-sitter-*' 2>/dev/null); do \
+      rm -rf "$D/prebuilds" "$D/bindings" "$D/binding.gyp" 2>/dev/null || true; \
+      find "$D" -maxdepth 2 -type d -name src -prune -exec rm -rf {} + 2>/dev/null || true; \
+    done; \
+    for D in $(find node_modules/.pnpm -maxdepth 3 -type d -path '*/node_modules/better-sqlite3' 2>/dev/null); do \
+      rm -rf "$D/deps" "$D/src" "$D/build/Release/obj.target" "$D/build/Release/.deps" \
+             "$D/build/Release/test_extension.node" "$D/build/deps" 2>/dev/null || true; \
+    done; \
+    case "${TARGETARCH:-amd64}" in arm64) ARCH=arm64 ;; *) ARCH=x64 ;; esac; \
+    for P in $(find node_modules/.pnpm -type d -name prebuilds 2>/dev/null); do \
+      find "$P" -mindepth 1 -maxdepth 1 ! -name "linux-${ARCH}*" ! -name "linuxmusl-${ARCH}*" \
+        -exec rm -rf {} + 2>/dev/null || true; \
+    done
+
 # Surgical prune of unused fat from the @github/copilot CLI bundle.
 # - tree-sitter grammars for languages METIS does not inspect via the SDK
 # - README, CHANGELOG, docs, examples, test fixtures
@@ -227,9 +270,7 @@ RUN set -eux; \
     # Other AI providers (bedrock-gateway, openai, azure, anthropic,
     # offline-stub) work normally because the SDK is dynamically imported.
     rm -rf node_modules/.pnpm/@github+copilot@* \
-           node_modules/.pnpm/@github+copilot-linux-* \
-           node_modules/.pnpm/@github+copilot-darwin-* \
-           node_modules/.pnpm/@github+copilot-win32-* \
+           node_modules/.pnpm/@github+copilot-* \
            node_modules/.pnpm/@github+copilot-sdk@* \
            node_modules/@github/copilot* \
            server/node_modules/@github/copilot* \
@@ -249,6 +290,14 @@ RUN set -eux; \
       rm -f query_compiler_bg.cockroachdb.* query_compiler_bg.mysql.* \
             query_compiler_bg.sqlserver.* query_compiler_bg.sqlite.* \
             query_engine_bg.sqlite.* 2>/dev/null || true; \
+      # #34 — Prisma 7 renamed these to query_compiler_{fast,small}_bg.<db>.*, so
+      # the names above had stopped matching anything. The generated client
+      # (.prisma/client) carries its OWN copy of the compiler it uses; these are
+      # never loaded by it. Keep sqlite + postgresql (the two supported DBs).
+      rm -f query_compiler_fast_bg.cockroachdb.* query_compiler_fast_bg.mysql.* \
+            query_compiler_fast_bg.sqlserver.* query_compiler_small_bg.cockroachdb.* \
+            query_compiler_small_bg.mysql.* query_compiler_small_bg.sqlserver.* \
+            2>/dev/null || true; \
       cd /app; \
     done; \
     # Drop apache-arrow TypeScript sources (1.1 MB) — lance only loads the
@@ -310,13 +359,20 @@ ENV TRANSFORMERS_CACHE=/app/.cache/huggingface
 ARG EMBED_DTYPE=q8
 ENV EMBED_DTYPE=${EMBED_DTYPE}
 
+# #34 — the runtime is `node server/dist/index.js`; nothing in it runs npm, npx,
+# yarn or corepack, which the base image ships (~23 MB).
 RUN apk add --no-cache libc6-compat \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+           /usr/local/bin/yarn /usr/local/bin/yarnpkg \
  && addgroup --system --gid 1001 metis \
  && adduser  --system --uid 1001 --ingroup metis metis
 
 # Oracle Instant Client for thick mode (supports pre-12c password verifiers).
 # gcompat provides glibc compatibility layer needed by Oracle's prebuilt libs.
-# The libs are downloaded once at image build and add ~35 MB to the runtime layer.
+# The libs are downloaded once at image build and add ~138 MB to the runtime layer
+# (164 MB unpacked; the JDBC jars are dropped below — thick mode loads only the .so
+# libraries). Measured in #34.
 # Set ORACLE_CLIENT_DIR=/opt/oracle/instantclient at deploy time to enable.
 #
 # TARGETARCH is injected automatically by BuildKit so multi-arch builds fetch
@@ -334,6 +390,7 @@ RUN apk add --no-cache gcompat curl unzip \
  && unzip -q /tmp/ic.zip -d /opt/oracle \
  && mv /opt/oracle/instantclient_* /opt/oracle/instantclient \
  && rm /tmp/ic.zip \
+ && rm -f /opt/oracle/instantclient/*.jar \
  && apk del curl unzip \
  && ln -s /opt/oracle/instantclient/libclntsh.so /usr/lib/libclntsh.so
 
