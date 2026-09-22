@@ -150,15 +150,34 @@ test.describe("Database-aware analysis — settings control + status indicator (
         (url) => /\/api\/analyses\/[^/]+$/.test(url.pathname),
         async (route) => {
           if (route.request().method() !== "GET") return route.fallback();
-          const resp = await route.fetch();
-          const body = (await resp.json().catch(() => null)) as {
-            data?: Record<string, unknown>;
-          } | null;
+          // Read the upstream response ONCE into plain values, and treat a
+          // failed fetch as "let it through": the page polls this endpoint, so
+          // a handler can still be running as the test ends, and holding the
+          // `APIResponse` across an await then fails with "Target page,
+          // context or browser has been closed".
+          let status = 200;
+          let headers: Record<string, string> = { "content-type": "application/json" };
+          let text = "";
+          try {
+            const resp = await route.fetch();
+            status = resp.status();
+            headers = resp.headers();
+            text = await resp.text();
+          } catch {
+            return route.fallback();
+          }
+          const body = (() => {
+            try {
+              return JSON.parse(text) as { data?: Record<string, unknown> };
+            } catch {
+              return null;
+            }
+          })();
           if (body?.data) {
             body.data.databaseAware = databaseAware;
-            return route.fulfill({ response: resp, json: body });
+            return route.fulfill({ status, headers, body: JSON.stringify(body) });
           }
-          return route.fulfill({ response: resp });
+          return route.fulfill({ status, headers, body: text });
         },
       );
       await page.reload({ waitUntil: "load" });

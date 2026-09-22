@@ -24,7 +24,10 @@ export class LoginPage {
     // Exact match: once an SSO IdP is enabled the login page also renders
     // "Sign in with <IdP>" buttons, which a /Sign in/ regex also matches.
     this.submit = page.getByRole("button", { name: "Sign in", exact: true });
-    this.error = page.getByRole("alert");
+    // The login form's inline error. NOT a bare `getByRole("alert")`: after any
+    // client-side navigation Next.js mounts its own route announcer with
+    // `role="alert"`, and the two collide under strict mode.
+    this.error = page.locator("#login-error");
   }
 
   async goto(): Promise<void> {
