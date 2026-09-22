@@ -210,14 +210,30 @@ test.describe("Model Recommendation — Issue #600", () => {
       // Radix Select: Enter opens the listbox and moves DOM focus onto the
       // options; ArrowDown walks them; Enter commits the focused one.
       await page.keyboard.press("Enter");
-      await expect(page.getByRole("listbox")).toBeVisible();
-      await page.keyboard.press("ArrowDown");
+      const listbox = page.getByRole("listbox");
+      await expect(listbox).toBeVisible();
+      await expect(listbox.getByRole("option")).toHaveCount(5);
+
+      // Radix moves DOM focus onto the options itself, a tick after the
+      // listbox opens. Pressing ArrowDown once and committing straight away
+      // races that: the highlight can still be on "Auto", and Enter then
+      // commits the value we started from. Press until the highlight has
+      // actually moved, THEN commit — extra presses just walk further down a
+      // list where every entry is a valid choice.
+      await expect(async () => {
+        await page.keyboard.press("ArrowDown");
+        const focused = (
+          await page.evaluate(() => document.activeElement?.textContent ?? "")
+        ).trim();
+        expect(focused, "keyboard focus moved off the current value").not.toBe("Auto");
+        expect(
+          Object.values(ModelSelectionPanel.OVERRIDE_LABELS),
+          "focus is on one of the offered overrides",
+        ).toContain(focused);
+      }).toPass({ timeout: 10_000 });
+
       await page.keyboard.press("Enter");
-      await expect(page.getByRole("listbox")).toBeHidden();
-      // Retrying assertion: the trigger label follows React state, which
-      // updates a tick after the key event. Reading the focused option BEFORE
-      // committing raced Radix moving its highlight, so assert the outcome:
-      // the keyboard moved the selection off the default.
+      await expect(listbox).toBeHidden();
       await expect(panel.overrideSelect).not.toContainText("Auto");
       expect(
         Object.values(ModelSelectionPanel.OVERRIDE_LABELS),
