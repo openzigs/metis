@@ -161,10 +161,9 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
     promotionStatus: "allowed",
   });
 
-  log.info(
-    "Promoted %d withheld requirement(s) for analysis %s",
-    requirementIds.length,
+  log.info("Promoted withheld requirements", {
+    requirements: requirementIds.length,
     analysisId,
-  );
+  });
   return { status: "promoted", requirementCount: requirementIds.length };
 }

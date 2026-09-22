@@ -214,11 +214,10 @@ export class AmbiguityGrounding {
       };
     } catch (err) {
       // 7. Degrade safe on any retrieval/LLM error.
-      log.warn(
-        "Grounding failed for question %s — treating as open: %s",
-        question.id,
-        (err as Error).message,
-      );
+      log.warn("Grounding failed for question — treating as open", {
+        questionId: question.id,
+        error: (err as Error).message,
+      });
       return { groundingStatus: "open" };
     }
   }
@@ -259,11 +258,10 @@ export class AmbiguityGrounding {
         } catch (err) {
           // Defensive: groundQuestion already degrades safe, but never let one
           // rejected task abort its siblings.
-          log.warn(
-            "Grounding task threw for question %s — treating as open: %s",
-            question.id,
-            (err as Error).message,
-          );
+          log.warn("Grounding task threw for question — treating as open", {
+            questionId: question.id,
+            error: (err as Error).message,
+          });
           result = { groundingStatus: "open" };
         }
         enriched[i] = { ...question, ...result };

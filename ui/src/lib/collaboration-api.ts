@@ -70,7 +70,7 @@ export const commentApi = {
   ): Promise<CommentThread> {
     return apiFetch<CommentThread>(`/requirements/${requirementId}/comments`, {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: payload,
     });
   },
 
@@ -89,7 +89,7 @@ export const commentApi = {
   ): Promise<CommentThread> {
     return apiFetch<CommentThread>(
       `/projects/${projectId}/spec-kit/artifacts/${encodeURIComponent(artifactName)}/comments`,
-      { method: "POST", body: JSON.stringify(payload) },
+      { method: "POST", body: payload },
     );
   },
 
@@ -97,7 +97,7 @@ export const commentApi = {
   async reply(threadId: string, body: string): Promise<CommentItem> {
     return apiFetch<CommentItem>(`/comments/${threadId}/replies`, {
       method: "POST",
-      body: JSON.stringify({ body }),
+      body: { body },
     });
   },
 
@@ -105,7 +105,7 @@ export const commentApi = {
   async edit(commentId: string, body: string): Promise<CommentItem> {
     return apiFetch<CommentItem>(`/comments/${commentId}`, {
       method: "PATCH",
-      body: JSON.stringify({ body }),
+      body: { body },
     });
   },
 
@@ -128,7 +128,7 @@ export const assignmentApi = {
   ): Promise<Assignment> {
     return apiFetch<Assignment>(`/requirements/${requirementId}/assignments`, {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: payload,
     });
   },
 
@@ -150,7 +150,7 @@ export const requirementUpdateApi = {
       `/requirements/${requirementId}`,
       {
         method: "PUT",
-        body: JSON.stringify(patch),
+        body: patch,
       },
     );
   },

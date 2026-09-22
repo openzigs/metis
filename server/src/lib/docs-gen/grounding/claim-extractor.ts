@@ -175,7 +175,7 @@ export class ClaimExtractor {
       },
     ];
 
-    log.info("Decomposing section into grounded claims (%d chars)", text.length);
+    log.info("Decomposing section into grounded claims", { chars: text.length });
 
     const response = await this.provider.chat(messages, {
       model: this.model,

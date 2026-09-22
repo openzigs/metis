@@ -4,7 +4,9 @@
  * `ZodError` escaping any route MUST surface as a friendly 400 envelope, never
  * a 500 with the raw issues array.
  */
+import { Writable } from "node:stream";
 import express from "express";
+import winston from "winston";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -14,6 +16,7 @@ import { z } from "zod";
 import { SqlLineageClientError } from "../lib/code-graph/sql-lineage-client.js";
 import { JiraApiError } from "../lib/connectors/jira/jira-errors.js";
 import { ConnectorError } from "../lib/connectors/types.js";
+import { logger } from "../lib/logger.js";
 import { AppError, errorHandler, zodErrorToFriendly } from "./error-handler.js";
 import { genericMessageForStatus } from "./http-status-errors.js";
 
@@ -265,5 +268,88 @@ describe("errorHandler — status-carrying error classes (#1065)", () => {
     const res = await request(app).get("/boom");
     expect(res.status).toBe(403);
     expect(res.body.correlationId).toBe("corr-1");
+  });
+});
+
+describe("errorHandler — malformed JSON request body → 400 (#21)", () => {
+  function jsonApp() {
+    const app = express();
+    app.use(express.json());
+    app.post(["/echo", "/auth/login"], (req, res) => {
+      res.json({ success: true, data: req.body });
+    });
+    app.get("/syntax", () => {
+      // A SyntaxError the SERVER raised (e.g. JSON.parse of stored data) is
+      // not the client's fault and must stay a 500.
+      JSON.parse("{not json");
+    });
+    app.use(errorHandler);
+    return app;
+  }
+
+  it("maps a truncated JSON body to 400 INVALID_JSON", async () => {
+    const res = await request(jsonApp())
+      .post("/echo")
+      .set("Content-Type", "application/json")
+      .send('{"reviewStatus":');
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      success: false,
+      error: { code: "INVALID_JSON", message: "Request body is not valid JSON" },
+    });
+  });
+
+  it("maps a double-encoded body (a top-level JSON string) to 400 — the #14 shape", async () => {
+    const res = await request(jsonApp())
+      .post("/echo")
+      .set("Content-Type", "application/json")
+      .send(JSON.stringify(JSON.stringify({ reviewStatus: "approved" })));
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("INVALID_JSON");
+  });
+
+  it("does not echo any fragment of the rejected body back to the client", async () => {
+    const res = await request(jsonApp())
+      .post("/echo")
+      .set("Content-Type", "application/json")
+      .send('{"n": s3cr3t}');
+    expect(JSON.stringify(res.body)).not.toContain("s3cr3t");
+  });
+
+  it("does not write any fragment of the rejected body to the server log", async () => {
+    const lines: string[] = [];
+    const transport = new winston.transports.Stream({
+      stream: new Writable({
+        write(chunk, _enc, cb) {
+          lines.push(String(chunk));
+          cb();
+        },
+      }),
+    });
+    logger.add(transport);
+    try {
+      const res = await request(jsonApp())
+        .post("/auth/login")
+        .set("Content-Type", "application/json")
+        .send('{"p": hunter2}');
+      expect(res.status).toBe(400);
+    } finally {
+      logger.remove(transport);
+    }
+    const logged = lines.join("");
+    expect(logged).toContain("Malformed JSON request body");
+    expect(logged).not.toContain("hunter2");
+  });
+
+  it("leaves a server-side SyntaxError as a 500", async () => {
+    const res = await request(jsonApp()).get("/syntax");
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe("INTERNAL_ERROR");
+  });
+
+  it("still accepts a well-formed body", async () => {
+    const res = await request(jsonApp()).post("/echo").send({ a: 1 });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ a: 1 });
   });
 });

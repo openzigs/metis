@@ -74,7 +74,7 @@ export class RequirementsExtractor {
       { role: "user", content: rawInput },
     ];
 
-    log.info("Extracting structured requirements from input (%d chars)", rawInput.length);
+    log.info("Extracting structured requirements from input", { chars: rawInput.length });
 
     const response = await this.provider.chat(messages, {
       model: this.model,
@@ -84,12 +84,11 @@ export class RequirementsExtractor {
 
     const parsed = this.parseResponse(response.content, rawInput);
 
-    log.info(
-      "Extracted %d requirements (%d ambiguities, %d evidence needs)",
-      parsed.requirements.length,
-      parsed.totalAmbiguities,
-      parsed.totalEvidenceNeeds,
-    );
+    log.info("Extracted structured requirements", {
+      requirements: parsed.requirements.length,
+      ambiguities: parsed.totalAmbiguities,
+      evidenceNeeds: parsed.totalEvidenceNeeds,
+    });
 
     return parsed;
   }
