@@ -1651,3 +1651,103 @@ describe("listImpactAnalyses / getImpactAnalysisDetail", () => {
     expect(detail?.items[0].affectedSymbols[0].relation).toBe("direct");
   });
 });
+
+/**
+ * Issue #70 — the projects a run was started for are persisted WITH the run, and
+ * the list read can see them before the executor has written anything.
+ *
+ * The assertions deliberately go back through `listImpactAnalyses` rather than
+ * inspecting the row `create` returned: a write that reports success while the
+ * read cannot see it is exactly the shape this issue was.
+ */
+describe("triggerImpactAnalysis — #70 persists the selected projects", () => {
+  /** A store both the write and the read see, as one database would be. */
+  function roundTripPrisma() {
+    const rows: Array<{
+      id: string;
+      status: string;
+      documentId: string | null;
+      summary: string | null;
+      totalImpactedSymbols: number;
+      startedAt: Date;
+      completedAt: Date | null;
+      rerunOfId: string | null;
+      items: Array<{ projectId: string }>;
+      projects: Array<{ projectId: string }>;
+    }> = [];
+    let seq = 0;
+    const prisma = {
+      impactAnalysis: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          const nested = data.projects as { create?: Array<{ projectId: string }> } | undefined;
+          const row = {
+            id: `ia-${++seq}`,
+            status: String(data.status ?? "pending"),
+            documentId: (data.documentId as string | null) ?? null,
+            summary: null,
+            totalImpactedSymbols: 0,
+            startedAt: new Date(),
+            completedAt: null,
+            rerunOfId: (data.rerunOfId as string | null) ?? null,
+            items: [],
+            // Only a nested create lands here — a `projectIds` passed to the
+            // executor alone leaves this empty, which is the bug.
+            projects: nested?.create ?? [],
+          };
+          rows.push(row);
+          return row;
+        }),
+        findFirst: vi.fn(async () => null),
+        update: vi.fn(async () => ({})),
+        findMany: vi.fn(
+          async (args: {
+            where?: { OR?: Array<{ projects?: { some?: { projectId?: string } } }> };
+          }) => {
+            const arms = args.where?.OR;
+            if (!arms) return rows;
+            return rows.filter((r) =>
+              arms.some((a) => {
+                const pid = a.projects?.some?.projectId;
+                return pid ? r.projects.some((p) => p.projectId === pid) : false;
+              }),
+            );
+          },
+        ),
+      },
+      impactItem: { create: vi.fn(async () => ({})) },
+      impactAffectedSymbol: { createMany: vi.fn(async () => ({ count: 0 })) },
+      impactAffectedTable: { createMany: vi.fn(async () => ({ count: 0 })) },
+      knowledgeChunk: { findMany: vi.fn(async () => []) },
+      quarantineChunk: { findMany: vi.fn(async () => []) },
+      document: {},
+      codeSymbol: {},
+      codeEdge: {},
+    };
+    return { prisma, rows };
+  }
+
+  it("a run is listed on its project before any item exists", async () => {
+    const { prisma } = roundTripPrisma();
+    const created = await triggerImpactAnalysis(
+      { projectIds: ["proj-a", "proj-b"], text: "change", actorId: "u1" },
+      { prisma: prisma as never, extractor: { extract: async () => [] } },
+    );
+
+    const listed = await listImpactAnalyses(
+      { accessibleProjectIds: ["proj-a"], projectId: "proj-a" },
+      prisma as never,
+    );
+    expect(listed.map((r) => r.id)).toEqual([created.id]);
+    expect(listed[0].projectCount).toBe(2);
+    expect(listed[0].projectIds).toEqual(["proj-a"]);
+  });
+
+  it("deduplicates a repeated project id instead of writing it twice", async () => {
+    const { prisma, rows } = roundTripPrisma();
+    await triggerImpactAnalysis(
+      { projectIds: ["proj-a", "proj-a"], text: "change", actorId: "u1" },
+      { prisma: prisma as never, extractor: { extract: async () => [] } },
+    );
+    expect(rows[0].projects).toEqual([{ projectId: "proj-a" }]);
+  });
+});

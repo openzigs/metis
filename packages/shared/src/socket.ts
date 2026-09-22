@@ -258,6 +258,19 @@ export interface ServerToClientEvents {
   "analysis:completed": (data: { analysisId: string }) => void;
   "analysis:failed": (data: { analysisId: string; errorMessage: string }) => void;
   "analysis:cancelled": (data: { analysisId: string }) => void;
+  /**
+   * Issue #78 (Epic #739) — a new pending drift event was reconciled for a
+   * project. IDENTIFIER-ONLY by design: the drift badge re-reads the
+   * permission-checked `GET /sync/drift/count` rather than rendering anything
+   * from this payload, so the socket carries no issue content.
+   */
+  "drift:detected": (data: {
+    projectId: string;
+    driftEventId: string;
+    requirementId: string | null;
+    status: string;
+    ts: number;
+  }) => void;
   "document:status": (data: {
     projectId: string;
     documentId: string;

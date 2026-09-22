@@ -856,23 +856,47 @@ export async function listImpactAnalyses(
 ): Promise<ImpactAnalysisSummary[]> {
   const db = resolvePrisma(prisma);
   const rows = await db.impactAnalysis.findMany({
-    ...(opts.projectId ? { where: { items: { some: { projectId: opts.projectId } } } } : {}),
+    // #70 — a run belongs to the projects it was STARTED for (`projects`, written
+    // with the run) as well as those its items name. The `items` arm is kept for
+    // runs created before that table existed, whose selection was never recorded.
+    ...(opts.projectId
+      ? {
+          where: {
+            OR: [
+              { projects: { some: { projectId: opts.projectId } } },
+              { items: { some: { projectId: opts.projectId } } },
+            ],
+          },
+        }
+      : {}),
     orderBy: { startedAt: "desc" },
     take: opts.limit ?? 100,
-    include: { items: { select: { projectId: true } } },
+    include: {
+      items: { select: { projectId: true } },
+      projects: { select: { projectId: true } },
+    },
   });
 
   const accessible = opts.accessibleProjectIds ? new Set(opts.accessibleProjectIds) : null;
 
   return rows
     .map((row) => {
-      const projectIds = [...new Set(row.items.map((i) => i.projectId))];
+      // #70 — started-for projects first, so a run in flight names them in the
+      // order they were selected; item-derived ones follow.
+      const projectIds = [
+        ...new Set([
+          ...(row.projects ?? []).map((p) => p.projectId),
+          ...row.items.map((i) => i.projectId),
+        ]),
+      ];
       return { row, projectIds };
     })
     .filter(({ projectIds }) => {
       if (!accessible) return true;
-      // Admin (accessible=null handled above) or any overlap with accessible set.
-      return projectIds.length === 0 || projectIds.some((id) => accessible.has(id));
+      // #70 — no `projectIds.length === 0` escape hatch. It was written for runs
+      // whose projects could not be derived from their items, and it showed every
+      // such run — another member's in-progress run included — to EVERY caller.
+      return projectIds.some((id) => accessible.has(id));
     })
     .map(({ row, projectIds }) => ({
       id: row.id,

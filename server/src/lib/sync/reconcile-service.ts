@@ -3,16 +3,16 @@
  *
  * Matches incoming `IssueChangeEvent` (from GitHub or Jira webhooks) to
  * a `PublishedIssue` row, computes field-level diff against the local state,
- * and persists a `DriftEvent` row. Drift surfaces via the REST drift API; a
- * realtime `requirement:drift` socket broadcast is intentionally not wired yet
- * (see #417 — the dead contract entry was removed; revisit if a live drift
- * feed is built under a future progress-feedback epic).
+ * and persists a `DriftEvent` row. Drift surfaces via the REST drift API and,
+ * since #78, via a realtime `drift:detected` broadcast to the `project:{id}`
+ * room so the pending-drift badge updates without a reload.
  *
  * Idempotent: duplicate `deliveryId` values are rejected at the DB unique
  * constraint level and surfaced as a no-op result.
  */
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import { createSocketDriftEmitter } from "./socket-emitter.js";
 import { audit } from "../audit/audit-service.js";
 import type {
   IssueChangeEvent,
@@ -31,8 +31,19 @@ export interface ReconcileResult {
 }
 
 export interface ReconcileDeps {
+  /**
+   * #78 — defaults to the Socket.IO emitter. Every caller (both webhook
+   * receivers and the Jira poll worker) previously left this undefined, so the
+   * broadcast never happened; defaulting HERE rather than at each composition
+   * root is what stops a future caller re-introducing the silent gap. The
+   * default is a no-op until the IO server is registered, so tests that pass no
+   * deps behave exactly as before.
+   */
   emitDrift?: (projectId: string, event: DriftEventRow) => void;
 }
+
+/** Built once per module load; resolves the live IO server on each call. */
+const defaultEmitDrift = createSocketDriftEmitter();
 
 /**
  * Process a normalized issue change event: look up the PublishedIssue,
@@ -111,8 +122,8 @@ export async function reconcileIssueChange(
       createdAt: driftEvent.createdAt.toISOString(),
     };
 
-    // 5. Emit socket event
-    deps.emitDrift?.(projectId, row);
+    // 5. Emit socket event (#78 — the badge's live update depends on this).
+    (deps.emitDrift ?? defaultEmitDrift)(projectId, row);
 
     // 6. Audit
     void audit({

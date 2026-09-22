@@ -3315,6 +3315,14 @@ CREATE TABLE "impact_analyses" (
     CONSTRAINT "impact_analyses_pkey" PRIMARY KEY ("id")
 );
 
+CREATE TABLE "impact_analysis_projects" (
+    "analysisId" TEXT NOT NULL,
+    "projectId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "impact_analysis_projects_pkey" PRIMARY KEY ("analysisId","projectId")
+);
+
 CREATE TABLE "impact_items" (
     "id" TEXT NOT NULL,
     "impactAnalysisId" TEXT NOT NULL,
@@ -3409,6 +3417,7 @@ CREATE INDEX "impact_analyses_documentId_idx" ON "impact_analyses"("documentId")
 CREATE INDEX "impact_analyses_startedById_idx" ON "impact_analyses"("startedById");
 CREATE INDEX "impact_analyses_status_idx" ON "impact_analyses"("status");
 CREATE INDEX "impact_analyses_rerunOfId_idx" ON "impact_analyses"("rerunOfId");
+CREATE INDEX "impact_analysis_projects_projectId_idx" ON "impact_analysis_projects"("projectId");
 CREATE INDEX "impact_items_impactAnalysisId_idx" ON "impact_items"("impactAnalysisId");
 CREATE INDEX "impact_items_projectId_idx" ON "impact_items"("projectId");
 CREATE INDEX "impact_items_requirementId_idx" ON "impact_items"("requirementId");
@@ -3435,6 +3444,8 @@ ALTER TABLE "spec_code_mappings" ADD CONSTRAINT "spec_code_mappings_codeSymbolId
 ALTER TABLE "impact_analyses" ADD CONSTRAINT "impact_analyses_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "documents"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "impact_analyses" ADD CONSTRAINT "impact_analyses_startedById_fkey" FOREIGN KEY ("startedById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "impact_analyses" ADD CONSTRAINT "impact_analyses_rerunOfId_fkey" FOREIGN KEY ("rerunOfId") REFERENCES "impact_analyses"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "impact_analysis_projects" ADD CONSTRAINT "impact_analysis_projects_analysisId_fkey" FOREIGN KEY ("analysisId") REFERENCES "impact_analyses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "impact_analysis_projects" ADD CONSTRAINT "impact_analysis_projects_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "projects"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "impact_items" ADD CONSTRAINT "impact_items_impactAnalysisId_fkey" FOREIGN KEY ("impactAnalysisId") REFERENCES "impact_analyses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "impact_items" ADD CONSTRAINT "impact_items_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "projects"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "impact_items" ADD CONSTRAINT "impact_items_requirementId_fkey" FOREIGN KEY ("requirementId") REFERENCES "requirements"("id") ON DELETE SET NULL ON UPDATE CASCADE;

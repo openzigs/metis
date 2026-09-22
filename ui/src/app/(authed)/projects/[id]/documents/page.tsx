@@ -5,10 +5,16 @@
  * index page. Hosts the document list, uploader, URL ingest, and text ingest.
  */
 import { useEffect } from "react";
+import Link from "next/link";
 import { notFound, useParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { documentsApi, projectsApi } from "@/lib/projects-api";
+import { documentsApi, projectsApi, type DocumentRow } from "@/lib/projects-api";
 import { ApiError } from "@/lib/api-client";
+import {
+  isDocumentAwaitingReview,
+  isDocumentIngesting,
+  quarantineHref,
+} from "@/lib/project-pipeline";
 import { queryKeys } from "@/lib/query-keys";
 import { useSocket } from "@/lib/socket-client";
 import { Button } from "@/components/ui/button";
@@ -18,7 +24,15 @@ import { DocumentUploader } from "@/components/projects/document-uploader";
 import { UrlIngestForm } from "@/components/projects/url-ingest-form";
 import { TextIngestForm } from "@/components/projects/text-ingest-form";
 
-const INGESTING_STATUSES = new Set(["pending", "queued", "processing"]);
+/**
+ * #69 — what one row says about itself. A quarantined document keeps
+ * `status = processing`, so printing the raw status called it "processing"
+ * indefinitely with nothing pointing at the reviewer queue it is actually
+ * waiting on.
+ */
+function documentStatusLabel(d: DocumentRow): string {
+  return isDocumentAwaitingReview(d) ? "awaiting review" : d.status;
+}
 
 export default function ProjectDocumentsPage() {
   const params = useParams<{ id: string }>();
@@ -39,8 +53,11 @@ export default function ProjectDocumentsPage() {
     // Ingest runs in the background (issue: list showed stale "queued · 0
     // chunks" forever). The `document:status` socket event below invalidates
     // on push; this poll is a degraded fallback for a disconnected socket.
-    refetchInterval: (query) =>
-      query.state.data?.items.some((d) => INGESTING_STATUSES.has(d.status)) ? 3000 : false,
+    // #69 — a quarantined document is waiting for a reviewer, not ingesting.
+    // Matching on `status` alone kept this 3s poll running for ever on any
+    // project holding one (`isDocumentIngesting` excludes them, as #66 did for
+    // the Overview).
+    refetchInterval: (query) => (query.state.data?.items.some(isDocumentIngesting) ? 3000 : false),
   });
 
   // Live-update the list on ingest transitions instead of relying solely on
@@ -123,9 +140,19 @@ export default function ProjectDocumentsPage() {
                 <div>
                   <p className="font-medium">{d.filename}</p>
                   <p className="text-xs text-muted-foreground">
-                    {d.status} · {d.chunkCount} chunks · {(d.sizeBytes / 1024).toFixed(1)} KB
+                    {documentStatusLabel(d)} · {d.chunkCount} chunks ·{" "}
+                    {(d.sizeBytes / 1024).toFixed(1)} KB
                     {d.errorMessage ? ` · ${d.errorMessage}` : ""}
                   </p>
+                  {isDocumentAwaitingReview(d) ? (
+                    <Link
+                      href={quarantineHref(id)}
+                      className="text-xs underline"
+                      data-testid={`document-quarantine-link-${d.id}`}
+                    >
+                      Review in quarantine
+                    </Link>
+                  ) : null}
                 </div>
                 <Button
                   variant="ghost"
