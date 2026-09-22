@@ -12,7 +12,8 @@
 #   4. Surgical post-install prune of `@github/copilot` CLI fat (tree-sitter
 #      wasm grammars for languages we don't inspect, README/CHANGELOG).
 #
-# Base image: `node:20-alpine` (~75 MB). Native modules left in the runtime
+# Base image: `node:20-alpine` (~75 MB). Measured runtime size and what makes it
+# up: docs/OPERATIONS.md > "Container Image Sizes" (#34). Native modules left in the runtime
 # tree (`argon2`, `@lancedb/vectordb`, `@github/copilot`, `@prisma/client`)
 # all ship musl variants.
 # ==============================================================================
@@ -174,7 +175,8 @@ RUN node /tmp/prune-pnpm-store.mjs --store node_modules/.pnpm \
 # #34 — native-addon build leftovers and other platforms' prebuilt binaries.
 #   - tree-sitter-* grammars: the server loads ONLY the `.wasm` from each package
 #     (server/src/lib/code-graph/parsers-tree-sitter.ts, via web-tree-sitter). The
-#     C sources (`src/parser.c` is 34 MB for C#) and the per-platform native
+#     C sources (`src/parser.c` is 34 MB for C#; tree-sitter-typescript has two,
+#     under `typescript/src` and `tsx/src`) and the per-platform native
 #     `prebuilds/` are never loaded: ~110 MB.
 #   - better-sqlite3: `deps/` is the SQLite amalgamation source and
 #     `build/Release/obj.target` the object files — compile-time only.
@@ -184,7 +186,8 @@ RUN node /tmp/prune-pnpm-store.mjs --store node_modules/.pnpm \
 ARG TARGETARCH
 RUN set -eux; \
     for D in $(find node_modules/.pnpm -maxdepth 3 -type d -path '*/node_modules/tree-sitter-*' 2>/dev/null); do \
-      rm -rf "$D/src" "$D/prebuilds" "$D/bindings" "$D/binding.gyp" 2>/dev/null || true; \
+      rm -rf "$D/prebuilds" "$D/bindings" "$D/binding.gyp" 2>/dev/null || true; \
+      find "$D" -maxdepth 2 -type d -name src -prune -exec rm -rf {} + 2>/dev/null || true; \
     done; \
     for D in $(find node_modules/.pnpm -maxdepth 3 -type d -path '*/node_modules/better-sqlite3' 2>/dev/null); do \
       rm -rf "$D/deps" "$D/src" "$D/build/Release/obj.target" "$D/build/Release/.deps" \
@@ -367,7 +370,9 @@ RUN apk add --no-cache libc6-compat \
 
 # Oracle Instant Client for thick mode (supports pre-12c password verifiers).
 # gcompat provides glibc compatibility layer needed by Oracle's prebuilt libs.
-# The libs are downloaded once at image build and add ~35 MB to the runtime layer.
+# The libs are downloaded once at image build and add ~138 MB to the runtime layer
+# (164 MB unpacked; the JDBC jars are dropped below — thick mode loads only the .so
+# libraries). Measured in #34.
 # Set ORACLE_CLIENT_DIR=/opt/oracle/instantclient at deploy time to enable.
 #
 # TARGETARCH is injected automatically by BuildKit so multi-arch builds fetch

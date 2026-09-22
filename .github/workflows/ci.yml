@@ -111,12 +111,10 @@ jobs:
       - name: Test
         run: pnpm test
 
-      # #3 — the runner ran OUT OF DISK building these ("Free space left:
-      # 55 MB"): ubuntu-latest leaves ~14 GB free after the job's own
-      # node_modules, and four images plus the builder's cache do not fit in
-      # that. Drop the preinstalled toolchains this job never uses (.NET,
-      # Android SDK, GHC, CodeQL bundles, the runner's cached Docker images) —
-      # ~25 GB back.
+      # #3 — a run on main ran OUT OF DISK building these ("Free space left:
+      # 55 MB"). Drop the preinstalled toolchains this job never uses (.NET,
+      # Android SDK, GHC, CodeQL bundles, the runner's cached Docker images)
+      # before building. Measured on #38: 83 GB -> 110 GB free, in 1m21s.
       - name: Free runner disk for image builds
         if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
         run: |
@@ -134,7 +132,11 @@ jobs:
       # built but exempt from the cap (see docs/OPERATIONS.md > "Container
       # Image Sizes").
       #
-      # Budget note: the documented amd64 floor is ~329 MB, gated at ≤350 MB.
+      # Budget note (#34): metis-ui is gated at ≤350 MB. metis-server is held to
+      # its OWN measured amd64 budget (900 MB, DEFAULT_MAX_SERVER_IMAGE_MB) —
+      # the old ~329 MB figure was never re-measured as the image grew, and
+      # 350 is unreachable for it without dropping features. The breakdown is in
+      # docs/OPERATIONS.md > "Container Image Sizes".
       #
       # This gate previously allowed 1200 MB. That was NOT the real budget — it
       # was an arm64 allowance, because the runner was arm64 and a

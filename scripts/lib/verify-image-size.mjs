@@ -2,9 +2,10 @@
  * Cross-platform `verify:image-size` helper (Issue #189 / Epic #183).
  *
  * Port of `scripts/verify-image-size.sh`: builds the metis-server / metis-ui /
- * metis-embeddings images (unless `--no-build`) and asserts metis-server and
- * metis-ui each stay under `MAX_IMAGE_MB` (default 350). The embeddings sidecar
- * is measured for visibility but exempt from the budget (Issue #145).
+ * metis-embeddings images (unless `--no-build`) and asserts metis-ui stays under
+ * `MAX_IMAGE_MB` (default 350) and metis-server under its own measured budget,
+ * `MAX_SERVER_IMAGE_MB` (default 900, #34). The embeddings sidecar is measured
+ * for visibility but exempt from the budget (Issue #145).
  *
  * Runs on Windows, macOS, and Linux: `docker` is invoked via
  * `child_process.execFileSync` with an ARGUMENT ARRAY (never a shell string),
@@ -14,7 +15,7 @@
  * are split out so the budget logic is unit-tested without Docker.
  *
  * Exit codes match the original script:
- *   0  both gated images present and ≤ MAX_IMAGE_MB
+ *   0  both gated images present and within their budgets
  *   1  an image exceeds the limit OR is missing
  *   2  invalid invocation / docker not available
  */
@@ -34,7 +35,7 @@ export const DEFAULT_MAX_IMAGE_MB = 350;
  * Sizes". This is a REGRESSION gate: measured size plus modest headroom, never a
  * number raised until CI goes green. `MAX_SERVER_IMAGE_MB` overrides it.
  */
-export const DEFAULT_MAX_SERVER_IMAGE_MB = 1000;
+export const DEFAULT_MAX_SERVER_IMAGE_MB = 900;
 
 /** @typedef {{ tag: string, mb: number | null, exempt: boolean, budgetMb?: number }} ImageSize */
 
