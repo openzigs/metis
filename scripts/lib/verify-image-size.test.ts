@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   DEFAULT_MAX_IMAGE_MB,
+  DEFAULT_MAX_SERVER_IMAGE_MB,
+  resolveImageBudget,
   bytesToMb,
   parseBudgetMb,
   isOverBudget,
@@ -91,6 +93,27 @@ describe("evaluateSizes", () => {
     expect(r.ok).toBe(false);
     expect(r.failures).toHaveLength(1);
     expect(r.failures[0]).toContain("metis-server:test");
+  });
+
+  it("applies a per-image budget in place of the general one (#34)", () => {
+    const r = evaluateSizes(
+      [
+        { tag: "metis-server:test", mb: 900, exempt: false, budgetMb: 1000 },
+        { tag: "metis-ui:test", mb: 360, exempt: false },
+      ],
+      350,
+    );
+    // The server is inside ITS budget; the UI is still held to the general 350.
+    expect(r.ok).toBe(false);
+    expect(r.failures).toEqual(["metis-ui:test = 360 MB exceeds 350 MB"]);
+  });
+
+  it("fails an image over its own per-image budget (#34)", () => {
+    const r = evaluateSizes(
+      [{ tag: "metis-server:test", mb: 1001, exempt: false, budgetMb: 1000 }],
+      5000,
+    );
+    expect(r.failures).toEqual(["metis-server:test = 1001 MB exceeds 1000 MB"]);
   });
 
   it("fails a missing gated image", () => {
@@ -185,6 +208,25 @@ describe("parseHumanSizeToBytes", () => {
   });
 });
 
+describe("resolveImageBudget (#34)", () => {
+  const server = { budgetEnv: "MAX_SERVER_IMAGE_MB", defaultBudgetMb: 1000 };
+  it("uses the image's own env override when set and valid", () => {
+    expect(resolveImageBudget(server, 350, { MAX_SERVER_IMAGE_MB: "1200" })).toBe(1200);
+  });
+  it("falls back to the image's documented default, NOT the general budget", () => {
+    expect(resolveImageBudget(server, 350, {})).toBe(1000);
+    expect(resolveImageBudget(server, 350, { MAX_SERVER_IMAGE_MB: "junk" })).toBe(1000);
+    expect(resolveImageBudget(server, 350, { MAX_SERVER_IMAGE_MB: "  " })).toBe(1000);
+  });
+  it("an image with no budget of its own takes the general budget", () => {
+    expect(resolveImageBudget({}, 350, { MAX_SERVER_IMAGE_MB: "1200" })).toBe(350);
+  });
+  it("the shipped server default is a real number below the old arm64 allowance", () => {
+    expect(DEFAULT_MAX_SERVER_IMAGE_MB).toBeGreaterThan(DEFAULT_MAX_IMAGE_MB);
+    expect(DEFAULT_MAX_SERVER_IMAGE_MB).toBeLessThan(1200);
+  });
+});
+
 describe("runVerify", () => {
   function makeDeps(over = false, missingDocker = false) {
     const log = vi.fn();
@@ -225,8 +267,41 @@ describe("runVerify", () => {
 
   it("returns 1 when a gated image is over budget", () => {
     const deps = makeDeps(true);
-    expect(runVerify({ noBuild: true, deps, budgetMb: 350 })).toBe(1);
+    expect(
+      runVerify({ noBuild: true, deps, budgetMb: 350, env: { MAX_SERVER_IMAGE_MB: "350" } }),
+    ).toBe(1);
     expect(deps.err).toHaveBeenCalledWith(expect.stringContaining("exceeds"));
+  });
+
+  it("holds metis-server to its own budget and metis-ui to the general one (#34)", () => {
+    const log = vi.fn();
+    const err = vi.fn();
+    const sizes: Record<string, string> = {
+      "metis-server:test": "900000000",
+      "metis-ui:test": "300000000",
+      "metis-embeddings:test": "999000000",
+    };
+    const run = vi.fn((args: string[]) => sizes[args[2]] ?? "");
+    const deps = { log, err, run, hasDocker: () => true };
+
+    // 900 MB server passes under a 1000 MB server budget while MAX_IMAGE_MB is 350.
+    expect(
+      runVerify({ noBuild: true, deps, budgetMb: 350, env: { MAX_SERVER_IMAGE_MB: "1000" } }),
+    ).toBe(0);
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/metis-server:test\s+900\s+1000/));
+
+    // ...and fails under an 800 MB one.
+    expect(
+      runVerify({ noBuild: true, deps, budgetMb: 350, env: { MAX_SERVER_IMAGE_MB: "800" } }),
+    ).toBe(1);
+    expect(err).toHaveBeenCalledWith("FAIL: metis-server:test = 900 MB exceeds 800 MB");
+
+    // The UI is NOT loosened by the server's budget.
+    sizes["metis-ui:test"] = "400000000";
+    expect(
+      runVerify({ noBuild: true, deps, budgetMb: 350, env: { MAX_SERVER_IMAGE_MB: "1000" } }),
+    ).toBe(1);
+    expect(err).toHaveBeenCalledWith("FAIL: metis-ui:test = 400 MB exceeds 350 MB");
   });
 
   it("measures a manifest-index image via the ls fallback (#509)", () => {
