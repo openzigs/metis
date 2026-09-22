@@ -4417,6 +4417,17 @@ call that reveals it, no further judge batches or LLM phases run, and the
 budget line reads `$x + N unpriced tokens` rather than `$0.00`. Pricing the
 model with `MODEL_PRICES` lets later runs proceed.
 
+The budget is checked before every judge batch and before every suggestion
+cluster, so a run stops part-way through either phase once the cap is reached.
+
+Embedding usage is recorded under the embedder that ran. The built-in local
+embedders cost $0; Amazon Titan Text Embeddings V2 and OpenAI's
+`text-embedding-3-small`, `text-embedding-3-large` and `text-embedding-ada-002`
+are priced at their published prices. Any other cloud embedding model is
+unpriced, and stops the run's LLM phases as above, until you price it with a
+`MODEL_PRICES` key of the form `embed:<backend>:<model>` — for example
+`embed:bedrock-sdk:cohere.embed-english-v3`.
+
 ### Permissions
 
 - **`project.read`** — view the page, runs, report, and budget tiles.

@@ -37,6 +37,11 @@ afterEach(() => {
 
 /** What served the judge/suggestion calls on the default Bedrock deployment. */
 const BEDROCK = { provider: "bedrock-gateway", modelId: HAIKU_MODEL_ID } as const;
+/** The default in-process embedder (#58). */
+const LOCAL_EMBEDDER = {
+  embedder: "xenova",
+  modelId: "onnx-community/gte-modernbert-base",
+} as const;
 
 function makeDb(
   initial?: Partial<{
@@ -89,7 +94,7 @@ describe("CoverageCostTracker", () => {
       { runId: "r1", userId: "u1", projectId: "p1" },
       { db: db as never, budgetCents: 1000 },
     );
-    tracker.record({ phase: "embedding", embeddingTokens: 100 });
+    tracker.record({ phase: "embedding", ...LOCAL_EMBEDDER, embeddingTokens: 100 });
     tracker.record({ phase: "judge", ...BEDROCK, promptTokens: 50, completionTokens: 50 });
     tracker.record({ phase: "suggestion", ...BEDROCK, promptTokens: 30, completionTokens: 20 });
     const view = tracker.view();
@@ -106,7 +111,7 @@ describe("CoverageCostTracker", () => {
       { runId: "r1", userId: "u1", projectId: "p1" },
       { db: db as never },
     );
-    tracker.record({ phase: "embedding" });
+    tracker.record({ phase: "embedding", ...LOCAL_EMBEDDER });
     expect(tracker.view().breakdown.embeddingTokens).toBe(0);
   });
 
@@ -295,6 +300,83 @@ describe("CoverageCostTracker — served provider and unpriced usage (#43)", () 
     } as never);
     expect(cost.usedCents).toBe(0);
     expect(cost.exceeded()).toBe(true);
+  });
+});
+
+describe("CoverageCostTracker — embedding usage under the embedder that ran (#58)", () => {
+  const scope = { runId: "r1", userId: "u1", projectId: "p1" };
+
+  function tracked(budgetCents = 20) {
+    const { db } = makeDb();
+    const recorder = makeRecorder();
+    const cost = new CoverageCostTracker(scope, {
+      db: db as never,
+      tracker: recorder.tracker,
+      budgetCents,
+    });
+    return { cost, events: recorder.events };
+  }
+
+  it("a local-embedder run's embedding phase adds $0 to the run budget", async () => {
+    // 1M tokens: at the Haiku 4.5 input price this was 100 cents — five times
+    // the default $0.20 budget, spent before any LLM call was made.
+    const { cost, events } = tracked();
+    cost.record({
+      phase: "embedding",
+      embedder: "xenova",
+      modelId: "onnx-community/gte-modernbert-base",
+      embeddingTokens: 1_000_000,
+    });
+    await cost.flush();
+    expect(cost.usedCents).toBe(0);
+    expect(cost.view().unpricedTokens).toBe(0);
+    expect(cost.view().breakdown.embeddingTokens).toBe(1_000_000);
+    expect(cost.exceeded()).toBe(false);
+    // Recorded under the embedder that ran — not offline-stub, not Haiku.
+    expect(events.map((e) => [e.provider, e.model, e.agentStep])).toEqual([
+      ["embed:xenova", "onnx-community/gte-modernbert-base", "testcoverage.embedding"],
+    ]);
+  });
+
+  it("prices a cloud embedder at its own published price", () => {
+    const { cost } = tracked(1_000);
+    // Titan Text Embeddings V2: $0.02 / MTok → 10M tokens = $0.20.
+    cost.record({
+      phase: "embedding",
+      embedder: "bedrock",
+      modelId: "amazon.titan-embed-text-v2:0",
+      embeddingTokens: 10_000_000,
+    });
+    expect(cost.usedCents).toBe(20);
+    // text-embedding-3-large: $0.13 / MTok → 1M tokens = $0.13.
+    cost.record({
+      phase: "embedding",
+      embedder: "openai",
+      modelId: "text-embedding-3-large",
+      embeddingTokens: 1_000_000,
+    });
+    expect(cost.usedCents).toBe(33);
+    expect(cost.view().unpricedTokens).toBe(0);
+  });
+
+  it("an embedding model with no price is unpriced, and the budget fails closed", () => {
+    const { cost } = tracked(10_000);
+    cost.record({
+      phase: "embedding",
+      embedder: "bedrock-sdk",
+      modelId: "cohere.embed-english-v3",
+      embeddingTokens: 400,
+    });
+    expect(cost.usedCents).toBe(0);
+    expect(cost.view().unpricedTokens).toBe(400);
+    expect(cost.exceeded()).toBe(true);
+  });
+
+  it("an embedding record that names no embedder is unpriced — never priced as Haiku", () => {
+    const { cost } = tracked(10_000);
+    cost.record({ phase: "embedding", embeddingTokens: 1_000_000 } as never);
+    expect(cost.usedCents).toBe(0);
+    expect(cost.view().unpricedTokens).toBe(1_000_000);
   });
 });
 

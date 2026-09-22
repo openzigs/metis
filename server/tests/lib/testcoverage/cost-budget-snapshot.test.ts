@@ -44,6 +44,11 @@ import { HAIKU_MODEL_ID } from "../../../src/lib/ai/model-router.js";
 
 /** The default deployment: Haiku 4.5 on the Bedrock gateway (#43). */
 const BEDROCK = { provider: "bedrock-gateway", modelId: HAIKU_MODEL_ID } as const;
+/** The default in-process embedder: no per-token charge (#58). */
+const LOCAL_EMBEDDER = {
+  embedder: "xenova",
+  modelId: "onnx-community/gte-modernbert-base",
+} as const;
 
 beforeEach(() => {
   __resetTokenTrackerSingleton();
@@ -73,9 +78,9 @@ describe("Cost guardrail snapshot (PR #879)", () => {
     const JUDGE_LLM_CALLS = Math.round(NUM_REQS * TOP_K * (1 - CACHE_HIT_RATE));
     const NUM_GAPS = 20;
 
-    // Embedding phase — offline-stub model, zero cost contribution.
-    tracker.record({ phase: "embedding", embeddingTokens: NUM_REQS * 120 });
-    tracker.record({ phase: "embedding", embeddingTokens: NUM_TESTS * 80 });
+    // Embedding phase — the local embedder, zero cost contribution (#58).
+    tracker.record({ phase: "embedding", ...LOCAL_EMBEDDER, embeddingTokens: NUM_REQS * 120 });
+    tracker.record({ phase: "embedding", ...LOCAL_EMBEDDER, embeddingTokens: NUM_TESTS * 80 });
 
     // Judge phase — Haiku, ~60% cache hit rate.
     for (let i = 0; i < JUDGE_LLM_CALLS; i += 1) {

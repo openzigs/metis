@@ -19,7 +19,7 @@ import {
   familyPricePerMTok,
   resolveRate,
 } from "../finops/provider-rates.js";
-import type { ProviderKey, TokenUsage } from "./types.js";
+import type { TokenUsage, UsageProvider } from "./types.js";
 
 const log = createChildLogger("ai-token-tracker");
 
@@ -139,7 +139,7 @@ export function estimateUsageCostUsd(
     TokenUsage,
     "promptTokens" | "completionTokens" | "cacheReadTokens" | "cacheWriteTokens"
   >,
-  provider: ProviderKey,
+  provider: UsageProvider,
   writeTtl: PromptCacheTtl = "5m",
 ): number | null {
   const norm = normalizeTokenUsage({ ...usage, totalTokens: 0 }, conventionForProvider(provider));
@@ -156,7 +156,7 @@ export function estimateUsageCostUsd(
 export interface TokenEvent {
   sessionId: string;
   userId: string;
-  provider: ProviderKey;
+  provider: UsageProvider;
   model: string;
   usage: Partial<TokenUsage>;
   /** Optional source prompt — hashed (never stored). */
@@ -318,7 +318,7 @@ export class TokenTracker {
   private async persist(row: {
     sessionId: string;
     userId: string;
-    provider: ProviderKey;
+    provider: UsageProvider;
     model: string;
     promptTokens: number;
     completionTokens: number;
