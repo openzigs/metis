@@ -115,8 +115,14 @@ export function loadMentionNotifyConfig(
  * Resolved once from config; the default is in-memory/per-process, and
  * `DISCUSSION_RATE_LIMIT_BACKEND=shared` selects the process-wide shared-store
  * seam (#508) so the spam cap can hold cluster-wide. Module-scoped.
+ *
+ * #60 — resolved on FIRST USE, not at import. A shared backend's factory
+ * (`DISCUSSION_RATE_LIMIT_BACKEND=postgres`, production's setting) is registered by
+ * `createServer()`, which runs after every module is imported; resolving here made
+ * the server exit at import with "the Postgres store factory was not registered".
  */
-let notifyStore: RateLimitStore = resolveRateLimitStore();
+let notifyStore: RateLimitStore | undefined;
+const currentNotifyStore = (): RateLimitStore => (notifyStore ??= resolveRateLimitStore());
 
 function notifyKey(threadId: string, userId: string): string {
   return `${threadId}::${userId}`;
@@ -133,7 +139,12 @@ export async function allowMentionNotification(
   cfg: MentionNotifyLimitConfig,
 ): Promise<boolean> {
   const now = Date.now();
-  const res = await notifyStore.hit(notifyKey(threadId, userId), cfg.max, cfg.windowMs, now);
+  const res = await currentNotifyStore().hit(
+    notifyKey(threadId, userId),
+    cfg.max,
+    cfg.windowMs,
+    now,
+  );
   return res.allowed;
 }
 
@@ -143,7 +154,7 @@ export async function allowMentionNotification(
  * `DISCUSSION_RATE_LIMIT_BACKEND` picks up the selected backend).
  */
 export function __resetMentionNotifyLimiter(): void {
-  void notifyStore.reset();
+  void notifyStore?.reset();
   notifyStore = resolveRateLimitStore();
 }
 
@@ -153,7 +164,7 @@ export function __resetMentionNotifyLimiter(): void {
  * store so callers can restore it.
  */
 export function __setMentionNotifyStore(next: RateLimitStore): RateLimitStore {
-  const prev = notifyStore;
+  const prev = currentNotifyStore();
   notifyStore = next;
   return prev;
 }

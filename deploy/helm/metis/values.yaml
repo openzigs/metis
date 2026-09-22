@@ -529,6 +529,18 @@ persistence:
     size: 5Gi
     storageClassName: gp3
     mountPath: /app/server/data/lancedb
+  # #60 — the server's data directory, which the root filesystem (read-only) is
+  # not. With no DATABASE_URL the server runs on SQLite at
+  # /app/server/data/metis.db (the image's default, Dockerfile.server); repository
+  # archive uploads are unpacked under data/repo-{archives,extracts}. The uploads and
+  # LanceDB volumes above mount INSIDE it. `enabled: false` keeps the directory
+  # writable on an emptyDir instead of a PVC — right when DATABASE_URL is Postgres
+  # (values-prod.yaml), where nothing durable is written there.
+  data:
+    enabled: true
+    size: 5Gi
+    storageClassName: gp3
+    mountPath: /app/server/data
   # EFS RWX toggle. NO LONGER required for multi-replica: the recommended N>1
   # path puts uploads on S3 (uploads.backend=s3) and vectors in pgvector
   # (scaling.vectorStore=pgvector), so neither the uploads nor the LanceDB PVC

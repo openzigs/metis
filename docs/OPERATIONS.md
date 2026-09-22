@@ -322,9 +322,9 @@ The release pipeline ships three images:
 
 | Image | Built from | Current size | Budget |
 |---|---|---|---|
-| `metis-ui` | `Dockerfile.ui` (Next.js 15 standalone, alpine) | **~197 MB** | ≤ 350 MB ✅ |
+| `metis-ui` | `Dockerfile.ui` (Next.js 16 standalone, alpine) | **~207 MB** (amd64, `api` run 35740221946) | ≤ 350 MB ✅ |
 | `metis-server` | `Dockerfile.server` (`node:22-trixie-slim`, glibc, prod-only deps, slimmed) | **~1,045 MB** (amd64, measured #45) | ≤ 1,170 MB — its own budget, see below |
-| `metis-embeddings` | `Dockerfile.embeddings` (bookworm-slim, glibc) | **~423 MB** | exempt (sidecar) |
+| `metis-embeddings` | `Dockerfile.embeddings` (bookworm-slim, glibc) | **~589 MB** (amd64, `api` run 35740221946, built with `BAKE_MODELS=0`) | exempt (sidecar) |
 
 > **Multi-arch (Epic #360 / sub-issue #373)**: All four core images
 > (`metis-server`, `metis-ui`, `metis-embeddings-svc`, `metis-copilot-svc`)
@@ -396,7 +396,7 @@ What is left, measured in the amd64 image (MiB, from `du`):
 | Component | Size | Notes |
 |---|---|---|
 | Oracle Instant Client (basiclite 23.9, `.so` only) | ~138 | Thick mode (pre-12c password verifiers); did not load in this image — loads since #39 |
-| Node.js 20 runtime (`/usr/local`) | ~104 | The `node` binary alone is 97 |
+| Node.js 22 runtime (`/usr/local`) | ~125 | The `node` binary alone is 117 (arm64, `du`, #51). #34 measured ~104 / 97 on the Node 20 base the image no longer uses |
 | `@lancedb/vectordb-linux-x64-gnu` | ~99 | Single native library; did not load on musl — loads on the glibc base since #39 |
 | `@napi-rs/canvas` ×3 (pdf-parse and two `pdfjs-dist` versions each pin their own) | ~88 | Native (musl then; glibc since #39) |
 | `tesseract.js-core` | ~44 | OCR WASM, via `officeparser` |
@@ -469,17 +469,65 @@ migrated `/app/server/dev.db` while the server's client could not open `/app/dev
 image now runs from **`/app/server`**, with `/app/server/data` owned by the runtime
 user; the Helm chart already mounts its uploads and LanceDB volumes at
 `/app/server/data/{uploads,lancedb}`, which the server had never written to.
-**To keep vectors and uploads across container restarts, mount a volume at
-`/app/server/data`** (or set `LANCEDB_PATH` / `UPLOAD_DIR`); on SQLite, point
-`DATABASE_URL` into that volume too, e.g. `file:/app/server/data/metis.db`.
+**To keep vectors, uploads and the SQLite database across container restarts,
+mount a volume at `/app/server/data`** (or set `LANCEDB_PATH` / `UPLOAD_DIR`).
 
-**The CI smoke runs both.** `scripts/lib/smoke-server-image.mjs` boots the image on
-SQLite with no `DATABASE_URL` at all, then against a `pgvector/pgvector:pg16`
-container on a private docker network. In each it runs `prisma migrate status` with
-the image's own CLI, reads a migrated table through the server's own Prisma client,
-and writes and reads back a LanceDB table and an upload through the server's own
-`getVectorStore()` and `resolveDocumentStorage()` at their default paths. It used to
-write LanceDB to `/tmp`, which passed while the real default was `Permission denied`.
+**The SQLite default is inside that directory (#60).** The image sets
+`DATABASE_URL=file:/app/server/data/metis.db`; the server's own default,
+`file:./dev.db`, is `/app/server/dev.db`, on the image's writable layer — lost when
+the container is recreated, and not creatable at all under the Helm chart's
+read-only root filesystem, so the chart's **default values could not start**. Any
+`DATABASE_URL` set at deploy time replaces the image's. An existing SQLite
+deployment that relied on `/app/server/dev.db` should copy that file to
+`/app/server/data/metis.db`, or set `DATABASE_URL=file:/app/server/dev.db`
+explicitly. The chart now mounts a writable volume at every path the server writes
+under its default values: `/app/server/data` (a `<release>-server-data` PVC, or an
+`emptyDir` with `persistence.data.enabled=false`, as `values-prod.yaml` sets),
+the uploads and LanceDB PVCs inside it, `/home/metis` and `/tmp`.
+
+**`docker-compose.prod.yml` (#60)** sets `VECTOR_STORE=lancedb` explicitly (it used
+to inherit the base file's `local`, the dev JSON store) and keeps `/app/server/data`
+on the `server_prod_data` named volume. Compose runs one server container, so
+single-writer LanceDB is correct there. `pgvector` needs a Postgres with the
+extension, which the compose `postgres` service's `postgres:16-alpine` image does not
+ship.
+
+**The CI smoke runs three arms.** `scripts/lib/smoke-server-image.mjs` boots the
+image:
+
+- `sqlite` — no `DATABASE_URL` at all, so the image's own default boots;
+- `postgres` — against a `pgvector/pgvector:pg16` container on a private docker
+  network, with production's shared backends (`VECTOR_STORE=pgvector` and the
+  Postgres rate limit, SSO state and leader election, as `values-prod.yaml` sets
+  them, #60);
+- `helm-default` — the way the Helm chart's default values run it (#60): read-only
+  root filesystem, uid 1001, every capability dropped, no `DATABASE_URL`, and
+  writable only at the paths the chart mounts.
+
+In each it runs `prisma migrate status` with the image's own CLI (resolved through
+the `prisma` package's declared `bin`, as the migration guard does, #51), reads a
+migrated table through the server's own Prisma client, and writes and reads back an
+upload through the server's own `resolveDocumentStorage()`. The SQLite arms write and
+read back a LanceDB table through `getVectorStore()` at its default path (it used to
+write LanceDB to `/tmp`, which passed while the real default was `Permission
+denied`); the Postgres arm instead writes, searches and counts a vector through the
+server's own `PgVectorStore`. The Postgres arm found that production's values could
+not start (#60): the Postgres rate-limit store was resolved at import, before its
+factory was registered, and the pgvector factory was registered after the routers
+that resolve it. Unit tests could not see either — they run under `NODE_ENV=test`,
+where registration is skipped.
+
+The smoke runs on Dependabot PRs too (#51), which build `metis-server` (not the
+other three images, and not the size gate): a dependency bump is the likeliest cause
+of the next image that does not start. Its per-run secrets and the Postgres password
+reach docker through its environment (`--env NAME`), never on its command line, where
+`ps` on the runner would show them.
+
+**The Oracle Instant Client download is pinned (#51).** `Dockerfile.server` checks
+each architecture's zip against a SHA-256 and fails the build on a mismatch. Oracle's
+download page no longer lists 23.9, so the pins were computed from the zips as served
+and checked against the byte size and `cksum` Oracle published for 23.9. Upgrading
+the client means replacing both the URL and the SHA-256.
 
 Reducible contributors still in the image, measured in review of #38:
 

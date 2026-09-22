@@ -18,6 +18,7 @@
  *     that have already run `prisma migrate deploy` out-of-band).
  */
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,12 +55,34 @@ function resolveServerRoot(): string {
 }
 
 /**
- * The Prisma CLI's entry script, resolved from this package the way `server/dist`
- * resolves every other dependency. `prisma` is a server `dependency`, so this is
- * present in a dev checkout and in the production image alike.
+ * The Prisma CLI's entry script, as the package itself declares it: the `prisma`
+ * entry of its `bin` field, relative to its `package.json` (#51).
+ *
+ * `bin` is the contract every package manager builds `node_modules/.bin/prisma`
+ * from, and `prisma/package.json` is an explicit `exports` entry, so neither is an
+ * internal. The guard used to resolve `prisma/build/index.js` directly — the file
+ * `bin` happens to name today, which a Prisma release can move without notice.
+ *
+ * @param manifestPath absolute path of the resolved `prisma/package.json`
+ * @param manifest its parsed contents
+ */
+export function prismaCliFromManifest(manifestPath: string, manifest: unknown): string {
+  const bin = (manifest as { bin?: unknown } | null)?.bin;
+  const rel = typeof bin === "string" ? bin : (bin as Record<string, unknown> | undefined)?.prisma;
+  if (typeof rel !== "string" || rel.length === 0) {
+    throw new Error(`${manifestPath} declares no "prisma" bin entry`);
+  }
+  return path.resolve(path.dirname(manifestPath), rel);
+}
+
+/**
+ * Resolve the Prisma CLI from this package the way `server/dist` resolves every
+ * other dependency. `prisma` is a server `dependency`, so this is present in a dev
+ * checkout and in the production image alike.
  */
 function resolvePrismaCliDefault(): string {
-  return createRequire(import.meta.url).resolve("prisma/build/index.js");
+  const manifestPath = createRequire(import.meta.url).resolve("prisma/package.json");
+  return prismaCliFromManifest(manifestPath, JSON.parse(readFileSync(manifestPath, "utf-8")));
 }
 
 export async function ensureSchemaUpToDate(

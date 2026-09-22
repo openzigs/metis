@@ -66,8 +66,14 @@ export function loadThreadAIRateLimitConfig(
  * default is in-memory/per-process, `DISCUSSION_RATE_LIMIT_BACKEND=shared`
  * selects the process-wide shared-store seam (#508). Module-scoped so the
  * window persists across calls within a process.
+ *
+ * #60 — resolved on FIRST USE, not at import. A shared backend's factory
+ * (`DISCUSSION_RATE_LIMIT_BACKEND=postgres`, production's setting) is registered by
+ * `createServer()`, which runs after every module is imported; resolving here made
+ * the server exit at import with "the Postgres store factory was not registered".
  */
-let store: RateLimitStore = resolveRateLimitStore();
+let store: RateLimitStore | undefined;
+const currentStore = (): RateLimitStore => (store ??= resolveRateLimitStore());
 
 function keyOf(k: ThreadAIRateLimitKey): string {
   return `${k.threadId}::${k.userId}`;
@@ -87,7 +93,7 @@ export async function checkThreadAIRateLimit(
   cfg: ThreadAIRateLimitConfig,
 ): Promise<ThreadAIRateLimitResult> {
   const now = Date.now();
-  const res = await store.hit(keyOf(key), cfg.max, cfg.windowMs, now);
+  const res = await currentStore().hit(keyOf(key), cfg.max, cfg.windowMs, now);
 
   if (!res.allowed) {
     const oldest = res.oldestTs ?? now;
@@ -104,7 +110,7 @@ export async function checkThreadAIRateLimit(
  * picks up the selected backend.
  */
 export function __resetThreadAIRateLimiter(): void {
-  void store.reset();
+  void store?.reset();
   store = resolveRateLimitStore();
 }
 
@@ -114,7 +120,7 @@ export function __resetThreadAIRateLimiter(): void {
  * store so callers can restore it.
  */
 export function __setThreadAIRateLimitStore(next: RateLimitStore): RateLimitStore {
-  const prev = store;
+  const prev = currentStore();
   store = next;
   return prev;
 }
