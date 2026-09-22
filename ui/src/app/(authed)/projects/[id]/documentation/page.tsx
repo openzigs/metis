@@ -85,6 +85,11 @@ interface GeneratedDoc {
    */
   errorMessage?: string | null;
   /**
+   * #50 — true when a `failed` doc was interrupted by a server restart (set by
+   * the detail endpoint), so the view can say so instead of a generic failure.
+   */
+  interrupted?: boolean;
+  /**
    * Epic #204 follow-up (#252) — dedicated structured warnings column. A
    * `DocWarning[]` for `degraded` docs; null/undefined otherwise.
    */
@@ -237,6 +242,19 @@ export default function DocumentationPage(): React.ReactElement {
     if (!selectedDoc || !titleDraft.trim()) return;
     renameMutation.mutate({ docId: selectedDoc, title: titleDraft.trim() });
   };
+
+  // #50 — regenerate a failed document in place (e.g. one interrupted by a
+  // server restart). The row goes back to `pending` and the live progress takes
+  // over from the job events, exactly as for a new generation.
+  const regenerateMutation = useAppMutation({
+    mutationFn: (docId: string) =>
+      apiFetch<{ id: string; status: string }>(`/projects/${projectId}/docs/${docId}/regenerate`, {
+        method: "POST",
+      }),
+    successMessage: "Regenerating documentation…",
+    // Prefix match — also refreshes the selected doc's detail query.
+    invalidateKeys: [["generated-docs", projectId]],
+  });
 
   // Delete mutation
   const deleteMutation = useAppMutation({
@@ -437,6 +455,14 @@ export default function DocumentationPage(): React.ReactElement {
               sections={sectionProgress}
               lifecycleMessage={docJob?.message}
               progress={docJob?.progress}
+            />
+          )}
+
+          {docDetail.data.status === "failed" && (
+            <FailedGenerationBanner
+              interrupted={docDetail.data.interrupted === true}
+              regenerating={regenerateMutation.isPending}
+              onRegenerate={() => regenerateMutation.mutate(docDetail.data.id)}
             />
           )}
 
@@ -1197,6 +1223,38 @@ export function classifyWarningSeverity(warnings: DocWarning[]): {
     ),
   );
   return { reviewRecommended: concerning.length > 0, concerningSections };
+}
+
+/**
+ * #50 — a `failed` document: why, and a one-click regenerate of the same doc.
+ * The server's raw error string is deliberately not shown (#254); an
+ * interruption by a restart gets its own explanation because the user did
+ * nothing wrong and simply needs to run it again. Exported for unit testing.
+ */
+export function FailedGenerationBanner({
+  interrupted,
+  regenerating,
+  onRegenerate,
+}: {
+  interrupted: boolean;
+  regenerating: boolean;
+  onRegenerate: () => void;
+}): React.ReactElement {
+  return (
+    <Card className="border-red-300 bg-red-50 p-4" role="alert">
+      <p className="font-medium text-red-900">
+        {interrupted ? "Generation was interrupted" : "Generation failed"}
+      </p>
+      <p className="mt-1 text-sm text-red-800">
+        {interrupted
+          ? "The server restarted or stopped while this document was being generated, so it never finished. Regenerating reuses the modules already analysed before the interruption."
+          : "This document could not be generated. You can try again; if it keeps failing, check the server logs."}
+      </p>
+      <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
+        {regenerating ? "Regenerating…" : "Regenerate"}
+      </Button>
+    </Card>
+  );
 }
 
 /**

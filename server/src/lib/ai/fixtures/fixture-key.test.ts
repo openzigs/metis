@@ -68,6 +68,7 @@ describe("keyedOptions", () => {
     const out = keyedOptions({
       systemMessage: "s",
       reasoningEffort: "high",
+      disableThinking: true,
       disableTools: true,
       maxTokens: 100,
       topP: 0.9,
@@ -77,6 +78,7 @@ describe("keyedOptions", () => {
     expect(out).toEqual({
       systemMessage: "s",
       reasoningEffort: "high",
+      disableThinking: true,
       disableTools: true,
       maxTokens: 100,
       topP: 0.9,

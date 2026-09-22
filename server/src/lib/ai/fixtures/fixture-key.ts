@@ -23,6 +23,7 @@ export interface KeyedChatOptions {
   model?: string;
   systemMessage?: string;
   reasoningEffort?: ChatOptions["reasoningEffort"];
+  disableThinking?: boolean;
   disableTools?: boolean;
   maxTokens?: number;
   temperature?: number;
@@ -56,6 +57,7 @@ export function keyedOptions(opts: ChatOptions = {}): KeyedChatOptions {
   if (opts.model !== undefined) out.model = opts.model;
   if (opts.systemMessage !== undefined) out.systemMessage = opts.systemMessage;
   if (opts.reasoningEffort !== undefined) out.reasoningEffort = opts.reasoningEffort;
+  if (opts.disableThinking !== undefined) out.disableThinking = opts.disableThinking;
   if (opts.disableTools !== undefined) out.disableTools = opts.disableTools;
   if (opts.maxTokens !== undefined) out.maxTokens = opts.maxTokens;
   if (opts.temperature !== undefined) out.temperature = opts.temperature;

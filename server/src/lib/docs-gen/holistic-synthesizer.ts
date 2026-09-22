@@ -64,6 +64,7 @@ import {
   type TruncationDetection,
 } from "./truncation.js";
 import { resolveFactsMaxOutputTokens, resolveSectionMaxOutputTokens } from "./output-caps.js";
+import { resolvePhase1Reasoning } from "./docs-gen-reasoning.js";
 import { mapSettledWithConcurrency, resolvePhase1Concurrency } from "./phase1-concurrency.js";
 import {
   loadRepositorySources,
@@ -2003,6 +2004,9 @@ Extract ALL facts now. Be EXHAUSTIVE — every validation, every conditional, ev
   ];
 
   const maxTokens = resolveFactsMaxOutputTokens(provider.model);
+  // #25 — bound a thinking-by-default model's reasoning on this mechanical
+  // extraction; `{}` (no change) for every other model.
+  const reasoning = resolvePhase1Reasoning(provider.model);
   const cacheKey = createHash("sha256")
     .update(
       JSON.stringify({
@@ -2018,6 +2022,9 @@ Extract ALL facts now. Be EXHAUSTIVE — every validation, every conditional, ev
         effectiveConfigHash,
         maxTokens,
         supportsCaching,
+        // Facts extracted at a different reasoning setting are different facts;
+        // omitted when empty so an unchanged (Claude) request keeps its key.
+        ...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
       }),
     )
     .digest("hex");
@@ -2090,6 +2097,7 @@ Extract ALL facts now. Be EXHAUSTIVE — every validation, every conditional, ev
           // #1226 — configurable OUTPUT cap (was hardcoded 4096), clamped to
           // the model's known ceiling.
           maxTokens,
+          ...reasoning,
           // #390 — tag prompt-cache hit-ratio telemetry by workload.
           callType: "synthesis",
           // Cache ONLY the stable system prompt — it is shared across every

@@ -171,6 +171,8 @@ export class AnthropicProvider implements AIProvider {
   private readonly defaultModel: string;
   private readonly defaultMaxTokens: number;
   private readonly streamMaxTokens: number;
+  /** #25 — `baseUrl` is DeepSeek's Anthropic-compatible endpoint. */
+  private readonly deepSeekEndpoint: boolean;
 
   constructor(opts: AnthropicProviderOptions) {
     // Normalize the configured default so the bare id is reported consistently
@@ -178,6 +180,7 @@ export class AnthropicProvider implements AIProvider {
     this.defaultModel = normalizeAnthropicModelId(opts.model) || DEFAULT_ANTHROPIC_MODEL;
     this.defaultMaxTokens = opts.defaultMaxTokens ?? DEFAULT_MAX_TOKENS;
     this.streamMaxTokens = opts.streamMaxTokens ?? DEFAULT_STREAM_MAX_TOKENS;
+    this.deepSeekEndpoint = isDeepSeekEndpoint(opts.baseUrl);
     // Only pass auth fields that are actually set so the SDK can apply its own
     // env-var defaults. We never log the key/token.
     this.client = new Anthropic({
@@ -426,8 +429,15 @@ export class AnthropicProvider implements AIProvider {
     // block form in place; all other turns stay as plain strings.
     if (cacheMessages) markLastUserBlockForCaching(apiMessages, cacheControl);
 
-    if (opts.reasoningEffort) {
-      body.thinking = { type: "adaptive" };
+    if (opts.disableThinking) {
+      // #25 — explicit OFF. Documented on the Anthropic API and on DeepSeek's
+      // Anthropic-compatible endpoint; an effort would contradict it, so none.
+      body.thinking = { type: "disabled" };
+    } else if (opts.reasoningEffort) {
+      // #25 — DeepSeek documents only `enabled`/`disabled` for the Anthropic
+      // format (https://api-docs.deepseek.com/guides/thinking_mode); Claude's
+      // `adaptive` is kept for every other endpoint.
+      body.thinking = { type: this.deepSeekEndpoint ? "enabled" : "adaptive" };
       body.output_config = { effort: opts.reasoningEffort };
     }
     return body;
@@ -445,6 +455,20 @@ export class AnthropicProvider implements AIProvider {
     const message = err instanceof Error ? err.message : String(err);
     log.error("Anthropic provider error", { op, name, status });
     return new AIProviderError(`anthropic ${op} failed (${name}): ${message}`, status ?? 502);
+  }
+}
+
+/**
+ * #25 — true when `baseUrl` is DeepSeek's Anthropic-compatible API
+ * (`https://api.deepseek.com/anthropic`), keyed on the documented host. A
+ * missing or unparseable URL is the SDK default (api.anthropic.com) → false.
+ */
+export function isDeepSeekEndpoint(baseUrl: string | undefined): boolean {
+  if (!baseUrl?.trim()) return false;
+  try {
+    return /(^|\.)deepseek\.com$/i.test(new URL(baseUrl.trim()).hostname);
+  } catch {
+    return false;
   }
 }
 

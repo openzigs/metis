@@ -65,6 +65,7 @@ import { startAlertEngine, setDefaultDispatcherFactory } from "./lib/finops/aler
 import { createDispatcher } from "./lib/finops/channels/dispatcher.js";
 import { startChargebackScheduler } from "./lib/finops/chargeback-scheduler.js";
 import { startWorkspaceUsageRollup } from "./lib/workspaces/usage-rollup.js";
+import { startInterruptedGenerationSweeper } from "./lib/docs-gen/interrupted-generations.js";
 
 const log = createChildLogger("server-bootstrap");
 
@@ -418,6 +419,10 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
       .recoverStaleRuns()
       .then(() => runner.dispatchQueued())
       .catch((err) => log.warn("Async runner recover failed", { error: (err as Error).message }));
+    // #50 — documentation generation runs in-process, so a restart orphans it.
+    // Fail any whose heartbeat stopped (now, then every minute) instead of
+    // leaving it `generating` forever.
+    startInterruptedGenerationSweeper();
   }
 
   // Epic #163, Issue #119 — attach the ACP WebSocket server. Disabled in
