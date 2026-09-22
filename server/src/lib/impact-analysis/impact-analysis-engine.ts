@@ -816,6 +816,8 @@ export async function triggerImpactAnalysis(
     throw new ImpactAnalysisError(400, "NO_SOURCE", "Either documentId or text is required");
   }
 
+  const projectIds = [...new Set(input.projectIds)];
+
   const row = await prisma.impactAnalysis.create({
     data: {
       status: "pending",
@@ -824,10 +826,15 @@ export async function triggerImpactAnalysis(
       startedById: input.actorId,
       // #965 — drift lineage: point back at the original run (null for originals).
       rerunOfId: input.rerunOfId ?? null,
+      // #70 — record the selection HERE, in the same write as the run. The
+      // executor below is fire-and-forget and `ImpactItem` rows arrive much
+      // later (or never), so a run whose projects were only passed to the
+      // executor belonged to no project for the whole time it was running.
+      projects: { create: projectIds.map((projectId) => ({ projectId })) },
     },
   });
 
-  void executeImpactAnalysis(row.id, input.projectIds, {
+  void executeImpactAnalysis(row.id, projectIds, {
     ...deps,
     includeSchemaImpact: input.includeSchemaImpact ?? deps.includeSchemaImpact,
     expandDaoSiblings: input.expandDaoSiblings ?? deps.expandDaoSiblings,
