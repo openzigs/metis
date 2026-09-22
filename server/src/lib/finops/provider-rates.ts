@@ -18,7 +18,8 @@
  *      `ANTHROPIC_BASE_URL_BILLS_AS=anthropic`;
  *   3. a Claude-family match on the model id, then a `provider:default` row —
  *      which exists only for providers that genuinely cost nothing per token
- *      (offline-stub, copilot-native, self-hosted local-gemma);
+ *      (offline-stub, copilot-native, self-hosted local-gemma, and the
+ *      in-process / in-cluster embedders under `embed:<key>`, #58);
  *   4. otherwise `null` — UNPRICED. Never `0`, and never another model's price.
  *
  * Cost is computed as integer cents. We round half-up at the cent boundary
@@ -26,6 +27,7 @@
  */
 import { getConfigService, type ConfigService } from "../config/config-service.js";
 import { MODEL_PRICES_KEY, modelPricesSchema, type ModelPrice } from "./model-prices-schema.js";
+import type { EmbeddingUsageProvider } from "../ai/types.js";
 
 export { MODEL_PRICES_KEY, modelPricesSchema, type ModelPrice };
 
@@ -215,7 +217,34 @@ const RATES: ReadonlyMap<string, TokenRate> = new Map([
   ["copilot-native:gpt-4o", DEFAULT_RATE],
   ["offline-stub:offline-stub", DEFAULT_RATE],
   ["offline-stub:default", DEFAULT_RATE],
+  // #58 — embedders, under `embed:<registry key>` (see embeddingUsageProvider).
+  // An embedding call bills input tokens only. Sources (read 2026-09-22):
+  //   Titan Text Embeddings V2 — AWS Price List API, offer AmazonBedrock,
+  //     us-east-1, SKU USE1-TitanEmbeddingV2-Text-input-tokens: $0.00002 / 1K.
+  //   OpenAI — https://developers.openai.com/api/docs/pricing (Standard):
+  //     text-embedding-3-small $0.02, -3-large $0.13, ada-002 $0.10 per MTok.
+  // Any other cloud embedding model is UNPRICED until an administrator prices it.
+  ["embed:bedrock:amazon.titan-embed-text-v2:0", { inputPer1k: 0.002, outputPer1k: 0 }],
+  ["embed:bedrock-sdk:amazon.titan-embed-text-v2:0", { inputPer1k: 0.002, outputPer1k: 0 }],
+  ["embed:openai:text-embedding-3-small", { inputPer1k: 0.002, outputPer1k: 0 }],
+  ["embed:openai:text-embedding-3-large", { inputPer1k: 0.013, outputPer1k: 0 }],
+  ["embed:openai:text-embedding-ada-002", { inputPer1k: 0.01, outputPer1k: 0 }],
+  // The in-process and in-cluster embedders run on METIS's own compute: a
+  // genuine zero per token, whatever model they load.
+  ["embed:offline:default", DEFAULT_RATE],
+  ["embed:xenova:default", DEFAULT_RATE],
+  ["embed:embeddinggemma:default", DEFAULT_RATE],
+  ["embed:sidecar:default", DEFAULT_RATE],
 ]);
+
+/**
+ * #58 — the provider embedding usage is recorded and priced under: the
+ * embedder's registry key (`getEmbedder().key`) in an `embed:` namespace of its
+ * own, so it can never resolve to an LLM provider's row.
+ */
+export function embeddingUsageProvider(embedderKey: string): EmbeddingUsageProvider {
+  return `embed:${embedderKey}`;
+}
 
 /** USD per MTok → cents per 1k tokens (`$X / MTok === X / 10 cents / 1k`). */
 function toRate(p: ModelPrice): TokenRate {

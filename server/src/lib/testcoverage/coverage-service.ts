@@ -139,7 +139,14 @@ export async function runCoverageScoring(
   emit({ phase: "match", state: "running" });
   const reqTexts = reqRows.map((r) => `${r.title}\n${r.body}`);
   const reqEmb = await embedder.embed(reqTexts);
-  cost.record({ phase: "embedding", embeddingTokens: estimateTokens(reqTexts) });
+  // #58 — under the embedder that ran (read AFTER embed: a failed backend may
+  // have been swapped for the hash stub) and the model it reports.
+  cost.record({
+    phase: "embedding",
+    embedder: embedder.key,
+    modelId: reqEmb.model,
+    embeddingTokens: estimateTokens(reqTexts),
+  });
   const requirementInputs: RequirementInput[] = reqRows.map((r, i) => ({
     id: r.id,
     text: reqTexts[i],
@@ -151,7 +158,12 @@ export async function runCoverageScoring(
   if (caseRows.length > 0) {
     const caseTexts = caseRows.map((c) => caseText(hydrateCase(c)));
     const caseEmb = await embedder.embed(caseTexts);
-    cost.record({ phase: "embedding", embeddingTokens: estimateTokens(caseTexts) });
+    cost.record({
+      phase: "embedding",
+      embedder: embedder.key,
+      modelId: caseEmb.model,
+      embeddingTokens: estimateTokens(caseTexts),
+    });
     testCaseInputs = caseRows.map((c, i) => ({
       id: c.id,
       text: caseTexts[i],
@@ -317,17 +329,11 @@ export async function runCoverageScoring(
       sessionId: cost.sessionId,
       userId: input.userId,
       projectId: input.projectId,
+      // #57 — each call is recorded as it happens and the budget is checked
+      // before every cluster, so the generator records its own spend here.
+      cost,
     });
-    // #43 — recorded under what served the calls; none made ⇒ nothing spent.
-    if (sugResult.servedBy) {
-      cost.record({
-        phase: "suggestion",
-        provider: sugResult.servedBy.provider,
-        modelId: sugResult.servedBy.model,
-        promptTokens: sugResult.promptTokens,
-        completionTokens: sugResult.completionTokens,
-      });
-    }
+    if (sugResult.budgetExceeded) budgetExceeded = true;
     rejectedDuplicates = sugResult.rejectedDuplicates;
 
     await db.suggestion.deleteMany({ where: { runId: input.runId } });

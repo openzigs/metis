@@ -18,10 +18,17 @@
  * price for is UNPRICED: it adds nothing to `usedCents` (never $0, never another
  * model's price) and makes the per-run budget fail closed, because spend that
  * cannot be priced cannot be shown to be under the cap.
+ *
+ * #58 — embedding usage is recorded under the embedder that ran
+ * (`embed:<registry key>` and the model it loaded) and priced through the same
+ * source: $0 for an in-process or in-cluster embedder, the published price for
+ * a cloud one, and unpriced — failing the budget closed — where there is none.
+ * Before, it was recorded on `offline-stub` under the Claude Haiku model id and
+ * so priced at Haiku's rate.
  */
 import { getTokenTracker, estimateUsageCostUsd } from "../ai/token-tracker.js";
-import { HAIKU_MODEL_ID } from "../ai/model-router.js";
-import type { ProviderKey } from "../ai/types.js";
+import type { ProviderKey, UsageProvider } from "../ai/types.js";
+import { embeddingUsageProvider } from "../finops/provider-rates.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 
@@ -69,7 +76,10 @@ export interface CostScope {
 export type CoverageUsage =
   | {
       phase: "embedding";
-      modelId?: string;
+      /** Registry key of the embedder that ran (`getEmbedder().key`) — #58. */
+      embedder: string;
+      /** The model it ran (`EmbeddingResult.model`). */
+      modelId: string;
       promptTokens?: number;
       completionTokens?: number;
       /** For pre-computed embeddings where there is no completion. */
@@ -137,10 +147,15 @@ export class CoverageCostTracker {
     const completion = input.completionTokens ?? 0;
     const total = prompt + completion;
     if (total === 0) return;
-    // Embeddings run on the local embedder (offline-stub); an LLM phase is
-    // recorded under what served it (#43), never a hard-coded provider.
-    const provider: ProviderKey = input.phase === "embedding" ? "offline-stub" : input.provider;
-    const modelId = input.modelId ?? HAIKU_MODEL_ID;
+    // Every phase is recorded under what served it — the embedder that ran
+    // (#58) or the LLM provider (#43) — never a hard-coded provider or model.
+    const provider: UsageProvider | undefined =
+      input.phase === "embedding"
+        ? input.embedder
+          ? embeddingUsageProvider(input.embedder)
+          : undefined
+        : input.provider;
+    const modelId = input.modelId;
 
     switch (input.phase) {
       case "embedding":
@@ -155,10 +170,12 @@ export class CoverageCostTracker {
     }
     const usage = { promptTokens: prompt, completionTokens: completion, totalTokens: total };
     // #43 — the same price lookup the persisted `ai_token_usages` row uses.
-    // Without a provider there is no telling whose price applies: unpriced.
-    const usd = provider ? estimateUsageCostUsd(modelId, usage, provider) : null;
+    // Without a provider or model there is no telling whose price applies:
+    // unpriced, and not persisted (a usage row needs both).
+    const usd = provider && modelId ? estimateUsageCostUsd(modelId, usage, provider) : null;
     if (usd === null) this.unpricedTokens += total;
     else this.estimatedUsd += usd;
+    if (!provider || !modelId) return;
 
     this.persist({
       sessionId: this.sessionId,
@@ -188,7 +205,7 @@ export class CoverageCostTracker {
     void task.finally(() => this.inflight.delete(task));
   }
 
-  private ensureSession(provider: ProviderKey, model: string): Promise<boolean> {
+  private ensureSession(provider: UsageProvider, model: string): Promise<boolean> {
     if (!this.session) {
       const db = this.options.db ?? prisma;
       // Inside the promise chain, so a failure of any kind is caught below and

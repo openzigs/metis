@@ -6206,13 +6206,18 @@ single entry the task-runner calls during the `match → judge → suggest → s
 `CoverageCostTracker` aggregates token usage by phase (`embedding`, `judge`, `suggestion`) and
 charges via the per-provider price table:
 
-- Embeddings → `offline-stub` rate (BGE-small is local; we record `embeddingTokens` only for
-  reporting).
-- Judge + suggestion → `bedrock-gateway` rate for the Haiku model.
+- Embeddings → the embedder that ran, as provider `embed:<registry key>` (`embeddingUsageProvider`)
+  and the model its `embed()` reported. The local backends (`offline`, `xenova`, `embeddinggemma`,
+  `sidecar`) have `embed:<key>:default` zero rows; Titan Text Embeddings V2 and OpenAI's embedding
+  models have published-price rows (`published-embedding-prices.test.ts`); anything else is
+  unpriced (#58). The `embed:` namespace keeps an embedder key off LLM provider rows.
+- Judge + suggestion → the provider and model that served each call (#43).
 
-`canAfford(cents)` lets the orchestrator short-circuit before the next batch when the run
-budget would be exceeded; `flush()` persists `tokenCostCents`, `embeddingTokens`, `judgeTokens`,
-and `suggestionTokens` onto the `TestCoverageRun`. The default budget is 150¢ and is
+`exceeded()` is checked before each judge batch and before each suggestion cluster; the judge
+and `generateSuggestions` record every call through the tracker as it happens (#57), so a run
+stops part-way once the cap is reached or a call reveals an unpriced model. `flush()` persists
+`tokenCostCents`, `embeddingTokens`, `judgeTokens`, and `suggestionTokens` onto the
+`TestCoverageRun`. The default budget is 20¢ and is
 overridable via the `TESTCOVERAGE_BUDGET_CENTS` env var. A new route exposes the live view:
 
 - `GET /api/projects/:projectId/test-coverage/runs/:runId/budget` →
