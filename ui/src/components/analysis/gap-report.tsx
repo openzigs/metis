@@ -196,6 +196,13 @@ function GapReportCard({
  * hit. When retrieval was degraded this panel leads with the warning instead.
  */
 function RetrievalPanel({ retrieval }: { retrieval: AnalysisRetrievalHealth }): React.ReactElement {
+  // #19 — a run can be degraded because most requirements went unverified while
+  // its searches worked; the headline must not then blame code search.
+  const mostlyUnverified =
+    !retrieval.starved && (retrieval.unverifiedRequirements ?? 0) * 2 > retrieval.requirementCount;
+  const degradedHeadline = mostlyUnverified
+    ? "Most requirements could not be verified against the code — “not found” results are unreliable"
+    : "Code search returned little usable evidence — “not found” results are unreliable";
   return (
     <details
       data-testid="gap-searched-scope"
@@ -207,9 +214,7 @@ function RetrievalPanel({ retrieval }: { retrieval: AnalysisRetrievalHealth }): 
       }`}
     >
       <summary className="cursor-pointer font-semibold">
-        {retrieval.degraded
-          ? "Code search returned little usable evidence — “not found” results are unreliable"
-          : "Searched scope"}{" "}
+        {retrieval.degraded ? degradedHeadline : "Searched scope"}{" "}
         <span className="font-normal">
           ({retrieval.successfulSearches} of {retrieval.totalCalls} retrieval calls returned results
           {/* #1236 — budget cut-off is `exhausted`, not `starved`. */}

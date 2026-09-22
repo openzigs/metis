@@ -112,7 +112,8 @@
  *
  * Pure + dependency-free: same tool calls in ⇒ same health out.
  */
-import type { AnalysisRetrievalHealth, SearchedQuery } from "@metis/shared";
+import type { AnalysisRetrievalHealth, RequirementVerdict, SearchedQuery } from "@metis/shared";
+import { deriveRequirementVerdict, type VerdictFindingInput } from "./requirement-verdict.js";
 import { isErroredCall, type ToolCallRecord } from "./tool-telemetry.js";
 
 /** Minimum retrieval calls that must return usable results before ANY absence claim is confirmable. */
@@ -626,29 +627,42 @@ export interface VerdictBearingFinding {
 }
 
 /**
- * #19 — how many of a pass's requirements the code agent reported on ONLY as
- * `could-not-verify` (every finding bound to the requirement carries that verdict).
- *
- * Conservative in the direction that keeps healthy runs quiet: a requirement the
- * agent reported nothing for, a finding with no verdict, and a finding bound to a
- * requirement outside this pass are not counted.
+ * #19 — how many of a pass's requirements the analysis page shows as
+ * `could-not-verify`. Computed with the page's OWN roll-up,
+ * {@link deriveRequirementVerdict}, so the report and the page cannot disagree:
+ * a requirement the agent reported NOTHING for is could-not-verify (the
+ * budget-starvation rule), `could-not-verify` beats `implemented`, and
+ * `gap-confirmed` beats both. A finding bound to a requirement outside this
+ * pass, or to none, is ignored; a verdict the page does not know counts as none.
  */
 export function countUnverifiedRequirements(
   findings: readonly VerdictBearingFinding[],
   requirementIds: Iterable<string>,
 ): number {
-  const inPass = new Set(requirementIds);
-  const verified = new Map<string, boolean>();
+  const byRequirement = new Map<string, VerdictFindingInput[]>();
+  for (const id of requirementIds) byRequirement.set(id, []);
   for (const finding of findings) {
-    const id = finding.requirementId;
-    if (!id || !inPass.has(id) || finding.verdict == null) continue;
-    const thisVerified = finding.verdict !== "could-not-verify";
-    verified.set(id, (verified.get(id) ?? false) || thisVerified);
+    const linked = finding.requirementId ? byRequirement.get(finding.requirementId) : undefined;
+    if (!linked) continue;
+    const verdict = REQUIREMENT_VERDICTS.has(finding.verdict ?? "")
+      ? (finding.verdict as RequirementVerdict)
+      : null;
+    // Every finding of the agentic code pass is a CODE finding.
+    linked.push({ agentKey: "code", verdict });
   }
   let unverified = 0;
-  for (const wasVerified of verified.values()) if (!wasVerified) unverified += 1;
+  for (const linked of byRequirement.values()) {
+    const verdict = deriveRequirementVerdict({ codeAnalysisRan: true, findings: linked });
+    if (verdict === "could-not-verify") unverified += 1;
+  }
   return unverified;
 }
+
+const REQUIREMENT_VERDICTS: ReadonlySet<string> = new Set<RequirementVerdict>([
+  "implemented",
+  "gap-confirmed",
+  "could-not-verify",
+]);
 
 export interface InvestigationCoverageInput {
   /** {@link countUnverifiedRequirements} over the pass's GATED findings. */
@@ -670,9 +684,10 @@ export interface InvestigationCoverageInput {
  *     {@link MAX_UNVERIFIED_REQUIREMENT_SHARE} of its requirements came back
  *     `could-not-verify`.
  *
- * #1236 — a pass cut short by its turn/token budget is left as `exhausted`, which
- * is how the record already reports it; exhaustion is not retrieval failure. The
- * unverified count is recorded either way. Returns a NEW record; never clears a
+ * #1236 — a pass cut short by its turn/token budget is never branded STARVED:
+ * it is `exhausted`, which is how the record already reports it, and exhaustion
+ * is not retrieval failure. The unverified share still applies — it is what the
+ * page shows, whatever cut the run short. Returns a NEW record; never clears a
  * degradation the threshold found.
  */
 export function assessInvestigationCoverage(
@@ -687,8 +702,10 @@ export function assessInvestigationCoverage(
     ...health,
     ...(unverified > 0 ? { unverifiedRequirements: unverified } : {}),
   };
-  if (health.exhausted === true || health.requirementCount === 0) return assessed;
-  const searchStarved = health.totalCalls < health.requirementCount * MIN_SEARCHES_PER_REQUIREMENT;
+  if (health.requirementCount === 0) return assessed;
+  const searchStarved =
+    health.exhausted !== true &&
+    health.totalCalls < health.requirementCount * MIN_SEARCHES_PER_REQUIREMENT;
   const mostlyUnverified = unverified > health.requirementCount * MAX_UNVERIFIED_REQUIREMENT_SHARE;
   if (searchStarved) assessed.starved = true;
   if (searchStarved || mostlyUnverified) assessed.degraded = true;

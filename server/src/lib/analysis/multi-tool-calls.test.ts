@@ -175,6 +175,81 @@ describe("#15 parseToolCalls — every encoding yields an ORDERED list of calls"
   });
 });
 
+describe("#15 PR #37 review — tool-shaped JSON in an ANSWER is not a batch of calls", () => {
+  // A chat answer ABOUT tooling can legitimately contain `{"tool": …}` objects. The
+  // single-call parser never ran these; the multi-call scan must not start to.
+  const ESLINT_ARRAY = JSON.stringify([
+    { tool: "eslint", config: "recommended" },
+    { tool: "prettier", config: "default" },
+  ]);
+  const ESLINT_PROSE =
+    'Configure your linters like this: {"tool": "eslint", "args": {"fix": true}} and ' +
+    'then {"tool": "prettier", "args": {"write": true}}. That keeps formatting consistent.';
+
+  it("does not treat a JSON array naming only unregistered tools as calls", () => {
+    expect(parseToolCalls(ESLINT_ARRAY, KNOWN)).toBeNull();
+  });
+
+  it("does not treat prose containing unregistered tool objects as calls", () => {
+    expect(parseToolCalls(ESLINT_PROSE, KNOWN)).toBeNull();
+  });
+
+  it("still runs a batch in which at least one call names a registered tool", () => {
+    expect(
+      parseToolCalls('{"tool":"made_up"}{"tool":"list_files"}', KNOWN)?.map((c) => c.tool),
+    ).toEqual(["made_up", "list_files"]);
+  });
+
+  it("still treats a <tool_calls> wrapper as calls even when no name is registered", () => {
+    // The wrapper IS protocol; the loop answers each bad name with a repair error.
+    const wrapped = '<tool_calls>{"tool":"made_up"}{"tool":"also_made_up"}</tool_calls>';
+    expect(parseToolCalls(wrapped, KNOWN)?.map((c) => c.tool)).toEqual(["made_up", "also_made_up"]);
+  });
+
+  it.each([
+    ["a JSON array", ESLINT_ARRAY],
+    ["prose", ESLINT_PROSE],
+  ])("returns %s of unregistered tool objects to the chat user as the answer", async (_l, text) => {
+    const order: string[] = [];
+    const { provider } = scriptedProvider([text]);
+    const result = await runAgentLoop(
+      provider,
+      loopInput([recordingTool("search_code_graph", order)]),
+      { maxTurns: 3 },
+    );
+    expect(order).toEqual([]);
+    expect(result.toolCalls).toEqual([]);
+    expect(result.turnsExhausted).toBe(false);
+    expect(result.hasFinalAnswer).toBe(true);
+    expect(result.finalResponse).toBe(text);
+  });
+});
+
+describe("#15 PR #37 review — a stray bracket in prose does not hide the calls after it", () => {
+  const STRAY =
+    "Let me check the {config and the [handlers. " +
+    '{"tool":"search_code_graph","args":{"query":"a"}}\n{"tool":"list_files"}';
+
+  it("parses the calls that follow an unmatched { or [", () => {
+    expect(parseToolCalls(STRAY, KNOWN)).toEqual([
+      { tool: "search_code_graph", args: { query: "a" } },
+      { tool: "list_files", args: {} },
+    ]);
+  });
+
+  it("runs them in the loop instead of rendering the raw tool JSON", async () => {
+    const order: string[] = [];
+    const { provider } = scriptedProvider([STRAY, FINDINGS_JSON]);
+    const result = await runAgentLoop(
+      provider,
+      loopInput([recordingTool("search_code_graph", order), recordingTool("list_files", order)]),
+      { maxTurns: 3 },
+    );
+    expect(order).toEqual(["search_code_graph:a", "list_files:"]);
+    expect(result.finalResponse).toBe(FINDINGS_JSON);
+  });
+});
+
 describe("#15 looksLikeToolCallMarkup — unparseable tool markup is still recognised", () => {
   it.each([
     ["an unterminated <tool_calls> wrapper", '<tool_calls>{"tool": "search_code_symbols", "args":'],
@@ -226,6 +301,9 @@ describe("#15 parsing stays linear on untrusted model output (ReDoS)", () => {
     ["whitespace after a fence", (n) => "```json" + " ".repeat(n)],
     ["whitespace inside a call prefix", (n) => "[" + " ".repeat(n / 2) + "{" + " ".repeat(n / 2)],
     ["many tiny valid calls", (n) => '{"tool":"list_files"}'.repeat(Math.floor(n / 21))],
+    // PR #37 review — the unmatched-opener rescan must stay bounded.
+    ["stray openers between calls", (n) => '{ {"tool":"list_files"} '.repeat(Math.floor(n / 24))],
+    ["alternating stray openers", (n) => "{[".repeat(n / 2)],
   ];
 
   it.each(SHAPES)(

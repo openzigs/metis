@@ -482,11 +482,16 @@ describe("#773 — a budget-exhausted investigation cannot confirm an UNCITED ga
       starved: boolean;
       exhausted?: boolean;
       degraded: boolean;
+      unverifiedRequirements?: number;
     };
     expect(retrieval.exhausted).toBe(true);
-    // The pass is NOT starved and NOT degraded — retrieval worked; it ran out of turns.
+    // The pass is NOT starved — retrieval worked; it ran out of turns.
     expect(retrieval.starved).toBe(false);
-    expect(retrieval.degraded).toBe(false);
+    // #19 — but its one requirement shows `could-not-verify` on the page, so the
+    // REPORT is degraded by the unverified share (report-side only: the verdict
+    // above was set before this, by the per-claim rule).
+    expect(retrieval.unverifiedRequirements).toBe(1);
+    expect(retrieval.degraded).toBe(true);
   });
 });
 
@@ -684,7 +689,11 @@ describe("#773 — healthy retrieval confirms real gaps AT SCALE (N=20, N=30)", 
   );
 
   it("does not flag a gap-heavy (but working) run as retrieval-degraded", async () => {
-    await runPipeline(scaleScenario(20));
+    // #19 — five requirements, so the agent reported on four of them. At N=20 the 16
+    // unreached fillers are `could-not-verify` on the page, and a run showing most of
+    // its requirements unverified IS reported degraded now (see the #19 block below);
+    // this test is about the gaps, which must never be what degrades a run.
+    await runPipeline(scaleScenario(5));
 
     // 3 of 5 searches came back EMPTY — because the code genuinely is not there.
     // Counting empties as tool errors made a real-gap-heavy codebase look "degraded"
@@ -966,11 +975,17 @@ describe("#773 — a model-authored title cannot license a gap for an un-searche
     await runPipeline(TITLE_INJECTION_RUN());
 
     const retrieval = persistedEnhancements.find((p) => p.retrieval)?.retrieval as {
+      starved: boolean;
       degraded: boolean;
+      unverifiedRequirements?: number;
     };
-    // The run's retrieval WORKED — this is not a degradation story. The requirement
+    // The run's retrieval WORKED — this is not a starvation story. The requirement
     // simply was never investigated, and the title cannot stand in for having looked.
-    expect(retrieval.degraded).toBe(false);
+    expect(retrieval.starved).toBe(false);
+    // #19 — both requirements show `could-not-verify` on the page (REQ-001 has no
+    // finding at all), so the REPORT is degraded by the unverified share alone.
+    expect(retrieval.unverifiedRequirements).toBe(2);
+    expect(retrieval.degraded).toBe(true);
     expect(codeFindings()[0]?.verdict).toBe("could-not-verify");
     expect(codeFindings()[0]?.title).toMatch(/^Could not verify:/);
     expect(requirementVerdicts()[1]).toBe("could-not-verify");
@@ -1065,6 +1080,43 @@ describe("#19 — a run that verified nothing is reported starved/degraded", () 
     expect(retrieval().starved).toBe(false);
     expect(retrieval().degraded).toBe(true);
     expect(retrieval().unverifiedRequirements).toBe(2);
+    expect(capability()?.reasons).toContain("code-retrieval-degraded");
+  });
+
+  it("counts requirements the agent never reported on, as the page does (PR #37 review)", async () => {
+    // Five searches for 16 requirements clears the starvation floor, and the three
+    // findings are `implemented` — but the other 13 requirements have no finding, so
+    // the page shows them `could-not-verify`. Counting only requirements that HAVE
+    // a finding recorded this run as healthy.
+    state.documentRequirements = [...SIXTEEN];
+    const answer = JSON.stringify({
+      summary: "s",
+      findings: SIXTEEN.slice(0, 3).map((r) => ({
+        requirementId: r.id,
+        verdict: "implemented",
+        category: "architecture",
+        severity: "info",
+        title: `Drift severity is computed in severity.ts (${r.id})`,
+        body: "computeSeverity classifies drift severity from the commit-SHA baseline.",
+        tags: [],
+        citations: [{ filePath: "server/src/drift/severity.ts", startLine: 10, endLine: 42 }],
+      })),
+      notes: [],
+    });
+    await runPipeline([
+      DOC_ANSWER,
+      ...["drift severity", "commit sha baseline", "severity", "baseline", "drift"].map((query) =>
+        JSON.stringify({ tool: "search_code_graph", query }),
+      ),
+      answer,
+    ]);
+
+    const verified = codeFindings().filter((f) => f.verdict !== "could-not-verify").length;
+    expect(verified).toBe(3); // the three implemented claims stand
+    expect(retrieval().totalCalls).toBe(5);
+    expect(retrieval().starved).toBe(false);
+    expect(retrieval().unverifiedRequirements).toBe(13);
+    expect(retrieval().degraded).toBe(true);
     expect(capability()?.reasons).toContain("code-retrieval-degraded");
   });
 

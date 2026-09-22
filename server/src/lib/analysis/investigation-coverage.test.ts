@@ -13,7 +13,8 @@
  * report-side check: applied after verdicts are gated, it never changes a verdict.
  */
 import { describe, expect, it } from "vitest";
-import type { AnalysisRetrievalHealth } from "@metis/shared";
+import type { AnalysisRetrievalHealth, RequirementVerdict } from "@metis/shared";
+import { deriveRequirementVerdict } from "./requirement-verdict.js";
 import {
   MAX_UNVERIFIED_REQUIREMENT_SHARE,
   MIN_SEARCHES_PER_REQUIREMENT,
@@ -123,14 +124,25 @@ describe("#19 most requirements could-not-verify", () => {
 });
 
 describe("#19 exhaustion keeps its own signal (#1236)", () => {
-  it("does not brand a budget-exhausted pass starved or degraded", () => {
+  it("never brands a budget-exhausted pass starved", () => {
     // #1236: running out of turns says the investigation was cut short, which the
     // record already reports as `exhausted` — it is not retrieval failure.
+    const before = healthOf(1, 16, { exhausted: true });
+    const after = assessInvestigationCoverage(before, { unverifiedRequirements: 0 });
+    expect(after.exhausted).toBe(true);
+    expect(after.starved).toBe(false);
+    expect(after.degraded).toBe(false);
+  });
+
+  it("still degrades an exhausted pass that left most requirements unverified", () => {
+    // The unverified share is what the analysis page SHOWS, whatever cut the run
+    // short. Exempting exhausted runs let 16 of 16 unverified read as healthy — and
+    // with a successful final-answer retry, raise no warning at all (PR #37 review).
     const before = healthOf(1, 16, { exhausted: true });
     const after = assessInvestigationCoverage(before, { unverifiedRequirements: 16 });
     expect(after.exhausted).toBe(true);
     expect(after.starved).toBe(false);
-    expect(after.degraded).toBe(false);
+    expect(after.degraded).toBe(true);
     expect(after.unverifiedRequirements).toBe(16);
   });
 });
@@ -151,31 +163,85 @@ describe("#19 the check never feeds back into the verdict record", () => {
   });
 });
 
-describe("#19 countUnverifiedRequirements", () => {
-  it("counts a requirement only when EVERY finding for it is could-not-verify", () => {
-    const findings = [
-      cnv("REQ-1"),
-      { requirementId: "REQ-1", verdict: "implemented" }, // REQ-1 was verified
-      cnv("REQ-2"),
-      cnv("REQ-2"), // REQ-2 was not
-      { requirementId: "REQ-3", verdict: "gap-confirmed" },
-    ];
-    expect(countUnverifiedRequirements(findings, ids(3))).toBe(1);
+describe("#19 countUnverifiedRequirements — agrees with the verdict the page shows", () => {
+  /** The page's own roll-up for one requirement, over this pass's findings. */
+  const pageVerdict = (
+    findings: Array<{ requirementId?: string; verdict?: string | null }>,
+    id: string,
+  ) =>
+    deriveRequirementVerdict({
+      codeAnalysisRan: true,
+      findings: findings
+        .filter((f) => f.requirementId === id)
+        .map((f) => ({
+          agentKey: "code",
+          verdict: (f.verdict ?? null) as RequirementVerdict | null,
+        })),
+    });
+
+  it("counts a requirement the agent reported NOTHING for (the page shows it could-not-verify)", () => {
+    // PR #37 review: 3 implemented + 13 with no finding counted 0 — while the page
+    // showed 13 of 16 unverified.
+    const findings = ids(3).map((requirementId) => ({ requirementId, verdict: "implemented" }));
+    expect(countUnverifiedRequirements(findings, ids(16))).toBe(13);
+    const after = assessInvestigationCoverage(healthOf(5, 16), {
+      unverifiedRequirements: countUnverifiedRequirements(findings, ids(16)),
+    });
+    expect(after.starved).toBe(false);
+    expect(after.degraded).toBe(true);
+  });
+
+  it("lets could-not-verify beat implemented on the same requirement, as the page does", () => {
+    const findings = ids(16).flatMap((requirementId) => [
+      { requirementId, verdict: "implemented" },
+      cnv(requirementId),
+    ]);
+    expect(countUnverifiedRequirements(findings, ids(16))).toBe(16);
+  });
+
+  it("counts every requirement of a pass that reported no findings at all", () => {
+    expect(countUnverifiedRequirements([], ids(16))).toBe(16);
+    // 4 searches for 16 requirements clears the starvation floor; the count still degrades.
+    const after = assessInvestigationCoverage(healthOf(4, 16), { unverifiedRequirements: 16 });
+    expect(after.starved).toBe(false);
+    expect(after.degraded).toBe(true);
+  });
+
+  it("does not count a confirmed gap, which beats could-not-verify on the page", () => {
+    const findings = [{ requirementId: "REQ-1", verdict: "gap-confirmed" }, cnv("REQ-1")];
+    expect(countUnverifiedRequirements(findings, ids(1))).toBe(0);
+  });
+
+  it("counts a requirement whose only finding carries no verdict", () => {
+    expect(countUnverifiedRequirements([{ requirementId: "REQ-1", verdict: null }], ids(1))).toBe(
+      1,
+    );
   });
 
   it("ignores findings for requirements outside the pass, or with no requirement", () => {
-    const findings = [cnv("REQ-99"), { verdict: "could-not-verify" }, cnv("REQ-1")];
-    expect(countUnverifiedRequirements(findings, ids(2))).toBe(1);
+    const findings = [
+      cnv("REQ-99"),
+      { verdict: "could-not-verify" },
+      { requirementId: "REQ-1", verdict: "implemented" },
+      { requirementId: "REQ-2", verdict: "implemented" },
+    ];
+    expect(countUnverifiedRequirements(findings, ids(2))).toBe(0);
   });
 
-  it("does not count requirements the agent reported nothing for", () => {
-    expect(countUnverifiedRequirements([], ids(5))).toBe(0);
-  });
-
-  it("does not count a finding with no verdict as unverified", () => {
-    expect(countUnverifiedRequirements([{ requirementId: "REQ-1", verdict: null }], ids(1))).toBe(
-      0,
+  it("equals the number of could-not-verify page verdicts over a mixed pass", () => {
+    const verdicts = ["implemented", "could-not-verify", "gap-confirmed", null, "bogus"];
+    const findings = ids(40).flatMap((requirementId, i) =>
+      // 0, 1 or 2 findings per requirement, cycling through every verdict shape.
+      Array.from({ length: i % 3 }, (_, k) => ({
+        requirementId,
+        verdict: verdicts[(i + k) % verdicts.length],
+      })),
     );
+    const expected = ids(40).filter(
+      (id) => pageVerdict(findings, id) === "could-not-verify",
+    ).length;
+    expect(expected).toBeGreaterThan(0);
+    expect(countUnverifiedRequirements(findings, ids(40))).toBe(expected);
   });
 });
 

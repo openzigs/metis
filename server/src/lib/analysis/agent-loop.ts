@@ -796,9 +796,9 @@ export const MAX_TOOL_CALLS_PER_REPLY = 8;
  * Depth is tracked across the whole text, and string literals are only
  * recognised INSIDE a value (depth > 0), so prose apostrophes and quotes between
  * calls cannot desynchronise the scan, while a `}` inside a string argument
- * cannot close a call early. Nothing is ever rescanned: a stray `}` at depth 0 is
- * skipped, and an opener that never closes simply swallows the rest of the input
- * as one unterminated (and therefore unreported) span. Tags such as
+ * cannot close a call early. A stray `}` at depth 0 is skipped; an opener that
+ * never closes is rescanned past, at most {@link MAX_UNTERMINATED_RESCANS} times,
+ * so the scan stays linear (see {@link scanJsonSpans}). Tags such as
  * `<tool_calls>` carry no brackets, so every wrapper form — flat, nested, or
  * absent — reduces to the calls inside it with no tag handling at all.
  *
@@ -808,10 +808,33 @@ export const MAX_TOOL_CALLS_PER_REPLY = 8;
  */
 function topLevelJsonSpans(text: string): Array<[number, number]> {
   const spans: Array<[number, number]> = [];
+  let from = 0;
+  for (let rescans = 0; rescans <= MAX_UNTERMINATED_RESCANS; rescans++) {
+    const unterminated = scanJsonSpans(text, from, spans);
+    if (unterminated < 0) break;
+    from = unterminated + 1;
+  }
+  return spans;
+}
+
+/**
+ * PR #37 review — how many times {@link topLevelJsonSpans} restarts just past an
+ * opener that never closed. A stray `{` or `[` in prose ("check the {config")
+ * otherwise swallows every call after it. Each restart is one more linear pass,
+ * and the count is a constant, so the scan stays linear in the input.
+ */
+const MAX_UNTERMINATED_RESCANS = 4;
+
+/**
+ * One linear pass of {@link topLevelJsonSpans} from `from`, appending each closed
+ * top-level span to `spans`. Returns the index of the top-level opener left
+ * unterminated at end of input, or `-1` when every opener closed.
+ */
+function scanJsonSpans(text: string, from: number, spans: Array<[number, number]>): number {
   let depth = 0;
   let start = -1;
   let inString = false;
-  for (let i = 0; i < text.length; i++) {
+  for (let i = from; i < text.length; i++) {
     const ch = text[i];
     if (inString) {
       if (ch === "\\") i++;
@@ -829,7 +852,7 @@ function topLevelJsonSpans(text: string): Array<[number, number]> {
       inString = true;
     }
   }
-  return spans;
+  return depth > 0 ? start : -1;
 }
 
 /**
@@ -853,6 +876,13 @@ function topLevelJsonSpans(text: string): Array<[number, number]> {
  *   3. otherwise the single parser's answer, byte-for-byte;
  *   4. otherwise the one call the scan found (e.g. a wrapped call followed by
  *      prose containing a `}`), else `null`.
+ *
+ * PR #37 review — when `knownTools` is given, the SCAN's calls (rules 2 and 4)
+ * count only if at least one names a registered tool, or the reply wraps them in
+ * a `<tool_call>` / `<tool_calls>` tag. A chat answer ABOUT tooling — a JSON array
+ * `[{"tool":"eslint",…},{"tool":"prettier",…}]`, or prose quoting two such objects
+ * — is otherwise run as calls and the user's answer discarded. Rule 3 is
+ * untouched, so a lone unknown-tool object still gets the loop's repair error.
  *
  * LINEAR TIME on untrusted output (see the #1244 / #1220 ReDoS notes above): one
  * single-pass bracket scan, one `JSON.parse` per disjoint span, and the
@@ -878,10 +908,15 @@ export function parseToolCalls(
       if (call) scanned.push(call);
     }
   }
-  if (scanned.length >= 2) return scanned;
+  const scanCounts =
+    scanned.length > 0 &&
+    (known === undefined ||
+      scanned.some((call) => known.includes(call.tool)) ||
+      hasToolCallTagWrappingJson(response));
+  if (scanCounts && scanned.length >= 2) return scanned;
   const single = parseToolCall(response, known);
   if (single) return [single];
-  return scanned.length === 1 ? scanned : null;
+  return scanCounts && scanned.length === 1 ? scanned : null;
 }
 
 /** Index of the first non-whitespace character at or after `from`. */
@@ -944,9 +979,20 @@ export function looksLikeToolCallMarkup(text: string): boolean {
   return text.startsWith('"tool"', i);
 }
 
-/** #15 — a reply that is (or looks like) tool protocol rather than an answer. */
-export function isToolCallReply(text: string): boolean {
-  return parseToolCalls(text) !== null || looksLikeToolCallMarkup(text);
+/**
+ * #15 — a reply that is (or looks like) tool protocol rather than an answer.
+ *
+ * Pass the registered tool names wherever {@link parseToolCalls} received them, so
+ * the two agree. With them, a reply that PARSES into tool-shaped objects none of
+ * which is registered (and carries no tool tag) is an answer that happens to
+ * quote tool JSON — {@link looksLikeToolCallMarkup}'s prefix heuristic exists for
+ * replies that do NOT parse (a truncated call), not for these.
+ */
+export function isToolCallReply(text: string, knownTools?: Iterable<string>): boolean {
+  const known = knownTools ? [...knownTools] : undefined;
+  if (parseToolCalls(text, known) !== null) return true;
+  if (known && parseToolCalls(text) !== null) return false;
+  return looksLikeToolCallMarkup(text);
 }
 
 /**
@@ -1392,12 +1438,18 @@ export async function runAgentLoop(
   // The loop stopped while the model was still calling tools ⇒ it never got to
   // answer. `budgetExhausted` only ever covered the TOKEN budget, so the turn
   // cap was previously invisible to callers (#769 root cause #2).
-  const turnsExhausted = parseToolCalls(finalResponse) !== null;
+  //
+  // PR #37 review — every post-loop check reads the reply with the SAME registered
+  // tool set the loop parsed it with, or an answer the loop accepted (tool-shaped
+  // JSON naming no registered tool) is re-read here as a call and replaced.
+  const registeredTools = [...toolMap.keys()];
+  const turnsExhausted = parseToolCalls(finalResponse, registeredTools) !== null;
 
   // #15 — a reply that only LOOKS like tool protocol (a truncated call, a broken
   // `<tool_calls>` wrapper) is not an answer either.
   const isValidFinalAnswer =
-    options.finalAnswerRetry?.isValidFinalAnswer ?? ((text: string) => !isToolCallReply(text));
+    options.finalAnswerRetry?.isValidFinalAnswer ??
+    ((text: string) => !isToolCallReply(text, registeredTools));
 
   // P0 #769 — SALVAGE. The loop ended without a usable answer but the whole
   // investigation is sitting in `messages`. Spend ONE more, tool-free call
@@ -1495,7 +1547,7 @@ export async function runAgentLoop(
   // model was still emitting a tool call, `finalResponse` is raw `{"tool":...}`
   // protocol JSON. Never hand that to a caller: substitute a safe,
   // human-readable fallback. Pure post-loop sanitization — no model call.
-  if (isToolCallReply(finalResponse)) {
+  if (isToolCallReply(finalResponse, registeredTools)) {
     // #1217 (D1) — keep the pre-overwrite text for the caller's salvage pass.
     // A retry answer, if there was one, is the better source and wins.
     salvageSource ??= finalResponse;

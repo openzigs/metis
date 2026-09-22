@@ -1233,12 +1233,12 @@ export interface AnalysisRetrievalHealth {
    */
   starved: boolean;
   /**
-   * #19 — how many requirements the code agent reported on ONLY as
-   * `could-not-verify`. Omitted when none. When more than half of
-   * `requirementCount` are unverified, the record is `degraded` — and when the pass
-   * also made far fewer code searches than it had requirements, `starved` — even
-   * though a single working search clears the verdict threshold. Report-side only:
-   * set after verdicts are gated, it never changes one.
+   * #19 — how many requirements the analysis page shows as `could-not-verify`
+   * (the same `deriveRequirementVerdict` roll-up, so a requirement with no code
+   * finding counts). Omitted when none. When more than half of `requirementCount`
+   * are unverified, the record is `degraded` — even though a single working search
+   * clears the verdict threshold, and even when the pass was `exhausted`.
+   * Report-side only: set after verdicts are gated, it never changes one.
    */
   unverifiedRequirements?: number;
   /**
