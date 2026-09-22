@@ -215,3 +215,59 @@ describe("MCPStdioTransport env inheritance (SEC-4)", () => {
     }
   });
 });
+
+// #24 — scripts/restart.sh finds orphaned sidecars by an owner marker in their
+// environment instead of SIGTERMing every `mcp-server-*` process on the machine.
+describe("MCPStdioTransport sidecar owner marker (#24)", () => {
+  async function spawnEnv(configured: Record<string, string>): Promise<Record<string, string>> {
+    const child = new (class extends EventEmitter {
+      stdin = new EventEmitter();
+      stdout = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
+      stderr = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
+    })();
+    let captured: Record<string, string> = {};
+    const spawnFn = vi.fn(
+      (_cmd: string, _args: string[], opts: { env: Record<string, string> }) => {
+        captured = opts.env;
+        return child as never;
+      },
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const t = new MCPStdioTransport({ command: "node", env: configured, spawnFn: spawnFn as any });
+    await t.start();
+    return captured;
+  }
+
+  it("stamps the owner tag restart.sh exported onto every sidecar", async () => {
+    const original = process.env.METIS_SIDECAR_OWNER;
+    process.env.METIS_SIDECAR_OWNER = "metis-12345";
+    try {
+      expect((await spawnEnv({})).METIS_SIDECAR_OWNER).toBe("metis-12345");
+    } finally {
+      if (original === undefined) delete process.env.METIS_SIDECAR_OWNER;
+      else process.env.METIS_SIDECAR_OWNER = original;
+    }
+  });
+
+  it("still marks the sidecar as METIS's when no owner tag was exported", async () => {
+    const original = process.env.METIS_SIDECAR_OWNER;
+    delete process.env.METIS_SIDECAR_OWNER;
+    try {
+      expect((await spawnEnv({})).METIS_SIDECAR_OWNER).toBe("metis");
+    } finally {
+      if (original !== undefined) process.env.METIS_SIDECAR_OWNER = original;
+    }
+  });
+
+  it("a server's configured env cannot remove or spoof the marker", async () => {
+    const original = process.env.METIS_SIDECAR_OWNER;
+    process.env.METIS_SIDECAR_OWNER = "metis-777";
+    try {
+      const env = await spawnEnv({ METIS_SIDECAR_OWNER: "someone-else" });
+      expect(env.METIS_SIDECAR_OWNER).toBe("metis-777");
+    } finally {
+      if (original === undefined) delete process.env.METIS_SIDECAR_OWNER;
+      else process.env.METIS_SIDECAR_OWNER = original;
+    }
+  });
+});
