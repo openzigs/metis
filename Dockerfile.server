@@ -133,11 +133,37 @@ COPY e2e/package.json ./e2e/
 # the source tree.
 COPY server/prisma ./server/prisma
 
+# #45 — ONE image serves BOTH providers. A generated Prisma client is bound to one
+# provider (its `activeProvider`, and the provider's query compiler inlined as
+# base64 in its index.js); its constructor refuses a driver adapter for the other
+# ("adapter-pg ... is not compatible with the provider sqlite"). This stage has no
+# prisma.config.ts, so a bare `prisma generate` reads prisma/schema.prisma — SQLite.
+# So generate the Postgres client FIRST, from prisma/postgres/schema.prisma, and
+# move it to server/prisma-clients/postgresql; then generate the SQLite client into
+# its default place (`@prisma/client`). server/src/lib/prisma.ts loads the Postgres
+# one for a postgres:// DATABASE_URL via METIS_PRISMA_CLIENT_POSTGRESQL (set below).
+# The generated client is relocatable: its one package import is
+# `@prisma/client/runtime/client.js`, which resolves from server/ to the same runtime
+# the SQLite client uses (so `Prisma.*` error classes are identical objects —
+# measured). What it does not load under Node is dropped: type declarations, the
+# edge/browser/worker builds, the raw .wasm (index.js loads the base64 copy) and
+# the schema (inlined in index.js).
 RUN pnpm install --prod --frozen-lockfile \
       --filter @metis/server... --filter @metis/shared \
       --ignore-scripts \
  && pnpm rebuild --filter @metis/server \
+ && pnpm --filter @metis/server prisma generate --schema prisma/postgres/schema.prisma \
+ && GENERATED="$(cd server && node -p "require('path').join(require('path').dirname(require.resolve('@prisma/client/package.json')), '..', '..', '.prisma', 'client')")" \
+ && grep -q '"activeProvider": "postgresql"' "${GENERATED}/index.js" \
+ && mkdir -p server/prisma-clients \
+ && cp -R "${GENERATED}" server/prisma-clients/postgresql \
+ && rm -f server/prisma-clients/postgresql/*.d.ts server/prisma-clients/postgresql/edge.js \
+          server/prisma-clients/postgresql/index-browser.js \
+          server/prisma-clients/postgresql/wasm-*-loader.mjs \
+          server/prisma-clients/postgresql/query_compiler_fast_bg.wasm \
+          server/prisma-clients/postgresql/schema.prisma \
  && pnpm --filter @metis/server prisma generate \
+ && grep -q '"activeProvider": "sqlite"' "${GENERATED}/index.js" \
  && pnpm store prune \
  && rm -rf /root/.cache /root/.npm /root/.local /tmp/* /usr/local/share/pnpm/store
 
@@ -227,8 +253,9 @@ RUN set -eux; \
 #     17 MB source map alongside the 2.4 MB CommonJS entry we actually use.
 #   - @prisma/client/runtime ships WASM query engines for every supported
 #     database (cockroachdb, mysql, sqlserver, sqlite, postgresql) plus
-#     edge/browser variants. METIS only uses postgres in prod and sqlite
-#     in dev/test; drop the rest plus all *.map source maps.
+#     edge/browser variants; drop the edge/browser variants and *.map source
+#     maps here. The query compilers themselves are all dropped further down
+#     (#45: the generated clients inline their own).
 #   - pdfjs-dist ships both a "legacy" build and a "build" directory. We
 #     only use the legacy one (CommonJS). Drop the modern build, web, and
 #     image_decoders dirs.
@@ -282,21 +309,17 @@ RUN set -eux; \
     rm -rf node_modules/.pnpm/@types+* \
            node_modules/.pnpm/@apache-arrow+ts@* \
            2>/dev/null || true; \
-    # Drop production sqlite/sqlserver/cockroachdb/mysql query compilers
-    # from @prisma/client/runtime — production deployments use Postgres only.
+    # Drop EVERY query compiler from @prisma/client/runtime. #45 — this block used
+    # to justify itself by production being Postgres-only, while the image could
+    # only build a SQLite client, and it kept the sqlite + postgresql copies anyway. The
+    # image now serves both providers (see the prod-deps stage), and neither
+    # generated client loads anything from here: each inlines its OWN compiler
+    # (`query_compiler_fast_bg.wasm-base64.js` beside its index.js), and
+    # runtime/client.js names no query_compiler file (measured). Both smoke arms
+    # (SQLite and Postgres) migrate and query without them. ~29 MB.
     for D in $(find node_modules/.pnpm -path '*/@prisma/client/runtime' -type d 2>/dev/null); do \
       cd "$D"; \
-      rm -f query_compiler_bg.cockroachdb.* query_compiler_bg.mysql.* \
-            query_compiler_bg.sqlserver.* query_compiler_bg.sqlite.* \
-            query_engine_bg.sqlite.* 2>/dev/null || true; \
-      # #34 — Prisma 7 renamed these to query_compiler_{fast,small}_bg.<db>.*, so
-      # the names above had stopped matching anything. The generated client
-      # (.prisma/client) carries its OWN copy of the compiler it uses; these are
-      # never loaded by it. Keep sqlite + postgresql (the two supported DBs).
-      rm -f query_compiler_fast_bg.cockroachdb.* query_compiler_fast_bg.mysql.* \
-            query_compiler_fast_bg.sqlserver.* query_compiler_small_bg.cockroachdb.* \
-            query_compiler_small_bg.mysql.* query_compiler_small_bg.sqlserver.* \
-            2>/dev/null || true; \
+      rm -f query_compiler_* query_engine_bg.* 2>/dev/null || true; \
       cd /app; \
     done; \
     # Drop apache-arrow TypeScript sources (1.1 MB) — lance only loads the
@@ -379,7 +402,7 @@ ENV TRANSFORMERS_CACHE=/app/.cache/huggingface
 ARG EMBED_DTYPE=q8
 ENV EMBED_DTYPE=${EMBED_DTYPE}
 
-# #34 — the runtime is `node server/dist/index.js`; nothing in it runs npm, npx,
+# #34 — the runtime is `node dist/index.js` (from /app/server); nothing in it runs npm, npx,
 # yarn or corepack, which the base image ships (~23 MB).
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
            /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
@@ -411,6 +434,10 @@ RUN echo /opt/oracle/instantclient > /etc/ld.so.conf.d/oracle-instantclient.conf
 
 # Compiled application code.
 COPY --from=builder    --chown=metis:metis /app/server/dist             ./server/dist
+# #45 — the Postgres Prisma client (generated in prod-deps); server/src/lib/prisma.ts
+# loads it for a postgres:// DATABASE_URL. Root-owned: nothing writes to it.
+COPY --from=prod-deps  /app/server/prisma-clients ./server/prisma-clients
+ENV METIS_PRISMA_CLIENT_POSTGRESQL=/app/server/prisma-clients/postgresql
 COPY --from=builder    --chown=metis:metis /app/server/prisma           ./server/prisma
 # #39 — the Prisma CLI the migration guard runs reads its schema and migration
 # paths from here (it picks the SQLite or Postgres history by DATABASE_URL, #539).
@@ -431,6 +458,19 @@ COPY --from=prod-deps  --chown=metis:metis /app/node_modules            ./node_m
 COPY --from=prod-deps  --chown=metis:metis /app/server/node_modules     ./server/node_modules
 COPY --from=prod-deps  --chown=metis:metis /app/packages/shared/node_modules ./packages/shared/node_modules
 
+# #54 — the server's default data paths are relative to its working directory:
+# LanceDB `data/lancedb` (rag/vector-store.ts), uploads `data/uploads`
+# (documents/storage.ts), archive extracts, and the SQLite default `file:./dev.db`.
+# Run from /app/server, not /app: /app is root-owned, so every one of those
+# defaults was EACCES for uid 1001, and the Helm chart mounts its uploads and
+# LanceDB volumes at /app/server/data/{uploads,lancedb} — where the server never
+# wrote. The migration guard already ran the Prisma CLI from /app/server, so the
+# SQLite default now names ONE file for the CLI and the client. `data/` is created
+# and owned by the runtime user so a fresh named volume mounted there inherits
+# that ownership.
+RUN mkdir -p /app/server/data && chown metis:metis /app/server/data
+WORKDIR /app/server
+
 USER metis
 
 EXPOSE 4000
@@ -438,4 +478,4 @@ EXPOSE 4000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "require('http').get({host:'127.0.0.1',port:process.env.PORT||4000,path:'/healthz',timeout:4000},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 
-CMD ["node", "server/dist/index.js"]
+CMD ["node", "dist/index.js"]

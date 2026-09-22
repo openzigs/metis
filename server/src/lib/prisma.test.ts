@@ -7,16 +7,24 @@
  * anything else. Adapter construction is lazy (no DB connection), so we can
  * assert the concrete factory's `provider` field without a live database.
  */
+import { createRequire } from "node:module";
+import path from "node:path";
+
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { afterEach, describe, expect, it } from "vitest";
+import { PrismaClient } from "@prisma/client";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_SQLITE_URL,
+  POSTGRES_CLIENT_ENV,
   redactDatabaseUrl,
   resolveDatabaseProvider,
+  resolvePrismaClientClass,
   selectPrismaAdapter,
 } from "./prisma.js";
+
+const require = createRequire(import.meta.url);
 
 describe("resolveDatabaseProvider", () => {
   it("classifies postgres:// as postgresql", () => {
@@ -135,5 +143,82 @@ describe("redactDatabaseUrl", () => {
 
   it("leaves a credential-free file: URL intact", () => {
     expect(redactDatabaseUrl(DEFAULT_SQLITE_URL)).toBe(DEFAULT_SQLITE_URL);
+  });
+});
+
+/**
+ * #45 — one image, both providers. A generated Prisma client is bound to ONE
+ * provider (its `activeProvider`), and the constructor refuses a driver adapter for
+ * the other. The image ships the default (SQLite) client at `@prisma/client` plus a
+ * Postgres client generated to a separate directory, named by
+ * `METIS_PRISMA_CLIENT_POSTGRESQL`; the class is chosen by the same scheme rule
+ * that chooses the adapter.
+ */
+describe("resolvePrismaClientClass", () => {
+  class FakePostgresClient {}
+  const pgPath = "/app/server/prisma-clients/postgresql";
+
+  it("names the env var the image sets", () => {
+    expect(POSTGRES_CLIENT_ENV).toBe("METIS_PRISMA_CLIENT_POSTGRESQL");
+  });
+
+  it("uses the Postgres client from the configured directory for a Postgres URL", () => {
+    const load = vi.fn(() => ({ PrismaClient: FakePostgresClient }));
+    const cls = resolvePrismaClientClass("postgresql", { [POSTGRES_CLIENT_ENV]: pgPath }, load);
+    expect(load).toHaveBeenCalledWith(pgPath);
+    expect(cls).toBe(FakePostgresClient);
+  });
+
+  it("uses the default @prisma/client for SQLite even when the Postgres client is configured", () => {
+    const load = vi.fn(() => ({ PrismaClient: FakePostgresClient }));
+    const cls = resolvePrismaClientClass("sqlite", { [POSTGRES_CLIENT_ENV]: pgPath }, load);
+    expect(load).not.toHaveBeenCalled();
+    expect(cls).toBe(PrismaClient);
+  });
+
+  it("uses the default @prisma/client for Postgres when nothing is configured (dev: `prisma generate` per DB)", () => {
+    const load = vi.fn();
+    expect(resolvePrismaClientClass("postgresql", {}, load)).toBe(PrismaClient);
+    expect(resolvePrismaClientClass("postgresql", { [POSTGRES_CLIENT_ENV]: "  " }, load)).toBe(
+      PrismaClient,
+    );
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("refuses a relative path, which would resolve against this module rather than the cwd", () => {
+    expect(() =>
+      resolvePrismaClientClass(
+        "postgresql",
+        { [POSTGRES_CLIENT_ENV]: "prisma-clients/pg" },
+        vi.fn(),
+      ),
+    ).toThrow(/must be an absolute path/);
+  });
+
+  it("fails loud when the configured directory holds no PrismaClient", () => {
+    expect(() =>
+      resolvePrismaClientClass("postgresql", { [POSTGRES_CLIENT_ENV]: pgPath }, () => ({})),
+    ).toThrow(/exports no PrismaClient/);
+  });
+
+  it("fails loud, naming the variable, when the configured directory cannot be loaded", () => {
+    const load = () => {
+      throw new Error("Cannot find module");
+    };
+    expect(() =>
+      resolvePrismaClientClass("postgresql", { [POSTGRES_CLIENT_ENV]: pgPath }, load),
+    ).toThrow(/METIS_PRISMA_CLIENT_POSTGRESQL.*Cannot find module/s);
+  });
+
+  it("loads a real generated client directory through the default loader", () => {
+    // The default loader is `require` from this module. Point it at the generated
+    // client @prisma/client itself re-exports, so the test needs no second generate.
+    const generated = require.resolve(".prisma/client/default", {
+      paths: [path.dirname(require.resolve("@prisma/client/package.json"))],
+    });
+    const cls = resolvePrismaClientClass("postgresql", {
+      [POSTGRES_CLIENT_ENV]: path.dirname(generated),
+    });
+    expect(cls).toBe(PrismaClient);
   });
 });

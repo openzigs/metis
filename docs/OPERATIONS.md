@@ -323,7 +323,7 @@ The release pipeline ships three images:
 | Image | Built from | Current size | Budget |
 |---|---|---|---|
 | `metis-ui` | `Dockerfile.ui` (Next.js 15 standalone, alpine) | **~197 MB** | ≤ 350 MB ✅ |
-| `metis-server` | `Dockerfile.server` (`node:22-trixie-slim`, glibc, prod-only deps, slimmed) | **~1,068 MB** (amd64, measured #39) | ≤ 1,170 MB — its own budget, see below |
+| `metis-server` | `Dockerfile.server` (`node:22-trixie-slim`, glibc, prod-only deps, slimmed) | **~1,045 MB** (amd64, measured #45) | ≤ 1,170 MB — its own budget, see below |
 | `metis-embeddings` | `Dockerfile.embeddings` (bookworm-slim, glibc) | **~423 MB** | exempt (sidecar) |
 
 > **Multi-arch (Epic #360 / sub-issue #373)**: All four core images
@@ -362,8 +362,9 @@ by combining three changes:
    - `node-sql-parser`'s 45 MB UMD bundle and 23 MB `build/` dir
    - `pdfjs-dist`'s modern `build/`, `web/`, and `image_decoders/` dirs (we
      only use the legacy build via `pdf-parse`)
-   - All `@prisma/client/runtime` query engines/compilers for non-Postgres
-     databases (cockroachdb, mysql, sqlserver, sqlite)
+   - All `@prisma/client/runtime` query engines/compilers — since #45 for every
+     database: each generated Prisma client inlines its own compiler, so none of
+     the runtime copies is loaded
    - All READMEs/CHANGELOGs/docs/examples/test directories under `node_modules`
 
 ### Why the server's budget is 900 MB, not 350 (#34)
@@ -433,8 +434,52 @@ Every row of the #34 breakdown above now loads: the `api` job starts the image,
 waits for `/healthz`, and then loads LanceDB, `mysql2`, `better-sqlite3` and
 `oracledb` in thick mode inside the running container, and checks that the
 runtime user can write its home directory
-(`scripts/lib/smoke-server-image.mjs`). A size figure for an image that does not
-pass that step is not a measurement of this product.
+(`scripts/lib/smoke-server-image.mjs`). Since #45 it does so on SQLite **and** on
+Postgres (below). A size figure for an image that does not pass that step is not a
+measurement of this product.
+
+### One image, SQLite and Postgres (#45), and where it keeps data (#54)
+
+**Two Prisma clients.** A generated Prisma client is bound to one provider — its
+`activeProvider`, with that provider's query compiler inlined in its `index.js` —
+and refuses a driver adapter for the other. Until #45 the image generated only the
+SQLite client, so every documented production deployment (`docker-compose.prod.yml`,
+the Helm prod values; both `postgres://`) exited at import with *"The Driver Adapter
+`@prisma/adapter-pg` … is not compatible with the provider `sqlite`"*. The image now
+generates the Postgres client from `prisma/postgres/schema.prisma` into
+`/app/server/prisma-clients/postgresql`, and the SQLite client into its default
+place. `server/src/lib/prisma.ts` picks the client by the same `DATABASE_URL` scheme
+rule that picks the adapter, loading the Postgres one from
+`METIS_PRISMA_CLIENT_POSTGRESQL` (set by the image; unset in dev, where you
+`prisma generate` for the database you run, as before). Both clients share one
+`@prisma/client/runtime`, so `Prisma.*` error classes are the same objects either
+way. The Postgres client adds ~6 MiB; deleting the query compilers in
+`@prisma/client/runtime` that neither client loads saves ~29 MiB, so the image got
+smaller: the `api` job measured **1,045.4 MB** (run 35722462860), down from
+1,067.7 MB at #39 (local arm64 build, `du -sm /app`: 744 → 723 MiB). The budget
+stays 1,170 MB.
+
+**Working directory.** The server resolves its default data paths against its
+working directory: LanceDB `data/lancedb`, uploads `data/uploads`, archive extracts,
+and the SQLite default `file:./dev.db`. The image used to run from `/app`, which is
+root-owned, so for the runtime user (uid 1001) every one of those defaults was
+`EACCES`, and the SQLite default named two different files — the migration guard
+migrated `/app/server/dev.db` while the server's client could not open `/app/dev.db`
+(*"unable to open database file"*), behind a `/healthz` that still answered 200. The
+image now runs from **`/app/server`**, with `/app/server/data` owned by the runtime
+user; the Helm chart already mounts its uploads and LanceDB volumes at
+`/app/server/data/{uploads,lancedb}`, which the server had never written to.
+**To keep vectors and uploads across container restarts, mount a volume at
+`/app/server/data`** (or set `LANCEDB_PATH` / `UPLOAD_DIR`); on SQLite, point
+`DATABASE_URL` into that volume too, e.g. `file:/app/server/data/metis.db`.
+
+**The CI smoke runs both.** `scripts/lib/smoke-server-image.mjs` boots the image on
+SQLite with no `DATABASE_URL` at all, then against a `pgvector/pgvector:pg16`
+container on a private docker network. In each it runs `prisma migrate status` with
+the image's own CLI, reads a migrated table through the server's own Prisma client,
+and writes and reads back a LanceDB table and an upload through the server's own
+`getVectorStore()` and `resolveDocumentStorage()` at their default paths. It used to
+write LanceDB to `/tmp`, which passed while the real default was `Permission denied`.
 
 Reducible contributors still in the image, measured in review of #38:
 

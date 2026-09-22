@@ -131,6 +131,67 @@ describe("Dockerfile.server keeps what the server loads at boot (#39)", () => {
   });
 });
 
+describe("Dockerfile.server serves both Prisma providers (#45)", () => {
+  const dockerfile = read("Dockerfile.server");
+  const prismaTs = read("server/src/lib/prisma.ts");
+  const prodDeps = dockerfile.slice(
+    dockerfile.indexOf("AS prod-deps"),
+    dockerfile.indexOf("AS runner"),
+  );
+  const runner = dockerfile.slice(dockerfile.indexOf("AS runner"));
+
+  it("generates a Postgres client from the Postgres schema, then the SQLite one into @prisma/client", () => {
+    const pg = prodDeps.indexOf("prisma generate --schema prisma/postgres/schema.prisma");
+    const copy = prodDeps.indexOf('cp -R "${GENERATED}" server/prisma-clients/postgresql');
+    const sqlite = prodDeps.indexOf("prisma generate \\\n", copy);
+    expect(pg).toBeGreaterThan(-1);
+    expect(copy).toBeGreaterThan(pg);
+    // The default (SQLite) generate runs LAST, so it is what @prisma/client holds.
+    expect(sqlite).toBeGreaterThan(copy);
+    expect(prodDeps).toContain(`grep -q '"activeProvider": "postgresql"'`);
+    expect(prodDeps).toContain(`grep -q '"activeProvider": "sqlite"'`);
+  });
+
+  it("ships the Postgres client and points the server at it by the variable prisma.ts reads", () => {
+    expect(runner).toMatch(
+      /^COPY --from=prod-deps +\/app\/server\/prisma-clients \.\/server\/prisma-clients$/m,
+    );
+    const env = runner.match(/^ENV (METIS_PRISMA_CLIENT_POSTGRESQL)=(\S+)$/m);
+    expect(env).not.toBeNull();
+    expect(prismaTs).toContain(`POSTGRES_CLIENT_ENV = "${env?.[1]}"`);
+    expect(env?.[2]).toBe("/app/server/prisma-clients/postgresql");
+  });
+
+  it("no longer claims production is Postgres-only while deleting compilers", () => {
+    expect(dockerfile).not.toMatch(/production deployments use Postgres only/);
+  });
+});
+
+describe("Dockerfile.server runs where its default data paths are writable (#54)", () => {
+  const dockerfile = read("Dockerfile.server");
+  const runner = dockerfile.slice(dockerfile.indexOf("AS runner"));
+  const workdirs = [...runner.matchAll(/^WORKDIR (\S+)$/gm)].map((m) => m[1]);
+  const cmd = runner.match(/^CMD \["node", "([^"]+)"\]$/m)?.[1];
+
+  it("runs from /app/server, the directory the Helm chart mounts data volumes under", () => {
+    expect(workdirs.at(-1)).toBe("/app/server");
+    const values = read("deploy/helm/metis/values.yaml");
+    expect(values).toContain(`mountPath: ${workdirs.at(-1)}/data/lancedb`);
+    expect(values).toContain(`mountPath: ${workdirs.at(-1)}/data/uploads`);
+  });
+
+  it("starts the compiled server relative to that directory", () => {
+    expect(cmd).toBe("dist/index.js");
+    expect(runner).toMatch(/^COPY --from=builder .*\/app\/server\/dist +\.\/server\/dist$/m);
+  });
+
+  it("creates the data directory owned by the runtime user, before dropping to it", () => {
+    const mk = runner.indexOf("mkdir -p /app/server/data && chown metis:metis /app/server/data");
+    expect(mk).toBeGreaterThan(-1);
+    expect(mk).toBeLessThan(runner.indexOf("USER metis"));
+  });
+});
+
 describe("ci.yml `api` starts the server image it built (#39)", () => {
   const api = jobBlock(read(".github/workflows/ci.yml"), "api");
   const smoke = api.indexOf("- name: Smoke-test metis-server");
@@ -151,6 +212,10 @@ describe("ci.yml `api` starts the server image it built (#39)", () => {
   it("is not allowed to fail quietly", () => {
     expect(body).not.toMatch(/continue-on-error/);
     expect(body).not.toMatch(/\|\| true/);
+  });
+
+  it("runs every database arm, not just SQLite (#45)", () => {
+    expect(body).not.toMatch(/--database (sqlite|postgres)\b/);
   });
 });
 

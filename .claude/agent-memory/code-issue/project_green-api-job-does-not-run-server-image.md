@@ -1,6 +1,6 @@
 ---
 name: green-api-job-does-not-run-server-image
-description: RESOLVED by #39 — the `api` job now starts metis-server and polls /healthz; a size or build pass alone never meant it ran
+description: RESOLVED by #39/#45 — the `api` job starts metis-server on SQLite and Postgres and polls /healthz; a size or build pass alone never meant it ran
 metadata:
   type: project
 ---
@@ -22,5 +22,6 @@ image with no package manager) while every gate was green.
 run it locally with `node scripts/lib/smoke-server-image.mjs --image <tag>`
 against an amd64 build before pushing. A module that `/healthz` never loads is
 invisible to it unless it is in `MODULE_PROBES`; add a probe when a new native
-or lazily-imported dependency lands. The smoke covers SQLite only: Postgres
-startup is broken separately (#45) and has no CI arm yet.
+or lazily-imported dependency lands. Since #45 the smoke runs two arms: SQLite
+with no `DATABASE_URL`, and Postgres (a `pgvector/pgvector:pg16` container on a
+private network). `--database sqlite|postgres` runs one arm for a quick local check.

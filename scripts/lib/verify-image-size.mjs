@@ -32,7 +32,9 @@ export const DEFAULT_MAX_IMAGE_MB = 350;
  * the Prisma CLI the boot-time migration guard runs — measured 1,068 MB on the
  * `api` job (run 35712009974); 1,170 is that plus ~10% headroom. CI now starts
  * the image and polls /healthz (scripts/lib/smoke-server-image.mjs), so this
- * budget describes an image that runs. The breakdown and the reducible contributors are in
+ * budget describes an image that runs. #45 added a Postgres Prisma client (~6 MiB)
+ * and dropped the unused runtime query compilers (~29 MiB): 1,045.4 MB (run
+ * 35722462860), on SQLite and Postgres both. The breakdown and the reducible contributors are in
  * docs/OPERATIONS.md > "Container Image Sizes". This is a REGRESSION gate:
  * measured size plus modest headroom, never a number raised until CI goes green.
  * `MAX_SERVER_IMAGE_MB` overrides it.
