@@ -13,6 +13,8 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper, TEST_USER } from "../test-utils";
 
+const nav = vi.hoisted(() => ({ search: new URLSearchParams() }));
+
 vi.mock("next/navigation", async () => {
   const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
   return {
@@ -27,7 +29,7 @@ vi.mock("next/navigation", async () => {
       prefetch: vi.fn(),
       refresh: vi.fn(),
     }),
-    useSearchParams: () => new URLSearchParams(),
+    useSearchParams: () => nav.search,
   };
 });
 
@@ -243,7 +245,38 @@ async function waitForResults() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  nav.search = new URLSearchParams();
   apiMock.get.mockResolvedValue(SNAPSHOT);
+});
+
+// #29 — the Overview's "Review N requirements" and the Requirements tab link
+// here with `?analysisId=`; the page must open that run, not the newest one.
+describe("?analysisId deep link (#29)", () => {
+  const listMock = analysisApi.listForProject as unknown as ReturnType<typeof vi.fn>;
+  const twoRuns = {
+    items: [
+      { id: "an-new", status: "running", startedAt: new Date().toISOString(), totalTokens: 0 },
+      { id: "an-1", status: "completed", startedAt: new Date().toISOString(), totalTokens: 10 },
+    ],
+  };
+
+  it("selects the requested run when it belongs to this project", async () => {
+    listMock.mockResolvedValueOnce(twoRuns);
+    nav.search = new URLSearchParams("analysisId=an-1");
+    renderPage();
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalled());
+    expect(apiMock.get).toHaveBeenCalledWith("an-1");
+    expect(apiMock.get).not.toHaveBeenCalledWith("an-new");
+  });
+
+  it("ignores an id that is not in this project's list", async () => {
+    listMock.mockResolvedValueOnce(twoRuns);
+    nav.search = new URLSearchParams("analysisId=someone-elses");
+    renderPage();
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalled());
+    expect(apiMock.get).toHaveBeenCalledWith("an-new");
+    expect(apiMock.get).not.toHaveBeenCalledWith("someone-elses");
+  });
 });
 
 describe("Analysis results hierarchy (#1232)", () => {

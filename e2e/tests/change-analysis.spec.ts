@@ -465,6 +465,7 @@ test.describe("Epic #557 — Change Analysis UI", () => {
     const ca = new ChangeAnalysisPage(page);
     await page.goto(`/projects/${projectId}`);
     await expect(ca.projectTabs).toBeVisible();
+    await ca.codeTab.click();
     await expect(ca.changesTab).toBeVisible();
 
     await ca.changesTab.click();
@@ -824,10 +825,13 @@ test.describe("Epic #557 — Publishing Destination Config UI", () => {
     const tabs = page.getByTestId("project-tabs");
     await expect(tabs).toBeVisible();
 
-    // Verify key tabs exist
+    // Verify key tabs exist (#28: Changes is a Code page, in its sub-nav)
     await expect(tabs.getByRole("link", { name: "Settings" })).toBeVisible();
-    await expect(tabs.getByRole("link", { name: "Changes" })).toBeVisible();
     await expect(tabs.getByRole("link", { name: "Publish" })).toBeVisible();
+    await tabs.getByRole("link", { name: "Code", exact: true }).click();
+    await expect(
+      page.getByTestId("project-subnav").getByRole("link", { name: "Changes" }),
+    ).toBeVisible();
   });
 
   // AC #569-5, #569-6: Published batch records include destination info (API check)

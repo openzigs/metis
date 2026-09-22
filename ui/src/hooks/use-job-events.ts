@@ -91,7 +91,12 @@ function invalidationKeysFor(kind: JobKind, projectId: string): readonly (readon
     case "analysis":
       return [queryKeys.analyses.forProject(projectId)];
     case "doc-generation":
-      return [queryKeys.documents.forProject(projectId)];
+      // The Documentation list keys generated docs separately from uploaded
+      // documents (#29); without it a finished run kept its "generating" badge.
+      return [
+        queryKeys.documents.forProject(projectId),
+        queryKeys.generatedDocs.forProject(projectId),
+      ];
     case "impact-analysis":
       return [impactAnalysisKeys.list()];
     default:

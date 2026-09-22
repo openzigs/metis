@@ -5,6 +5,11 @@ import { makeWrapper, TEST_USER } from "./test-utils";
 import LibraryPage from "@/app/(authed)/library/page";
 import { libraryApi } from "@/lib/library-api";
 
+// #28 — Library's project picker lists projects.
+vi.mock("@/lib/projects-api", () => ({
+  projectsApi: { list: vi.fn().mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 }) },
+}));
+
 vi.mock("@/lib/library-api", () => ({
   libraryApi: {
     search: vi.fn(),

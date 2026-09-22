@@ -66,7 +66,7 @@ test.describe("Database-aware analysis — settings control + status indicator (
     page,
   }) => {
     const detail = new ProjectDetailPage(page);
-    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
+    await page.goto(`/projects/${projectId}/settings`, { waitUntil: "load" });
 
     await test.step("a fresh project resolves 'auto' with no schema data — hint links to Connections", async () => {
       await expect(detail.databaseAwareCard).toBeVisible({ timeout: 15_000 });

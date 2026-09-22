@@ -16,6 +16,7 @@ import { TemplatesSection } from "@/components/library/templates-section";
 import { ArtifactsSection } from "@/components/library/artifacts-section";
 import { LibraryBrowseSection } from "@/components/library/browse-section";
 import { ConnectorsSection } from "@/components/library/connectors-section";
+import { LibraryProjectPicker } from "@/components/library/project-picker";
 
 type Tab = "browse" | "templates" | "artifacts" | "connectors";
 
@@ -43,6 +44,8 @@ export default function LibraryPage() {
             : "Open a project to manage per-project access."}
         </p>
       </header>
+
+      <LibraryProjectPicker projectId={projectId} />
 
       <div role="tablist" aria-label="Library sections" className="flex gap-1 border-b">
         {TABS.map((t) => (

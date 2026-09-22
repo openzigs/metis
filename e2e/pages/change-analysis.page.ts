@@ -36,6 +36,7 @@ export class ChangeAnalysisPage {
 
   // ── Project navigation ─────────────────────────────────────────────
   readonly projectTabs: Locator;
+  readonly codeTab: Locator;
   readonly changesTab: Locator;
 
   constructor(page: Page) {
@@ -68,9 +69,11 @@ export class ChangeAnalysisPage {
     this.changesList = page.getByTestId("changes-list");
     this.noChangesMessage = page.getByText("No changes detected.");
 
-    // Project navigation
+    // Project navigation. Since #28, Changes is a page of the Code section: the
+    // Code tab is in the bar, Changes in the section's sub-nav.
     this.projectTabs = page.getByTestId("project-tabs");
-    this.changesTab = this.projectTabs.getByRole("link", { name: "Changes" });
+    this.codeTab = this.projectTabs.getByRole("link", { name: "Code", exact: true });
+    this.changesTab = page.getByTestId("project-subnav").getByRole("link", { name: "Changes" });
   }
 
   async goto(projectId: string): Promise<void> {

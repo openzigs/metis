@@ -925,7 +925,20 @@ After logging in you land on the **Dashboard** inside the persistent app shell:
 
 A **skip-to-content** link is the first focusable element on every authenticated page so keyboard users can bypass the navigation.
 
-**Project sections.** Inside a project, the tab bar shows a few primary tabs — **Overview**, **Documents**, **Analysis** — plus grouped **Code**, **Quality**, and **Docs** menus and a **More** overflow for the rest. The former kitchen-sink "Settings" index tab is now **Overview**, and Documents has its own destination. Below `md` the whole bar collapses into a single dropdown so there's no horizontal scrolling on mobile. **Settings** sub-pages share a persistent left sub-navigation.
+**Project sections.** Inside a project, the tab bar follows the pipeline from left to right: **Overview · Sources · Analyze · Requirements · Docs · Publish · Code · ⚙**. Each tab opens its section's first step in one click, and the section's other pages appear in a row underneath:
+
+| Tab | Pages |
+|---|---|
+| Overview | Where each stage stands and what to do next; a numbered **Get started** checklist on a new project |
+| Sources | Connections (including Deep Ingest), Documents, Import, Jira |
+| Analyze | Requirements Analysis, Impact Analysis (this project), Spec Kit |
+| Requirements | Review (what is awaiting review), Baselines, Discussions |
+| Docs | Documentation, Templates |
+| Publish | Issue drafts and publish batches |
+| Code | Code Overview, Changes, Pull Requests, Bug Rules, Bug Scans, Test Coverage |
+| ⚙ | Project settings, Models, Plugins, Usage |
+
+There is no "More" menu. Project settings (AI provider and model, safety, budget, autopilot, quarantine, archive, …) are behind **⚙**, not on the Overview. Per-project skills are managed from **Library**, which has a project picker. Every existing project URL still works. Below `md` the whole bar collapses into a single dropdown so there's no horizontal scrolling on mobile. **Settings** sub-pages share a persistent left sub-navigation.
 
 Press **⌘K** (or **Ctrl+K** on Windows/Linux) anywhere in the app to open the **command palette**. Type to fuzzy-search navigation targets, recently opened items, and project actions; ↑/↓ to move, **↵** to invoke, **Esc** to dismiss.
 
@@ -1052,6 +1065,8 @@ Click on any project card to view its details.
 
 ### 9.4 Project Detail View
 
+Opening a project lands on its **Overview**: one card per pipeline stage — sources connected, ingest status and counts, the last analysis, requirements awaiting review, generated docs, and the last publish — each with the one action that moves it forward ("Connect a source", "Ingest", "Run analysis", "Review 12 requirements", …). Status updates live while an ingest, analysis or doc generation runs. A brand-new project shows a numbered **Get started** checklist instead — connect a source → ingest → run an analysis → review → publish — and each step links straight to the page where it is done. Project settings are behind the **⚙** tab.
+
 The project detail page gives you a complete picture of a single project:
 
 **Header Area:**
@@ -1151,7 +1166,7 @@ When you no longer need to actively work on a project, you can **archive** it. T
 
 After METIS ingests a repository for **Code Discovery**, you can view a deterministic, AI-free summary of the codebase computed straight from the AST CodeGraph.
 
-**How to view it.** Open the project detail page and click **View AST-derived project overview →**. The page shows:
+**How to view it.** Open the project's **Code** tab — it lands on **Code Overview** (the project's own **Overview** tab links to it too). The page shows:
 
 - **Summary** — a 500-word paragraph composed from the rationale comments (`// WHY:`, `// NOTE:`, JSDoc, Python docstrings) attached to the project's most-referenced symbols. If no rationale is available, METIS renders a deterministic three-sentence boilerplate so the section is never blank.
 - **Top Symbols by In-Degree** — the top 20 functions/classes/modules sorted by how many other symbols call or reference them.
@@ -1565,7 +1580,7 @@ For teams that use the **formal review workflow** (the Reviews page — see the 
 
 When a review of requirements is **approved**, METIS automatically creates a **baseline**: a named, immutable snapshot recording the exact version of every requirement in the review's scope at sign-off time. This is the same review-to-baseline coupling you may know from IBM DOORS Next or Jama Connect — approval *is* the baselining event, so your audit trail and your requirement snapshots can never drift apart.
 
-- **Where:** the project's **Baselines** tab (in the **More** menu of the project tab bar). The review detail page also links straight to the baseline a review produced.
+- **Where:** the project's **Requirements** tab → **Baselines**. The review detail page also links straight to the baseline a review produced.
 - **List:** every baseline in the project, newest first, showing how many requirements it pins and which review produced it (or who created it manually).
 - **Contents:** open a baseline to see each requirement **as it was at its pinned version** — even if it has been edited or deleted since. A drift note ("now at v5", "deleted since") tells you where the requirement is today, but the baseline itself never changes.
 - **Compare:** with two or more baselines, pick two in the compare picker to see what changed between sign-offs: requirements **added**, **removed**, **unchanged**, and **changed** — the changed ones with a field-by-field before/after diff (title, body, priority, type, story points, …).
@@ -3207,7 +3222,7 @@ The **Spec Kit** turns METIS into a structured specification tool. Rather than f
 
 ### Where to find it: the BA/PM "author the intent" front-door
 
-Spec Kit is the **business-analyst / product-manager front-door** for authoring intent. It sits as a **primary project tab immediately beside Analysis** — not buried under the "Docs" group — because it is a planning/requirements surface, not documentation. Open a project and you'll see the tab order **Overview · Documents · Analysis · Spec Kit · …**.
+Spec Kit is the **business-analyst / product-manager front-door** for authoring intent. It sits under the **Analyze** tab beside Requirements Analysis — not under "Docs" — because it is a planning/requirements surface, not documentation. Open a project, click **Analyze**, then **Spec Kit**.
 
 The mental model is **author the intent here, then hand it off**:
 

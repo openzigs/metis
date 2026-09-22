@@ -149,6 +149,20 @@ describe("useProjectJobEvents", () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: ["documents"] });
   });
 
+  // #29 — the Documentation list (and the Overview's docs stage) read
+  // ["generated-docs", projectId], which the two keys above never matched, so a
+  // finished generation stayed "generating" until something else refetched.
+  it("invalidates the generated-docs list for a doc-generation transition", () => {
+    const qc = new QueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    renderHook(() => useProjectJobEvents("p1"), { wrapper: wrapper(qc) });
+
+    act(() =>
+      fake.fire("job:lifecycle", lifecycle({ kind: "doc-generation", status: "completed" })),
+    );
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["generated-docs", "p1"] });
+  });
+
   it("invalidates the impact-analysis list for an impact transition", () => {
     const qc = new QueryClient();
     const spy = vi.spyOn(qc, "invalidateQueries");

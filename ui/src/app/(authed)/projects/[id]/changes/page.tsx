@@ -30,11 +30,14 @@ export default function ChangeAnalysisPage() {
   const [baseAnalysisId, setBaseAnalysisId] = useState("");
   const [headAnalysisId, setHeadAnalysisId] = useState("");
 
-  // Fetch analyses for the project (for the trigger form)
+  // Fetch analyses for the project (for the trigger form). This key is shared
+  // with the Analysis page and the project Overview, which cache the
+  // `{ items }` envelope — so cache that here too and unwrap with `select`.
+  // Caching the bare array left those readers with no `.items` on a fresh cache.
   const { data: analyses } = useQuery({
     queryKey: queryKeys.analyses.forProject(projectId),
-    queryFn: () =>
-      apiFetch<{ items: Analysis[] }>(`/projects/${projectId}/analyses`).then((r) => r.items),
+    queryFn: () => apiFetch<{ items: Analysis[] }>(`/projects/${projectId}/analyses`),
+    select: (r) => r.items,
   });
 
   // Fetch change analyses

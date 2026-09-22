@@ -5,7 +5,7 @@
  * persona cards, and review findings + requirements with approve/reject/edit.
  */
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { toast } from "sonner";
@@ -163,12 +163,18 @@ export default function AnalysisPage(): React.ReactElement {
     enabled: Boolean(projectId),
   });
 
-  // Auto-select the most recent run after the list loads.
+  // Auto-select a run after the list loads: the one named in `?analysisId=`
+  // (the Overview's and Requirements tab's deep links, #29) when it belongs to
+  // THIS project's list, otherwise the most recent. Matching against the list
+  // keeps a foreign id from rendering another project's run under this one.
+  const requestedAnalysisId = useSearchParams()?.get("analysisId") ?? null;
   useEffect(() => {
-    if (!selectedAnalysisId && list.data?.items?.[0]) {
-      setSelectedAnalysisId(list.data.items[0].id);
+    const items = list.data?.items;
+    if (!selectedAnalysisId && items?.[0]) {
+      const requested = items.find((item) => item.id === requestedAnalysisId);
+      setSelectedAnalysisId((requested ?? items[0]).id);
     }
-  }, [list.data, selectedAnalysisId]);
+  }, [list.data, selectedAnalysisId, requestedAnalysisId]);
 
   const detail = useQuery({
     queryKey: queryKeys.analyses.detail(selectedAnalysisId ?? ""),

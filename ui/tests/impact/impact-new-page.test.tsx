@@ -4,6 +4,7 @@ import { makeWrapper } from "../test-utils";
 import { ApiError } from "@/lib/api-client";
 
 const push = vi.fn();
+let search = new URLSearchParams();
 
 vi.mock("next/navigation", async () => {
   const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
@@ -11,7 +12,7 @@ vi.mock("next/navigation", async () => {
     ...actual,
     useRouter: () => ({ push }),
     usePathname: () => "/impact-analyses/new",
-    useSearchParams: () => new URLSearchParams(),
+    useSearchParams: () => search,
   };
 });
 
@@ -44,10 +45,20 @@ import { documentsApi } from "@/lib/projects-api";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  search = new URLSearchParams();
   mutationState = { mutate, isPending: false, error: null };
 });
 
 describe("NewImpactAnalysisPage", () => {
+  // #28 — the project's Analyze → Impact Analysis entry links here with
+  // `?projectId=`, which must arrive with that project already selected.
+  it("pre-selects the project named in ?projectId", async () => {
+    search = new URLSearchParams("projectId=project-001");
+    render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("multi-project-count")).toHaveTextContent("1 selected");
+    await waitFor(() => expect(screen.getByTestId("project-checkbox-project-001")).toBeChecked());
+  });
+
   it("shows a contrast pointer to the per-project Requirements Analysis tab", async () => {
     render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
     expect(

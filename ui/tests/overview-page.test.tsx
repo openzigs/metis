@@ -128,7 +128,10 @@ describe("ProjectOverviewPage", () => {
 
     render(<ProjectOverviewPage />, { wrapper: makeWrapper() });
     await waitFor(() => expect(screen.getByTestId("overview-empty-state")).toBeInTheDocument());
-    expect(screen.getByRole("heading", { level: 1, name: /Project Overview/ })).toBeInTheDocument();
+    // #29 — exactly one project page is named "Overview"; this one is Code Overview.
+    expect(
+      screen.getByRole("heading", { level: 1, name: /^Code Overview — / }),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("overview-regenerate"));
     const alert = await screen.findByRole("alert");

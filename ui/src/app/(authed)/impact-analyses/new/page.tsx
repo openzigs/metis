@@ -8,7 +8,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import type { CreateImpactAnalysisInput } from "@metis/shared";
@@ -28,7 +28,14 @@ export default function NewImpactAnalysisPage() {
   const router = useRouter();
   const createMutation = useCreateImpactAnalysis();
 
-  const [selected, setSelected] = useState<string[]>([]);
+  // #28 — the project's Analyze → Impact Analysis entry arrives with
+  // `?projectId=` so that project starts selected. The server still checks
+  // access to every selected project on submit.
+  const searchParams = useSearchParams();
+  const [selected, setSelected] = useState<string[]>(() => {
+    const preselected = searchParams?.get("projectId");
+    return preselected ? [preselected] : [];
+  });
   const [mode, setMode] = useState<SourceMode>("text");
   const [text, setText] = useState("");
   const [documentId, setDocumentId] = useState<string | null>(null);

@@ -57,7 +57,7 @@ test.describe("Project settings — AI pickers (#234)", () => {
 
   // AC: AI provider picker renders with selectable options and saves
   test("should display AI provider picker with options", async ({ page }) => {
-    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
+    await page.goto(`/projects/${projectId}/settings`, { waitUntil: "load" });
     const detail = new ProjectDetailPage(page);
 
     await test.step("Verify provider picker is visible", async () => {
@@ -86,7 +86,7 @@ test.describe("Project settings — AI pickers (#234)", () => {
 
   // AC (#114): local-gemma is selectable and persists as the project provider
   test("should select local-gemma in the provider picker and persist it", async ({ page }) => {
-    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
+    await page.goto(`/projects/${projectId}/settings`, { waitUntil: "load" });
     const detail = new ProjectDetailPage(page);
 
     await test.step("Verify provider picker is visible", async () => {
@@ -119,7 +119,7 @@ test.describe("Project settings — AI pickers (#234)", () => {
 
   // AC: AI model picker accepts free-form model id and saves
   test("should accept model id in AI model picker", async ({ page }) => {
-    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
+    await page.goto(`/projects/${projectId}/settings`, { waitUntil: "load" });
     const detail = new ProjectDetailPage(page);
 
     await test.step("Verify model picker is visible", async () => {

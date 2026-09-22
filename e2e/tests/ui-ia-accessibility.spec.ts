@@ -82,14 +82,15 @@ test.describe("UI IA — accessibility affordances (#133)", () => {
     expect(box!.height).toBeGreaterThanOrEqual(24);
   });
 
-  // A1 #149: the project tab overflow is icon-only but exposes "More project sections".
-  test("project tab overflow control has an accessible name", async ({ page }) => {
+  // A1 #149: icon-only project navigation exposes an accessible name. Since #28
+  // the "More" overflow is gone; the icon-only control is the ⚙ settings tab.
+  test("icon-only project settings tab has an accessible name", async ({ page }) => {
     await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
     const tabs = new ProjectTabsPage(page);
     await tabs.expectVisible();
 
-    const more = page.getByRole("button", { name: "More project sections" });
-    await expect(more).toBeVisible();
+    await expect(tabs.primaryLink("Settings")).toBeVisible();
+    await expect(page.getByRole("button", { name: "More project sections" })).toHaveCount(0);
   });
 
   // A2 #150: icon-only controls are keyboard-focusable and meet the min target size.
@@ -103,11 +104,11 @@ test.describe("UI IA — accessibility affordances (#133)", () => {
       await expectMinTarget(shell.themeToggle);
     });
 
-    await test.step("the overflow control is keyboard-focusable", async () => {
-      const more = page.getByRole("button", { name: "More project sections" });
-      await more.focus();
-      await expect(more).toBeFocused();
-      await expectMinTarget(more);
+    await test.step("the ⚙ settings tab is keyboard-focusable", async () => {
+      const gear = new ProjectTabsPage(page).primaryLink("Settings");
+      await gear.focus();
+      await expect(gear).toBeFocused();
+      await expectMinTarget(gear);
     });
   });
 
@@ -242,7 +243,8 @@ test.describe("UI IA — accessibility affordances (#133)", () => {
     const routes: Array<{ label: string; path: string; h1: RegExp }> = [
       { label: "dashboard", path: "/dashboard", h1: /Dashboard/ },
       { label: "projects", path: "/projects", h1: /Projects/ },
-      { label: "overview", path: `/projects/${projectId}/overview`, h1: /Project Overview/ },
+      // #29 — the code summary is "Code Overview"; only the landing page is "Overview".
+      { label: "overview", path: `/projects/${projectId}/overview`, h1: /Code Overview/ },
       { label: "analysis", path: `/projects/${projectId}/analysis`, h1: /Requirements Analysis/ },
       {
         label: "requirements",

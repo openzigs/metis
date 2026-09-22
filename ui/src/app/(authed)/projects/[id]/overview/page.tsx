@@ -115,7 +115,8 @@ export default function ProjectOverviewPage(): React.ReactElement {
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">
-            Project Overview — {project.data?.name ?? "loading…"}
+            {/* #29 — "Overview" alone names the project landing page. */}
+            Code Overview — {project.data?.name ?? "loading…"}
           </h1>
           <p className="text-sm text-muted-foreground">
             Auto-generated from the AST CodeGraph. Top symbols by in-degree, entry points, and a
