@@ -15,6 +15,7 @@
  */
 import { createHash } from "node:crypto";
 import type { SchemaEdgeKind, SchemaRoutineKind, SchemaSource } from "@metis/shared";
+import { createEventLoopYielder, type MaybeYield } from "./event-loop-yield.js";
 
 /** Minimal Prisma surface the writer needs — injectable for unit tests. */
 export interface SchemaGraphPrisma {
@@ -193,10 +194,17 @@ export class SchemaGraphWriter {
   private readonly columnCache = new Map<string, string>();
   private readonly routineCache = new Map<string, string>();
 
+  /**
+   * @param maybeYield #16 — awaited before every write. Each schema pass writes
+   *   its table/column symbols and edges one row at a time; on the synchronous
+   *   SQLite adapter a pass over this repository's own `schema.prisma` (~2k
+   *   symbols, ~4k edges) otherwise held the event loop for ~8 s.
+   */
   constructor(
     private readonly prisma: SchemaGraphPrisma,
     private readonly codeGraphId: string,
     private readonly projectId: string,
+    private readonly maybeYield: MaybeYield = createEventLoopYielder(),
   ) {}
 
   /**
@@ -227,6 +235,7 @@ export class SchemaGraphWriter {
     const qn = tableQualifiedName(opts.schema, table);
     const cached = this.tableCache.get(qn);
     if (cached) return cached;
+    await this.maybeYield();
     const created = await this.prisma.codeSymbol.create({
       data: {
         codeGraphId: this.codeGraphId,
@@ -259,6 +268,7 @@ export class SchemaGraphWriter {
     const qn = columnQualifiedName(opts.schema, table, column);
     const cached = this.columnCache.get(qn);
     if (cached) return cached;
+    await this.maybeYield();
     const created = await this.prisma.codeSymbol.create({
       data: {
         codeGraphId: this.codeGraphId,
@@ -300,6 +310,7 @@ export class SchemaGraphWriter {
     const cacheKey = `${kind}:${qn}`;
     const cached = this.routineCache.get(cacheKey);
     if (cached) return cached;
+    await this.maybeYield();
     const created = await this.prisma.codeSymbol.create({
       data: {
         codeGraphId: this.codeGraphId,
@@ -331,6 +342,7 @@ export class SchemaGraphWriter {
     filePath: string,
     line: number,
   ): Promise<string> {
+    await this.maybeYield();
     const created = await this.prisma.codeSymbol.create({
       data: {
         codeGraphId: this.codeGraphId,
@@ -370,6 +382,7 @@ export class SchemaGraphWriter {
       metadata?: Record<string, unknown>;
     } = {},
   ): Promise<void> {
+    await this.maybeYield();
     await this.prisma.codeEdge.create({
       data: {
         codeGraphId: this.codeGraphId,

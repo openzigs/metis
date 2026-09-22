@@ -118,6 +118,8 @@ function makePrismaMock() {
   };
 
   const prisma: any = {
+    // #16 — persistParsed batches per-file writes in a transaction.
+    $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
     codeGraph: {
       findFirst: vi.fn(
         async ({ where }: any) => codeGraphs.find((r) => matchWhere(r, where)) ?? null,
@@ -193,6 +195,10 @@ function makePrismaMock() {
         const row: Row = { id: nextId(), ...data };
         codeEdges.push(row);
         return row;
+      }),
+      createMany: vi.fn(async ({ data }: any) => {
+        for (const d of data) codeEdges.push({ id: nextId(), ...d });
+        return { count: data.length };
       }),
       deleteMany: vi.fn(async ({ where }: any) => {
         for (let i = codeEdges.length - 1; i >= 0; i -= 1) {

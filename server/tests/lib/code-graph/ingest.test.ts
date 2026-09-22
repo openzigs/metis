@@ -53,6 +53,8 @@ function makePrismaMock() {
   };
 
   const prisma: any = {
+    // #16 — persistParsed batches per-file writes in a transaction.
+    $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
     codeGraph: {
       findFirst: vi.fn(
         async ({ where }: any) => codeGraphs.find((r) => matchWhere(r, where)) ?? null,
@@ -128,6 +130,10 @@ function makePrismaMock() {
         const row: Row = { id: nextId(), ...data };
         codeEdges.push(row);
         return row;
+      }),
+      createMany: vi.fn(async ({ data }: any) => {
+        for (const d of data) codeEdges.push({ id: nextId(), ...d });
+        return { count: data.length };
       }),
       deleteMany: vi.fn(async ({ where }: any) => {
         for (let i = codeEdges.length - 1; i >= 0; i -= 1) {
@@ -438,5 +444,205 @@ export function entry() { return helper(); }
     expect(localHelper).toBeDefined();
     expect(callEdge).toBeDefined();
     expect((callEdge as any).toSymbolId).toBe((localHelper as any).id);
+  });
+});
+
+/** The persisted `calls` edges whose textual target is `name`. */
+function callsTo(store: { codeEdges: Row[] }, name: string, filePath?: string): any[] {
+  return store.codeEdges.filter(
+    (e: any) =>
+      e.kind === "calls" && e.toQualifiedName === name && (!filePath || e.filePath === filePath),
+  );
+}
+
+function symbolId(store: { codeSymbols: Row[] }, filePath: string, name: string): string {
+  const sym = store.codeSymbols.find((s: any) => s.filePath === filePath && s.name === name);
+  if (!sym) throw new Error(`no symbol ${filePath}::${name}`);
+  return sym.id;
+}
+
+describe("ingestCodeGraph — calls need evidence, not a matching name (#17)", () => {
+  it("fixture from the issue: two files each defining `join`, callers using array.join() — neither gains in-degree", async () => {
+    const root = await makeFixture({
+      // Defines `join` AND calls `.join()` on an array inside it (same file).
+      "src/strings.ts": `export function join(parts: string[]) { return parts.join("/"); }\nexport const SEP = "/";\n`,
+      "src/path-utils.ts": `export class PathUtils {\n  join(a: string, b: string) { return [a, b].join("/"); }\n}\n`,
+      // Imports a module that defines `join`, then calls `.join()` on an array.
+      "src/caller.ts": `import { SEP } from "./strings.js";\nexport function csv(xs: string[]) { return xs.join(SEP); }\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+
+    const joins = callsTo(store, "join");
+    expect(joins).toHaveLength(3);
+    expect(joins.every((e) => e.toSymbolId === null)).toBe(true);
+    const joinIds = new Set([
+      symbolId(store, "src/strings.ts", "join"),
+      symbolId(store, "src/path-utils.ts", "join"),
+    ]);
+    // In-degree as the overview counts it: inbound `calls` + `references`.
+    const inbound = store.codeEdges.filter(
+      (e: any) => (e.kind === "calls" || e.kind === "references") && joinIds.has(e.toSymbolId),
+    );
+    expect(inbound).toHaveLength(0);
+  });
+
+  it("a project-unique method name is not bound to an unrelated receiver's call", async () => {
+    // The shape behind `ClarificationDialog.tsx::join` (in-degree 2,922): the only
+    // `trim` in the project is one method; every `.trim()` elsewhere bound to it.
+    const root = await makeFixture({
+      "src/dialog.ts": `export class Cleaner {\n  trim(value: string) { return value; }\n}\n`,
+      "src/form.ts": `export function clean(v: string) { return v.trim(); }\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+
+    const [edge] = callsTo(store, "trim", "src/form.ts");
+    expect(edge).toBeDefined();
+    expect(edge.toSymbolId).toBeNull();
+  });
+
+  it("test-framework globals and runtime imports never bind to a same-named project symbol", async () => {
+    const root = await makeFixture({
+      "src/helpers.ts": `export function beforeEach() { return 1; }\nexport const mock = (fn: unknown) => fn;\nexport function join(a: string, b: string) { return a + b; }\n`,
+      "src/thing.test.ts": `import { vi } from "vitest";\nimport { join } from "node:path";\nvi.mock("./x");\nbeforeEach(() => {});\nexport function p() { return join("a", "b"); }\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+
+    for (const name of ["mock", "beforeEach", "join"]) {
+      const edges = callsTo(store, name, "src/thing.test.ts");
+      expect(edges.length, name).toBeGreaterThan(0);
+      expect(
+        edges.every((e) => e.toSymbolId === null),
+        name,
+      ).toBe(true);
+    }
+  });
+
+  it("still binds member calls that carry evidence: this., Class., module namespace, imported class method", async () => {
+    const root = await makeFixture({
+      "src/util.ts": `export function slugify(s: string) { return s; }\n`,
+      "src/errors.ts": `export class AppError {\n  static notFound(m: string) { return new AppError(); }\n}\n`,
+      "src/service.ts": `export class OrderService {\n  placeOrder(id: string) { return this.validate(id); }\n  validate(id: string) { return id; }\n}\n`,
+      "src/main.ts": [
+        `import * as util from "./util.js";`,
+        `import { AppError } from "./errors.js";`,
+        `import { OrderService } from "./service.js";`,
+        `export function run(svc: OrderService) {`,
+        `  util.slugify("x");`,
+        `  AppError.notFound("x");`,
+        `  return svc.placeOrder("1");`,
+        `}`,
+        ``,
+      ].join("\n"),
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+
+    expect(callsTo(store, "validate", "src/service.ts")[0].toSymbolId).toBe(
+      symbolId(store, "src/service.ts", "validate"),
+    );
+    expect(callsTo(store, "slugify", "src/main.ts")[0].toSymbolId).toBe(
+      symbolId(store, "src/util.ts", "slugify"),
+    );
+    expect(callsTo(store, "notFound", "src/main.ts")[0].toSymbolId).toBe(
+      symbolId(store, "src/errors.ts", "notFound"),
+    );
+    expect(callsTo(store, "placeOrder", "src/main.ts")[0].toSymbolId).toBe(
+      symbolId(store, "src/service.ts", "placeOrder"),
+    );
+  });
+
+  it("resolves `@/` path-alias imports as evidence (Next.js `@/*` → `src/*`)", async () => {
+    const root = await makeFixture({
+      "ui/src/lib/api.ts": `export class Api {\n  fetchRules() { return []; }\n}\nexport const api = new Api();\n`,
+      "ui/src/app/page.tsx": `import { api } from "@/lib/api";\nexport function Page() { return api.fetchRules(); }\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+
+    expect(callsTo(store, "fetchRules", "ui/src/app/page.tsx")[0].toSymbolId).toBe(
+      symbolId(store, "ui/src/lib/api.ts", "fetchRules"),
+    );
+  });
+
+  it("resolves Java single-type imports to their file, so an instance call on an imported type binds", async () => {
+    const root = await makeFixture({
+      "src/main/java/com/acme/svc/OrderService.java": `package com.acme.svc;\npublic class OrderService {\n  public void placeOrder() {}\n}\n`,
+      "src/main/java/com/acme/other/Audit.java": `package com.acme.other;\npublic class Audit {\n  public void placeOrder() {}\n}\n`,
+      "src/main/java/com/acme/web/OrderController.java": `package com.acme.web;\nimport com.acme.svc.OrderService;\npublic class OrderController {\n  private OrderService orders;\n  public void submit() { orders.placeOrder(); }\n}\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+
+    const [edge] = callsTo(store, "placeOrder", "src/main/java/com/acme/web/OrderController.java");
+    expect(edge.toSymbolId).toBe(
+      symbolId(store, "src/main/java/com/acme/svc/OrderService.java", "placeOrder"),
+    );
+  });
+
+  it("binds a Go package-qualified call to the package's function", async () => {
+    const root = await makeFixture({
+      "billing/charge.go": `package billing\n\nfunc Charge() int { return 1 }\n`,
+      "cmd/app/main.go": `package main\n\nimport "example.com/app/billing"\n\nfunc main() { billing.Charge() }\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+
+    expect(callsTo(store, "Charge", "cmd/app/main.go")[0].toSymbolId).toBe(
+      symbolId(store, "billing/charge.go", "Charge"),
+    );
+  });
+});
+
+describe("ingestCodeGraph — the event loop keeps turning (#16)", () => {
+  /** Burn `ms` of CPU synchronously — what a better-sqlite3 statement does. */
+  function spin(ms: number): void {
+    const end = performance.now() + ms;
+    while (performance.now() < end) {
+      /* busy */
+    }
+  }
+
+  it("never holds the loop for more than a fraction of a second while persisting", async () => {
+    // 1,500 calls in one file. Each simulated statement costs 1 ms of synchronous
+    // work (a commit), plus 5 µs per row. Persisting row-by-row with no yield
+    // would hold the loop for >= 1.5 s in one stretch.
+    const calls = Array.from({ length: 1500 }, (_, i) => `  f${i % 10}();`).join("\n");
+    const defs = Array.from({ length: 10 }, (_, i) => `function f${i}() { return ${i}; }`).join(
+      "\n",
+    );
+    const root = await makeFixture({
+      "src/big.ts": `${defs}\nexport function main() {\n${calls}\n}\n`,
+    });
+    const { prisma } = makePrismaMock();
+    const slow = (model: any, op: string) => {
+      const inner = model[op];
+      model[op] = async (args: any) => {
+        spin(1 + (Array.isArray(args?.data) ? args.data.length * 0.005 : 0));
+        return inner(args);
+      };
+    };
+    slow(prisma.codeSymbol, "create");
+    slow(prisma.codeEdge, "create");
+    slow(prisma.codeEdge, "createMany");
+
+    let last = performance.now();
+    let maxGap = 0;
+    const ticker = setInterval(() => {
+      const now = performance.now();
+      maxGap = Math.max(maxGap, now - last);
+      last = now;
+    }, 5);
+    try {
+      await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+    } finally {
+      // A loop blocked until the very end never fires its late tick — count the
+      // gap that is still open, or a fully-blocked run reads as "no stall".
+      maxGap = Math.max(maxGap, performance.now() - last);
+      clearInterval(ticker);
+    }
+    expect(maxGap).toBeLessThan(500);
   });
 });

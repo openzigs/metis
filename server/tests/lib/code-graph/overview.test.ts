@@ -507,3 +507,85 @@ describe("composeSummary()", () => {
     expect(out).toMatch(/already done\./);
   });
 });
+
+describe("generateOverview() — test files are not ranked (#17)", () => {
+  it("excludes symbols in test files from the top-symbol table and the summary's rationale", async () => {
+    // A test helper with the highest in-degree, then 25 product symbols below it —
+    // more than one page of the ranking is test code (GOD_NODE_PAGE = 100).
+    const symbols: SymbolRow[] = [
+      {
+        ...symbolRow(900, "function", "ui/tests/test-utils.tsx"),
+        qualifiedName: "ui/tests/test-utils.tsx::makeWrapper",
+      },
+      {
+        ...symbolRow(901, "method", "src/lib/foo.test.ts"),
+        qualifiedName: "src/lib/foo.test.ts::mock",
+      },
+    ];
+    for (let i = 0; i < 150; i += 1) {
+      symbols.push({
+        ...symbolRow(1000 + i, "function", `e2e/specs/s${i}.spec.ts`),
+        qualifiedName: `e2e/specs/s${i}.spec.ts::step`,
+      });
+    }
+    for (let i = 0; i < 25; i += 1) symbols.push(symbolRow(i, "function", "src/lib/util.ts"));
+
+    const edges: EdgeRow[] = [];
+    let n = 0;
+    const inbound = (to: string, count: number) => {
+      for (let j = 0; j < count; j += 1) {
+        edges.push({
+          id: `e${n++}`,
+          fromSymbolId: "sym_0",
+          toSymbolId: to,
+          kind: "calls",
+          projectId: "proj_1",
+        });
+      }
+    };
+    inbound("sym_900", 500);
+    inbound("sym_901", 400);
+    for (let i = 0; i < 150; i += 1) inbound(`sym_${1000 + i}`, 300);
+    for (let i = 0; i < 25; i += 1) inbound(`sym_${i}`, 100 - i);
+
+    const prisma = makePrisma({
+      project: { id: "proj_1", name: "Demo", slug: "demo" },
+      graph: {
+        id: "g1",
+        symbolCount: symbols.length,
+        edgeCount: edges.length,
+        languageStats: '{"ts":177}',
+        lastIndexedAt: null,
+        commitSha: null,
+      },
+      symbols,
+      edges,
+      findings: [
+        {
+          id: "f1",
+          category: "rationale",
+          body: "Wraps providers for every test.",
+          symbolId: "sym_900",
+        },
+        {
+          id: "f2",
+          category: "rationale",
+          body: "The util module does the real work.",
+          symbolId: "sym_0",
+        },
+      ],
+    });
+    const out = await generateOverview(prisma, "proj_1");
+
+    const rows = out.markdown.split("\n").filter((l) => /^\| \d+ \|/.test(l));
+    expect(rows).toHaveLength(20);
+    expect(rows[0]).toContain("module::Symbol000");
+    expect(out.markdown).not.toMatch(
+      /test-utils\.tsx::makeWrapper|foo\.test\.ts::mock|\.spec\.ts::step/,
+    );
+    expect(out.markdown).toContain("Symbols in test files are not ranked (152 skipped");
+    expect(out.markdown).not.toContain("Wraps providers for every test.");
+    expect(out.markdown).toContain("The util module does the real work.");
+    expect(out.stats.godNodeCount).toBe(20);
+  });
+});

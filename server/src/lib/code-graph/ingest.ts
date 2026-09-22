@@ -12,9 +12,17 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { compileMetisignore, DEFAULT_METISIGNORE, isIgnored } from "./metisignore.js";
 import { detectLanguage, initCodeGraphParsers, parseSource, type ParsedFile } from "./parsers.js";
+import {
+  createResolutionIndex,
+  indexSymbol,
+  isRuntimeOrTestModule,
+  resolveEdgeTarget,
+  type ResolvableSymbol,
+} from "./call-resolution.js";
+import { createEventLoopYielder, type MaybeYield } from "./event-loop-yield.js";
 import type { DbDependencyInfo, DbPackageInfo, DbRoutineInfo } from "@metis/shared";
 import { extractRoutineDependencies } from "./routine-dependency-extractor.js";
 import { extractPlsqlPackageLineage, type PackageBodyFetcher } from "./plsql-package-lineage.js";
@@ -233,6 +241,12 @@ export async function ingestCodeGraph(
   // cheap on the second call (returns the cached parsers).
   await initCodeGraphParsers();
 
+  // Issue #16 — every long loop below calls this once per unit of work so the
+  // event loop (and `/healthz`) gets a turn at least every ~50 ms. Without it,
+  // the synchronous SQLite adapter keeps the whole persist phase on the
+  // microtask queue and the API goes dark for the length of the ingest.
+  const maybeYield = createEventLoopYielder();
+
   // Step 1 — locate or create the CodeGraph row.
   const graph = await upsertCodeGraph(prisma, projectId, repoConnectionId, commitSha);
 
@@ -351,6 +365,7 @@ export async function ingestCodeGraph(
       stats.filesSkipped += 1;
       continue;
     }
+    await maybeYield();
     const parsed = parseSource(relPath, source, lang);
     if (parsed.unparseable) {
       stats.filesSkipped += 1;
@@ -380,7 +395,7 @@ export async function ingestCodeGraph(
 
   // Step 5 — persist. Wipe previous rows for files we re-parsed so we don't
   // accumulate stale symbols. (For unchanged files the previous rows remain.)
-  await persistParsed(prisma, graph.id, projectId, parsedFiles, stats, sourceByRelPath);
+  await persistParsed(prisma, graph.id, projectId, parsedFiles, stats, sourceByRelPath, maybeYield);
 
   // Step 5b — ORM schema extraction (#849). Map ORM model definitions (Prisma
   // `schema.prisma`, JPA entities) onto `table`/`column` symbols + `persists-to`
@@ -522,7 +537,14 @@ export async function ingestCodeGraph(
   }
 
   // Step 7 — extract rationale and (optionally) persist as Findings.
-  await persistRationale(prisma, projectId, parsedFiles, stats, options.triggeredByUserId);
+  await persistRationale(
+    prisma,
+    projectId,
+    parsedFiles,
+    stats,
+    options.triggeredByUserId,
+    maybeYield,
+  );
 
   // Step 8 — finalise CodeGraph counts.
   const totalSymbols = await prisma.codeSymbol.count({ where: { codeGraphId: graph.id } });
@@ -627,6 +649,7 @@ async function persistParsed(
   parsedFiles: ParsedFile[],
   stats: IngestStats,
   sourceByRelPath: Map<string, string>,
+  maybeYield: MaybeYield,
 ): Promise<void> {
   // ── Pass 1: persist symbols and build resolution indices. ───────────────
   // The legacy single-pass loop only resolved edges via exact `qualifiedName`
@@ -643,26 +666,45 @@ async function persistParsed(
   //   4. unique project-wide `name` (last resort, only if exactly one match)
   //   5. unresolved → toSymbolId stays null, toQualifiedName preserved.
   //
+  // Issue #17 — steps 2-4 apply to BARE calls only. A member call (`x.join()`)
+  // is resolved with the receiver as evidence and never by project-wide name
+  // uniqueness; built-in and test-framework names are never bound by name
+  // alone. The rules live in `call-resolution.ts`.
+  //
   // All lookups are in-memory after pass 1; no per-edge DB round-trips.
-  // Performance note: for popular names like `log`/`get`/`render`, the
-  // project-wide candidate list can run into hundreds of entries; we look
-  // up by `(file, name)` rather than filtering the candidate list to keep
-  // resolution O(importsPerFile) per edge instead of O(candidates).
-  interface SymbolIndex {
-    id: string;
-    name: string;
-    qualifiedName: string;
-    filePath: string;
-  }
   const qnameToId = new Map<string, string>();
-  const fileToSymbols = new Map<string, SymbolIndex[]>();
-  const fileToNameIndex = new Map<string, Map<string, SymbolIndex>>();
-  const nameToSymbols = new Map<string, SymbolIndex[]>();
+  const fileToSymbols = new Map<string, ResolvableSymbol[]>();
+  const index = createResolutionIndex();
 
   for (const file of parsedFiles) {
-    // Wipe previous symbols+edges for this file so we don't accumulate stale rows.
-    await prisma.codeEdge.deleteMany({ where: { codeGraphId, filePath: file.filePath } });
-    await prisma.codeSymbol.deleteMany({ where: { codeGraphId, filePath: file.filePath } });
+    await maybeYield();
+    // Wipe previous symbols+edges for this file so we don't accumulate stale rows,
+    // and insert its symbols — one batch transaction per FILE (#16). On SQLite a
+    // statement outside a transaction is its own commit, and each commit is a
+    // synchronous journal write + fsync on the event-loop thread; per-row commits
+    // made the persist phase ~420k of them for this repository.
+    const results = await prisma.$transaction([
+      prisma.codeEdge.deleteMany({ where: { codeGraphId, filePath: file.filePath } }),
+      prisma.codeSymbol.deleteMany({ where: { codeGraphId, filePath: file.filePath } }),
+      ...file.symbols.map((sym) =>
+        prisma.codeSymbol.create({
+          data: {
+            codeGraphId,
+            projectId,
+            kind: sym.kind,
+            name: sym.name,
+            qualifiedName: sym.qualifiedName,
+            filePath: file.filePath,
+            startLine: sym.startLine,
+            endLine: sym.endLine,
+            language: file.language,
+            contentHash: sym.contentHash,
+          },
+          select: { id: true },
+        }),
+      ),
+    ]);
+    const createdIds = (results.slice(2) as Array<{ id: string }>).map((r) => r.id);
 
     // Issue #797 — the index-time embedding TEXT is formatted HERE, while the
     // source file is still in memory. It cannot be rebuilt later: `CodeSymbol`
@@ -678,41 +720,25 @@ async function persistParsed(
       contentHash: string;
     }> = [];
 
-    const fileSyms: SymbolIndex[] = [];
-    const fileNameIndex = new Map<string, SymbolIndex>();
-    for (const sym of file.symbols) {
-      const created = await prisma.codeSymbol.create({
-        data: {
-          codeGraphId,
-          projectId,
-          kind: sym.kind,
-          name: sym.name,
-          qualifiedName: sym.qualifiedName,
-          filePath: file.filePath,
-          startLine: sym.startLine,
-          endLine: sym.endLine,
-          language: file.language,
-          contentHash: sym.contentHash,
-        },
-        select: { id: true },
-      });
-      const idx: SymbolIndex = {
-        id: created.id,
+    const fileSyms: ResolvableSymbol[] = [];
+    for (const [i, sym] of file.symbols.entries()) {
+      const id = createdIds[i];
+      const idx: ResolvableSymbol = {
+        id,
         name: sym.name,
         qualifiedName: sym.qualifiedName,
         filePath: file.filePath,
+        kind: sym.kind,
+        language: file.language,
       };
       fileSyms.push(idx);
       // First definition of a name within a file wins (deterministic).
-      if (!fileNameIndex.has(sym.name)) fileNameIndex.set(sym.name, idx);
-      qnameToId.set(sym.qualifiedName, created.id);
-      const bucket = nameToSymbols.get(sym.name);
-      if (bucket) bucket.push(idx);
-      else nameToSymbols.set(sym.name, [idx]);
+      indexSymbol(index, idx);
+      qnameToId.set(sym.qualifiedName, id);
       stats.symbolsUpserted += 1;
 
       const text = formatSymbolForEmbedding({
-        symbolId: created.id,
+        symbolId: id,
         name: sym.name,
         qualifiedName: sym.qualifiedName,
         kind: sym.kind as EmbeddingSymbolKind,
@@ -722,7 +748,7 @@ async function persistParsed(
       embeddingRows.push({
         codeGraphId,
         projectId,
-        symbolId: created.id,
+        symbolId: id,
         text,
         contentHash: computeSymbolHash(text),
         // `embeddingModel` defaults to "" = PENDING. The background job embeds it.
@@ -735,48 +761,58 @@ async function persistParsed(
       await prisma.codeSymbolEmbedding.createMany({ data: embeddingRows });
     }
     fileToSymbols.set(file.filePath, fileSyms);
-    fileToNameIndex.set(file.filePath, fileNameIndex);
   }
 
   // ── Pass 2: build import-target index and persist edges. ────────────────
-  const fileImportTargets = buildFileImportIndex(parsedFiles, fileToSymbols);
+  const { importTargets, runtimeImports } = buildFileImportIndex(parsedFiles, fileToSymbols);
 
   for (const file of parsedFiles) {
-    const localByName = fileToNameIndex.get(file.filePath) ?? new Map<string, SymbolIndex>();
-    const importedFiles = fileImportTargets.get(file.filePath) ?? [];
+    const site = {
+      filePath: file.filePath,
+      language: file.language,
+      importedFiles: importTargets.get(file.filePath) ?? [],
+      runtimeImports: runtimeImports.get(file.filePath),
+    };
 
+    // Edges carry no ids anyone needs back, so they go in multi-row inserts:
+    // one statement (and one commit) per EDGE_INSERT_BATCH rows (#16).
+    let batch: Prisma.CodeEdgeCreateManyInput[] = [];
     for (const edge of file.edges) {
+      await maybeYield();
       const fromId = qnameToId.get(edge.fromQualifiedName);
       if (!fromId) continue; // Dropped: no source symbol — should not happen.
 
       let toId: string | null = qnameToId.get(edge.toQualifiedName) ?? null;
       if (!toId) {
-        toId = resolveByName(
-          edge.toQualifiedName,
-          localByName,
-          importedFiles,
-          fileToNameIndex,
-          nameToSymbols,
-        );
+        toId = resolveEdgeTarget(edge.toQualifiedName, edge.receiver, site, index);
       }
 
-      await prisma.codeEdge.create({
-        data: {
-          codeGraphId,
-          projectId,
-          kind: edge.kind,
-          fromSymbolId: fromId,
-          toSymbolId: toId,
-          toQualifiedName: edge.toQualifiedName,
-          filePath: file.filePath,
-          line: edge.line,
-          metadata: edge.metadata ? JSON.stringify(edge.metadata) : null,
-        },
+      batch.push({
+        codeGraphId,
+        projectId,
+        kind: edge.kind,
+        fromSymbolId: fromId,
+        toSymbolId: toId,
+        toQualifiedName: edge.toQualifiedName,
+        filePath: file.filePath,
+        line: edge.line,
+        metadata: edge.metadata ? JSON.stringify(edge.metadata) : null,
       });
-      stats.edgesUpserted += 1;
+      if (batch.length >= EDGE_INSERT_BATCH) {
+        await prisma.codeEdge.createMany({ data: batch });
+        stats.edgesUpserted += batch.length;
+        batch = [];
+      }
+    }
+    if (batch.length > 0) {
+      await prisma.codeEdge.createMany({ data: batch });
+      stats.edgesUpserted += batch.length;
     }
   }
 }
+
+/** Rows per `codeEdge.createMany` in {@link persistParsed} (#16). */
+const EDGE_INSERT_BATCH = 500;
 
 export interface SchemaUsageWiring {
   /** Introspected schema for SELECT* expansion / column accuracy (#317). */
@@ -1696,24 +1732,60 @@ export async function extractSchemaUsage(
  *  - Relative imports (`./foo`, `../bar/baz`) are resolved against the
  *    importing file's directory, then matched against parsedFiles by
  *    candidate extensions (.ts/.tsx/.js/.jsx/.py/.go/.java).
+ *  - `@/x` and `~/x` path aliases (#17) are tried as `<ancestor>/src/x` and
+ *    `<ancestor>/x` for each ancestor directory of the importing file, nearest
+ *    first — the Next.js / Vite default (`"@/*": ["./src/*"]`).
  *  - Bare imports (`react`, `lodash/fp`, `os`) are NOT resolved here —
  *    third-party packages aren't in our symbol index and chasing them
  *    would yield false positives.
  *  - Python dotted modules (`server.lib.foo`) are resolved as
  *    `server/lib/foo.py` relative to the project root (best-effort).
+ *  - Java single-type imports (`org.acme.svc.OrderService`) are resolved to the
+ *    parsed file ending `org/acme/svc/OrderService.java` (#17); wildcard imports
+ *    are not.
+ *
+ * Also returns, per file, the local names imported from the runtime's standard
+ * library or a test framework (#17) — evidence that a bare call to that name is
+ * NOT a project symbol.
  */
 function buildFileImportIndex(
   parsedFiles: ParsedFile[],
   fileToSymbols: Map<string, unknown[]>,
-): Map<string, string[]> {
+): { importTargets: Map<string, string[]>; runtimeImports: Map<string, Set<string>> } {
   const filePaths = new Set<string>(parsedFiles.map((f) => f.filePath));
-  const out = new Map<string, string[]>();
+  // `OrderService.java` → every parsed path with that basename (Java imports).
+  const javaByBasename = new Map<string, string[]>();
+  for (const fp of filePaths) {
+    if (!fp.endsWith(".java")) continue;
+    const base = fp.slice(fp.lastIndexOf("/") + 1);
+    const list = javaByBasename.get(base);
+    if (list) list.push(fp);
+    else javaByBasename.set(base, [fp]);
+  }
+  const importTargets = new Map<string, string[]>();
+  const runtimeImports = new Map<string, Set<string>>();
   for (const file of parsedFiles) {
     const targets: string[] = [];
     const fromDir = parentDir(file.filePath);
     for (const edge of file.edges) {
       if (edge.kind !== "imports") continue;
       const raw = edge.toQualifiedName;
+      if (edge.importedNames?.length && isRuntimeOrTestModule(raw)) {
+        let names = runtimeImports.get(file.filePath);
+        if (!names) runtimeImports.set(file.filePath, (names = new Set()));
+        for (const n of edge.importedNames) names.add(n);
+        continue;
+      }
+      if (file.language === "java") {
+        const resolved = resolveJavaImport(raw, javaByBasename);
+        if (resolved && fileToSymbols.has(resolved)) targets.push(resolved);
+        continue;
+      }
+      if (raw.startsWith("@/") || raw.startsWith("~/")) {
+        const resolved = resolveAliasImport(fromDir, raw.slice(2), filePaths);
+        if (resolved && fileToSymbols.has(resolved)) targets.push(resolved);
+        continue;
+      }
       // Skip bare package imports — they don't resolve to in-project files.
       if (!raw.startsWith(".") && !raw.startsWith("/") && !raw.includes("/")) {
         // Python dotted module: try `a.b.c` → `a/b/c.py`.
@@ -1726,9 +1798,39 @@ function buildFileImportIndex(
       const resolved = resolveImportPath(fromDir, raw, filePaths);
       if (resolved && fileToSymbols.has(resolved)) targets.push(resolved);
     }
-    if (targets.length) out.set(file.filePath, targets);
+    if (targets.length) importTargets.set(file.filePath, targets);
   }
-  return out;
+  return { importTargets, runtimeImports };
+}
+
+/** `org.acme.svc.OrderService` → the unique parsed `…/org/acme/svc/OrderService.java`. */
+function resolveJavaImport(spec: string, javaByBasename: Map<string, string[]>): string | null {
+  if (spec.endsWith(".*")) return null;
+  const parts = spec.split(".");
+  // `import static a.b.C.method` names a member; try the class one segment up too.
+  for (const take of [parts.length, parts.length - 1]) {
+    if (take < 1) continue;
+    const suffix = `${parts.slice(0, take).join("/")}.java`;
+    const base = `${parts[take - 1]}.java`;
+    const hits = (javaByBasename.get(base) ?? []).filter(
+      (fp) => fp === suffix || fp.endsWith(`/${suffix}`),
+    );
+    if (hits.length === 1) return hits[0];
+  }
+  return null;
+}
+
+/** `@/lib/api` from `ui/src/app/page.tsx` → `ui/src/lib/api.ts` (nearest ancestor wins). */
+function resolveAliasImport(fromDir: string, rest: string, filePaths: Set<string>): string | null {
+  const segs = fromDir ? fromDir.split("/") : [];
+  for (let i = segs.length; i >= 0; i -= 1) {
+    const ancestor = segs.slice(0, i).join("/");
+    const hit =
+      resolveImportPath(ancestor, `./src/${rest}`, filePaths) ??
+      resolveImportPath(ancestor, `./${rest}`, filePaths);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 function parentDir(p: string): string {
@@ -1783,51 +1885,13 @@ function resolveImportPath(fromDir: string, spec: string, filePaths: Set<string>
   return null;
 }
 
-function resolveByName(
-  name: string,
-  localByName: Map<string, { id: string }>,
-  importedFiles: string[],
-  fileToNameIndex: Map<string, Map<string, { id: string; filePath: string }>>,
-  nameToSymbols: Map<string, Array<{ id: string; filePath: string }>>,
-): string | null {
-  // 1. Same-file lookup wins outright — locally-scoped helpers always
-  //    bind to the in-file symbol when shadowing exists.
-  const local = localByName.get(name);
-  if (local) return local.id;
-
-  // 2. Walk the importing file's resolved import targets and pick the
-  //    unique match. O(importsPerFile) — safe even for popular names.
-  if (importedFiles.length) {
-    let firstMatch: { id: string; filePath: string } | null = null;
-    let multiple = false;
-    for (const fp of importedFiles) {
-      const idx = fileToNameIndex.get(fp);
-      const hit = idx?.get(name);
-      if (!hit) continue;
-      if (firstMatch && firstMatch.id !== hit.id) {
-        multiple = true;
-        break;
-      }
-      firstMatch = hit;
-    }
-    if (firstMatch && !multiple) return firstMatch.id;
-    if (multiple) return null; // ambiguous across imports — refuse to guess.
-  }
-
-  // 3. Globally unique by name → safe to bind.
-  const candidates = nameToSymbols.get(name);
-  if (candidates && candidates.length === 1) return candidates[0].id;
-
-  // 4. Ambiguous project-wide — leave unresolved; toQualifiedName preserved.
-  return null;
-}
-
 async function persistRationale(
   prisma: PrismaClient,
   projectId: string,
   parsedFiles: ParsedFile[],
   stats: IngestStats,
   triggeredByUserId: string | undefined,
+  maybeYield: MaybeYield,
 ): Promise<void> {
   // Collect all rationale across files first so the count is accurate even
   // when persistence is skipped (no user → no Analysis row possible).
@@ -1862,6 +1926,7 @@ async function persistRationale(
   });
 
   for (const r of allFindings) {
+    await maybeYield();
     const symbolId = r.symbolQualifiedName
       ? ((
           await prisma.codeSymbol.findFirst({
