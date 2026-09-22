@@ -144,7 +144,9 @@ export class ProductDetailPage {
    */
   async fillRepoForm(ownerAndRepo: string, role?: string): Promise<void> {
     await this.repoConnectionSearch.fill(ownerAndRepo.split("/")[1] ?? ownerAndRepo);
-    await this.page.getByRole("button", { name: new RegExp(ownerAndRepo) }).click();
+    // Plain string (substring, case-insensitive) rather than `new RegExp(...)`
+    // on a value from the caller — a dynamic RegExp trips the ReDoS rule.
+    await this.page.getByRole("button", { name: ownerAndRepo }).click();
     if (role) {
       await this.repoRoleSelect.selectOption(role);
     }
