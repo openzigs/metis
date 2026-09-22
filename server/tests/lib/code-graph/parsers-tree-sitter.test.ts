@@ -469,3 +469,79 @@ public class C {
     expect(ref).toBeDefined();
   });
 });
+
+describe("call receivers are recorded for resolution (#17)", () => {
+  const calls = (r: ReturnType<typeof parseSource>) =>
+    Object.fromEntries(
+      r.edges.filter((e) => e.kind === "calls").map((e) => [e.toQualifiedName, e.receiver]),
+    );
+
+  it("TS: bare, identifier, this, super and complex receivers", () => {
+    const src = `
+class A extends B {
+  run(xs: string[]) {
+    bare();
+    xs.join(",");
+    this.helper();
+    super.save();
+    getList().push(1);
+    a.b.deep();
+  }
+}
+`;
+    expect(calls(parseSource("a.ts", src, "ts"))).toEqual({
+      bare: undefined,
+      join: "xs",
+      helper: "this",
+      save: "super",
+      push: "<expr>",
+      deep: "<expr>",
+    });
+  });
+
+  it("TS: import statements carry the local names they bind", () => {
+    const src = `import def, { join, resolve as res } from "node:path";\nimport * as fs from "fs";\nimport "./side-effect";\n`;
+    const imports = parseSource("a.ts", src, "ts").edges.filter((e) => e.kind === "imports");
+    expect(imports.map((e) => [e.toQualifiedName, e.importedNames])).toEqual([
+      ["node:path", ["def", "join", "res"]],
+      ["fs", ["fs"]],
+      ["./side-effect", undefined],
+    ]);
+  });
+
+  it("Python: self and module receivers", () => {
+    const src = `class A:\n    def run(self):\n        self.helper()\n        util.fmt()\n        plain()\n`;
+    expect(calls(parseSource("a.py", src, "py"))).toEqual({
+      helper: "self",
+      fmt: "util",
+      plain: undefined,
+    });
+  });
+
+  it("Go: package-qualified and bare calls", () => {
+    const src = `package main\n\nfunc main() {\n\tbilling.Charge()\n\tlocal()\n}\n`;
+    expect(calls(parseSource("main.go", src, "go"))).toEqual({
+      Charge: "billing",
+      local: undefined,
+    });
+  });
+
+  it("Java: object, this and unqualified invocations", () => {
+    const src = `class A {\n  void run() {\n    orders.placeOrder();\n    this.helper();\n    local();\n  }\n}\n`;
+    expect(calls(parseSource("A.java", src, "java"))).toEqual({
+      placeOrder: "orders",
+      helper: "this",
+      local: undefined,
+    });
+  });
+
+  it("C#: member access, this and base", () => {
+    const src = `class A : B {\n  void Run() {\n    orders.PlaceOrder();\n    this.Helper();\n    base.Save();\n    Local();\n  }\n}\n`;
+    expect(calls(parseSource("A.cs", src, "cs"))).toEqual({
+      PlaceOrder: "orders",
+      Helper: "this",
+      Save: "base",
+      Local: undefined,
+    });
+  });
+});

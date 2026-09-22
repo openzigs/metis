@@ -50,6 +50,8 @@ function fakeIngestPrisma(connections: { projectId: string; databaseResourceId: 
   const keyOf = (r: any) =>
     `${r.databaseResourceId}|${r.schemaName}|${r.objectName}|${r.objectType}`;
   const prisma = {
+    // #16 — persistParsed batches per-file writes in a transaction.
+    $transaction: async (ops: Promise<unknown>[]) => Promise.all(ops),
     codeGraph: {
       findFirst: async () => null,
       create: async () => graph,
@@ -74,6 +76,10 @@ function fakeIngestPrisma(connections: { projectId: string; databaseResourceId: 
       groupBy: async () => [],
     },
     codeEdge: {
+      createMany: async ({ data }: any) => {
+        for (const d of data) await prisma.codeEdge.create({ data: d });
+        return { count: data.length };
+      },
       create: async () => undefined,
       deleteMany: async () => ({ count: 0 }),
       count: async () => 0,

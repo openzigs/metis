@@ -51,6 +51,20 @@ export interface ParsedEdge {
   toQualifiedName: string;
   line: number;
   metadata?: Record<string, unknown>;
+  /**
+   * Issue #17 — for a `calls` edge made by a member call (`x.foo()`), what the
+   * callee was called ON: the receiver identifier (`x`, `this`, `self`, `Foo`) or
+   * `COMPLEX_RECEIVER` for any other expression (`a.b.foo()`, `f().foo()`).
+   * Absent for a bare call (`foo()`). Used only to resolve the edge at ingest —
+   * never persisted.
+   */
+  receiver?: string;
+  /**
+   * Issue #17 — for a TS/JS `imports` edge, the local names the statement binds
+   * (`import a, { b as c } from "x"` → `["a", "c"]`). Used only to resolve calls
+   * at ingest — never persisted.
+   */
+  importedNames?: string[];
 }
 
 export interface ParsedFile {

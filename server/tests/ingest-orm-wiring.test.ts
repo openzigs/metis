@@ -32,6 +32,8 @@ function fakePrisma(existingSymbols: any[] = []) {
   const deletes: { table: "codeSymbol" | "codeEdge"; where: any }[] = [];
   let n = 0;
   const prisma = {
+    // #16 — persistParsed batches per-file writes in a transaction.
+    $transaction: async (ops: Promise<unknown>[]) => Promise.all(ops),
     codeSymbol: {
       create: vi.fn(async ({ data }: any) => {
         symbols.push(data);
@@ -49,6 +51,10 @@ function fakePrisma(existingSymbols: any[] = []) {
       }),
     },
     codeEdge: {
+      createMany: async ({ data }: any) => {
+        for (const d of data) await prisma.codeEdge.create({ data: d });
+        return { count: data.length };
+      },
       create: vi.fn(async ({ data }: any) => {
         edges.push(data);
         return undefined;
@@ -163,6 +169,8 @@ function fakeIngestPrisma() {
   let n = 0;
   const graph = { id: "cg1" };
   const prisma = {
+    // #16 — persistParsed batches per-file writes in a transaction.
+    $transaction: async (ops: Promise<unknown>[]) => Promise.all(ops),
     codeGraph: {
       findFirst: async () => null,
       create: async () => graph,
@@ -188,6 +196,10 @@ function fakeIngestPrisma() {
       groupBy: async () => [],
     },
     codeEdge: {
+      createMany: async ({ data }: any) => {
+        for (const d of data) await prisma.codeEdge.create({ data: d });
+        return { count: data.length };
+      },
       create: async ({ data }: any = {}) => {
         edgesCreated.push(data);
         return undefined;

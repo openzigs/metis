@@ -6,7 +6,9 @@
  *
  * Algorithm:
  *   1. Top-20 god-nodes — `CodeSymbol` ordered by inbound `calls`/`references`
- *      edge count DESC, ties broken by qualifiedName ASC for determinism.
+ *      edge count DESC, ties broken by qualifiedName ASC for determinism. Symbols
+ *      in test files (`isTestFilePath`) are excluded (#17): a test helper is
+ *      called from every test and is not what the project is "about".
  *   2. Top-10 entry points — `function`/`method` symbols whose inbound
  *      `calls` edge count is zero AND whose `filePath` matches a known
  *      entry-point glob (bin/*, cmd/*, src/index.*, src/main.*, **\/server.*,
@@ -20,6 +22,8 @@
  * trivially mockable in tests (matches the pattern already established by
  * the MCP query tools in `images/mcp-wrappers/code-graph-runner-sse/queries/`).
  */
+
+import { isTestFilePath } from "./call-resolution.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export interface OverviewPrismaShape {
@@ -130,6 +134,8 @@ export function isJavaEntryPoint(symbol: {
 }
 
 const TOP_GOD_NODES = 20;
+/** Ranked symbol ids fetched per round trip while skipping test-file symbols. */
+const GOD_NODE_PAGE = 100;
 const TOP_ENTRY_POINTS = 10;
 const TOP_RATIONALE_SOURCES = 5;
 const SUMMARY_WORD_CAP = 500;
@@ -202,27 +208,49 @@ export async function generateOverview(
   }
 
   // ── Top-20 god-nodes ────────────────────────────────────────────────────
-  const godNodeIds = Array.from(inboundBySymbol.entries())
+  const rankedIds = Array.from(inboundBySymbol.entries())
     .sort((a, b) => {
       if (b[1] !== a[1]) return b[1] - a[1];
       return a[0].localeCompare(b[0]);
     })
-    .slice(0, TOP_GOD_NODES)
     .map(([id]) => id);
 
-  const godNodeRows = godNodeIds.length
-    ? await prisma.codeSymbol.findMany({
-        where: { id: { in: godNodeIds } },
-        select: {
-          id: true,
-          qualifiedName: true,
-          kind: true,
-          filePath: true,
-          language: true,
-          startLine: true,
-        },
-      })
-    : [];
+  // #17 — walk the ranking in pages, skipping symbols that live in test files,
+  // until TOP_GOD_NODES product symbols are found.
+  const godNodeRows: Array<{
+    id: string;
+    qualifiedName: string;
+    kind: string;
+    filePath: string;
+    language: string;
+    startLine: number;
+  }> = [];
+  let testSymbolsSkipped = 0;
+  for (let i = 0; i < rankedIds.length && godNodeRows.length < TOP_GOD_NODES; i += GOD_NODE_PAGE) {
+    const page = rankedIds.slice(i, i + GOD_NODE_PAGE);
+    const rows = await prisma.codeSymbol.findMany({
+      where: { id: { in: page } },
+      select: {
+        id: true,
+        qualifiedName: true,
+        kind: true,
+        filePath: true,
+        language: true,
+        startLine: true,
+      },
+    });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    for (const id of page) {
+      const row = byId.get(id);
+      if (!row) continue;
+      if (isTestFilePath(row.filePath)) {
+        testSymbolsSkipped += 1;
+        continue;
+      }
+      godNodeRows.push(row);
+      if (godNodeRows.length === TOP_GOD_NODES) break;
+    }
+  }
   // Re-attach the inbound count and sort deterministically.
   const godNodes = godNodeRows
     .map((s) => ({ ...s, inDegree: inboundBySymbol.get(s.id) ?? 0 }))
@@ -313,6 +341,12 @@ export async function generateOverview(
   lines.push("");
   lines.push("## Top Symbols by In-Degree");
   lines.push("");
+  if (testSymbolsSkipped > 0) {
+    lines.push(
+      `_Symbols in test files are not ranked (${testSymbolsSkipped} skipped above the cut-off)._`,
+    );
+    lines.push("");
+  }
   if (godNodes.length === 0) {
     lines.push("_No inbound `calls`/`references` edges in this graph yet._");
   } else {

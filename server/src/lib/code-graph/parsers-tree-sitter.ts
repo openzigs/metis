@@ -31,6 +31,7 @@
  */
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { COMPLEX_RECEIVER } from "./call-resolution.js";
 import { buildCodeQualifiedName, moduleQualifiedName } from "./qualified-name.js";
 import type {
   EdgeKind,
@@ -518,6 +519,50 @@ function walk(node: SyntaxNode, visit: (n: SyntaxNode) => void | "skip"): void {
 // Resolves: nested classes, methods inside classes, computed property names,
 // re-exports, dynamic imports, generic arrow functions.
 // ---------------------------------------------------------------------------
+/**
+ * Issue #17 — what a member call was made on, as recorded on the `calls` edge:
+ * the receiver's text when it is a plain identifier or a self/base reference
+ * (`this`, `super`, C# `this`/`base`), otherwise {@link COMPLEX_RECEIVER}.
+ */
+function receiverOf(obj: SyntaxNode | null | undefined): string {
+  if (!obj) return COMPLEX_RECEIVER;
+  switch (obj.type) {
+    case "identifier":
+    case "this":
+    case "super":
+      return obj.text;
+    case "base":
+      return "base";
+    default:
+      return COMPLEX_RECEIVER;
+  }
+}
+
+/**
+ * Issue #17 — the local bindings a TS/JS `import` statement introduces: the
+ * default import, a namespace import's alias, and each named import (by its
+ * alias when renamed).
+ */
+function importedLocalNames(importStmt: SyntaxNode): string[] {
+  const out: string[] = [];
+  const clause = importStmt.namedChildren.find((c) => c.type === "import_clause");
+  if (!clause) return out;
+  for (const c of clause.namedChildren) {
+    if (c.type === "identifier") out.push(c.text);
+    else if (c.type === "namespace_import") {
+      const id = c.namedChildren.find((x) => x.type === "identifier");
+      if (id) out.push(id.text);
+    } else if (c.type === "named_imports") {
+      for (const spec of c.namedChildren) {
+        if (spec.type !== "import_specifier") continue;
+        const local = spec.childForFieldName("alias") ?? spec.childForFieldName("name");
+        if (local) out.push(local.text);
+      }
+    }
+  }
+  return out;
+}
+
 function walkTsJs(
   root: SyntaxNode,
   source: string,
@@ -652,12 +697,14 @@ function walkTsJs(
           // Detect `import type` by inspecting the raw text — the AST exposes
           // it as `type` keyword in the import_clause.
           const typeOnly = /^\s*import\s+type\b/.test(source.slice(n.startIndex, n.endIndex));
+          const importedNames = importedLocalNames(n);
           edges.push({
             kind: "imports",
             fromQualifiedName: moduleQname,
             toQualifiedName: src,
             line: n.startPosition.row + 1,
             metadata: typeOnly ? { typeOnly: true } : undefined,
+            ...(importedNames.length ? { importedNames } : {}),
           });
         }
         return "skip";
@@ -700,10 +747,14 @@ function walkTsJs(
           }
           // Plain identifier or member expression — record the call.
           let callee: string | null = null;
+          let receiver: string | undefined;
           if (fn.type === "identifier") callee = fn.text;
           else if (fn.type === "member_expression") {
             const prop = fn.childForFieldName("property");
-            if (prop) callee = prop.text;
+            if (prop) {
+              callee = prop.text;
+              receiver = receiverOf(fn.childForFieldName("object"));
+            }
           } else if (fn.type === "super") callee = "super";
           if (callee) {
             edges.push({
@@ -711,6 +762,7 @@ function walkTsJs(
               fromQualifiedName: enclosingDefQname(n),
               toQualifiedName: callee,
               line: n.startPosition.row + 1,
+              ...(receiver !== undefined ? { receiver } : {}),
             });
           }
         }
@@ -957,10 +1009,14 @@ function walkPython(
         const fn = n.childForFieldName("function");
         if (fn) {
           let callee: string | null = null;
+          let receiver: string | undefined;
           if (fn.type === "identifier") callee = fn.text;
           else if (fn.type === "attribute") {
             const attr = fn.childForFieldName("attribute");
-            if (attr) callee = attr.text;
+            if (attr) {
+              callee = attr.text;
+              receiver = receiverOf(fn.childForFieldName("object"));
+            }
           }
           if (callee) {
             edges.push({
@@ -968,6 +1024,7 @@ function walkPython(
               fromQualifiedName: enclosingDefQname(n),
               toQualifiedName: callee,
               line: n.startPosition.row + 1,
+              ...(receiver !== undefined ? { receiver } : {}),
             });
           }
         }
@@ -1055,10 +1112,14 @@ function walkGo(
         const fn = n.childForFieldName("function");
         if (fn) {
           let callee: string | null = null;
+          let receiver: string | undefined;
           if (fn.type === "identifier") callee = fn.text;
           else if (fn.type === "selector_expression") {
             const field = fn.childForFieldName("field");
-            if (field) callee = field.text;
+            if (field) {
+              callee = field.text;
+              receiver = receiverOf(fn.childForFieldName("operand"));
+            }
           }
           if (callee) {
             edges.push({
@@ -1066,6 +1127,7 @@ function walkGo(
               fromQualifiedName: enclosingDefQname(n),
               toQualifiedName: callee,
               line: n.startPosition.row + 1,
+              ...(receiver !== undefined ? { receiver } : {}),
             });
           }
         }
@@ -1195,11 +1257,13 @@ function walkJava(
       case "method_invocation": {
         const id = n.childForFieldName("name");
         if (id) {
+          const obj = n.childForFieldName("object");
           edges.push({
             kind: "calls",
             fromQualifiedName: enclosingDefQname(n),
             toQualifiedName: id.text,
             line: n.startPosition.row + 1,
+            ...(obj ? { receiver: receiverOf(obj) } : {}),
           });
         }
         return;
@@ -1402,11 +1466,17 @@ function walkCSharp(
         if (fn) {
           const callee = memberCallee(fn);
           if (callee) {
+            // `a.B()` is a member_access_expression whose `expression` is `a`.
+            const receiver =
+              fn.type === "member_access_expression"
+                ? receiverOf(fn.childForFieldName("expression"))
+                : undefined;
             edges.push({
               kind: "calls",
               fromQualifiedName: enclosingDefQname(n),
               toQualifiedName: callee,
               line: n.startPosition.row + 1,
+              ...(receiver !== undefined ? { receiver } : {}),
             });
           }
         }
