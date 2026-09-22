@@ -189,7 +189,11 @@ jobs:
           provenance: false
           sbom: false
           cache-from: type=gha,scope=metis-server
-          cache-to: type=gha,scope=metis-server,mode=max
+          # `ignore-error=true` because this step also runs for Dependabot PRs
+          # (#51), whose restricted token usually cannot WRITE the Actions cache.
+          # BuildKit reports a refused cache export as a failed build step, which
+          # would turn every Dependabot PR red — worse than the skip it replaced.
+          cache-to: type=gha,scope=metis-server,mode=max,ignore-error=true
 
       - name: Build metis-ui
         if: ${{ !startsWith(github.head_ref, 'dependabot/') }}

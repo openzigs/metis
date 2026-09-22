@@ -351,6 +351,12 @@ describe("ci.yml `api` image builds cache across runs (#3)", () => {
     const body = step.slice(0, step.indexOf("\n      - name:", 1));
     expect(body).toContain(`cache-from: type=gha,scope=${image}`);
     expect(body).toContain(`cache-to: type=gha,scope=${image},mode=max`);
+    // #51 — the server build also runs for Dependabot PRs, whose token usually
+    // cannot write the Actions cache; without `ignore-error` BuildKit fails the
+    // step and every Dependabot PR goes red.
+    if (image === "metis-server") {
+      expect(body).toContain(`cache-to: type=gha,scope=${image},mode=max,ignore-error=true`);
+    }
     // The size gate inspects the image in the daemon, so it must be loaded there.
     expect(body).toContain("load: true");
     // #509 — an attestation index has no `.Size`; the gate would read "missing".
