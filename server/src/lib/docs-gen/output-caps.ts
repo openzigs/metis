@@ -84,7 +84,7 @@ const MODEL_OUTPUT_CEILINGS: ReadonlyArray<readonly [RegExp, number]> = [
   // — and the Models & Pricing page lists MAX OUTPUT "MAXIMUM: 384K" for both
   // deepseek-flash and deepseek-v4-pro (read 2026-09-21). Without a row the
   // model fell to UNKNOWN_MODEL_SAFE_DEFAULT (8192), the cap #25 truncated at.
-  [/deepseek-(v4-pro|v4-flash|flash)/i, 393_216],
+  [/deepseek-(v4-pro|flash)/i, 393_216],
 ];
 
 /**
@@ -99,7 +99,37 @@ const MODEL_OUTPUT_CEILINGS: ReadonlyArray<readonly [RegExp, number]> = [
  * Deliberately a short allow-list: a model is only given the extra budget on
  * documented evidence that it thinks by default.
  */
-const THINKING_BY_DEFAULT_MODELS: ReadonlyArray<RegExp> = [/deepseek-(v4-pro|v4-flash|flash)/i];
+const THINKING_BY_DEFAULT_MODELS: ReadonlyArray<RegExp> = [/deepseek-(v4-pro|flash)/i];
+
+/**
+ * PR #41 review — Anthropic-compatible endpoints that serve a `claude-*` model
+ * NAME as one of their own thinking-by-default models. DeepSeek maps
+ * `claude-opus-*` to `deepseek-v4-pro` and `claude-haiku-*` / `claude-sonnet-*`
+ * to `deepseek-flash` (https://api-docs.deepseek.com/guides/anthropic_api), so
+ * the model METIS requests is not the model that reasons. Keyed on the
+ * documented host only: a proxy relaying to Anthropic serves real Claude.
+ */
+const THINKING_BY_DEFAULT_ENDPOINT_HOSTS: ReadonlyArray<RegExp> = [/(^|\.)deepseek\.com$/i];
+
+/**
+ * True when `model` is a bare `claude-*` name (the direct-Anthropic spelling;
+ * Bedrock's is `us.anthropic.claude-…`) and `ANTHROPIC_BASE_URL` points at an
+ * endpoint that serves such names as thinking-by-default models.
+ */
+function servedAsThinkingModel(
+  model: string,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): boolean {
+  if (!/^claude-/i.test(model)) return false;
+  const raw = env.ANTHROPIC_BASE_URL?.trim();
+  if (!raw) return false;
+  try {
+    const host = new URL(raw).hostname;
+    return THINKING_BY_DEFAULT_ENDPOINT_HOSTS.some((p) => p.test(host));
+  } catch {
+    return false;
+  }
+}
 
 /** #25 — default reasoning allowance added on top of an answer budget. */
 export const DEFAULT_REASONING_ALLOWANCE_TOKENS = 32_768;
@@ -113,15 +143,19 @@ export function modelThinksByDefault(model: string | undefined): boolean {
 /**
  * #25 — the extra OUTPUT tokens to grant a thinking-by-default model on top of
  * the answer budget: `DOCS_GEN_REASONING_ALLOWANCE_TOKENS` (db → env) or
- * {@link DEFAULT_REASONING_ALLOWANCE_TOKENS}; `0` for every other model. A
+ * {@link DEFAULT_REASONING_ALLOWANCE_TOKENS}; `0` for every other model. The
+ * model is the one SERVED: a `claude-*` name on DeepSeek's endpoint counts
+ * (PR #41 review). A
  * negative / non-numeric setting falls back to the default; `0` is honoured
  * (an operator who has disabled thinking upstream can opt out).
  */
 export function reasoningAllowanceTokens(
   model: string | undefined,
   config: ConfigService = getConfigService(),
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
 ): number {
-  if (!modelThinksByDefault(model)) return 0;
+  if (!model) return 0;
+  if (!modelThinksByDefault(model) && !servedAsThinkingModel(model, env)) return 0;
   const raw = config.getNumber(
     "DOCS_GEN_REASONING_ALLOWANCE_TOKENS",
     DEFAULT_REASONING_ALLOWANCE_TOKENS,

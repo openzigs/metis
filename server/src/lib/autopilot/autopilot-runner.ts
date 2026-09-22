@@ -7,7 +7,9 @@
  *      `AUTOPILOT_DISABLED` (the scheduler create route also enforces this
  *      so jobs never reach this point — but defense-in-depth).
  *   2. The current MTD cost must be below `autopilotCostCeilingCents` (or
- *      no ceiling configured). Throws `AUTOPILOT_COST_CEILING` otherwise.
+ *      no ceiling configured). Throws `AUTOPILOT_COST_CEILING` otherwise —
+ *      including when the month has usage METIS cannot price (#22): an
+ *      unknown cost cannot be shown to be under a ceiling, so it fails closed.
  *   3. After every chunk/tool call the runner re-checks the ceiling via
  *      `assertCeiling()`. The actual streaming integration calls
  *      `assertCeiling` between provider events.
@@ -21,7 +23,7 @@
 import { audit } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
-import { assertWithinBudget, projectMonthlyCost } from "../finops/budget-enforcer.js";
+import { assertWithinBudget, projectMonthlyCostForCeiling } from "../finops/budget-enforcer.js";
 
 const log = createChildLogger("autopilot");
 
@@ -39,14 +41,39 @@ export class AutopilotCostCeilingError extends Error {
   readonly code = "AUTOPILOT_COST_CEILING";
   readonly projectedCents: number;
   readonly ceilingCents: number;
-  constructor(projectedCents: number, ceilingCents: number) {
+  /**
+   * #22 — month-to-date tokens METIS has no price for. Non-zero means the
+   * ceiling could not be evaluated and the run was refused (fail closed).
+   */
+  readonly unpricedTokens: number;
+  constructor(projectedCents: number, ceilingCents: number, unpricedTokens = 0) {
     super(
-      `Autopilot run aborted — projected cost ${projectedCents}¢ exceeds ceiling ${ceilingCents}¢`,
+      unpricedTokens > 0
+        ? `Autopilot run refused — cost ceiling ${ceilingCents}¢ cannot be evaluated: ` +
+            `${unpricedTokens} month-to-date tokens are from models METIS has no price for. ` +
+            `Set MODEL_PRICES for those models or remove the ceiling.`
+        : `Autopilot run aborted — projected cost ${projectedCents}¢ exceeds ceiling ${ceilingCents}¢`,
     );
     this.name = "AutopilotCostCeilingError";
     this.projectedCents = projectedCents;
     this.ceilingCents = ceilingCents;
+    this.unpricedTokens = unpricedTokens;
   }
+}
+
+/**
+ * Throw when the month's projection meets `ceilingCents`, or when any of the
+ * month's usage is unpriced (#22 review, PR #41). Returns the projection.
+ */
+async function checkCeiling(projectId: string, ceilingCents: number, now: Date): Promise<number> {
+  const { projectedCents, unpricedTokens } = await projectMonthlyCostForCeiling(projectId, now);
+  if (unpricedTokens > 0) {
+    throw new AutopilotCostCeilingError(projectedCents, ceilingCents, unpricedTokens);
+  }
+  if (projectedCents >= ceilingCents) {
+    throw new AutopilotCostCeilingError(projectedCents, ceilingCents);
+  }
+  return projectedCents;
 }
 
 export interface AutopilotProjectSettings {
@@ -83,10 +110,7 @@ export async function assertAutopilotAllowed(
   // Budget gate first — cheaper to fail than ceiling.
   await assertWithinBudget(projectId, now);
   if (settings.autopilotCostCeilingCents != null) {
-    const projected = await projectMonthlyCost(projectId, now);
-    if (projected >= settings.autopilotCostCeilingCents) {
-      throw new AutopilotCostCeilingError(projected, settings.autopilotCostCeilingCents);
-    }
+    await checkCeiling(projectId, settings.autopilotCostCeilingCents, now);
   }
   return settings;
 }
@@ -102,11 +126,7 @@ export async function assertCeiling(
   now: Date = new Date(),
 ): Promise<number> {
   if (ceilingCents == null) return 0;
-  const projected = await projectMonthlyCost(projectId, now);
-  if (projected >= ceilingCents) {
-    throw new AutopilotCostCeilingError(projected, ceilingCents);
-  }
-  return projected;
+  return checkCeiling(projectId, ceilingCents, now);
 }
 
 export interface RunAutopilotOptions {

@@ -3946,7 +3946,9 @@ An administrator can price such a model under **Settings → Configuration** (`/
 { "deepseek-v4-pro": { "inputPerMTok": 1.32, "outputPerMTok": 3.96, "cacheReadPerMTok": 0.044 } }
 ```
 
-`cacheReadPerMTok` and `cacheWritePerMTok` are optional and default to the input price. A price applies to usage recorded after it is saved; earlier rows keep the cost they were recorded with. When `ANTHROPIC_BASE_URL` points at a provider other than Anthropic, Anthropic's own list prices are not applied even to `claude-*` model names, because such a provider bills its own prices — set them here.
+`cacheReadPerMTok` and `cacheWritePerMTok` are optional and default to the input price. A price applies to usage recorded after it is saved; earlier rows keep the cost they were recorded with. When `ANTHROPIC_BASE_URL` points at a provider other than Anthropic, Anthropic's own list prices are not applied even to `claude-*` model names, because such a provider bills its own prices — set them here. If `ANTHROPIC_BASE_URL` is instead a proxy or AI gateway that relays to Anthropic (a corporate egress proxy, LiteLLM), set `ANTHROPIC_BASE_URL_BILLS_AS` to `anthropic` in the same place and the built-in Claude prices apply again. Self-hosted `local-gemma` usage is recorded at $0, since it has no per-token charge.
+
+An **autopilot cost ceiling** cannot be checked against spend it cannot price, so while the month has unpriced usage a project with a ceiling refuses autopilot runs (`AUTOPILOT_COST_CEILING`, naming the unpriced token count). Pricing those models with `MODEL_PRICES` clears it — the ceiling check re-prices the month's earlier unpriced rows with the current prices — or remove the ceiling.
 
 #### Time Range & Grouping
 

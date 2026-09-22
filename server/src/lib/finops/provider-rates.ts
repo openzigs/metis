@@ -13,10 +13,12 @@
  *   2. the built-in list prices below — SKIPPED for the `anthropic` provider
  *      when `ANTHROPIC_BASE_URL` points somewhere other than Anthropic, because
  *      an Anthropic-compatible endpoint (DeepSeek, …) bills its own prices even
- *      for a `claude-*` model name it maps onto one of its own models;
+ *      for a `claude-*` model name it maps onto one of its own models. A proxy
+ *      or gateway that relays to Anthropic opts back in with
+ *      `ANTHROPIC_BASE_URL_BILLS_AS=anthropic`;
  *   3. a Claude-family match on the model id, then a `provider:default` row —
- *      which exists only for METIS-internal providers that genuinely cost
- *      nothing per call (offline-stub, copilot-native);
+ *      which exists only for providers that genuinely cost nothing per token
+ *      (offline-stub, copilot-native, self-hosted local-gemma);
  *   4. otherwise `null` — UNPRICED. Never `0`, and never another model's price.
  *
  * Cost is computed as integer cents. We round half-up at the cent boundary
@@ -56,6 +58,8 @@ export const DEFAULT_RATE: TokenRate = {
 // Re-read 2026-09-21 for #22, adding:
 //   Sonnet 5   : $2 in / $10 out / $0.20 cacheRead / $2.50 cacheWrite(5m)
 //   Opus 4/4.1 : $15 in / $75 out / $1.50 cacheRead / $18.75 cacheWrite(5m)
+//   Fable 5    : $10 in / $50 out / $1 cacheRead / $12.50 cacheWrite(5m)
+//   Fable 5.1  : as Fable 5 but $0.25 cacheRead (0.025x input)
 const ANTHROPIC_SONNET_4: TokenRate = {
   inputPer1k: 0.3,
   outputPer1k: 1.5,
@@ -86,6 +90,14 @@ const ANTHROPIC_OPUS_LEGACY: TokenRate = {
   cacheReadPer1k: 0.15,
   cacheWritePer1k: 1.875,
 };
+
+const ANTHROPIC_FABLE_5: TokenRate = {
+  inputPer1k: 1,
+  outputPer1k: 5,
+  cacheReadPer1k: 0.1,
+  cacheWritePer1k: 1.25,
+};
+const ANTHROPIC_FABLE_5_1: TokenRate = { ...ANTHROPIC_FABLE_5, cacheReadPer1k: 0.025 };
 
 const RATES: ReadonlyMap<string, TokenRate> = new Map([
   // ── Anthropic direct API — BARE 4.x model ids (Issue #428) ──────────────
@@ -156,6 +168,9 @@ const RATES: ReadonlyMap<string, TokenRate> = new Map([
   ["azure:gpt-4o-mini", { inputPer1k: 0.015, outputPer1k: 0.06 }],
   // METIS-internal stubs — no rate.
   ["copilot-native:default", DEFAULT_RATE],
+  // Self-hosted Ollama / vLLM (PR #41 review): no per-token charge exists, so
+  // this is a genuine zero, not an unpriced model.
+  ["local-gemma:default", DEFAULT_RATE],
   ["copilot-native:gpt-4o", DEFAULT_RATE],
   ["offline-stub:offline-stub", DEFAULT_RATE],
   ["offline-stub:default", DEFAULT_RATE],
@@ -169,6 +184,22 @@ function toRate(p: ModelPrice): TokenRate {
     ...(p.cacheReadPerMTok !== undefined ? { cacheReadPer1k: p.cacheReadPerMTok / 10 } : {}),
     ...(p.cacheWritePerMTok !== undefined ? { cacheWritePer1k: p.cacheWritePerMTok / 10 } : {}),
   };
+}
+
+/**
+ * Last `MODEL_PRICES` value seen and its parse — usage is recorded per model
+ * call, and the setting almost never changes, so re-validating it each time is
+ * wasted work (PR #41 nit). Keyed on the raw string, so an edit is picked up
+ * on the next lookup.
+ */
+let parsedPrices: { raw: string; prices: Record<string, ModelPrice> | null } | null = null;
+
+function parsePrices(raw: string): Record<string, ModelPrice> | null {
+  if (parsedPrices?.raw !== raw) {
+    const parsed = modelPricesSchema.safeParse(raw);
+    parsedPrices = { raw, prices: parsed.success ? parsed.data : null };
+  }
+  return parsedPrices.prices;
 }
 
 /**
@@ -189,9 +220,8 @@ function overrideRate(
     return undefined;
   }
   if (!raw) return undefined;
-  const parsed = modelPricesSchema.safeParse(raw);
-  if (!parsed.success) return undefined;
-  const prices = parsed.data;
+  const prices = parsePrices(raw);
+  if (!prices) return undefined;
   // Own keys only: a model id such as "constructor" or "toString" must not
   // resolve to an Object.prototype member.
   const own = (key: string) => (Object.hasOwn(prices, key) ? prices[key] : undefined);
@@ -220,6 +250,20 @@ export function isThirdPartyAnthropicEndpoint(
   }
 }
 
+/**
+ * PR #41 review — an operator's statement that `ANTHROPIC_BASE_URL` is a proxy
+ * or gateway relaying to Anthropic (`ANTHROPIC_BASE_URL_BILLS_AS=anthropic`),
+ * so Anthropic's list prices DO apply behind it. Anything else keeps the host
+ * check. Never throws inside usage accounting.
+ */
+function baseUrlBillsAsAnthropic(config: ConfigService): boolean {
+  try {
+    return config.get("ANTHROPIC_BASE_URL_BILLS_AS")?.trim().toLowerCase() === "anthropic";
+  } catch {
+    return false;
+  }
+}
+
 export interface ResolveRateOptions {
   config?: ConfigService;
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -240,7 +284,13 @@ export function resolveRate(
   const override = overrideRate(provider, model, config);
   if (override) return override;
 
-  if (provider === "anthropic" && isThirdPartyAnthropicEndpoint(opts.env)) return null;
+  if (
+    provider === "anthropic" &&
+    isThirdPartyAnthropicEndpoint(opts.env) &&
+    !baseUrlBillsAsAnthropic(config)
+  ) {
+    return null;
+  }
 
   if (provider) {
     const exact = RATES.get(`${provider}:${model}`);
@@ -268,11 +318,14 @@ export function getRate(provider: string, model: string): TokenRate | null {
  * spelling, on any provider — to its family's published rate. Returns
  * `undefined` for an id that names no Claude family, so it stays unpriced.
  *
- * Opus 4.5 and later are $5/$25; Opus 4 / 4.1 (and Claude 3 Opus) are
- * $15/$75. Sonnet 5 is $2/$10; every earlier Sonnet is $3/$15.
+ * Fable 5 / 5.1 are $10/$50. Opus 4.5 and later are $5/$25; Opus 4 / 4.1
+ * (and Claude 3 Opus) are $15/$75. Sonnet 5 is $2/$10; every earlier Sonnet
+ * is $3/$15.
  */
 export function claudeFamilyRate(model: string): TokenRate | undefined {
   const m = model.toLowerCase();
+  if (/fable-5[.-]1/.test(m)) return ANTHROPIC_FABLE_5_1;
+  if (/fable/.test(m)) return ANTHROPIC_FABLE_5;
   if (/opus-(4-[5-9]|[5-9])/.test(m)) return ANTHROPIC_OPUS_4;
   if (/opus/.test(m)) return ANTHROPIC_OPUS_LEGACY;
   if (/sonnet-[5-9]/.test(m)) return ANTHROPIC_SONNET_5;

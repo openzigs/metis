@@ -129,9 +129,14 @@ export default function AdminUsagePage() {
               <p className="text-sm text-gray-500 dark:text-gray-400">Total Tokens</p>
               <p className="text-2xl font-bold">{formatTokens(data.totalTokens)}</p>
             </Card>
-            <Card className="p-4">
+            <Card className="p-4" data-testid="admin-usage-cost">
               <p className="text-sm text-gray-500 dark:text-gray-400">Estimated Cost</p>
-              <p className="text-2xl font-bold">{formatCost(data.totalCostUsd)}</p>
+              <p className="text-2xl font-bold">
+                {/* PR #41 review — all-unpriced usage is not "$0.0000" of spend. */}
+                {data.totalCostUsd === 0 && data.unpriced.totalTokens > 0
+                  ? "Unpriced"
+                  : formatCost(data.totalCostUsd)}
+              </p>
             </Card>
             <Card className="p-4" data-testid="admin-usage-unpriced">
               <p className="text-sm text-gray-500 dark:text-gray-400">Unpriced Tokens</p>

@@ -216,6 +216,9 @@ describe("usage aggregate-vs-detail consistency (#428)", () => {
     const day = aggregate.byDay.find((d) => d.day === "2026-06-25");
     expect(day?.costCents).toBe(1800);
     expect(day?.unpricedTokens).toBe(2_631_389);
+    // PR #41 review — the projection covers priced usage only, so the summary
+    // says how much month-to-date usage it leaves out.
+    expect(aggregate.monthToDateUnpricedTokens).toBe(2_631_389);
 
     const detail = await new UsageService().projectUsage(PROJECT_ID, {
       range: "7d",

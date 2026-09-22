@@ -216,6 +216,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Native-Anthropic prompt-cache TTL ('5m' | '1h'; default '5m'). Sets the ttl on the cache_control breakpoints emitted by the DIRECT Anthropic provider only — Bedrock is unaffected (no 1h TTL for Sonnet 4.6 / Opus 4.6). A 1h cache WRITE costs 2× the input rate (vs 1.25× for 5m), so the break-even shifts: 1h needs ≥3 reads to beat uncached (2× write + 0.2× reads vs 3× uncached) versus 2 reads for 5m (1.25× + 0.1× vs 2×). Leave at '5m' unless a bursty flow reuses a prefix with >5-minute gaps between calls.",
     sensitive: false,
   },
+  // ── #22 (PR #41 review) — whose prices an ANTHROPIC_BASE_URL endpoint bills ──
+  ANTHROPIC_BASE_URL_BILLS_AS: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.enum(["auto", "anthropic"]),
+    description:
+      "Whose list prices apply to the anthropic provider when ANTHROPIC_BASE_URL is set ('auto' | 'anthropic'; default 'auto'). 'auto': any host other than api.anthropic.com is treated as a different provider (e.g. DeepSeek, which serves claude-* names as its own models), so built-in Anthropic prices are not applied and only MODEL_PRICES prices its usage. 'anthropic': the endpoint is a proxy or AI gateway that relays to Anthropic and bills Anthropic's list prices (a corporate egress proxy, LiteLLM, …), so built-in Claude prices apply as if no base URL were set. Unknown models stay unpriced either way.",
+    sensitive: false,
+  },
   // ── #22 — administrator-configured per-model prices ───────────────────
   MODEL_PRICES: {
     tier: "tunable",
@@ -256,7 +265,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "int",
     schema: z.coerce.number().int().min(0).max(393_216),
     description:
-      "#25 — extra OUTPUT tokens added to every docs-gen output cap (section, facts, DB-schema prose, claim/judge) for a model that REASONS BY DEFAULT and spends that reasoning from the same max_tokens budget as the answer. Default 32768. Applies only to models documented to think by default (today: DeepSeek deepseek-v4-pro / deepseek-flash, whose thinking mode is on by default); every other model is unaffected. The section/facts caps then describe the ANSWER budget and this is the reasoning headroom on top, still clamped to the model's output ceiling. Set 0 to opt out (e.g. when thinking has been disabled upstream).",
+      "#25 — extra OUTPUT tokens added to every docs-gen output cap (section, facts, DB-schema prose, claim/judge) for a model that REASONS BY DEFAULT and spends that reasoning from the same max_tokens budget as the answer. Default 32768. Applies only to models documented to think by default: DeepSeek deepseek-v4-pro / deepseek-flash, and a claude-* model name sent to DeepSeek's Anthropic endpoint (ANTHROPIC_BASE_URL on deepseek.com), which serves it as one of those models. Every other model is unaffected. The section/facts caps then describe the ANSWER budget and this is the reasoning headroom on top, still clamped to the model's output ceiling. Claim extraction and the faithfulness judge are NON-streaming calls, so on the anthropic provider their request is further clamped to the Anthropic SDK's non-streaming bound (21,333 tokens, or the SDK's lower per-model limit) — they receive less than the sum. Set 0 to opt out (e.g. when thinking has been disabled upstream).",
     sensitive: false,
   },
   DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS: {

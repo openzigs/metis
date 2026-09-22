@@ -14,8 +14,11 @@
 -- old fallback are NOT rewritten — which rows were fallback-priced is not
 -- recoverable from the table.
 --
--- Rollback: rebuild the table with `"costCents" INTEGER NOT NULL DEFAULT 0`,
--- copying `COALESCE("costCents", 0)` — which folds unpriced rows back into $0.
+-- Rollback (DOCUMENTATION ONLY — never executed or tested; rehearse it on a
+-- copy of dev.db before relying on it): rebuild the table with
+-- `"costCents" INTEGER NOT NULL DEFAULT 0`, copying `COALESCE("costCents", 0)`.
+-- It is LOSSY: every unpriced row becomes $0, re-creating exactly the
+-- "unknown spend reads as zero" rows #22 removed, and it cannot be undone.
 -- RedefineTables
 PRAGMA defer_foreign_keys=ON;
 PRAGMA foreign_keys=OFF;

@@ -195,6 +195,8 @@ export interface UsageSummary {
   projectedMonthlyCostCents: number;
   monthlyTokenBudget: number | null;
   monthToDateTokens: number;
+  /** MTD tokens left out of `projectedMonthlyCostCents` because unpriced. */
+  monthToDateUnpricedTokens: number;
   byProvider: Array<{
     provider: string;
     model: string;

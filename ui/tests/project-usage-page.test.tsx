@@ -71,6 +71,7 @@ function makeUsage(overrides: Partial<Record<string, unknown>> = {}) {
     projectedMonthlyCostCents: 600,
     monthlyTokenBudget: 5_000,
     monthToDateTokens: 1000,
+    monthToDateUnpricedTokens: 0,
     byProvider: [
       {
         provider: "openai",
@@ -189,6 +190,65 @@ describe("Project usage page", () => {
       "$0.01 + 5 unpriced tokens",
     );
     expect(screen.getByTestId("provider-cost-gpt-4o")).toHaveTextContent("$0.50");
+  });
+
+  it("never shows $0.00 in the headline tiles when usage is unpriced (PR #41 review)", async () => {
+    get.mockResolvedValue({ id: "p1", name: "Demo" });
+    const unpriced = { inputTokens: 900, outputTokens: 100, totalTokens: 1000, calls: 2 };
+    getUsage.mockResolvedValue(
+      makeUsage({
+        costCents: 0,
+        projectedMonthlyCostCents: 0,
+        unpriced,
+        monthToDateUnpricedTokens: 1000,
+        byProvider: [
+          {
+            provider: "anthropic",
+            model: "deepseek-v4-pro",
+            inputTokens: 900,
+            outputTokens: 100,
+            totalTokens: 1000,
+            costCents: null,
+            unpricedTokens: 1000,
+          },
+        ],
+      }),
+    );
+    getSafetyEvents.mockResolvedValue({ items: [] });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("tile-window-cost")).toBeInTheDocument();
+    });
+    // All usage unpriced: a DeepSeek deployment must not read as "no spend".
+    expect(screen.getByTestId("tile-window-cost")).toHaveTextContent("Unpriced");
+    expect(screen.getByTestId("tile-window-cost")).not.toHaveTextContent("$0.00");
+    expect(screen.getByTestId("tile-projected-cost")).toHaveTextContent("Unpriced");
+    expect(screen.getByTestId("tile-projected-cost")).not.toHaveTextContent("$0.00");
+  });
+
+  it("labels a mixed headline figure as a priced part plus unpriced tokens (PR #41 review)", async () => {
+    get.mockResolvedValue({ id: "p1", name: "Demo" });
+    getUsage.mockResolvedValue(
+      makeUsage({
+        costCents: 50,
+        projectedMonthlyCostCents: 600,
+        unpriced: { inputTokens: 4, outputTokens: 1, totalTokens: 5, calls: 1 },
+        monthToDateUnpricedTokens: 7,
+      }),
+    );
+    getSafetyEvents.mockResolvedValue({ items: [] });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("tile-window-cost")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("tile-window-cost")).toHaveTextContent("$0.50 + 5 unpriced tokens");
+    expect(screen.getByTestId("tile-projected-cost")).toHaveTextContent(
+      "$6.00 + 7 unpriced tokens",
+    );
   });
 
   it("shows unpriced tokens in the detailed and agent-step views (#22)", async () => {

@@ -99,6 +99,8 @@ export const usageSummarySchema = z.object({
   monthlyTokenBudget: z.number().int().min(0).nullable(),
   /** Tokens used MTD — distinct from `totalTokens` when window != month. */
   monthToDateTokens: z.number().int().min(0),
+  /** MTD tokens left out of `projectedMonthlyCostCents` because unpriced. */
+  monthToDateUnpricedTokens: z.number().int().min(0),
   byProvider: z.array(usageByProviderSchema),
   byDay: z.array(usageByDaySchema),
 });

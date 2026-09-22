@@ -27,6 +27,17 @@ function formatCents(cents: number | null): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+/**
+ * PR #41 review — a headline cost that excludes unpriced usage. With no priced
+ * usage at all it reads "Unpriced" (never $0.00); with some it reads
+ * "$x + N unpriced tokens", like the per-model cells.
+ */
+function formatHeadlineCents(cents: number, unpricedTokens: number): string {
+  if (unpricedTokens <= 0) return formatCents(cents);
+  if (cents === 0) return "Unpriced";
+  return `${formatCents(cents)} + ${formatTokens(unpricedTokens)} unpriced tokens`;
+}
+
 /** #22 — USD with the unpriced (`null`) case spelled out. */
 function formatUsd(usd: number | null): string {
   return usd === null ? "unpriced" : `$${usd.toFixed(4)}`;
@@ -135,10 +146,14 @@ export default function ProjectUsagePage() {
           value={formatTokens(u.monthToDateTokens)}
           testId="tile-mtd-tokens"
         />
-        <Tile label="Window cost" value={formatCents(u.costCents)} testId="tile-window-cost" />
+        <Tile
+          label="Window cost"
+          value={formatHeadlineCents(u.costCents, u.unpriced.totalTokens)}
+          testId="tile-window-cost"
+        />
         <Tile
           label="Projected month"
-          value={formatCents(u.projectedMonthlyCostCents)}
+          value={formatHeadlineCents(u.projectedMonthlyCostCents, u.monthToDateUnpricedTokens)}
           testId="tile-projected-cost"
         />
       </section>

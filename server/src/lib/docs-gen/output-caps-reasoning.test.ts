@@ -9,7 +9,7 @@
  *      `max_tokens` as the answer, so even the answer budget was shared.
  * Pure functions — no DB, no network, no live model.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConfigService } from "../config/config-service.js";
 import {
   DEFAULT_DB_SCHEMA_PROSE_MAX_OUTPUT_TOKENS,
@@ -38,7 +38,6 @@ describe("DeepSeek output ceiling (#25)", () => {
   it("knows DeepSeek V4's documented 384K (393,216) output ceiling", () => {
     expect(modelOutputCeiling(DEEPSEEK_PRO)).toBe(393_216);
     expect(modelOutputCeiling(DEEPSEEK_FLASH)).toBe(393_216);
-    expect(modelOutputCeiling("deepseek-v4-flash")).toBe(393_216);
   });
 });
 
@@ -112,5 +111,39 @@ describe("reasoning allowance on the docs-gen output caps (#25)", () => {
     );
     // An unknown model keeps the conservative 8,192 unknown-model default.
     expect(resolveSectionMaxOutputTokens("some-local-gemma-27b", stubConfig())).toBe(8_192);
+  });
+});
+
+/**
+ * PR #41 review — the allowance was keyed on the model METIS REQUESTS. On
+ * DeepSeek's Anthropic endpoint a `claude-haiku-*` / `claude-sonnet-*` name is
+ * served as `deepseek-flash` and `claude-opus-*` as `deepseek-v4-pro`
+ * (https://api-docs.deepseek.com/guides/anthropic_api), both thinking by
+ * default — so the docs-gen claim model (`claude-haiku-4-5`) got no headroom.
+ */
+describe("reasoning allowance keyed on the SERVED model (PR #41 review)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("grants the allowance to a claude-* name served by DeepSeek's endpoint", () => {
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic");
+    expect(reasoningAllowanceTokens("claude-haiku-4-5", stubConfig())).toBe(
+      DEFAULT_REASONING_ALLOWANCE_TOKENS,
+    );
+    expect(resolveFactsMaxOutputTokens("claude-haiku-4-5", stubConfig())).toBe(
+      DEFAULT_FACTS_MAX_OUTPUT_TOKENS + DEFAULT_REASONING_ALLOWANCE_TOKENS,
+    );
+  });
+
+  it("does not grant it on Anthropic itself, a gateway, or a Bedrock id", () => {
+    expect(reasoningAllowanceTokens("claude-haiku-4-5", stubConfig())).toBe(0);
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://api.anthropic.com");
+    expect(reasoningAllowanceTokens("claude-haiku-4-5", stubConfig())).toBe(0);
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://llm-gateway.corp.example/anthropic");
+    expect(reasoningAllowanceTokens("claude-haiku-4-5", stubConfig())).toBe(0);
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic");
+    // Bedrock spells Claude ids `us.anthropic.claude-…`; the base URL is not in its path.
+    expect(reasoningAllowanceTokens("us.anthropic.claude-haiku-4-5-v1:0", stubConfig())).toBe(0);
   });
 });

@@ -6,7 +6,9 @@
 -- applied), so replaying the chain over the cumulative init baseline — which
 -- now declares the column nullable with no default — never collides (#556).
 --
--- Rollback:
+-- Rollback (DOCUMENTATION ONLY — never executed or tested; rehearse it on a
+-- copy of the database first). It is LOSSY: every unpriced row becomes $0,
+-- re-creating the "unknown spend reads as zero" rows #22 removed:
 --   UPDATE "token_usages" SET "costCents" = 0 WHERE "costCents" IS NULL;
 --   ALTER TABLE "token_usages" ALTER COLUMN "costCents" SET DEFAULT 0,
 --     ALTER COLUMN "costCents" SET NOT NULL;

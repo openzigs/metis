@@ -8,10 +8,15 @@
  *   • `projectMonthlyCost(projectId)` — pro-rates current MTD cost over
  *     the calendar month. Used for the `projectedMonthlyCostCents` field
  *     on the usage summary endpoint and the autopilot ceiling check.
+ *   • `projectMonthlyCostForCeiling(projectId)` — the projection a cost
+ *     CEILING compares against. Unlike `projectMonthlyCost` it re-prices
+ *     rows recorded as unpriced (#22) with today's price source and reports
+ *     the tokens that are still unpriced, so a ceiling can fail closed.
  *   • `summarizeUsage(projectId, from, to)` — full usage rollup that
  *     powers `GET /api/projects/:id/usage`.
  */
 import { prisma } from "../prisma.js";
+import { computeCostCents, resolveRate } from "./provider-rates.js";
 
 export class BudgetExceededError extends Error {
   readonly status = 402;
@@ -63,7 +68,7 @@ async function getProjectBudget(projectId: string): Promise<number | null> {
 async function getMtdAggregate(
   projectId: string,
   now: Date = new Date(),
-): Promise<{ tokens: number; cents: number }> {
+): Promise<{ tokens: number; cents: number; unpricedTokens: number }> {
   const { start } = monthBoundsUtc(now);
   const rows = await prisma.tokenUsage.findMany({
     where: { projectId, createdAt: { gte: start } },
@@ -71,12 +76,14 @@ async function getMtdAggregate(
   });
   let tokens = 0;
   let cents = 0;
+  let unpricedTokens = 0;
   for (const r of rows) {
     tokens += r.totalTokens;
     // #22 — an unpriced row (null) adds tokens but no known cost.
-    cents += r.costCents ?? 0;
+    if (r.costCents === null) unpricedTokens += r.totalTokens;
+    else cents += r.costCents;
   }
-  return { tokens, cents };
+  return { tokens, cents, unpricedTokens };
 }
 
 /**
@@ -119,6 +126,64 @@ export async function projectMonthlyCost(
   return projectMonthlyFromMtd(mtd.cents, now);
 }
 
+/** #22 review — what a cost ceiling can and cannot see this month. */
+export interface CeilingProjection {
+  /** Pro-rated month-end projection of the spend METIS can price, in cents. */
+  projectedCents: number;
+  /**
+   * Month-to-date tokens that have NO price, even after re-pricing with the
+   * current price source. Non-zero means the projection is a LOWER BOUND and a
+   * ceiling cannot be evaluated.
+   */
+  unpricedTokens: number;
+}
+
+/**
+ * #22 review (PR #41) — the projection a cost CEILING compares against.
+ *
+ * Rows are recorded with a NULL cost when their model was unpriced at record
+ * time. Summing only priced cents made the projection 0 on a deployment whose
+ * every row is unpriced (DeepSeek through `ANTHROPIC_BASE_URL`), so a ceiling
+ * could never fire. Here a NULL row is re-priced with {@link resolveRate} — an
+ * administrator who sets `MODEL_PRICES` therefore covers the month's earlier
+ * rows too — and whatever still has no price is returned as `unpricedTokens`
+ * so the caller can refuse rather than treat unknown spend as zero.
+ */
+export async function projectMonthlyCostForCeiling(
+  projectId: string,
+  now: Date = new Date(),
+): Promise<CeilingProjection> {
+  const { start } = monthBoundsUtc(now);
+  const rows = await prisma.tokenUsage.findMany({
+    where: { projectId, createdAt: { gte: start } },
+    select: {
+      provider: true,
+      model: true,
+      inputTokens: true,
+      outputTokens: true,
+      cacheReadTokens: true,
+      cacheWriteTokens: true,
+      totalTokens: true,
+      costCents: true,
+    },
+  });
+  let cents = 0;
+  let unpricedTokens = 0;
+  for (const r of rows) {
+    const rowCents =
+      r.costCents ??
+      computeCostCents(resolveRate(r.provider, r.model), {
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+        cacheReadTokens: r.cacheReadTokens,
+        cacheWriteTokens: r.cacheWriteTokens,
+      });
+    if (rowCents === null) unpricedTokens += r.totalTokens;
+    else cents += rowCents;
+  }
+  return { projectedCents: projectMonthlyFromMtd(cents, now), unpricedTokens };
+}
+
 export interface UsageWindow {
   /** Inclusive start (defaults to first of current month UTC). */
   from?: Date;
@@ -143,6 +208,12 @@ export interface UsageSummaryRow {
   projectedMonthlyCostCents: number;
   monthlyTokenBudget: number | null;
   monthToDateTokens: number;
+  /**
+   * PR #41 review — month-to-date tokens left OUT of
+   * `projectedMonthlyCostCents` because they were unpriced, so a view can say
+   * the projection is incomplete instead of showing a bare $0.
+   */
+  monthToDateUnpricedTokens: number;
   byProvider: Array<{
     provider: string;
     model: string;
@@ -272,6 +343,7 @@ export async function summarizeUsage(
     projectedMonthlyCostCents: projectMonthlyFromMtd(mtd.cents, now),
     monthlyTokenBudget: project?.monthlyTokenBudget ?? null,
     monthToDateTokens: mtd.tokens,
+    monthToDateUnpricedTokens: mtd.unpricedTokens,
     byProvider: Array.from(byProviderMap.values()).sort((a, b) => b.totalTokens - a.totalTokens),
     byDay: Array.from(byDayMap.values()).sort((a, b) => a.day.localeCompare(b.day)),
   };

@@ -264,6 +264,65 @@ describe("provider-rates — one pricing source, unpriced is null (#22)", () => 
     ).toBe(0.3);
   });
 
+  it("prices a proxy/gateway relaying to Anthropic when ANTHROPIC_BASE_URL_BILLS_AS=anthropic (PR #41 review)", () => {
+    // A corporate egress proxy / LiteLLM / AI gateway in front of Anthropic
+    // bills Anthropic's list prices; the host check alone cannot know that.
+    const env = { ANTHROPIC_BASE_URL: "https://llm-gateway.corp.example/anthropic" };
+    expect(
+      resolveRate("anthropic", "claude-sonnet-4-6", { config: configWith({}), env }),
+    ).toBeNull();
+    const billsAsAnthropic = configWith({ ANTHROPIC_BASE_URL_BILLS_AS: "anthropic" });
+    expect(
+      resolveRate("anthropic", "claude-sonnet-4-6", { config: billsAsAnthropic, env })?.inputPer1k,
+    ).toBe(0.3);
+    // An unknown model is still unpriced — the override restores list prices, not a fallback.
+    expect(
+      resolveRate("anthropic", "deepseek-v4-pro", { config: billsAsAnthropic, env }),
+    ).toBeNull();
+    // "auto" (the default) keeps the host check.
+    const auto = configWith({ ANTHROPIC_BASE_URL_BILLS_AS: "auto" });
+    expect(resolveRate("anthropic", "claude-sonnet-4-6", { config: auto, env })).toBeNull();
+  });
+
+  it("records self-hosted local-gemma at a genuine zero, not unpriced (PR #41 review)", () => {
+    const rate = resolveRate("local-gemma", "gemma4:12b", { config: configWith({}), env: {} });
+    expect(rate).toEqual(DEFAULT_RATE);
+    expect(computeCostCents(rate, { inputTokens: 1_000_000, outputTokens: 1_000_000 })).toBe(0);
+  });
+
+  it("prices Claude Fable 5 / 5.1 on the direct API at $10/$50 (PR #41 review)", () => {
+    // platform.claude.com/docs/en/about-claude/pricing, read 2026-09-21:
+    // Fable 5 $10 in / $12.50 5m-write / $1 cache hit / $50 out;
+    // Fable 5.1 the same except a $0.25 cache hit.
+    const opts = { config: configWith({}), env: {} };
+    const fable5 = resolveRate("anthropic", "claude-fable-5", opts);
+    expect(fable5).toEqual({
+      inputPer1k: 1,
+      outputPer1k: 5,
+      cacheReadPer1k: 0.1,
+      cacheWritePer1k: 1.25,
+    });
+    const fable51 = resolveRate("anthropic", "claude-fable-5-1", opts);
+    expect(fable51?.inputPer1k).toBe(1);
+    expect(fable51?.outputPer1k).toBe(5);
+    expect(fable51?.cacheReadPer1k).toBe(0.025);
+  });
+
+  it("parses an unchanged MODEL_PRICES value once, not on every usage record (PR #41 nit)", () => {
+    const config = configWith({
+      MODEL_PRICES: JSON.stringify({ "memo-model": { inputPerMTok: 1, outputPerMTok: 2 } }),
+    });
+    const spy = vi.spyOn(modelPricesSchema, "safeParse");
+    try {
+      for (let i = 0; i < 5; i++) {
+        expect(resolveRate("openai", "memo-model", { config, env: {} })?.inputPer1k).toBe(0.1);
+      }
+      expect(spy.mock.calls.length).toBeLessThanOrEqual(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("reads the process-wide config and env by default", () => {
     vi.stubEnv("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic");
     expect(getRate("anthropic", "claude-sonnet-4-6")).toBeNull();

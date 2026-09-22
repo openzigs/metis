@@ -8,11 +8,17 @@ export type { RecordUsageInput, RecordUsageResult } from "./token-tracker.js";
 export {
   assertWithinBudget,
   projectMonthlyCost,
+  projectMonthlyCostForCeiling,
   projectMonthlyFromMtd,
   summarizeUsage,
   BudgetExceededError,
 } from "./budget-enforcer.js";
-export type { BudgetSnapshot, UsageSummaryRow, UsageWindow } from "./budget-enforcer.js";
+export type {
+  BudgetSnapshot,
+  CeilingProjection,
+  UsageSummaryRow,
+  UsageWindow,
+} from "./budget-enforcer.js";
 export { getRate, computeCostCents, DEFAULT_RATE } from "./provider-rates.js";
 export type { TokenRate } from "./provider-rates.js";
 // Epic #47 (#48) — time-series cost forecaster.

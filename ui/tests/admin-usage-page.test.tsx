@@ -77,4 +77,21 @@ describe("Admin usage page — unpriced usage (#22)", () => {
     const table = screen.getAllByRole("table")[0];
     expect(within(table).getByText("Unpriced tokens")).toBeInTheDocument();
   });
+
+  it("shows the Estimated Cost tile as Unpriced, not $0.0000, when all usage is unpriced (PR #41 review)", async () => {
+    const allUnpriced = { ...summary, totalCostUsd: 0, rows: [summary.rows[0]] };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ success: true, data: allUnpriced }))),
+    );
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(
+      <Wrapper>
+        <AdminUsagePage />
+      </Wrapper>,
+    );
+    const costTile = await screen.findByTestId("admin-usage-cost");
+    expect(costTile).toHaveTextContent("Unpriced");
+    expect(costTile).not.toHaveTextContent("$0.0000");
+  });
 });
