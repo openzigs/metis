@@ -959,9 +959,9 @@ where cached-Haiku is not. Is it *cheaper*? That turns on the flow's
 "cheap" model.
 
 The analysis is pure, unit-tested code in `server/src/lib/ai/cache-crossover.ts`.
-It reuses the **single** rate table in `token-tracker.ts` (`MODEL_PRICING`,
-`CACHE_READ_MULTIPLIER`, `estimateCostUsd`) — there is no second copy of the
-rates. Per-1M-token rates: Sonnet $3 in / $15 out, Haiku $1 in / $5 out; cache
+It reuses the **single** pricing source (`lib/finops/provider-rates.ts`, surfaced
+here through `MODEL_PRICING`, `CACHE_READ_MULTIPLIER` and `estimateCostUsd` in
+`token-tracker.ts`) — there is no second copy of the rates (#22). Per-1M-token rates: Sonnet $3 in / $15 out, Haiku $1 in / $5 out; cache
 reads bill at **0.1×** input.
 
 **The two cost legs** (per call, `I` = input tokens, `O` = output, `f` =

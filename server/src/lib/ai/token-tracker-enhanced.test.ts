@@ -58,8 +58,9 @@ describe("estimateCostUsd", () => {
     expect(cost).toBeCloseTo(0.0525);
   });
 
-  it("returns 0 for unknown models", () => {
-    expect(estimateCostUsd("unknown-model", 1000, 500)).toBe(0);
+  it("returns null (UNPRICED) for unknown models — never 0 (#22)", () => {
+    expect(estimateCostUsd("unknown-model", 1000, 500)).toBeNull();
+    expect(estimateCostUsd("deepseek-v4-pro", 1000, 500)).toBeNull();
   });
 
   it("handles zero tokens", () => {
@@ -104,13 +105,13 @@ describe("estimateCostUsd", () => {
     expect(legacy).toBeCloseTo(0.0105, 10);
   });
 
-  it("returns 0 for unknown models even with cache tokens", () => {
+  it("returns null for unknown models even with cache tokens (#22)", () => {
     expect(
       estimateCostUsd("mystery-model", 1000, 500, {
         cacheReadTokens: 5000,
         cacheWriteTokens: 5000,
       }),
-    ).toBe(0);
+    ).toBeNull();
   });
 });
 
@@ -316,7 +317,7 @@ describe("TokenTracker — enhanced fields", () => {
         projectId: null,
         inferenceProfileArn: null,
         agentStep: null,
-        estimatedCostUsd: 0, // unknown model = 0
+        estimatedCostUsd: null, // #22 — unknown model = UNPRICED, never 0
       }),
     });
   });

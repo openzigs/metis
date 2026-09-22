@@ -150,6 +150,12 @@ export interface FaithfulnessJudgeDeps {
   responseFormat?: JsonSchemaResponseFormat;
 }
 
+/**
+ * #25 — calls per batch when the judge's response cannot be parsed: the
+ * original plus ONE retry.
+ */
+export const JUDGE_BATCH_ATTEMPTS = 2;
+
 export class FaithfulnessJudge {
   private readonly provider: AIProvider;
   private readonly model: string | undefined;
@@ -209,12 +215,11 @@ export class FaithfulnessJudge {
     if (!evidence) return null;
 
     const batches = chunk(cleaned, this.maxBatch);
-    log.info(
-      "Judging faithfulness of %d claim(s) in %d batch(es) of up to %d",
-      cleaned.length,
-      batches.length,
-      this.maxBatch,
-    );
+    log.info("Judging faithfulness of claims", {
+      claims: cleaned.length,
+      batches: batches.length,
+      maxBatch: this.maxBatch,
+    });
 
     const all: ClaimVerdict[] = [];
     let anyVerifiable = false;
@@ -227,8 +232,10 @@ export class FaithfulnessJudge {
 
     if (!anyVerifiable) {
       log.warn(
-        "Faithfulness judge: all %d batch(es) were unverifiable; treating section as unverified",
-        batches.length,
+        "Faithfulness judge: all batches were unverifiable; treating section as unverified",
+        {
+          batches: batches.length,
+        },
       );
       return null;
     }
@@ -272,21 +279,37 @@ export class FaithfulnessJudge {
       { role: "user", content: userContent },
     ];
 
-    const response = await this.provider.chat(messages, {
-      model: this.model,
-      signal,
-      disableTools: true,
-      // #1226 — cap sized for THIS judge's model, never inherited from the
-      // provider's section-model default.
-      ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
-      // #390 — tag prompt-cache hit-ratio telemetry by workload.
-      callType: "grounding",
-      ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
-      // #336 — schema-constrained verdict list on the local/vLLM path when enabled.
-      ...(this.responseFormat ? { responseFormat: this.responseFormat } : {}),
-    });
+    const ask = () =>
+      this.provider.chat(messages, {
+        model: this.model,
+        signal,
+        disableTools: true,
+        // #1226 — cap sized for THIS judge's model, never inherited from the
+        // provider's section-model default.
+        ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
+        // #390 — tag prompt-cache hit-ratio telemetry by workload.
+        callType: "grounding",
+        ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
+        // #336 — schema-constrained verdict list on the local/vLLM path when enabled.
+        ...(this.responseFormat ? { responseFormat: this.responseFormat } : {}),
+      });
 
-    const rawVerdicts = this.parseRawVerdicts(response.content);
+    // #25 — an unparseable batch is retried ONCE before it is counted as
+    // unverifiable: a sampled model can emit a malformed or cut-off verdict list
+    // on one call and a clean one on the next, and each lost batch removes its
+    // claims from the section's faithfulness score. A batch that parses but
+    // matches too few claims is a different failure and is not retried.
+    let rawVerdicts: ClaimVerdict[] | null = null;
+    for (let attempt = 1; attempt <= JUDGE_BATCH_ATTEMPTS; attempt++) {
+      const response = await ask();
+      rawVerdicts = this.parseRawVerdicts(response.content);
+      if (rawVerdicts) break;
+      if (attempt < JUDGE_BATCH_ATTEMPTS && !signal?.aborted) {
+        log.warn("Faithfulness judge batch was unparseable; retrying once");
+        continue;
+      }
+      break;
+    }
     if (!rawVerdicts) {
       log.warn("Faithfulness judge batch was unparseable; treating batch as unverifiable");
       return null;
@@ -295,12 +318,11 @@ export class FaithfulnessJudge {
     const matched = this.alignVerdicts(rawVerdicts, batch);
     const ratio = batch.length === 0 ? 0 : matched.length / batch.length;
     if (ratio < MIN_BATCH_MATCH_RATIO) {
-      log.warn(
-        "Faithfulness judge batch matched only %d/%d claim(s) (< %d%%); treating batch as unverifiable",
-        matched.length,
-        batch.length,
-        Math.round(MIN_BATCH_MATCH_RATIO * 100),
-      );
+      log.warn("Faithfulness judge batch matched too few claims; treating batch as unverifiable", {
+        matched: matched.length,
+        claims: batch.length,
+        minMatchPercent: Math.round(MIN_BATCH_MATCH_RATIO * 100),
+      });
       return null;
     }
     return matched;

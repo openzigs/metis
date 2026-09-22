@@ -232,7 +232,7 @@ CREATE TABLE "token_usages" (
     "cacheReadTokens" INTEGER NOT NULL DEFAULT 0,
     "cacheWriteTokens" INTEGER NOT NULL DEFAULT 0,
     "totalTokens" INTEGER NOT NULL DEFAULT 0,
-    "costCents" INTEGER NOT NULL DEFAULT 0,
+    "costCents" INTEGER,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "token_usages_pkey" PRIMARY KEY ("id")

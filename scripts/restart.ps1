@@ -10,7 +10,8 @@
 
   Sidecars: server/src/lib/mcp/stdio-transport.ts spawns MCP child processes.
   They are children of the server; `taskkill /T` tears down the whole tree, and
-  we also sweep for orphans by port and known argv patterns.
+  we also sweep by port and known dev argv patterns. MCP servers are NOT matched
+  by argv (#24): that pattern also hit other tools' MCP servers on the machine.
 
   This script ONLY targets dev processes. Production deployments should use
   `docker compose down && docker compose up -d` instead.
@@ -86,8 +87,7 @@ function Stop-Stack {
     'next dev',
     'pnpm.*--filter ./server.*dev',
     'pnpm.*--filter ./ui.*dev',
-    'metis.*pnpm dev',
-    'modelcontextprotocol|@modelcontextprotocol|mcp-server-'
+    'metis.*pnpm dev'
   )
 
   $raw = New-Object System.Collections.Generic.List[int]

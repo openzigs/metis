@@ -170,6 +170,8 @@ export async function computeRunCost(runId: string): Promise<RunCost> {
   let costCents = 0;
   for (const g of groups.values()) {
     const rate = getRate(g.provider, g.model);
+    // #22 — an unpriced model has no cost to attribute; its tokens still count.
+    if (!rate) continue;
     costCents += computeCostCents(rate, {
       inputTokens: g.inputTokens,
       outputTokens: g.outputTokens,

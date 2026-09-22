@@ -50,7 +50,10 @@ export const usageByProviderSchema = z.object({
   inputTokens: z.number().int().min(0),
   outputTokens: z.number().int().min(0),
   totalTokens: z.number().int().min(0),
-  costCents: z.number().int().min(0),
+  /** Cost of this model's PRICED usage; `null` when none of it was priced (#22). */
+  costCents: z.number().int().min(0).nullable(),
+  /** #22 — tokens recorded while this model had no price. */
+  unpricedTokens: z.number().int().min(0),
 });
 export type UsageByProvider = z.infer<typeof usageByProviderSchema>;
 
@@ -61,8 +64,18 @@ export const usageByDaySchema = z.object({
   outputTokens: z.number().int().min(0),
   totalTokens: z.number().int().min(0),
   costCents: z.number().int().min(0),
+  /** #22 — tokens that day from models with no price. */
+  unpricedTokens: z.number().int().min(0),
 });
 export type UsageByDay = z.infer<typeof usageByDaySchema>;
+
+export const unpricedUsageSchema = z.object({
+  inputTokens: z.number().int().min(0),
+  outputTokens: z.number().int().min(0),
+  totalTokens: z.number().int().min(0),
+  calls: z.number().int().min(0),
+});
+export type UnpricedUsage = z.infer<typeof unpricedUsageSchema>;
 
 export const usageSummarySchema = z.object({
   projectId: z.string().min(1),
@@ -73,13 +86,21 @@ export const usageSummarySchema = z.object({
   inputTokens: z.number().int().min(0),
   outputTokens: z.number().int().min(0),
   totalTokens: z.number().int().min(0),
+  /** Cost of the PRICED usage in the window (excludes {@link unpriced}). */
   costCents: z.number().int().min(0),
+  /**
+   * #22 — usage from models METIS had no price for. Shown separately so an
+   * unknown cost never reads as $0.
+   */
+  unpriced: unpricedUsageSchema,
   /** Calendar-month projected cost (MTD × daysInMonth/dayOfMonth). */
   projectedMonthlyCostCents: z.number().int().min(0),
   /** `monthlyTokenBudget` resolved at query time (null = no cap). */
   monthlyTokenBudget: z.number().int().min(0).nullable(),
   /** Tokens used MTD — distinct from `totalTokens` when window != month. */
   monthToDateTokens: z.number().int().min(0),
+  /** MTD tokens left out of `projectedMonthlyCostCents` because unpriced. */
+  monthToDateUnpricedTokens: z.number().int().min(0),
   byProvider: z.array(usageByProviderSchema),
   byDay: z.array(usageByDaySchema),
 });
@@ -113,7 +134,8 @@ export const usageTickEventSchema = z.object({
   inputTokens: z.number().int().min(0),
   outputTokens: z.number().int().min(0),
   totalTokens: z.number().int().min(0),
-  costCents: z.number().int().min(0),
+  /** `null` = the model is unpriced (#22). */
+  costCents: z.number().int().min(0).nullable(),
   ts: z.number().int().min(0),
 });
 export type UsageTickEvent = z.infer<typeof usageTickEventSchema>;

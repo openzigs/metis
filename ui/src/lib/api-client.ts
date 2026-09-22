@@ -226,6 +226,23 @@ async function doFetch<T>(path: string, options: ApiFetchOptions): Promise<DoFet
 }
 
 /**
+ * #14 — `apiFetch` JSON-encodes `body` itself, so a caller that passes
+ * `JSON.stringify(x)` sends a JSON *string containing JSON*
+ * (`"{\"a\":1}"`), which the server's strict parser rejects. Every
+ * requirement-collaboration write shipped that way and returned 500. Fail
+ * loudly outside production so the mistake surfaces in the first dev run or
+ * unit test instead of as a server error; production behaviour is unchanged.
+ */
+function assertBodyNotPreSerialised(path: string, body: unknown): void {
+  if (typeof body === "string" && process.env.NODE_ENV !== "production") {
+    throw new TypeError(
+      `apiFetch(${path}): \`body\` is already a string. apiFetch JSON-encodes the body ` +
+        "itself — pass the plain object, not JSON.stringify(...).",
+    );
+  }
+}
+
+/**
  * Issue a request through the Next.js auth proxy. Always sends cookies and
  * normalizes upstream `{ success, data, error }` envelopes into either the
  * unwrapped data payload or a thrown `ApiError`.
@@ -236,6 +253,7 @@ async function doFetch<T>(path: string, options: ApiFetchOptions): Promise<DoFet
  * the optional `onRefreshFailure` callback is invoked so the app can log out.
  */
 export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise<T> {
+  assertBodyNotPreSerialised(path, options.body);
   let { response, payload } = await doFetch<T>(path, options);
 
   // #412 — an authz (permission) 401 must surface like a 403: no refresh, no

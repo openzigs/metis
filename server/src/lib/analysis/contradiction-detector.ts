@@ -181,7 +181,7 @@ export class ContradictionDetector {
       }
     }
 
-    log.info("Contradiction detection complete: %d contradiction(s) found", contradictions.length);
+    log.info("Contradiction detection complete", { contradictions: contradictions.length });
     return { contradictions, usage };
   }
 

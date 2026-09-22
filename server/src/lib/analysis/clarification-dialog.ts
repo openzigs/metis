@@ -358,10 +358,9 @@ export class ClarificationDialog {
       });
       return await grounding.groundQuestions(this.projectId, questions, signal);
     } catch (err) {
-      log.warn(
-        "Self-resolution grounding pass failed — surfacing questions as open: %s",
-        (err as Error).message,
-      );
+      log.warn("Self-resolution grounding pass failed — surfacing questions as open", {
+        error: (err as Error).message,
+      });
       return questions.map((q) => ({ ...q, groundingStatus: q.groundingStatus ?? "open" }));
     }
   }
@@ -442,7 +441,7 @@ export class ClarificationDialog {
         if (resolution) {
           for (const field of resolution.resolvedFields) {
             if (!realFields.has(field) || !answeredFields.has(field)) {
-              log.debug("Ignoring unsupported resolved field %s on requirement %s", field, reqId);
+              log.debug("Ignoring unsupported resolved field", { field, requirementId: reqId });
               continue;
             }
             resolved.add(`${reqId}:${field}`);
@@ -455,7 +454,10 @@ export class ClarificationDialog {
           }
         }
       } catch (err) {
-        log.warn("Failed to resolve ambiguities for req %s: %s", reqId, (err as Error).message);
+        log.warn("Failed to resolve ambiguities", {
+          requirementId: reqId,
+          error: (err as Error).message,
+        });
       }
     }
 

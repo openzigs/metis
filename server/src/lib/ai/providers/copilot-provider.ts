@@ -385,10 +385,9 @@ export class CopilotProvider implements AIProvider {
                   >;
                 }
               ).getMessages();
-              log.debug(
-                "getMessages() fallback: types=%j",
-                msgs.map((m) => m.type),
-              );
+              log.debug("getMessages() fallback", {
+                types: msgs.map((m) => m.type),
+              });
               // Surface any session.error events found in the message log.
               const errorEvt = msgs.find((m) => m.type.includes("error"));
               if (errorEvt) {
@@ -406,7 +405,7 @@ export class CopilotProvider implements AIProvider {
                 }
               }
             } catch (e) {
-              log.debug("getMessages() fallback failed: %s", (e as Error).message);
+              log.debug("getMessages() fallback failed", { error: (e as Error).message });
             }
           }
         }
@@ -465,12 +464,11 @@ export class CopilotProvider implements AIProvider {
           // This is the EXPECTED termination path for bedrock-gateway,
           // which never fires assistant.message_delta's terminal event.
           if (receivedDeltas && lastDeltaAt > 0 && Date.now() - lastDeltaAt > QUIET_MS) {
-            log.debug(
-              "stream end via quiet period: deltas=%d lastDelta=%dms ago totalElapsed=%ds",
-              queue.filter((q) => q.type === "delta").length + lastLoggedDeltaCount,
-              Date.now() - lastDeltaAt,
-              Math.round((Date.now() - startedAt) / 1000),
-            );
+            log.debug("stream end via quiet period", {
+              deltas: queue.filter((q) => q.type === "delta").length + lastLoggedDeltaCount,
+              lastDeltaAgoMs: Date.now() - lastDeltaAt,
+              totalElapsedSec: Math.round((Date.now() - startedAt) / 1000),
+            });
             return;
           }
           // Periodic progress log every 30s so long synthesis calls are visible.
@@ -478,24 +476,22 @@ export class CopilotProvider implements AIProvider {
           if (elapsed > 30_000 && elapsed % 30_000 < 100) {
             const deltaCount = queue.filter((q) => q.type === "delta").length;
             if (deltaCount !== lastLoggedDeltaCount) {
-              log.debug(
-                "stream still flowing: elapsed=%ds deltas=%d lastDelta=%dms ago",
-                Math.round(elapsed / 1000),
-                deltaCount,
-                lastDeltaAt > 0 ? Date.now() - lastDeltaAt : -1,
-              );
+              log.debug("stream still flowing", {
+                elapsedSec: Math.round(elapsed / 1000),
+                deltas: deltaCount,
+                lastDeltaAgoMs: lastDeltaAt > 0 ? Date.now() - lastDeltaAt : -1,
+              });
               lastLoggedDeltaCount = deltaCount;
             }
           }
           await new Promise<void>((resolve) => setTimeout(resolve, 100));
         }
-        log.warn(
-          "stream end via HARD ceiling (%dms): receivedDeltas=%s endPushed=%s lastDeltaAgo=%dms — content may be truncated",
-          HARD_DEADLINE_MS,
+        log.warn("stream end via HARD ceiling — content may be truncated", {
+          hardDeadlineMs: HARD_DEADLINE_MS,
           receivedDeltas,
           endPushed,
-          lastDeltaAt > 0 ? Date.now() - lastDeltaAt : -1,
-        );
+          lastDeltaAgoMs: lastDeltaAt > 0 ? Date.now() - lastDeltaAt : -1,
+        });
       };
       await waitForStreamEnd();
       if (!endPushed) {
@@ -515,10 +511,9 @@ export class CopilotProvider implements AIProvider {
                 >;
               }
             ).getMessages();
-            log.debug(
-              "sendPromise getMessages() fallback: types=%j",
-              msgs.map((m) => m.type),
-            );
+            log.debug("sendPromise getMessages() fallback", {
+              types: msgs.map((m) => m.type),
+            });
             const errorEvt = msgs.find((m) => m.type.includes("error"));
             if (errorEvt) {
               const errMsg =
@@ -533,7 +528,7 @@ export class CopilotProvider implements AIProvider {
               }
             }
           } catch (e) {
-            log.debug("sendPromise getMessages() fallback failed: %s", (e as Error).message);
+            log.debug("sendPromise getMessages() fallback failed", { error: (e as Error).message });
           }
         }
         pushEnd();

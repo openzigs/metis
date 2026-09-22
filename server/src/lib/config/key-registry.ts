@@ -26,6 +26,7 @@ import {
   parseMemoryQuantityToMi,
   validateEgressAllowlistEntry,
 } from "@metis/shared";
+import { modelPricesSchema } from "../finops/model-prices-schema.js";
 
 export type ConfigTier = "bootstrap" | "secret" | "tunable";
 export type ConfigValueType = "string" | "int" | "bool" | "json" | "csv";
@@ -215,6 +216,24 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Native-Anthropic prompt-cache TTL ('5m' | '1h'; default '5m'). Sets the ttl on the cache_control breakpoints emitted by the DIRECT Anthropic provider only — Bedrock is unaffected (no 1h TTL for Sonnet 4.6 / Opus 4.6). A 1h cache WRITE costs 2× the input rate (vs 1.25× for 5m), so the break-even shifts: 1h needs ≥3 reads to beat uncached (2× write + 0.2× reads vs 3× uncached) versus 2 reads for 5m (1.25× + 0.1× vs 2×). Leave at '5m' unless a bursty flow reuses a prefix with >5-minute gaps between calls.",
     sensitive: false,
   },
+  // ── #22 (PR #41 review) — whose prices an ANTHROPIC_BASE_URL endpoint bills ──
+  ANTHROPIC_BASE_URL_BILLS_AS: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.enum(["auto", "anthropic"]),
+    description:
+      "Whose list prices apply to the anthropic provider when ANTHROPIC_BASE_URL is set ('auto' | 'anthropic'; default 'auto'). 'auto': any host other than api.anthropic.com is treated as a different provider (e.g. DeepSeek, which serves claude-* names as its own models), so built-in Anthropic prices are not applied and only MODEL_PRICES prices its usage. 'anthropic': the endpoint is a proxy or AI gateway that relays to Anthropic and bills Anthropic's list prices (a corporate egress proxy, LiteLLM, …), so built-in Claude prices apply as if no base URL were set. Unknown models stay unpriced either way.",
+    sensitive: false,
+  },
+  // ── #22 — administrator-configured per-model prices ───────────────────
+  MODEL_PRICES: {
+    tier: "tunable",
+    valueType: "json",
+    schema: modelPricesSchema,
+    description:
+      'Per-model prices, in USD per million tokens, for models METIS has no built-in price for (or to replace a built-in one). JSON object keyed by model id, or "provider:model" to price one provider only (the more specific key wins): {"deepseek-v4-pro": {"inputPerMTok": 1.32, "outputPerMTok": 3.96, "cacheReadPerMTok": 0.044}}. cacheReadPerMTok / cacheWritePerMTok are optional and default to the input price. Usage from a model with no price here and no built-in price is recorded as UNPRICED (null cost, shown separately with its token counts in the usage views) — never as $0 and never at another model\'s price. Built-in Anthropic list prices are not applied when ANTHROPIC_BASE_URL points at a non-Anthropic endpoint, so such a deployment prices only what is listed here. Applies to usage recorded after the change; existing rows keep the cost they were recorded with.',
+    sensitive: false,
+  },
   // ── Epic #696 / Issue #701 — claim-extraction model selection ──────────
   DOCS_GEN_CLAIM_MODEL: {
     tier: "tunable",
@@ -231,6 +250,22 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     schema: z.coerce.number().int().positive(),
     description:
       "OUTPUT cap (max_tokens) for one Phase-2 docs-gen SECTION synthesis call (#1226). Default 32768; was hardcoded at 8192, which silently truncated long BRD sections (the model stopped mid-answer or the gateway substituted a max_tokens placeholder) while the document was still marked ready. Clamped down to the resolved model's known output ceiling, so raising it above what the model supports can never turn a working call into a 400. Also the provider-level default for every Phase-2 call that does not set its own cap.",
+    sensitive: false,
+  },
+  DOCS_GEN_PHASE1_CONCURRENCY: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(1).max(64),
+    description:
+      "#25 — how many Phase-1 module fact extractions docs-gen keeps in flight at once (1-64, default 3). A worker pool: the next module starts the moment any extraction finishes. Wall-clock time for a large project scales roughly with modules ÷ this value, so a 174-module project at ~23 s per module takes about an hour at 1 and about 22 minutes at 3. Raise it when the provider allows more parallel requests (DeepSeek documents a 500-request concurrency limit for deepseek-v4-pro); keep it low behind a gateway with request-rate or idle-timeout limits.",
+    sensitive: false,
+  },
+  DOCS_GEN_REASONING_ALLOWANCE_TOKENS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(0).max(393_216),
+    description:
+      "#25 — extra OUTPUT tokens added to every docs-gen output cap (section, facts, DB-schema prose, claim/judge) for a model that REASONS BY DEFAULT and spends that reasoning from the same max_tokens budget as the answer. Default 32768. Applies only to models documented to think by default: DeepSeek deepseek-v4-pro / deepseek-flash, and a claude-* model name sent to DeepSeek's Anthropic endpoint (ANTHROPIC_BASE_URL on deepseek.com), which serves it as one of those models. Every other model is unaffected. The section/facts caps then describe the ANSWER budget and this is the reasoning headroom on top, still clamped to the model's output ceiling. Claim extraction and the faithfulness judge are NON-streaming calls, so on the anthropic provider their request is further clamped to the Anthropic SDK's non-streaming bound (21,333 tokens, or the SDK's lower per-model limit) — they receive less than the sum. Set 0 to opt out (e.g. when thinking has been disabled upstream).",
     sensitive: false,
   },
   DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS: {

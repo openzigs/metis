@@ -18,7 +18,7 @@ interface PersistedRow {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   totalTokens: number;
-  costCents: number;
+  costCents: number | null;
 }
 
 const persisted: PersistedRow[] = [];
@@ -97,6 +97,32 @@ describe("recordUsage", () => {
     expect(r.totalTokens).toBe(150);
     expect(r.costCents).toBe(0);
     expect(persisted).toHaveLength(1);
+  });
+
+  it("persists and emits a NULL cost for an unpriced model, never 0 (#22)", async () => {
+    vi.stubEnv("ANTHROPIC_BASE_URL", "");
+    vi.stubEnv("MODEL_PRICES", "");
+    const ticks: Array<{ costCents: number | null; totalTokens: number }> = [];
+    setUsageEmitter((_projectId, payload) => ticks.push(payload));
+    try {
+      const r = await recordUsageAndFlush({
+        projectId: "proj-1",
+        sessionId: "sess-1",
+        provider: "anthropic",
+        model: "deepseek-v4-pro",
+        inputTokens: 1_334_017,
+        outputTokens: 1_297_372,
+      });
+      expect(r.costCents).toBeNull();
+      expect(r.totalTokens).toBe(2_631_389);
+      expect(persisted).toHaveLength(1);
+      expect(persisted[0].costCents).toBeNull();
+      expect(persisted[0].totalTokens).toBe(2_631_389);
+      expect(ticks).toHaveLength(1);
+      expect(ticks[0].costCents).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("emits usage:tick to the project room when an emitter is set", async () => {

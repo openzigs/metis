@@ -99,6 +99,82 @@ export function zodErrorToFriendly(err: ZodError): {
   };
 }
 
+/**
+ * True for the `SyntaxError` body-parser (`express.json()`) raises when a
+ * request body is not valid JSON — including a body that was JSON-encoded
+ * twice (a JSON string at top level, which the strict parser refuses).
+ */
+export function isJsonParseError(err: unknown): err is SyntaxError {
+  return (
+    err instanceof SyntaxError &&
+    (err as SyntaxError & { type?: unknown }).type === "entity.parse.failed"
+  );
+}
+
+/**
+ * #35 — every OTHER client error body-parser (and the raw-body reader under it)
+ * raises, keyed by its `type`. Each is an `http-errors` object with a 4xx
+ * `status`; without this table they fell through to the 500 below, were logged
+ * as "Unexpected error" and read as a server fault. The messages are ours:
+ * body-parser's own quote the client's `Content-Encoding` / charset, so they are
+ * never forwarded. `entity.parse.failed` keeps its dedicated #21 branch.
+ */
+const BODY_PARSER_CLIENT_ERRORS: Readonly<
+  Record<string, { statusCode: number; code: string; message: string }>
+> = Object.freeze({
+  "entity.too.large": {
+    statusCode: 413,
+    code: "PAYLOAD_TOO_LARGE",
+    message: "Request body is too large",
+  },
+  "parameters.too.many": {
+    statusCode: 413,
+    code: "TOO_MANY_PARAMETERS",
+    message: "Request body has too many parameters",
+  },
+  "encoding.unsupported": {
+    statusCode: 415,
+    code: "UNSUPPORTED_CONTENT_ENCODING",
+    message: "Request body content encoding is not supported",
+  },
+  "charset.unsupported": {
+    statusCode: 415,
+    code: "UNSUPPORTED_CHARSET",
+    message: "Request body charset is not supported",
+  },
+  "request.aborted": {
+    statusCode: 400,
+    code: "REQUEST_ABORTED",
+    message: "Request was aborted before the body was received",
+  },
+  "request.size.invalid": {
+    statusCode: 400,
+    code: "REQUEST_SIZE_MISMATCH",
+    message: "Request body size did not match Content-Length",
+  },
+  "querystring.parse.rangeError": {
+    statusCode: 400,
+    code: "FORM_BODY_TOO_DEEP",
+    message: "Request body is nested too deeply",
+  },
+});
+
+/**
+ * The mapping for a body-parser client error, or `null`. Matches on `type` AND
+ * on the status body-parser attached, so an unrelated error that merely carries
+ * a `type` field of the same name is not reclassified as the client's fault.
+ */
+export function bodyParserClientError(
+  err: unknown,
+): { type: string; statusCode: number; code: string; message: string } | null {
+  if (!err || typeof err !== "object") return null;
+  const { type, status } = err as { type?: unknown; status?: unknown };
+  if (typeof type !== "string" || !Object.hasOwn(BODY_PARSER_CLIENT_ERRORS, type)) return null;
+  const mapped = BODY_PARSER_CLIENT_ERRORS[type];
+  if (status !== mapped.statusCode) return null;
+  return { type, ...mapped };
+}
+
 export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   const correlationId = (req as unknown as { correlationId?: string }).correlationId;
 
@@ -124,6 +200,49 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
       correlationId,
     };
     res.status(400).json(body);
+    return;
+  }
+
+  // #21 — a request body the JSON parser rejects is the CLIENT's error. The
+  // body-parser `SyntaxError` carries `type: "entity.parse.failed"` and
+  // `status: 400`; without this branch it fell through to the 500 below, was
+  // logged as "Unexpected error" and hid genuine server faults. The parser's
+  // own message quotes a fragment of the request body, so it is neither
+  // echoed to the client NOR logged: a malformed login body
+  // would otherwise put a fragment of a password into the log.
+  if (isJsonParseError(err)) {
+    log.warn("Malformed JSON request body → 400", {
+      correlationId,
+      method: req.method,
+      path: req.path,
+    });
+    const body: ApiResponse = {
+      success: false,
+      error: { code: "INVALID_JSON", message: "Request body is not valid JSON" },
+      correlationId,
+    };
+    res.status(400).json(body);
+    return;
+  }
+
+  const parserError = bodyParserClientError(err);
+  if (parserError) {
+    const { limit, length } = err as { limit?: unknown; length?: unknown };
+    log.warn("Rejected request body → client error", {
+      correlationId,
+      method: req.method,
+      path: req.path,
+      type: parserError.type,
+      statusCode: parserError.statusCode,
+      ...(typeof limit === "number" ? { limit } : {}),
+      ...(typeof length === "number" ? { length } : {}),
+    });
+    const body: ApiResponse = {
+      success: false,
+      error: { code: parserError.code, message: parserError.message },
+      correlationId,
+    };
+    res.status(parserError.statusCode).json(body);
     return;
   }
 

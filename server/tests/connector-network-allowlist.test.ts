@@ -1,6 +1,7 @@
 /**
  * Connector network allow-list — DNS pinning + RFC1918/loopback rejection.
  */
+import net from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetAllowlistForTests,
@@ -222,6 +223,48 @@ describe("resolveAndAssertConnectorHost (M1 — DNS pinning)", () => {
 });
 
 describe("makePinnedLookup", () => {
+  it("answers the all-addresses form with an array when Node asks for it", () => {
+    const cb = makePinnedLookup("203.0.113.20", 4);
+    return new Promise<void>((resolve) => {
+      (cb as unknown as (h: string, o: unknown, c: (e: Error | null, a: unknown) => void) => void)(
+        "attacker.example.com",
+        { all: true },
+        (err, addresses) => {
+          expect(err).toBeNull();
+          expect(addresses).toEqual([{ address: "203.0.113.20", family: 4 }]);
+          resolve();
+        },
+      );
+    });
+  });
+
+  it("lets a real net.connect reach the pinned address on this Node version", async () => {
+    // The unit tests above call the lookup directly, which is how the
+    // single-address bug went unnoticed: only Node's own connect path asks for
+    // `{ all: true }`. Drive that path for real against a local listener.
+    const server = net.createServer((socket) => socket.end());
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as net.AddressInfo;
+    try {
+      const lookup = makePinnedLookup("127.0.0.1", 4)!;
+      await new Promise<void>((resolve, reject) => {
+        const socket = net.connect({
+          host: "pinned.invalid",
+          port,
+          lookup,
+          autoSelectFamily: true,
+        });
+        socket.once("connect", () => {
+          socket.destroy();
+          resolve();
+        });
+        socket.once("error", reject);
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("returns undefined when no address pinned", () => {
     expect(makePinnedLookup(undefined, undefined)).toBeUndefined();
   });

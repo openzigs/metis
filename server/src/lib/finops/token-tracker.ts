@@ -12,7 +12,7 @@
  */
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
-import { computeCostCents, getRate } from "./provider-rates.js";
+import { computeCostCents, resolveRate } from "./provider-rates.js";
 
 const log = createChildLogger("finops-token-tracker");
 
@@ -29,7 +29,8 @@ export interface RecordUsageInput {
 
 export interface RecordUsageResult {
   totalTokens: number;
-  costCents: number;
+  /** `null` = the model is UNPRICED (#22) — unknown spend, not zero spend. */
+  costCents: number | null;
 }
 
 // Socket emitter — set via `setUsageEmitter()` so we don't pull a transitive
@@ -44,7 +45,7 @@ type Emitter = (
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
-    costCents: number;
+    costCents: number | null;
     ts: number;
   },
 ) => void;
@@ -75,7 +76,8 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
   const cacheReadTokens = sanitize(input.cacheReadTokens);
   const cacheWriteTokens = sanitize(input.cacheWriteTokens);
   const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
-  const rate = getRate(input.provider, input.model);
+  // #22 — the single pricing source; `null` for a model METIS has no price for.
+  const rate = resolveRate(input.provider, input.model);
   const costCents = computeCostCents(rate, {
     inputTokens,
     outputTokens,
@@ -145,7 +147,7 @@ async function persist(row: {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   totalTokens: number;
-  costCents: number;
+  costCents: number | null;
 }): Promise<void> {
   try {
     await prisma.tokenUsage.create({ data: row });

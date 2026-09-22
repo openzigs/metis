@@ -316,7 +316,8 @@ export interface ServerToClientEvents {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
-    costCents: number;
+    /** `null` = the model is unpriced (#22). */
+    costCents: number | null;
     ts: number;
   }) => void;
   /** Epic #156 — async background run lifecycle event. */

@@ -157,13 +157,12 @@ export async function runElicitation(input: ElicitationPipelineInput): Promise<E
   addUsage(usage, nfrResult.usage);
   addUsage(usage, arResult.usage);
 
-  log.info(
-    "Elicited %d NFR(s), %d AC(s), %d assumption(s), %d risk(s)",
-    nfrResult.nfrs.length,
-    nfrResult.acceptanceCriteria.length,
-    arResult.assumptions.length,
-    arResult.risks.length,
-  );
+  log.info("Elicitation complete", {
+    nfrs: nfrResult.nfrs.length,
+    acceptanceCriteria: nfrResult.acceptanceCriteria.length,
+    assumptions: arResult.assumptions.length,
+    risks: arResult.risks.length,
+  });
 
   return {
     nfrs: nfrResult.nfrs,

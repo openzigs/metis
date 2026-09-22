@@ -112,7 +112,8 @@
  *
  * Pure + dependency-free: same tool calls in ⇒ same health out.
  */
-import type { AnalysisRetrievalHealth, SearchedQuery } from "@metis/shared";
+import type { AnalysisRetrievalHealth, RequirementVerdict, SearchedQuery } from "@metis/shared";
+import { deriveRequirementVerdict, type VerdictFindingInput } from "./requirement-verdict.js";
 import { isErroredCall, type ToolCallRecord } from "./tool-telemetry.js";
 
 /** Minimum retrieval calls that must return usable results before ANY absence claim is confirmable. */
@@ -588,9 +589,127 @@ export function mergeRetrievalHealth(
     starved: passes.some((p) => p.starved),
     ...(passes.some((p) => p.exhausted === true) ? { exhausted: true } : {}),
     ...(passes.some((p) => p.seedGrounded === true) ? { seedGrounded: true } : {}),
+    // #19 — summed only when some pass recorded one, so a clean run is unchanged.
+    ...(passes.some((p) => p.unverifiedRequirements !== undefined)
+      ? {
+          unverifiedRequirements: passes.reduce((n, p) => n + (p.unverifiedRequirements ?? 0), 0),
+        }
+      : {}),
     degraded: passes.some((p) => p.degraded),
     searchedScope,
   };
+}
+
+/**
+ * #19 — the fewest CODE-retrieval calls per requirement a pass may make before its
+ * health REPORT calls it starved: one search for every four requirements. Far below
+ * what a funded pass makes (the turn cap scales at two turns per requirement), and
+ * far above the reported incident (one call for 16 requirements).
+ *
+ * Deliberately NOT part of {@link absenceIsConfirmable}: a pass-wide quota in the
+ * VERDICT gate made a confirmed gap mathematically impossible at scale (see the
+ * module doc). This floor only decides what the run REPORTS, after verdicts are set.
+ */
+export const MIN_SEARCHES_PER_REQUIREMENT = 0.25;
+
+/**
+ * #19 — the largest share of a pass's requirements that may come back
+ * `could-not-verify` before the report calls the pass degraded. "Most" means MORE
+ * than this share, so a pass that verified exactly half of its requirements is not
+ * flagged.
+ */
+export const MAX_UNVERIFIED_REQUIREMENT_SHARE = 0.5;
+
+/** The two fields of a finding {@link countUnverifiedRequirements} reads. */
+export interface VerdictBearingFinding {
+  requirementId?: string | null;
+  verdict?: string | null;
+}
+
+/**
+ * #19 — how many of a pass's requirements the analysis page shows as
+ * `could-not-verify`. Computed with the page's OWN roll-up,
+ * {@link deriveRequirementVerdict}, so the report and the page cannot disagree:
+ * a requirement the agent reported NOTHING for is could-not-verify (the
+ * budget-starvation rule), `could-not-verify` beats `implemented`, and
+ * `gap-confirmed` beats both. A finding bound to a requirement outside this
+ * pass, or to none, is ignored; a verdict the page does not know counts as none.
+ */
+export function countUnverifiedRequirements(
+  findings: readonly VerdictBearingFinding[],
+  requirementIds: Iterable<string>,
+): number {
+  const byRequirement = new Map<string, VerdictFindingInput[]>();
+  for (const id of requirementIds) byRequirement.set(id, []);
+  for (const finding of findings) {
+    const linked = finding.requirementId ? byRequirement.get(finding.requirementId) : undefined;
+    if (!linked) continue;
+    const verdict = REQUIREMENT_VERDICTS.has(finding.verdict ?? "")
+      ? (finding.verdict as RequirementVerdict)
+      : null;
+    // Every finding of the agentic code pass is a CODE finding.
+    linked.push({ agentKey: "code", verdict });
+  }
+  let unverified = 0;
+  for (const linked of byRequirement.values()) {
+    const verdict = deriveRequirementVerdict({ codeAnalysisRan: true, findings: linked });
+    if (verdict === "could-not-verify") unverified += 1;
+  }
+  return unverified;
+}
+
+const REQUIREMENT_VERDICTS: ReadonlySet<string> = new Set<RequirementVerdict>([
+  "implemented",
+  "gap-confirmed",
+  "could-not-verify",
+]);
+
+export interface InvestigationCoverageInput {
+  /** {@link countUnverifiedRequirements} over the pass's GATED findings. */
+  unverifiedRequirements: number;
+}
+
+/**
+ * #19 — the REPORT-SIDE coverage check. The #773 run-level threshold asks only
+ * "did retrieval physically work at least once?", so a pass that made ONE working
+ * search and then verified none of its 16 requirements was persisted as
+ * `starved: false, degraded: false` and raised no capability reason — the analysis
+ * page told the user nothing. This check runs AFTER the pass's verdicts are gated,
+ * over the record that is persisted and drives the `code-retrieval-degraded`
+ * banner, and never over the record the verdicts read:
+ *
+ *   - STARVED when the pass made fewer than {@link MIN_SEARCHES_PER_REQUIREMENT}
+ *     code-retrieval calls per requirement;
+ *   - DEGRADED when it is starved, or when more than
+ *     {@link MAX_UNVERIFIED_REQUIREMENT_SHARE} of its requirements came back
+ *     `could-not-verify`.
+ *
+ * #1236 — a pass cut short by its turn/token budget is never branded STARVED:
+ * it is `exhausted`, which is how the record already reports it, and exhaustion
+ * is not retrieval failure. The unverified share still applies — it is what the
+ * page shows, whatever cut the run short. Returns a NEW record; never clears a
+ * degradation the threshold found.
+ */
+export function assessInvestigationCoverage(
+  health: AnalysisRetrievalHealth,
+  input: InvestigationCoverageInput,
+): AnalysisRetrievalHealth {
+  const unverified = Math.min(
+    Math.max(0, Math.floor(input.unverifiedRequirements)),
+    health.requirementCount,
+  );
+  const assessed: AnalysisRetrievalHealth = {
+    ...health,
+    ...(unverified > 0 ? { unverifiedRequirements: unverified } : {}),
+  };
+  if (health.requirementCount === 0) return assessed;
+  const searchStarved =
+    health.exhausted !== true &&
+    health.totalCalls < health.requirementCount * MIN_SEARCHES_PER_REQUIREMENT;
+  const mostlyUnverified = unverified > health.requirementCount * MAX_UNVERIFIED_REQUIREMENT_SHARE;
+  if (searchStarved) assessed.starved = true;
+  if (searchStarved || mostlyUnverified) assessed.degraded = true;
+  return assessed;
 }
 
 /**
