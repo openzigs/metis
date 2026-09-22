@@ -323,7 +323,7 @@ The release pipeline ships three images:
 | Image | Built from | Current size | Budget |
 |---|---|---|---|
 | `metis-ui` | `Dockerfile.ui` (Next.js 15 standalone, alpine) | **~197 MB** | ≤ 350 MB ✅ |
-| `metis-server` | `Dockerfile.server` (`node:22-trixie-slim`, glibc, prod-only deps, slimmed) | **~1,068 MB** (amd64, measured #39) | ≤ 1,170 MB — its own budget, see below |
+| `metis-server` | `Dockerfile.server` (`node:22-trixie-slim`, glibc, prod-only deps, slimmed) | **~1,045 MB** (amd64, measured #45) | ≤ 1,170 MB — its own budget, see below |
 | `metis-embeddings` | `Dockerfile.embeddings` (bookworm-slim, glibc) | **~423 MB** | exempt (sidecar) |
 
 > **Multi-arch (Epic #360 / sub-issue #373)**: All four core images
@@ -455,7 +455,9 @@ rule that picks the adapter, loading the Postgres one from
 `@prisma/client/runtime`, so `Prisma.*` error classes are the same objects either
 way. The Postgres client adds ~6 MiB; deleting the query compilers in
 `@prisma/client/runtime` that neither client loads saves ~29 MiB, so the image got
-smaller (local arm64 build, `du -sm /app`: 744 → 723 MiB).
+smaller: the `api` job measured **1,045.4 MB** (run 35722462860), down from
+1,067.7 MB at #39 (local arm64 build, `du -sm /app`: 744 → 723 MiB). The budget
+stays 1,170 MB.
 
 **Working directory.** The server resolves its default data paths against its
 working directory: LanceDB `data/lancedb`, uploads `data/uploads`, archive extracts,
