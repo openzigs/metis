@@ -41,14 +41,14 @@ const SAFE_MESSAGES: ReadonlySet<string> = new Set([
 // An HTTP status named as one: "returned 402", "status 429", "HTTP 401",
 // "(403)", or a message that starts with it ("402 Insufficient Balance", the
 // OpenAI SDK's form). A bare number elsewhere in a message is not a status.
-const statusIn = (codes: string) =>
-  new RegExp(
-    `(?:returned|status(?: code)?|HTTP|code)[:\\s]*(?:${codes})\\b|\\((?:${codes})\\)|^(?:\\w*Error:\\s*)?(?:${codes})\\b`,
-    "i",
-  );
-const STATUS_402 = statusIn("402");
-const STATUS_429 = statusIn("429");
-const STATUS_401_403 = statusIn("401|403");
+// Literal patterns, one per status set (a RegExp built from a string is a
+// Semgrep finding even when the string is a constant).
+const STATUS_402 =
+  /(?:returned|status(?: code)?|HTTP|code)[:\s]*402\b|\(402\)|^(?:\w*Error:\s*)?402\b/i;
+const STATUS_429 =
+  /(?:returned|status(?: code)?|HTTP|code)[:\s]*429\b|\(429\)|^(?:\w*Error:\s*)?429\b/i;
+const STATUS_401_403 =
+  /(?:returned|status(?: code)?|HTTP|code)[:\s]*(?:401|403)\b|\((?:401|403)\)|^(?:\w*Error:\s*)?(?:401|403)\b/i;
 
 function readStatus(err: unknown): number | undefined {
   if (err && typeof err === "object" && "status" in err) {

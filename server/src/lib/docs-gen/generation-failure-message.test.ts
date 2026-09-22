@@ -65,6 +65,9 @@ describe("generationFailureMessage", () => {
     expect(generationFailureMessage(new Error("bedrock returned 429: ThrottlingException"))).toBe(
       GENERATION_PROVIDER_RATE_LIMITED_MESSAGE,
     );
+    expect(generationFailureMessage(new Error('openai returned 429: {"error":{}}'))).toBe(
+      GENERATION_PROVIDER_RATE_LIMITED_MESSAGE,
+    );
     expect(generationFailureMessage(new Error("Rate limit reached for requests"))).toBe(
       GENERATION_PROVIDER_RATE_LIMITED_MESSAGE,
     );
