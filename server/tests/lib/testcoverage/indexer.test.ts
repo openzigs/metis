@@ -12,10 +12,15 @@ import {
   stepNamespace,
   stepText,
 } from "../../../src/lib/testcoverage/indexer.js";
+import {
+  type CoverageEmbeddingUsage,
+  estimateEmbeddingTokens,
+} from "../../../src/lib/testcoverage/cost-tracker.js";
 import { LocalVectorStore } from "../../../src/lib/rag/vector-store.js";
 
 vi.mock("../../../src/lib/rag/embedder.js", () => ({
   getEmbedder: () => ({
+    key: "xenova",
     model: "test-model",
     dimension: 4,
     async embed(texts: string[]) {
@@ -120,5 +125,64 @@ describe("testcoverage/indexer", () => {
     await indexer.index("proj", [{ docId: "d1", contentHash: "h1", case: tc }]);
     const hits = await indexer.searchCases("proj", [0, 0, 0, 0], 5);
     expect(hits.length).toBeGreaterThan(0);
+  });
+
+  describe("index-phase embedding usage (#72)", () => {
+    /** Collects what the indexer bills, in order. */
+    function recorder() {
+      const recorded: CoverageEmbeddingUsage[] = [];
+      return { recorded, cost: { record: (u: CoverageEmbeddingUsage) => recorded.push(u) } };
+    }
+
+    it("bills the case batch AND the step batch to the run's cost tracker", async () => {
+      // The index phase is the largest embedding consumer in a coverage run —
+      // every test case text plus every step text — and ran off-budget entirely.
+      const { recorded, cost } = recorder();
+      await indexer.index("proj", [{ docId: "d1", contentHash: "h1", case: tc }], { cost });
+
+      const caseTexts = [caseText(tc)];
+      const stepTexts = tc.steps.map((s) => stepText(s.action, s.expected));
+      expect(recorded).toEqual([
+        {
+          phase: "embedding",
+          embedder: "xenova",
+          modelId: "test-model",
+          embeddingTokens: estimateEmbeddingTokens(caseTexts),
+        },
+        {
+          phase: "embedding",
+          embedder: "xenova",
+          modelId: "test-model",
+          embeddingTokens: estimateEmbeddingTokens(stepTexts),
+        },
+      ]);
+      // The two batches are different texts, so neither row can stand in for
+      // the other if one arm stops recording.
+      expect(estimateEmbeddingTokens(caseTexts)).not.toBe(estimateEmbeddingTokens(stepTexts));
+    });
+
+    it("bills only the case batch when no case has steps", async () => {
+      const stepless: NormalisedTestCase = { ...tc, steps: [] };
+      const { recorded, cost } = recorder();
+      await indexer.index("proj", [{ docId: "d1", contentHash: "h1", case: stepless }], { cost });
+
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0].embeddingTokens).toBe(estimateEmbeddingTokens([caseText(stepless)]));
+    });
+
+    it("bills nothing when every case is already indexed", async () => {
+      await indexer.index("proj", [{ docId: "d1", contentHash: "h1", case: tc }]);
+      const { recorded, cost } = recorder();
+      const second = await indexer.index("proj", [{ docId: "d1", contentHash: "h1", case: tc }], {
+        cost,
+      });
+      expect(second.inserted).toBe(0);
+      expect(recorded).toEqual([]);
+    });
+
+    it("indexes normally when no cost tracker is supplied", async () => {
+      const result = await indexer.index("proj", [{ docId: "d1", contentHash: "h1", case: tc }]);
+      expect(result.inserted).toBe(1);
+    });
   });
 });

@@ -9,10 +9,18 @@
  * Incremental: each row's `chunkId` includes the case's `contentHash` so
  * re-indexing the same case is a no-op. Removal is atomic across both
  * namespaces.
+ *
+ * #72 — the two `embed()` calls below are the largest embedding consumers in a
+ * coverage run (every test-case text, then every step text), and the run's
+ * budget never saw them: the task-runner drives this phase before the coverage
+ * service exists. The run's {@link CoverageCostTracker} is now threaded in so
+ * "every embedder call a run makes is on the budget" holds for the whole run,
+ * not only the phases the service owns.
  */
 import type { NormalisedTestCase } from "@metis/shared";
 
 import { getEmbedder } from "../rag/embedder.js";
+import { type CoverageEmbeddingUsage, estimateEmbeddingTokens } from "./cost-tracker.js";
 import {
   type SearchHit,
   type VectorRow,
@@ -59,6 +67,20 @@ export interface IndexerOptions {
   store?: VectorStore;
 }
 
+/**
+ * The slice of {@link CoverageCostTracker} the index phase needs (#72). Narrow
+ * on purpose: the indexer bills, it never reads the budget — embedding spend is
+ * already incurred by the time it is recorded and does not stop a run (#77).
+ */
+export interface EmbeddingCostRecorder {
+  record(usage: CoverageEmbeddingUsage): void;
+}
+
+export interface IndexCallOptions {
+  /** The run's cost tracker. Omitted outside a budgeted run (#72). */
+  cost?: EmbeddingCostRecorder;
+}
+
 export interface IndexResult {
   inserted: number;
   /** docIds skipped because their contentHash was already present. */
@@ -76,7 +98,11 @@ export class TestCoverageIndexer {
    * case namespace are skipped (idempotent re-runs). Step rows are flushed
    * for every case being inserted.
    */
-  async index(projectId: string, cases: readonly IndexableCase[]): Promise<IndexResult> {
+  async index(
+    projectId: string,
+    cases: readonly IndexableCase[],
+    options: IndexCallOptions = {},
+  ): Promise<IndexResult> {
     if (cases.length === 0) return { inserted: 0, skipped: [] };
     const embedder = getEmbedder();
     const caseNs = caseNamespace(projectId);
@@ -100,6 +126,15 @@ export class TestCoverageIndexer {
     // Embed all case texts and step texts in one batch each.
     const caseTexts = todo.map((c) => caseText(c.case));
     const caseEmb = await embedder.embed(caseTexts);
+    // #58 rule, applied to the index phase: the embedder key is read AFTER
+    // `embed()` (a failed backend may have been swapped for the hash stub) and
+    // the model is the one `embed()` itself reported.
+    options.cost?.record({
+      phase: "embedding",
+      embedder: embedder.key,
+      modelId: caseEmb.model,
+      embeddingTokens: estimateEmbeddingTokens(caseTexts),
+    });
 
     const stepEntries: { docId: string; step: number; text: string }[] = [];
     for (const c of todo) {
@@ -107,9 +142,19 @@ export class TestCoverageIndexer {
         stepEntries.push({ docId: c.docId, step: idx, text: stepText(s.action, s.expected) });
       });
     }
-    const stepEmb = stepEntries.length
-      ? await embedder.embed(stepEntries.map((e) => e.text))
-      : { vectors: [] as number[][], model: caseEmb.model, dimension: caseEmb.dimension };
+    let stepEmb: { vectors: number[][]; model: string; dimension: number };
+    if (stepEntries.length) {
+      const stepTexts = stepEntries.map((e) => e.text);
+      stepEmb = await embedder.embed(stepTexts);
+      options.cost?.record({
+        phase: "embedding",
+        embedder: embedder.key,
+        modelId: stepEmb.model,
+        embeddingTokens: estimateEmbeddingTokens(stepTexts),
+      });
+    } else {
+      stepEmb = { vectors: [], model: caseEmb.model, dimension: caseEmb.dimension };
+    }
 
     const caseRows: VectorRow[] = todo.map((c, i) => ({
       id: caseChunkId(c),

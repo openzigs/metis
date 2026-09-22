@@ -11,12 +11,16 @@
  * runner provides the shell those handlers will fill in, with a stable phase
  * naming scheme already exposed to the UI.
  */
+import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
+import { CoverageCostTracker } from "./cost-tracker.js";
 import { TestCoverageIndexer } from "./indexer.js";
 import { finaliseCase } from "./normaliser.js";
 import { runCoverageScoring } from "./coverage-service.js";
 import type { JudgeModelCaller } from "./judge.js";
 import type { TestCaseSource, NormalisedTestCase } from "@metis/shared";
+
+const log = createChildLogger("testcoverage/task-runner");
 
 export const TEST_COVERAGE_PHASES = [
   "import",
@@ -76,6 +80,14 @@ export async function runTestCoverageJob(
   if (!existing) return;
   if (existing.status !== "queued") return;
 
+  // #72 — ONE tracker for the whole run. The index phase below is the largest
+  // embedding consumer a run has, and it executes before `runCoverageScoring`
+  // exists, so a tracker owned by the service could never see it.
+  const cost = new CoverageCostTracker(
+    { runId, projectId, userId: existing.createdById },
+    { budgetCents: deps.budgetCents, db },
+  );
+
   const progress: Record<TestCoveragePhase, "pending" | "running" | "done" | "skipped"> = {
     import: "pending",
     index: "pending",
@@ -127,7 +139,7 @@ export async function runTestCoverageJob(
         contentHash: c.contentHash,
         case: hydrateCase(c),
       }));
-      await indexer.index(projectId, indexable);
+      await indexer.index(projectId, indexable, { cost });
     }
     await advance("index", "done", { count: cases.length });
 
@@ -140,6 +152,7 @@ export async function runTestCoverageJob(
           db,
           caller: deps.caller,
           budgetCents: deps.budgetCents,
+          cost,
           emit: (event) => {
             // Map service-level events onto runner phases.
             if (event.phase === "match" && event.state === "done") {
@@ -175,6 +188,14 @@ export async function runTestCoverageJob(
       await advance("judge", "skipped");
       await advance("suggest", "skipped");
     }
+
+    // #72 — with no caller wired the service never runs, so the index phase's
+    // usage would never be persisted. Flushing here covers both paths; the
+    // service's own flush writes the same totals from the same tracker.
+    // Accounting must never be the reason a completed run reads as failed.
+    await cost.flush().catch((err: unknown) => {
+      log.error("test-coverage run cost could not be persisted", { runId, error: String(err) });
+    });
 
     // ---- score ----------------------------------------------------------
     await advance("score", "running");

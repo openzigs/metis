@@ -23,6 +23,7 @@ import { getTokenTracker } from "../ai/token-tracker.js";
 import type { ProviderKey } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import type { MatcherCell } from "./coverage-matcher.js";
+import { type CoverageEmbeddingUsage, estimateEmbeddingTokens } from "./cost-tracker.js";
 
 const log = createChildLogger("testcoverage/judge");
 
@@ -92,14 +93,21 @@ export interface JudgeCallResult {
  * calls) the moment the budget is reached.
  */
 export interface JudgeBudgetGuard {
-  /** Record token usage for one batch so cumulative spend advances. */
-  record(input: {
-    phase: "judge";
-    provider: ProviderKey;
-    modelId: string;
-    promptTokens?: number;
-    completionTokens?: number;
-  }): void;
+  /**
+   * Record token usage so cumulative spend advances: one call per batch for the
+   * model, and one per batch for the cache-key embedding (#72).
+   */
+  record(
+    input:
+      | {
+          phase: "judge";
+          provider: ProviderKey;
+          modelId: string;
+          promptTokens?: number;
+          completionTokens?: number;
+        }
+      | CoverageEmbeddingUsage,
+  ): void;
   /** True once cumulative spend has reached the per-run cap. */
   exceeded(): boolean;
 }
@@ -269,8 +277,18 @@ export async function judgeAmbiguous(
 
     const batch = results.slice(start, start + batchSize);
     const userPrompt = buildUserPrompt(batch);
-    const { vectors } = await embedder.embed([userPrompt]);
-    const cacheKey = vectors[0];
+    const embedded = await embedder.embed([userPrompt]);
+    const cacheKey = embedded.vectors[0];
+    // #72 — the cache-key embedding is a real embedder call, made whether or
+    // not the lookup then hits. Recorded under the embedder that ran (read
+    // AFTER embed: a failed backend may have been swapped for the hash stub)
+    // and the model IT reported, the same way the match phase is (#58).
+    options.cost?.record({
+      phase: "embedding",
+      embedder: embedder.key,
+      modelId: embedded.model,
+      embeddingTokens: estimateEmbeddingTokens([userPrompt]),
+    });
 
     let raw: string | null = null;
     let batchPromptTokens = 0;
