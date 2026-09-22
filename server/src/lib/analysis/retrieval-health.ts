@@ -588,9 +588,111 @@ export function mergeRetrievalHealth(
     starved: passes.some((p) => p.starved),
     ...(passes.some((p) => p.exhausted === true) ? { exhausted: true } : {}),
     ...(passes.some((p) => p.seedGrounded === true) ? { seedGrounded: true } : {}),
+    // #19 — summed only when some pass recorded one, so a clean run is unchanged.
+    ...(passes.some((p) => p.unverifiedRequirements !== undefined)
+      ? {
+          unverifiedRequirements: passes.reduce((n, p) => n + (p.unverifiedRequirements ?? 0), 0),
+        }
+      : {}),
     degraded: passes.some((p) => p.degraded),
     searchedScope,
   };
+}
+
+/**
+ * #19 — the fewest CODE-retrieval calls per requirement a pass may make before its
+ * health REPORT calls it starved: one search for every four requirements. Far below
+ * what a funded pass makes (the turn cap scales at two turns per requirement), and
+ * far above the reported incident (one call for 16 requirements).
+ *
+ * Deliberately NOT part of {@link absenceIsConfirmable}: a pass-wide quota in the
+ * VERDICT gate made a confirmed gap mathematically impossible at scale (see the
+ * module doc). This floor only decides what the run REPORTS, after verdicts are set.
+ */
+export const MIN_SEARCHES_PER_REQUIREMENT = 0.25;
+
+/**
+ * #19 — the largest share of a pass's requirements that may come back
+ * `could-not-verify` before the report calls the pass degraded. "Most" means MORE
+ * than this share, so a pass that verified exactly half of its requirements is not
+ * flagged.
+ */
+export const MAX_UNVERIFIED_REQUIREMENT_SHARE = 0.5;
+
+/** The two fields of a finding {@link countUnverifiedRequirements} reads. */
+export interface VerdictBearingFinding {
+  requirementId?: string | null;
+  verdict?: string | null;
+}
+
+/**
+ * #19 — how many of a pass's requirements the code agent reported on ONLY as
+ * `could-not-verify` (every finding bound to the requirement carries that verdict).
+ *
+ * Conservative in the direction that keeps healthy runs quiet: a requirement the
+ * agent reported nothing for, a finding with no verdict, and a finding bound to a
+ * requirement outside this pass are not counted.
+ */
+export function countUnverifiedRequirements(
+  findings: readonly VerdictBearingFinding[],
+  requirementIds: Iterable<string>,
+): number {
+  const inPass = new Set(requirementIds);
+  const verified = new Map<string, boolean>();
+  for (const finding of findings) {
+    const id = finding.requirementId;
+    if (!id || !inPass.has(id) || finding.verdict == null) continue;
+    const thisVerified = finding.verdict !== "could-not-verify";
+    verified.set(id, (verified.get(id) ?? false) || thisVerified);
+  }
+  let unverified = 0;
+  for (const wasVerified of verified.values()) if (!wasVerified) unverified += 1;
+  return unverified;
+}
+
+export interface InvestigationCoverageInput {
+  /** {@link countUnverifiedRequirements} over the pass's GATED findings. */
+  unverifiedRequirements: number;
+}
+
+/**
+ * #19 — the REPORT-SIDE coverage check. The #773 run-level threshold asks only
+ * "did retrieval physically work at least once?", so a pass that made ONE working
+ * search and then verified none of its 16 requirements was persisted as
+ * `starved: false, degraded: false` and raised no capability reason — the analysis
+ * page told the user nothing. This check runs AFTER the pass's verdicts are gated,
+ * over the record that is persisted and drives the `code-retrieval-degraded`
+ * banner, and never over the record the verdicts read:
+ *
+ *   - STARVED when the pass made fewer than {@link MIN_SEARCHES_PER_REQUIREMENT}
+ *     code-retrieval calls per requirement;
+ *   - DEGRADED when it is starved, or when more than
+ *     {@link MAX_UNVERIFIED_REQUIREMENT_SHARE} of its requirements came back
+ *     `could-not-verify`.
+ *
+ * #1236 — a pass cut short by its turn/token budget is left as `exhausted`, which
+ * is how the record already reports it; exhaustion is not retrieval failure. The
+ * unverified count is recorded either way. Returns a NEW record; never clears a
+ * degradation the threshold found.
+ */
+export function assessInvestigationCoverage(
+  health: AnalysisRetrievalHealth,
+  input: InvestigationCoverageInput,
+): AnalysisRetrievalHealth {
+  const unverified = Math.min(
+    Math.max(0, Math.floor(input.unverifiedRequirements)),
+    health.requirementCount,
+  );
+  const assessed: AnalysisRetrievalHealth = {
+    ...health,
+    ...(unverified > 0 ? { unverifiedRequirements: unverified } : {}),
+  };
+  if (health.exhausted === true || health.requirementCount === 0) return assessed;
+  const searchStarved = health.totalCalls < health.requirementCount * MIN_SEARCHES_PER_REQUIREMENT;
+  const mostlyUnverified = unverified > health.requirementCount * MAX_UNVERIFIED_REQUIREMENT_SHARE;
+  if (searchStarved) assessed.starved = true;
+  if (searchStarved || mostlyUnverified) assessed.degraded = true;
+  return assessed;
 }
 
 /**

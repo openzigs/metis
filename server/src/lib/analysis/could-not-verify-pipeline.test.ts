@@ -976,3 +976,106 @@ describe("#773 — a model-authored title cannot license a gap for an un-searche
     expect(requirementVerdicts()[1]).toBe("could-not-verify");
   });
 });
+
+/**
+ * #19 — THE HEALTH REPORT MUST NOT CALL A RUN THAT VERIFIED NOTHING HEALTHY.
+ *
+ * Reported run: the code agent made ONE tool call, then every one of its 16
+ * requirements came back `could-not-verify` — and the persisted record read
+ * `starved: false, degraded: false`, with no capability reason, so the analysis page
+ * gave no hint that none of the requirements had been checked against the code. One
+ * working search clears the #773 run-level threshold (which must stay scale-free for
+ * the VERDICT), so the REPORT needs its own coverage check. Verdicts are unchanged.
+ */
+describe("#19 — a run that verified nothing is reported starved/degraded", () => {
+  const SIXTEEN = Array.from({ length: 16 }, (_, i) => ({
+    id: `REQ-${String(i + 1).padStart(3, "0")}`,
+    text: `Requirement ${i + 1} about subsystem ${i + 1}.`,
+  }));
+
+  /** The agent's answer on the reported run: every requirement could-not-verify. */
+  const NOTHING_VERIFIED = JSON.stringify({
+    summary: "Investigation was cut short after a single call; nothing could be grounded.",
+    findings: SIXTEEN.map((r) => ({
+      requirementId: r.id,
+      verdict: "could-not-verify",
+      category: "other",
+      severity: "info",
+      title: `Could not verify ${r.id}`,
+      body: "No code evidence was gathered for this requirement.",
+      tags: [],
+      citations: [],
+    })),
+    notes: [],
+  });
+
+  const retrieval = () =>
+    persistedEnhancements.find((p) => p.retrieval)?.retrieval as {
+      starved: boolean;
+      degraded: boolean;
+      totalCalls: number;
+      successfulSearches: number;
+      requirementCount: number;
+      unverifiedRequirements?: number;
+    };
+
+  it("marks one search for 16 requirements as starved and degraded, and raises the banner", async () => {
+    state.documentRequirements = [...SIXTEEN];
+    await runPipeline([
+      DOC_ANSWER,
+      JSON.stringify({ tool: "search_code_graph", query: "drift severity" }), // one working hit
+      NOTHING_VERIFIED,
+    ]);
+
+    // The reported run's exact counters…
+    expect(retrieval().totalCalls).toBe(1);
+    expect(retrieval().successfulSearches).toBe(1);
+    expect(retrieval().requirementCount).toBe(16);
+    // …which on main were reported `starved: false, degraded: false`.
+    expect(retrieval().starved).toBe(true);
+    expect(retrieval().degraded).toBe(true);
+    expect(retrieval().unverifiedRequirements).toBe(16);
+    expect(capability()?.codeRetrievalDegraded).toBe(true);
+    expect(capability()?.reasons).toContain("code-retrieval-degraded");
+  });
+
+  it("degrades a run that searched enough but still verified most requirements as could-not-verify", async () => {
+    state.documentRequirements = SIXTEEN.slice(0, 2);
+    const answer = JSON.stringify({
+      summary: "s",
+      findings: SIXTEEN.slice(0, 2).map((r) => ({
+        requirementId: r.id,
+        verdict: "could-not-verify",
+        category: "other",
+        severity: "info",
+        title: `Could not verify ${r.id}`,
+        body: "b",
+        tags: [],
+        citations: [],
+      })),
+      notes: [],
+    });
+    await runPipeline([
+      DOC_ANSWER,
+      JSON.stringify({ tool: "search_code_graph", query: "drift severity" }),
+      JSON.stringify({ tool: "search_code_graph", query: "commit sha baseline" }),
+      answer,
+    ]);
+
+    expect(retrieval().starved).toBe(false);
+    expect(retrieval().degraded).toBe(true);
+    expect(retrieval().unverifiedRequirements).toBe(2);
+    expect(capability()?.reasons).toContain("code-retrieval-degraded");
+  });
+
+  it("does not change a single verdict (the check is report-side only)", async () => {
+    state.documentRequirements = [...SIXTEEN];
+    await runPipeline([
+      DOC_ANSWER,
+      JSON.stringify({ tool: "search_code_graph", query: "drift severity" }),
+      NOTHING_VERIFIED,
+    ]);
+    expect(codeFindings()).toHaveLength(16);
+    expect(codeFindings().every((f) => f.verdict === "could-not-verify")).toBe(true);
+  });
+});

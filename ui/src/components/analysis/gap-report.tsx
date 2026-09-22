@@ -213,7 +213,13 @@ function RetrievalPanel({ retrieval }: { retrieval: AnalysisRetrievalHealth }): 
         <span className="font-normal">
           ({retrieval.successfulSearches} of {retrieval.totalCalls} retrieval calls returned results
           {/* #1236 — budget cut-off is `exhausted`, not `starved`. */}
-          {retrieval.exhausted ? "; the investigation was cut short by its budget" : ""})
+          {retrieval.exhausted ? "; the investigation was cut short by its budget" : ""}
+          {/* #19 — a run can clear the search threshold and still check almost nothing. */}
+          {retrieval.starved ? "; far fewer code searches than requirements" : ""}
+          {retrieval.unverifiedRequirements
+            ? `; ${retrieval.unverifiedRequirements} of ${retrieval.requirementCount} requirements could not be verified`
+            : ""}
+          )
         </span>
       </summary>
       {retrieval.searchedScope.length === 0 ? (

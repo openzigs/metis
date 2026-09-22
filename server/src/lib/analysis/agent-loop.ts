@@ -724,13 +724,22 @@ export function parseToolCall(
     return null;
   }
 
+  return toolCallFromValue(parsed, knownTools);
+}
+
+/**
+ * The shape half of {@link parseToolCall}: turn ONE already-parsed JSON value into
+ * a tool call, or `null` when it is not one. Shared with {@link parseToolCalls} so a
+ * call inside a multi-call reply is held to exactly the same rules as a lone one.
+ */
+function toolCallFromValue(parsed: unknown, knownTools?: Iterable<string>): ToolCallRequest | null {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const obj = parsed as Record<string, unknown>;
 
   // (1) The agent's final answer carries a `findings` array. Classify it as the
   // final answer BEFORE looking at `tool`, so a findings object that happens to
   // mention a tool (or carries a stray `tool` key) can never be executed as one.
-  if (Array.isArray(obj.findings)) return null;
+  if (isFindingsAnswer(obj)) return null;
 
   // It's a tool call only if it has a "tool" field with a non-empty string value
   const toolName = typeof obj.tool === "string" ? obj.tool.trim() : "";
@@ -759,6 +768,185 @@ export function parseToolCall(
   // still a tool call, so the loop answers with a repair error naming the real
   // tools instead of silently dropping the turn.
   return { tool: toolName, args: {} };
+}
+
+/** The agent's final answer carries a `findings` array (see {@link parseToolCall}, rule 1). */
+function isFindingsAnswer(value: unknown): boolean {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Array.isArray((value as Record<string, unknown>).findings)
+  );
+}
+
+/**
+ * #15 — the most tool calls executed from ONE model reply. The loop's turn cap
+ * bounds how many REPLIES a run gets, not how many calls a reply may ask for, and
+ * the reply is untrusted model output — without a cap one reply could request
+ * hundreds of searches. Calls past the cap are not run; the model is told which
+ * ones were dropped so it can ask again next turn.
+ */
+export const MAX_TOOL_CALLS_PER_REPLY = 8;
+
+/**
+ * #15 — the `[start, end)` spans of every balanced TOP-LEVEL `{…}` / `[…]` in
+ * `text`, in order, in ONE linear pass.
+ *
+ * Depth is tracked across the whole text, and string literals are only
+ * recognised INSIDE a value (depth > 0), so prose apostrophes and quotes between
+ * calls cannot desynchronise the scan, while a `}` inside a string argument
+ * cannot close a call early. Nothing is ever rescanned: a stray `}` at depth 0 is
+ * skipped, and an opener that never closes simply swallows the rest of the input
+ * as one unterminated (and therefore unreported) span. Tags such as
+ * `<tool_calls>` carry no brackets, so every wrapper form — flat, nested, or
+ * absent — reduces to the calls inside it with no tag handling at all.
+ *
+ * Bracket KIND is not matched here (`{…]` balances); `JSON.parse` on the span is
+ * the validator, and each span is parsed once, so total parse work is bounded by
+ * the input length too.
+ */
+function topLevelJsonSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === "\\") i++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}" || ch === "]") {
+      if (depth === 0) continue;
+      depth--;
+      if (depth === 0) spans.push([start, i + 1]);
+    } else if (ch === '"' && depth > 0) {
+      inString = true;
+    }
+  }
+  return spans;
+}
+
+/**
+ * #15 — every tool call a model reply requests, IN ORDER, or `null` when the
+ * reply is a final answer.
+ *
+ * Models that are not Claude routinely ask for several tools in one reply, as
+ * consecutive JSON objects, as a JSON array of calls, or inside a `<tool_calls>`
+ * wrapper — including the NESTED form DeepSeek emits
+ * (`<tool_calls><tool_calls>{…}</tool_calls>…</tool_calls>`). {@link parseToolCall}
+ * understands one object only: with two, its first-`{`-to-last-`}` slice spans
+ * both, fails to parse, and the reply was classified as a FINAL ANSWER — chat
+ * rendered the raw tool markup to the user, and the analysis code agent stopped
+ * investigating after its first call.
+ *
+ * Precedence, so every reply {@link parseToolCall} already understood parses
+ * exactly as before:
+ *   1. a `findings` answer ANYWHERE in the reply makes the whole reply the final
+ *      answer (the same safety rule 1 as the single parser);
+ *   2. two or more calls found by the top-level scan win;
+ *   3. otherwise the single parser's answer, byte-for-byte;
+ *   4. otherwise the one call the scan found (e.g. a wrapped call followed by
+ *      prose containing a `}`), else `null`.
+ *
+ * LINEAR TIME on untrusted output (see the #1244 / #1220 ReDoS notes above): one
+ * single-pass bracket scan, one `JSON.parse` per disjoint span, and the
+ * already-linear single parser. No regex.
+ */
+export function parseToolCalls(
+  response: string,
+  knownTools?: Iterable<string>,
+): ToolCallRequest[] | null {
+  const known = knownTools ? [...knownTools] : undefined;
+  const scanned: ToolCallRequest[] = [];
+  for (const [start, end] of topLevelJsonSpans(response)) {
+    let value: unknown;
+    try {
+      value = JSON.parse(response.slice(start, end));
+    } catch {
+      continue; // prose in braces, or a broken call — neither is a call
+    }
+    const items = Array.isArray(value) ? value : [value];
+    for (const item of items) {
+      if (isFindingsAnswer(item)) return null;
+      const call = toolCallFromValue(item, known);
+      if (call) scanned.push(call);
+    }
+  }
+  if (scanned.length >= 2) return scanned;
+  const single = parseToolCall(response, known);
+  if (single) return [single];
+  return scanned.length === 1 ? scanned : null;
+}
+
+/** Index of the first non-whitespace character at or after `from`. */
+function skipWhitespace(text: string, from: number): number {
+  let i = from;
+  while (i < text.length && /\s/.test(text[i] as string)) i++;
+  return i;
+}
+
+/**
+ * Does `text` contain a `<tool_call>` / `<tool_calls>` tag that OPENS protocol —
+ * followed, after whitespace, by JSON (`{` / `[`), another opening or closing tag,
+ * or the end of the reply? A tag that is merely MENTIONED (prose explaining the
+ * `<tool_calls>` format, say) is followed by ordinary text and is not markup. One
+ * `indexOf` walk; each whitespace run is skipped once, so this is linear.
+ */
+function hasToolCallTagWrappingJson(text: string): boolean {
+  const TAG = "<tool_call";
+  for (let at = text.indexOf(TAG); at >= 0; at = text.indexOf(TAG, at + TAG.length)) {
+    let i = at + TAG.length;
+    if (text[i] === "s") i++;
+    if (text[i] !== ">") continue;
+    i = skipWhitespace(text, i + 1);
+    if (
+      i >= text.length ||
+      text[i] === "{" ||
+      text[i] === "[" ||
+      text.startsWith(TAG, i) ||
+      text.startsWith("</tool_call", i)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * #15 — does this reply LOOK like tool-call protocol even though it may not
+ * parse (a truncated call, a broken `<tool_calls>` wrapper)? Such a reply must
+ * never be handed to a user as the answer: the loop routes it to the final-answer
+ * retry and, failing that, to the brace-free fallback message.
+ *
+ * Recognised: a `<tool_call>` / `<tool_calls>` tag wrapping JSON anywhere in the
+ * reply (see {@link hasToolCallTagWrappingJson}), or a reply whose first
+ * token — after an optional ``` / ```json fence and an optional `[` — is an
+ * object opening with the key `"tool"`. Scanned by index rather than by regex so
+ * the whitespace runs between those tokens cannot backtrack (linear time).
+ */
+export function looksLikeToolCallMarkup(text: string): boolean {
+  if (hasToolCallTagWrappingJson(text)) return true;
+  let i = skipWhitespace(text, 0);
+  if (text.startsWith("```", i)) {
+    i += 3;
+    if (text.startsWith("json", i)) i += 4;
+    i = skipWhitespace(text, i);
+  }
+  if (text[i] === "[") i = skipWhitespace(text, i + 1);
+  if (text[i] !== "{") return false;
+  i = skipWhitespace(text, i + 1);
+  return text.startsWith('"tool"', i);
+}
+
+/** #15 — a reply that is (or looks like) tool protocol rather than an answer. */
+export function isToolCallReply(text: string): boolean {
+  return parseToolCalls(text) !== null || looksLikeToolCallMarkup(text);
 }
 
 /**
@@ -813,7 +1001,8 @@ export type FinalAnswerKind =
 export function classifyFinalAnswer(text: string): FinalAnswerKind {
   const trimmed = (text ?? "").trim();
   if (!trimmed) return "empty";
-  if (parseToolCall(trimmed) !== null) return "tool-call";
+  // #15 — a multi-call reply is a tool call too, not "valid-json" or prose.
+  if (parseToolCalls(trimmed) !== null) return "tool-call";
   const start = trimmed.indexOf("{");
   if (start < 0) return "prose";
   const end = trimmed.lastIndexOf("}");
@@ -1110,83 +1299,105 @@ export async function runAgentLoop(
 
     // Check if this is a tool call or final response. The REGISTERED tool names
     // are handed to the parser so it can (and only then) absorb flat top-level
-    // arguments for a tool that really exists (#774).
-    const toolCall = parseToolCall(response.content, toolMap.keys());
+    // arguments for a tool that really exists (#774). #15 — a reply may request
+    // SEVERAL tools; every one of them is executed, in order.
+    const requested = parseToolCalls(response.content, toolMap.keys());
 
-    if (!toolCall) {
+    if (!requested) {
       // Final answer — exit the loop
       break;
     }
 
-    // It's a tool call — execute it
-    const tool = toolMap.get(toolCall.tool);
-    let toolResult: ToolResult;
+    const batch = requested.slice(0, MAX_TOOL_CALLS_PER_REPLY);
+    const resultSections: string[] = [];
+    for (const [index, toolCall] of batch.entries()) {
+      // A cancelled run stops between tool calls, not only between turns.
+      if (index > 0 && options.signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
 
-    if (!tool) {
-      toolResult = {
-        content: `Error: Unknown tool "${toolCall.tool}". Available tools: ${Array.from(toolMap.keys()).join(", ")}`,
-        isError: true,
+      const tool = toolMap.get(toolCall.tool);
+      let toolResult: ToolResult;
+
+      if (!tool) {
+        toolResult = {
+          content: `Error: Unknown tool "${toolCall.tool}". Available tools: ${Array.from(toolMap.keys()).join(", ")}`,
+          isError: true,
+        };
+      } else {
+        try {
+          toolResult = await tool.execute(toolCall.args, input.toolContext);
+        } catch (err) {
+          toolResult = {
+            content: `Error executing tool: ${(err as Error).message}`,
+            isError: true,
+          };
+        }
+      }
+
+      const executed = {
+        tool: toolCall.tool,
+        args: toolCall.args,
+        resultPreview: toolResult.content.slice(0, 200),
+        // #773 — the tool's OWN structured outcome, forwarded so retrieval health
+        // never has to guess from prose whether a call failed or came back empty.
+        ...(typeof toolResult.isError === "boolean" ? { isError: toolResult.isError } : {}),
+        ...(typeof toolResult.resultCount === "number"
+          ? { resultCount: toolResult.resultCount }
+          : {}),
+        // #734 — full, untruncated result so code-citation grounding can harvest
+        // authoritative `filePath:startLine-endLine` locators from search-tool
+        // output. Already retained verbatim in `messages` below, so this is a
+        // reference, not a copy — no extra memory of note.
+        result: toolResult.content,
       };
-    } else {
-      try {
-        toolResult = await tool.execute(toolCall.args, input.toolContext);
-      } catch (err) {
-        toolResult = { content: `Error executing tool: ${(err as Error).message}`, isError: true };
+      toolCalls.push(executed);
+
+      // #713 — surface tool activity to a streaming caller as a structured frame,
+      // live, right after execution. Best-effort: never let it break the loop.
+      if (options.onToolCall) {
+        try {
+          options.onToolCall(executed);
+        } catch (err) {
+          log.warn("onToolCall callback threw, continuing", { error: (err as Error).message });
+        }
       }
+
+      log.info("Tool call executed", {
+        turn,
+        tool: toolCall.tool,
+        resultLength: toolResult.content.length,
+        truncated: toolResult.truncated,
+      });
+
+      resultSections.push(
+        `Tool result for ${toolCall.tool}:\n${toolResult.content}${toolResult.truncated ? "\n[Results truncated]" : ""}`,
+      );
     }
 
-    const executed = {
-      tool: toolCall.tool,
-      args: toolCall.args,
-      resultPreview: toolResult.content.slice(0, 200),
-      // #773 — the tool's OWN structured outcome, forwarded so retrieval health
-      // never has to guess from prose whether a call failed or came back empty.
-      ...(typeof toolResult.isError === "boolean" ? { isError: toolResult.isError } : {}),
-      ...(typeof toolResult.resultCount === "number"
-        ? { resultCount: toolResult.resultCount }
-        : {}),
-      // #734 — full, untruncated result so code-citation grounding can harvest
-      // authoritative `filePath:startLine-endLine` locators from search-tool
-      // output. Already retained verbatim in `messages` below, so this is a
-      // reference, not a copy — no extra memory of note.
-      result: toolResult.content,
-    };
-    toolCalls.push(executed);
-
-    // #713 — surface tool activity to a streaming caller as a structured frame,
-    // live, right after execution. Best-effort: never let it break the loop.
-    if (options.onToolCall) {
-      try {
-        options.onToolCall(executed);
-      } catch (err) {
-        log.warn("onToolCall callback threw, continuing", { error: (err as Error).message });
-      }
+    if (requested.length > batch.length) {
+      resultSections.push(
+        `Note: your reply requested ${requested.length} tool calls; only the first ` +
+          `${batch.length} of ${requested.length} were executed. Request the rest in your next reply if you still need them.`,
+      );
     }
 
-    log.info("Tool call executed", {
-      turn,
-      tool: toolCall.tool,
-      resultLength: toolResult.content.length,
-      truncated: toolResult.truncated,
-    });
-
-    // Append the assistant's response and the tool result to the conversation
+    // Append the assistant's response and EVERY tool result to the conversation.
+    // A single call produces exactly the pre-#15 message, byte for byte.
     messages.push({ role: "assistant", content: response.content });
-    messages.push({
-      role: "user",
-      content: `Tool result for ${toolCall.tool}:\n${toolResult.content}${toolResult.truncated ? "\n[Results truncated]" : ""}`,
-    });
+    messages.push({ role: "user", content: resultSections.join("\n\n") });
   }
 
   let finalResponse = lastResponse;
   // The loop stopped while the model was still calling tools ⇒ it never got to
   // answer. `budgetExhausted` only ever covered the TOKEN budget, so the turn
   // cap was previously invisible to callers (#769 root cause #2).
-  const turnsExhausted = parseToolCall(finalResponse) !== null;
+  const turnsExhausted = parseToolCalls(finalResponse) !== null;
 
+  // #15 — a reply that only LOOKS like tool protocol (a truncated call, a broken
+  // `<tool_calls>` wrapper) is not an answer either.
   const isValidFinalAnswer =
-    options.finalAnswerRetry?.isValidFinalAnswer ??
-    ((text: string) => parseToolCall(text) === null);
+    options.finalAnswerRetry?.isValidFinalAnswer ?? ((text: string) => !isToolCallReply(text));
 
   // P0 #769 — SALVAGE. The loop ended without a usable answer but the whole
   // investigation is sitting in `messages`. Spend ONE more, tool-free call
@@ -1284,7 +1495,7 @@ export async function runAgentLoop(
   // model was still emitting a tool call, `finalResponse` is raw `{"tool":...}`
   // protocol JSON. Never hand that to a caller: substitute a safe,
   // human-readable fallback. Pure post-loop sanitization — no model call.
-  if (parseToolCall(finalResponse) !== null) {
+  if (isToolCallReply(finalResponse)) {
     // #1217 (D1) — keep the pre-overwrite text for the caller's salvage pass.
     // A retry answer, if there was one, is the better source and wins.
     salvageSource ??= finalResponse;

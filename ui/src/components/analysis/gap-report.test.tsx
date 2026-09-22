@@ -273,6 +273,32 @@ describe("GapReport — could-not-verify (#773)", () => {
       /the investigation was cut short by its budget/,
     );
   });
+
+  it("says how many requirements went unverified and that searches were starved (#19)", async () => {
+    renderPanel();
+    await screen.findByTestId("gap-searched-scope");
+    // Neither signal on the base fixture — no wording.
+    expect(screen.getByTestId("gap-searched-scope")).not.toHaveTextContent(/could not be verified/);
+    expect(screen.getByTestId("gap-searched-scope")).not.toHaveTextContent(/far fewer/);
+
+    cleanup();
+    getGapReport.mockResolvedValue({
+      ...REPORT,
+      retrieval: {
+        ...REPORT.retrieval,
+        totalCalls: 1,
+        successfulSearches: 1,
+        requirementCount: 16,
+        starved: true,
+        unverifiedRequirements: 16,
+      },
+    });
+    renderPanel();
+    await screen.findByTestId("gap-searched-scope");
+    const panel = screen.getByTestId("gap-searched-scope");
+    expect(panel).toHaveTextContent(/16 of 16 requirements could not be verified/);
+    expect(panel).toHaveTextContent(/far fewer code searches than requirements/);
+  });
 });
 
 /**

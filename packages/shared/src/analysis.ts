@@ -1221,12 +1221,26 @@ export interface AnalysisRetrievalHealth {
    * RETRIEVAL ITSELF FAILED — the pass could not search the codebase at all, so no
    * verdict from it may stand, in either direction.
    *
+   * #19 — on the persisted run record, also set when the pass made far fewer code
+   * searches than it had requirements (below `MIN_SEARCHES_PER_REQUIREMENT` in
+   * `retrieval-health.ts`). That is a report-side judgement applied after the
+   * verdicts are gated; it is never fed back into them.
+   *
    * #1236 — this used to be set from turn/token exhaustion, which is a DIFFERENT
    * condition (see `exhausted`): a pass whose 14 searches all worked was branded
    * starved purely for running out of turns, and every one of its findings — file
    * paths, line numbers and all — was retitled "Could not verify".
    */
   starved: boolean;
+  /**
+   * #19 — how many requirements the code agent reported on ONLY as
+   * `could-not-verify`. Omitted when none. When more than half of
+   * `requirementCount` are unverified, the record is `degraded` — and when the pass
+   * also made far fewer code searches than it had requirements, `starved` — even
+   * though a single working search clears the verdict threshold. Report-side only:
+   * set after verdicts are gated, it never changes one.
+   */
+  unverifiedRequirements?: number;
   /**
    * #1236 — the loop ran out of TURNS or TOKENS. Retrieval worked; the
    * investigation was merely cut short, so the requirements it never reached are
@@ -1248,7 +1262,9 @@ export interface AnalysisRetrievalHealth {
   /**
    * Retrieval was too broken or too thin to support ANY absence claim (fails the
    * evidence threshold — see `server/src/lib/analysis/retrieval-health.ts`).
-   * Drives the `code-retrieval-degraded` capability reason.
+   * Drives the `code-retrieval-degraded` capability reason. #19 — on the persisted
+   * run record, also set when the pass was search-starved or left most of its
+   * requirements `could-not-verify` (see `unverifiedRequirements`).
    */
   degraded: boolean;
   /**
