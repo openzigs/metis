@@ -71,9 +71,14 @@ test.describe("Global connector catalogues (#224)", () => {
       await expect(dbs.projectFilter.locator("option", { hasText: project.name })).toHaveCount(1);
     });
 
-    await test.step("the list resolves to its empty state (no infinite loading)", async () => {
+    await test.step("the list resolves to a terminal state (no infinite loading)", async () => {
       await expect(dbs.listCard).toBeVisible();
-      await expect(dbs.emptyState()).toBeVisible({ timeout: 20_000 });
+      // Either the empty state or the table — this page lists connections
+      // across EVERY project, so whether it is empty depends on what the rest
+      // of the suite has created. What must always hold is that it stops
+      // loading.
+      await expect(dbs.emptyState().or(dbs.table()).first()).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByText("Loading databases…")).toHaveCount(0);
     });
 
     guard.assertClean();
@@ -102,9 +107,10 @@ test.describe("Global connector catalogues (#224)", () => {
       await expect(repos.projectFilter.locator("option", { hasText: project.name })).toHaveCount(1);
     });
 
-    await test.step("the list resolves to its empty state (no infinite loading)", async () => {
+    await test.step("the list resolves to a terminal state (no infinite loading)", async () => {
       await expect(repos.listCard).toBeVisible();
-      await expect(repos.emptyState()).toBeVisible({ timeout: 20_000 });
+      await expect(repos.emptyState().or(repos.table()).first()).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByText("Loading repositories…")).toHaveCount(0);
     });
 
     guard.assertClean();

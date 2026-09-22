@@ -15,6 +15,28 @@ import { SSOLoginPage } from "../pages/sso-login.page.js";
 
 const API_BASE = apiBase();
 
+/**
+ * Delete every configured SSO provider. Providers live in one global config,
+ * so a spec that asserts "no providers" has to establish that state itself.
+ */
+async function removeAllSsoProviders(token: string): Promise<void> {
+  const ctx = await request.newContext({
+    baseURL: API_BASE,
+    extraHTTPHeaders: { Authorization: `Bearer ${token}` },
+  });
+  try {
+    const res = await ctx.get("/api/admin/auth/providers");
+    expect(res.status(), await res.text()).toBe(200);
+    const { data } = (await res.json()) as { data: { providers: Array<{ id: string }> } };
+    for (const provider of data.providers) {
+      const del = await ctx.delete(`/api/admin/auth/providers/${provider.id}`);
+      expect([200, 404]).toContain(del.status());
+    }
+  } finally {
+    await ctx.dispose();
+  }
+}
+
 test.describe("SSO Login — Provider Buttons (#755)", () => {
   let adminToken: string;
 
@@ -26,6 +48,11 @@ test.describe("SSO Login — Provider Buttons (#755)", () => {
 
   // AC: Login page falls back to standard LDAP/mock when no SSO providers configured
   test("should show standard login form when no SSO providers configured", async ({ page }) => {
+    // SSO providers are GLOBAL state that other specs configure (admin-auth
+    // saves a "Test SAML IdP"). Clear them first, or this test's result depends
+    // on which files ran before it.
+    await removeAllSsoProviders(adminToken);
+
     const loginPage = new SSOLoginPage(page);
     await loginPage.goto();
 
