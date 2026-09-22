@@ -323,7 +323,7 @@ The release pipeline ships three images:
 | Image | Built from | Current size | Budget |
 |---|---|---|---|
 | `metis-ui` | `Dockerfile.ui` (Next.js 15 standalone, alpine) | **~197 MB** | ≤ 350 MB ✅ |
-| `metis-server` | `Dockerfile.server` (`node:22-trixie-slim`, glibc, prod-only deps, slimmed) | **~__MEASURED__ MB** (amd64, measured #39) | ≤ 1,170 MB — its own budget, see below |
+| `metis-server` | `Dockerfile.server` (`node:22-trixie-slim`, glibc, prod-only deps, slimmed) | **~1,068 MB** (amd64, measured #39) | ≤ 1,170 MB — its own budget, see below |
 | `metis-embeddings` | `Dockerfile.embeddings` (bookworm-slim, glibc) | **~423 MB** | exempt (sidecar) |
 
 > **Multi-arch (Epic #360 / sub-issue #373)**: All four core images
@@ -423,8 +423,8 @@ got further. The fixes that make it start, measured on amd64 (`du`, MiB; the
 | Oracle Instant Client on the loader path (`ld.so.conf.d` + `libaio`) | <1 | `initOracleClient` failed with `DPI-1047` without it |
 
 In total the image grew from 860 to 1,111 MiB by `du` (849 → 1,101 MB of
-uncompressed layers), and the `api` job measured it at **__MEASURED__ MB**. The
-gate holds it to **1,170 MB** (`DEFAULT_MAX_SERVER_IMAGE_MB` in
+uncompressed layers), and the `api` job measured it at **1,067.7 MB** (run
+35712009974). The gate holds it to **1,170 MB** (`DEFAULT_MAX_SERVER_IMAGE_MB` in
 `scripts/lib/verify-image-size.mjs`, overridable with `MAX_SERVER_IMAGE_MB`) —
 that measurement plus ~10% headroom, as a regression guard. `metis-ui` stays on
 the general 350 MB.

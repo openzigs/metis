@@ -29,10 +29,10 @@ export const DEFAULT_MAX_IMAGE_MB = 350;
  *
  * #34 measured 821 MB and set 900, provisionally: that image did not start (#39).
  * The image that starts — a glibc base, because LanceDB ships no musl binding, and
- * the Prisma CLI the boot-time migration guard runs — measured __MEASURED__ MB on the
- * `api` job, and this is that plus ~10% headroom. CI now starts the image and
- * polls /healthz (scripts/lib/smoke-server-image.mjs), so this budget describes an
- * image that runs. The breakdown and the reducible contributors are in
+ * the Prisma CLI the boot-time migration guard runs — measured 1,068 MB on the
+ * `api` job (run 35712009974); 1,170 is that plus ~10% headroom. CI now starts
+ * the image and polls /healthz (scripts/lib/smoke-server-image.mjs), so this
+ * budget describes an image that runs. The breakdown and the reducible contributors are in
  * docs/OPERATIONS.md > "Container Image Sizes". This is a REGRESSION gate:
  * measured size plus modest headroom, never a number raised until CI goes green.
  * `MAX_SERVER_IMAGE_MB` overrides it.
