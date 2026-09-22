@@ -1,7 +1,7 @@
 /**
  * Tests for the coverage scoring orchestrator (Epic #856 issue #858).
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 
 import {
   runCoverageScoring,
@@ -86,6 +86,12 @@ beforeEach(() => {
   embedState.model = "test-model";
   embedState.pins.length = 0;
   embedState.calls.length = 0;
+});
+
+// Env stubs are undone here, not at the end of a test body: a failing
+// assertion would otherwise leak the stub into every test that follows.
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 interface MockDbState {
@@ -645,6 +651,82 @@ describe("runCoverageScoring — embedding cost follow-ups (#72, #73, #77)", () 
     expect(state.run.embeddingTokens).toBe(
       embedState.calls.reduce((n, texts) => n + embedTokens(texts), 0),
     );
+  });
+
+  /** Every persisted usage row, and the embedding subset, for the current test. */
+  function persistedRows() {
+    const rows = vi.mocked(prisma.aITokenUsage.create).mock.calls.map((c) => c[0].data);
+    const embedding = rows.filter((r) => r.agentStep === "testcoverage.embedding");
+    // Set the two match-phase rows aside by the token count of the exact texts
+    // the embedder was handed, so what is left is the four calls #72 added:
+    // one cache key per judge batch, the suggestion cluster prompt, its dedup.
+    const inLoop = [...embedding];
+    for (const texts of [embedState.calls[0], embedState.calls[1]]) {
+      const i = inLoop.findIndex((r) => r.totalTokens === embedTokens(texts));
+      expect(i).toBeGreaterThanOrEqual(0);
+      inLoop.splice(i, 1);
+    }
+    const usd = (rs: typeof rows) => rs.reduce((n, r) => n + Number(r.estimatedCostUsd ?? 0), 0);
+    return { rows, embedding, inLoop, usd };
+  }
+
+  it("a priced cloud embedder bills every in-loop call at its published rate (#72 AC2)", async () => {
+    // AC2 asks for one test where a priced cloud embedder's in-loop calls are
+    // visible on the budget — not for a reader to compose that from "the calls
+    // are recorded" and "recorded calls are priced".
+    embedState.key = "openai";
+    embedState.model = "text-embedding-3-large";
+    const { report } = await runAmbiguous({
+      runId: "run-72-ac2",
+      budgetCents: 10_000,
+      call: dualCaller(),
+    });
+
+    const { rows, embedding, inLoop, usd } = persistedRows();
+    expect(embedding).toHaveLength(6);
+    expect(inLoop).toHaveLength(4);
+    // $0.13/MTok — the published OpenAI price the rate table carries.
+    const perToken = 0.13 / 1_000_000;
+    for (const row of embedding) {
+      expect(row.provider).toBe("embed:openai");
+      expect(row.model).toBe("text-embedding-3-large");
+      expect(Number(row.estimatedCostUsd)).toBeCloseTo(row.totalTokens * perToken, 12);
+    }
+    // None of it is guesswork the budget has to disclaim.
+    expect(report.cost.unpricedEmbeddingTokens).toBe(0);
+    // The in-loop calls are the MAJORITY of a run's embedding tokens here, and
+    // the run's reported spend is every priced row, those four included.
+    expect(usd(inLoop)).toBeGreaterThan(usd(embedding) / 2);
+    expect(report.cost.usedCents).toBe(Math.ceil(usd(rows) * 100));
+  });
+
+  it("an administrator's embedding price moves the run budget by the in-loop calls (#72 AC2)", async () => {
+    // The published rate is fractions of a cent on a fixture this size, so the
+    // cents the budget reports cannot show the difference. `MODEL_PRICES` with
+    // an `embed:<backend>:<model>` key is the documented way to put a model on
+    // the cap (#77); at a price that registers, the four in-loop calls are
+    // plainly the reason the run's cents read what they do.
+    vi.stubEnv(
+      "MODEL_PRICES",
+      JSON.stringify({
+        "embed:openai:text-embedding-3-large": { inputPerMTok: 10_000, outputPerMTok: 0 },
+      }),
+    );
+    embedState.key = "openai";
+    embedState.model = "text-embedding-3-large";
+    const { report } = await runAmbiguous({
+      runId: "run-72-ac2-priced",
+      budgetCents: 100_000,
+      call: dualCaller(),
+    });
+
+    const { rows, inLoop, usd } = persistedRows();
+    expect(inLoop).toHaveLength(4);
+    const totalCents = Math.ceil(usd(rows) * 100);
+    const withoutInLoop = Math.ceil((usd(rows) - usd(inLoop)) * 100);
+    expect(report.cost.usedCents).toBe(totalCents);
+    // Not a rounding artefact: the in-loop calls are worth hundreds of cents.
+    expect(totalCents - withoutInLoop).toBeGreaterThan(100);
   });
 
   it("an unpriced cloud embedder no longer stops a budgeted run (#77)", async () => {

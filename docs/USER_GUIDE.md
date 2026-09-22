@@ -4421,8 +4421,10 @@ The budget is checked before every judge batch and before every suggestion
 cluster, so a run stops part-way through either phase once the cap is reached.
 
 Embedding usage is recorded under the embedder that ran — every call a run
-makes, including the judge's per-batch cache keys and the suggestion phase's
-cluster prompts and deduplication. The built-in local embedders cost $0; Amazon
+makes: the indexing pass over your test cases and their steps, the requirement
+and test-case batches the matcher needs, the judge's per-batch cache keys, and
+the suggestion phase's cluster prompts and deduplication. On a cold run the
+indexing pass is the largest of those. The built-in local embedders cost $0; Amazon
 Titan Text Embeddings V2 and OpenAI's `text-embedding-3-small`,
 `text-embedding-3-large` and `text-embedding-ada-002` are priced at their
 published prices.

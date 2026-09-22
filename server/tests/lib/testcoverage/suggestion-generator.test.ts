@@ -1,7 +1,7 @@
 /**
  * Tests for the suggestion generator (Epic #856 issue #870).
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 
 import {
   FAITHFULNESS_THRESHOLD,
@@ -53,6 +53,12 @@ vi.mock("../../../src/lib/judge/hallucination-scorer.js", () => ({
 
 beforeEach(() => {
   __resetSemanticCacheSingleton();
+});
+
+// Undone here, not at the end of the test body that stubs it: a failing
+// assertion would otherwise leak SEMANTIC_CACHE_ENABLED into every test after.
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 function vec(...xs: number[]): number[] {
@@ -436,7 +442,6 @@ describe("generateSuggestions", () => {
       const phases = record.mock.calls.map((c) => c[0].phase);
       expect(phases.filter((p) => p === "suggestion")).toHaveLength(0);
       expect(phases.filter((p) => p === "embedding")).toHaveLength(2);
-      vi.unstubAllEnvs();
     });
   });
 

@@ -70,11 +70,15 @@ export interface CoverageBudgetView {
   /**
    * #77 — the embedding share of {@link unpricedTokens}. Reported, but it does
    * not stop the run: see {@link CoverageCostTracker.exceeded}.
+   *
+   * Served by the budget endpoint and not yet rendered: the budget tile shows
+   * the combined {@link unpricedTokens}, so it cannot tell an operator which
+   * kind of unknown spend they are looking at. Splitting the tile is #92.
    */
   unpricedEmbeddingTokens: number;
   /**
    * #43 — the judge/suggestion share of {@link unpricedTokens}. Non-zero means
-   * the budget refuses further LLM work.
+   * the budget refuses further LLM work. Unrendered today; see #92.
    */
   unpricedLlmTokens: number;
   /** Per-phase token counts. */
@@ -373,22 +377,21 @@ export async function readBudget(
   // phase on `agentStep`, so the persisted view answers the same question the
   // in-memory one does: which share of the unknown spend stops a run.
   const sessionId = coverageSessionId(runId);
-  const [unpricedEmbedding, unpricedLlm] = await Promise.all([
+  // Total first, embedding second, LLM by subtraction — the same `else` that
+  // {@link CoverageCostTracker.view} splits on. An allowlist of the LLM phases
+  // would silently drop a phase added later out of the persisted total.
+  const [unpricedTotal, unpricedEmbedding] = await Promise.all([
+    db.aITokenUsage.aggregate({
+      where: { sessionId, estimatedCostUsd: null },
+      _sum: { totalTokens: true },
+    }),
     db.aITokenUsage.aggregate({
       where: { sessionId, estimatedCostUsd: null, agentStep: "testcoverage.embedding" },
       _sum: { totalTokens: true },
     }),
-    db.aITokenUsage.aggregate({
-      where: {
-        sessionId,
-        estimatedCostUsd: null,
-        agentStep: { in: ["testcoverage.judge", "testcoverage.suggestion"] },
-      },
-      _sum: { totalTokens: true },
-    }),
   ]);
   const embeddingTokens = unpricedEmbedding._sum.totalTokens ?? 0;
-  const llmTokens = unpricedLlm._sum.totalTokens ?? 0;
+  const llmTokens = Math.max(0, (unpricedTotal._sum.totalTokens ?? 0) - embeddingTokens);
   const limit = options.budgetCents ?? DEFAULT_BUDGET_CENTS;
   return {
     limitCents: limit,

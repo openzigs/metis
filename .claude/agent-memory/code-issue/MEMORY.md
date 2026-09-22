@@ -9,3 +9,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Probe real default paths](project_storage-probes-must-target-real-default-paths.md) — a /tmp probe passed while <cwd>/data was EACCES (#54)
 - [Module wiring needs the smoke](project_module-wiring-needs-the-image-smoke.md) — import-time / registration-order bugs pass unit tests (#55, #60)
 - [Never `git checkout --` to undo a mutation](project_mutation-restore-must-not-use-git-checkout.md) — it restores HEAD, wiping uncommitted work
+- [A run outruns its service](project_coverage-run-spans-more-phases-than-the-service.md) — bill from `task-runner.ts` phases (#72)

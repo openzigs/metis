@@ -1,7 +1,7 @@
 /**
  * Tests for the LLM judge (Epic #856 issue #863).
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 
 import {
   DEFAULT_BATCH_SIZE,
@@ -40,6 +40,12 @@ vi.mock("../../../src/lib/rag/embedder.js", () => ({
 beforeEach(() => {
   __resetTokenTrackerSingleton();
   __resetSemanticCacheSingleton();
+});
+
+// Undone here, not at the end of the test body that stubs it: a failing
+// assertion would otherwise leak SEMANTIC_CACHE_ENABLED into every test after.
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 function ambCell(id: string): MatcherCell {
@@ -424,6 +430,5 @@ describe("judgeAmbiguous", () => {
     expect(second.modelCalls).toBe(0);
     expect(warm.recorded.filter((r) => r.phase === "judge")).toHaveLength(0);
     expect(warm.recorded.filter((r) => r.phase === "embedding")).toHaveLength(1);
-    vi.unstubAllEnvs();
   });
 });

@@ -82,6 +82,14 @@ export interface CoverageServiceDeps {
   caller: JudgeModelCaller;
   emit?: (event: CoverageProgressEvent) => void;
   budgetCents?: number;
+  /**
+   * #72 — the run's cost tracker, supplied by the task-runner so the import /
+   * index phases it drives before this function bill to the same budget. One is
+   * constructed here when the service is called on its own. When supplied, ITS
+   * cap governs and {@link budgetCents} is unused — the runner builds both from
+   * the same value.
+   */
+  cost?: CoverageCostTracker;
 }
 
 export interface CoverageServiceInput {
@@ -104,10 +112,12 @@ export async function runCoverageScoring(
   const emit = deps.emit ?? noopEmit;
   const embedder = getEmbedder();
 
-  const cost = new CoverageCostTracker(
-    { runId: input.runId, projectId: input.projectId, userId: input.userId },
-    { budgetCents: deps.budgetCents, db },
-  );
+  const cost =
+    deps.cost ??
+    new CoverageCostTracker(
+      { runId: input.runId, projectId: input.projectId, userId: input.userId },
+      { budgetCents: deps.budgetCents, db },
+    );
 
   // --- Load inputs ---------------------------------------------------------
   // Use the latest non-deleted requirements for the project.
