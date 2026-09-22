@@ -273,6 +273,56 @@ describe("GapReport — could-not-verify (#773)", () => {
       /the investigation was cut short by its budget/,
     );
   });
+
+  it("says how many requirements went unverified and that searches were starved (#19)", async () => {
+    renderPanel();
+    await screen.findByTestId("gap-searched-scope");
+    // Neither signal on the base fixture — no wording.
+    expect(screen.getByTestId("gap-searched-scope")).not.toHaveTextContent(/could not be verified/);
+    expect(screen.getByTestId("gap-searched-scope")).not.toHaveTextContent(/far fewer/);
+
+    cleanup();
+    getGapReport.mockResolvedValue({
+      ...REPORT,
+      retrieval: {
+        ...REPORT.retrieval,
+        totalCalls: 1,
+        successfulSearches: 1,
+        requirementCount: 16,
+        starved: true,
+        unverifiedRequirements: 16,
+      },
+    });
+    renderPanel();
+    await screen.findByTestId("gap-searched-scope");
+    const panel = screen.getByTestId("gap-searched-scope");
+    expect(panel).toHaveTextContent(/16 of 16 requirements could not be verified/);
+    expect(panel).toHaveTextContent(/far fewer code searches than requirements/);
+    // Starved: the headline blames code search, correctly.
+    expect(panel).toHaveTextContent(/Code search returned little usable evidence/);
+  });
+
+  it("does not blame code search when the run is degraded only by unverified requirements (#19)", async () => {
+    getGapReport.mockResolvedValue({
+      ...REPORT,
+      retrieval: {
+        ...REPORT.retrieval,
+        totalCalls: 12,
+        successfulSearches: 12,
+        erroredCalls: 0,
+        requirementCount: 16,
+        starved: false,
+        degraded: true,
+        unverifiedRequirements: 13,
+      },
+    });
+    renderPanel();
+    const panel = await screen.findByTestId("gap-searched-scope");
+    expect(panel).toHaveAttribute("data-degraded", "true");
+    expect(panel).toHaveTextContent(/Most requirements could not be verified against the code/);
+    expect(panel).not.toHaveTextContent(/Code search returned little usable evidence/);
+    expect(panel).toHaveTextContent(/13 of 16 requirements could not be verified/);
+  });
 });
 
 /**

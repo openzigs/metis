@@ -38,7 +38,7 @@ import type { AIProvider } from "../ai/types.js";
 import { extractJsonObject, repairAgentJson } from "./agent-runner.js";
 import {
   classifyFinalAnswer,
-  parseToolCall,
+  isToolCallReply,
   type AgentLoopResult,
   type FinalAnswerKind,
 } from "./agent-loop.js";
@@ -71,7 +71,9 @@ const REASON_TEXT: Record<AgenticDegradationReason, string> = {
  * when it is NOT a tool call AND it contains a parseable JSON object.
  */
 export function isJsonFinalAnswer(text: string): boolean {
-  if (!text || parseToolCall(text) !== null) return false;
+  // #15 — `isToolCallReply`, not the single-call parser: a multi-call reply's
+  // first object would otherwise pass `extractJsonObject` below as an "answer".
+  if (!text || isToolCallReply(text)) return false;
   try {
     const parsed = extractJsonObject(text);
     return !!parsed && typeof parsed === "object";
