@@ -62,6 +62,7 @@ import {
 } from "../lib/docs-gen/interrupted-generations.js";
 import {
   generationFailureMessage,
+  publicDocWarnings,
   publicGenerationErrorMessage,
 } from "../lib/docs-gen/generation-failure-message.js";
 
@@ -406,6 +407,10 @@ export function generatedDocsRouter(): Router {
         ...doc,
         // #52 — never the raw exception text a pre-#52 row may still hold.
         errorMessage: publicGenerationErrorMessage(doc.status, doc.errorMessage),
+        // #67 — same rule for the DEGRADED path: a `section-failed` warning
+        // persisted before #67 appended up to 300 characters of `String(err)`
+        // to its message, and this column was returned verbatim.
+        warnings: publicDocWarnings(doc.warnings),
         // #50 — lets the UI explain a restart and offer a one-click regenerate.
         interrupted: doc.status === "failed" && doc.errorMessage === GENERATION_INTERRUPTED_MESSAGE,
         indexing: syntheticDocument
@@ -518,6 +523,9 @@ export function generatedDocsRouter(): Router {
       data: {
         ...updated,
         errorMessage: publicGenerationErrorMessage(updated.status, updated.errorMessage),
+        // #67 — see the GET handler: the row's warnings column is the degraded
+        // path's equivalent of `errorMessage` and gets the same treatment.
+        warnings: publicDocWarnings(updated.warnings),
       },
     });
   });

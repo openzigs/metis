@@ -715,7 +715,15 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
     const result = await synthesizeHolisticDocument("p1", "architecture", "Arch");
     expect(result.warnings.length).toBeGreaterThan(0);
     expect(result.warnings[0].kind).toBe("section-failed");
-    expect(result.warnings[0].message).toContain("synthetic section failure");
+    // #67 — the warning names the section and says it failed, but it no longer
+    // echoes the exception. This assertion used to require the thrown text
+    // ("synthetic section failure") to be IN the message, which is precisely
+    // the exposure #67 closes: the message is persisted, returned by
+    // `GET /docs/:docId` and rendered in the UI banner.
+    expect(result.warnings[0].message).toContain(
+      'Section "Overview, Context & Layers" could not be generated',
+    );
+    expect(result.warnings[0].message).not.toContain("synthetic section failure");
     // The failed section is NOT buried as an HTML comment in the body.
     expect(result.markdown).not.toContain("<!-- Section");
   });

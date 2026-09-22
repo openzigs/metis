@@ -158,12 +158,40 @@ export function tokenCountMetaKeys(): ReadonlySet<string> {
 }
 
 /**
+ * #68 — a plain-object view of an `Error` that survives serialisation.
+ *
+ * `name`, `message`, `stack` and `cause` are own but NOT own *enumerable*
+ * properties, so `Object.entries(err)` returns `[]` and the generic object
+ * branch below rebuilt every logged error as `{}`. `winston.format.errors`
+ * does not cover this: it only handles an Error passed as the log *message* or
+ * as the top-level info object, never one nested in metadata — which is the
+ * shape nearly every call site under `server/src` uses (`log.error("…", { err })`).
+ *
+ * Own enumerable properties are spread on top (an `AIProviderError`'s `status`,
+ * a driver's `code`), and the caller walks the result through the same
+ * key-based redaction as any other object, so `err.token` redacts exactly as
+ * `meta.token` would.
+ */
+function errorShape(err: Error): Record<string, unknown> {
+  const out: Record<string, unknown> = { name: err.name, message: err.message };
+  if (err.stack != null) out.stack = err.stack;
+  if (err.cause != null) out.cause = err.cause;
+  return { ...out, ...err };
+}
+
+/**
  * Recursively walk a meta object and return a redacted clone.
  * Leaves the original untouched (winston shares meta across transports).
  */
 export function redact(input: unknown, depth = 0): unknown {
   if (depth > 6 || input == null) return input;
   if (Array.isArray(input)) return input.map((v) => redact(v, depth + 1));
+  if (input instanceof Error) {
+    // Recurse at the SAME depth: the shape is a view of this one value, not an
+    // extra level of nesting, so an error never costs a level of depth budget.
+    // `errorShape` returns a plain object, so this cannot re-enter this branch.
+    return redact(errorShape(input), depth);
+  }
   if (typeof input === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(input as Record<string, unknown>)) {

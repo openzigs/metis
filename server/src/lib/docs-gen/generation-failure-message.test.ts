@@ -10,6 +10,7 @@ import {
   GENERATION_PROVIDER_BALANCE_MESSAGE,
   GENERATION_PROVIDER_RATE_LIMITED_MESSAGE,
   generationFailureMessage,
+  publicDocWarnings,
   publicGenerationErrorMessage,
 } from "./generation-failure-message.js";
 import { GENERATION_INTERRUPTED_MESSAGE } from "./interrupted-generations.js";
@@ -120,5 +121,90 @@ describe("publicGenerationErrorMessage", () => {
     expect(publicGenerationErrorMessage("failed", undefined)).toBeNull();
     const legacyWarnings = JSON.stringify([{ kind: "ungrounded", message: "m" }]);
     expect(publicGenerationErrorMessage("degraded", legacyWarnings)).toBe(legacyWarnings);
+  });
+});
+
+/**
+ * #67 — the READ arm. A row persisted before #67 still carries up to 300
+ * characters of `String(err)` inside a `section-failed` warning message, in the
+ * `warnings` JSON column that `GET /projects/:projectId/docs/:docId` returns.
+ * `publicDocWarnings` re-derives the detail of any such warning through the
+ * fixed vocabulary, and leaves everything else exactly as persisted.
+ */
+describe("publicDocWarnings", () => {
+  const legacy = (message: string) => [
+    { kind: "section-failed", section: "Business Rules", message, severity: "error" },
+  ];
+
+  it("sanitises a legacy section-failed warning that echoes the exception", () => {
+    const out = publicDocWarnings(
+      legacy(`Section "Business Rules" could not be generated: Error: ${SECRET}.`),
+    ) as Array<Record<string, unknown>>;
+    expect(out).toHaveLength(1);
+    expect(out[0].message).not.toContain("deepseek");
+    expect(out[0].message).not.toContain("/srv/metis");
+    expect(out[0].message).not.toContain("SELECT");
+    expect(out[0].message).toContain(GENERATION_FAILED_MESSAGE);
+    expect(out[0].message).toContain('Section "Business Rules" could not be generated');
+    // Still an error-severity degradation for the same section.
+    expect(out[0].severity).toBe("error");
+    expect(out[0].section).toBe("Business Rules");
+    expect(out[0].detailSafe).toBe(true);
+  });
+
+  it("keeps a legacy balance failure recognisable as a balance problem", () => {
+    const out = publicDocWarnings(
+      legacy('Section "X" could not be generated: Error: deepseek returned 402: {"e":1}.'),
+    ) as Array<Record<string, unknown>>;
+    expect(out[0].message).toContain(GENERATION_PROVIDER_BALANCE_MESSAGE);
+    expect(out[0].message).not.toContain("deepseek");
+  });
+
+  it("leaves a post-#67 warning untouched, message and all", () => {
+    const safe = [
+      {
+        kind: "section-failed",
+        section: "Table Reference",
+        message: 'Section "Table Reference" could not be generated: 0 of 641 tables described.',
+        severity: "error",
+        detailSafe: true,
+      },
+    ];
+    expect(publicDocWarnings(safe)).toEqual(safe);
+  });
+
+  it("leaves every other warning kind untouched, numeric fields included", () => {
+    const others = [
+      {
+        kind: "section-ungrounded",
+        section: "Workflows",
+        message: 'Section "Workflows": 41% of claims are grounded.',
+        severity: "warning",
+        ratio: 0.41,
+        threshold: 0.6,
+        tier: "reconstruction",
+      },
+      { kind: "no-modules", section: "Document", message: "none qualified", severity: "warning" },
+    ];
+    expect(publicDocWarnings(others)).toEqual(others);
+  });
+
+  it("passes through shapes that are not a warnings array", () => {
+    expect(publicDocWarnings(null)).toBeNull();
+    expect(publicDocWarnings(undefined)).toBeUndefined();
+    expect(publicDocWarnings("legacy string")).toBe("legacy string");
+    expect(publicDocWarnings({ kind: "section-failed" })).toEqual({ kind: "section-failed" });
+    // Non-object members survive a mixed array rather than being dropped.
+    expect(publicDocWarnings([1, null, "x"])).toEqual([1, null, "x"]);
+  });
+
+  it("sanitises a legacy warning whose message field is missing or not a string", () => {
+    const out = publicDocWarnings([
+      { kind: "section-failed", section: "Y", severity: "error" },
+      { kind: "section-failed", section: "Z", message: 42, severity: "error" },
+    ]) as Array<Record<string, unknown>>;
+    expect(out[0].message).toContain(GENERATION_FAILED_MESSAGE);
+    expect(out[1].message).toContain(GENERATION_FAILED_MESSAGE);
+    expect(out[1].message).not.toContain("42");
   });
 });

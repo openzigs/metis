@@ -541,6 +541,9 @@ model Project {
   /// Epic #159 — requirement→code mappings + per-project impact items.
   requirementCodeMappings    RequirementCodeMapping[]
   impactItems                ImpactItem[]
+  /// Issue #70 — impact-analysis runs STARTED for this project (recorded at
+  /// creation, so a run in flight is already this project's).
+  impactAnalyses             ImpactAnalysisProject[]
   /// Epic #207 — requirement↔spec + spec↔code mappings (traceability spine).
   requirementSpecMappings    RequirementSpecMapping[]
   specCodeMappings           SpecCodeMapping[]
@@ -1935,6 +1938,11 @@ model ImpactAnalysis {
 
   items ImpactItem[]
 
+  /// Issue #70 — the projects this run was STARTED for, persisted at creation.
+  /// `items` is empty until the run maps its first change, so this is what the
+  /// list view and its access filter read.
+  projects ImpactAnalysisProject[]
+
   /// Issue #963 (Epic #960) — external issues published from this run (Jira/GitHub).
   issueLinks IssueLink[]
 
@@ -1943,6 +1951,30 @@ model ImpactAnalysis {
   @@index([status])
   @@index([rerunOfId])
   @@map("impact_analyses")
+}
+
+/// Issue #70 — the projects an impact-analysis run was STARTED for.
+///
+/// `ImpactItem` rows only come into existence once a run has mapped a change to
+/// code, so deriving a run's projects from them made every run that is still
+/// pending/running, that failed before its first item, or that extracted zero
+/// changes look like it belonged to NO project: invisible on
+/// `/projects/:id/impact`, and — because the access filter treated "no known
+/// projects" as "visible to everyone" — readable by members with no access to
+/// the projects involved. This table records the selection at creation time, in
+/// the same write as the run, so membership and access never depend on work the
+/// run has not done yet. Items remain the basis for the per-project DETAIL view.
+model ImpactAnalysisProject {
+  analysisId String
+  projectId  String
+  createdAt  DateTime @default(now())
+
+  analysis ImpactAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+  project  Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@id([analysisId, projectId])
+  @@index([projectId])
+  @@map("impact_analysis_projects")
 }
 
 /// One (project, requirement-change) impact row within an ImpactAnalysis run.

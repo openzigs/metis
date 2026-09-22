@@ -10,3 +10,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Module wiring needs the smoke](project_module-wiring-needs-the-image-smoke.md) — import-time / registration-order bugs pass unit tests (#55, #60)
 - [Never `git checkout --` to undo a mutation](project_mutation-restore-must-not-use-git-checkout.md) — it restores HEAD, wiping uncommitted work
 - [A run outruns its service](project_coverage-run-spans-more-phases-than-the-service.md) — bill from `task-runner.ts` phases (#72)
+- [Whole-module vi.mock 500s later](project_whole-module-vi-mock-stubs-500-at-runtime.md) — one-export stub rots; use `importOriginal` (#67)
