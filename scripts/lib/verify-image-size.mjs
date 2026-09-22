@@ -27,13 +27,14 @@ export const DEFAULT_MAX_IMAGE_MB = 350;
 /**
  * `metis-server`'s own budget, in MB, measured on a GitHub-hosted amd64 runner (#34).
  *
- * The general 350 MB is unreachable for the server without dropping features: the
- * Oracle Instant Client, Node itself, LanceDB's native library, three
- * `@napi-rs/canvas` builds (pdf-parse / pdfjs-dist) and tesseract's OCR WASM
- * alone come to over 500 MB before a single line of application JavaScript. The
- * breakdown and the reasoning are in docs/OPERATIONS.md > "Container Image
- * Sizes". This is a REGRESSION gate: measured size plus modest headroom, never a
- * number raised until CI goes green. `MAX_SERVER_IMAGE_MB` overrides it.
+ * 900 MB is the measured amd64 size (821 MB) plus ~10% headroom, and it is
+ * PROVISIONAL: two of the largest contributors — the Oracle Instant Client and
+ * LanceDB's native library, ~237 MB together — do not load in this image (#39),
+ * and three `@napi-rs/canvas` copies and tesseract's unused WASM variants are
+ * still reducible. Re-measure once #39 lands. The breakdown is in
+ * docs/OPERATIONS.md > "Container Image Sizes". This is a REGRESSION gate:
+ * measured size plus modest headroom, never a number raised until CI goes green.
+ * `MAX_SERVER_IMAGE_MB` overrides it.
  */
 export const DEFAULT_MAX_SERVER_IMAGE_MB = 900;
 

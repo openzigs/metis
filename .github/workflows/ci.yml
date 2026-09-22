@@ -134,9 +134,10 @@ jobs:
       #
       # Budget note (#34): metis-ui is gated at ≤350 MB. metis-server is held to
       # its OWN measured amd64 budget (900 MB, DEFAULT_MAX_SERVER_IMAGE_MB) —
-      # the old ~329 MB figure was never re-measured as the image grew, and
-      # 350 is unreachable for it without dropping features. The breakdown is in
-      # docs/OPERATIONS.md > "Container Image Sizes".
+      # the old ~329 MB figure was never re-measured as the image grew. 900 MB is
+      # the measured size plus ~10% and is PROVISIONAL until #39: ~237 MB of it
+      # (Oracle client, LanceDB) does not even load in this image. The breakdown
+      # is in docs/OPERATIONS.md > "Container Image Sizes".
       #
       # This gate previously allowed 1200 MB. That was NOT the real budget — it
       # was an arm64 allowance, because the runner was arm64 and a
