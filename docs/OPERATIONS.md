@@ -323,7 +323,7 @@ The release pipeline ships three images:
 | Image | Built from | Current size | Budget |
 |---|---|---|---|
 | `metis-ui` | `Dockerfile.ui` (Next.js 15 standalone, alpine) | **~197 MB** | ≤ 350 MB ✅ |
-| `metis-server` | `Dockerfile.server` (alpine, prod-only deps, slimmed) | **~329 MB** | ≤ 350 MB ✅ |
+| `metis-server` | `Dockerfile.server` (alpine, prod-only deps, slimmed) | **~820 MB** (amd64, measured #34) | ≤ 900 MB — its own budget, see below |
 | `metis-embeddings` | `Dockerfile.embeddings` (bookworm-slim, glibc) | **~423 MB** | exempt (sidecar) |
 
 > **Multi-arch (Epic #360 / sub-issue #373)**: All four core images
@@ -366,33 +366,80 @@ by combining three changes:
      databases (cockroachdb, mysql, sqlserver, sqlite)
    - All READMEs/CHANGELOGs/docs/examples/test directories under `node_modules`
 
-### What's left (and why we can't hit 250 MB without further surgery)
+### Why the server's budget is 900 MB, not 350 (#34)
 
-The remaining ~329 MB is dominated by native binaries we can't trim:
+The ~329 MB above was never re-measured as the image grew. The first amd64 build
+to reach the gate on a GitHub-hosted runner measured **1,301 MB**. Three causes:
+the Oracle Instant Client was added to the runtime stage (the comment beside it
+said ~35 MB; it unpacks to 164 MB), the tree-sitter grammar packages arrived
+with C sources and six platforms' native builds each, and the prune globs had
+silently stopped matching — `@github+copilot-linux-*` never matched the
+`copilot-linuxmusl-x64` package (158 MB), and Prisma 7 renamed the query
+compilers the `query_compiler_bg.*` globs were written for.
 
-| Dependency | Approx size | Notes |
+#34 took it to **839 MB**, then ~820 MB (CI figures are decimal MB from
+`docker image inspect`):
+
+| Removed | Saved |
+|---|---|
+| Copilot CLI binary (`@github/copilot-linuxmusl-x64`) — the glob fix, plus the Copilot SDK excluded from the reachability prune | ~160 MB |
+| tree-sitter C sources and native prebuilds (the server loads only the `.wasm`, via `web-tree-sitter`) | ~125 MB |
+| The `prisma` CLI's tree — `@prisma/studio-core`, `@prisma/dev`, `@electric-sql/pglite`, react-dom and 58 more — by the reachability prune (`scripts/lib/prune-pnpm-store.mjs`) | ~80 MB |
+| Prisma 7 query compilers for cockroachdb / mysql / sqlserver | ~45 MB |
+| Other platforms' `prebuilds/`, better-sqlite3's SQLite sources and object files | ~40 MB |
+| Oracle's JDBC jars (`ojdbc*.jar`, `ucp*.jar`) — thick mode loads only the `.so` libraries | ~27 MB |
+| npm, npx, yarn and corepack from the runtime stage | ~23 MB |
+
+What is left, measured in the amd64 image (MiB, from `du`):
+
+| Component | Size | Notes |
 |---|---|---|
-| `@lancedb/vectordb-linux-arm64-gnu` | ~87 MB | Single `.node` binary, on-disk vector store |
-| `@prisma/client` runtime + Postgres WASM engine | ~34 MB | After all prunes |
-| `@napi-rs/canvas-linux-arm64-musl` | ~24 MB | Required by `pdf-parse@2`; single `.node` binary |
-| `pdfjs-dist` (legacy build) + `pdf-parse` | ~15 MB | PDF text extraction |
-| `apache-arrow` + zod + everything else | ~70 MB | Sum of remaining JS deps |
-| `node:20-alpine` base | ~75 MB | Smallest practical Node base image |
+| Oracle Instant Client (basiclite 23.9, `.so` only) | ~138 | Intended for thick mode (pre-12c password verifiers); does not load today (#39) |
+| Node.js 20 runtime (`/usr/local`) | ~104 | The `node` binary alone is 97 |
+| `@lancedb/vectordb-linux-x64-gnu` | ~99 | Single native library; does not load on musl today (#39) |
+| `@napi-rs/canvas` ×3 (pdf-parse and two `pdfjs-dist` versions each pin their own) | ~88 | Native, musl |
+| `tesseract.js-core` | ~44 | OCR WASM, via `officeparser` |
+| `@prisma/client` | ~41 | After the prunes |
+| mermaid, `@kubernetes/client-node`, playwright-core, cytoscape, pdfjs-dist ×2 | ~92 | |
+| Everything else in `node_modules` | ~212 | ~750 store entries |
+| Compiled server (`server/dist`) + Prisma schema | ~29 | |
 
-**Hitting the original ≤250 MB target requires one of:**
-- Externalising LanceDB to its own sidecar (saves ~87 MB) — or replacing it
-  with `pgvector` riding on the existing Postgres
-- Reverting to `pdf-parse@1`, which doesn't depend on `@napi-rs/canvas`
-  (saves ~24 MB) — at the cost of weaker PDF support
-- Switching the runtime to `gcr.io/distroless/nodejs20-debian12` — has not
-  been measured but expected to net <30 MB
+**The 900 MB budget is a measured ceiling, not a floor, and it is provisional
+until #39 is fixed.** CI measured `metis-server` at **821 MB** (`api` run
+35673206512); the gate holds it to its own budget, **900 MB**
+(`DEFAULT_MAX_SERVER_IMAGE_MB` in `scripts/lib/verify-image-size.mjs`,
+overridable with `MAX_SERVER_IMAGE_MB`), which is that measurement plus ~10%
+headroom, as a regression guard. `metis-ui` stays on the general 350 MB — a
+larger server budget does not loosen it.
 
-Tracked as follow-up work (see PR description for issue #145).
+Do not cite the table above as the smallest this image can be. Two of its
+largest rows do not work in this image today (#39): the Oracle Instant Client
+fails `initOracleClient` with `DPI-1047` (`libnnz.so` is not found on the
+loader path, although the file is present), and `@lancedb/vectordb` fails to
+relocate on musl. That is ~237 MB counted as features that are not delivered.
+Fixing #39 may mean a glibc base image (larger) or dropping the Instant Client
+(~138 MB smaller); either way the budget must be re-measured then, and lowered
+if the measurement allows.
+
+Reducible contributors still in the image, measured in review of #38:
+
+- The Oracle Instant Client (~138 MB), which does not load (#39) — the
+  strongest candidate for a build argument
+- Three copies of `@napi-rs/canvas` (~55 MB recoverable by deduplicating to one
+  version — needs `pdfjs-dist` aligned across `pdf-parse` and `officeparser`)
+- `tesseract.js-core` WASM variants (~35 MB — 12 variants ship, about 2 are used)
+- `@azure/msal-browser`, a browser library, in a server image
+- better-sqlite3 build leftovers (`build/Release/obj` and `sqlite3.a`, ~13 MB)
+
+Moving LanceDB to `pgvector` or a sidecar (~99 MB) is a feature decision
+rather than a prune.
 
 ### Enforcing the budget
 
-The `pnpm verify:image-size` script (`scripts/verify-image-size.sh`) builds
-both **gated** images and asserts each is ≤ `MAX_IMAGE_MB` (default **350**).
+The `pnpm verify:image-size` script (`scripts/lib/verify-image-size.mjs`; the
+older `scripts/verify-image-size.sh` does the same) builds both **gated** images
+and asserts `metis-ui` is ≤ `MAX_IMAGE_MB` (default **350**) and `metis-server`
+is ≤ `MAX_SERVER_IMAGE_MB` (default **900**).
 The embeddings sidecar size is reported but not gated. The script exits
 non-zero when the budget is exceeded and is wired into CI as part of the
 `api` job.
@@ -405,9 +452,45 @@ pnpm verify:image-size
 SERVER_TAG=metis-server:test UI_TAG=metis-ui:test \
   bash scripts/verify-image-size.sh --no-build
 
-# Tighten the budget (e.g. after the LanceDB sidecar lands)
-MAX_IMAGE_MB=250 pnpm verify:image-size
+# Tighten the budgets (e.g. after the LanceDB sidecar lands)
+MAX_IMAGE_MB=250 MAX_SERVER_IMAGE_MB=700 pnpm verify:image-size
 ```
+
+### CI build cache (#3)
+
+`ci.yml`'s `api` job builds the four images with `docker/build-push-action`
+and caches layers in the GitHub Actions cache (`type=gha`, one `scope` per
+image, `mode=max` so the multi-stage builders' `pnpm install` layers are cached
+too). `build-images.yml` uses the same scopes, but its release-tag build
+only reads the cache. A run can restore caches written by its own ref or by
+the default branch, so a tag run reads `main`'s cache, but a cache written
+from a tag can be restored only by that same tag — it would never be read
+again and would only spend the 10 GB repository limit. The earlier caches — the
+self-hosted daemon's layer store, and a `type=local` directory under
+`/tmp/buildkit-cache` — were properties of that machine and are empty on every
+hosted VM. Before building, both workflows delete preinstalled toolchains the
+build never uses (.NET, Android SDK, GHC, CodeQL) and the runner's cached
+Docker images.
+
+Measured on #38 (hosted `ubuntu-latest`, amd64), from the `api` job's step
+timings (`gh api repos/openzigs/metis/actions/jobs/<id>`):
+
+| Cache | Run (job) | server | ui | embeddings | sql-lineage | four builds | whole `api` job |
+|---|---|---|---|---|---|---|---|
+| Cold — first run, empty cache | 35671126250 (106567592133) | 7m19s | 3m42s | 2m11s | 18s | 13m30s | 28m20s |
+| Partly warm — new commit, server source changed | 35673206512 attempt 1 (106574086399) | 3m03s | 2m47s | 1m49s | 6s | 7m45s | 23m22s |
+| Warm — re-run of the same commit | 35673206512 attempt 2 (106589624773) | 2m31s | 2m33s | 2m12s | 9s | 7m25s | 18m46s |
+
+The cache roughly halves the image builds (13m30s → 7m25s) and brings the
+whole job from 28m20s to under 19 minutes, well inside its 60-minute timeout.
+It does not bring a warm build to seconds: every dependency-install layer
+restores as `CACHED`, but in the warm run the compile steps after the source
+`COPY` (`pnpm --filter @metis/server build`, `next build`) still re-ran, and
+restoring and re-exporting the `mode=max` cache costs 15–60 s per image. The
+rest of the job is not image building: `Test` took 8–11 minutes in each run.
+
+Freeing disk took 45s–1m49s across these runs; in the warm run it took the
+runner from 83 GB to 110 GB free.
 
 ### Embeddings sidecar deployment notes
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # verify-image-size.sh
 #
-# Builds the metis-server and metis-ui Docker images and asserts each one
-# stays under MAX_IMAGE_MB.
+# Builds the metis-server and metis-ui Docker images and asserts metis-ui
+# stays under MAX_IMAGE_MB and metis-server under MAX_SERVER_IMAGE_MB.
 #
-# Default budget: 350 MB.
+# Default budgets: 350 MB (ui), 900 MB (server — measured on amd64 in #34;
+# the 350 MB below is unreachable for the server, see docs/OPERATIONS.md).
 #
 # Issue #93 originally targeted ≤250 MB, but the architectural floor with
 # the user's hard constraints (keep `lancedb`, keep `pdf-parse`) is higher
@@ -21,18 +22,20 @@
 #   scripts/verify-image-size.sh --no-build     # verify already-tagged images
 #
 # Environment variables:
-#   MAX_IMAGE_MB  Limit per image in megabytes (default 350)
+#   MAX_IMAGE_MB         Limit for metis-ui in megabytes (default 350)
+#   MAX_SERVER_IMAGE_MB  Limit for metis-server in megabytes (default 900)
 #   SERVER_TAG    Image ref to inspect for the server (default metis-server:test)
 #   UI_TAG        Image ref to inspect for the UI     (default metis-ui:test)
 #
 # Exit codes:
-#   0  both images present and ≤ MAX_IMAGE_MB
+#   0  both images present and within their budgets
 #   1  an image exceeds the limit OR is missing
 #   2  invalid invocation / docker not available
 
 set -euo pipefail
 
 MAX_IMAGE_MB=${MAX_IMAGE_MB:-350}
+MAX_SERVER_IMAGE_MB=${MAX_SERVER_IMAGE_MB:-900}
 SERVER_TAG=${SERVER_TAG:-metis-server:test}
 UI_TAG=${UI_TAG:-metis-ui:test}
 # Issue #145 — the embeddings sidecar is intentionally exempt from the
@@ -90,8 +93,8 @@ over() {
 }
 
 fail=0
-if over "$server_mb" "$MAX_IMAGE_MB"; then
-  echo "FAIL: $SERVER_TAG = ${server_mb} MB exceeds ${MAX_IMAGE_MB} MB" >&2
+if over "$server_mb" "$MAX_SERVER_IMAGE_MB"; then
+  echo "FAIL: $SERVER_TAG = ${server_mb} MB exceeds ${MAX_SERVER_IMAGE_MB} MB" >&2
   fail=1
 fi
 if over "$ui_mb" "$MAX_IMAGE_MB"; then
@@ -105,4 +108,4 @@ if [[ $fail -ne 0 ]]; then
   exit 1
 fi
 
-echo "OK: both images ≤ ${MAX_IMAGE_MB} MB"
+echo "OK: $SERVER_TAG ≤ ${MAX_SERVER_IMAGE_MB} MB, $UI_TAG ≤ ${MAX_IMAGE_MB} MB"
