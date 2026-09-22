@@ -12,3 +12,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [A run outruns its service](project_coverage-run-spans-more-phases-than-the-service.md) — bill from `task-runner.ts` phases (#72)
 - [Whole-module vi.mock 500s later](project_whole-module-vi-mock-stubs-500-at-runtime.md) — one-export stub rots; use `importOriginal` (#67)
 - [Sanitise the superseded field too](project_sanitise-the-superseded-field-too.md) — UI legacy parsers still read the old column (#67/#86)
+- [Socket guard half-checks](project_socket-contract-guard-half-checks.md) — a misspelled consumer passes; check the §7.6.4 row by hand (#91)
