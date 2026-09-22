@@ -14,7 +14,18 @@
  * This must stay in lock-step with `scripts/dev-server-entrypoint.sh`, which
  * picks the matching `prisma/postgres/schema.prisma` migrate target by the same
  * scheme rule.
+ *
+ * Issue #45 — the adapter is half of it. A generated Prisma client is bound to ONE
+ * provider (its `activeProvider`) and refuses a driver adapter for the other, so the
+ * CLIENT must be chosen by the same rule. In dev there is one client and you
+ * `prisma generate` for the database you run. The production image ships two: the
+ * default (SQLite) client at `@prisma/client`, and a Postgres client generated to
+ * the directory {@link POSTGRES_CLIENT_ENV} names (`Dockerfile.server`). See
+ * {@link resolvePrismaClientClass}.
  */
+import { createRequire } from "node:module";
+import path from "node:path";
+
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
@@ -92,6 +103,56 @@ export function redactDatabaseUrl(databaseUrl: string): string {
 }
 
 /**
+ * Environment variable naming a directory that holds a Prisma client generated
+ * from `prisma/postgres/schema.prisma`. When set, a Postgres `DATABASE_URL` uses
+ * that client instead of `@prisma/client` (#45).
+ */
+export const POSTGRES_CLIENT_ENV = "METIS_PRISMA_CLIENT_POSTGRESQL";
+
+type PrismaClientClass = typeof PrismaClient;
+
+/**
+ * Choose the generated Prisma client class for a provider (#45).
+ *
+ * - `postgresql` with {@link POSTGRES_CLIENT_ENV} set: the client in that directory.
+ *   It must be absolute — `require` would otherwise resolve it against THIS module's
+ *   directory, not the working directory an operator would assume.
+ * - anything else: `@prisma/client`, i.e. whatever `prisma generate` last produced.
+ *
+ * A directory that cannot be loaded, or that exports no `PrismaClient`, fails loud
+ * at startup rather than falling back to a client for the other provider, which
+ * would only fail later with Prisma's less specific adapter-mismatch error.
+ *
+ * Both clients import the same `@prisma/client/runtime`, so `Prisma.*` error
+ * classes and sentinels (`Prisma.JsonNull`, `Prisma.Decimal`) are the same objects
+ * whichever client is in use (measured in the image).
+ */
+export function resolvePrismaClientClass(
+  provider: DatabaseProvider,
+  env: NodeJS.ProcessEnv = process.env,
+  load: (id: string) => unknown = createRequire(import.meta.url),
+): PrismaClientClass {
+  const dir = provider === "postgresql" ? env[POSTGRES_CLIENT_ENV]?.trim() : undefined;
+  if (!dir) return PrismaClient;
+  if (!path.isAbsolute(dir)) {
+    throw new Error(`${POSTGRES_CLIENT_ENV} must be an absolute path, got "${dir}".`);
+  }
+  let mod: unknown;
+  try {
+    mod = load(dir);
+  } catch (err) {
+    throw new Error(
+      `${POSTGRES_CLIENT_ENV}=${dir}: cannot load the Postgres Prisma client: ${(err as Error).message}`,
+    );
+  }
+  const cls = (mod as { PrismaClient?: unknown } | null)?.PrismaClient;
+  if (typeof cls !== "function") {
+    throw new Error(`${POSTGRES_CLIENT_ENV}=${dir} exports no PrismaClient.`);
+  }
+  return cls as PrismaClientClass;
+}
+
+/**
  * The `DATABASE_URL` the module-scope {@link prisma} client was actually built
  * against, captured at load (#1338).
  *
@@ -106,10 +167,11 @@ export function redactDatabaseUrl(databaseUrl: string): string {
 export const boundDatabaseUrl: string = process.env.DATABASE_URL || DEFAULT_SQLITE_URL;
 
 const adapter = selectPrismaAdapter(boundDatabaseUrl);
+const PrismaClientForProvider = resolvePrismaClientClass(resolveDatabaseProvider(boundDatabaseUrl));
 
 export const prisma: PrismaClient =
   globalThis.__metisPrisma ??
-  new PrismaClient({
+  new PrismaClientForProvider({
     adapter,
     log: process.env.NODE_ENV === "production" ? ["error"] : ["warn", "error"],
   });

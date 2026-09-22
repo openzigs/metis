@@ -21,7 +21,8 @@ services:
     # Base file already defines a pg_isready healthcheck.
 
   server:
-    # Production uses the slim, postgres-only Dockerfile (issue #390).
+    # Production uses the slim Dockerfile.server (issue #390), which serves both
+    # Postgres and SQLite (#45).
     # Dev compose targets Dockerfile.server.dev; this overlay swaps it back.
     build:
       context: .
