@@ -22,10 +22,12 @@ import { publishingApi } from "@/lib/publishing-api";
 import { queryKeys } from "@/lib/query-keys";
 import { useProjectJobEvents } from "@/hooks/use-job-events";
 import { useConnectorProgress } from "@/hooks/use-connector-events";
+import { useAuth } from "@/lib/auth-context";
 import {
   FIRST_RUN_STEPS,
   derivePipelineStages,
   isFirstRun,
+  isIngestRunning,
   latestCompletedAnalysisId,
   type PipelineFacts,
   type PipelineStage,
@@ -37,6 +39,9 @@ import { cn } from "@/lib/utils";
 
 /** Fallback poll cadence while a stage is running and the socket may be down. */
 const LIVE_POLL_MS = 5_000;
+
+/** `GET /documents` caps a page at 100; the Overview reads the newest page. */
+const DOCUMENT_PAGE = 100;
 
 const STATE_LABEL: Record<PipelineStageState, string> = {
   todo: "Not started",
@@ -79,9 +84,12 @@ function StageAction({ stage }: { stage: PipelineStage }) {
 
 export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  // `GET /publishing/batches` needs `issue.preview`, which `reader` lacks.
+  const canReadBatches = user?.permissions.includes("issue.preview") ?? false;
   useProjectJobEvents(projectId);
   const { progressMap } = useConnectorProgress(projectId);
-  const ingestInProgress = Object.keys(progressMap).length > 0;
+  const ingestInProgress = isIngestRunning(progressMap);
 
   const repos = useQuery({
     queryKey: ["connectors", "repos", projectId],
@@ -92,8 +100,10 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
     queryFn: () => dbConnectorsApi.list(projectId),
   });
   const documents = useQuery({
-    queryKey: queryKeys.documents.forProject(projectId),
-    queryFn: () => documentsApi.list(projectId),
+    // Its own key under the project's prefix: the Documents page caches a
+    // 25-row page at `forProject`, and invalidating `forProject` still hits this.
+    queryKey: [...queryKeys.documents.forProject(projectId), "pipeline"],
+    queryFn: () => documentsApi.list(projectId, { limit: DOCUMENT_PAGE }),
     refetchInterval: (q) =>
       q.state.data?.items.some((d) => ["pending", "queued", "processing"].includes(d.status))
         ? LIVE_POLL_MS
@@ -116,6 +126,7 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
   const batches = useQuery({
     queryKey: ["publishing", "batches", projectId],
     queryFn: () => publishingApi.listBatches(projectId),
+    enabled: canReadBatches,
     refetchInterval: (q) =>
       ["pending", "running"].includes(q.state.data?.[0]?.status ?? "") ? LIVE_POLL_MS : false,
   });
@@ -159,7 +170,7 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
       ? review.data.requirements.filter((r) => r.reviewStatus === "draft").length
       : null,
     docs: docs.data ?? [],
-    batches: batches.data ?? [],
+    batches: canReadBatches ? (batches.data ?? []) : null,
   };
   const stages = derivePipelineStages(projectId, facts);
   const partial = core.some((q) => q.isError);

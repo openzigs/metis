@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { makeWrapper, TEST_USER } from "../test-utils";
 
 vi.mock("@/lib/projects-api", () => ({ projectsApi: { list: vi.fn() } }));
@@ -47,9 +47,40 @@ describe("<LibraryProjectPicker />", () => {
     const select = screen.getByTestId("library-project-picker");
     await waitFor(() => expect(select).toBeEnabled());
     fireEvent.change(select, { target: { value: "p 2" } });
-    expect(replace).toHaveBeenCalledWith("/library?projectId=p%202");
+    // URLSearchParams form-encodes the space; `searchParams.get` reads it back as "p 2".
+    expect(replace).toHaveBeenCalledWith("/library?projectId=p+2");
+    expect(new URLSearchParams("projectId=p+2").get("projectId")).toBe("p 2");
     fireEvent.change(select, { target: { value: "" } });
     expect(replace).toHaveBeenLastCalledWith("/library");
+  });
+
+  // Review of #63 — switching project used to drop Library's `?tab=`.
+  it("keeps the rest of the query string when the project changes", async () => {
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams("tab=templates&projectId=p1") as never,
+    );
+    render(<LibraryProjectPicker projectId="p1" />, {
+      wrapper: makeWrapper({ initialUser: UPDATER }),
+    });
+    const select = screen.getByTestId("library-project-picker");
+    await waitFor(() => expect(select).toBeEnabled());
+    fireEvent.change(select, { target: { value: "p 2" } });
+    expect(replace).toHaveBeenLastCalledWith("/library?tab=templates&projectId=p+2");
+    fireEvent.change(select, { target: { value: "" } });
+    expect(replace).toHaveBeenLastCalledWith("/library?tab=templates");
+    vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams() as never);
+  });
+
+  // Review of #63 — the list is one page of 100; a project past it read as
+  // "No project" even while its allowlist was on screen.
+  it("still shows a selected project that is not on the listed page", async () => {
+    render(<LibraryProjectPicker projectId="p-far" />, {
+      wrapper: makeWrapper({ initialUser: UPDATER }),
+    });
+    const select = screen.getByTestId("library-project-picker");
+    await waitFor(() => expect(screen.getByRole("option", { name: "Beta" })).toBeInTheDocument());
+    expect(select).toHaveValue("p-far");
+    expect(screen.getByRole("option", { name: "Current project" })).toBeInTheDocument();
   });
 
   it("renders nothing, and fetches nothing, without project.update", () => {

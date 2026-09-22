@@ -8,13 +8,14 @@
  * server's gate on saving the allowlist (#469).
  */
 import { useQuery } from "@tanstack/react-query";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { projectsApi } from "@/lib/projects-api";
 import { Label } from "@/components/ui/label";
 
 export function LibraryProjectPicker({ projectId }: { projectId: string | null }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user } = useAuth();
   const canManage = user?.permissions.includes("project.update") ?? false;
   const projects = useQuery({
@@ -35,11 +36,19 @@ export function LibraryProjectPicker({ projectId }: { projectId: string | null }
         value={projectId ?? ""}
         disabled={projects.isLoading}
         onChange={(e) => {
-          const next = e.target.value;
-          router.replace(next ? `/library?projectId=${encodeURIComponent(next)}` : "/library");
+          // Keep the rest of the query (`?tab=`) — only the project changes.
+          const params = new URLSearchParams(searchParams?.toString() ?? "");
+          if (e.target.value) params.set("projectId", e.target.value);
+          else params.delete("projectId");
+          const query = params.toString();
+          router.replace(query ? `/library?${query}` : "/library");
         }}
       >
         <option value="">No project (browse only)</option>
+        {/* The list is one page of 100; a project past it is still the selection. */}
+        {projectId && projects.data && !projects.data.items.some((p) => p.id === projectId) ? (
+          <option value={projectId}>Current project</option>
+        ) : null}
         {(projects.data?.items ?? []).map((p) => (
           <option key={p.id} value={p.id}>
             {p.name}

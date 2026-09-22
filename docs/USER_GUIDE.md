@@ -1067,36 +1067,11 @@ Click on any project card to view its details.
 
 Opening a project lands on its **Overview**: one card per pipeline stage — sources connected, ingest status and counts, the last analysis, requirements awaiting review, generated docs, and the last publish — each with the one action that moves it forward ("Connect a source", "Ingest", "Run analysis", "Review 12 requirements", …). Status updates live while an ingest, analysis or doc generation runs. A brand-new project shows a numbered **Get started** checklist instead — connect a source → ingest → run an analysis → review → publish — and each step links straight to the page where it is done. Project settings are behind the **⚙** tab.
 
-The project detail page gives you a complete picture of a single project:
+The Ingest card reads the newest 100 documents: on a larger project it shows the project's document total, and any failed or processing count from that page reads "at least N". The Publish card shows the last batch only to roles that can preview issues; a read-only role sees that publish history is not available to it.
 
-**Header Area:**
-- Project name with status badge
-- Description
-- Created and last-updated dates
-- **"Run Analysis"** button — starts an AI analysis of the project
-- **"Publish Issues"** button — publishes approved requirements to GitHub
+Beneath the pipeline, **Knowledge search** runs a retrieval query over the project's ingested documents and shows the top matching chunks.
 
-**Stat Cards:**
-- Documents (uploaded)
-- Requirements (generated)
-- Analyses (completed)
-- Published Issues (sent to GitHub)
-
-**Requirements Panel** (left 2/3):
-A list of all requirements generated for this project. Each shows:
-- Title and source reference
-- Priority badge (Critical, High, Medium, Low)
-- Status badge (Generated, Reviewing, Approved, Published)
-
-**Activity Feed** (right 1/3):
-A chronological log of everything that's happened in this project:
-- Analysis completed
-- Requirements generated
-- Documents uploaded
-- Status changes
-- Issues published
-
-**Settings tab controls** (project **Settings** tab, `/projects/{id}`): in addition to the AI provider/model pickers and safety/budget cards, the Settings tab includes a **Bedrock inference profile** card (Issue #127). Paste a cross-region inference-profile ARN and model id to use it as the Bedrock model identifier for this project; leave it blank to use the default model. The control only stores the value — it has no effect on non-Bedrock providers (e.g. `local-gemma`).
+**Settings tab controls** (the project's **⚙** tab, `/projects/{id}/settings`): in addition to the AI provider/model pickers and safety/budget cards, the ⚙ tab includes a **Bedrock inference profile** card (Issue #127). Paste a cross-region inference-profile ARN and model id to use it as the Bedrock model identifier for this project; leave it blank to use the default model. The control only stores the value — it has no effect on non-Bedrock providers (e.g. `local-gemma`).
 
 **Plugins tab** (`/projects/{id}/plugins`, Issue #123): export a portable plugin by entering a name/version and selecting skills, custom agents, and hooks — METIS downloads a `metis-plugin-*.json` envelope. To import, upload a previously-exported envelope; METIS validates it and shows a summary of the skills/agents/hooks installed into the current project (or a human-readable error if the file is malformed).
 

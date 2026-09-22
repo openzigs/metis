@@ -33,6 +33,11 @@ vi.mock("@/lib/api-client", async (orig) => ({
 }));
 vi.mock("@/hooks/use-job-events", () => ({ useProjectJobEvents: vi.fn() }));
 vi.mock("@/hooks/use-connector-events", () => ({ useConnectorProgress: vi.fn() }));
+let permissions: string[] = ["issue.preview"];
+vi.mock("@/lib/auth-context", async (orig) => ({
+  ...(await orig<typeof import("@/lib/auth-context")>()),
+  useAuth: () => ({ user: { id: "u1", permissions } }),
+}));
 
 import { ProjectPipelineOverview } from "@/components/projects/pipeline-overview";
 import { repoConnectorsApi, dbConnectorsApi } from "@/lib/connectors-api";
@@ -84,6 +89,7 @@ const COMPLETED = {
 beforeEach(() => {
   vi.clearAllMocks();
   setProgress({});
+  permissions = ["issue.preview"];
   generatedDocs = [];
   repos.mockResolvedValue([]);
   dbs.mockResolvedValue([]);
@@ -191,6 +197,26 @@ describe("stage grid", () => {
     renderOverview();
     expect(await screen.findByTestId("pipeline-partial")).toHaveTextContent(/could not be loaded/);
     expect(screen.getByTestId("first-run-checklist")).toBeInTheDocument();
+  });
+
+  // Review of #63 — `reader` lacks `issue.preview`; the batches request used to
+  // 403 on every visit, raising the partial-load alert and a false "Nothing
+  // published yet".
+  it("does not request publish history a reader may not read", async () => {
+    permissions = [];
+    batches.mockRejectedValue(new Error("403"));
+    renderOverview();
+    expect(await screen.findByTestId("pipeline-status-publish")).toHaveTextContent(
+      "Publish history is not available to your role",
+    );
+    expect(batches).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("pipeline-partial")).toBeNull();
+  });
+
+  it("reads the newest full page of documents, so counts are not capped at 25", async () => {
+    renderOverview();
+    await screen.findByTestId("first-run-checklist");
+    expect(docsList).toHaveBeenCalledWith("p1", { limit: 100 });
   });
 
   it("shows a loading status first", () => {

@@ -28,9 +28,13 @@ type DateLike = string | Date;
 export interface PipelineFacts {
   repos: Array<{ status: string; lastIngestAt?: DateLike | null }>;
   databases: number;
-  /** One page of `GET /documents` — `total` is exact, `items` may be partial. */
+  /**
+   * One page of `GET /documents` (newest first, at most 100) — `total` is
+   * exact, `items` may be partial. Counts taken from a partial page are lower
+   * bounds and are only ever reported as such.
+   */
   documents: { total: number; items: Array<{ status: string; chunkCount: number }> };
-  /** A live `connector:progress` ingest is in flight. */
+  /** A live `connector:progress` ingest is in flight — see {@link isIngestRunning}. */
   ingestInProgress: boolean;
   /** Newest first, as `GET /projects/:id/analyses` returns them. */
   analyses: Array<{
@@ -42,7 +46,11 @@ export interface PipelineFacts {
   /** Draft requirements in the latest completed analysis; null while unknown. */
   awaitingReview: number | null;
   docs: Array<{ status: string }>;
-  /** Newest first, as `GET /publishing/batches` returns them. */
+  /**
+   * Newest first, as `GET /publishing/batches` returns them; `null` when the
+   * user may not read them (the route needs `issue.preview`, which `reader`
+   * lacks), so the stage never claims "nothing published" it cannot know.
+   */
   batches: Array<{
     status: string;
     dryRun: boolean;
@@ -50,7 +58,21 @@ export interface PipelineFacts {
     totalDrafts: number;
     startedAt: DateLike;
     completedAt: DateLike | null;
-  }>;
+  }> | null;
+}
+
+/**
+ * The `connector:progress` phases that are an ingest. The server also emits
+ * `test`, `metadata` and `introspect` progress with no `current`/`total`, and
+ * `useConnectorProgress` clears an entry only on an error or when
+ * `current >= total` — so those entries never clear, and counting them left the
+ * Ingest stage on "Ingesting…" for good (review of #63).
+ */
+const INGEST_PHASES = new Set(["ingest", "deep-ingest"]);
+
+/** Whether any connector in the `useConnectorProgress` map is ingesting. */
+export function isIngestRunning(progressMap: Record<string, { phase: string }>): boolean {
+  return Object.values(progressMap).some((p) => INGEST_PHASES.has(p.phase));
 }
 
 /** The numbered first-run checklist: connect → ingest → analyse → review → publish. */
@@ -114,6 +136,9 @@ function sourcesStage(base: string, f: PipelineFacts): PipelineStage {
 function ingestStage(base: string, f: PipelineFacts): PipelineStage {
   const action = { label: "Ingest", href: `${base}/connections` };
   const items = f.documents.items;
+  // Every document is on this page, so counts over `items` are the project's.
+  const complete = items.length >= f.documents.total;
+  const atLeast = complete ? "" : "at least ";
   const processing = items.filter((d) => RUNNING_DOC_STATUSES.has(d.status)).length;
   const failed = items.filter((d) => d.status === "failed").length;
   const ready = items.filter((d) => d.status === "ready");
@@ -125,16 +150,17 @@ function ingestStage(base: string, f: PipelineFacts): PipelineStage {
       title: "Ingest",
       state: "running",
       status:
-        processing > 0 ? `Ingesting — ${plural(processing, "document")} processing` : "Ingesting…",
+        processing > 0
+          ? `Ingesting — ${atLeast}${plural(processing, "document")} processing`
+          : "Ingesting…",
       action,
     };
   }
 
   const parts: string[] = [];
-  if (ready.length) {
-    parts.push(`${plural(ready.length, "document")} ready`);
-    // Chunk totals are only honest when every document is on this page.
-    if (items.length === f.documents.total) {
+  if (complete) {
+    if (ready.length) {
+      parts.push(`${plural(ready.length, "document")} ready`);
       parts.push(
         plural(
           ready.reduce((n, d) => n + d.chunkCount, 0),
@@ -142,9 +168,12 @@ function ingestStage(base: string, f: PipelineFacts): PipelineStage {
         ),
       );
     }
+  } else {
+    // A ready count or chunk total from one page would understate the project.
+    parts.push(plural(f.documents.total, "document"));
   }
   if (lastRepoIngest) parts.push(`repository last ingested ${when(lastRepoIngest)}`);
-  if (failed) parts.push(`${plural(failed, "document")} failed`);
+  if (failed) parts.push(`${atLeast}${plural(failed, "document")} failed`);
 
   if (parts.length === 0) {
     return { id: "ingest", title: "Ingest", state: "todo", status: "Nothing ingested yet", action };
@@ -282,6 +311,15 @@ function docsStage(base: string, f: PipelineFacts): PipelineStage {
 
 function publishStage(base: string, f: PipelineFacts): PipelineStage {
   const action = { label: "Publish issues", href: `${base}/publish` };
+  if (f.batches === null) {
+    return {
+      id: "publish",
+      title: "Publish",
+      state: "todo",
+      status: "Publish history is not available to your role",
+      action,
+    };
+  }
   const latest = f.batches[0];
   if (!latest) {
     return {
@@ -340,5 +378,5 @@ export function derivePipelineStages(projectId: string, facts: PipelineFacts): P
  * user is least likely to find on their own.
  */
 export function isFirstRun(facts: PipelineFacts): boolean {
-  return facts.analyses.length === 0 && facts.batches.length === 0;
+  return facts.analyses.length === 0 && (facts.batches ?? []).length === 0;
 }

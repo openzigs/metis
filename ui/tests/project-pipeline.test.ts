@@ -6,6 +6,7 @@ import { describe, it, expect } from "vitest";
 import {
   derivePipelineStages,
   isFirstRun,
+  isIngestRunning,
   FIRST_RUN_STEPS,
   type PipelineFacts,
   type PipelineStage,
@@ -163,6 +164,76 @@ describe("ingest stage", () => {
     expect(s.status).not.toContain("chunks");
   });
 
+  // Review of #63 — `GET /documents` returns one page (at most 100), and a
+  // connected repository creates a document per file. A count taken from that
+  // page is a lower bound, never the project's figure.
+  it("reports the project's document total, not the page's ready count, when the list is partial", () => {
+    const s = stage(
+      facts({
+        documents: {
+          total: 1234,
+          items: Array.from({ length: 100 }, () => ({ status: "ready", chunkCount: 3 })),
+        },
+      }),
+      "ingest",
+    );
+    expect(s.state).toBe("done");
+    expect(s.status).toContain("1,234 documents");
+    expect(s.status).not.toMatch(/100 documents/);
+    expect(s.status).not.toContain("ready");
+    expect(s.status).not.toContain("chunks");
+  });
+
+  it("states failures and processing on a partial list as lower bounds", () => {
+    const failed = stage(
+      facts({
+        documents: {
+          total: 500,
+          items: [
+            { status: "failed", chunkCount: 0 },
+            { status: "ready", chunkCount: 1 },
+          ],
+        },
+      }),
+      "ingest",
+    );
+    expect(failed.state).toBe("attention");
+    expect(failed.status).toContain("500 documents");
+    expect(failed.status).toContain("at least 1 document failed");
+
+    const running = stage(
+      facts({
+        documents: {
+          total: 500,
+          items: [
+            { status: "processing", chunkCount: 0 },
+            { status: "queued", chunkCount: 0 },
+          ],
+        },
+      }),
+      "ingest",
+    );
+    expect(running.state).toBe("running");
+    expect(running.status).toBe("Ingesting — at least 2 documents processing");
+  });
+
+  it("gives exact counts when every document is on the page", () => {
+    const s = stage(
+      facts({
+        documents: {
+          total: 3,
+          items: [
+            { status: "ready", chunkCount: 1 },
+            { status: "ready", chunkCount: 1 },
+            { status: "failed", chunkCount: 0 },
+          ],
+        },
+      }),
+      "ingest",
+    );
+    expect(s.status).toBe("2 documents ready · 2 chunks · 1 document failed");
+  });
+
   it("counts a repository ingest as done and dates it", () => {
     const s = stage(
       facts({ repos: [{ status: "connected", lastIngestAt: "2026-09-02T08:00:00Z" }] }),
@@ -314,6 +385,15 @@ describe("publish stage", () => {
     completedAt: "2026-09-05T10:01:00Z",
   };
 
+  // Review of #63 — `reader` has no `issue.preview`, so the batch list is not
+  // theirs to read. "Nothing published yet" would be a claim they cannot know.
+  it("says publish history is unavailable, rather than empty, when it cannot be read", () => {
+    const s = stage(facts({ batches: null }), "publish");
+    expect(s.state).toBe("todo");
+    expect(s.status).toBe("Publish history is not available to your role");
+    expect(s.status).not.toMatch(/nothing published/i);
+  });
+
   it("asks to publish when nothing has been", () => {
     const s = stage(facts(), "publish");
     expect(s.state).toBe("todo");
@@ -342,7 +422,45 @@ describe("publish stage", () => {
   });
 });
 
+describe("isIngestRunning", () => {
+  // The shapes the server actually emits on `connector:progress` — see
+  // server/src/lib/connectors/{connector-ingest,repo/repo-service,db/db-service}.ts
+  // and server/src/routes/connectors.ts.
+  const ev = (phase: string, extra: Record<string, unknown> = {}) => ({
+    connectorId: "c1",
+    phase,
+    step: "s",
+    ts: 1,
+    ...extra,
+  });
+
+  it("is false with no progress", () => {
+    expect(isIngestRunning({})).toBe(false);
+  });
+
+  it.each(["ingest", "deep-ingest"])("is true for a %s event", (phase) => {
+    expect(isIngestRunning({ c1: ev(phase, { current: 1, total: 5 }) })).toBe(true);
+  });
+
+  it.each(["test", "metadata", "introspect"])(
+    "ignores a count-less %s event, which the hook never clears",
+    (phase) => {
+      expect(isIngestRunning({ c1: ev(phase) })).toBe(false);
+    },
+  );
+
+  it("is true when any connector is ingesting", () => {
+    expect(isIngestRunning({ a: ev("test"), b: ev("deep-ingest", { current: 2, total: 5 }) })).toBe(
+      true,
+    );
+  });
+});
+
 describe("isFirstRun", () => {
+  it("treats unreadable publish history as none", () => {
+    expect(isFirstRun(facts({ batches: null }))).toBe(true);
+  });
+
   it("is true for a brand-new project", () => {
     expect(isFirstRun(facts())).toBe(true);
   });
