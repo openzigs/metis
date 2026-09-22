@@ -25,7 +25,7 @@ import {
   type RequirementForSuggestion,
   generateSuggestions,
 } from "./suggestion-generator.js";
-import { CoverageCostTracker } from "./cost-tracker.js";
+import { CoverageCostTracker, estimateEmbeddingTokens } from "./cost-tracker.js";
 import type { NormalisedTestCase, TestCaseSource } from "@metis/shared";
 
 const log = createChildLogger("testcoverage/coverage-service");
@@ -61,8 +61,12 @@ export interface CoverageRunReport {
     limitCents: number;
     usedCents: number;
     remainingCents: number;
-    /** #43 — tokens with no known price; `usedCents` is then a lower bound. */
+    /** Tokens with no known price; `usedCents` is then a lower bound. */
     unpricedTokens: number;
+    /** #77 — the embedding share, which does NOT stop the run. */
+    unpricedEmbeddingTokens: number;
+    /** #43 — the judge/suggestion share, which does. */
+    unpricedLlmTokens: number;
   };
   /**
    * True when the per-run token budget was exhausted and at least one LLM phase
@@ -145,7 +149,7 @@ export async function runCoverageScoring(
     phase: "embedding",
     embedder: embedder.key,
     modelId: reqEmb.model,
-    embeddingTokens: estimateTokens(reqTexts),
+    embeddingTokens: estimateEmbeddingTokens(reqTexts),
   });
   const requirementInputs: RequirementInput[] = reqRows.map((r, i) => ({
     id: r.id,
@@ -162,7 +166,7 @@ export async function runCoverageScoring(
       phase: "embedding",
       embedder: embedder.key,
       modelId: caseEmb.model,
-      embeddingTokens: estimateTokens(caseTexts),
+      embeddingTokens: estimateEmbeddingTokens(caseTexts),
     });
     testCaseInputs = caseRows.map((c, i) => ({
       id: c.id,
@@ -395,6 +399,8 @@ export async function runCoverageScoring(
       usedCents: view.usedCents,
       remainingCents: view.remainingCents,
       unpricedTokens: view.unpricedTokens,
+      unpricedEmbeddingTokens: view.unpricedEmbeddingTokens,
+      unpricedLlmTokens: view.unpricedLlmTokens,
     },
     budgetExceeded,
     coveragePct,
@@ -412,17 +418,12 @@ function emptyReport(cost: CoverageCostTracker): CoverageRunReport {
       usedCents: v.usedCents,
       remainingCents: v.remainingCents,
       unpricedTokens: v.unpricedTokens,
+      unpricedEmbeddingTokens: v.unpricedEmbeddingTokens,
+      unpricedLlmTokens: v.unpricedLlmTokens,
     },
     budgetExceeded: false,
     coveragePct: 0,
   };
-}
-
-function estimateTokens(texts: readonly string[]): number {
-  // Rough heuristic: ~4 chars per token. Cheap and good enough for budget bookkeeping.
-  let chars = 0;
-  for (const t of texts) chars += t.length;
-  return Math.ceil(chars / 4);
 }
 
 function normalisePriority(raw: string): RequirementForSuggestion["priority"] {

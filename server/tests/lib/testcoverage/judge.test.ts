@@ -18,6 +18,8 @@ import { __resetSemanticCacheSingleton } from "../../../src/lib/ai/semantic-cach
 
 vi.mock("../../../src/lib/rag/embedder.js", () => ({
   getEmbedder: () => ({
+    // The registry key the in-loop embedding record names (#72).
+    key: "xenova",
     model: "test-model",
     dimension: 4,
     async embed(texts: string[]) {
@@ -312,7 +314,7 @@ describe("judgeAmbiguous", () => {
       cost,
     });
 
-    expect(recorded).toEqual([
+    expect(recorded.filter((r) => r.phase === "judge")).toEqual([
       {
         phase: "judge",
         provider: "anthropic",
@@ -362,5 +364,66 @@ describe("judgeAmbiguous", () => {
     expect(out.budgetExceeded).toBe(true);
     expect(cost.usedCents).toBe(0);
     expect(cost.view().unpricedTokens).toBe(2);
+  });
+
+  it("records each batch's cache-key embedding through the cost guard (#72)", async () => {
+    // The judge embeds every batch prompt to build the semantic-cache key. On a
+    // cloud embedder that is real spend the run budget never saw.
+    const pairs = [pair("a"), pair("b"), pair("c")];
+    const { caller } = makeCaller([{ idx: 0, isCovered: true, confidence: 0.9 }]);
+    const recorded: Parameters<JudgeBudgetGuard["record"]>[0][] = [];
+    const cost: JudgeBudgetGuard = {
+      record(input) {
+        recorded.push(input);
+      },
+      exceeded: () => false,
+    };
+
+    const out = await judgeAmbiguous(pairs, {
+      caller,
+      sessionId: "s",
+      userId: "u",
+      batchSize: 1,
+      cost,
+    });
+
+    expect(out.batches).toBe(3);
+    const embeddings = recorded.filter((r) => r.phase === "embedding");
+    // One cache-key embedding per batch, under the embedder that ran and the
+    // model IT reported — not the configured one, not an LLM provider.
+    expect(embeddings).toHaveLength(3);
+    for (const e of embeddings) {
+      expect(e).toMatchObject({ phase: "embedding", embedder: "xenova", modelId: "test-model" });
+      expect((e as { embeddingTokens?: number }).embeddingTokens).toBeGreaterThan(0);
+    }
+  });
+
+  it("records the cache-key embedding even when the batch is a cache hit (#72)", async () => {
+    // A warm cache skips the MODEL call, not the embedding: the key is what the
+    // lookup needs, so the embedder runs (and bills) either way.
+    // The cache is opt-in; without it a repeat batch is a fresh model call.
+    vi.stubEnv("SEMANTIC_CACHE_ENABLED", "1");
+    __resetSemanticCacheSingleton();
+    const pairs = [pair("a")];
+    const { caller } = makeCaller([{ idx: 0, isCovered: true, confidence: 0.9 }]);
+    const guard = () => {
+      const recorded: Parameters<JudgeBudgetGuard["record"]>[0][] = [];
+      return {
+        recorded,
+        cost: { record: (i: (typeof recorded)[number]) => recorded.push(i), exceeded: () => false },
+      };
+    };
+    const opts = { caller, sessionId: "s", userId: "u", batchSize: 1 };
+
+    const cold = guard();
+    await judgeAmbiguous(pairs, { ...opts, cost: cold.cost });
+    const warm = guard();
+    const second = await judgeAmbiguous(pairs, { ...opts, cost: warm.cost });
+
+    expect(second.cacheHits).toBe(1);
+    expect(second.modelCalls).toBe(0);
+    expect(warm.recorded.filter((r) => r.phase === "judge")).toHaveLength(0);
+    expect(warm.recorded.filter((r) => r.phase === "embedding")).toHaveLength(1);
+    vi.unstubAllEnvs();
   });
 });

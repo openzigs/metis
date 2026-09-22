@@ -23,6 +23,8 @@ vi.mock("../../../src/lib/prisma.js", () => ({
 
 vi.mock("../../../src/lib/rag/embedder.js", () => ({
   getEmbedder: () => ({
+    // The registry key the in-loop embedding records name (#72).
+    key: "xenova",
     model: "test-model",
     dimension: 4,
     async embed(texts: string[]) {
@@ -379,7 +381,7 @@ describe("generateSuggestions", () => {
         clusterSize: 1,
         cost: { record, exceeded: () => false },
       });
-      expect(record.mock.calls.map((c) => c[0])).toEqual(
+      expect(record.mock.calls.map((c) => c[0]).filter((c) => c.phase === "suggestion")).toEqual(
         served.map((s) => ({
           phase: "suggestion",
           provider: s.provider,
@@ -388,6 +390,53 @@ describe("generateSuggestions", () => {
           completionTokens: 1,
         })),
       );
+    });
+
+    it("records the cluster-prompt and suggestion-dedup embeddings (#72)", async () => {
+      // Two embedder calls per cluster: the cache key for the cluster prompt,
+      // and the suggestion texts embedded for dedup. On a cloud embedder both
+      // are real spend the run budget never saw.
+      const call = servedBy("bedrock-gateway", HAIKU_MODEL_ID, 10);
+      const record = vi.fn();
+      const out = await generateSuggestions({
+        requirements: threeClusters,
+        caller: { call },
+        sessionId: "s",
+        userId: "u",
+        clusterSize: 1,
+        cost: { record, exceeded: () => false },
+      });
+      expect(out.clusters).toBe(3);
+      const embeddings = record.mock.calls.map((c) => c[0]).filter((c) => c.phase === "embedding");
+      expect(embeddings).toHaveLength(6);
+      for (const e of embeddings) {
+        expect(e).toMatchObject({ phase: "embedding", embedder: "xenova", modelId: "test-model" });
+        expect(e.embeddingTokens).toBeGreaterThan(0);
+      }
+    });
+
+    it("records the cluster-prompt embedding even when the cluster is a cache hit (#72)", async () => {
+      // A warm cache skips the MODEL call, not the cluster prompt's embedding.
+      vi.stubEnv("SEMANTIC_CACHE_ENABLED", "1");
+      __resetSemanticCacheSingleton();
+      const call = servedBy("bedrock-gateway", HAIKU_MODEL_ID, 10);
+      const opts = {
+        requirements: [req("r1", vec(1, 0, 0))],
+        caller: { call },
+        sessionId: "s",
+        userId: "u",
+        clusterSize: 1,
+      };
+      await generateSuggestions({ ...opts, cost: { record: vi.fn(), exceeded: () => false } });
+      const record = vi.fn();
+      const warm = await generateSuggestions({ ...opts, cost: { record, exceeded: () => false } });
+
+      expect(warm.cacheHits).toBe(1);
+      expect(warm.modelCalls).toBe(0);
+      const phases = record.mock.calls.map((c) => c[0].phase);
+      expect(phases.filter((p) => p === "suggestion")).toHaveLength(0);
+      expect(phases.filter((p) => p === "embedding")).toHaveLength(2);
+      vi.unstubAllEnvs();
     });
   });
 
