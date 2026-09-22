@@ -175,6 +175,10 @@ async function main(): Promise<void> {
     symbols: stats.symbolsUpserted,
     edges: stats.edgesUpserted,
     calls: { total: totalCalls, resolved: resolvedCalls },
+    overview: {
+      godNodes: overview.stats.godNodeCount,
+      entryPoints: overview.stats.entryPointCount,
+    },
     healthz: {
       probes: lat.length,
       timeouts: probe.timeouts,
