@@ -17,8 +17,10 @@
  *  2. The overview's "Top Symbols by In-Degree" table (#17), exactly as the Code
  *     Overview renders it.
  *
- * Refuses anything but a `file:` DATABASE_URL: it creates a throwaway user and
- * project and deletes them afterwards, and is never meant to touch a real database.
+ * Refuses anything but a `file:` DATABASE_URL, and refuses a database that
+ * already holds any project: the dev database is a `file:` URL too, so the scheme
+ * alone is no guard. It creates a throwaway user and project and deletes them in
+ * a `finally`, so a failed ingest leaves nothing behind.
  */
 /* eslint-disable no-console */
 import http from "node:http";
@@ -78,8 +80,15 @@ async function main(): Promise<void> {
   }
 
   const { prisma } = await import("../src/lib/prisma.js");
-  const { ingestCodeGraph } = await import("../src/lib/code-graph/ingest.js");
-  const { generateOverview } = await import("../src/lib/code-graph/overview.js");
+
+  // A scratch database is empty; the live dev database is not.
+  const existingProjects = await prisma.project.count();
+  if (existingProjects > 0) {
+    await prisma.$disconnect();
+    throw new Error(
+      `DATABASE_URL already holds ${existingProjects} project(s) — refusing: point it at an empty scratch database`,
+    );
+  }
 
   const tag = `bench-${Date.now()}`;
   const user = await prisma.user.create({
@@ -88,6 +97,19 @@ async function main(): Promise<void> {
   const project = await prisma.project.create({
     data: { name: tag, slug: tag, createdById: user.id },
   });
+  try {
+    await run(project.id, user.id, root);
+  } finally {
+    await prisma.project.delete({ where: { id: project.id } });
+    await prisma.user.delete({ where: { id: user.id } });
+    await prisma.$disconnect();
+  }
+}
+
+async function run(projectId: string, userId: string, root: string): Promise<void> {
+  const { prisma } = await import("../src/lib/prisma.js");
+  const { ingestCodeGraph } = await import("../src/lib/code-graph/ingest.js");
+  const { generateOverview } = await import("../src/lib/code-graph/overview.js");
 
   const server = http.createServer((req, res) => {
     res.writeHead(req.url === "/healthz" ? 200 : 404).end("ok");
@@ -140,10 +162,10 @@ async function main(): Promise<void> {
       : prisma;
 
   const stats = await ingestCodeGraph(client as typeof prisma, {
-    projectId: project.id,
+    projectId,
     rootDir: path.resolve(root),
     incremental: false,
-    triggeredByUserId: user.id,
+    triggeredByUserId: userId,
     sqlLineageOverride: false,
   });
   const wallMs = performance.now() - t0;
@@ -157,13 +179,13 @@ async function main(): Promise<void> {
   await prober.terminate();
   server.close();
 
-  const overview = await generateOverview(prisma, project.id);
+  const overview = await generateOverview(prisma, projectId);
   const table = overview.markdown.split("\n").filter((l) => /^\| \d+ \|/.test(l));
   const resolvedCalls = await prisma.codeEdge.count({
-    where: { projectId: project.id, kind: "calls", NOT: { toSymbolId: null } },
+    where: { projectId, kind: "calls", NOT: { toSymbolId: null } },
   });
   const totalCalls = await prisma.codeEdge.count({
-    where: { projectId: project.id, kind: "calls" },
+    where: { projectId, kind: "calls" },
   });
 
   const lat = [...probe.latencies].sort((a, b) => a - b);
@@ -208,10 +230,6 @@ async function main(): Promise<void> {
   }
   console.log("\nTop symbols by in-degree:");
   for (const l of table) console.log(l);
-
-  await prisma.project.delete({ where: { id: project.id } });
-  await prisma.user.delete({ where: { id: user.id } });
-  await prisma.$disconnect();
 }
 
 main().catch((err) => {

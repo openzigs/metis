@@ -9,12 +9,14 @@
  *
  * The rule here is **no binding without evidence**:
  *
- *  - A **bare** call (`foo()`) binds to a same-file definition (lexical
- *    shadowing), then to a unique match in a file this file imports, then — only
- *    for names that are neither language/runtime or test-framework globals nor
- *    imported from the standard library or a test framework
- *    (`import { join } from "node:path"`), and only within the same language
- *    family — to the project's single TOP-LEVEL declaration of that name.
+ *  - A **bare** call (`foo()`) never binds when the file imports that name from
+ *    the standard library or a test framework (`import { join } from
+ *    "node:path"`). Otherwise it binds to a same-file definition (lexical
+ *    shadowing), then to a unique TOP-LEVEL match in a file this file imports,
+ *    then — only for names that are not a runtime or test-framework global of
+ *    the caller's language, and only within the same language family — to the
+ *    project's single TOP-LEVEL declaration of that name. A bare call never
+ *    reaches a method, except a same-file one in Java/C# (implicit `this`).
  *  - A **member** call (`x.foo()`) never uses that project-wide fallback, because
  *    uniqueness of a method name says nothing about the type of `x`:
  *      - `this.foo()` / `self.foo()` — the enclosing file, then imported files.
@@ -22,10 +24,14 @@
  *      - `mod.bar()` where `mod` names a project module (file stem, or the Go
  *        package directory) — that module's top-level `bar`.
  *      - any other receiver — a *method* of the same name in this file or an
- *        imported one, unless the name is a built-in prototype method (`join`,
- *        `trim`, `test`, `get`, …), which is never bound on an unknown receiver.
- *      - a receiver that is itself a runtime/test global (`Math`, `JSON`, `vi`,
- *        `console`, …) is never bound.
+ *        imported one. A built-in prototype method (`join`, `trim`, `test`, …)
+ *        is never bound on an unknown receiver; a collection-style name that is
+ *        also common on domain types (`get`, `update`, `insert`, …) binds only
+ *        when the receiver is named after a class in an IMPORTED file
+ *        (`orderMapper.insert()` → `OrderMapper::insert`).
+ *      - a receiver that is a runtime/test global of the caller's language
+ *        (`Math`, `JSON`, `vi`, `console`, Go `errors`, …) is never bound,
+ *        unless the file imports a project module of that name.
  *
  * Everything unresolved keeps `toSymbolId = null` and its `toQualifiedName`, so
  * "who calls X" tools still see the textual reference.
@@ -38,201 +44,223 @@ export const COMPLEX_RECEIVER = "<expr>";
 const SELF_RECEIVERS = new Set(["this", "self", "cls", "super", "base"]);
 
 /**
- * Bare names that are runtime / standard-library / test-framework globals in at
- * least one supported language. A bare call to one of these is never bound to a
- * project symbol by project-wide name uniqueness — only by a same-file definition
- * or an explicit import.
+ * Bare names that are runtime / standard-library / test-framework globals, per
+ * language family. A bare call to one of these is never bound to a project
+ * symbol by project-wide name uniqueness — only by a same-file definition or an
+ * explicit import. Scoped by language (#64 review): Python's `open` or Go's
+ * `copy` says nothing about a TS project's own top-level `open()`.
+ *
+ * Test-library helpers that are always imported (`render`, `screen`, `waitFor`
+ * from `@testing-library/*`) are not listed: the runtime-import guard covers
+ * them precisely, and listing them would block a project's own `render()`.
  */
-export const GLOBAL_CALL_NAMES: ReadonlySet<string> = new Set([
-  // JS/TS runtime
-  "require",
-  "setTimeout",
-  "setInterval",
-  "setImmediate",
-  "clearTimeout",
-  "clearInterval",
-  "clearImmediate",
-  "queueMicrotask",
-  "structuredClone",
-  "fetch",
-  "parseInt",
-  "parseFloat",
-  "isNaN",
-  "isFinite",
-  "encodeURIComponent",
-  "decodeURIComponent",
-  "encodeURI",
-  "decodeURI",
-  "atob",
-  "btoa",
-  "alert",
-  "confirm",
-  "prompt",
-  "eval",
-  "String",
-  "Number",
-  "Boolean",
-  "Symbol",
-  "BigInt",
-  "Object",
-  "Array",
-  "Date",
-  "Error",
-  "TypeError",
-  "RangeError",
-  "SyntaxError",
-  "Promise",
-  "Map",
-  "Set",
-  "WeakMap",
-  "WeakSet",
-  "WeakRef",
-  "RegExp",
-  "Proxy",
-  "URL",
-  "URLSearchParams",
-  "Buffer",
-  "AbortController",
-  "TextEncoder",
-  "TextDecoder",
-  "Headers",
-  "Request",
-  "Response",
-  "FormData",
-  "Blob",
-  "File",
-  "Event",
-  "CustomEvent",
-  "ReadableStream",
-  "WritableStream",
-  // Test frameworks (vitest / jest / mocha / jasmine / testing-library / playwright)
-  "describe",
-  "it",
-  "test",
-  "expect",
-  "suite",
-  "context",
-  "beforeEach",
-  "afterEach",
-  "beforeAll",
-  "afterAll",
-  "before",
-  "after",
-  "xit",
-  "xdescribe",
-  "fit",
-  "fdescribe",
-  "render",
-  "renderHook",
-  "screen",
-  "waitFor",
-  "within",
-  "fireEvent",
-  "act",
-  "cleanup",
-  // Python builtins
-  "print",
-  "len",
-  "range",
-  "str",
-  "int",
-  "float",
-  "bool",
-  "list",
-  "dict",
-  "tuple",
-  "set",
-  "isinstance",
-  "issubclass",
-  "getattr",
-  "setattr",
-  "hasattr",
-  "open",
-  "super",
-  "enumerate",
-  "zip",
-  "sorted",
-  "reversed",
-  "min",
-  "max",
-  "sum",
-  "any",
-  "all",
-  "abs",
-  "round",
-  "repr",
-  "type",
-  "iter",
-  "next",
-  "map",
-  "filter",
-  // Go builtins
-  "make",
-  "new",
-  "append",
-  "cap",
-  "copy",
-  "delete",
-  "panic",
-  "recover",
-  "close",
-]);
+const GLOBAL_CALL_NAMES_BY_FAMILY: Readonly<Record<string, ReadonlySet<string>>> = {
+  js: new Set([
+    // Runtime
+    "require",
+    "setTimeout",
+    "setInterval",
+    "setImmediate",
+    "clearTimeout",
+    "clearInterval",
+    "clearImmediate",
+    "queueMicrotask",
+    "structuredClone",
+    "fetch",
+    "parseInt",
+    "parseFloat",
+    "isNaN",
+    "isFinite",
+    "encodeURIComponent",
+    "decodeURIComponent",
+    "encodeURI",
+    "decodeURI",
+    "atob",
+    "btoa",
+    "alert",
+    "confirm",
+    "prompt",
+    "eval",
+    "String",
+    "Number",
+    "Boolean",
+    "Symbol",
+    "BigInt",
+    "Object",
+    "Array",
+    "Date",
+    "Error",
+    "TypeError",
+    "RangeError",
+    "SyntaxError",
+    "Promise",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "WeakRef",
+    "RegExp",
+    "Proxy",
+    "URL",
+    "URLSearchParams",
+    "Buffer",
+    "AbortController",
+    "TextEncoder",
+    "TextDecoder",
+    "Headers",
+    "Request",
+    "Response",
+    "FormData",
+    "Blob",
+    "File",
+    "Event",
+    "CustomEvent",
+    "ReadableStream",
+    "WritableStream",
+    // Test-framework globals (vitest `globals`, jest, mocha, jasmine) — usable
+    // without an import, so the runtime-import guard cannot see them.
+    "describe",
+    "it",
+    "test",
+    "expect",
+    "suite",
+    "context",
+    "beforeEach",
+    "afterEach",
+    "beforeAll",
+    "afterAll",
+    "before",
+    "after",
+    "xit",
+    "xdescribe",
+    "fit",
+    "fdescribe",
+  ]),
+  py: new Set([
+    "print",
+    "len",
+    "range",
+    "str",
+    "int",
+    "float",
+    "bool",
+    "list",
+    "dict",
+    "tuple",
+    "set",
+    "isinstance",
+    "issubclass",
+    "getattr",
+    "setattr",
+    "hasattr",
+    "open",
+    "super",
+    "enumerate",
+    "zip",
+    "sorted",
+    "reversed",
+    "min",
+    "max",
+    "sum",
+    "any",
+    "all",
+    "abs",
+    "round",
+    "repr",
+    "type",
+    "iter",
+    "next",
+    "map",
+    "filter",
+  ]),
+  go: new Set([
+    "make",
+    "new",
+    "len",
+    "cap",
+    "append",
+    "copy",
+    "delete",
+    "panic",
+    "recover",
+    "close",
+    "print",
+    "min",
+    "max",
+  ]),
+};
+
+const NO_NAMES: ReadonlySet<string> = new Set();
+
+/** True when `name` is a runtime / test-framework global in `language`. */
+export function isGlobalCallName(name: string, language: string): boolean {
+  return (GLOBAL_CALL_NAMES_BY_FAMILY[languageFamily(language)] ?? NO_NAMES).has(name);
+}
 
 /**
- * Receivers that are runtime / standard-library / test-framework namespaces. A
- * member call on one (`Math.max`, `JSON.parse`, `vi.mock`, `console.log`) is
- * never bound to a project symbol.
+ * Receivers that are runtime / standard-library / test-framework namespaces, per
+ * language family. A member call on one (`Math.max`, `JSON.parse`, `vi.mock`,
+ * `console.log`, Go `errors.New`) is never bound to a project symbol — unless
+ * the file imports a project module of that name (see {@link resolveEdgeTarget}).
  */
-export const GLOBAL_RECEIVERS: ReadonlySet<string> = new Set([
-  "Math",
-  "JSON",
-  "Object",
-  "Array",
-  "Number",
-  "String",
-  "Boolean",
-  "Promise",
-  "Reflect",
-  "Symbol",
-  "Date",
-  "Intl",
-  "Atomics",
-  "console",
-  "process",
-  "Buffer",
-  "globalThis",
-  "window",
-  "document",
-  "navigator",
-  "localStorage",
-  "sessionStorage",
-  "crypto",
-  "performance",
-  "vi",
-  "jest",
-  "expect",
-  "cy",
-  "assert",
-  "screen",
-  "userEvent",
-  "fireEvent",
-  "os",
-  "sys",
-  "re",
-  "json",
-  "path",
-  "fs",
-  "logging",
-  "fmt",
-  "strings",
-  "errors",
-  "System",
-  "Arrays",
-  "Collections",
-  "Objects",
-  "Optional",
-  "Collectors",
-]);
+const GLOBAL_RECEIVERS_BY_FAMILY: Readonly<Record<string, ReadonlySet<string>>> = {
+  js: new Set([
+    "Math",
+    "JSON",
+    "Object",
+    "Array",
+    "Number",
+    "String",
+    "Boolean",
+    "Promise",
+    "Reflect",
+    "Symbol",
+    "Date",
+    "Intl",
+    "Atomics",
+    "console",
+    "process",
+    "Buffer",
+    "globalThis",
+    "window",
+    "document",
+    "navigator",
+    "localStorage",
+    "sessionStorage",
+    "crypto",
+    "performance",
+    "vi",
+    "jest",
+    "expect",
+    "cy",
+    "assert",
+    "screen",
+    "userEvent",
+    "fireEvent",
+    // Node core modules bound by CommonJS `require`, which the import index
+    // does not see; an ESM import of a project `./path` overrides these.
+    "path",
+    "fs",
+  ]),
+  py: new Set(["os", "sys", "re", "json", "logging", "path"]),
+  go: new Set(["fmt", "strings", "errors", "os", "json", "path"]),
+  java: new Set([
+    "System",
+    "Math",
+    "String",
+    "Arrays",
+    "Collections",
+    "Objects",
+    "Optional",
+    "Collectors",
+  ]),
+  cs: new Set(["Math", "String", "Array", "Object"]),
+};
+
+/** True when `receiver` is a runtime / test-framework namespace in `language`. */
+export function isGlobalReceiver(receiver: string, language: string): boolean {
+  return (GLOBAL_RECEIVERS_BY_FAMILY[languageFamily(language)] ?? NO_NAMES).has(receiver);
+}
 
 /**
  * Method names defined by built-in types (JS Array/String/Map/Set/Promise/RegExp/
@@ -249,7 +277,6 @@ export const BUILTIN_METHOD_NAMES: ReadonlySet<string> = new Set([
   "every",
   "fill",
   "filter",
-  "find",
   "findIndex",
   "findLast",
   "findLastIndex",
@@ -309,13 +336,6 @@ export const BUILTIN_METHOD_NAMES: ReadonlySet<string> = new Set([
   "call",
   "apply",
   "bind",
-  // Map / Set
-  "get",
-  "set",
-  "has",
-  "delete",
-  "clear",
-  "add",
   // Promise
   "then",
   "catch",
@@ -336,17 +356,7 @@ export const BUILTIN_METHOD_NAMES: ReadonlySet<string> = new Set([
   "mockReset",
   "mockClear",
   // Python str / list / dict
-  "append",
-  "extend",
-  "insert",
-  "remove",
-  "index",
-  "count",
-  "copy",
-  "items",
-  "update",
   "setdefault",
-  "format",
   "strip",
   "lstrip",
   "rstrip",
@@ -361,13 +371,41 @@ export const BUILTIN_METHOD_NAMES: ReadonlySet<string> = new Set([
   "hashCode",
   "getClass",
   "length",
-  "size",
   "isEmpty",
-  "contains",
-  "put",
   "stream",
   "collect",
   "iterator",
+]);
+
+/**
+ * Collection-style method names that are equally common on domain types
+ * (`repo.update()`, `mapper.insert()`, `cache.get()`). On a receiver of unknown
+ * type these bind only when the receiver is named after a class in an imported
+ * file that has the method ({@link resolveByReceiverClassName}) — never to a
+ * method of the caller's own file (`map.get()` inside a class that defines
+ * `get`), and never on import evidence alone (#64 review, finding 3).
+ */
+export const COLLECTION_METHOD_NAMES: ReadonlySet<string> = new Set([
+  "get",
+  "set",
+  "has",
+  "delete",
+  "clear",
+  "add",
+  "insert",
+  "remove",
+  "index",
+  "count",
+  "copy",
+  "items",
+  "update",
+  "find",
+  "format",
+  "contains",
+  "size",
+  "put",
+  "append",
+  "extend",
 ]);
 
 /** Node.js core modules — importable bare (`"path"`) or prefixed (`"node:path"`). */
@@ -470,8 +508,12 @@ export interface ResolvableSymbol {
 
 /** Project-wide indices, built once per ingest after every symbol is persisted. */
 export interface ResolutionIndex {
-  /** Per file: first definition of each name in that file. */
+  /** Per file: first definition of each name in that file (any kind). */
   fileToNameIndex: Map<string, Map<string, ResolvableSymbol>>;
+  /** Per file: first non-method definition of each name (what a bare call can reach). */
+  fileToBareIndex: Map<string, Map<string, ResolvableSymbol>>;
+  /** Per file: first TOP-LEVEL non-method definition (what another file can import). */
+  fileToTopLevelIndex: Map<string, Map<string, ResolvableSymbol>>;
   /** Per file: first method-capable definition of each name in that file. */
   fileToMemberIndex: Map<string, Map<string, ResolvableSymbol>>;
   /** Every symbol of a given name, project-wide. */
@@ -500,20 +542,42 @@ function isMemberCapable(sym: ResolvableSymbol): boolean {
   return sym.kind === "method" || (sym.language === "go" && sym.kind === "function");
 }
 
+/** Languages where a bare `foo()` inside a class is an implicit `this.foo()`. */
+const IMPLICIT_THIS_LANGUAGES: ReadonlySet<string> = new Set(["java", "cs"]);
+
+/** Declared directly in its file, not inside a class or function. */
+function isTopLevel(sym: ResolvableSymbol): boolean {
+  return sym.qualifiedName === `${sym.filePath}::${sym.name}`;
+}
+
 export function createResolutionIndex(): ResolutionIndex {
-  return { fileToNameIndex: new Map(), fileToMemberIndex: new Map(), nameToSymbols: new Map() };
+  return {
+    fileToNameIndex: new Map(),
+    fileToBareIndex: new Map(),
+    fileToTopLevelIndex: new Map(),
+    fileToMemberIndex: new Map(),
+    nameToSymbols: new Map(),
+  };
+}
+
+/** First definition per file wins. */
+function addFirst(
+  perFile: Map<string, Map<string, ResolvableSymbol>>,
+  sym: ResolvableSymbol,
+): void {
+  let byName = perFile.get(sym.filePath);
+  if (!byName) perFile.set(sym.filePath, (byName = new Map()));
+  if (!byName.has(sym.name)) byName.set(sym.name, sym);
 }
 
 /** Add one persisted symbol to the indices. First definition per file wins. */
 export function indexSymbol(index: ResolutionIndex, sym: ResolvableSymbol): void {
-  let byName = index.fileToNameIndex.get(sym.filePath);
-  if (!byName) index.fileToNameIndex.set(sym.filePath, (byName = new Map()));
-  if (!byName.has(sym.name)) byName.set(sym.name, sym);
-  if (isMemberCapable(sym)) {
-    let members = index.fileToMemberIndex.get(sym.filePath);
-    if (!members) index.fileToMemberIndex.set(sym.filePath, (members = new Map()));
-    if (!members.has(sym.name)) members.set(sym.name, sym);
+  addFirst(index.fileToNameIndex, sym);
+  if (sym.kind !== "method") {
+    addFirst(index.fileToBareIndex, sym);
+    if (isTopLevel(sym)) addFirst(index.fileToTopLevelIndex, sym);
   }
+  if (isMemberCapable(sym)) addFirst(index.fileToMemberIndex, sym);
   const bucket = index.nameToSymbols.get(sym.name);
   if (bucket) bucket.push(sym);
   else index.nameToSymbols.set(sym.name, [sym]);
@@ -609,47 +673,87 @@ export function resolveEdgeTarget(
   }
 
   if (receiver !== COMPLEX_RECEIVER) {
-    if (GLOBAL_RECEIVERS.has(receiver) || site.runtimeImports?.has(receiver)) return null;
+    if (site.runtimeImports?.has(receiver)) return null;
+    // A runtime namespace name is overridden only by importing a project module
+    // of that name (`import * as errors from "./errors"`).
+    if (
+      isGlobalReceiver(receiver, site.language) &&
+      !site.importedFiles.some((fp) => moduleStem(fp) === receiver)
+    ) {
+      return null;
+    }
     const qualified = resolveQualifiedReceiver(receiver, name, site, index);
     if (qualified) return qualified.id;
   }
 
   // Receiver of unknown type.
   if (BUILTIN_METHOD_NAMES.has(name)) return null;
+  if (COLLECTION_METHOD_NAMES.has(name)) {
+    return receiver === COMPLEX_RECEIVER
+      ? null
+      : (resolveByReceiverClassName(receiver, name, site, index)?.id ?? null);
+  }
   const local = index.fileToMemberIndex.get(site.filePath)?.get(name);
   if (local) return local.id;
   return uniqueAcross(site.importedFiles, index.fileToMemberIndex, name)?.id ?? null;
 }
 
+/**
+ * `repo.update()` / `orderMapper.insert()` / `configService.get()`: the receiver
+ * is named after a class declared top-level in a file the caller imports (case
+ * aside — the Java field and TS singleton convention), and that class has the
+ * method. Import evidence alone is not enough for these names: measured on this
+ * repository, it bound `analyses.get(id)` on a local `Map` to `ConfigService::get`
+ * merely because the file imports config-service.
+ */
+function resolveByReceiverClassName(
+  receiver: string,
+  name: string,
+  site: ResolutionSite,
+  index: ResolutionIndex,
+): ResolvableSymbol | null {
+  const want = receiver.toLowerCase();
+  const hits = (index.nameToSymbols.get(name) ?? []).filter((c) => {
+    if (!isMemberCapable(c) || !site.importedFiles.includes(c.filePath)) return false;
+    const parts = c.qualifiedName.slice(c.filePath.length + 2).split("::");
+    return parts.length === 2 && parts[0].toLowerCase() === want;
+  });
+  return hits.length === 1 ? hits[0] : null;
+}
+
 function resolveBare(name: string, site: ResolutionSite, index: ResolutionIndex): string | null {
-  // 1. Same-file definition wins outright — lexical shadowing.
-  const local = index.fileToNameIndex.get(site.filePath)?.get(name);
+  // 0. A name this file imports from the runtime or a test framework
+  //    (`import { join } from "node:path"`) is by definition not a project
+  //    symbol — not even a same-file or imported one of the same name.
+  if (site.runtimeImports?.has(name)) return null;
+
+  // 1. Same-file definition wins outright — lexical shadowing. A bare call
+  //    cannot reach a method, except in Java/C# where it is an implicit `this.`.
+  const sameFile = IMPLICIT_THIS_LANGUAGES.has(site.language)
+    ? index.fileToNameIndex
+    : index.fileToBareIndex;
+  const local = sameFile.get(site.filePath)?.get(name);
   if (local) return local.id;
 
-  // 2. Unique match across the files this file imports.
-  if (site.importedFiles.length) {
-    let hit: ResolvableSymbol | null = null;
-    for (const fp of site.importedFiles) {
-      const cand = index.fileToNameIndex.get(fp)?.get(name);
-      if (!cand) continue;
-      if (hit && hit.id !== cand.id) return null; // ambiguous across imports
-      hit = cand;
-    }
-    if (hit) return hit.id;
-  }
+  // 2. Unique TOP-LEVEL, non-method match across the files this file imports —
+  //    the only declarations another file can import by name. Two imported
+  //    files defining it is ambiguous — and step 3 refuses it too, since the
+  //    name then has more than one project-wide candidate.
+  const imported = uniqueAcross(site.importedFiles, index.fileToTopLevelIndex, name);
+  if (imported) return imported.id;
 
-  // 3. Project-wide unique — never for a runtime / test-framework global or a
-  //    name this file imports from one, and never across language families.
-  if (GLOBAL_CALL_NAMES.has(name) || site.runtimeImports?.has(name)) return null;
-  //    Only a TOP-LEVEL, non-method declaration is reachable by a bare name from
-  //    another file: a method needs a receiver, a nested helper is not exported.
+  // 3. Project-wide unique — never for a runtime / test-framework global of the
+  //    caller's language, and never across language families. Only a TOP-LEVEL,
+  //    non-method declaration is reachable by a bare name from another file: a
+  //    method needs a receiver, a nested helper is not exported.
+  if (isGlobalCallName(name, site.language)) return null;
   const candidates = index.nameToSymbols.get(name);
   if (candidates && candidates.length === 1) {
     const only = candidates[0];
     if (
       languageFamily(only.language) === languageFamily(site.language) &&
       only.kind !== "method" &&
-      only.qualifiedName === `${only.filePath}::${only.name}`
+      isTopLevel(only)
     ) {
       return only.id;
     }

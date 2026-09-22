@@ -520,6 +520,31 @@ describe("ingestCodeGraph — calls need evidence, not a matching name (#17)", (
     }
   });
 
+  it("a bare call to a runtime-imported name never binds to an imported file's method, or to its own (#64 review)", async () => {
+    // Both imports present: `join` from `node:path` AND a project file whose only
+    // `join` is a METHOD. The bare `join()` is the runtime's, in both files.
+    const root = await makeFixture({
+      "src/path-utils.ts": `import { join } from "node:path";\nexport class PathUtils {\n  join(a: string, b: string) { return join(a, b); }\n}\n`,
+      "src/suite.ts": `export class Suite {\n  beforeEach() { return 1; }\n}\n`,
+      "src/caller.ts": `import { join } from "node:path";\nimport { beforeEach } from "vitest";\nimport { PathUtils } from "./path-utils.js";\nimport { Suite } from "./suite.js";\nbeforeEach(() => {});\nexport function p() { return [new PathUtils(), new Suite(), join("a", "b")]; }\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+
+    for (const [name, file] of [
+      ["join", "src/caller.ts"],
+      ["beforeEach", "src/caller.ts"],
+      ["join", "src/path-utils.ts"],
+    ]) {
+      const edges = callsTo(store, name, file);
+      expect(edges.length, `${file} ${name}`).toBeGreaterThan(0);
+      expect(
+        edges.every((e) => e.toSymbolId === null),
+        `${file} ${name}`,
+      ).toBe(true);
+    }
+  });
+
   it("still binds member calls that carry evidence: this., Class., module namespace, imported class method", async () => {
     const root = await makeFixture({
       "src/util.ts": `export function slugify(s: string) { return s; }\n`,
@@ -582,6 +607,21 @@ describe("ingestCodeGraph — calls need evidence, not a matching name (#17)", (
     );
   });
 
+  it("binds a Java mapper's `insert`/`update` through the imported type the field is named after (#64 review)", async () => {
+    const root = await makeFixture({
+      "src/main/java/com/acme/mapper/OrderMapper.java": `package com.acme.mapper;\npublic interface OrderMapper {\n  void insert(Object o);\n  void update(Object o);\n}\n`,
+      "src/main/java/com/acme/svc/OrderService.java": `package com.acme.svc;\nimport com.acme.mapper.OrderMapper;\nimport java.util.Map;\npublic class OrderService {\n  private OrderMapper orderMapper;\n  private Map<String, Object> cache;\n  public void save(Object o) {\n    orderMapper.insert(o);\n    orderMapper.update(o);\n    cache.put("k", o);\n  }\n}\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+
+    const svc = "src/main/java/com/acme/svc/OrderService.java";
+    const mapper = "src/main/java/com/acme/mapper/OrderMapper.java";
+    expect(callsTo(store, "insert", svc)[0].toSymbolId).toBe(symbolId(store, mapper, "insert"));
+    expect(callsTo(store, "update", svc)[0].toSymbolId).toBe(symbolId(store, mapper, "update"));
+    expect(callsTo(store, "put", svc)[0].toSymbolId).toBeNull();
+  });
+
   it("binds a Go package-qualified call to the package's function", async () => {
     const root = await makeFixture({
       "billing/charge.go": `package billing\n\nfunc Charge() int { return 1 }\n`,
@@ -605,7 +645,42 @@ describe("ingestCodeGraph — the event loop keeps turning (#16)", () => {
     }
   }
 
-  it("never holds the loop for more than a fraction of a second while persisting", async () => {
+  /** Charge `cost(args)` ms of synchronous work to every call of `model[op]`. */
+  function slow(model: any, op: string, cost: (args: any) => number): void {
+    const inner = model[op];
+    model[op] = async (args: any) => {
+      spin(cost(args));
+      return inner(args);
+    };
+  }
+
+  /** Longest stretch, in ms, the event loop went without a turn while `run` ran. */
+  async function maxLoopGap(run: () => Promise<unknown>): Promise<number> {
+    let last = performance.now();
+    let maxGap = 0;
+    const ticker = setInterval(() => {
+      const now = performance.now();
+      maxGap = Math.max(maxGap, now - last);
+      last = now;
+    }, 5);
+    try {
+      await run();
+    } finally {
+      // A loop blocked until the very end never fires its late tick — count the
+      // gap that is still open, or a fully-blocked run reads as "no stall".
+      maxGap = Math.max(maxGap, performance.now() - last);
+      clearInterval(ticker);
+    }
+    return maxGap;
+  }
+
+  // Each phase below that yields gets its own test, with the synchronous cost
+  // charged ONLY to that phase's writes, so removing any one yield turns exactly
+  // its test red (#64 review: a single fixture guarded one of the yield sites).
+  // The parse loop needs no test of its own: it awaits `fs.readFile` per file,
+  // which is a real I/O turn whether or not it also calls `maybeYield`.
+
+  it("pass 1 — symbol writes never hold the loop for more than a fraction of a second", async () => {
     // 300 files x 4 functions. Each simulated statement costs 1 ms of synchronous
     // work, plus 5 us per row of a multi-row insert. However the writes are
     // batched, the total is well over a second — so this stays green only if the
@@ -617,32 +692,56 @@ describe("ingestCodeGraph — the event loop keeps turning (#16)", () => {
     }
     const root = await makeFixture(tree);
     const { prisma } = makePrismaMock();
-    const slow = (model: any, op: string) => {
-      const inner = model[op];
-      model[op] = async (args: any) => {
-        spin(1 + (Array.isArray(args?.data) ? args.data.length * 0.005 : 0));
-        return inner(args);
-      };
-    };
-    slow(prisma.codeSymbol, "create");
-    slow(prisma.codeEdge, "create");
-    slow(prisma.codeEdge, "createMany");
+    const perStatement = (args: any) =>
+      1 + (Array.isArray(args?.data) ? args.data.length * 0.005 : 0);
+    slow(prisma.codeSymbol, "create", perStatement);
+    slow(prisma.codeEdge, "create", perStatement);
+    slow(prisma.codeEdge, "createMany", perStatement);
 
-    let last = performance.now();
-    let maxGap = 0;
-    const ticker = setInterval(() => {
-      const now = performance.now();
-      maxGap = Math.max(maxGap, now - last);
-      last = now;
-    }, 5);
-    try {
-      await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
-    } finally {
-      // A loop blocked until the very end never fires its late tick — count the
-      // gap that is still open, or a fully-blocked run reads as "no stall".
-      maxGap = Math.max(maxGap, performance.now() - last);
-      clearInterval(ticker);
+    const gap = await maxLoopGap(() => ingestCodeGraph(prisma, { projectId: "p", rootDir: root }));
+    expect(gap).toBeLessThan(500);
+  });
+
+  it("pass 2 — edge resolution and writes never hold the loop for more than a fraction of a second", async () => {
+    // Few symbols, many edges: 12 files x 1,500 calls. Only the edge inserts cost
+    // anything (0.1 ms per row, ~1.8 s in total), so the symbol pass is cheap and
+    // only the edge loop's own yield can keep the loop turning.
+    const tree: Record<string, string> = {};
+    for (let f = 0; f < 12; f += 1) {
+      const calls = Array.from({ length: 1500 }, (_, k) => `  g${f}(${k});`).join("\n");
+      tree[`src/e${f}.ts`] =
+        `function g${f}(n: number) { return n; }\nexport function main() {\n${calls}\n}\n`;
     }
-    expect(maxGap).toBeLessThan(500);
+    const root = await makeFixture(tree);
+    const { prisma, store } = makePrismaMock();
+    slow(prisma.codeEdge, "createMany", (args: any) =>
+      Array.isArray(args?.data) ? args.data.length * 0.1 : 0,
+    );
+
+    const gap = await maxLoopGap(() => ingestCodeGraph(prisma, { projectId: "p", rootDir: root }));
+    expect(callsTo(store, "g0").length).toBe(1500); // the workload really ran
+    expect(gap).toBeLessThan(500);
+  });
+
+  it("rationale — finding writes never hold the loop for more than a fraction of a second", async () => {
+    // 400 rationale comments; each finding costs 3 ms to write (~1.2 s in total)
+    // and nothing else does, so only the rationale loop's yield is exercised.
+    const tree: Record<string, string> = {};
+    for (let f = 0; f < 10; f += 1) {
+      tree[`src/r${f}.ts`] = Array.from(
+        { length: 40 },
+        (_, k) =>
+          `// WHY: reason ${f}-${k} is kept distinct\nfunction r${f}_${k}() { return ${k}; }`,
+      ).join("\n");
+    }
+    const root = await makeFixture(tree);
+    const { prisma, store } = makePrismaMock();
+    slow(prisma.finding, "create", () => 3);
+
+    const gap = await maxLoopGap(() =>
+      ingestCodeGraph(prisma, { projectId: "p", rootDir: root, triggeredByUserId: "user-1" }),
+    );
+    expect(store.findings.length).toBe(400); // the workload really ran
+    expect(gap).toBeLessThan(500);
   });
 });

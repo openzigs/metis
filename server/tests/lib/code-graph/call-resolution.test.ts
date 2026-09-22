@@ -237,3 +237,198 @@ describe("resolveEdgeTarget — project-wide fallback reaches top-level declarat
     );
   });
 });
+
+// PR #64 review, blocking finding 1: steps 1 and 2 of the bare-call rule ran
+// before the runtime-import guard and looked up every kind of symbol, so a bare
+// `join` imported from `node:path` still bound to a project METHOD `join`.
+describe("resolveEdgeTarget — a bare call never reaches a method, and a runtime import always wins", () => {
+  const index = build([
+    sym("pathUtilsJoin", "src/path-utils.ts", "PathUtils::join", "method"),
+    sym("suiteBeforeEach", "src/suite-helpers.ts", "Suite::beforeEach", "method"),
+    sym("helperNested", "src/helpers.ts", "outer::inner", "function"),
+    sym("helperTop", "src/helpers.ts", "slugify", "function"),
+    sym("fixtureTop", "src/fixtures.ts", "beforeEach", "function"),
+    // A method declared BEFORE a same-named top-level function in one file.
+    sym("mixedMethod", "src/mixed.ts", "Box::wrap", "method"),
+    sym("mixedTop", "src/mixed.ts", "wrap", "function"),
+    sym("javaSave", "src/main/java/a/Repo.java", "Repo::save", "method", "java"),
+    sym("csSave", "src/Repo.cs", "Repo::Save", "method", "cs"),
+  ]);
+
+  it("the issue's shape: `import { join } from 'node:path'` beside an imported file with a `join` method", () => {
+    const s = site({ importedFiles: ["src/path-utils.ts"], runtimeImports: new Set(["join"]) });
+    expect(resolveEdgeTarget("join", undefined, s, index)).toBeNull();
+  });
+
+  it("a runtime import wins over a same-file definition too (no self-edge from PathUtils.join)", () => {
+    const s = site({ filePath: "src/path-utils.ts", runtimeImports: new Set(["join"]) });
+    expect(resolveEdgeTarget("join", undefined, s, index)).toBeNull();
+  });
+
+  it("a runtime import wins over an imported top-level function of the same name", () => {
+    const s = site({ importedFiles: ["src/fixtures.ts"], runtimeImports: new Set(["beforeEach"]) });
+    expect(resolveEdgeTarget("beforeEach", undefined, s, index)).toBeNull();
+  });
+
+  it("a bare call never binds to a method in an imported file", () => {
+    expect(
+      resolveEdgeTarget("join", undefined, site({ importedFiles: ["src/path-utils.ts"] }), index),
+    ).toBeNull();
+    expect(
+      resolveEdgeTarget(
+        "beforeEach",
+        undefined,
+        site({ importedFiles: ["src/suite-helpers.ts"] }),
+        index,
+      ),
+    ).toBeNull();
+  });
+
+  it("a bare call never binds to a nested function in an imported file, only a top-level one", () => {
+    const s = site({ importedFiles: ["src/helpers.ts"] });
+    expect(resolveEdgeTarget("inner", undefined, s, index)).toBeNull();
+    expect(resolveEdgeTarget("slugify", undefined, s, index)).toBe("helperTop");
+  });
+
+  it("a bare call never binds to a method in its own file (TS/JS/Python)", () => {
+    expect(
+      resolveEdgeTarget("join", undefined, site({ filePath: "src/path-utils.ts" }), index),
+    ).toBeNull();
+  });
+
+  it("a same-named method declared first does not hide the top-level function", () => {
+    expect(resolveEdgeTarget("wrap", undefined, site({ filePath: "src/mixed.ts" }), index)).toBe(
+      "mixedTop",
+    );
+    expect(
+      resolveEdgeTarget("wrap", undefined, site({ importedFiles: ["src/mixed.ts"] }), index),
+    ).toBe("mixedTop");
+  });
+
+  it("Java and C# bare calls still reach a method of the same file (implicit `this`)", () => {
+    const javaSite = site({ filePath: "src/main/java/a/Repo.java", language: "java" });
+    expect(resolveEdgeTarget("save", undefined, javaSite, index)).toBe("javaSave");
+    const csSite = site({ filePath: "src/Repo.cs", language: "cs" });
+    expect(resolveEdgeTarget("Save", undefined, csSite, index)).toBe("csSave");
+  });
+});
+
+// PR #64 review, finding 3: the built-in method-name guard ran before the
+// imported-file lookup, so `repo.update()` on an imported project class never bound.
+describe("resolveEdgeTarget — collection-style method names bind on receiver-named evidence", () => {
+  const index = build([
+    sym("repoUpdate", "src/repo.ts", "Repo::update", "method"),
+    sym("repoGet", "src/repo.ts", "Repo::get", "method"),
+    sym("cacheGet", "src/cache.ts", "Cache::get", "method"),
+    sym("cfgGet", "src/config-service.ts", "ConfigService::get", "method"),
+    sym("dialogJoin", "src/dialog.tsx", "join", "method"),
+    sym(
+      "mapperInsert",
+      "src/main/java/a/OrderMapper.java",
+      "OrderMapper::insert",
+      "method",
+      "java",
+    ),
+  ]);
+
+  it("`repo.update()` binds to the imported class's method", () => {
+    const s = site({ importedFiles: ["src/repo.ts"] });
+    expect(resolveEdgeTarget("update", "repo", s, index)).toBe("repoUpdate");
+    expect(resolveEdgeTarget("get", "Repo", s, index)).toBe("repoGet");
+  });
+
+  it("import evidence alone is not enough: `analyses.get()` on a local Map stays unbound", () => {
+    const s = site({ importedFiles: ["src/config-service.ts"] });
+    expect(resolveEdgeTarget("get", "analyses", s, index)).toBeNull();
+    expect(resolveEdgeTarget("get", COMPLEX_RECEIVER, s, index)).toBeNull();
+    expect(resolveEdgeTarget("get", "configService", s, index)).toBe("cfgGet");
+  });
+
+  it("a Java mapper's `insert` binds through the import", () => {
+    const s = site({
+      filePath: "src/main/java/a/OrderService.java",
+      language: "java",
+      importedFiles: ["src/main/java/a/OrderMapper.java"],
+    });
+    expect(resolveEdgeTarget("insert", "orderMapper", s, index)).toBe("mapperInsert");
+  });
+
+  it("but not from the defining file on an unknown receiver (`map.get()` inside Cache)", () => {
+    expect(resolveEdgeTarget("get", "map", site({ filePath: "src/cache.ts" }), index)).toBeNull();
+    expect(resolveEdgeTarget("get", "this", site({ filePath: "src/cache.ts" }), index)).toBe(
+      "cacheGet",
+    );
+  });
+
+  it("the receiver-named class must be in an imported file", () => {
+    expect(resolveEdgeTarget("update", "repo", site(), index)).toBeNull();
+  });
+
+  it("strictly built-in names (`join`) stay unbound even with import evidence", () => {
+    const s = site({ importedFiles: ["src/dialog.tsx"] });
+    expect(resolveEdgeTarget("join", "parts", s, index)).toBeNull();
+  });
+});
+
+// PR #64 review, findings 4 and 5: the global-name and global-receiver lists
+// applied to every language.
+describe("resolveEdgeTarget — global names and receivers are scoped by language", () => {
+  const index = build([
+    sym("tsOpen", "src/dialog-state.ts", "open", "function"),
+    sym("tsFilter", "src/query.ts", "filter", "function"),
+    sym("tsRender", "src/render.ts", "render", "function"),
+    sym("errNotFound", "src/errors.ts", "notFound", "function"),
+    sym("jsonParse", "src/json.ts", "parseLoose", "function"),
+    sym("goStrings", "internal/strings/strings.go", "Pad", "function", "go"),
+  ]);
+
+  it("a Python builtin name does not block a TS project's own top-level function", () => {
+    expect(resolveEdgeTarget("open", undefined, site(), index)).toBe("tsOpen");
+    expect(resolveEdgeTarget("filter", undefined, site(), index)).toBe("tsFilter");
+  });
+
+  it("…and still blocks the Python builtin from binding to a Python project function", () => {
+    const pyIndex = build([sym("pyOpen", "pkg/files.py", "open", "function", "py")]);
+    const py = site({ filePath: "pkg/main.py", language: "py" });
+    expect(resolveEdgeTarget("open", undefined, py, pyIndex)).toBeNull();
+  });
+
+  it("a test-library helper name that is always imported is not a bare global", () => {
+    expect(resolveEdgeTarget("render", undefined, site(), index)).toBe("tsRender");
+    expect(
+      resolveEdgeTarget("render", undefined, site({ runtimeImports: new Set(["render"]) }), index),
+    ).toBeNull();
+  });
+
+  it("test-framework globals stay blocked in JS/TS", () => {
+    const idx = build([sym("d", "src/x.ts", "describe", "function")]);
+    expect(resolveEdgeTarget("describe", undefined, site(), idx)).toBeNull();
+  });
+
+  it("a Go/Python namespace name is not a runtime receiver in TS", () => {
+    expect(resolveEdgeTarget("notFound", "errors", site(), index)).toBe("errNotFound");
+    expect(resolveEdgeTarget("parseLoose", "json", site(), index)).toBe("jsonParse");
+  });
+
+  it("…but is one in its own language", () => {
+    const goSite = site({ filePath: "cmd/main.go", language: "go" });
+    expect(resolveEdgeTarget("Pad", "strings", goSite, index)).toBeNull();
+  });
+
+  it("an imported project module overrides a runtime receiver name", () => {
+    const idx = build([sym("pj", "src/lib/path.ts", "join", "function")]);
+    expect(resolveEdgeTarget("join", "path", site(), idx)).toBeNull();
+    expect(
+      resolveEdgeTarget("join", "path", site({ importedFiles: ["src/lib/path.ts"] }), idx),
+    ).toBe("pj");
+    // …unless the file also imports that name from the runtime.
+    expect(
+      resolveEdgeTarget(
+        "join",
+        "path",
+        site({ importedFiles: ["src/lib/path.ts"], runtimeImports: new Set(["path"]) }),
+        idx,
+      ),
+    ).toBeNull();
+  });
+});
