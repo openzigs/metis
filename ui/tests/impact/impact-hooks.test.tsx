@@ -52,6 +52,7 @@ const summary: ImpactAnalysisSummary = {
   documentId: null,
   summary: null,
   projectCount: 2,
+  projectIds: ["project-001", "project-002"],
   totalImpactedSymbols: 3,
   startedAt: "2024-01-01T00:00:00.000Z",
   completedAt: "2024-01-01T00:01:00.000Z",
@@ -152,6 +153,23 @@ describe("useImpactAnalyses", () => {
     const { result } = renderHook(() => useImpactAnalyses(), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toEqual([summary]);
+  });
+});
+
+describe("useImpactAnalyses — #61 one project", () => {
+  it("fetches that project's runs under a key the list invalidation reaches", async () => {
+    vi.mocked(impactAnalysisApi.list).mockResolvedValue([summary]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const Wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useImpactAnalyses("p1"), { wrapper: Wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(impactAnalysisApi.list).toHaveBeenCalledWith("p1");
+    expect(client.getQueryData(impactAnalysisKeys.projectList("p1"))).toEqual([summary]);
+
+    await client.invalidateQueries({ queryKey: impactAnalysisKeys.list() });
+    await waitFor(() => expect(impactAnalysisApi.list).toHaveBeenCalledTimes(2));
   });
 });
 

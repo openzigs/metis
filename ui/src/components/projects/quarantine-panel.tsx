@@ -67,7 +67,8 @@ export function QuarantinePanel({ projectId }: { projectId: string }) {
   });
 
   return (
-    <Card className="space-y-4 p-4" data-testid="quarantine-panel">
+    // `id` — the Overview's Review stage links here (#66).
+    <Card id="quarantine" className="scroll-mt-4 space-y-4 p-4" data-testid="quarantine-panel">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Quarantine</h2>
         <label className="flex items-center gap-2 text-sm">

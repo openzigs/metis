@@ -842,13 +842,21 @@ export function computeSharedTableImpacts(items: ImpactItemView[]): SharedTableI
   return out.sort((a, b) => a.tableName.localeCompare(b.tableName));
 }
 
-/** List impact analyses, optionally scoped to those touching accessible projects. */
+/**
+ * List impact analyses, optionally scoped to those touching accessible projects.
+ *
+ * #61 — `projectId` narrows the list to runs that include that project, in the
+ * query itself, so a project's runs are not lost behind the `limit` newest runs
+ * of other projects. Each row names only the run's projects the caller can
+ * access; `projectCount` still counts them all, exactly as before.
+ */
 export async function listImpactAnalyses(
-  opts: { accessibleProjectIds?: string[] | null; limit?: number } = {},
+  opts: { accessibleProjectIds?: string[] | null; limit?: number; projectId?: string } = {},
   prisma?: ReadPrisma,
 ): Promise<ImpactAnalysisSummary[]> {
   const db = resolvePrisma(prisma);
   const rows = await db.impactAnalysis.findMany({
+    ...(opts.projectId ? { where: { items: { some: { projectId: opts.projectId } } } } : {}),
     orderBy: { startedAt: "desc" },
     take: opts.limit ?? 100,
     include: { items: { select: { projectId: true } } },
@@ -872,6 +880,7 @@ export async function listImpactAnalyses(
       documentId: row.documentId,
       summary: row.summary,
       projectCount: projectIds.length,
+      projectIds: accessible ? projectIds.filter((id) => accessible.has(id)) : projectIds,
       totalImpactedSymbols: row.totalImpactedSymbols,
       startedAt: row.startedAt.toISOString(),
       completedAt: row.completedAt ? row.completedAt.toISOString() : null,

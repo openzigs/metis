@@ -733,14 +733,23 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
     }
   });
 
-  // GET / — list analyses visible to the caller.
+  // GET / — list analyses visible to the caller. #61 — `?projectId=` narrows it
+  // to runs that include that project; a project the caller cannot access
+  // lists nothing, the same answer as a project with no runs.
   r.get("/", requirePermission("analysis.read"), async (req, res, next) => {
     try {
       const actor = actorOf(req);
       const accessibleProjectIds = isAdminActor(actor)
         ? null
         : await listAccessibleProjectIds(actor);
-      const rows = await listImpactAnalyses({ accessibleProjectIds });
+      const projectId = typeof req.query.projectId === "string" ? req.query.projectId : "";
+      if (projectId && accessibleProjectIds && !accessibleProjectIds.includes(projectId)) {
+        res.json(ok([]));
+        return;
+      }
+      const rows = await listImpactAnalyses(
+        projectId ? { accessibleProjectIds, projectId } : { accessibleProjectIds },
+      );
       res.json(ok(rows));
     } catch (err) {
       next(asAppError(err));

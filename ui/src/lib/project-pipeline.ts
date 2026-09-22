@@ -21,6 +21,8 @@ export interface PipelineStage {
   status: string;
   /** The stage's primary action, deep-linked to where it is done. */
   action: { label: string; href: string };
+  /** A second thing waiting in this stage, when there is one. */
+  secondaryAction?: { label: string; href: string };
 }
 
 type DateLike = string | Date;
@@ -33,7 +35,10 @@ export interface PipelineFacts {
    * exact, `items` may be partial. Counts taken from a partial page are lower
    * bounds and are only ever reported as such.
    */
-  documents: { total: number; items: Array<{ status: string; chunkCount: number }> };
+  documents: {
+    total: number;
+    items: Array<{ status: string; chunkCount: number; indexState?: string | null }>;
+  };
   /** A live `connector:progress` ingest is in flight — see {@link isIngestRunning}. */
   ingestInProgress: boolean;
   /** Newest first, as `GET /projects/:id/analyses` returns them. */
@@ -85,6 +90,25 @@ export const FIRST_RUN_STEPS: readonly PipelineStageId[] = [
 ];
 
 const RUNNING_DOC_STATUSES = new Set(["pending", "queued", "processing"]);
+
+/**
+ * #66 — a document held in quarantine: processed and chunked, waiting for a
+ * reviewer. It keeps `status = processing` (the documents list and the
+ * approve/reject flow read it that way), so status alone reads as ingesting.
+ */
+export function isDocumentAwaitingReview(d: { indexState?: string | null }): boolean {
+  return d.indexState === "quarantined";
+}
+
+/** A document that is still being ingested — not one only waiting for review. */
+export function isDocumentIngesting(d: { status: string; indexState?: string | null }): boolean {
+  return RUNNING_DOC_STATUSES.has(d.status) && !isDocumentAwaitingReview(d);
+}
+
+/** Where quarantined documents are approved or rejected. */
+export function quarantineHref(projectId: string): string {
+  return `/projects/${projectId}/settings#quarantine`;
+}
 const RUNNING_GENERATED_DOC_STATUSES = new Set(["pending", "generating"]);
 const RUNNING_JOB_STATUSES = new Set(["pending", "running"]);
 
@@ -139,7 +163,8 @@ function ingestStage(base: string, f: PipelineFacts): PipelineStage {
   // Every document is on this page, so counts over `items` are the project's.
   const complete = items.length >= f.documents.total;
   const atLeast = complete ? "" : "at least ";
-  const processing = items.filter((d) => RUNNING_DOC_STATUSES.has(d.status)).length;
+  const processing = items.filter(isDocumentIngesting).length;
+  const awaitingReview = items.filter(isDocumentAwaitingReview).length;
   const failed = items.filter((d) => d.status === "failed").length;
   const ready = items.filter((d) => d.status === "ready");
   const lastRepoIngest = latestTime(f.repos.map((r) => r.lastIngestAt));
@@ -173,6 +198,7 @@ function ingestStage(base: string, f: PipelineFacts): PipelineStage {
     parts.push(plural(f.documents.total, "document"));
   }
   if (lastRepoIngest) parts.push(`repository last ingested ${when(lastRepoIngest)}`);
+  if (awaitingReview) parts.push(`${atLeast}${plural(awaitingReview, "document")} awaiting review`);
   if (failed) parts.push(`${atLeast}${plural(failed, "document")} failed`);
 
   if (parts.length === 0) {
@@ -234,7 +260,7 @@ export function latestCompletedAnalysisId(f: Pick<PipelineFacts, "analyses">): s
   return f.analyses.find((a) => a.status === "completed")?.id ?? null;
 }
 
-function reviewStage(base: string, f: PipelineFacts): PipelineStage {
+function requirementsReview(base: string, f: PipelineFacts): PipelineStage {
   const hub = `${base}/requirements`;
   const analysisId = latestCompletedAnalysisId(f);
   if (!analysisId) {
@@ -273,6 +299,30 @@ function reviewStage(base: string, f: PipelineFacts): PipelineStage {
     state: "done",
     status: "All requirements reviewed",
     action: { label: "Open requirements", href: hub },
+  };
+}
+
+/**
+ * #66 — quarantined documents wait on a reviewer too. They join the Review
+ * stage, linked to the quarantine queue, alongside the requirements.
+ */
+function reviewStage(base: string, projectId: string, f: PipelineFacts): PipelineStage {
+  const stage = requirementsReview(base, f);
+  const items = f.documents.items;
+  const quarantined = items.filter(isDocumentAwaitingReview).length;
+  if (quarantined === 0) return stage;
+  const atLeast = items.length >= f.documents.total ? "" : "at least ";
+  const quarantine = {
+    label: `Review ${plural(quarantined, "quarantined document")}`,
+    href: quarantineHref(projectId),
+  };
+  const requirementsWaiting = stage.state === "attention";
+  return {
+    ...stage,
+    state: "attention",
+    status: `${stage.status} · ${atLeast}${plural(quarantined, "document")} awaiting review in quarantine`,
+    action: requirementsWaiting ? stage.action : quarantine,
+    secondaryAction: requirementsWaiting ? quarantine : stage.action,
   };
 }
 
@@ -366,7 +416,7 @@ export function derivePipelineStages(projectId: string, facts: PipelineFacts): P
     sourcesStage(base, facts),
     ingestStage(base, facts),
     analyzeStage(base, facts),
-    reviewStage(base, facts),
+    reviewStage(base, projectId, facts),
     docsStage(base, facts),
     publishStage(base, facts),
   ];

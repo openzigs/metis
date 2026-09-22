@@ -70,6 +70,12 @@ describe("QuarantinePanel", () => {
     expect(await screen.findByText(/Quarantine is empty/i)).toBeInTheDocument();
   });
 
+  it("is the #quarantine anchor the Overview's Review stage links to (#66)", async () => {
+    mocks.list.mockResolvedValue({ items: [], autoApproveTrustedSources: false });
+    renderPanel();
+    expect(screen.getByTestId("quarantine-panel")).toHaveAttribute("id", "quarantine");
+  });
+
   it("renders rows with approve / reject controls", async () => {
     mocks.list.mockResolvedValue({
       items: [sampleRow],

@@ -900,7 +900,7 @@ The UI consumes these via `ui/src/hooks/use-job-events.ts`: `useJobLifecycle`/`u
 - **Embeddings reindex** (`server/src/routes/admin/embeddings.ts`, kind `embeddings-reindex`) — **fire-and-forget**: `POST …/reindex` enqueues a background worker (`runReindexJob`) and returns `202 { jobId }` immediately (no gateway/idle-timeout risk on large corpora). The worker streams `started → progress` (0-100, from `reindexProject`'s `onProgress`) `→ completed/failed`. Because the work happens *after* the response, the client learns the terminal outcome ONLY from the bus.
 - **Spec Kit commands** (`server/src/routes/spec-kit.ts`, kind `spec-kit`) and **overview regenerate** (`server/src/routes/projects.ts`, kind `overview-regenerate`) — **awaited**: the op runs in one server-side shot and the HTTP response carries the result (so the precise success payload + 4xx/5xx error contract are preserved). Lifecycle events are still emitted for the global indicator, but the surface drives its terminal toast from the mutation callback (a late `subscribe:job` would miss the already-fired terminal event). Spec Kit threads its grounded-completion line verbatim into `jobEvents.completed` via `extractCompletionMessage`.
 
-Client surfaces use `useJobToast` (`ui/src/hooks/use-job-toast.ts`) for the fire-and-forget case (subscribe to one `jobId` → live progress + a terminal toast fired at most once) and the shared accessible `<JobProgress>` component (`ui/src/components/realtime/job-progress.tsx`, `role="progressbar"`; determinate bar from a 0-100 progress event, indeterminate animated bar for awaited ops). Terminal failure text always comes from `genericFailureMessage(kind)` / a generic client string — raw error detail never reaches the user.
+Client surfaces use `useJobToast` (`ui/src/hooks/use-job-toast.ts`) for the fire-and-forget case (subscribe to one `jobId` → live progress + a terminal toast fired at most once) and the shared accessible `<JobProgress>` component (`ui/src/components/realtime/job-progress.tsx`, `role="progressbar"`; determinate bar from a 0-100 progress event, indeterminate animated bar for awaited ops). Terminal failure text always comes from `genericFailureMessage(kind)` / a generic client string — raw error detail never reaches the user. The same holds for a failed generated document's persisted `errorMessage` (#52): `generationFailureMessage(err)` (`server/src/lib/docs-gen/generation-failure-message.ts`) maps the error to one of a fixed set of user-safe reasons (restart, provider 402 balance, project budget, rate limit, credentials, generic), and `GET`/`PATCH /projects/:id/docs/:docId` re-classify rows written before #52 on read.
 
 #### 7.6.2 Personal user rooms and notification center (Issue #416, epic #405)
 
@@ -2359,6 +2359,11 @@ flowchart LR
 API: `POST /api/impact-analyses` (returns `202` with `{id,status,projectIds}`),
 `GET /api/impact-analyses`, `GET /api/impact-analyses/:id`. Guarded by the
 `analysis.run` and `analysis.read` permissions. UI lives under `/impact-analyses`.
+`GET /api/impact-analyses?projectId=` lists only the runs that include that
+project (empty for a project the caller cannot access); each summary row's
+`projectIds` names only the run's projects the caller can access, while
+`projectCount` counts them all (#61). A project's own runs are listed on
+`/projects/:id/impact`.
 
 #### Mapping precision/recall eval — replayed PRs (Epic #726 / #738)
 

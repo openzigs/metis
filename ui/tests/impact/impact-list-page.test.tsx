@@ -23,6 +23,7 @@ const row: ImpactAnalysisSummary = {
   documentId: null,
   summary: null,
   projectCount: 2,
+  projectIds: ["project-001", "project-002"],
   totalImpactedSymbols: 5,
   startedAt: "2024-01-01T00:00:00.000Z",
   completedAt: "2024-01-01T00:05:00.000Z",

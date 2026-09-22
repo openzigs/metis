@@ -26,6 +26,7 @@ import { useAuth } from "@/lib/auth-context";
 import {
   FIRST_RUN_STEPS,
   derivePipelineStages,
+  isDocumentIngesting,
   isFirstRun,
   isIngestRunning,
   latestCompletedAnalysisId,
@@ -74,11 +75,23 @@ function StageStatus({ stage }: { stage: PipelineStage }) {
 
 function StageAction({ stage }: { stage: PipelineStage }) {
   return (
-    <Button asChild size="sm" variant={stage.state === "done" ? "outline" : "default"}>
-      <Link href={stage.action.href} data-testid={`pipeline-action-${stage.id}`}>
-        {stage.action.label}
-      </Link>
-    </Button>
+    <div className="flex flex-wrap items-center gap-2">
+      <Button asChild size="sm" variant={stage.state === "done" ? "outline" : "default"}>
+        <Link href={stage.action.href} data-testid={`pipeline-action-${stage.id}`}>
+          {stage.action.label}
+        </Link>
+      </Button>
+      {stage.secondaryAction ? (
+        <Button asChild size="sm" variant="outline">
+          <Link
+            href={stage.secondaryAction.href}
+            data-testid={`pipeline-secondary-action-${stage.id}`}
+          >
+            {stage.secondaryAction.label}
+          </Link>
+        </Button>
+      ) : null}
+    </div>
   );
 }
 
@@ -105,9 +118,8 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
     queryKey: [...queryKeys.documents.forProject(projectId), "pipeline"],
     queryFn: () => documentsApi.list(projectId, { limit: DOCUMENT_PAGE }),
     refetchInterval: (q) =>
-      q.state.data?.items.some((d) => ["pending", "queued", "processing"].includes(d.status))
-        ? LIVE_POLL_MS
-        : false,
+      // #66 — a quarantined document is waiting for review, not ingesting.
+      q.state.data?.items.some(isDocumentIngesting) ? LIVE_POLL_MS : false,
   });
   const analyses = useQuery({
     queryKey: queryKeys.analyses.forProject(projectId),

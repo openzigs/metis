@@ -55,6 +55,11 @@ export interface DocumentRow {
   mimeType: string;
   sizeBytes: number;
   status: "pending" | "queued" | "processing" | "ready" | "failed";
+  /**
+   * Epic #157 — `quarantined` while held for review. A quarantined document
+   * keeps `status = processing`; see `isDocumentAwaitingReview` (#66).
+   */
+  indexState?: string | null;
   errorMessage?: string | null;
   chunkCount: number;
   /** Epic #724 — when true this document is a spec for implementation comparison. */

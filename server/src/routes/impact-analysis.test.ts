@@ -277,6 +277,32 @@ describe("impact-analyses router", () => {
       expect(listImpactAnalyses).toHaveBeenCalledWith({ accessibleProjectIds: null });
     });
 
+    it("#61 — narrows to one accessible project", async () => {
+      const res = await request(app).get("/impact-analyses?projectId=project-002");
+      expect(res.status).toBe(200);
+      expect(listImpactAnalyses).toHaveBeenCalledWith({
+        accessibleProjectIds: ["project-001", "project-002"],
+        projectId: "project-002",
+      });
+    });
+
+    it("#61 — lists nothing for a project the caller cannot access", async () => {
+      listImpactAnalyses.mockResolvedValue([{ id: "ia-1", projectCount: 2 }] as never);
+      const res = await request(app).get("/impact-analyses?projectId=project-999");
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual([]);
+      expect(listImpactAnalyses).not.toHaveBeenCalled();
+    });
+
+    it("#61 — lets an admin narrow to any project", async () => {
+      adminFlag = true;
+      await request(app).get("/impact-analyses?projectId=project-999");
+      expect(listImpactAnalyses).toHaveBeenCalledWith({
+        accessibleProjectIds: null,
+        projectId: "project-999",
+      });
+    });
+
     it("returns 403 when analysis.read permission is denied", async () => {
       permitRead = false;
       const res = await request(app).get("/impact-analyses");

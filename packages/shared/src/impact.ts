@@ -526,6 +526,12 @@ export interface ImpactAnalysisSummary {
   documentId: string | null;
   summary: string | null;
   projectCount: number;
+  /**
+   * #61 — the run's projects the caller can access (all of them for an admin).
+   * `projectCount` still counts every project in the run, as it always has; a
+   * project the caller cannot see is counted there but never named here.
+   */
+  projectIds: string[];
   totalImpactedSymbols: number;
   startedAt: string;
   completedAt: string | null;

@@ -349,6 +349,94 @@ describe("review stage", () => {
   });
 });
 
+// #66 — generated docs published back into the knowledge base and held for
+// review keep `status = processing`, exactly as observed on a local install.
+const quarantinedGeneratedDocs = [
+  { status: "processing", indexState: "quarantined", chunkCount: 26 },
+  { status: "processing", indexState: "quarantined", chunkCount: 58 },
+  { status: "processing", indexState: "quarantined", chunkCount: 1 },
+];
+
+describe("quarantined documents (#66)", () => {
+  it("leave the Ingest stage idle when they are the only non-ready documents", () => {
+    const s = stage(
+      facts({
+        documents: {
+          total: 4,
+          items: [
+            { status: "ready", indexState: "indexed", chunkCount: 4 },
+            ...quarantinedGeneratedDocs,
+          ],
+        },
+      }),
+      "ingest",
+    );
+    expect(s.state).toBe("done");
+    expect(s.status).not.toMatch(/ingesting|processing/i);
+    expect(s.status).toBe("1 document ready · 4 chunks · 3 documents awaiting review");
+  });
+
+  it("do not hide a document that is really still processing", () => {
+    const s = stage(
+      facts({
+        documents: {
+          total: 4,
+          items: [
+            { status: "processing", indexState: "pending", chunkCount: 0 },
+            ...quarantinedGeneratedDocs,
+          ],
+        },
+      }),
+      "ingest",
+    );
+    expect(s.state).toBe("running");
+    expect(s.status).toMatch(/1 document processing/);
+  });
+
+  it("are counted under Review and linked to the quarantine queue", () => {
+    const s = stage(
+      facts({
+        analyses: [completed],
+        awaitingReview: 0,
+        documents: { total: 3, items: quarantinedGeneratedDocs },
+      }),
+      "review",
+    );
+    expect(s.state).toBe("attention");
+    expect(s.status).toBe("All requirements reviewed · 3 documents awaiting review in quarantine");
+    expect(s.action).toEqual({
+      label: "Review 3 quarantined documents",
+      href: `${B}/settings#quarantine`,
+    });
+    expect(s.secondaryAction).toEqual({ label: "Open requirements", href: `${B}/requirements` });
+  });
+
+  it("keep requirements awaiting review as the primary action, quarantine second", () => {
+    const s = stage(
+      facts({
+        analyses: [completed],
+        awaitingReview: 2,
+        documents: { total: 10, items: quarantinedGeneratedDocs.slice(0, 1) },
+      }),
+      "review",
+    );
+    expect(s.status).toBe(
+      "2 requirements awaiting review · at least 1 document awaiting review in quarantine",
+    );
+    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1`);
+    expect(s.secondaryAction).toEqual({
+      label: "Review 1 quarantined document",
+      href: `${B}/settings#quarantine`,
+    });
+  });
+
+  it("leave Review unchanged when nothing is quarantined", () => {
+    const s = stage(facts({ analyses: [completed], awaitingReview: 0 }), "review");
+    expect(s.secondaryAction).toBeUndefined();
+    expect(s.state).toBe("done");
+  });
+});
+
 describe("docs stage", () => {
   it("asks to generate docs when there are none", () => {
     const s = stage(facts(), "docs");
