@@ -204,7 +204,7 @@ async function main(): Promise<void> {
     const counts: Record<string, number> = {};
     for (const o of opLog) if (o.t >= from && o.t <= to) counts[o.op] = (counts[o.op] ?? 0) + 1;
     if (Object.keys(counts).length)
-      console.log(`stall@${st.atS}s ${st.ms}ms:`, JSON.stringify(counts));
+      console.log("stall at %ss (%sms): %s", st.atS, st.ms, JSON.stringify(counts));
   }
   console.log("\nTop symbols by in-degree:");
   for (const l of table) console.log(l);
