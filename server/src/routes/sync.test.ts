@@ -40,6 +40,8 @@ vi.mock("../lib/sync/index.js", () => ({
     resolvedAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
   }),
+  // #102 — the drift's owning project, resolved before the write is authorised.
+  getDriftEventProjectId: vi.fn().mockResolvedValue("proj-1"),
   listDriftEvents: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   getDriftCount: vi.fn().mockResolvedValue(3),
   verifyGithubIssueSignature: vi.fn().mockReturnValue({ ok: true }),
@@ -103,10 +105,12 @@ vi.mock("../lib/custom-agents/authz.js", () => ({
 vi.mock("../middleware/error-handler.js", () => {
   class AppError extends Error {
     status: number;
+    statusCode: number;
     code: string;
     constructor(status: number, code: string, message: string) {
       super(message);
       this.status = status;
+      this.statusCode = status;
       this.code = code;
     }
   }
@@ -331,6 +335,87 @@ describe("Drift management routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.resolution).toBe("adopt");
+  });
+
+  /**
+   * #102 — the WRITE twin of #88. `sync.resolve` is a role check; it said the
+   * caller may resolve drift, never whose. Any holder could resolve another
+   * project's drift by id, which destroys that project's signal.
+   */
+  describe("#102 project access on the drift resolve", () => {
+    it("returns 404 and does not resolve a drift in a project the caller cannot access", async () => {
+      const { getDriftEventProjectId, resolveDriftEvent } = await import("../lib/sync/index.js");
+      vi.mocked(getDriftEventProjectId).mockResolvedValueOnce("proj-other");
+      const app = createApp();
+      const res = await request(app).post("/sync/drift/drift-9/resolve").send({ action: "adopt" });
+
+      expect(res.status).toBe(404);
+      expect(vi.mocked(resolveDriftEvent)).not.toHaveBeenCalled();
+    });
+
+    it("answers an inaccessible drift exactly as it answers a nonexistent one", async () => {
+      const { getDriftEventProjectId } = await import("../lib/sync/index.js");
+      const app = createApp();
+
+      vi.mocked(getDriftEventProjectId).mockResolvedValueOnce("proj-other");
+      const foreign = await request(app)
+        .post("/sync/drift/drift-9/resolve")
+        .send({ action: "adopt" });
+      vi.mocked(getDriftEventProjectId).mockResolvedValueOnce(null);
+      const missing = await request(app)
+        .post("/sync/drift/no-such/resolve")
+        .send({ action: "adopt" });
+
+      expect(foreign.status).toBe(404);
+      expect(missing.status).toBe(404);
+      // Same body: the error channel is not an existence oracle across projects.
+      expect(foreign.body).toEqual(missing.body);
+    });
+
+    it("never consults the scope seam for a drift that does not exist", async () => {
+      const { getDriftEventProjectId, resolveDriftEvent } = await import("../lib/sync/index.js");
+      vi.mocked(getDriftEventProjectId).mockResolvedValueOnce(null);
+      const app = createApp();
+      const res = await request(app).post("/sync/drift/no-such/resolve").send({ action: "adopt" });
+
+      expect(res.status).toBe(404);
+      expect(assertProjectAccess).not.toHaveBeenCalled();
+      expect(vi.mocked(resolveDriftEvent)).not.toHaveBeenCalled();
+    });
+
+    it("asserts access against the drift's OWN project, not one the caller names", async () => {
+      const { getDriftEventProjectId } = await import("../lib/sync/index.js");
+      const app = createApp();
+      await request(app)
+        .post("/sync/drift/drift-1/resolve?projectId=proj-other")
+        .send({ action: "adopt", projectId: "proj-other" });
+
+      expect(vi.mocked(getDriftEventProjectId)).toHaveBeenCalledWith("drift-1");
+      expect(assertProjectAccess).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: "user-1" }),
+        "proj-1",
+      );
+    });
+
+    it("propagates a scope-seam failure that is not a 404", async () => {
+      const { resolveDriftEvent } = await import("../lib/sync/index.js");
+      assertProjectAccess.mockRejectedValueOnce(new Error("db down"));
+      const app = createApp();
+      const res = await request(app).post("/sync/drift/drift-1/resolve").send({ action: "adopt" });
+
+      expect(res.status).toBe(500);
+      expect(vi.mocked(resolveDriftEvent)).not.toHaveBeenCalled();
+    });
+
+    it("returns 401 rather than skipping the scope check when there is no caller", async () => {
+      authedUser = null;
+      const { resolveDriftEvent } = await import("../lib/sync/index.js");
+      const app = createApp();
+      const res = await request(app).post("/sync/drift/drift-1/resolve").send({ action: "adopt" });
+
+      expect(res.status).toBe(401);
+      expect(vi.mocked(resolveDriftEvent)).not.toHaveBeenCalled();
+    });
   });
 
   it("POST /sync/drift/:id/resolve rejects invalid action", async () => {

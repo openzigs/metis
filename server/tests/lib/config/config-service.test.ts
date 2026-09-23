@@ -80,6 +80,7 @@ function makeStubVault(initial: VaultEntry[] = []): {
     read: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
     rotate: ReturnType<typeof vi.fn>;
+    upsert: ReturnType<typeof vi.fn>;
     delete: ReturnType<typeof vi.fn>;
   };
 } {
@@ -123,6 +124,24 @@ function makeStubVault(initial: VaultEntry[] = []): {
       entry.plaintext = plaintext;
       return summaryOf(entry);
     }),
+    // #93 — keyed on the label, like the vault's unique `name` index: it finds
+    // an existing entry whether or not `list()` would have surfaced it.
+    upsert: vi.fn(
+      async (
+        label: string,
+        plaintext: string,
+        _scope: "global" | "project",
+      ): Promise<SecretSummary> => {
+        const found = Array.from(store.values()).find((e) => e.label === label);
+        if (found) {
+          found.plaintext = plaintext;
+          return summaryOf(found);
+        }
+        const entry: VaultEntry = { id: `vault_${nextId++}`, label, plaintext };
+        store.set(entry.id, entry);
+        return summaryOf(entry);
+      },
+    ),
     delete: vi.fn(async (id: string) => {
       store.delete(id);
     }),
@@ -133,6 +152,7 @@ function makeStubVault(initial: VaultEntry[] = []): {
     read: spies.read,
     create: spies.create,
     rotate: spies.rotate,
+    upsert: spies.upsert,
     delete: spies.delete,
   } as unknown as VaultService;
 
@@ -302,22 +322,46 @@ describe("ConfigService — loadSecrets concurrency", () => {
 
 describe("ConfigService — write path (secrets)", () => {
   it("creates a new vault entry on first setSecret", async () => {
-    const { vault, spies } = makeStubVault();
+    const { vault, spies, store } = makeStubVault();
     const svc = new ConfigService({ vault, env: {} });
     await svc.setSecret("OPENAI_API_KEY", "sk-new", { actorId: "user_1" });
-    expect(spies.create).toHaveBeenCalledTimes(1);
+    expect(spies.upsert).toHaveBeenCalledWith(
+      "OPENAI_API_KEY",
+      "sk-new",
+      "global",
+      expect.objectContaining({ createdById: "user_1" }),
+    );
+    expect(store.size).toBe(1);
     expect(svc.get("OPENAI_API_KEY")).toBe("sk-new");
   });
 
   it("rotates an existing vault entry on subsequent setSecret", async () => {
-    const { vault, spies } = makeStubVault([
+    const { vault, store } = makeStubVault([
       { id: "v1", label: "OPENAI_API_KEY", plaintext: "old" },
     ]);
     const svc = new ConfigService({ vault, env: {} });
     await svc.setSecret("OPENAI_API_KEY", "rotated");
-    expect(spies.rotate).toHaveBeenCalledWith("v1", "rotated");
-    expect(spies.create).not.toHaveBeenCalled();
+    expect(store.size).toBe(1);
+    expect(store.get("v1")?.plaintext).toBe("rotated");
     expect(svc.get("OPENAI_API_KEY")).toBe("rotated");
+  });
+
+  /**
+   * #93 — the entry exists but the pre-read does not surface it (a cleared,
+   * soft-deleted row; or a concurrent writer). Deciding create-vs-rotate from
+   * `list()` sent this to `create`, which the unique index refuses.
+   */
+  it("writes through to the existing entry when list() misses it", async () => {
+    const { vault, spies, store } = makeStubVault([
+      { id: "v1", label: "OPENAI_API_KEY", plaintext: "old" },
+    ]);
+    spies.list.mockResolvedValue([]);
+    spies.create.mockRejectedValue(new Error("Unique constraint failed on the fields: (`name`)"));
+    const svc = new ConfigService({ vault, env: {} });
+
+    await expect(svc.setSecret("OPENAI_API_KEY", "fresh")).resolves.toMatchObject({ id: "v1" });
+    expect(store.get("v1")?.plaintext).toBe("fresh");
+    expect(svc.get("OPENAI_API_KEY")).toBe("fresh");
   });
 
   it("rejects bootstrap-tier writes with ConfigBootstrapError", async () => {

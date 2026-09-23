@@ -8,7 +8,7 @@
  * Drift management:
  *   GET  /api/sync/drift               — list drift events (project scoped)
  *   GET  /api/sync/drift/count         — drift count for badge
- *   POST /api/sync/drift/:id/resolve   — resolve a drift event
+ *   POST /api/sync/drift/:id/resolve   — resolve a drift event (project scoped)
  */
 import { Router, type Request, type Response } from "express";
 import { resolveDriftSchema, type ApiResponse } from "@metis/shared";
@@ -22,6 +22,7 @@ import { recordDelivery } from "../lib/agents/pr-reviewer/webhook-dedup.js";
 import {
   reconcileIssueChange,
   resolveDriftEvent,
+  getDriftEventProjectId,
   listDriftEvents,
   getDriftCount,
   verifyGithubIssueSignature,
@@ -220,6 +221,13 @@ export function syncDriftRouter(): Router {
 
   /**
    * POST /drift/:id/resolve — resolve a drift event.
+   *
+   * #102 — the write twin of #88. `sync.resolve` is a ROLE check: it says the
+   * caller may resolve drift, not whose. The drift is addressed by id alone, so
+   * its owning project is resolved from the row and passed through the same
+   * `assertProjectAccess` seam as the reads. An inaccessible drift answers the
+   * SAME 404 as a nonexistent one, so a drift id cannot be probed across
+   * projects.
    */
   r.post(
     "/drift/:id/resolve",
@@ -230,6 +238,15 @@ export function syncDriftRouter(): Router {
 
         const { id } = req.params as { id: string };
         const body = resolveDriftSchema.parse(req.body);
+
+        const projectId = await getDriftEventProjectId(id);
+        if (!projectId) throw new Error("DRIFT_NOT_FOUND");
+        try {
+          await assertProjectAccess(req.user, projectId);
+        } catch (err) {
+          if (err instanceof AppError && err.statusCode === 404) throw new Error("DRIFT_NOT_FOUND");
+          throw err;
+        }
 
         const result = await resolveDriftEvent(id, body.action, req.user.userId);
         res.json(ok(result));

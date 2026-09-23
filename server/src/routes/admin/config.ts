@@ -26,6 +26,9 @@ import {
   type ConfigKeyDef,
   type ConfigService,
 } from "../../lib/config/index.js";
+import { createChildLogger } from "../../lib/logger.js";
+
+const log = createChildLogger("admin-config-routes");
 
 // Match a registered key shape (UPPER_SNAKE_CASE).
 const KEY_PARAM_PATTERN = /^[A-Z][A-Z0-9_]*$/;
@@ -256,8 +259,36 @@ function safeGet(svc: ConfigService, key: string): string | null {
   }
 }
 
+/**
+ * #93 — a Prisma client error, by class name or by its `P####` code. Its message
+ * quotes the invocation site and the violated fields, so it must never be the
+ * text of an API response.
+ */
+function isPrismaError(err: unknown): err is Error & { code?: unknown } {
+  if (!(err instanceof Error)) return false;
+  if (err.name.startsWith("PrismaClient")) return true;
+  const { code } = err as { code?: unknown };
+  return typeof code === "string" && /^P\d{4}$/.test(code);
+}
+
 function translateError(err: unknown): unknown {
   if (err instanceof AppError) return err;
+  if (isPrismaError(err)) {
+    const code = typeof err.code === "string" ? err.code : undefined;
+    log.warn("Config store error mapped to a fixed response", { errorClass: err.name, code });
+    if (code === "P2002") {
+      return new AppError(
+        409,
+        "CONFIG_WRITE_CONFLICT",
+        "The value was changed by another request. Retry the save.",
+      );
+    }
+    return new AppError(
+      500,
+      "CONFIG_STORE_ERROR",
+      "The configuration store could not complete the request.",
+    );
+  }
   if (err instanceof ConfigUnknownKeyError) {
     return new AppError(400, "UNKNOWN_KEY", err.message);
   }
