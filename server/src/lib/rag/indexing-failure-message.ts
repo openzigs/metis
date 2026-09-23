@@ -48,7 +48,8 @@ export const INDEXING_PROVIDER_BALANCE_MESSAGE =
 export const INDEXING_STORAGE_MESSAGE =
   "The stored file could not be read for indexing. The details are in the server log.";
 
-export const INDEXING_REJECTED_MESSAGE = "Indexing was rejected by a reviewer.";
+/** The same words the documentation page falls back to for a rejected row. */
+export const INDEXING_REJECTED_MESSAGE = "Indexing was rejected.";
 
 export const INDEXING_UNSUPPORTED_TYPE_MESSAGE = "This file type is not supported for indexing.";
 

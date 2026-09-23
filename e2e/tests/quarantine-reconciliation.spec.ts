@@ -1,7 +1,11 @@
 import { test, expect, request, type APIRequestContext } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { apiBase } from "../fixtures/api-base.js";
-import { CLEANUP_ERROR, parkManualApprovalForReconciliation } from "../fixtures/manual-approval.js";
+import {
+  CLEANUP_ERROR,
+  SHOWN_CLEANUP_ERROR,
+  parkManualApprovalForReconciliation,
+} from "../fixtures/manual-approval.js";
 import { primeAdminUser } from "../fixtures/seed-user.js";
 import { LoginPage } from "../pages/login.page.js";
 import { QuarantinePage } from "./pages/quarantine.page.js";
@@ -67,9 +71,9 @@ test.describe("Manual approval reconciliation (#1350)", () => {
   test("keeps saved approval and cleanup error across a browser refresh", async ({ page }) => {
     const quarantine = new QuarantinePage(page, filename);
     await quarantine.goto(projectId);
-    await quarantine.expectReconciling(CLEANUP_ERROR);
+    await quarantine.expectReconciling(SHOWN_CLEANUP_ERROR, CLEANUP_ERROR);
     await quarantine.reload();
-    await quarantine.expectReconciling(CLEANUP_ERROR);
+    await quarantine.expectReconciling(SHOWN_CLEANUP_ERROR, CLEANUP_ERROR);
   });
 
   // AC #1350: failed retry stays actionable; successful retry clears quarantine durably.
@@ -81,7 +85,7 @@ test.describe("Manual approval reconciliation (#1350)", () => {
     const listPath = `/projects/${projectId}/quarantine`;
     const failure = "E2E simulated approval cleanup failure";
     await quarantine.goto(projectId);
-    await quarantine.expectReconciling(CLEANUP_ERROR);
+    await quarantine.expectReconciling(SHOWN_CLEANUP_ERROR, CLEANUP_ERROR);
 
     await test.step("failed HTTP retry shows pending and error states without losing saved approval", async () => {
       let release!: () => void;
@@ -123,9 +127,9 @@ test.describe("Manual approval reconciliation (#1350)", () => {
         `Unable to finish approval/indexing: ${failure}`,
       );
       expect((await refreshedList).status()).toBe(200);
-      await quarantine.expectReconciling(CLEANUP_ERROR);
+      await quarantine.expectReconciling(SHOWN_CLEANUP_ERROR, CLEANUP_ERROR);
       await quarantine.reload();
-      await quarantine.expectReconciling(CLEANUP_ERROR);
+      await quarantine.expectReconciling(SHOWN_CLEANUP_ERROR, CLEANUP_ERROR);
     });
 
     await test.step("real retry completes cleanup and stays absent after refresh", async () => {

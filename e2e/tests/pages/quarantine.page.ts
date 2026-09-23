@@ -31,11 +31,12 @@ export class QuarantinePage {
     await this.page.reload();
   }
 
-  async expectReconciling(error: string): Promise<void> {
+  async expectReconciling(error: string, hidden?: string): Promise<void> {
     await expect(this.row).toContainText(
       "Approval saved. Index cleanup is incomplete; retry indexing to finish.",
     );
     await expect(this.row).toContainText(error);
+    if (hidden) await expect(this.row).not.toContainText(hidden);
     await expect(this.retry).toBeEnabled();
     await expect(this.row.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
     await expect(this.row.getByRole("button", { name: "Reject", exact: true })).toHaveCount(0);
