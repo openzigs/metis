@@ -17,6 +17,20 @@
  * is exactly the accounting an audit record exists to carry. Rationale and the
  * other two sinks' policies: `docs/decisions/0008-redaction-sinks.md`.
  *
+ * ERROR_SERIALISATION_POLICY: reduce-at-call-site
+ *
+ * An `Error` reaching {@link redact} keeps only its own ENUMERABLE properties
+ * (redacted by key); `name` / `message` / `stack` / `cause` / `errors` are own
+ * but non-enumerable and are dropped, so an Error persists as `{}`. That is
+ * deliberate and is NOT the #68 defect arriving one sink down: `AuditLog` rows
+ * are retained compliance evidence and are exported, a stack carries absolute
+ * server paths, and a `cause` chain can drag a whole provider payload into a
+ * row nobody will ever re-read. Every `audit({...})` call site in `server/src`
+ * already reduces its error to `.message` or `.code` at the boundary, which is
+ * where the decision about how much of a failure a compliance record should
+ * keep belongs. `redaction-sinks.enumeration.test.ts` re-checks that premise.
+ * Decision: `docs/decisions/0016-error-serialisation-in-the-persisting-sinks.md`.
+ *
  * Writes are non-blocking: `record()` returns immediately and the actual
  * Prisma insert runs on a microtask queue. Failures are logged but never
  * surface to the caller.

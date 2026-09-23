@@ -1107,6 +1107,17 @@ function formatIndexingSummary(indexing?: GeneratedDoc["indexing"]): string {
  * render. Prefers the dedicated structured `warnings` column; falls back to
  * parsing the legacy `errorMessage` JSON for docs persisted before the #252
  * migration. Exported for unit testing.
+ *
+ * #86 — the legacy fallback is kept, and it is safe because the SERVER sanitises
+ * that column now: `publicGenerationErrorMessage` re-derives every
+ * `section-failed` warning in a pre-#252 blob through the fixed
+ * `generationFailureMessage` vocabulary, and collapses anything that is not a
+ * warning list (a raw exception string a pre-#52 row left behind) to a fixed
+ * message. Before that fix this parse rendered `String(err)` — provider
+ * response bodies, absolute paths, SQL text — verbatim in the banner, which is
+ * exactly the exposure #67 closed for the `warnings` column. Do not start
+ * trusting this input on the strength of that: it is sanitised upstream, not
+ * sanitised here.
  */
 export function resolveDocWarnings(
   structuredWarnings?: DocWarning[] | null,

@@ -208,3 +208,114 @@ describe("publicDocWarnings", () => {
     expect(out[1].message).not.toContain("42");
   });
 });
+
+/**
+ * #86 — the LEGACY `errorMessage` column, the last arm of the same exposure.
+ *
+ * #52 sanitised a `failed` row's `errorMessage`; #67 sanitised the `warnings`
+ * column. A row degraded before the #252 migration stored its `DocWarning[]`
+ * JSON in `errorMessage` instead, built by the pre-#67
+ * `sectionFailedWarning(label, String(err))` — so the exception text is
+ * embedded in that blob, `publicGenerationErrorMessage` returned it verbatim
+ * for any non-`failed` status, and the UI's `resolveDocWarnings` legacy
+ * fallback parsed and rendered it. The exposure #67 closed survived intact for
+ * every document generated before #252.
+ *
+ * Two things must hold together: nothing echoed, AND the blob still parses into
+ * the `DocWarning[]` shape the UI's legacy fallback requires (it keeps only
+ * entries with a string `message`), so sanitising it does not silently blank
+ * the banner instead.
+ */
+const LEGACY_WARNING_BLOB = JSON.stringify([
+  {
+    kind: "section-failed",
+    section: "Data Model",
+    // The pre-#67 builder: `String(err)` straight into the message.
+    message: `Section "Data Model" could not be generated: ${SECRET}.`,
+    severity: "error",
+  },
+]);
+
+describe("publicGenerationErrorMessage — legacy errorMessage warning JSON (#86)", () => {
+  it("does not echo the exception embedded in a pre-#252 degraded row", () => {
+    const out = publicGenerationErrorMessage("degraded", LEGACY_WARNING_BLOB);
+    expect(out).not.toBeNull();
+    expect(out).not.toContain("/srv");
+    expect(out).not.toContain("SELECT");
+    expect(out).not.toContain("deepseek returned 500");
+    expect(out).not.toContain('{"error":"boom"}');
+  });
+
+  it("keeps the blob parseable as the DocWarning[] the UI legacy fallback reads", () => {
+    const parsed: unknown = JSON.parse(
+      publicGenerationErrorMessage("degraded", LEGACY_WARNING_BLOB)!,
+    );
+    expect(Array.isArray(parsed)).toBe(true);
+    const warnings = parsed as Array<Record<string, unknown>>;
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].kind).toBe("section-failed");
+    expect(warnings[0].section).toBe("Data Model");
+    expect(warnings[0].severity).toBe("error");
+    // The UI keeps only entries whose `message` is a string — sanitising must
+    // not blank the banner it was meant to make safe.
+    expect(typeof warnings[0].message).toBe("string");
+    expect(warnings[0].message).toContain(GENERATION_FAILED_MESSAGE);
+    expect(warnings[0].detailSafe).toBe(true);
+  });
+
+  it("keeps a recognisable provider failure recognisable through the legacy column", () => {
+    const blob = JSON.stringify([
+      {
+        kind: "section-failed",
+        section: "Workflows",
+        message: 'Section "Workflows" could not be generated: deepseek returned 402: {"x":1}.',
+        severity: "error",
+      },
+    ]);
+    const out = publicGenerationErrorMessage("degraded", blob)!;
+    expect(out).toContain(GENERATION_PROVIDER_BALANCE_MESSAGE);
+    expect(out).not.toContain('{"x":1}');
+  });
+
+  it("sanitises a non-JSON legacy errorMessage on a non-failed row", () => {
+    // The UI's `catch` arm renders this string as a single warning verbatim.
+    expect(publicGenerationErrorMessage("degraded", `Error: ${SECRET}`)).toBe(
+      GENERATION_FAILED_MESSAGE,
+    );
+    expect(
+      publicGenerationErrorMessage("degraded", "Error: deepseek returned 429: slow down"),
+    ).toBe(GENERATION_PROVIDER_RATE_LIMITED_MESSAGE);
+  });
+
+  it("sanitises JSON that is not an array of warnings", () => {
+    expect(publicGenerationErrorMessage("degraded", JSON.stringify({ raw: SECRET }))).toBe(
+      GENERATION_FAILED_MESSAGE,
+    );
+    expect(publicGenerationErrorMessage("degraded", "null")).toBe(GENERATION_FAILED_MESSAGE);
+  });
+
+  it("leaves a post-#67 warning's METIS-authored detail intact", () => {
+    // `detailSafe` is the discriminator: no pre-#67 row can carry it, so a
+    // blob written after #67 keeps its own prose.
+    const blob = JSON.stringify([
+      {
+        kind: "section-failed",
+        section: "Data Model",
+        message: 'Section "Data Model" could not be generated: 3 of 11 tables described.',
+        severity: "error",
+        detailSafe: true,
+      },
+    ]);
+    expect(publicGenerationErrorMessage("degraded", blob)).toBe(blob);
+  });
+
+  it("leaves a warning kind that is never built from an exception untouched", () => {
+    const blob = JSON.stringify([{ kind: "no-modules", message: "No modules found." }]);
+    expect(publicGenerationErrorMessage("degraded", blob)).toBe(blob);
+  });
+
+  it("still returns null for no message", () => {
+    expect(publicGenerationErrorMessage("degraded", null)).toBeNull();
+    expect(publicGenerationErrorMessage("degraded", undefined)).toBeNull();
+  });
+});

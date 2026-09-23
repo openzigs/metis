@@ -111,18 +111,52 @@ export function generationFailureMessage(err: unknown): string {
 }
 
 /**
- * The `errorMessage` a client may see for a generated document. Only a
- * `failed` row's message is an error reason; a legacy `degraded` row may still
- * carry pre-#252 warning JSON the UI parses, which METIS wrote itself, so it
- * passes through.
+ * The `errorMessage` a client may see for a generated document.
+ *
+ * #86 — a non-`failed` row's message used to pass through VERBATIM on the
+ * reasoning that a legacy `degraded` row carries pre-#252 warning JSON "which
+ * METIS wrote itself". METIS *formatted* that blob, but the pre-#67
+ * `sectionFailedWarning(label, String(err))` embedded the exception inside it,
+ * and the UI's `resolveDocWarnings` legacy fallback parses and renders it — so
+ * the exposure #52 closed for a `failed` row, and #67 closed for the `warnings`
+ * column, survived here for every document generated before #252.
+ *
+ * Both arms now go through the fixed vocabulary:
+ *
+ * - a `failed` row's message → {@link generationFailureMessage}, as since #52;
+ * - anything else → {@link legacyWarningJson}, which re-derives the detail of
+ *   the embedded warnings through {@link publicDocWarnings} and collapses any
+ *   other content to a fixed message.
  */
 export function publicGenerationErrorMessage(
   status: string,
   errorMessage: string | null | undefined,
 ): string | null {
   if (errorMessage == null) return null;
-  if (status !== "failed") return errorMessage;
+  if (status !== "failed") return legacyWarningJson(errorMessage);
   return generationFailureMessage(errorMessage);
+}
+
+/**
+ * #86 — sanitise the legacy `errorMessage` blob of a non-`failed` row.
+ *
+ * The shape is re-derived rather than trusted: pre-#252 rows hold `DocWarning[]`
+ * JSON, which is handed to {@link publicDocWarnings} so each `section-failed`
+ * warning's detail is re-classified exactly as the `warnings` column's is —
+ * keeping the array parseable by the UI's legacy fallback, which drops any entry
+ * without a string `message`. Anything else in that column (a raw exception
+ * string a pre-#52 row left behind, a JSON object, `"null"`) is not a warning
+ * list and cannot be repaired into one, so it collapses to the fixed vocabulary.
+ */
+function legacyWarningJson(errorMessage: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(errorMessage);
+  } catch {
+    return generationFailureMessage(errorMessage);
+  }
+  if (!Array.isArray(parsed)) return generationFailureMessage(errorMessage);
+  return JSON.stringify(publicDocWarnings(parsed));
 }
 
 /**

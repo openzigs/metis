@@ -21,6 +21,16 @@
  *
  * REDACTION_SINK_POLICY: no-token-count-exemption
  *
+ * ERROR_SERIALISATION_POLICY: reduce-at-call-site
+ *
+ * Same decision as `audit-service.ts`, and for the same reason one degree
+ * stronger: `SandboxAuditEvent` rows are SOC 2 evidence. An `Error` reaching
+ * {@link redactSandboxPayload} keeps only its own enumerable properties — the
+ * non-enumerable `name` / `message` / `stack` / `cause` / `errors` are dropped,
+ * so it persists as `{}` rather than as a stack. The audit emitter's own
+ * failure path already reduces to `(err as Error).message`.
+ * Decision: `docs/decisions/0016-error-serialisation-in-the-persisting-sinks.md`.
+ *
  * `logger.ts` and `audit-service.ts` exempt enumerated numeric token *counts*
  * from `/token/i` (#1263, #1268). This sink deliberately does not, and the
  * reason is evidence rather than symmetry: **no token count reaches it.** Every

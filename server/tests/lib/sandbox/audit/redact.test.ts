@@ -270,3 +270,42 @@ describe("redactSecretsInString — Anthropic keys & DB connection strings (#685
     expect(out.args[1]).toContain("[REDACTED]");
   });
 });
+
+/**
+ * #85 — `ERROR_SERIALISATION_POLICY: reduce-at-call-site`, one degree stronger
+ * than `audit-service.ts` because `SandboxAuditEvent` rows are SOC 2 evidence.
+ *
+ * The #68 repair (serialise `name` / `message` / `stack` / `cause`) and the #85
+ * follow-up (an aggregate's `errors`) are deliberately NOT copied here. These
+ * assertions make that executable, so a later copy-by-analogy goes red and
+ * points at `docs/decisions/0016-error-serialisation-in-the-persisting-sinks.md`
+ * rather than putting a server stack into a compliance row.
+ */
+describe("redactSandboxPayload — Errors are reduced at the call site (#85)", () => {
+  it("does not persist name, message, stack, cause or sub-errors", () => {
+    const out = redactSandboxPayload({
+      err: new Error("spawn failed at /srv/metis/server/src/lib/x.ts"),
+    }) as Record<string, Record<string, unknown>>;
+    expect(Object.keys(out.err)).toEqual([]);
+    for (const dropped of ["name", "message", "stack", "cause", "errors"]) {
+      expect(out.err[dropped], `${dropped} must not reach a SandboxAuditEvent row`).toBeUndefined();
+    }
+    expect(JSON.stringify(out)).not.toContain("/srv/metis");
+  });
+
+  it("drops an AggregateError's sub-errors too", () => {
+    const out = redactSandboxPayload({
+      err: new AggregateError([new Error("a: /srv/one")], "all failed"),
+    }) as Record<string, Record<string, unknown>>;
+    expect(out.err.errors).toBeUndefined();
+    expect(JSON.stringify(out)).not.toContain("/srv/");
+  });
+
+  it("still redacts a credential hung off an error as an own enumerable property", () => {
+    const out = redactSandboxPayload({
+      err: Object.assign(new Error("boom"), { exitCode: 1, token: "ghp_abc" }),
+    }) as Record<string, Record<string, unknown>>;
+    expect(out.err.exitCode).toBe(1);
+    expect(out.err.token).toBe("[REDACTED]");
+  });
+});

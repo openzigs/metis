@@ -462,3 +462,111 @@ describe("logger.redact — an Error in metadata (#68)", () => {
     expect(line!.docId).toBe("doc-1");
   });
 });
+
+/**
+ * #85 — `AggregateError.errors` is an own but NON-ENUMERABLE property.
+ *
+ * #68 enumerated `name` / `message` / `stack` / `cause` explicitly because
+ * `Object.entries(err)` returns `[]` for them. `errors` has exactly the same
+ * descriptor and was not on that list, so it was dropped by both the explicit
+ * keys and the `...err` spread: every `Promise.any` rejection and every
+ * batched-connector failure logged an `AggregateError` whose sub-errors — the
+ * only part that says WHY each attempt failed — were gone. The surviving
+ * `message` is `"All promises were rejected"`, which is why nothing looked
+ * broken.
+ *
+ * Both directions on the same run, as in the #68 block above: the sub-errors
+ * must serialise, AND a credential hung off a sub-error must still redact —
+ * an `errors` array that bypassed the recursive walk would satisfy the first
+ * assertion alone.
+ */
+describe("logger.redact — AggregateError sub-errors (#85)", () => {
+  it("serialises each entry of `errors`, not just the aggregate's own message", () => {
+    const out = redact({
+      err: new AggregateError(
+        [new Error("primary down"), new TypeError("bad shape")],
+        "all failed",
+      ),
+    }) as Record<string, Record<string, unknown>>;
+    expect(out.err.name).toBe("AggregateError");
+    expect(out.err.message).toBe("all failed");
+    const errors = out.err.errors as Array<Record<string, unknown>>;
+    expect(errors, "AggregateError.errors did not survive serialisation").toHaveLength(2);
+    expect(errors[0].name).toBe("Error");
+    expect(errors[0].message).toBe("primary down");
+    expect(typeof errors[0].stack).toBe("string");
+    expect(errors[1].name).toBe("TypeError");
+    expect(errors[1].message).toBe("bad shape");
+  });
+
+  it("redacts a credential hung off a sub-error", () => {
+    const sub = Object.assign(new Error("gateway refused"), {
+      status: 401,
+      apiKey: SECRET_LOOKALIKE,
+    });
+    const out = redact({ err: new AggregateError([sub], "all failed") }) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const errors = out.err.errors as Array<Record<string, unknown>>;
+    expect(errors[0].status).toBe(401);
+    expect(errors[0].message).toBe("gateway refused");
+    expect(errors[0].apiKey).toBe("[REDACTED]");
+  });
+
+  it("serialises the sub-errors of a real Promise.any rejection", async () => {
+    const rejected = await Promise.any([
+      Promise.reject(new Error("connector a: ECONNREFUSED")),
+      Promise.reject(new Error("connector b: 503")),
+    ]).catch((err: unknown) => err);
+    const out = redact({ err: rejected }) as Record<string, Record<string, unknown>>;
+    const errors = out.err.errors as Array<Record<string, unknown>>;
+    expect(errors.map((e) => e.message)).toEqual(["connector a: ECONNREFUSED", "connector b: 503"]);
+  });
+
+  it("carries an aggregate nested inside metadata and through winston", async () => {
+    const captured: Array<Record<string, unknown>> = [];
+    const transport = new winston.transports.Stream({
+      stream: new Writable({
+        write(chunk, _enc, cb) {
+          captured.push(JSON.parse(String(chunk)) as Record<string, unknown>);
+          cb();
+        },
+      }),
+      format: winston.format.json(),
+    });
+    logger.add(transport);
+    try {
+      logger.error("Every connector failed", {
+        ctx: { err: new AggregateError([new Error("inner reason")], "all failed") },
+      });
+      await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      logger.remove(transport);
+    }
+    const line = captured.find((e) => e.message === "Every connector failed");
+    expect(line, "the logger emitted nothing").toBeDefined();
+    const err = (line!.ctx as Record<string, unknown>).err as Record<string, unknown>;
+    const errors = err.errors as Array<Record<string, unknown>>;
+    expect(errors[0].message).toBe("inner reason");
+  });
+
+  it("leaves a non-array `errors` property alone", () => {
+    // Only the AggregateError shape is captured. An ordinary error carrying a
+    // scalar `errors` must not gain a fabricated array, and an own ENUMERABLE
+    // `errors` still wins the spread as any other own property does.
+    const scalar = redact({ err: Object.assign(new Error("x"), { errors: 3 }) }) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(scalar.err.errors).toBe(3);
+    const enumerable = redact({
+      err: Object.assign(new Error("x"), { errors: [{ detail: "own enumerable" }] }),
+    }) as Record<string, Record<string, unknown>>;
+    expect(enumerable.err.errors).toEqual([{ detail: "own enumerable" }]);
+    // And an ordinary error gains no empty `errors` key: a default of `[]` here
+    // would put a meaningless field on every logged error in the codebase.
+    const plain = redact({ err: new Error("x") }) as Record<string, Record<string, unknown>>;
+    expect("errors" in plain.err).toBe(false);
+  });
+});
