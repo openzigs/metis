@@ -568,8 +568,20 @@ export interface ImpactAnalysisDetail {
   totalImpactedSymbols: number;
   startedAt: string;
   completedAt: string | null;
-  /** Distinct project ids covered by this run. */
+  /**
+   * Distinct project ids covered by this run: the projects it was STARTED for
+   * (`impact_analysis_projects`, persisted at creation — #70) followed by any
+   * further projects its items name. Non-empty for every run created since #70,
+   * which is what lets the read routes authorize a run that has no items yet.
+   */
   projectIds: string[];
+  /**
+   * #88 — the actor who started the run. Load-bearing for authorization, not
+   * display: a pre-#70 run with neither persisted projects nor items belongs to
+   * no project the access filter can name, and its starter is then the only
+   * non-admin principal who may still read it.
+   */
+  startedById: string;
   items: ImpactItemView[];
   /**
    * Epic #954 (#956) — tables impacted across ≥2 of the run's selected projects

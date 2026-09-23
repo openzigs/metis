@@ -62,6 +62,8 @@ const summary: ImpactAnalysisSummary = {
 const detail: ImpactAnalysisDetail = {
   id: "ia-0000000001",
   status: "completed",
+  // #88 — the run's starter; load-bearing for the server's access guard.
+  startedById: "user-1",
   documentId: null,
   sourceText: "text",
   summary: null,

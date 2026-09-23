@@ -266,15 +266,22 @@ describe("impact-analyses router", () => {
       const res = await request(app).get("/impact-analyses");
       expect(res.status).toBe(200);
       expect(res.body.data).toHaveLength(1);
+      // #88 — `actorId` is a SCOPING key: it is what keeps a legacy run with no
+      // recoverable projects visible to its starter and nobody else. Pinned here
+      // so dropping it from the route cannot stay green.
       expect(listImpactAnalyses).toHaveBeenCalledWith({
         accessibleProjectIds: ["project-001", "project-002"],
+        actorId: "user-1",
       });
     });
 
     it("passes a null scope for admins", async () => {
       adminFlag = true;
       await request(app).get("/impact-analyses");
-      expect(listImpactAnalyses).toHaveBeenCalledWith({ accessibleProjectIds: null });
+      expect(listImpactAnalyses).toHaveBeenCalledWith({
+        accessibleProjectIds: null,
+        actorId: "user-1",
+      });
     });
 
     it("#61 — narrows to one accessible project", async () => {
@@ -282,6 +289,7 @@ describe("impact-analyses router", () => {
       expect(res.status).toBe(200);
       expect(listImpactAnalyses).toHaveBeenCalledWith({
         accessibleProjectIds: ["project-001", "project-002"],
+        actorId: "user-1",
         projectId: "project-002",
       });
     });
@@ -299,6 +307,7 @@ describe("impact-analyses router", () => {
       await request(app).get("/impact-analyses?projectId=project-999");
       expect(listImpactAnalyses).toHaveBeenCalledWith({
         accessibleProjectIds: null,
+        actorId: "user-1",
         projectId: "project-999",
       });
     });
@@ -316,6 +325,7 @@ describe("impact-analyses router", () => {
       status: "completed",
       projectIds: ["project-001", "project-002"],
       items: [],
+      startedById: "user-owner",
     };
 
     it("returns the detail when the caller can access all projects", async () => {
@@ -344,6 +354,90 @@ describe("impact-analyses router", () => {
       getImpactAnalysisDetail.mockResolvedValue(detail);
       const res = await request(app).get("/impact-analyses/ia-1");
       expect(res.status).toBe(200);
+    });
+
+    /**
+     * #88 — the detail twin of the hatch #70 closed on the list path. The guard
+     * used to skip itself when `detail.projectIds` was empty, and an in-flight
+     * run's projectIds WERE empty because the projection read `ImpactItem` rows
+     * alone. Any `analysis.read` holder could then read another project's
+     * in-flight run by id, and likewise through export and Jira publish.
+     */
+    describe("#88 the empty-projectIds escape hatch, on every route that shared it", () => {
+      /**
+       * The exact projection shape the hatch needed: a run the caller has no
+       * claim to at all — someone else's, naming no project this caller can
+       * reach. `loadAccessibleImpactDetail` is shared by the detail, export,
+       * re-run, drift and Jira-publish routes, so every one of them admitted it.
+       */
+      const notMine = {
+        id: "ia-secret",
+        status: "running",
+        summary: null,
+        errorMessage: null,
+        totalImpactedSymbols: 0,
+        projectIds: [],
+        items: [],
+        sharedTableImpacts: [],
+        startedById: "user-owner",
+      };
+
+      it("returns 404 on the detail read", async () => {
+        getImpactAnalysisDetail.mockResolvedValue(notMine);
+        const res = await request(app).get("/impact-analyses/ia-secret");
+        expect(res.status).toBe(404);
+      });
+
+      it("returns 404 on the markdown export", async () => {
+        getImpactAnalysisDetail.mockResolvedValue(notMine);
+        const res = await request(app).get("/impact-analyses/ia-secret/export.md");
+        expect(res.status).toBe(404);
+        expect(res.text).not.toContain("# Impact analysis");
+      });
+
+      it("returns 404 on the Jira publish, and publishes nothing", async () => {
+        getImpactAnalysisDetail.mockResolvedValue(notMine);
+        const res = await request(app).post("/impact-analyses/ia-secret/publish/jira").send({});
+        expect(res.status).toBe(404);
+        expect(publishImpactAnalysisToJira).not.toHaveBeenCalled();
+      });
+
+      it("still lets an admin through", async () => {
+        adminFlag = true;
+        accessibleIds = [];
+        getImpactAnalysisDetail.mockResolvedValue(notMine);
+        const res = await request(app).get("/impact-analyses/ia-secret");
+        expect(res.status).toBe(200);
+      });
+    });
+
+    /**
+     * #88 — a run with NO recoverable projects (pre-#70, no items) belongs to
+     * nobody the access filter can name, so the only principal who may read it
+     * is the one who started it. It must not fall back to "visible to all".
+     */
+    describe("#88 a legacy run with neither persisted projects nor items", () => {
+      const legacy = { id: "ia-legacy", status: "failed", projectIds: [], items: [] };
+
+      it("is refused to a member who did not start it", async () => {
+        getImpactAnalysisDetail.mockResolvedValue({ ...legacy, startedById: "user-owner" });
+        const res = await request(app).get("/impact-analyses/ia-legacy");
+        expect(res.status).toBe(404);
+      });
+
+      it("stays readable by the actor who started it", async () => {
+        getImpactAnalysisDetail.mockResolvedValue({ ...legacy, startedById: "user-1" });
+        const res = await request(app).get("/impact-analyses/ia-legacy");
+        expect(res.status).toBe(200);
+        expect(res.body.data.id).toBe("ia-legacy");
+      });
+
+      /** Fail closed on a projection that cannot name a starter at all. */
+      it("is refused when the run names no starter", async () => {
+        getImpactAnalysisDetail.mockResolvedValue({ ...legacy, startedById: undefined });
+        const res = await request(app).get("/impact-analyses/ia-legacy");
+        expect(res.status).toBe(404);
+      });
     });
   });
 

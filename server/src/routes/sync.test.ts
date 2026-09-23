@@ -70,15 +70,34 @@ vi.mock("../lib/sync/index.js", () => ({
   }),
 }));
 
+// #88 — the drift reads now narrow `req.user` before handing it to the
+// project-scope seam. `authedUser = null` mounts the router as an unauthenticated
+// request would reach it, so that arm is exercised rather than assumed.
+let authedUser: unknown = { userId: "user-1", role: "coordinator", username: "test" };
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (req: Request & { user?: unknown }, _res: Response, next: NextFunction) => {
-    req.user = { userId: "user-1", role: "coordinator", username: "test" };
+    if (authedUser) req.user = authedUser;
     next();
   },
 }));
 
 vi.mock("../middleware/require-permission.js", () => ({
   requirePermission: () => (_req: Request, _res: Response, next: NextFunction) => next(),
+}));
+
+// #88 — the drift reads gate on `sync.read` alone, so they must ALSO go through
+// the canonical object-level project-scope seam (`assertProjectAccess`, the same
+// predicate `requireProjectAccess` applies to `/projects/:projectId/*`). A
+// non-member gets 404, never 403, so route probing cannot enumerate projects.
+let accessibleProjectIds: string[] = ["proj-1"];
+const assertProjectAccess = vi.fn(async (_user: unknown, projectId: string) => {
+  if (!accessibleProjectIds.includes(projectId)) {
+    const { AppError } = await import("../middleware/error-handler.js");
+    throw new AppError(404, "NOT_FOUND", "Project not found");
+  }
+});
+vi.mock("../lib/custom-agents/authz.js", () => ({
+  assertProjectAccess: (...args: [unknown, string]) => assertProjectAccess(...args),
 }));
 
 vi.mock("../middleware/error-handler.js", () => {
@@ -110,7 +129,12 @@ function createApp() {
   return app;
 }
 
-beforeEach(() => seenDeliveries.clear());
+beforeEach(() => {
+  seenDeliveries.clear();
+  vi.clearAllMocks();
+  accessibleProjectIds = ["proj-1"];
+  authedUser = { userId: "user-1", role: "coordinator", username: "test" };
+});
 
 describe("GitHub issues webhook route", () => {
   it("returns 200 with handled result on valid payload", async () => {
@@ -247,6 +271,57 @@ describe("Drift management routes", () => {
     const res = await request(app).get("/sync/drift");
 
     expect(res.status).toBe(400);
+  });
+
+  /**
+   * #88 — both drift READS checked `sync.read` and nothing else, so any holder
+   * of that permission could read (and badge-count) the drift of ANY project by
+   * passing its id in the query string. `ui/src/hooks/use-drift-count.ts` is
+   * their first UI consumer, which is what surfaced it.
+   */
+  describe("#88 project access on the drift reads", () => {
+    it("GET /sync/drift returns 404 for a project the caller cannot access", async () => {
+      const { listDriftEvents } = await import("../lib/sync/index.js");
+      const app = createApp();
+      const res = await request(app).get("/sync/drift?projectId=proj-other");
+
+      expect(res.status).toBe(404);
+      // The refusal happens BEFORE the read, so no drift content is loaded.
+      expect(vi.mocked(listDriftEvents)).not.toHaveBeenCalled();
+    });
+
+    it("GET /sync/drift/count returns 404 for a project the caller cannot access", async () => {
+      const { getDriftCount } = await import("../lib/sync/index.js");
+      const app = createApp();
+      const res = await request(app).get("/sync/drift/count?projectId=proj-other");
+
+      expect(res.status).toBe(404);
+      expect(vi.mocked(getDriftCount)).not.toHaveBeenCalled();
+    });
+
+    it("returns 401 rather than skipping the scope check when there is no caller", async () => {
+      authedUser = null;
+      const { listDriftEvents, getDriftCount } = await import("../lib/sync/index.js");
+      const app = createApp();
+
+      const list = await request(app).get("/sync/drift?projectId=proj-1");
+      const count = await request(app).get("/sync/drift/count?projectId=proj-1");
+
+      expect(list.status).toBe(401);
+      expect(count.status).toBe(401);
+      expect(vi.mocked(listDriftEvents)).not.toHaveBeenCalled();
+      expect(vi.mocked(getDriftCount)).not.toHaveBeenCalled();
+      expect(assertProjectAccess).not.toHaveBeenCalled();
+    });
+
+    it("asserts access against the project id the caller actually asked for", async () => {
+      const app = createApp();
+      await request(app).get("/sync/drift?projectId=proj-1");
+      expect(assertProjectAccess).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: "user-1" }),
+        "proj-1",
+      );
+    });
   });
 
   it("POST /sync/drift/:id/resolve resolves drift", async () => {

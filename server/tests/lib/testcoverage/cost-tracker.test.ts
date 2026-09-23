@@ -447,22 +447,47 @@ describe("readBudget", () => {
     });
   });
 
+  /** The session every `readBudget("r1", …)` in this block is scoped to. */
+  const R1_SESSION = "testCoverageRun:r1";
+
   /**
    * Answer `aggregate` from a row set instead of by call order, so the test
    * measures the `where` clauses `readBudget` actually issues rather than
    * restating them.
+   *
+   * #94 — the row matcher honours `sessionId`, and a row may name one. Filtering
+   * only on `estimatedCostUsd`/`agentStep` is what let the unpriced-TOTAL
+   * aggregate lose its `sessionId` with all 322 tests still green: rows from
+   * another run were counted into this run's total and no assertion could see it.
+   * A row with no `sessionId` belongs to this run, so the pre-existing cases read
+   * unchanged.
    */
   function usageRows(
     db: { aITokenUsage: { aggregate: ReturnType<typeof vi.fn> } },
-    rows: { agentStep: string; totalTokens: number; estimatedCostUsd: number | null }[],
+    rows: {
+      agentStep: string;
+      totalTokens: number;
+      estimatedCostUsd: number | null;
+      sessionId?: string;
+    }[],
   ) {
     db.aITokenUsage.aggregate.mockImplementation(
       async ({
         where,
       }: {
-        where: { estimatedCostUsd: number | null; agentStep?: string | { in: string[] } };
+        where: {
+          sessionId?: string;
+          estimatedCostUsd: number | null;
+          agentStep?: string | { in: string[] };
+        };
       }) => {
         const matched = rows.filter((r) => {
+          // An ABSENT `sessionId` filter matches every row, exactly as the real
+          // query would — so a lost scope over-counts here, as it would in
+          // production, rather than quietly matching nothing.
+          if (where.sessionId !== undefined && (r.sessionId ?? R1_SESSION) !== where.sessionId) {
+            return false;
+          }
           if (r.estimatedCostUsd !== where.estimatedCostUsd) return false;
           if (where.agentStep === undefined) return true;
           if (typeof where.agentStep === "string") return r.agentStep === where.agentStep;
@@ -497,6 +522,10 @@ describe("readBudget", () => {
       { agentStep: "testcoverage.suggestion", totalTokens: 9_999, estimatedCostUsd: 0.5 },
     ]);
     const out = await readBudget("r1", { db: db as never, budgetCents: 20 });
+    // #94 — pin EVERY scoping key of BOTH arms. The row-matcher above measures
+    // the split; these two pin the `where` each aggregate is issued with, so
+    // dropping `sessionId` (or `estimatedCostUsd`) from either one fails here
+    // even if the arithmetic still happens to come out right.
     expect(db.aITokenUsage.aggregate).toHaveBeenCalledWith({
       where: {
         sessionId: "testCoverageRun:r1",
@@ -505,9 +534,45 @@ describe("readBudget", () => {
       },
       _sum: { totalTokens: true },
     });
+    expect(db.aITokenUsage.aggregate).toHaveBeenCalledWith({
+      where: { sessionId: "testCoverageRun:r1", estimatedCostUsd: null },
+      _sum: { totalTokens: true },
+    });
     expect(out?.unpricedEmbeddingTokens).toBe(400);
     expect(out?.unpricedLlmTokens).toBe(1_500);
     expect(out?.unpricedTokens).toBe(1_900);
+  });
+
+  /**
+   * #94 — the behavioural twin of the pin above: another run's unpriced spend
+   * must not land in this run's totals. The unpriced TOTAL is the arm that lost
+   * its scope, and because the LLM share is computed by subtraction, an
+   * unscoped total inflates `unpricedLlmTokens` — the field `exceeded()` stops a
+   * run on. So a sibling run's cold embedding pass could stop this one.
+   */
+  it("counts only THIS run's unpriced rows, never another run's (#94)", async () => {
+    const { db } = makeDb({ tokenCostCents: 0, embeddingTokens: 400, judgeTokens: 100 });
+    usageRows(db, [
+      { agentStep: "testcoverage.embedding", totalTokens: 400, estimatedCostUsd: null },
+      { agentStep: "testcoverage.judge", totalTokens: 100, estimatedCostUsd: null },
+      // A concurrent run's rows. Same phases, same NULL cost, different session.
+      {
+        sessionId: "testCoverageRun:r2",
+        agentStep: "testcoverage.embedding",
+        totalTokens: 9_000_000,
+        estimatedCostUsd: null,
+      },
+      {
+        sessionId: "testCoverageRun:r2",
+        agentStep: "testcoverage.judge",
+        totalTokens: 7_000,
+        estimatedCostUsd: null,
+      },
+    ]);
+    const out = await readBudget("r1", { db: db as never, budgetCents: 20 });
+    expect(out?.unpricedEmbeddingTokens).toBe(400);
+    expect(out?.unpricedLlmTokens).toBe(100);
+    expect(out?.unpricedTokens).toBe(500);
   });
 
   it("counts a phase it has never heard of in the LLM share, as view() does", async () => {
