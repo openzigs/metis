@@ -625,6 +625,128 @@ export function sectionTruncatedWarning(
   };
 }
 
+/** At most this many module names are spelled out in one warning. */
+const MAX_NAMED_MODULES = 10;
+
+function nameModules(modules: readonly string[]): string {
+  const named = modules.slice(0, MAX_NAMED_MODULES).map((m) => `"${m}"`);
+  const more = modules.length - named.length;
+  return more > 0 ? `${named.join(", ")} and ${more} more` : named.join(", ");
+}
+
+/**
+ * #157 — a BATCHED section (Rules, Workflows, Calculations, Data Model) is
+ * written in several calls, so a cut-off reply leaves a hole for specific
+ * modules rather than for "the rest of the section". This names them, and says
+ * which of three cases it is:
+ *   - `singleModules`: a module that alone writes more than one call can hold
+ *     (splitting cannot help — only a larger cap can);
+ *   - `allowanceSpent`: a multi-module batch that COULD have been split, but
+ *     the section's re-split allowance (one per planned batch, shared) had
+ *     already been used by earlier batches (PR #169 review);
+ *   - `runaway`: a batch cut off although its facts were estimated to need far
+ *     less than the cap, so splitting it would only have bought more full-cap
+ *     calls (#165's repetition shape).
+ *
+ * `error` severity, like {@link sectionTruncatedWarning}: the section is
+ * definitely missing content for these modules.
+ */
+export function batchTruncatedWarning(
+  section: string,
+  cutOff: {
+    singleModules: readonly string[];
+    /** One entry per batch, each listing its modules. */
+    allowanceSpent: readonly (readonly string[])[];
+    /** One entry per batch, each listing its modules. */
+    runaway: readonly (readonly string[])[];
+  },
+  maxTokens: number,
+): DocWarning {
+  const parts: string[] = [];
+  if (cutOff.singleModules.length > 0) {
+    const one = cutOff.singleModules.length === 1;
+    parts.push(
+      `module${one ? "" : "s"} ${nameModules(cutOff.singleModules)} alone write${one ? "s" : ""} ` +
+        `more than one call can hold`,
+    );
+  }
+  if (cutOff.allowanceSpent.length > 0) {
+    const one = cutOff.allowanceSpent.length === 1;
+    parts.push(
+      `the batch${one ? "" : "es"} covering ${nameModules(cutOff.allowanceSpent.flat())} ` +
+        `${one ? "was" : "were"} not split again because the section's re-split allowance ` +
+        `(one per planned batch) had been used up`,
+    );
+  }
+  if (cutOff.runaway.length > 0) {
+    const one = cutOff.runaway.length === 1;
+    parts.push(
+      `the batch${one ? "" : "es"} covering ${nameModules(cutOff.runaway.flat())} ` +
+        `${one ? "was" : "were"} cut off although ${one ? "its" : "their"} facts were estimated ` +
+        `to need far less than the cap — the model was likely repeating itself, so ` +
+        `${one ? "it was" : "they were"} not split`,
+    );
+  }
+  return {
+    kind: "section-truncated",
+    section,
+    message:
+      `Section "${section}" is incomplete: the output-token cap (${maxTokens} tokens) CUT OFF ` +
+      `the part written from specific modules — ${parts.join("; ")}. Raise ` +
+      `DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS and regenerate.`,
+    severity: "error",
+  };
+}
+
+/**
+ * #157 — some batches of a BATCHED section failed while others succeeded. The
+ * section keeps what the successful batches wrote; this names the modules that
+ * are missing from it. `detail` MUST already be through the fixed failure
+ * vocabulary (`generationFailureMessage`), never an exception's own text (#67).
+ */
+export function batchFailedWarning(
+  section: string,
+  modules: readonly string[],
+  detail: string,
+): DocWarning {
+  const trimmed = detail.trim().slice(0, 300);
+  const stop = /[.!?]$/.test(trimmed) ? "" : ".";
+  return {
+    kind: "section-failed",
+    section,
+    message:
+      `Section "${section}" is incomplete: the part written from ${nameModules(modules)} could ` +
+      `not be generated${trimmed ? `: ${trimmed}${stop}` : "."}`,
+    severity: "error",
+    detailSafe: true,
+  };
+}
+
+/**
+ * #157 — some batches of a BATCHED section were graded and others were not
+ * (their faithfulness came back unverified, or scoring threw). The pooled
+ * section score covers only the graded parts, so without this the score reads
+ * as if the whole section had been checked (PR #169 review). `warning`
+ * severity: unchecked is not the same as wrong.
+ */
+export function batchUnverifiedWarning(
+  section: string,
+  modules: readonly string[],
+  checkedParts: number,
+  totalParts: number,
+): DocWarning {
+  return {
+    kind: "section-ungrounded",
+    section,
+    message:
+      `Section "${section}": the part written from ${nameModules(modules)} could not be ` +
+      `checked against the source, so the section's faithfulness score covers only ` +
+      `${checkedParts} of its ${totalParts} parts. Review that part against the code before ` +
+      `relying on it.`,
+    severity: "warning",
+  };
+}
+
 /**
  * #1226 — build a warning for a declared section group that contributed nothing
  * to the final document. Previously such a group was simply absent from the

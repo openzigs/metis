@@ -3743,6 +3743,74 @@ against stay identical. On onyourleft (143 TypeScript modules, gemma3:12b facts)
 at a 200,000-char cap the Rules section went from 8 to 35 modules, Key Workflows
 from 11 to 91, Calculations from 11 to all 143.
 
+#### Batched enumerative sections (#157)
+
+Business Rules, Key Workflows, Calculations and Data Model are catalogs whose
+length grows with the codebase, so they declare `batched: true` on their
+`SectionGroup` and are written in several calls instead of one. On onyourleft
+(143 modules), raising the section output cap from 8,192 to 16,384 tokens only
+doubled Rules from 32,169 to 63,719 chars, still cut off, having read ~10% of
+the modules.
+
+- **Plan** (`planSectionBatches`): every module with content for the section
+  (a declared topic slice, a rendered mined rule, or — for Calculations — an
+  extracted source formula) is taken in
+  `rankRelevantFacts` order. Modules are packed greedily into batches whose
+  facts fit `factsCharCap` **and** whose *estimated reply* fits
+  `batchOutputBudgetChars` (the section output cap × 3.5 chars/token × 0.6
+  margin). A module's estimate is 300 + 1.25 × its topic-slice chars + 300 per
+  mined rule the capped inventory renders. Both come from `factsModuleParts`,
+  the same function that builds the entry the model reads, so the estimate
+  never counts rules past the inventory cut. For Calculations a batch also
+  holds at most as many extracted formulas as its formulas block renders (80,
+  counted with the same `distinctFormulas` the block is built from), so no
+  module's extracted formulas are cut from its batch. No "ADDITIONAL MODULES
+  (facts omitted)" catalog is sent. `DOCS_GEN_BATCHED_SECTIONS=0` turns
+  batching off and restores the single-call path.
+- **Generate** (`synthesizeBatchedSection`): one call per batch, in order. The
+  batch's facts, its own modules' source formulas and a batch note go in the
+  prompt, and only the batch with the most relevant module writes the
+  introduction. A reply that finishes with `finish_reason` `length` (or the
+  gateway placeholder) is split in two by estimated output and each half
+  regenerated. `shouldResplit` bounds this: never below one module, at most one
+  re-split per planned batch across the section, and never for a batch estimated
+  under a quarter of the budget (#165's runaway shape). A model that always runs
+  to the cap therefore costs at most 3× the planned calls. What is still cut off
+  raises one `section-truncated` warning naming the modules and why each part
+  stayed whole: a module that *alone* exceeds the cap, a batch left whole
+  because the section's re-split allowance was used up by earlier batches, or a
+  runaway batch estimated far below the cap. A failed batch, or one whose reply
+  is empty, costs only its modules (a `section-failed` warning names them). The
+  section fails only if every batch fails.
+- **Merge** (`mergeBatchSections`, `section-batching.ts`): replies are parsed into
+  H3 topic → H4 subtopic → entries. An entry is a list item with its nested
+  lines, a table, a fence, or a paragraph with the list it introduces. Topics
+  and subtopics with the same normalised heading merge in order of first
+  appearance, and entries follow in batch (relevance) order. An entry identical
+  to one an *earlier* batch wrote (ignoring numbering on every line, emphasis,
+  case and spacing) is dropped. Substantive entries (40+ chars) are matched
+  section-wide and short ones only within their subtopic. Repeated table rows
+  under the same header are dropped. Fences are atomic — including a fence nested
+  in a list item at any indentation (four or more spaces, or a tab) — and an
+  unclosed fence is closed at the end of its own reply.
+- **Ground**: each reply is decomposed and judged against its **own** batch's
+  facts plus the section's retrieved sources. The section's faithfulness is the
+  pooled supported/total over verified batches (`aggregateFaithfulness`),
+  graded by the same `gradeFaithfulness` as a single-call section. When some
+  batches were graded and others were not (unverified, or scoring threw), a
+  `section-ungrounded` warning names the unchecked modules and says how many
+  parts the score covers. Judge-gated
+  escalation (#334) re-runs the whole batched section on the escalation
+  provider, re-planned for its budget and cap.
+
+On the real onyourleft facts at a 16,384-token cap, the plan is Rules 20
+batches (143 modules, all 4,611 rule bullets), Workflows 9, Calculations 35
+(142 modules, all 2,619 extracted formulas; 6 before the formulas-block cap was
+honoured) and Data Model 14. A single call at 200,000 chars reads 35, 91, 143 and 60 modules
+respectively. `Batched section synthesized` logs planned vs actual calls,
+re-splits, wall time, and estimated vs actual reply chars, which is the data
+for calibrating the output estimate.
+
 #### 3. Dynamic Per-Module Snippet Budgets
 
 Rather than sending the maximum context window to every module, Phase 1 tiers the code context by module complexity:
@@ -3836,6 +3904,7 @@ Design points:
 | `DOCS_GEN_HYBRID_ROUTING` | `0` (off) | Route each Phase-2 section to a provider by faithfulness tier (local for literal/reconstruction, Sonnet for narrative). No-op unless BOTH a local and an escalation provider are configured (#333). |
 | `DOCS_GEN_JUDGE_ESCALATION` | `0` (off) | Re-run a below-threshold LOCAL section once on the escalation (Sonnet) provider and keep the better result — the quality floor (#334). Independent of hybrid routing but inert without it. |
 | `DOCS_GEN_MAX_ESCALATIONS` | `3` | Per-document cap on escalation re-runs (bounds cost). The per-section cap is always exactly one. `0` disables escalation via budget while leaving the flag on. |
+| `DOCS_GEN_BATCHED_SECTIONS` | on | #157: write Business Rules, Key Workflows, Calculations and Data Model in batches that together read every relevant module. `0`/`false`/`no`/`off` falls back to one call per section over the modules that fit the facts cap — faster on a local model, but those sections can be cut off and skip modules. |
 | `DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS` | `32768` | Output-token cap for each Phase-2 section call (#1226). Was hardcoded at `8192`, which silently truncated long section groups. Values below `512` are rejected back to the default, and the effective cap is clamped down to the selected model's own documented output ceiling — so `claude-3-5-haiku` still tops out at `8192` no matter what is configured. A section that hits the cap anyway now raises a `section-truncated` warning and puts the document into `degraded` status instead of `ready`. |
 | `DOCS_GEN_REASONING_ALLOWANCE_TOKENS` | `32768` | Reasoning headroom added on top of every docs-gen output cap for a model that **thinks by default** and draws its reasoning from the same `max_tokens` (#25). Applies only to models on the documented allow-list in `docs-gen/output-caps.ts` — today DeepSeek `deepseek-v4-pro` / `deepseek-flash`, whose thinking mode is on by default. The section/facts caps then describe the ANSWER budget; the sum is still clamped to the model's ceiling (384K for DeepSeek V4). `0` opts out. |
 | `DOCS_GEN_PHASE1_REASONING` | `auto` | How much a Phase-1 fact-extraction call may reason (#25): `auto` asks a thinking-by-default model (the same allow-list) for `low` effort and sends nothing for any other model, so Claude is unchanged; `provider-default`, `off`, `low`, `medium`, `high` override it for every model. Sent by the `anthropic` provider as `thinking` + `output_config.effort` (`thinking: enabled` on DeepSeek's endpoint, `adaptive` elsewhere; `off` → `thinking: disabled`). |

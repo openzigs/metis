@@ -15,6 +15,9 @@ import {
   factsTruncatedWarning,
   sectionTruncatedWarning,
   sectionMissingWarning,
+  batchTruncatedWarning,
+  batchFailedWarning,
+  batchUnverifiedWarning,
   DEFAULT_FAITHFULNESS_THRESHOLD,
   NARRATIVE_FAITHFULNESS_THRESHOLD,
   RECONSTRUCTION_FAITHFULNESS_THRESHOLD,
@@ -517,5 +520,82 @@ describe("sectionMissingWarning (#1226)", () => {
       serializeWarnings([sectionMissingWarning("X", "r")])!,
     ) as DocWarning[];
     expect(parsed[0].kind).toBe("section-missing");
+  });
+});
+
+describe("#157 — batched-section warnings name the modules", () => {
+  it("names a single module that alone overflows the cap, as an error that degrades the doc", () => {
+    const w = batchTruncatedWarning(
+      "Business Rules & Policies",
+      { singleModules: ["src/billing"], allowanceSpent: [], runaway: [] },
+      16_384,
+    );
+    expect(w.kind).toBe("section-truncated");
+    expect(w.severity).toBe("error");
+    expect(w.message).toContain('module "src/billing" alone writes more than one call can hold');
+    expect(w.message).toContain("16384 tokens");
+    expect(w.message).toContain("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS");
+    expect(deriveDocStatus([w])).toBe("degraded");
+  });
+
+  it("reports the cases together, and caps the list at ten names", () => {
+    const many = Array.from({ length: 13 }, (_, i) => `m${i}`);
+    const w = batchTruncatedWarning(
+      "Key Workflows",
+      { singleModules: ["a", "b"], allowanceSpent: [many.slice(0, 7), many.slice(7)], runaway: [] },
+      8_192,
+    );
+    expect(w.message).toContain('modules "a", "b" alone write more');
+    expect(w.message).toContain('the batches covering "m0"');
+    expect(w.message).toContain('"m9" and 3 more were not split again because');
+    expect(w.message).not.toContain('"m10"');
+  });
+
+  // PR #169 review: "could not be split further" was said of a batch that
+  // could have been split — the section's shared re-split allowance had simply
+  // run out. The two reasons a multi-module batch stays whole are now distinct.
+  it("says the re-split ALLOWANCE ran out, not that the batch could not be split", () => {
+    const w = batchTruncatedWarning(
+      "Business Rules & Policies",
+      { singleModules: [], allowanceSpent: [["p0", "p1"]], runaway: [] },
+      8_192,
+    );
+    expect(w.message).toContain(
+      'the batch covering "p0", "p1" was not split again because the section\'s re-split allowance',
+    );
+    expect(w.message).not.toContain("could not be split");
+  });
+
+  it("names a runaway batch — cut off though estimated far below the cap — as its own case", () => {
+    const w = batchTruncatedWarning(
+      "Business Rules & Policies",
+      { singleModules: [], allowanceSpent: [], runaway: [["tiny1", "tiny2"]] },
+      8_192,
+    );
+    expect(w.message).toContain('the batch covering "tiny1", "tiny2" was cut off although');
+    expect(w.message).toContain("repeating itself");
+    expect(w.message).not.toContain("allowance");
+  });
+
+  it("names the modules a failed batch left out, with a safe detail", () => {
+    const w = batchFailedWarning("Key Workflows", ["x", "y"], "the model timed out");
+    expect(w.kind).toBe("section-failed");
+    expect(w.detailSafe).toBe(true);
+    expect(w.message).toBe(
+      'Section "Key Workflows" is incomplete: the part written from "x", "y" could not be generated: the model timed out.',
+    );
+    expect(batchFailedWarning("S", ["x"], "Timed out.").message).toMatch(/Timed out\.$/);
+    expect(batchFailedWarning("S", ["x"], "  ").message).toMatch(/could not be generated\.$/);
+  });
+
+  it("says how much of a batched section its score actually covers", () => {
+    const w = batchUnverifiedWarning("Key Workflows", ["x", "y"], 3, 5);
+    expect(w.kind).toBe("section-ungrounded");
+    expect(w.severity).toBe("warning");
+    expect(w.message).toBe(
+      'Section "Key Workflows": the part written from "x", "y" could not be checked against ' +
+        "the source, so the section's faithfulness score covers only 3 of its 5 parts. Review " +
+        "that part against the code before relying on it.",
+    );
   });
 });

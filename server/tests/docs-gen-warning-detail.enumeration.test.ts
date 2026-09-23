@@ -93,10 +93,17 @@ function callSitesIn(rawSrc: string, where: string): CallSite[] {
   const sites: CallSite[] = [];
   const src = blankComments(rawSrc);
   // The declaration itself is not a call site.
-  const CALL = /\bsectionFailedWarning\s*\(/g;
+  // #157 — `batchFailedWarning` carries the same persisted, detail-safe
+  // message for a failed batch of a batched section, so it is held to the
+  // same contract.
+  const CALL = /\b(?:sectionFailedWarning|batchFailedWarning)\s*\(/g;
   let m: RegExpExecArray | null;
   while ((m = CALL.exec(src)) !== null) {
-    if (/export function\s+sectionFailedWarning\s*\($/.test(src.slice(0, m.index + m[0].length)))
+    if (
+      /export function\s+(?:sectionFailedWarning|batchFailedWarning)\s*\($/.test(
+        src.slice(0, m.index + m[0].length),
+      )
+    )
       continue;
     const openIdx = m.index + m[0].length - 1;
     const call = sliceCall(src, openIdx);
@@ -122,6 +129,8 @@ describe("sectionFailedWarning — the detail contract is checked, not just docu
     // assertion below would pass over an unchecked codebase.
     expect(sites.length).toBeGreaterThan(0);
     expect(sites.some((s) => s.where.startsWith("lib/docs-gen/"))).toBe(true);
+    // The batched-section call site is scanned too, not just the older one.
+    expect(sites.some((s) => s.detail.includes("generationFailureMessage(f.err)"))).toBe(true);
   });
 
   it("no call site passes an exception's own message, stack or String(err)", () => {
@@ -157,6 +166,7 @@ describe("sectionFailedWarning — the detail contract is checked, not just docu
     const bad = [
       "sectionFailedWarning(group.label, String(err))",
       "sectionFailedWarning(group.label, err.message)",
+      "batchFailedWarning(group.label, names, String(err))",
       "sectionFailedWarning(label, `${err}`)",
       'sectionFailedWarning(label, error instanceof Error ? error.message : "x")',
     ];
