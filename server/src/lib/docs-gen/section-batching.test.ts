@@ -166,14 +166,14 @@ describe("entryKey / topicKey", () => {
 // Merge — real section shapes
 // ---------------------------------------------------------------------------
 
-const RULE_A = `1. **Device ID Validation**
-   - **Condition**: A device id is empty or blank (whitespace-only).
-   - **Action/Consequence**: A \`SensorError('invalid-device-id')\` is thrown.
+const RULE_A = `1. **Account ID Validation**
+   - **Condition**: An account id is empty or blank (whitespace-only).
+   - **Action/Consequence**: A \`ValidationError('invalid-account-id')\` is thrown.
    - **Exceptions/Edge Cases**: None.`;
 
-const RULE_B = `2. **Transport Availability Check**
-   - **Condition**: \`availability.kind\` is not \`'available'\`.
-   - **Action/Consequence**: A \`SensorError\` is thrown.
+const RULE_B = `2. **Gateway Availability Check**
+   - **Condition**: \`gateway.status\` is not \`'online'\`.
+   - **Action/Consequence**: A \`GatewayError\` is thrown.
    - **Exceptions/Edge Cases**: None.`;
 
 const RULE_C = `1. **Refund Window**
@@ -189,7 +189,7 @@ This section catalogs every business rule enforced in the system.
 
 ### Validation Rules
 
-#### Sensor Device Validation
+#### Account Validation
 
 ${RULE_A}
 
@@ -197,8 +197,8 @@ ${RULE_B}
 
 | Field | Condition | Error Code |
 |---|---|---|
-| Device ID | Empty or blank | \`'invalid-device-id'\` |
-| Transport ID | Empty or blank | \`'invalid-device-id'\` |
+| Account ID | Empty or blank | \`'invalid-account-id'\` |
+| Gateway ID | Empty or blank | \`'invalid-account-id'\` |
 
 ---
 
@@ -214,13 +214,13 @@ ${RULE_C}
 
 ### Validation rules
 
-#### Sensor device validation
+#### Account validation
 
 ${RULE_A.replace(/^1\./, "4.")}
 
 | Field | Condition | Error Code |
 |---|---|---|
-| Device ID | Empty or blank | \`'invalid-device-id'\` |
+| Account ID | Empty or blank | \`'invalid-account-id'\` |
 | Session | Not connected | \`'not-connected'\` |`;
 
 describe("mergeBatchSections — real section shape", () => {
@@ -242,8 +242,8 @@ describe("mergeBatchSections — real section shape", () => {
   });
 
   it("keeps each rule once — a renumbered repeat from a later batch is dropped", () => {
-    expect(merged.split("Device ID Validation")).toHaveLength(2);
-    expect(merged).toContain("Transport Availability Check");
+    expect(merged.split("Account ID Validation")).toHaveLength(2);
+    expect(merged).toContain("Gateway Availability Check");
     expect(merged).toContain("Refund Window");
     expect(merged).toContain("Trial eligibility");
   });
@@ -256,7 +256,7 @@ describe("mergeBatchSections — real section shape", () => {
   it("drops repeated table rows under the same header but keeps the header and new rows", () => {
     const tables = merged.split("\n").filter((l) => l.startsWith("| Field |"));
     expect(tables).toHaveLength(2);
-    expect(merged.split("| Device ID | Empty or blank |")).toHaveLength(2);
+    expect(merged.split("| Account ID | Empty or blank |")).toHaveLength(2);
     expect(merged).toContain("| Session | Not connected |");
     const second = merged.lastIndexOf("| Field |");
     expect(merged.slice(second).split("\n")[1]).toBe("|---|---|---|");
@@ -275,7 +275,7 @@ describe("mergeBatchSections — real section shape", () => {
       merged.indexOf("### Validation Rules"),
       merged.indexOf("### Eligibility"),
     );
-    expect(validation.indexOf("Transport Availability Check")).toBeLessThan(
+    expect(validation.indexOf("Gateway Availability Check")).toBeLessThan(
       validation.indexOf("| Session | Not connected |"),
     );
   });
@@ -290,41 +290,41 @@ describe("mergeBatchSections — what must NOT be deduplicated", () => {
   it("never takes a labelled list apart — two formulas' identical 'Edge cases' bullets both stay", () => {
     const f1 = `## Calculations & Formulas
 
-### Route Planning Calculations
+### Billing Calculations
 
-#### Next Waypoint Calculation
+#### Late Fee Calculation
 
 $$
-\\text{next} = \\text{last} + 4
+\\text{fee} = \\text{days} \\times 2
 $$
 
 **Variables:**
-- \`last\` — the last waypoint.
+- \`days\` — days past the due date.
 
 **Edge cases:**
 
 - None.`;
     const f2 = `## Calculations & Formulas
 
-### Route Planning Calculations
+### Billing Calculations
 
-#### Nudge Calculation
+#### Refund Calculation
 
 $$
-\\text{new} = \\text{old} + \\text{north}
+\\text{refund} = \\text{paid} - \\text{used}
 $$
 
 **Variables:**
-- \`north\` — the northward offset.
+- \`used\` — the amount already consumed.
 
 **Edge cases:**
 
 - None.`;
     const merged = mergeBatchSections([f1, f2], "Calculations & Formulas");
     expect(merged.match(/- None\./g)).toHaveLength(2);
-    expect(merged).toContain("#### Next Waypoint Calculation");
-    expect(merged).toContain("#### Nudge Calculation");
-    expect(merged).toContain("\\text{new} = \\text{old} + \\text{north}");
+    expect(merged).toContain("#### Late Fee Calculation");
+    expect(merged).toContain("#### Refund Calculation");
+    expect(merged).toContain("\\text{refund} = \\text{paid} - \\text{used}");
   });
 
   it("keeps a later batch's labelled list whole even when its label and a line repeat", () => {
