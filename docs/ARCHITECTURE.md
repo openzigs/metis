@@ -3714,8 +3714,11 @@ off, the partial facts are used for that run but **not cached**, and the documen
 carries a `facts-truncated` warning (section `Phase 1 facts`) naming the modules
 (#156). Rows written before that fix can be purged with
 `pnpm --filter @metis/server facts:purge-truncated -- --dry-run` (deletes rows
-with `outputTokens >=` the Phase-1 cap, default 8,192; `--min-output-tokens`,
-`--project`).
+with `outputTokens >=` the Phase-1 cap, default 8,192, written under an OLDER
+`PHASE1_PROMPT_VERSION` — a current-version row at the cap can only be a
+complete larger-cap retry; `--include-current` widens the sweep for a provider
+that reports no finish reason; `--min-output-tokens`, `--project`; a value flag
+with no value, or an unknown flag, is refused rather than widening the purge).
 
 #### Phase-2 fact slices (#154)
 
@@ -3728,7 +3731,11 @@ STATUS_TRANSITIONS), `workflows` (WORKFLOWS, STATUS_TRANSITIONS, DATA_LINEAGE),
 bullets. A reply with no recognised heading is kept whole in `summary`. Each
 `sectionGroupsFor` group declares `factSlices` (and the Rules sections
 `minedRules`, which appends each module's `file:line` mined-rule inventory and
-drops LLM bullets that restate a mined rule). `selectRelevantFacts` ranks and
+drops LLM bullets that restate a mined rule — matched only against the rules
+the 4,000-char-capped inventory actually renders (`minedRulesThatFit`), so a
+rule past the cut keeps its LLM bullet instead of vanishing). Headings are
+recognised bare, decorated (`## RULES`, `**RULES:**`), numbered (`**1. RULES**`)
+or inline (`RULES: - first item`). `selectRelevantFacts` ranks and
 admits modules on those slices, and the facts blob, the citable `facts:`
 grounding sources and the `facts-truncated` budget are all rendered from the one
 per-section module entry, so what the model reads and what its claims are judged

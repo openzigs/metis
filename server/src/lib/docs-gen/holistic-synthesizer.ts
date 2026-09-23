@@ -74,6 +74,7 @@ import {
   MINED_RULES_ENTRY_CHAR_CAP,
   countFactBullets,
   dedupeRulesAgainstMined,
+  minedRulesThatFit,
   parsePersistedMinedRules,
   renderMinedRuleInventory,
   sliceModuleFacts,
@@ -3745,7 +3746,16 @@ function factsModuleEntry(f: ModuleFacts, group: SectionGroup): string {
   const body: string[] = [];
   for (const slice of FACT_SLICES) {
     if (!wanted.has(slice) || !slices[slice]) continue;
-    body.push(slice === "rules" ? dedupeRulesAgainstMined(slices.rules, mined) : slices[slice]);
+    // Dedupe only against the rules the capped inventory actually renders: a
+    // rule past the cut must keep its LLM bullet or it vanishes (PR #163).
+    body.push(
+      slice === "rules"
+        ? dedupeRulesAgainstMined(
+            slices.rules,
+            minedRulesThatFit(mined, MINED_RULES_ENTRY_CHAR_CAP),
+          )
+        : slices[slice],
+    );
   }
   const inventory = renderMinedRuleInventory(mined, MINED_RULES_ENTRY_CHAR_CAP);
   if (inventory) body.push(inventory);

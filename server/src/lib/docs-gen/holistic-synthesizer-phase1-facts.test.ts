@@ -351,6 +351,35 @@ describe("#155 a TypeScript module's guard clauses reach the Rules section input
     expect(blob).toContain("Refunds need a reason");
   });
 
+  it("keeps an LLM bullet whose mined rule was cut from the inventory by its char cap", () => {
+    // 60 mined rules overflow MINED_RULES_ENTRY_CHAR_CAP, so the tail is not
+    // rendered. A bullet restating a rule past the cut must survive — otherwise
+    // the rule is in neither the inventory nor the bullets (PR #163 review).
+    const mined: PersistedMinedRule[] = Array.from({ length: 60 }, (_, i) => ({
+      language: "ts",
+      kind: "guard",
+      expression: `if (value > LIMIT_${i}_VALUE) throw new RangeError("limit ${i}")`,
+      summary: `rejects values above limit ${i}`,
+      file: "src/limits/limits.ts",
+      line: i + 1,
+      context: null,
+    }));
+    const m = facts(
+      "limits",
+      "PURPOSE\nLimits.\n\nRULES\n" +
+        '- Enforces `if (value > LIMIT_0_VALUE) throw new RangeError("limit 0")`\n' +
+        '- Enforces `if (value > LIMIT_59_VALUE) throw new RangeError("limit 59")`',
+      { minedRules: mined },
+    );
+    const blob = buildRelevantFactsBlob([m], rulesGroup(), "business-requirements");
+    expect(blob).toMatch(/more mined rule\(s\) omitted/);
+    expect(blob).not.toContain("(src/limits/limits.ts:60)");
+    // Rendered rule 0: deduped to exactly one mention (the citable one).
+    expect(blob.match(/LIMIT_0_VALUE/g)).toHaveLength(1);
+    // Omitted rule 59: its LLM bullet is the only mention left, so it stays.
+    expect(blob.match(/LIMIT_59_VALUE/g)).toHaveLength(1);
+  });
+
   it("persists every language's rules and reads them back through the cache", async () => {
     const provider = scriptedProvider([
       { text: "PURPOSE\nBilling.\n\nRULES\n- r", finishReason: "stop" },

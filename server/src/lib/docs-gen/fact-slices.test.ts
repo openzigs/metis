@@ -7,6 +7,7 @@ import {
   FACT_SLICES,
   countFactBullets,
   dedupeRulesAgainstMined,
+  minedRulesThatFit,
   parsePersistedMinedRules,
   renderMinedRuleInventory,
   sliceModuleFacts,
@@ -88,10 +89,32 @@ describe("sliceModuleFacts (#154)", () => {
   });
 
   it("tolerates decorated headings from small local models", () => {
-    const s = sliceModuleFacts("## PURPOSE\nA.\n\n**RULES**\n- r1\n\nKEY APIS:\n- api1");
+    const s = sliceModuleFacts(
+      "## PURPOSE\nA.\n\n**RULES**\n- r1\n\n**FORMULAS:**\n- f1\n\nKEY APIS:\n- api1",
+    );
     expect(s.summary).toContain("A.");
     expect(s.rules).toBe("RULES\n- r1");
+    expect(s.formulas).toBe("FORMULAS\n- f1");
     expect(s.capabilities).toBe("KEY_APIS\n- api1");
+  });
+
+  it("recognises numbered headings (`**1. RULES**`, `2) FORMULAS`)", () => {
+    const s = sliceModuleFacts("**1. PURPOSE**\nA.\n\n**2. RULES**\n- r1\n\n3) FORMULAS\n- f = 1");
+    expect(s.summary).toBe("PURPOSE\nA.");
+    expect(s.rules).toBe("RULES\n- r1");
+    expect(s.formulas).toBe("FORMULAS\n- f = 1");
+  });
+
+  it("recognises an inline heading whose first item follows the colon", () => {
+    const s = sliceModuleFacts("PURPOSE: Takes payments.\nRULES: - amount > 0\n- currency set");
+    expect(s.summary).toBe("PURPOSE\nTakes payments.");
+    expect(s.rules).toBe("RULES\n- amount > 0\n- currency set");
+  });
+
+  it("does not treat a bullet or prose line that merely starts with a heading word as a heading", () => {
+    const s = sliceModuleFacts("RULES\n- NOTES: must be signed\nRules apply daily: yes");
+    expect(s.rules).toBe("RULES\n- NOTES: must be signed\nRules apply daily: yes");
+    expect(s.notes).toBe("");
   });
 
   it("concatenates a repeated heading instead of keeping only the last block", () => {
@@ -250,5 +273,26 @@ describe("renderMinedRuleInventory (#155)", () => {
 
   it("is empty when there is nothing mined", () => {
     expect(renderMinedRuleInventory([])).toBe("");
+  });
+});
+
+describe("minedRulesThatFit (#155)", () => {
+  it("is exactly the set of rules the capped inventory renders", () => {
+    const many = Array.from({ length: 50 }, (_, i) => rule({ line: i + 1 }));
+    for (const cap of [120, 600, 2_000, 100_000]) {
+      const fitted = minedRulesThatFit(many, cap);
+      const out = renderMinedRuleInventory(many, cap);
+      const rendered = [...out.matchAll(/\(src\/pay\.ts:(\d+)\)/g)].map((m) => Number(m[1]));
+      expect(
+        fitted.map((r) => r.line),
+        `cap ${cap}`,
+      ).toEqual(rendered);
+    }
+  });
+
+  it("returns every rule when they all fit, and none when not even one does", () => {
+    const two = [rule({ line: 1 }), rule({ line: 2 })];
+    expect(minedRulesThatFit(two)).toEqual(two);
+    expect(minedRulesThatFit(two, 10)).toEqual([]);
   });
 });

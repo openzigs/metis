@@ -63,9 +63,14 @@ const HEADING_SLICES: Readonly<Record<string, readonly FactSlice[]>> = {
 
 /**
  * A heading line: the bare token the Phase-1 prompt asks for, tolerating the
- * decorations small local models add (`## RULES`, `**RULES**`, `RULES:`).
+ * decorations small local models add (`## RULES`, `**RULES**`, `RULES:`,
+ * `**1. RULES**`, `2) RULES`). With a colon, the heading may also carry its
+ * first item inline (`RULES: - amount > 0`); group 2 is that remainder. The
+ * token is upper-case only, so prose such as `Rules apply: daily` is not a
+ * heading, and a bullet line (`- NOTES: ...`) never is.
  */
-const HEADING_LINE = /^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*([A-Z][A-Z_ ]{2,}?)\s*(?:\*\*)?\s*:?\s*$/;
+const HEADING_LINE =
+  /^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*(?:\d+[.)]\s*)?([A-Z][A-Z_ ]{2,}?)\s*(?:\*\*)?\s*(?::\s*(?:\*\*)?\s*([^*\s].*?))?\s*(?:\*\*)?\s*:?\s*(?:\*\*)?\s*$/;
 
 /** A bullet or numbered-list line. */
 const BULLET_LINE = /^\s*(?:[-•*]|\d+\.)\s/;
@@ -73,24 +78,22 @@ const BULLET_LINE = /^\s*(?:[-•*]|\d+\.)\s/;
 /** A section body that says nothing: `(none)`, `none`, `(none extracted in offline mode)`. */
 const EMPTY_BODY = /^\(?\s*none\b[^)]*\)?\.?$/i;
 
-function emptySlices(): ModuleFactSlices {
-  return {
-    summary: "",
-    rules: "",
-    formulas: "",
-    workflows: "",
-    entities: "",
-    capabilities: "",
-    integrations: "",
-    notes: "",
-  };
+/** A record with one fresh value per {@link FactSlice}. */
+function perSlice<T>(make: () => T): Record<FactSlice, T> {
+  return Object.fromEntries(FACT_SLICES.map((slice) => [slice, make()])) as Record<FactSlice, T>;
 }
 
-function headingOf(line: string): string | null {
+/** A recognised heading, plus any first item written on the heading line itself. */
+interface Heading {
+  token: string;
+  inline: string | null;
+}
+
+function headingOf(line: string): Heading | null {
   const m = HEADING_LINE.exec(line);
   if (!m) return null;
   const token = m[1].trim().replace(/\s+/g, "_");
-  return token in HEADING_SLICES ? token : null;
+  return token in HEADING_SLICES ? { token, inline: m[2] ?? null } : null;
 }
 
 /**
@@ -105,37 +108,19 @@ function headingOf(line: string): string | null {
  * bullet repeated verbatim within a slice is kept once.
  */
 export function sliceModuleFacts(text: string): ModuleFactSlices {
-  const slices = emptySlices();
+  const slices = perSlice(() => "");
   const lines = text.split("\n");
   if (!lines.some((line) => headingOf(line) !== null)) {
     slices.summary = text.trim();
     return slices;
   }
-  const parts: Record<FactSlice, string[]> = {
-    summary: [],
-    rules: [],
-    formulas: [],
-    workflows: [],
-    entities: [],
-    capabilities: [],
-    integrations: [],
-    notes: [],
-  };
+  const parts = perSlice<string[]>(() => []);
   let heading: string | null = null;
   let body: string[] = [];
   // Bullets already emitted into each slice — a model caught in a repetition
   // loop repeats the same bullet hundreds of times until the output cap stops
   // it (onyourleft's truncated modules: 453 RULES bullets, 32 distinct).
-  const seen: Record<FactSlice, Set<string>> = {
-    summary: new Set(),
-    rules: new Set(),
-    formulas: new Set(),
-    workflows: new Set(),
-    entities: new Set(),
-    capabilities: new Set(),
-    integrations: new Set(),
-    notes: new Set(),
-  };
+  const seen = perSlice(() => new Set<string>());
   const flush = (): void => {
     if (heading !== null) {
       const targets = HEADING_SLICES[heading];
@@ -159,7 +144,8 @@ export function sliceModuleFacts(text: string): ModuleFactSlices {
     const next = headingOf(line);
     if (next !== null) {
       flush();
-      heading = next;
+      heading = next.token;
+      if (next.inline !== null) body.push(next.inline);
     } else {
       body.push(line);
     }
@@ -278,6 +264,9 @@ const MIN_DEDUP_EXPRESSION_CHARS = 10;
  * MINED entry is kept, not the bullet: it is the one that carries the
  * `file:line` a claim can be verified against. Headings and non-bullet lines are
  * never removed, and a slice with no mined rules is returned unchanged.
+ *
+ * Pass only the rules the inventory RENDERS ({@link minedRulesThatFit}), never
+ * the uncapped list — see there for why.
  */
 export function dedupeRulesAgainstMined(
   rulesSlice: string,
@@ -309,28 +298,52 @@ export const MINED_RULES_ENTRY_CHAR_CAP = 4_000;
 /** Heading the mined inventory is rendered under inside a module's facts entry. */
 export const MINED_RULES_HEADING = "MINED_RULES";
 
+/** One mined rule as a line of the rendered inventory. */
+function minedRuleLine(r: PersistedMinedRule): string {
+  const expr = r.expression.replace(/\s+/g, " ").trim().slice(0, 200);
+  return `- [${r.language} ${r.kind}] \`${expr}\` — ${r.summary} (${r.file}:${r.line})`;
+}
+
+function minedInventoryHeader(total: number): string {
+  return `${MINED_RULES_HEADING} (deterministically mined from source — ${total} rule(s); each cites file:line)`;
+}
+
+/**
+ * The prefix of `rules` that {@link renderMinedRuleInventory} actually renders
+ * within `maxChars`. A step that drops something "because the inventory covers
+ * it" — {@link dedupeRulesAgainstMined} — must match against THIS list, not the
+ * uncapped one: a rule past the cut is in no inventory line, so removing the LLM
+ * bullet that restates it would lose the rule from the section entirely.
+ */
+export function minedRulesThatFit(
+  rules: readonly PersistedMinedRule[],
+  maxChars = MINED_RULES_ENTRY_CHAR_CAP,
+): PersistedMinedRule[] {
+  const fitted: PersistedMinedRule[] = [];
+  let used = minedInventoryHeader(rules.length).length;
+  for (const r of rules) {
+    const len = minedRuleLine(r).length + 1;
+    if (used + len > maxChars) break;
+    fitted.push(r);
+    used += len;
+  }
+  return fitted;
+}
+
 /**
  * Render a module's mined rules as a deterministic, citable inventory block for
  * the Rules section input. Each line carries `file:line` so a claim derived from
- * it resolves against code. Bounded by `maxChars`; the number of rules that did
- * not fit is stated rather than silently dropped. Returns "" when there are none.
+ * it resolves against code. Bounded by `maxChars` (the rendered rules are
+ * exactly {@link minedRulesThatFit}); the number of rules that did not fit is
+ * stated rather than silently dropped. Returns "" when there are none.
  */
 export function renderMinedRuleInventory(
   rules: readonly PersistedMinedRule[],
   maxChars = MINED_RULES_ENTRY_CHAR_CAP,
 ): string {
   if (rules.length === 0) return "";
-  const header = `${MINED_RULES_HEADING} (deterministically mined from source — ${rules.length} rule(s); each cites file:line)`;
-  const lines: string[] = [];
-  let used = header.length;
-  for (const r of rules) {
-    const expr = r.expression.replace(/\s+/g, " ").trim().slice(0, 200);
-    const line = `- [${r.language} ${r.kind}] \`${expr}\` — ${r.summary} (${r.file}:${r.line})`;
-    if (used + line.length + 1 > maxChars) break;
-    lines.push(line);
-    used += line.length + 1;
-  }
+  const lines = minedRulesThatFit(rules, maxChars).map(minedRuleLine);
   const omitted = rules.length - lines.length;
   if (omitted > 0) lines.push(`- (${omitted} more mined rule(s) omitted to fit the budget)`);
-  return [header, ...lines].join("\n");
+  return [minedInventoryHeader(rules.length), ...lines].join("\n");
 }
