@@ -276,6 +276,7 @@ import {
   shouldAutoApprove,
   writeQuarantine,
 } from "../src/lib/rag/quarantine.js";
+import { INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE } from "../src/lib/rag/indexing-failure-message.js";
 
 const stubVector = {
   ensureTable: vi.fn(async () => undefined),
@@ -756,5 +757,19 @@ describe("listQuarantine", () => {
     const rows = await listQuarantine("p1");
     expect(rows).toHaveLength(1);
     expect(rows[0].documentId).toBe("d1");
+  });
+
+  it("#98 — never returns the raw cleanup error a quarantined row holds", async () => {
+    seedDocument({
+      id: "d1",
+      projectId: "p1",
+      indexState: "quarantined",
+      errorMessage:
+        'embedding failed: returned 500: {"key":"sk-live-4f9a8b7c"} at /srv/metis/server/src/x.ts:1',
+    });
+    const rows = await listQuarantine("p1");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].errorMessage).toBe(INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE);
+    expect(JSON.stringify(rows)).not.toMatch(/sk-live|\/srv/);
   });
 });

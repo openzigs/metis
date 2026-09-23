@@ -95,6 +95,7 @@ import {
   registerBuiltInHandlers,
 } from "../src/lib/scheduler/task-handlers.js";
 import { publishGeneratedDocRevision } from "../src/lib/docs-gen/generated-doc-publication.js";
+import { INDEXING_FAILED_MESSAGE } from "../src/lib/rag/indexing-failure-message.js";
 import {
   dispatchGeneratedDocTask,
   generatedDocOutboxId,
@@ -365,7 +366,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
               state: "failed",
               status: "failed",
               chunkCount: 0,
-              errorMessage: "publication stopped",
+              errorMessage: INDEXING_FAILED_MESSAGE, // #98 — never the task's raw error,
               processedAt: null,
             });
         }
