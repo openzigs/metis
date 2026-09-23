@@ -101,6 +101,52 @@ describe("optimisticLock middleware", () => {
     expect(labelDiff!.server).toEqual(["a"]);
   });
 
+  // The first fix used `JSON.stringify`, which compares serialized key ORDER —
+  // and nothing promises a Prisma JSON column round-trips its keys in the order
+  // the client sends them. An equal object must not read as a conflict.
+  it("does not report an object field as conflicting when only key order differs", async () => {
+    fetcher.mockResolvedValue({
+      id: "1",
+      version: 5,
+      metadata: { owner: "alice", priority: "high" },
+    });
+    const app = createApp(fetcher);
+    const res = await request(app)
+      .put("/items/1")
+      .send({ version: 2, metadata: { priority: "high", owner: "alice" } });
+
+    expect(res.status).toBe(409);
+    const fields = (res.body.error.diff as Array<{ field: string }>).map((d) => d.field);
+    expect(fields).not.toContain("metadata");
+  });
+
+  it("still reports an object field whose values genuinely differ", async () => {
+    fetcher.mockResolvedValue({ id: "1", version: 5, metadata: { owner: "alice" } });
+    const app = createApp(fetcher);
+    const res = await request(app)
+      .put("/items/1")
+      .send({ version: 2, metadata: { owner: "bob" } });
+
+    expect(res.status).toBe(409);
+    const fields = (res.body.error.diff as Array<{ field: string }>).map((d) => d.field);
+    expect(fields).toContain("metadata");
+  });
+
+  // A key the CLIENT added is the asymmetric case: iterating only the server
+  // object's keys would find every one of them present and equal, and report
+  // no conflict for an object the client genuinely changed.
+  it("reports a key the client added as a conflict", async () => {
+    fetcher.mockResolvedValue({ id: "1", version: 5, metadata: {} });
+    const app = createApp(fetcher);
+    const res = await request(app)
+      .put("/items/1")
+      .send({ version: 2, metadata: { owner: "alice" } });
+
+    expect(res.status).toBe(409);
+    const fields = (res.body.error.diff as Array<{ field: string }>).map((d) => d.field);
+    expect(fields).toContain("metadata");
+  });
+
   it("returns 404 when record not found", async () => {
     fetcher.mockResolvedValue(null);
     const app = createApp(fetcher);

@@ -13,3 +13,8 @@ section: Fixed
   invitation link, the assignee picker finds people, deleted comments stay in
   their thread, a version conflict stops flagging an unchanged `labels` array,
   and an unknown approval request answers 404 instead of 500.
+- The pending-drift badge's three parked e2e specs are live again, and the
+  live-update one now drives a real signed webhook so it proves the count moves
+  without a reload rather than that the badge is still on screen.
+- A late subscriber's replayed job state is scoped to projects it can access, and
+  a version conflict no longer depends on the key order of a JSON field.

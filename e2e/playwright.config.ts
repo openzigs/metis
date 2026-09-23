@@ -135,6 +135,11 @@ export default defineConfig({
             INGEST_QUEUE: "off",
             // Epic #192 — closed-loop webhook secret for the e2e suite.
             GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET ?? "e2e-closed-loop-secret",
+            // Epic #739 — the drift reconciler's webhook receiver. Without a
+            // secret it rejects every delivery with NO_SECRET_CONFIGURED, so
+            // `issue-sync.spec.ts` could not drive a real drift (and the
+            // badge's live-update path had no way to be exercised end to end).
+            JIRA_WEBHOOK_SECRET: process.env.JIRA_WEBHOOK_SECRET ?? "e2e-jira-sync-secret",
             // The deterministic suite logs in many times per server lifetime
             // (each spec primes the admin via API + a UI login). The default
             // 20 req/15 min auth limiter throttles credential stuffing, not

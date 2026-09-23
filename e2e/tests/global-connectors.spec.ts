@@ -81,6 +81,17 @@ test.describe("Global connector catalogues (#224)", () => {
       await expect(page.getByText("Loading databases…")).toHaveCount(0);
     });
 
+    // `emptyState().or(table())` alone only proves the page stopped loading.
+    // Filtering to THIS test's freshly created project makes the outcome
+    // deterministic — it owns no connectors — so the empty state and the
+    // "0 … (filtered)" caption become real assertions about the filter.
+    await test.step("filtering to the new project shows a deterministic empty list", async () => {
+      await dbs.projectFilter.selectOption(project.id);
+      await expect(dbs.emptyState()).toBeVisible({ timeout: 20_000 });
+      await expect(dbs.table()).toHaveCount(0);
+      await expect(dbs.controls).toContainText("0 database connections visible (filtered).");
+    });
+
     guard.assertClean();
   });
 
@@ -111,6 +122,16 @@ test.describe("Global connector catalogues (#224)", () => {
       await expect(repos.listCard).toBeVisible();
       await expect(repos.emptyState().or(repos.table()).first()).toBeVisible({ timeout: 20_000 });
       await expect(page.getByText("Loading repositories…")).toHaveCount(0);
+    });
+
+    // See the /databases twin above: the cross-project assertion can only ever
+    // say "it stopped loading", so scope the filter to this test's own project
+    // for an outcome the spec actually controls.
+    await test.step("filtering to the new project shows a deterministic empty list", async () => {
+      await repos.projectFilter.selectOption(project.id);
+      await expect(repos.emptyState()).toBeVisible({ timeout: 20_000 });
+      await expect(repos.table()).toHaveCount(0);
+      await expect(repos.controls).toContainText("0 repository connections visible (filtered).");
     });
 
     guard.assertClean();

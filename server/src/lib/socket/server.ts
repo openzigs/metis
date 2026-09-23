@@ -269,8 +269,40 @@ function attachHandlers(
     // and `completed` into an empty room and the surface never learned the
     // job was done. Replay is idempotent: the client dedups terminal
     // handling by job id.
+    //
+    // Joining the room stays capability-based (holding the job id is the
+    // capability; the REST trigger that hands the id out does the authz).
+    // The REPLAY is a new READ of stored state, though, so where the
+    // remembered event names a project it is gated by the same
+    // `actorCanAccessProject` check `subscribe:project` uses — a guessed job
+    // id must not become a way to read another project's job state. Events
+    // with no `projectId` carry no project to scope to and replay as before.
     const last = getLastJobLifecycle(jobId);
-    if (last) socket.emit("job:lifecycle", last);
+    if (!last) return;
+    if (!last.projectId) {
+      socket.emit("job:lifecycle", last);
+      return;
+    }
+    const scopedProjectId = last.projectId;
+    void (async () => {
+      try {
+        const allowed = await actorCanAccessProject(
+          { id: user.userId, role: user.role },
+          scopedProjectId,
+          {
+            resource: "job_replay",
+            resourceId: jobId,
+            action: "socket.subscribe:job",
+          },
+        );
+        if (allowed) socket.emit("job:lifecycle", last);
+      } catch (err) {
+        log.warn("socket.job_replay_authz_failed", {
+          jobId,
+          error: (err as Error).message,
+        });
+      }
+    })();
   });
   socket.on("unsubscribe:job", ({ jobId }) => {
     if (!jobId || typeof jobId !== "string") return;

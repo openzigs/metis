@@ -7,8 +7,14 @@
  *      `quarantined` indexState because auto-approve defaults to off.
  *   3. `POST /api/projects/:projectId/documents/:id/approve` flips it to `indexed` and chunks
  *      become visible to RAG search.
- *   4. `PATCH /api/projects/:projectId/documents/:id/acl` cascades a deny rule and the document
- *      hides from a search performed by a non-admin actor.
+ *   4. `PATCH /api/projects/:projectId/documents/:id/acl` restricts the document
+ *      to a role and the restriction CASCADES onto its indexed chunks
+ *      (asserted via the returned `chunkCount`).
+ *
+ * NOT covered here: that a non-admin's search then misses the document. The
+ * header used to claim it; no such assertion has ever existed in this file.
+ * Adding it needs a second seeded actor without the role — tracked separately
+ * rather than left as a comment that reads like coverage.
  *
  * AI provider is `offline-stub`, embedder is `HashEmbedder`, vector store is
  * the local in-memory backend — same determinism guarantees as the rest of

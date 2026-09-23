@@ -10,14 +10,17 @@
  *   - Verify badge rendering, navigation, table, modal, and resolution actions
  *   - Test empty state when no drift exists
  */
+import crypto from "node:crypto";
 import { test, expect, request, type APIRequestContext } from "@playwright/test";
 import { primeAdminUser } from "../fixtures/seed-user.js";
 import { apiBase } from "../fixtures/api-base.js";
-import { seedDriftViaCli } from "../fixtures/seed-drift.js";
+import { seedDriftViaCli, type SeedDriftResult } from "../fixtures/seed-drift.js";
 import { LoginPage } from "../pages/login.page.js";
 import { SyncPage } from "../pages/sync.page.js";
 
 const API_BASE = apiBase();
+// Must match `playwright.config.ts`'s server env, which defaults the same way.
+const JIRA_WEBHOOK_SECRET = process.env.JIRA_WEBHOOK_SECRET ?? "e2e-jira-sync-secret";
 
 function databaseUrl(): string {
   return process.env.E2E_DB_FILE
@@ -44,19 +47,83 @@ async function createProject(api: APIRequestContext, suffix: string): Promise<st
   return (body.data?.project?.id ?? body.data?.id ?? body.id) as string;
 }
 
-/** Seed a drift event directly in the e2e database via CLI helper. */
+/**
+ * Seed a drift event directly in the e2e database via CLI helper.
+ *
+ * Returns the whole seeded chain, not just the drift id: `externalIssueId` is
+ * what a real webhook has to carry for the reconciler to match it, which is the
+ * only way to get a `drift:detected` broadcast (a direct row insert emits
+ * nothing).
+ */
 function seedDrift(
   projectId: string,
   opts?: { field?: string; localValue?: string; externalValue?: string },
-): string {
-  const result = seedDriftViaCli({
+): SeedDriftResult {
+  return seedDriftViaCli({
     projectId,
     databaseUrl: databaseUrl(),
     field: opts?.field,
     localValue: opts?.localValue,
     externalValue: opts?.externalValue,
   });
-  return result.driftId;
+}
+
+/** HMAC over the exact body bytes the server will verify. */
+function signBody(secret: string, body: string): string {
+  return "sha256=" + crypto.createHmac("sha256", secret).update(body).digest("hex");
+}
+
+/**
+ * Post a signed Jira `issue_updated` webhook for an already-published issue.
+ * This is what drives `reconcileIssueChange` → a new `DriftEvent` row → the
+ * `drift:detected` broadcast the badge listens to (#78). Seeding a row via the
+ * CLI writes straight to SQLite and emits nothing, so it cannot exercise the
+ * live-update path at all.
+ *
+ * Jira rather than GitHub deliberately: `POST /api/webhooks/github/issues` is
+ * claimed by the spec-kit task-sync router, which is mounted BEFORE
+ * `syncWebhookRouter` in `server/src/routes/index.ts`, so the reconciler's
+ * GitHub receiver is unreachable and answers `NO_TASK_EXPORT` —
+ * https://github.com/openzigs/metis/issues/96. `/jira/issues` is not shadowed
+ * and exercises the identical reconcile → emit → badge path.
+ */
+async function postJiraIssueEditedWebhook(
+  api: APIRequestContext,
+  opts: { externalIssueId: string; issueKey: string; title: string; body: string },
+): Promise<void> {
+  const payload = JSON.stringify({
+    webhookEvent: "jira:issue_updated",
+    timestamp: Date.now(),
+    issue: {
+      id: opts.externalIssueId,
+      key: opts.issueKey,
+      fields: {
+        summary: opts.title,
+        description: opts.body,
+        status: { name: "To Do" },
+        labels: ["e2e", "sync-test"],
+        assignee: null,
+      },
+    },
+    changelog: {
+      items: [{ field: "summary", fromString: "Original METIS title", toString: opts.title }],
+    },
+    user: { displayName: "e2e-external-editor" },
+  });
+  const res = await api.post("/api/webhooks/jira/issues", {
+    headers: {
+      "content-type": "application/json",
+      "x-atlassian-webhook-id": crypto.randomUUID(),
+      "x-hub-signature": signBody(JIRA_WEBHOOK_SECRET, payload),
+    },
+    data: payload,
+  });
+  expect(res.status(), await res.text()).toBe(200);
+  // `handled:false` means the reconciler matched no PublishedIssue or found no
+  // diff — i.e. no DriftEvent and no broadcast. Assert it here so a harness
+  // regression fails loudly instead of as a mystery badge that never moves.
+  const json = (await res.json()) as { ok: boolean; handled: boolean; reason?: string };
+  expect(json, JSON.stringify(json)).toMatchObject({ ok: true, handled: true });
 }
 
 // ============================================================================
@@ -281,10 +348,10 @@ test.describe("Epic #739 — Drift Badge (@issue-745)", () => {
   });
 
   // AC: Badge renders with drift count
-  // #78 — `DriftBadge` is imported by nothing, so the count never renders on
-  // any project surface. The seeding + assertions below are correct; they
-  // fail only because the component is unmounted.
-  test.fixme("should display drift badge with correct count", async ({ page }) => {
+  // #78 mounted `DriftBadge` on the project Overview's Publish stage, so this
+  // is live again. It asserts the COUNT, not just visibility: a badge that
+  // renders a hardcoded or stale number would pass a visibility-only check.
+  test("should display drift badge with correct count", async ({ page }) => {
     seedDrift(projectId);
     seedDrift(projectId, { field: "body" });
 
@@ -295,17 +362,17 @@ test.describe("Epic #739 — Drift Badge (@issue-745)", () => {
       await page.goto(`/projects/${projectId}`);
     });
 
-    await test.step("Verify drift badge renders", async () => {
+    await test.step("Verify drift badge renders the pending count", async () => {
       const badge = page.getByRole("status", { name: /pending drift/ });
       await expect(badge).toBeVisible();
+      await expect(badge).toHaveText("2");
+      await expect(badge).toHaveAccessibleName("2 pending drift events");
     });
   });
 
   // AC: Click on badge navigates to sync page filtered to that requirement
-  // #78 — `DriftBadge` is imported by nothing, so the count never renders on
-  // any project surface. The seeding + assertions below are correct; they
-  // fail only because the component is unmounted.
-  test.fixme("should navigate to sync page when badge is clicked", async ({ page }) => {
+  // Live again since #78 mounted the badge on the project Overview.
+  test("should navigate to sync page when badge is clicked", async ({ page }) => {
     seedDrift(projectId);
 
     const loginPage = new LoginPage(page);
@@ -346,31 +413,41 @@ test.describe("Epic #739 — Drift Badge (@issue-745)", () => {
   });
 
   // AC: Badge live-updates via Socket.IO
-  // #78 — `DriftBadge` is imported by nothing, so the count never renders.
-  test.fixme("should live-update badge count when new drift event arrives via Socket.IO", async ({
+  //
+  // Live again since #78 wired `drift:detected` (the old comment here said
+  // `requirement:drift`, an event that was never implemented).
+  //
+  // This DRIVES A REAL SIGNED WEBHOOK rather than seeding a second row: the
+  // CLI seeder writes straight to SQLite, so it produces no broadcast at all
+  // and the "live update" would be indistinguishable from a page that never
+  // updated. The assertion is the count changing 1 → 2 with no reload.
+  test("should live-update badge count when new drift event arrives via Socket.IO", async ({
     page,
   }) => {
-    seedDrift(projectId);
+    const seeded = seedDrift(projectId);
 
     const loginPage = new LoginPage(page);
     await loginPage.loginAsAdmin();
 
+    const badge = page.getByRole("status", { name: /pending drift/ });
+
     await test.step("Navigate to project and verify initial badge", async () => {
       await page.goto(`/projects/${projectId}`);
-      const badge = page.getByRole("status", { name: /pending drift/ });
       await expect(badge).toBeVisible();
+      await expect(badge).toHaveText("1");
     });
 
-    await test.step("Seed another drift event while on page", async () => {
-      seedDrift(projectId, { field: "body" });
+    await test.step("An external edit arrives by webhook while the page is open", async () => {
+      await postJiraIssueEditedWebhook(api, {
+        externalIssueId: seeded.externalIssueId,
+        issueKey: `E2E-${seeded.issueNumber}`,
+        title: "Externally edited while the badge was on screen",
+        body: seeded.draftBody,
+      });
     });
 
     await test.step("Badge count updates without page refresh", async () => {
-      // The badge should update via Socket.IO event `requirement:drift`
-      // Give it a moment for the websocket event to propagate
-      const badge = page.getByRole("status", { name: /pending drift/ });
-      // Verify badge is still visible (count may have incremented)
-      await expect(badge).toBeVisible();
+      await expect(badge).toHaveText("2");
     });
   });
 });

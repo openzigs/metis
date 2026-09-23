@@ -26,6 +26,17 @@ export interface SeedDriftResult {
   driftId: string;
   publishedIssueId: string;
   projectId: string;
+  /**
+   * `PublishedIssue.issueId` — what `reconcileIssueChange` matches an inbound
+   * webhook's external issue id against (GitHub `issue.node_id`, Jira
+   * `issue.id`). A spec that wants the real `drift:detected` broadcast has to
+   * post a webhook carrying this id; a direct row insert emits nothing (#78).
+   */
+  externalIssueId: string;
+  issueNumber: number;
+  /** The IssueDraft title/body the reconciler diffs an inbound webhook against. */
+  draftTitle: string;
+  draftBody: string;
 }
 
 /**
@@ -62,7 +73,7 @@ export function seedDriftViaCli(opts: SeedDriftOpts): SeedDriftResult {
   }
 
   const parsed = JSON.parse(result.stdout) as SeedDriftResult;
-  if (!parsed.driftId) {
+  if (!parsed.driftId || !parsed.externalIssueId) {
     throw new Error(`e2e-seed-drift.ts returned malformed payload: ${result.stdout}`);
   }
   return parsed;

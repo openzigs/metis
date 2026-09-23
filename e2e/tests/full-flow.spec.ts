@@ -39,6 +39,7 @@ const PDF_PATH = path.join(FIXTURES_DIR, "sample.pdf");
 const MD_PATH = path.join(FIXTURES_DIR, "sample.md");
 
 import { apiBase } from "../fixtures/api-base.js";
+import { isOfflineAiStub } from "../fixtures/ai-mode.js";
 
 const API_BASE = apiBase();
 
@@ -195,12 +196,22 @@ test.describe("METIS — full workbench journey (#144)", () => {
         // structured JSON the specialist agents require, so every agent
         // rejects its output. The orchestrator's honesty gate then marks a run
         // whose specialists ALL failed as `failed` rather than reporting a
-        // silent green — which is exactly what should happen here. Assert that
-        // contract instead of a `completed` the harness cannot reach.
-        expect(
-          snapshot.status,
-          `offline-stub: every specialist rejects the prose, so the honesty gate fails the run`,
-        ).toBe("failed");
+        // silent green — which is exactly what should happen here.
+        //
+        // Branch on the DECLARED provider so this does not go red the day the
+        // stub (or a configured real provider) can satisfy the agents: with a
+        // structured-output model the same journey must reach `completed`.
+        if (isOfflineAiStub()) {
+          expect(
+            snapshot.status,
+            `offline-stub: every specialist rejects the prose, so the honesty gate fails the run`,
+          ).toBe("failed");
+        } else {
+          expect(
+            snapshot.status,
+            `AI_PROVIDER is a real provider: the journey must complete, not fail`,
+          ).toBe("completed");
+        }
 
         const databaseUrl = `file:${process.env.E2E_DB_FILE ?? path.join(__dirname, "..", "test-results", "stack-data", "metis-e2e.db")}`;
         // Draft generation needs a COMPLETED analysis carrying a requirement.

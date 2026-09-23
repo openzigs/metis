@@ -214,17 +214,27 @@ test.describe("Epic #856 — Test Coverage", () => {
       // Gherkin export writes one feature per SUGGESTION. Suggestion
       // generation needs a model that returns structured JSON, which the
       // deterministic harness's offline-stub provider cannot do, so a run here
-      // legitimately produces none — and then the export is empty. Assert
-      // against the run's actual suggestion count rather than assuming.
+      // legitimately produces none — and then the export is empty.
+      //
+      // Branch on the DECLARED provider mode, not on the observed suggestion
+      // count: branching on the count made the empty arm the only one CI could
+      // ever take while reading as a pass for both.
       const reportRes = await ctx.get(
         `/api/projects/${projectId}/test-coverage/runs/${runId}/report`,
       );
       const suggestionCount = ((await reportRes.json()) as Envelope<{ suggestions: unknown[] }>)
         .data.suggestions.length;
-      if (suggestionCount > 0) {
-        expect(bytes.byteLength).toBeGreaterThan(0);
-      } else {
+      if (isOfflineAiStub()) {
+        expect(suggestionCount).toBe(0);
         expect(bytes.byteLength).toBe(0);
+        test.info().annotations.push({
+          type: "not-verified-offline",
+          description:
+            "populated Gherkin export needs a structured-output provider (AI_PROVIDER != offline-stub)",
+        });
+      } else {
+        expect(suggestionCount).toBeGreaterThan(0);
+        expect(bytes.byteLength).toBeGreaterThan(0);
       }
     } finally {
       await ctx.dispose();

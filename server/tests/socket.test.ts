@@ -172,6 +172,74 @@ describe("Socket.IO server", () => {
     socket.close();
   });
 
+  /**
+   * The replay above is a READ of stored job state, so it must not become a
+   * way around project scoping: `subscribe:job` itself is capability-based
+   * (holding the id is the capability), but a guessed id must not hand back
+   * another project's job state. `u1` owns `p1` only, per the prisma mock.
+   */
+  it("replays a project-scoped job to a member of that project", async () => {
+    _resetJobLifecycleMemory();
+    const { accessToken } = issueTokens({
+      userId: "u1",
+      username: "alice",
+      role: "developer",
+      permissions: ["analysis.read"],
+    });
+    const socket = ioClient(`http://127.0.0.1:${port}`, {
+      auth: { token: accessToken },
+      transports: ["websocket"],
+      reconnection: false,
+      timeout: 1500,
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.on("auth:ok", () => resolve());
+      socket.on("connect_error", (err) => reject(err));
+    });
+
+    createJobEventEmitter(io).completed("analysis", "mine-job", "p1", "done");
+
+    const replayed = new Promise<{ jobId: string }>((resolve) => {
+      socket.on("job:lifecycle", resolve);
+    });
+    socket.emit("subscribe:job", { jobId: "mine-job" });
+    expect((await replayed).jobId).toBe("mine-job");
+
+    socket.close();
+  });
+
+  it("does NOT replay a job scoped to a project the subscriber cannot access", async () => {
+    _resetJobLifecycleMemory();
+    const { accessToken } = issueTokens({
+      userId: "u1",
+      username: "alice",
+      role: "developer",
+      permissions: ["analysis.read"],
+    });
+    const socket = ioClient(`http://127.0.0.1:${port}`, {
+      auth: { token: accessToken },
+      transports: ["websocket"],
+      reconnection: false,
+      timeout: 1500,
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.on("auth:ok", () => resolve());
+      socket.on("connect_error", (err) => reject(err));
+    });
+
+    createJobEventEmitter(io).completed("analysis", "foreign-job", "p-other", "secret progress");
+
+    const received: unknown[] = [];
+    socket.on("job:lifecycle", (e: unknown) => received.push(e));
+    socket.emit("subscribe:job", { jobId: "foreign-job" });
+    // The authz check is async; give it more time than it needs, then assert
+    // silence. A bare `await nextTick` would pass even if the gate were absent.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(received).toEqual([]);
+
+    socket.close();
+  });
+
   // SEC-5: subscribe:mcp must be admin-only.
   it("rejects subscribe:mcp from non-admin and emits auth:error", async () => {
     const { accessToken } = issueTokens({

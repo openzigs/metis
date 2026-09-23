@@ -25,6 +25,44 @@ export interface VersionedRecord {
 type RecordFetcher = (req: Request) => Promise<VersionedRecord | null>;
 
 /**
+ * Structural equality for conflict-diff comparison.
+ *
+ * `JSON.stringify` was the first fix (identity comparison reported every
+ * array/object field as conflicting), but it compares serialized key ORDER, so
+ * `{a:1,b:2}` and `{b:2,a:1}` still read as different — and Prisma's JSON
+ * column round-trip does not promise key order. It also equates a field
+ * explicitly sent as `undefined` with one that is absent. Compare the shapes
+ * instead: order-insensitive for objects, order-SENSITIVE for arrays (a
+ * reordered label list is a real edit), and `undefined` distinguished from
+ * `null`.
+ */
+function valuesEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  // NaN === NaN is false, but two NaNs are not a user-visible edit.
+  if (typeof a === "number" && typeof b === "number" && Number.isNaN(a) && Number.isNaN(b)) {
+    return true;
+  }
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+
+  const aIsArray = Array.isArray(a);
+  if (aIsArray !== Array.isArray(b)) return false;
+  if (aIsArray) {
+    const x = a as unknown[];
+    const y = b as unknown[];
+    return x.length === y.length && x.every((item, i) => valuesEqual(item, y[i]));
+  }
+
+  const x = a as Record<string, unknown>;
+  const y = b as Record<string, unknown>;
+  const xKeys = Object.keys(x);
+  const yKeys = Object.keys(y);
+  if (xKeys.length !== yKeys.length) return false;
+  // `in` rather than `y[k] !== undefined`: a key present with value
+  // `undefined` is not the same as a missing key.
+  return xKeys.every((k) => k in y && valuesEqual(x[k], y[k]));
+}
+
+/**
  * Build the optimistic-lock middleware for a given record fetcher.
  *
  * @param entityLabel  Used in error messages, e.g. "requirement".
@@ -65,8 +103,8 @@ export function optimisticLock(entityLabel: string, getRecord: RecordFetcher): R
           // equivalent value from the request body, so identity comparison
           // reported it as conflicting on EVERY conflict — and the merge modal
           // then offered a "server version" the client never actually differed
-          // from.
-          if (JSON.stringify(record[field]) !== JSON.stringify(clientBody[field])) {
+          // from. See `valuesEqual` for why this is not `JSON.stringify`.
+          if (!valuesEqual(record[field], clientBody[field])) {
             diff.push({ field, server: record[field], client: clientBody[field] });
           }
         }

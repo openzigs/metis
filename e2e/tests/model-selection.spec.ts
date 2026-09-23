@@ -104,23 +104,19 @@ test.describe("Model Recommendation — Issue #600", () => {
       await panel.waitForLoaded();
     });
 
-    // A brand-new project has no completed analysis to size from, so the panel
-    // states that instead of showing a fabricated token/cost estimate. Assert
-    // whichever of the two honest states is on screen — never both absent.
-    await test.step("Verify the token estimate (or its absence) is stated", async () => {
-      await expect(panel.tokenBadge.or(panel.tokenUnavailableBadge).first()).toBeVisible();
+    // `beforeEach` creates an ISOLATED, EMPTY project, so there is never a
+    // completed analysis to size from: the "no estimate" state is the
+    // deterministic one here. Asserting it directly rather than behind
+    // `if (tokenBadge.isVisible())` — that branch could never run, so the old
+    // shape reported a pass for an arm nothing executed.
+    await test.step("Panel states that no token estimate is available", async () => {
+      await expect(panel.tokenUnavailableBadge).toBeVisible();
+      await expect(panel.noTokenEstimateCaption).toBeVisible();
     });
 
-    await test.step("Verify a cost estimate accompanies a token estimate", async () => {
-      if (await panel.tokenBadge.isVisible()) {
-        await expect(panel.costBadge).toBeVisible();
-      } else {
-        // No completed run to size from: the panel says so and shows no
-        // fabricated cost.
-        await expect(panel.tokenUnavailableBadge).toBeVisible();
-        await expect(panel.noTokenEstimateCaption).toBeVisible();
-        await expect(panel.costBadge).toHaveCount(0);
-      }
+    await test.step("No fabricated cost is shown without a token estimate", async () => {
+      await expect(panel.tokenBadge).toHaveCount(0);
+      await expect(panel.costBadge).toHaveCount(0);
     });
   });
 
