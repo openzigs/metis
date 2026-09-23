@@ -943,30 +943,36 @@ The shared mutation helper `ui/src/lib/use-app-mutation.ts` wraps TanStack Query
 
 #### 7.6.4 Realtime event catalogue + drift guard (Issue #417, epic #405)
 
-The `ServerToClientEvents` contract (`packages/shared/src/socket.ts`) is the single source of truth for every server→client Socket.IO event. To stop it drifting away from real emitters/consumers, a typed-event guard (`packages/shared/src/socket-contract.ts`, tested by `packages/shared/tests/socket-contract.test.ts`) statically scans `server/src` for `.emit("…")` and `ui/src` for `.on("…")` and **fails CI** if any declared event is neither emitted, consumed, nor on the documented allow-list (`SOCKET_EVENT_ALLOWLIST`). The catalogue below is the audit it enforces.
+The `ServerToClientEvents` contract (`packages/shared/src/socket.ts`) is the single source of truth for every server→client Socket.IO event. To stop it drifting away from real emitters/consumers, a typed-event guard (`packages/shared/src/socket-contract.ts`, tested by `packages/shared/tests/socket-contract.test.ts`) statically scans `server/src` for `.emit("…")` and `ui/src` for `.on("…")` and **fails CI** unless every declared event is **both** emitted **and** consumed — or allow-listed, with a reason, as having no UI consumer (`SOCKET_EVENT_ALLOWLIST`). Until #91 it failed only on an event used on *neither* side, so an emitted event whose UI listener name was misspelled passed; UI listeners are typically cast `as never`, so the compiler does not catch that either. An emitter that computes the event name is registered in `SOCKET_COMPUTED_EMITTERS` against the file holding the literal. The guard also parses **this table** and fails if a declared event has no current row, or a current row names an event that is not declared — so a new event is not done until it is catalogued here.
 
 | Event | Emitter (server/src) | UI consumer (ui/src) | Status |
 |---|---|---|---|
 | `job:lifecycle` | `lib/socket/job-events.ts` | `hooks/use-job-events.ts` | live |
 | `job:doc-section` | `lib/socket/job-events.ts` | `hooks/use-job-events.ts` | live |
-| `analysis:agent` | `lib/analysis/orchestrator.ts` | analysis room | live |
 | `analysis:promotion-blocked` | `lib/analysis/orchestrator.ts` | `components/analysis/ApprovalsPanel.tsx` | live |
-| `analysis:completed` / `analysis:failed` / `analysis:cancelled` | `lib/analysis/orchestrator.ts` | analysis room | live |
+| `analysis:agent` / `analysis:capability` / `analysis:repos-skipped` | `lib/analysis/orchestrator.ts` (room `analysis:{id}`) | — | allow-listed (#91): no `ui/src` listener; the UI follows runs via `job:lifecycle` |
+| `analysis:completed` / `analysis:failed` / `analysis:cancelled` | `lib/analysis/orchestrator.ts` (room `analysis:{id}`) | — | allow-listed (#91): no `ui/src` listener; the UI follows runs via `job:lifecycle` |
 | `connector:progress` / `connector:discovery` | `lib/connectors/socket-emitter.ts` | `hooks/use-connector-events.ts` | live |
 | `publish:status` / `publish:progress` / `publish:completed` | `lib/publishing/socket-emitter.ts` | `…/publish/page.tsx` | live |
 | `scheduler:status` | `lib/scheduler/socket-emitter.ts` | `scheduler/page.tsx` | live |
 | `task:status` / `task:progress` | `lib/scheduler/socket-emitter.ts` | `tasks/page.tsx` | live |
-| `testcoverage:run-update` / `testcoverage:run-finished` | `lib/testcoverage/socket-emitter.ts` (computed name) | `…/test-coverage/page.tsx` | live |
+| `testcoverage:run-update` / `testcoverage:run-finished` | `lib/testcoverage/socket-emitter.ts` (computed name — `SOCKET_COMPUTED_EMITTERS`) | `…/test-coverage/page.tsx` | live |
 | `presence:update` | `lib/collaboration/presence.ts` | `components/presence/PresenceAvatars.tsx` | live |
+| `message:new` / `message:stream` | `lib/discussions/socket-emitter.ts` (room `thread:{id}`) | `components/chat/discussion-thread-view.tsx` | live |
+| `typing:update` | `lib/socket/discussion-presence.ts` | `components/chat/typing-indicator.tsx` | live |
 | `comment:mention` | `lib/collaboration/mentions.ts` | `components/notifications/notifications-drawer.tsx` | live (#416) |
 | `sla:deadline_expired` | `lib/scheduler/sla-checker.ts` | `components/notifications/notifications-drawer.tsx` | live (#416) |
-| `auth:ok` / `auth:error` / `heartbeat` | `lib/socket/server.ts` | socket-client plumbing | allow-listed (protocol/handshake) |
+| `discussion:mention` | `lib/discussions/notify.ts` (room `user:{id}`) | — | allow-listed (#91), **no UI consumer yet** (#104) |
+| `review:notification` | `lib/reviews/notify.ts` (room `user:{id}`) | — | allow-listed (#91), **no UI consumer yet** (#104) |
+| `drift:detected` | `lib/sync/socket-emitter.ts` (room `project:{id}`; payload `{ projectId, driftEventId, requirementId, status, ts }` — identifiers only, no issue content) | `hooks/use-drift-count.ts` (re-reads `GET /api/sync/drift/count`) | live (#78); reachable from GitHub deliveries since #96 |
+| `auth:error` | `lib/socket/server.ts`, `lib/socket/discussion-presence.ts` | `lib/socket-client.ts` | live |
+| `document:status` | `lib/rag/socket-emitter.ts` (room `project:{id}`) | `…/documents/page.tsx` | live |
+| `auth:ok` / `heartbeat` | `lib/socket/server.ts` | socket-client plumbing | allow-listed (protocol/handshake) |
 | `mcp:status` / `mcp:approval:requested` / `mcp:approval:decided` | `lib/mcp/index.ts` | — | allow-listed (admin/protocol, no UI by design) |
 | `usage:tick` / `bg-run:status` / `bg-run:step` | `server.ts` | — | allow-listed, **deferred to Epic #406** (progress UI) |
-| `document:status` | `lib/rag/socket-emitter.ts` | — | allow-listed, **deferred to Epic #406** |
 | `connector:status` | `lib/connectors/socket-emitter.ts` | — | allow-listed, **deferred to Epic #406** |
 | `presence:error` | `lib/collaboration/presence.ts` | — | allow-listed, **deferred to Epic #406** |
-| `requirement:drift` | — | — | **removed** (#417): declared but never emitted/consumed; the stale `reconcile-service.ts` docstring was corrected |
+| `requirement:drift` | — | — | **removed** (#417) — never emitted or consumed. Not current: project drift is `drift:detected` (#78) |
 | `project:updated` / `analysis:progress` / `session:event` | — | — | **removed** (#417): declared with zero references (no emitter, no consumer) |
 
 Deferred events keep their server emitter and a `TODO(#406)` allow-list reason rather than being deleted — removing the contract entry would break the live emitter and fail typecheck.
@@ -5265,8 +5271,10 @@ The MCP server is **not** mounted into the REST process — it's a separate stdi
 GitHub issues event
   └── POST /api/webhooks/github/issues
         ├── verifyGithubPrSignature(rawBody, secret, {signature, timestamp})   ← shared with PR webhook
+        ├── dedup on X-GitHub-Delivery (replay → 200 DUPLICATE_DELIVERY, neither pipeline runs)
+        ├── [#96] reconcileGithubIssueDelivery → Epic #739 drift (reported under `drift`; see "Bidirectional Issue Sync")
         ├── parse {action, issue.number, repository.{owner.login, name}}
-        ├── if action ∉ {closed, reopened, edited}: return 200 (ignore)
+        ├── if action ∉ {closed, reopened, edited}: spec-kit half is a no-op (drift still runs)
         └── syncIssueEvent({action, issueNumber, repoOwner, repoName, newTitle?})
               ├── prisma.specKitTaskExport.findFirst({repoOwner, repoName, issueNumber})  → exp
               ├── if !exp: return {handled: false, reason: "NO_TASK_EXPORT"}
@@ -6036,6 +6044,7 @@ Jira) and presents the changes for resolution in METIS.
 
 ```
 GitHub Webhook → POST /api/webhooks/github/issues → verifySignature → normalizeEvent → reconcileIssueChange → DriftEvent
+                  (one receiver in routes/webhooks-github.ts runs this AND the spec-kit tasks.md sync — #96)
 Jira Webhook   → POST /api/webhooks/jira/issues   → verifySignature → normalizeEvent → reconcileIssueChange → DriftEvent
 Jira DC Poll   → scheduler task (jira.poll)        → fetchChanges    → normalizeEvent → reconcileIssueChange → DriftEvent
 ```

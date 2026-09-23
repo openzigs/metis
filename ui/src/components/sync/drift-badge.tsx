@@ -3,13 +3,26 @@
  *
  * Displays the count of pending drift events for a project/requirement.
  * Renders within 50ms (no API call on mount — relies on prefetched data or
- * Socket.IO live-updates). Clicking navigates to the sync page.
+ * Socket.IO live-updates). Activating it navigates to the sync page.
+ *
+ * #90 — it is a real `<button>`. It used to be the ui-kit `Badge` (a `<div>`)
+ * with an `onClick` and `role="status"`: unreachable by Tab, inert to Enter and
+ * Space, and announced as a live region rather than as a control. Once #78
+ * mounted it on the project Overview that was a mouse-only control on a
+ * primary page. The badge LOOK is kept by applying the destructive badge
+ * classes to the button itself — `Badge` renders a `<div>`, which is not valid
+ * button content.
  */
 "use client";
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Badge } from "@/components/ui/badge";
+
+/** The ui-kit `Badge` destructive variant, applied to a focusable element. */
+const BADGE_CLASSES =
+  "inline-flex items-center justify-center rounded-full border border-transparent font-semibold " +
+  "bg-destructive text-destructive-foreground hover:bg-destructive/80 transition-colors " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 
 export interface DriftBadgeProps {
   /** Project ID for navigation. */
@@ -40,19 +53,20 @@ export function DriftBadge({ projectId, count, requirementId, className }: Drift
     ? `/projects/${projectId}/sync?requirementId=${requirementId}`
     : `/projects/${projectId}/sync`;
 
+  const noun = `pending drift event${localCount === 1 ? "" : "s"}`;
+
   return (
-    <Badge
-      variant="destructive"
-      className={`cursor-pointer text-[10px] px-1.5 py-0 min-w-[18px] h-[18px] flex items-center justify-center ${className ?? ""}`}
+    <button
+      type="button"
+      className={`${BADGE_CLASSES} cursor-pointer text-[10px] px-1.5 py-0 min-w-[18px] h-[18px] ${className ?? ""}`}
       onClick={(e) => {
         e.stopPropagation();
         router.push(href);
       }}
       title={`${localCount} drift${localCount === 1 ? "" : "s"} detected`}
-      role="status"
-      aria-label={`${localCount} pending drift events`}
+      aria-label={`View ${localCount} ${noun}`}
     >
       {localCount}
-    </Badge>
+    </button>
   );
 }

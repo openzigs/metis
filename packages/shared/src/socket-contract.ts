@@ -7,9 +7,13 @@
  *
  * The CI test (`tests/socket-contract.test.ts`) reads the real source files,
  * extracts the three sets (declared / emitted / consumed), and feeds them into
- * {@link findDriftedEvents}. A declared event that is neither emitted nor
- * consumed nor explicitly allow-listed is reported as "drifted" and fails CI,
- * keeping the contract honest as the app evolves.
+ * {@link checkSocketContract}. Since #91 the check is TWO-SIDED: a declared
+ * event must be emitted by the server AND consumed by the UI (or carry an
+ * allow-list reason for having no consumer). The earlier rule failed only when
+ * an event was used on NEITHER side, so an emitted event whose UI listener name
+ * was misspelled passed CI — the declaration was "used" by the emitter alone.
+ * {@link findUncataloguedEvents} additionally pins every declared event to a
+ * row of the `docs/ARCHITECTURE.md` §7.6.4 realtime event catalogue.
  *
  * All functions here are intentionally side-effect-free so they can be unit
  * tested against in-memory fixtures (including a synthetic drifted event) with
@@ -17,21 +21,25 @@
  */
 
 /**
- * Explicit allow-list of declared `ServerToClientEvents` that legitimately have
- * no UI `.on(...)` consumer. Each entry MUST carry a reason so the exception is
- * self-documenting and reviewable.
+ * Explicit allow-list of declared `ServerToClientEvents` that are emitted but
+ * legitimately have no UI `.on(...)` consumer. Each entry MUST carry a reason so
+ * the exception is self-documenting and reviewable. An entry for an event that
+ * IS consumed fails the guard (`redundantAllowlist`): the exception would
+ * otherwise outlive its reason and hide a later consumer-side misspelling.
  *
- * Two categories:
- *  - **protocol/handshake/admin** events with no React consumer by design; and
+ * Categories:
+ *  - **protocol/handshake/admin** events with no React consumer by design;
  *  - **#406-deferred** events whose server emitter already exists but whose
  *    progress UI is owned by Epic #406 (progress feedback). These must NOT be
  *    deleted — removing the contract entry would break the live emitter and
- *    fail typecheck.
+ *    fail typecheck; and
+ *  - **found by #91** — emitted events that had no UI consumer, invisible to
+ *    the old one-sided rule. Recorded here, not wired, so the guard can go
+ *    green without inventing UI; each names what the UI uses instead.
  */
 export const SOCKET_EVENT_ALLOWLIST: Readonly<Record<string, string>> = {
   // --- Protocol / handshake / admin — no React consumer by design ----------
   "auth:ok": "Handshake ack consumed by the low-level socket client, not a React .on() listener.",
-  "auth:error": "Handshake error; surfaced by socket-client.ts plumbing, not a feature component.",
   heartbeat: "Keep-alive ping; the client library handles it, no UI renders it.",
   "mcp:status": "MCP admin/protocol channel; no end-user React consumer by design.",
   "mcp:approval:requested":
@@ -45,18 +53,46 @@ export const SOCKET_EVENT_ALLOWLIST: Readonly<Record<string, string>> = {
     "TODO(#406): wire progress UI consumer — background-run status emitter already live.",
   "bg-run:step":
     "TODO(#406): wire progress UI consumer — background-run step emitter already live.",
-  "document:status": "TODO(#406): wire progress UI consumer — RAG doc-status emitter already live.",
   "connector:status":
     "TODO(#406): wire progress UI consumer — connector status emitter already live.",
   "presence:error":
     "TODO(#406): wire progress UI consumer — presence room-cap error emitter already live.",
+  // --- Found by #91's two-sided rule — emitted, never consumed in ui/src ----
+  "analysis:agent":
+    "#91: analysis:{id} room event with no ui/src listener; the UI follows analysis runs via job:lifecycle.",
+  "analysis:capability":
+    "#91: analysis:{id} room event with no ui/src listener; the UI follows analysis runs via job:lifecycle.",
+  "analysis:repos-skipped":
+    "#91: analysis:{id} room event with no ui/src listener; the UI follows analysis runs via job:lifecycle.",
+  "analysis:completed":
+    "#91: analysis:{id} room event with no ui/src listener; the UI follows analysis runs via job:lifecycle.",
+  "analysis:failed":
+    "#91: analysis:{id} room event with no ui/src listener; the UI follows analysis runs via job:lifecycle.",
+  "analysis:cancelled":
+    "#91: analysis:{id} room event with no ui/src listener; the UI follows analysis runs via job:lifecycle.",
+  "discussion:mention":
+    "TODO(#104): user:{id} notification with no ui/src listener; the drawer listens to comment:mention only.",
+  "review:notification":
+    "TODO(#104): user:{id} notification with no ui/src listener; nothing renders it in realtime.",
 };
 
-/** Inputs to the pure drift checker. */
+/**
+ * Declared events whose server emitter computes the event NAME (so no
+ * `.emit("<literal>")` exists for {@link extractEmittedEvents} to find), mapped
+ * to the server file, relative to `server/src`, that holds the literal. The
+ * live guard counts such an event as emitted only if that file still contains
+ * the quoted name — a rename on the server side still fails.
+ */
+export const SOCKET_COMPUTED_EMITTERS: Readonly<Record<string, string>> = {
+  "testcoverage:run-update": "lib/testcoverage/socket-emitter.ts",
+  "testcoverage:run-finished": "lib/testcoverage/socket-emitter.ts",
+};
+
+/** Inputs to the pure contract checker. */
 export interface DriftCheckInput {
   /** Event names declared on `ServerToClientEvents`. */
   declaredEvents: readonly string[];
-  /** Event names found as `.emit("<event>")` in the server source. */
+  /** Event names the server emits (literal `.emit("<event>")` + computed emitters). */
   emitters: readonly string[];
   /** Event names found as `.on("<event>")` in the UI source. */
   consumers: readonly string[];
@@ -64,21 +100,34 @@ export interface DriftCheckInput {
   allowlist: readonly string[];
 }
 
+/** Every way a declared event can disagree with its emitter and consumer. */
+export interface SocketContractReport {
+  /** Declared but never emitted — a consumer (if any) listens for nothing. */
+  neverEmitted: string[];
+  /** Emitted but no UI consumer and no allow-list reason — e.g. a misspelled listener. */
+  unconsumed: string[];
+  /** Allow-listed as having no consumer, yet one exists. */
+  redundantAllowlist: string[];
+}
+
+const sortedUnique = (xs: readonly string[]): string[] => [...new Set(xs)].sort();
+
 /**
- * Core, pure drift check. Returns the sorted list of declared events that are
- * **drifted**: neither emitted by the server, nor consumed by the UI, nor
- * present on the allow-list. An empty result means the contract is honest.
+ * Core, pure, TWO-SIDED contract check (#91). Each declared event must be
+ * emitted, and must be consumed unless allow-listed. All arrays are sorted and
+ * de-duplicated; an all-empty report means the contract is honest.
  */
-export function findDriftedEvents(input: DriftCheckInput): string[] {
+export function checkSocketContract(input: DriftCheckInput): SocketContractReport {
   const emitted = new Set(input.emitters);
   const consumed = new Set(input.consumers);
   const allowed = new Set(input.allowlist);
+  const declared = sortedUnique(input.declaredEvents);
 
-  const drifted = input.declaredEvents.filter(
-    (event) => !emitted.has(event) && !consumed.has(event) && !allowed.has(event),
-  );
-
-  return [...new Set(drifted)].sort();
+  return {
+    neverEmitted: declared.filter((e) => !emitted.has(e)),
+    unconsumed: declared.filter((e) => emitted.has(e) && !consumed.has(e) && !allowed.has(e)),
+    redundantAllowlist: declared.filter((e) => allowed.has(e) && consumed.has(e)),
+  };
 }
 
 /**
@@ -167,9 +216,9 @@ export function parseDeclaredEvents(socketSource: string): string[] {
 
 /**
  * Extract every event name passed as a string literal to `.emit("<event>", …)`
- * from a blob of server source. Computed/templated emit names (e.g. a ternary
- * that selects between two literals) are still captured because both literals
- * appear elsewhere as string tokens, but the canonical case is a direct literal.
+ * from a blob of server source. A computed emit name (e.g. a ternary selecting
+ * between two literals) is NOT captured — declare it in
+ * {@link SOCKET_COMPUTED_EMITTERS} instead.
  */
 export function extractEmittedEvents(serverSource: string): string[] {
   return extractEventLiterals(serverSource, /\.emit\(\s*"([^"]+)"/g);
@@ -189,4 +238,65 @@ function extractEventLiterals(source: string, pattern: RegExp): string[] {
     found.add(m[1]);
   }
   return [...found].sort();
+}
+
+/** The §7.6.4 realtime event catalogue, as parsed from `docs/ARCHITECTURE.md`. */
+export interface EventCatalogue {
+  /** Events on a row whose status does not say **removed**. */
+  current: string[];
+  /** Events on a row whose status says **removed**. */
+  removed: string[];
+}
+
+const CATALOGUE_HEADING = /^#{2,6}\s+7\.6\.4\b/;
+
+/**
+ * Parse the §7.6.4 catalogue table out of `docs/ARCHITECTURE.md`. The first
+ * cell of a row may name several events as backticked literals separated by
+ * `/`; the last cell is the status, and a status containing `removed` marks a
+ * historical row rather than a current event.
+ */
+export function parseEventCatalogue(markdown: string): EventCatalogue {
+  const lines = markdown.split("\n");
+  const start = lines.findIndex((l) => CATALOGUE_HEADING.test(l));
+  if (start === -1) {
+    throw new Error("Could not locate the §7.6.4 realtime event catalogue heading.");
+  }
+  const current = new Set<string>();
+  const removed = new Set<string>();
+  let rows = 0;
+  for (const line of lines.slice(start + 1)) {
+    if (/^#{1,6}\s/.test(line)) break;
+    if (!line.startsWith("|")) continue;
+    const cells = line
+      .split("|")
+      .slice(1, -1)
+      .map((c) => c.trim());
+    if (cells.length < 2 || /^-+$/.test(cells[0]) || cells[0] === "Event") continue;
+    const names = [...cells[0].matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+    if (names.length === 0) continue;
+    rows++;
+    const target = /\bremoved\b/i.test(cells[cells.length - 1]) ? removed : current;
+    for (const n of names) target.add(n);
+  }
+  if (rows === 0) throw new Error("The §7.6.4 realtime event catalogue has no event rows.");
+  return { current: [...current].sort(), removed: [...removed].sort() };
+}
+
+/** Declared events with no current §7.6.4 row (a **removed** row does not count). */
+export function findUncataloguedEvents(
+  declaredEvents: readonly string[],
+  catalogue: EventCatalogue,
+): string[] {
+  const listed = new Set(catalogue.current);
+  return sortedUnique(declaredEvents).filter((e) => !listed.has(e));
+}
+
+/** Current §7.6.4 rows naming an event that is not declared — the doc implies it exists. */
+export function findStaleCatalogueRows(
+  declaredEvents: readonly string[],
+  catalogue: EventCatalogue,
+): string[] {
+  const declared = new Set(declaredEvents);
+  return catalogue.current.filter((e) => !declared.has(e));
 }

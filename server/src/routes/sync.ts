@@ -2,8 +2,13 @@
  * Epic #739 — Bidirectional Issue Sync routes.
  *
  * Webhook receivers:
- *   POST /api/webhooks/github/issues   — GitHub issue lifecycle events
- *   POST /api/webhooks/jira/issues     — Jira issue lifecycle events
+ *   POST /api/webhooks/jira/issues     — Jira issue lifecycle events (here)
+ *   POST /api/webhooks/github/issues   — GitHub issue lifecycle events, served
+ *     by `webhooks-github.ts`, which runs the spec-kit task sync AND this
+ *     epic's drift reconcile (`reconcileGithubIssueDelivery`) on every delivery.
+ *     It is not registered here: a second registration of the same path on the
+ *     same `/webhooks` prefix is never reached by Express (#96), and
+ *     `server/tests/route-table-collisions.test.ts` fails if one comes back.
  *
  * Drift management:
  *   GET  /api/sync/drift               — list drift events (project scoped)
@@ -25,8 +30,6 @@ import {
   getDriftEventProjectId,
   listDriftEvents,
   getDriftCount,
-  verifyGithubIssueSignature,
-  normalizeGithubIssueEvent,
   verifyJiraWebhookSignature,
   normalizeJiraIssueEvent,
 } from "../lib/sync/index.js";
@@ -48,8 +51,6 @@ function rawBody(req: Request): string {
 
 export interface SyncRouterDeps {
   reconcileDeps?: ReconcileDeps;
-  /** Override GitHub webhook secret resolver (test seam). */
-  resolveGithubSecret?: () => string;
   /** Override Jira webhook secret resolver (test seam). */
   resolveJiraSecret?: () => string;
 }
@@ -62,53 +63,6 @@ export function syncWebhookRouter(deps: SyncRouterDeps = {}): Router {
   // #680 — throttle these UNAUTHENTICATED receivers (they are already
   // signature-first: the HMAC is verified before any DB work).
   r.use(webhookReceiverRateLimiter);
-
-  /**
-   * POST /github/issues — receive GitHub issue lifecycle webhooks.
-   */
-  r.post("/github/issues", async (req: Request, res: Response) => {
-    const secret = deps.resolveGithubSecret?.() ?? process.env.GITHUB_WEBHOOK_SECRET ?? "";
-    const sig = req.header("x-hub-signature-256") ?? undefined;
-    const body = rawBody(req);
-
-    const verify = verifyGithubIssueSignature(body, secret, sig);
-    if (!verify.ok) {
-      res.status(401).json({ ok: false, reason: verify.reason });
-      return;
-    }
-
-    const eventType = req.header("x-github-event") ?? "";
-    if (eventType !== "issues") {
-      log.debug("sync.webhook.github.ignored_event", { eventType });
-      res.status(200).json({ ok: true, handled: false, reason: "NOT_ISSUES_EVENT" });
-      return;
-    }
-
-    // #681 — replay/dedup: GitHub signature carries no timestamp, so a captured
-    // valid delivery can be replayed. Record the X-GitHub-Delivery UUID in the
-    // shared dedup table and short-circuit re-deliveries, matching the PR-review
-    // webhook path (webhooks-github.ts). An empty header is non-deduplicatable
-    // (recordDelivery passes it through), so the header-less path is unchanged.
-    const rawDelivery = (req.header("x-github-delivery") ?? "").trim();
-    const dedup = await recordDelivery({ deliveryId: rawDelivery, eventType: "issues" });
-    if (dedup.duplicate) {
-      log.debug("sync.webhook.github.duplicate_delivery", { deliveryId: rawDelivery });
-      res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_DELIVERY" });
-      return;
-    }
-
-    const deliveryId = rawDelivery || crypto.randomUUID();
-    const payload = req.body;
-
-    const { event, reason } = normalizeGithubIssueEvent(payload, deliveryId);
-    if (!event) {
-      res.status(200).json({ ok: true, handled: false, reason });
-      return;
-    }
-
-    const result = await reconcileIssueChange(event, deps.reconcileDeps);
-    res.status(200).json({ ok: true, ...result });
-  });
 
   /**
    * POST /jira/issues — receive Jira issue lifecycle webhooks.
