@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DriftBadge } from "@/components/sync/drift-badge";
+import { badgeVariantClasses } from "@metis/ui-kit";
 
 const PUSH_MOCK = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -75,6 +76,27 @@ describe("DriftBadge", () => {
     );
     await user.click(screen.getByRole("button"));
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  /**
+   * #113 — WCAG 2.2 SC 2.5.8 (Target Size, Minimum) asks for 24×24 CSS px. The
+   * badge was 18×18. jsdom does no layout, so the sizing classes ARE the
+   * contract: `h-6` / `min-w-6` are 1.5rem = 24px at the default root size.
+   */
+  it("meets the 24×24 minimum target size (#113)", () => {
+    render(<DriftBadge projectId="p1" count={1} />);
+    const classes = screen.getByRole("button").className.split(/\s+/);
+    expect(classes).toEqual(expect.arrayContaining(["h-6", "min-w-6"]));
+    // No smaller size may override them.
+    expect(classes.filter((c) => /^(h|min-w|w|size)-\[/.test(c))).toEqual([]);
+  });
+
+  it("takes its look from the ui-kit Badge destructive variant, not a hand copy (#113)", () => {
+    render(<DriftBadge projectId="p1" count={1} />);
+    const classes = screen.getByRole("button").className.split(/\s+/);
+    expect(classes).toEqual(
+      expect.arrayContaining(badgeVariantClasses("destructive").split(/\s+/)),
+    );
   });
 
   it("updates count when prop changes", () => {

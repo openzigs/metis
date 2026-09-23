@@ -157,9 +157,6 @@ export async function reconcileIssueChange(
 }
 
 /**
- * Resolve a drift event with the chosen action.
- */
-/**
  * #102 — the project that owns a drift event, or `null` when no such event
  * exists. The resolve route authorises against THIS, never against a project
  * the caller names, so a drift id cannot be used to act on another project.
@@ -172,6 +169,9 @@ export async function getDriftEventProjectId(driftEventId: string): Promise<stri
   return row?.projectId ?? null;
 }
 
+/**
+ * Resolve a drift event with the chosen action.
+ */
 export async function resolveDriftEvent(
   driftEventId: string,
   action: DriftResolutionAction,

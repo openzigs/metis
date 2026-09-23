@@ -181,6 +181,23 @@ describe("#103 getImpactAnalysisDetail query shape", () => {
       }),
     );
   });
+
+  // #112 — nothing downstream re-sorts the items, so the order Prisma returns
+  // is the order the user reads: grouped by project, highest impact first.
+  it("orders items by project, then by impactScore descending", async () => {
+    const prisma = detailPrisma(detailRow());
+    await getImpactAnalysisDetail("ia-88", prisma as never);
+
+    expect(prisma.impactAnalysis.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          items: expect.objectContaining({
+            orderBy: [{ projectId: "asc" }, { impactScore: "desc" }],
+          }),
+        }),
+      }),
+    );
+  });
 });
 
 // ---- list path: the legacy run stays visible to the actor who started it ----

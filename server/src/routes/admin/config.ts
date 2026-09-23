@@ -275,7 +275,14 @@ function translateError(err: unknown): unknown {
   if (err instanceof AppError) return err;
   if (isPrismaError(err)) {
     const code = typeof err.code === "string" ? err.code : undefined;
-    log.warn("Config store error mapped to a fixed response", { errorClass: err.name, code });
+    // #112 — the RESPONSE is fixed vocabulary; the LOG keeps the cause. Before
+    // #93 these errors reached the generic handler, which logged both.
+    log.warn("Config store error mapped to a fixed response", {
+      errorClass: err.name,
+      code,
+      error: err.message,
+      stack: err.stack,
+    });
     if (code === "P2002") {
       return new AppError(
         409,

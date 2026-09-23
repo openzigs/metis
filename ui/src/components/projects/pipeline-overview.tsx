@@ -73,20 +73,30 @@ function StateIcon({ state }: { state: PipelineStageState }) {
  */
 const DRIFT_STAGE: PipelineStageId = "publish";
 
-function StageTitle({
+/**
+ * #113 — the badge sits BESIDE the `<h3>`, not inside it: inside, its accessible
+ * name became part of the heading's ("Publish View 3 pending drift events"), so
+ * heading navigation read a control's label as the stage name.
+ */
+function StageHeading({
   stage,
   projectId,
   driftCount,
+  prefix,
 }: {
   stage: PipelineStage;
   projectId: string;
   driftCount: number;
+  prefix?: string;
 }) {
   return (
-    <span className="flex items-center gap-2">
-      {stage.title}
+    <div className="flex items-center gap-2">
+      <h3 className="font-medium">
+        {prefix ? <span className="mr-2 text-muted-foreground">{prefix}</span> : null}
+        {stage.title}
+      </h3>
       {stage.id === DRIFT_STAGE ? <DriftBadge projectId={projectId} count={driftCount} /> : null}
-    </span>
+    </div>
   );
 }
 
@@ -278,10 +288,12 @@ function FirstRunChecklist({
             data-testid={`first-run-step-${stage.id}`}
           >
             <div className="space-y-1">
-              <h3 className="font-medium">
-                <span className="mr-2 text-muted-foreground">{i + 1}.</span>
-                <StageTitle stage={stage} projectId={projectId} driftCount={driftCount} />
-              </h3>
+              <StageHeading
+                stage={stage}
+                projectId={projectId}
+                driftCount={driftCount}
+                prefix={`${i + 1}.`}
+              />
               <StageStatus stage={stage} />
             </div>
             <StageAction stage={stage} />
@@ -311,9 +323,7 @@ function StageGrid({
           <li key={stage.id} data-testid={`pipeline-stage-${stage.id}`}>
             <Card className="flex h-full flex-col justify-between gap-3 p-4">
               <div className="space-y-1">
-                <h3 className="font-medium">
-                  <StageTitle stage={stage} projectId={projectId} driftCount={driftCount} />
-                </h3>
+                <StageHeading stage={stage} projectId={projectId} driftCount={driftCount} />
                 <StageStatus stage={stage} />
               </div>
               <div>

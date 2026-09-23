@@ -658,6 +658,14 @@ jobs:
         working-directory: server
         run: pnpm test:integration saml-request-id-cache-postgres
 
+      # Issue #112 — prove the #93 config-secret upsert on real Postgres: save →
+      # clear → save revives the SAME soft-deleted row (the unique `secrets.name`
+      # still holds it), and two concurrent first saves leave one row. The unit
+      # tests model the index and the soft-delete by hand; this runs the real one.
+      - name: Prove config secret save/clear/save on real Postgres
+        working-directory: server
+        run: pnpm test:integration config-secret-vault-postgres
+
       # Issue #543 (Epic #518) — prove the pgvector-backed RAG vector store gives
       # retrieval parity AND multi-replica read/write safety against the same real
       # Postgres: two separately-constructed store instances (= two pods) sharing

@@ -1,10 +1,11 @@
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /**
  * Every `git ls-files` gate must answer about the REPOSITORY, not about the caller's
@@ -36,6 +37,28 @@ import { describe, expect, it } from "vitest";
  * `server/src`. Not merely "both green": before the fix, both invocations of
  * `check-no-nul` exited 0 and the only difference was the file count in a success line,
  * which is exactly the difference a human does not read.
+ *
+ * ## Over a small index, not the whole tree (#97, #99)
+ *
+ * The comparison used to run every gate twice over all ~4,100 tracked files. The
+ * private-vocabulary gate alone took 1.9 s per spawn on an idle machine, so its arm was
+ * ~3.9 s of CPU against vitest's 5 s default — and 16.4 s when `pnpm test` ran the other
+ * 57 files beside it. The margin shrank with every file added to the repository.
+ *
+ * What this test measures is ANCHORING, and anchoring is a property of how a gate finds
+ * the repository, not of how many files the repository holds. So each spawn is handed a
+ * throwaway git index (`GIT_INDEX_FILE`) holding a small, fixed-shape subset of the real
+ * tracked paths: root-level files, `.claude/`, `.github/`, every `package.json`, and a
+ * few files under `server/src`. The gates still run from their real location over the
+ * real files on disk — only what `git ls-files` enumerates shrinks. The subset has files
+ * on BOTH sides of `server/src`, which is what makes an un-anchored gate's output differ
+ * (a pinned test below requires both sides; deleting the `chdir` in `lib/repo-root.mjs`
+ * turns three arms red), and its size tracks those config directories,
+ * not the tree: measured at 144 of 4,104 paths, every gate under 0.45 s per spawn.
+ *
+ * The one arm that must scan the WHOLE tree — the acceptance check that this repository
+ * carries no private term — lives in `verify-no-company-identifiers-runner.test.mjs` and
+ * runs once, in the package's global setup, outside the timed and parallel pool.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -54,6 +77,54 @@ const MEASURED_IN_1381 = [
   "scripts/verify-agent-frontmatter.mjs",
   "scripts/verify-skill-links.mjs",
 ];
+
+/** How many tracked files under `server/src` the subset index keeps. */
+const SUBDIR_SAMPLE = 3;
+
+/**
+ * Whether a tracked path belongs in the subset index. Chosen so every derived gate has
+ * something real to answer about: the agent and skill gates read `.claude/` and
+ * `.github/`, the licence gate every `package.json`, and the tree scanners get root-level
+ * files outside `server/src` to discriminate an anchored scan from an un-anchored one.
+ *
+ * @param {string} file repo-relative
+ * @returns {boolean}
+ */
+function inSubset(file) {
+  return (
+    !file.includes("/") ||
+    file.startsWith(".claude/") ||
+    file.startsWith(".github/") ||
+    path.posix.basename(file) === "package.json"
+  );
+}
+
+/**
+ * Write a git index holding the subset (plus the first few `server/src` files) to `indexFile`.
+ *
+ * @param {string} indexFile absolute path; must not exist yet
+ * @returns {string[]} the paths it holds
+ */
+function writeSubsetIndex(indexFile) {
+  const entries = execFileSync("git", ["ls-files", "-s", "-z"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  })
+    .split("\0")
+    .filter((entry) => entry.length > 0);
+  const pathOf = (/** @type {string} */ entry) => entry.slice(entry.indexOf("\t") + 1);
+  const kept = [
+    ...entries.filter((entry) => inSubset(pathOf(entry))),
+    ...entries.filter((entry) => pathOf(entry).startsWith("server/src/")).slice(0, SUBDIR_SAMPLE),
+  ];
+  execFileSync("git", ["update-index", "-z", "--index-info"], {
+    cwd: repoRoot,
+    env: { ...process.env, GIT_INDEX_FILE: indexFile },
+    input: kept.map((entry) => `${entry}\0`).join(""),
+  });
+  return kept.map(pathOf);
+}
 
 /** The two gates that share `lib/repo-root.mjs`, and so must agree outside a checkout. */
 const SHARED_ANCHOR_GATES = [
@@ -110,13 +181,15 @@ function deriveLsFilesGates() {
 /**
  * @param {string} script repo-relative
  * @param {string} cwd
+ * @param {NodeJS.ProcessEnv} [env]
  * @returns {{ status: number | null, stdout: string, stderr: string }}
  */
-function run(script, cwd) {
+function run(script, cwd, env = process.env) {
   const result = spawnSync(process.execPath, [path.join(repoRoot, script)], {
     cwd,
     encoding: "utf8",
     input: "",
+    env,
   });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
@@ -152,19 +225,72 @@ describe("the derivation of `git ls-files` gates", () => {
   });
 });
 
-describe.each(gates)("%s", (gate) => {
-  it("produces identical output from the repository root and from server/src", () => {
-    expect(fs.existsSync(SUBDIR)).toBe(true);
+describe("over a subset index", () => {
+  /** @type {string} */
+  let scratch;
+  /** @type {string[]} */
+  let subset;
+  /** @type {NodeJS.ProcessEnv} */
+  let env;
 
-    const fromRoot = run(gate, repoRoot);
-    const fromSub = run(gate, SUBDIR);
+  beforeAll(() => {
+    scratch = fs.mkdtempSync(path.join(os.tmpdir(), "gate-anchor-index-"));
+    const indexFile = path.join(scratch, "index");
+    subset = writeSubsetIndex(indexFile);
+    // An invented term no file can contain, supplied inline: the vocabulary gate must
+    // SCAN here rather than skip, whatever list this machine does or does not hold. A
+    // skip happens after the anchor but before enumeration, so a skipped gate would be
+    // identical from both directories even with its anchor deleted.
+    const inherited = { ...process.env };
+    delete inherited.METIS_PRIVATE_TERMS_FILE;
+    delete inherited.METIS_REQUIRE_PRIVATE_TERMS;
+    env = {
+      ...inherited,
+      GIT_INDEX_FILE: indexFile,
+      METIS_PRIVATE_TERMS: `anchor${randomBytes(12).toString("hex")}`,
+    };
+  });
 
-    expect(fromSub.stdout).toBe(fromRoot.stdout);
-    expect(fromSub.stderr).toBe(fromRoot.stderr);
-    expect(fromSub.status).toBe(fromRoot.status);
-    // A gate that emits nothing at all would satisfy the three lines above without
-    // having scanned anything, so require it to have said something.
-    expect(`${fromRoot.stdout}${fromRoot.stderr}`.trim().length).toBeGreaterThan(0);
+  afterAll(() => {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it("holds files on both sides of server/src, and a small fraction of the tree", () => {
+    const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: repoRoot, encoding: "utf8" })
+      .split("\0")
+      .filter((file) => file.length > 0);
+
+    // Inside server/src, so the subdirectory run has a real subtree to enumerate; outside
+    // it, so an un-anchored run enumerates a DIFFERENT set from the root run.
+    expect(subset.filter((file) => file.startsWith("server/src/")).length).toBeGreaterThan(0);
+    expect(subset.filter((file) => !file.startsWith("server/src/")).length).toBeGreaterThan(0);
+    // The point of the index: the workload no longer grows with the repository.
+    expect(subset.length).toBeLessThan(tracked.length / 4);
+  });
+
+  it("is what the gates actually enumerate — the injection is not silently ignored", () => {
+    // Without this pin, a gate that stopped honouring GIT_INDEX_FILE would quietly go
+    // back to scanning the whole tree, and the only symptom would be the timeout this
+    // file was changed to remove.
+    const { stdout } = run("scripts/verify-no-company-identifiers.mjs", repoRoot, env);
+
+    expect(stdout).toContain(`and ${subset.length} paths scanned`);
+  });
+
+  describe.each(gates)("%s", (gate) => {
+    it("produces identical output from the repository root and from server/src", () => {
+      expect(fs.existsSync(SUBDIR)).toBe(true);
+
+      const fromRoot = run(gate, repoRoot, env);
+      const fromSub = run(gate, SUBDIR, env);
+
+      expect(fromSub.stdout).toBe(fromRoot.stdout);
+      expect(fromSub.stderr).toBe(fromRoot.stderr);
+      expect(fromSub.status).toBe(fromRoot.status);
+      // A gate that emits nothing at all would satisfy the three lines above without
+      // having scanned anything, so require it to have said something.
+      expect(`${fromRoot.stdout}${fromRoot.stderr}`.trim().length).toBeGreaterThan(0);
+    });
   });
 });
 
