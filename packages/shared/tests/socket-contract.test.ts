@@ -9,91 +9,151 @@
  *     actually catches drift (not just that the current repo happens to pass).
  *
  *  2. **The live CI guard** scans the real `socket.ts`, `server/src`, and
- *     `ui/src`, then asserts no declared `ServerToClientEvents` member has
- *     drifted away from both its emitter and its consumer.
+ *     `ui/src`, then asserts every declared `ServerToClientEvents` member is
+ *     emitted AND consumed (or allow-listed as consumer-less), and has a row in
+ *     the `docs/ARCHITECTURE.md` §7.6.4 realtime event catalogue (#91).
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  SOCKET_COMPUTED_EMITTERS,
   SOCKET_EVENT_ALLOWLIST,
+  checkSocketContract,
   extractConsumedEvents,
   extractEmittedEvents,
-  findDriftedEvents,
   findStaleAllowlistEntries,
+  findStaleCatalogueRows,
+  findUncataloguedEvents,
   parseDeclaredEvents,
+  parseEventCatalogue,
 } from "../src/socket-contract.js";
 
 // ---------------------------------------------------------------------------
 // Layer 1 — pure-logic unit tests (no filesystem)
 // ---------------------------------------------------------------------------
 
-describe("findDriftedEvents (pure drift checker)", () => {
-  it("returns nothing when every event is emitted, consumed, or allow-listed", () => {
-    const drifted = findDriftedEvents({
-      declaredEvents: ["job:lifecycle", "auth:ok", "comment:mention"],
-      emitters: ["job:lifecycle"],
-      consumers: ["comment:mention"],
-      allowlist: ["auth:ok"],
-    });
-    expect(drifted).toEqual([]);
+const EMPTY_REPORT = { neverEmitted: [], unconsumed: [], redundantAllowlist: [] };
+
+describe("checkSocketContract (pure, two-sided — #91)", () => {
+  it("returns an empty report when every event is emitted and consumed or allow-listed", () => {
+    expect(
+      checkSocketContract({
+        declaredEvents: ["job:lifecycle", "auth:ok", "comment:mention"],
+        emitters: ["job:lifecycle", "auth:ok", "comment:mention"],
+        consumers: ["job:lifecycle", "comment:mention"],
+        allowlist: ["auth:ok"],
+      }),
+    ).toEqual(EMPTY_REPORT);
   });
 
-  it("FAILS on a synthetic drifted event that is neither emitted, consumed, nor allow-listed", () => {
-    // `fake:orphan` is a deliberately drifted ServerToClientEvents-style member.
-    const drifted = findDriftedEvents({
-      declaredEvents: ["job:lifecycle", "fake:orphan"],
-      emitters: ["job:lifecycle"],
-      consumers: [],
+  it("FAILS on a misspelled CONSUMER — the event is emitted, the listener name is wrong", () => {
+    // The #91 shape: the old one-sided rule saw `drift:detected` emitted and
+    // stopped there, so this passed CI.
+    const report = checkSocketContract({
+      declaredEvents: ["drift:detected"],
+      emitters: ["drift:detected"],
+      consumers: ["drift:detectd"],
       allowlist: [],
     });
-    expect(drifted).toEqual(["fake:orphan"]);
-    expect(drifted).toContain("fake:orphan");
+    expect(report.unconsumed).toEqual(["drift:detected"]);
   });
 
-  it("treats an emitter-only event as honest (no UI consumer required)", () => {
-    expect(
-      findDriftedEvents({
-        declaredEvents: ["usage:tick"],
-        emitters: ["usage:tick"],
-        consumers: [],
-        allowlist: [],
-      }),
-    ).toEqual([]);
+  it("FAILS on a misspelled EMITTER — the event is consumed, the server emits a different name", () => {
+    const report = checkSocketContract({
+      declaredEvents: ["drift:detected"],
+      emitters: ["drift:detectd"],
+      consumers: ["drift:detected"],
+      allowlist: [],
+    });
+    expect(report.neverEmitted).toEqual(["drift:detected"]);
   });
 
-  it("treats a consumer-only event as honest (computed/templated emit names)", () => {
-    expect(
-      findDriftedEvents({
-        declaredEvents: ["testcoverage:run-update"],
-        emitters: [],
-        consumers: ["testcoverage:run-update"],
-        allowlist: [],
-      }),
-    ).toEqual([]);
+  it("FAILS on an event used on neither side (the original #417 case)", () => {
+    const report = checkSocketContract({
+      declaredEvents: ["job:lifecycle", "fake:orphan"],
+      emitters: ["job:lifecycle"],
+      consumers: ["job:lifecycle"],
+      allowlist: [],
+    });
+    expect(report.neverEmitted).toEqual(["fake:orphan"]);
   });
 
-  it("treats an allow-listed event with no emitter and no consumer as honest", () => {
-    expect(
-      findDriftedEvents({
-        declaredEvents: ["mcp:status"],
-        emitters: [],
-        consumers: [],
-        allowlist: ["mcp:status"],
-      }),
-    ).toEqual([]);
+  it("an allow-list entry excuses a missing consumer, never a missing emitter", () => {
+    const report = checkSocketContract({
+      declaredEvents: ["usage:tick", "mcp:status"],
+      emitters: ["usage:tick"],
+      consumers: [],
+      allowlist: ["usage:tick", "mcp:status"],
+    });
+    expect(report).toEqual({ ...EMPTY_REPORT, neverEmitted: ["mcp:status"] });
   });
 
-  it("reports multiple drifted events, de-duplicated and sorted", () => {
+  it("flags an allow-list entry for an event that IS consumed", () => {
+    const report = checkSocketContract({
+      declaredEvents: ["document:status"],
+      emitters: ["document:status"],
+      consumers: ["document:status"],
+      allowlist: ["document:status"],
+    });
+    expect(report.redundantAllowlist).toEqual(["document:status"]);
+  });
+
+  it("reports de-duplicated, sorted lists", () => {
+    const report = checkSocketContract({
+      declaredEvents: ["z:e", "a:e", "z:e", "ok:e"],
+      emitters: ["z:e", "a:e", "ok:e"],
+      consumers: ["ok:e"],
+      allowlist: [],
+    });
+    expect(report.unconsumed).toEqual(["a:e", "z:e"]);
+  });
+});
+
+describe("parseEventCatalogue / findUncataloguedEvents / findStaleCatalogueRows", () => {
+  const doc = [
+    "#### 7.6.3 Something else",
+    "| Event | x |",
+    "| `not:this:section` | y |",
+    "#### 7.6.4 Realtime event catalogue",
+    "",
+    "| Event | Emitter | UI consumer | Status |",
+    "|---|---|---|---|",
+    "| `job:lifecycle` | a | b | live |",
+    "| `publish:status` / `publish:progress` | a | b | live |",
+    "| `requirement:drift` | — | — | **removed** (#417), superseded by `drift:detected` |",
+    "",
+    "### 7.7 Next section",
+    "| `after:section` | a | b | live |",
+  ].join("\n");
+
+  it("reads only the §7.6.4 table, splitting multi-event rows and removed rows", () => {
+    expect(parseEventCatalogue(doc)).toEqual({
+      current: ["job:lifecycle", "publish:progress", "publish:status"],
+      removed: ["requirement:drift"],
+    });
+  });
+
+  it("flags a declared event with no row — and one that has only a REMOVED row", () => {
+    const cat = parseEventCatalogue(doc);
     expect(
-      findDriftedEvents({
-        declaredEvents: ["z:orphan", "a:orphan", "z:orphan", "ok:event"],
-        emitters: ["ok:event"],
-        consumers: [],
-        allowlist: [],
-      }),
-    ).toEqual(["a:orphan", "z:orphan"]);
+      findUncataloguedEvents(["job:lifecycle", "drift:detected", "requirement:drift"], cat),
+    ).toEqual(["drift:detected", "requirement:drift"]);
+  });
+
+  it("flags a current row naming an undeclared event", () => {
+    const cat = parseEventCatalogue(doc);
+    expect(findStaleCatalogueRows(["job:lifecycle", "publish:status"], cat)).toEqual([
+      "publish:progress",
+    ]);
+  });
+
+  it("throws when the heading or its rows are missing, rather than passing vacuously", () => {
+    expect(() => parseEventCatalogue("# nothing here")).toThrow(/7\.6\.4/);
+    expect(() => parseEventCatalogue("#### 7.6.4 Catalogue\n\nno table\n")).toThrow(
+      /no event rows/,
+    );
   });
 });
 
@@ -190,9 +250,16 @@ function readSourceTree(dir: string): string {
 describe("realtime contract guard (live repo scan)", () => {
   const socketSource = readFileSync(socketTsPath, "utf8");
   const declaredEvents = parseDeclaredEvents(socketSource);
-  const serverEmitters = extractEmittedEvents(readSourceTree(join(repoRoot, "server", "src")));
+  const serverSrc = join(repoRoot, "server", "src");
+  const computedEmitters = Object.entries(SOCKET_COMPUTED_EMITTERS)
+    .filter(([event, file]) => readFileSync(join(serverSrc, file), "utf8").includes(`"${event}"`))
+    .map(([event]) => event);
+  const serverEmitters = [...extractEmittedEvents(readSourceTree(serverSrc)), ...computedEmitters];
   const uiConsumers = extractConsumedEvents(readSourceTree(join(repoRoot, "ui", "src")));
   const allowlist = Object.keys(SOCKET_EVENT_ALLOWLIST);
+  const catalogue = parseEventCatalogue(
+    readFileSync(join(repoRoot, "docs", "ARCHITECTURE.md"), "utf8"),
+  );
 
   it("declares at least the known core events (sanity that parsing worked)", () => {
     expect(declaredEvents.length).toBeGreaterThan(10);
@@ -200,23 +267,48 @@ describe("realtime contract guard (live repo scan)", () => {
     expect(declaredEvents).toContain("heartbeat");
   });
 
-  it("has no drifted events — every declared event is emitted, consumed, or allow-listed", () => {
-    const drifted = findDriftedEvents({
+  it("every computed emitter's literal is still in its named server file", () => {
+    expect(computedEmitters.sort()).toEqual(Object.keys(SOCKET_COMPUTED_EMITTERS).sort());
+  });
+
+  it("every declared event is emitted AND consumed, or allow-listed as consumer-less (#91)", () => {
+    const report = checkSocketContract({
       declaredEvents,
       emitters: serverEmitters,
       consumers: uiConsumers,
       allowlist,
     });
     expect(
-      drifted,
-      `Drifted ServerToClientEvents (declared but neither emitted in server/src, ` +
-        `consumed in ui/src, nor allow-listed in SOCKET_EVENT_ALLOWLIST): ${drifted.join(", ")}. ` +
-        `Either wire an emitter/consumer or add an allow-list entry with a reason.`,
+      report,
+      `ServerToClientEvents out of step with server/src emitters and ui/src consumers. ` +
+        `neverEmitted: nothing in server/src emits it (misspelled emitter, or a computed name ` +
+        `missing from SOCKET_COMPUTED_EMITTERS). unconsumed: no ui/src .on() listener ` +
+        `(misspelled listener?) — wire one or add a SOCKET_EVENT_ALLOWLIST reason. ` +
+        `redundantAllowlist: the event IS consumed; delete its allow-list entry.`,
+    ).toEqual(EMPTY_REPORT);
+  });
+
+  it("every declared event has a current row in the ARCHITECTURE.md §7.6.4 catalogue (#91)", () => {
+    const missing = findUncataloguedEvents(declaredEvents, catalogue);
+    expect(
+      missing,
+      `Declared events with no current row in docs/ARCHITECTURE.md §7.6.4: ${missing.join(", ")}`,
     ).toEqual([]);
   });
 
-  it("removed `requirement:drift` is fully gone from the contract", () => {
+  it("no current §7.6.4 row names an event that is not declared (#91)", () => {
+    const stale = findStaleCatalogueRows(declaredEvents, catalogue);
+    expect(
+      stale,
+      `§7.6.4 rows imply these events exist, but socket.ts does not declare them: ` +
+        `${stale.join(", ")}. Mark the row **removed** or delete it.`,
+    ).toEqual([]);
+  });
+
+  it("removed `requirement:drift` is fully gone from the contract and catalogued as removed", () => {
     expect(declaredEvents).not.toContain("requirement:drift");
+    expect(catalogue.removed).toContain("requirement:drift");
+    expect(catalogue.current).toContain("drift:detected");
   });
 
   it("has no stale allow-list entries (each allow-listed event is still declared)", () => {

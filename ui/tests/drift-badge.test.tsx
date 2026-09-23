@@ -1,7 +1,7 @@
 /**
  * Tests for DriftBadge component.
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DriftBadge } from "@/components/sync/drift-badge";
@@ -13,6 +13,8 @@ vi.mock("next/navigation", () => ({
 }));
 
 describe("DriftBadge", () => {
+  beforeEach(() => PUSH_MOCK.mockClear());
+
   it("renders nothing when count is 0", () => {
     const { container } = render(<DriftBadge projectId="p1" count={0} />);
     expect(container.innerHTML).toBe("");
@@ -37,9 +39,42 @@ describe("DriftBadge", () => {
     expect(PUSH_MOCK).toHaveBeenCalledWith("/projects/p1/sync?requirementId=req-42");
   });
 
-  it("has correct aria-label", () => {
-    render(<DriftBadge projectId="p1" count={1} />);
-    expect(screen.getByLabelText("1 pending drift events")).toBeInTheDocument();
+  it("is a button whose accessible name carries the count (#90)", () => {
+    const { rerender } = render(<DriftBadge projectId="p1" count={1} />);
+    expect(screen.getByRole("button", { name: "View 1 pending drift event" })).toBeInTheDocument();
+    rerender(<DriftBadge projectId="p1" count={4} />);
+    expect(screen.getByRole("button", { name: "View 4 pending drift events" })).toBeInTheDocument();
+    // A control, not a live region: `role="status"` announced it as one.
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("is reachable by Tab and activated by Enter — keyboard only (#90)", async () => {
+    const user = userEvent.setup();
+    render(<DriftBadge projectId="p1" count={3} />);
+    await user.tab();
+    expect(screen.getByRole("button", { name: /3 pending drift events/ })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(PUSH_MOCK).toHaveBeenCalledWith("/projects/p1/sync");
+  });
+
+  it("is activated by Space — keyboard only (#90)", async () => {
+    const user = userEvent.setup();
+    render(<DriftBadge projectId="p1" count={2} requirementId="req-7" />);
+    await user.tab();
+    await user.keyboard(" ");
+    expect(PUSH_MOCK).toHaveBeenCalledWith("/projects/p1/sync?requirementId=req-7");
+  });
+
+  it("does not submit an enclosing form (type=button)", async () => {
+    const onSubmit = vi.fn((e: { preventDefault: () => void }) => e.preventDefault());
+    const user = userEvent.setup();
+    render(
+      <form onSubmit={onSubmit}>
+        <DriftBadge projectId="p1" count={1} />
+      </form>,
+    );
+    await user.click(screen.getByRole("button"));
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("updates count when prop changes", () => {

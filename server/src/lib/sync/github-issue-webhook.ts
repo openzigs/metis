@@ -8,6 +8,11 @@
 import crypto from "node:crypto";
 import type { IssueChangeEvent, IssueChangeFields, IssueChangeAction } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
+import {
+  reconcileIssueChange,
+  type ReconcileDeps,
+  type ReconcileResult,
+} from "./reconcile-service.js";
 
 const log = createChildLogger("sync-github-webhook");
 
@@ -125,4 +130,38 @@ export function normalizeGithubIssueEvent(
   };
 
   return { event };
+}
+
+export interface GithubIssueDriftDelivery {
+  /** `X-GitHub-Event` header value. */
+  eventType: string;
+  /** `X-GitHub-Delivery` UUID — the DriftEvent's idempotency key. */
+  deliveryId: string;
+  /** Parsed JSON body, already signature-verified by the caller. */
+  payload: unknown;
+}
+
+/**
+ * Issue #96 — the drift half of `POST /api/webhooks/github/issues`.
+ *
+ * GitHub issue deliveries are received by ONE handler (`webhooks-github.ts`),
+ * which runs the spec-kit `tasks.md` sync and then this. It used to be a second
+ * `POST /github/issues` route in `routes/sync.ts`, registered after the spec-kit
+ * one on the same `/webhooks` prefix — so Express never reached it and no
+ * GitHub edit ever produced a `DriftEvent`. Signature verification and replay
+ * dedup are the caller's; this only filters, normalizes and reconciles.
+ */
+export async function reconcileGithubIssueDelivery(
+  delivery: GithubIssueDriftDelivery,
+  deps: ReconcileDeps = {},
+): Promise<ReconcileResult> {
+  // A repo webhook set to "send everything" also delivers `issue_comment`
+  // events, whose payload carries an `issue` and an `edited` action too.
+  if (delivery.eventType !== "issues") {
+    return { handled: false, reason: "NOT_ISSUES_EVENT" };
+  }
+  const payload = (delivery.payload ?? {}) as GithubIssueWebhookPayload;
+  const { event, reason } = normalizeGithubIssueEvent(payload, delivery.deliveryId);
+  if (!event) return { handled: false, reason };
+  return reconcileIssueChange(event, deps);
 }

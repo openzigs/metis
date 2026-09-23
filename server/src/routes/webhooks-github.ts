@@ -1,7 +1,8 @@
 /**
  * Epic #192 (A.3) + Epic #394 — GitHub PR webhook receiver.
  *
- * Mounted under `/api/webhooks/github/pr`. Verifies the
+ * Mounted under `/api/webhooks`: `POST github/pr` and `POST github/issues`
+ * (spec-kit task sync #433 + drift reconcile #96). Verifies the
  * `X-Hub-Signature-256` HMAC against `GITHUB_WEBHOOK_SECRET`, then dispatches
  * to the living-spec sync (#192/A.5) on `pull_request.closed+merged` and
  * the PR-reviewer agent (#192/A.4 → #394 MVP) on `pull_request.opened|synchronize`.
@@ -17,6 +18,11 @@ import { defaultBudgetDeps, type JudgeLike } from "../lib/agents/pr-reviewer/age
 import { type DiffFetchOctokit } from "../lib/agents/pr-reviewer/diff-fetcher.js";
 import type { OctokitLike } from "../lib/agents/pr-reviewer/github-review-poster.js";
 import { syncIssueEvent, type IssuesEventAction } from "../lib/spec-kit/issue-sync.js";
+import {
+  reconcileGithubIssueDelivery,
+  type ReconcileDeps,
+  type ReconcileResult,
+} from "../lib/sync/index.js";
 import { recordDelivery } from "../lib/agents/pr-reviewer/webhook-dedup.js";
 import { githubIssuesWebhookRateLimiter } from "../middleware/github-issues-webhook-rate-limit.js";
 import type { PrReviewQueue } from "../lib/agents/pr-reviewer/queue.js";
@@ -51,6 +57,8 @@ export interface GithubPrRouterDeps {
   queue?: PrReviewQueue;
   /** Test seam — bypass the dedup table on payloads without delivery headers. */
   skipDedup?: boolean;
+  /** Issue #96 — drift reconcile deps for `POST /github/issues` (test seam). */
+  reconcileDeps?: ReconcileDeps;
 }
 
 export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
@@ -197,7 +205,8 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
     res.status(200).json({ ok: true, ...out });
   });
 
-  // Issue #433 — spec-kit issue → tasks.md sync.
+  // Issue #433 — spec-kit issue → tasks.md sync, and (#96) Epic #739 drift
+  // reconcile: the ONLY registration of this path — see runDriftReconcile.
   // Issue #438 — defence-in-depth: rate-limit so HMAC failures don't go
   // unthrottled, and dedup on `X-GitHub-Delivery` so re-deliveries don't
   // re-write `tasks.md` twice.
@@ -236,45 +245,78 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const payload = req.body as any;
-    const action = String(payload?.action ?? "") as IssuesEventAction;
-    const issue = payload?.issue;
-    const repo = payload?.repository;
-    if (!issue || !repo || typeof issue.number !== "number") {
-      res.status(200).json({ ok: true, handled: false, reason: "MISSING_ISSUE_OR_REPO" });
-      return;
-    }
-    if (action !== "closed" && action !== "reopened" && action !== "edited") {
-      res.status(200).json({ ok: true, handled: false, reason: `UNHANDLED_ACTION:${action}` });
-      return;
-    }
-    const fullName: string = repo.full_name ?? "";
-    const [repoOwner, repoName] = fullName.split("/");
-    if (!repoOwner || !repoName) {
-      res.status(200).json({ ok: true, handled: false, reason: "MISSING_REPO_FULLNAME" });
-      return;
-    }
-    try {
-      const outcome = await syncIssueEvent({
-        repoOwner,
-        repoName,
-        issueNumber: issue.number,
-        action,
-        ...(typeof issue.title === "string" ? { newTitle: issue.title } : {}),
-        ...(payload?.changes ? { changes: payload.changes } : {}),
-      });
-      res.status(200).json({ ok: true, ...outcome });
-    } catch (err) {
-      // Never 5xx GitHub — log + acknowledge.
-      res.status(200).json({
-        ok: true,
-        handled: false,
-        reason: "SYNC_ERROR",
-        error: (err as Error).message,
-      });
-    }
+    // Issue #96 — ONE receiver, two pipelines. The drift reconciler used to
+    // register its own `POST /github/issues` on the same `/webhooks` prefix,
+    // after this one, so it was never reached. Both run on every verified,
+    // non-duplicate delivery; the spec-kit outcome keeps the top level of the
+    // envelope (unchanged for existing callers) and drift is reported under
+    // `drift`. Neither pipeline's failure may 5xx GitHub or skip the other.
+    const specKit = await runSpecKitIssueSync(payload);
+    const drift = await runDriftReconcile({
+      eventType: req.header("x-github-event") ?? "",
+      deliveryId: deliveryId || crypto.randomUUID(),
+      payload,
+      reconcileDeps: deps.reconcileDeps,
+    });
+    res.status(200).json({ ok: true, ...specKit, drift });
   });
 
   return r;
+}
+
+/** Issue #433 — spec-kit issue → `tasks.md` sync; never throws. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function runSpecKitIssueSync(payload: any): Promise<Record<string, unknown>> {
+  const action = String(payload?.action ?? "") as IssuesEventAction;
+  const issue = payload?.issue;
+  const repo = payload?.repository;
+  if (!issue || !repo || typeof issue.number !== "number") {
+    return { handled: false, reason: "MISSING_ISSUE_OR_REPO" };
+  }
+  if (action !== "closed" && action !== "reopened" && action !== "edited") {
+    return { handled: false, reason: `UNHANDLED_ACTION:${action}` };
+  }
+  const fullName: string = repo.full_name ?? "";
+  const [repoOwner, repoName] = fullName.split("/");
+  if (!repoOwner || !repoName) {
+    return { handled: false, reason: "MISSING_REPO_FULLNAME" };
+  }
+  try {
+    const outcome = await syncIssueEvent({
+      repoOwner,
+      repoName,
+      issueNumber: issue.number,
+      action,
+      ...(typeof issue.title === "string" ? { newTitle: issue.title } : {}),
+      ...(payload?.changes ? { changes: payload.changes } : {}),
+    });
+    return { ...outcome };
+  } catch (err) {
+    // Never 5xx GitHub — log + acknowledge.
+    return { handled: false, reason: "SYNC_ERROR", error: (err as Error).message };
+  }
+}
+
+/** Issue #96 — Epic #739 drift reconcile for the same delivery; never throws. */
+async function runDriftReconcile(input: {
+  eventType: string;
+  deliveryId: string;
+  payload: unknown;
+  reconcileDeps?: ReconcileDeps;
+}): Promise<ReconcileResult> {
+  try {
+    return await reconcileGithubIssueDelivery(
+      { eventType: input.eventType, deliveryId: input.deliveryId, payload: input.payload },
+      input.reconcileDeps,
+    );
+  } catch (err) {
+    // The message stays in the log, not the response (#86).
+    log.warn("sync.webhook.github.drift_failed", {
+      deliveryId: input.deliveryId,
+      error: (err as Error).message,
+    });
+    return { handled: false, reason: "DRIFT_ERROR" };
+  }
 }
 
 /**

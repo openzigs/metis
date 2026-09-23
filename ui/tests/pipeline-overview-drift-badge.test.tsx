@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
@@ -121,7 +122,7 @@ describe("#78 — drift badge on the project Overview", () => {
     driftCount.mockResolvedValue(3);
     renderOverview();
 
-    const badge = await screen.findByRole("status", { name: /3 pending drift events/i });
+    const badge = await screen.findByRole("button", { name: /3 pending drift events/i });
     expect(badge).toHaveTextContent("3");
     expect(driftCount).toHaveBeenCalledWith("p1");
   });
@@ -131,22 +132,33 @@ describe("#78 — drift badge on the project Overview", () => {
     renderOverview();
 
     await screen.findByTestId("pipeline-stage-publish");
-    expect(screen.queryByRole("status", { name: /pending drift/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /pending drift/i })).toBeNull();
   });
 
   it("opens that project's sync dashboard when clicked", async () => {
     driftCount.mockResolvedValue(1);
     renderOverview();
 
-    const badge = await screen.findByRole("status", { name: /pending drift/i });
+    const badge = await screen.findByRole("button", { name: /pending drift/i });
     act(() => badge.click());
+    expect(push).toHaveBeenCalledWith("/projects/p1/sync");
+  });
+
+  it("#90 — is keyboard-operable where it is mounted: focus + Enter opens the dashboard", async () => {
+    driftCount.mockResolvedValue(4);
+    renderOverview();
+
+    const badge = await screen.findByRole("button", { name: "View 4 pending drift events" });
+    act(() => badge.focus());
+    expect(badge).toHaveFocus();
+    await userEvent.setup().keyboard("{Enter}");
     expect(push).toHaveBeenCalledWith("/projects/p1/sync");
   });
 
   it("updates live when a drift:detected event arrives for this project", async () => {
     driftCount.mockResolvedValue(1);
     renderOverview();
-    await screen.findByRole("status", { name: /1 pending drift events/i });
+    await screen.findByRole("button", { name: /1 pending drift event\b/i });
 
     driftCount.mockResolvedValue(2);
     await act(async () => {
@@ -154,14 +166,14 @@ describe("#78 — drift badge on the project Overview", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByRole("status", { name: /2 pending drift events/i })).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: /2 pending drift events/i })).toBeInTheDocument(),
     );
   });
 
   it("ignores a drift:detected event for another project", async () => {
     driftCount.mockResolvedValue(1);
     renderOverview();
-    await screen.findByRole("status", { name: /1 pending drift events/i });
+    await screen.findByRole("button", { name: /1 pending drift event\b/i });
 
     driftCount.mockResolvedValue(9);
     await act(async () => {
@@ -169,6 +181,6 @@ describe("#78 — drift badge on the project Overview", () => {
     });
 
     expect(driftCount).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("status", { name: /1 pending drift events/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /1 pending drift event\b/i })).toBeInTheDocument();
   });
 });

@@ -42,19 +42,6 @@ vi.mock("../lib/sync/index.js", () => ({
   }),
   listDriftEvents: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   getDriftCount: vi.fn().mockResolvedValue(3),
-  verifyGithubIssueSignature: vi.fn().mockReturnValue({ ok: true }),
-  normalizeGithubIssueEvent: vi.fn().mockReturnValue({
-    event: {
-      deliveryId: "del-1",
-      source: "github",
-      externalId: "node-1",
-      externalRef: "42",
-      action: "edited",
-      changes: { title: "New" },
-      current: { title: "New", body: "B", state: "open", labels: [], assignees: [] },
-      timestamp: new Date().toISOString(),
-    },
-  }),
   verifyJiraWebhookSignature: vi.fn().mockReturnValue({ ok: true }),
   normalizeJiraIssueEvent: vi.fn().mockReturnValue({
     event: {
@@ -136,67 +123,19 @@ beforeEach(() => {
   authedUser = { userId: "user-1", role: "coordinator", username: "test" };
 });
 
-describe("GitHub issues webhook route", () => {
-  it("returns 200 with handled result on valid payload", async () => {
+// Issue #96 — `POST /webhooks/github/issues` is no longer registered by this
+// router (it was shadowed by the spec-kit receiver and never reached). Its drift
+// coverage lives with the single real receiver, in
+// `server/tests/webhooks-github-issues-integration.test.ts`.
+describe("GitHub issues path is not registered here (#96)", () => {
+  it("falls through to 404 instead of serving a second, shadowed handler", async () => {
     const app = createApp();
     const res = await request(app)
       .post("/webhooks/github/issues")
       .set("x-github-event", "issues")
       .set("x-hub-signature-256", "sha256=valid")
-      .set("x-github-delivery", "del-1")
       .send({ action: "edited", issue: { id: 1, node_id: "N_1", number: 1 } });
-
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.handled).toBe(true);
-  });
-
-  it("returns 401 when signature verification fails", async () => {
-    const { verifyGithubIssueSignature } = await import("../lib/sync/index.js");
-    vi.mocked(verifyGithubIssueSignature).mockReturnValueOnce({
-      ok: false,
-      reason: "SIGNATURE_MISMATCH",
-    });
-
-    const app = createApp();
-    const res = await request(app)
-      .post("/webhooks/github/issues")
-      .set("x-github-event", "issues")
-      .send({});
-
-    expect(res.status).toBe(401);
-    expect(res.body.reason).toBe("SIGNATURE_MISMATCH");
-  });
-
-  it("returns 200 with handled=false for non-issues events", async () => {
-    const app = createApp();
-    const res = await request(app)
-      .post("/webhooks/github/issues")
-      .set("x-github-event", "pull_request")
-      .set("x-hub-signature-256", "sha256=valid")
-      .send({});
-
-    expect(res.status).toBe(200);
-    expect(res.body.handled).toBe(false);
-    expect(res.body.reason).toBe("NOT_ISSUES_EVENT");
-  });
-
-  it("dedups a replayed delivery — second identical X-GitHub-Delivery is a no-op (#681)", async () => {
-    const app = createApp();
-    const send = () =>
-      request(app)
-        .post("/webhooks/github/issues")
-        .set("x-github-event", "issues")
-        .set("x-hub-signature-256", "sha256=valid")
-        .set("x-github-delivery", "replay-1")
-        .send({ action: "edited", issue: { id: 1, node_id: "N_1", number: 1 } });
-    const first = await send();
-    expect(first.status).toBe(200);
-    expect(first.body.handled).toBe(true);
-    const replay = await send();
-    expect(replay.status).toBe(200);
-    expect(replay.body.handled).toBe(false);
-    expect(replay.body.reason).toBe("DUPLICATE_DELIVERY");
+    expect(res.status).toBe(404);
   });
 });
 

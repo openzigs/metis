@@ -3289,6 +3289,8 @@ The Spec Kit page has three columns:
 
 Replays of the same event are no-ops. The mutation is audited as `speckit.tasks_md.synced_from_issue`.
 
+The same webhook also feeds **drift detection**: when someone edits, closes, reopens, labels or assigns an issue that METIS published, the change is recorded as pending drift on the project's sync dashboard (`/projects/:id/sync`) and the pending-drift badge on the Overview updates. You don't need a second webhook.
+
 **Feature archive / restore.** Old features clutter the listing. Archive one with `POST /api/projects/:projectId/spec-kit/features/:slug/archive` (audited as `speckit.feature.archived` with `previousStatus` metadata). Archived features disappear from `GET /features` by default; pass `?includeArchived=true` to surface them. Restore with `POST /api/projects/:projectId/spec-kit/features/:slug/restore` (optional `{restoreTo: "specified"}` body; defaults to `draft`). Both routes require `project.update`. Restore on a non-archived feature returns 409 `SPECKIT_FEATURE_NOT_ARCHIVED`.
 
 ---
