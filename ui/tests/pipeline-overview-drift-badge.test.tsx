@@ -10,7 +10,7 @@
  * project-scoped, and the socket client is shared).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
@@ -125,6 +125,23 @@ describe("#78 — drift badge on the project Overview", () => {
     const badge = await screen.findByRole("button", { name: /3 pending drift events/i });
     expect(badge).toHaveTextContent("3");
     expect(driftCount).toHaveBeenCalledWith("p1");
+  });
+
+  it("#113 — keeps the badge's name out of the Publish stage heading", async () => {
+    driftCount.mockResolvedValue(3);
+    renderOverview();
+
+    const badge = await screen.findByRole("button", { name: /3 pending drift events/i });
+    // Inside the <h3>, the heading read "Publish View 3 pending drift events".
+    const heading = screen.getByRole("heading", { level: 3, name: "Publish" });
+    expect(within(heading).queryByRole("button")).toBeNull();
+    expect(heading.contains(badge)).toBe(false);
+    // Still beside the stage it belongs to.
+    expect(
+      within(screen.getByTestId("pipeline-stage-publish")).getByRole("button", {
+        name: /pending drift/i,
+      }),
+    ).toBe(badge);
   });
 
   it("renders nothing when there is no pending drift", async () => {

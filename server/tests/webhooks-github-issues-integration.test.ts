@@ -184,7 +184,7 @@ describe("POST /api/webhooks/github/issues — integration", () => {
   });
 
   it("never 5xxs GitHub even when syncIssueEvent throws", async () => {
-    syncIssueEventMock.mockRejectedValueOnce(new Error("boom"));
+    syncIssueEventMock.mockRejectedValueOnce(new Error("boom: /srv/metis/specs/secret-path"));
     const app = makeApp();
     const body = JSON.stringify(issuesPayload({ action: "closed", number: 14 }));
     const resp = await request(app)
@@ -196,6 +196,9 @@ describe("POST /api/webhooks/github/issues — integration", () => {
     expect(resp.status).toBe(200);
     expect(resp.body.ok).toBe(true);
     expect(resp.body.reason).toBe("SYNC_ERROR");
+    // #113 — fixed vocabulary, like the drift half: the cause is logged, never returned.
+    expect(resp.body).not.toHaveProperty("error");
+    expect(JSON.stringify(resp.body)).not.toContain("secret-path");
   });
 
   it("acks unhandled actions without dispatching", async () => {

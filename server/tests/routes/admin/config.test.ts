@@ -245,6 +245,28 @@ vi.mock("../../../src/lib/prisma.js", async () => {
 
 vi.mock("../../../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
+/**
+ * #112 — what the config route LOGS, captured while still forwarding to the real
+ * logger. Only the route's own child logger is recorded.
+ */
+const routeLogWarn = vi.hoisted(() => vi.fn());
+vi.mock("../../../src/lib/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/lib/logger.js")>();
+  return {
+    ...actual,
+    createChildLogger: (module: string) => {
+      const child = actual.createChildLogger(module);
+      if (module !== "admin-config-routes") return child;
+      const warn = child.warn.bind(child);
+      child.warn = ((...args: unknown[]) => {
+        routeLogWarn(...args);
+        return (warn as (...a: unknown[]) => unknown)(...args);
+      }) as typeof child.warn;
+      return child;
+    },
+  };
+});
+
 import request from "supertest";
 import { createApp } from "../../../src/app.js";
 import { __resetConfigSingleton } from "../../../src/lib/config/index.js";
@@ -538,6 +560,40 @@ describe("PUT /api/admin/config/:key — #93 idempotent secret writes", () => {
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe("CONFIG_STORE_ERROR");
     expect(JSON.stringify(res.body)).not.toMatch(RAW_PRISMA);
+
+    // #112 — the cause stays out of the response but reaches the log.
+    expect(routeLogWarn).toHaveBeenCalledWith(
+      "Config store error mapped to a fixed response",
+      expect.objectContaining({
+        errorClass: "PrismaClientInitializationError",
+        error: dbErr.message,
+        stack: dbErr.stack,
+      }),
+    );
+  });
+
+  it("logs the message and stack of a mapped unique violation (#112)", async () => {
+    const { prisma } = await import("../../../src/lib/prisma.js");
+    const secret = (prisma as unknown as { secret: { upsert: () => unknown } }).secret;
+    const first = prismaUniqueError("secret.upsert");
+    vi.spyOn(secret, "upsert")
+      .mockRejectedValueOnce(first)
+      .mockRejectedValueOnce(prismaUniqueError("secret.upsert"));
+
+    const token = await login("admin");
+    const res = await request(app)
+      .put("/api/admin/config/OPENAI_API_KEY")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ value: "sk-x" });
+
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(res.body)).not.toMatch(RAW_PRISMA);
+    const meta = routeLogWarn.mock.calls.find(
+      (c) => c[0] === "Config store error mapped to a fixed response",
+    )?.[1] as Record<string, unknown> | undefined;
+    expect(meta).toMatchObject({ code: "P2002", errorClass: "PrismaClientKnownRequestError" });
+    expect(meta?.error).toMatch(/Unique constraint failed/);
+    expect(meta?.stack).toMatch(/PrismaClientKnownRequestError|Error/);
   });
 });
 

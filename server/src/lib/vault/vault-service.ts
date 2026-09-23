@@ -313,6 +313,9 @@ export class VaultService {
           keyVersion: envelope.keyVersion,
           algorithm: envelope.algorithm,
           deletedAt: null,
+          // #112 — a revived row takes the caller's current description, not
+          // the one it was cleared under. Omitted, the stored one stands.
+          ...(opts.description !== undefined ? { description: opts.description } : {}),
         },
       });
     let row;

@@ -92,6 +92,14 @@ export class ConfigService extends EventEmitter {
   private secretsLoadPromise: Promise<void> | null = null;
   private tunablesLoaded = false;
   private tunablesLoadPromise: Promise<void> | null = null;
+  /**
+   * #112 — per-key tail of the in-flight write chain. A store write and the
+   * cache update that follows it are one unit: without this, two concurrent
+   * saves can commit A-then-B but land in the cache B-then-A, leaving the cache
+   * serving a value the store no longer holds until the next reload. Scope is
+   * this process — the only place this cache lives.
+   */
+  private readonly writeChains = new Map<string, Promise<unknown>>();
 
   constructor(opts: ConfigServiceOptions = {}) {
     super();
@@ -258,6 +266,22 @@ export class ConfigService extends EventEmitter {
   // ── Write path (secrets only in Phase 1) ────────────────────────────────
 
   /**
+   * #112 — run `write` after every earlier write of `key` has settled, so
+   * store-commit order and cache-update order are the same order. A failed
+   * write releases the chain; it does not block the next one.
+   */
+  private serializeWrite<T>(key: string, write: () => Promise<T>): Promise<T> {
+    const prev = this.writeChains.get(key) ?? Promise.resolve();
+    const run = prev.then(write);
+    const tail = run.catch(() => undefined);
+    this.writeChains.set(key, tail);
+    void tail.then(() => {
+      if (this.writeChains.get(key) === tail) this.writeChains.delete(key);
+    });
+    return run;
+  }
+
+  /**
    * Persist a Tier-2 secret. Creates a new vault entry if absent, otherwise
    * rotates the existing one (reviving a cleared one) in a single upsert on
    * the vault's unique name (#93). Returns the resulting `SecretSummary`.
@@ -286,12 +310,15 @@ export class ConfigService extends EventEmitter {
     // #93 — one idempotent write keyed on the unique name. Choosing between
     // create and rotate from `vault.list()` missed soft-deleted rows (and any
     // concurrent writer), so re-setting a cleared secret 500'd on the index.
-    const summary = await this.vault.upsert(key, plaintext, VAULT_SCOPE, {
-      description: def.description,
-      createdById: opts.actorId ?? null,
+    const summary = await this.serializeWrite(key, async () => {
+      const written = await this.vault.upsert(key, plaintext, VAULT_SCOPE, {
+        description: def.description,
+        createdById: opts.actorId ?? null,
+      });
+      this.secretSummaries.set(key, written);
+      this.secretCache.set(key, plaintext);
+      return written;
     });
-    this.secretSummaries.set(key, summary);
-    this.secretCache.set(key, plaintext);
     log.info("Secret updated via ConfigService", { key });
     this.emitChange({
       key,
@@ -314,13 +341,15 @@ export class ConfigService extends EventEmitter {
     if (def.tier !== "secret") {
       throw new Error(`clearSecret only supports secret-tier keys (key=${key} tier=${def.tier})`);
     }
-    const summaries = await this.vault.list(VAULT_SCOPE);
-    const existing = summaries.find((s) => s.label === key);
-    if (existing) {
-      await this.vault.delete(existing.id);
-    }
-    this.secretSummaries.delete(key);
-    this.secretCache.delete(key);
+    await this.serializeWrite(key, async () => {
+      const summaries = await this.vault.list(VAULT_SCOPE);
+      const existing = summaries.find((s) => s.label === key);
+      if (existing) {
+        await this.vault.delete(existing.id);
+      }
+      this.secretSummaries.delete(key);
+      this.secretCache.delete(key);
+    });
     log.info("Secret cleared via ConfigService", { key });
     this.emitChange({
       key,
@@ -394,28 +423,30 @@ export class ConfigService extends EventEmitter {
     }
     const stored = serializeForStorage(def.valueType, parsed.data);
 
-    const oldValue = this.tunableCache.getValue(key) ?? null;
     const scope = opts.scope ?? "global";
 
-    await prisma.runtimeConfig.upsert({
-      where: { key },
-      create: {
-        key,
-        value: stored,
-        valueType: def.valueType,
-        scope,
-        updatedById: opts.actorId,
-      },
-      update: {
-        value: stored,
-        valueType: def.valueType,
-        scope,
-        updatedById: opts.actorId,
-      },
+    const oldValue = await this.serializeWrite(key, async () => {
+      const previous = this.tunableCache.getValue(key) ?? null;
+      await prisma.runtimeConfig.upsert({
+        where: { key },
+        create: {
+          key,
+          value: stored,
+          valueType: def.valueType,
+          scope,
+          updatedById: opts.actorId,
+        },
+        update: {
+          value: stored,
+          valueType: def.valueType,
+          scope,
+          updatedById: opts.actorId,
+        },
+      });
+      this.tunableCache.set(key, stored);
+      this.tunableDbBacked.add(key);
+      return previous;
     });
-
-    this.tunableCache.set(key, stored);
-    this.tunableDbBacked.add(key);
 
     log.info("Tunable updated via ConfigService", { key });
     this.emitChange({
@@ -439,10 +470,13 @@ export class ConfigService extends EventEmitter {
     if (def.tier !== "tunable") {
       throw new Error(`clearTunable only supports tunable-tier keys (key=${key})`);
     }
-    const oldValue = this.tunableCache.getValue(key) ?? null;
-    await prisma.runtimeConfig.deleteMany({ where: { key } });
-    this.tunableCache.invalidate(key);
-    this.tunableDbBacked.delete(key);
+    const oldValue = await this.serializeWrite(key, async () => {
+      const previous = this.tunableCache.getValue(key) ?? null;
+      await prisma.runtimeConfig.deleteMany({ where: { key } });
+      this.tunableCache.invalidate(key);
+      this.tunableDbBacked.delete(key);
+      return previous;
+    });
     const scope = opts.scope ?? "global";
     log.info("Tunable cleared via ConfigService", { key });
     this.emitChange({ key, oldValue, newValue: null, scope, tier: "tunable" });

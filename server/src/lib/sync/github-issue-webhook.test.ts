@@ -3,51 +3,9 @@
  */
 import { describe, it, expect } from "vitest";
 import {
-  verifyGithubIssueSignature,
   normalizeGithubIssueEvent,
   type GithubIssueWebhookPayload,
 } from "./github-issue-webhook.js";
-import crypto from "node:crypto";
-
-function sign(body: string, secret: string): string {
-  return "sha256=" + crypto.createHmac("sha256", secret).update(body).digest("hex");
-}
-
-describe("verifyGithubIssueSignature", () => {
-  const secret = "test-secret-123";
-  const body = '{"action":"edited","issue":{}}';
-
-  it("returns ok when signature matches", () => {
-    const sig = sign(body, secret);
-    const result = verifyGithubIssueSignature(body, secret, sig);
-    expect(result.ok).toBe(true);
-  });
-
-  it("returns SIGNATURE_MISMATCH on bad signature", () => {
-    const result = verifyGithubIssueSignature(body, secret, "sha256=deadbeef" + "0".repeat(56));
-    expect(result.ok).toBe(false);
-    expect(result.reason).toBe("SIGNATURE_MISMATCH");
-  });
-
-  it("returns NO_SIGNATURE when signature is undefined", () => {
-    const result = verifyGithubIssueSignature(body, secret, undefined);
-    expect(result.ok).toBe(false);
-    expect(result.reason).toBe("NO_SIGNATURE");
-  });
-
-  it("returns NO_SECRET_CONFIGURED when secret is empty", () => {
-    const sig = sign(body, secret);
-    const result = verifyGithubIssueSignature(body, "", sig);
-    expect(result.ok).toBe(false);
-    expect(result.reason).toBe("NO_SECRET_CONFIGURED");
-  });
-
-  it("uses timing-safe comparison (different length signatures rejected)", () => {
-    const result = verifyGithubIssueSignature(body, secret, "sha256=short");
-    expect(result.ok).toBe(false);
-    expect(result.reason).toBe("SIGNATURE_MISMATCH");
-  });
-});
 
 describe("normalizeGithubIssueEvent", () => {
   const basePayload: GithubIssueWebhookPayload = {

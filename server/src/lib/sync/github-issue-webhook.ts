@@ -3,9 +3,10 @@
  *
  * Processes `issues.{edited,closed,reopened,labeled,unlabeled,assigned,unassigned}`
  * events, normalizes them into `IssueChangeEvent`, and feeds the reconciliation
- * service. Verifies HMAC signature (X-Hub-Signature-256).
+ * service. The HMAC signature (X-Hub-Signature-256) is verified by the one
+ * receiver, `routes/webhooks-github.ts`, before this runs (#113 removed an
+ * unused second verifier from here).
  */
-import crypto from "node:crypto";
 import type { IssueChangeEvent, IssueChangeFields, IssueChangeAction } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import {
@@ -40,33 +41,6 @@ export interface GithubIssueWebhookPayload {
   };
   changes?: Record<string, { from: unknown }>;
   sender?: { login: string };
-}
-
-export interface VerifyResult {
-  ok: boolean;
-  reason?: string;
-}
-
-/**
- * Verify the GitHub webhook HMAC-SHA256 signature.
- */
-export function verifyGithubIssueSignature(
-  rawBody: string,
-  secret: string,
-  signature: string | undefined,
-): VerifyResult {
-  if (!secret) return { ok: false, reason: "NO_SECRET_CONFIGURED" };
-  if (!signature) return { ok: false, reason: "NO_SIGNATURE" };
-
-  const expected = "sha256=" + crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
-
-  const sigBuf = Buffer.from(signature);
-  const expectedBuf = Buffer.from(expected);
-
-  if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
-    return { ok: false, reason: "SIGNATURE_MISMATCH" };
-  }
-  return { ok: true };
 }
 
 export interface NormalizeResult {

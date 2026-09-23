@@ -17,12 +17,18 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { badgeVariantClasses } from "@metis/ui-kit";
 
-/** The ui-kit `Badge` destructive variant, applied to a focusable element. */
+/**
+ * The ui-kit `Badge` destructive variant (its colours come FROM the ui-kit, so
+ * they cannot drift — #113), applied to a focusable element. `h-6 min-w-6` is
+ * the WCAG 2.2 SC 2.5.8 minimum target of 24×24 CSS px; it was 18×18.
+ */
 const BADGE_CLASSES =
   "inline-flex items-center justify-center rounded-full border border-transparent font-semibold " +
-  "bg-destructive text-destructive-foreground hover:bg-destructive/80 transition-colors " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
+  `${badgeVariantClasses("destructive")} transition-colors ` +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 " +
+  "h-6 min-w-6";
 
 export interface DriftBadgeProps {
   /** Project ID for navigation. */
@@ -58,7 +64,7 @@ export function DriftBadge({ projectId, count, requirementId, className }: Drift
   return (
     <button
       type="button"
-      className={`${BADGE_CLASSES} cursor-pointer text-[10px] px-1.5 py-0 min-w-[18px] h-[18px] ${className ?? ""}`}
+      className={`${BADGE_CLASSES} cursor-pointer text-xs px-1.5 py-0 ${className ?? ""}`}
       onClick={(e) => {
         e.stopPropagation();
         router.push(href);
