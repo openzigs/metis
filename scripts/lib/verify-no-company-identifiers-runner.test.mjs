@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, inject, it } from "vitest";
 
 /**
  * Runner-level tests for `node scripts/verify-no-company-identifiers.mjs` (#1373).
@@ -289,10 +289,17 @@ describe("this repository's own tree", () => {
     // as `pnpm lint`. Without it the runner skips and this proves only that the tree
     // does not trip the invented list — which is why ci.yml sets
     // METIS_REQUIRE_PRIVATE_TERMS on the lint step rather than relying on this test.
-    const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-    const result = spawnSync(process.execPath, [scriptPath], { cwd: repoRoot, encoding: "utf8" });
+    //
+    // The scan itself ran once in `vitest.global-setup.mjs`, before the pool started:
+    // spawned here it raced the 5 s default under the suite's own parallelism (#99).
+    const scan = inject("wholeTreeIdentifierScan");
 
-    expect(`${result.stdout}${result.stderr}`).not.toContain("Private vocabulary found");
-    expect(result.status).toBe(0);
+    // Absent means the global setup never ran — e.g. this file was run under another
+    // config. That is "nothing was checked", which must not read as a pass.
+    expect(scan, "the whole-tree scan did not run (vitest.global-setup.mjs)").toBeDefined();
+    expect(scan.error).toBeNull();
+    expect(scan.output).not.toContain("Private vocabulary found");
+    expect(scan.output.trim().length).toBeGreaterThan(0);
+    expect(scan.status).toBe(0);
   });
 });
