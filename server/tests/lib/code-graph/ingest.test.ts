@@ -294,6 +294,47 @@ describe("ingestCodeGraph (#308)", () => {
     expect(stats.filesSkipped).toBeGreaterThanOrEqual(1);
   });
 
+  it("ingests Kotlin .kt and .kts files as code-graph symbols and edges (#159)", async () => {
+    const root = await makeFixture({
+      "src/main/kotlin/com/acme/Order.kt": `package com.acme\nimport com.acme.util.Money\nclass OrderService {\n  fun place(total: Int): Int {\n    require(total > 0)\n    return total * 2\n  }\n}\nfun topLevel() = OrderService().place(1)\n`,
+      "build.gradle.kts": `plugins {\n  kotlin("jvm")\n}\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    const stats = await ingestCodeGraph(prisma, { projectId: "proj1", rootDir: root });
+
+    expect(stats.filesParsed).toBe(2);
+    expect(stats.languageStats.kt).toBeGreaterThan(0);
+    const kt = store.codeSymbols.filter(
+      (s: any) => s.filePath === "src/main/kotlin/com/acme/Order.kt",
+    ) as any[];
+    expect(kt.map((s) => [s.kind, s.name, s.language])).toEqual(
+      expect.arrayContaining([
+        ["class", "OrderService", "kt"],
+        ["method", "place", "kt"],
+        ["function", "topLevel", "kt"],
+      ]),
+    );
+    expect(
+      store.codeEdges.some(
+        (e: any) => e.kind === "imports" && e.toQualifiedName === "com.acme.util.Money",
+      ),
+    ).toBe(true);
+    expect(callsTo(store, "place", "src/main/kotlin/com/acme/Order.kt")).toHaveLength(1);
+  });
+
+  it("resolves a bare Kotlin call to a sibling method as an implicit `this.` (#159)", async () => {
+    const root = await makeFixture({
+      "src/main/kotlin/com/acme/Checkout.kt": `package com.acme\nclass Checkout {\n  fun submit(total: Int) {\n    validate(total)\n  }\n  private fun validate(total: Int) {\n    require(total > 0)\n  }\n}\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "proj1", rootDir: root });
+
+    const [edge] = callsTo(store, "validate", "src/main/kotlin/com/acme/Checkout.kt");
+    expect(edge.toSymbolId).toBe(
+      symbolId(store, "src/main/kotlin/com/acme/Checkout.kt", "validate"),
+    );
+  });
+
   it("reuses existing CodeGraph row instead of creating a duplicate", async () => {
     const root = await makeFixture({ "a.ts": "function f(){}\n" });
     const { prisma, store } = makePrismaMock();

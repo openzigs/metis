@@ -299,7 +299,8 @@ calls `ingestCodeGraph()` ([connectors.ts](../server/src/routes/connectors.ts#L2
 **Parsing:**
 
 - **Tree-sitter** WASM grammars parse TypeScript, JavaScript, Python, Go,
-  Java, and C# ([parsers-tree-sitter.ts](../server/src/lib/code-graph/parsers-tree-sitter.ts#L81-L110)).
+  Java, C#, and Kotlin (`.kt`/`.kts`)
+  ([parsers-tree-sitter.ts](../server/src/lib/code-graph/parsers-tree-sitter.ts#L81-L110)).
 - **SAS** uses a dedicated regex parser
   ([parsers.ts](../server/src/lib/code-graph/parsers.ts#L27-L110)).
 - Extension recognition (e.g. TSX/JSX, C# scripts) is not a guarantee of
@@ -492,8 +493,9 @@ runs in stages:
    lineage
    ([holistic-synthesizer.ts](../server/src/lib/docs-gen/holistic-synthesizer.ts#L933-L1022)).
 2. **Extract per-module facts from real source bodies** (not just names or
-   embedding previews), supplemented by deterministic formula/rule miners and
-   rationale findings
+   embedding previews), supplemented by deterministic formula/rule miners
+   (Java, TypeScript/JavaScript, Python, Go, C#, Kotlin, SAS, SQL —
+   `server/src/lib/code-graph/*-rule-miner.ts`) and rationale findings
    ([holistic-synthesizer.ts](../server/src/lib/docs-gen/holistic-synthesizer.ts#L1473-L1585)).
    Module extraction defaults to **3 concurrent modules**
    (`DOCS_GEN_PHASE1_CONCURRENCY`), bounded to stay within gateway idle
