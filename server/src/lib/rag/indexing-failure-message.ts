@@ -141,6 +141,51 @@ export function indexingFailureMessage(err: unknown): string {
   return INDEXING_FAILED_MESSAGE;
 }
 
+export const APPROVAL_NOT_FOUND_MESSAGE = "The document was not found.";
+
+export const APPROVAL_NOT_AWAITING_MESSAGE =
+  "The document is not awaiting approval. Reload the document list to see its current state.";
+
+export const APPROVAL_STATE_CHANGED_MESSAGE =
+  "The document changed while it was being approved. Reload the document list and try again.";
+
+export const APPROVAL_REVISION_UNAVAILABLE_MESSAGE =
+  "This generated-document revision is no longer available for approval; a newer revision or a deletion superseded it.";
+
+export const APPROVAL_EMBEDDING_MISSING_MESSAGE =
+  "The quarantined copy has no embedding; re-index the document before approving it.";
+
+/**
+ * `quarantine.ts`'s own refusals, matched against the WHOLE message so an
+ * exception that merely quotes one of them is not mistaken for it. Each answers
+ * with a fixed string — the document id in the original text is dropped.
+ */
+const APPROVAL_REFUSALS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^Document \S+ not found$/, APPROVAL_NOT_FOUND_MESSAGE],
+  [/^Document \S+ not in approvable state: \w+$/, APPROVAL_NOT_AWAITING_MESSAGE],
+  [
+    /^Document \S+ (?:no longer approvable|approval attempt revoked|ingest generation revoked)$/,
+    APPROVAL_STATE_CHANGED_MESSAGE,
+  ],
+  [/^Generated document revision unavailable for approval$/, APPROVAL_REVISION_UNAVAILABLE_MESSAGE],
+  [/^Quarantine embedding missing; re-ingest before approval$/, APPROVAL_EMBEDDING_MISSING_MESSAGE],
+];
+
+/**
+ * #108 — the message for a failed `POST /documents/:id/approve` or `/reject`.
+ * `approveDocument` rethrows whatever the vector store, the BM25 index or
+ * Prisma threw during cleanup, and the 409 body used to carry it verbatim. A
+ * METIS-authored state refusal keeps its meaning; anything else goes through
+ * {@link indexingFailureMessage}. The raw error is the caller's to log.
+ */
+export function approvalFailureMessage(err: unknown): string {
+  const message = readMessage(err);
+  for (const [pattern, safe] of APPROVAL_REFUSALS) {
+    if (pattern.test(message)) return safe;
+  }
+  return indexingFailureMessage(err);
+}
+
 /**
  * The indexing `errorMessage` a client may see for a `Document` row (or a
  * publication outbox task), given the row's `indexState` when it has one.

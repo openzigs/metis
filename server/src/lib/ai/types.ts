@@ -165,6 +165,19 @@ export interface JsonSchemaResponseFormat {
   };
 }
 
+/**
+ * #117 — OpenAI-compatible JSON mode: the runtime guarantees a JSON object but
+ * no particular shape, so the caller states the shape in the prompt. For local
+ * runtimes that accept `json_schema` with HTTP 200 and then ignore it (measured:
+ * `laguna-s-2.1` on Ollama 0.34.2 returns prose), yet honour `json_object`.
+ */
+export interface JsonObjectResponseFormat {
+  type: "json_object";
+}
+
+/** Either `response_format` shape the OpenAI-compatible adapter forwards verbatim. */
+export type ResponseFormat = JsonSchemaResponseFormat | JsonObjectResponseFormat;
+
 export interface ChatOptions {
   /** Override the provider/session default model. */
   model?: string;
@@ -286,7 +299,7 @@ export interface ChatOptions {
    * loss is visible in the logs even when the caller does not probe. See
    * {@link ProviderCapabilities}.
    */
-  responseFormat?: JsonSchemaResponseFormat;
+  responseFormat?: ResponseFormat;
 }
 
 export interface EmbedResult {

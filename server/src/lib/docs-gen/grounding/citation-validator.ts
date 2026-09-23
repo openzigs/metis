@@ -216,6 +216,12 @@ export interface FaithfulnessResult {
   unsupportedClaims: UnsupportedClaim[];
   /** Supported claims with their optional attribution ids. */
   supportedAttributions: SupportedAttribution[];
+  /**
+   * #117 — which grounding reply could not be parsed, when one could not:
+   * `claims` (the decomposition, so nothing was checked) or `verdicts` (at least
+   * one judge batch, so its claims went unscored). Absent when everything parsed.
+   */
+  unparseable?: "claims" | "verdicts";
 }
 
 /** Minimal extractor surface needed for scoring (eases testing/mocking). */
@@ -264,7 +270,11 @@ export async function scoreFaithfulness(
     return unverifiedResult(section, 0);
   }
 
-  const { claims } = await deps.extractor.decompose(sectionMarkdown, ctx, deps.signal);
+  const { claims, unparseable } = await deps.extractor.decompose(sectionMarkdown, ctx, deps.signal);
+  if (unparseable) {
+    // #117 — "the reply did not parse" is not "the section makes no claims".
+    return { ...unverifiedResult(section, 0), unparseable: "claims" };
+  }
   if (claims.length === 0) {
     // No substantive claims → nothing to verify; clean and (trivially) fine.
     return {
@@ -278,17 +288,21 @@ export async function scoreFaithfulness(
     };
   }
 
+  const diagnostics = { batches: 0, unparseableBatches: 0 };
   const verdicts = await deps.judge.judge(
     claims.map((c) => c.claim),
     ctx,
     deps.signal,
+    diagnostics,
   );
+  const verdictsUnparseable =
+    diagnostics.unparseableBatches > 0 ? { unparseable: "verdicts" as const } : {};
   if (!verdicts) {
     // Unverifiable: keep the section as-is (never a false degraded).
-    return unverifiedResult(section, claims.length);
+    return { ...unverifiedResult(section, claims.length), ...verdictsUnparseable };
   }
 
-  return aggregateVerdicts(section, verdicts);
+  return { ...aggregateVerdicts(section, verdicts), ...verdictsUnparseable };
 }
 
 /**

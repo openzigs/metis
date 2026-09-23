@@ -499,9 +499,20 @@ field on both `chat()` and `stream()`. vLLM (≥ 0.8.5) maps this to its
 mode. (The older vLLM `guided_json` extra-body param is deprecated and not used.)
 
 - **Flag + capability gate.** Threaded ONLY on the `local` provider bundle and
-  ONLY when `DOCS_GEN_LOCAL_STRUCTURED_OUTPUT=1` (`docsGenTuning.structuredOutput`).
-  Anthropic/Bedrock tunings always report `false`, so the field is never forced
+  ONLY when `DOCS_GEN_LOCAL_STRUCTURED_OUTPUT` is `json_schema` (or `1`) or
+  `json_object` (`docsGenTuning.structuredOutput`, a `StructuredOutputMode`).
+  Anthropic/Bedrock tunings always report `"off"`, so the field is never forced
   onto a cloud path that ignores it. When unset, the request body is unchanged.
+- **Accept-and-ignore runtimes (#117).** Some runtimes answer a `json_schema`
+  request with HTTP 200 and prose (`laguna-s-2.1` on Ollama 0.34.2), which the
+  400/422 fallback below cannot detect. In `json_schema` mode the extractor
+  retries an unparseable reply once in `json_object` mode, and the judge's one
+  unparseable-batch retry (#25) is sent in `json_object` mode; `json_object`
+  mode sends `response_format: { type: "json_object" }` from the start with the
+  schema appended to the system prompt. A claim list or verdict batch that still
+  does not parse is reported (`ClaimDecomposition.unparseable`,
+  `JudgeDiagnostics.unparseableBatches` → `FaithfulnessResult.unparseable`) and
+  surfaces as an untiered `section-ungrounded` warning — never as "no claims".
 - **Graceful degradation.** A runtime that does not support the field (some
   Ollama / LM Studio builds) returns a **400/422**; the provider — only when the
   request carried `response_format` — logs one warn and retries **once without
@@ -509,6 +520,14 @@ mode. (The older vLLM `guided_json` extra-body param is deprecated and not used.
   (never a hard failure). On `stream()` this happens pre-first-byte, so no
   partial output leaks and the "never retry mid-stream" rule (§ #388) holds. A
   non-capability 4xx (401/404) is not retried.
+- **Mid-stream drop on the local provider (#114).** The provider still never
+  retries mid-stream. One level up, `generateSectionGroup` retries a LOCAL
+  section's draft once, immediately, with the identical prompt when the stream
+  dropped after its first chunk (`TypeError: terminated` / `ECONNRESET`,
+  `isConnectionDropped`): the partial text is discarded, not stitched, and
+  llama-server saved the prompt to its cache on cancel, so the retry skips most
+  of the prefill. A drop before the first chunk and every timeout are not
+  retried (#111).
 - **Schemas** (`docs-gen/grounding/structured-output-schemas.ts`) are
   strict-mode-valid and mirror the shapes the extractor/judge already
   Zod-validate after parsing, so the constrained output and the parser cannot

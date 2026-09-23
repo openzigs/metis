@@ -21,7 +21,7 @@
  * Unlike the old per-symbol approach, the output is a single narrative
  * document rather than a flat list of class summaries.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "../prisma.js";
@@ -95,6 +95,7 @@ import {
   sectionUnfaithfulWarning,
   sectionPartlyGroundedWarning,
   sectionUnderReconstructedWarning,
+  groundingUnparseableWarning,
   resolveSectionFaithfulnessThreshold,
   tierForSection,
   type DocWarningTier,
@@ -105,7 +106,7 @@ import {
 } from "./grounding/degraded-warnings.js";
 // #67 — the fixed, user-safe failure vocabulary a section's exception is mapped
 // through before it can reach a persisted, client-visible warning.
-import { generationFailureMessage } from "./generation-failure-message.js";
+import { generationFailureMessage, isConnectionDropped } from "./generation-failure-message.js";
 import { isSasBusinessSymbol } from "./discovery-agent.js";
 import { ClaimExtractor } from "./grounding/claim-extractor.js";
 import {
@@ -116,6 +117,9 @@ import {
 import {
   CLAIM_DECOMPOSITION_RESPONSE_FORMAT,
   FAITHFULNESS_VERDICTS_RESPONSE_FORMAT,
+  JSON_OBJECT_RESPONSE_FORMAT,
+  parseStructuredOutputMode,
+  type StructuredOutputMode,
 } from "./grounding/structured-output-schemas.js";
 import {
   scoreFaithfulness,
@@ -292,17 +296,21 @@ export interface DocsGenTuning {
    */
   concisePrompt: boolean;
   /**
-   * #336 — when true, the JSON-shaped grounding calls on the LOCAL/vLLM path
-   * (claim extraction, faithfulness judging) request schema-constrained
-   * ("structured") output via the OpenAI-compatible `response_format` field so
-   * a vLLM (xgrammar) runtime cannot emit unparseable JSON. Gated to the LOCAL
-   * provider only (Ollama/vLLM/LM Studio) and default OFF — Bedrock/Anthropic
-   * never set it, and existing Ollama users see unchanged requests until they
-   * opt in with `DOCS_GEN_LOCAL_STRUCTURED_OUTPUT=1`. The provider degrades
-   * gracefully if the runtime rejects the field (retry without it), so enabling
-   * it can never hard-fail a call — worst case it is a no-op + one warn.
+   * #336 — how the JSON-shaped grounding calls on the LOCAL/vLLM path (claim
+   * extraction, faithfulness judging) request structured output via the
+   * OpenAI-compatible `response_format` field. Gated to the LOCAL provider only
+   * (Ollama/vLLM/LM Studio) and default `off` — Bedrock/Anthropic never set it,
+   * and existing Ollama users see unchanged requests until they opt in with
+   * `DOCS_GEN_LOCAL_STRUCTURED_OUTPUT`. The provider degrades gracefully if the
+   * runtime rejects the field (retry without it), so enabling it can never
+   * hard-fail a call — worst case it is a no-op + one warn.
+   *
+   * #117 — `json_schema` (also `1`) constrains decoding to the schema and, when
+   * a runtime accepts-and-ignores it, retries an unparseable reply once in
+   * `json_object` mode; `json_object` asks for JSON mode with the shape in the
+   * prompt, for such runtimes (`laguna-s-2.1` on Ollama 0.34.2).
    */
-  structuredOutput: boolean;
+  structuredOutput: StructuredOutputMode;
 }
 
 /** Trimmed non-empty env string, or undefined. */
@@ -403,9 +411,10 @@ export function docsGenTuning(kind: DocsGenProviderKind, configModel: string): D
       disableThinking: !boolFromEnv("DOCS_GEN_LOCAL_ENABLE_THINKING"),
       refine: boolFromEnv("DOCS_GEN_LOCAL_REFINE"),
       concisePrompt: boolFromEnv("DOCS_GEN_LOCAL_CONCISE_PROMPT"),
-      // #336 — opt-in schema-constrained decoding on the local/vLLM path.
-      // Default OFF so existing Ollama users are unaffected.
-      structuredOutput: boolFromEnv("DOCS_GEN_LOCAL_STRUCTURED_OUTPUT"),
+      // #336 — opt-in structured output on the local/vLLM path. Default OFF so
+      // existing Ollama users are unaffected. #117 — json_schema | json_object |
+      // off, with the old 1/0 spellings kept.
+      structuredOutput: parseStructuredOutputMode(process.env.DOCS_GEN_LOCAL_STRUCTURED_OUTPUT),
     };
   }
   if (kind === "anthropic") {
@@ -441,7 +450,7 @@ export function docsGenTuning(kind: DocsGenProviderKind, configModel: string): D
       concisePrompt: false,
       // #336 — structured output is a LOCAL/vLLM-only capability gate. The
       // native Anthropic provider ignores `response_format`, so never request it.
-      structuredOutput: false,
+      structuredOutput: "off",
     };
   }
   const bedrockModel = envStr("BEDROCK_MODEL") ?? "us.anthropic.claude-sonnet-4-6";
@@ -469,7 +478,7 @@ export function docsGenTuning(kind: DocsGenProviderKind, configModel: string): D
     concisePrompt: false,
     // #336 — capability-gated to local/vLLM only. The Bedrock gateway path does
     // not schema-constrain via `response_format`, so never request it.
-    structuredOutput: false,
+    structuredOutput: "off",
   };
 }
 
@@ -2393,11 +2402,24 @@ async function validateSectionGrounding(
       judge: faithfulnessJudge,
     });
 
-    // Unverifiable or no claims → keep the section, no warning, NO score (so
-    // #334 escalation never fires on an unverified section — "unverified" is not
-    // "below the bar").
+    // #117 — a grounding reply that did not parse is NOT "nothing to check":
+    // the section is surfaced as unverified instead of passing silently.
+    const unparseableWarning = result.unparseable
+      ? groundingUnparseableWarning(sectionLabel, result.unparseable)
+      : null;
+    if (unparseableWarning) {
+      log.warn("Section grounding reply could not be parsed; section not fully verified", {
+        projectId,
+        section: sectionLabel,
+        stage: result.unparseable,
+      });
+    }
+
+    // Unverifiable or no claims → keep the section, NO score (so #334
+    // escalation never fires on an unverified section — "unverified" is not
+    // "below the bar"), and no warning unless a reply was unparseable.
     if (!result.verified || result.totalClaims === 0) {
-      return { markdown: sectionMarkdown, warning: null, score: null };
+      return { markdown: sectionMarkdown, warning: unparseableWarning, score: null };
     }
 
     // #283 — resolve the threshold for THIS section: an explicit per-section
@@ -2405,8 +2427,9 @@ async function validateSectionGrounding(
     const threshold = resolveSectionFaithfulnessThreshold(section?.threshold);
     const score = { faithfulness: result.faithfulness, threshold, result };
     if (result.faithfulness >= threshold) {
-      // Faithful enough — accurate synthesis stays `ready`.
-      return { markdown: sectionMarkdown, warning: null, score };
+      // Faithful enough — accurate synthesis stays `ready`, unless some of the
+      // judge's batches were unparseable and their claims went unscored (#117).
+      return { markdown: sectionMarkdown, warning: unparseableWarning, score };
     }
 
     log.warn("Section faithfulness below threshold", {
@@ -2597,11 +2620,24 @@ export async function synthesizeFinalDocument(
   const grounderFor = (bundle: Phase2ProviderBundle): SectionGrounder => {
     const cached = grounderCache.get(bundle);
     if (cached) return cached;
-    // #336 — schema-constrained decoding is a LOCAL/vLLM-only, flag-gated
-    // capability (`structuredOutput`, default OFF). Only the local provider's
-    // tuning ever sets it true, so Bedrock/Anthropic bundles pass `undefined`
-    // and their requests are byte-for-byte unchanged.
-    const structuredOutput = bundle.tuning.structuredOutput;
+    // #336 — structured output is a LOCAL/vLLM-only, flag-gated capability
+    // (`structuredOutput`, default `off`). Only the local provider's tuning ever
+    // sets another mode, so Bedrock/Anthropic bundles pass `undefined` and their
+    // requests are byte-for-byte unchanged. #117 — `json_object` for a runtime
+    // that accepts `json_schema` and ignores it.
+    const mode = bundle.tuning.structuredOutput;
+    const claimFormat =
+      mode === "json_schema"
+        ? CLAIM_DECOMPOSITION_RESPONSE_FORMAT
+        : mode === "json_object"
+          ? JSON_OBJECT_RESPONSE_FORMAT
+          : undefined;
+    const judgeFormat =
+      mode === "json_schema"
+        ? FAITHFULNESS_VERDICTS_RESPONSE_FORMAT
+        : mode === "json_object"
+          ? JSON_OBJECT_RESPONSE_FORMAT
+          : undefined;
     // #1226 — the grounders run a DIFFERENT model than the Phase-2 section
     // model the bundle's provider was built for, so each must carry its own
     // cap. Inheriting the provider's `defaultMaxTokens` would ask a Haiku-class
@@ -2612,7 +2648,7 @@ export async function synthesizeFinalDocument(
           model: bundle.tuning.claimModel,
           promptCaching: bundle.supportsCaching,
           maxTokens: resolveSectionMaxOutputTokens(bundle.tuning.claimModel),
-          ...(structuredOutput ? { responseFormat: CLAIM_DECOMPOSITION_RESPONSE_FORMAT } : {}),
+          ...(claimFormat ? { responseFormat: claimFormat } : {}),
         })
       : null;
     // #anthropic-prompt-caching — when the provider supports caching, the judge
@@ -2625,7 +2661,7 @@ export async function synthesizeFinalDocument(
           charBudget: bundle.factsCharCap,
           promptCaching: bundle.supportsCaching,
           maxTokens: resolveSectionMaxOutputTokens(bundle.tuning.judgeModel),
-          ...(structuredOutput ? { responseFormat: FAITHFULNESS_VERDICTS_RESPONSE_FORMAT } : {}),
+          ...(judgeFormat ? { responseFormat: judgeFormat } : {}),
         })
       : null;
     const grounder: SectionGrounder = { claimExtractor, faithfulnessJudge };
@@ -2804,9 +2840,10 @@ export async function synthesizeFinalDocument(
           judgeMaxTokens: resolveSectionMaxOutputTokens(tuning.judgeModel),
           judgeMaxBatch: DEFAULT_JUDGE_MAX_BATCH,
           judgeMinBatchMatchRatio: MIN_BATCH_MATCH_RATIO,
-          structuredSchemas: tuning.structuredOutput
-            ? [CLAIM_DECOMPOSITION_RESPONSE_FORMAT, FAITHFULNESS_VERDICTS_RESPONSE_FORMAT]
-            : null,
+          structuredSchemas:
+            tuning.structuredOutput === "off"
+              ? null
+              : [CLAIM_DECOMPOSITION_RESPONSE_FORMAT, FAITHFULNESS_VERDICTS_RESPONSE_FORMAT],
           threshold: resolveSectionFaithfulnessThreshold(group.faithfulnessThreshold),
         }),
         prompts: JSON.stringify(prompts),
@@ -3709,6 +3746,12 @@ Write the markdown for the **${group.label}** section group now, following the i
   return { systemMessage, userMessage };
 }
 
+/**
+ * #114 — draft attempts for a local section whose stream drops mid-response:
+ * the original plus ONE immediate retry with the identical prompt.
+ */
+export const MID_STREAM_DROP_ATTEMPTS = 2;
+
 async function generateSectionGroup(
   group: SectionGroup,
   meta: ProjectMeta,
@@ -3738,13 +3781,44 @@ async function generateSectionGroup(
   const sessionBase = `docs-synth-${projectId}-${docType}-${group.id}`;
 
   // ── Draft pass ────────────────────────────────────────────────────────────
-  const draft = await streamSectionContent(provider, {
-    sessionId: `${sessionBase}-draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    systemMessage,
-    userMessage,
-    supportsCaching,
-    projectId,
-  });
+  // #114 — on the LOCAL provider a connection that drops MID-STREAM (after the
+  // first chunk arrived) is retried once, immediately, with the identical
+  // prompt: llama-server saves the prompt to its cache when a request is
+  // cancelled (`srv prompt_save`), so the retry skips almost all of the prefill
+  // that dominated the first attempt. A drop BEFORE the first chunk, a
+  // timeout, or any other error is not retried here — re-sending a prompt the
+  // runtime never finished processing repeats the whole prefill (#111).
+  const draftSessionId = `${sessionBase}-draft-${Date.now()}-${randomBytes(3).toString("hex")}`;
+  let draft: SectionStreamResult | undefined;
+  for (let attempt = 1; draft === undefined; attempt++) {
+    const progress = { chunks: 0 };
+    try {
+      draft = await streamSectionContent(provider, {
+        sessionId: draftSessionId,
+        systemMessage,
+        userMessage,
+        supportsCaching,
+        projectId,
+        progress,
+      });
+    } catch (err) {
+      if (
+        !isLocal ||
+        attempt >= MID_STREAM_DROP_ATTEMPTS ||
+        progress.chunks === 0 ||
+        !isConnectionDropped(err)
+      ) {
+        throw err;
+      }
+      log.warn("Local section stream dropped mid-response; retrying once with the same prompt", {
+        projectId,
+        docType,
+        group: group.id,
+        chunksBeforeDrop: progress.chunks,
+        err: String(err),
+      });
+    }
+  }
   // #1226 — the DRAFT's truncation verdict is the baseline: the refine pass
   // below is opt-in, local-only, and can only ever be accepted when it
   // preserved the draft's content, so it cannot clear a truncated draft. When
@@ -3841,6 +3915,8 @@ async function streamSectionContent(
     temperature?: number;
     /** When provided, token usage is recorded to the project usage dashboard. */
     projectId?: string;
+    /** #114 — counts chunks received, so a caller can tell a mid-stream drop. */
+    progress?: { chunks: number };
   },
 ): Promise<SectionStreamResult> {
   const messages: ChatMessage[] = [
@@ -3870,6 +3946,7 @@ async function streamSectionContent(
     // read to amortise it (#389). #anthropic-prompt-caching.
     promptCaching: singleShotPromptCaching(opts.supportsCaching),
   })) {
+    if (opts.progress) opts.progress.chunks += 1;
     if (chunk.type === "delta") {
       chunks.push(chunk.content);
     } else if (chunk.type === "usage") {

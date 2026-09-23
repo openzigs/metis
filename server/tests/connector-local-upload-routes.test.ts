@@ -206,7 +206,11 @@ import {
   ingestRepoMetadata,
   ingestSourceAsKnowledge,
 } from "../src/lib/connectors/connector-ingest.js";
-import { fetchRepoMetadata } from "../src/lib/connectors/repo/repo-service.js";
+import {
+  fetchRepoMetadata,
+  getRepoConnectorEmitter,
+} from "../src/lib/connectors/repo/repo-service.js";
+import { REPO_INGEST_FAILED_MESSAGE } from "../src/routes/connectors.js";
 import { discoverAndUpsertConnections } from "../src/lib/connectors/repo/connection-discovery.js";
 import {
   bootstrapScheduler,
@@ -377,6 +381,51 @@ describe("provider routing on deep-ingest", () => {
     expect(res.status).toBe(200);
     expect(resolveNonGitIngestRoot).toHaveBeenCalledTimes(1);
     expect(shallowCloneRepo).not.toHaveBeenCalled();
+  });
+});
+
+// #114 — the auto-ingest (create-with-autoIngest) progress socket event carried
+// the raw exception text (paths, git stderr, SQL) to the browser as both `step`
+// and `errorMessage`.
+describe("auto-ingest failure progress event", () => {
+  it("sends fixed vocabulary, never the exception text", async () => {
+    const RAW =
+      "EACCES: permission denied, open '/srv/metis/server/data/repos/acme/secret/.git/config' " +
+      "token=ghp_4f9a8b7c6d5e4f3a2b1c";
+    h.createRepoConnector.mockImplementation(async (_projectId, input) => ({
+      id: "repo_github_x",
+      provider: input.provider,
+      label: input.label,
+    }));
+    vi.mocked(ingestSourceAsKnowledge).mockRejectedValueOnce(new Error(RAW));
+    const finished = new Promise<void>((resolve) => h.finished.mockImplementation(resolve));
+    const token = await login("admin");
+    const res = await request(app)
+      .post("/api/projects/proj_1/connectors/repos")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        label: "repo",
+        provider: "github",
+        ownerOrOrg: "acme",
+        repoName: "backend",
+        autoIngest: true,
+      });
+    expect(res.status).toBe(201);
+    await finished;
+    const events = vi
+      .mocked(getRepoConnectorEmitter)
+      .mock.results.flatMap((r) =>
+        vi
+          .mocked((r.value as { progress: (e: unknown) => void }).progress)
+          .mock.calls.map((c) => c[0] as { status?: string; step: string; errorMessage?: string }),
+      );
+    const failure = events.find((e) => e.status === "error");
+    expect(failure).toBeDefined();
+    expect(JSON.stringify(failure)).not.toContain("/srv");
+    expect(JSON.stringify(failure)).not.toContain("ghp_");
+    expect(failure!.errorMessage).toBe(REPO_INGEST_FAILED_MESSAGE);
+    expect(failure!.step).toBe("Ingestion failed");
+    h.finished.mockReset();
   });
 });
 

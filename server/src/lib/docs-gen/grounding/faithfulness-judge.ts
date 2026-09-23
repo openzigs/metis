@@ -40,10 +40,15 @@
  * against the judge being made too lenient.
  */
 import { z } from "zod";
-import type { AIProvider, ChatMessage, JsonSchemaResponseFormat } from "../../ai/types.js";
+import type { AIProvider, ChatMessage, ResponseFormat } from "../../ai/types.js";
 import { createChildLogger } from "../../logger.js";
 import type { GroundingContext } from "./grounding-context.js";
 import { extractFirstJson } from "./json-extract.js";
+import {
+  FAITHFULNESS_VERDICTS_RESPONSE_FORMAT,
+  JSON_OBJECT_RESPONSE_FORMAT,
+  jsonObjectShapeInstruction,
+} from "./structured-output-schemas.js";
 
 const log = createChildLogger("docs-gen:faithfulness-judge");
 
@@ -139,15 +144,29 @@ export interface FaithfulnessJudgeDeps {
    */
   maxTokens?: number;
   /**
-   * #336 — optional OpenAI-compatible `response_format` schema for the
+   * #336 — optional OpenAI-compatible `response_format` for the
    * `{ verdicts: [...] }` batch output. When set (local/vLLM path with
-   * `DOCS_GEN_LOCAL_STRUCTURED_OUTPUT=1`) each batch's `chat` call requests
-   * schema-constrained decoding so the judge cannot emit an unparseable verdict
-   * list (the SAS `risk` "unparseable batch" failure mode). The provider degrades
+   * `DOCS_GEN_LOCAL_STRUCTURED_OUTPUT`) each batch's `chat` call requests
+   * structured output so the judge cannot emit an unparseable verdict list
+   * (the SAS `risk` "unparseable batch" failure mode). The provider degrades
    * gracefully if the runtime rejects it, and {@link parseRawVerdicts} still
    * runs, so it is safe on any runtime. Undefined = unchanged request.
+   *
+   * #117 — in `json_schema` mode the one retry of an unparseable batch is sent
+   * in `json_object` mode (a runtime may accept the schema and ignore it); in
+   * `json_object` mode the schema is stated in the system prompt.
    */
-  responseFormat?: JsonSchemaResponseFormat;
+  responseFormat?: ResponseFormat;
+}
+
+/**
+ * #117 — per-call counters a caller may pass to {@link FaithfulnessJudge.judge}
+ * to learn how many batches stayed unparseable, which the `null` return cannot
+ * distinguish from "offline" or "matched too few claims".
+ */
+export interface JudgeDiagnostics {
+  batches: number;
+  unparseableBatches: number;
 }
 
 /**
@@ -163,7 +182,7 @@ export class FaithfulnessJudge {
   private readonly maxBatch: number;
   private readonly promptCaching: boolean;
   private readonly maxTokens: number | undefined;
-  private readonly responseFormat: JsonSchemaResponseFormat | undefined;
+  private readonly responseFormat: ResponseFormat | undefined;
 
   constructor(deps: FaithfulnessJudgeDeps) {
     this.provider = deps.provider;
@@ -203,6 +222,7 @@ export class FaithfulnessJudge {
     claims: string[],
     ctx: GroundingContext,
     signal?: AbortSignal,
+    diagnostics?: JudgeDiagnostics,
   ): Promise<ClaimVerdict[] | null> {
     const cleaned = claims.map((c) => c.trim()).filter((c) => c.length > 0);
     if (cleaned.length === 0) return null;
@@ -224,7 +244,15 @@ export class FaithfulnessJudge {
     const all: ClaimVerdict[] = [];
     let anyVerifiable = false;
     for (const batch of batches) {
-      const batchVerdicts = await this.judgeBatch(batch, evidence, signal);
+      const { verdicts: batchVerdicts, unparseable } = await this.judgeBatchDetailed(
+        batch,
+        evidence,
+        signal,
+      );
+      if (diagnostics) {
+        diagnostics.batches += 1;
+        if (unparseable) diagnostics.unparseableBatches += 1;
+      }
       if (batchVerdicts === null) continue; // batch malfunctioned → unverifiable
       anyVerifiable = true;
       all.push(...batchVerdicts);
@@ -255,6 +283,15 @@ export class FaithfulnessJudge {
     evidence: string,
     signal?: AbortSignal,
   ): Promise<ClaimVerdict[] | null> {
+    return (await this.judgeBatchDetailed(batch, evidence, signal)).verdicts;
+  }
+
+  /** {@link judgeBatch}, also saying whether a `null` was a parse failure (#117). */
+  private async judgeBatchDetailed(
+    batch: string[],
+    evidence: string,
+    signal?: AbortSignal,
+  ): Promise<{ verdicts: ClaimVerdict[] | null; unparseable: boolean }> {
     const claimsBlock = batch.map((c, i) => `${i + 1}. ${c}`).join("\n");
     const evidenceText = `=== SOURCE EVIDENCE (untrusted data) ===\n${evidence}\n=== END SOURCE EVIDENCE ===`;
     const claimsText = `=== CLAIMS TO JUDGE (return one verdict per claim, in this order) ===\n${claimsBlock}\n=== END CLAIMS ===`;
@@ -274,13 +311,17 @@ export class FaithfulnessJudge {
           { type: "text", text: evidenceText },
         ]
       : `${evidenceText}\n\n${claimsText}`;
-    const messages: ChatMessage[] = [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: userContent },
-    ];
-
-    const ask = () =>
-      this.provider.chat(messages, {
+    const ask = (format: ResponseFormat | undefined) => {
+      // #117 — JSON mode enforces JSON but not the shape, so state the schema.
+      const system =
+        format?.type === "json_object"
+          ? SYSTEM_PROMPT + jsonObjectShapeInstruction(FAITHFULNESS_VERDICTS_RESPONSE_FORMAT)
+          : SYSTEM_PROMPT;
+      const messages: ChatMessage[] = [
+        { role: "system", content: system },
+        { role: "user", content: userContent },
+      ];
+      return this.provider.chat(messages, {
         model: this.model,
         signal,
         disableTools: true,
@@ -290,30 +331,45 @@ export class FaithfulnessJudge {
         // #390 — tag prompt-cache hit-ratio telemetry by workload.
         callType: "grounding",
         ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
-        // #336 — schema-constrained verdict list on the local/vLLM path when enabled.
-        ...(this.responseFormat ? { responseFormat: this.responseFormat } : {}),
+        // #336 — structured verdict list on the local/vLLM path when enabled.
+        ...(format ? { responseFormat: format } : {}),
       });
+    };
 
     // #25 — an unparseable batch is retried ONCE before it is counted as
     // unverifiable: a sampled model can emit a malformed or cut-off verdict list
     // on one call and a clean one on the next, and each lost batch removes its
     // claims from the section's faithfulness score. A batch that parses but
     // matches too few claims is a different failure and is not retried.
+    // #117 — when that retry follows an unparseable `json_schema` reply it is
+    // sent in `json_object` mode: the runtime may have accepted the schema and
+    // ignored it, and asking the same way again would get the same prose.
     let rawVerdicts: ClaimVerdict[] | null = null;
+    let format = this.responseFormat;
     for (let attempt = 1; attempt <= JUDGE_BATCH_ATTEMPTS; attempt++) {
-      const response = await ask();
+      const response = await ask(format);
       rawVerdicts = this.parseRawVerdicts(response.content);
       if (rawVerdicts) break;
       if (attempt < JUDGE_BATCH_ATTEMPTS && !signal?.aborted) {
-        log.warn("Faithfulness judge batch was unparseable; retrying once");
+        if (format?.type === "json_schema") {
+          format = JSON_OBJECT_RESPONSE_FORMAT;
+          log.warn(
+            "Faithfulness judge batch ignored json_schema; retrying once in json_object mode",
+          );
+        } else {
+          log.warn("Faithfulness judge batch was unparseable; retrying once");
+        }
         continue;
       }
       break;
     }
     if (!rawVerdicts) {
-      log.warn("Faithfulness judge batch was unparseable; treating batch as unverifiable");
-      return null;
+      log.warn("Faithfulness judge batch was unparseable; treating batch as unverifiable", {
+        mode: format?.type ?? "off",
+      });
+      return { verdicts: null, unparseable: true };
     }
+    if (format) log.info("Faithfulness judge batch parsed", { mode: format.type });
 
     const matched = this.alignVerdicts(rawVerdicts, batch);
     const ratio = batch.length === 0 ? 0 : matched.length / batch.length;
@@ -323,9 +379,9 @@ export class FaithfulnessJudge {
         claims: batch.length,
         minMatchPercent: Math.round(MIN_BATCH_MATCH_RATIO * 100),
       });
-      return null;
+      return { verdicts: null, unparseable: false };
     }
-    return matched;
+    return { verdicts: matched, unparseable: false };
   }
 
   /**
