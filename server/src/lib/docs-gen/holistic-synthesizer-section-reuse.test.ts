@@ -239,6 +239,7 @@ describe("actual section synthesis reuse", () => {
     "claim",
     "judge",
     "budget",
+    "claim-budget",
     "config",
   ])("invalidates all sections when shared %s inputs change", async (kind) => {
     const cold = await synth();
@@ -254,6 +255,8 @@ describe("actual section synthesis reuse", () => {
     if (kind === "claim") nextRouter.primary.tuning.claimModel = "other";
     if (kind === "judge") nextRouter.primary.tuning.judgeModel = "other";
     if (kind === "budget") vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "1500");
+    // #152 — claim extraction has its own cap, so changing it must invalidate too.
+    if (kind === "claim-budget") vi.stubEnv("DOCS_GEN_CLAIM_MAX_OUTPUT_TOKENS", "1500");
     calls.sections = [];
     const result = await synthesizeFinalDocument(
       nextFacts,

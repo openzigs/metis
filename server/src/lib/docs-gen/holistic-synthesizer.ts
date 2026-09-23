@@ -65,6 +65,7 @@ import {
 } from "./truncation.js";
 import {
   modelOutputCeiling,
+  resolveClaimMaxOutputTokens,
   resolveFactsMaxOutputTokens,
   resolveSectionMaxOutputTokens,
 } from "./output-caps.js";
@@ -2580,7 +2581,11 @@ async function validateSectionGrounding(
     // #117 — a grounding reply that did not parse is NOT "nothing to check":
     // the section is surfaced as unverified instead of passing silently.
     const unparseableWarning = result.unparseable
-      ? groundingUnparseableWarning(sectionLabel, result.unparseable)
+      ? groundingUnparseableWarning(
+          sectionLabel,
+          result.unparseable,
+          result.truncated ? "truncated" : undefined,
+        )
       : null;
     if (unparseableWarning) {
       log.warn("Section grounding reply could not be parsed; section not fully verified", {
@@ -2822,7 +2827,8 @@ export async function synthesizeFinalDocument(
           provider: bundle.provider,
           model: bundle.tuning.claimModel,
           promptCaching: bundle.supportsCaching,
-          maxTokens: resolveSectionMaxOutputTokens(bundle.tuning.claimModel),
+          // #152 — its own cap, not the section cap.
+          maxTokens: resolveClaimMaxOutputTokens(bundle.tuning.claimModel),
           ...(claimFormat ? { responseFormat: claimFormat } : {}),
         })
       : null;
@@ -3011,7 +3017,7 @@ export async function synthesizeFinalDocument(
           factsCharCap,
           escalationConfig,
           sectionMaxTokens: resolveSectionMaxOutputTokens(provider.model),
-          claimMaxTokens: resolveSectionMaxOutputTokens(tuning.claimModel),
+          claimMaxTokens: resolveClaimMaxOutputTokens(tuning.claimModel),
           judgeMaxTokens: resolveSectionMaxOutputTokens(tuning.judgeModel),
           judgeMaxBatch: DEFAULT_JUDGE_MAX_BATCH,
           judgeMinBatchMatchRatio: MIN_BATCH_MATCH_RATIO,

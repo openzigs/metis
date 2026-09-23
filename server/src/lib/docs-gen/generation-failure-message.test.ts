@@ -13,13 +13,14 @@ import {
   GENERATION_PROVIDER_SLOW_MESSAGE,
   GENERATION_PROVIDER_TLS_MESSAGE,
   GENERATION_PROVIDER_DROPPED_MESSAGE,
+  GENERATION_PROVIDER_CLOSED_MESSAGE,
   generationFailureMessage,
   isConnectionDropped,
   publicDocWarnings,
   publicGenerationErrorMessage,
 } from "./generation-failure-message.js";
 import { GENERATION_INTERRUPTED_MESSAGE } from "./interrupted-generations.js";
-import { AIError, AIProviderError } from "../ai/errors.js";
+import { AIProviderError } from "../ai/errors.js";
 import { BudgetExceededError } from "../finops/budget-enforcer.js";
 
 const SECRET =
@@ -214,10 +215,12 @@ describe("generationFailureMessage — transport failures are classified by code
     );
   });
 
-  it("the declared AI_PROVIDER_UNREACHABLE code reads as unreachable", () => {
-    expect(generationFailureMessage(new AIError("AI_PROVIDER_UNREACHABLE", "host down", 503))).toBe(
-      GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
-    );
+  // #152 — nothing ever threw AI_PROVIDER_UNREACHABLE, so the code was removed
+  // from `AIErrorCode` and from the classifier. A METIS code says nothing about
+  // the transport; the text fallback still reads the message.
+  it("AI_PROVIDER_UNREACHABLE is no longer a transport code", () => {
+    const err = Object.assign(new Error("host down"), { code: "AI_PROVIDER_UNREACHABLE" });
+    expect(generationFailureMessage(err)).toBe(GENERATION_FAILED_MESSAGE);
   });
 
   it("every transport class gets a DISTINCT message, and only connect-phase says unreachable", () => {
@@ -265,6 +268,64 @@ describe("generationFailureMessage — transport failures are classified by code
     expect(generationFailureMessage(new Error("worker terminated by operator"))).toBe(
       GENERATION_FAILED_MESSAGE,
     );
+  });
+});
+
+/**
+ * #152 — measured on Node 22.22.3: a socket the host closes BEFORE sending
+ * headers surfaces as `TypeError: fetch failed` with cause `SocketError: other
+ * side closed` (UND_ERR_SOCKET); the same close after headers surfaces as
+ * `TypeError: terminated` with the same cause.
+ * The pre-headers case was reported as "dropped while the response was
+ * arriving" — but no response had arrived.
+ */
+describe("generationFailureMessage — a connection closed before any response (#152)", () => {
+  it("UND_ERR_SOCKET under `fetch failed` is closed-before-response", () => {
+    const err = undiciError("fetch failed", "UND_ERR_SOCKET", "other side closed");
+    expect(generationFailureMessage(err)).toBe(GENERATION_PROVIDER_CLOSED_MESSAGE);
+    expect(isConnectionDropped(err)).toBe(false);
+  });
+
+  it("a reset under `fetch failed` keeps its #114 drop reading (the mid-stream retry keys on it)", () => {
+    const err = undiciError("fetch failed", "ECONNRESET", "read ECONNRESET");
+    expect(generationFailureMessage(err)).toBe(GENERATION_PROVIDER_DROPPED_MESSAGE);
+    expect(isConnectionDropped(err)).toBe(true);
+  });
+
+  it("the same close under `terminated` is still a mid-response drop", () => {
+    const err = undiciError("terminated", "UND_ERR_SOCKET", "other side closed");
+    expect(generationFailureMessage(err)).toBe(GENERATION_PROVIDER_DROPPED_MESSAGE);
+    expect(isConnectionDropped(err)).toBe(true);
+  });
+
+  it("a read-side ETIMEDOUT keeps its #114 classification", () => {
+    expect(generationFailureMessage(undiciError("fetch failed", "ETIMEDOUT"))).toBe(
+      GENERATION_PROVIDER_DROPPED_MESSAGE,
+    );
+  });
+
+  it("the message says no response arrived, never that it was arriving", () => {
+    expect(GENERATION_PROVIDER_CLOSED_MESSAGE).toMatch(/before sending any response/);
+    expect(GENERATION_PROVIDER_CLOSED_MESSAGE).not.toMatch(/while the response was arriving/);
+    expect(generationFailureMessage(GENERATION_PROVIDER_CLOSED_MESSAGE)).toBe(
+      GENERATION_PROVIDER_CLOSED_MESSAGE,
+    );
+  });
+
+  it("is classified from a real undici pre-headers close", async () => {
+    const net = await import("node:net");
+    const server = net.createServer((sock) => sock.once("data", () => sock.destroy()));
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as { port: number };
+    let err: unknown;
+    try {
+      await fetch(`http://127.0.0.1:${port}/`);
+    } catch (e) {
+      err = e;
+    } finally {
+      server.close();
+    }
+    expect(generationFailureMessage(err)).toBe(GENERATION_PROVIDER_CLOSED_MESSAGE);
   });
 });
 

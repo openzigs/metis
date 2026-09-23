@@ -49,6 +49,17 @@ export const DEFAULT_FACTS_MAX_OUTPUT_TOKENS = 8_192;
  */
 export const DEFAULT_DB_SCHEMA_PROSE_MAX_OUTPUT_TOKENS = 16_384;
 
+/**
+ * #152 — default OUTPUT cap for ONE claim-extraction call. Claim extraction
+ * used to reuse the SECTION cap, so its budget moved whenever the section cap
+ * was tuned for prose and was never sized for a claim list. With claim
+ * extraction batched (`DEFAULT_CLAIM_BATCH_CHARS` characters of passage
+ * per call) one reply is a few thousand tokens; 16384 leaves room for a dense,
+ * formula-heavy passage. Like every default here it drops to 8192 for a model
+ * with no known ceiling.
+ */
+export const DEFAULT_CLAIM_MAX_OUTPUT_TOKENS = 16_384;
+
 /** Floor for any cap — below this no useful output could be written at all. */
 const MIN_MAX_OUTPUT_TOKENS = 512;
 
@@ -194,7 +205,8 @@ export function modelOutputCeiling(model: string | undefined): number | null {
 export type DocsGenMaxOutputTokensKey =
   | "DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS"
   | "DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS"
-  | "DOCS_GEN_DB_SCHEMA_MAX_OUTPUT_TOKENS";
+  | "DOCS_GEN_DB_SCHEMA_MAX_OUTPUT_TOKENS"
+  | "DOCS_GEN_CLAIM_MAX_OUTPUT_TOKENS";
 
 /**
  * #1226 — resolve a docs-gen OUTPUT cap: the registry value (db → env, so a
@@ -255,6 +267,19 @@ export function resolveDbSchemaProseMaxOutputTokens(
   return resolveDocsGenMaxOutputTokens(
     "DOCS_GEN_DB_SCHEMA_MAX_OUTPUT_TOKENS",
     DEFAULT_DB_SCHEMA_PROSE_MAX_OUTPUT_TOKENS,
+    model,
+    config,
+  );
+}
+
+/** #152 — OUTPUT cap for one grounding claim-extraction call. */
+export function resolveClaimMaxOutputTokens(
+  model?: string,
+  config: ConfigService = getConfigService(),
+): number {
+  return resolveDocsGenMaxOutputTokens(
+    "DOCS_GEN_CLAIM_MAX_OUTPUT_TOKENS",
+    DEFAULT_CLAIM_MAX_OUTPUT_TOKENS,
     model,
     config,
   );

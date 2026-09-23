@@ -5,7 +5,6 @@
 export type AIErrorCode =
   | "AI_OFFLINE"
   | "AI_PROVIDER_ERROR"
-  | "AI_PROVIDER_UNREACHABLE"
   | "AI_CONFIG_INVALID"
   | "AI_RATE_LIMITED"
   | "AI_CANCELLED"

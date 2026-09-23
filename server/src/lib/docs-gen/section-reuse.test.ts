@@ -3,6 +3,7 @@ import {
   hashSectionInputs,
   recordSectionSynthesis,
   reusableSectionRecords,
+  SECTION_SYNTHESIS_VERSION,
   sectionSynthesisSchema,
   type SectionInputHashes,
 } from "./section-reuse.js";
@@ -46,7 +47,11 @@ const payload = {
   ],
 };
 const record = () => recordSectionSynthesis("overview", hashSectionInputs(inputs), payload);
-const snapshot = () => ({ version: 1, complete: true, records: [record()] });
+const snapshot = () => ({
+  version: SECTION_SYNTHESIS_VERSION,
+  complete: true,
+  records: [record()],
+});
 
 describe("proven section reuse", () => {
   it("stores hashes only and preserves immutable historical output metadata", () => {
@@ -76,7 +81,9 @@ describe("proven section reuse", () => {
     null,
     {},
     { ...snapshot(), complete: false },
-    { ...snapshot(), version: 2 },
+    { ...snapshot(), version: SECTION_SYNTHESIS_VERSION + 1 },
+    // #152 — a record written before claim extraction was batched.
+    { ...snapshot(), version: 1 },
     { ...snapshot(), records: [] },
     { ...snapshot(), records: [record(), record()] },
     { ...snapshot(), extra: true },

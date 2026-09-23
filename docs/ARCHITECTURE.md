@@ -513,6 +513,16 @@ mode. (The older vLLM `guided_json` extra-body param is deprecated and not used.
   does not parse is reported (`ClaimDecomposition.unparseable`,
   `JudgeDiagnostics.unparseableBatches` → `FaithfulnessResult.unparseable`) and
   surfaces as an untiered `section-ungrounded` warning — never as "no claims".
+- **Replies cut off at the output cap (#152).** `finishReason` is checked
+  BEFORE parsing: a claim or verdict reply stopped by `max_tokens` is never
+  parsed and never retried in `json_object` mode (the same prompt is cut off
+  the same way). The extractor batches a section into passages of at most
+  `DEFAULT_CLAIM_BATCH_CHARS` (8,000) characters and splits a passage whose
+  reply is still cut off in two, down to 500 characters; the judge counts a
+  cut-off batch in `JudgeDiagnostics.truncatedBatches`. Either way
+  `FaithfulnessResult.truncated` selects warning wording that names the cap
+  (`DOCS_GEN_CLAIM_MAX_OUTPUT_TOKENS` / `DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS`)
+  instead of the structured-output mode.
 - **Graceful degradation.** A runtime that does not support the field (some
   Ollama / LM Studio builds) returns a **400/422**; the provider — only when the
   request carried `response_format` — logs one warn and retries **once without
@@ -3823,6 +3833,7 @@ Design points:
 | `DOCS_GEN_REASONING_ALLOWANCE_TOKENS` | `32768` | Reasoning headroom added on top of every docs-gen output cap for a model that **thinks by default** and draws its reasoning from the same `max_tokens` (#25). Applies only to models on the documented allow-list in `docs-gen/output-caps.ts` — today DeepSeek `deepseek-v4-pro` / `deepseek-flash`, whose thinking mode is on by default. The section/facts caps then describe the ANSWER budget; the sum is still clamped to the model's ceiling (384K for DeepSeek V4). `0` opts out. |
 | `DOCS_GEN_PHASE1_REASONING` | `auto` | How much a Phase-1 fact-extraction call may reason (#25): `auto` asks a thinking-by-default model (the same allow-list) for `low` effort and sends nothing for any other model, so Claude is unchanged; `provider-default`, `off`, `low`, `medium`, `high` override it for every model. Sent by the `anthropic` provider as `thinking` + `output_config.effort` (`thinking: enabled` on DeepSeek's endpoint, `adaptive` elsewhere; `off` → `thinking: disabled`). |
 | `DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS` | `8192` | Output-token cap for Phase-1 fact extraction (#1226). Same floor and model-ceiling clamp as above. Fact extraction emits compact bullets, so the smaller default is deliberate. |
+| `DOCS_GEN_CLAIM_MAX_OUTPUT_TOKENS` | `16384` | Output-token cap for one grounding claim-extraction call (#152); it used to reuse the section cap. Claim extraction sends a section in passages of at most ~8,000 characters (split at subsection headings where possible, never inside a fenced block), and a passage whose reply still stops at the cap (`finishReason: "length"`) is split in two and asked again rather than re-sent in `json_object` mode. A reply cut off at the cap is never parsed, and a section that still cannot fit gets a warning naming this key. Same floor and model-ceiling clamp as above. |
 | `DOCS_GEN_DB_SCHEMA_MAX_OUTPUT_TOKENS` | `16384` | Output-token cap for one DB-schema table-prose batch (#1228). Previously no cap was passed at all, so the call inherited the provider's `4096` default; at the default batch size of 30 that leaves roughly 516 characters per description, and one batch is a single JSON object, so exceeding it discarded all 30 rather than the tail few. Same floor and model-ceiling clamp as above. Lower it only alongside `DB_SCHEMA_SYNTH_BATCH_SIZE`. |
 | `BEDROCK_GATEWAY_URL` | — | When set alongside `BEDROCK_GATEWAY_API_KEY`, enables `BedrockDirectProvider` with prompt caching, model pinning, and `cached_tokens` reporting. Without this, falls back to the default provider with no caching. |
 | `ENABLE_PROMPT_CACHING` | — | **Set on the bedrock-access-gateway container** (not METIS). Enables server-side prompt caching for all requests, including chat/stream routes that go through the SDK path. See [`docs/OPERATIONS.md` §7.5](../docs/OPERATIONS.md). |
