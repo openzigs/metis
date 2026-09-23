@@ -91,8 +91,11 @@ const sectionRecordSchema = outputSchema
 export type SectionSynthesisRecord = z.infer<typeof sectionRecordSchema>;
 
 /** Version the complete synthesis/grounding contract, not citation coverage.
- * Bump when prompt, refinement, cleanup, claim extraction or judging semantics change. */
-export const SECTION_SYNTHESIS_VERSION = 1;
+ * Bump when prompt, refinement, cleanup, claim extraction or judging semantics change.
+ * 2 — #152: claim extraction is batched and a reply cut off at the output cap is
+ * no longer retried or parsed, so a section left unverified by a truncated claim
+ * list under version 1 must be re-checked, not reused with its stale warning. */
+export const SECTION_SYNTHESIS_VERSION = 2;
 export const sectionSynthesisSchema = z
   .object({
     version: z.literal(SECTION_SYNTHESIS_VERSION),

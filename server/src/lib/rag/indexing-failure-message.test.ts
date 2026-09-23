@@ -141,6 +141,64 @@ describe("indexingFailureMessage", () => {
   });
 });
 
+/**
+ * #152 — #114 gave generation failures distinct slow / TLS / dropped wording,
+ * and the indexing vocabulary mapped none of them, so a reset embedding call
+ * read as a generic "Indexing failed". Each transport cause keeps its meaning.
+ */
+describe("indexingFailureMessage — transport causes keep their wording (#152)", () => {
+  const undici = (outer: string, code: string, inner = "x") =>
+    new TypeError(outer, { cause: Object.assign(new Error(inner), { code }) });
+
+  it("a connection reset mid-response is a drop, not a generic failure", () => {
+    const msg = indexingFailureMessage(undici("terminated", "ECONNRESET", "read ECONNRESET"));
+    expect(msg).toBe(m.INDEXING_PROVIDER_DROPPED_MESSAGE);
+    expect(indexingFailureMessage("embedding failed: read ECONNRESET")).toBe(
+      m.INDEXING_PROVIDER_DROPPED_MESSAGE,
+    );
+  });
+
+  it("a slow embedding host is named as slow", () => {
+    expect(
+      indexingFailureMessage(undici("fetch failed", "UND_ERR_HEADERS_TIMEOUT", "Headers Timeout")),
+    ).toBe(m.INDEXING_PROVIDER_SLOW_MESSAGE);
+  });
+
+  it("a certificate failure is named as TLS", () => {
+    expect(indexingFailureMessage(undici("fetch failed", "CERT_HAS_EXPIRED"))).toBe(
+      m.INDEXING_PROVIDER_TLS_MESSAGE,
+    );
+  });
+
+  it("a connection closed before any response is named as such", () => {
+    expect(
+      indexingFailureMessage(undici("fetch failed", "UND_ERR_SOCKET", "other side closed")),
+    ).toBe(m.INDEXING_PROVIDER_CLOSED_MESSAGE);
+  });
+
+  it("every transport message is distinct, speaks about indexing, and passes through unchanged", () => {
+    const msgs = [
+      m.INDEXING_PROVIDER_UNREACHABLE_MESSAGE,
+      m.INDEXING_PROVIDER_SLOW_MESSAGE,
+      m.INDEXING_PROVIDER_TLS_MESSAGE,
+      m.INDEXING_PROVIDER_DROPPED_MESSAGE,
+      m.INDEXING_PROVIDER_CLOSED_MESSAGE,
+    ];
+    expect(new Set(msgs).size).toBe(msgs.length);
+    for (const msg of msgs) {
+      expect(msg).toMatch(/re-index/);
+      expect(msg).not.toMatch(/regenerate/);
+      expect(indexingFailureMessage(msg)).toBe(msg);
+    }
+  });
+
+  it("the approve/reject fallback inherits the cause-specific wording", () => {
+    expect(m.approvalFailureMessage(undici("terminated", "ECONNRESET"))).toBe(
+      m.INDEXING_PROVIDER_DROPPED_MESSAGE,
+    );
+  });
+});
+
 describe("publicIndexingErrorMessage", () => {
   it("returns null for no message", () => {
     expect(publicIndexingErrorMessage(null)).toBeNull();

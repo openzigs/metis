@@ -21,6 +21,7 @@
 import { z } from "zod";
 import type { AIProvider, ChatMessage, ResponseFormat } from "../../ai/types.js";
 import { createChildLogger } from "../../logger.js";
+import { isTruncationFinishReason } from "../truncation.js";
 import type { GroundingContext } from "./grounding-context.js";
 import { extractFirstJson } from "./json-extract.js";
 import {
@@ -46,6 +47,85 @@ export interface ClaimDecomposition {
    * surfaces it as a grounding warning on the document.
    */
   unparseable?: true;
+  /**
+   * #152 — set with {@link unparseable} when the reason was the output cap: a
+   * reply stopped at `max_tokens` (`finishReason: "length"`) even after the
+   * batch was split as far as it would go. The warning then names the cap
+   * (`DOCS_GEN_CLAIM_MAX_OUTPUT_TOKENS`) instead of the structured-output mode.
+   */
+  truncated?: true;
+}
+
+/**
+ * #152 — the largest passage, in characters, sent to the model in ONE claim
+ * extraction call. Run 7's 30,713-character Formulas section asked for its whole
+ * claim list in one reply, which ran 3m53s and stopped at the 8,192-token cap
+ * with the JSON cut mid-array — so the section was left unverified. A claim list
+ * is roughly as long as its passage plus JSON overhead, so 8,000 characters
+ * keeps one reply well inside an 8K-token cap. Overridable per-instance.
+ */
+export const DEFAULT_CLAIM_BATCH_CHARS = 8_000;
+
+/**
+ * #152 — the smallest passage a reply cut off at the cap is split down to. Below
+ * this a cut-off reply means the cap itself is too small, and splitting further
+ * would only multiply calls.
+ */
+const MIN_SPLIT_CHARS = 500;
+
+/**
+ * #152 — split a section into passages of at most `budget` characters for
+ * claim extraction, by subsection where it can: a heading starts a new passage
+ * once the current one is at least half full, paragraphs (blank-line separated)
+ * are kept whole, and a fenced block is never cut. Only a paragraph larger than
+ * the budget on its own is split, by line; a single line longer than the budget
+ * is left whole. Joining the passages back loses no line. A non-positive budget,
+ * or a text that already fits, returns the text as one passage.
+ * @internal — exported for testing.
+ */
+export function splitForClaimExtraction(text: string, budget: number): string[] {
+  if (budget <= 0 || text.length <= budget) return [text];
+
+  // Blocks: blank-line separated paragraphs, with fenced blocks kept intact.
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let inFence = false;
+  for (const line of text.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+    if (!inFence && line.trim() === "") {
+      if (current.length > 0) blocks.push(current.join("\n"));
+      current = [];
+      continue;
+    }
+    current.push(line);
+  }
+  if (current.length > 0) blocks.push(current.join("\n"));
+
+  const chunks: string[] = [];
+  let chunk = "";
+  const flush = () => {
+    if (chunk) chunks.push(chunk);
+    chunk = "";
+  };
+  const add = (piece: string, sep: string) => {
+    if (chunk && chunk.length + sep.length + piece.length > budget) flush();
+    chunk = chunk ? chunk + sep + piece : piece;
+  };
+  for (const block of blocks) {
+    if (/^#{1,6}\s/.test(block) && chunk.length >= budget / 2) flush();
+    // A block holding a fence anywhere (e.g. "Formula:" directly above it).
+    const fenced = /(^|\n)\s*(```|~~~)/.test(block);
+    if (block.length <= budget || fenced) {
+      add(block, "\n\n");
+      continue;
+    }
+    // An oversized paragraph: pack it line by line.
+    flush();
+    for (const line of block.split("\n")) add(line, "\n");
+    flush();
+  }
+  flush();
+  return chunks;
 }
 
 // ── Zod schema — applied AFTER JSON.parse + shape check, never at the boundary.
@@ -143,7 +223,20 @@ export interface ClaimExtractorDeps {
    * schema stated in the system prompt.
    */
   responseFormat?: ResponseFormat;
+  /**
+   * #152 — the largest passage sent in one call (default
+   * {@link DEFAULT_CLAIM_BATCH_CHARS}). A larger section is split with
+   * {@link splitForClaimExtraction} and its claim lists concatenated in order.
+   * A non-positive value falls back to the default.
+   */
+  batchChars?: number;
 }
+
+/** One claim-extraction call's outcome (#152). */
+type BatchOutcome =
+  | { kind: "parsed"; decomposition: ClaimDecomposition }
+  | { kind: "truncated" }
+  | { kind: "unparseable" };
 
 export class ClaimExtractor {
   private readonly provider: AIProvider;
@@ -151,6 +244,7 @@ export class ClaimExtractor {
   private readonly promptCaching: boolean;
   private readonly maxTokens: number | undefined;
   private readonly responseFormat: ResponseFormat | undefined;
+  private readonly batchChars: number;
 
   constructor(deps: ClaimExtractorDeps) {
     this.provider = deps.provider;
@@ -158,6 +252,10 @@ export class ClaimExtractor {
     this.promptCaching = deps.promptCaching ?? false;
     this.maxTokens = deps.maxTokens;
     this.responseFormat = deps.responseFormat;
+    this.batchChars =
+      deps.batchChars && deps.batchChars > 0
+        ? Math.floor(deps.batchChars)
+        : DEFAULT_CLAIM_BATCH_CHARS;
   }
 
   /**
@@ -183,56 +281,121 @@ export class ClaimExtractor {
 
     const idList = ctx.sources.map((s) => `- ${s.sourceId} (${s.kind}): ${s.label}`).join("\n");
 
-    const userContent = `AVAILABLE SOURCE IDS (cite only these):\n${idList || "(none)"}\n\n=== PASSAGE ===\n${text}\n=== END PASSAGE ===`;
+    const batches = splitForClaimExtraction(text, this.batchChars);
+    log.info("Decomposing section into grounded claims", {
+      chars: text.length,
+      batches: batches.length,
+    });
 
-    log.info("Decomposing section into grounded claims", { chars: text.length });
+    // #117 — once a runtime has been seen to ignore `json_schema`, every later
+    // batch of the section goes straight to `json_object`.
+    const state = { format: this.responseFormat };
+    const claims: GroundedClaim[] = [];
+    for (const batch of batches) {
+      const outcome = await this.decomposeBatch(batch, idList, state, signal);
+      if (outcome.kind !== "parsed") {
+        // All-or-nothing, as before batching: a partial claim list would score
+        // only part of the section and read as a verdict on all of it. The
+        // remaining batches are not asked — their answer could not be used.
+        log.warn("Claim decomposition incomplete; the section is unverified", {
+          cause: outcome.kind,
+          mode: state.format?.type ?? "off",
+        });
+        return outcome.kind === "truncated"
+          ? { claims: [], unparseable: true, truncated: true }
+          : { claims: [], unparseable: true };
+      }
+      claims.push(...outcome.decomposition.claims);
+    }
+    if (state.format) log.info("Claim decomposition parsed", { mode: state.format.type });
+    return { claims };
+  }
 
-    const ask = async (format: ResponseFormat | undefined) => {
-      // #117 — JSON mode enforces JSON but not the shape, so state the schema.
-      const system =
-        format?.type === "json_object"
-          ? SYSTEM_PROMPT + jsonObjectShapeInstruction(CLAIM_DECOMPOSITION_RESPONSE_FORMAT)
-          : SYSTEM_PROMPT;
-      const messages: ChatMessage[] = [
-        { role: "system", content: system },
-        { role: "user", content: userContent },
-      ];
-      const response = await this.provider.chat(messages, {
-        model: this.model,
-        signal,
-        disableTools: true,
-        // #1226 — cap sized for THIS extractor's model, never inherited from the
-        // provider's section-model default.
-        ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
-        // #390/#701 — tag prompt-cache hit-ratio telemetry by workload. Claim
-        // extraction has its OWN bucket (split from the faithfulness judge's
-        // "grounding") so its input:output ratio + hit rate surface distinctly in
-        // the #699 admin telemetry endpoint, validating the Sonnet-vs-Haiku call.
-        callType: "claim-extraction",
-        ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
-        // #336 — structured output on the local/vLLM path when enabled.
-        ...(format ? { responseFormat: format } : {}),
-      });
-      return this.tryParseClaims(response.content);
-    };
-
-    let format = this.responseFormat;
-    let parsed = await ask(format);
+  /**
+   * #152 — decompose one passage. A reply stopped at the output cap is never
+   * parsed and never re-asked in `json_object` mode (the same prompt would be
+   * cut off the same way); the passage is split in two and each half asked on
+   * its own, down to {@link MIN_SPLIT_CHARS}.
+   */
+  private async decomposeBatch(
+    passage: string,
+    idList: string,
+    state: { format: ResponseFormat | undefined },
+    signal: AbortSignal | undefined,
+  ): Promise<BatchOutcome> {
+    let outcome = await this.ask(passage, idList, state.format, signal);
     // #117 — a runtime can accept `json_schema` with HTTP 200 and ignore it, so
-    // an unparseable reply in that mode is retried once in JSON mode.
-    if (parsed === null && format?.type === "json_schema" && !signal?.aborted) {
+    // an unparseable (NOT cut-off) reply in that mode is retried once in JSON mode.
+    if (
+      outcome.kind === "unparseable" &&
+      state.format?.type === "json_schema" &&
+      !signal?.aborted
+    ) {
       log.warn("Claim decomposition ignored json_schema; retrying once in json_object mode");
-      format = JSON_OBJECT_RESPONSE_FORMAT;
-      parsed = await ask(format);
+      state.format = JSON_OBJECT_RESPONSE_FORMAT;
+      outcome = await this.ask(passage, idList, state.format, signal);
     }
-    if (parsed === null) {
-      log.warn("Failed to parse claim decomposition as JSON; the section is unverified", {
-        mode: format?.type ?? "off",
+    if (outcome.kind !== "truncated") return outcome;
+
+    const halves = splitForClaimExtraction(passage, Math.ceil(passage.length / 2));
+    if (passage.length < MIN_SPLIT_CHARS * 2 || halves.length < 2 || signal?.aborted) {
+      log.warn("Claim list exceeded the output cap; the passage cannot be split further", {
+        chars: passage.length,
+        maxTokens: this.maxTokens,
       });
-      return { claims: [], unparseable: true };
+      return outcome;
     }
-    if (format) log.info("Claim decomposition parsed", { mode: format.type });
-    return parsed;
+    log.warn("Claim list exceeded the output cap; splitting the passage and asking again", {
+      chars: passage.length,
+      parts: halves.length,
+      maxTokens: this.maxTokens,
+    });
+    const claims: GroundedClaim[] = [];
+    for (const half of halves) {
+      const part = await this.decomposeBatch(half, idList, state, signal);
+      if (part.kind !== "parsed") return part;
+      claims.push(...part.decomposition.claims);
+    }
+    return { kind: "parsed", decomposition: { claims } };
+  }
+
+  private async ask(
+    passage: string,
+    idList: string,
+    format: ResponseFormat | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<BatchOutcome> {
+    const userContent = `AVAILABLE SOURCE IDS (cite only these):\n${idList || "(none)"}\n\n=== PASSAGE ===\n${passage}\n=== END PASSAGE ===`;
+    // #117 — JSON mode enforces JSON but not the shape, so state the schema.
+    const system =
+      format?.type === "json_object"
+        ? SYSTEM_PROMPT + jsonObjectShapeInstruction(CLAIM_DECOMPOSITION_RESPONSE_FORMAT)
+        : SYSTEM_PROMPT;
+    const messages: ChatMessage[] = [
+      { role: "system", content: system },
+      { role: "user", content: userContent },
+    ];
+    const response = await this.provider.chat(messages, {
+      model: this.model,
+      signal,
+      disableTools: true,
+      // #1226 — cap sized for THIS extractor's model, never inherited from the
+      // provider's section-model default.
+      ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
+      // #390/#701 — tag prompt-cache hit-ratio telemetry by workload. Claim
+      // extraction has its OWN bucket (split from the faithfulness judge's
+      // "grounding") so its input:output ratio + hit rate surface distinctly in
+      // the #699 admin telemetry endpoint, validating the Sonnet-vs-Haiku call.
+      callType: "claim-extraction",
+      ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
+      // #336 — structured output on the local/vLLM path when enabled.
+      ...(format ? { responseFormat: format } : {}),
+    });
+    // #152 — checked BEFORE parsing: a reply stopped at the cap is an
+    // incomplete claim list even when the prefix happens to parse.
+    if (isTruncationFinishReason(response.finishReason)) return { kind: "truncated" };
+    const parsed = this.tryParseClaims(response.content);
+    return parsed === null ? { kind: "unparseable" } : { kind: "parsed", decomposition: parsed };
   }
 
   /**
