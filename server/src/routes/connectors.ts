@@ -163,6 +163,13 @@ function projectIdOf(req: Request): string {
  * Performs: shallow clone → code-graph → RAG ingest → metadata → discovery.
  */
 
+/**
+ * #114 — the only text a failed deep-ingest's progress event may carry to the
+ * browser. The exception is logged server-side.
+ */
+export const REPO_INGEST_FAILED_MESSAGE =
+  "Repository ingestion failed. The details are in the server log; run the ingest again to retry.";
+
 /** In-memory concurrency guard: connectors currently being ingested (#663 review). */
 const activeIngests = new Set<string>();
 
@@ -267,15 +274,20 @@ async function triggerDeepIngest(projectId: string, connectorId: string, userId:
       });
     }
   } catch (err) {
+    // #114 — the raw exception (paths, git stderr, SQL) stays in the server log;
+    // the progress event reaches the browser, so it carries fixed text only.
+    // The background callers' `.catch()` swallows the rethrow, so this is also
+    // the only place the failure is logged for them.
+    logger.warn("Repo deep-ingest failed", { err, projectId, connectorId });
     // Emit error progress so the UI can show failure and dismiss the progress bar
     emitter.progress({
       connectorId,
       projectId,
       kind: "repo",
       phase: "deep-ingest",
-      step: (err as Error).message || "Ingestion failed",
+      step: "Ingestion failed",
       status: "error",
-      errorMessage: (err as Error).message || "Unknown error",
+      errorMessage: REPO_INGEST_FAILED_MESSAGE,
     });
     throw err;
   } finally {

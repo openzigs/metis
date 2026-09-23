@@ -273,7 +273,7 @@ Record the chosen config and measured limits here (this satisfies the #332 ACs):
 | `DOCS_GEN_LOCAL_PHASE2_MODEL` | `LOCAL_GEMMA_MODEL ?? gemma3:12b` | Synthesis model (never the `gemma4:12b` reasoning default). | `tuning.phase2Model` |
 | `DOCS_GEN_LOCAL_REFINE` | unset (off) | Extra low-temp refine pass per section (slower, better). | `tuning.refine` |
 | `DOCS_GEN_LOCAL_CONCISE_PROMPT` | unset (off) | Short prompt variant (terser output). Leave off for detailed docs. | `tuning.concisePrompt` |
-| `DOCS_GEN_LOCAL_STRUCTURED_OUTPUT` | unset (off) | #336 — schema-constrained JSON on the grounding calls (vLLM/xgrammar). | grounding calls only |
+| `DOCS_GEN_LOCAL_STRUCTURED_OUTPUT` | unset (off) | `json_schema` (or `1`): #336 schema-constrained JSON on the grounding calls (vLLM/xgrammar); an unparseable reply is retried once in JSON mode. `json_object` (#117): JSON mode with the shape in the prompt, for a runtime that accepts `json_schema` and ignores it (`laguna-s-2.1` on Ollama). `off` (or `0`). | grounding calls only |
 
 ### Sizing `DOCS_GEN_LOCAL_FACTS_CHAR_CAP` — the derivation
 

@@ -404,6 +404,34 @@ export function sectionUnderReconstructedWarning(
 }
 
 /**
+ * #117 — the grounding model's reply could not be parsed, so the section was
+ * not (or not fully) checked against the source. Before #117 an unparseable
+ * claim list returned zero claims and the section passed as a clean `ready`
+ * with no faithfulness check at all — silently. Same `section-ungrounded`
+ * kind as the other "not auto-verified" warnings (the UI banner and the
+ * section-reuse schema already handle it); no `tier`, because no score exists,
+ * so the UI treats it as worth a review.
+ */
+export function groundingUnparseableWarning(
+  section: string,
+  stage: "claims" | "verdicts",
+): DocWarning {
+  const what =
+    stage === "claims"
+      ? "the grounding model's claim list could not be parsed, so none of its statements were checked"
+      : "some of the grounding model's verdicts could not be parsed, so those statements were not checked";
+  return {
+    kind: "section-ungrounded",
+    section,
+    message:
+      `Section "${section}" was not fully verified against the source: ${what}. Review it ` +
+      `against the code before relying on it. With a local model that ignores json_schema, set ` +
+      `DOCS_GEN_LOCAL_STRUCTURED_OUTPUT=json_object.`,
+    severity: "warning",
+  };
+}
+
+/**
  * Build a warning for the case where the project HAS indexed code symbols but
  * none of them survived the documentable-module filter, so synthesis produced an
  * empty document. Previously this returned a clean `ready` with zero warnings,

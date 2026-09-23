@@ -37,6 +37,29 @@ export const GENERATION_PROVIDER_AUTH_MESSAGE =
 export const GENERATION_PROVIDER_UNREACHABLE_MESSAGE =
   "The AI provider could not be reached (connection failed). Check that the provider host — for example a local Ollama server — is running and reachable from the METIS server, then regenerate the document.";
 
+/**
+ * #114 — the host answered the connect but sent no response (headers) or no
+ * further body within undici's transport budget. On a local runtime that is
+ * almost always a model still processing a large prompt: on 2026-09-23 a ~9.7
+ * min prefill was reported as "unreachable" and sent two investigators looking
+ * for a hung server that was working.
+ */
+export const GENERATION_PROVIDER_SLOW_MESSAGE =
+  "The AI provider accepted the connection but did not respond in time. A local model may still be processing a large prompt rather than being down — check the provider's own log for progress, allow it more time or reduce the prompt, then regenerate the document.";
+
+/** #114 — the provider's TLS certificate failed verification. */
+export const GENERATION_PROVIDER_TLS_MESSAGE =
+  "The AI provider's TLS certificate could not be verified. Check the provider URL and the certificate trust settings of the METIS server, then regenerate the document.";
+
+/**
+ * #114 — the connection was reset or closed while the response was arriving
+ * (`ECONNRESET`, undici's `TypeError: terminated`). Observed live on 2026-09-23:
+ * the Ollama host logged the request cancelled 52 s before METIS saw the dead
+ * socket — a network drop between the hosts, not a stopped model.
+ */
+export const GENERATION_PROVIDER_DROPPED_MESSAGE =
+  "The connection to the AI provider dropped while the response was arriving (reset or closed mid-response). This usually means a network interruption between METIS and the provider host rather than a stopped model; regenerate the document.";
+
 /** Every string a client may receive as a failed generation's `errorMessage`. */
 const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   GENERATION_INTERRUPTED_MESSAGE,
@@ -46,6 +69,9 @@ const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   GENERATION_PROVIDER_RATE_LIMITED_MESSAGE,
   GENERATION_PROVIDER_AUTH_MESSAGE,
   GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
+  GENERATION_PROVIDER_SLOW_MESSAGE,
+  GENERATION_PROVIDER_TLS_MESSAGE,
+  GENERATION_PROVIDER_DROPPED_MESSAGE,
 ]);
 
 // An HTTP status named as one: "returned 402", "status 429", "HTTP 401",
@@ -76,37 +102,151 @@ function readCode(err: unknown): string | undefined {
   return undefined;
 }
 
-// Connection-establishment failures only: the host refused, does not resolve,
-// has no route, or never answered the connect. A reset mid-response is not
-// "unreachable" and stays generic.
-const UNREACHABLE_CODES: ReadonlySet<string> = new Set([
+function readSyscall(err: unknown): string | undefined {
+  if (err && typeof err === "object" && "syscall" in err) {
+    const s = (err as { syscall?: unknown }).syscall;
+    if (typeof s === "string") return s;
+  }
+  return undefined;
+}
+
+/** How a request failed at the transport layer, when it did (#114). */
+export type TransportFailure = "unreachable" | "slow" | "tls" | "dropped";
+
+// Connection-establishment failures: the host refused, does not resolve, has no
+// route, or never answered the connect. ETIMEDOUT is here only when the error
+// says it came from `connect` — a read-side ETIMEDOUT is a dead connection.
+const CONNECT_CODES: ReadonlySet<string> = new Set([
   "ECONNREFUSED",
   "ENOTFOUND",
   "EAI_AGAIN",
   "EHOSTUNREACH",
+  "EHOSTDOWN",
   "ENETUNREACH",
-  "ETIMEDOUT",
+  "ENETDOWN",
   "UND_ERR_CONNECT_TIMEOUT",
+  "AI_PROVIDER_UNREACHABLE",
 ]);
+// undici's transport timeouts once connected: no headers / no further body.
+const SLOW_CODES: ReadonlySet<string> = new Set([
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+// OpenSSL verification codes Node surfaces on `err.code`.
+const TLS_CODES: ReadonlySet<string> = new Set([
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "CERT_UNTRUSTED",
+  "CERT_REVOKED",
+  "HOSTNAME_MISMATCH",
+]);
+const TLS_CODE_PREFIX = /^(?:ERR_TLS_|ERR_SSL_)/;
+// The connection existed and then died under the response.
+const DROPPED_CODES: ReadonlySet<string> = new Set([
+  "ECONNRESET",
+  "EPIPE",
+  "ECONNABORTED",
+  "UND_ERR_SOCKET",
+  "ETIMEDOUT",
+]);
+
+// METIS's own error codes (`AIError`, the budget enforcer) say nothing about the
+// transport, so they neither decide nor block the text fallback.
+function isMetisCode(code: string): boolean {
+  return code !== "AI_PROVIDER_UNREACHABLE" && (/^AI_/.test(code) || code === "BUDGET_EXCEEDED");
+}
+
+function classifyCode(code: string, e: unknown): TransportFailure | undefined {
+  if (code === "ETIMEDOUT") {
+    return readSyscall(e) === "connect" || /\bconnect ETIMEDOUT\b/.test(readMessage(e))
+      ? "unreachable"
+      : "dropped";
+  }
+  if (CONNECT_CODES.has(code)) return "unreachable";
+  if (SLOW_CODES.has(code)) return "slow";
+  if (TLS_CODES.has(code) || TLS_CODE_PREFIX.test(code)) return "tls";
+  if (DROPPED_CODES.has(code)) return "dropped";
+  return undefined;
+}
+
+// Text fallback, for stored strings and code-less errors only.
+const SLOW_TEXT =
+  /\b(?:UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT)\b|\bHeaders Timeout Error\b|\bBody Timeout Error\b/;
+const TLS_TEXT =
+  /\b(?:UNABLE_TO_VERIFY_LEAF_SIGNATURE|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|CERT_HAS_EXPIRED|ERR_TLS_CERT_ALTNAME_INVALID)\b|unable to verify the first certificate|self[- ]signed certificate|certificate has expired/i;
+// `terminated` is undici's whole message for a body that died mid-stream; match
+// it only as the entire message, never as a word inside other prose.
+const DROPPED_TEXT =
+  /\b(?:ECONNRESET|EPIPE)\b|\bsocket hang up\b|\bother side closed\b|^(?:TypeError:\s*)?terminated$/;
 const UNREACHABLE_TEXT =
   /(?:^|[^\w])fetch failed\b|\b(?:ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|UND_ERR_CONNECT_TIMEOUT)\b|\bconnect ETIMEDOUT\b/;
 
-/**
- * True when `err` says the provider host could not be connected to. undici
- * nests the OS error under `.cause`, so both levels are read.
- */
-export function isProviderUnreachable(err: unknown): boolean {
-  const cause =
-    err && typeof err === "object" && "cause" in err
-      ? (err as { cause?: unknown }).cause
-      : undefined;
-  for (const e of [err, cause]) {
-    const code = readCode(e);
-    if (code !== undefined && UNREACHABLE_CODES.has(code)) return true;
-    if (UNREACHABLE_TEXT.test(readMessage(e))) return true;
+/** `err` and up to two levels of `.cause` (undici nests the OS error). */
+function causeChain(err: unknown): unknown[] {
+  const chain: unknown[] = [];
+  let e: unknown = err;
+  for (let depth = 0; depth < 3 && e != null; depth++) {
+    chain.push(e);
+    e = typeof e === "object" && "cause" in e ? (e as { cause?: unknown }).cause : undefined;
   }
-  return false;
+  return chain;
 }
+
+/**
+ * #114 — classify a transport failure. When the error or any of its causes
+ * carries a (non-METIS) code, the code alone decides: the FIRST recognised code
+ * wins, and a chain carrying only unrecognised codes is not a transport verdict
+ * at all. The text is read only when no code is present — a stored string, or an
+ * error undici raised without one (`TypeError: terminated`).
+ */
+export function classifyTransportFailure(err: unknown): TransportFailure | undefined {
+  const chain = causeChain(err);
+  let sawCode = false;
+  for (const e of chain) {
+    const code = readCode(e);
+    if (code === undefined || isMetisCode(code)) continue;
+    sawCode = true;
+    const verdict = classifyCode(code, e);
+    if (verdict) return verdict;
+  }
+  if (sawCode) return undefined;
+  for (const e of chain) {
+    const message = readMessage(e).trim();
+    if (SLOW_TEXT.test(message)) return "slow";
+    if (TLS_TEXT.test(message)) return "tls";
+    if (DROPPED_TEXT.test(message)) return "dropped";
+  }
+  for (const e of chain) {
+    if (UNREACHABLE_TEXT.test(readMessage(e))) return "unreachable";
+  }
+  return undefined;
+}
+
+/** True when `err` says the provider host could not be connected to. */
+export function isProviderUnreachable(err: unknown): boolean {
+  return classifyTransportFailure(err) === "unreachable";
+}
+
+/**
+ * #114 — true when the connection was reset or closed while a response was
+ * arriving. The docs-gen section loop retries a local section once on this
+ * (see `generateSectionGroup`); a timeout or a refused connect is not a drop.
+ */
+export function isConnectionDropped(err: unknown): boolean {
+  return classifyTransportFailure(err) === "dropped";
+}
+
+const TRANSPORT_MESSAGES: Readonly<Record<TransportFailure, string>> = {
+  unreachable: GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
+  slow: GENERATION_PROVIDER_SLOW_MESSAGE,
+  tls: GENERATION_PROVIDER_TLS_MESSAGE,
+  dropped: GENERATION_PROVIDER_DROPPED_MESSAGE,
+};
 
 function readMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -148,7 +288,8 @@ export function generationFailureMessage(err: unknown): string {
   ) {
     return GENERATION_PROVIDER_AUTH_MESSAGE;
   }
-  if (isProviderUnreachable(err)) return GENERATION_PROVIDER_UNREACHABLE_MESSAGE;
+  const transport = classifyTransportFailure(err);
+  if (transport) return TRANSPORT_MESSAGES[transport];
   return GENERATION_FAILED_MESSAGE;
 }
 

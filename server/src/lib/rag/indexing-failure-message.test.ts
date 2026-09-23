@@ -21,6 +21,7 @@ import {
   indexingFailureMessage,
   publicIndexingErrorMessage,
 } from "./indexing-failure-message.js";
+import * as m from "./indexing-failure-message.js";
 
 /** A provider response body with an absolute path and an API-key-shaped string. */
 const RAW_PROVIDER_BODY =
@@ -163,5 +164,44 @@ describe("publicIndexingErrorMessage", () => {
 
   it("keeps the METIS-authored deletion marker", () => {
     expect(publicIndexingErrorMessage("deleted", "pending")).toBe("deleted");
+  });
+});
+
+describe("approvalFailureMessage (#108)", () => {
+  it("keeps each of quarantine.ts's own refusals, without the document id", () => {
+    const cases: Array<[string, string]> = [
+      ["Document gendoc-abc:rev:v2 not found", m.APPROVAL_NOT_FOUND_MESSAGE],
+      ["Document doc-1 not in approvable state: indexed", m.APPROVAL_NOT_AWAITING_MESSAGE],
+      ["Document doc-1 no longer approvable", m.APPROVAL_STATE_CHANGED_MESSAGE],
+      ["Document doc-1 approval attempt revoked", m.APPROVAL_STATE_CHANGED_MESSAGE],
+      ["Document doc-1 ingest generation revoked", m.APPROVAL_STATE_CHANGED_MESSAGE],
+      [
+        "Generated document revision unavailable for approval",
+        m.APPROVAL_REVISION_UNAVAILABLE_MESSAGE,
+      ],
+      [
+        "Quarantine embedding missing; re-ingest before approval",
+        m.APPROVAL_EMBEDDING_MISSING_MESSAGE,
+      ],
+    ];
+    for (const [raw, safe] of cases) {
+      const out = m.approvalFailureMessage(new Error(raw));
+      expect(out, raw).toBe(safe);
+      expect(out).not.toContain("doc-1");
+    }
+  });
+
+  it("does not trust a refusal quoted inside some other exception", () => {
+    const out = m.approvalFailureMessage(
+      new Error("prisma: /srv/metis/dev.db locked while Document doc-1 not found"),
+    );
+    expect(out).toBe(m.INDEXING_FAILED_MESSAGE);
+  });
+
+  it("classifies everything else through the indexing vocabulary", () => {
+    expect(m.approvalFailureMessage(new Error("cleanup unavailable"))).toBe(
+      m.INDEXING_FAILED_MESSAGE,
+    );
+    expect(m.approvalFailureMessage(undefined)).toBe(m.INDEXING_FAILED_MESSAGE);
   });
 });

@@ -93,20 +93,29 @@ describe("docsGenTuning('local') phase-1 model resolution", () => {
   });
 });
 
-describe("docsGenTuning structuredOutput flag (#336)", () => {
+describe("docsGenTuning structuredOutput flag (#336, #117)", () => {
   it("is OFF by default on the local path (existing Ollama users unaffected)", () => {
-    expect(docsGenTuning("local", "gemma3:12b").structuredOutput).toBe(false);
+    expect(docsGenTuning("local", "gemma3:12b").structuredOutput).toBe("off");
   });
 
-  it("turns ON when DOCS_GEN_LOCAL_STRUCTURED_OUTPUT=1 on the local path", () => {
+  it("DOCS_GEN_LOCAL_STRUCTURED_OUTPUT=1 keeps meaning json_schema on the local path", () => {
     process.env.DOCS_GEN_LOCAL_STRUCTURED_OUTPUT = "1";
-    expect(docsGenTuning("local", "gemma3:12b").structuredOutput).toBe(true);
+    expect(docsGenTuning("local", "gemma3:12b").structuredOutput).toBe("json_schema");
+  });
+
+  it("accepts json_object and json_schema by name, and 0 as off (#117)", () => {
+    process.env.DOCS_GEN_LOCAL_STRUCTURED_OUTPUT = "json_object";
+    expect(docsGenTuning("local", "laguna-s-2.1").structuredOutput).toBe("json_object");
+    process.env.DOCS_GEN_LOCAL_STRUCTURED_OUTPUT = "json_schema";
+    expect(docsGenTuning("local", "gemma3:12b").structuredOutput).toBe("json_schema");
+    process.env.DOCS_GEN_LOCAL_STRUCTURED_OUTPUT = "0";
+    expect(docsGenTuning("local", "gemma3:12b").structuredOutput).toBe("off");
   });
 
   it("is ALWAYS off on anthropic/bedrock (capability-gated to local/vLLM only)", () => {
-    process.env.DOCS_GEN_LOCAL_STRUCTURED_OUTPUT = "1";
+    process.env.DOCS_GEN_LOCAL_STRUCTURED_OUTPUT = "json_object";
     // The local flag must never leak onto cloud providers that ignore response_format.
-    expect(docsGenTuning("anthropic", "claude-sonnet-4-6").structuredOutput).toBe(false);
-    expect(docsGenTuning("bedrock", "us.anthropic.claude-sonnet-4-6").structuredOutput).toBe(false);
+    expect(docsGenTuning("anthropic", "claude-sonnet-4-6").structuredOutput).toBe("off");
+    expect(docsGenTuning("bedrock", "us.anthropic.claude-sonnet-4-6").structuredOutput).toBe("off");
   });
 });

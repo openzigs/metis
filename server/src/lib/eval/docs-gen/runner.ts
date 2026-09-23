@@ -280,7 +280,7 @@ function benchmarkProviders(provider: AIProvider): {
       disableThinking: false,
       refine: false,
       concisePrompt: false,
-      structuredOutput: false,
+      structuredOutput: "off",
     },
     effectiveConfigHash: createHash("sha256")
       .update(`benchmark:${provider.key}:${provider.model}`)

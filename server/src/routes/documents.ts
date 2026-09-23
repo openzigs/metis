@@ -39,6 +39,7 @@ import { approveDocument, rejectDocument } from "../lib/rag/quarantine.js";
 import { propagateAcl } from "../lib/rag/acl.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
+  approvalFailureMessage,
   indexingFailureMessage,
   publicDocumentRow,
   publicIndexingErrorMessage,
@@ -399,7 +400,9 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         const refreshed = await prisma.document.findUnique({ where: { id: documentId } });
         res.json(ok({ document: publicDocumentRow(refreshed), ...result }));
       } catch (err) {
-        throw new AppError(409, "DOCUMENT_APPROVE_FAILED", (err as Error).message);
+        // #108 — the cleanup exception stays in the server log.
+        log.warn("document approve failed", { documentId, error: String(err) });
+        throw new AppError(409, "DOCUMENT_APPROVE_FAILED", approvalFailureMessage(err));
       }
     },
   );
@@ -426,7 +429,9 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         const refreshed = await prisma.document.findUnique({ where: { id: documentId } });
         res.json(ok({ document: publicDocumentRow(refreshed) }));
       } catch (err) {
-        throw new AppError(409, "DOCUMENT_REJECT_FAILED", (err as Error).message);
+        // #108 — the cleanup exception stays in the server log.
+        log.warn("document reject failed", { documentId, error: String(err) });
+        throw new AppError(409, "DOCUMENT_REJECT_FAILED", approvalFailureMessage(err));
       }
     },
   );

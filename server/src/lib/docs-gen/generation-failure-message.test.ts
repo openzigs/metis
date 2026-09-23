@@ -10,12 +10,16 @@ import {
   GENERATION_PROVIDER_BALANCE_MESSAGE,
   GENERATION_PROVIDER_RATE_LIMITED_MESSAGE,
   GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
+  GENERATION_PROVIDER_SLOW_MESSAGE,
+  GENERATION_PROVIDER_TLS_MESSAGE,
+  GENERATION_PROVIDER_DROPPED_MESSAGE,
   generationFailureMessage,
+  isConnectionDropped,
   publicDocWarnings,
   publicGenerationErrorMessage,
 } from "./generation-failure-message.js";
 import { GENERATION_INTERRUPTED_MESSAGE } from "./interrupted-generations.js";
-import { AIProviderError } from "../ai/errors.js";
+import { AIError, AIProviderError } from "../ai/errors.js";
 import { BudgetExceededError } from "../finops/budget-enforcer.js";
 
 const SECRET =
@@ -134,6 +138,128 @@ describe("generationFailureMessage", () => {
     expect(generationFailureMessage(new Error("parsed 402 tables in 429 ms"))).toBe(
       GENERATION_FAILED_MESSAGE,
     );
+  });
+});
+
+/** undici's shape: an outer TypeError whose `.cause` carries the real code. */
+function undiciError(outer: string, code: string, inner = "x", extra: object = {}): TypeError {
+  return new TypeError(outer, { cause: Object.assign(new Error(inner), { code, ...extra }) });
+}
+
+// #114 — "fetch failed" is undici's wrapper text for EVERY transport failure, so
+// deciding on it alone told the operator of a slow-but-working local model that
+// the host was unreachable. When a code is present it decides; text is only the
+// fallback for stored strings and code-less errors.
+describe("generationFailureMessage — transport failures are classified by code (#114)", () => {
+  it("a headers timeout is a slow model, not an unreachable host", () => {
+    const err = undiciError("fetch failed", "UND_ERR_HEADERS_TIMEOUT", "Headers Timeout Error");
+    expect(generationFailureMessage(err)).toBe(GENERATION_PROVIDER_SLOW_MESSAGE);
+  });
+
+  it("a body timeout mid-response is a slow model too", () => {
+    const err = undiciError("terminated", "UND_ERR_BODY_TIMEOUT", "Body Timeout Error");
+    expect(generationFailureMessage(err)).toBe(GENERATION_PROVIDER_SLOW_MESSAGE);
+  });
+
+  it("a TLS verification failure names the certificate", () => {
+    for (const code of [
+      "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+      "DEPTH_ZERO_SELF_SIGNED_CERT",
+      "CERT_HAS_EXPIRED",
+      "ERR_TLS_CERT_ALTNAME_INVALID",
+    ]) {
+      expect(generationFailureMessage(undiciError("fetch failed", code)), code).toBe(
+        GENERATION_PROVIDER_TLS_MESSAGE,
+      );
+    }
+  });
+
+  it("a reset connection is a drop, not an unreachable host", () => {
+    const err = undiciError("fetch failed", "ECONNRESET", "read ECONNRESET");
+    expect(generationFailureMessage(err)).toBe(GENERATION_PROVIDER_DROPPED_MESSAGE);
+  });
+
+  it("undici's `TypeError: terminated` (the socket closed mid-stream) is a drop", () => {
+    const socket = undiciError("terminated", "UND_ERR_SOCKET", "other side closed");
+    expect(generationFailureMessage(socket)).toBe(GENERATION_PROVIDER_DROPPED_MESSAGE);
+    // Observed live 2026-09-23 against Ollama: the bare form, no code at all.
+    expect(generationFailureMessage(new TypeError("terminated"))).toBe(
+      GENERATION_PROVIDER_DROPPED_MESSAGE,
+    );
+    // A pre-#114 stored warning carries only the words.
+    expect(generationFailureMessage("TypeError: terminated")).toBe(
+      GENERATION_PROVIDER_DROPPED_MESSAGE,
+    );
+  });
+
+  it("a read-side ETIMEDOUT is a drop; only a connect ETIMEDOUT is unreachable", () => {
+    expect(
+      generationFailureMessage(undiciError("fetch failed", "ETIMEDOUT", "read ETIMEDOUT")),
+    ).toBe(GENERATION_PROVIDER_DROPPED_MESSAGE);
+    expect(
+      generationFailureMessage(
+        undiciError("fetch failed", "ETIMEDOUT", "connect ETIMEDOUT 10.0.0.5:11434", {
+          syscall: "connect",
+        }),
+      ),
+    ).toBe(GENERATION_PROVIDER_UNREACHABLE_MESSAGE);
+    expect(generationFailureMessage(undiciError("fetch failed", "UND_ERR_CONNECT_TIMEOUT"))).toBe(
+      GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
+    );
+  });
+
+  it("an unrecognised code decides too: `fetch failed` text no longer overrides it", () => {
+    expect(generationFailureMessage(undiciError("fetch failed", "ERR_INVALID_URL"))).toBe(
+      GENERATION_FAILED_MESSAGE,
+    );
+  });
+
+  it("the declared AI_PROVIDER_UNREACHABLE code reads as unreachable", () => {
+    expect(generationFailureMessage(new AIError("AI_PROVIDER_UNREACHABLE", "host down", 503))).toBe(
+      GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
+    );
+  });
+
+  it("every transport class gets a DISTINCT message, and only connect-phase says unreachable", () => {
+    const messages = [
+      GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
+      GENERATION_PROVIDER_SLOW_MESSAGE,
+      GENERATION_PROVIDER_TLS_MESSAGE,
+      GENERATION_PROVIDER_DROPPED_MESSAGE,
+    ];
+    expect(new Set(messages).size).toBe(4);
+    for (const m of messages.slice(1)) expect(m).not.toMatch(/could not be reached|unreachable/i);
+    // Each is in the safe vocabulary, so a stored copy passes through unchanged.
+    for (const m of messages) expect(generationFailureMessage(m)).toBe(m);
+  });
+
+  it("stored text falls back by class when there is no code", () => {
+    expect(generationFailureMessage("HeadersTimeoutError: Headers Timeout Error")).toBe(
+      GENERATION_PROVIDER_SLOW_MESSAGE,
+    );
+    expect(generationFailureMessage("Error: read ECONNRESET")).toBe(
+      GENERATION_PROVIDER_DROPPED_MESSAGE,
+    );
+    expect(generationFailureMessage("Error: unable to verify the first certificate")).toBe(
+      GENERATION_PROVIDER_TLS_MESSAGE,
+    );
+  });
+
+  it("does not read a word that merely contains `terminated` as a drop", () => {
+    expect(generationFailureMessage(new Error("worker terminated by operator"))).toBe(
+      GENERATION_FAILED_MESSAGE,
+    );
+  });
+});
+
+describe("isConnectionDropped (#114)", () => {
+  it("is true only for a mid-response drop", () => {
+    expect(isConnectionDropped(new TypeError("terminated"))).toBe(true);
+    expect(isConnectionDropped(undiciError("terminated", "UND_ERR_SOCKET"))).toBe(true);
+    expect(isConnectionDropped(undiciError("fetch failed", "ECONNRESET"))).toBe(true);
+    expect(isConnectionDropped(undiciError("fetch failed", "ECONNREFUSED"))).toBe(false);
+    expect(isConnectionDropped(undiciError("terminated", "UND_ERR_BODY_TIMEOUT"))).toBe(false);
+    expect(isConnectionDropped(new Error("boom"))).toBe(false);
   });
 });
 

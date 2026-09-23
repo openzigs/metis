@@ -19,10 +19,15 @@
  * the test seam stays green without a network call.
  */
 import { z } from "zod";
-import type { AIProvider, ChatMessage, JsonSchemaResponseFormat } from "../../ai/types.js";
+import type { AIProvider, ChatMessage, ResponseFormat } from "../../ai/types.js";
 import { createChildLogger } from "../../logger.js";
 import type { GroundingContext } from "./grounding-context.js";
 import { extractFirstJson } from "./json-extract.js";
+import {
+  CLAIM_DECOMPOSITION_RESPONSE_FORMAT,
+  JSON_OBJECT_RESPONSE_FORMAT,
+  jsonObjectShapeInstruction,
+} from "./structured-output-schemas.js";
 
 const log = createChildLogger("docs-gen:claim-extractor");
 
@@ -35,6 +40,12 @@ export interface GroundedClaim {
 /** Result of decomposing one section of generated text. */
 export interface ClaimDecomposition {
   claims: GroundedClaim[];
+  /**
+   * #117 — true when the model's reply could not be parsed as a claim list, so
+   * the empty `claims` means "not checked", not "nothing to check". The caller
+   * surfaces it as a grounding warning on the document.
+   */
+  unparseable?: true;
 }
 
 // ── Zod schema — applied AFTER JSON.parse + shape check, never at the boundary.
@@ -119,14 +130,19 @@ export interface ClaimExtractorDeps {
    */
   maxTokens?: number;
   /**
-   * #336 — optional OpenAI-compatible `response_format` schema. When set (the
-   * local/vLLM path with `DOCS_GEN_LOCAL_STRUCTURED_OUTPUT=1`), each `chat` call
-   * requests schema-constrained decoding of the `{ claims: [...] }` shape so the
-   * model cannot emit unparseable structure. The provider degrades gracefully if
-   * the runtime rejects it, and {@link parseClaims} still runs, so setting this
-   * is safe on any runtime. Undefined = unchanged request (the default).
+   * #336 — optional OpenAI-compatible `response_format`. When set (the
+   * local/vLLM path with `DOCS_GEN_LOCAL_STRUCTURED_OUTPUT`), each `chat` call
+   * requests structured output of the `{ claims: [...] }` shape. The provider
+   * degrades gracefully if the runtime rejects it, and {@link parseClaims}
+   * still runs, so setting this is safe on any runtime. Undefined = unchanged
+   * request (the default).
+   *
+   * #117 — `json_schema` asks for schema-constrained decoding; a reply that
+   * still does not parse (a runtime that accepted the field and ignored it) is
+   * retried once in `json_object` mode. `json_object` sends JSON mode with the
+   * schema stated in the system prompt.
    */
-  responseFormat?: JsonSchemaResponseFormat;
+  responseFormat?: ResponseFormat;
 }
 
 export class ClaimExtractor {
@@ -134,7 +150,7 @@ export class ClaimExtractor {
   private readonly model: string | undefined;
   private readonly promptCaching: boolean;
   private readonly maxTokens: number | undefined;
-  private readonly responseFormat: JsonSchemaResponseFormat | undefined;
+  private readonly responseFormat: ResponseFormat | undefined;
 
   constructor(deps: ClaimExtractorDeps) {
     this.provider = deps.provider;
@@ -167,34 +183,56 @@ export class ClaimExtractor {
 
     const idList = ctx.sources.map((s) => `- ${s.sourceId} (${s.kind}): ${s.label}`).join("\n");
 
-    const messages: ChatMessage[] = [
-      { role: "system", content: SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: `AVAILABLE SOURCE IDS (cite only these):\n${idList || "(none)"}\n\n=== PASSAGE ===\n${text}\n=== END PASSAGE ===`,
-      },
-    ];
+    const userContent = `AVAILABLE SOURCE IDS (cite only these):\n${idList || "(none)"}\n\n=== PASSAGE ===\n${text}\n=== END PASSAGE ===`;
 
     log.info("Decomposing section into grounded claims", { chars: text.length });
 
-    const response = await this.provider.chat(messages, {
-      model: this.model,
-      signal,
-      disableTools: true,
-      // #1226 — cap sized for THIS extractor's model, never inherited from the
-      // provider's section-model default.
-      ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
-      // #390/#701 — tag prompt-cache hit-ratio telemetry by workload. Claim
-      // extraction has its OWN bucket (split from the faithfulness judge's
-      // "grounding") so its input:output ratio + hit rate surface distinctly in
-      // the #699 admin telemetry endpoint, validating the Sonnet-vs-Haiku call.
-      callType: "claim-extraction",
-      ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
-      // #336 — schema-constrained decoding on the local/vLLM path when enabled.
-      ...(this.responseFormat ? { responseFormat: this.responseFormat } : {}),
-    });
+    const ask = async (format: ResponseFormat | undefined) => {
+      // #117 — JSON mode enforces JSON but not the shape, so state the schema.
+      const system =
+        format?.type === "json_object"
+          ? SYSTEM_PROMPT + jsonObjectShapeInstruction(CLAIM_DECOMPOSITION_RESPONSE_FORMAT)
+          : SYSTEM_PROMPT;
+      const messages: ChatMessage[] = [
+        { role: "system", content: system },
+        { role: "user", content: userContent },
+      ];
+      const response = await this.provider.chat(messages, {
+        model: this.model,
+        signal,
+        disableTools: true,
+        // #1226 — cap sized for THIS extractor's model, never inherited from the
+        // provider's section-model default.
+        ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
+        // #390/#701 — tag prompt-cache hit-ratio telemetry by workload. Claim
+        // extraction has its OWN bucket (split from the faithfulness judge's
+        // "grounding") so its input:output ratio + hit rate surface distinctly in
+        // the #699 admin telemetry endpoint, validating the Sonnet-vs-Haiku call.
+        callType: "claim-extraction",
+        ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
+        // #336 — structured output on the local/vLLM path when enabled.
+        ...(format ? { responseFormat: format } : {}),
+      });
+      return this.tryParseClaims(response.content);
+    };
 
-    return this.parseClaims(response.content);
+    let format = this.responseFormat;
+    let parsed = await ask(format);
+    // #117 — a runtime can accept `json_schema` with HTTP 200 and ignore it, so
+    // an unparseable reply in that mode is retried once in JSON mode.
+    if (parsed === null && format?.type === "json_schema" && !signal?.aborted) {
+      log.warn("Claim decomposition ignored json_schema; retrying once in json_object mode");
+      format = JSON_OBJECT_RESPONSE_FORMAT;
+      parsed = await ask(format);
+    }
+    if (parsed === null) {
+      log.warn("Failed to parse claim decomposition as JSON; the section is unverified", {
+        mode: format?.type ?? "off",
+      });
+      return { claims: [], unparseable: true };
+    }
+    if (format) log.info("Claim decomposition parsed", { mode: format.type });
+    return parsed;
   }
 
   /**
@@ -222,17 +260,20 @@ export class ClaimExtractor {
    * @internal — exposed for testing.
    */
   parseClaims(content: string): ClaimDecomposition {
-    // Tolerant parse: recovers the claims JSON even when the model wraps it in
-    // prose or a mid-response ```json fence. A genuinely unrecoverable response
-    // still degrades to an empty claim set (treated as "no claims" upstream — no
-    // ungrounded warning), which is intentional: we never fabricate claims, and a
-    // degenerate parse should not by itself mark a section degraded.
-    // See {@link extractFirstJson}.
+    return this.tryParseClaims(content) ?? { claims: [] };
+  }
+
+  /**
+   * {@link parseClaims}, but `null` when the response is not a claim list at
+   * all (no recoverable JSON, or no `claims` array), so {@link decompose} can
+   * tell "unparseable" from "no claims" (#117). Tolerant: recovers the claims
+   * JSON even when the model wraps it in prose or a mid-response ```json fence
+   * (see {@link extractFirstJson}). We never fabricate claims.
+   * @internal — exposed for testing.
+   */
+  tryParseClaims(content: string): ClaimDecomposition | null {
     const json = extractFirstJson(content);
-    if (json === null) {
-      log.warn("Failed to parse claim decomposition as JSON, returning empty");
-      return { claims: [] };
-    }
+    if (json === null) return null;
 
     // Coarse shape check before Zod (mirrors requirements-extractor).
     if (
@@ -241,7 +282,7 @@ export class ClaimExtractor {
       !Array.isArray((json as Record<string, unknown>).claims)
     ) {
       log.warn("Claim decomposition missing 'claims' array");
-      return { claims: [] };
+      return null;
     }
 
     // Zod AFTER parse. Drop malformed entries individually rather than failing
