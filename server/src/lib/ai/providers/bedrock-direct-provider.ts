@@ -32,6 +32,7 @@ import { Agent, type Dispatcher } from "undici";
 import { createChildLogger } from "../../logger.js";
 import { recordCacheHit } from "../cache-hit-telemetry.js";
 import { ToolTagStreamParser } from "./tool-tag-parser.js";
+import { messageText } from "../types.js";
 import type { ProviderCapabilities } from "../capabilities.js";
 import type {
   AIProvider,
@@ -255,6 +256,95 @@ function envIntOr(raw: string | undefined, fallback: number, min = 0): number {
   return Number.isFinite(n) && n >= min ? n : fallback;
 }
 
+/** Default time-to-first-token budget (ms) for `stream()`. */
+const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 600_000;
+/** Default between-chunk stall budget (ms) once `stream()` has started emitting. */
+const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
+/** Default total-request budget (ms) for non-streaming `chat()`. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
+
+/**
+ * #111 — env knobs for the `local-gemma` provider's app-level timeouts. A local
+ * runtime's time-to-first-token is dominated by prompt processing (measured
+ * ~224 tok/s prefill for a 117B MoE, so a 130K-token prompt needs ~9.7 min), so
+ * the budgets must be operator-tunable per model and hardware. Read in the
+ * provider constructor — like `AI_MAX_RETRIES` — so every construction site
+ * (the factory, docs-gen's single-provider and hybrid bundles, the analysis
+ * interception) honours them without threading a value through each. Scoped to
+ * `local-gemma`: a gateway provider keeps its defaults. `0` disables a guard,
+ * matching the constructor options; an explicit constructor option wins.
+ */
+export const LOCAL_TIMEOUT_ENV = {
+  firstByte: "LOCAL_GEMMA_FIRST_BYTE_TIMEOUT_MS",
+  idle: "LOCAL_GEMMA_IDLE_TIMEOUT_MS",
+  request: "LOCAL_GEMMA_REQUEST_TIMEOUT_MS",
+} as const;
+
+/** Node clamps any timer longer than 2^31-1 ms to 1 ms (TimeoutOverflowWarning). */
+const MAX_NODE_TIMER_MS = 2_147_483_647;
+
+/**
+ * Largest accepted `LOCAL_GEMMA_*_TIMEOUT_MS` value. undici's `headersTimeout`
+ * is sized to the budget PLUS {@link UNDICI_HEADERS_TIMEOUT_MARGIN_MS}, so the
+ * budget itself must leave room for the margin under the Node timer ceiling —
+ * otherwise undici's own timer overflows to 1 ms. ~24.8 days; `0` means "never".
+ */
+export const MAX_LOCAL_TIMEOUT_MS = MAX_NODE_TIMER_MS - UNDICI_HEADERS_TIMEOUT_MARGIN_MS;
+
+/**
+ * Parse a `LOCAL_GEMMA_*_TIMEOUT_MS` knob STRICTLY: plain decimal digits only, at
+ * most {@link MAX_LOCAL_TIMEOUT_MS}. `parseInt` read `1_200_000` and `1.2e6` as
+ * `1`, and an over-limit value becomes a 1 ms Node timer — either way a setting
+ * meant to RAISE the budget failed every stream at once. Unset/blank keeps the
+ * default silently; anything else invalid keeps the default and warns.
+ */
+function envTimeoutMsOr(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw.trim().length === 0) return fallback;
+  const value = raw.trim();
+  if (/^\d+$/.test(value)) {
+    const n = Number(value);
+    if (n <= MAX_LOCAL_TIMEOUT_MS) return n;
+  }
+  log.warn("Ignoring invalid local timeout; keeping the default", {
+    env: name,
+    value: raw.slice(0, 40),
+    defaultMs: fallback,
+    maxMs: MAX_LOCAL_TIMEOUT_MS,
+  });
+  return fallback;
+}
+
+/**
+ * #111 — `stream()` received no first token within `firstByteTimeoutMs`. A typed
+ * error so it is recognisably NOT a transient network failure: `withRetry` never
+ * retries it, because re-sending the identical prompt to a local runtime repeats
+ * the whole prefill (Ollama discards the aborted request's KV cache and logs
+ * "forcing full prompt re-processing"), doubling wall time for the same outcome.
+ */
+export class FirstTokenTimeoutError extends Error {
+  constructor(
+    readonly timeoutMs: number,
+    readonly promptChars: number,
+    readonly messageCount: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "FirstTokenTimeoutError";
+  }
+}
+
+/**
+ * Total characters of prompt text across `messages` (text parts only). Characters,
+ * not tokens: no token count is observable before the first token — the runtime
+ * reports `usage` only at stream end — and the chars-per-token ratio varies ~2.5x
+ * between prose and dense code facts, so an estimate would mislead the operator
+ * this number is meant to inform.
+ */
+function promptChars(messages: ChatMessage[]): number {
+  return messages.reduce((n, m) => n + messageText(m).length, 0);
+}
+
 /**
  * Internal marker thrown by a connection attempt when the gateway returns a
  * RETRYABLE HTTP status (429/503). It carries the status and an optional
@@ -406,7 +496,8 @@ export interface OpenAICompatibleProviderOptions {
    * Inactivity timeout (ms) BETWEEN streamed chunks once the model has begun
    * emitting tokens. The timer resets on every SSE chunk, so a long-but-
    * progressing stream is never killed — only a genuine stall (no new bytes
-   * for this long mid-stream) aborts. Defaults to 120s. Set 0 to disable.
+   * for this long mid-stream) aborts. Defaults to 120s (for `local-gemma`,
+   * `LOCAL_GEMMA_IDLE_TIMEOUT_MS` when set). Set 0 to disable.
    */
   idleTimeoutMs?: number;
   /**
@@ -414,13 +505,15 @@ export interface OpenAICompatibleProviderOptions {
    * prompt (e.g. docs-gen Phase 2 with 100+ module fact-sheets) can spend
    * minutes on prompt evaluation before the FIRST token streams — during
    * which no SSE chunk arrives. This budget is applied only until the first
-   * chunk; afterwards `idleTimeoutMs` governs. Defaults to 600s. Set 0 to
-   * disable.
+   * chunk; afterwards `idleTimeoutMs` governs. Defaults to 600s (for
+   * `local-gemma`, `LOCAL_GEMMA_FIRST_BYTE_TIMEOUT_MS` when set). Set 0 to
+   * disable. A timeout throws {@link FirstTokenTimeoutError}, never retried.
    */
   firstByteTimeoutMs?: number;
   /**
    * Total request timeout (ms) for non-streaming `chat()` calls. Defaults
-   * to 300s. Set 0 to disable.
+   * to 300s (for `local-gemma`, `LOCAL_GEMMA_REQUEST_TIMEOUT_MS` when set).
+   * Set 0 to disable.
    */
   requestTimeoutMs?: number;
   /**
@@ -493,11 +586,19 @@ interface StreamWatchdogState {
   idleTimedOut: boolean;
 }
 
+/** #111 — the size of the prompt a stream was opened with, for timeout reporting. */
+interface StreamPromptShape {
+  model: string;
+  chars: number;
+  messageCount: number;
+}
+
 /** Watchdog handles returned alongside a connected stream response. */
 interface StreamWatchdog {
   armIdle: () => void;
   disarmIdle: () => void;
   state: StreamWatchdogState;
+  prompt: StreamPromptShape;
 }
 
 /** Result of a successful (retryable) stream connection attempt. */
@@ -582,9 +683,18 @@ export class OpenAICompatibleProvider implements AIProvider {
     this.defaultSeed = opts.defaultSeed;
     this.disableThinking = opts.disableThinking ?? false;
     this.modelProfileMap = opts.modelProfileMap ?? {};
-    this.idleTimeoutMs = opts.idleTimeoutMs ?? 120_000;
-    this.firstByteTimeoutMs = opts.firstByteTimeoutMs ?? 600_000;
-    this.requestTimeoutMs = opts.requestTimeoutMs ?? 300_000;
+    // #111 — constructor option → `LOCAL_GEMMA_*_TIMEOUT_MS` (local-gemma only)
+    // → default. Resolved BEFORE `buildDispatcher()` so undici's transport
+    // timeout is sized from the budget actually in force.
+    const localTimeout = (name: string, fallback: number): number =>
+      this.key === "local-gemma" ? envTimeoutMsOr(name, fallback) : fallback;
+    this.idleTimeoutMs =
+      opts.idleTimeoutMs ?? localTimeout(LOCAL_TIMEOUT_ENV.idle, DEFAULT_IDLE_TIMEOUT_MS);
+    this.firstByteTimeoutMs =
+      opts.firstByteTimeoutMs ??
+      localTimeout(LOCAL_TIMEOUT_ENV.firstByte, DEFAULT_FIRST_BYTE_TIMEOUT_MS);
+    this.requestTimeoutMs =
+      opts.requestTimeoutMs ?? localTimeout(LOCAL_TIMEOUT_ENV.request, DEFAULT_REQUEST_TIMEOUT_MS);
     // Retry/backoff knobs. The constructor option wins; otherwise read the
     // `AI_*` env knob (consistent with `config.ts`'s `intOr`); otherwise the
     // default. The attempt cap is clamped to `[1, 6]` so a hostile/typo env can
@@ -711,7 +821,12 @@ export class OpenAICompatibleProvider implements AIProvider {
         lastError = err;
         const retryAfterMs = err instanceof RetryableHttpError ? err.retryAfterMs : undefined;
         const status = err instanceof RetryableHttpError ? err.status : undefined;
-        const retryable = err instanceof RetryableHttpError || isRetryableNetworkError(err);
+        // #111 — a first-token timeout is never retried: the identical prompt would
+        // repeat the entire prefill on a local runtime and time out the same way.
+        // Excluded by TYPE: `isRetryableNetworkError` also matches message text.
+        const retryable =
+          !(err instanceof FirstTokenTimeoutError) &&
+          (err instanceof RetryableHttpError || isRetryableNetworkError(err));
         const triesLeft = this.maxAttempts - attempt;
         if (!retryable || triesLeft <= 0) {
           throw err;
@@ -761,6 +876,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     url: string,
     body: Record<string, unknown>,
     opts: ChatOptions,
+    prompt: StreamPromptShape,
     carriesResponseFormat = false,
     includeTemperature = true,
   ): Promise<StreamConnection> {
@@ -820,10 +936,8 @@ export class OpenAICompatibleProvider implements AIProvider {
     } catch (err) {
       disarmIdle();
       if (state.idleTimedOut) {
-        // A first-byte timeout is its own (non-retryable) failure mode.
-        throw new Error(
-          `${this.key} stream stalled — no response for ${this.firstByteTimeoutMs}ms (is the local model running?)`,
-        );
+        // A first-byte timeout is its own (non-retryable) failure mode (#111).
+        throw this.firstTokenTimeout(prompt, "no response headers yet");
       }
       // A connection-reset network error here is retryable; `withRetry` decides.
       throw err;
@@ -865,7 +979,45 @@ export class OpenAICompatibleProvider implements AIProvider {
       throw new Error(`${this.key} returned empty stream body`);
     }
 
-    return { response, watchdog: { armIdle, disarmIdle, state } };
+    return { response, watchdog: { armIdle, disarmIdle, state, prompt } };
+  }
+
+  /**
+   * #111 — the operator remedy for a timeout on THIS provider: the env knob that
+   * governs the budget, named, when one exists (local-gemma only).
+   */
+  private timeoutKnobHint(envName: string): string {
+    return this.key === "local-gemma"
+      ? `. Raise ${envName} (ms; 0 disables) if the model needs longer.`
+      : "";
+  }
+
+  /**
+   * #111 — build (and log) the first-token timeout. The message states what was
+   * OBSERVED — no first token within N ms for a prompt of this size — rather than
+   * guessing the model is down: the live case that motivated this was a model
+   * 98% of the way through a 130K-token prefill.
+   */
+  private firstTokenTimeout(prompt: StreamPromptShape, phase: string): FirstTokenTimeoutError {
+    const ms = this.firstByteTimeoutMs;
+    const isLocal = this.key === "local-gemma";
+    log.warn("Stream timed out before the first token", {
+      provider: this.key,
+      model: prompt.model,
+      firstByteTimeoutMs: ms,
+      promptChars: prompt.chars,
+      messageCount: prompt.messageCount,
+      phase,
+      ...(isLocal ? { knob: LOCAL_TIMEOUT_ENV.firstByte } : {}),
+    });
+    const message =
+      `${this.key} stream stalled — no first token within ${ms}ms for a prompt of ` +
+      `${prompt.chars} chars across ${prompt.messageCount} message(s) (${phase})` +
+      (isLocal
+        ? ". A local runtime emits nothing until it has processed the whole prompt, so a large prompt can need longer than this budget" +
+          this.timeoutKnobHint(LOCAL_TIMEOUT_ENV.firstByte)
+        : "");
+    return new FirstTokenTimeoutError(ms, prompt.chars, prompt.messageCount, message);
   }
 
   async chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResponse> {
@@ -1006,7 +1158,10 @@ export class OpenAICompatibleProvider implements AIProvider {
         } catch (err) {
           if (timeout) clearTimeout(timeout);
           if (controller.signal.aborted && !opts.signal?.aborted) {
-            throw new Error(`${this.key} chat request timed out after ${this.requestTimeoutMs}ms`);
+            throw new Error(
+              `${this.key} chat request timed out after ${this.requestTimeoutMs}ms` +
+                this.timeoutKnobHint(LOCAL_TIMEOUT_ENV.request),
+            );
           }
           throw err;
         }
@@ -1108,6 +1263,12 @@ export class OpenAICompatibleProvider implements AIProvider {
       caching: opts.promptCaching,
     });
 
+    const prompt: StreamPromptShape = {
+      model,
+      chars: promptChars(messages),
+      messageCount: messages.length,
+    };
+
     // CONNECTION PHASE (pre-first-byte) — retried on a transient 429/503 or a
     // connection-reset error, bounded by `maxAttempts`. Each attempt builds a
     // FRESH AbortController + watchdog so a retry never reuses an aborted signal.
@@ -1135,7 +1296,8 @@ export class OpenAICompatibleProvider implements AIProvider {
       );
       const carriesResponseFormat = includeResponseFormat && opts.responseFormat != null;
       return this.withRetry<StreamConnection>(
-        () => this.connectStream(url, body, opts, carriesResponseFormat, includeTemperature),
+        () =>
+          this.connectStream(url, body, opts, prompt, carriesResponseFormat, includeTemperature),
         { method: "stream", model },
       );
     };
@@ -1226,7 +1388,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     carriesResponseFormat: boolean,
   ): AsyncGenerator<ChatChunk> {
     const { response, watchdog } = conn;
-    const { armIdle, disarmIdle, state } = watchdog;
+    const { armIdle, disarmIdle, state, prompt } = watchdog;
 
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
@@ -1252,12 +1414,12 @@ export class OpenAICompatibleProvider implements AIProvider {
           // emitted) — it surfaces here per issue #388. We only translate a
           // watchdog-driven abort into a clear stall message.
           if (state.idleTimedOut) {
-            const budget = state.firstChunkSeen ? this.idleTimeoutMs : this.firstByteTimeoutMs;
-            const phase = state.firstChunkSeen
-              ? "no data mid-stream"
-              : "no first token (prompt eval may exceed the budget)";
+            if (!state.firstChunkSeen) {
+              throw this.firstTokenTimeout(prompt, "connected, awaiting the first token");
+            }
             throw new Error(
-              `${this.key} stream stalled — ${phase} for ${budget}ms (local model may be overloaded or the prompt exceeds its context window)`,
+              `${this.key} stream stalled — no data mid-stream for ${this.idleTimeoutMs}ms (local model may be overloaded or the prompt exceeds its context window)` +
+                this.timeoutKnobHint(LOCAL_TIMEOUT_ENV.idle),
             );
           }
           throw err;
