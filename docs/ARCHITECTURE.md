@@ -3743,6 +3743,62 @@ against stay identical. On onyourleft (143 TypeScript modules, gemma3:12b facts)
 at a 200,000-char cap the Rules section went from 8 to 35 modules, Key Workflows
 from 11 to 91, Calculations from 11 to all 143.
 
+#### Batched enumerative sections (#157)
+
+Business Rules, Key Workflows, Calculations and Data Model are catalogs whose
+length grows with the codebase, so they declare `batched: true` on their
+`SectionGroup` and are written in several calls instead of one. On onyourleft
+(143 modules), raising the section output cap from 8,192 to 16,384 tokens only
+doubled Rules from 32,169 to 63,719 chars, still cut off, having read ~10% of
+the modules.
+
+- **Plan** (`planSectionBatches`): every module with content for the section
+  (a declared topic slice or a rendered mined rule) is taken in
+  `rankRelevantFacts` order. Modules are packed greedily into batches whose
+  facts fit `factsCharCap` **and** whose *estimated reply* fits
+  `batchOutputBudgetChars` (the section output cap × 3.5 chars/token × 0.6
+  margin). A module's estimate is 300 + 1.25 × its topic-slice chars + 300 per
+  mined rule the capped inventory renders. Both come from `factsModuleParts`,
+  the same function that builds the entry the model reads, so the estimate
+  never counts rules past the inventory cut. No "ADDITIONAL MODULES (facts
+  omitted)" catalog is sent.
+- **Generate** (`synthesizeBatchedSection`): one call per batch, in order. The
+  batch's facts, its own modules' source formulas and a batch note go in the
+  prompt, and only the batch with the most relevant module writes the
+  introduction. A reply that finishes with `finish_reason` `length` (or the
+  gateway placeholder) is split in two by estimated output and each half
+  regenerated. `shouldResplit` bounds this: never below one module, at most one
+  re-split per planned batch across the section, and never for a batch estimated
+  under a quarter of the budget (#165's runaway shape). A model that always runs
+  to the cap therefore costs at most 3× the planned calls. What is still cut off
+  raises one `section-truncated` warning naming the modules, and says which ones
+  *alone* exceed the cap. A failed batch costs only its modules (a
+  `section-failed` warning names them). The section fails only if every batch
+  fails.
+- **Merge** (`mergeBatchSections`, `section-batching.ts`): replies are parsed into
+  H3 topic → H4 subtopic → entries. An entry is a list item with its nested
+  lines, a table, a fence, or a paragraph with the list it introduces. Topics
+  and subtopics with the same normalised heading merge in order of first
+  appearance, and entries follow in batch (relevance) order. An entry identical
+  to one an *earlier* batch wrote (ignoring numbering on every line, emphasis,
+  case and spacing) is dropped. Substantive entries (40+ chars) are matched
+  section-wide and short ones only within their subtopic. Repeated table rows
+  under the same header are dropped. Fences are atomic, and an unclosed fence is
+  closed at the end of its own reply.
+- **Ground**: each reply is decomposed and judged against its **own** batch's
+  facts plus the section's retrieved sources. The section's faithfulness is the
+  pooled supported/total over verified batches (`aggregateFaithfulness`),
+  graded by the same `gradeFaithfulness` as a single-call section. Judge-gated
+  escalation (#334) re-runs the whole batched section on the escalation
+  provider, re-planned for its budget and cap.
+
+On the real onyourleft facts at a 16,384-token cap, the plan is Rules 20
+batches (143 modules, all 4,611 rule bullets), Workflows 9, Calculations 6 and
+Data Model 14. A single call at 200,000 chars reads 35, 91, 143 and 60 modules
+respectively. `Batched section synthesized` logs planned vs actual calls,
+re-splits, wall time, and estimated vs actual reply chars, which is the data
+for calibrating the output estimate.
+
 #### 3. Dynamic Per-Module Snippet Budgets
 
 Rather than sending the maximum context window to every module, Phase 1 tiers the code context by module complexity:

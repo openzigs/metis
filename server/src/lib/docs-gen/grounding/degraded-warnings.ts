@@ -625,6 +625,79 @@ export function sectionTruncatedWarning(
   };
 }
 
+/** At most this many module names are spelled out in one warning. */
+const MAX_NAMED_MODULES = 10;
+
+function nameModules(modules: readonly string[]): string {
+  const named = modules.slice(0, MAX_NAMED_MODULES).map((m) => `"${m}"`);
+  const more = modules.length - named.length;
+  return more > 0 ? `${named.join(", ")} and ${more} more` : named.join(", ");
+}
+
+/**
+ * #157 — a BATCHED section (Rules, Workflows, Calculations, Data Model) is
+ * written in several calls, so a cut-off reply leaves a hole for specific
+ * modules rather than for "the rest of the section". This names them, and says
+ * which of two cases it is: a module that alone writes more than one call can
+ * hold (splitting cannot help — only a larger cap can), or a batch that was
+ * still cut off when it could not be split further.
+ *
+ * `error` severity, like {@link sectionTruncatedWarning}: the section is
+ * definitely missing content for these modules.
+ */
+export function batchTruncatedWarning(
+  section: string,
+  cutOff: { singleModules: readonly string[]; unsplitBatches: readonly string[] },
+  maxTokens: number,
+): DocWarning {
+  const parts: string[] = [];
+  if (cutOff.singleModules.length > 0) {
+    const one = cutOff.singleModules.length === 1;
+    parts.push(
+      `module${one ? "" : "s"} ${nameModules(cutOff.singleModules)} alone write${one ? "s" : ""} ` +
+        `more than one call can hold`,
+    );
+  }
+  if (cutOff.unsplitBatches.length > 0) {
+    parts.push(
+      `the batch(es) covering ${nameModules(cutOff.unsplitBatches)} could not be split further`,
+    );
+  }
+  return {
+    kind: "section-truncated",
+    section,
+    message:
+      `Section "${section}" is incomplete: the output-token cap (${maxTokens} tokens) CUT OFF ` +
+      `the part written from specific modules — ${parts.join("; ")}. Raise ` +
+      `DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS and regenerate.`,
+    severity: "error",
+  };
+}
+
+/**
+ * #157 — some batches of a BATCHED section failed while others succeeded. The
+ * section keeps what the successful batches wrote; this names the modules that
+ * are missing from it. `detail` MUST already be through the fixed failure
+ * vocabulary (`generationFailureMessage`), never an exception's own text (#67).
+ */
+export function batchFailedWarning(
+  section: string,
+  modules: readonly string[],
+  detail: string,
+): DocWarning {
+  const trimmed = detail.trim().slice(0, 300);
+  const stop = /[.!?]$/.test(trimmed) ? "" : ".";
+  return {
+    kind: "section-failed",
+    section,
+    message:
+      `Section "${section}" is incomplete: the part written from ${nameModules(modules)} could ` +
+      `not be generated${trimmed ? `: ${trimmed}${stop}` : "."}`,
+    severity: "error",
+    detailSafe: true,
+  };
+}
+
 /**
  * #1226 — build a warning for a declared section group that contributed nothing
  * to the final document. Previously such a group was simply absent from the

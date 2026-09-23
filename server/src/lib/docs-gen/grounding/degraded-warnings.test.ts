@@ -15,6 +15,8 @@ import {
   factsTruncatedWarning,
   sectionTruncatedWarning,
   sectionMissingWarning,
+  batchTruncatedWarning,
+  batchFailedWarning,
   DEFAULT_FAITHFULNESS_THRESHOLD,
   NARRATIVE_FAITHFULNESS_THRESHOLD,
   RECONSTRUCTION_FAITHFULNESS_THRESHOLD,
@@ -517,5 +519,44 @@ describe("sectionMissingWarning (#1226)", () => {
       serializeWarnings([sectionMissingWarning("X", "r")])!,
     ) as DocWarning[];
     expect(parsed[0].kind).toBe("section-missing");
+  });
+});
+
+describe("#157 — batched-section warnings name the modules", () => {
+  it("names a single module that alone overflows the cap, as an error that degrades the doc", () => {
+    const w = batchTruncatedWarning(
+      "Business Rules & Policies",
+      { singleModules: ["src/billing"], unsplitBatches: [] },
+      16_384,
+    );
+    expect(w.kind).toBe("section-truncated");
+    expect(w.severity).toBe("error");
+    expect(w.message).toContain('module "src/billing" alone writes more than one call can hold');
+    expect(w.message).toContain("16384 tokens");
+    expect(w.message).toContain("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS");
+    expect(deriveDocStatus([w])).toBe("degraded");
+  });
+
+  it("reports both cases together, and caps the list at ten names", () => {
+    const many = Array.from({ length: 13 }, (_, i) => `m${i}`);
+    const w = batchTruncatedWarning(
+      "Key Workflows",
+      { singleModules: ["a", "b"], unsplitBatches: many },
+      8_192,
+    );
+    expect(w.message).toContain('modules "a", "b" alone write more');
+    expect(w.message).toContain('"m9" and 3 more could not be split further');
+    expect(w.message).not.toContain('"m10"');
+  });
+
+  it("names the modules a failed batch left out, with a safe detail", () => {
+    const w = batchFailedWarning("Key Workflows", ["x", "y"], "the model timed out");
+    expect(w.kind).toBe("section-failed");
+    expect(w.detailSafe).toBe(true);
+    expect(w.message).toBe(
+      'Section "Key Workflows" is incomplete: the part written from "x", "y" could not be generated: the model timed out.',
+    );
+    expect(batchFailedWarning("S", ["x"], "Timed out.").message).toMatch(/Timed out\.$/);
+    expect(batchFailedWarning("S", ["x"], "  ").message).toMatch(/could not be generated\.$/);
   });
 });

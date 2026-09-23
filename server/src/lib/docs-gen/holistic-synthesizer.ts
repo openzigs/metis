@@ -111,6 +111,8 @@ import {
   phase1FactsTruncatedWarning,
   sectionFailedWarning,
   sectionTruncatedWarning,
+  batchTruncatedWarning,
+  batchFailedWarning,
   sectionMissingWarning,
   sectionUnfaithfulWarning,
   sectionPartlyGroundedWarning,
@@ -163,6 +165,17 @@ import {
   type SectionSynthesis,
   type SectionSynthesisRecord,
 } from "./section-reuse.js";
+import {
+  aggregateFaithfulness,
+  batchOutputBudgetChars,
+  batchOutputChars,
+  estimateModuleOutputChars,
+  mergeBatchSections,
+  planBatches,
+  shouldResplit,
+  splitBatch,
+  type BatchCandidate,
+} from "./section-batching.js";
 
 const log = createChildLogger("docs-gen:holistic");
 
@@ -2478,6 +2491,15 @@ export interface SectionGroup {
    * the LLM summary. Omitted → true for the Rules sections only.
    */
   minedRules?: boolean;
+  /**
+   * #157 — when true this is an ENUMERATIVE section (a catalog that grows with
+   * the codebase), written in batches: every relevant module is read by
+   * exactly one batch, batches are sized by estimated output as well as input,
+   * a cut-off batch is re-split, and the replies are merged under their H3
+   * topics. No "ADDITIONAL MODULES (facts omitted)" catalog is sent. Omitted →
+   * one call over the modules that fit the facts cap.
+   */
+  batched?: boolean;
 }
 
 /** Outcome of post-validating one synthesized section against its grounding. */
@@ -2578,60 +2600,7 @@ async function validateSectionGrounding(
       extractor: claimExtractor,
       judge: faithfulnessJudge,
     });
-
-    // #117 — a grounding reply that did not parse is NOT "nothing to check":
-    // the section is surfaced as unverified instead of passing silently.
-    const unparseableWarning = result.unparseable
-      ? groundingUnparseableWarning(
-          sectionLabel,
-          result.unparseable,
-          result.truncated ? "truncated" : undefined,
-        )
-      : null;
-    if (unparseableWarning) {
-      log.warn("Section grounding reply could not be parsed; section not fully verified", {
-        projectId,
-        section: sectionLabel,
-        stage: result.unparseable,
-      });
-    }
-
-    // Unverifiable or no claims → keep the section, NO score (so #334
-    // escalation never fires on an unverified section — "unverified" is not
-    // "below the bar"), and no warning unless a reply was unparseable.
-    if (!result.verified || result.totalClaims === 0) {
-      return { markdown: sectionMarkdown, warning: unparseableWarning, score: null };
-    }
-
-    // #283 — resolve the threshold for THIS section: an explicit per-section
-    // override (narrative sections set a lower bar) wins over the global default.
-    const threshold = resolveSectionFaithfulnessThreshold(section?.threshold);
-    const score = { faithfulness: result.faithfulness, threshold, result };
-    if (result.faithfulness >= threshold) {
-      // Faithful enough — accurate synthesis stays `ready`, unless some of the
-      // judge's batches were unparseable and their claims went unscored (#117).
-      return { markdown: sectionMarkdown, warning: unparseableWarning, score };
-    }
-
-    log.warn("Section faithfulness below threshold", {
-      projectId,
-      section: sectionLabel,
-      threshold,
-      narrative: section?.narrative ?? false,
-      reconstruction: section?.reconstruction ?? false,
-      summary: summarizeFaithfulness(result),
-    });
-
-    // Pick the warning-copy variant that honestly frames WHY this section fell
-    // short, by section character:
-    //   - narrative (Overview, Capabilities): "X% grounded; remainder is domain
-    //     context" — the gap is general domain knowledge, not a defect.
-    //   - reconstruction (Workflows, Data Model): "inferred — verify against
-    //     source" — the gap is mandated structural inference, not fabrication.
-    //   - literal (Business Rules, Integrations): "may be unreliable" — an
-    //     unsupported claim genuinely signals fabrication.
-    const warning = buildFaithfulnessWarning(sectionLabel, result, threshold, section);
-    return { markdown: sectionMarkdown, warning, score };
+    return gradeFaithfulness(sectionLabel, sectionMarkdown, result, projectId, section);
   } catch (err) {
     // A faithfulness-scoring failure must NOT crash synthesis. Degrade to the
     // original section with no warning — we cannot assert it is unfaithful, only
@@ -2643,6 +2612,328 @@ async function validateSectionGrounding(
     });
     return { markdown: sectionMarkdown, warning: null, score: null };
   }
+}
+
+/**
+ * Turn one faithfulness result into the section's outcome: its score (when it
+ * was verified and made claims) and the tier-correct warning when it fell below
+ * the bar or a grounding reply did not parse. Shared by the single-call path
+ * ({@link validateSectionGrounding}) and batched sections (#157), which grade
+ * the POOLED result of their batches, so both apply identical rules.
+ */
+function gradeFaithfulness(
+  sectionLabel: string,
+  sectionMarkdown: string,
+  result: FaithfulnessResult,
+  projectId: string,
+  section?: { threshold?: number; narrative?: boolean; reconstruction?: boolean },
+): SectionGroundingOutcome {
+  // #117 — a grounding reply that did not parse is NOT "nothing to check":
+  // the section is surfaced as unverified instead of passing silently.
+  const unparseableWarning = result.unparseable
+    ? groundingUnparseableWarning(
+        sectionLabel,
+        result.unparseable,
+        result.truncated ? "truncated" : undefined,
+      )
+    : null;
+  if (unparseableWarning) {
+    log.warn("Section grounding reply could not be parsed; section not fully verified", {
+      projectId,
+      section: sectionLabel,
+      stage: result.unparseable,
+    });
+  }
+
+  // Unverifiable or no claims → keep the section, NO score (so #334
+  // escalation never fires on an unverified section — "unverified" is not
+  // "below the bar"), and no warning unless a reply was unparseable.
+  if (!result.verified || result.totalClaims === 0) {
+    return { markdown: sectionMarkdown, warning: unparseableWarning, score: null };
+  }
+
+  // #283 — resolve the threshold for THIS section: an explicit per-section
+  // override (narrative sections set a lower bar) wins over the global default.
+  const threshold = resolveSectionFaithfulnessThreshold(section?.threshold);
+  const score = { faithfulness: result.faithfulness, threshold, result };
+  if (result.faithfulness >= threshold) {
+    // Faithful enough — accurate synthesis stays `ready`, unless some of the
+    // judge's batches were unparseable and their claims went unscored (#117).
+    return { markdown: sectionMarkdown, warning: unparseableWarning, score };
+  }
+
+  log.warn("Section faithfulness below threshold", {
+    projectId,
+    section: sectionLabel,
+    threshold,
+    narrative: section?.narrative ?? false,
+    reconstruction: section?.reconstruction ?? false,
+    summary: summarizeFaithfulness(result),
+  });
+
+  // Pick the warning-copy variant that honestly frames WHY this section fell
+  // short, by section character:
+  //   - narrative (Overview, Capabilities): "X% grounded; remainder is domain
+  //     context" — the gap is general domain knowledge, not a defect.
+  //   - reconstruction (Workflows, Data Model): "inferred — verify against
+  //     source" — the gap is mandated structural inference, not fabrication.
+  //   - literal (Business Rules, Integrations): "may be unreliable" — an
+  //     unsupported claim genuinely signals fabrication.
+  const warning = buildFaithfulnessWarning(sectionLabel, result, threshold, section);
+  return { markdown: sectionMarkdown, warning, score };
+}
+
+/**
+ * #157 — the citable `facts:` sources of a batched section: one per relevant
+ * module, with its section-wide relevance rank as `idx`, so ids stay unique
+ * across batches and match what each batch's model was shown.
+ */
+function batchFactsSources(plan: SectionBatchPlan): FactsSourceInput[] {
+  return plan.modules.map((m, idx) => ({
+    repository: m.item.repository,
+    moduleDir: m.item.modulePath || m.item.moduleName,
+    idx,
+    label: m.item.moduleName,
+    text: m.entry,
+  }));
+}
+
+/** The `facts:` id of a facts source, as {@link mergeFactsIntoContext} will mint it. */
+function factsSourceIdOf(source: FactsSourceInput): string {
+  return `facts:${source.repository ? repositoryPathIdentity(source.repository, source.moduleDir) : source.moduleDir}:${source.idx}`;
+}
+
+/**
+ * #157 — the prompt addendum that tells one batch it is one part of a section.
+ * Only the LEAD batch (the one holding the section's most relevant module)
+ * writes the introduction and overview diagram; the merge would otherwise keep
+ * one per batch.
+ */
+export function batchNoteFor(
+  group: SectionGroup,
+  lead: boolean,
+  batchModules: number,
+  totalModules: number,
+): string {
+  return [
+    "=== BATCH INSTRUCTIONS ===",
+    `This section is written in several parts. THIS part covers ${batchModules} of the ${totalModules} modules with content for "${group.label}"; the other modules are written in separate parts and merged with this one afterwards under the same headings.`,
+    "- Document EVERY item in the MODULE FACTS above. Do not stop early and do not summarise.",
+    "- Begin with the H2 heading from your instructions, then organise everything under H3 (###) TOPIC headings named by business topic, never by module; use H4 (####) for sub-topics.",
+    "- Do not mention other parts and do not write a closing summary.",
+    ...(lead
+      ? []
+      : [
+          "- Do NOT write an introduction, overview table or overview diagram before the first H3 — another part does that. Go straight to the H3 topics.",
+        ]),
+    "=== END BATCH INSTRUCTIONS ===",
+  ].join("\n");
+}
+
+/** The grounding a batched section's evidence and manifest report: base sources plus every module's facts. */
+function batchedGroundingUnion(
+  base: GroundingContext | undefined,
+  sources: FactsSourceInput[],
+  active: boolean,
+): GroundingContext | undefined {
+  if (!active) return base;
+  const total = sources.reduce((n, src) => n + (src.text?.length ?? 0), 0);
+  return mergeFactsIntoContext(base, sources, Math.max(total, 1));
+}
+
+interface BatchedSectionResult {
+  /** The merged section. */
+  markdown: string;
+  /** Pooled faithfulness across batches, graded at the section's tier. */
+  outcome: SectionGroundingOutcome;
+  /** Module-named cut-off and failed-batch warnings. */
+  warnings: DocWarning[];
+  /** Base grounding plus every module's facts (for evidence and the manifest). */
+  grounding: GroundingContext | undefined;
+}
+
+/**
+ * #157 — write one BATCHED section: one call per batch of `plan`, in order; a
+ * batch whose reply is cut off at the output cap is split in two and each half
+ * regenerated, bounded by {@link shouldResplit} (at most one re-split per
+ * planned batch across the section, and never a batch too small for its size
+ * to explain the cut-off), so a model that always runs to the cap costs at most
+ * three times the planned calls and cannot loop. Each batch's reply is judged
+ * against its OWN facts; the section's faithfulness is the pooled ratio. One
+ * failed batch costs only its modules (named in a warning); if every batch
+ * fails the first error is rethrown so the section fails as before.
+ */
+async function synthesizeBatchedSection(input: {
+  group: SectionGroup;
+  meta: ProjectMeta;
+  title: string;
+  docType: DocType;
+  bundle: Phase2ProviderBundle;
+  claimExtractor: ClaimExtractor | null;
+  faithfulnessJudge: FaithfulnessJudge | null;
+  baseGrounding: GroundingContext | undefined;
+  plan: SectionBatchPlan;
+  projectId: string;
+  flowBlob: string;
+}): Promise<BatchedSectionResult> {
+  const { group, bundle, plan, projectId, claimExtractor, faithfulnessJudge } = input;
+  const startedAt = Date.now();
+  const sources = batchFactsSources(plan);
+  const sourceOf = new Map(plan.modules.map((m, i) => [m, sources[i]]));
+  const lead = plan.modules[0];
+  let resplitsLeft = plan.batches.length;
+  let calls = 0;
+  const done: Array<{
+    batch: SectionBatchModule[];
+    result: SectionGroupResult;
+    grounding: GroundingContext | undefined;
+  }> = [];
+  const failed: Array<{ batch: SectionBatchModule[]; err: unknown }> = [];
+
+  const runBatch = async (batch: SectionBatchModule[]): Promise<void> => {
+    const batchSources = batch.map((m) => sourceOf.get(m)!);
+    const grounding = claimExtractor
+      ? mergeFactsIntoContext(input.baseGrounding, batchSources, bundle.factsCharCap)
+      : input.baseGrounding;
+    let result: SectionGroupResult;
+    calls += 1;
+    try {
+      result = await generateSectionGroup(
+        group,
+        input.meta,
+        input.title,
+        input.docType,
+        batch.map((m) => m.entry).join("\n\n---\n\n"),
+        renderFormulasBlob(batch.map((m) => m.item)),
+        bundle.provider,
+        bundle.supportsCaching,
+        projectId,
+        bundle.tuning,
+        grounding ? renderGroundingBlock(grounding) : "",
+        input.flowBlob,
+        batchNoteFor(group, batch.includes(lead), batch.length, plan.modules.length),
+      );
+    } catch (err) {
+      log.warn("Section batch failed", {
+        projectId,
+        group: group.id,
+        modules: batch.length,
+        err: String(err),
+      });
+      failed.push({ batch, err });
+      return;
+    }
+    if (shouldResplit(batch, result.truncation.truncated, resplitsLeft, plan.outputBudget)) {
+      resplitsLeft -= 1;
+      const [first, second] = splitBatch(batch)!;
+      log.warn("Section batch cut off by the output cap; splitting it and regenerating", {
+        projectId,
+        group: group.id,
+        modules: batch.length,
+        replyChars: result.markdown.length,
+        resplitsLeft,
+      });
+      await runBatch(first);
+      await runBatch(second);
+      return;
+    }
+    done.push({ batch, result, grounding });
+  };
+
+  for (const batch of plan.batches) await runBatch(batch);
+  if (done.length === 0) throw failed[0].err;
+
+  const replies = done.filter((d) => d.result.markdown.trim().length > 0);
+  const markdown =
+    replies.length > 0
+      ? mergeBatchSections(
+          replies.map((d) => d.result.markdown),
+          group.label,
+        )
+      : "";
+
+  const warnings: DocWarning[] = [];
+  const cutOff = done.filter((d) => d.result.truncation.truncated);
+  if (cutOff.length > 0) {
+    const names = (d: (typeof done)[number]) => d.batch.map((m) => m.item.moduleName);
+    warnings.push(
+      batchTruncatedWarning(
+        group.label,
+        {
+          singleModules: cutOff.filter((d) => d.batch.length === 1).flatMap(names),
+          unsplitBatches: cutOff.filter((d) => d.batch.length > 1).flatMap(names),
+        },
+        cutOff[0].result.maxTokens,
+      ),
+    );
+  }
+  for (const f of failed) {
+    warnings.push(
+      batchFailedWarning(
+        group.label,
+        f.batch.map((m) => m.item.moduleName),
+        generationFailureMessage(f.err),
+      ),
+    );
+  }
+
+  // Per-batch grounding: each reply is decomposed and judged against its own
+  // batch's facts, so every claim list stays small; the pooled result is then
+  // graded exactly like a single-call section.
+  const results: FaithfulnessResult[] = [];
+  if (claimExtractor && faithfulnessJudge) {
+    for (const d of replies) {
+      try {
+        results.push(
+          // Always built when an extractor exists (runBatch); an empty context
+          // is scored as unverified by scoreFaithfulness itself.
+          await scoreFaithfulness(group.label, d.result.markdown.trim(), d.grounding!, {
+            extractor: claimExtractor,
+            judge: faithfulnessJudge,
+          }),
+        );
+      } catch (err) {
+        log.warn("Faithfulness scoring failed for a section batch; batch unverified", {
+          projectId,
+          section: group.label,
+          err: String(err),
+        });
+      }
+    }
+  }
+  const pooled = aggregateFaithfulness(group.label, results);
+  const outcome: SectionGroundingOutcome =
+    pooled && markdown
+      ? gradeFaithfulness(group.label, markdown, pooled, projectId, {
+          threshold: group.faithfulnessThreshold,
+          narrative: group.narrative,
+          reconstruction: group.reconstruction,
+        })
+      : { markdown, warning: null, score: null };
+
+  log.info("Batched section synthesized", {
+    projectId,
+    group: group.id,
+    modules: plan.modules.length,
+    skippedModules: plan.skipped.length,
+    plannedBatches: plan.batches.length,
+    calls,
+    resplits: plan.batches.length - resplitsLeft,
+    parts: done.length,
+    cutOffParts: cutOff.length,
+    failedParts: failed.length,
+    // Planned vs actual reply size — the data to calibrate the output estimate.
+    estimatedReplyChars: done.reduce((n, d) => n + batchOutputChars(d.batch), 0),
+    replyChars: done.reduce((n, d) => n + d.result.markdown.length, 0),
+    wallMs: Date.now() - startedAt,
+  });
+
+  return {
+    markdown,
+    outcome,
+    warnings,
+    grounding: batchedGroundingUnion(input.baseGrounding, sources, claimExtractor != null),
+  };
 }
 
 // Exported for #334 escalation tests: the per-section synthesis loop is where
@@ -2688,27 +2979,7 @@ export async function synthesizeFinalDocument(
       // swallow — progress reporting must not affect document output
     }
   };
-  // Deduplicate within a repository, never collapse identical expressions across repos.
-  const seenExpr = new Set<string>();
-  const allFormulas: Array<ExtractedFormula & { repository?: RepositoryIdentity }> = [];
-  for (const f of facts) {
-    for (const formula of f.formulas) {
-      const identity = repositoryPathIdentity(f.repository, formula.expression);
-      if (seenExpr.has(identity)) continue;
-      seenExpr.add(identity);
-      allFormulas.push({ ...formula, repository: f.repository });
-    }
-  }
-  const formulasBlob =
-    allFormulas.length > 0
-      ? allFormulas
-          .slice(0, 80)
-          .map(
-            (f) =>
-              `- ${f.repository ? `[${f.repository.repoConnectorId ?? f.repository.codeGraphId}] ` : ""}${f.kind}: ${f.expression.slice(0, 250)}`,
-          )
-          .join("\n")
-      : "(none extracted)";
+  const formulasBlob = renderFormulasBlob(facts);
 
   // #271 — project-level end-to-end FLOW block: cross-module dependency/call
   // summary + SAS dataset lineage chain, both derived from the code graph and
@@ -2876,16 +3147,22 @@ export async function synthesizeFinalDocument(
       const { bundle, tier } = providerForSection(router, group);
       const { provider, supportsCaching, factsCharCap, tuning } = bundle;
       const { claimExtractor, faithfulnessJudge } = grounderFor(bundle);
-      const sectionFactsSources: FactsSourceInput[] = buildSectionFactsSources(
-        facts,
-        group,
-        docType,
-        factsCharCap,
-      );
-      const factsSourceIds = sectionFactsSources.map(
-        (source) =>
-          `facts:${source.repository ? repositoryPathIdentity(source.repository, source.moduleDir) : source.moduleDir}:${source.idx}`,
-      );
+      // #157 — an enumerative group is written in batches that together read
+      // EVERY relevant module. A group with no relevant module at all keeps the
+      // single-call path.
+      const plannedBatches = group.batched
+        ? planSectionBatches(
+            facts,
+            group,
+            factsCharCap,
+            resolveSectionMaxOutputTokens(provider.model),
+          )
+        : null;
+      const batchPlan = plannedBatches && plannedBatches.modules.length > 0 ? plannedBatches : null;
+      const sectionFactsSources: FactsSourceInput[] = batchPlan
+        ? batchFactsSources(batchPlan)
+        : buildSectionFactsSources(facts, group, docType, factsCharCap);
+      const factsSourceIds = sectionFactsSources.map(factsSourceIdOf);
       if (router.hybrid) {
         log.info("Routed section to provider", {
           projectId,
@@ -2922,7 +3199,18 @@ export async function synthesizeFinalDocument(
       // `factsCharCap` is the provider-optimized budget resolved upstream
       // (large for Bedrock, small for local-gemma's 32K window) so each
       // provider stays independently tuned. #108.
-      const factsBlob = buildRelevantFactsBlob(facts, group, docType, factsCharCap);
+      // Batched: every batch's facts, in order — what the batches read, for the
+      // reuse hash (no "facts omitted" catalog: nothing is omitted).
+      const factsBlob = batchPlan
+        ? batchPlan.batches
+            .map((batch) => batch.map((m) => m.entry).join("\n\n---\n\n"))
+            .join("\n\n=== NEXT BATCH ===\n\n")
+        : buildRelevantFactsBlob(facts, group, docType, factsCharCap);
+      const sectionFormulasBlob = batchPlan
+        ? batchPlan.batches
+            .map((batch) => renderFormulasBlob(batch.map((m) => m.item)))
+            .join("\n\n=== NEXT BATCH ===\n\n")
+        : formulasBlob;
 
       // #337 — make facts-cap truncation OBSERVABLE. `buildRelevantFactsBlob`
       // silently drops the lowest-ranked modules when the relevant facts exceed
@@ -2935,8 +3223,14 @@ export async function synthesizeFinalDocument(
       // concrete remedy (raise the cap / narrow retrieval). Large-window
       // providers (Bedrock ~200K) omit tail modules by design → log only, no
       // warning (avoids false-flagging every big-project cloud run).
-      const factsBudget = summarizeFactsBudget(facts, group, docType, factsCharCap);
-      if (factsBudget.exceeded) {
+      const factsBudget = batchPlan
+        ? {
+            batches: batchPlan.batches.map((batch) => batch.length),
+            skippedModules: batchPlan.skipped.length,
+            outputBudget: batchPlan.outputBudget,
+          }
+        : summarizeFactsBudget(facts, group, docType, factsCharCap);
+      if ("exceeded" in factsBudget && factsBudget.exceeded) {
         log.warn("Section facts exceeded the facts char cap — modules omitted", {
           projectId,
           docType,
@@ -2970,7 +3264,13 @@ export async function synthesizeFinalDocument(
       // doc-level grounding context OR a per-section retriever was supplied): a
       // caller that opted out of grounding entirely keeps the fully-ungrounded
       // path (no grounding block, no validation) — back-compat preserved.
-      if (claimExtractor) {
+      const baseGrounding = sectionGrounding;
+      if (claimExtractor && batchPlan) {
+        // #157 — the section's citable set is every module's facts; each batch
+        // is generated and judged against its own share (see
+        // synthesizeBatchedSection).
+        sectionGrounding = batchedGroundingUnion(sectionGrounding, sectionFactsSources, true);
+      } else if (claimExtractor) {
         // Pass `factsCharCap` so the CITABLE facts budget matches the facts BLOB
         // the model actually read (`buildRelevantFactsBlob` above used the same
         // cap). Without it, mergeFactsIntoContext fell back to its 60K default
@@ -2992,14 +3292,14 @@ export async function synthesizeFinalDocument(
         title,
         docType,
         factsBlob,
-        formulasBlob,
+        sectionFormulasBlob,
         tuning,
         groundingBlock,
         flowBlob,
       );
       const inputHashes = hashSectionInputs({
         facts: factsBlob,
-        formulas: formulasBlob,
+        formulas: sectionFormulasBlob,
         flow: flowBlob,
         grounding: JSON.stringify({
           block: groundingBlock,
@@ -3055,48 +3355,71 @@ export async function synthesizeFinalDocument(
         continue;
       }
       regeneratedSections.push(group.id);
-      const generated = await generateSectionGroup(
-        group,
-        meta,
-        title,
-        docType,
-        factsBlob,
-        formulasBlob,
-        provider,
-        supportsCaching,
-        projectId,
-        tuning,
-        groundingBlock,
-        flowBlob,
-      );
-      const md = generated.markdown;
-      // #1226 — the truncation verdict travels with whichever output is KEPT
-      // below (local draft vs escalated re-run), so the warning always describes
-      // the text that actually reaches the document.
-      let keptTruncation = generated;
-      // #273 — post-validate the freshly-synthesized section by ENTAILMENT:
-      // decompose it into atomic claims, then judge each claim's support against
-      // THIS section's grounding context (the judge sees source TEXT, not ids),
-      // scoring RAGAS-style supported/total. A `section-ungrounded` warning is
-      // emitted only when faithfulness falls BELOW the threshold — accurate
-      // abstractive synthesis (no exact id) is no longer false-flagged. A
-      // failure here degrades only this section (a warning), never the whole
-      // synthesis — consistent with #225.
       const sectionGating = {
         threshold: group.faithfulnessThreshold,
         narrative: group.narrative,
         reconstruction: group.reconstruction,
       };
-      const validated = await validateSectionGrounding(
-        group.label,
-        md.trim(),
-        claimExtractor,
-        faithfulnessJudge,
-        sectionGrounding,
-        projectId,
-        // #283 — per-section gating carried on the group definition.
-        sectionGating,
-      );
+      // #157 — a batched group's cut-off / failed-batch warnings, kept with
+      // whichever output (local or escalated) reaches the document.
+      let batchWarnings: DocWarning[] = [];
+      // #1226 — the truncation verdict travels with whichever output is KEPT
+      // below (local draft vs escalated re-run), so the warning always describes
+      // the text that actually reaches the document. Null for a batched group,
+      // whose truncation is reported per module in `batchWarnings`.
+      let keptTruncation: SectionGroupResult | null = null;
+      let validated: SectionGroundingOutcome;
+      if (batchPlan) {
+        const batched = await synthesizeBatchedSection({
+          group,
+          meta,
+          title,
+          docType,
+          bundle,
+          claimExtractor,
+          faithfulnessJudge,
+          baseGrounding,
+          plan: batchPlan,
+          projectId,
+          flowBlob,
+        });
+        validated = batched.outcome;
+        batchWarnings = batched.warnings;
+      } else {
+        const generated = await generateSectionGroup(
+          group,
+          meta,
+          title,
+          docType,
+          factsBlob,
+          formulasBlob,
+          provider,
+          supportsCaching,
+          projectId,
+          tuning,
+          groundingBlock,
+          flowBlob,
+        );
+        keptTruncation = generated;
+        // #273 — post-validate the freshly-synthesized section by ENTAILMENT:
+        // decompose it into atomic claims, then judge each claim's support against
+        // THIS section's grounding context (the judge sees source TEXT, not ids),
+        // scoring RAGAS-style supported/total. A `section-ungrounded` warning is
+        // emitted only when faithfulness falls BELOW the threshold — accurate
+        // abstractive synthesis (no exact id) is no longer false-flagged. A
+        // failure here degrades only this section (a warning), never the whole
+        // synthesis — consistent with #225.
+        validated = await validateSectionGrounding(
+          group.label,
+          generated.markdown.trim(),
+          claimExtractor,
+          faithfulnessJudge,
+          sectionGrounding,
+          projectId,
+          // #283 — per-section gating carried on the group definition.
+          sectionGating,
+        );
+      }
 
       // #334 — judge-gated escalation (quality floor). When a LOCAL section
       // scored strictly below its tier threshold (and hybrid routing + an
@@ -3135,65 +3458,108 @@ export async function synthesizeFinalDocument(
           maxEscalations: escalationConfig.maxEscalations,
         });
         try {
-          // Rebuild the facts blob at the ESCALATION provider's (larger) budget
-          // and the citable facts/grounding to match — Sonnet can see more than
-          // the local window, and its claims must resolve against the same set.
-          const escFactsBlob = buildRelevantFactsBlob(facts, group, docType, esc.factsCharCap);
-          let escGrounding = sectionGrounding;
-          if (escGrounder.claimExtractor) {
-            escGrounding = mergeFactsIntoContext(
-              escGrounding,
-              buildSectionFactsSources(facts, group, docType, esc.factsCharCap),
-              esc.factsCharCap,
+          const escPlan = batchPlan
+            ? planSectionBatches(
+                facts,
+                group,
+                esc.factsCharCap,
+                resolveSectionMaxOutputTokens(esc.provider.model),
+              )
+            : null;
+          if (escPlan) {
+            // #157 — re-run the batched section on the escalation provider,
+            // re-planned for ITS facts budget and output cap.
+            const escBatched = await synthesizeBatchedSection({
+              group,
+              meta,
+              title,
+              docType,
+              bundle: esc,
+              claimExtractor: escGrounder.claimExtractor,
+              faithfulnessJudge: escGrounder.faithfulnessJudge,
+              baseGrounding,
+              plan: escPlan,
+              projectId,
+              flowBlob,
+            });
+            const escScore = escBatched.outcome.score?.faithfulness ?? null;
+            const keptEscalated = escScore == null ? true : escScore >= localScore;
+            finalOutcome = keptEscalated ? escBatched.outcome : validated;
+            if (keptEscalated) {
+              batchWarnings = escBatched.warnings;
+              finalBundle = esc;
+              finalGrounding = escBatched.grounding;
+            }
+            log.info("Escalation decision", {
+              projectId,
+              docType,
+              group: group.id,
+              localScore,
+              escalatedScore: escScore,
+              kept: keptEscalated ? "escalated" : "local",
+              stillBelowThreshold: finalOutcome.warning != null,
+            });
+          } else {
+            // Rebuild the facts blob at the ESCALATION provider's (larger) budget
+            // and the citable facts/grounding to match — Sonnet can see more than
+            // the local window, and its claims must resolve against the same set.
+            const escFactsBlob = buildRelevantFactsBlob(facts, group, docType, esc.factsCharCap);
+            let escGrounding = sectionGrounding;
+            if (escGrounder.claimExtractor) {
+              escGrounding = mergeFactsIntoContext(
+                escGrounding,
+                buildSectionFactsSources(facts, group, docType, esc.factsCharCap),
+                esc.factsCharCap,
+              );
+            }
+            const escBlock = escGrounding ? renderGroundingBlock(escGrounding) : "";
+            const escMd = await generateSectionGroup(
+              group,
+              meta,
+              title,
+              docType,
+              escFactsBlob,
+              formulasBlob,
+              esc.provider,
+              esc.supportsCaching,
+              projectId,
+              esc.tuning,
+              escBlock,
+              flowBlob,
             );
+            const escValidated = await validateSectionGrounding(
+              group.label,
+              escMd.markdown.trim(),
+              escGrounder.claimExtractor,
+              escGrounder.faithfulnessJudge,
+              escGrounding,
+              projectId,
+              sectionGating,
+            );
+            // Keep whichever output scored HIGHER. Ties (or an unverifiable
+            // escalated re-run) keep the escalated output — the cloud provider is
+            // the quality ceiling, so its result is the safer default. The kept
+            // output's warning is whatever ITS own scoring produced, so if the
+            // escalated result still falls below the bar the correct tier warning
+            // is still surfaced (never a false clean `ready`).
+            const escScore = escValidated.score?.faithfulness ?? null;
+            const keptEscalated = escScore == null ? true : escScore >= localScore;
+            finalOutcome = keptEscalated ? escValidated : validated;
+            if (keptEscalated) {
+              keptTruncation = escMd;
+              finalBundle = esc;
+              finalGrounding = escGrounding;
+            }
+            log.info("Escalation decision", {
+              projectId,
+              docType,
+              group: group.id,
+              localScore,
+              escalatedScore: escScore,
+              kept: keptEscalated ? "escalated" : "local",
+              stillBelowThreshold: finalOutcome.warning != null,
+            });
           }
-          const escBlock = escGrounding ? renderGroundingBlock(escGrounding) : "";
-          const escMd = await generateSectionGroup(
-            group,
-            meta,
-            title,
-            docType,
-            escFactsBlob,
-            formulasBlob,
-            esc.provider,
-            esc.supportsCaching,
-            projectId,
-            esc.tuning,
-            escBlock,
-            flowBlob,
-          );
-          const escValidated = await validateSectionGrounding(
-            group.label,
-            escMd.markdown.trim(),
-            escGrounder.claimExtractor,
-            escGrounder.faithfulnessJudge,
-            escGrounding,
-            projectId,
-            sectionGating,
-          );
-          // Keep whichever output scored HIGHER. Ties (or an unverifiable
-          // escalated re-run) keep the escalated output — the cloud provider is
-          // the quality ceiling, so its result is the safer default. The kept
-          // output's warning is whatever ITS own scoring produced, so if the
-          // escalated result still falls below the bar the correct tier warning
-          // is still surfaced (never a false clean `ready`).
-          const escScore = escValidated.score?.faithfulness ?? null;
-          const keptEscalated = escScore == null ? true : escScore >= localScore;
-          finalOutcome = keptEscalated ? escValidated : validated;
-          if (keptEscalated) {
-            keptTruncation = escMd;
-            finalBundle = esc;
-            finalGrounding = escGrounding;
-          }
-          log.info("Escalation decision", {
-            projectId,
-            docType,
-            group: group.id,
-            localScore,
-            escalatedScore: escScore,
-            kept: keptEscalated ? "escalated" : "local",
-            stillBelowThreshold: finalOutcome.warning != null,
-          });
         } catch (err) {
           // An escalation re-run failure must never crash synthesis or discard
           // the already-generated local section: keep the local outcome (with its
@@ -3225,7 +3591,7 @@ export async function synthesizeFinalDocument(
           docType,
           group: group.id,
         });
-        warnings.push(emptyWarning);
+        warnings.push(...batchWarnings, emptyWarning);
         reportSection({
           section: group.label,
           status: "degraded",
@@ -3263,8 +3629,9 @@ export async function synthesizeFinalDocument(
       // #1226 — the section WAS produced but the model was cut off by the
       // output-token cap, so it is incomplete. Record it (error severity) so the
       // document degrades instead of shipping a half-written section as `ready`.
-      let truncationWarning: DocWarning | undefined;
-      if (keptTruncation.truncation.truncated) {
+      let truncationWarning: DocWarning | undefined = batchWarnings[0];
+      warnings.push(...batchWarnings);
+      if (keptTruncation?.truncation.truncated) {
         truncationWarning = sectionTruncatedWarning(
           group.label,
           describeTruncation(keptTruncation.truncation),
@@ -3398,6 +3765,35 @@ export async function synthesizeFinalDocument(
                   : "All section synthesis inputs changed",
             },
   };
+}
+
+/**
+ * The source-extracted formulas block of a section prompt: up to 80 distinct
+ * expressions from `facts`. Deduplicated within a repository, never across
+ * repositories. A batched section (#157) renders it from its batch's modules
+ * only, so each batch documents its own formulas instead of every batch
+ * restating the same project-wide list.
+ */
+function renderFormulasBlob(facts: readonly ModuleFacts[]): string {
+  const seenExpr = new Set<string>();
+  const allFormulas: Array<ExtractedFormula & { repository?: RepositoryIdentity }> = [];
+  for (const f of facts) {
+    for (const formula of f.formulas) {
+      const identity = repositoryPathIdentity(f.repository, formula.expression);
+      if (seenExpr.has(identity)) continue;
+      seenExpr.add(identity);
+      allFormulas.push({ ...formula, repository: f.repository });
+    }
+  }
+  return allFormulas.length > 0
+    ? allFormulas
+        .slice(0, 80)
+        .map(
+          (f) =>
+            `- ${f.repository ? `[${f.repository.repoConnectorId ?? f.repository.codeGraphId}] ` : ""}${f.kind}: ${f.expression.slice(0, 250)}`,
+        )
+        .join("\n")
+    : "(none extracted)";
 }
 
 /**
@@ -3739,27 +4135,41 @@ export function summarizeFactsBudget(
  * for this section (it says nothing on the topic) still renders its header.
  */
 function factsModuleEntry(f: ModuleFacts, group: SectionGroup): string {
+  const { header, body } = factsModuleParts(f, group);
+  return body.length > 0 ? `${header}\n\n${body.join("\n\n")}` : header;
+}
+
+/**
+ * The pieces {@link factsModuleEntry} joins, plus what the #157 batch planner
+ * measures from them: the characters of TOPIC content (the declared slices
+ * other than `summary`, after mined-rule dedupe) and the number of mined rules
+ * the capped inventory actually renders. Both come from this one function, so
+ * the output estimate counts exactly what the model is given — never the
+ * uncapped mined list (PR #163's lesson).
+ */
+function factsModuleParts(
+  f: ModuleFacts,
+  group: SectionGroup,
+): { header: string; body: string[]; topicChars: number; renderedMinedRules: number } {
   const header = `### MODULE: ${f.moduleName}\n(${f.classCount} classes, ${f.methodCount} methods)`;
   const slices = moduleFactSlices(f);
   const wanted = new Set(factSlicesFor(group));
   const mined = readsMinedRules(group) ? (f.minedRules ?? []) : [];
+  // Dedupe only against the rules the capped inventory actually renders: a
+  // rule past the cut must keep its LLM bullet or it vanishes (PR #163).
+  const rendered = minedRulesThatFit(mined, MINED_RULES_ENTRY_CHAR_CAP);
   const body: string[] = [];
+  let topicChars = 0;
   for (const slice of FACT_SLICES) {
     if (!wanted.has(slice) || !slices[slice]) continue;
-    // Dedupe only against the rules the capped inventory actually renders: a
-    // rule past the cut must keep its LLM bullet or it vanishes (PR #163).
-    body.push(
-      slice === "rules"
-        ? dedupeRulesAgainstMined(
-            slices.rules,
-            minedRulesThatFit(mined, MINED_RULES_ENTRY_CHAR_CAP),
-          )
-        : slices[slice],
-    );
+    const text =
+      slice === "rules" ? dedupeRulesAgainstMined(slices.rules, rendered) : slices[slice];
+    body.push(text);
+    if (slice !== "summary") topicChars += text.length;
   }
   const inventory = renderMinedRuleInventory(mined, MINED_RULES_ENTRY_CHAR_CAP);
   if (inventory) body.push(inventory);
-  return body.length > 0 ? `${header}\n\n${body.join("\n\n")}` : header;
+  return { header, body, topicChars, renderedMinedRules: rendered.length };
 }
 
 /**
@@ -3811,6 +4221,29 @@ export function selectRelevantFacts(
   _docType: DocType,
   perSectionCap = 150_000,
 ): { included: ModuleFacts[]; omitted: string[] } {
+  const included: ModuleFacts[] = [];
+  const omitted: string[] = [];
+  let totalChars = 0;
+
+  for (const f of rankRelevantFacts(facts, group)) {
+    const entry = factsModuleEntry(f, group);
+    if (totalChars + entry.length > perSectionCap) {
+      omitted.push(f.moduleName);
+      continue;
+    }
+    included.push(f);
+    totalChars += entry.length;
+  }
+
+  return { included, omitted };
+}
+
+/**
+ * Every module, ordered by relevance to a section group (the ranking described
+ * on {@link selectRelevantFacts}). Shared by the single-call selection and the
+ * #157 batch planner, so a batched section reads its modules in the same order.
+ */
+export function rankRelevantFacts(facts: ModuleFacts[], group: SectionGroup): ModuleFacts[] {
   const declared = factSlicesFor(group);
   const scoredSlices = declared.length > 1 ? declared.filter((s) => s !== "summary") : declared;
   const withMined = readsMinedRules(group);
@@ -3832,22 +4265,62 @@ export function selectRelevantFacts(
 
   // Sort by relevance score descending (stable, so ties keep input order).
   scored.sort((a, b) => b.score - a.score);
+  return scored.map((s) => s.facts);
+}
 
-  const included: ModuleFacts[] = [];
-  const omitted: string[] = [];
-  let totalChars = 0;
+/** One module of a batched section, with its rendered entry and output estimate. */
+export type SectionBatchModule = BatchCandidate<ModuleFacts> & { entry: string };
 
-  for (const { facts: f } of scored) {
-    const entry = factsModuleEntry(f, group);
-    if (totalChars + entry.length > perSectionCap) {
-      omitted.push(f.moduleName);
+/** How a batched section's modules are split across calls (#157). */
+export interface SectionBatchPlan {
+  /** The batches, in relevance order; every relevant module is in exactly one. */
+  batches: SectionBatchModule[][];
+  /** Relevant modules in relevance order (the concatenation of `batches`). */
+  modules: SectionBatchModule[];
+  /** Modules with nothing on this section's topic — no topic slice, no mined rule. */
+  skipped: string[];
+  /** Estimated reply characters one batch is planned against. */
+  outputBudget: number;
+}
+
+/**
+ * Plan a batched section (#157): rank the modules ({@link rankRelevantFacts}),
+ * keep those with something on the section's topic, and split them into
+ * batches whose facts fit `factsCharCap` and whose ESTIMATED reply fits the
+ * output cap `maxTokens` with margin ({@link batchOutputBudgetChars}). The
+ * estimate is taken from {@link factsModuleParts} — the rendered topic slices
+ * and the mined rules the capped inventory renders — the same parts the entry
+ * the model reads is built from.
+ */
+export function planSectionBatches(
+  facts: ModuleFacts[],
+  group: SectionGroup,
+  factsCharCap: number,
+  maxTokens: number,
+): SectionBatchPlan {
+  const modules: SectionBatchModule[] = [];
+  const skipped: string[] = [];
+  for (const f of rankRelevantFacts(facts, group)) {
+    const parts = factsModuleParts(f, group);
+    if (parts.topicChars === 0 && parts.renderedMinedRules === 0) {
+      skipped.push(f.moduleName);
       continue;
     }
-    included.push(f);
-    totalChars += entry.length;
+    const entry =
+      parts.body.length > 0 ? `${parts.header}\n\n${parts.body.join("\n\n")}` : parts.header;
+    modules.push({
+      item: f,
+      entry,
+      inputChars: entry.length,
+      outputChars: estimateModuleOutputChars({
+        topicChars: parts.topicChars,
+        minedRules: parts.renderedMinedRules,
+      }),
+    });
   }
-
-  return { included, omitted };
+  const outputBudget = batchOutputBudgetChars(maxTokens);
+  const batches = planBatches(modules, { inputCap: factsCharCap, outputBudget });
+  return { batches, modules, skipped, outputBudget };
 }
 
 /**
@@ -3915,6 +4388,7 @@ function buildSectionPrompts(
   tuning: DocsGenTuning,
   groundingBlock = "",
   flowBlob = "",
+  batchNote = "",
 ): { systemMessage: string; userMessage: string } {
   // The VERBOSE prompt (with explicit EXHAUSTIVE / word-count / table mandates)
   // is the default for ALL providers because it produces markedly more detailed
@@ -4018,7 +4492,7 @@ ${
   flowBlob
     ? `\n=== END-TO-END FLOW (cross-module dependencies + SAS dataset lineage, from the code graph) ===\n\n${flowBlob}\n\nUse this to describe TRUE end-to-end workflows: which module hands off to which, and how datasets flow input→output across modules. Do NOT invent flows not supported by this graph.\n\n=== END FLOW ===\n`
     : ""
-}${groundingBlock ? `\n${groundingBlock}\n` : ""}
+}${groundingBlock ? `\n${groundingBlock}\n` : ""}${batchNote ? `\n${batchNote}\n` : ""}
 Write the markdown for the **${group.label}** section group now, following the instructions in your system prompt. Begin with the first H2 heading.`;
 
   return { systemMessage, userMessage };
@@ -4043,6 +4517,7 @@ async function generateSectionGroup(
   tuning: DocsGenTuning,
   groundingBlock = "",
   flowBlob = "",
+  batchNote = "",
 ): Promise<SectionGroupResult> {
   const isLocal = provider.key === "local-gemma";
   const { systemMessage, userMessage } = buildSectionPrompts(
@@ -4055,6 +4530,7 @@ async function generateSectionGroup(
     tuning,
     groundingBlock,
     flowBlob,
+    batchNote,
   );
   const sessionBase = `docs-synth-${projectId}-${docType}-${group.id}`;
 
@@ -4586,6 +5062,8 @@ The major business capabilities the system provides, grouped logically (NOT one 
         {
           id: "rules",
           factSlices: SECTION_FACT_SLICES["rules"],
+          // #157 — an enumeration: written in batches that read every module.
+          batched: true,
           minedRules: true,
           label: "Business Rules & Policies",
           instructions: `Produce ONE section:
@@ -4616,6 +5094,8 @@ DEPTH REQUIREMENT: If the source facts mention 50 rules, ALL 50 must appear here
         {
           id: "workflows",
           factSlices: SECTION_FACT_SLICES["workflows"],
+          // #157 — an enumeration: written in batches that read every module.
+          batched: true,
           label: "Key Workflows",
           // The prompt below MANDATES reconstruction (explicit Trigger /
           // Preconditions / Postconditions / Error Paths per workflow) that the
@@ -4648,6 +5128,8 @@ DEPTH REQUIREMENT: Each workflow must document EVERY validation check AND every 
         {
           id: "formulas",
           factSlices: SECTION_FACT_SLICES["formulas"],
+          // #157 — an enumeration: written in batches that read every module.
+          batched: true,
           label: "Calculations & Formulas",
           instructions: `Produce ONE section:
 
@@ -4665,6 +5147,8 @@ Use a summary table at the end of each sub-section: | Formula | Purpose | Key Va
         {
           id: "data-model",
           factSlices: SECTION_FACT_SLICES["data-model"],
+          // #157 — an enumeration: written in batches that read every module.
+          batched: true,
           label: "Data & Domain Model",
           // The prompt below MANDATES a reconstruction-grade per-field data
           // dictionary (Type / Constraint / Default / Range) that the code rarely
