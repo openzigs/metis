@@ -283,7 +283,9 @@ its time to first token is `prompt_tokens / prefill_tok_per_s`, and raising
 130,482-token section prompt at ~224 tok/s needed ~9.7 min, and the 10-min
 default aborted it with 98% of the prompt processed. These apply to every
 `local-gemma` provider (chat, analysis, docs-gen single and hybrid), in ms, with
-`0` disabling the guard:
+`0` disabling the guard. Write plain digits (`1200000`, not `1_200_000` or
+`1.2e6`), at most `2147453647` (~24.8 days; a longer Node timer fires after 1 ms);
+any other value keeps the default and logs `Ignoring invalid local timeout`:
 
 | Env var | Default | Governs |
 |---|---|---|
