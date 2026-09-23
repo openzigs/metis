@@ -439,6 +439,42 @@ describe("mergeBatchSections — edges", () => {
   });
 });
 
+describe("mergeBatchSections — markdown details and hostile input", () => {
+  it("reads closing hashes, spaced thematic breaks and pipe-less table delimiters", () => {
+    const a =
+      "## R ##\n\n### Topic One ###\n\n- - -\n\n***\n\nA | B\n--- | ---\n\n| x | y |\n|:--|--:|\n| 1 | 2 |";
+    const b = "## R\n\n### Topic One\n\n| x | y |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |";
+    const merged = mergeBatchSections([a, b], "fallback");
+    expect(merged.startsWith("## R\n")).toBe(true);
+    expect(merged.match(/^### Topic One$/gm)).toHaveLength(1);
+    expect(merged).not.toMatch(/^- - -$|^\*\*\*$/m);
+    expect(merged).toContain("| x | y |\n| --- | --- |\n| 3 | 4 |");
+    expect(merged.split("| 1 | 2 |")).toHaveLength(2);
+    // A "#" that is part of the text (no space before it) is not a closing sequence.
+    expect(mergeBatchSections(["## R\n\n### C#\n\n- x"], "R")).toContain("### C#\n");
+    expect(mergeBatchSections(["## R\n\n    ---"], "R")).toContain("    ---");
+  });
+
+  it("stays linear on very long runaway lines (no regex backtracking)", () => {
+    const n = 60_000;
+    const hostile = [
+      `## ${" ".repeat(n)}x`,
+      `-${" ".repeat(n)}-x`,
+      `a${". ".repeat(n / 2)}x`,
+      `|${" ".repeat(n)}x`,
+      `- ${"\n".repeat(n)}x`,
+      `a${".".repeat(n)}x`,
+      `| h |\n|${" ".repeat(n)}x`,
+      `\`\`\`\n${" \n".repeat(n)}\`\`\``,
+    ].join("\n\n");
+    const started = performance.now();
+    const merged = mergeBatchSections([hostile, hostile], "R");
+    // Quadratic patterns took ~11 s here; linear ones take milliseconds.
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(merged.length).toBeGreaterThan(n);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Faithfulness
 // ---------------------------------------------------------------------------

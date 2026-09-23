@@ -199,12 +199,32 @@ interface Block {
   blankBefore: boolean;
 }
 
+// Every pattern below is linear in the line length: replies are model output,
+// and a model caught in a repetition loop writes very long lines. Anything
+// that would need backtracking (a trailing "#"/space run, a thematic break) is
+// done with string operations instead.
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
-const HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
-const THEMATIC_BREAK = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/;
-const LIST_ITEM = /^ {0,3}(?:[-*+]|\d+[.)])\s+/;
-const TABLE_LINE = /^\s*\|/;
+const HEADING_START = /^(#{1,6})[ \t]/;
+const LIST_ITEM = /^ {0,3}(?:[-*+]|\d+[.)])[ \t]/;
+const TABLE_LINE = /^[ \t]*\|/;
 const INDENTED = /^(?: {2,}|\t)/;
+
+/** An ATX heading: its level and text, without the optional closing `#`s. */
+function parseHeading(line: string): { level: number; text: string } | null {
+  const m = HEADING_START.exec(line);
+  if (!m) return null;
+  let text = line.slice(m[0].length).trim();
+  const unhashed = text.replace(/#+$/, "");
+  if (unhashed.length === 0 || /[ \t]$/.test(unhashed)) text = unhashed.trimEnd();
+  return { level: m[1].length, text };
+}
+
+/** `---`, `***`, `___` (spaces allowed between), indented at most three spaces. */
+function isThematicBreak(line: string): boolean {
+  if (/^ {4}/.test(line)) return false;
+  const compact = line.replace(/[ \t]/g, "");
+  return compact.length >= 3 && /^(?:-+|\*+|_+)$/.test(compact);
+}
 
 function isFenceClose(line: string, open: string): boolean {
   const m = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
@@ -231,8 +251,8 @@ function readFence(lines: string[], start: number): { text: string; next: number
 function startsBlock(line: string): boolean {
   return (
     FENCE_OPEN.test(line) ||
-    HEADING.test(line) ||
-    THEMATIC_BREAK.test(line) ||
+    parseHeading(line) !== null ||
+    isThematicBreak(line) ||
     LIST_ITEM.test(line) ||
     TABLE_LINE.test(line)
   );
@@ -261,16 +281,16 @@ function tokenize(markdown: string): Block[] {
       i = next;
       continue;
     }
-    const heading = HEADING.exec(line);
+    const heading = parseHeading(line);
     if (heading) {
-      const level = heading[1].length;
+      const { level } = heading;
       const kind: BlockKind | null =
         level === 2 ? "h2" : level === 3 ? "h3" : level === 4 ? "h4" : null;
-      push(kind ?? "para", kind ? heading[2] : line);
+      push(kind ?? "para", kind ? heading.text : line);
       i++;
       continue;
     }
-    if (THEMATIC_BREAK.test(line)) {
+    if (isThematicBreak(line)) {
       // Dropped: separators are re-inserted between topics when rendering.
       i++;
       continue;
@@ -327,13 +347,15 @@ function tokenize(markdown: string): Block[] {
  * spacing do not make a rule new.
  */
 export function entryKey(text: string): string {
-  return text
-    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, "")
+  const key = text
+    .replace(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/gm, "")
     .replace(/[*_`]/g, "")
     .toLowerCase()
     .replace(/\s+/g, " ")
-    .replace(/[.:;,\s]+$/, "")
     .trim();
+  let end = key.length;
+  while (end > 0 && ".:;, ".includes(key[end - 1])) end--;
+  return key.slice(0, end);
 }
 
 /** Normalise a heading so "Validation Rules" and "validation rules:" are one topic. */
@@ -442,7 +464,11 @@ function renderEntry(parts: readonly EntryPart[]): string {
 /** Normalised entries at least this long are deduplicated across the whole section. */
 const SECTION_WIDE_DEDUP_MIN_CHARS = 40;
 
-const TABLE_SEPARATOR = /^\s*\|?\s*:?-{2,}/;
+/** A GFM table's `|---|:--:|` delimiter row. */
+function isTableSeparator(row: string): boolean {
+  const t = row.trimStart();
+  return /^:?-{2,}/.test((t.startsWith("|") ? t.slice(1) : t).trimStart());
+}
 
 interface MergedSubtopic {
   heading: string | null;
@@ -554,8 +580,7 @@ function mergeTableRows(
   firstSeenBy: (key: string, batch: number) => boolean,
 ): string | null {
   const rows = table.split("\n");
-  const head =
-    rows.length > 1 && TABLE_SEPARATOR.test(rows[1]) ? rows.slice(0, 2) : rows.slice(0, 1);
+  const head = rows.length > 1 && isTableSeparator(rows[1]) ? rows.slice(0, 2) : rows.slice(0, 1);
   const data = rows.slice(head.length);
   if (data.length === 0) return table;
   const headerKey = entryKey(head[0]);
