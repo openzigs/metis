@@ -96,8 +96,8 @@ test.describe("Epic #515 — Prompt & Context Compression", () => {
             },
           },
         });
-        // Accept 201 (created) or 200 (already exists)
-        expect([200, 201]).toContain(uploadRes.status());
+        // 202 Accepted: the upload is queued for ingest.
+        expect([200, 201, 202]).toContain(uploadRes.status());
 
         // Start an analysis — in lazy mode, skill manifests are compact
         const startRes = await ctx.post(`/api/projects/${projectId}/analyses`, {
@@ -141,7 +141,7 @@ test.describe("Epic #515 — Prompt & Context Compression", () => {
               },
             },
           });
-          expect([200, 201]).toContain(res.status());
+          expect([200, 201, 202]).toContain(res.status());
         }
 
         // Query the project — hierarchical summarizer handles the result set

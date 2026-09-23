@@ -24,9 +24,11 @@ async function login(): Promise<{ token: string }> {
     data: { username: ADMIN_USER.username, password: ADMIN_USER.password },
   });
   expect(res.status()).toBe(200);
-  const body = (await res.json()) as ApiEnvelope<{ token: string }>;
+  // The login envelope names the bearer `accessToken`; reading `token`
+  // yielded undefined and every authed call below 401'd.
+  const body = (await res.json()) as ApiEnvelope<{ accessToken: string }>;
   await ctx.dispose();
-  return { token: body.data.token };
+  return { token: body.data.accessToken };
 }
 
 async function authed(token: string): Promise<APIRequestContext> {
@@ -44,8 +46,10 @@ test.describe("Epic #162 — MCP platform", () => {
   test("export emits Copilot mcp.json shape and import round-trips", async () => {
     const { token } = await login();
     const api = await authed(token);
-    // Create a server first via the existing route.
-    const create = await api.post("/api/mcp/servers", {
+    // Create a server first via the existing route. The collection is mounted
+    // at /api/mcp itself — /api/mcp/servers only carries the per-server
+    // sub-resources (…/servers/:id/tools).
+    const create = await api.post("/api/mcp", {
       data: {
         scope: "global",
         label: `e2e-${Date.now()}`,

@@ -77,6 +77,16 @@ describe("middleware auth gate (handler)", () => {
     expect(redirectMock).not.toHaveBeenCalled();
   });
 
+  // The invite landing page is for people who have no session yet — bouncing
+  // them to /login makes the invitation link useless.
+  it("lets an unauthenticated visitor reach a workspace invite link", async () => {
+    refreshMock.mockResolvedValue(null);
+    await run(makeReq("/invites/abc123"));
+    expect(nextMock).toHaveBeenCalled();
+    expect(refreshMock).not.toHaveBeenCalled();
+    expect(redirectMock).not.toHaveBeenCalled();
+  });
+
   it("passes a request with a live access cookie straight through (no refresh)", async () => {
     await run(makeReq("/projects/abc", { access: "live" }));
     expect(nextMock).toHaveBeenCalled();

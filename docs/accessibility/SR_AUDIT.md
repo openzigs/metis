@@ -61,5 +61,5 @@ Per-page SR assertions were added to the vitest suite (runs on every PR via the
 
 The Playwright a11y harness (`e2e/tests/ui-ia-accessibility.spec.ts`) also gains
 a per-route landmark/heading audit for the authenticated integration path. Note
-the full `e2e` job is gated behind `E2E_ENABLED`, so the vitest tests above are
+the full `e2e` job runs on every pull request (#62); the vitest tests above are
 the enforced regression bar on each PR.

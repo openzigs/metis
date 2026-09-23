@@ -321,6 +321,19 @@ describe("AuthProvider — onRefreshFailure redirect (#411)", () => {
     });
   });
 
+  // The workspace-invite landing page is read by people who have no session
+  // yet; an involuntary bounce to /login makes the invite link useless.
+  it("does NOT redirect an anonymous visitor away from an invite link", async () => {
+    stubLocation("/invites/tok-123");
+    const { result } = mountWithFailingRefresh();
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const router = (useRouter as unknown as () => { replace: ReturnType<typeof vi.fn> })();
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
   it("does NOT redirect or strip ?next when already on /login (cold-login guard)", async () => {
     stubLocation("/login", "?next=%2Fprojects%2Fabc");
     const { result } = mountWithFailingRefresh();

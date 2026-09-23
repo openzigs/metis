@@ -135,7 +135,7 @@ test.describe("Epic #260 — Custom Analyst Agents", () => {
             success: true,
             data: {
               content: COMPLETION,
-              model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+              model: "us.anthropic.claude-sonnet-5",
               provider: "offline-stub",
               usage: { promptTokens: 42, completionTokens: 18, totalTokens: 60 },
             },
@@ -180,7 +180,10 @@ test.describe("Epic #260 — Custom Analyst Agents", () => {
 
       await test.step("Step 4 — model + reasoning picker", async () => {
         await expect(wizard.stepPanel("model")).toBeVisible();
-        await wizard.modelSelect.selectOption("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
+        // Must be one of MODEL_OPTIONS in AgentAuthoringWizard.tsx — an id the
+        // dropdown does not offer makes `selectOption` wait until the test times
+        // out.
+        await wizard.modelSelect.selectOption("us.anthropic.claude-sonnet-5");
         await wizard.reasoningSelect.selectOption("medium");
         await wizard.next();
       });

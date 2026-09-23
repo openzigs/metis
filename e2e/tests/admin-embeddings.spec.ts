@@ -171,8 +171,8 @@ test.describe("Admin Embedding backends — coverage & reindex (#937)", () => {
     const loginPage = new LoginPage(page);
     await loginPage.loginAsAdmin();
 
-    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
     const detail = new ProjectDetailPage(page);
+    await detail.gotoDocuments(projectId);
     await detail.uploadFiles([path.join(FIXTURES_DIR, "sample.md")]);
     await expect(page.getByTestId("upload-status-done")).toBeVisible({ timeout: 30_000 });
 

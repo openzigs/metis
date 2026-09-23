@@ -186,7 +186,9 @@ test.describe("Epic #511 — Token Telemetry & Budgeting", () => {
   // ──────────────────────────────────────────────────────────────────────────
   // Issue #512 AC: Token category breakdown populated after AI interaction
   // ──────────────────────────────────────────────────────────────────────────
-  test("token categories populated after chat interaction", async () => {
+  // #79 — probes `POST /api/projects/:id/sessions`, which is not a mounted
+  // route; it used to `test.skip()` at runtime, which reports as a pass.
+  test.fixme("token categories populated after chat interaction", async () => {
     const ctx = await authedApi(accessToken);
     try {
       // Create a chat session and send a message to trigger AI usage
@@ -269,7 +271,8 @@ test.describe("Epic #511 — Token Telemetry & Budgeting", () => {
   // indirectly — different query types should not cause errors and the
   // breakdown endpoint should remain healthy after varied interactions.
   // ──────────────────────────────────────────────────────────────────────────
-  test("adaptive budget allocation handles varied query types without error", async () => {
+  // #79 — same missing per-project sessions route as above.
+  test.fixme("adaptive budget allocation handles varied query types without error", async () => {
     const ctx = await authedApi(accessToken);
     try {
       // Create a session for varied queries
@@ -367,7 +370,9 @@ test.describe("Epic #511 — Token Telemetry & Budgeting", () => {
   // ──────────────────────────────────────────────────────────────────────────
   // Issue #513 AC: Time range filtering works in the UI
   // ──────────────────────────────────────────────────────────────────────────
-  test("token breakdown chart range buttons trigger data reload", async ({ page }) => {
+  // #79 — `TokenBreakdownChart` is never rendered, so the card under test is
+  // not on the page; the old runtime `test.skip()` hid that behind a pass.
+  test.fixme("token breakdown chart range buttons trigger data reload", async ({ page }) => {
     const { LoginPage } = await import("../pages/login.page.js");
     const loginPage = new LoginPage(page);
     await loginPage.goto();

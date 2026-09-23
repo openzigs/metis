@@ -9,9 +9,15 @@
  * Usage:
  *   tsx server/scripts/e2e-seed-drift.ts <projectId> [field] [localValue] [externalValue]
  *
- * Outputs JSON: { driftId, publishedIssueId, projectId }
+ * Outputs JSON: { driftId, publishedIssueId, projectId, externalIssueId, issueNumber }
+ *
+ * `externalIssueId` is the PublishedIssue.issueId the reconciler matches an
+ * inbound webhook against (GitHub `issue.node_id` / Jira `issue.id`), so a spec
+ * can drive a REAL signed webhook at the seeded chain and get the
+ * `drift:detected` broadcast a direct row insert cannot produce (#78).
  */
 /* eslint-disable no-console -- CLI script */
+import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import * as crypto from "node:crypto";
 
@@ -28,9 +34,10 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const prisma = new PrismaClient({
-    datasources: { db: { url: databaseUrl } },
-  });
+  // Prisma 7 dropped `datasources`; the SQLite driver adapter is the
+  // supported way to point a client at the e2e database file.
+  const adapter = new PrismaBetterSqlite3({ url: databaseUrl });
+  const prisma = new PrismaClient({ adapter });
 
   try {
     // 0. Ensure we have a user row for the batch FK (startedById)
@@ -64,12 +71,14 @@ async function main(): Promise<void> {
     });
 
     // 3. Create a PublishedIssue
+    const issueNumber = Math.floor(Math.random() * 9000) + 1000;
+    const externalIssueId = `ext-${crypto.randomUUID().slice(0, 8)}`;
     const publishedIssue = await prisma.publishedIssue.create({
       data: {
         batchId: batch.id,
         draftId: draft.id,
-        issueNumber: Math.floor(Math.random() * 9000) + 1000,
-        issueId: `ext-${crypto.randomUUID().slice(0, 8)}`,
+        issueNumber,
+        issueId: externalIssueId,
         htmlUrl: `https://github.com/e2e-owner/e2e-repo/issues/${Math.floor(Math.random() * 9000)}`,
         status: "created",
         destination: "github",
@@ -115,6 +124,10 @@ async function main(): Promise<void> {
         driftId: driftEvent.id,
         publishedIssueId: publishedIssue.id,
         projectId,
+        externalIssueId,
+        issueNumber,
+        draftTitle: draft.title,
+        draftBody: draft.body,
       }),
     );
   } finally {

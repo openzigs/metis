@@ -173,7 +173,8 @@ test.describe("Analysis finding verification badges + filter (#740)", () => {
       await page.getByTestId("verification-filter-unverified").click();
       await expect(page.getByTestId("verification-badge-unverified")).toBeVisible();
       await expect(page.getByTestId("verification-badge-confirmed")).toHaveCount(0);
-      await expect(page.getByText("Neutral finding")).toHaveCount(0);
+      // `exact` matters: the card body reads "Neutral finding body".
+      await expect(page.getByText("Neutral finding", { exact: true })).toHaveCount(0);
     });
 
     await test.step("filtering to confirmed narrows to the confirmed finding", async () => {
@@ -186,7 +187,7 @@ test.describe("Analysis finding verification badges + filter (#740)", () => {
       await page.getByTestId("verification-filter-all").click();
       await expect(page.getByTestId("verification-badge-confirmed")).toBeVisible();
       await expect(page.getByTestId("verification-badge-unverified")).toBeVisible();
-      await expect(page.getByText("Neutral finding")).toBeVisible();
+      await expect(page.getByText("Neutral finding", { exact: true })).toBeVisible();
     });
   });
 });

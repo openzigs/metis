@@ -3,7 +3,11 @@ import { ACCESS_COOKIE, REFRESH_COOKIE } from "@/lib/config";
 import { applyRotatedCookies, refreshUpstreamTokens } from "@/lib/edge-auth";
 
 const PUBLIC_PATHS = new Set(["/login"]);
-const PUBLIC_PREFIXES = ["/_next", "/favicon", "/api/auth/"];
+// `/invites/<token>` is the workspace-invitation landing page. Its audience is
+// by definition signed out, and both server routes behind it
+// (`GET /api/workspaces/invites/:token` and `POST …/accept`) are deliberately
+// unauthenticated — gating the page here bounced every invitee to /login.
+const PUBLIC_PREFIXES = ["/_next", "/favicon", "/api/auth/", "/invites/"];
 
 /**
  * Edge auth gate. Lets authenticated requests through; for a request whose

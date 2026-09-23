@@ -3,7 +3,7 @@
  *
  * Verifies the API + UI behaviour the unit tests can't reach:
  *   1. PATCH /api/projects/:id/safety|budget|autopilot — RBAC + persistence.
- *   2. GET /api/projects/:id/usage — empty-state shape.
+ *   2. GET /api/projects/:id/usage-summary — empty-state shape.
  *   3. The /projects/:id/usage UI page renders for an authenticated admin
  *      and shows the no-budget tile when the project has no cap.
  *   4. Toggling autopilot in the Settings card surfaces the warning banner.
@@ -52,8 +52,10 @@ test.describe("Epic #164 — safety + FinOps", () => {
       expect(autopilotBody.autopilotEnabled).toBe(true);
       expect(autopilotBody.autopilotCostCeilingCents).toBe(500);
 
-      // GET /usage — fresh project: zero usage, budget echoed back.
-      const usageRes = await ctx.get(`/api/projects/${projectId}/usage`);
+      // GET /usage-summary — fresh project: zero usage, budget echoed back.
+      // (`/usage` is Epic #594's per-call token ledger; the FinOps rollup this
+      // asserts was renamed to /usage-summary to free that path.)
+      const usageRes = await ctx.get(`/api/projects/${projectId}/usage-summary`);
       expect(usageRes.status(), await usageRes.text()).toBe(200);
       const usage = (await usageRes.json()).data;
       expect(usage.totalTokens).toBe(0);

@@ -43,9 +43,14 @@ export class ConnectionsPage {
     this.suggestedSection = page.getByRole("heading", {
       name: "Suggested Database Connectors",
     });
-    this.suggestedCards = page.locator('[class*="Card"]').filter({
-      has: page.getByRole("button", { name: "Configure" }),
-    });
+    // The shadcn Card renders utility classes only — there is no "Card" in the
+    // class attribute to match on. Scope to the suggestions section and take
+    // the grid's children, each of which owns a Configure button.
+    this.suggestedCards = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name: "Suggested Database Connectors" }) })
+      .locator(":scope > div > div")
+      .filter({ has: page.getByRole("button", { name: "Configure" }) });
 
     // Repo form inputs (use id selectors to avoid ambiguity with DB form)
     this.repoLabelInput = page.locator("#repo-label");
@@ -89,8 +94,9 @@ export class ConnectionsPage {
     await this.repoNameInput.fill(opts.repoName);
     if (opts.apiBaseUrl) await this.repoApiBaseInput.fill(opts.apiBaseUrl);
     await this.addRepoButton.click();
-    // Wait for the new connector to appear in the list
-    await expect(this.page.getByText(opts.label)).toBeVisible({ timeout: 10_000 });
+    // Wait for the new connector to appear in the list (it can render in more
+    // than one panel, so take the first).
+    await expect(this.page.getByText(opts.label).first()).toBeVisible({ timeout: 10_000 });
   }
 
   /** Click "Set as primary" on a repo connector by its id. */
@@ -113,7 +119,7 @@ export class ConnectionsPage {
     if (opts.allowTables !== undefined) await this.dbAllowTablesInput.fill(opts.allowTables);
     if (opts.allowColumns !== undefined) await this.dbAllowColumnsInput.fill(opts.allowColumns);
     await this.addDbButton.click();
-    await expect(this.page.getByText(opts.label)).toBeVisible({ timeout: 10_000 });
+    await expect(this.page.getByText(opts.label).first()).toBeVisible({ timeout: 10_000 });
   }
 
   /** Get a suggestion card by its driver type label. */
@@ -152,6 +158,10 @@ export class ConnectionsPage {
   }
 
   // ── Epic #701 wizard locators ─────────────────────────────────────────
+  /** The wizard dialog itself — scopes every control below to it. */
+  wizardDialog(): Locator {
+    return this.page.getByRole("dialog", { name: "Configure database connector" });
+  }
   wizardStep(step: "review" | "configure" | "test" | "provision"): Locator {
     return this.page.getByTestId(`wizard-step-${step}`);
   }
@@ -159,19 +169,22 @@ export class ConnectionsPage {
     return this.page.getByTestId(`wizard-${step}`);
   }
   wizardNext(): Locator {
-    return this.page.getByRole("button", { name: "Next" });
+    // `exact` matters: Next.js dev mode injects an "Open Next.js Dev Tools"
+    // button, which a substring match on "Next" also selects.
+    return this.wizardDialog().getByRole("button", { name: "Next", exact: true });
   }
   wizardRunTest(): Locator {
-    return this.page.getByRole("button", { name: "Run test" });
+    return this.wizardDialog().getByRole("button", { name: "Run test" });
   }
   wizardProvision(): Locator {
-    return this.page.getByRole("button", { name: "Provision" });
+    return this.wizardDialog().getByRole("button", { name: "Provision" });
   }
   wizardPasswordInput(): Locator {
-    return this.page.getByLabel("Password");
+    // `exact` matters: the reveal button is labelled "Show password".
+    return this.wizardDialog().getByLabel("Password", { exact: true });
   }
   wizardShowPasswordButton(): Locator {
-    return this.page.getByRole("button", { name: "Show password" });
+    return this.wizardDialog().getByRole("button", { name: "Show password" });
   }
   allowCredentialScanToggle(): Locator {
     return this.page.getByTestId("allow-credential-scan-toggle");

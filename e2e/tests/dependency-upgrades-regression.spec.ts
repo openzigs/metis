@@ -18,6 +18,7 @@ import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user.js";
 import { LoginPage } from "../pages/login.page.js";
 import { ProjectsPage, ProjectDetailPage } from "../pages/project.page.js";
 import { apiBase } from "../fixtures/api-base.js";
+import { AppShellPage } from "../pages/app-shell.page.js";
 
 const API_BASE = apiBase();
 
@@ -89,10 +90,14 @@ test.describe("Dependency Upgrades Regression (#633)", () => {
     // Dashboard should be the default redirect target after login.
     // Verify the main navigation and layout elements are visible,
     // which proves Tailwind CSS is compiling and applying styles.
-    await expect(page.getByRole("navigation")).toBeVisible({ timeout: 30_000 });
+    // The shell renders more than one landmark (sidebar "Sections", header
+    // breadcrumb), so name the one under test rather than the bare role.
+    const shell = new AppShellPage(page);
+    await expect(shell.sidebar).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("navigation", { name: "Sections" })).toBeVisible();
 
     // The app shell includes a sidebar or top nav with key links
-    await expect(page.getByRole("link", { name: /projects/i })).toBeVisible();
+    await expect(shell.navLink("Projects")).toBeVisible();
   });
 
   // ──────────────────────────────────────────────────────────────────────
@@ -133,9 +138,9 @@ test.describe("Dependency Upgrades Regression (#633)", () => {
     });
     expect(createRes.status()).toBe(201);
     const { data } = (await createRes.json()) as {
-      data: { project: { id: string } };
+      data: { id: string };
     };
-    const projectId = data.project.id;
+    const projectId = data.id;
     await api.dispose();
 
     // Log in and navigate to project detail
@@ -143,9 +148,11 @@ test.describe("Dependency Upgrades Regression (#633)", () => {
     await loginPage.goto();
     await loginPage.login(ADMIN_USER.username, ADMIN_USER.password);
 
-    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
+    // The uploader lives on the project's Sources → Documents page; the
+    // landing page is the pipeline Overview (#28/#29).
+    await page.goto(`/projects/${projectId}/documents`, { waitUntil: "load" });
 
-    // Verify the project detail page renders — the document upload zone
+    // Verify the project documents page renders — the document upload zone
     // is a key indicator that the full component tree loaded successfully
     const detailPage = new ProjectDetailPage(page);
     await expect(detailPage.dropzone).toBeVisible({ timeout: 30_000 });
@@ -164,9 +171,9 @@ test.describe("Dependency Upgrades Regression (#633)", () => {
     });
     expect(createRes.status()).toBe(201);
     const { data } = (await createRes.json()) as {
-      data: { project: { id: string } };
+      data: { id: string };
     };
-    const projectId = data.project.id;
+    const projectId = data.id;
     await api.dispose();
 
     // Log in and navigate to project detail
@@ -197,18 +204,18 @@ test.describe("Dependency Upgrades Regression (#633)", () => {
       });
       expect(createRes.status()).toBe(201);
       const created = (await createRes.json()) as {
-        data: { project: { id: string; slug: string } };
+        data: { id: string; slug: string };
       };
-      expect(created.data.project.slug).toBe(slug);
-      const projectId = created.data.project.id;
+      expect(created.data.slug).toBe(slug);
+      const projectId = created.data.id;
 
       // READ (list)
       const listRes = await api.get("/api/projects");
       expect(listRes.status()).toBe(200);
       const listed = (await listRes.json()) as {
-        data: { projects: Array<{ id: string; slug: string }> };
+        data: { items: Array<{ id: string; slug: string }> };
       };
-      expect(listed.data.projects.some((p) => p.id === projectId)).toBe(true);
+      expect(listed.data.items.some((p) => p.id === projectId)).toBe(true);
 
       // READ (single)
       const getRes = await api.get(`/api/projects/${projectId}`);
@@ -222,7 +229,8 @@ test.describe("Dependency Upgrades Regression (#633)", () => {
 
       // DELETE
       const deleteRes = await api.delete(`/api/projects/${projectId}`);
-      expect(deleteRes.status()).toBe(200);
+      // DELETE /api/projects/:id answers 204 No Content.
+      expect(deleteRes.status()).toBe(204);
 
       // Verify deletion
       const verifyRes = await api.get(`/api/projects/${projectId}`);

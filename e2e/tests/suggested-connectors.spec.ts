@@ -173,11 +173,14 @@ test.describe("Epic #467 — Suggested Database Connectors", () => {
     // Advance to configure step and verify pre-fill from the suggestion row
     await connections.wizardNext().click();
     await expect(connections.wizardSection("configure")).toBeVisible();
-    await expect(page.getByLabel("Host")).toHaveValue("db-prod.internal");
-    await expect(page.getByLabel("Port")).toHaveValue("5432");
-    await expect(page.getByLabel("Database")).toHaveValue("orders_db");
-    await expect(page.locator("#wiz-driver")).toHaveValue("postgres");
-    await expect(page.getByLabel("Label")).toHaveValue("postgresql-orders_db");
+    // Scope to the wizard dialog: the page behind it has its own
+    // Host/Port/Database/Label inputs in the "add database connector" form.
+    const wizard = connections.wizardDialog();
+    await expect(wizard.getByLabel("Host")).toHaveValue("db-prod.internal");
+    await expect(wizard.getByLabel("Port")).toHaveValue("5432");
+    await expect(wizard.getByLabel("Database")).toHaveValue("orders_db");
+    await expect(wizard.locator("#wiz-driver")).toHaveText("postgres");
+    await expect(wizard.getByLabel("Label")).toHaveValue("postgresql-orders_db");
   });
 
   // AC3: Given a suggestion, When user clicks "Dismiss", Then suggestion disappears

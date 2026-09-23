@@ -312,8 +312,9 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
           data: { title: "Code Question", projectId: pid },
         });
         expect(sessionRes.ok()).toBe(true);
-        const sessionBody = (await sessionRes.json()) as ApiEnvelope<{ id: string }>;
-        const sessionId = sessionBody.data.id;
+        // The create-session envelope nests the row: `data.session.id`.
+        const sessionBody = (await sessionRes.json()) as ApiEnvelope<{ session: { id: string } }>;
+        const sessionId = sessionBody.data.session.id;
 
         // Send a code-related question
         const chatRes = await api.post("/api/ai/chat", {
@@ -323,15 +324,18 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
           },
         });
         expect(chatRes.ok()).toBe(true);
+        // The chat envelope nests the reply: `data.response`.
         const chatBody = (await chatRes.json()) as ApiEnvelope<{
-          content: string;
-          model: string;
-          usage: { promptTokens: number; completionTokens: number };
+          response: {
+            content: string;
+            model: string;
+            usage: { promptTokens: number; completionTokens: number };
+          };
         }>;
 
         // AC: Chat returns a response (offline-stub produces deterministic output)
-        expect(chatBody.data.content).toBeTruthy();
-        expect(chatBody.data.content.length).toBeGreaterThan(0);
+        expect(chatBody.data.response.content).toBeTruthy();
+        expect(chatBody.data.response.content.length).toBeGreaterThan(0);
       } finally {
         await api.dispose();
       }
@@ -378,8 +382,9 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
         data: { title: "Fallback Test", projectId: pid },
       });
       expect(sessionRes.ok()).toBe(true);
-      const sessionBody = (await sessionRes.json()) as ApiEnvelope<{ id: string }>;
-      const sessionId = sessionBody.data.id;
+      // The create-session envelope nests the row: `data.session.id`.
+      const sessionBody = (await sessionRes.json()) as ApiEnvelope<{ session: { id: string } }>;
+      const sessionId = sessionBody.data.session.id;
 
       // Ask a code question — should not error, should fall back gracefully
       const chatRes = await api.post("/api/ai/chat", {
@@ -393,10 +398,8 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
 
       // AC: Falls back gracefully — returns 200 with a response, not a 500
       expect(chatRes.ok()).toBe(true);
-      const chatBody = (await chatRes.json()) as ApiEnvelope<{
-        content: string;
-      }>;
-      expect(chatBody.data.content).toBeTruthy();
+      const chatBody = (await chatRes.json()) as ApiEnvelope<{ response: { content: string } }>;
+      expect(chatBody.data.response.content).toBeTruthy();
     } finally {
       await api.dispose();
     }
@@ -423,8 +426,9 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
         data: { title: "Flag Test", projectId: pid },
       });
       expect(sessionRes.ok()).toBe(true);
-      const sessionBody = (await sessionRes.json()) as ApiEnvelope<{ id: string }>;
-      const sessionId = sessionBody.data.id;
+      // The create-session envelope nests the row: `data.session.id`.
+      const sessionBody = (await sessionRes.json()) as ApiEnvelope<{ session: { id: string } }>;
+      const sessionId = sessionBody.data.session.id;
 
       // With default CODE_RETRIEVAL_MODE=graph, chat should still work
       const chatRes = await api.post("/api/ai/chat", {
@@ -434,11 +438,9 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
         },
       });
       expect(chatRes.ok()).toBe(true);
-      const chatBody = (await chatRes.json()) as ApiEnvelope<{
-        content: string;
-      }>;
+      const chatBody = (await chatRes.json()) as ApiEnvelope<{ response: { content: string } }>;
       // Graph-only mode still produces valid responses
-      expect(chatBody.data.content).toBeTruthy();
+      expect(chatBody.data.response.content).toBeTruthy();
 
       // Verify the server healthz confirms correct configuration
       const healthRes = await api.get("/healthz");

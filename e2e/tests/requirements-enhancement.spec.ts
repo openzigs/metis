@@ -19,6 +19,7 @@
 import { test, expect, request, type APIRequestContext } from "@playwright/test";
 import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user.js";
 import { apiBase } from "../fixtures/api-base.js";
+import { seedCompletedAnalysis } from "../fixtures/review-helpers.js";
 import { LoginPage } from "../pages/login.page.js";
 import { AnalysisEnhancementPage } from "../pages/analysis-enhancement.page.js";
 
@@ -43,25 +44,11 @@ async function createProject(api: APIRequestContext, suffix: string): Promise<st
   return (body.data?.project?.id ?? body.data?.id ?? body.id) as string;
 }
 
+// A live analysis always ends `failed` under the offline-stub provider (every
+// specialist agent rejects its prose as non-JSON), so seed a COMPLETED one
+// through the shared CLI seam instead.
 async function seedAnalysis(api: APIRequestContext, projectId: string): Promise<string> {
-  const startRes = await api.post(`/api/projects/${projectId}/analyses`, {
-    data: { documentIds: [] },
-  });
-  expect([201, 202]).toContain(startRes.status());
-  const startBody = await startRes.json();
-  const analysisId = (startBody.data?.id ?? startBody.id) as string;
-  expect(analysisId).toBeTruthy();
-
-  for (let i = 0; i < 60; i++) {
-    const res = await api.get(`/api/analyses/${analysisId}`);
-    if (res.ok()) {
-      const body = await res.json();
-      const status = body.data?.status ?? body.status;
-      if (["completed", "failed", "cancelled"].includes(status)) return analysisId;
-    }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  throw new Error(`Analysis ${analysisId} did not reach terminal state in 60s`);
+  return seedCompletedAnalysis(api, projectId);
 }
 
 async function loginViaUi(page: import("@playwright/test").Page): Promise<void> {
@@ -97,7 +84,9 @@ test.describe("API: Structured Requirements Extraction (#622)", () => {
     // The offline-stub produces a deterministic analysis. We verify the
     // response shape has requirements with expected fields.
     expect(snapshot).toHaveProperty("requirements");
-    expect(snapshot).toHaveProperty("agentResults");
+    // The snapshot names the per-agent rows `agents` (see
+    // `toAnalysisSnapshot` in server/src/lib/analysis/analysis-service.ts).
+    expect(snapshot).toHaveProperty("agents");
     expect(snapshot.status).toMatch(/completed|failed/);
     await api.dispose();
   });
@@ -451,8 +440,17 @@ test.describe("UI: Enhancement Options (#625)", () => {
     });
   });
 
-  // AC: Both toggles default to off
-  test("should have both enhancement toggles defaulting to off", async ({ page }) => {
+  // AC: web research is opt-IN; clarifying questions are opt-OUT (the analysis
+  // page defaults `enableClarification` to true so doc-grounded questions
+  // surface without being asked for).
+  //
+  // This asserts the SHIPPED product, which diverges from the original
+  // enhancement-toggles AC ("both default off"). The divergence looks
+  // deliberate — the ON default carries its own rationale comment in
+  // `ui/src/app/(authed)/projects/[id]/analysis/page.tsx` — but it is not this
+  // spec's call to adjudicate, so it is tracked in
+  // https://github.com/openzigs/metis/issues/95 rather than silently encoded here.
+  test("should default web research off and clarifying questions on", async ({ page }) => {
     const enhancementPage = new AnalysisEnhancementPage(page);
     await enhancementPage.goto(projectId);
 
@@ -460,8 +458,8 @@ test.describe("UI: Enhancement Options (#625)", () => {
       expect(await enhancementPage.isWebResearchChecked()).toBe(false);
     });
 
-    await test.step("Clarification toggle is unchecked by default", async () => {
-      expect(await enhancementPage.isClarificationChecked()).toBe(false);
+    await test.step("Clarification toggle is checked by default", async () => {
+      expect(await enhancementPage.isClarificationChecked()).toBe(true);
     });
   });
 
@@ -484,12 +482,11 @@ test.describe("UI: Enhancement Options (#625)", () => {
   });
 
   // AC: Enhancement status indicator adapts to selected toggles
-  test("should show clarification step when clarification toggle is enabled", async ({ page }) => {
+  test("should show clarification step while the clarification toggle is on", async ({ page }) => {
     const enhancementPage = new AnalysisEnhancementPage(page);
     await enhancementPage.goto(projectId);
 
-    await test.step("Enable clarification toggle", async () => {
-      await enhancementPage.enableClarification();
+    await test.step("Clarification is on out of the box", async () => {
       expect(await enhancementPage.isClarificationChecked()).toBe(true);
     });
 
@@ -509,9 +506,9 @@ test.describe("UI: Enhancement Options (#625)", () => {
     const enhancementPage = new AnalysisEnhancementPage(page);
     await enhancementPage.goto(projectId);
 
-    await test.step("Enable both toggles", async () => {
+    await test.step("Enable both toggles (clarification is already on)", async () => {
       await enhancementPage.enableWebResearch();
-      await enhancementPage.enableClarification();
+      expect(await enhancementPage.isClarificationChecked()).toBe(true);
     });
 
     await test.step("All pipeline steps visible", async () => {
@@ -528,7 +525,11 @@ test.describe("UI: Enhancement Options (#625)", () => {
     const enhancementPage = new AnalysisEnhancementPage(page);
     await enhancementPage.goto(projectId);
 
-    // Both toggles default to off, so status should not be visible
+    // Clarification ships ON, so turn it off to reach the "no enhancements" state.
+    await enhancementPage.enableClarification();
+    expect(await enhancementPage.isClarificationChecked()).toBe(false);
+    expect(await enhancementPage.isWebResearchChecked()).toBe(false);
+
     await expect(enhancementPage.getStatusStep("Extract Requirements")).not.toBeVisible();
   });
 
@@ -537,14 +538,19 @@ test.describe("UI: Enhancement Options (#625)", () => {
     const enhancementPage = new AnalysisEnhancementPage(page);
     await enhancementPage.goto(projectId);
 
-    await test.step("Enable web research", async () => {
+    await test.step("Enable web research (clarification is already on)", async () => {
       await enhancementPage.enableWebResearch();
       await expect(enhancementPage.getStatusStep("Extract Requirements")).toBeVisible();
     });
 
-    await test.step("Disable web research", async () => {
+    await test.step("Turning BOTH off removes the indicator", async () => {
       await enhancementPage.enableWebResearch(); // toggles off
       expect(await enhancementPage.isWebResearchChecked()).toBe(false);
+      // Clarification alone still keeps the pipeline on screen.
+      await expect(enhancementPage.getStatusStep("Extract Requirements")).toBeVisible();
+
+      await enhancementPage.enableClarification(); // toggles off
+      expect(await enhancementPage.isClarificationChecked()).toBe(false);
       await expect(enhancementPage.getStatusStep("Extract Requirements")).not.toBeVisible();
     });
   });

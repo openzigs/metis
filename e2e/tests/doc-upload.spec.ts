@@ -54,8 +54,8 @@ test.describe("Document upload — new formats (#239)", () => {
       data: { name: `Upload Test ${slug}`, slug, description: "upload e2e" },
     });
     expect(res.status()).toBe(201);
-    const body = (await res.json()) as { success: boolean; data: { project: { id: string } } };
-    projectId = body.data.project.id;
+    const body = (await res.json()) as { success: boolean; data: { id: string } };
+    projectId = body.data.id;
     await api.dispose();
 
     const loginPage = new LoginPage(page);
@@ -65,8 +65,8 @@ test.describe("Document upload — new formats (#239)", () => {
 
   // AC: PDF upload still works (regression check, #244)
   test("should upload PDF and show in document list", async ({ page }) => {
-    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
     const detail = new ProjectDetailPage(page);
+    await detail.gotoDocuments(projectId);
 
     await test.step("Upload sample.pdf", async () => {
       await detail.uploadFiles([path.join(FIXTURES_DIR, "sample.pdf")]);
@@ -83,8 +83,8 @@ test.describe("Document upload — new formats (#239)", () => {
 
   // AC: DOCX files can be uploaded and processed to Markdown (#243)
   test("should upload DOCX and show in document list", async ({ page }) => {
-    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
     const detail = new ProjectDetailPage(page);
+    await detail.gotoDocuments(projectId);
 
     await test.step("Upload sample.docx", async () => {
       await detail.uploadFiles([path.join(FIXTURES_DIR, "sample.docx")]);
@@ -101,8 +101,8 @@ test.describe("Document upload — new formats (#239)", () => {
 
   // AC: XLSX files can be uploaded and processed to Markdown (#245)
   test("should upload XLSX and show in document list", async ({ page }) => {
-    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
     const detail = new ProjectDetailPage(page);
+    await detail.gotoDocuments(projectId);
 
     await test.step("Upload sample.xlsx", async () => {
       await detail.uploadFiles([path.join(FIXTURES_DIR, "sample.xlsx")]);
@@ -119,8 +119,8 @@ test.describe("Document upload — new formats (#239)", () => {
 
   // AC: PPTX files can be uploaded and processed to Markdown (#246)
   test("should upload PPTX and show in document list", async ({ page }) => {
-    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
     const detail = new ProjectDetailPage(page);
+    await detail.gotoDocuments(projectId);
 
     await test.step("Upload sample.pptx", async () => {
       await detail.uploadFiles([path.join(FIXTURES_DIR, "sample.pptx")]);

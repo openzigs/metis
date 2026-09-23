@@ -95,7 +95,10 @@ export class DataMappingsPage {
     note?: string;
   }): Promise<void> {
     await this.openAddForm();
-    await this.connectorSelect.selectOption({ label: opts.connectorLabel });
+    // Radix Select — a button + listbox portal, not a native <select>, so
+    // `selectOption` does not apply: open it and pick the option by name.
+    await this.connectorSelect.click();
+    await this.page.getByRole("option", { name: opts.connectorLabel }).click();
     if (opts.schema) await this.schemaInput.fill(opts.schema);
     await this.tableInput.fill(opts.table);
     if (opts.column) await this.columnInput.fill(opts.column);

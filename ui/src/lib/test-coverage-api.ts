@@ -10,13 +10,32 @@
 import { apiFetch } from "@/lib/api-client";
 import { API_BASE } from "@/lib/config";
 
+/**
+ * A row from `GET /test-coverage/imports` — i.e. a `TestCaseImport` record.
+ * The field names here are the ones the API actually returns; the previous
+ * shape (`filename` / `casesParsed` / `casesUpserted`) matched no column, so
+ * the imports list rendered a blank name and a blank count.
+ */
 export interface TestImportSummary {
   id: string;
   source: string;
-  filename: string | null;
-  byteSize: number | null;
-  createdById: string | null;
+  /** Uploaded file name, or the label typed into the paste dialog. */
+  label: string;
+  /** `pending|importing|completed|failed`. */
+  status: string;
+  /** Count of successfully normalised test cases. */
+  testCount: number;
+  error?: string | null;
+  runId?: string | null;
   createdAt: string;
+  updatedAt?: string;
+}
+
+/** The response of a CONNECTOR pull (Jira / Xray / Zephyr / TestRail). */
+export interface ConnectorImportSummary {
+  id: string;
+  source: string;
+  label: string;
   casesParsed: number;
   casesUpserted: number;
 }
@@ -321,10 +340,13 @@ export const testCoverageApi = {
 
   // ---- connector imports -------------------------------------------------
   pullFromConnector: (projectId: string, body: ConnectorPullRequest) =>
-    apiFetch<TestImportSummary>(`/projects/${projectId}/test-coverage/imports/${body.source}`, {
-      method: "POST",
-      body,
-    }),
+    apiFetch<ConnectorImportSummary>(
+      `/projects/${projectId}/test-coverage/imports/${body.source}`,
+      {
+        method: "POST",
+        body,
+      },
+    ),
 };
 
 async function safeJson(res: Response): Promise<{

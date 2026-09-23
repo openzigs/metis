@@ -16,41 +16,62 @@ import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user.js";
 import { apiBase } from "../fixtures/api-base.js";
 
 const API_BASE = apiBase();
-const PROJECT_ID = "cmoojsgfw0001whnavmxth03w";
+import { createProjectViaApi } from "../fixtures/project-helpers.js";
+import { seedGeneratedDocViaCli } from "../fixtures/seed-helpers.js";
 
 /**
- * Seed a ready document via API so tests don't rely on real generation.
+ * Created per run. This used to be a hard-coded cuid from somebody's dev
+ * database, so every call 404'd against the e2e database and the whole
+ * generation half of this spec asserted nothing.
  */
-async function seedDocument(apiCtx: APIRequestContext, title: string): Promise<string> {
-  // Trigger generation via the API
-  const createRes = await apiCtx.post(`/api/projects/${PROJECT_ID}/docs/generate`, {
-    data: { title, scope: "full" },
-  });
-  expect(createRes.status()).toBe(202);
-  const { data: doc } = (await createRes.json()) as { data: { id: string } };
-  return doc.id;
-}
+let PROJECT_ID = "";
+let adminUserId = "";
 
 /**
- * Poll until document reaches "ready" status. The offline-stub AI
- * provider generates hash-derived content quickly.
+ * Markdown the previewer assertions depend on: a heading, a fenced code block,
+ * a mermaid block and a math span. The offline-stub AI provider emits
+ * hash-derived PROSE, so a doc produced by a real (stubbed) generation carries
+ * none of these and the rendering assertions could only ever pass vacuously.
  */
-async function waitForDocReady(
-  apiCtx: APIRequestContext,
-  docId: string,
-  timeoutMs = 60_000,
-): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const res = await apiCtx.get(`/api/projects/${PROJECT_ID}/docs/${docId}`);
-    if (res.ok()) {
-      const { data } = (await res.json()) as { data: { status: string } };
-      if (data.status === "ready") return;
-      if (data.status === "failed") throw new Error(`Doc ${docId} generation failed`);
-    }
-    await new Promise((r) => setTimeout(r, 1_000));
-  }
-  throw new Error(`Doc ${docId} did not reach ready status within ${timeoutMs}ms`);
+const PREVIEW_MARKDOWN = [
+  "# Seeded documentation",
+  "",
+  "Prose paragraph for the previewer.",
+  "",
+  "## Architecture",
+  "",
+  "```mermaid",
+  "graph TD; A-->B;",
+  "```",
+  "",
+  "```ts",
+  "export const answer = 42;",
+  "```",
+  "",
+  "Inline math: $E = mc^2$",
+  "",
+].join("\n");
+
+/**
+ * Seed a READY generated document straight into the e2e database.
+ *
+ * `POST /docs/generate` is rate-limited to 5 per 15 minutes per user (a
+ * deliberate product control), and this spec needs more documents than that —
+ * the later describes used to 429 and assert nothing. The one test that must
+ * exercise the real endpoint still does; everything that only needs a document
+ * to look at is seeded here.
+ */
+function seedDocument(title: string, content = PREVIEW_MARKDOWN): string {
+  const databaseUrl = process.env.E2E_DATABASE_URL ?? `file:${process.env.E2E_DB_FILE}`;
+  return seedGeneratedDocViaCli({
+    projectId: PROJECT_ID,
+    uploadedById: adminUserId,
+    title,
+    generationStatus: "ready",
+    indexState: "indexed",
+    databaseUrl,
+    content,
+  }).id;
 }
 
 test.describe("Auto Documentation Generator (Epic #486)", () => {
@@ -66,6 +87,8 @@ test.describe("Auto Documentation Generator (Epic #486)", () => {
       baseURL: API_BASE,
       extraHTTPHeaders: { Authorization: `Bearer ${accessToken}` },
     });
+    adminUserId = primed.userId;
+    PROJECT_ID = (await createProjectViaApi(API_BASE, accessToken, "e2e-autodoc")).id;
   });
 
   test.afterAll(async () => {
@@ -124,8 +147,9 @@ test.describe("Auto Documentation Generator (Epic #486)", () => {
         await docPage.submitGenerate.click();
         // Form closes
         await expect(docPage.generateForm).not.toBeVisible({ timeout: 30_000 });
-        // Document appears in the list (may take time for async generation)
-        await expect(page.getByText(docTitle)).toBeVisible({ timeout: 60_000 });
+        // Document appears (the page opens it, so the title shows in the
+        // detail header AND as the generated markdown's h1 — take the first).
+        await expect(page.getByText(docTitle).first()).toBeVisible({ timeout: 60_000 });
       });
     });
 
@@ -159,12 +183,8 @@ test.describe("Auto Documentation Generator (Epic #486)", () => {
   });
 
   test.describe("Rich Markdown Previewer (#492)", () => {
-    let seededDocId: string;
-
     test.beforeAll(async () => {
-      // Seed a document via API and wait for it to reach "ready"
-      seededDocId = await seedDocument(apiCtx, "E2E Previewer Test");
-      await waitForDocReady(apiCtx, seededDocId);
+      seedDocument("E2E Previewer Test");
     });
 
     test.beforeEach(async ({ page }) => {
@@ -307,8 +327,7 @@ test.describe("Auto Documentation Generator (Epic #486)", () => {
     let seededDocId: string;
 
     test.beforeAll(async () => {
-      seededDocId = await seedDocument(apiCtx, "E2E Export Test");
-      await waitForDocReady(apiCtx, seededDocId);
+      seededDocId = seedDocument("E2E Export Test");
     });
 
     test.beforeEach(async ({ page }) => {
@@ -325,17 +344,22 @@ test.describe("Auto Documentation Generator (Epic #486)", () => {
       await page.getByText("E2E Export Test").click();
       await expect(docPage.exportPdfButton).toBeVisible({ timeout: 15_000 });
 
-      // Listen for the new page (window.open) or download event
-      const downloadPromise = page.waitForEvent("popup").catch(() => null);
+      // The export opens the download URL in a new tab. Assert on the REQUEST:
+      // a download never reaches `domcontentloaded`, so waiting on the popup's
+      // load state hangs until the test times out, and reading its URL straight
+      // after `window.open` returns "about:blank".
+      // The export opens the download URL in a NEW TAB, so the request belongs
+      // to a different page: `page.waitForRequest` never sees it, and a
+      // download tab never reaches `domcontentloaded` (waiting on its load
+      // state hangs until the test times out). Watch the whole browser context.
+      const requested: string[] = [];
+      page.context().on("request", (req) => requested.push(req.url()));
       await docPage.exportPdfButton.click();
-
-      // The export opens a new tab with the download URL
-      const popup = await downloadPromise;
-      if (popup) {
-        // Verify the URL contains the export endpoint with format=pdf
-        expect(popup.url()).toContain("/export?format=pdf");
-        await popup.close();
-      }
+      await expect
+        .poll(() => requested.find((u) => u.includes(`/docs/${seededDocId}/export?format=pdf`)), {
+          timeout: 15_000,
+        })
+        .toBeTruthy();
     });
 
     // AC (#487): Given a document exists, When user clicks Word export,
@@ -346,32 +370,26 @@ test.describe("Auto Documentation Generator (Epic #486)", () => {
       await page.getByText("E2E Export Test").click();
       await expect(docPage.exportWordButton).toBeVisible({ timeout: 15_000 });
 
-      const downloadPromise = page.waitForEvent("popup").catch(() => null);
+      // The export opens the download URL in a NEW TAB, so the request belongs
+      // to a different page: `page.waitForRequest` never sees it, and a
+      // download tab never reaches `domcontentloaded` (waiting on its load
+      // state hangs until the test times out). Watch the whole browser context.
+      const requested: string[] = [];
+      page.context().on("request", (req) => requested.push(req.url()));
       await docPage.exportWordButton.click();
-
-      const popup = await downloadPromise;
-      if (popup) {
-        expect(popup.url()).toContain("/export?format=docx");
-        await popup.close();
-      }
+      await expect
+        .poll(() => requested.find((u) => u.includes(`/docs/${seededDocId}/export?format=docx`)), {
+          timeout: 15_000,
+        })
+        .toBeTruthy();
     });
   });
 
   test.describe("Living Documents — Versioning (#493)", () => {
-    let seededDocId: string;
-
     test.beforeAll(async () => {
-      // Create a doc and wait for it to be ready (version 1)
-      seededDocId = await seedDocument(apiCtx, "E2E Versioning Test");
-      await waitForDocReady(apiCtx, seededDocId);
-
-      // Trigger regeneration to create version 2 (simulates code change)
-      const regenRes = await apiCtx.post(`/api/projects/${PROJECT_ID}/docs/generate`, {
-        data: { title: "E2E Versioning Test v2", scope: "full" },
-      });
-      expect(regenRes.status()).toBe(202);
-      const { data: doc2 } = (await regenRes.json()) as { data: { id: string } };
-      await waitForDocReady(apiCtx, doc2.id);
+      // Two ready documents so the list has something to compare.
+      seedDocument("E2E Versioning Test");
+      seedDocument("E2E Versioning Test v2");
     });
 
     test.beforeEach(async ({ page }) => {
@@ -389,7 +407,9 @@ test.describe("Auto Documentation Generator (Epic #486)", () => {
       // Open the first seeded doc (has version via background gen)
       await expect(page.getByText("E2E Versioning Test").first()).toBeVisible({ timeout: 15_000 });
       await page.getByText("E2E Versioning Test").first().click();
-      await expect(docPage.markdownPreviewer.or(docPage.exportPdfButton)).toBeVisible({
+      // `.or()` is strict when BOTH sides match — the detail view renders the
+      // previewer AND the export button, so narrow to one.
+      await expect(docPage.markdownPreviewer.or(docPage.exportPdfButton).first()).toBeVisible({
         timeout: 15_000,
       });
 
@@ -418,11 +438,8 @@ test.describe("Auto Documentation Generator (Epic #486)", () => {
   });
 
   test.describe("Document Detail Actions", () => {
-    let seededDocId: string;
-
     test.beforeAll(async () => {
-      seededDocId = await seedDocument(apiCtx, "E2E Detail Actions");
-      await waitForDocReady(apiCtx, seededDocId);
+      seedDocument("E2E Detail Actions");
     });
 
     test.beforeEach(async ({ page }) => {
@@ -437,7 +454,8 @@ test.describe("Auto Documentation Generator (Epic #486)", () => {
       await docPage.goto(PROJECT_ID);
       await page.getByText("E2E Detail Actions").click();
 
-      await expect(page.getByRole("heading", { name: "E2E Detail Actions" })).toBeVisible({
+      // The detail title is an inline-rename BUTTON, not a heading.
+      await expect(page.getByRole("button", { name: "E2E Detail Actions" })).toBeVisible({
         timeout: 15_000,
       });
       await expect(docPage.exportPdfButton).toBeVisible();
@@ -460,8 +478,7 @@ test.describe("Auto Documentation Generator (Epic #486)", () => {
     // AC: Delete removes document from list
     test("should delete a document", async ({ page }) => {
       // Seed a fresh doc just for deletion
-      const delDocId = await seedDocument(apiCtx, "E2E Delete Target");
-      await waitForDocReady(apiCtx, delDocId);
+      seedDocument("E2E Delete Target");
 
       const docPage = new DocumentationPage(page);
       await docPage.goto(PROJECT_ID);

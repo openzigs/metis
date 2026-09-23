@@ -90,6 +90,24 @@ describe("TestCoveragePage", () => {
     expect(await screen.findByTestId("tc-runs-empty")).toBeInTheDocument();
   });
 
+  // The list used to read `filename` / `casesUpserted`, which the API never
+  // returns — every row rendered a blank name and a blank count.
+  it("lists an import with its label and case count", async () => {
+    api.listImports.mockResolvedValue([
+      {
+        id: "imp-9",
+        source: "csv",
+        label: "tests.csv",
+        status: "completed",
+        testCount: 3,
+        createdAt: new Date("2026-01-02T03:04:05Z").toISOString(),
+      },
+    ]);
+    renderPage();
+    expect(await screen.findByText("tests.csv")).toBeInTheDocument();
+    expect(await screen.findByText(/3 cases/)).toBeInTheDocument();
+  });
+
   it("kicks off a new run when the button is clicked", async () => {
     const user = userEvent.setup();
     api.createRun.mockResolvedValue({
@@ -187,12 +205,10 @@ describe("TestCoveragePage", () => {
     api.uploadImport.mockResolvedValue({
       id: "imp-1",
       source: "csv",
-      filename: "cases.csv",
-      byteSize: 10,
-      createdById: null,
+      label: "cases.csv",
+      status: "completed",
+      testCount: 2,
       createdAt: new Date().toISOString(),
-      casesParsed: 2,
-      casesUpserted: 2,
     });
     renderPage();
     const input = await screen.findByTestId("tc-upload-input");
@@ -206,12 +222,10 @@ describe("TestCoveragePage", () => {
     api.pasteImport.mockResolvedValue({
       id: "imp-2",
       source: "csv",
-      filename: null,
-      byteSize: 10,
-      createdById: null,
+      label: "Pasted set",
+      status: "completed",
+      testCount: 1,
       createdAt: new Date().toISOString(),
-      casesParsed: 1,
-      casesUpserted: 1,
     });
     renderPage();
     await user.click(await screen.findByTestId("tc-paste-button"));

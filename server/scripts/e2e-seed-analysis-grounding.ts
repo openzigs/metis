@@ -75,7 +75,26 @@ async function main(): Promise<void> {
         startedAt: now,
         completedAt: now,
         totalTokens: 1234,
-        metadata: JSON.stringify({ source: "e2e-seed-analysis-grounding" }),
+        metadata: JSON.stringify({
+          source: "e2e-seed-analysis-grounding",
+          // #733 — the same degraded capability record the orchestrator
+          // persists for a completed run on a project with no code graph and
+          // no ingested repo source. Seeded here because a live offline run
+          // can never reach the persist step (every specialist agent rejects
+          // the stub's prose, so the run is marked `failed` first).
+          capability: {
+            codeAnalysisRequested: true,
+            databaseAnalysisRequested: false,
+            codeGraphPresent: false,
+            agentMode: "single-shot",
+            repoSourceIngested: false,
+            fusedCodeRetrievalEnabled: true,
+            schemaContextEnabled: true,
+            quarantineFallbackUsed: false,
+            skippedRepos: [],
+            reasons: ["no-code-graph", "source-not-ingested"],
+          },
+        }),
       },
     });
 

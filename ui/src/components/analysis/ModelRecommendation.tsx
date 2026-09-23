@@ -146,7 +146,10 @@ export function ModelRecommendation({
   const { profile, selection } = data;
 
   return (
-    <div className="rounded border border-zinc-700 bg-zinc-900/40 p-3 space-y-2">
+    <div
+      className="rounded border border-zinc-700 bg-zinc-900/40 p-3 space-y-2"
+      data-testid="model-recommendation"
+    >
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-zinc-200">Model Selection</span>
         <Select value={override} onValueChange={(v) => onOverrideChange(v as ModelOverride)}>

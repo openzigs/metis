@@ -399,7 +399,12 @@ export default function WorkbenchPage() {
             ) : (
               <ul className="space-y-2 text-sm">
                 {messages.map((m) => (
-                  <li key={m.id} className={m.isError ? "text-destructive" : ""}>
+                  <li
+                    key={m.id}
+                    className={m.isError ? "text-destructive" : ""}
+                    data-testid="workbench-message"
+                    data-role={m.role}
+                  >
                     <strong className="mr-2 capitalize">{m.role}:</strong>
                     {m.isError ? (
                       <span className="whitespace-pre-wrap">{`⚠ ${m.content}`}</span>

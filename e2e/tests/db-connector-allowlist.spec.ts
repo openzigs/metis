@@ -162,7 +162,9 @@ test.describe("Issue #882 — DB connector table/column allow-list", () => {
     await test.step("reload still shows the connector", async () => {
       await page.reload();
       await expect(connections.heading).toBeVisible();
-      await expect(page.getByText(label)).toBeVisible();
+      // The connector shows up twice after a reload (the connectors list and
+      // the "unlinked connections" panel) — assert on the first.
+      await expect(page.getByText(label).first()).toBeVisible();
     });
 
     await test.step("allow-list is still persisted after reload", async () => {

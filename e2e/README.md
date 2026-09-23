@@ -1,11 +1,36 @@
 # `@metis/e2e` — Playwright suite
 
-End-to-end browser tests for METIS. Two specs ship today:
+End-to-end browser tests for METIS: ~590 specs across `tests/`, driving the real
+API + Next.js UI. Two are worth naming as the entry points:
 
-| Spec                    | Coverage |
-| ----------------------- | -------- |
-| `tests/smoke.spec.ts`   | `/healthz` reachability + bare login/project plumbing (smoke) |
-| `tests/full-flow.spec.ts` | Issue [#144](https://github.com/openzigs/metis-private/issues/144) — project → upload → analyze → publish-dry-run → schedule → cancel |
+| Spec                      | Coverage                                                            |
+| ------------------------- | ------------------------------------------------------------------- |
+| `tests/smoke.spec.ts`     | `/healthz` reachability + bare login/project plumbing (smoke)        |
+| `tests/full-flow.spec.ts` | project → upload → analyze → publish-dry-run → schedule → cancel     |
+
+**The whole suite runs on every pull request** (the `e2e` job in
+`.github/workflows/ci.yml`). It used to be gated behind an `E2E_ENABLED` repo
+variable that was never set; by the time anyone looked, ~150 specs were failing
+on `main` (#62).
+
+## What the harness can and cannot do
+
+The suite is deterministic and makes **no outbound network calls**. Two
+consequences bite when writing a spec:
+
+- **The `offline-stub` AI provider returns hash-derived PROSE, never JSON.**
+  Every analysis specialist agent rejects it, so a live analysis run always ends
+  `failed` — and anything downstream of a *completed* analysis (draft
+  generation, change analysis, the capability banner) cannot be reached by
+  running the pipeline. Seed a completed snapshot instead:
+  `seedGroundedAnalysisViaCli` / `seedCompletedAnalysis`
+  (`fixtures/seed-helpers.ts`, `fixtures/review-helpers.ts`).
+- **A spec that truly needs a live model must say so.** Use
+  `test.skip(isOfflineAiStub(), OFFLINE_AI_SKIP_REASON)` from
+  `fixtures/ai-mode.ts` — the report then shows the test as skipped *with the
+  reason*. Point `AI_PROVIDER` at a real provider to run those specs. Never
+  call a bare `test.skip()` at runtime for a missing surface: that reports as a
+  pass. Use `test.fixme("…")` with an issue number instead.
 
 ## Run locally
 
@@ -103,6 +128,9 @@ E2E_SKIP_WEBSERVER=1 \
 
 # Surface quarantined specs (default run skips them)
 pnpm --filter @metis/e2e test --grep @quarantine
+
+# Run the specs that need a live model too (they self-skip by default)
+AI_PROVIDER=copilot pnpm --filter @metis/e2e test
 ```
 
 ## Canonical API + UI base URLs (#183)

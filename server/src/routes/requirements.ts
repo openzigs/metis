@@ -28,6 +28,21 @@ import {
   RequirementVersionError,
 } from "../lib/requirements/requirement-version-service.js";
 
+/**
+ * `Requirement.labels` is a JSON-encoded string[] in the database and a plain
+ * string[] on the wire. Tolerates a malformed/legacy value by reporting no
+ * labels rather than throwing inside the lock's pre-flight read.
+ */
+function parseLabels(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map((l) => String(l)) : [];
+  } catch {
+    return [];
+  }
+}
+
 // ---- Schemas ----------------------------------------------------------------
 
 const updateRequirementSchema = z.object({
@@ -168,7 +183,7 @@ export function requirementsCollaborationRouter(): Router {
     requirePermission("project.update"),
     optimisticLock("requirement", async (req) => {
       const id = String(req.params.requirementId);
-      return prisma.requirement.findUnique({
+      const row = await prisma.requirement.findUnique({
         // The scope resolved by `requireRequirementAccess` narrows the loader
         // too, so the lock's 409 diff can only ever describe an in-tenant row.
         where: { id, deletedAt: null, ...requirementScopeWhere(req) },
@@ -184,6 +199,14 @@ export function requirementsCollaborationRouter(): Router {
           reviewStatus: true,
         },
       });
+      if (!row) return null;
+      // `labels` is stored as a JSON string but travels over the API as a
+      // string[] (see `updateRequirementSchema`). The lock diffs the record
+      // against the REQUEST BODY field by field, so handing it the raw column
+      // reported `labels` as conflicting on every 409 — and the merge modal
+      // then offered to "keep" a JSON string, which the same endpoint rejects
+      // with a 400. Present the record in the shape the client speaks.
+      return { ...row, labels: parseLabels(row.labels) };
     }),
     async (req: Request, res: Response) => {
       if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");

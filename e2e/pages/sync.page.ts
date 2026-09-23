@@ -41,7 +41,9 @@ export class SyncPage {
 
     // Pagination
     this.prevButton = page.getByRole("button", { name: "Previous" });
-    this.nextButton = page.getByRole("button", { name: "Next" });
+    // `exact` matters: Next.js dev mode injects an "Open Next.js Dev Tools"
+    // button, which a substring match on "Next" also selects.
+    this.nextButton = page.getByRole("button", { name: "Next", exact: true });
     this.pageIndicator = page.getByText(/Page \d+ of \d+/);
 
     // Diff modal (fixed overlay)
@@ -52,7 +54,8 @@ export class SyncPage {
     this.pushMetisButton = page.getByRole("button", { name: "Push METIS →" });
     this.markDivergentButton = page.getByRole("button", { name: "Mark Divergent" });
     this.localPanel = page.getByText("Local (METIS)");
-    this.externalPanel = page.getByText("External");
+    // `exact` matters: "← Adopt External" also contains "External".
+    this.externalPanel = page.getByText("External", { exact: true });
   }
 
   async goto(projectId: string, requirementId?: string): Promise<void> {

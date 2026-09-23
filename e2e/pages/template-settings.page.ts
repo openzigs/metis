@@ -52,7 +52,9 @@ export class TemplateSettingsPage {
     // Create/Edit form
     this.formHeadingCreate = page.getByRole("heading", { name: "Create Template" });
     this.templateNameInput = page.getByLabel("Template name");
-    this.platformSelect = page.getByLabel("Platform");
+    // `getByRole("combobox")` (a native <select>) disambiguates from the
+    // sidebar's "Platform" nav section, which `getByLabel` also matched.
+    this.platformSelect = page.getByRole("combobox", { name: "Platform" });
     this.templateTypeSelect = page.getByLabel("Template type");
     this.addSectionButton = page.getByRole("button", { name: /Add Section/ });
     this.saveButton = page.getByRole("button", { name: "Save Template" });
@@ -72,8 +74,9 @@ export class TemplateSettingsPage {
 
   async goto(projectId: string): Promise<void> {
     await this.page.goto(`/projects/${projectId}/settings/templates`, { waitUntil: "load" });
-    // Wait for either the heading (list loaded) or loading indicator
-    await expect(this.heading.or(this.loadingIndicator)).toBeVisible({ timeout: 30_000 });
+    // Wait for either the heading (list loaded) or loading indicator. `.first()`
+    // because `.or()` is strict when BOTH sides are on screen.
+    await expect(this.heading.or(this.loadingIndicator).first()).toBeVisible({ timeout: 30_000 });
     // Then wait for the heading specifically (templates loaded)
     await expect(this.heading).toBeVisible({ timeout: 30_000 });
   }

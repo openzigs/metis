@@ -61,7 +61,7 @@ test.describe("Sessions page — no /api/api/ double prefix (#122)", () => {
       // Either at least one session row OR the empty-state copy that the page
       // shows when the 200 returns an empty array.
       const rows = page.locator('[data-testid^="sess-row-"]');
-      const empty = page.getByText("No resumable sessions.", { exact: true });
+      const empty = page.getByText("No resumable sessions", { exact: true });
       await expect
         .poll(async () => (await rows.count()) > 0 || (await empty.isVisible()))
         .toBe(true);

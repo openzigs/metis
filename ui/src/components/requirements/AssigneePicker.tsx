@@ -29,8 +29,11 @@ interface AssigneePickerProps {
 
 async function searchUsers(q: string): Promise<User[]> {
   if (!q.trim()) return [];
-  const data = await apiFetch<{ data: User[] }>(`/users?search=${encodeURIComponent(q)}&limit=8`);
-  return data.data ?? [];
+  // `apiFetch` already unwraps the `{ success, data }` envelope, so the result
+  // IS the user array. Reading `.data` off it returned undefined for every
+  // query and the picker always said "No users found".
+  const users = await apiFetch<User[]>(`/users?search=${encodeURIComponent(q)}&limit=8`);
+  return users ?? [];
 }
 
 function assignmentQueryKey(requirementId: string) {

@@ -5,10 +5,16 @@
  *   1. Login + create a project.
  *   2. Upload a markdown document — server lands it in `pending` /
  *      `quarantined` indexState because auto-approve defaults to off.
- *   3. `POST /api/documents/:id/approve` flips it to `indexed` and chunks
+ *   3. `POST /api/projects/:projectId/documents/:id/approve` flips it to `indexed` and chunks
  *      become visible to RAG search.
- *   4. `PATCH /api/documents/:id/acl` cascades a deny rule and the document
- *      hides from a search performed by a non-admin actor.
+ *   4. `PATCH /api/projects/:projectId/documents/:id/acl` restricts the document
+ *      to a role and the restriction CASCADES onto its indexed chunks
+ *      (asserted via the returned `chunkCount`).
+ *
+ * NOT covered here: that a non-admin's search then misses the document. The
+ * header used to claim it; no such assertion has ever existed in this file.
+ * Adding it needs a second seeded actor without the role — tracked separately
+ * rather than left as a comment that reads like coverage.
  *
  * AI provider is `offline-stub`, embedder is `HashEmbedder`, vector store is
  * the local in-memory backend — same determinism guarantees as the rest of
@@ -90,8 +96,10 @@ test.describe("Epic #157 — RAG hardening", () => {
         },
       });
       expect([201, 202]).toContain(upload.status());
-      const uploadBody = (await upload.json()) as ApiEnvelope<{ id: string }>;
-      const documentId = uploadBody.data.id;
+      // The upload envelope is `{ document, ingest }` — the id lives on
+      // `data.document`, not on `data` itself.
+      const uploadBody = (await upload.json()) as ApiEnvelope<{ document: { id: string } }>;
+      const documentId = uploadBody.data.document.id;
       expect(documentId).toBeTruthy();
 
       // -------- 3. Document settles into quarantine (or pending) --------
@@ -118,7 +126,9 @@ test.describe("Epic #157 — RAG hardening", () => {
       expect(qBody.data.items.some((row) => row.documentId === documentId)).toBe(true);
 
       // -------- 5. Approve flips indexState to "indexed" --------
-      const approve = await api.post(`/api/documents/${documentId}/approve`, {
+      // The approve route is project-scoped (mounted under
+      // /projects/:projectId/documents), not a bare /documents/:id path.
+      const approve = await api.post(`/api/projects/${projectId}/documents/${documentId}/approve`, {
         data: {},
       });
       expect(approve.status(), await approve.text()).toBe(200);
@@ -137,13 +147,20 @@ test.describe("Epic #157 — RAG hardening", () => {
       );
       expect(indexed.indexState).toBe("indexed");
 
-      // -------- 6. PATCH ACL with a deny rule on a fictional role --------
-      const aclRes = await api.patch(`/api/documents/${documentId}/acl`, {
+      // -------- 6. PATCH ACL restricting the document to one role --------
+      // An ACL subject is `{ kind: user|role|group, value }` — there is no
+      // "deny" kind; presence of subjects is itself the restriction.
+      const aclRes = await api.patch(`/api/projects/${projectId}/documents/${documentId}/acl`, {
         data: {
-          aclSubjects: [{ kind: "deny", value: "role:secret" }],
+          aclSubjects: [{ kind: "role", value: "secret-clearance" }],
         },
       });
       expect(aclRes.status(), await aclRes.text()).toBe(200);
+      const aclBody = (await aclRes.json()) as ApiEnvelope<{ chunkCount: number }>;
+      expect(
+        aclBody.data.chunkCount,
+        "the ACL cascades onto the document's indexed chunks",
+      ).toBeGreaterThan(0);
     } finally {
       await api.dispose();
     }

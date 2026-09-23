@@ -59,8 +59,8 @@ test.describe("Issue Templates — Epic #595", () => {
       },
     });
     expect(res.status()).toBe(201);
-    const body = (await res.json()) as { success: boolean; data: { project: { id: string } } };
-    projectId = body.data.project.id;
+    const body = (await res.json()) as { success: boolean; data: { id: string } };
+    projectId = body.data.id;
     await api.dispose();
 
     // Log in through the browser
@@ -451,15 +451,25 @@ test.describe("Issue Templates — Epic #595", () => {
     await templatePage.waitForTemplatesLoaded();
 
     await test.step("Tab to New Template button and activate with Enter", async () => {
-      // Focus the page body and tab through
+      // Tab from the top of the document until the New Template button takes
+      // focus. The app shell's sidebar alone is ~30 tab stops, so the old
+      // 20-press budget ran out before reaching the page content and the
+      // Enter below landed on whatever happened to be focused.
       await page.keyboard.press("Tab");
-      // Keep tabbing until we reach the New Template button
-      for (let i = 0; i < 20; i++) {
-        const focused = page.locator(":focus");
-        const text = await focused.textContent().catch(() => "");
-        if (text?.includes("New Template")) break;
+      let reached = false;
+      for (let i = 0; i < 100; i += 1) {
+        const text =
+          (await page
+            .locator(":focus")
+            .textContent()
+            .catch(() => "")) ?? "";
+        if (text.includes("New Template")) {
+          reached = true;
+          break;
+        }
         await page.keyboard.press("Tab");
       }
+      expect(reached, "New Template is reachable by keyboard alone").toBe(true);
       await page.keyboard.press("Enter");
       await expect(templatePage.formHeadingCreate).toBeVisible();
     });
@@ -499,7 +509,9 @@ test.describe("Issue Templates — Epic #595", () => {
       const options = typeSelect.locator("option");
       await expect(options).toHaveCount(6);
       for (const type of ["text", "markdown", "checklist", "number", "select", "tags"]) {
-        await expect(typeSelect.locator("option", { hasText: type })).toBeVisible();
+        // An <option> inside a closed <select> has no box and is never
+        // "visible" — assert that the option exists.
+        await expect(typeSelect.locator("option", { hasText: type })).toHaveCount(1);
       }
     });
 

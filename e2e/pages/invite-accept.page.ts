@@ -21,13 +21,15 @@ export class InviteAcceptPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Workspace Invitation" });
+    // shadcn's CardTitle renders a <div>, not a heading element (see
+    // packages/ui-kit/src/components/card.tsx), so these are text locators.
+    this.heading = page.getByText("Workspace Invitation", { exact: true });
     this.workspaceName = page.locator(".rounded-lg.border p.text-lg");
     this.acceptButton = page.getByRole("button", { name: "Accept invitation" });
-    this.errorCard = page.getByRole("heading", { name: "Invalid Invitation" });
-    this.expiredHeading = page.getByRole("heading", { name: "Invitation Expired" });
-    this.invalidHeading = page.getByRole("heading", { name: "Invalid Invitation" });
-    this.successHeading = page.getByRole("heading", { name: "Welcome!" });
+    this.errorCard = page.getByText("Invalid Invitation", { exact: true });
+    this.expiredHeading = page.getByText("Invitation Expired", { exact: true });
+    this.invalidHeading = page.getByText("Invalid Invitation", { exact: true });
+    this.successHeading = page.getByText("Welcome!", { exact: true });
     this.inviterName = page.getByText(/invited you to join/);
     this.inviteeEmail = page.getByText(/Invitation for/);
     this.roleLabel = page.getByText(/^Role:/);

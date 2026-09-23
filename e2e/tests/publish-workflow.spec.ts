@@ -58,7 +58,9 @@ test.describe("Publishing tab (#publishing) — generate / batch / recent", () =
       await expect(
         page.getByRole("heading", { name: "Generate drafts from analysis" }),
       ).toBeVisible();
-      await expect(page.getByLabel("Analysis ID")).toBeVisible();
+      // The opaque "Analysis ID" text box became a picker over the project's
+      // own analyses; the label is now just "Analysis".
+      await expect(page.getByLabel("Analysis")).toBeVisible();
       await expect(page.getByLabel("Target owner")).toBeVisible();
       await expect(page.getByLabel("Target repo")).toBeVisible();
       // Generate is gated off until all three fields are present.

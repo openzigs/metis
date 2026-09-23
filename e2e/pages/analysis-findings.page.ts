@@ -40,8 +40,10 @@ export class AnalysisFindingsPage {
   constructor(page: Page) {
     this.page = page;
 
-    this.heading = page.getByRole("heading", { name: /^Analysis —/ });
-    this.findingsHeading = page.getByRole("heading", { name: "Findings" });
+    this.heading = page.getByRole("heading", { name: /^Requirements Analysis —/ });
+    this.findingsHeading = page
+      .getByTestId("findings-section")
+      .getByRole("heading", { name: "Findings", exact: true });
     this.noFindings = page.getByText("No findings yet.", { exact: true });
 
     this.dialog = page.getByTestId("deep-dive-dialog");

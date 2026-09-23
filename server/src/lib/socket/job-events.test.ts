@@ -7,9 +7,11 @@ import type { MetisIOServer } from "./server.js";
 import {
   createJobEventEmitter,
   genericFailureMessage,
+  getLastJobLifecycle,
   JOB_KINDS,
   NOOP_JOB_EMITTER,
   jobEvents,
+  _resetJobLifecycleMemory,
 } from "./job-events.js";
 import * as registry from "./registry.js";
 
@@ -350,5 +352,56 @@ describe("genericFailureMessage (#254)", () => {
     expect(serialized).not.toContain(RAW);
     expect(serialized).not.toContain("ECONNREFUSED");
     expect(serialized).not.toContain("secret_tokens");
+  });
+});
+
+/**
+ * A socket room only delivers what is emitted while the client is in it, and a
+ * client cannot join `job:{id}` until the trigger endpoint has answered. A job
+ * shorter than that round-trip therefore emitted its whole lifecycle into an
+ * empty room, and the surface waited forever. The emitter remembers the last
+ * transition so the socket server can replay it to a late subscriber.
+ */
+describe("last-event memory for late subscribers", () => {
+  beforeEach(() => {
+    _resetJobLifecycleMemory();
+  });
+
+  it("remembers the most recent transition per job", () => {
+    const { io } = makeFakeIo();
+    const emitter = createJobEventEmitter(io);
+    emitter.started("embeddings-reindex", "job-1", "proj-1", "Reindexing embeddings");
+    emitter.completed("embeddings-reindex", "job-1", "proj-1", "Reindexed 4 of 4 chunks.");
+
+    const last = getLastJobLifecycle("job-1");
+    expect(last?.status).toBe("completed");
+    expect(last?.message).toBe("Reindexed 4 of 4 chunks.");
+    expect(last?.progress).toBe(100);
+  });
+
+  it("keeps jobs apart and reports nothing for an unknown job", () => {
+    const { io } = makeFakeIo();
+    const emitter = createJobEventEmitter(io);
+    emitter.started("scan", "job-a", null);
+    emitter.failed("scan", "job-b", null, genericFailureMessage("scan"));
+
+    expect(getLastJobLifecycle("job-a")?.status).toBe("started");
+    expect(getLastJobLifecycle("job-b")?.status).toBe("failed");
+    expect(getLastJobLifecycle("job-never-seen")).toBeUndefined();
+  });
+
+  it("remembers even when no IO server is wired (emit is a no-op)", () => {
+    NOOP_JOB_EMITTER.completed("spec-kit", "job-offline", null, "done");
+    expect(getLastJobLifecycle("job-offline")?.status).toBe("completed");
+  });
+
+  it("evicts the oldest jobs beyond the cap so memory stays bounded", () => {
+    const { io } = makeFakeIo();
+    const emitter = createJobEventEmitter(io);
+    for (let i = 0; i < 520; i += 1) {
+      emitter.started("scan", `bounded-${i}`, null);
+    }
+    expect(getLastJobLifecycle("bounded-0")).toBeUndefined();
+    expect(getLastJobLifecycle("bounded-519")?.status).toBe("started");
   });
 });

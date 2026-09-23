@@ -20,6 +20,10 @@ export class ModelSelectionPanel {
   // ── Reasoning & cost badges ────────────────────────────────────────
   readonly reasoningBadge: Locator;
   readonly tokenBadge: Locator;
+  /** Badge shown in place of a number when there is no estimate. */
+  readonly tokenUnavailableBadge: Locator;
+  /** Caption shown instead of a number when the project has no completed run. */
+  readonly noTokenEstimateCaption: Locator;
   readonly costBadge: Locator;
 
   // ── Rationale text ─────────────────────────────────────────────────
@@ -31,25 +35,31 @@ export class ModelSelectionPanel {
   constructor(page: Page) {
     this.page = page;
 
-    this.panelHeading = page.getByText("Model Selection", { exact: true });
-    this.overrideSelect = page.getByLabel("Model override");
+    // The panel exports a test id (ModelRecommendation.tsx); a class-based
+    // container lookup matched several ancestors and went strict-mode red.
+    const panel = page.getByTestId("model-recommendation");
+    this.panelHeading = panel.getByText("Model Selection", { exact: true });
+    // A Radix Select: a labelled BUTTON that opens a listbox portal, not a
+    // native <select>. `selectOption` / `inputValue` do not apply.
+    this.overrideSelect = panel.getByRole("combobox", { name: "Model override" });
     this.loadingIndicator = page.getByText("Loading model recommendation…");
 
-    // The model name is a <span> with font-mono class inside the panel.
-    // We locate by role-less text within the panel container. The panel is
-    // the parent of "Model Selection" heading.
-    const panel = page.locator(".space-y-2", { has: this.panelHeading });
     this.modelName = panel.locator("span.font-mono");
     this.budgetDowngradedBadge = panel.getByText("Budget downgraded");
 
-    // Reasoning depth badge — contains " reasoning" suffix
-    this.reasoningBadge = panel.getByText(/reasoning$/);
-    // Token estimate badge — starts with "~" and ends with "tokens"
+    // Reasoning depth badge. Anchored on the WHOLE label: a loose
+    // "ends with reasoning" also matched the rationale sentence
+    // ("… Sonnet required for deep reasoning").
+    this.reasoningBadge = panel.getByText(/^(Simple|Moderate|Complex) reasoning$/);
+    // Token estimate — "~N tokens" once the project has a run to size from,
+    // otherwise the panel says so explicitly rather than inventing a number.
     this.tokenBadge = panel.getByText(/^~[\d,]+ tokens$/);
+    this.tokenUnavailableBadge = panel.getByText(/^Token estimate unavailable$/);
+    this.noTokenEstimateCaption = panel.getByText(/^No token estimate yet/);
     // Cost badge — starts with "~$"
     this.costBadge = panel.getByText(/^~\$/);
-    // Rationale — the <p> paragraph in the panel
-    this.rationale = panel.locator("p");
+    // Rationale — the LAST <p> in the panel (the first is the estimate caption).
+    this.rationale = panel.locator("p").last();
   }
 
   /** Wait for the recommendation data to load (loading indicator disappears). */
@@ -57,14 +67,37 @@ export class ModelSelectionPanel {
     await expect(this.panelHeading).toBeVisible({ timeout: 15_000 });
   }
 
-  /** Select a model override from the dropdown. */
-  async selectOverride(value: "auto" | "force-haiku" | "force-sonnet"): Promise<void> {
-    await this.overrideSelect.selectOption(value);
+  /** The human label shown for an override value. */
+  static readonly OVERRIDE_LABELS: Record<string, string> = {
+    auto: "Auto",
+    "force-haiku": "Force Haiku",
+    "force-sonnet": "Force Sonnet",
+    "force-fable": "Force Fable",
+    "force-opus": "Force Opus",
+  };
+
+  /** Open the override dropdown and return its options (as a listbox). */
+  async openOverride(): Promise<Locator> {
+    await this.overrideSelect.click();
+    const listbox = this.page.getByRole("listbox");
+    await expect(listbox).toBeVisible();
+    return listbox;
   }
 
-  /** Get the current override dropdown value. */
+  /** Select a model override from the dropdown. */
+  async selectOverride(
+    value: "auto" | "force-haiku" | "force-sonnet" | "force-fable" | "force-opus",
+  ): Promise<void> {
+    const listbox = await this.openOverride();
+    await listbox
+      .getByRole("option", { name: ModelSelectionPanel.OVERRIDE_LABELS[value], exact: true })
+      .click();
+    await expect(this.overrideSelect).toContainText(ModelSelectionPanel.OVERRIDE_LABELS[value]);
+  }
+
+  /** The override currently shown on the trigger (its human label). */
   async currentOverride(): Promise<string> {
-    return this.overrideSelect.inputValue();
+    return (await this.overrideSelect.textContent())?.trim() ?? "";
   }
 
   /** Get the displayed model name text. */

@@ -19,7 +19,8 @@ export class BaselinesPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Baselines" });
+    // `exact` matters: the page also renders an h2 "Compare two baselines".
+    this.heading = page.getByRole("heading", { name: "Baselines", exact: true });
     this.baselineList = page.getByRole("list", { name: "Baselines" });
     this.compareSelectA = page.getByTestId("compare-select-a");
     this.compareSelectB = page.getByTestId("compare-select-b");

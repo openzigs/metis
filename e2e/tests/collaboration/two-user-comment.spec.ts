@@ -58,7 +58,12 @@ async function loginAs(
 
 async function createProject(api: APIRequestContext, suffix: string): Promise<string> {
   const res = await api.post("/api/projects", {
-    data: { name: `collab-comment-${suffix}`, description: "E2E #738" },
+    data: {
+      name: `collab-comment-${suffix}`,
+      // POST /api/projects requires a slug.
+      slug: `collab-comment-${suffix}`.toLowerCase(),
+      description: "E2E #738",
+    },
   });
   expect(res.status(), await res.text()).toBe(201);
   const body = await res.json();
@@ -86,23 +91,50 @@ test.describe("Epic #728 / Issue #738 — Two-user comment + mention flow", () =
     coordinatorApi = coordPrimed.api;
     coordinatorUserId = coordPrimed.userId;
 
-    // Create a project as admin and seed a requirement.
-    projectId = await createProject(adminApi, String(Date.now()));
+    // Create the project as the COORDINATOR. Project access for a non-admin is
+    // "you created it" (listAccessibleProjectIds in
+    // lib/scheduler/project-access.ts — there is no ProjectMember table yet), so
+    // a project created by the admin is invisible to the coordinator and every
+    // comment call from them 403s. Admins bypass the check, so owning it from
+    // the coordinator's side is the only arrangement in which BOTH users can
+    // act on the same project today.
+    projectId = await createProject(coordinatorApi, String(Date.now()));
 
     // Seed requirement via seed script (bypasses AI pipeline).
     const { spawnSync } = await import("node:child_process");
     const { resolve } = await import("node:path");
-    const repoRoot = resolve(new URL(import.meta.url).pathname, "../../../../..");
+    // This file lives at e2e/tests/collaboration/<spec>.ts, so the repo root is
+    // four levels up from the file itself — one ".." consumes the filename.
+    const repoRoot = resolve(new URL(import.meta.url).pathname, "../../../..");
     const dbFile = process.env.E2E_DB_FILE;
     if (!dbFile) {
       throw new Error("E2E_DB_FILE env var not set — run via playwright config");
     }
     const databaseUrl = `file:${dbFile}`;
 
+    // `Requirement.analysisId` is a NOT-NULL foreign key, so seed a completed
+    // analysis first: the old "none" sentinel violated the constraint.
+    const analysisScript = resolve(repoRoot, "server", "scripts", "e2e-seed-analysis-grounding.ts");
+    const analysisResult = spawnSync(
+      "pnpm",
+      ["--filter", "@metis/server", "exec", "tsx", analysisScript, projectId, adminUserId],
+      {
+        cwd: repoRoot,
+        env: { ...process.env, DATABASE_URL: databaseUrl, DATABASE_PROVIDER: "sqlite" },
+        encoding: "utf8",
+      },
+    );
+    if (analysisResult.status !== 0) {
+      throw new Error(
+        `Analysis seed failed (status=${analysisResult.status}):\n${analysisResult.stderr}\n${analysisResult.stdout}`,
+      );
+    }
+    const analysisId = (JSON.parse(analysisResult.stdout) as { id: string }).id;
+
     const scriptPath = resolve(repoRoot, "server", "scripts", "e2e-seed-requirement.ts");
     const result = spawnSync(
       "pnpm",
-      ["--filter", "@metis/server", "exec", "tsx", scriptPath, projectId, "none"],
+      ["--filter", "@metis/server", "exec", "tsx", scriptPath, projectId, analysisId],
       {
         cwd: repoRoot,
         env: { ...process.env, DATABASE_URL: databaseUrl, DATABASE_PROVIDER: "sqlite" },

@@ -39,7 +39,9 @@ export class ImportPage {
 
     this.heading = page.getByRole("heading", { name: "Import Requirements" });
     this.newImportTitle = page.getByText("New import", { exact: true });
-    this.sourceSelect = page.getByLabel("Source");
+    // `exact` matters: the project sub-nav is labelled "Sources pages" and the
+    // tab bar has a "Sources" link, both of which a substring match selects.
+    this.sourceSelect = page.getByLabel("Source", { exact: true });
     this.labelInput = page.getByLabel("Label", { exact: true });
     this.tokenInput = page.getByLabel("API token");
     this.baseUrlInput = page.getByLabel("Base URL (optional, self-hosted)");

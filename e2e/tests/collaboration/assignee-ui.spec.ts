@@ -44,7 +44,9 @@ async function loginAs(
 async function runSeedScript(scriptName: string, args: string[]): Promise<{ id: string }> {
   const { spawnSync } = await import("node:child_process");
   const { resolve } = await import("node:path");
-  const repoRoot = resolve(new URL(import.meta.url).pathname, "../../../../..");
+  // This file lives at e2e/tests/collaboration/<spec>.ts, so the repo root is
+  // four levels up from the file itself — one ".." consumes the filename.
+  const repoRoot = resolve(new URL(import.meta.url).pathname, "../../../..");
   const dbFile = process.env.E2E_DB_FILE;
   if (!dbFile) throw new Error("E2E_DB_FILE not set");
   const scriptPath = resolve(repoRoot, "server", "scripts", scriptName);
@@ -79,8 +81,14 @@ test.describe("Epic #34 — Assignee picker + SLA badge (AC4, browser)", () => {
     adminUserId = admin.userId;
     coordinatorUserId = coord.userId;
 
+    const stamp = `${Date.now()}`;
     const res = await adminApi.post("/api/projects", {
-      data: { name: `collab-assignee-${Date.now()}`, description: "E2E #34 AC4" },
+      data: {
+        name: `collab-assignee-${stamp}`,
+        // POST /api/projects requires a slug.
+        slug: `collab-assignee-${stamp}`,
+        description: "E2E #34 AC4",
+      },
     });
     expect(res.status()).toBe(201);
     projectId = (await res.json()).data.id as string;

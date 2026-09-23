@@ -79,7 +79,9 @@ export class DocumentationPage {
     this.backButton = page.getByRole("button", { name: /Back/ });
     this.exportPdfButton = page.getByRole("button", { name: "Export PDF" });
     this.exportWordButton = page.getByRole("button", { name: "Export Word" });
-    this.deleteButton = page.getByRole("button", { name: "Delete" });
+    // `exact` matters: the detail title is a rename button, so a document
+    // called e.g. "E2E Delete Target" also matches a substring "Delete".
+    this.deleteButton = page.getByRole("button", { name: "Delete", exact: true });
 
     // Markdown previewer
     this.markdownPreviewer = page.getByTestId("markdown-previewer");

@@ -42,6 +42,15 @@ const LANCEDB_PATH = path.join(DATA_ROOT, "lancedb");
 // LLM credentials. Unrecorded requests fall back to the offline stub.
 const LLM_FIXTURE_DIR = process.env.AI_FIXTURE_DIR ?? path.join(__dirname, "fixtures", "llm");
 
+// Which AI provider the stack will run with. The deterministic default is the
+// offline stub, whose replies are hash-derived PROSE: anything that needs the
+// model to emit structured JSON (analysis agents, test-case suggestions) cannot
+// work under it. Specs read `E2E_AI_OFFLINE` to skip — with a reason — rather
+// than assert something the harness cannot produce. Point `AI_PROVIDER` at a
+// real provider and those specs run.
+const AI_PROVIDER = process.env.AI_PROVIDER ?? "offline-stub";
+process.env.E2E_AI_OFFLINE = AI_PROVIDER === "offline-stub" ? "1" : "0";
+
 // Expose the resolved DB path so test specs can reach into the SQLite file
 // for fixtures that bypass the API surface (e.g. seeding requirements when
 // the offline-stub AI provider can't produce structured output).
@@ -107,8 +116,8 @@ export default defineConfig({
             // Issue #144 AC: deterministic — no live AI provider, GitHub, or
             // external network. The offline-stub returns hash-derived
             // responses without I/O.
-            AI_PROVIDER: "offline-stub",
-            AI_OFFLINE: "1",
+            AI_PROVIDER,
+            AI_OFFLINE: AI_PROVIDER === "offline-stub" ? "1" : "0",
             // Epic #209 (#235) — replay recorded LLM fixtures (#234) for the
             // clarification → refinement → spec loop. Replay wins over the
             // offline stub; fixture misses still fall back to the stub, so the
@@ -126,6 +135,11 @@ export default defineConfig({
             INGEST_QUEUE: "off",
             // Epic #192 — closed-loop webhook secret for the e2e suite.
             GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET ?? "e2e-closed-loop-secret",
+            // Epic #739 — the drift reconciler's webhook receiver. Without a
+            // secret it rejects every delivery with NO_SECRET_CONFIGURED, so
+            // `issue-sync.spec.ts` could not drive a real drift (and the
+            // badge's live-update path had no way to be exercised end to end).
+            JIRA_WEBHOOK_SECRET: process.env.JIRA_WEBHOOK_SECRET ?? "e2e-jira-sync-secret",
             // The deterministic suite logs in many times per server lifetime
             // (each spec primes the admin via API + a UI login). The default
             // 20 req/15 min auth limiter throttles credential stuffing, not
@@ -144,6 +158,12 @@ export default defineConfig({
             // The Next.js auth proxy (ui/src/lib/auth-proxy.ts) reads
             // METIS_API_URL — point it at the test API.
             METIS_API_URL: `${API_BASE}/api`,
+            // The BROWSER socket connects straight to the API (it is not
+            // proxied through Next). Without this it falls back to
+            // `http://localhost:4000` — a developer's dev stack, or nothing at
+            // all in CI — so every realtime assertion in the suite ran against
+            // a socket that never connected ("Reconnecting…" forever).
+            NEXT_PUBLIC_SOCKET_URL: API_BASE,
             NEXT_TELEMETRY_DISABLED: "1",
             // Opt-in isolated Next dev dir (read by ui/next.config.mjs). Only
             // forwarded when explicitly set, so CI keeps the default `.next`

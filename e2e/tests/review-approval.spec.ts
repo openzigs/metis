@@ -260,9 +260,14 @@ test.describe("Epic #609 — review & approval workflow (#622)", () => {
             targetRepo: "fixture-repo",
             draftIds,
             dryRun: false,
+            // #1092/#1094 — a live batch is rejected with 400 TOKEN_REQUIRED
+            // before anything else if no vault ref is supplied, which would
+            // short-circuit the gate this step is about. The ref only has to be
+            // well-formed: it is resolved inside runBatch, long after the gate.
+            secretRef: "${vault:gh-publish-token}",
           },
         });
-        expect(batch.status()).toBe(409);
+        expect(batch.status(), await batch.text()).toBe(409);
         const body = (await batch.json()) as {
           error: { code: string; details?: { requirementIds?: string[] } };
         };

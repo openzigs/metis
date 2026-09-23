@@ -177,7 +177,12 @@ export function requirementCommentsRouter(): Router {
         orderBy: { createdAt: "asc" },
         include: {
           comments: {
-            where: { deletedAt: null },
+            // Soft-deleted comments stay in the list as placeholders
+            // (`commentView` blanks the body and sets `deleted: true`), which is
+            // what the thread UI renders as "This comment was deleted." Dropping
+            // them here made that branch — and the whole `deleted` field —
+            // unreachable, and left a thread whose only comment was deleted
+            // looking empty.
             orderBy: { createdAt: "asc" },
             include: commentInclude,
           },
@@ -283,7 +288,12 @@ export function specKitArtifactCommentsRouter(): Router {
         orderBy: { createdAt: "asc" },
         include: {
           comments: {
-            where: { deletedAt: null },
+            // Soft-deleted comments stay in the list as placeholders
+            // (`commentView` blanks the body and sets `deleted: true`), which is
+            // what the thread UI renders as "This comment was deleted." Dropping
+            // them here made that branch — and the whole `deleted` field —
+            // unreachable, and left a thread whose only comment was deleted
+            // looking empty.
             orderBy: { createdAt: "asc" },
             include: commentInclude,
           },

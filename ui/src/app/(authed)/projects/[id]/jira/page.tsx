@@ -554,8 +554,11 @@ export default function JiraPage() {
 
             {/* Row 2: advanced JQL bar */}
             <div className="flex gap-2 items-center">
-              <span className="text-xs text-muted-foreground shrink-0">JQL:</span>
+              <span className="text-xs text-muted-foreground shrink-0" aria-hidden="true">
+                JQL:
+              </span>
               <Input
+                aria-label="JQL Filter"
                 value={jqlFilter}
                 onChange={(e) => setJqlFilter(e.target.value)}
                 placeholder='Advanced: project = "KEY" AND labels = "perf" ORDER BY updated DESC'

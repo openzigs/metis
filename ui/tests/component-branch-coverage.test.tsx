@@ -93,11 +93,13 @@ describe("AssigneePicker", () => {
     await waitFor(() => expect(screen.getByPlaceholderText(/Search/i)).toBeInTheDocument());
   });
 
-  it("searches users on input (fires API call)", async () => {
+  // `apiFetch` unwraps the API envelope, so the search resolves to the ARRAY.
+  // Mocking `{ data: [...] }` here (the wire shape, not the client shape) hid a
+  // real defect: the component read `.data` off the array and rendered
+  // "No users found" for every query.
+  it("searches users on input and renders the matching option", async () => {
     const user = userEvent.setup();
-    apiFetchMock.mockResolvedValue({
-      data: [{ id: "u2", username: "bob", displayName: "Bob Smith" }],
-    });
+    apiFetchMock.mockResolvedValue([{ id: "u2", username: "bob", displayName: "Bob Smith" }]);
     const Wrapper = makeWrapper({});
     render(
       <Wrapper>
@@ -108,9 +110,10 @@ describe("AssigneePicker", () => {
     await user.click(screen.getByRole("button"));
     await waitFor(() => expect(screen.getByPlaceholderText(/Search/i)).toBeInTheDocument());
     const input = screen.getByPlaceholderText(/Search/i);
-    await user.type(input, "b");
-    // After typing, component is still mounted
-    expect(input).toBeInTheDocument();
+    await user.type(input, "bob");
+    const option = await screen.findByRole("option");
+    expect(option).toHaveTextContent("@bob");
+    expect(screen.queryByText(/No users found/i)).toBeNull();
   });
 });
 
