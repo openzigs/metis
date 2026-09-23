@@ -78,6 +78,17 @@ const ITEM_INCLUDE = {
   },
 } satisfies Prisma.ImpactAnalysisInclude;
 
+/**
+ * #88 — the detail read additionally loads the run's PERSISTED project selection
+ * (`impact_analysis_projects`, written at creation by #70). It is the only thing
+ * that names the projects of a run which has not written an item yet, and the
+ * detail/export/publish access guard is derived from it.
+ */
+const DETAIL_INCLUDE = {
+  ...ITEM_INCLUDE,
+  projects: { select: { projectId: true } },
+} satisfies Prisma.ImpactAnalysisInclude;
+
 interface RawAffectedSymbol {
   id: string;
   codeSymbolId: string | null;
@@ -851,7 +862,19 @@ export function computeSharedTableImpacts(items: ImpactItemView[]): SharedTableI
  * access; `projectCount` still counts them all, exactly as before.
  */
 export async function listImpactAnalyses(
-  opts: { accessibleProjectIds?: string[] | null; limit?: number; projectId?: string } = {},
+  opts: {
+    accessibleProjectIds?: string[] | null;
+    limit?: number;
+    projectId?: string;
+    /**
+     * #88 — the calling actor. A run with NO recoverable projects (pre-#70, no
+     * items) is not attributable to any project, so #70 correctly hides it from
+     * every non-admin — including the person who started it. Naming the actor
+     * lets that one principal keep seeing their own run without reopening the
+     * hatch for anybody else. Omitted ⇒ nobody sees such a run (fail closed).
+     */
+    actorId?: string;
+  } = {},
   prisma?: ReadPrisma,
 ): Promise<ImpactAnalysisSummary[]> {
   const db = resolvePrisma(prisma);
@@ -891,11 +914,20 @@ export async function listImpactAnalyses(
       ];
       return { row, projectIds };
     })
-    .filter(({ projectIds }) => {
+    .filter(({ row, projectIds }) => {
       if (!accessible) return true;
       // #70 — no `projectIds.length === 0` escape hatch. It was written for runs
       // whose projects could not be derived from their items, and it showed every
       // such run — another member's in-progress run included — to EVERY caller.
+      //
+      // #88 — with one bounded exception, which is NOT that hatch: a run whose
+      // projects are unrecoverable stays visible to the actor who STARTED it.
+      // It admits at most that actor, and only for a run nothing else can
+      // attribute; a run with known projects is still judged on those alone, so
+      // starting a run never buys back access to a project you have lost.
+      if (projectIds.length === 0) {
+        return opts.actorId !== undefined && row.startedById === opts.actorId;
+      }
       return projectIds.some((id) => accessible.has(id));
     })
     .map(({ row, projectIds }) => ({
@@ -921,7 +953,7 @@ export async function getImpactAnalysisDetail(
   const db = resolvePrisma(prisma);
   const row = await db.impactAnalysis.findFirst({
     where: { id },
-    include: ITEM_INCLUDE,
+    include: DETAIL_INCLUDE,
   });
   if (!row) return null;
 
@@ -954,7 +986,12 @@ export async function getImpactAnalysisDetail(
     );
   }
 
-  const projectIds = [...new Set(items.map((i) => i.projectId))];
+  // #88 — the run's projects are its PERSISTED selection (#70) first, then any
+  // further project its items name. Deriving them from `items` alone reported a
+  // run with no items yet as belonging to no project at all, and the read routes'
+  // access guard skipped itself on that empty list (OWASP A01 / BOLA).
+  const persistedProjectIds = (row.projects ?? []).map((p) => p.projectId);
+  const projectIds = [...new Set([...persistedProjectIds, ...items.map((i) => i.projectId)])];
 
   return {
     id: row.id,
@@ -967,6 +1004,9 @@ export async function getImpactAnalysisDetail(
     startedAt: row.startedAt.toISOString(),
     completedAt: row.completedAt ? row.completedAt.toISOString() : null,
     projectIds,
+    // #88 — carried so the route layer can keep an unattributable legacy run
+    // visible to its own starter without a second query.
+    startedById: row.startedById,
     items,
     // #956 — physical tables impacted across ≥2 of the run's projects.
     sharedTableImpacts: computeSharedTableImpacts(items),

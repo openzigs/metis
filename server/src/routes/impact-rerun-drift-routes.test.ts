@@ -120,6 +120,10 @@ function detail(over: Partial<ImpactAnalysisDetail> & { id: string }): ImpactAna
     startedAt: "2026-07-20T00:00:00.000Z",
     completedAt: "2026-07-20T00:01:00.000Z",
     projectIds: over.projectIds ?? ["project-001"],
+    // #88 — these cases are about re-run/drift semantics, not access, so the
+    // fixture is a run the caller started. It matters for the `projectIds: []`
+    // case: an unattributable run is now readable by its starter alone.
+    startedById: over.startedById ?? "user-1",
     items: over.items ?? [],
     sharedTableImpacts: [],
     rerunOfId: over.rerunOfId ?? null,

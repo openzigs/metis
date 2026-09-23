@@ -88,6 +88,7 @@ function detail(id: string, items: ImpactItemView[]): ImpactAnalysisDetail {
     startedAt: "2026-07-20T00:00:00.000Z",
     completedAt: "2026-07-20T00:01:00.000Z",
     projectIds: [...new Set(items.map((i) => i.projectId))],
+    startedById: "user-1",
     items,
     sharedTableImpacts: [],
     rerunOfId: id === "head" ? "base" : null,

@@ -4440,6 +4440,18 @@ OpenAI-compatible endpoint before the judge had started. Price the model with a
 `MODEL_PRICES` key of the form `embed:<backend>:<model>` — for example
 `embed:bedrock-sdk:cohere.embed-english-v3` — to bring it back onto the cap.
 
+**Priced embedding spend from the indexing pass counts against the run's cap.**
+The indexing pass over your test cases and their steps runs *before* judging, and
+its cost is charged to the same `TESTCOVERAGE_BUDGET_CENTS` budget as the judge
+and suggestion phases — it is not a free preamble. On a large cold corpus and a
+*priced* cloud embedder (Amazon Titan V2, OpenAI's `text-embedding-3-*`) that pass
+alone can consume the cap, and the run then stops before the judge has looked at
+anything, reporting `BUDGET_EXCEEDED` with a near-zero judged-requirement count.
+Two things avoid it: raise `TESTCOVERAGE_BUDGET_CENTS` for the first (cold) run of
+a large corpus, or use one of the built-in local embedders, which cost $0. Later
+runs over the same corpus skip cases that are already indexed, so the indexing
+share drops sharply after the first run.
+
 ### Permissions
 
 - **`project.read`** — view the page, runs, report, and budget tiles.

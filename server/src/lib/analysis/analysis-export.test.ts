@@ -821,6 +821,7 @@ function impactDetail(overrides: Partial<ImpactAnalysisDetail> = {}): ImpactAnal
     startedAt: "2026-07-20T00:00:00.000Z",
     completedAt: "2026-07-20T00:01:00.000Z",
     projectIds: ["project-001", "project-002"],
+    startedById: "user-1",
     items: [impactItem()],
     sharedTableImpacts: [],
     ...overrides,

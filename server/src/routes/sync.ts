@@ -15,6 +15,7 @@ import { resolveDriftSchema, type ApiResponse } from "@metis/shared";
 import { ZodError } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { AppError } from "../middleware/error-handler.js";
 import { webhookReceiverRateLimiter } from "../middleware/webhook-receiver-rate-limit.js";
 import { recordDelivery } from "../lib/agents/pr-reviewer/webhook-dedup.js";
@@ -165,11 +166,19 @@ export function syncDriftRouter(): Router {
 
   /**
    * GET /drift — list drift events for a project.
+   *
+   * #88 — `sync.read` is a ROLE check: it says the caller may read drift, not
+   * whose drift. The project comes from the query string, so the read must also
+   * pass the canonical object-level scope seam (`assertProjectAccess`, the same
+   * predicate `requireProjectAccess` applies to `/projects/:projectId/*`).
+   * A non-member gets 404, never 403, so probing cannot enumerate projects.
    */
   r.get("/drift", requirePermission("sync.read"), async (req: Request, res: Response, next) => {
     try {
       const projectId = req.query.projectId as string;
       if (!projectId) throw new AppError(400, "INVALID_REQUEST", "projectId query param required");
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      await assertProjectAccess(req.user, projectId);
 
       const status = req.query.status as string | undefined;
       const requirementId = req.query.requirementId as string | undefined;
@@ -185,6 +194,10 @@ export function syncDriftRouter(): Router {
 
   /**
    * GET /drift/count — drift count for badge display.
+   *
+   * #88 — same object-level scope as `GET /drift` above. A count is a read too:
+   * "project X has 7 unresolved drifts" is content, and the badge hook
+   * (`ui/src/hooks/use-drift-count.ts`) is its first consumer.
    */
   r.get(
     "/drift/count",
@@ -194,6 +207,8 @@ export function syncDriftRouter(): Router {
         const projectId = req.query.projectId as string;
         if (!projectId)
           throw new AppError(400, "INVALID_REQUEST", "projectId query param required");
+        if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+        await assertProjectAccess(req.user, projectId);
 
         const count = await getDriftCount(projectId);
         res.json(ok({ count }));

@@ -71,6 +71,8 @@ function state(over: Partial<ReturnType<typeof useImpactAnalysis>>) {
 const detail: ImpactAnalysisDetail = {
   id: "ia-0000000001",
   status: "completed",
+  // #88 — the run's starter; load-bearing for the server's access guard.
+  startedById: "user-1",
   documentId: null,
   sourceText: null,
   summary: "Touched 1 project via the `orders` table.",
