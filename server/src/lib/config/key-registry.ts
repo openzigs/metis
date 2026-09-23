@@ -284,6 +284,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "OUTPUT cap (max_tokens) for one Phase-1 docs-gen FACT-EXTRACTION call (#1226). Default 8192; was hardcoded at 4096, which truncated the per-module fact blob for large modules and starved every downstream section of source facts. Clamped down to the resolved model's known output ceiling. Also the provider-level default for every Phase-1 call that does not set its own cap.",
     sensitive: false,
   },
+  // ── Issue #152 — claim-extraction OUTPUT cap (was the section cap) ────
+  DOCS_GEN_CLAIM_MAX_OUTPUT_TOKENS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().positive(),
+    description:
+      "OUTPUT cap (max_tokens) for one grounding CLAIM-EXTRACTION call (#152). Default 16384; claim extraction previously reused DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS. Sections are sent in passages of about 8,000 characters, and a passage whose claim list still stops at the cap is split and asked again, so raise this only when a section is reported as having exceeded its output cap. Clamped down to the claim model's known output ceiling; an unknown (e.g. local) model defaults to 8192.",
+    sensitive: false,
+  },
   // ── Issue #1228 — DB-schema prose OUTPUT cap (was the inherited 4096) ───
   DOCS_GEN_DB_SCHEMA_MAX_OUTPUT_TOKENS: {
     tier: "tunable",

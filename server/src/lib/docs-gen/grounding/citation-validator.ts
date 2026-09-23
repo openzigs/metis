@@ -222,6 +222,12 @@ export interface FaithfulnessResult {
    * one judge batch, so its claims went unscored). Absent when everything parsed.
    */
   unparseable?: "claims" | "verdicts";
+  /**
+   * #152 — set with {@link unparseable} when the reply was cut off at the output
+   * cap rather than malformed, so the warning names the cap, not the
+   * structured-output mode.
+   */
+  truncated?: true;
 }
 
 /** Minimal extractor surface needed for scoring (eases testing/mocking). */
@@ -270,10 +276,19 @@ export async function scoreFaithfulness(
     return unverifiedResult(section, 0);
   }
 
-  const { claims, unparseable } = await deps.extractor.decompose(sectionMarkdown, ctx, deps.signal);
+  const { claims, unparseable, truncated } = await deps.extractor.decompose(
+    sectionMarkdown,
+    ctx,
+    deps.signal,
+  );
   if (unparseable) {
     // #117 — "the reply did not parse" is not "the section makes no claims".
-    return { ...unverifiedResult(section, 0), unparseable: "claims" };
+    // #152 — and a reply cut off at the output cap says so.
+    return {
+      ...unverifiedResult(section, 0),
+      unparseable: "claims",
+      ...(truncated ? { truncated: true as const } : {}),
+    };
   }
   if (claims.length === 0) {
     // No substantive claims → nothing to verify; clean and (trivially) fine.
@@ -288,15 +303,17 @@ export async function scoreFaithfulness(
     };
   }
 
-  const diagnostics = { batches: 0, unparseableBatches: 0 };
+  const diagnostics = { batches: 0, unparseableBatches: 0, truncatedBatches: 0 };
   const verdicts = await deps.judge.judge(
     claims.map((c) => c.claim),
     ctx,
     deps.signal,
     diagnostics,
   );
-  const verdictsUnparseable =
-    diagnostics.unparseableBatches > 0 ? { unparseable: "verdicts" as const } : {};
+  const verdictsUnparseable = {
+    ...(diagnostics.unparseableBatches > 0 ? { unparseable: "verdicts" as const } : {}),
+    ...(diagnostics.truncatedBatches > 0 ? { truncated: true as const } : {}),
+  };
   if (!verdicts) {
     // Unverifiable: keep the section as-is (never a false degraded).
     return { ...unverifiedResult(section, claims.length), ...verdictsUnparseable };

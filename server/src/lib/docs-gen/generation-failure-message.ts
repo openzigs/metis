@@ -60,6 +60,15 @@ export const GENERATION_PROVIDER_TLS_MESSAGE =
 export const GENERATION_PROVIDER_DROPPED_MESSAGE =
   "The connection to the AI provider dropped while the response was arriving (reset or closed mid-response). This usually means a network interruption between METIS and the provider host rather than a stopped model; regenerate the document.";
 
+/**
+ * #152 — the host accepted the request and closed the connection before sending
+ * any response. Node 22's undici reports it as `TypeError: fetch failed` with an
+ * `UND_ERR_SOCKET` ("other side closed") cause; the same close after the
+ * headers is `TypeError: terminated` — {@link GENERATION_PROVIDER_DROPPED_MESSAGE}.
+ */
+export const GENERATION_PROVIDER_CLOSED_MESSAGE =
+  "The AI provider closed the connection before sending any response. The host accepted the request and then hung up — often a model runner that crashed or restarted, a proxy or load balancer timeout, or a runtime that refused the request; check the provider's own log, then regenerate the document.";
+
 /** Every string a client may receive as a failed generation's `errorMessage`. */
 const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   GENERATION_INTERRUPTED_MESSAGE,
@@ -72,6 +81,7 @@ const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   GENERATION_PROVIDER_SLOW_MESSAGE,
   GENERATION_PROVIDER_TLS_MESSAGE,
   GENERATION_PROVIDER_DROPPED_MESSAGE,
+  GENERATION_PROVIDER_CLOSED_MESSAGE,
 ]);
 
 // An HTTP status named as one: "returned 402", "status 429", "HTTP 401",
@@ -111,7 +121,7 @@ function readSyscall(err: unknown): string | undefined {
 }
 
 /** How a request failed at the transport layer, when it did (#114). */
-export type TransportFailure = "unreachable" | "slow" | "tls" | "dropped";
+export type TransportFailure = "unreachable" | "slow" | "tls" | "dropped" | "closed";
 
 // Connection-establishment failures: the host refused, does not resolve, has no
 // route, or never answered the connect. ETIMEDOUT is here only when the error
@@ -125,7 +135,6 @@ const CONNECT_CODES: ReadonlySet<string> = new Set([
   "ENETUNREACH",
   "ENETDOWN",
   "UND_ERR_CONNECT_TIMEOUT",
-  "AI_PROVIDER_UNREACHABLE",
 ]);
 // undici's transport timeouts once connected: no headers / no further body.
 const SLOW_CODES: ReadonlySet<string> = new Set([
@@ -156,9 +165,21 @@ const DROPPED_CODES: ReadonlySet<string> = new Set([
 ]);
 
 // METIS's own error codes (`AIError`, the budget enforcer) say nothing about the
-// transport, so they neither decide nor block the text fallback.
+// transport, so they neither decide nor block the text fallback. #152 — this
+// includes the former `AI_PROVIDER_UNREACHABLE`, which nothing ever threw and
+// which was removed from `AIErrorCode`.
 function isMetisCode(code: string): boolean {
-  return code !== "AI_PROVIDER_UNREACHABLE" && (/^AI_/.test(code) || code === "BUDGET_EXCEEDED");
+  return /^AI_/.test(code) || code === "BUDGET_EXCEEDED";
+}
+
+/**
+ * #152 — undici's `fetch` rejects with `TypeError: fetch failed` when the
+ * request failed before a response began, and errors the body with
+ * `TypeError: terminated` once one had. (Measured on Node 22.22.3 against a
+ * socket closed before and after the headers.)
+ */
+function isFetchFailedWrapper(e: unknown): boolean {
+  return e instanceof TypeError && e.message === "fetch failed";
 }
 
 function classifyCode(code: string, e: unknown): TransportFailure | undefined {
@@ -209,11 +230,19 @@ function causeChain(err: unknown): unknown[] {
 export function classifyTransportFailure(err: unknown): TransportFailure | undefined {
   const chain = causeChain(err);
   let sawCode = false;
-  for (const e of chain) {
+  for (let i = 0; i < chain.length; i++) {
+    const e = chain[i];
     const code = readCode(e);
     if (code === undefined || isMetisCode(code)) continue;
     sawCode = true;
     const verdict = classifyCode(code, e);
+    // #152 — undici's socket close under `fetch failed` happened before any
+    // response: not "dropped while the response was arriving". Deliberately
+    // UND_ERR_SOCKET only: an ECONNRESET under `fetch failed` keeps its #114
+    // "dropped" reading, which the local mid-stream retry keys on.
+    if (code === "UND_ERR_SOCKET" && chain.slice(0, i).some(isFetchFailedWrapper)) {
+      return "closed";
+    }
     if (verdict) return verdict;
   }
   if (sawCode) return undefined;
@@ -248,6 +277,7 @@ const TRANSPORT_MESSAGES: Readonly<Record<TransportFailure, string>> = {
   slow: GENERATION_PROVIDER_SLOW_MESSAGE,
   tls: GENERATION_PROVIDER_TLS_MESSAGE,
   dropped: GENERATION_PROVIDER_DROPPED_MESSAGE,
+  closed: GENERATION_PROVIDER_CLOSED_MESSAGE,
 };
 
 function readMessage(err: unknown): string {

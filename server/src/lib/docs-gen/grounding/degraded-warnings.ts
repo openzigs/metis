@@ -411,22 +411,45 @@ export function sectionUnderReconstructedWarning(
  * kind as the other "not auto-verified" warnings (the UI banner and the
  * section-reuse schema already handle it); no `tier`, because no score exists,
  * so the UI treats it as worth a review.
+ *
+ * #152 — `cause: "truncated"` is a reply stopped at the output cap. The remedy
+ * is then the cap, never the structured-output mode: telling the operator to
+ * set `json_object` for a cut-off reply was wrong, and circular when the reply
+ * had already been retried in `json_object` mode. The non-truncated remedy is
+ * worded conditionally for the same reason — by the time this warning exists a
+ * `json_schema` reply has already been retried in `json_object` mode.
  */
 export function groundingUnparseableWarning(
   section: string,
   stage: "claims" | "verdicts",
+  cause?: "truncated",
 ): DocWarning {
-  const what =
-    stage === "claims"
-      ? "the grounding model's claim list could not be parsed, so none of its statements were checked"
-      : "some of the grounding model's verdicts could not be parsed, so those statements were not checked";
+  let what: string;
+  let remedy: string;
+  if (cause === "truncated") {
+    what =
+      stage === "claims"
+        ? "the grounding model's claim list exceeded its output cap even after the section was split into smaller passages, so none of its statements were checked"
+        : "some of the grounding model's verdict lists exceeded its output cap, so those statements were not checked";
+    remedy =
+      stage === "claims"
+        ? "To verify it, raise DOCS_GEN_CLAIM_MAX_OUTPUT_TOKENS (a model that reasons by default spends part of that cap on reasoning) and regenerate."
+        : "To verify them, raise DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS, which also caps the faithfulness judge, and regenerate.";
+  } else {
+    what =
+      stage === "claims"
+        ? "the grounding model's claim list could not be parsed, so none of its statements were checked"
+        : "some of the grounding model's verdicts could not be parsed, so those statements were not checked";
+    remedy =
+      "If DOCS_GEN_LOCAL_STRUCTURED_OUTPUT is off, a local model that answers in prose may " +
+      "follow JSON mode: set DOCS_GEN_LOCAL_STRUCTURED_OUTPUT=json_object.";
+  }
   return {
     kind: "section-ungrounded",
     section,
     message:
       `Section "${section}" was not fully verified against the source: ${what}. Review it ` +
-      `against the code before relying on it. With a local model that ignores json_schema, set ` +
-      `DOCS_GEN_LOCAL_STRUCTURED_OUTPUT=json_object.`,
+      `against the code before relying on it. ${remedy}`,
     severity: "warning",
   };
 }

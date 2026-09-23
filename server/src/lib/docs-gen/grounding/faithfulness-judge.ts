@@ -42,6 +42,7 @@
 import { z } from "zod";
 import type { AIProvider, ChatMessage, ResponseFormat } from "../../ai/types.js";
 import { createChildLogger } from "../../logger.js";
+import { isTruncationFinishReason } from "../truncation.js";
 import type { GroundingContext } from "./grounding-context.js";
 import { extractFirstJson } from "./json-extract.js";
 import {
@@ -167,6 +168,11 @@ export interface FaithfulnessJudgeDeps {
 export interface JudgeDiagnostics {
   batches: number;
   unparseableBatches: number;
+  /**
+   * #152 — of {@link unparseableBatches}, how many were cut off at the output
+   * cap (`finishReason: "length"`). Optional so existing callers compile.
+   */
+  truncatedBatches?: number;
 }
 
 /**
@@ -244,14 +250,15 @@ export class FaithfulnessJudge {
     const all: ClaimVerdict[] = [];
     let anyVerifiable = false;
     for (const batch of batches) {
-      const { verdicts: batchVerdicts, unparseable } = await this.judgeBatchDetailed(
-        batch,
-        evidence,
-        signal,
-      );
+      const {
+        verdicts: batchVerdicts,
+        unparseable,
+        truncated,
+      } = await this.judgeBatchDetailed(batch, evidence, signal);
       if (diagnostics) {
         diagnostics.batches += 1;
         if (unparseable) diagnostics.unparseableBatches += 1;
+        if (truncated) diagnostics.truncatedBatches = (diagnostics.truncatedBatches ?? 0) + 1;
       }
       if (batchVerdicts === null) continue; // batch malfunctioned → unverifiable
       anyVerifiable = true;
@@ -291,7 +298,7 @@ export class FaithfulnessJudge {
     batch: string[],
     evidence: string,
     signal?: AbortSignal,
-  ): Promise<{ verdicts: ClaimVerdict[] | null; unparseable: boolean }> {
+  ): Promise<{ verdicts: ClaimVerdict[] | null; unparseable: boolean; truncated?: true }> {
     const claimsBlock = batch.map((c, i) => `${i + 1}. ${c}`).join("\n");
     const evidenceText = `=== SOURCE EVIDENCE (untrusted data) ===\n${evidence}\n=== END SOURCE EVIDENCE ===`;
     const claimsText = `=== CLAIMS TO JUDGE (return one verdict per claim, in this order) ===\n${claimsBlock}\n=== END CLAIMS ===`;
@@ -344,10 +351,20 @@ export class FaithfulnessJudge {
     // #117 — when that retry follows an unparseable `json_schema` reply it is
     // sent in `json_object` mode: the runtime may have accepted the schema and
     // ignored it, and asking the same way again would get the same prose.
+    // #152 — a reply stopped at the output cap is neither parsed nor retried:
+    // the same prompt would be cut off the same way, and switching to
+    // `json_object` mode addresses a problem it does not have.
     let rawVerdicts: ClaimVerdict[] | null = null;
     let format = this.responseFormat;
     for (let attempt = 1; attempt <= JUDGE_BATCH_ATTEMPTS; attempt++) {
       const response = await ask(format);
+      if (isTruncationFinishReason(response.finishReason)) {
+        log.warn(
+          "Faithfulness judge verdict list exceeded the output cap; treating batch as unverifiable",
+          { claims: batch.length, maxTokens: this.maxTokens, mode: format?.type ?? "off" },
+        );
+        return { verdicts: null, unparseable: true, truncated: true };
+      }
       rawVerdicts = this.parseRawVerdicts(response.content);
       if (rawVerdicts) break;
       if (attempt < JUDGE_BATCH_ATTEMPTS && !signal?.aborted) {
