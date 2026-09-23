@@ -24,6 +24,11 @@ import { prisma } from "../prisma.js";
 
 const log = createChildLogger("vault");
 
+/** Prisma's unique-index violation (`P2002`), matched on its code alone. */
+function isUniqueConstraintError(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2002";
+}
+
 const ALGORITHM = "aes-256-gcm" as const;
 const KEY_VERSION = 0x01;
 const KEY_LENGTH = 32; // 256 bits
@@ -267,6 +272,57 @@ export class VaultService {
       },
     });
     log.info("Secret created", { id: row.id, scope, label });
+    return this.toSummary(row, scope);
+  }
+
+  /**
+   * #93 — create-or-rotate by label, decided by the database's unique `name`
+   * index rather than by a prior read. A soft-deleted row under the same name
+   * is brought back live (the index still holds its name, so a fresh create
+   * could never succeed). Prisma may run an upsert as read-then-create, so two
+   * concurrent first writers can still collide on the index; the loser's
+   * retry finds the winner's row and takes the update branch.
+   */
+  async upsert(
+    label: string,
+    plaintext: string,
+    scope: SecretScope = "global",
+    opts: { description?: string; createdById?: string | null } = {},
+  ): Promise<SecretSummary> {
+    if (!label || label.trim().length === 0) {
+      throw new Error("label is required");
+    }
+    const envelope = await this.encrypt(plaintext);
+    const name = this.scopedName(scope, label);
+    const write = () =>
+      prisma.secret.upsert({
+        where: { name },
+        create: {
+          name,
+          description: opts.description ?? "",
+          ciphertext: envelope.ciphertext,
+          iv: "",
+          tag: "",
+          salt: "",
+          keyVersion: envelope.keyVersion,
+          algorithm: envelope.algorithm,
+          createdById: opts.createdById ?? null,
+        },
+        update: {
+          ciphertext: envelope.ciphertext,
+          keyVersion: envelope.keyVersion,
+          algorithm: envelope.algorithm,
+          deletedAt: null,
+        },
+      });
+    let row;
+    try {
+      row = await write();
+    } catch (err) {
+      if (!isUniqueConstraintError(err)) throw err;
+      row = await write();
+    }
+    log.info("Secret upserted", { id: row.id, scope, label });
     return this.toSummary(row, scope);
   }
 

@@ -6071,6 +6071,10 @@ resolvedById, resolvedAt, createdAt, updatedAt.
 - `sync.read` — View drift events (coordinator, developer, reader).
 - `sync.resolve` — Resolve drift events (coordinator only).
 
+Both are role checks, not object checks. Every drift route also passes the drift's project
+through `assertProjectAccess`: the reads take it from `projectId` (#88), the resolve reads it from
+the drift row (#102). A project the caller cannot reach answers 404, the same as an unknown id.
+
 ## Project-Level Test Coverage Gap Analysis (Epic #856)
 
 ### Overview

@@ -14,7 +14,7 @@
  * who may still see it is the one who started it (`startedById`), on BOTH the
  * list and the detail paths.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { getImpactAnalysisDetail, listImpactAnalyses } from "./impact-analysis-read.js";
 
 type ProjectLink = { projectId: string };
@@ -77,14 +77,25 @@ function item(projectId: string, id = `item-${projectId}`): Record<string, unkno
 /**
  * A prisma double WITHOUT `codeSymbol`/`codeEdge`, so the #962 write-path pass
  * is skipped and the assertions measure the projection alone.
+ *
+ * #103 — it honours `include` the way Prisma does: a relation the query did not
+ * ask for is ABSENT from the row. The previous double answered from `where.id`
+ * alone and returned `projects` regardless, so reverting the detail read to
+ * `ITEM_INCLUDE` (which drops `projects`) left every test here green.
  */
 function detailPrisma(row: DetailRow | null) {
-  return {
-    impactAnalysis: {
-      findFirst: async ({ where }: { where: { id: string } }) =>
-        row && row.id === where.id ? row : null,
+  const findFirst = vi.fn(
+    async ({ where, include }: { where: { id: string }; include?: Record<string, unknown> }) => {
+      if (!row || row.id !== where.id) return null;
+      const { items, projects, ...scalars } = row;
+      return {
+        ...scalars,
+        ...(include?.items ? { items } : {}),
+        ...(include?.projects ? { projects } : {}),
+      };
     },
-  } as never;
+  );
+  return { impactAnalysis: { findFirst } };
 }
 
 describe("#88 getImpactAnalysisDetail names the run's PERSISTED projects", () => {
@@ -95,7 +106,7 @@ describe("#88 getImpactAnalysisDetail names the run's PERSISTED projects", () =>
   it("names the started-for projects of a run that has written no item yet", async () => {
     const detail = await getImpactAnalysisDetail(
       "ia-88",
-      detailPrisma(detailRow({ projects: [{ projectId: "p-secret" }], items: [] })),
+      detailPrisma(detailRow({ projects: [{ projectId: "p-secret" }], items: [] })) as never,
     );
     expect(detail?.projectIds).toEqual(["p-secret"]);
   });
@@ -109,7 +120,7 @@ describe("#88 getImpactAnalysisDetail names the run's PERSISTED projects", () =>
           projects: [{ projectId: "p-a" }, { projectId: "p-b" }],
           items: [item("p-a"), item("p-c")],
         }),
-      ),
+      ) as never,
     );
     // Started-for first, exactly as the list projection orders them.
     expect(detail?.projectIds).toEqual(["p-a", "p-b", "p-c"]);
@@ -119,10 +130,56 @@ describe("#88 getImpactAnalysisDetail names the run's PERSISTED projects", () =>
   it("reports no projects, and the starting actor, for a run with neither", async () => {
     const detail = await getImpactAnalysisDetail(
       "ia-88",
-      detailPrisma(detailRow({ projects: [], items: [], startedById: "user-owner" })),
+      detailPrisma(detailRow({ projects: [], items: [], startedById: "user-owner" })) as never,
     );
     expect(detail?.projectIds).toEqual([]);
     expect(detail?.startedById).toBe("user-owner");
+  });
+});
+
+/**
+ * #103 — the query shape itself, pinned. The behavioural tests above only see
+ * what the double returns; these fix what the read ASKS Prisma for, so a
+ * narrowed `include` cannot pass unnoticed through a permissive double.
+ */
+describe("#103 getImpactAnalysisDetail query shape", () => {
+  it("asks for the run by id and includes its persisted projects", async () => {
+    const prisma = detailPrisma(detailRow({ projects: [{ projectId: "p-a" }] }));
+    await getImpactAnalysisDetail("ia-88", prisma as never);
+
+    expect(prisma.impactAnalysis.findFirst).toHaveBeenCalledWith({
+      where: { id: "ia-88" },
+      include: expect.objectContaining({
+        projects: { select: { projectId: true } },
+      }),
+    });
+  });
+
+  it("includes every item relation the detail projection renders", async () => {
+    const prisma = detailPrisma(detailRow());
+    await getImpactAnalysisDetail("ia-88", prisma as never);
+
+    expect(prisma.impactAnalysis.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          items: expect.objectContaining({
+            include: {
+              affectedSymbols: { orderBy: [{ depth: "asc" }, { confidence: "desc" }] },
+              affectedTables: {
+                include: {
+                  consumers: {
+                    orderBy: [{ consumerProjectName: "asc" }, { consumerProjectId: "asc" }],
+                  },
+                },
+                orderBy: [{ tableName: "asc" }, { columnName: "asc" }],
+              },
+              feedback: { orderBy: [{ createdAt: "asc" }] },
+              requirement: { select: { title: true } },
+            },
+          }),
+        }),
+      }),
+    );
   });
 });
 
@@ -164,6 +221,26 @@ function listPrisma(rows: ListRow[]) {
     impactAnalysis: { findMany: async () => rows },
   } as never;
 }
+
+/**
+ * #103 audit — the list read's `projects` include was equally unpinned: this
+ * file's double returns `projects` whatever the query asked for.
+ */
+describe("#103 listImpactAnalyses query shape", () => {
+  it("includes both the item-derived and the persisted project ids", async () => {
+    const findMany = vi.fn(async () => [] as ListRow[]);
+    await listImpactAnalyses({}, { impactAnalysis: { findMany } } as never);
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: {
+          items: { select: { projectId: true } },
+          projects: { select: { projectId: true } },
+        },
+      }),
+    );
+  });
+});
 
 describe("#88 listImpactAnalyses keeps a legacy run visible to its starter", () => {
   const legacy = listRow("legacy", { startedById: "user-owner" });

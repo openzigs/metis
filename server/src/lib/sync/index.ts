@@ -4,6 +4,7 @@
 export {
   reconcileIssueChange,
   resolveDriftEvent,
+  getDriftEventProjectId,
   listDriftEvents,
   getDriftCount,
 } from "./reconcile-service.js";

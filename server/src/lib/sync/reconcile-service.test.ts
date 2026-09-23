@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   reconcileIssueChange,
   resolveDriftEvent,
+  getDriftEventProjectId,
   listDriftEvents,
   getDriftCount,
 } from "./reconcile-service.js";
@@ -273,6 +274,26 @@ describe("reconcileIssueChange", () => {
     const result = await reconcileIssueChange(event);
     expect(result.handled).toBe(false);
     expect(result.reason).toBe("NO_DIFF");
+  });
+});
+
+describe("getDriftEventProjectId (#102)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the owning project of the drift addressed by id", async () => {
+    vi.mocked(prisma.driftEvent.findUnique).mockResolvedValue({ projectId: "proj-7" } as never);
+    await expect(getDriftEventProjectId("drift-7")).resolves.toBe("proj-7");
+    expect(prisma.driftEvent.findUnique).toHaveBeenCalledWith({
+      where: { id: "drift-7" },
+      select: { projectId: true },
+    });
+  });
+
+  it("returns null for an unknown drift", async () => {
+    vi.mocked(prisma.driftEvent.findUnique).mockResolvedValue(null);
+    await expect(getDriftEventProjectId("nope")).resolves.toBeNull();
   });
 });
 

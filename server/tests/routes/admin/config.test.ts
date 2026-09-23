@@ -48,6 +48,23 @@ const runtimeRows: RuntimeConfigRow[] = [];
 let nextSecretId = 1;
 let nextAuditId = 1;
 
+/**
+ * #93 — the error Prisma raises on a unique-index violation, shaped as the
+ * client raises it: its class name, `code: "P2002"`, and the raw invocation
+ * text that must never reach an API response.
+ */
+function prismaUniqueError(op: string): Error {
+  const err = new Error(
+    `Invalid \`prisma.${op}()\` invocation in server/src/lib/vault/vault-service.ts:254\n\n` +
+      "Unique constraint failed on the fields: (`name`)",
+  ) as Error & { code: string; clientVersion: string; meta: unknown };
+  err.name = "PrismaClientKnownRequestError";
+  err.code = "P2002";
+  err.clientVersion = "7.8.0";
+  err.meta = { target: ["name"] };
+  return err;
+}
+
 vi.mock("../../../src/lib/prisma.js", async () => {
   const { withRouteAuth } = await import("../../helpers/route-auth-prisma.js");
   const prisma = withRouteAuth({
@@ -75,7 +92,11 @@ vi.mock("../../../src/lib/prisma.js", async () => {
     auditLog: { create: vi.fn(async () => ({})) },
     project: { findMany: vi.fn(async () => []) },
     secret: {
+      // #93 — `Secret.name` is UNIQUE in the schema, soft-deleted rows included.
+      // This double used to accept a duplicate name, which is how a re-set after
+      // a clear passed here while it 500'd against a real database.
       create: vi.fn(async ({ data }: { data: Partial<SecretRow> }) => {
+        if (secretRows.some((r) => r.name === data.name)) throw prismaUniqueError("secret.create");
         const row: SecretRow = {
           id: `sec_${nextSecretId++}`,
           name: data.name ?? "",
@@ -111,6 +132,48 @@ vi.mock("../../../src/lib/prisma.js", async () => {
           const row = secretRows.find((r) => r.id === where.id);
           if (!row) throw new Error("not found");
           Object.assign(row, data, { updatedAt: new Date() });
+          return row;
+        },
+      ),
+      // #93 — modelled as Prisma's NON-native upsert: a read, a gap, then a
+      // create that the unique index can still refuse. Two concurrent callers
+      // can both miss the read, and the loser gets P2002 — the race the vault
+      // must absorb rather than surface.
+      upsert: vi.fn(
+        async ({
+          where,
+          create,
+          update,
+        }: {
+          where: { name: string };
+          create: Partial<SecretRow>;
+          update: Partial<SecretRow>;
+        }) => {
+          const existing = secretRows.find((r) => r.name === where.name);
+          if (existing) {
+            Object.assign(existing, update, { updatedAt: new Date() });
+            return existing;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          if (secretRows.some((r) => r.name === create.name)) {
+            throw prismaUniqueError("secret.upsert");
+          }
+          const row: SecretRow = {
+            id: `sec_${nextSecretId++}`,
+            name: create.name ?? "",
+            description: create.description ?? "",
+            ciphertext: create.ciphertext ?? "",
+            iv: create.iv ?? "",
+            tag: create.tag ?? "",
+            salt: create.salt ?? "",
+            keyVersion: create.keyVersion ?? 1,
+            algorithm: create.algorithm ?? "aes-256-gcm",
+            createdById: create.createdById ?? null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            deletedAt: null,
+          };
+          secretRows.push(row);
           return row;
         },
       ),
@@ -383,6 +446,98 @@ describe("PUT /api/admin/config/:key — boundaries", () => {
       .send({ value: "x" });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("UNKNOWN_KEY");
+  });
+});
+
+/**
+ * #93 — setting a config secret could answer 500 with a raw Prisma
+ * unique-constraint error. `setSecret` chose between create and rotate from a
+ * prior `list()`, which filters out soft-deleted rows — so a secret that had
+ * been cleared was invisible to the read and fatal to the create.
+ */
+describe("PUT /api/admin/config/:key — #93 idempotent secret writes", () => {
+  const RAW_PRISMA = /prisma|Unique constraint|P2002|invocation/i;
+
+  it("re-sets a secret that was cleared (the row exists, the pre-read missed it)", async () => {
+    const token = await login("admin");
+    const put = (value: string) =>
+      request(app)
+        .put("/api/admin/config/GITHUB_TOKEN")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ value });
+
+    expect((await put("gho_first")).status).toBe(200);
+    const cleared = await request(app)
+      .delete("/api/admin/config/GITHUB_TOKEN")
+      .set("Authorization", `Bearer ${token}`);
+    expect(cleared.status).toBe(200);
+
+    const again = await put("gho_second");
+    expect(again.status).toBe(200);
+    expect(JSON.stringify(again.body)).not.toMatch(RAW_PRISMA);
+    // One row, live again — not a second row, and not still soft-deleted.
+    expect(secretRows).toHaveLength(1);
+    expect(secretRows[0].deletedAt).toBeNull();
+
+    // Read back through the route a consumer uses: the vault is the source again.
+    const read = await request(app)
+      .get("/api/admin/config/GITHUB_TOKEN")
+      .set("Authorization", `Bearer ${token}`);
+    expect(read.body.data.source).toBe("vault");
+  });
+
+  it("accepts two concurrent first writes of the same secret", async () => {
+    const token = await login("admin");
+    const put = (value: string) =>
+      request(app)
+        .put("/api/admin/config/ANTHROPIC_API_KEY")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ value });
+
+    const [a, b] = await Promise.all([put("sk-ant-a"), put("sk-ant-b")]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect(JSON.stringify([a.body, b.body])).not.toMatch(RAW_PRISMA);
+    expect(secretRows).toHaveLength(1);
+  });
+
+  it("maps a persistent unique violation to 409 in fixed vocabulary", async () => {
+    const { prisma } = await import("../../../src/lib/prisma.js");
+    const secret = (prisma as unknown as { secret: { upsert: () => unknown } }).secret;
+    // Once per attempt: the vault retries a lost race exactly once. `Once` keeps
+    // the double's real implementation for every later test.
+    vi.spyOn(secret, "upsert")
+      .mockRejectedValueOnce(prismaUniqueError("secret.upsert"))
+      .mockRejectedValueOnce(prismaUniqueError("secret.upsert"));
+
+    const token = await login("admin");
+    const res = await request(app)
+      .put("/api/admin/config/OPENAI_API_KEY")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ value: "sk-x" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("CONFIG_WRITE_CONFLICT");
+    expect(JSON.stringify(res.body)).not.toMatch(RAW_PRISMA);
+  });
+
+  it("maps any other database error to a fixed 500, never its text", async () => {
+    const { prisma } = await import("../../../src/lib/prisma.js");
+    const secret = (prisma as unknown as { secret: { upsert: () => unknown } }).secret;
+    const dbErr = Object.assign(
+      new Error("Invalid `prisma.secret.upsert()` invocation: Can't reach database server"),
+      { name: "PrismaClientInitializationError" },
+    );
+    vi.spyOn(secret, "upsert").mockRejectedValueOnce(dbErr);
+
+    const token = await login("admin");
+    const res = await request(app)
+      .put("/api/admin/config/OPENAI_API_KEY")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ value: "sk-x" });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe("CONFIG_STORE_ERROR");
+    expect(JSON.stringify(res.body)).not.toMatch(RAW_PRISMA);
   });
 });
 

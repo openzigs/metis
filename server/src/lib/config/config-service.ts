@@ -259,7 +259,8 @@ export class ConfigService extends EventEmitter {
 
   /**
    * Persist a Tier-2 secret. Creates a new vault entry if absent, otherwise
-   * rotates the existing one. Returns the resulting `SecretSummary`.
+   * rotates the existing one (reviving a cleared one) in a single upsert on
+   * the vault's unique name (#93). Returns the resulting `SecretSummary`.
    *
    * Bootstrap-tier writes throw `ConfigBootstrapError`; tunable-tier writes
    * land in Phase 2 (#255) — for now they throw the same error so the route
@@ -282,17 +283,13 @@ export class ConfigService extends EventEmitter {
       throw new Error(`setSecret requires a non-empty string value for ${key}`);
     }
 
-    const summaries = await this.vault.list(VAULT_SCOPE);
-    const existing = summaries.find((s) => s.label === key);
-    let summary: SecretSummary;
-    if (existing) {
-      summary = await this.vault.rotate(existing.id, plaintext);
-    } else {
-      summary = await this.vault.create(key, plaintext, VAULT_SCOPE, {
-        description: def.description,
-        createdById: opts.actorId ?? null,
-      });
-    }
+    // #93 — one idempotent write keyed on the unique name. Choosing between
+    // create and rotate from `vault.list()` missed soft-deleted rows (and any
+    // concurrent writer), so re-setting a cleared secret 500'd on the index.
+    const summary = await this.vault.upsert(key, plaintext, VAULT_SCOPE, {
+      description: def.description,
+      createdById: opts.actorId ?? null,
+    });
     this.secretSummaries.set(key, summary);
     this.secretCache.set(key, plaintext);
     log.info("Secret updated via ConfigService", { key });
