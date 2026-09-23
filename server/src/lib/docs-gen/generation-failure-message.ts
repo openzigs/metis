@@ -174,9 +174,11 @@ function classifyCode(code: string, e: unknown): TransportFailure | undefined {
   return undefined;
 }
 
-// Text fallback, for stored strings and code-less errors only.
+// Text fallback, for stored strings and code-less errors only. #111's
+// `FirstTokenTimeoutError` ("stream stalled — no first token within …") is the
+// app-level form of the same slow-prefill case as undici's headers timeout.
 const SLOW_TEXT =
-  /\b(?:UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT)\b|\bHeaders Timeout Error\b|\bBody Timeout Error\b/;
+  /\b(?:UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT)\b|\bHeaders Timeout Error\b|\bBody Timeout Error\b|\bstream stalled — no first token within\b/;
 const TLS_TEXT =
   /\b(?:UNABLE_TO_VERIFY_LEAF_SIGNATURE|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|CERT_HAS_EXPIRED|ERR_TLS_CERT_ALTNAME_INVALID)\b|unable to verify the first certificate|self[- ]signed certificate|certificate has expired/i;
 // `terminated` is undici's whole message for a body that died mid-stream; match

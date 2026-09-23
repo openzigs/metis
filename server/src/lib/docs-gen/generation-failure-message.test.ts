@@ -245,6 +245,22 @@ describe("generationFailureMessage — transport failures are classified by code
     );
   });
 
+  it("#111's first-token timeout reads as a slow model, never as a drop", async () => {
+    const { FirstTokenTimeoutError } = await import("../ai/providers/bedrock-direct-provider.js");
+    const err = new FirstTokenTimeoutError(
+      600_000,
+      520_000,
+      2,
+      "local-gemma stream stalled — no first token within 600000ms for a prompt of 520000 chars across 2 message(s) (connected, awaiting the first token)",
+    );
+    expect(generationFailureMessage(err)).toBe(GENERATION_PROVIDER_SLOW_MESSAGE);
+    expect(isConnectionDropped(err)).toBe(false);
+    // A stored copy of its text classifies the same way.
+    expect(generationFailureMessage(`Error: ${err.message}`)).toBe(
+      GENERATION_PROVIDER_SLOW_MESSAGE,
+    );
+  });
+
   it("does not read a word that merely contains `terminated` as a drop", () => {
     expect(generationFailureMessage(new Error("worker terminated by operator"))).toBe(
       GENERATION_FAILED_MESSAGE,
