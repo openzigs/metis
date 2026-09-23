@@ -17,7 +17,7 @@ import crypto from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readMountTable } from "./helpers/mount-table.js";
 
 const { reconcileCalls, syncIssueEventMock } = vi.hoisted(() => ({
@@ -94,6 +94,8 @@ function normalise(path: string): string {
 interface Registration {
   key: string;
   owner: string;
+  /** Position in the composed table: Express tries registrations in this order. */
+  order: number;
 }
 
 /**
@@ -106,6 +108,7 @@ function collectRegistrations(
   stack: Layer[],
 ): Registration[] {
   const out: Registration[] = [];
+  let order = 0;
   table.forEach((entry, i) => {
     if (entry.path === null) return;
     const router = asRouter(stack[i]?.handle);
@@ -118,6 +121,7 @@ function collectRegistrations(
           out.push({
             key: `${method.toUpperCase()} ${normalise(`${entry.path}/${p}`)}`,
             owner: `${entry.expression} (index.ts:${entry.line})`,
+            order: order++,
           });
         }
       }
@@ -126,17 +130,52 @@ function collectRegistrations(
   return out;
 }
 
-/** Keys registered by more than one DISTINCT mount — the shadowing shape. */
+/**
+ * Keys registered more than once — by two mounts (#96) or twice inside ONE
+ * router (#113). Either way only the first registration is ever served.
+ */
 function findCollisions(regs: Registration[]): Array<{ key: string; owners: string[] }> {
-  const byKey = new Map<string, Set<string>>();
-  for (const r of regs) {
-    const owners = byKey.get(r.key) ?? new Set<string>();
-    owners.add(r.owner);
-    byKey.set(r.key, owners);
-  }
+  const byKey = new Map<string, string[]>();
+  for (const r of regs) byKey.set(r.key, [...(byKey.get(r.key) ?? []), r.owner]);
   return [...byKey.entries()]
-    .filter(([, owners]) => owners.size > 1)
-    .map(([key, owners]) => ({ key, owners: [...owners] }));
+    .filter(([, owners]) => owners.length > 1)
+    .map(([key, owners]) => ({ key, owners }));
+}
+
+/**
+ * #113 — a `:param` route registered BEFORE a literal route of the same method
+ * and shape answers the literal's requests: `GET /x/:param` swallows a later
+ * `GET /x/export`. Only plain paths are compared (no wildcard/optional syntax).
+ */
+function findParamShadowing(
+  regs: Registration[],
+): Array<{ literal: string; shadowedBy: string; owners: string[] }> {
+  const parse = (key: string) => {
+    const [method, path] = key.split(" ");
+    return { method, segments: path.split("/") };
+  };
+  const plain = regs.filter((r) => !/[*{}()?]/.test(r.key));
+  const out: Array<{ literal: string; shadowedBy: string; owners: string[] }> = [];
+  for (const later of plain) {
+    const b = parse(later.key);
+    for (const earlier of plain) {
+      if (earlier.order >= later.order || earlier.key === later.key) continue;
+      const a = parse(earlier.key);
+      if (a.method !== b.method || a.segments.length !== b.segments.length) continue;
+      const covers = a.segments.every(
+        (seg, i) => seg === b.segments[i] || (seg === ":param" && b.segments[i] !== ":param"),
+      );
+      if (covers) {
+        out.push({
+          literal: later.key,
+          shadowedBy: earlier.key,
+          owners: [earlier.owner, later.owner],
+        });
+        break;
+      }
+    }
+  }
+  return out;
 }
 
 const table = readMountTable(INDEX_PATH);
@@ -167,6 +206,15 @@ describe("composed route table (#96)", () => {
     ).toEqual([]);
   });
 
+  it("registers no literal path after a :param route that already answers it (#113)", () => {
+    const shadowed = findParamShadowing(collectRegistrations(table, runtimeStack));
+    expect(
+      shadowed,
+      "A literal route registered after a same-method :param route of the same shape is " +
+        "never reached — Express hands its requests to the :param handler (#113).",
+    ).toEqual([]);
+  });
+
   it("the detector flags a synthetic duplicate and ignores param-name-only differences", () => {
     const mk = (routes: Array<[string, string]>): Layer => ({
       handle: Object.assign(() => {}, {
@@ -194,10 +242,80 @@ describe("composed route table (#96)", () => {
     const collisions = findCollisions(collectRegistrations(synthetic, stack));
     expect(collisions.map((c) => c.key).sort()).toEqual(["GET /p/:param/y", "POST /hooks/x"]);
   });
+
+  const mkRouter = (routes: Array<[string, string]>): Layer => ({
+    handle: Object.assign(() => {}, {
+      stack: routes.map(([m, p]) => ({
+        handle: () => {},
+        route: { path: p, methods: { [m]: true } },
+      })),
+    }),
+  });
+
+  it("the detector flags a duplicate inside ONE router (#113)", () => {
+    const synthetic = [{ path: "/hooks", expression: "aRouter()", line: 1 }];
+    const stack = [
+      mkRouter([
+        ["post", "/x"],
+        ["get", "/x"],
+        ["post", "/x/"],
+      ]),
+    ];
+    const collisions = findCollisions(collectRegistrations(synthetic, stack));
+    expect(collisions).toEqual([
+      { key: "POST /hooks/x", owners: ["aRouter() (index.ts:1)", "aRouter() (index.ts:1)"] },
+    ]);
+  });
+
+  it("the shadowing detector flags :param-before-literal, across and within routers (#113)", () => {
+    const synthetic = [
+      { path: "/projects", expression: "aRouter()", line: 1 },
+      { path: "/projects", expression: "bRouter()", line: 2 },
+    ];
+    const stack = [
+      mkRouter([
+        ["get", "/:id"],
+        ["get", "/:id/docs"],
+        ["get", "/:id/stats"], // differs at a literal segment: not a shadow
+      ]),
+      mkRouter([
+        ["get", "/export"], // shadowed by aRouter's GET /:id
+        ["post", "/export"], // different method: not shadowed
+        ["get", "/:id/docs/all"], // different length: not shadowed
+        ["get", "/42/docs"], // shadowed by GET /:id/docs
+      ]),
+    ];
+    const shadowed = findParamShadowing(collectRegistrations(synthetic, stack));
+    expect(shadowed.map((s) => [s.literal, s.shadowedBy])).toEqual([
+      ["GET /projects/export", "GET /projects/:param"],
+      ["GET /projects/42/docs", "GET /projects/:param/docs"],
+    ]);
+  });
+
+  it("a literal registered BEFORE the :param route is not shadowed (#113)", () => {
+    const synthetic = [{ path: "/projects", expression: "aRouter()", line: 1 }];
+    const stack = [
+      mkRouter([
+        ["get", "/export"],
+        ["get", "/:id"],
+      ]),
+    ];
+    expect(findParamShadowing(collectRegistrations(synthetic, stack))).toEqual([]);
+  });
 });
 
 describe("a signed GitHub issues delivery through the composed router (#96)", () => {
   const SECRET = "composed-route-secret";
+  // #113 — a value set before this suite must survive it.
+  const PRIOR = "prior-webhook-secret";
+  const original = process.env.GITHUB_WEBHOOK_SECRET;
+  beforeAll(() => {
+    process.env.GITHUB_WEBHOOK_SECRET = PRIOR;
+  });
+  afterAll(() => {
+    if (original === undefined) delete process.env.GITHUB_WEBHOOK_SECRET;
+    else process.env.GITHUB_WEBHOOK_SECRET = original;
+  });
 
   function app() {
     const a = express();
@@ -213,6 +331,9 @@ describe("a signed GitHub issues delivery through the composed router (#96)", ()
   }
 
   it("reaches the drift reconciler AND the spec-kit task sync", async () => {
+    // #113 — restore whatever was there, rather than deleting a value this
+    // test did not create.
+    const priorSecret = process.env.GITHUB_WEBHOOK_SECRET;
     process.env.GITHUB_WEBHOOK_SECRET = SECRET;
     reconcileCalls.length = 0;
     const specKitCalls: unknown[] = [];
@@ -253,8 +374,13 @@ describe("a signed GitHub issues delivery through the composed router (#96)", ()
       expect(specKitCalls).toHaveLength(1);
       expect(res.body.reason).toBe("NO_TASK_EXPORT");
     } finally {
-      delete process.env.GITHUB_WEBHOOK_SECRET;
+      if (priorSecret === undefined) delete process.env.GITHUB_WEBHOOK_SECRET;
+      else process.env.GITHUB_WEBHOOK_SECRET = priorSecret;
       syncIssueEventMock.fn = null;
     }
+  });
+
+  it("leaves the GITHUB_WEBHOOK_SECRET it found in place (#113)", () => {
+    expect(process.env.GITHUB_WEBHOOK_SECRET).toBe(PRIOR);
   });
 });

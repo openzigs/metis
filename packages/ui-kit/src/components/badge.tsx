@@ -9,6 +9,15 @@ const variantClasses: Record<BadgeVariant, string> = {
   outline: "text-foreground border border-input",
 };
 
+/**
+ * The colour classes of a Badge variant, for an element that cannot BE a Badge
+ * (a `<button>`: `Badge` renders a `<div>`, which is not valid button content).
+ * Sharing them keeps such an element from drifting off the ui-kit style (#113).
+ */
+export function badgeVariantClasses(variant: BadgeVariant = "default"): string {
+  return variantClasses[variant];
+}
+
 export interface BadgeProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: BadgeVariant;
 }

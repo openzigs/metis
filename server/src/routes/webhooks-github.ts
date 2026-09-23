@@ -292,8 +292,15 @@ async function runSpecKitIssueSync(payload: any): Promise<Record<string, unknown
     });
     return { ...outcome };
   } catch (err) {
-    // Never 5xx GitHub — log + acknowledge.
-    return { handled: false, reason: "SYNC_ERROR", error: (err as Error).message };
+    // Never 5xx GitHub — log + acknowledge. #113: the message goes to the log,
+    // never the response, the same as the drift half (#86).
+    log.warn("speckit.issues_webhook_sync_failed", {
+      repo: fullName,
+      issueNumber: issue.number,
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
+    return { handled: false, reason: "SYNC_ERROR" };
   }
 }
 

@@ -615,3 +615,95 @@ describe("ConfigService — tunable write (#255 + #256)", () => {
     expect(events[0].newValue).toBe("[REDACTED]");
   });
 });
+
+/**
+ * #112 — concurrent saves of one key must leave the in-memory cache agreeing
+ * with the store. Each double below COMMITS at call time (so the store ends on
+ * the later caller's value) but ANSWERS after a per-call delay — the first
+ * caller's answer arrives last. Unserialized, that late answer overwrites the
+ * cache with the value the store no longer holds.
+ */
+describe("ConfigService — concurrent writes of one key (#112)", () => {
+  const delayForCall = (n: number) => new Promise((r) => setTimeout(r, n === 1 ? 30 : 0));
+
+  it("two concurrent setSecret calls leave cache and vault on the same value", async () => {
+    const { vault, spies, store } = makeStubVault();
+    const realUpsert = spies.upsert.getMockImplementation()!;
+    let calls = 0;
+    spies.upsert.mockImplementation(async (...args: Parameters<typeof realUpsert>) => {
+      const n = ++calls;
+      const summary = await realUpsert(...args); // committed
+      await delayForCall(n); // the first caller hears back last
+      return summary;
+    });
+    const svc = new ConfigService({ vault, env: {} });
+
+    await Promise.all([
+      svc.setSecret("OPENAI_API_KEY", "sk-first"),
+      svc.setSecret("OPENAI_API_KEY", "sk-second"),
+    ]);
+
+    const [entry] = Array.from(store.values());
+    expect(entry.plaintext).toBe("sk-second");
+    expect(svc.get("OPENAI_API_KEY")).toBe(entry.plaintext);
+  });
+
+  it("a setSecret racing a clearSecret leaves cache and vault agreeing", async () => {
+    const { vault, spies, store } = makeStubVault([
+      { id: "v1", label: "OPENAI_API_KEY", plaintext: "sk-old" },
+    ]);
+    const realUpsert = spies.upsert.getMockImplementation()!;
+    spies.upsert.mockImplementation(async (...args: Parameters<typeof realUpsert>) => {
+      const summary = await realUpsert(...args);
+      await delayForCall(1);
+      return summary;
+    });
+    const svc = new ConfigService({ vault, env: { OPENAI_API_KEY: "env" } });
+    await svc.loadSecrets();
+
+    await Promise.all([
+      svc.setSecret("OPENAI_API_KEY", "sk-new"),
+      svc.clearSecret("OPENAI_API_KEY"),
+    ]);
+
+    // Called in that order, the clear is the last write: the vault is empty,
+    // and the cache must not still serve the value the clear removed.
+    expect(store.size).toBe(0);
+    expect(svc.get("OPENAI_API_KEY")).toBe("env");
+  });
+
+  it("two concurrent tunable sets leave cache and runtime_config on the same value", async () => {
+    __runtimeRows.length = 0;
+    const { prisma } = await import("../../../src/lib/prisma.js");
+    const upsert = prisma.runtimeConfig.upsert as unknown as ReturnType<typeof vi.fn>;
+    const realUpsert = upsert.getMockImplementation()!;
+    let calls = 0;
+    const slow = async (...args: unknown[]) => {
+      const n = ++calls;
+      const row = await realUpsert(...args);
+      await delayForCall(n);
+      return row;
+    };
+    upsert.mockImplementationOnce(slow).mockImplementationOnce(slow);
+    const svc = new ConfigService({ vault: makeStubVault().vault, env: ENV_FIXTURE });
+
+    await Promise.all([
+      svc.set("AI_DEFAULT_MODEL", "model-first", { actorId: "u-1" }),
+      svc.set("AI_DEFAULT_MODEL", "model-second", { actorId: "u-1" }),
+    ]);
+
+    expect(__runtimeRows).toHaveLength(1);
+    expect(__runtimeRows[0].value).toBe("model-second");
+    expect(svc.get("AI_DEFAULT_MODEL")).toBe(__runtimeRows[0].value);
+  });
+
+  it("a failed write does not block the next write of the same key", async () => {
+    const { vault, spies } = makeStubVault();
+    spies.upsert.mockRejectedValueOnce(new Error("db down"));
+    const svc = new ConfigService({ vault, env: {} });
+
+    await expect(svc.setSecret("OPENAI_API_KEY", "sk-a")).rejects.toThrow("db down");
+    await svc.setSecret("OPENAI_API_KEY", "sk-b");
+    expect(svc.get("OPENAI_API_KEY")).toBe("sk-b");
+  });
+});

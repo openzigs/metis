@@ -20,7 +20,10 @@ import { describe, expect, it } from "vitest";
 import {
   SOCKET_COMPUTED_EMITTERS,
   SOCKET_EVENT_ALLOWLIST,
+  SOCKET_NON_SOCKET_EMITS,
   checkSocketContract,
+  findUndeclaredEventNames,
+  isReservedListenName,
   extractConsumedEvents,
   extractEmittedEvents,
   findStaleAllowlistEntries,
@@ -108,6 +111,76 @@ describe("checkSocketContract (pure, two-sided — #91)", () => {
       allowlist: [],
     });
     expect(report.unconsumed).toEqual(["a:e", "z:e"]);
+  });
+});
+
+/**
+ * #113 — the per-DECLARED-event check above cannot see a misspelled COPY: with
+ * `drift:detected` AND `drift:detectd` both present, the declared event is
+ * satisfied by the correct one and the typo is never looked at. Every emitted
+ * and listened-for NAME must also be declared (or be a known non-contract name).
+ */
+describe("findUndeclaredEventNames (#113 — a misspelled copy beside a correct one)", () => {
+  const declaredEvents = ["drift:detected", "job:lifecycle"];
+  const base = {
+    declaredEvents,
+    emitters: ["drift:detected", "job:lifecycle"],
+    consumers: ["drift:detected", "job:lifecycle"],
+    nonSocketEmits: [],
+  };
+
+  it("reports nothing when every name is declared", () => {
+    expect(findUndeclaredEventNames(base)).toEqual({
+      undeclaredEmits: [],
+      undeclaredListens: [],
+      staleNonSocketEmits: [],
+    });
+  });
+
+  it("FAILS on a misspelled LISTENER next to the correct listener", () => {
+    const input = { ...base, consumers: ["drift:detected", "drift:detectd", "job:lifecycle"] };
+    // The declared-event check alone stays green on exactly this input …
+    expect(checkSocketContract({ ...input, allowlist: [] })).toEqual(EMPTY_REPORT);
+    // … and the name check is what catches it.
+    expect(findUndeclaredEventNames(input).undeclaredListens).toEqual(["drift:detectd"]);
+  });
+
+  it("FAILS on a misspelled EMIT next to the correct emit", () => {
+    const input = { ...base, emitters: ["drift:detected", "drift:detectd", "job:lifecycle"] };
+    expect(checkSocketContract({ ...input, allowlist: [] })).toEqual(EMPTY_REPORT);
+    expect(findUndeclaredEventNames(input).undeclaredEmits).toEqual(["drift:detectd"]);
+  });
+
+  it("allows Socket.IO's own listener names, and nothing that merely resembles them", () => {
+    const consumers = [
+      ...base.consumers,
+      "connect",
+      "connect_error",
+      "disconnect",
+      "reconnect",
+      "reconnect_attempt",
+      "reconnect_failed",
+      "name",
+    ];
+    expect(findUndeclaredEventNames({ ...base, consumers }).undeclaredListens).toEqual([]);
+    for (const name of ["connected", "disconnect:all", "reconnects", "xreconnect", "names"]) {
+      expect(isReservedListenName(name), name).toBe(false);
+    }
+  });
+
+  it("reserved LISTEN names are not a pass for an emit", () => {
+    const report = findUndeclaredEventNames({ ...base, emitters: [...base.emitters, "connect"] });
+    expect(report.undeclaredEmits).toEqual(["connect"]);
+  });
+
+  it("excuses a listed non-socket emit, and flags a listed one that is no longer emitted", () => {
+    const report = findUndeclaredEventNames({
+      ...base,
+      emitters: [...base.emitters, "config.changed"],
+      nonSocketEmits: ["config.changed", "gone.event"],
+    });
+    expect(report.undeclaredEmits).toEqual([]);
+    expect(report.staleNonSocketEmits).toEqual(["gone.event"]);
   });
 });
 
@@ -286,6 +359,29 @@ describe("realtime contract guard (live repo scan)", () => {
         `(misspelled listener?) — wire one or add a SOCKET_EVENT_ALLOWLIST reason. ` +
         `redundantAllowlist: the event IS consumed; delete its allow-list entry.`,
     ).toEqual(EMPTY_REPORT);
+  });
+
+  it("every emitted and listened-for name is declared, reserved or a listed non-socket emit (#113)", () => {
+    const report = findUndeclaredEventNames({
+      declaredEvents,
+      emitters: serverEmitters,
+      consumers: uiConsumers,
+      nonSocketEmits: Object.keys(SOCKET_NON_SOCKET_EMITS),
+    });
+    expect(
+      report,
+      `Event names outside ServerToClientEvents. undeclaredEmits: a server/src .emit() name ` +
+        `that is not declared — a misspelled copy of a declared event, or a non-socket ` +
+        `EventEmitter that needs a SOCKET_NON_SOCKET_EMITS reason. undeclaredListens: a ` +
+        `ui/src .on() name that is not declared or a Socket.IO reserved name — a misspelled ` +
+        `listener. staleNonSocketEmits: no longer emitted; delete the entry.`,
+    ).toEqual({ undeclaredEmits: [], undeclaredListens: [], staleNonSocketEmits: [] });
+  });
+
+  it("every non-socket emit entry carries a non-empty documented reason (#113)", () => {
+    for (const [event, reason] of Object.entries(SOCKET_NON_SOCKET_EMITS)) {
+      expect(reason.trim().length, `non-socket emit "${event}" needs a reason`).toBeGreaterThan(0);
+    }
   });
 
   it("every declared event has a current row in the ARCHITECTURE.md §7.6.4 catalogue (#91)", () => {

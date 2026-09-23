@@ -88,6 +88,77 @@ export const SOCKET_COMPUTED_EMITTERS: Readonly<Record<string, string>> = {
   "testcoverage:run-finished": "lib/testcoverage/socket-emitter.ts",
 };
 
+/**
+ * #113 — `.emit("<literal>")` names in `server/src` that are NOT Socket.IO
+ * events: other Node `EventEmitter`s share the call shape. Each entry needs a
+ * reason; an entry no longer emitted fails the guard (`staleNonSocketEmits`), so
+ * it cannot outlive its reason and later excuse a misspelling of the same name.
+ */
+export const SOCKET_NON_SOCKET_EMITS: Readonly<Record<string, string>> = {
+  "config.changed":
+    "ConfigService is a Node EventEmitter; in-process subscribers rebuild on a config write.",
+  error: "remote-copilot-client's internal EventEmitter, not a socket.",
+  sessionStart: "Async runner hook bus (getHookBus()), not a socket.",
+  sessionEnd: "Async runner hook bus (getHookBus()), not a socket.",
+};
+
+/**
+ * #113 — listener names `ui/src` may use that are not `ServerToClientEvents`:
+ * Socket.IO's own socket/manager lifecycle events, and `name`, the placeholder
+ * in the hooks' doc comments describing the `socket.on("name" as never, …)`
+ * escape hatch (the extractor reads comments too).
+ */
+export function isReservedListenName(name: string): boolean {
+  return (
+    name === "connect" ||
+    name === "connect_error" ||
+    name === "disconnect" ||
+    name === "name" ||
+    /^reconnect(_[a-z]+)?$/.test(name)
+  );
+}
+
+/** Inputs to {@link findUndeclaredEventNames}. */
+export interface EventNameCheckInput {
+  declaredEvents: readonly string[];
+  emitters: readonly string[];
+  consumers: readonly string[];
+  /** Keys of {@link SOCKET_NON_SOCKET_EMITS}. */
+  nonSocketEmits: readonly string[];
+}
+
+/** Names used in code that the contract does not declare. */
+export interface EventNameReport {
+  /** Emitted names that are neither declared nor a listed non-socket emit. */
+  undeclaredEmits: string[];
+  /** Listened-for names that are neither declared nor a Socket.IO reserved name. */
+  undeclaredListens: string[];
+  /** Listed non-socket emits that nothing emits any more. */
+  staleNonSocketEmits: string[];
+}
+
+/**
+ * #113 — the name-side half of the contract. {@link checkSocketContract} walks
+ * the DECLARED events, so a misspelled copy (`drift:detectd` beside a correct
+ * `drift:detected`) never fails it: the declared event is satisfied by the
+ * correct occurrence and the typo is never looked at. This walks every USED
+ * name instead.
+ */
+export function findUndeclaredEventNames(input: EventNameCheckInput): EventNameReport {
+  const declared = new Set(input.declaredEvents);
+  const nonSocket = new Set(input.nonSocketEmits);
+  const emitted = new Set(input.emitters);
+  return {
+    undeclaredEmits: sortedUnique(input.emitters).filter(
+      (e) => !declared.has(e) && !nonSocket.has(e),
+    ),
+    undeclaredListens: sortedUnique(input.consumers).filter(
+      (e) => !declared.has(e) && !isReservedListenName(e),
+    ),
+    staleNonSocketEmits: sortedUnique(input.nonSocketEmits).filter((e) => !emitted.has(e)),
+  };
+}
+
 /** Inputs to the pure contract checker. */
 export interface DriftCheckInput {
   /** Event names declared on `ServerToClientEvents`. */
