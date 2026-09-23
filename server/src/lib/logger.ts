@@ -12,6 +12,14 @@
  *
  * REDACTION_SINK_POLICY: exempt-token-counts
  * (one of three registered sinks — `docs/decisions/0008-redaction-sinks.md`)
+ *
+ * ERROR_SERIALISATION_POLICY: serialise-errors
+ *
+ * This sink is the one that serialises a thrown `Error` — `name`, `message`,
+ * `stack`, `cause` and an aggregate's `errors` (#68, #85). It is transient and
+ * operator-facing; a stack is the point of the line. The two PERSISTING sinks
+ * deliberately do not, and reduce at the call site instead:
+ * `docs/decisions/0016-error-serialisation-in-the-persisting-sinks.md`.
  */
 import winston from "winston";
 
@@ -176,6 +184,17 @@ function errorShape(err: Error): Record<string, unknown> {
   const out: Record<string, unknown> = { name: err.name, message: err.message };
   if (err.stack != null) out.stack = err.stack;
   if (err.cause != null) out.cause = err.cause;
+  // #85 — `AggregateError.errors` has the same descriptor as `message`: own but
+  // NOT enumerable. Omitting it from this list dropped every sub-error of a
+  // `Promise.any` / batched-connector rejection, leaving only the aggregate's
+  // own "All promises were rejected" — which is why nothing looked broken.
+  // Duck-typed on an array rather than `instanceof AggregateError` so a
+  // cross-realm aggregate, or a library error that copies the shape, is covered
+  // too; a non-array `errors` is left to the spread below, as any other own
+  // property is. The caller recurses into the result, so each entry that is
+  // itself an Error comes back through this function and is redacted by key.
+  const nested = (err as { errors?: unknown }).errors;
+  if (Array.isArray(nested)) out.errors = nested;
   return { ...out, ...err };
 }
 

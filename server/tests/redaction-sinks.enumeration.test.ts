@@ -23,6 +23,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { blankComments } from "./helpers/source-scan.js";
 import { tokenCountMetaKeys } from "../src/lib/logger.js";
 
 const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
@@ -36,6 +37,24 @@ const REGISTERED_SINKS: ReadonlyMap<string, string> = new Map([
 
 const RECOGNISED_POLICIES = new Set(["exempt-token-counts", "no-token-count-exemption"]);
 
+/**
+ * #85 — the second axis: whether a sink serialises a thrown `Error`.
+ *
+ * #68 made the logger serialise `name` / `message` / `stack` / `cause`, and #85
+ * added an aggregate's `errors`. The same `Object.entries` rebuild is in both
+ * PERSISTING sinks, where the answer is the opposite one — a stack in a retained
+ * compliance row is a cost, not a feature — so the divergence is recorded per
+ * sink rather than left looking like an unfixed copy of #68.
+ * `docs/decisions/0016-error-serialisation-in-the-persisting-sinks.md`.
+ */
+const REGISTERED_ERROR_POLICIES: ReadonlyMap<string, string> = new Map([
+  ["lib/logger.ts", "serialise-errors"],
+  ["lib/audit/audit-service.ts", "reduce-at-call-site"],
+  ["lib/sandbox/audit/redact.ts", "reduce-at-call-site"],
+]);
+
+const RECOGNISED_ERROR_POLICIES = new Set(["serialise-errors", "reduce-at-call-site"]);
+
 function collectSourceFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
@@ -47,81 +66,6 @@ function collectSourceFiles(dir: string, out: string[] = []): string[] {
     }
   }
   return out;
-}
-
-/**
- * Blank every comment, replacing its characters with spaces so byte offsets and
- * line numbers are preserved exactly.
- *
- * This is load-bearing twice over. A *discussion* of `/token/i` — which several
- * modules carry, correctly — must not be mistaken for a declaration of one. And
- * an apostrophe in prose (`the UI's`) opens a phantom string for the balanced
- * slicer below, which then runs to end-of-file and attributes every key in the
- * rest of the module to one call. That is not hypothetical: it is what the
- * first draft of this scan did to `analysis/orchestrator.ts:1703`.
- */
-function blankComments(src: string): string {
-  const out = src.split("");
-  let i = 0;
-  let prevSignificant = "";
-  const blank = (from: number, to: number) => {
-    for (let j = from; j < to && j < out.length; j++) if (out[j] !== "\n") out[j] = " ";
-  };
-  while (i < src.length) {
-    const c = src[i];
-    const next = src[i + 1];
-    if (c === "/" && next === "/") {
-      let j = i;
-      while (j < src.length && src[j] !== "\n") j++;
-      blank(i, j);
-      i = j;
-      continue;
-    }
-    if (c === "/" && next === "*") {
-      const end = src.indexOf("*/", i + 2);
-      const j = end === -1 ? src.length : end + 2;
-      blank(i, j);
-      i = j;
-      continue;
-    }
-    if (c === '"' || c === "'" || c === "`") {
-      let j = i + 1;
-      while (j < src.length) {
-        if (src[j] === "\\") {
-          j += 2;
-          continue;
-        }
-        if (src[j] === c) break;
-        j++;
-      }
-      i = j + 1;
-      prevSignificant = c;
-      continue;
-    }
-    // A `/` here is a regex literal when the previous significant character
-    // cannot end an expression — otherwise it is division.
-    if (c === "/" && (prevSignificant === "" || "=(,:[!&|?{};+-*%~^<>".includes(prevSignificant))) {
-      let j = i + 1;
-      let inClass = false;
-      while (j < src.length) {
-        if (src[j] === "\\") {
-          j += 2;
-          continue;
-        }
-        if (src[j] === "[") inClass = true;
-        else if (src[j] === "]") inClass = false;
-        else if (src[j] === "/" && !inClass) break;
-        else if (src[j] === "\n") break;
-        j++;
-      }
-      i = j + 1;
-      prevSignificant = "/";
-      continue;
-    }
-    if (!/\s/.test(c)) prevSignificant = c;
-    i++;
-  }
-  return out.join("");
 }
 
 /**
@@ -156,6 +100,12 @@ function discoverSinkFiles(): string[] {
 function policyOf(relPath: string): string | null {
   const src = readFileSync(path.join(SRC_ROOT, relPath), "utf8");
   const m = src.match(/REDACTION_SINK_POLICY:\s*([a-z-]+)/);
+  return m ? m[1] : null;
+}
+
+function errorPolicyOf(relPath: string): string | null {
+  const src = readFileSync(path.join(SRC_ROOT, relPath), "utf8");
+  const m = src.match(/ERROR_SERIALISATION_POLICY:\s*([a-z-]+)/);
   return m ? m[1] : null;
 }
 
@@ -197,6 +147,34 @@ describe("redaction sinks — the registry is closed (#1268)", () => {
       );
       expect(policy, `${file} declares a policy the registry does not expect`).toBe(expected);
     }
+  });
+
+  it("requires each registered sink to declare its error-serialisation policy too (#85)", () => {
+    for (const [file, expected] of REGISTERED_ERROR_POLICIES) {
+      const policy = errorPolicyOf(file);
+      expect(
+        policy,
+        `${file} is missing its ERROR_SERIALISATION_POLICY marker. An Error reaching a sink that ` +
+          `rebuilds objects from Object.entries() serialises as {} — #68's defect. Whether that is ` +
+          `a bug or the policy is per-sink; declare which. ` +
+          `docs/decisions/0016-error-serialisation-in-the-persisting-sinks.md`,
+      ).not.toBeNull();
+      expect(
+        RECOGNISED_ERROR_POLICIES.has(policy as string),
+        `${file}: unknown error policy ${policy}`,
+      ).toBe(true);
+      expect(policy, `${file} declares an error policy the registry does not expect`).toBe(
+        expected,
+      );
+    }
+  });
+
+  it("registers the same set of files on both axes", () => {
+    // A sink added to one map and not the other would be unchecked on that axis
+    // while every assertion above still passed.
+    expect([...REGISTERED_ERROR_POLICIES.keys()].sort()).toEqual(
+      [...REGISTERED_SINKS.keys()].sort(),
+    );
   });
 });
 
@@ -335,6 +313,105 @@ describe("sandbox sink — the no-exemption premise still holds (#1268)", () => 
       "a token-shaped key now reaches the sandbox audit sink, and that sink redacts it. " +
         "Its no-token-count-exemption policy was chosen because no count reached it — " +
         "revisit docs/decisions/0008-redaction-sinks.md on this evidence, do not rename the field.",
+    ).toEqual([]);
+  });
+});
+
+// ── The persisting sinks do not serialise Errors (#85) ─────────────────────
+
+/**
+ * #85 — the premise behind `reduce-at-call-site`, re-checked from source.
+ *
+ * Both persisting sinks rebuild every object from `Object.entries(...)`, so an
+ * `Error` handed to either one persists as `{}` plus whatever own *enumerable*
+ * properties it carries. The decision not to fix that the way #68 fixed the
+ * logger rests on one fact: **no call site hands either sink an Error.** Every
+ * `audit({...})` reduces to `.message` or `.code` at the boundary, which is
+ * where the judgement about how much of a failure a retained compliance record
+ * should keep belongs.
+ *
+ * That is a claim about the source, so it is read off the source. If a call site
+ * ever does pass a bare error, this fails and the next person re-decides on
+ * evidence — the construction ADR 0008 used for the sandbox token-count opt-out.
+ */
+const ERROR_VALUED: ReadonlyArray<RegExp> = [
+  // `{ key: err }` — a bare error identifier in value position, unreduced.
+  /:\s*(?:err|error|e|ex|exc|exception|cause|aggregate|aggregateError)\s*(?=[,}])/,
+  // `{ err }` shorthand.
+  /[{,]\s*(?:err|error|ex|exc|exception|cause)\s*(?=[,}])/,
+  // A freshly constructed error handed straight in.
+  /:\s*new\s+\w*Error\s*\(/,
+];
+
+/** Every call expression matching `callRx`, with a `file:line` for each. */
+function scanCallsAt(root: string, callRx: RegExp): Array<{ where: string; call: string }> {
+  const out: Array<{ where: string; call: string }> = [];
+  for (const file of collectSourceFiles(root)) {
+    const src = blankComments(readFileSync(file, "utf8"));
+    callRx.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = callRx.exec(src)) !== null) {
+      const openIdx = m.index + m[0].length - 1;
+      const line = src.slice(0, m.index).split("\n").length;
+      out.push({
+        where: `${path.relative(SRC_ROOT, file).split(path.sep).join("/")}:${line}`,
+        call: sliceCall(src, openIdx),
+      });
+    }
+  }
+  return out;
+}
+
+function errorValuedSites(calls: Array<{ where: string; call: string }>): string[] {
+  return calls.filter(({ call }) => ERROR_VALUED.some((rx) => rx.test(call))).map((c) => c.where);
+}
+
+describe("persisting sinks — nothing hands them an un-reduced Error (#85)", () => {
+  const auditCalls = scanCallsAt(SRC_ROOT, AUDIT_CALL);
+  const sandboxCalls = scanCallsAt(SANDBOX_ROOT, SANDBOX_EMIT);
+
+  it("finds the call sites at all", () => {
+    // Anti-vacuity, both scans. A detector that matched nothing would satisfy
+    // every assertion below — the failure shape this repo keeps re-finding.
+    expect(auditCalls.length, "the audit call scan found nothing").toBeGreaterThanOrEqual(30);
+    expect(sandboxCalls.length, "the sandbox emit scan found nothing").toBeGreaterThanOrEqual(10);
+  });
+
+  it("the detector fires on a call site that would leak one", () => {
+    // Positive control for the patterns themselves, independent of the repo's
+    // current state: without it, deleting a pattern reads as "premise holds".
+    const planted = [
+      { where: "planted.ts:1", call: "({ action: 'x', metadata: { error: err } })" },
+      { where: "planted.ts:2", call: "({ action: 'x', metadata: { err } })" },
+      { where: "planted.ts:3", call: "({ action: 'x', metadata: { cause: new Error('boom') } })" },
+    ];
+    expect(errorValuedSites(planted)).toEqual(["planted.ts:1", "planted.ts:2", "planted.ts:3"]);
+    // …and not on the reduced forms every real call site uses.
+    expect(
+      errorValuedSites([
+        { where: "ok.ts:1", call: "({ metadata: { error: (err as Error).message } })" },
+        { where: "ok.ts:2", call: "({ metadata: { errorMessage: message, code: ce.code } })" },
+        { where: "ok.ts:3", call: "({ metadata: { status: 'error', error: summary } })" },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("no audit call site passes a bare error", () => {
+    expect(
+      errorValuedSites(auditCalls),
+      "an audit({...}) call now hands the persisted sink an Error. It rebuilds objects from " +
+        "Object.entries(), so name/message/stack are DROPPED and the row records {} — reduce it " +
+        "to .message or .code at the call site, or re-decide the sink's policy on this evidence: " +
+        "docs/decisions/0016-error-serialisation-in-the-persisting-sinks.md",
+    ).toEqual([]);
+  });
+
+  it("no sandbox emit passes a bare error", () => {
+    expect(
+      errorValuedSites(sandboxCalls),
+      "a sandbox emitter.emit(...) now hands the SOC 2 audit sink an Error; it persists as {}. " +
+        "Reduce it at the call site, or re-decide: " +
+        "docs/decisions/0016-error-serialisation-in-the-persisting-sinks.md",
     ).toEqual([]);
   });
 });

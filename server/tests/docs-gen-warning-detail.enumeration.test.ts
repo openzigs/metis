@@ -20,6 +20,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { blankComments } from "./helpers/source-scan.js";
 
 const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
 
@@ -76,21 +77,39 @@ interface CallSite {
   detail: string;
 }
 
+/**
+ * Call sites in ONE source text. Exposed separately from the file walk so the
+ * gate itself can be exercised against a fixture — see the prose arm below.
+ *
+ * #85/#86 — comments are blanked before scanning. This read RAW source, so a doc
+ * comment that merely NAMED the pre-#67 `sectionFailedWarning(label,
+ * String(err))` shape was reported as a call site passing an exception, and
+ * #86's fix — whose whole subject is that builder — tripped the gate it was
+ * honouring. A gate that cannot tell prose from code gets the prose reworded
+ * instead of the code fixed; `redaction-sinks.enumeration.test.ts` already
+ * carried that lesson, and this scanner was the second copy without it.
+ */
+function callSitesIn(rawSrc: string, where: string): CallSite[] {
+  const sites: CallSite[] = [];
+  const src = blankComments(rawSrc);
+  // The declaration itself is not a call site.
+  const CALL = /\bsectionFailedWarning\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = CALL.exec(src)) !== null) {
+    if (/export function\s+sectionFailedWarning\s*\($/.test(src.slice(0, m.index + m[0].length)))
+      continue;
+    const openIdx = m.index + m[0].length - 1;
+    const call = sliceCall(src, openIdx);
+    const line = src.slice(0, m.index).split("\n").length;
+    sites.push({ where: `${where}:${line}`, detail: call });
+  }
+  return sites;
+}
+
 function sectionFailedWarningCallSites(): CallSite[] {
   const sites: CallSite[] = [];
   for (const file of collectSourceFiles(SRC_ROOT)) {
-    const src = readFileSync(file, "utf8");
-    // The declaration itself is not a call site.
-    const CALL = /\bsectionFailedWarning\s*\(/g;
-    let m: RegExpExecArray | null;
-    while ((m = CALL.exec(src)) !== null) {
-      if (/export function\s+sectionFailedWarning\s*\($/.test(src.slice(0, m.index + m[0].length)))
-        continue;
-      const openIdx = m.index + m[0].length - 1;
-      const call = sliceCall(src, openIdx);
-      const line = src.slice(0, m.index).split("\n").length;
-      sites.push({ where: `${path.relative(SRC_ROOT, file)}:${line}`, detail: call });
-    }
+    sites.push(...callSitesIn(readFileSync(file, "utf8"), path.relative(SRC_ROOT, file)));
   }
   return sites;
 }
@@ -111,6 +130,25 @@ describe("sectionFailedWarning — the detail contract is checked, not just docu
       offenders.map((o) => o.where),
       "map the error through generationFailureMessage() before building the warning",
     ).toEqual([]);
+  });
+
+  it("does not mistake prose about the offending shape for a call site", () => {
+    // The regression this arm exists for, asserted through the GATE rather than
+    // through `blankComments` alone: a fixture whose offending text lives only
+    // in comments must yield no offender, while the one real call in the same
+    // fixture is still found — so dropping the blanking fails, and blanking too
+    // greedily fails too.
+    const fixture = [
+      "/**",
+      " * Built by the OLD sectionFailedWarning(label, String(err)), so the",
+      " * exception string is embedded in the persisted blob.",
+      " */",
+      "// see also sectionFailedWarning(section, err.message)",
+      "const safe = sectionFailedWarning(section, generationFailureMessage(raw));",
+    ].join("\n");
+    const found = callSitesIn(fixture, "fixture.ts");
+    expect(found.map((f) => f.detail)).toEqual(["(section, generationFailureMessage(raw))"]);
+    expect(found.filter((f) => RAW_ERROR_EXPR.some((rx) => rx.test(f.detail)))).toEqual([]);
   });
 
   it("recognises the offending shape when it is present", () => {

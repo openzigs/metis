@@ -208,3 +208,57 @@ describe("audit sink — the persisted row, end to end (#1268)", () => {
     expect(mk(1)).not.toBe(mk(2));
   });
 });
+
+/**
+ * #85 — this sink does NOT serialise an `Error`, and that is the policy.
+ *
+ * `ERROR_SERIALISATION_POLICY: reduce-at-call-site`. #68 taught the logger to
+ * serialise `name` / `message` / `stack` / `cause`; #85 added an aggregate's
+ * `errors`. The identical `Object.entries` rebuild is here, and here the answer
+ * is the opposite one: `AuditLog` rows are retained compliance evidence that is
+ * exported, a stack carries absolute server paths, and a `cause` chain can drag
+ * a whole provider payload into a row nobody re-reads. Callers reduce to
+ * `.message` / `.code` at the boundary instead —
+ * `redaction-sinks.enumeration.test.ts` re-checks that they all still do.
+ *
+ * These assertions exist so the policy is executable rather than a comment: a
+ * later copy of the #68 repair into this file turns them red and sends the
+ * author to `docs/decisions/0016-error-serialisation-in-the-persisting-sinks.md`
+ * instead of landing a stack in a compliance row by analogy.
+ */
+describe("audit sink — Errors are reduced at the call site, not serialised here (#85)", () => {
+  it("does not persist name, message, stack, cause or aggregate sub-errors", () => {
+    const out = r({ err: new Error("provider refused: /srv/metis/secrets.env") });
+    const err = out.err as Record<string, unknown>;
+    expect(Object.keys(err)).toEqual([]);
+    for (const dropped of ["name", "message", "stack", "cause", "errors"]) {
+      expect(err[dropped], `${dropped} must not reach a persisted audit row`).toBeUndefined();
+    }
+    expect(JSON.stringify(out)).not.toContain("/srv/metis");
+  });
+
+  it("drops an AggregateError's sub-errors too", () => {
+    const out = r({
+      err: new AggregateError([new Error("a: /srv/one"), new Error("b: /srv/two")], "all failed"),
+    });
+    expect(JSON.stringify(out)).not.toContain("/srv/");
+    expect((out.err as Record<string, unknown>).errors).toBeUndefined();
+  });
+
+  it("still redacts a credential hung off an error as an own enumerable property", () => {
+    // The other direction: whatever an Error DOES carry enumerably is walked by
+    // the same key rules as any other object, so the policy is "record less",
+    // never "skip redaction".
+    const out = r({
+      err: Object.assign(new Error("boom"), {
+        status: 402,
+        accessToken: "opaque-credential-value-for-tests",
+        requestId: "req-7",
+      }),
+    });
+    const err = out.err as Record<string, unknown>;
+    expect(err.status).toBe(402);
+    expect(err.requestId).toBe("req-7");
+    expect(err.accessToken).toBe(REDACTED);
+  });
+});
