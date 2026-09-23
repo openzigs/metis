@@ -2356,7 +2356,7 @@ async function streamPhase1Facts(
   let lastErr: unknown;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const sessionId = `docs-facts-${opts.projectId}-${opts.modulePath.replace(/[^a-z0-9]/gi, "_")}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const sessionId = `docs-facts-${opts.projectId}-${opts.modulePath.replace(/[^a-z0-9]/gi, "_")}-${Date.now()}-${randomBytes(3).toString("hex")}`;
       const chunks: string[] = [];
       const usage = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 };
       let finishReason: string | undefined;
