@@ -274,7 +274,14 @@ function readFence(
     const candidate = nested ? lines[i].trimStart() : lines[i];
     if (isFenceClose(candidate, open)) return { text: body.join("\n"), next: i + 1 };
   }
-  body.push(open);
+  // A nested fence is closed at the opener's own indentation: under
+  // CommonMark a column-0 marker ends the list item instead, then opens a new
+  // top-level fence that never closes and turns every later heading into code
+  // (PR #169 re-review). `open` is the opener's full run, so the close is the
+  // same character and at least as long.
+  const opener = lines[start];
+  const indent = nested ? opener.slice(0, opener.length - opener.trimStart().length) : "";
+  body.push(indent + open);
   return { text: body.join("\n"), next: i };
 }
 

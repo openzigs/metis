@@ -9,6 +9,7 @@
  * and "**Variables:**" lists) plus large and unclosed code fences, which the
  * synthetic bullet fixtures of earlier batching work never contained (#165).
  */
+import { micromark } from "micromark";
 import { describe, expect, it } from "vitest";
 import type { FaithfulnessResult } from "./grounding/citation-validator.js";
 import {
@@ -374,16 +375,6 @@ describe("mergeBatchSections — fences", () => {
     );
   });
 
-  it("closes an unclosed fence at the end of its own reply so it cannot swallow the next batch", () => {
-    const a = "## R\n\n### A\n\n```mermaid\nflowchart TD\n  X --> Y";
-    const b = "## R\n\n### B\n\n- rule from batch two";
-    const merged = mergeBatchSections([a, b], "R");
-    const fences = merged.split("\n").filter((l) => l.startsWith("```"));
-    expect(fences).toEqual(["```mermaid", "```"]);
-    expect(merged.indexOf("```", merged.indexOf("X --> Y"))).toBeLessThan(merged.indexOf("### B"));
-    expect(merged).toMatch(/^### B$/m);
-  });
-
   it("keeps a 20,000-char fence whole and intact", () => {
     const code = Array.from({ length: 800 }, (_, i) => `line ${i} = compute(${i}) # ### x`).join(
       "\n",
@@ -427,14 +418,50 @@ describe("mergeBatchSections — fences", () => {
     expect(merged).not.toMatch(/^### not a topic$/m);
   });
 
-  it("closes an unclosed 4-space nested fence at the end of its own reply", () => {
-    const a = "## R\n\n### A\n\n1. **Rule**\n    ```sql\n    SELECT 1";
-    const b = "## R\n\n### B\n\n- rule from batch two";
-    const merged = mergeBatchSections([a, b], "R");
-    expect(merged).toContain("    ```sql\n    SELECT 1\n```");
-    expect(merged).toMatch(/^### B$/m);
-    expect(merged).toContain("- rule from batch two");
-  });
+  // PR #169 re-review: fence repair is asserted by RENDERING the merged
+  // section with micromark (the CommonMark parser under the UI's
+  // react-markdown), not by string shape. A synthetic close at column 0 does
+  // not close a fence nested in a list item; it opens a new top-level fence
+  // that never closes, and every later heading renders as code.
+  it.each([
+    ["an unclosed top-level fence", "", "```", "mermaid", "flowchart TD\n  X --> Y"],
+    ["an unclosed top-level 4-backtick fence", "", "````", "js", "const x = 1;"],
+    [
+      "an unclosed fence nested 2 spaces under a bullet",
+      "- **Rule**\n  ",
+      "```",
+      "sql",
+      "  SELECT 1",
+    ],
+    [
+      "an unclosed fence nested 4 spaces under a numbered item",
+      "1. **Rule**\n    ",
+      "```",
+      "sql",
+      "    SELECT 1",
+    ],
+    ["an unclosed fence nested by a tab", "1. **Rule**\n\t", "```", "sql", "\tSELECT 1"],
+    ["an unclosed nested ~~~ fence", "1. **Rule**\n    ", "~~~", "sql", "    SELECT 1"],
+    ["an unclosed nested 5-backtick fence", "- **Rule**\n  ", "`````", "sql", "  SELECT 1"],
+  ])(
+    "closes %s so the next batch and section still render as headings",
+    (_label, prefix, marker, lang, code) => {
+      const a = `## R\n\n### A\n\n${prefix}${marker}${lang}\n${code}`;
+      const b = "## R\n\n### B\n\n- rule from batch two";
+      const merged = mergeBatchSections([a, b], "R");
+      const html = micromark(`${merged}\n\n## Next Section\n\nprose`);
+      // (a) the code is inside a code block ...
+      const codeBlocks = [...html.matchAll(/<pre><code[^>]*>([\s\S]*?)<\/code><\/pre>/g)];
+      expect(codeBlocks).toHaveLength(1);
+      expect(codeBlocks[0][1]).toContain(code.trim().split("\n")[0].trim());
+      expect(codeBlocks[0][1]).not.toContain("rule from batch two");
+      // (b) ... and nothing after it is: the next batch's topic and the
+      // following section still render as headings.
+      expect(html).toContain("<h3>B</h3>");
+      expect(html).toContain("<li>rule from batch two</li>");
+      expect(html).toContain("<h2>Next Section</h2>");
+    },
+  );
 });
 
 describe("mergeBatchSections — edges", () => {
