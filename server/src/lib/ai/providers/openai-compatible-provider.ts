@@ -20,6 +20,8 @@
 export {
   OpenAICompatibleProvider,
   BedrockDirectProvider,
+  FirstTokenTimeoutError,
+  LOCAL_TIMEOUT_ENV,
   isCrossRegionModelId,
   isStructuredOutputUnsupportedStatus,
   isTemperatureUnsupportedBody,

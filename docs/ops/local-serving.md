@@ -275,6 +275,27 @@ Record the chosen config and measured limits here (this satisfies the #332 ACs):
 | `DOCS_GEN_LOCAL_CONCISE_PROMPT` | unset (off) | Short prompt variant (terser output). Leave off for detailed docs. | `tuning.concisePrompt` |
 | `DOCS_GEN_LOCAL_STRUCTURED_OUTPUT` | unset (off) | #336 — schema-constrained JSON on the grounding calls (vLLM/xgrammar). | grounding calls only |
 
+### Provider timeouts — size the first-token budget to prefill (Issue #111)
+
+A local runtime streams **nothing** until it has processed the whole prompt, so
+its time to first token is `prompt_tokens / prefill_tok_per_s`, and raising
+`DOCS_GEN_LOCAL_FACTS_CHAR_CAP` raises it with it. Measured on 2026-09-23: a
+130,482-token section prompt at ~224 tok/s needed ~9.7 min, and the 10-min
+default aborted it with 98% of the prompt processed. These apply to every
+`local-gemma` provider (chat, analysis, docs-gen single and hybrid), in ms, with
+`0` disabling the guard:
+
+| Env var | Default | Governs |
+|---|---|---|
+| `LOCAL_GEMMA_FIRST_BYTE_TIMEOUT_MS` | `600000` | Streaming time to first token (prefill). |
+| `LOCAL_GEMMA_IDLE_TIMEOUT_MS` | `120000` | Gap between tokens once streaming has started. |
+| `LOCAL_GEMMA_REQUEST_TIMEOUT_MS` | `300000` | A whole non-streaming request. |
+
+A first-token timeout logs `Stream timed out before the first token` with the
+prompt size in characters and the budget, and names the knob in the error. It is
+**not retried**: re-sending the same prompt repeats the whole prefill (Ollama
+logs `forcing full prompt re-processing`) and times out the same way.
+
 ### Sizing `DOCS_GEN_LOCAL_FACTS_CHAR_CAP` — the derivation
 
 The cap is a **per-section character budget** for the facts blob. It must leave
