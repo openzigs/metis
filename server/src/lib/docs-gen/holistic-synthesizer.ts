@@ -40,6 +40,8 @@ import { minePyRules, renderMinedPyRules } from "../code-graph/py-rule-miner.js"
 import { mineGoRules, renderMinedGoRules } from "../code-graph/go-rule-miner.js";
 import { mineTsRules, renderMinedTsRules } from "../code-graph/ts-rule-miner.js";
 import { mineSqlRules, renderMinedSqlRules } from "../code-graph/sql-rule-miner.js";
+import { mineCsRules, renderMinedCsRules } from "../code-graph/cs-rule-miner.js";
+import { mineKtRules, renderMinedKtRules } from "../code-graph/kt-rule-miner.js";
 import {
   buildCodeGraphSummary,
   renderCrossModuleDeps,
@@ -1716,6 +1718,9 @@ export async function extractModuleFacts(
   const allPyRules: ReturnType<typeof minePyRules> = [];
   const allGoRules: ReturnType<typeof mineGoRules> = [];
   const allTsRules: ReturnType<typeof mineTsRules> = [];
+  // #158 / #159 — C# and Kotlin mined rules, each in its own rule shape.
+  const allCsRules: ReturnType<typeof mineCsRules> = [];
+  const allKtRules: ReturnType<typeof mineKtRules> = [];
   // #274 — SQL rules are mined at the FILE level (no CodeSymbol rows for .sql);
   // populated by a separate bounded clone-dir pass below, not the symbol loop.
   const allSqlRules: ReturnType<typeof mineSqlRules> = [];
@@ -1776,6 +1781,12 @@ export async function extractModuleFacts(
       // conditions, zod schema constraints, enum/union constraints, constants.
       if (lang === "ts" || lang === "js") {
         allTsRules.push(...mineTsRules(slice, sym.filePath, sym.startLine, sym.qualifiedName));
+      }
+      if (lang === "cs") {
+        allCsRules.push(...mineCsRules(slice, sym.filePath, sym.startLine, sym.qualifiedName));
+      }
+      if (lang === "kt") {
+        allKtRules.push(...mineKtRules(slice, sym.filePath, sym.startLine, sym.qualifiedName));
       }
     } catch {
       // unreadable — file may have been deleted or path is wrong
@@ -2001,6 +2012,10 @@ ${allPyRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED PYTHON RULE INVENTORY (
 ${allGoRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED GO RULE INVENTORY (${allGoRules.length} rules) ===\nThese Go rules (guard clauses, errors.New / fmt.Errorf failure modes, switch business branches, const thresholds) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedGoRules(allGoRules, 12000)}\n=== END GO MINED RULES ===\n` : ""}
 
 ${allTsRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED TYPESCRIPT RULE INVENTORY (${allTsRules.length} rules) ===\nThese TypeScript/JavaScript rules (if/ternary guards, thrown-error conditions, zod schema constraints, enum/union constraints, numeric/string constants) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedTsRules(allTsRules, 12000)}\n=== END TYPESCRIPT MINED RULES ===\n` : ""}
+
+${allCsRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED C# RULE INVENTORY (${allCsRules.length} rules) ===\nThese C# rules (guard clauses, ThrowIf / Guard.Against helpers, thrown exceptions, DataAnnotations validation attributes, FluentValidation rules, switch dispatch on status/enum values, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedCsRules(allCsRules, 12000)}\n=== END C# MINED RULES ===\n` : ""}
+
+${allKtRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED KOTLIN RULE INVENTORY (${allKtRules.length} rules) ===\nThese Kotlin rules (require/check preconditions, guard clauses and elvis guards, thrown exceptions, when dispatch on status/enum values, validation annotations, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedKtRules(allKtRules, 12000)}\n=== END KOTLIN MINED RULES ===\n` : ""}
 
 ${allSqlRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED SQL RULE INVENTORY (${allSqlRules.length} rules) ===\nThese SQL schema rules (CHECK constraints, NOT NULL, UNIQUE, PRIMARY/FOREIGN KEY referential rules, DEFAULT values, triggers, view WHERE filters, stored-proc conditionals) were extracted from the module's .sql files by deterministic passes and are GUARANTEED present. EVERY ONE below MUST appear as a bullet in your RULES (or ENTITIES) section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedSqlRules(allSqlRules, 12000)}\n=== END SQL MINED RULES ===\n` : ""}
 

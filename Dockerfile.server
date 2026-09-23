@@ -204,14 +204,17 @@ RUN node /tmp/prune-pnpm-store.mjs --store node_modules/.pnpm \
 #     (server/src/lib/code-graph/parsers-tree-sitter.ts, via web-tree-sitter). The
 #     C sources (`src/parser.c` is 34 MB for C#; tree-sitter-typescript has two,
 #     under `typescript/src` and `tsx/src`) and the per-platform native
-#     `prebuilds/` are never loaded: ~110 MB.
+#     `prebuilds/` are never loaded: ~110 MB. The Kotlin grammar (#159) is scoped,
+#     `@tree-sitter-grammars/tree-sitter-kotlin`, one directory deeper — hence
+#     a second, maxdepth-4 find; without it its 22 MB `src/` would ship.
 #   - better-sqlite3: `deps/` is the SQLite amalgamation source and
 #     `build/Release/obj.target` the object files — compile-time only.
 #   - Any package's `prebuilds/<platform>-<arch>[/.node]`: keep only linux-<this
 #     arch> (glibc, #39; the musl builds are never loaded here).
 ARG TARGETARCH
 RUN set -eux; \
-    for D in $(find node_modules/.pnpm -maxdepth 3 -type d -path '*/node_modules/tree-sitter-*' 2>/dev/null); do \
+    for D in $(find node_modules/.pnpm -maxdepth 3 -type d -path '*/node_modules/tree-sitter-*' 2>/dev/null) \
+             $(find node_modules/.pnpm -maxdepth 4 -type d -path '*/node_modules/@tree-sitter-grammars/tree-sitter-*' 2>/dev/null); do \
       rm -rf "$D/prebuilds" "$D/bindings" "$D/binding.gyp" 2>/dev/null || true; \
       find "$D" -maxdepth 2 -type d -name src -prune -exec rm -rf {} + 2>/dev/null || true; \
     done; \
