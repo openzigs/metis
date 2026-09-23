@@ -65,6 +65,7 @@ import {
   publicDocWarnings,
   publicGenerationErrorMessage,
 } from "../lib/docs-gen/generation-failure-message.js";
+import { publicIndexingErrorMessage } from "../lib/rag/indexing-failure-message.js";
 
 const log = createChildLogger("generated-docs");
 
@@ -107,7 +108,8 @@ function unpublishedIndex(outbox?: PublicationState | null) {
     state: failed ? "failed" : "pending",
     status: failed ? "failed" : outbox?.status === "running" ? "processing" : "pending",
     chunkCount: 0,
-    errorMessage: failed ? outbox.errorMessage : null,
+    // #98 — the outbox task's error is the publication's own exception text.
+    errorMessage: failed ? publicIndexingErrorMessage(outbox.errorMessage) : null,
     processedAt: null,
   };
 }
@@ -335,7 +337,8 @@ export function generatedDocsRouter(): Router {
           state: document.indexState,
           status: document.status,
           chunkCount: document.chunkCount,
-          errorMessage: document.errorMessage,
+          // #98 — never the ingest pipeline's raw exception text.
+          errorMessage: publicIndexingErrorMessage(document.errorMessage, document.indexState),
           processedAt: document.processedAt,
         },
       ]),
@@ -418,7 +421,11 @@ export function generatedDocsRouter(): Router {
               state: syntheticDocument.indexState,
               status: syntheticDocument.status,
               chunkCount: syntheticDocument.chunkCount,
-              errorMessage: syntheticDocument.errorMessage,
+              // #98 — same rule as the list handler.
+              errorMessage: publicIndexingErrorMessage(
+                syntheticDocument.errorMessage,
+                syntheticDocument.indexState,
+              ),
               processedAt: syntheticDocument.processedAt,
             }
           : unpublishedIndex(outbox),

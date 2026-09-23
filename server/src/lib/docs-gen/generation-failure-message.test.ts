@@ -9,6 +9,7 @@ import {
   GENERATION_PROVIDER_AUTH_MESSAGE,
   GENERATION_PROVIDER_BALANCE_MESSAGE,
   GENERATION_PROVIDER_RATE_LIMITED_MESSAGE,
+  GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
   generationFailureMessage,
   publicDocWarnings,
   publicGenerationErrorMessage,
@@ -86,6 +87,49 @@ describe("generationFailureMessage", () => {
     );
   });
 
+  it("names an unreachable provider host instead of the generic message", () => {
+    // What undici's fetch throws when a local Ollama host is down: the message
+    // is only "fetch failed" and the OS error hangs off `.cause`.
+    const refused = new TypeError("fetch failed", {
+      cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:11434"), {
+        code: "ECONNREFUSED",
+      }),
+    });
+    const msg = generationFailureMessage(refused);
+    expect(msg).toBe(GENERATION_PROVIDER_UNREACHABLE_MESSAGE);
+    expect(msg).not.toContain("127.0.0.1");
+    expect(msg).not.toContain("11434");
+    // The cause code alone, with an opaque message.
+    const dns = new Error("request to provider failed", {
+      cause: Object.assign(new Error("getaddrinfo ENOTFOUND ollama.internal"), {
+        code: "ENOTFOUND",
+      }),
+    });
+    expect(generationFailureMessage(dns)).toBe(GENERATION_PROVIDER_UNREACHABLE_MESSAGE);
+    expect(generationFailureMessage(Object.assign(new Error("x"), { code: "EHOSTUNREACH" }))).toBe(
+      GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
+    );
+    // Stored text (a pre-#67 section-failed warning) carries only the words.
+    expect(generationFailureMessage("TypeError: fetch failed")).toBe(
+      GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
+    );
+    expect(generationFailureMessage("connect ECONNREFUSED 10.0.0.5:11434")).toBe(
+      GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
+    );
+  });
+
+  it("classifies a provider status before a connection failure", () => {
+    expect(generationFailureMessage(new AIProviderError("fetch failed", 401))).toBe(
+      GENERATION_PROVIDER_AUTH_MESSAGE,
+    );
+  });
+
+  it("does not read an unrelated mention of a network word as unreachable", () => {
+    expect(generationFailureMessage(new Error("prefetch failed for module cache"))).toBe(
+      GENERATION_FAILED_MESSAGE,
+    );
+  });
+
   it("does not read a bare number in a message as a status", () => {
     expect(generationFailureMessage(new Error("parsed 402 tables in 429 ms"))).toBe(
       GENERATION_FAILED_MESSAGE,
@@ -102,6 +146,7 @@ describe("publicGenerationErrorMessage", () => {
       GENERATION_BUDGET_EXCEEDED_MESSAGE,
       GENERATION_PROVIDER_RATE_LIMITED_MESSAGE,
       GENERATION_PROVIDER_AUTH_MESSAGE,
+      GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
     ]) {
       expect(publicGenerationErrorMessage("failed", safe)).toBe(safe);
     }

@@ -4,6 +4,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const CLEANUP_ERROR = "Selected approval cleanup needs another indexing retry.";
+/**
+ * #98 — what the quarantine list SHOWS for a row holding {@link CLEANUP_ERROR}.
+ * The stored text stands in for a raw cleanup exception, so the server routes
+ * it through the fixed indexing vocabulary and the page must never echo it.
+ */
+export const SHOWN_CLEANUP_ERROR =
+  "Indexing failed. The details are in the server log; re-index the document to try again.";
 
 /**
  * Park a REAL API-approved document at the post-commit cleanup-failure boundary.

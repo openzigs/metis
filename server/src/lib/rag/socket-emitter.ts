@@ -7,6 +7,7 @@
  */
 import type { MetisIOServer } from "../socket/server.js";
 import type { KnowledgeEvent } from "../rag/knowledge-service.js";
+import { publicIndexingErrorMessage } from "./indexing-failure-message.js";
 
 export function createSocketDocumentEmitter(io: MetisIOServer) {
   return (event: KnowledgeEvent): void => {
@@ -16,7 +17,9 @@ export function createSocketDocumentEmitter(io: MetisIOServer) {
       documentId: event.documentId,
       status: event.status,
       chunkCount: event.chunkCount,
-      errorMessage: event.errorMessage ?? null,
+      // #98 — the ingest queue and KnowledgeService put the raw exception
+      // text here; only the fixed indexing vocabulary reaches the browser.
+      errorMessage: publicIndexingErrorMessage(event.errorMessage),
       attempt: event.attempt,
     });
   };

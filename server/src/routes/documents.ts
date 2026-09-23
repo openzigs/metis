@@ -37,6 +37,14 @@ import { getIngestQueue, type IngestQueue } from "../lib/rag/ingest-queue.js";
 import { getProject } from "../lib/projects/project-service.js";
 import { approveDocument, rejectDocument } from "../lib/rag/quarantine.js";
 import { propagateAcl } from "../lib/rag/acl.js";
+import { createChildLogger } from "../lib/logger.js";
+import {
+  indexingFailureMessage,
+  publicDocumentRow,
+  publicIndexingErrorMessage,
+} from "../lib/rag/indexing-failure-message.js";
+
+const log = createChildLogger("documents-routes");
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -94,12 +102,14 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         await ingestQueue.enqueue(documentId, { priority: "manual" });
         return { documentId, status: "queued", chunkCount: 0, queued: true };
       } catch (err) {
+        log.warn("document enqueue failed", { documentId, error: String(err) });
         return {
           documentId,
           status: "failed",
           chunkCount: 0,
           queued: false,
-          errorMessage: (err as Error).message,
+          // #98 — the ingest exception stays in the server log.
+          errorMessage: indexingFailureMessage(err),
         };
       }
     }
@@ -110,15 +120,17 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         status: result.status,
         chunkCount: result.chunkCount,
         queued: false,
-        errorMessage: result.errorMessage,
+        errorMessage: publicIndexingErrorMessage(result.errorMessage) ?? undefined,
       };
     } catch (err) {
+      log.warn("document ingest failed", { documentId, error: String(err) });
       return {
         documentId,
         status: "failed",
         chunkCount: 0,
         queued: false,
-        errorMessage: (err as Error).message,
+        // #98 — the ingest exception stays in the server log.
+        errorMessage: indexingFailureMessage(err),
       };
     }
   }
@@ -180,7 +192,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       const ingest = await handleIngest(document.id);
       const refreshed = await prisma.document.findUnique({ where: { id: document.id } });
       const httpStatus = ingest.queued ? 202 : 201;
-      res.status(httpStatus).json(ok({ document: refreshed, ingest }));
+      res.status(httpStatus).json(ok({ document: publicDocumentRow(refreshed), ingest }));
     },
   );
 
@@ -255,7 +267,9 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       const httpStatus = ingest.queued ? 202 : 201;
       res
         .status(httpStatus)
-        .json(ok({ document: refreshed, ingest, source: { url: fetched.finalUrl } }));
+        .json(
+          ok({ document: publicDocumentRow(refreshed), ingest, source: { url: fetched.finalUrl } }),
+        );
     },
   );
 
@@ -313,7 +327,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       const ingest = await handleIngest(document.id);
       const refreshed = await prisma.document.findUnique({ where: { id: document.id } });
       const httpStatus = ingest.queued ? 202 : 201;
-      res.status(httpStatus).json(ok({ document: refreshed, ingest }));
+      res.status(httpStatus).json(ok({ document: publicDocumentRow(refreshed), ingest }));
     },
   );
 
@@ -334,7 +348,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       }),
       prisma.document.count({ where }),
     ]);
-    res.json(ok({ items, total, limit, offset }));
+    res.json(ok({ items: items.map((item) => publicDocumentRow(item)), total, limit, offset }));
   });
 
   // ── Get one ─────────────────────────────────────────────────────────────
@@ -345,7 +359,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       where: { id: documentId, projectId, deletedAt: null },
     });
     if (!document) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
-    res.json(ok(document));
+    res.json(ok(publicDocumentRow(document)));
   });
 
   // ── Delete ──────────────────────────────────────────────────────────────
@@ -383,7 +397,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       try {
         const result = await approveDocument(documentId, { id: actor.id });
         const refreshed = await prisma.document.findUnique({ where: { id: documentId } });
-        res.json(ok({ document: refreshed, ...result }));
+        res.json(ok({ document: publicDocumentRow(refreshed), ...result }));
       } catch (err) {
         throw new AppError(409, "DOCUMENT_APPROVE_FAILED", (err as Error).message);
       }
@@ -410,7 +424,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       try {
         await rejectDocument(documentId, { id: actor.id }, reason);
         const refreshed = await prisma.document.findUnique({ where: { id: documentId } });
-        res.json(ok({ document: refreshed }));
+        res.json(ok({ document: publicDocumentRow(refreshed) }));
       } catch (err) {
         throw new AppError(409, "DOCUMENT_REJECT_FAILED", (err as Error).message);
       }
@@ -480,7 +494,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         target: { type: "document", id: documentId },
         metadata: { projectId, autoApproveTrusted: parsed.data.autoApproveTrusted },
       });
-      res.json(ok(updated));
+      res.json(ok(publicDocumentRow(updated)));
     },
   );
 
@@ -511,7 +525,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         target: { type: "document", id: documentId },
         metadata: { projectId, isSpec },
       });
-      res.json(ok(updated));
+      res.json(ok(publicDocumentRow(updated)));
     },
   );
 
