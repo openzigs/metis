@@ -25,6 +25,8 @@ import { useJobLifecycle } from "@/hooks/use-job-events";
 export const impactAnalysisKeys = {
   all: ["impact-analyses"] as const,
   list: () => [...impactAnalysisKeys.all, "list"] as const,
+  /** #61 — under `list()`, so invalidating the list refreshes every project's too. */
+  projectList: (projectId: string) => [...impactAnalysisKeys.list(), projectId] as const,
   detail: (id: string) => [...impactAnalysisKeys.all, "detail", id] as const,
   drift: (id: string) => [...impactAnalysisKeys.all, "drift", id] as const,
   usageClassification: (projectId: string) =>
@@ -65,11 +67,14 @@ export function useCrossProjectImpact(projectId: string | null | undefined) {
 
 const TERMINAL_STATUSES = new Set(["completed", "failed"]);
 
-/** List every impact analysis visible to the caller. */
-export function useImpactAnalyses() {
+/**
+ * List every impact analysis visible to the caller — or, with `projectId`
+ * (#61), only the runs that include that project.
+ */
+export function useImpactAnalyses(projectId?: string) {
   return useQuery<ImpactAnalysisSummary[]>({
-    queryKey: impactAnalysisKeys.list(),
-    queryFn: () => impactAnalysisApi.list(),
+    queryKey: projectId ? impactAnalysisKeys.projectList(projectId) : impactAnalysisKeys.list(),
+    queryFn: () => impactAnalysisApi.list(projectId),
     retry: false,
   });
 }

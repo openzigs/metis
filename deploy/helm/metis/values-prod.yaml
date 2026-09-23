@@ -91,6 +91,11 @@ persistence:
   lancedb:
     size: 20Gi
     storageClassName: gp3
+  # #60 — DATABASE_URL is Postgres (externalSecrets) and uploads are on S3, so the
+  # server's data directory holds only scratch (repo archive extracts): an emptyDir,
+  # not a ReadWriteOnce PVC that a second replica on another node could not attach.
+  data:
+    enabled: false
 externalSecrets:
   enabled: true
   secretStoreName: aws-secrets-manager

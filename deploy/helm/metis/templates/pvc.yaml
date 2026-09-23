@@ -10,7 +10,8 @@ ensures `helm uninstall` does not delete the PVC even if the SC reclaim is Delet
 {{- if $efs }}{{ $accessModes = list "ReadWriteMany" }}{{ end -}}
 {{- $uploadsSC := .Values.persistence.uploads.storageClassName -}}
 {{- $lancedbSC := .Values.persistence.lancedb.storageClassName -}}
-{{- if $efs }}{{ $uploadsSC = .Values.persistence.efs.storageClassName }}{{ $lancedbSC = .Values.persistence.efs.storageClassName }}{{ end -}}
+{{- $dataSC := .Values.persistence.data.storageClassName -}}
+{{- if $efs }}{{ $uploadsSC = .Values.persistence.efs.storageClassName }}{{ $lancedbSC = .Values.persistence.efs.storageClassName }}{{ $dataSC = .Values.persistence.efs.storageClassName }}{{ end -}}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -43,4 +44,24 @@ spec:
   resources:
     requests:
       storage: {{ .Values.persistence.lancedb.size | quote }}
+{{- if .Values.persistence.data.enabled }}
+---
+# #60 — the server's data directory: the SQLite default (/app/server/data/metis.db)
+# when DATABASE_URL is unset, and repo archive extracts.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-server-data" (include "metis.fullname" .) }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "server") | nindent 4 }}
+  annotations:
+    "helm.sh/resource-policy": {{ eq .Values.persistence.reclaimPolicy "Retain" | ternary "keep" "" | quote }}
+spec:
+  accessModes:
+    {{- toYaml $accessModes | nindent 4 }}
+  storageClassName: {{ $dataSC | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.data.size | quote }}
+{{- end }}
 {{- end }}

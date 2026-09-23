@@ -62,6 +62,8 @@ persistence:
     storageClassName: standard
   lancedb:
     storageClassName: standard
+  data:
+    storageClassName: standard
 secrets:
   create: true
   values:

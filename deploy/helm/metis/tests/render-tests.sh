@@ -117,7 +117,8 @@ assert_contains "copilot deployment named" "name: metis-copilot" "${COPILOT}"
 echo "Test 4: PVC story — sub-issue #367 (CRITICAL)"
 # ---------------------------------------------------------------------------
 PVC_RENDER=$(template)
-assert "2× PVC by default" 2 "$(count_kind PersistentVolumeClaim "${PVC_RENDER}")"
+# #60 — uploads + lancedb + the server's data directory (SQLite + repo extracts).
+assert "3× PVC by default" 3 "$(count_kind PersistentVolumeClaim "${PVC_RENDER}")"
 assert_contains "uploads PVC mounted at /app/server/data/uploads" "mountPath: /app/server/data/uploads" "${PVC_RENDER}"
 assert_contains "lancedb PVC mounted at /app/server/data/lancedb" "mountPath: /app/server/data/lancedb" "${PVC_RENDER}"
 assert_contains "uploads default 10Gi" 'storage: "10Gi"' "${PVC_RENDER}"
@@ -577,6 +578,46 @@ assert_contains "dev: embeddings still probes /readyz" "path: /readyz" "${DEV_EM
 # -- The image the pod runs is the BAKED one (#784) — air-gap needs no HF egress.
 assert_contains "embeddings uses the baked sidecar image" \
   "image: ghcr.io/openzigs/metis-embeddings-svc" "${EMB}"
+
+# ---------------------------------------------------------------------------
+echo "Test 12: the DEFAULT values can start — issue #60"
+# ---------------------------------------------------------------------------
+# The chart makes the root filesystem read-only, and with no DATABASE_URL the server
+# runs on SQLite, whose file must be creatable. The image puts it in
+# /app/server/data (Dockerfile.server `ENV DATABASE_URL`), and the server also writes
+# its home directory (~/.metis-sessions) and data/repo-{extracts,archives}. So the
+# server pod must mount a WRITABLE volume at each. The CI image smoke runs the image
+# under exactly these mounts (scripts/lib/smoke-server-image.mjs `helm-default`, the
+# list is HELM_DEFAULT_WRITABLE_PATHS); image-build-wiring.test.mjs keeps them equal.
+server_deployment() {
+  echo "$1" | awk '/^kind: Deployment$/{d=1} /^---$/{d=0; s=0} d && /^  name: metis-server$/{s=1} s'
+}
+DEF_SERVER=$(server_deployment "${DEFAULT}")
+assert_contains "default: server root filesystem is read-only" "readOnlyRootFilesystem: true" "${DEF_SERVER}"
+for p in /tmp /home/metis /app/server/data /app/server/data/uploads /app/server/data/lancedb; do
+  assert_contains "default: server mounts a writable volume at ${p}" "mountPath: ${p}"$'\n' "${DEF_SERVER}"$'\n'
+done
+assert_contains "default: data dir is a PVC" "claimName: metis-server-data" "${DEF_SERVER}"
+assert_contains "default: data PVC rendered" "name: metis-server-data" "${DEFAULT}"
+# The data volume mounts BEFORE the uploads/lancedb volumes nested inside it.
+DATA_LINE=$(echo "${DEF_SERVER}" | grep -n "mountPath: /app/server/data$" | cut -d: -f1)
+UPLOADS_LINE=$(echo "${DEF_SERVER}" | grep -n "mountPath: /app/server/data/uploads$" | cut -d: -f1)
+assert "default: data volume listed before the volumes nested in it" "yes" \
+  "$([[ -n "${DATA_LINE}" && -n "${UPLOADS_LINE}" && ${DATA_LINE} -lt ${UPLOADS_LINE} ]] && echo yes || echo no)"
+# No plain DATABASE_URL: the image default applies unless the Secret supplies one.
+assert_not_contains "default: no inline DATABASE_URL value" "name: DATABASE_URL"$'\n'"              value:" "${DEF_SERVER}"
+
+NO_PERSIST_SERVER=$(server_deployment "${NO_PERSIST}")
+assert_contains "persistence off: data dir still writable (emptyDir)" "mountPath: /app/server/data"$'\n' "${NO_PERSIST_SERVER}"$'\n'
+assert_not_contains "persistence off: no data PVC" "claimName: metis-server-data" "${NO_PERSIST_SERVER}"
+
+PROD_SERVER=$(server_deployment "${PROD_RENDER}")
+assert_contains "prod: data dir still writable" "mountPath: /app/server/data"$'\n' "${PROD_SERVER}"$'\n'
+assert_not_contains "prod: no RWO data PVC (Postgres + S3 + pgvector)" "claimName: metis-server-data" "${PROD_SERVER}"
+assert_not_contains "prod: data PVC not rendered" "name: metis-server-data" "${PROD_RENDER}"
+
+EFS_DATA=$(template --set persistence.efs.enabled=true | awk '/^  name: metis-server-data$/,/^---$/')
+assert_contains "EFS toggle moves the data PVC to efs-sc too" 'storageClassName: "efs-sc"' "${EFS_DATA}"
 
 # ---------------------------------------------------------------------------
 echo

@@ -11,6 +11,15 @@
  *      blocked from export.
  *   5. Dedup against existing {@link TestCaseDoc} via {@link isDuplicateOfExisting}.
  *
+ * #57 — with a {@link SuggestionBudgetGuard}, each model call is recorded as it
+ * happens and the budget is checked before every cluster, the way the judge
+ * checks between batches: the phase stops part-way once the budget is reached,
+ * or after the first call served by a model METIS has no price for.
+ *
+ * #72 — the phase's own embedder calls (the cluster prompt's cache key, and the
+ * suggestion texts embedded for dedup) are recorded through the same guard. On
+ * a cloud embedder they are real spend the run budget never saw.
+ *
  * The generator is pure of Prisma — callers persist via the service layer.
  * A pluggable {@link JudgeModelCaller} is reused so tests need not boot a
  * real provider.
@@ -39,6 +48,7 @@ import {
 export type { ExistingCaseVector } from "./dedup.js";
 import type { ProviderKey } from "../ai/types.js";
 import type { JudgeModelCaller } from "./judge.js";
+import { type CoverageEmbeddingUsage, estimateEmbeddingTokens } from "./cost-tracker.js";
 
 const log = createChildLogger("testcoverage/suggestion-generator");
 
@@ -64,6 +74,31 @@ export interface SourceExcerpt {
   excerpt: string;
 }
 
+/**
+ * #57 — the per-run cost guard the generator records each call through and
+ * consults before each cluster. `CoverageCostTracker` satisfies it.
+ */
+export interface SuggestionBudgetGuard {
+  /**
+   * Record token usage so cumulative spend advances: one call per model call,
+   * and one per embedder call — the cluster prompt's cache key and the
+   * suggestion texts embedded for dedup (#72).
+   */
+  record(
+    input:
+      | {
+          phase: "suggestion";
+          provider: ProviderKey;
+          modelId: string;
+          promptTokens?: number;
+          completionTokens?: number;
+        }
+      | CoverageEmbeddingUsage,
+  ): void;
+  /** True once the per-run cap is reached, or any LLM usage is unpriced. */
+  exceeded(): boolean;
+}
+
 export interface GenerateInput {
   requirements: readonly RequirementForSuggestion[];
   /** Optional document chunks to ground the suggestions. */
@@ -76,6 +111,13 @@ export interface GenerateInput {
   projectId?: string;
   /** Cluster size hint — default 8 per the research doc. */
   clusterSize?: number;
+  /**
+   * #57 — optional per-run cost guard. When supplied, every model call is
+   * recorded through it (under the provider and model that served THAT call)
+   * and no cluster starts once `exceeded()` is true. When omitted, the caller
+   * records the returned totals itself.
+   */
+  cost?: SuggestionBudgetGuard;
 }
 
 export interface GeneratedSuggestion {
@@ -99,6 +141,11 @@ export interface GenerateResult {
    * none was made (every cluster a cache hit). Usage is recorded under these.
    */
   servedBy: { provider: ProviderKey; model: string } | null;
+  /**
+   * #57 — true when the cost guard stopped the phase before a cluster, so some
+   * clusters got no suggestions.
+   */
+  budgetExceeded: boolean;
 }
 
 /**
@@ -209,6 +256,7 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
       completionTokens: 0,
       rejectedDuplicates: 0,
       servedBy: null,
+      budgetExceeded: false,
     };
   }
 
@@ -224,9 +272,22 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
   let completionTokens = 0;
   let rejectedDuplicates = 0;
   let servedBy: GenerateResult["servedBy"] = null;
+  let budgetExceeded = false;
   const all: GeneratedSuggestion[] = [];
 
-  for (const bucket of buckets) {
+  for (const [clustersDone, bucket] of buckets.entries()) {
+    // #57 — budget hard-stop before each cluster, as the judge does between
+    // batches: the previous call's spend (or its unpriced model) is already
+    // recorded, so a run cannot make every call before the budget sees one.
+    if (input.cost?.exceeded()) {
+      budgetExceeded = true;
+      log.warn("token budget exceeded mid-suggestion; stopping cluster loop", {
+        sessionId: input.sessionId,
+        clustersDone,
+        clusters: buckets.length,
+      });
+      break;
+    }
     const reqs = bucket.map((idx) => input.requirements[idx]);
     const userPrompt = buildClusterPrompt({
       requirements: reqs.map((r) => ({
@@ -241,8 +302,17 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
       })),
     });
 
-    const { vectors } = await embedder.embed([userPrompt]);
-    const cacheKey = vectors[0];
+    const promptEmbedded = await embedder.embed([userPrompt]);
+    const cacheKey = promptEmbedded.vectors[0];
+    // #72 — the cache-key embedding is a real embedder call, made whether or
+    // not the lookup then hits. Under the embedder that ran and the model IT
+    // reported, the same way the match phase is (#58).
+    input.cost?.record({
+      phase: "embedding",
+      embedder: embedder.key,
+      modelId: promptEmbedded.model,
+      embeddingTokens: estimateEmbeddingTokens([userPrompt]),
+    });
     let raw: string | null = null;
     const hit = await cache.lookup(cacheKey, HAIKU_MODEL_ID, SYSTEM_PROMPT_HASH, input.projectId);
     if (hit) {
@@ -259,6 +329,13 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
       promptTokens += out.promptTokens;
       completionTokens += out.completionTokens;
       servedBy = { provider: out.provider, model: out.model };
+      input.cost?.record({
+        phase: "suggestion",
+        provider: out.provider,
+        modelId: out.model,
+        promptTokens: out.promptTokens,
+        completionTokens: out.completionTokens,
+      });
       await cache.store(cacheKey, HAIKU_MODEL_ID, SYSTEM_PROMPT_HASH, raw, input.projectId);
     }
 
@@ -285,7 +362,15 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
     const suggestionTexts = items.map(
       (s) => `${s.title}\n${s.steps.map((st) => `${st.action} -> ${st.expected}`).join("; ")}`,
     );
-    const { vectors: sugVectors } = await embedder.embed(suggestionTexts);
+    const sugEmbedded = await embedder.embed(suggestionTexts);
+    const sugVectors = sugEmbedded.vectors;
+    // #72 — dedup's embedder call, billed like any other.
+    input.cost?.record({
+      phase: "embedding",
+      embedder: embedder.key,
+      modelId: sugEmbedded.model,
+      embeddingTokens: estimateEmbeddingTokens(suggestionTexts),
+    });
     const candidates: SuggestionVector<GeneratedSuggestion>[] = [];
     for (let i = 0; i < items.length; i += 1) {
       const item = items[i];
@@ -349,5 +434,6 @@ export async function generateSuggestions(input: GenerateInput): Promise<Generat
     completionTokens,
     rejectedDuplicates,
     servedBy,
+    budgetExceeded,
   };
 }

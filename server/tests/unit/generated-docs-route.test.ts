@@ -160,7 +160,15 @@ vi.mock("../../src/lib/docs-gen/grounding/domain-web-research.js", () => ({
   runDomainWebResearch: vi.fn(),
 }));
 
-vi.mock("../../src/lib/docs-gen/grounding/degraded-warnings.js", () => ({
+// #67 — a PARTIAL mock: `deriveDocStatus` stays a spy these tests assert on,
+// but every other export (notably `sectionFailedWarning`, which the read-path
+// sanitiser builds its replacement message with) is the real, pure module.
+// The previous whole-module stub exported only `deriveDocStatus`, so anything
+// else the route reached for threw at request time.
+vi.mock("../../src/lib/docs-gen/grounding/degraded-warnings.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../src/lib/docs-gen/grounding/degraded-warnings.js")
+  >()),
   deriveDocStatus: vi.fn((warnings: unknown[]) => (warnings.length > 0 ? "degraded" : "ready")),
 }));
 
@@ -920,6 +928,75 @@ describe("generated-docs routes", () => {
         }),
       );
     });
+    it("#67 — sanitises a legacy section-failed warning read back from the row", async () => {
+      // The exposure: a degraded row persisted before #67 carries up to 300
+      // characters of `String(err)` inside its `warnings` JSON, and this
+      // endpoint returned the column verbatim.
+      (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+        title: "Doc",
+        content: "# Hello",
+        status: "degraded",
+        errorMessage: null,
+        warnings: [
+          {
+            kind: "section-failed",
+            section: "Business Rules",
+            message:
+              'Section "Business Rules" could not be generated: Error: deepseek returned 500: ' +
+              '{"error":"secret detail"} at /srv/metis/server/src/x.ts:12.',
+            severity: "error",
+          },
+          {
+            kind: "section-failed",
+            section: "Integrations",
+            message:
+              'Section "Integrations" could not be generated: Error: deepseek returned 402: ' +
+              '{"error":"Insufficient Balance"}.',
+            severity: "error",
+          },
+          {
+            kind: "section-ungrounded",
+            section: "Workflows",
+            message: 'Section "Workflows": 41% of claims are grounded.',
+            severity: "warning",
+            ratio: 0.41,
+            threshold: 0.6,
+            tier: "reconstruction",
+          },
+        ],
+        versions: [
+          { id: "v1", documentId: "doc-1", version: 1, revisionId: null, provenanceManifest: null },
+        ],
+      });
+      (prisma.document.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+
+      const res = await request(app).get("/projects/proj-1/docs/doc-1");
+
+      expect(res.status).toBe(200);
+      const body = JSON.stringify(res.body);
+      expect(body).not.toContain("secret detail");
+      expect(body).not.toContain("deepseek");
+      expect(body).not.toContain("/srv/metis");
+      const warnings = res.body.data.warnings as Array<Record<string, unknown>>;
+      expect(warnings).toHaveLength(3);
+      expect(warnings[0].message).toMatch(/^Section "Business Rules" could not be generated: /);
+      expect(warnings[0].message).toContain("Document generation failed.");
+      expect(warnings[0].severity).toBe("error");
+      // A balance failure stays diagnosable rather than collapsing to generic.
+      expect(warnings[1].message).toContain("402 Insufficient Balance");
+      // Untouched kinds keep every field, numbers included.
+      expect(warnings[2]).toEqual({
+        kind: "section-ungrounded",
+        section: "Workflows",
+        message: 'Section "Workflows": 41% of claims are grounded.',
+        severity: "warning",
+        ratio: 0.41,
+        threshold: 0.6,
+        tier: "reconstruction",
+      });
+    });
+
     it("returns document with versions and separate indexing health", async () => {
       (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
         id: "doc-1",
@@ -1137,6 +1214,62 @@ describe("generated-docs routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data.title).toBe("Updated Title");
+    });
+
+    it("#52 — never returns a failed document's raw error text", async () => {
+      (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+      });
+      (prisma.generatedDocument.update as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+        title: "Doc",
+        status: "failed",
+        autoUpdate: false,
+        errorMessage: "Error: secret detail at /srv/metis/server/src/x.ts",
+      });
+
+      const res = await request(app)
+        .patch("/projects/proj-1/docs/doc-1")
+        .send({ autoUpdate: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.status).toBe("failed");
+      expect(res.body.data.errorMessage).toMatch(/^Document generation failed\./);
+      expect(JSON.stringify(res.body)).not.toContain("secret detail");
+    });
+
+    it("#67 — never returns a degraded document's raw exception text in a warning", async () => {
+      (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+      });
+      (prisma.generatedDocument.update as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+        title: "Doc",
+        status: "degraded",
+        autoUpdate: false,
+        errorMessage: null,
+        warnings: [
+          {
+            kind: "section-failed",
+            section: "Business Rules",
+            message:
+              'Section "Business Rules" could not be generated: Error: secret detail at ' +
+              "/srv/metis/server/src/x.ts.",
+            severity: "error",
+          },
+        ],
+      });
+
+      const res = await request(app)
+        .patch("/projects/proj-1/docs/doc-1")
+        .send({ autoUpdate: false });
+
+      expect(res.status).toBe(200);
+      expect(JSON.stringify(res.body)).not.toContain("secret detail");
+      expect(JSON.stringify(res.body)).not.toContain("/srv/metis");
+      expect(res.body.data.warnings[0].message).toContain(
+        'Section "Business Rules" could not be generated',
+      );
     });
 
     it("returns 400 for an invalid patch body", async () => {

@@ -1,7 +1,7 @@
 /**
  * Tests for the suggestion generator (Epic #856 issue #870).
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 
 import {
   FAITHFULNESS_THRESHOLD,
@@ -13,9 +13,18 @@ import {
 } from "../../../src/lib/testcoverage/suggestion-generator.js";
 import type { JudgeModelCaller } from "../../../src/lib/testcoverage/judge.js";
 import { __resetSemanticCacheSingleton } from "../../../src/lib/ai/semantic-cache.js";
+import { CoverageCostTracker } from "../../../src/lib/testcoverage/cost-tracker.js";
+import { HAIKU_MODEL_ID } from "../../../src/lib/ai/model-router.js";
+
+// The cost tracker's usage rows go through the Prisma singleton; keep them here.
+vi.mock("../../../src/lib/prisma.js", () => ({
+  prisma: { aITokenUsage: { create: vi.fn(async () => ({})) } },
+}));
 
 vi.mock("../../../src/lib/rag/embedder.js", () => ({
   getEmbedder: () => ({
+    // The registry key the in-loop embedding records name (#72).
+    key: "xenova",
     model: "test-model",
     dimension: 4,
     async embed(texts: string[]) {
@@ -44,6 +53,12 @@ vi.mock("../../../src/lib/judge/hallucination-scorer.js", () => ({
 
 beforeEach(() => {
   __resetSemanticCacheSingleton();
+});
+
+// Undone here, not at the end of the test body that stubs it: a failing
+// assertion would otherwise leak SEMANTIC_CACHE_ENABLED into every test after.
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 function vec(...xs: number[]): number[] {
@@ -247,6 +262,187 @@ describe("generateSuggestions", () => {
     });
     // After dedup + faithfulness gate + per-req cap, no more than the cap.
     expect(out.suggestions.length).toBeLessThanOrEqual(MAX_SUGGESTIONS_PER_REQUIREMENT);
+  });
+
+  describe("budget checked before each cluster (#57)", () => {
+    /** Three orthogonal requirements, one per cluster → three model calls when unguarded. */
+    const threeClusters = [
+      req("r1", vec(1, 0, 0)),
+      req("r2", vec(0, 1, 0)),
+      req("r3", vec(0, 0, 1)),
+    ];
+
+    function servedBy(provider: "bedrock-gateway" | "openai", model: string, tokens: number) {
+      return vi.fn(async () => ({
+        raw: JSON.stringify({ suggestions: [sampleItem()] }),
+        promptTokens: tokens,
+        completionTokens: 0,
+        provider,
+        model,
+      }));
+    }
+
+    function realTracker(budgetCents: number) {
+      const db = {
+        aISession: { upsert: vi.fn(async () => ({})) },
+        testCoverageRun: { update: vi.fn(async () => ({})) },
+      };
+      const tracker = { record: vi.fn(), recordAndFlush: vi.fn(async () => ({})) };
+      return new CoverageCostTracker(
+        { runId: "run", userId: "u", projectId: "p" },
+        { db: db as never, tracker: tracker as never, budgetCents },
+      );
+    }
+
+    it("makes one call per cluster when no guard is wired (the control)", async () => {
+      const call = servedBy("bedrock-gateway", HAIKU_MODEL_ID, 10);
+      const out = await generateSuggestions({
+        requirements: threeClusters,
+        caller: { call },
+        sessionId: "s",
+        userId: "u",
+        clusterSize: 1,
+      });
+      expect(out.clusters).toBe(3);
+      expect(call).toHaveBeenCalledTimes(3);
+      expect(out.budgetExceeded).toBe(false);
+    });
+
+    it("stops part-way once priced spend reaches the budget", async () => {
+      // 5M prompt tokens of Bedrock Haiku 4.5 is $5.50 — past a 1-cent cap.
+      const call = servedBy("bedrock-gateway", HAIKU_MODEL_ID, 5_000_000);
+      const cost = realTracker(1);
+      const out = await generateSuggestions({
+        requirements: threeClusters,
+        caller: { call },
+        sessionId: "s",
+        userId: "u",
+        clusterSize: 1,
+        cost,
+      });
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(out.modelCalls).toBe(1);
+      expect(out.budgetExceeded).toBe(true);
+      // The call that was made is on the budget.
+      expect(cost.view().breakdown.suggestionTokens).toBe(5_000_000);
+      expect(cost.usedCents).toBe(550);
+    });
+
+    it("stops after the first unpriced call, however much budget is left", async () => {
+      const call = servedBy("openai", "no-such-priced-model", 10);
+      const cost = realTracker(100_000);
+      const out = await generateSuggestions({
+        requirements: threeClusters,
+        caller: { call },
+        sessionId: "s",
+        userId: "u",
+        clusterSize: 1,
+        cost,
+      });
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(out.budgetExceeded).toBe(true);
+      expect(cost.view().unpricedTokens).toBe(10);
+    });
+
+    it("makes no call at all when the budget is already exhausted", async () => {
+      const call = servedBy("bedrock-gateway", HAIKU_MODEL_ID, 10);
+      const out = await generateSuggestions({
+        requirements: threeClusters,
+        caller: { call },
+        sessionId: "s",
+        userId: "u",
+        clusterSize: 1,
+        cost: { record: vi.fn(), exceeded: () => true },
+      });
+      expect(call).not.toHaveBeenCalled();
+      expect(out.budgetExceeded).toBe(true);
+      expect(out.suggestions).toEqual([]);
+    });
+
+    it("records each call under the provider and model that served it", async () => {
+      // A provider fallback part-way through the phase: each call keeps its own
+      // price instead of all of them taking the last call's (#59 review).
+      const served = [
+        { provider: "bedrock-gateway" as const, model: HAIKU_MODEL_ID, tokens: 7 },
+        { provider: "openai" as const, model: "gpt-4o-mini", tokens: 11 },
+        { provider: "openai" as const, model: "gpt-4o-mini", tokens: 13 },
+      ];
+      let i = 0;
+      const call = vi.fn(async () => {
+        const s = served[i++];
+        return {
+          raw: JSON.stringify({ suggestions: [sampleItem()] }),
+          promptTokens: s.tokens,
+          completionTokens: 1,
+          provider: s.provider,
+          model: s.model,
+        };
+      });
+      const record = vi.fn();
+      await generateSuggestions({
+        requirements: threeClusters,
+        caller: { call },
+        sessionId: "s",
+        userId: "u",
+        clusterSize: 1,
+        cost: { record, exceeded: () => false },
+      });
+      expect(record.mock.calls.map((c) => c[0]).filter((c) => c.phase === "suggestion")).toEqual(
+        served.map((s) => ({
+          phase: "suggestion",
+          provider: s.provider,
+          modelId: s.model,
+          promptTokens: s.tokens,
+          completionTokens: 1,
+        })),
+      );
+    });
+
+    it("records the cluster-prompt and suggestion-dedup embeddings (#72)", async () => {
+      // Two embedder calls per cluster: the cache key for the cluster prompt,
+      // and the suggestion texts embedded for dedup. On a cloud embedder both
+      // are real spend the run budget never saw.
+      const call = servedBy("bedrock-gateway", HAIKU_MODEL_ID, 10);
+      const record = vi.fn();
+      const out = await generateSuggestions({
+        requirements: threeClusters,
+        caller: { call },
+        sessionId: "s",
+        userId: "u",
+        clusterSize: 1,
+        cost: { record, exceeded: () => false },
+      });
+      expect(out.clusters).toBe(3);
+      const embeddings = record.mock.calls.map((c) => c[0]).filter((c) => c.phase === "embedding");
+      expect(embeddings).toHaveLength(6);
+      for (const e of embeddings) {
+        expect(e).toMatchObject({ phase: "embedding", embedder: "xenova", modelId: "test-model" });
+        expect(e.embeddingTokens).toBeGreaterThan(0);
+      }
+    });
+
+    it("records the cluster-prompt embedding even when the cluster is a cache hit (#72)", async () => {
+      // A warm cache skips the MODEL call, not the cluster prompt's embedding.
+      vi.stubEnv("SEMANTIC_CACHE_ENABLED", "1");
+      __resetSemanticCacheSingleton();
+      const call = servedBy("bedrock-gateway", HAIKU_MODEL_ID, 10);
+      const opts = {
+        requirements: [req("r1", vec(1, 0, 0))],
+        caller: { call },
+        sessionId: "s",
+        userId: "u",
+        clusterSize: 1,
+      };
+      await generateSuggestions({ ...opts, cost: { record: vi.fn(), exceeded: () => false } });
+      const record = vi.fn();
+      const warm = await generateSuggestions({ ...opts, cost: { record, exceeded: () => false } });
+
+      expect(warm.cacheHits).toBe(1);
+      expect(warm.modelCalls).toBe(0);
+      const phases = record.mock.calls.map((c) => c[0].phase);
+      expect(phases.filter((p) => p === "suggestion")).toHaveLength(0);
+      expect(phases.filter((p) => p === "embedding")).toHaveLength(2);
+    });
   });
 
   it("constants are sane", () => {

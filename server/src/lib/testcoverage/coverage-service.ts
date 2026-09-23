@@ -25,7 +25,7 @@ import {
   type RequirementForSuggestion,
   generateSuggestions,
 } from "./suggestion-generator.js";
-import { CoverageCostTracker } from "./cost-tracker.js";
+import { CoverageCostTracker, estimateEmbeddingTokens } from "./cost-tracker.js";
 import type { NormalisedTestCase, TestCaseSource } from "@metis/shared";
 
 const log = createChildLogger("testcoverage/coverage-service");
@@ -61,8 +61,12 @@ export interface CoverageRunReport {
     limitCents: number;
     usedCents: number;
     remainingCents: number;
-    /** #43 — tokens with no known price; `usedCents` is then a lower bound. */
+    /** Tokens with no known price; `usedCents` is then a lower bound. */
     unpricedTokens: number;
+    /** #77 — the embedding share, which does NOT stop the run. */
+    unpricedEmbeddingTokens: number;
+    /** #43 — the judge/suggestion share, which does. */
+    unpricedLlmTokens: number;
   };
   /**
    * True when the per-run token budget was exhausted and at least one LLM phase
@@ -78,6 +82,14 @@ export interface CoverageServiceDeps {
   caller: JudgeModelCaller;
   emit?: (event: CoverageProgressEvent) => void;
   budgetCents?: number;
+  /**
+   * #72 — the run's cost tracker, supplied by the task-runner so the import /
+   * index phases it drives before this function bill to the same budget. One is
+   * constructed here when the service is called on its own. When supplied, ITS
+   * cap governs and {@link budgetCents} is unused — the runner builds both from
+   * the same value.
+   */
+  cost?: CoverageCostTracker;
 }
 
 export interface CoverageServiceInput {
@@ -100,10 +112,12 @@ export async function runCoverageScoring(
   const emit = deps.emit ?? noopEmit;
   const embedder = getEmbedder();
 
-  const cost = new CoverageCostTracker(
-    { runId: input.runId, projectId: input.projectId, userId: input.userId },
-    { budgetCents: deps.budgetCents, db },
-  );
+  const cost =
+    deps.cost ??
+    new CoverageCostTracker(
+      { runId: input.runId, projectId: input.projectId, userId: input.userId },
+      { budgetCents: deps.budgetCents, db },
+    );
 
   // --- Load inputs ---------------------------------------------------------
   // Use the latest non-deleted requirements for the project.
@@ -139,7 +153,14 @@ export async function runCoverageScoring(
   emit({ phase: "match", state: "running" });
   const reqTexts = reqRows.map((r) => `${r.title}\n${r.body}`);
   const reqEmb = await embedder.embed(reqTexts);
-  cost.record({ phase: "embedding", embeddingTokens: estimateTokens(reqTexts) });
+  // #58 — under the embedder that ran (read AFTER embed: a failed backend may
+  // have been swapped for the hash stub) and the model it reports.
+  cost.record({
+    phase: "embedding",
+    embedder: embedder.key,
+    modelId: reqEmb.model,
+    embeddingTokens: estimateEmbeddingTokens(reqTexts),
+  });
   const requirementInputs: RequirementInput[] = reqRows.map((r, i) => ({
     id: r.id,
     text: reqTexts[i],
@@ -151,7 +172,12 @@ export async function runCoverageScoring(
   if (caseRows.length > 0) {
     const caseTexts = caseRows.map((c) => caseText(hydrateCase(c)));
     const caseEmb = await embedder.embed(caseTexts);
-    cost.record({ phase: "embedding", embeddingTokens: estimateTokens(caseTexts) });
+    cost.record({
+      phase: "embedding",
+      embedder: embedder.key,
+      modelId: caseEmb.model,
+      embeddingTokens: estimateEmbeddingTokens(caseTexts),
+    });
     testCaseInputs = caseRows.map((c, i) => ({
       id: c.id,
       text: caseTexts[i],
@@ -317,17 +343,11 @@ export async function runCoverageScoring(
       sessionId: cost.sessionId,
       userId: input.userId,
       projectId: input.projectId,
+      // #57 — each call is recorded as it happens and the budget is checked
+      // before every cluster, so the generator records its own spend here.
+      cost,
     });
-    // #43 — recorded under what served the calls; none made ⇒ nothing spent.
-    if (sugResult.servedBy) {
-      cost.record({
-        phase: "suggestion",
-        provider: sugResult.servedBy.provider,
-        modelId: sugResult.servedBy.model,
-        promptTokens: sugResult.promptTokens,
-        completionTokens: sugResult.completionTokens,
-      });
-    }
+    if (sugResult.budgetExceeded) budgetExceeded = true;
     rejectedDuplicates = sugResult.rejectedDuplicates;
 
     await db.suggestion.deleteMany({ where: { runId: input.runId } });
@@ -389,6 +409,8 @@ export async function runCoverageScoring(
       usedCents: view.usedCents,
       remainingCents: view.remainingCents,
       unpricedTokens: view.unpricedTokens,
+      unpricedEmbeddingTokens: view.unpricedEmbeddingTokens,
+      unpricedLlmTokens: view.unpricedLlmTokens,
     },
     budgetExceeded,
     coveragePct,
@@ -406,17 +428,12 @@ function emptyReport(cost: CoverageCostTracker): CoverageRunReport {
       usedCents: v.usedCents,
       remainingCents: v.remainingCents,
       unpricedTokens: v.unpricedTokens,
+      unpricedEmbeddingTokens: v.unpricedEmbeddingTokens,
+      unpricedLlmTokens: v.unpricedLlmTokens,
     },
     budgetExceeded: false,
     coveragePct: 0,
   };
-}
-
-function estimateTokens(texts: readonly string[]): number {
-  // Rough heuristic: ~4 chars per token. Cheap and good enough for budget bookkeeping.
-  let chars = 0;
-  for (const t of texts) chars += t.length;
-  return Math.ceil(chars / 4);
 }
 
 function normalisePriority(raw: string): RequirementForSuggestion["priority"] {

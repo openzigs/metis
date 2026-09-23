@@ -900,7 +900,7 @@ The UI consumes these via `ui/src/hooks/use-job-events.ts`: `useJobLifecycle`/`u
 - **Embeddings reindex** (`server/src/routes/admin/embeddings.ts`, kind `embeddings-reindex`) — **fire-and-forget**: `POST …/reindex` enqueues a background worker (`runReindexJob`) and returns `202 { jobId }` immediately (no gateway/idle-timeout risk on large corpora). The worker streams `started → progress` (0-100, from `reindexProject`'s `onProgress`) `→ completed/failed`. Because the work happens *after* the response, the client learns the terminal outcome ONLY from the bus.
 - **Spec Kit commands** (`server/src/routes/spec-kit.ts`, kind `spec-kit`) and **overview regenerate** (`server/src/routes/projects.ts`, kind `overview-regenerate`) — **awaited**: the op runs in one server-side shot and the HTTP response carries the result (so the precise success payload + 4xx/5xx error contract are preserved). Lifecycle events are still emitted for the global indicator, but the surface drives its terminal toast from the mutation callback (a late `subscribe:job` would miss the already-fired terminal event). Spec Kit threads its grounded-completion line verbatim into `jobEvents.completed` via `extractCompletionMessage`.
 
-Client surfaces use `useJobToast` (`ui/src/hooks/use-job-toast.ts`) for the fire-and-forget case (subscribe to one `jobId` → live progress + a terminal toast fired at most once) and the shared accessible `<JobProgress>` component (`ui/src/components/realtime/job-progress.tsx`, `role="progressbar"`; determinate bar from a 0-100 progress event, indeterminate animated bar for awaited ops). Terminal failure text always comes from `genericFailureMessage(kind)` / a generic client string — raw error detail never reaches the user.
+Client surfaces use `useJobToast` (`ui/src/hooks/use-job-toast.ts`) for the fire-and-forget case (subscribe to one `jobId` → live progress + a terminal toast fired at most once) and the shared accessible `<JobProgress>` component (`ui/src/components/realtime/job-progress.tsx`, `role="progressbar"`; determinate bar from a 0-100 progress event, indeterminate animated bar for awaited ops). Terminal failure text always comes from `genericFailureMessage(kind)` / a generic client string — raw error detail never reaches the user. The same holds for a failed generated document's persisted `errorMessage` (#52): `generationFailureMessage(err)` (`server/src/lib/docs-gen/generation-failure-message.ts`) maps the error to one of a fixed set of user-safe reasons (restart, provider 402 balance, project budget, rate limit, credentials, generic), and `GET`/`PATCH /projects/:id/docs/:docId` re-classify rows written before #52 on read.
 
 #### 7.6.2 Personal user rooms and notification center (Issue #416, epic #405)
 
@@ -2359,6 +2359,11 @@ flowchart LR
 API: `POST /api/impact-analyses` (returns `202` with `{id,status,projectIds}`),
 `GET /api/impact-analyses`, `GET /api/impact-analyses/:id`. Guarded by the
 `analysis.run` and `analysis.read` permissions. UI lives under `/impact-analyses`.
+`GET /api/impact-analyses?projectId=` lists only the runs that include that
+project (empty for a project the caller cannot access); each summary row's
+`projectIds` names only the run's projects the caller can access, while
+`projectCount` counts them all (#61). A project's own runs are listed on
+`/projects/:id/impact`.
 
 #### Mapping precision/recall eval — replayed PRs (Epic #726 / #738)
 
@@ -5841,7 +5846,7 @@ The project Usage page draws from **two** token-accounting tables, written by **
 
 `TokenUsage.projectId` is **non-null** (always stamped). `AITokenUsage.projectId` is **nullable** — chat traffic associates the row to its project via the `session` relation (`session.projectId`). To keep the two views consistent, `UsageService.projectUsage()` matches rows by **either** the direct `projectId` column **or** `session.projectId` (`where.OR`), so session-only rows are not dropped from the detail/agent-step views. Without this, the detail sections showed "No data" while the aggregates showed data for the same window (Issue #428). The write path also stamps the direct `projectId` for forward-correctness so the `[projectId, ts]` index can serve the query.
 
-**One pricing source, and unpriced is not zero (Issue #22).** Both tables price through `resolveRate(provider, model)` in `provider-rates.ts`: an administrator's `MODEL_PRICES` entry (USD per MTok, keyed `model` or `provider:model`) first, then the built-in `provider:model` rows, then a Claude-family match on the model id (`opus`/`sonnet`/`haiku`, any provider spelling). Anything else resolves to `null` and is **recorded as unpriced** — `TokenUsage.costCents` and `AITokenUsage.estimatedCostUsd` are NULL, never `0` and never another model's price. Before #22 the two tables disagreed in opposite directions for such a model: `TokenUsage` billed it at Sonnet 4.6 rates through an `anthropic:default` row, `AITokenUsage` recorded `0`. The built-in Anthropic list prices are skipped for the `anthropic` provider when `ANTHROPIC_BASE_URL` points at a host other than `api.anthropic.com`, because an Anthropic-compatible endpoint (DeepSeek) maps `claude-*` names onto its own models and bills its own prices. `summarizeUsage()` and `UsageService` report the priced cost plus a separate `unpriced` token total, and each group carries `unpricedTokens`; the Usage and admin Usage pages render those instead of `$0`. Rates follow the published per-MTok prices converted to cents-per-1k (`$X / MTok === X / 10`). The dated/bare Anthropic id coverage from #428 still holds through the family match. `bedrock-gateway` rows carry AWS's own Bedrock prices (AWS Price List API, `AmazonBedrockFoundationModels`), not Anthropic's: a geo inference profile (`us.anthropic.…`) or in-region id of a Claude 4.5+ model bills at Bedrock's Regional SKU, 1.1x the Global one, and the family match applies the same premium to such ids (#42). `published-claude-prices.test.ts` pins every built-in Claude row and family price to its published price, and fails when a Claude row is added without one. The usage summary's `projectedMonthlyCostCents` is the same `projectMonthlyCostForCeiling()` projection the autopilot ceiling enforces. Test-coverage runs record judge and suggestion usage under the provider and model that served them, in an `AISession` whose id is `testCoverageRun:<runId>` (the `ai_token_usages.sessionId` foreign key needs it); their per-run budget treats unpriced usage as exceeded (#43).
+**One pricing source, and unpriced is not zero (Issue #22).** Both tables price through `resolveRate(provider, model)` in `provider-rates.ts`: an administrator's `MODEL_PRICES` entry (USD per MTok, keyed `model` or `provider:model`) first, then the built-in `provider:model` rows, then a Claude-family match on the model id (`opus`/`sonnet`/`haiku`, any provider spelling). Anything else resolves to `null` and is **recorded as unpriced** — `TokenUsage.costCents` and `AITokenUsage.estimatedCostUsd` are NULL, never `0` and never another model's price. Before #22 the two tables disagreed in opposite directions for such a model: `TokenUsage` billed it at Sonnet 4.6 rates through an `anthropic:default` row, `AITokenUsage` recorded `0`. The built-in Anthropic list prices are skipped for the `anthropic` provider when `ANTHROPIC_BASE_URL` points at a host other than `api.anthropic.com`, because an Anthropic-compatible endpoint (DeepSeek) maps `claude-*` names onto its own models and bills its own prices. `summarizeUsage()` and `UsageService` report the priced cost plus a separate `unpriced` token total, and each group carries `unpricedTokens`; the Usage and admin Usage pages render those instead of `$0`. Rates follow the published per-MTok prices converted to cents-per-1k (`$X / MTok === X / 10`). The dated/bare Anthropic id coverage from #428 still holds through the family match. `bedrock-gateway` rows carry AWS's own Bedrock prices (AWS Price List API, `AmazonBedrockFoundationModels`), not Anthropic's: a geo inference profile (`us.anthropic.…`) or in-region id of a Claude 4.5+ model bills at Bedrock's Regional SKU, 1.1x the Global one, and the family match applies the same premium to such ids (#42). `published-claude-prices.test.ts` pins every built-in Claude row and family price to its published price, and fails when a Claude row is added without one. The usage summary's `projectedMonthlyCostCents` is the same `projectMonthlyCostForCeiling()` projection the autopilot ceiling enforces. Test-coverage runs record judge and suggestion usage under the provider and model that served them, in an `AISession` whose id is `testCoverageRun:<runId>` (the `ai_token_usages.sessionId` foreign key needs it); their per-run budget treats unpriced **judge or suggestion** usage as exceeded (#43), while unpriced **embedding** usage is reported without stopping the run (#77) — it is bounded, input-only and already incurred by the time it is recorded.
 
 ### 32.6 API Endpoints
 
@@ -6206,13 +6211,30 @@ single entry the task-runner calls during the `match → judge → suggest → s
 `CoverageCostTracker` aggregates token usage by phase (`embedding`, `judge`, `suggestion`) and
 charges via the per-provider price table:
 
-- Embeddings → `offline-stub` rate (BGE-small is local; we record `embeddingTokens` only for
-  reporting).
-- Judge + suggestion → `bedrock-gateway` rate for the Haiku model.
+- Embeddings → the embedder that ran, as provider `embed:<registry key>` (`embeddingUsageProvider`)
+  and the model its `embed()` reported. The local backends (`offline`, `xenova`, `embeddinggemma`,
+  `sidecar`) have `embed:<key>:default` zero rows; Titan Text Embeddings V2 and OpenAI's embedding
+  models have published-price rows (`published-embedding-prices.test.ts`); anything else is
+  unpriced (#58). The `embed:` namespace keeps an embedder key off LLM provider rows.
+- Judge + suggestion → the provider and model that served each call (#43).
 
-`canAfford(cents)` lets the orchestrator short-circuit before the next batch when the run
-budget would be exceeded; `flush()` persists `tokenCostCents`, `embeddingTokens`, `judgeTokens`,
-and `suggestionTokens` onto the `TestCoverageRun`. The default budget is 150¢ and is
+Every `embed()` call a run makes is billed: the `index` phase's case and step batches
+(`TestCoverageIndexer.index`), the match phase's requirement and test-case batches, the judge's
+per-batch semantic-cache key, and the suggestion generator's cluster prompt plus its dedup texts
+(#72). A cache **hit** still bills its key embedding — a warm cache skips the model call, not the
+embedding.
+
+`exceeded()` is checked before each judge batch and before each suggestion cluster; the judge
+and `generateSuggestions` record every call through the tracker as it happens (#57), so a run
+stops part-way once the cap is reached or a judge/suggestion call reveals an unpriced model. An
+unpriced EMBEDDING model does not stop the run (#77); its tokens are still counted, so
+`usedCents` reads as the lower bound it is and `unpricedEmbeddingTokens` says by how much.
+The tracker is created by the **task-runner**, not by `runCoverageScoring`, so the `index`
+phase's two `embed()` calls — every test-case text, then every step text, the largest embedding
+consumer a run has — are on the same budget as the match phase's and the judge/suggestion
+loops' (#72). `flush()` persists
+`tokenCostCents`, `embeddingTokens`, `judgeTokens`, and `suggestionTokens` onto the
+`TestCoverageRun`. The default budget is 20¢ and is
 overridable via the `TESTCOVERAGE_BUDGET_CENTS` env var. A new route exposes the live view:
 
 - `GET /api/projects/:projectId/test-coverage/runs/:runId/budget` →

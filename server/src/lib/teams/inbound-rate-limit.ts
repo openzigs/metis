@@ -67,8 +67,14 @@ export function loadInboundRateLimitConfig(
  * makes the cap hold cluster-wide. Module-scoped so the window persists across
  * calls within a process. Shares the seam with the AI limiter — the key prefix
  * keeps the namespaces disjoint.
+ *
+ * #60 — resolved on FIRST USE, not at import. A shared backend's factory
+ * (`DISCUSSION_RATE_LIMIT_BACKEND=postgres`, production's setting) is registered by
+ * `createServer()`, which runs after every module is imported; resolving here made
+ * the server exit at import with "the Postgres store factory was not registered".
  */
-let store: RateLimitStore = resolveRateLimitStore();
+let store: RateLimitStore | undefined;
+const currentStore = (): RateLimitStore => (store ??= resolveRateLimitStore());
 
 function keyOf(k: InboundRateLimitKey): string {
   return `teams-inbound:${k.workspaceId}::${k.conversationId}`;
@@ -85,7 +91,7 @@ export async function checkInboundRateLimit(
   cfg: InboundRateLimitConfig,
   now: number = Date.now(),
 ): Promise<InboundRateLimitResult> {
-  const res = await store.hit(keyOf(key), cfg.max, cfg.windowMs, now);
+  const res = await currentStore().hit(keyOf(key), cfg.max, cfg.windowMs, now);
 
   if (!res.allowed) {
     const oldest = res.oldestTs ?? now;
@@ -102,13 +108,13 @@ export async function checkInboundRateLimit(
  * the selected backend).
  */
 export function __resetInboundRateLimiter(): void {
-  void store.reset();
+  void store?.reset();
   store = resolveRateLimitStore();
 }
 
 /** Inject a specific store (e.g. a shared instance) for cross-instance tests. */
 export function __setInboundRateLimitStore(next: RateLimitStore): RateLimitStore {
-  const prev = store;
+  const prev = currentStore();
   store = next;
   return prev;
 }

@@ -360,6 +360,17 @@ export type ProviderKey =
   | "anthropic"
   | "offline-stub";
 
+/**
+ * #58 — the provider an EMBEDDING usage row is recorded under: `embed:` plus the
+ * embedder registry key that ran (`embed:xenova`, `embed:bedrock`, …). A
+ * namespace of its own, so an embedder key can never pick up an LLM provider's
+ * price row (the `openai` embedder is not the `openai` chat provider).
+ */
+export type EmbeddingUsageProvider = `embed:${string}`;
+
+/** Whose usage a token row records: an LLM provider, or an embedder (#58). */
+export type UsageProvider = ProviderKey | EmbeddingUsageProvider;
+
 export interface AIProvider {
   /** Stable provider identifier — surfaced in `ChatResponse`/audit. */
   readonly key: ProviderKey;

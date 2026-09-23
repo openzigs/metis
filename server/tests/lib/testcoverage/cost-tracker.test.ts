@@ -37,6 +37,11 @@ afterEach(() => {
 
 /** What served the judge/suggestion calls on the default Bedrock deployment. */
 const BEDROCK = { provider: "bedrock-gateway", modelId: HAIKU_MODEL_ID } as const;
+/** The default in-process embedder (#58). */
+const LOCAL_EMBEDDER = {
+  embedder: "xenova",
+  modelId: "onnx-community/gte-modernbert-base",
+} as const;
 
 function makeDb(
   initial?: Partial<{
@@ -89,7 +94,7 @@ describe("CoverageCostTracker", () => {
       { runId: "r1", userId: "u1", projectId: "p1" },
       { db: db as never, budgetCents: 1000 },
     );
-    tracker.record({ phase: "embedding", embeddingTokens: 100 });
+    tracker.record({ phase: "embedding", ...LOCAL_EMBEDDER, embeddingTokens: 100 });
     tracker.record({ phase: "judge", ...BEDROCK, promptTokens: 50, completionTokens: 50 });
     tracker.record({ phase: "suggestion", ...BEDROCK, promptTokens: 30, completionTokens: 20 });
     const view = tracker.view();
@@ -106,7 +111,7 @@ describe("CoverageCostTracker", () => {
       { runId: "r1", userId: "u1", projectId: "p1" },
       { db: db as never },
     );
-    tracker.record({ phase: "embedding" });
+    tracker.record({ phase: "embedding", ...LOCAL_EMBEDDER });
     expect(tracker.view().breakdown.embeddingTokens).toBe(0);
   });
 
@@ -298,6 +303,119 @@ describe("CoverageCostTracker — served provider and unpriced usage (#43)", () 
   });
 });
 
+describe("CoverageCostTracker — embedding usage under the embedder that ran (#58)", () => {
+  const scope = { runId: "r1", userId: "u1", projectId: "p1" };
+
+  function tracked(budgetCents = 20) {
+    const { db } = makeDb();
+    const recorder = makeRecorder();
+    const cost = new CoverageCostTracker(scope, {
+      db: db as never,
+      tracker: recorder.tracker,
+      budgetCents,
+    });
+    return { cost, events: recorder.events };
+  }
+
+  it("a local-embedder run's embedding phase adds $0 to the run budget", async () => {
+    // 1M tokens: at the Haiku 4.5 input price this was 100 cents — five times
+    // the default $0.20 budget, spent before any LLM call was made.
+    const { cost, events } = tracked();
+    cost.record({
+      phase: "embedding",
+      embedder: "xenova",
+      modelId: "onnx-community/gte-modernbert-base",
+      embeddingTokens: 1_000_000,
+    });
+    await cost.flush();
+    expect(cost.usedCents).toBe(0);
+    expect(cost.view().unpricedTokens).toBe(0);
+    expect(cost.view().breakdown.embeddingTokens).toBe(1_000_000);
+    expect(cost.exceeded()).toBe(false);
+    // Recorded under the embedder that ran — not offline-stub, not Haiku.
+    expect(events.map((e) => [e.provider, e.model, e.agentStep])).toEqual([
+      ["embed:xenova", "onnx-community/gte-modernbert-base", "testcoverage.embedding"],
+    ]);
+  });
+
+  it("prices a cloud embedder at its own published price", () => {
+    const { cost } = tracked(1_000);
+    // Titan Text Embeddings V2: $0.02 / MTok → 10M tokens = $0.20.
+    cost.record({
+      phase: "embedding",
+      embedder: "bedrock",
+      modelId: "amazon.titan-embed-text-v2:0",
+      embeddingTokens: 10_000_000,
+    });
+    expect(cost.usedCents).toBe(20);
+    // text-embedding-3-large: $0.13 / MTok → 1M tokens = $0.13.
+    cost.record({
+      phase: "embedding",
+      embedder: "openai",
+      modelId: "text-embedding-3-large",
+      embeddingTokens: 1_000_000,
+    });
+    expect(cost.usedCents).toBe(33);
+    expect(cost.view().unpricedTokens).toBe(0);
+  });
+
+  it("an embedding model with no price is unpriced, but does NOT stop the run (#77)", () => {
+    // `bedrock-sdk` also serves Cohere; `openai` also serves Azure deployment
+    // names. Embedding is a run's FIRST recorded usage, so failing the budget
+    // closed here ended every such run before the judge had started (#77).
+    const { cost } = tracked(10_000);
+    cost.record({
+      phase: "embedding",
+      embedder: "bedrock-sdk",
+      modelId: "cohere.embed-english-v3",
+      embeddingTokens: 400,
+    });
+    expect(cost.usedCents).toBe(0);
+    const view = cost.view();
+    expect(view.unpricedTokens).toBe(400);
+    expect(view.unpricedEmbeddingTokens).toBe(400);
+    expect(view.unpricedLlmTokens).toBe(0);
+    // The spend is still unknown and still reported — it just does not veto the
+    // LLM phases, which are the unbounded part the cap exists to control.
+    expect(cost.exceeded()).toBe(false);
+    expect(cost.canAfford(1)).toBe(true);
+  });
+
+  it("an unpriced embedder does not excuse unpriced LLM spend (#77)", () => {
+    const { cost } = tracked(10_000);
+    cost.record({
+      phase: "embedding",
+      embedder: "openai",
+      modelId: "my-azure-deployment",
+      embeddingTokens: 400,
+    });
+    expect(cost.exceeded()).toBe(false);
+    cost.record({
+      phase: "judge",
+      provider: "anthropic",
+      modelId: "deepseek-v4-pro",
+      promptTokens: 1,
+      completionTokens: 1,
+    });
+    // #43 is untouched: unpriced judge/suggestion spend still fails closed.
+    expect(cost.exceeded()).toBe(true);
+    expect(cost.canAfford(0)).toBe(false);
+    const view = cost.view();
+    expect(view.unpricedEmbeddingTokens).toBe(400);
+    expect(view.unpricedLlmTokens).toBe(2);
+    expect(view.unpricedTokens).toBe(402);
+  });
+
+  it("an embedding record that names no embedder is unpriced — never priced as Haiku", () => {
+    const { cost } = tracked(10_000);
+    cost.record({ phase: "embedding", embeddingTokens: 1_000_000 } as never);
+    expect(cost.usedCents).toBe(0);
+    expect(cost.view().unpricedTokens).toBe(1_000_000);
+    expect(cost.view().unpricedEmbeddingTokens).toBe(1_000_000);
+    expect(cost.exceeded()).toBe(false);
+  });
+});
+
 describe("readBudget", () => {
   it("returns null when run is missing", async () => {
     const db = {
@@ -323,21 +441,89 @@ describe("readBudget", () => {
       usedCents: 25,
       remainingCents: 75,
       unpricedTokens: 0,
+      unpricedEmbeddingTokens: 0,
+      unpricedLlmTokens: 0,
       breakdown: { embeddingTokens: 10, judgeTokens: 5, suggestionTokens: 2 },
     });
   });
 
+  /**
+   * Answer `aggregate` from a row set instead of by call order, so the test
+   * measures the `where` clauses `readBudget` actually issues rather than
+   * restating them.
+   */
+  function usageRows(
+    db: { aITokenUsage: { aggregate: ReturnType<typeof vi.fn> } },
+    rows: { agentStep: string; totalTokens: number; estimatedCostUsd: number | null }[],
+  ) {
+    db.aITokenUsage.aggregate.mockImplementation(
+      async ({
+        where,
+      }: {
+        where: { estimatedCostUsd: number | null; agentStep?: string | { in: string[] } };
+      }) => {
+        const matched = rows.filter((r) => {
+          if (r.estimatedCostUsd !== where.estimatedCostUsd) return false;
+          if (where.agentStep === undefined) return true;
+          if (typeof where.agentStep === "string") return r.agentStep === where.agentStep;
+          return where.agentStep.in.includes(r.agentStep);
+        });
+        const sum = matched.reduce((n, r) => n + r.totalTokens, 0);
+        return { _sum: { totalTokens: matched.length ? sum : null } };
+      },
+    );
+  }
+
   it("reads the run's unpriced tokens back from its ai_token_usages rows (#43)", async () => {
     const { db } = makeDb({ tokenCostCents: 0, judgeTokens: 1_500 });
-    db.aITokenUsage.aggregate.mockResolvedValueOnce({ _sum: { totalTokens: 1_500 } });
+    usageRows(db, [
+      { agentStep: "testcoverage.judge", totalTokens: 1_500, estimatedCostUsd: null },
+    ]);
     const out = await readBudget("r1", { db: db as never, budgetCents: 20 });
-    expect(db.aITokenUsage.aggregate).toHaveBeenCalledWith({
-      where: { sessionId: "testCoverageRun:r1", estimatedCostUsd: null },
-      _sum: { totalTokens: true },
-    });
     // $0 priced, but not "no spend": 1,500 tokens have no known price.
     expect(out?.usedCents).toBe(0);
     expect(out?.unpricedTokens).toBe(1_500);
+    expect(out?.unpricedLlmTokens).toBe(1_500);
+  });
+
+  it("splits persisted unpriced tokens into embedding and LLM phases (#77)", async () => {
+    // The persisted view must agree with the in-memory one: an unpriced
+    // EMBEDDER is reported without being the reason a run stopped.
+    const { db } = makeDb({ tokenCostCents: 0, embeddingTokens: 400, judgeTokens: 1_500 });
+    usageRows(db, [
+      { agentStep: "testcoverage.embedding", totalTokens: 400, estimatedCostUsd: null },
+      { agentStep: "testcoverage.judge", totalTokens: 1_500, estimatedCostUsd: null },
+      // Priced rows are never part of the unpriced tally.
+      { agentStep: "testcoverage.suggestion", totalTokens: 9_999, estimatedCostUsd: 0.5 },
+    ]);
+    const out = await readBudget("r1", { db: db as never, budgetCents: 20 });
+    expect(db.aITokenUsage.aggregate).toHaveBeenCalledWith({
+      where: {
+        sessionId: "testCoverageRun:r1",
+        estimatedCostUsd: null,
+        agentStep: "testcoverage.embedding",
+      },
+      _sum: { totalTokens: true },
+    });
+    expect(out?.unpricedEmbeddingTokens).toBe(400);
+    expect(out?.unpricedLlmTokens).toBe(1_500);
+    expect(out?.unpricedTokens).toBe(1_900);
+  });
+
+  it("counts a phase it has never heard of in the LLM share, as view() does", async () => {
+    // `view()` splits with an `else`: anything that is not embedding is LLM. A
+    // two-value allowlist here would drop a future phase's unpriced tokens out
+    // of the persisted total silently, and the endpoint would under-report the
+    // unknown spend that stops a run.
+    const { db } = makeDb({ tokenCostCents: 0, embeddingTokens: 400 });
+    usageRows(db, [
+      { agentStep: "testcoverage.embedding", totalTokens: 400, estimatedCostUsd: null },
+      { agentStep: "testcoverage.rerank", totalTokens: 300, estimatedCostUsd: null },
+    ]);
+    const out = await readBudget("r1", { db: db as never, budgetCents: 20 });
+    expect(out?.unpricedEmbeddingTokens).toBe(400);
+    expect(out?.unpricedLlmTokens).toBe(300);
+    expect(out?.unpricedTokens).toBe(700);
   });
 
   it("clamps remaining to zero when overspent", async () => {

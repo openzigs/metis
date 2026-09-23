@@ -22,19 +22,23 @@ import { publishingApi } from "@/lib/publishing-api";
 import { queryKeys } from "@/lib/query-keys";
 import { useProjectJobEvents } from "@/hooks/use-job-events";
 import { useConnectorProgress } from "@/hooks/use-connector-events";
+import { useProjectDriftCount } from "@/hooks/use-drift-count";
 import { useAuth } from "@/lib/auth-context";
 import {
   FIRST_RUN_STEPS,
   derivePipelineStages,
+  isDocumentIngesting,
   isFirstRun,
   isIngestRunning,
   latestCompletedAnalysisId,
   type PipelineFacts,
   type PipelineStage,
+  type PipelineStageId,
   type PipelineStageState,
 } from "@/lib/project-pipeline";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { DriftBadge } from "@/components/sync/drift-badge";
 import { cn } from "@/lib/utils";
 
 /** Fallback poll cadence while a stage is running and the socket may be down. */
@@ -60,6 +64,32 @@ function StateIcon({ state }: { state: PipelineStageState }) {
   return <Circle className={cn(cls, "text-muted-foreground")} aria-hidden />;
 }
 
+/**
+ * #78 — the pending-drift count, rendered beside the stage it belongs to.
+ * `DriftBadge` was in the tree but imported by nothing, so drift detected by the
+ * sync reconciler was invisible unless an operator already knew to open
+ * `/projects/:id/sync`. Publish is the stage that produced the external issues
+ * drift is measured against, so that is where it goes.
+ */
+const DRIFT_STAGE: PipelineStageId = "publish";
+
+function StageTitle({
+  stage,
+  projectId,
+  driftCount,
+}: {
+  stage: PipelineStage;
+  projectId: string;
+  driftCount: number;
+}) {
+  return (
+    <span className="flex items-center gap-2">
+      {stage.title}
+      {stage.id === DRIFT_STAGE ? <DriftBadge projectId={projectId} count={driftCount} /> : null}
+    </span>
+  );
+}
+
 function StageStatus({ stage }: { stage: PipelineStage }) {
   return (
     <p className="flex items-start gap-2 text-sm">
@@ -74,11 +104,23 @@ function StageStatus({ stage }: { stage: PipelineStage }) {
 
 function StageAction({ stage }: { stage: PipelineStage }) {
   return (
-    <Button asChild size="sm" variant={stage.state === "done" ? "outline" : "default"}>
-      <Link href={stage.action.href} data-testid={`pipeline-action-${stage.id}`}>
-        {stage.action.label}
-      </Link>
-    </Button>
+    <div className="flex flex-wrap items-center gap-2">
+      <Button asChild size="sm" variant={stage.state === "done" ? "outline" : "default"}>
+        <Link href={stage.action.href} data-testid={`pipeline-action-${stage.id}`}>
+          {stage.action.label}
+        </Link>
+      </Button>
+      {stage.secondaryAction ? (
+        <Button asChild size="sm" variant="outline">
+          <Link
+            href={stage.secondaryAction.href}
+            data-testid={`pipeline-secondary-action-${stage.id}`}
+          >
+            {stage.secondaryAction.label}
+          </Link>
+        </Button>
+      ) : null}
+    </div>
   );
 }
 
@@ -88,6 +130,8 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
   // `GET /publishing/batches` needs `issue.preview`, which `reader` lacks.
   const canReadBatches = user?.permissions.includes("issue.preview") ?? false;
   useProjectJobEvents(projectId);
+  // #78 — surfaces the pending-drift count here rather than only on /sync.
+  const driftCount = useProjectDriftCount(projectId);
   const { progressMap } = useConnectorProgress(projectId);
   const ingestInProgress = isIngestRunning(progressMap);
 
@@ -105,9 +149,8 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
     queryKey: [...queryKeys.documents.forProject(projectId), "pipeline"],
     queryFn: () => documentsApi.list(projectId, { limit: DOCUMENT_PAGE }),
     refetchInterval: (q) =>
-      q.state.data?.items.some((d) => ["pending", "queued", "processing"].includes(d.status))
-        ? LIVE_POLL_MS
-        : false,
+      // #66 — a quarantined document is waiting for review, not ingesting.
+      q.state.data?.items.some(isDocumentIngesting) ? LIVE_POLL_MS : false,
   });
   const analyses = useQuery({
     queryKey: queryKeys.analyses.forProject(projectId),
@@ -186,7 +229,11 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
           Some stages could not be loaded; their status may be incomplete.
         </p>
       ) : null}
-      {isFirstRun(facts) ? <FirstRunChecklist stages={stages} /> : <StageGrid stages={stages} />}
+      {isFirstRun(facts) ? (
+        <FirstRunChecklist stages={stages} projectId={projectId} driftCount={driftCount} />
+      ) : (
+        <StageGrid stages={stages} projectId={projectId} driftCount={driftCount} />
+      )}
       <p className="text-sm text-muted-foreground">
         The code summary lives under Code:{" "}
         <Link
@@ -202,7 +249,15 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
   );
 }
 
-function FirstRunChecklist({ stages }: { stages: PipelineStage[] }) {
+function FirstRunChecklist({
+  stages,
+  projectId,
+  driftCount,
+}: {
+  stages: PipelineStage[];
+  projectId: string;
+  driftCount: number;
+}) {
   const byId = new Map(stages.map((s) => [s.id, s]));
   const steps = FIRST_RUN_STEPS.map((id) => byId.get(id) as PipelineStage);
   return (
@@ -225,7 +280,7 @@ function FirstRunChecklist({ stages }: { stages: PipelineStage[] }) {
             <div className="space-y-1">
               <h3 className="font-medium">
                 <span className="mr-2 text-muted-foreground">{i + 1}.</span>
-                {stage.title}
+                <StageTitle stage={stage} projectId={projectId} driftCount={driftCount} />
               </h3>
               <StageStatus stage={stage} />
             </div>
@@ -237,7 +292,15 @@ function FirstRunChecklist({ stages }: { stages: PipelineStage[] }) {
   );
 }
 
-function StageGrid({ stages }: { stages: PipelineStage[] }) {
+function StageGrid({
+  stages,
+  projectId,
+  driftCount,
+}: {
+  stages: PipelineStage[];
+  projectId: string;
+  driftCount: number;
+}) {
   return (
     <div className="space-y-3">
       <h2 id="pipeline-heading" className="text-lg font-semibold">
@@ -248,7 +311,9 @@ function StageGrid({ stages }: { stages: PipelineStage[] }) {
           <li key={stage.id} data-testid={`pipeline-stage-${stage.id}`}>
             <Card className="flex h-full flex-col justify-between gap-3 p-4">
               <div className="space-y-1">
-                <h3 className="font-medium">{stage.title}</h3>
+                <h3 className="font-medium">
+                  <StageTitle stage={stage} projectId={projectId} driftCount={driftCount} />
+                </h3>
                 <StageStatus stage={stage} />
               </div>
               <div>

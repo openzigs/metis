@@ -48,12 +48,21 @@ helm install metis ./deploy/helm/metis \
 ## Critical: persistence
 
 Without bound PVCs, **every server pod restart wipes uploads + the entire
-LanceDB vector store**. The chart binds two PVCs by default:
+LanceDB vector store**. The chart binds three PVCs by default:
 
 | PVC | Mount | Default size | Default SC | Access |
 |-----|-------|-------------:|------------|--------|
+| `<release>-server-data` | `/app/server/data` | 5Gi | `gp3` | RWO |
 | `<release>-server-uploads` | `/app/server/data/uploads` | 10Gi | `gp3` | RWO |
 | `<release>-server-lancedb` | `/app/server/data/lancedb` | 5Gi | `gp3` | RWO |
+
+The server's root filesystem is read-only, so it can write only where a volume is
+mounted (#60). `<release>-server-data` holds the SQLite database when no
+`DATABASE_URL` is supplied — the image's default is
+`file:/app/server/data/metis.db` — and repository archive extracts; the server's
+home directory (`/home/metis`) is an `emptyDir`. With a Postgres `DATABASE_URL`, set
+`persistence.data.enabled=false` (as `values-prod.yaml` does) to keep the data
+directory on an `emptyDir` instead of a `ReadWriteOnce` PVC.
 
 **Reclaim policy** is `Retain` by default — the PVC survives `helm uninstall`
 via `helm.sh/resource-policy: keep`. To switch to multi-replica RWX:

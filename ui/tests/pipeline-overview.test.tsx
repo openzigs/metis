@@ -174,6 +174,85 @@ describe("stage grid", () => {
     expect(screen.getByTestId("pipeline-stage-review")).toHaveTextContent("Needs attention:");
   });
 
+  // #66 — observed after #63 merged: three generated docs held in quarantine
+  // left the Ingest card on "Ingesting — at least 3 documents processing".
+  it("shows quarantined generated docs as awaiting review, not ingesting", async () => {
+    listAnalyses.mockResolvedValue({ items: [COMPLETED] });
+    getAnalysis.mockResolvedValue({ requirements: [] } as never);
+    const doc = (id: string, chunkCount: number) =>
+      ({
+        id,
+        projectId: "p1",
+        filename: `generated-doc-${id}.md`,
+        mimeType: "text/markdown",
+        sizeBytes: 10,
+        status: "processing",
+        indexState: "quarantined",
+        chunkCount,
+        uploadedAt: "2026-09-22T10:00:00Z",
+        processedAt: "2026-09-22T10:00:00Z",
+      }) as const;
+    docsList.mockResolvedValue({
+      items: [doc("d1", 26), doc("d2", 58), doc("d3", 1)],
+      total: 3,
+      limit: 100,
+      offset: 0,
+    });
+    renderOverview();
+
+    const ingest = await screen.findByTestId("pipeline-stage-ingest");
+    expect(ingest).not.toHaveTextContent(/ingesting|processing/i);
+    expect(ingest).not.toHaveTextContent("In progress:");
+    expect(screen.getByTestId("pipeline-status-ingest")).toHaveTextContent(
+      "3 documents awaiting review",
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent(
+        "3 documents awaiting review in quarantine",
+      ),
+    );
+    expect(screen.getByTestId("pipeline-action-review")).toHaveAttribute(
+      "href",
+      "/projects/p1/settings#quarantine",
+    );
+    expect(screen.getByTestId("pipeline-secondary-action-review")).toHaveAttribute(
+      "href",
+      "/projects/p1/requirements",
+    );
+  });
+
+  it("polls the document list only while a document is really ingesting", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const row = (indexState: string) => ({
+        id: indexState,
+        projectId: "p1",
+        filename: "a.md",
+        mimeType: "text/markdown",
+        sizeBytes: 1,
+        status: "processing" as const,
+        indexState,
+        chunkCount: 1,
+        uploadedAt: "2026-09-22T10:00:00Z",
+      });
+      docsList.mockResolvedValue({ items: [row("quarantined")], total: 1, limit: 100, offset: 0 });
+      const quarantined = renderOverview();
+      await screen.findByTestId("project-pipeline");
+      await act(() => vi.advanceTimersByTimeAsync(16_000));
+      expect(docsList).toHaveBeenCalledTimes(1);
+      quarantined.unmount();
+
+      docsList.mockClear();
+      docsList.mockResolvedValue({ items: [row("pending")], total: 1, limit: 100, offset: 0 });
+      renderOverview();
+      await screen.findByTestId("project-pipeline");
+      await act(() => vi.advanceTimersByTimeAsync(16_000));
+      expect(docsList.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("links the code summary as 'Code Overview'", async () => {
     renderOverview();
     const link = await screen.findByTestId("pipeline-code-overview-link");

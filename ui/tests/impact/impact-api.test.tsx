@@ -28,6 +28,12 @@ describe("impactAnalysisApi", () => {
     expect(apiFetch).toHaveBeenCalledWith("/impact-analyses");
   });
 
+  it("#61 — narrows the list to one project", async () => {
+    vi.mocked(apiFetch).mockResolvedValue([]);
+    await impactAnalysisApi.list("p1");
+    expect(apiFetch).toHaveBeenCalledWith("/impact-analyses", { params: { projectId: "p1" } });
+  });
+
   it("GETs a single analysis by id", async () => {
     vi.mocked(apiFetch).mockResolvedValue({});
     await impactAnalysisApi.get("ia-0000000001");

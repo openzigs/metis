@@ -115,8 +115,8 @@ jobs:
       # 55 MB"). Drop the preinstalled toolchains this job never uses (.NET,
       # Android SDK, GHC, CodeQL bundles, the runner's cached Docker images)
       # before building. Measured on #38: 83 GB -> 110 GB free, in 1m21s.
+      # Runs on Dependabot PRs too (#51): they build and smoke metis-server.
       - name: Free runner disk for image builds
-        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
         run: |
           df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
@@ -125,7 +125,6 @@ jobs:
           df -h /
 
       - name: Set up Buildx
-        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       # Issue #145 — image-size budget gate. The `metis-embeddings` sidecar is
@@ -159,11 +158,13 @@ jobs:
       # `mode=max` so the multi-stage builders' intermediate layers (the pnpm
       # install) are cached, not only the final stage.
       #
-      # Skipped for dependabot PRs: dependency bumps almost never touch the
-      # Dockerfiles, and rebuilding 3 images per dependabot PR is the single
-      # heaviest CI cost. `build-images.yml` already
-      # skips dependabot for the same reason; image validation still runs in
-      # full on every non-dependabot PR and on `main`.
+      # Dependabot PRs (#51): metis-server IS built and smoked for them. A
+      # dependency bump is the likeliest cause of the next server image that will
+      # not start (#39 was a runtime dependency; #45 a Prisma client), and skipping
+      # it here meant such a bump first failed on `main`. The other three images and
+      # the size gate still skip Dependabot PRs: rebuilding every image per bump is
+      # the single heaviest CI cost, `build-images.yml` skips Dependabot for the same
+      # reason, and full image validation still runs on every other PR and on `main`.
       #
       # Issue #509 — `provenance: false` / `sbom: false` on every gate build.
       # BuildKit adds a `mode=min` provenance attestation by DEFAULT, which wraps
@@ -179,7 +180,6 @@ jobs:
       # `load: true` puts each image in the runner's daemon so the size gate
       # below can `docker image inspect` it. #801 — run-scoped tag.
       - name: Build metis-server
-        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -189,7 +189,11 @@ jobs:
           provenance: false
           sbom: false
           cache-from: type=gha,scope=metis-server
-          cache-to: type=gha,scope=metis-server,mode=max
+          # `ignore-error=true` because this step also runs for Dependabot PRs
+          # (#51), whose restricted token usually cannot WRITE the Actions cache.
+          # BuildKit reports a refused cache export as a failed build step, which
+          # would turn every Dependabot PR red — worse than the skip it replaced.
+          cache-to: type=gha,scope=metis-server,mode=max,ignore-error=true
 
       - name: Build metis-ui
         if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
@@ -268,8 +272,14 @@ jobs:
       # reads a migrated table. Until #45 that arm exited at import. #54 — the LanceDB
       # and uploads probes write through the server's own code to its own default
       # paths, not to /tmp.
+      #
+      # #60 — the Postgres arm runs VECTOR_STORE=pgvector, the production Helm
+      # setting, and probes the pgvector store; a third arm, `helm-default`, boots the
+      # image under the Helm chart's DEFAULT values (read-only root filesystem, uid
+      # 1001, no DATABASE_URL, writable only where the chart mounts a volume).
+      # #51 — runs on Dependabot PRs too, and passes its per-run secrets through
+      # docker's environment rather than its command line.
       - name: Smoke-test metis-server (starts, serves /healthz)
-        if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
         run: node scripts/lib/smoke-server-image.mjs --image "metis-server:ci-${{ github.run_id }}" --timeout 180
 
       - name: Clean up test images

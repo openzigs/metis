@@ -110,7 +110,131 @@ describe("runTestCoverageJob", () => {
     expect(indexer.index).toHaveBeenCalledWith(
       "p-1",
       expect.arrayContaining([expect.objectContaining({ docId: "doc-1", contentHash: "abc" })]),
+      expect.objectContaining({ cost: expect.anything() }),
     );
+  });
+
+  describe("index-phase embedding usage on the run budget (#72)", () => {
+    /** One persisted test case, so the index phase has something to embed. */
+    function dbWithOneCase() {
+      const built = makeDb({
+        testCaseDoc: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              id: "doc-1",
+              contentHash: "abc",
+              title: "Login",
+              preconditions: null,
+              stepsJson: JSON.stringify([{ action: "click", expected: "ok" }]),
+              expected: "Dashboard",
+              priority: "medium",
+              tags: JSON.stringify(["auth"]),
+              externalId: null,
+              source: "csv",
+            },
+          ]),
+        },
+      });
+      // Keep makeDb's recording `update` spy — only the run row needs an owner.
+      built.db.testCoverageRun.findUnique = vi
+        .fn()
+        .mockResolvedValue({ id: "run-1", status: "queued", createdById: "user-1" });
+      return built;
+    }
+
+    /** An indexer that bills a known cloud-embedder batch, as the real one now does. */
+    function billingIndexer(tokens: number) {
+      return {
+        index: vi.fn(
+          async (
+            _projectId: string,
+            _cases: unknown[],
+            opts?: { cost?: { record: (u: Record<string, unknown>) => void } },
+          ) => {
+            opts?.cost?.record({
+              phase: "embedding",
+              embedder: "openai",
+              modelId: "text-embedding-3-small",
+              embeddingTokens: tokens,
+            });
+            return { inserted: 1, skipped: [] };
+          },
+        ),
+      };
+    }
+
+    it("hands the run's cost tracker to the index phase and flushes it (#72)", async () => {
+      // No caller is wired, so `runCoverageScoring` — which used to own the only
+      // tracker in a run — never runs. The index phase must still be billed.
+      const { db, updates } = dbWithOneCase();
+      const indexer = billingIndexer(1_000);
+      await runTestCoverageJob(
+        { runId: "run-1", projectId: "p-1" },
+        { db: db as never, indexer: indexer as never },
+      );
+
+      expect(indexer.index).toHaveBeenCalledWith(
+        "p-1",
+        expect.any(Array),
+        expect.objectContaining({ cost: expect.anything() }),
+      );
+      const flushed = updates.find((u) => "embeddingTokens" in u.data);
+      expect(flushed).toBeDefined();
+      expect(flushed!.data).toMatchObject({
+        embeddingTokens: 1_000,
+        // 1,000 tokens of text-embedding-3-small at $0.002/1K = $0.002, which
+        // the tracker rounds up to 1 cent of the 20-cent cap.
+        tokenCostCents: 1,
+        judgeTokens: 0,
+        suggestionTokens: 0,
+      });
+    });
+
+    it("shares ONE tracker across the index phase and the scoring service (#72)", async () => {
+      const { db, updates } = dbWithOneCase();
+      db.requirement = {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ id: "r1", title: "X", body: "body content", priority: "low" }]),
+      } as never;
+      db.coverageMapping = {
+        count: vi.fn().mockResolvedValue(0),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+        createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      } as never;
+      db.gapItem = {
+        count: vi.fn().mockResolvedValue(0),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+        createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      } as never;
+      db.suggestion = {
+        count: vi.fn().mockResolvedValue(0),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+        createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      } as never;
+      const indexer = billingIndexer(1_000);
+      const caller = {
+        call: vi.fn().mockResolvedValue({
+          raw: JSON.stringify({ suggestions: [] }),
+          promptTokens: 0,
+          completionTokens: 0,
+          provider: "bedrock-gateway" as const,
+          model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        }),
+      };
+      await runTestCoverageJob(
+        { runId: "run-1", projectId: "p-1" },
+        { db: db as never, indexer: indexer as never, caller, budgetCents: 10_000 },
+      );
+
+      // A separate tracker per phase would persist only the match phase's own
+      // embedding tokens; one shared tracker carries the index phase's too.
+      const totals = updates
+        .filter((u) => "embeddingTokens" in u.data)
+        .map((u) => (u.data as { embeddingTokens: number }).embeddingTokens);
+      expect(totals.length).toBeGreaterThan(0);
+      expect(Math.max(...totals)).toBeGreaterThan(1_000);
+    });
   });
 
   it("marks run as failed and emits run:failed when a phase throws", async () => {

@@ -32,7 +32,7 @@
  * never touches secrets, headers, or ARNs.
  */
 import { computeCacheHitRatio } from "./cache-hit-telemetry.js";
-import type { ProviderKey, TokenUsage } from "./types.js";
+import type { TokenUsage, UsageProvider } from "./types.js";
 
 /**
  * How a provider's `usage` payload accounts for cached tokens.
@@ -168,11 +168,11 @@ export function normalizeTokenUsage(
 }
 
 /**
- * Map a METIS {@link ProviderKey} to its cache-usage convention. Only the native
+ * Map a METIS {@link UsageProvider} to its cache-usage convention. Only the native
  * `anthropic` provider excludes cache tokens from the prompt count; every other
  * key (bedrock gateway, openai, azure, local, copilot) is OpenAI-compatible.
  */
-export function conventionForProvider(provider: ProviderKey): CacheUsageConvention {
+export function conventionForProvider(provider: UsageProvider): CacheUsageConvention {
   return provider === "anthropic" ? "anthropic-native" : "openai-compatible";
 }
 

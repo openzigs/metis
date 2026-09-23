@@ -10,6 +10,7 @@ import {
 } from "./reconcile-service.js";
 import type { IssueChangeEvent } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { registerSocketServer } from "../socket/registry.js";
 
 // Mock prisma
 vi.mock("../prisma.js", () => ({
@@ -150,6 +151,60 @@ describe("reconcileIssueChange", () => {
     expect(result.handled).toBe(true);
     expect(result.driftEventId).toBe("drift-1");
     expect(emitDrift).toHaveBeenCalledWith("proj-1", expect.objectContaining({ id: "drift-1" }));
+  });
+
+  /**
+   * Issue #78 — the injected `emitDrift` above was the ONLY thing that ever
+   * called it: every real caller (both webhook receivers and the Jira poll
+   * worker) passed no deps, so the broadcast never happened in production while
+   * this suite stayed green. Assert the default path, with no deps at all.
+   */
+  it("broadcasts drift:detected with no injected emitter (#78)", async () => {
+    vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue({
+      id: "pub-1",
+      batchId: "batch-1",
+      draftId: "draft-1",
+      issueNumber: 42,
+      batch: { id: "batch-1", projectId: "proj-1", project: { id: "proj-1", name: "Test" } },
+      draft: {
+        id: "draft-1",
+        title: "Old Title",
+        body: "Old body",
+        labels: "[]",
+        requirementId: "req-1",
+      },
+    } as never);
+    vi.mocked(prisma.driftEvent.create).mockResolvedValue({
+      id: "drift-2",
+      publishedIssueId: "pub-1",
+      projectId: "proj-1",
+      requirementId: "req-1",
+      source: "github",
+      deliveryId: "delivery-2",
+      action: "edited",
+      fieldDiffs: JSON.stringify([]),
+      externalSnapshot: JSON.stringify({}),
+      localSnapshot: JSON.stringify({}),
+      status: "pending",
+      resolution: null,
+      resolvedById: null,
+      resolvedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never);
+
+    const emit = vi.fn();
+    registerSocketServer({ to: vi.fn(() => ({ emit })) } as never);
+    try {
+      const result = await reconcileIssueChange(makeEvent());
+      expect(result.handled).toBe(true);
+      expect(emit).toHaveBeenCalledWith(
+        "drift:detected",
+        expect.objectContaining({ projectId: "proj-1", driftEventId: "drift-2" }),
+      );
+    } finally {
+      registerSocketServer(null as never);
+    }
   });
 
   it("returns not handled on duplicate deliveryId", async () => {

@@ -4417,6 +4417,29 @@ call that reveals it, no further judge batches or LLM phases run, and the
 budget line reads `$x + N unpriced tokens` rather than `$0.00`. Pricing the
 model with `MODEL_PRICES` lets later runs proceed.
 
+The budget is checked before every judge batch and before every suggestion
+cluster, so a run stops part-way through either phase once the cap is reached.
+
+Embedding usage is recorded under the embedder that ran — every call a run
+makes: the indexing pass over your test cases and their steps, the requirement
+and test-case batches the matcher needs, the judge's per-batch cache keys, and
+the suggestion phase's cluster prompts and deduplication. On a cold run the
+indexing pass is the largest of those. The built-in local embedders cost $0; Amazon
+Titan Text Embeddings V2 and OpenAI's `text-embedding-3-small`,
+`text-embedding-3-large` and `text-embedding-ada-002` are priced at their
+published prices.
+
+Any other cloud embedding model is **unpriced**, and its tokens are reported in
+the `+ N unpriced tokens` figure — so the budget line reads as the lower bound
+it is. Unlike an unpriced judge or suggestion model, an unpriced *embedder* does
+not stop the run. Embedding spend is bounded, input-only and already incurred by
+the time it is recorded, whereas LLM spend is the open-ended part the cap exists
+to control. Because embedding is a run's first recorded usage, stopping there
+would have ended every run on a Cohere model, an Azure deployment name or an
+OpenAI-compatible endpoint before the judge had started. Price the model with a
+`MODEL_PRICES` key of the form `embed:<backend>:<model>` — for example
+`embed:bedrock-sdk:cohere.embed-english-v3` — to bring it back onto the cap.
+
 ### Permissions
 
 - **`project.read`** — view the page, runs, report, and budget tiles.

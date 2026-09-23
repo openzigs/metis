@@ -103,6 +103,9 @@ import {
   RECONSTRUCTION_FAITHFULNESS_THRESHOLD,
   summarizeWarnings,
 } from "./grounding/degraded-warnings.js";
+// #67 — the fixed, user-safe failure vocabulary a section's exception is mapped
+// through before it can reach a persisted, client-visible warning.
+import { generationFailureMessage } from "./generation-failure-message.js";
 import { isSasBusinessSymbol } from "./discovery-agent.js";
 import { ClaimExtractor } from "./grounding/claim-extractor.js";
 import {
@@ -3102,7 +3105,13 @@ export async function synthesizeFinalDocument(
       // #225 — surface as a visible, user-facing degraded-output warning. The
       // failed section is omitted from the body (no silent HTML comment) and
       // the document will be marked `degraded`, not a clean `ready`.
-      const failWarning = sectionFailedWarning(group.label, String(err));
+      // #67 — through the FIXED failure vocabulary, never `String(err)`. This
+      // warning is persisted, returned by `GET /docs/:docId` and rendered in
+      // the UI banner, so the raw exception put provider response bodies,
+      // server paths and SQL text in front of the user — the same exposure #52
+      // closed for a failed document's `errorMessage`. The raw error is in the
+      // `log.warn` immediately above, which is where it belongs.
+      const failWarning = sectionFailedWarning(group.label, generationFailureMessage(err));
       warnings.push(failWarning);
       // #243 — surface the failed section live, with its warning.
       reportSection({
