@@ -70,9 +70,13 @@ vi.mock("../lib/sync/index.js", () => ({
   }),
 }));
 
+// #88 — the drift reads now narrow `req.user` before handing it to the
+// project-scope seam. `authedUser = null` mounts the router as an unauthenticated
+// request would reach it, so that arm is exercised rather than assumed.
+let authedUser: unknown = { userId: "user-1", role: "coordinator", username: "test" };
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (req: Request & { user?: unknown }, _res: Response, next: NextFunction) => {
-    req.user = { userId: "user-1", role: "coordinator", username: "test" };
+    if (authedUser) req.user = authedUser;
     next();
   },
 }));
@@ -129,6 +133,7 @@ beforeEach(() => {
   seenDeliveries.clear();
   vi.clearAllMocks();
   accessibleProjectIds = ["proj-1"];
+  authedUser = { userId: "user-1", role: "coordinator", username: "test" };
 });
 
 describe("GitHub issues webhook route", () => {
@@ -292,6 +297,21 @@ describe("Drift management routes", () => {
 
       expect(res.status).toBe(404);
       expect(vi.mocked(getDriftCount)).not.toHaveBeenCalled();
+    });
+
+    it("returns 401 rather than skipping the scope check when there is no caller", async () => {
+      authedUser = null;
+      const { listDriftEvents, getDriftCount } = await import("../lib/sync/index.js");
+      const app = createApp();
+
+      const list = await request(app).get("/sync/drift?projectId=proj-1");
+      const count = await request(app).get("/sync/drift/count?projectId=proj-1");
+
+      expect(list.status).toBe(401);
+      expect(count.status).toBe(401);
+      expect(vi.mocked(listDriftEvents)).not.toHaveBeenCalled();
+      expect(vi.mocked(getDriftCount)).not.toHaveBeenCalled();
+      expect(assertProjectAccess).not.toHaveBeenCalled();
     });
 
     it("asserts access against the project id the caller actually asked for", async () => {
