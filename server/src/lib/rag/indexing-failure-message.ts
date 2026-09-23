@@ -22,7 +22,11 @@
 import {
   GENERATION_PROVIDER_AUTH_MESSAGE,
   GENERATION_PROVIDER_BALANCE_MESSAGE,
+  GENERATION_PROVIDER_CLOSED_MESSAGE,
+  GENERATION_PROVIDER_DROPPED_MESSAGE,
   GENERATION_PROVIDER_RATE_LIMITED_MESSAGE,
+  GENERATION_PROVIDER_SLOW_MESSAGE,
+  GENERATION_PROVIDER_TLS_MESSAGE,
   GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
   generationFailureMessage,
 } from "../docs-gen/generation-failure-message.js";
@@ -35,6 +39,23 @@ export const INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE =
 
 export const INDEXING_PROVIDER_UNREACHABLE_MESSAGE =
   "The embedding provider could not be reached (connection failed). Check that the embedding host — for example a local Ollama server — is running and reachable from the METIS server, then re-index the document.";
+
+/**
+ * #152 — the transport causes #114 distinguished for generation, re-worded for
+ * indexing. Without them a reset, slow or certificate failure read as the
+ * generic {@link INDEXING_FAILED_MESSAGE}.
+ */
+export const INDEXING_PROVIDER_SLOW_MESSAGE =
+  "The embedding provider accepted the connection but did not respond in time. A local embedding model may still be loading or busy rather than being down — check the provider's own log, then re-index the document.";
+
+export const INDEXING_PROVIDER_TLS_MESSAGE =
+  "The embedding provider's TLS certificate could not be verified. Check the embedding URL and the certificate trust settings of the METIS server, then re-index the document.";
+
+export const INDEXING_PROVIDER_DROPPED_MESSAGE =
+  "The connection to the embedding provider dropped while the response was arriving (reset or closed mid-response). This usually means a network interruption between METIS and the embedding host; re-index the document.";
+
+export const INDEXING_PROVIDER_CLOSED_MESSAGE =
+  "The embedding provider closed the connection before sending any response. The host accepted the request and then hung up — check the embedding provider's own log, then re-index the document.";
 
 export const INDEXING_PROVIDER_AUTH_MESSAGE =
   "The embedding provider rejected the configured credentials (401/403). Check the embedding settings, then re-index the document.";
@@ -74,6 +95,10 @@ const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   INDEXING_FAILED_MESSAGE,
   INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE,
   INDEXING_PROVIDER_UNREACHABLE_MESSAGE,
+  INDEXING_PROVIDER_SLOW_MESSAGE,
+  INDEXING_PROVIDER_TLS_MESSAGE,
+  INDEXING_PROVIDER_DROPPED_MESSAGE,
+  INDEXING_PROVIDER_CLOSED_MESSAGE,
   INDEXING_PROVIDER_AUTH_MESSAGE,
   INDEXING_PROVIDER_RATE_LIMITED_MESSAGE,
   INDEXING_PROVIDER_BALANCE_MESSAGE,
@@ -105,6 +130,10 @@ const PARSER_REFUSALS: ReadonlyArray<readonly [RegExp, string]> = [
 /** The generation classifier's provider verdicts, re-worded for indexing. */
 const PROVIDER_VERDICTS: ReadonlyMap<string, string> = new Map([
   [GENERATION_PROVIDER_UNREACHABLE_MESSAGE, INDEXING_PROVIDER_UNREACHABLE_MESSAGE],
+  [GENERATION_PROVIDER_SLOW_MESSAGE, INDEXING_PROVIDER_SLOW_MESSAGE],
+  [GENERATION_PROVIDER_TLS_MESSAGE, INDEXING_PROVIDER_TLS_MESSAGE],
+  [GENERATION_PROVIDER_DROPPED_MESSAGE, INDEXING_PROVIDER_DROPPED_MESSAGE],
+  [GENERATION_PROVIDER_CLOSED_MESSAGE, INDEXING_PROVIDER_CLOSED_MESSAGE],
   [GENERATION_PROVIDER_AUTH_MESSAGE, INDEXING_PROVIDER_AUTH_MESSAGE],
   [GENERATION_PROVIDER_RATE_LIMITED_MESSAGE, INDEXING_PROVIDER_RATE_LIMITED_MESSAGE],
   [GENERATION_PROVIDER_BALANCE_MESSAGE, INDEXING_PROVIDER_BALANCE_MESSAGE],
