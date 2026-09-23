@@ -3,6 +3,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
+    // The one whole-tree acceptance scan runs here, once, outside the timed and
+    // parallel pool; see the file's header (#99).
+    globalSetup: ["./vitest.global-setup.mjs"],
     include: ["lib/**/*.test.ts", "lib/**/*.test.mjs", "local-llm/**/*.test.ts"],
     exclude: ["**/node_modules/**"],
     coverage: {
