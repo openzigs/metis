@@ -12,6 +12,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatChunk } from "../ai/types.js";
 import { synthesizeHolisticDocument } from "./holistic-synthesizer.js";
+import { parsePersistedMinedRules, type PersistedMinedRule } from "./fact-slices.js";
 
 const db = vi.hoisted(() => ({
   project: { findUnique: vi.fn() },
@@ -147,5 +148,20 @@ describe("Phase 1 C# / Kotlin rule inventories (#158, #159)", () => {
     const p1 = phase1Prompts.join("\n====\n");
     expect(p1).toContain("DETERMINISTICALLY-MINED KOTLIN RULE INVENTORY");
     expect(p1).toContain("require(order.total > 0): Order total must be positive");
+  });
+
+  it("persists the C# and Kotlin rules in minedRulesJson and reads them back (#155)", async () => {
+    await synthesizeHolisticDocument("p", "architecture", "Architecture");
+    const written: PersistedMinedRule[] = db.docsGenFactCache.upsert.mock.calls.flatMap(
+      (c: Array<{ create: { minedRulesJson: string } }>) =>
+        JSON.parse(c[0].create.minedRulesJson) as PersistedMinedRule[],
+    );
+    const cs = written.filter((r) => r.language === "cs");
+    const kt = written.filter((r) => r.language === "kt");
+    expect(cs.map((r) => r.summary)).toContain("Rejects/exits when order.Quantity > MaxQuantity");
+    expect(cs.every((r) => r.file === "src/OrderValidator.cs")).toBe(true);
+    expect(kt.map((r) => r.file)).toContain("src/OrderService.kt");
+    // A cache row holding them must be readable, or every hit silently re-mines.
+    expect(parsePersistedMinedRules(JSON.stringify(written))).toEqual(written);
   });
 });

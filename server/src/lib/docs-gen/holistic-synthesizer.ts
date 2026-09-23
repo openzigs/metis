@@ -1946,6 +1946,8 @@ export async function extractModuleFacts(
     ...toPersistedMinedRules("go", allGoRules),
     ...toPersistedMinedRules("sas", allSasRules),
     ...toPersistedMinedRules("sql", allSqlRules),
+    ...toPersistedMinedRules("cs", allCsRules),
+    ...toPersistedMinedRules("kt", allKtRules),
   ];
 
   // SAS workflow + source-derived dataset lineage, rendered once and reused in

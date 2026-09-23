@@ -8,4 +8,6 @@ section: Added
   ingest, and Kotlin modules get a deterministic rule inventory in
   business-requirements generation — `require`/`check` preconditions, guard
   clauses and elvis guards, thrown exceptions, `when` on a status or enum,
-  validation annotations, and constants and comparisons against them.
+  validation annotations, and constants and comparisons against them. The
+  rules are saved with the other languages' mined rules and reach the Rules
+  section.
