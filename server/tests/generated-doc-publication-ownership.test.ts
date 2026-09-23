@@ -46,6 +46,7 @@ import { issueTokens } from "../src/lib/auth/jwt.js";
 import { getPermissionsForRole, type RoleKey } from "@metis/shared";
 import { createEvidencePolicy } from "../src/lib/docs-gen/evidence-policy.js";
 import { generatedDocRevisionId } from "../src/lib/docs-gen/generated-doc-provenance.js";
+import { INDEXING_FAILED_MESSAGE } from "../src/lib/rag/indexing-failure-message.js";
 
 // A generated Postgres Prisma client cannot use the SQLite adapter. This proof
 // runs with the SQLite client, never the developer's configured application DB.
@@ -409,7 +410,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
           expect.objectContaining({
             documentId: syntheticId,
             indexState: "reconciling",
-            errorMessage: "cleanup unavailable",
+            errorMessage: INDEXING_FAILED_MESSAGE, // #98 — never the raw exception,
           }),
         ]);
         const selected = (await db.knowledgeChunk.findMany()).map((row) => row.id);
@@ -814,7 +815,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
         expect(response.body.data).toMatchObject({
           indexState: "reconciling",
           status: "failed",
-          errorMessage: "postcommit cleanup failed",
+          errorMessage: INDEXING_FAILED_MESSAGE, // #98 — the raw text stays in the column,
         });
         if (temperature === "cold") {
           __resetBM25IndexSingleton();
@@ -1263,7 +1264,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
       ]);
       expect(rows.find((row) => row.documentId === "manual")).toMatchObject({
         indexState: "reconciling",
-        errorMessage: "cleanup failed",
+        errorMessage: INDEXING_FAILED_MESSAGE, // #98,
       });
     });
 
@@ -1290,7 +1291,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
         expect.objectContaining({
           documentId: "ordinary",
           indexState: "reconciling",
-          errorMessage: "empty discard failed",
+          errorMessage: INDEXING_FAILED_MESSAGE, // #98 — the column above keeps the raw text,
         }),
       ]);
       await expect(approveDocument("ordinary", { id: "actor" })).resolves.toEqual({

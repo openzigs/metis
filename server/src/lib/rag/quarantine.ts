@@ -38,6 +38,7 @@ import {
 import type { AclSubject } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
 import { resolveEvidencePolicy } from "../docs-gen/evidence-policy.js";
+import { publicIndexingErrorMessage } from "./indexing-failure-message.js";
 
 const log = createChildLogger("rag-quarantine");
 
@@ -699,7 +700,8 @@ export async function listQuarantine(projectId: string) {
     chunkCount: d.chunkCount,
     indexState: d.indexState as "quarantined" | "reconciling",
     autoApproveTrusted: d.autoApproveTrusted,
-    errorMessage: d.errorMessage,
+    // #98 — a reconciling row holds the approval cleanup's raw exception text.
+    errorMessage: publicIndexingErrorMessage(d.errorMessage, d.indexState),
   }));
 }
 

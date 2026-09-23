@@ -29,6 +29,14 @@ export const GENERATION_PROVIDER_RATE_LIMITED_MESSAGE =
 export const GENERATION_PROVIDER_AUTH_MESSAGE =
   "The AI provider rejected the configured credentials (401/403). Check the AI provider settings, then regenerate the document.";
 
+/**
+ * #98 — the most common real failure in local use: the provider host (a local
+ * Ollama server, say) is down or unreachable, and undici throws only
+ * `TypeError: fetch failed` with the OS error under `.cause`.
+ */
+export const GENERATION_PROVIDER_UNREACHABLE_MESSAGE =
+  "The AI provider could not be reached (connection failed). Check that the provider host — for example a local Ollama server — is running and reachable from the METIS server, then regenerate the document.";
+
 /** Every string a client may receive as a failed generation's `errorMessage`. */
 const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   GENERATION_INTERRUPTED_MESSAGE,
@@ -37,6 +45,7 @@ const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   GENERATION_BUDGET_EXCEEDED_MESSAGE,
   GENERATION_PROVIDER_RATE_LIMITED_MESSAGE,
   GENERATION_PROVIDER_AUTH_MESSAGE,
+  GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
 ]);
 
 // An HTTP status named as one: "returned 402", "status 429", "HTTP 401",
@@ -65,6 +74,38 @@ function readCode(err: unknown): string | undefined {
     if (typeof c === "string") return c;
   }
   return undefined;
+}
+
+// Connection-establishment failures only: the host refused, does not resolve,
+// has no route, or never answered the connect. A reset mid-response is not
+// "unreachable" and stays generic.
+const UNREACHABLE_CODES: ReadonlySet<string> = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+const UNREACHABLE_TEXT =
+  /(?:^|[^\w])fetch failed\b|\b(?:ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|UND_ERR_CONNECT_TIMEOUT)\b|\bconnect ETIMEDOUT\b/;
+
+/**
+ * True when `err` says the provider host could not be connected to. undici
+ * nests the OS error under `.cause`, so both levels are read.
+ */
+export function isProviderUnreachable(err: unknown): boolean {
+  const cause =
+    err && typeof err === "object" && "cause" in err
+      ? (err as { cause?: unknown }).cause
+      : undefined;
+  for (const e of [err, cause]) {
+    const code = readCode(e);
+    if (code !== undefined && UNREACHABLE_CODES.has(code)) return true;
+    if (UNREACHABLE_TEXT.test(readMessage(e))) return true;
+  }
+  return false;
 }
 
 function readMessage(err: unknown): string {
@@ -107,6 +148,7 @@ export function generationFailureMessage(err: unknown): string {
   ) {
     return GENERATION_PROVIDER_AUTH_MESSAGE;
   }
+  if (isProviderUnreachable(err)) return GENERATION_PROVIDER_UNREACHABLE_MESSAGE;
   return GENERATION_FAILED_MESSAGE;
 }
 

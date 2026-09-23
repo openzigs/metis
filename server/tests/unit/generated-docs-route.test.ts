@@ -209,6 +209,10 @@ import { synthesizeHolisticDocument } from "../../src/lib/docs-gen/holistic-synt
 import { synthesizeDbSchemaDocument } from "../../src/lib/docs-gen/db-schema-synthesizer.js";
 import { runDomainWebResearch } from "../../src/lib/docs-gen/grounding/domain-web-research.js";
 import { jobEvents } from "../../src/lib/socket/job-events.js";
+import {
+  INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE,
+  INDEXING_PROVIDER_UNREACHABLE_MESSAGE,
+} from "../../src/lib/rag/indexing-failure-message.js";
 
 function buildApp() {
   const app = express();
@@ -233,6 +237,20 @@ function buildApp() {
     },
   );
   return app;
+}
+
+// #98 — an indexing failure as the ingest pipeline stores it: a provider
+// response body, an absolute path, an API-key-shaped string and a stack frame.
+const RAW_INDEXING_ERROR =
+  'embedding failed: embeddings returned 500: {"error":{"message":"upstream failure ' +
+  'reading /srv/metis/server/data/uploads/acme/secret.pdf","key":"sk-live-4f9a8b7c6d5e4f3a2b1c"}}' +
+  "\n    at OpenAICompatibleProvider.embed (/srv/metis/server/src/lib/ai/providers/x.ts:12:7)";
+
+function expectNoIndexingLeak(body: string) {
+  expect(body).not.toContain("/srv");
+  expect(body).not.toContain("sk-live");
+  expect(body).not.toContain("secret.pdf");
+  expect(body).not.toContain("OpenAICompatibleProvider");
 }
 
 describe("generated-docs routes", () => {
@@ -889,9 +907,104 @@ describe("generated-docs routes", () => {
         processedAt: "2026-01-01T00:00:00.000Z",
       });
     });
+
+    it("#98 — never returns the raw indexing error text a Document row holds", async () => {
+      vi.mocked(prisma.generatedDocument.findMany).mockResolvedValue([
+        { id: "doc-1", title: "Doc 1", status: "ready", versions: [{ revisionId: "revision-2" }] },
+      ] as never);
+      vi.mocked(prisma.document.findMany).mockResolvedValue([
+        {
+          id: "gendoc-doc-1:revision-2",
+          indexState: "pending",
+          status: "failed",
+          chunkCount: 0,
+          errorMessage: RAW_INDEXING_ERROR,
+          processedAt: null,
+        },
+      ] as never);
+
+      const res = await request(app).get("/projects/proj-1/docs");
+
+      expect(res.status).toBe(200);
+      expectNoIndexingLeak(JSON.stringify(res.body));
+      expect(res.body.data[0].indexing.errorMessage).toBe(INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE);
+    });
   });
 
   describe("GET /projects/:projectId/docs/:docId", () => {
+    it("#98 — never returns the raw indexing error text a Document row holds", async () => {
+      vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
+        id: "doc-1",
+        title: "Doc",
+        status: "ready",
+        versions: [
+          { id: "v1", documentId: "doc-1", version: 1, revisionId: null, provenanceManifest: null },
+        ],
+      } as never);
+      vi.mocked(prisma.document.findFirst).mockResolvedValue({
+        indexState: "pending",
+        status: "failed",
+        chunkCount: 0,
+        errorMessage: RAW_INDEXING_ERROR,
+        processedAt: null,
+      } as never);
+
+      const res = await request(app).get("/projects/proj-1/docs/doc-1");
+
+      expect(res.status).toBe(200);
+      expectNoIndexingLeak(JSON.stringify(res.body));
+      expect(res.body.data.indexing.errorMessage).toBe(INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE);
+    });
+
+    it("#98 — never returns a failed publication task's raw error as indexing status", async () => {
+      // No Document row yet: the status line comes from the publication outbox
+      // task, whose errorMessage is just as raw.
+      vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
+        id: "doc-1",
+        versions: [
+          {
+            id: "v1",
+            documentId: "doc-1",
+            version: 1,
+            revisionId: "revision-1",
+            provenanceManifest: null,
+          },
+        ],
+      } as never);
+      vi.mocked(prisma.task.findUnique).mockResolvedValueOnce({
+        status: "failed",
+        errorMessage: RAW_INDEXING_ERROR,
+      } as never);
+      vi.mocked(prisma.document.findFirst).mockResolvedValue(null);
+
+      const res = await request(app).get("/projects/proj-1/docs/doc-1");
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.indexing.state).toBe("failed");
+      expectNoIndexingLeak(JSON.stringify(res.body));
+      expect(res.body.data.indexing.errorMessage).toBe(INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE);
+    });
+
+    it("#98 — names an unreachable embedding host on the indexing status line", async () => {
+      vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
+        id: "doc-1",
+        versions: [
+          { id: "v1", documentId: "doc-1", version: 1, revisionId: null, provenanceManifest: null },
+        ],
+      } as never);
+      vi.mocked(prisma.document.findFirst).mockResolvedValue({
+        indexState: "pending",
+        status: "failed",
+        chunkCount: 0,
+        errorMessage: "embedding failed: fetch failed",
+        processedAt: null,
+      } as never);
+
+      const res = await request(app).get("/projects/proj-1/docs/doc-1");
+
+      expect(res.body.data.indexing.errorMessage).toBe(INDEXING_PROVIDER_UNREACHABLE_MESSAGE);
+    });
+
     it("falls back to legacy indexing health only when the revision-owned row is absent", async () => {
       vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
         id: "doc-1",
