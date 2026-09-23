@@ -120,6 +120,8 @@ interface FakeOptions {
   cutOff?: (call: Call) => boolean;
   /** Throw for a call. */
   fail?: (call: Call) => boolean;
+  /** Return an empty reply (a zero-token stream that still ends "stop"). */
+  empty?: (call: Call) => boolean;
 }
 
 function fakeModel(options: FakeOptions = {}): AIProvider & { calls: Call[] } {
@@ -141,6 +143,10 @@ function fakeModel(options: FakeOptions = {}): AIProvider & { calls: Call[] } {
       const call: Call = { group, modules, user, maxTokens };
       calls.push(call);
       if (options.fail?.(call)) throw new Error("upstream exploded with a secret stack trace");
+      if (options.empty?.(call)) {
+        yield { type: "done", finishReason: "stop" };
+        return;
+      }
       // One rule per module under a shared topic, padded to a reply proportional
       // to the facts read — the shape and scale of a real catalog reply.
       const perModule = modules.length
@@ -363,6 +369,77 @@ describe("planSectionBatches", () => {
   });
 });
 
+// PR #169 review: the skip test ignored a module's EXTRACTED formulas, and the
+// formulas block is built per batch — so on onyourleft 268 extracted formulas
+// in skipped modules reached no Calculations batch at all.
+describe("Calculations reads every module's extracted formulas", () => {
+  const CALCS = BATCHED.find((g) => g.id === "formulas")!;
+  const formula = (name: string, i: number) => ({
+    kind: "arithmetic" as const,
+    expression: `${name}_total_${i} = price * qty + ${i}`,
+    description: "",
+    name: null,
+    resolvedValue: null,
+    filePath: `src/${name}/x.ts`,
+  });
+  const withFormulas = (f: ModuleFacts, n: number): ModuleFacts =>
+    ({ ...f, formulas: Array.from({ length: n }, (_, i) => formula(f.moduleName, i)) }) as never;
+  const formulasOf = (user: string) =>
+    user.slice(user.indexOf("=== FORMULAS/CONSTANTS"), user.indexOf("=== END FORMULAS ==="));
+
+  it("does not skip a module whose only formula content is its extracted formulas", () => {
+    const facts = [mod("bare", { rules: 3 }), withFormulas(mod("calc", { rules: 3 }), 2)];
+    const plan = planSectionBatches(facts, CALCS, 150_000, 16_384);
+    // Precondition: with no formula facts and no extracted formula, a module IS skipped.
+    expect(plan.skipped).toEqual(["bare"]);
+    expect(plan.modules.map((m) => m.item.moduleName)).toEqual(["calc"]);
+  });
+
+  it("keeps the rules section's skip rule unchanged — extracted formulas are not a rules topic", () => {
+    const facts = [withFormulas(mod("calc", { rules: 0 }), 2)];
+    expect(planSectionBatches(facts, RULES, 150_000, 16_384).skipped).toEqual(["calc"]);
+  });
+
+  it("never puts more extracted formulas in one batch than its formulas block renders", async () => {
+    // 3 × 60 formulas: any two together pass the 80-entry block, so an
+    // uncapped plan (one batch — the facts are tiny) would cut 100 of them.
+    const facts = ["f0", "f1", "f2"].map((n) =>
+      withFormulas(mod(n, { rules: 1, formulas: 1 }), 60),
+    );
+    const plan = planSectionBatches(facts, CALCS, 150_000, 16_384);
+    expect(plan.batches.map((b) => b.length)).toEqual([1, 1, 1]);
+    const provider = fakeModel();
+    await run(facts, provider);
+    const blocks = callsFor(provider, CALCS).map((c) => formulasOf(c.user));
+    for (const f of facts) {
+      for (let i = 0; i < 60; i++) {
+        expect(
+          blocks.some((b) => b.includes(`${f.moduleName}_total_${i} =`)),
+          `${f.moduleName}_total_${i}`,
+        ).toBe(true);
+      }
+    }
+  });
+});
+
+describe("DOCS_GEN_BATCHED_SECTIONS — the operator's kill-switch", () => {
+  beforeEach(() => vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "4096"));
+
+  it.each(["0", "false", "off", "NO"])("=%s writes every batched group in ONE call", async (v) => {
+    vi.stubEnv("DOCS_GEN_BATCHED_SECTIONS", v);
+    const provider = fakeModel();
+    await run(pairs(6), provider);
+    for (const group of BATCHED) expect(callsFor(provider, group), group.id).toHaveLength(1);
+  });
+
+  it.each(["1", "true", ""])("=%s (or unset) keeps batching on", async (v) => {
+    vi.stubEnv("DOCS_GEN_BATCHED_SECTIONS", v);
+    const provider = fakeModel();
+    await run(pairs(6), provider);
+    expect(callsFor(provider, RULES)).toHaveLength(3);
+  });
+});
+
 describe("batchNoteFor", () => {
   it("lets only the lead batch write the introduction", () => {
     expect(batchNoteFor(RULES, true, 5, 50)).not.toContain("Do NOT write an introduction");
@@ -418,7 +495,11 @@ describe("a batch cut off at the cap is split and regenerated (bounded, #165)", 
     const result = await run(facts, provider);
     expect(callsFor(provider, RULES).map((c) => c.modules.length)).toEqual([4, 2, 2]);
     const warning = result.warnings.find((w) => w.section === RULES.label)!;
-    expect(warning.message).toContain("could not be split further");
+    // PR #169 review: the halves COULD be split — the allowance ran out.
+    expect(warning.message).toContain(
+      'the batches covering "p0", "p1", "p2", "p3" were not split again because the section\'s re-split allowance',
+    );
+    expect(warning.message).not.toContain("could not be split");
   });
 
   it("does not split a batch too small for its size to explain the cut-off (a runaway model)", async () => {
@@ -427,7 +508,8 @@ describe("a batch cut off at the cap is split and regenerated (bounded, #165)", 
     const result = await run(facts, provider);
     expect(callsFor(provider, RULES)).toHaveLength(1);
     const warning = result.warnings.find((w) => w.section === RULES.label)!;
-    expect(warning.message).toContain('"tiny1", "tiny2"');
+    expect(warning.message).toContain('the batch covering "tiny1", "tiny2" was cut off although');
+    expect(warning.message).not.toContain("allowance");
   });
 
   it("names a single module whose own reply is too large for the cap", async () => {
@@ -555,6 +637,34 @@ describe("a failed batch", () => {
     expect(warning.message).not.toContain("secret stack trace");
   });
 
+  // PR #169 review: an empty reply counted as done and was then filtered out
+  // before the merge, so its modules vanished with no warning at all.
+  it("names the modules of a batch whose reply was EMPTY", async () => {
+    const facts = pairs(4);
+    const provider = fakeModel({
+      empty: (c) => c.group === RULES.label && c.modules.includes("p2"),
+    });
+    const result = await run(facts, provider);
+    const rules = sectionOf(result.markdown, RULES.label);
+    expect(rules).toContain("Rule from p0**");
+    expect(rules).not.toContain("Rule from p2**");
+    const warning = result.warnings.find(
+      (w) => w.section === RULES.label && w.kind === "section-failed",
+    )!;
+    expect(warning.severity).toBe("error");
+    expect(warning.message).toContain('"p2", "p3"');
+    expect(warning.message).toContain("no content");
+    expect(warning.message).not.toContain('"p0"');
+  });
+
+  it("raises ONE empty-section warning, not one per batch, when every reply is empty", async () => {
+    const provider = fakeModel({ empty: (c) => c.group === RULES.label });
+    const result = await run(pairs(4), provider);
+    const warnings = result.warnings.filter((w) => w.section === RULES.label);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].message).toContain("could not be generated");
+  });
+
   it("fails the section as before when every batch fails", async () => {
     const provider = fakeModel({ fail: (c) => c.group === RULES.label });
     const result = await run(pairs(4), provider);
@@ -621,6 +731,41 @@ describe("per-batch grounding", () => {
     scoreFaithfulnessMock.mockResolvedValue(verified(10, 10));
     const result = await run(pairs(4), fakeModel(), ragGrounding());
     expect(result.warnings.filter((w) => w.section === RULES.label)).toEqual([]);
+  });
+
+  // PR #169 review: the section counted as verified if ANY batch was, so the
+  // score silently covered only part of it.
+  it("says which part went unchecked when one batch's scoring throws and another's does not", async () => {
+    let n = 0;
+    scoreFaithfulnessMock.mockImplementation(async (section: string) => {
+      if (section !== RULES.label) return verified(1, 1);
+      n += 1;
+      if (n === 2) throw new Error("judge down");
+      return verified(10, 10);
+    });
+    const result = await run(pairs(4), fakeModel(), ragGrounding());
+    const warning = result.warnings.find(
+      (w) => w.section === RULES.label && w.kind === "section-ungrounded",
+    )!;
+    expect(warning.severity).toBe("warning");
+    expect(warning.message).toContain('"p2", "p3" could not be checked');
+    expect(warning.message).toContain("covers only 1 of its 2 parts");
+    expect(warning.message).not.toContain('"p0"');
+  });
+
+  it("says which part went unchecked when a batch comes back unverified", async () => {
+    let n = 0;
+    scoreFaithfulnessMock.mockImplementation(async (section: string) => {
+      if (section !== RULES.label) return verified(1, 1);
+      n += 1;
+      return n === 1 ? { ...verified(0, 0), faithfulness: 1, verified: false } : verified(10, 10);
+    });
+    const result = await run(pairs(4), fakeModel(), ragGrounding());
+    const warning = result.warnings.find(
+      (w) => w.section === RULES.label && w.kind === "section-ungrounded",
+    )!;
+    expect(warning.message).toContain('"p0", "p1" could not be checked');
+    expect(warning.message).toContain("covers only 1 of its 2 parts");
   });
 
   it("treats a batch whose scoring throws as unverified, not as a section failure", async () => {

@@ -92,6 +92,11 @@ export interface BatchCandidate<T> {
   inputChars: number;
   /** Estimated characters this module adds to the batch's reply. */
   outputChars: number;
+  /**
+   * Entries this module adds to a per-batch list rendered under a count cap
+   * ({@link BatchLimits.listCap}) — the batch's source-formulas block.
+   */
+  listItems?: number;
 }
 
 export interface BatchLimits {
@@ -99,6 +104,12 @@ export interface BatchLimits {
   inputCap: number;
   /** Estimated reply characters one call may write ({@link batchOutputBudgetChars}). */
   outputBudget: number;
+  /**
+   * Most list entries one batch may carry ({@link BatchCandidate.listItems}):
+   * the cap the batch's list is rendered under, so no module's entries are cut
+   * from it. Unset = no limit.
+   */
+  listCap?: number;
 }
 
 /**
@@ -106,8 +117,8 @@ export interface BatchLimits {
  * batch's facts fit `inputCap` AND its estimated reply fits `outputBudget`.
  *
  * Greedy and order-preserving: a batch is closed when the next module would
- * push either total over its limit. A module that exceeds a limit on its own
- * still gets a batch to itself — it is never dropped — and the caller reports
+ * push any total (input, estimated output, list entries) over its limit. A
+ * module that exceeds a limit on its own still gets a batch to itself — it is never dropped — and the caller reports
  * it if its reply is cut off. Every candidate appears in exactly one batch.
  */
 export function planBatches<C extends BatchCandidate<unknown>>(
@@ -118,19 +129,26 @@ export function planBatches<C extends BatchCandidate<unknown>>(
   let current: C[] = [];
   let input = 0;
   let output = 0;
+  let items = 0;
+  const listCap = limits.listCap ?? Infinity;
   for (const c of candidates) {
+    const cItems = c.listItems ?? 0;
     const overflows =
       current.length > 0 &&
-      (input + c.inputChars > limits.inputCap || output + c.outputChars > limits.outputBudget);
+      (input + c.inputChars > limits.inputCap ||
+        output + c.outputChars > limits.outputBudget ||
+        items + cItems > listCap);
     if (overflows) {
       batches.push(current);
       current = [];
       input = 0;
       output = 0;
+      items = 0;
     }
     current.push(c);
     input += c.inputChars;
     output += c.outputChars;
+    items += cItems;
   }
   if (current.length > 0) batches.push(current);
   return batches;
@@ -232,17 +250,29 @@ function isFenceClose(line: string, open: string): boolean {
 }
 
 /**
- * Consume a fenced block starting at `lines[start]`. An UNCLOSED fence runs to
- * the end of the reply and is closed here, so it can never swallow the next
- * batch's content once the replies are joined.
+ * Consume a fenced block whose opening marker is `open` (the backtick or tilde
+ * run), starting at `lines[start]`. An UNCLOSED fence runs to the end of the
+ * reply and is closed here, so it can never swallow the next batch's content
+ * once the replies are joined.
+ *
+ * `nested`: the fence sits inside a list item, where it may be indented four
+ * or more spaces or by a tab, so its closing marker is matched on the line with
+ * its indentation removed (PR #169 review). The caller passes the marker it
+ * already matched, so the opener is never re-matched against a different form
+ * of the line.
  */
-function readFence(lines: string[], start: number): { text: string; next: number } {
-  const open = FENCE_OPEN.exec(lines[start])![1];
+function readFence(
+  lines: string[],
+  start: number,
+  open: string,
+  nested: boolean,
+): { text: string; next: number } {
   const body = [lines[start]];
   let i = start + 1;
   for (; i < lines.length; i++) {
     body.push(lines[i]);
-    if (isFenceClose(lines[i], open)) return { text: body.join("\n"), next: i + 1 };
+    const candidate = nested ? lines[i].trimStart() : lines[i];
+    if (isFenceClose(candidate, open)) return { text: body.join("\n"), next: i + 1 };
   }
   body.push(open);
   return { text: body.join("\n"), next: i };
@@ -275,8 +305,9 @@ function tokenize(markdown: string): Block[] {
       i++;
       continue;
     }
-    if (FENCE_OPEN.test(line)) {
-      const { text, next } = readFence(lines, i);
+    const fence = FENCE_OPEN.exec(line);
+    if (fence) {
+      const { text, next } = readFence(lines, i, fence[1], false);
       push("fence", text);
       i = next;
       continue;
@@ -319,8 +350,9 @@ function tokenize(markdown: string): Block[] {
           break;
         }
         if (!INDENTED.test(l)) break;
-        if (FENCE_OPEN.test(l.trimStart())) {
-          const { text, next } = readFence(lines, i);
+        const nestedFence = FENCE_OPEN.exec(l.trimStart());
+        if (nestedFence) {
+          const { text, next } = readFence(lines, i, nestedFence[1], true);
           body.push(text);
           i = next;
           continue;

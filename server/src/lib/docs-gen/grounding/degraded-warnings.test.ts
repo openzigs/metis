@@ -17,6 +17,7 @@ import {
   sectionMissingWarning,
   batchTruncatedWarning,
   batchFailedWarning,
+  batchUnverifiedWarning,
   DEFAULT_FAITHFULNESS_THRESHOLD,
   NARRATIVE_FAITHFULNESS_THRESHOLD,
   RECONSTRUCTION_FAITHFULNESS_THRESHOLD,
@@ -526,7 +527,7 @@ describe("#157 — batched-section warnings name the modules", () => {
   it("names a single module that alone overflows the cap, as an error that degrades the doc", () => {
     const w = batchTruncatedWarning(
       "Business Rules & Policies",
-      { singleModules: ["src/billing"], unsplitBatches: [] },
+      { singleModules: ["src/billing"], allowanceSpent: [], runaway: [] },
       16_384,
     );
     expect(w.kind).toBe("section-truncated");
@@ -537,16 +538,43 @@ describe("#157 — batched-section warnings name the modules", () => {
     expect(deriveDocStatus([w])).toBe("degraded");
   });
 
-  it("reports both cases together, and caps the list at ten names", () => {
+  it("reports the cases together, and caps the list at ten names", () => {
     const many = Array.from({ length: 13 }, (_, i) => `m${i}`);
     const w = batchTruncatedWarning(
       "Key Workflows",
-      { singleModules: ["a", "b"], unsplitBatches: many },
+      { singleModules: ["a", "b"], allowanceSpent: [many.slice(0, 7), many.slice(7)], runaway: [] },
       8_192,
     );
     expect(w.message).toContain('modules "a", "b" alone write more');
-    expect(w.message).toContain('"m9" and 3 more could not be split further');
+    expect(w.message).toContain('the batches covering "m0"');
+    expect(w.message).toContain('"m9" and 3 more were not split again because');
     expect(w.message).not.toContain('"m10"');
+  });
+
+  // PR #169 review: "could not be split further" was said of a batch that
+  // could have been split — the section's shared re-split allowance had simply
+  // run out. The two reasons a multi-module batch stays whole are now distinct.
+  it("says the re-split ALLOWANCE ran out, not that the batch could not be split", () => {
+    const w = batchTruncatedWarning(
+      "Business Rules & Policies",
+      { singleModules: [], allowanceSpent: [["p0", "p1"]], runaway: [] },
+      8_192,
+    );
+    expect(w.message).toContain(
+      'the batch covering "p0", "p1" was not split again because the section\'s re-split allowance',
+    );
+    expect(w.message).not.toContain("could not be split");
+  });
+
+  it("names a runaway batch — cut off though estimated far below the cap — as its own case", () => {
+    const w = batchTruncatedWarning(
+      "Business Rules & Policies",
+      { singleModules: [], allowanceSpent: [], runaway: [["tiny1", "tiny2"]] },
+      8_192,
+    );
+    expect(w.message).toContain('the batch covering "tiny1", "tiny2" was cut off although');
+    expect(w.message).toContain("repeating itself");
+    expect(w.message).not.toContain("allowance");
   });
 
   it("names the modules a failed batch left out, with a safe detail", () => {
@@ -558,5 +586,16 @@ describe("#157 — batched-section warnings name the modules", () => {
     );
     expect(batchFailedWarning("S", ["x"], "Timed out.").message).toMatch(/Timed out\.$/);
     expect(batchFailedWarning("S", ["x"], "  ").message).toMatch(/could not be generated\.$/);
+  });
+
+  it("says how much of a batched section its score actually covers", () => {
+    const w = batchUnverifiedWarning("Key Workflows", ["x", "y"], 3, 5);
+    expect(w.kind).toBe("section-ungrounded");
+    expect(w.severity).toBe("warning");
+    expect(w.message).toBe(
+      'Section "Key Workflows": the part written from "x", "y" could not be checked against ' +
+        "the source, so the section's faithfulness score covers only 3 of its 5 parts. Review " +
+        "that part against the code before relying on it.",
+    );
   });
 });

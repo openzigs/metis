@@ -115,6 +115,7 @@ import {
   sectionTruncatedWarning,
   batchTruncatedWarning,
   batchFailedWarning,
+  batchUnverifiedWarning,
   sectionMissingWarning,
   sectionUnfaithfulWarning,
   sectionPartlyGroundedWarning,
@@ -368,6 +369,18 @@ function floatFromEnv(name: string, fallback: number): number {
 function boolFromEnv(name: string): boolean {
   const raw = process.env[name];
   return raw != null && /^(1|true|yes|on)$/i.test(raw.trim());
+}
+
+/**
+ * #157 — whether the enumerative section groups (`batched: true`) are written
+ * in batches. Default ON; `DOCS_GEN_BATCHED_SECTIONS=0|false|no|off` is the
+ * operator's fallback to the single-call path (one call over the modules that
+ * fit the facts cap, the rest listed as a catalog) — e.g. when a local run's
+ * wall time matters more than completeness (PR #169 review).
+ */
+export function batchedSectionsEnabled(): boolean {
+  const raw = process.env.DOCS_GEN_BATCHED_SECTIONS;
+  return raw == null || !/^(0|false|no|off)$/i.test(raw.trim());
 }
 
 /**
@@ -2804,6 +2817,8 @@ async function synthesizeBatchedSection(input: {
     batch: SectionBatchModule[];
     result: SectionGroupResult;
     grounding: GroundingContext | undefined;
+    /** Why a cut-off multi-module batch was kept whole (PR #169 review). */
+    keptWhole?: "allowance" | "runaway";
   }> = [];
   const failed: Array<{ batch: SectionBatchModule[]; err: unknown }> = [];
 
@@ -2854,7 +2869,13 @@ async function synthesizeBatchedSection(input: {
       await runBatch(second);
       return;
     }
-    done.push({ batch, result, grounding });
+    const keptWhole =
+      result.truncation.truncated && batch.length > 1
+        ? resplitsLeft <= 0
+          ? ("allowance" as const)
+          : ("runaway" as const)
+        : undefined;
+    done.push({ batch, result, grounding, ...(keptWhole ? { keptWhole } : {}) });
   };
 
   for (const batch of plan.batches) await runBatch(batch);
@@ -2870,17 +2891,31 @@ async function synthesizeBatchedSection(input: {
       : "";
 
   const warnings: DocWarning[] = [];
+  const names = (d: { batch: SectionBatchModule[] }) => d.batch.map((m) => m.item.moduleName);
   const cutOff = done.filter((d) => d.result.truncation.truncated);
   if (cutOff.length > 0) {
-    const names = (d: (typeof done)[number]) => d.batch.map((m) => m.item.moduleName);
     warnings.push(
       batchTruncatedWarning(
         group.label,
         {
           singleModules: cutOff.filter((d) => d.batch.length === 1).flatMap(names),
-          unsplitBatches: cutOff.filter((d) => d.batch.length > 1).flatMap(names),
+          allowanceSpent: cutOff.filter((d) => d.keptWhole === "allowance").map(names),
+          runaway: cutOff.filter((d) => d.keptWhole === "runaway").map(names),
         },
         cutOff[0].result.maxTokens,
+      ),
+    );
+  }
+  // An EMPTY reply loses its modules as surely as a failed call (PR #169
+  // review). When every reply is empty the section-level empty warning fires
+  // instead, so this names the modules only when the rest of the section stands.
+  const empty = done.filter((d) => d.result.markdown.trim().length === 0);
+  if (replies.length > 0 && empty.length > 0) {
+    warnings.push(
+      batchFailedWarning(
+        group.label,
+        empty.flatMap(names),
+        "model returned no content (empty output)",
       ),
     );
   }
@@ -2898,18 +2933,21 @@ async function synthesizeBatchedSection(input: {
   // batch's facts, so every claim list stays small; the pooled result is then
   // graded exactly like a single-call section.
   const results: FaithfulnessResult[] = [];
+  // Replies the pooled score does not cover: unverified, or scoring threw.
+  const unchecked: typeof replies = [];
   if (claimExtractor && faithfulnessJudge) {
     for (const d of replies) {
       try {
-        results.push(
-          // Always built when an extractor exists (runBatch); an empty context
-          // is scored as unverified by scoreFaithfulness itself.
-          await scoreFaithfulness(group.label, d.result.markdown.trim(), d.grounding!, {
-            extractor: claimExtractor,
-            judge: faithfulnessJudge,
-          }),
-        );
+        // Always built when an extractor exists (runBatch); an empty context
+        // is scored as unverified by scoreFaithfulness itself.
+        const r = await scoreFaithfulness(group.label, d.result.markdown.trim(), d.grounding!, {
+          extractor: claimExtractor,
+          judge: faithfulnessJudge,
+        });
+        results.push(r);
+        if (!r.verified) unchecked.push(d);
       } catch (err) {
+        unchecked.push(d);
         log.warn("Faithfulness scoring failed for a section batch; batch unverified", {
           projectId,
           section: group.label,
@@ -2919,6 +2957,18 @@ async function synthesizeBatchedSection(input: {
     }
   }
   const pooled = aggregateFaithfulness(group.label, results);
+  // The pooled score is "verified" when ANY batch was; say which part it does
+  // not cover rather than let it stand for the whole section (PR #169 review).
+  if (pooled?.verified && unchecked.length > 0) {
+    warnings.push(
+      batchUnverifiedWarning(
+        group.label,
+        unchecked.flatMap(names),
+        replies.length - unchecked.length,
+        replies.length,
+      ),
+    );
+  }
   const outcome: SectionGroundingOutcome =
     pooled && markdown
       ? gradeFaithfulness(group.label, markdown, pooled, projectId, {
@@ -3167,14 +3217,15 @@ export async function synthesizeFinalDocument(
       // #157 — an enumerative group is written in batches that together read
       // EVERY relevant module. A group with no relevant module at all keeps the
       // single-call path.
-      const plannedBatches = group.batched
-        ? planSectionBatches(
-            facts,
-            group,
-            factsCharCap,
-            resolveSectionMaxOutputTokens(provider.model),
-          )
-        : null;
+      const plannedBatches =
+        group.batched && batchedSectionsEnabled()
+          ? planSectionBatches(
+              facts,
+              group,
+              factsCharCap,
+              resolveSectionMaxOutputTokens(provider.model),
+            )
+          : null;
       const batchPlan = plannedBatches && plannedBatches.modules.length > 0 ? plannedBatches : null;
       const sectionFactsSources: FactsSourceInput[] = batchPlan
         ? batchFactsSources(batchPlan)
@@ -3784,6 +3835,32 @@ export async function synthesizeFinalDocument(
   };
 }
 
+/** Most extracted formulas one section prompt's formulas block renders. */
+const FORMULAS_BLOCK_CAP = 80;
+
+/**
+ * The distinct extracted formulas of `facts`, in order — the list
+ * {@link renderFormulasBlob} renders the first {@link FORMULAS_BLOCK_CAP} of.
+ * Deduplicated within a repository, never across repositories. The #157 batch
+ * planner counts a module's formulas with this same function, so a batch never
+ * carries more than its block can render (PR #169 review).
+ */
+function distinctFormulas(
+  facts: readonly ModuleFacts[],
+): Array<ExtractedFormula & { repository?: RepositoryIdentity }> {
+  const seenExpr = new Set<string>();
+  const out: Array<ExtractedFormula & { repository?: RepositoryIdentity }> = [];
+  for (const f of facts) {
+    for (const formula of f.formulas) {
+      const identity = repositoryPathIdentity(f.repository, formula.expression);
+      if (seenExpr.has(identity)) continue;
+      seenExpr.add(identity);
+      out.push({ ...formula, repository: f.repository });
+    }
+  }
+  return out;
+}
+
 /**
  * The source-extracted formulas block of a section prompt: up to 80 distinct
  * expressions from `facts`. Deduplicated within a repository, never across
@@ -3792,19 +3869,10 @@ export async function synthesizeFinalDocument(
  * restating the same project-wide list.
  */
 function renderFormulasBlob(facts: readonly ModuleFacts[]): string {
-  const seenExpr = new Set<string>();
-  const allFormulas: Array<ExtractedFormula & { repository?: RepositoryIdentity }> = [];
-  for (const f of facts) {
-    for (const formula of f.formulas) {
-      const identity = repositoryPathIdentity(f.repository, formula.expression);
-      if (seenExpr.has(identity)) continue;
-      seenExpr.add(identity);
-      allFormulas.push({ ...formula, repository: f.repository });
-    }
-  }
+  const allFormulas = distinctFormulas(facts);
   return allFormulas.length > 0
     ? allFormulas
-        .slice(0, 80)
+        .slice(0, FORMULAS_BLOCK_CAP)
         .map(
           (f) =>
             `- ${f.repository ? `[${f.repository.repoConnectorId ?? f.repository.codeGraphId}] ` : ""}${f.kind}: ${f.expression.slice(0, 250)}`,
@@ -4294,7 +4362,10 @@ export interface SectionBatchPlan {
   batches: SectionBatchModule[][];
   /** Relevant modules in relevance order (the concatenation of `batches`). */
   modules: SectionBatchModule[];
-  /** Modules with nothing on this section's topic — no topic slice, no mined rule. */
+  /**
+   * Modules with nothing on this section's topic — no topic slice, no mined
+   * rule, and (for a formulas group) no extracted formula.
+   */
   skipped: string[];
   /** Estimated reply characters one batch is planned against. */
   outputBudget: number;
@@ -4317,9 +4388,15 @@ export function planSectionBatches(
 ): SectionBatchPlan {
   const modules: SectionBatchModule[] = [];
   const skipped: string[] = [];
+  // A group whose topic is formulas (Calculations) also documents each batch's
+  // EXTRACTED formulas, rendered per batch under FORMULAS_BLOCK_CAP: a module
+  // carrying some is on topic, and a batch never holds more than its block
+  // renders (PR #169 review).
+  const readsFormulas = factSlicesFor(group).includes("formulas");
   for (const f of rankRelevantFacts(facts, group)) {
     const parts = factsModuleParts(f, group);
-    if (parts.topicChars === 0 && parts.renderedMinedRules === 0) {
+    const formulas = readsFormulas ? distinctFormulas([f]).length : 0;
+    if (parts.topicChars === 0 && parts.renderedMinedRules === 0 && formulas === 0) {
       skipped.push(f.moduleName);
       continue;
     }
@@ -4329,6 +4406,7 @@ export function planSectionBatches(
       item: f,
       entry,
       inputChars: entry.length,
+      listItems: formulas,
       outputChars: estimateModuleOutputChars({
         topicChars: parts.topicChars,
         minedRules: parts.renderedMinedRules,
@@ -4336,7 +4414,11 @@ export function planSectionBatches(
     });
   }
   const outputBudget = batchOutputBudgetChars(maxTokens);
-  const batches = planBatches(modules, { inputCap: factsCharCap, outputBudget });
+  const batches = planBatches(modules, {
+    inputCap: factsCharCap,
+    outputBudget,
+    ...(readsFormulas ? { listCap: FORMULAS_BLOCK_CAP } : {}),
+  });
   return { batches, modules, skipped, outputBudget };
 }
 

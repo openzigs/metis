@@ -87,6 +87,14 @@ describe("planBatches", () => {
     expect(names(batches)).toEqual([["small"], ["huge"], ["tail"]]);
   });
 
+  it("closes a batch when its LIST entries would pass the list cap, and ignores it when unset", () => {
+    const withItems = (item: string, listItems: number) => ({ ...cand(item, 1, 1), listItems });
+    const cands = [withItems("a", 50), withItems("b", 40), withItems("c", 30)];
+    const limits = { inputCap: 1_000, outputBudget: 1_000 };
+    expect(names(planBatches(cands, { ...limits, listCap: 80 }))).toEqual([["a"], ["b", "c"]]);
+    expect(names(planBatches(cands, limits))).toEqual([["a", "b", "c"]]);
+  });
+
   it("returns no batches for no modules", () => {
     expect(planBatches([], { inputCap: 1, outputBudget: 1 })).toEqual([]);
   });
@@ -393,6 +401,39 @@ describe("mergeBatchSections — fences", () => {
     const merged = mergeBatchSections([reply], "R");
     expect(merged).toContain("1. **Rule**\n   ```js\nif (x) {}\n   ```\n   - detail");
     expect(merged).toContain("2. **Other**");
+  });
+
+  // PR #169 review: a nested fence indented 4+ spaces or by a tab crashed the
+  // merge (the item loop tested the trimmed line, the fence reader re-matched
+  // the untrimmed one and dereferenced a null match), losing every batch.
+  it.each([
+    ["four spaces", "    "],
+    ["six spaces", "      "],
+    ["a tab", "\t"],
+  ])("keeps a fence indented by %s under a list item with the item", (_label, indent) => {
+    const reply =
+      `## R\n\n### T\n\n1. **Rule**\n${indent}\`\`\`js\n${indent}### not a topic\n` +
+      `${indent}if (x) {}\n${indent}\`\`\`\n${indent}- detail\n\n2. **Other**\n\n### Next\n\n- after`;
+    const merged = mergeBatchSections([reply], "R");
+    expect(merged).toContain(
+      `1. **Rule**\n${indent}\`\`\`js\n${indent}### not a topic\n${indent}if (x) {}\n` +
+        `${indent}\`\`\`\n${indent}- detail`,
+    );
+    expect(merged).toContain("2. **Other**");
+    // The indented close ended the fence: the later H3 is still a topic (with
+    // its separator), and no closing marker was appended for a runaway fence.
+    expect(merged).toContain("\n\n---\n\n### Next\n\n- after");
+    expect(merged.split("\n").filter((l) => l.trim().startsWith("```"))).toHaveLength(2);
+    expect(merged).not.toMatch(/^### not a topic$/m);
+  });
+
+  it("closes an unclosed 4-space nested fence at the end of its own reply", () => {
+    const a = "## R\n\n### A\n\n1. **Rule**\n    ```sql\n    SELECT 1";
+    const b = "## R\n\n### B\n\n- rule from batch two";
+    const merged = mergeBatchSections([a, b], "R");
+    expect(merged).toContain("    ```sql\n    SELECT 1\n```");
+    expect(merged).toMatch(/^### B$/m);
+    expect(merged).toContain("- rule from batch two");
   });
 });
 
