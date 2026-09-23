@@ -211,6 +211,11 @@ describe("toPersistedMinedRules / parsePersistedMinedRules (#155)", () => {
     expect(parsePersistedMinedRules(undefined)).toBeNull();
   });
 
+  it("round-trips C# and Kotlin rules (#158, #159)", () => {
+    const rows = [rule({ language: "cs", file: "A.cs" }), rule({ language: "kt", file: "A.kt" })];
+    expect(parsePersistedMinedRules(JSON.stringify(rows))).toEqual(rows);
+  });
+
   it("accepts an empty inventory as a valid (not legacy) row", () => {
     expect(parsePersistedMinedRules("[]")).toEqual([]);
   });

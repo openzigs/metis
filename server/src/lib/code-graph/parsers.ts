@@ -25,7 +25,7 @@ export type { StringLiteral } from "./parsers-tree-sitter.js";
 
 export type SymbolKind = "function" | "class" | "interface" | "type" | "module" | "method";
 export type EdgeKind = "calls" | "imports" | "defines" | "references";
-export type Language = "ts" | "js" | "py" | "go" | "java" | "sas" | "cs";
+export type Language = "ts" | "js" | "py" | "go" | "java" | "sas" | "cs" | "kt";
 
 export interface ParsedSymbol {
   kind: SymbolKind;
@@ -111,6 +111,10 @@ export const LANGUAGE_BY_EXT: Record<string, Language> = {
   // files share the same grammar.
   cs: "cs",
   csx: "cs",
+  // Issue #159 — Kotlin (JVM services, Android). `.kts` scripts (incl. Gradle
+  // Kotlin DSL build files) share the grammar.
+  kt: "kt",
+  kts: "kt",
 };
 
 export function detectLanguage(filePath: string): Language | null {
@@ -1477,6 +1481,104 @@ function parseCSharp(filePath: string, source: string): ParsedFile {
 }
 
 // ---------------------------------------------------------------------------
+// Kotlin regex fallback parser — Issue #159.
+//
+// Used only when tree-sitter has not been initialised (unit tests that call
+// `parseSource` without booting the ingest pipeline). Captures:
+//   - `class` / `data class` / `object` / `sealed interface` ... -> class,
+//     interface, or (for `enum class`) type symbols
+//   - `fun name(` -> function (top level) or method (indented) symbols,
+//     including extension functions `fun Order.total(`
+//   - `import a.b.C` / `import a.b.*` / `import a.b.C as D` -> imports edges
+//   - `// WHY:` / `// NOTE:` / `// HACK:` / `// TODO:` markers
+// Nesting is NOT resolved here — the tree-sitter walker handles that.
+// ---------------------------------------------------------------------------
+// Literal regexes (no `RegExp` constructor) — the modifier list is spelled out
+// in both so Semgrep's non-literal-regexp rule has nothing to flag.
+const KT_TYPE_DECL_RE =
+  /^\s*(?:(?:public|private|protected|internal|open|abstract|final|sealed|data|enum|annotation|inner|value|inline|override|suspend|operator|infix|tailrec|external|expect|actual|fun|companion)\s+)*(class|interface|object)\s+([A-Za-z_]\w*)/;
+const KT_FUN_RE =
+  /^(\s*)(?:(?:public|private|protected|internal|open|abstract|final|sealed|data|enum|annotation|inner|value|inline|override|suspend|operator|infix|tailrec|external|expect|actual|fun|companion)\s+)*fun\s+(?:<[^>]*>\s*)?(?:[\w.<>?]+\.)?([A-Za-z_]\w*)\s*\(/;
+
+function parseKotlin(filePath: string, source: string): ParsedFile {
+  const lines = source.split(/\r?\n/);
+  const symbols: ParsedSymbol[] = [];
+  const edges: ParsedEdge[] = [];
+  const rationaleHints: RationaleHint[] = [];
+  const moduleQname = moduleQualifiedName(filePath);
+  symbols.push({
+    kind: "module",
+    name: filePath.split("/").pop() ?? filePath,
+    qualifiedName: moduleQname,
+    startLine: 1,
+    endLine: lines.length,
+    contentHash: sha256(source),
+  });
+  const define = (kind: SymbolKind, name: string, start: number, end: number): void => {
+    const qname = buildCodeQualifiedName(moduleQname, name);
+    symbols.push({
+      kind,
+      name,
+      qualifiedName: qname,
+      startLine: start + 1,
+      endLine: end + 1,
+      contentHash: sha256(lines.slice(start, end + 1).join("\n")),
+    });
+    edges.push({
+      kind: "defines",
+      fromQualifiedName: moduleQname,
+      toQualifiedName: qname,
+      line: start + 1,
+    });
+  };
+  // An expression-bodied `fun f() = x` has no block; do not let findBlockEnd
+  // borrow the NEXT declaration's `{`.
+  const endOf = (i: number): number =>
+    !lines[i].includes("{") && /\)\s*(?::\s*[^=]+)?=/.test(lines[i]) ? i : findBlockEnd(lines, i);
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const imp = /^\s*import\s+([A-Za-z_]\w*(?:\.\w+)*(?:\.\*)?)/.exec(line);
+    if (imp) {
+      edges.push({
+        kind: "imports",
+        fromQualifiedName: moduleQname,
+        toQualifiedName: imp[1],
+        line: i + 1,
+      });
+      continue;
+    }
+    const typeDecl = KT_TYPE_DECL_RE.exec(line);
+    if (typeDecl) {
+      const kind: SymbolKind =
+        typeDecl[1] === "interface"
+          ? "interface"
+          : /\benum\s+class\b/.test(line)
+            ? "type"
+            : "class";
+      define(kind, typeDecl[2], i, endOf(i));
+      continue;
+    }
+    const fn = KT_FUN_RE.exec(line);
+    if (fn) {
+      define(fn[1].length === 0 ? "function" : "method", fn[2], i, endOf(i));
+      continue;
+    }
+    const marker = /^\s*\/\/\s*(WHY|NOTE|HACK|TODO):\s*(.*)$/.exec(line);
+    if (marker) {
+      rationaleHints.push({
+        startLine: i + 1,
+        endLine: i + 1,
+        tag: marker[1] as RationaleHint["tag"],
+        text: marker[2].trim(),
+      });
+    }
+  }
+
+  return { filePath, language: "kt", symbols, edges, fileHash: sha256(source), rationaleHints };
+}
+
+// ---------------------------------------------------------------------------
 // Top-level dispatcher.
 //
 // Issue #322 — when `web-tree-sitter` has been initialised (call
@@ -1509,6 +1611,8 @@ export function parseSource(filePath: string, source: string, language: Language
         return parseJava(filePath, source);
       case "cs":
         return parseCSharp(filePath, source);
+      case "kt":
+        return parseKotlin(filePath, source);
     }
   } catch {
     return {

@@ -543,7 +543,7 @@ function isMemberCapable(sym: ResolvableSymbol): boolean {
 }
 
 /** Languages where a bare `foo()` inside a class is an implicit `this.foo()`. */
-const IMPLICIT_THIS_LANGUAGES: ReadonlySet<string> = new Set(["java", "cs"]);
+const IMPLICIT_THIS_LANGUAGES: ReadonlySet<string> = new Set(["java", "cs", "kt"]);
 
 /** Declared directly in its file, not inside a class or function. */
 function isTopLevel(sym: ResolvableSymbol): boolean {
@@ -728,7 +728,7 @@ function resolveBare(name: string, site: ResolutionSite, index: ResolutionIndex)
   if (site.runtimeImports?.has(name)) return null;
 
   // 1. Same-file definition wins outright — lexical shadowing. A bare call
-  //    cannot reach a method, except in Java/C# where it is an implicit `this.`.
+  //    cannot reach a method, except in Java/C#/Kotlin where it is an implicit `this.`.
   const sameFile = IMPLICIT_THIS_LANGUAGES.has(site.language)
     ? index.fileToNameIndex
     : index.fileToBareIndex;

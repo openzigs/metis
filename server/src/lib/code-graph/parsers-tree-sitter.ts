@@ -97,6 +97,9 @@ export async function initCodeGraphParsers(): Promise<void> {
       // Issue #900 — C#/.NET. The package publishes its prebuilt grammar as
       // `tree-sitter-c_sharp.wasm` (underscore), not `-c-sharp`.
       cs: require.resolve("tree-sitter-c-sharp/tree-sitter-c_sharp.wasm"),
+      // Issue #159 — Kotlin. `tree-sitter-grammars` publishes the maintained
+      // grammar (the unscoped `tree-sitter-kotlin` ships no prebuilt `.wasm`).
+      kt: require.resolve("@tree-sitter-grammars/tree-sitter-kotlin/tree-sitter-kotlin.wasm"),
     };
     const next = new Map<Language, LoadedParser>();
     for (const [lang, path] of Object.entries(grammarPaths) as Array<[Language, string]>) {
@@ -171,6 +174,9 @@ export function parseWithTreeSitter(
       break;
     case "cs":
       walkCSharp(tree.rootNode, source, moduleQname, symbols, edges);
+      break;
+    case "kt":
+      walkKotlin(tree.rootNode, source, moduleQname, symbols, edges);
       break;
   }
   // Rationale hints are comment-text scanning — orthogonal to grammar and
@@ -1513,6 +1519,156 @@ function walkCSharp(
 }
 
 // ---------------------------------------------------------------------------
+// Kotlin walker — Issue #159.
+//
+// Records classes / data / sealed classes and `object`s (as `class`),
+// interfaces, `enum class` (as `type`), functions (`function` at top level,
+// `method` inside a type), and a type's properties — body `val`/`var` and
+// primary-constructor `val`/`var` parameters — as `method`, mirroring the C#
+// walker's property handling so annotated DTO fields reach the rule miner.
+// `companion object` scopes are transparent: `Foo.create()` is how callers name
+// a companion member. Emits `imports` for `import` headers, `calls` for
+// invocations, and `references` (via `new`) for a call to a capitalised name,
+// which in Kotlin is a constructor call (there is no `new`).
+//
+// Known grammar gap (@tree-sitter-grammars/tree-sitter-kotlin 1.1.0): a
+// `fun interface` declaration parses as an ERROR node; its members are still
+// walked, the interface itself is not recorded.
+// ---------------------------------------------------------------------------
+function walkKotlin(
+  root: SyntaxNode,
+  source: string,
+  moduleQname: string,
+  symbols: ParsedSymbol[],
+  edges: ParsedEdge[],
+): void {
+  type Frame = { name: string; isType: boolean };
+  const declStack: Frame[] = [];
+  const top = (): Frame | undefined => declStack[declStack.length - 1];
+
+  const recordSymbol = (node: SyntaxNode, name: string, kind: SymbolKind): ParsedSymbol => {
+    const parentQ = top()?.name ?? moduleQname;
+    const sym: ParsedSymbol = {
+      kind,
+      name,
+      qualifiedName: buildCodeQualifiedName(parentQ, name),
+      startLine: node.startPosition.row + 1,
+      endLine: node.endPosition.row + 1,
+      contentHash: bodyHash(source, node),
+    };
+    symbols.push(sym);
+    emitDefines(edges, parentQ, sym);
+    return sym;
+  };
+
+  const descendAs = (n: SyntaxNode, frame: Frame | null, skipStart: number): "skip" => {
+    if (frame) declStack.push(frame);
+    for (const c of n.namedChildren) {
+      if (c.startIndex === skipStart) continue;
+      walk(c, visit);
+    }
+    if (frame) declStack.pop();
+    return "skip";
+  };
+
+  const hasKeyword = (n: SyntaxNode, kw: string): boolean => n.children.some((c) => c.type === kw);
+
+  const visit = (n: SyntaxNode): void | "skip" => {
+    switch (n.type) {
+      case "class_declaration":
+      case "object_declaration": {
+        const id = n.childForFieldName("name");
+        if (!id) return;
+        const modifiers = n.namedChildren.find((c) => c.type === "modifiers");
+        const kind: SymbolKind = hasKeyword(n, "interface")
+          ? "interface"
+          : modifiers && /\benum\b/.test(modifiers.text)
+            ? "type"
+            : "class";
+        const sym = recordSymbol(n, id.text, kind);
+        return descendAs(n, { name: sym.qualifiedName, isType: true }, id.startIndex);
+      }
+      case "function_declaration": {
+        const id = n.childForFieldName("name");
+        if (!id) return;
+        const sym = recordSymbol(n, id.text, top()?.isType ? "method" : "function");
+        return descendAs(n, { name: sym.qualifiedName, isType: false }, id.startIndex);
+      }
+      case "property_declaration": {
+        // Only a TYPE's properties are members; a local `val` is not a symbol.
+        if (top()?.isType) {
+          const decl = n.namedChildren.find((c) => c.type === "variable_declaration");
+          const id = decl?.namedChildren.find((c) => c.type === "identifier");
+          if (id) recordSymbol(n, id.text, "method");
+        }
+        return; // descend: an initialiser's calls are still edges
+      }
+      case "class_parameter": {
+        if (hasKeyword(n, "val") || hasKeyword(n, "var")) {
+          const id = n.namedChildren.find((c) => c.type === "identifier");
+          if (id) recordSymbol(n, id.text, "method");
+        }
+        return;
+      }
+      case "import": {
+        const m = /^import\s+([A-Za-z_]\w*(?:\.\w+)*(?:\.\*)?)/.exec(n.text.trim());
+        if (m) {
+          edges.push({
+            kind: "imports",
+            fromQualifiedName: moduleQname,
+            toQualifiedName: m[1],
+            line: n.startPosition.row + 1,
+          });
+        }
+        return "skip";
+      }
+      case "call_expression": {
+        const callee = n.namedChildren[0];
+        if (!callee) return;
+        let name: string | null = null;
+        let receiver: string | undefined;
+        if (callee.type === "identifier") {
+          name = callee.text;
+        } else if (callee.type === "navigation_expression") {
+          const last = callee.namedChildren[callee.namedChildren.length - 1];
+          if (last?.type === "identifier") name = last.text;
+          const obj = callee.namedChildren[0];
+          receiver =
+            obj.type === "this_expression"
+              ? "this"
+              : obj.type === "super_expression"
+                ? "super"
+                : receiverOf(obj);
+        }
+        if (name) {
+          const from = top()?.name ?? moduleQname;
+          const line = n.startPosition.row + 1;
+          if (/^[A-Z]/.test(name)) {
+            edges.push({
+              kind: "references",
+              fromQualifiedName: from,
+              toQualifiedName: name,
+              line,
+              metadata: { via: "new" },
+            });
+          } else {
+            edges.push({
+              kind: "calls",
+              fromQualifiedName: from,
+              toQualifiedName: name,
+              line,
+              ...(receiver !== undefined ? { receiver } : {}),
+            });
+          }
+        }
+        return; // continue into arguments / lambdas for nested calls
+      }
+    }
+  };
+  walk(root, visit);
+}
+
+// ---------------------------------------------------------------------------
 // Rationale-hint scanner — comment-text only, no syntax dependency.
 // ---------------------------------------------------------------------------
 function collectRationaleHints(source: string, language: Language): RationaleHint[] {
@@ -1523,7 +1679,8 @@ function collectRationaleHints(source: string, language: Language): RationaleHin
     language === "js" ||
     language === "go" ||
     language === "java" ||
-    language === "cs"
+    language === "cs" ||
+    language === "kt"
   ) {
     let i = 0;
     while (i < lines.length) {

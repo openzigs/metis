@@ -14,3 +14,9 @@ confirming a unit test pins the consumer's literal event name. Filed as #91.
 Related: `reconcileIssueChange` accepted an `emitDrift` dep that no caller ever
 supplied — its test injected the dep itself, so a dead emit path stayed green.
 An optional dep with a test that supplies it proves nothing about wiring.
+
+Update (#110/#113, 2026-09-23): #110 added the reverse check (emitted/listened
+names against the declared list), but the review showed a typo still passes when
+the **correct spelling also appears** elsewhere. To prove such a guard can fail,
+add a misspelled COPY next to a correct occurrence — misspelling the only
+occurrence does not test it.
