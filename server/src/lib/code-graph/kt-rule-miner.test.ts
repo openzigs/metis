@@ -95,6 +95,33 @@ describe("mineKtRules — guards and throws", () => {
   });
 });
 
+describe("mineKtRules — log-then-exit guards", () => {
+  it("keeps the condition of an if that logs before it returns or throws", () => {
+    const src = [
+      `if (order == null) {`,
+      `    logger.warn("missing order")`,
+      `    return`,
+      `}`,
+      `if (qty <= 0) {`,
+      `    log.error("bad qty")`,
+      `    throw IllegalArgumentException("qty")`,
+      `}`,
+    ].join("\n");
+    const g = byKind(mineKtRules(src, FILE, 1), "guard");
+    expect(g.map((r) => r.summary)).toEqual([
+      "Rejects/exits when order == null",
+      "Rejects/exits when qty <= 0",
+    ]);
+  });
+
+  it("does not treat an exit after other work as a guard", () => {
+    const src = [`if (flag) {`, `    logger.info("x")`, `    save(order)`, `    return`, `}`].join(
+      "\n",
+    );
+    expect(byKind(mineKtRules(src, FILE, 1), "guard")).toEqual([]);
+  });
+});
+
 describe("mineKtRules — constants in comparisons", () => {
   it("mines braced, inline and expression ifs that compare against constants", () => {
     const src = [
@@ -204,6 +231,22 @@ describe("mineKtRules — when on status/enum", () => {
     ]);
   });
 
+  it("trims whitespace padding around a when subject and its val binding", () => {
+    const src = [
+      `when (  order.status  ) {`,
+      `    OrderStatus.PENDING -> confirm()`,
+      `}`,
+      `when (  val s  =  order.status  ) {`,
+      `    OrderStatus.SHIPPED -> track()`,
+      `}`,
+    ].join("\n");
+    const w = byKind(mineKtRules(src, FILE, 1), "when-branch");
+    expect(w.map((r) => r.summary)).toEqual([
+      "State dispatch on `order.status` with 1 branches: OrderStatus.PENDING",
+      "State dispatch on `order.status` with 1 branches: OrderStatus.SHIPPED",
+    ]);
+  });
+
   it("records constant-comparing arms of a subject-less when as threshold guards", () => {
     const src = [
       `val grade = when {`,
@@ -294,6 +337,14 @@ describe("mineKtRules — linear time on long lines (ReDoS)", () => {
       `x${" ?: ".repeat(n / 4)}`,
       `[${"Required(".repeat(n / 9)}`,
       `if (a) b${" ".repeat(n)}c`,
+      // A header whose `(` never closes (or whose `)` has no `{` after it):
+      // `\(\s*(...)?([^)]*?)\s*\)` let three quantifiers share the whitespace
+      // run — cubic, ~9 s at 4,000 chars.
+      `when (${" ".repeat(n)}x`,
+      `when (${" ".repeat(n)})`,
+      `when${" ".repeat(n)}x`,
+      `if (${" ".repeat(n)}x`,
+      `require(${" ".repeat(n)}x`,
     ];
     const start = performance.now();
     for (const src of inputs) mineKtRules(src, FILE, 1);

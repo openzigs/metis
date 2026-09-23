@@ -71,8 +71,10 @@ const THROW_RE = /throw\s+new\s+([A-Za-z_][\w.]*)\s*\(\s*(\$?@?"(?:[^"\\]|\\.)*"
 const THROW_HELPER_RE =
   /\b(Argument(?:Null|OutOfRange)?Exception|ObjectDisposedException)\.(ThrowIf\w*)\s*\(([^;]*)\)\s*;/;
 const GUARD_AGAINST_RE = /\bGuard\.Against\.(\w+)\s*\(([^;]*)\)\s*;/;
-// `switch (subject)` statement header.
-const SWITCH_RE = /\bswitch\s*\(\s*([^)]+?)\s*\)/;
+// `switch (subject)` statement header. The subject is trimmed in code, not by
+// `\s*` around the capture: `\(\s*([^)]+?)\s*\)` let three quantifiers share
+// one whitespace run and was cubic on `switch (` + spaces with no `)` (ReDoS).
+const SWITCH_RE = /\bswitch\s*\(([^)]+)\)/;
 // `case Status.Pending:` / `case "gold":` / `case 3:` / `case X when y > 0:`.
 // Single greedy class up to the `:` (a lazy group + optional `when` guard was
 // cubic on a long line with no `:`); the guard is stripped afterwards.
@@ -206,6 +208,16 @@ function ifBody(lines: string[], headerIdx: number): string[] {
 
 function isLoggingOnly(statements: string[]): boolean {
   return statements.length > 0 && statements.every((s) => LOG_CALL_RE.test(s));
+}
+
+/**
+ * True when the body's first non-logging statement exits (`throw`/`return`).
+ * Leading log lines are skipped so `log(...); return;` is still a guard; an exit
+ * after other work is not.
+ */
+function exitsAfterLogging(statements: string[]): boolean {
+  const first = statements.find((s) => !LOG_CALL_RE.test(s));
+  return first !== undefined && EXIT_RE.test(first);
 }
 
 /**
@@ -428,10 +440,11 @@ export function mineCsRules(
     }
 
     // ---- 6. switch statements / expressions ----
-    const sMatch = SWITCH_RE.exec(raw);
+    const sHead = SWITCH_RE.exec(raw);
+    const sMatch = sHead && sHead[1].trim() ? sHead : null;
     const seMatch = sMatch ? null : SWITCH_EXPR_RE.exec(raw);
     if (sMatch || seMatch) {
-      const subject = (sMatch ?? seMatch)![1];
+      const subject = (sMatch ?? seMatch)![1].trim();
       const labels: string[] = [];
       let depth = 0;
       let started = false;
@@ -485,7 +498,7 @@ export function mineCsRules(
       if (LOG_LEVEL_COND_RE.test(cond)) continue;
       const body = ifBody(lines, i);
       if (isLoggingOnly(body)) continue;
-      const exits = body.length > 0 && EXIT_RE.test(body[0]);
+      const exits = exitsAfterLogging(body);
       if (exits) {
         push("guard", line, `Rejects/exits when ${truncate(cond, 140)}`, i);
       } else if (comparesToConstant(cond)) {

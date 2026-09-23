@@ -66,8 +66,12 @@ const IF_EXPR_HEAD_RE = /=\s*if\s*\(/;
 const ELVIS_RE = /(?<![\w.])(\w[\w.]*(?:\([^()]*\))?)\s*\?:\s*(throw\b.*|return\b.*)$/;
 // `throw XxxException("...")` — Kotlin has no `new`.
 const THROW_RE = /\bthrow\s+([A-Z][\w.]*)\s*\(\s*("(?:[^"\\]|\\.)*")?/;
-// `when (subject) {` / `when (val s = x.status) {` / `when {`.
-const WHEN_RE = /\bwhen\s*(?:\(\s*(?:val\s+\w+\s*=\s*)?([^)]*?)\s*\))?\s*\{/;
+// `when (subject) {` / `when (val s = x.status) {` / `when {`. The subject is
+// trimmed and its `val s =` binding stripped in code: `\(\s*(?:val…)?([^)]*?)\s*\)`
+// let three quantifiers share one whitespace run and was cubic on `when (` +
+// spaces with no `)` (ReDoS). No two quantifiers here can match the same text.
+const WHEN_RE = /\bwhen\s*(?:\(([^)]*)\)\s*)?\{/;
+const WHEN_VAL_BINDING_RE = /^val\s+\w+\s*=/;
 // Bean Validation annotations with optional Kotlin use-site target.
 const ANNOTATION_RE =
   /@(?:field:|get:|set:|param:|property:|setparam:)?([A-Z]\w*)\s*(\((?:[^()]|\([^()]*\))*\))?/g;
@@ -191,6 +195,16 @@ function isLoggingOnly(statements: string[]): boolean {
   return statements.length > 0 && statements.every((s) => LOG_CALL_RE.test(s));
 }
 
+/**
+ * True when the body's first non-logging statement exits (`throw`/`return`).
+ * Leading log lines are skipped so `log(...); return;` is still a guard; an exit
+ * after other work is not.
+ */
+function exitsAfterLogging(statements: string[]): boolean {
+  const first = statements.find((s) => !LOG_CALL_RE.test(s));
+  return first !== undefined && EXIT_RE.test(first);
+}
+
 function summarizeAnnotation(name: string, args: string): string {
   const a = args.replace(/^\(|\)$/g, "").trim();
   switch (name) {
@@ -307,7 +321,7 @@ export function mineKtRules(
     // ---- 5. when on a status/enum ----
     const wMatch = WHEN_RE.exec(raw);
     if (wMatch) {
-      const subject = wMatch[1]?.trim();
+      const subject = wMatch[1]?.trim().replace(WHEN_VAL_BINDING_RE, "").trim();
       const labels: string[] = [];
       let depth = 0;
       for (let j = i; j < Math.min(i + LOOKAHEAD, lines.length); j++) {
@@ -385,7 +399,7 @@ export function mineKtRules(
     }
     const body = ifBody(lines, i);
     if (isLoggingOnly(body)) continue;
-    if (body.length > 0 && EXIT_RE.test(body[0])) {
+    if (exitsAfterLogging(body)) {
       push("guard", line, `Rejects/exits when ${truncate(cond, 140)}`, i);
     } else if (comparesToConstant(cond)) {
       push("guard", line, `Branches on threshold ${truncate(cond, 140)}`, i);

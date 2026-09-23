@@ -67,6 +67,38 @@ describe("mineCsRules — guard clauses", () => {
   });
 });
 
+describe("mineCsRules — log-then-exit guards", () => {
+  it("keeps the condition of an if that logs before it returns or throws", () => {
+    const src = [
+      `if (order == null)`,
+      `{`,
+      `    _logger.LogWarning("missing order");`,
+      `    return;`,
+      `}`,
+      `if (qty <= 0) {`,
+      `    _logger.LogError("bad qty");`,
+      `    throw new ArgumentException("qty");`,
+      `}`,
+    ].join("\n");
+    const g = byKind(mineCsRules(src, FILE, 1), "guard");
+    expect(g.map((r) => r.summary)).toEqual([
+      "Rejects/exits when order == null",
+      "Rejects/exits when qty <= 0",
+    ]);
+  });
+
+  it("does not treat an exit after other work as a guard", () => {
+    const src = [
+      `if (flag) {`,
+      `    _logger.LogInformation("x");`,
+      `    Save(order);`,
+      `    return;`,
+      `}`,
+    ].join("\n");
+    expect(byKind(mineCsRules(src, FILE, 1), "guard")).toEqual([]);
+  });
+});
+
 describe("mineCsRules — constants in comparisons", () => {
   it("mines a branch on a named constant and on an enum member", () => {
     const src = [
@@ -276,6 +308,19 @@ describe("mineCsRules — switch on status/enum", () => {
     );
   });
 
+  it("trims whitespace padding around the switch subject", () => {
+    const src = [
+      `switch (  order.Status  ) {`,
+      `    case OrderStatus.Pending:`,
+      `        break;`,
+      `}`,
+    ].join("\n");
+    const s = byKind(mineCsRules(src, FILE, 1), "switch-case");
+    expect(s.map((r) => r.summary)).toEqual([
+      "State dispatch on `order.Status` with 1 branches: OrderStatus.Pending",
+    ]);
+  });
+
   it("strips a case guard (`when`) from the label", () => {
     const src = [
       `switch (order.Status) {`,
@@ -423,6 +468,11 @@ describe("mineCsRules — linear time on long lines (ReDoS)", () => {
       `if (${"a) ".repeat(n / 3)}`,
       `RuleFor(x => x.A)${".Must(".repeat(n / 6)}`,
       `[Range(${" ".repeat(n)}`,
+      // A header whose `(` never closes: `\s*([^)]+?)\s*\)` let three
+      // quantifiers share the whitespace run — cubic, ~10 s at 4,000 chars.
+      `switch (${" ".repeat(n)}x`,
+      `switch (${" ".repeat(n)}`,
+      `if (${" ".repeat(n)}x`,
     ];
     const start = performance.now();
     for (const src of inputs) mineCsRules(src, FILE, 1);
