@@ -126,8 +126,9 @@ function moduleWith(name: string, factsLen: number): ModuleFacts {
     moduleName: name,
     classCount: 1,
     methodCount: 10, // constant so relevance score ties → cap alone drives omission
-    // Fill with the WORKFLOWS header keyword so selectRelevantFacts scores it.
-    facts: `WORKFLOWS\n${"- step\n".repeat(Math.max(1, Math.floor(factsLen / 7)))}`,
+    // Fill the WORKFLOWS slice so selectRelevantFacts scores it. Bullets are
+    // distinct: #154 slicing keeps a verbatim-repeated bullet only once.
+    facts: `WORKFLOWS\n${Array.from({ length: Math.max(1, Math.floor(factsLen / 10)) }, (_, i) => `- step ${i}`).join("\n")}`,
     formulas: [],
     topClasses: [name],
   };

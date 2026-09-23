@@ -63,7 +63,24 @@ import {
   mergeTruncation,
   type TruncationDetection,
 } from "./truncation.js";
-import { resolveFactsMaxOutputTokens, resolveSectionMaxOutputTokens } from "./output-caps.js";
+import {
+  modelOutputCeiling,
+  resolveFactsMaxOutputTokens,
+  resolveSectionMaxOutputTokens,
+} from "./output-caps.js";
+import {
+  FACT_SLICES,
+  MINED_RULES_ENTRY_CHAR_CAP,
+  countFactBullets,
+  dedupeRulesAgainstMined,
+  parsePersistedMinedRules,
+  renderMinedRuleInventory,
+  sliceModuleFacts,
+  toPersistedMinedRules,
+  type FactSlice,
+  type ModuleFactSlices,
+  type PersistedMinedRule,
+} from "./fact-slices.js";
 import { resolvePhase1Reasoning } from "./docs-gen-reasoning.js";
 import { mapSettledWithConcurrency, resolvePhase1Concurrency } from "./phase1-concurrency.js";
 import {
@@ -89,6 +106,7 @@ import {
   noModulesWarning,
   sourceUnavailableWarning,
   factsTruncatedWarning,
+  phase1FactsTruncatedWarning,
   sectionFailedWarning,
   sectionTruncatedWarning,
   sectionMissingWarning,
@@ -194,7 +212,9 @@ export function singleShotPromptCaching(supportsCaching: boolean): { system: tru
  * different prompt version are treated as a miss and overwritten on the
  * next run.
  */
-const PHASE1_PROMPT_VERSION = 3;
+// 4 — #154/#155/#156: headings are now parsed into topic slices, every
+// language's mined rules are persisted, and truncated replies are no longer cached.
+const PHASE1_PROMPT_VERSION = 4;
 export { PHASE1_PROMPT_VERSION, GENERATED_DOC_PROVENANCE_SCHEMA_VERSION };
 
 /**
@@ -953,6 +973,18 @@ export interface ModuleFacts {
    * SAS-only ModuleGroups), which carry no readable code symbols by design.
    */
   sourceUnavailable?: boolean;
+  /**
+   * #155 — every language's deterministically mined rules for this module
+   * (Java, TS/JS, Python, Go, SAS, SQL), with `file:line`. Fed to the Rules
+   * section directly, independent of whether the LLM repeated them in `facts`.
+   */
+  minedRules?: PersistedMinedRule[];
+  /**
+   * #156 — true when the Phase-1 reply was still cut off by the output-token cap
+   * after the one larger-cap retry. The (partial) facts are used for this run
+   * but never cached, and the caller raises a warning naming the module.
+   */
+  factsTruncated?: boolean;
 }
 
 interface ProjectMeta {
@@ -1235,6 +1267,16 @@ export async function synthesizeHolisticDocument(
         Math.max(codeBackedModules, sourceUnavailableCount),
       ),
     );
+  }
+  // #156 — modules whose facts the output cap cut short even after the retry.
+  const truncatedModules = facts.filter((f) => f.factsTruncated).map((f) => f.moduleName);
+  if (truncatedModules.length > 0) {
+    log.warn("Phase 1 facts truncated for one or more modules", {
+      projectId,
+      docType,
+      modules: truncatedModules,
+    });
+    phase1Warnings.push(phase1FactsTruncatedWarning(truncatedModules));
   }
 
   log.info("Phase 2: synthesizing holistic document", {
@@ -1873,6 +1915,26 @@ export async function extractModuleFacts(
   const dataLineage =
     graphSummary?.perModuleLineage.get(repositoryPathIdentity(m.repository, m.dir)) ?? null;
 
+  // #155 — every language's mined rules in ONE language-neutral shape. This is
+  // what is persisted (`minedRulesJson`) and what reaches the Rules section
+  // directly; before #155 only the Java rules were persisted and the rest were
+  // discarded once the Phase-1 prompt had been built.
+  const minedRules: PersistedMinedRule[] = [
+    ...toPersistedMinedRules("java", allMinedRules),
+    ...toPersistedMinedRules(
+      "ts",
+      allTsRules.filter((r) => detectLanguage(r.filePath) !== "js"),
+    ),
+    ...toPersistedMinedRules(
+      "js",
+      allTsRules.filter((r) => detectLanguage(r.filePath) === "js"),
+    ),
+    ...toPersistedMinedRules("py", allPyRules),
+    ...toPersistedMinedRules("go", allGoRules),
+    ...toPersistedMinedRules("sas", allSasRules),
+    ...toPersistedMinedRules("sql", allSqlRules),
+  ];
+
   // SAS workflow + source-derived dataset lineage, rendered once and reused in
   // BOTH the Phase-1 prompt and the appended facts (so they survive the fact
   // cache and reach Phase-2 generation + the citable facts set). These are
@@ -1968,7 +2030,8 @@ ABSOLUTE RULES:
 2. Use domain language, not Java/Python jargon. Say "Generators must be certified" not "the certify() method runs validation".
 3. Output ONLY the structured sections above. No preamble, no closing remarks. Start with "PURPOSE".
 4. Use BULLETS only — no prose paragraphs. Short, dense, information-packed bullet points. One fact per bullet.
-5. Be EXHAUSTIVE — there is NO word limit on this fact extraction. If a module enforces 60 distinct rules, output 60 bullets in RULES. Do not summarize, do not abbreviate, do not omit "obvious" checks. The downstream synthesis pass cannot recover facts you discard here. Quantity of facts > prose quality. A 1500-word fact dump is BETTER than a 600-word polished summary.`;
+5. Be EXHAUSTIVE — there is NO word limit on this fact extraction. If a module enforces 60 distinct rules, output 60 bullets in RULES. Do not summarize, do not abbreviate, do not omit "obvious" checks. The downstream synthesis pass cannot recover facts you discard here. Quantity of facts > prose quality. A 1500-word fact dump is BETTER than a 600-word polished summary.
+6. Write each heading ALONE on its own line, spelled exactly as above (no "#", no "**", no numbering). A program splits your output on these headings and sends each topic only to the document section that needs it, so a fact under the wrong heading reaches the wrong section.`;
 
   const userMessage = `Module path: \`${moduleName}\`
 Top classes/interfaces (${classes.length} total): ${topClasses.join(", ")}
@@ -2072,6 +2135,10 @@ Extract ALL facts now. Be EXHAUSTIVE — every validation, every conditional, ev
           // The module-local fingerprint includes lineage, so a hit means
           // the lineage embedded in the cached facts is still current.
           dataLineage,
+          // #155 — read the persisted inventory back through the cache (the key
+          // covers every source file's hash, so its lines are current). A legacy
+          // Java-only row cannot be parsed as the new shape → use this run's.
+          minedRules: parsePersistedMinedRules(cached.minedRulesJson) ?? minedRules,
         };
       }
     } catch (err) {
@@ -2086,81 +2153,62 @@ Extract ALL facts now. Be EXHAUSTIVE — every validation, every conditional, ev
   let usagePromptTokens = 0;
   let usageCompletionTokens = 0;
   let usageCacheReadTokens = 0;
+  // #156 — true when the reply was still cut off by the output cap after the
+  // one larger-cap retry; such facts are used for this run but never cached.
+  let factsTruncated = false;
   if (provider.offline) {
     factsText = `PURPOSE\n${moduleName} module.\n\nENTITIES\n${topClasses.map((c) => `- \`${c}\``).join("\n")}\n\nRULES\n(none extracted in offline mode)\n\nWORKFLOWS\n(none)\n\nFORMULAS\n(none)\n\nINTEGRATIONS\n(none)\n\nKEY_APIS\n(none)\n\nNOTES\n(none)`;
   } else {
-    // Use streaming to avoid ALB 504 gateway timeouts. Non-streaming
-    // Phase 1 calls with large context (60K chars) routinely exceed the
-    // gateway ALB's 60s idle timeout. Streaming keeps bytes flowing so
-    // the ALB sees activity and doesn't kill the connection.
-    // Retry once on gateway errors (502/503/504) in case the initial
-    // stream setup fails (e.g. ALB rejects before streaming starts).
-    const MAX_RETRIES = 2;
-    const RETRY_DELAY_MS = 5_000;
-    let lastErr: unknown;
-    let succeeded = false;
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      try {
-        const sessionId = `docs-facts-${projectId}-${m.dir.replace(/[^a-z0-9]/gi, "_")}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const chunks: string[] = [];
-        for await (const chunk of provider.stream(messages, {
-          sessionId,
-          disableTools: true,
-          // #1226 — configurable OUTPUT cap (was hardcoded 4096), clamped to
-          // the model's known ceiling.
-          maxTokens,
-          ...reasoning,
-          // #390 — tag prompt-cache hit-ratio telemetry by workload.
-          callType: "synthesis",
-          // Cache ONLY the stable system prompt — it is shared across every
-          // module's Phase-1 call. The large per-module SOURCE in the user turn
-          // is unique to THIS module and not reused across provider calls, so a
-          // message-level cache write would just burn the write premium with no
-          // later read to amortise it (#389). #anthropic-prompt-caching.
-          promptCaching: singleShotPromptCaching(supportsCaching),
-        })) {
-          if (chunk.type === "delta") {
-            chunks.push(chunk.content);
-          } else if (chunk.type === "usage") {
-            usagePromptTokens = chunk.usage.promptTokens;
-            usageCompletionTokens = chunk.usage.completionTokens;
-            usageCacheReadTokens = chunk.usage.cacheReadTokens ?? 0;
-          }
-        }
-        factsText = chunks.join("").trim();
-        // Record token usage for the project usage dashboard.
-        if (usagePromptTokens > 0 || usageCompletionTokens > 0) {
-          recordUsage({
-            projectId,
-            sessionId,
-            provider: provider.key,
-            model: provider.model,
-            inputTokens: usagePromptTokens,
-            outputTokens: usageCompletionTokens,
-            cacheReadTokens: usageCacheReadTokens,
-          });
-        }
-        succeeded = true;
-        break;
-      } catch (err) {
-        lastErr = err;
-        const errStr = String(err);
-        const isGatewayTimeout = /\b(502|503|504)\b/.test(errStr);
-        if (isGatewayTimeout && attempt < MAX_RETRIES - 1) {
-          log.warn("Phase 1 stream setup failed, retrying", {
-            modulePath: m.dir,
-            attempt: attempt + 1,
-            delaySec: Math.round(RETRY_DELAY_MS / 1000),
-            err: errStr.slice(0, 200),
-          });
-          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
-          continue;
-        }
-        break;
+    let reply = await streamPhase1Facts(provider, messages, {
+      projectId,
+      modulePath: m.dir,
+      maxTokens,
+      reasoning,
+      supportsCaching,
+    });
+    // #156 — a reply that stopped at the OUTPUT cap is incomplete: 12 of 143
+    // onyourleft modules were cut at gemma3:12b's 8,192 tokens and cached as if
+    // complete. Retry ONCE with a larger cap (bounded by the model's known
+    // ceiling); if there is no larger cap to give, or the retry is cut off too,
+    // keep the partial facts for this run but flag them so they are not cached.
+    if (reply.ok && reply.truncation.truncated) {
+      const retryCap = phase1RetryMaxTokens(maxTokens, provider.model);
+      log.warn("Phase 1 facts truncated by the output-token cap", {
+        modulePath: m.dir,
+        moduleName,
+        maxTokens,
+        retryOutputCap: retryCap,
+        finishReason: reply.truncation.reason,
+        signals: reply.truncation.signals,
+      });
+      if (retryCap !== null) {
+        const retry = await streamPhase1Facts(provider, messages, {
+          projectId,
+          modulePath: m.dir,
+          maxTokens: retryCap,
+          reasoning,
+          supportsCaching,
+        });
+        // A failed retry keeps the first (truncated) reply rather than
+        // throwing the partial facts away.
+        if (retry.ok) reply = retry;
+      }
+      factsTruncated = reply.truncation.truncated;
+      if (factsTruncated) {
+        log.warn("Phase 1 facts still truncated after retry — not caching", {
+          modulePath: m.dir,
+          moduleName,
+          maxTokens: retryCap ?? maxTokens,
+        });
       }
     }
-    if (!succeeded) {
-      log.warn("Phase 1 LLM call failed", { err: String(lastErr), modulePath: m.dir });
+    if (reply.ok) {
+      factsText = reply.text;
+      usagePromptTokens = reply.usage.promptTokens;
+      usageCompletionTokens = reply.usage.completionTokens;
+      usageCacheReadTokens = reply.usage.cacheReadTokens;
+    } else {
+      log.warn("Phase 1 LLM call failed", { err: String(reply.error), modulePath: m.dir });
       factsText = `PURPOSE\n${moduleName} (extraction failed)\n\nENTITIES\n${topClasses.map((c) => `- \`${c}\``).join("\n")}`;
     }
   }
@@ -2201,7 +2249,10 @@ Extract ALL facts now. Be EXHAUSTIVE — every validation, every conditional, ev
     // #330 — never persist facts extracted from zero source: a cache HIT would
     // later return the empty facts WITHOUT re-attempting the read, hiding the
     // degradation permanently even after the source is restored.
-    !sourceUnavailable
+    !sourceUnavailable &&
+    // #156 — never persist facts the output cap cut short: every later run
+    // would reuse the incomplete version.
+    !factsTruncated
   ) {
     try {
       const fileFingerprint = createHash("sha1")
@@ -2219,7 +2270,7 @@ Extract ALL facts now. Be EXHAUSTIVE — every validation, every conditional, ev
           promptVersion: PHASE1_PROMPT_VERSION,
           facts: factsText,
           formulasJson: JSON.stringify(allFormulas),
-          minedRulesJson: JSON.stringify(allMinedRules),
+          minedRulesJson: JSON.stringify(minedRules),
           topClassesJson: JSON.stringify(topClasses),
           classCount: classes.length,
           methodCount: m.syms.filter((s) => s.kind === "method" || s.kind === "function").length,
@@ -2230,7 +2281,7 @@ Extract ALL facts now. Be EXHAUSTIVE — every validation, every conditional, ev
         update: {
           facts: factsText,
           formulasJson: JSON.stringify(allFormulas),
-          minedRulesJson: JSON.stringify(allMinedRules),
+          minedRulesJson: JSON.stringify(minedRules),
           topClassesJson: JSON.stringify(topClasses),
           model: provider.model ?? "unknown",
           inputTokens: usagePromptTokens,
@@ -2255,7 +2306,118 @@ Extract ALL facts now. Be EXHAUSTIVE — every validation, every conditional, ev
     topClasses,
     dataLineage,
     sourceUnavailable,
+    minedRules,
+    ...(factsTruncated ? { factsTruncated } : {}),
   };
+}
+
+/** Outcome of one Phase-1 facts stream (after the gateway-error retry). */
+type Phase1Reply =
+  | {
+      ok: true;
+      text: string;
+      truncation: TruncationDetection;
+      usage: { promptTokens: number; completionTokens: number; cacheReadTokens: number };
+    }
+  | { ok: false; error: unknown };
+
+/**
+ * #156 — the larger OUTPUT cap for the one retry of a truncated Phase-1 reply:
+ * double the cap, clamped to the model's known output ceiling. `null` when the
+ * cap is already at that ceiling, so there is nothing larger to ask for.
+ */
+export function phase1RetryMaxTokens(maxTokens: number, model: string | undefined): number | null {
+  const ceiling = modelOutputCeiling(model);
+  const doubled = maxTokens * 2;
+  const retry = ceiling === null ? doubled : Math.min(doubled, ceiling);
+  return retry > maxTokens ? retry : null;
+}
+
+/**
+ * Stream one Phase-1 fact extraction and report whether the reply was cut off
+ * by the output cap (#156). Streaming (not a blocking call) keeps bytes flowing
+ * so a gateway ALB's 60s idle timeout does not kill a large-context call; the
+ * stream setup is retried once on a 502/503/504. Never throws: a failure is
+ * returned as `{ ok: false }` so the caller can fall back.
+ */
+async function streamPhase1Facts(
+  provider: AIProvider,
+  messages: ChatMessage[],
+  opts: {
+    projectId: string;
+    modulePath: string;
+    maxTokens: number;
+    reasoning: ReturnType<typeof resolvePhase1Reasoning>;
+    supportsCaching: boolean;
+  },
+): Promise<Phase1Reply> {
+  const MAX_RETRIES = 2;
+  const RETRY_DELAY_MS = 5_000;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const sessionId = `docs-facts-${opts.projectId}-${opts.modulePath.replace(/[^a-z0-9]/gi, "_")}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const chunks: string[] = [];
+      const usage = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 };
+      let finishReason: string | undefined;
+      for await (const chunk of provider.stream(messages, {
+        sessionId,
+        disableTools: true,
+        // #1226 — configurable OUTPUT cap, clamped to the model's known ceiling.
+        maxTokens: opts.maxTokens,
+        ...opts.reasoning,
+        // #390 — tag prompt-cache hit-ratio telemetry by workload.
+        callType: "synthesis",
+        // Cache ONLY the stable system prompt — it is shared across every
+        // module's Phase-1 call. The large per-module SOURCE in the user turn is
+        // unique to THIS module, so a message-level cache write would just burn
+        // the write premium with no later read to amortise it (#389).
+        promptCaching: singleShotPromptCaching(opts.supportsCaching),
+      })) {
+        if (chunk.type === "delta") {
+          chunks.push(chunk.content);
+        } else if (chunk.type === "usage") {
+          usage.promptTokens = chunk.usage.promptTokens;
+          usage.completionTokens = chunk.usage.completionTokens;
+          usage.cacheReadTokens = chunk.usage.cacheReadTokens ?? 0;
+        } else if (chunk.type === "done") {
+          finishReason = chunk.finishReason;
+        }
+      }
+      // Record token usage for the project usage dashboard.
+      if (usage.promptTokens > 0 || usage.completionTokens > 0) {
+        recordUsage({
+          projectId: opts.projectId,
+          sessionId,
+          provider: provider.key,
+          model: provider.model,
+          inputTokens: usage.promptTokens,
+          outputTokens: usage.completionTokens,
+          cacheReadTokens: usage.cacheReadTokens,
+        });
+      }
+      // Both signals: the provider's stop reason and the gateway's placeholder
+      // body (which is also stripped so it can never be cached as facts).
+      const truncation = detectTruncation(chunks.join(""), finishReason);
+      return { ok: true, text: truncation.text.trim(), truncation, usage };
+    } catch (err) {
+      lastErr = err;
+      const errStr = String(err);
+      const isGatewayTimeout = /\b(502|503|504)\b/.test(errStr);
+      if (isGatewayTimeout && attempt < MAX_RETRIES - 1) {
+        log.warn("Phase 1 stream setup failed, retrying", {
+          modulePath: opts.modulePath,
+          attempt: attempt + 1,
+          delaySec: Math.round(RETRY_DELAY_MS / 1000),
+          err: errStr.slice(0, 200),
+        });
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+        continue;
+      }
+      break;
+    }
+  }
+  return { ok: false, error: lastErr };
 }
 
 // ============================================================================
@@ -2301,6 +2463,19 @@ export interface SectionGroup {
    * {@link sectionPartlyGroundedWarning}). Mutually exclusive with `narrative`.
    */
   reconstruction?: boolean;
+  /**
+   * #154 — the Phase-1 fact slices this section reads. Its facts blob AND its
+   * citable `facts:` sources carry only these slices of each module, so a
+   * section no longer pays for every module's unrelated topics. Omitted → the
+   * default for the group's id ({@link factSlicesFor}).
+   */
+  factSlices?: readonly FactSlice[];
+  /**
+   * #155 — when true, each module's deterministic mined-rule inventory (every
+   * language, with `file:line`) is part of this section's input, independent of
+   * the LLM summary. Omitted → true for the Rules sections only.
+   */
+  minedRules?: boolean;
 }
 
 /** Outcome of post-validating one synthesized section against its grounding. */
@@ -3401,17 +3576,86 @@ function dedupeH2Sections(markdown: string): string {
   return out.join("\n");
 }
 
+// ============================================================================
+// Phase-2 fact selection (#154) — what each section reads
+// ============================================================================
+//
+// These four functions are the ONE place that decides which module facts a
+// section sees, and they must stay in lock-step: the facts BLOB the model reads
+// (buildRelevantFactsBlob), the citable `facts:` grounding SOURCES its claims
+// are judged against (buildSectionFactsSources), and the budget telemetry that
+// raises `facts-truncated` (summarizeFactsBudget) are all built from the same
+// selectRelevantFacts result and the same per-module entry (factsModuleEntry).
+// Anything that changes what a section reads — batching (#157) included —
+// should go through selectRelevantFacts + factsModuleEntry rather than render
+// module facts itself, or the model and the judge will see different text.
+
 /**
- * Build a facts blob tailored to the given section group by scoring each
- * module's relevance to the section topic.
+ * The fact slices each section group reads when it does not declare its own
+ * (#154). {@link sectionGroupsFor} declares these on every group; the map is the
+ * single source for both, and also covers ad-hoc groups built from an id.
+ * A group id missing from the map reads every slice (the pre-#154 behaviour).
  *
- * Instead of a single 48K cap for all sections (which discards ~90% of
- * extracted knowledge), each section group gets up to 80K chars of the
- * MOST RELEVANT facts. This ensures the "Business Rules" section sees
- * rule-heavy modules, "Workflows" sees workflow-heavy modules, etc.
+ * Keyed by the CURRENT section-group ids — an earlier keyword map was keyed by
+ * long-removed ids and silently fell through to a default for every section.
+ * Keep in lock-step with {@link SECTION_TOPIC_KEYWORDS} (same ids).
+ */
+const SECTION_FACT_SLICES: Record<string, readonly FactSlice[]> = {
+  // business-requirements
+  overview: ["summary", "entities", "integrations"],
+  capabilities: ["summary", "capabilities", "workflows", "entities"],
+  rules: ["summary", "rules"],
+  workflows: ["summary", "workflows"],
+  formulas: ["summary", "formulas"],
+  "data-model": ["summary", "entities", "capabilities"],
+  "integrations-and-glossary": ["summary", "integrations", "capabilities", "entities"],
+  // architecture
+  "overview-and-context": ["summary", "integrations", "capabilities", "notes"],
+  "components-and-data": ["summary", "entities", "capabilities", "integrations"],
+  "concerns-and-integrations": ["summary", "integrations", "capabilities", "rules", "notes"],
+  "ops-and-stack": ["summary", "formulas", "integrations", "notes"],
+  // user-guide
+  intro: ["summary", "entities", "workflows"],
+  tasks: ["summary", "workflows", "capabilities", "rules"],
+  "rules-and-calcs": ["summary", "rules", "formulas"],
+  "faq-and-glossary": ["summary", "entities", "rules", "notes"],
+};
+
+/** Section ids that also receive every module's mined-rule inventory (#155). */
+const SECTION_READS_MINED_RULES: ReadonlySet<string> = new Set(["rules", "rules-and-calcs"]);
+
+/** The slices a section group reads: its declaration, else the id map, else all. */
+export function factSlicesFor(group: SectionGroup): readonly FactSlice[] {
+  return group.factSlices ?? SECTION_FACT_SLICES[group.id] ?? FACT_SLICES;
+}
+
+/** Whether a section group receives the deterministic mined-rule inventory. */
+export function readsMinedRules(group: SectionGroup): boolean {
+  return group.minedRules ?? SECTION_READS_MINED_RULES.has(group.id);
+}
+
+/** Parsed slices per facts object, so a blob is split once per run, not per section. */
+const sliceCache = new WeakMap<ModuleFacts, { text: string; slices: ModuleFactSlices }>();
+
+/** The topic slices of one module's facts (memoised on the facts object + text). */
+export function moduleFactSlices(f: ModuleFacts): ModuleFactSlices {
+  const cached = sliceCache.get(f);
+  if (cached && cached.text === f.facts) return cached.slices;
+  const slices = sliceModuleFacts(f.facts);
+  sliceCache.set(f, { text: f.facts, slices });
+  return slices;
+}
+
+/**
+ * Build the facts blob a section group reads (#154): the modules chosen by
+ * {@link selectRelevantFacts}, each rendered with ONLY the slices the group
+ * declares ({@link factSlicesFor}) — plus, for the Rules sections, the module's
+ * mined-rule inventory. A compact catalog names the modules that did not fit
+ * `perSectionCap`, so Phase 2 knows they exist.
  *
- * Every module always contributes at least its PURPOSE (for context),
- * but only high-relevance modules contribute their full facts.
+ * Sending slices instead of whole blobs is what lets most of a large codebase
+ * reach a section: onyourleft's Rules section read 8 of 143 modules at 200K
+ * chars with whole blobs.
  */
 export function buildRelevantFactsBlob(
   facts: ModuleFacts[],
@@ -3421,7 +3665,7 @@ export function buildRelevantFactsBlob(
 ): string {
   const { included, omitted } = selectRelevantFacts(facts, group, docType, perSectionCap);
 
-  const parts: string[] = included.map((f) => factsModuleEntry(f));
+  const parts: string[] = included.map((f) => factsModuleEntry(f, group));
 
   // Append a compact catalog of omitted modules so Phase 2 knows they exist.
   if (omitted.length > 0) {
@@ -3438,7 +3682,8 @@ export function buildRelevantFactsBlob(
  * did not fit) the provider's per-section `factsCharCap`. Pure and side-effect
  * free (reuses {@link selectRelevantFacts}, the SAME selection the facts blob
  * and citable sources are built from), so the truncation guard is unit-testable
- * without running synthesis.
+ * without running synthesis. Measured on the section's SLICED entries (#154),
+ * so `facts-truncated` reports what this section actually could not fit.
  *
  * `exceeded` is true when at least one relevant module was dropped to fit the
  * cap — i.e. the facts blob the model reads is a strict subset of the relevant
@@ -3466,7 +3711,7 @@ export function summarizeFactsBudget(
   factsCharCap: number,
 ): FactsBudgetSummary {
   const { included, omitted } = selectRelevantFacts(facts, group, docType, factsCharCap);
-  const includedChars = included.reduce((sum, f) => sum + factsModuleEntry(f).length, 0);
+  const includedChars = included.reduce((sum, f) => sum + factsModuleEntry(f, group).length, 0);
   return {
     includedModules: included.length,
     omittedModules: omitted.length,
@@ -3476,22 +3721,43 @@ export function summarizeFactsBudget(
   };
 }
 
-/** The rendered facts entry for one module (shared by blob + facts-source build). */
-function factsModuleEntry(f: ModuleFacts): string {
-  return `### MODULE: ${f.moduleName}\n(${f.classCount} classes, ${f.methodCount} methods)\n\n${f.facts}`;
+/**
+ * The rendered facts entry for one module AS A GIVEN SECTION READS IT — shared
+ * by the blob, the citable facts sources and the budget, so all three agree.
+ *
+ * Only the group's declared slices are included, in {@link FACT_SLICES} order.
+ * A group that reads the Rules slice and mined rules (#155) also gets the
+ * module's deterministic inventory, with LLM rule bullets that restate a mined
+ * rule removed so no rule is listed twice. A module whose sliced entry is empty
+ * for this section (it says nothing on the topic) still renders its header.
+ */
+function factsModuleEntry(f: ModuleFacts, group: SectionGroup): string {
+  const header = `### MODULE: ${f.moduleName}\n(${f.classCount} classes, ${f.methodCount} methods)`;
+  const slices = moduleFactSlices(f);
+  const wanted = new Set(factSlicesFor(group));
+  const mined = readsMinedRules(group) ? (f.minedRules ?? []) : [];
+  const body: string[] = [];
+  for (const slice of FACT_SLICES) {
+    if (!wanted.has(slice) || !slices[slice]) continue;
+    body.push(slice === "rules" ? dedupeRulesAgainstMined(slices.rules, mined) : slices[slice]);
+  }
+  const inventory = renderMinedRuleInventory(mined, MINED_RULES_ENTRY_CHAR_CAP);
+  if (inventory) body.push(inventory);
+  return body.length > 0 ? `${header}\n\n${body.join("\n\n")}` : header;
 }
 
 /**
  * #267 — build citable `facts:` grounding sources for the modules selected for
  * THIS section. One source PER selected module; the text is the SAME rendered
- * module-facts entry the model was given (`factsModuleEntry`), so a claim
- * derived from those facts resolves against an admitted source. `idx` is the
- * module's 0-based RANK in this section's relevance-sorted selection (NOT a
- * per-fact-within-module index) — the same rank used to lay out the facts blob,
- * so blob and citable id stay in lock-step within the run. The same module can
- * therefore get a different idx (hence a different id) in a different section,
- * each of which runs its own `selectRelevantFacts`. Returns [] when there are no
- * facts (back-compat).
+ * module-facts entry the model was given (`factsModuleEntry`, sliced for this
+ * group — #154), so a claim derived from those facts resolves against an
+ * admitted source, and a mined rule's `file:line` (#155) is part of that text.
+ * `idx` is the module's 0-based RANK in this section's relevance-sorted
+ * selection (NOT a per-fact-within-module index) — the same rank used to lay out
+ * the facts blob, so blob and citable id stay in lock-step within the run. The
+ * same module can therefore get a different idx (hence a different id) in a
+ * different section, each of which runs its own `selectRelevantFacts`. Returns
+ * [] when there are no facts (back-compat).
  */
 export function buildSectionFactsSources(
   facts: ModuleFacts[],
@@ -3505,16 +3771,23 @@ export function buildSectionFactsSources(
     moduleDir: f.modulePath || f.moduleName,
     idx,
     label: f.moduleName,
-    text: factsModuleEntry(f),
+    text: factsModuleEntry(f, group),
   }));
 }
 
 /**
  * Score + select the modules most relevant to a section group, capped by char
  * budget. Returns the ordered included modules plus the names of those omitted.
- * Extracted from {@link buildRelevantFactsBlob} so the blob (what the model
- * reads) and the citable facts sources (what claims resolve against) are built
- * from the IDENTICAL selection — keeping ids in sync with the prompt text.
+ *
+ * Relevance (#154) is measured on the slices the group reads: two points per
+ * bullet plus up to ten for length, per slice (`summary` is not scored unless it
+ * is all the group reads — every module has one), plus one point per mined rule
+ * for a group that reads them, plus half a point per method. Modules are then
+ * admitted greedily in score order while their SLICED entry fits
+ * `perSectionCap`; a module that does not fit is skipped, not a stopping point,
+ * so a smaller module further down can still get in.
+ *
+ * #157 (batched synthesis) should consume this ordering rather than re-rank.
  */
 export function selectRelevantFacts(
   facts: ModuleFacts[],
@@ -3522,46 +3795,35 @@ export function selectRelevantFacts(
   _docType: DocType,
   perSectionCap = 150_000,
 ): { included: ModuleFacts[]; omitted: string[] } {
-  const PER_SECTION_CAP = perSectionCap;
+  const declared = factSlicesFor(group);
+  const scoredSlices = declared.length > 1 ? declared.filter((s) => s !== "summary") : declared;
+  const withMined = readsMinedRules(group);
 
-  const keywords = SECTION_FACT_RELEVANCE_KEYWORDS[group.id] ?? DEFAULT_FACT_RELEVANCE_KEYWORDS;
-
-  // Score each module based on how much content it has for the relevant sections.
   const scored = facts.map((f) => {
+    const slices = moduleFactSlices(f);
     let score = 0;
-    for (const kw of keywords) {
-      // Find the section header and count content lines after it.
-      const sectionIdx = f.facts.indexOf(kw);
-      if (sectionIdx === -1) continue;
-      // Find next section header or end of text.
-      const nextSectionMatch = f.facts.slice(sectionIdx + kw.length).match(/\n[A-Z_]{3,}\n/);
-      const sectionEnd = nextSectionMatch
-        ? sectionIdx + kw.length + nextSectionMatch.index!
-        : f.facts.length;
-      const sectionContent = f.facts.slice(sectionIdx, sectionEnd);
-      // Score by number of bullet points (each "- " or numbered item).
-      const bulletCount = (sectionContent.match(/^[\s]*[-•]\s|^\s*\d+\.\s/gm) ?? []).length;
-      score += bulletCount * 2;
-      // Bonus for longer content in relevant sections.
-      score += Math.min(sectionContent.length / 200, 10);
+    for (const slice of scoredSlices) {
+      const content = slices[slice];
+      if (!content) continue;
+      score += countFactBullets(content) * 2;
+      score += Math.min(content.length / 200, 10);
     }
+    if (withMined) score += f.minedRules?.length ?? 0;
     // Extra weight for modules with many classes/methods (likely more complex).
     score += f.methodCount * 0.5;
     return { facts: f, score };
   });
 
-  // Sort by relevance score descending.
+  // Sort by relevance score descending (stable, so ties keep input order).
   scored.sort((a, b) => b.score - a.score);
 
-  // Include full facts for top-scoring modules up to cap (same ordering the blob
-  // and citable facts sources both consume).
   const included: ModuleFacts[] = [];
   const omitted: string[] = [];
   let totalChars = 0;
 
   for (const { facts: f } of scored) {
-    const entry = factsModuleEntry(f);
-    if (totalChars + entry.length > PER_SECTION_CAP) {
+    const entry = factsModuleEntry(f, group);
+    if (totalChars + entry.length > perSectionCap) {
       omitted.push(f.moduleName);
       continue;
     }
@@ -4213,48 +4475,6 @@ function repairCodeFences(text: string): string {
 // ============================================================================
 
 /**
- * Per-section FACT-relevance keywords. Maps each section-group id to the Phase-1
- * fact-section HEADERS (PURPOSE, ENTITIES, RULES, WORKFLOWS, FORMULAS,
- * INTEGRATIONS, KEY_APIS, STATUS_TRANSITIONS, NOTES, DATA_LINEAGE) most relevant
- * to that section. {@link selectRelevantFacts} scores each module by how much
- * content it has under these headers, so a section is grounded against — and the
- * model is shown — the modules whose facts actually matter to it.
- *
- * IMPORTANT: keyed by the CURRENT section-group ids emitted by
- * {@link sectionGroupsFor}. An earlier version was keyed by long-removed group
- * ids (`capabilities-and-rules`, `workflows-and-formulas`, `data-and-glossary`),
- * so every code-derived business-requirements section fell through to the
- * default `[RULES, WORKFLOWS, ENTITIES]` — ranking/selecting the WRONG modules
- * (e.g. the Integrations section was scored by RULES, not INTEGRATIONS/KEY_APIS),
- * which both degraded the facts blob and pointed the `facts:` grounding sources
- * at the wrong modules. Keep this in lock-step with {@link SECTION_TOPIC_KEYWORDS}
- * (the per-section RAG-query map) below — both are keyed by the same ids.
- */
-const SECTION_FACT_RELEVANCE_KEYWORDS: Record<string, string[]> = {
-  // business-requirements
-  overview: ["PURPOSE", "ENTITIES", "INTEGRATIONS"],
-  capabilities: ["RULES", "KEY_APIS", "ENTITIES", "WORKFLOWS"],
-  rules: ["RULES", "STATUS_TRANSITIONS"],
-  workflows: ["WORKFLOWS", "STATUS_TRANSITIONS", "DATA_LINEAGE"],
-  formulas: ["FORMULAS"],
-  "data-model": ["ENTITIES", "DATA_LINEAGE", "KEY_APIS"],
-  "integrations-and-glossary": ["INTEGRATIONS", "KEY_APIS", "ENTITIES"],
-  // architecture
-  "overview-and-context": ["PURPOSE", "INTEGRATIONS", "KEY_APIS", "NOTES"],
-  "components-and-data": ["ENTITIES", "KEY_APIS", "INTEGRATIONS", "PURPOSE", "DATA_LINEAGE"],
-  "concerns-and-integrations": ["INTEGRATIONS", "NOTES", "KEY_APIS", "RULES"],
-  "ops-and-stack": ["FORMULAS", "NOTES", "INTEGRATIONS"],
-  // user-guide
-  intro: ["PURPOSE", "ENTITIES", "WORKFLOWS"],
-  tasks: ["WORKFLOWS", "KEY_APIS", "RULES"],
-  "rules-and-calcs": ["RULES", "FORMULAS", "STATUS_TRANSITIONS"],
-  "faq-and-glossary": ["ENTITIES", "RULES", "NOTES", "PURPOSE"],
-};
-
-/** Fallback fact-relevance headers for an unknown section id. */
-const DEFAULT_FACT_RELEVANCE_KEYWORDS = ["RULES", "WORKFLOWS", "ENTITIES"];
-
-/**
  * Per-section topic keywords (#264). Used to widen a section's retrieval query
  * beyond its label so the RAG search surfaces sources relevant to the section's
  * subject matter. Keyed by section-group id; falls back to the label alone.
@@ -4311,6 +4531,7 @@ export function sectionGroupsFor(docType: DocType): SectionGroup[] {
       return [
         {
           id: "overview",
+          factSlices: SECTION_FACT_SLICES["overview"],
           label: "Overview & Domain",
           // #283 — inherently abstractive: the prompt MANDATES business/domain
           // narrative absent from the code, so gate at the lower narrative bar
@@ -4335,6 +4556,7 @@ graph LR
         },
         {
           id: "capabilities",
+          factSlices: SECTION_FACT_SLICES["capabilities"],
           label: "Core Business Capabilities",
           // #283 — capabilities synthesis is abstractive over many modules and
           // carries domain framing; gate at the narrative bar with honest copy.
@@ -4347,6 +4569,8 @@ The major business capabilities the system provides, grouped logically (NOT one 
         },
         {
           id: "rules",
+          factSlices: SECTION_FACT_SLICES["rules"],
+          minedRules: true,
           label: "Business Rules & Policies",
           instructions: `Produce ONE section:
 
@@ -4375,6 +4599,7 @@ DEPTH REQUIREMENT: If the source facts mention 50 rules, ALL 50 must appear here
         },
         {
           id: "workflows",
+          factSlices: SECTION_FACT_SLICES["workflows"],
           label: "Key Workflows",
           // The prompt below MANDATES reconstruction (explicit Trigger /
           // Preconditions / Postconditions / Error Paths per workflow) that the
@@ -4406,6 +4631,7 @@ DEPTH REQUIREMENT: Each workflow must document EVERY validation check AND every 
         },
         {
           id: "formulas",
+          factSlices: SECTION_FACT_SLICES["formulas"],
           label: "Calculations & Formulas",
           instructions: `Produce ONE section:
 
@@ -4422,6 +4648,7 @@ Use a summary table at the end of each sub-section: | Formula | Purpose | Key Va
         },
         {
           id: "data-model",
+          factSlices: SECTION_FACT_SLICES["data-model"],
           label: "Data & Domain Model",
           // The prompt below MANDATES a reconstruction-grade per-field data
           // dictionary (Type / Constraint / Default / Range) that the code rarely
@@ -4458,6 +4685,7 @@ erDiagram
         },
         {
           id: "integrations-and-glossary",
+          factSlices: SECTION_FACT_SLICES["integrations-and-glossary"],
           label: "Integrations & Glossary",
           instructions: `Produce two sections:
 
@@ -4473,6 +4701,7 @@ Alphabetical list of domain terms, abbreviations, and acronyms with concise defi
       return [
         {
           id: "overview-and-context",
+          factSlices: SECTION_FACT_SLICES["overview-and-context"],
           label: "Overview, Context & Layers",
           instructions: `Produce three sections.
 
@@ -4498,6 +4727,7 @@ The major logical layers/tiers (e.g., presentation, application, domain, persist
         },
         {
           id: "components-and-data",
+          factSlices: SECTION_FACT_SLICES["components-and-data"],
           label: "Components & Data Architecture",
           instructions: `Produce two sections.
 
@@ -4524,6 +4754,7 @@ The persistence model, documented as a RECONSTRUCTION-GRADE DATA DICTIONARY. Inc
         },
         {
           id: "concerns-and-integrations",
+          factSlices: SECTION_FACT_SLICES["concerns-and-integrations"],
           label: "Cross-Cutting Concerns & Integrations",
           instructions: `Produce two sections.
 
@@ -4543,6 +4774,7 @@ sequenceDiagram
         },
         {
           id: "ops-and-stack",
+          factSlices: SECTION_FACT_SLICES["ops-and-stack"],
           label: "Algorithms, Operations & Stack",
           instructions: `Produce three sections.
 
@@ -4561,6 +4793,7 @@ Languages, frameworks, libraries, build tools, infrastructure that are visible f
       return [
         {
           id: "intro",
+          factSlices: SECTION_FACT_SLICES["intro"],
           label: "Introduction & Getting Started",
           instructions: `Produce three sections.
 
@@ -4583,6 +4816,7 @@ flowchart TD
         },
         {
           id: "tasks",
+          factSlices: SECTION_FACT_SLICES["tasks"],
           label: "Common Tasks",
           instructions: `Produce ONE section: ## Common Tasks
 
@@ -4598,6 +4832,8 @@ For 1-2 of the most complex tasks, include a small Mermaid \`flowchart TD\` show
         },
         {
           id: "rules-and-calcs",
+          factSlices: SECTION_FACT_SLICES["rules-and-calcs"],
+          minedRules: true,
           label: "Rules, Calculations & Outputs",
           instructions: `Produce three sections.
 
@@ -4632,6 +4868,7 @@ What information the system produces for users — reports, exports, notificatio
         },
         {
           id: "faq-and-glossary",
+          factSlices: SECTION_FACT_SLICES["faq-and-glossary"],
           label: "FAQ & Glossary",
           instructions: `Produce two sections.
 
