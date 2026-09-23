@@ -21,7 +21,7 @@
  * Unlike the old per-symbol approach, the output is a single narrative
  * document rather than a flat list of class summaries.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "../prisma.js";
@@ -3788,7 +3788,7 @@ async function generateSectionGroup(
   // that dominated the first attempt. A drop BEFORE the first chunk, a
   // timeout, or any other error is not retried here — re-sending a prompt the
   // runtime never finished processing repeats the whole prefill (#111).
-  const draftSessionId = `${sessionBase}-draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const draftSessionId = `${sessionBase}-draft-${Date.now()}-${randomBytes(3).toString("hex")}`;
   let draft: SectionStreamResult | undefined;
   for (let attempt = 1; draft === undefined; attempt++) {
     const progress = { chunks: 0 };
