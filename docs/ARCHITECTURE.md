@@ -3704,6 +3704,45 @@ model DocsGenFactCache {
 
 Cache entries are stored permanently (no TTL). The `hitCount` and `lastUsedAt` fields allow future eviction policies to target cold entries.
 
+`minedRulesJson` holds **every** language's deterministically mined rules (Java,
+TS/JS, Python, Go, SAS, SQL) in one shape — `{language, kind, expression,
+summary, file, line, context}` (`fact-slices.ts`, #155); a cache hit reads them
+back from the row. A Phase-1 reply that stops at the output cap
+(`finish_reason` `length`/`max_tokens`, or the gateway placeholder) is retried
+once at double the cap, clamped to the model's known ceiling; if it is still cut
+off, the partial facts are used for that run but **not cached**, and the document
+carries a `facts-truncated` warning (section `Phase 1 facts`) naming the modules
+(#156). Rows written before that fix can be purged with
+`pnpm --filter @metis/server facts:purge-truncated -- --dry-run` (deletes rows
+with `outputTokens >=` the Phase-1 cap, default 8,192, written under an OLDER
+`PHASE1_PROMPT_VERSION` — a current-version row at the cap can only be a
+complete larger-cap retry; `--include-current` widens the sweep for a provider
+that reports no finish reason; `--min-output-tokens`, `--project`; a value flag
+with no value, or an unknown flag, is refused rather than widening the purge).
+
+#### Phase-2 fact slices (#154)
+
+Phase 2 no longer sends each section the whole facts blob of every module.
+`fact-slices.ts` splits a module's facts deterministically on the Phase-1
+headings into topic slices — `summary` (PURPOSE), `rules` (RULES,
+STATUS_TRANSITIONS), `workflows` (WORKFLOWS, STATUS_TRANSITIONS, DATA_LINEAGE),
+`entities` (ENTITIES, DATA_LINEAGE), `formulas`, `capabilities` (KEY_APIS),
+`integrations`, `notes` — dropping "(none)" blocks and verbatim-repeated
+bullets. A reply with no recognised heading is kept whole in `summary`. Each
+`sectionGroupsFor` group declares `factSlices` (and the Rules sections
+`minedRules`, which appends each module's `file:line` mined-rule inventory and
+drops LLM bullets that restate a mined rule — matched only against the rules
+the 4,000-char-capped inventory actually renders (`minedRulesThatFit`), so a
+rule past the cut keeps its LLM bullet instead of vanishing). Headings are
+recognised bare, decorated (`## RULES`, `**RULES:**`), numbered (`**1. RULES**`)
+or inline (`RULES: - first item`). `selectRelevantFacts` ranks and
+admits modules on those slices, and the facts blob, the citable `facts:`
+grounding sources and the `facts-truncated` budget are all rendered from the one
+per-section module entry, so what the model reads and what its claims are judged
+against stay identical. On onyourleft (143 TypeScript modules, gemma3:12b facts)
+at a 200,000-char cap the Rules section went from 8 to 35 modules, Key Workflows
+from 11 to 91, Calculations from 11 to all 143.
+
 #### 3. Dynamic Per-Module Snippet Budgets
 
 Rather than sending the maximum context window to every module, Phase 1 tiers the code context by module complexity:

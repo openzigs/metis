@@ -558,6 +558,33 @@ export function factsTruncatedWarning(
   };
 }
 
+/** How many module names {@link phase1FactsTruncatedWarning} lists before summarising. */
+const TRUNCATED_MODULES_LISTED = 10;
+
+/**
+ * #156 — Phase-1 fact extraction for one or more modules was cut off by the
+ * OUTPUT-token cap, even after one retry with a larger cap. Their facts are
+ * incomplete (used for this run, never cached), so every section that reads
+ * them may miss rules, workflows or formulas. Names the modules so an operator
+ * knows where to look, and the knob that fixes it.
+ */
+export function phase1FactsTruncatedWarning(moduleNames: readonly string[]): DocWarning {
+  const listed = moduleNames.slice(0, TRUNCATED_MODULES_LISTED).join(", ");
+  const more =
+    moduleNames.length > TRUNCATED_MODULES_LISTED
+      ? ` and ${moduleNames.length - TRUNCATED_MODULES_LISTED} more`
+      : "";
+  return {
+    kind: "facts-truncated",
+    section: "Phase 1 facts",
+    message:
+      `Fact extraction for ${moduleNames.length} module(s) was cut off by the model's output ` +
+      `limit even after a retry with a larger limit, so their facts are incomplete: ${listed}${more}. ` +
+      `Raise DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS or use a model with a larger output limit, then regenerate.`,
+    severity: "warning",
+  };
+}
+
 /**
  * #1226 — build a warning for a section whose generation hit the model's OUTPUT
  * token cap. Distinct from {@link factsTruncatedWarning}, which is about the
