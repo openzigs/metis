@@ -193,9 +193,10 @@ export interface ChatOptions {
    * #25 — turn the model's thinking OFF for this request. Honoured by the
    * native Anthropic provider as `thinking: { type: "disabled" }` (which also
    * drops any `reasoningEffort`) — the documented toggle on both the Anthropic
-   * Messages API and DeepSeek's Anthropic-compatible endpoint. Other providers
-   * ignore it. Distinct from the local provider's constructor-level
-   * `disableThinking` (Ollama `think: false`).
+   * Messages API and DeepSeek's Anthropic-compatible endpoint. The
+   * `local-gemma` provider sends `think: false` + `reasoning_effort: "none"`
+   * (and forwards `reasoningEffort` as `reasoning_effort`). Other providers
+   * ignore it.
    */
   disableThinking?: boolean;
   /**

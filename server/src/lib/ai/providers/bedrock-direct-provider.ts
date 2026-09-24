@@ -32,6 +32,11 @@ import { Agent, type Dispatcher } from "undici";
 import { createChildLogger } from "../../logger.js";
 import { recordCacheHit } from "../cache-hit-telemetry.js";
 import { ToolTagStreamParser } from "./tool-tag-parser.js";
+import {
+  localConcurrencyLimiter,
+  type FifoSemaphore,
+  type ReleaseSlot,
+} from "./local-concurrency-limiter.js";
 import { messageText } from "../types.js";
 import type { ProviderCapabilities } from "../capabilities.js";
 import type {
@@ -449,6 +454,65 @@ class TemperatureUnsupportedError extends Error {
   }
 }
 
+/**
+ * Env knob controlling whether the `local-gemma` provider sends the
+ * OpenAI-compatible `reasoning_effort` field (see
+ * {@link OpenAICompatibleProviderOptions.disableThinking}):
+ *
+ *   • `auto` (default, also blank/unrecognised) — send it; if the model rejects
+ *     it (HTTP 400/422 naming reasoning/thinking), retry ONCE without it and
+ *     remember that model for the life of the provider.
+ *   • `always` — send it and never fall back (a rejection surfaces as an error).
+ *   • `never`  — never send `reasoning_effort` (the pre-change behaviour:
+ *     `think: false` only, and explicit efforts dropped).
+ */
+export const LOCAL_REASONING_EFFORT_ENV = "LOCAL_GEMMA_SEND_REASONING_EFFORT";
+
+/** Resolved value of {@link LOCAL_REASONING_EFFORT_ENV}. */
+export type LocalReasoningEffortMode = "auto" | "always" | "never";
+
+/** Parse {@link LOCAL_REASONING_EFFORT_ENV}; unrecognised → `auto` with a warning. */
+export function resolveLocalReasoningEffortMode(
+  raw: string | undefined = process.env[LOCAL_REASONING_EFFORT_ENV],
+): LocalReasoningEffortMode {
+  if (raw == null || raw.trim().length === 0) return "auto";
+  const v = raw.trim().toLowerCase();
+  if (v === "auto" || v === "always" || v === "never") return v;
+  log.warn("Ignoring invalid reasoning_effort mode; using auto", {
+    env: LOCAL_REASONING_EFFORT_ENV,
+    value: raw.slice(0, 40),
+  });
+  return "auto";
+}
+
+/**
+ * True when a client-error body says the runtime rejected `reasoning_effort` —
+ * Ollama 0.34.2 answers `400 "<model>" does not support thinking` for an effort
+ * other than `none` on a non-thinking model (measured on gemma3:12b), and
+ * `400 invalid reasoning value: ...` for a value it does not know. Exported for
+ * direct unit testing.
+ */
+export function isReasoningEffortUnsupportedBody(status: number, bodyText: string): boolean {
+  if (status !== 400 && status !== 422) return false;
+  return /reasoning|think/i.test(bodyText);
+}
+
+/**
+ * Internal marker thrown when the runtime rejects the `reasoning_effort` field
+ * (see {@link isReasoningEffortUnsupportedBody}), so `chat()`/`stream()` can
+ * retry once without it.
+ */
+class ReasoningEffortRejectedError extends Error {
+  constructor(
+    readonly status: number,
+    readonly bodyExcerpt: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ReasoningEffortRejectedError";
+  }
+}
+
 export interface OpenAICompatibleProviderOptions {
   baseUrl: string;
   apiKey: string;
@@ -480,14 +544,29 @@ export interface OpenAICompatibleProviderOptions {
    */
   defaultSeed?: number;
   /**
-   * When true, adds `think: false` to the request body. Required for Gemma 4
-   * models served by Ollama, which enable thinking mode by default. Without
-   * this flag the model spends all its token budget on internal reasoning and
-   * returns an empty `content` field.
+   * When true, adds `think: false` to the request body — and, on `local-gemma`,
+   * `reasoning_effort: "none"` too. Required for thinking-by-default models
+   * served by Ollama (Gemma 4, laguna-s-2.1). Without it the model spends its
+   * token budget on internal reasoning that METIS discards.
    *
-   * Per Google's Gemma 4 model card, the correct way to disable thinking is
-   * to omit the `<|think|>` token from the system prompt — Ollama handles this
-   * via the `think: false` API parameter.
+   * `think` alone is NOT enough on Ollama's OpenAI-compatible `/v1` endpoint:
+   * measured on Ollama 0.34.2 with laguna-s-2.1, `think: false` was ignored
+   * (800/800 tokens of reasoning, `finish_reason: "length"`) while
+   * `reasoning_effort: "none"` produced a complete answer with no reasoning.
+   * A non-thinking model (gemma3:12b) accepts `"none"` and rejects any other
+   * effort with a 400, which triggers a single retry without the field.
+   *
+   * Per-call `ChatOptions.disableThinking` / `ChatOptions.reasoningEffort`
+   * override this on `local-gemma` (an explicit effort is sent as
+   * `reasoning_effort` and suppresses `think: false`). Whether
+   * `reasoning_effort` is sent at all is governed by
+   * `LOCAL_GEMMA_SEND_REASONING_EFFORT` (`auto` | `always` | `never`, see
+   * {@link LOCAL_REASONING_EFFORT_ENV}). Other provider keys never send
+   * `reasoning_effort` — bedrock-access-gateway maps it onto Claude thinking.
+   *
+   * Every `local-gemma` request also passes through a process-wide FIFO limiter
+   * of `LOCAL_GEMMA_MAX_CONCURRENCY` (default 1) in-flight requests per base
+   * URL; the first-byte / idle / request timers start only once a slot is held.
    */
   disableThinking?: boolean;
   /** Model ID → application inference profile ARN mapping for per-app cost tracking. */
@@ -605,6 +684,8 @@ interface StreamWatchdog {
 interface StreamConnection {
   response: Response;
   watchdog: StreamWatchdog;
+  /** Releases the local concurrency slot held for this stream (idempotent). */
+  release: ReleaseSlot;
 }
 
 export class OpenAICompatibleProvider implements AIProvider {
@@ -670,6 +751,19 @@ export class OpenAICompatibleProvider implements AIProvider {
    */
   private readonly temperatureRejectedModels = new Set<string>();
 
+  /**
+   * Resolved model ids that have rejected `reasoning_effort` (e.g. a
+   * non-thinking model sent an explicit effort). Same rationale as
+   * {@link temperatureRejectedModels}: learn once, stop paying the 400.
+   */
+  private readonly reasoningEffortRejectedModels = new Set<string>();
+
+  /** `LOCAL_GEMMA_SEND_REASONING_EFFORT`, resolved for `local-gemma` only. */
+  private readonly reasoningEffortMode: LocalReasoningEffortMode;
+
+  /** Process-wide per-base-URL FIFO limiter; `local-gemma` only. */
+  private readonly limiter: FifoSemaphore | undefined;
+
   constructor(opts: OpenAICompatibleProviderOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
     this.apiKey = opts.apiKey;
@@ -714,6 +808,18 @@ export class OpenAICompatibleProvider implements AIProvider {
     this.sleepFn = opts.sleepFn ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.randomFn = opts.randomFn ?? Math.random;
     this.dispatcher = this.buildDispatcher();
+    const isLocal = this.key === "local-gemma";
+    this.reasoningEffortMode = isLocal ? resolveLocalReasoningEffortMode() : "never";
+    this.limiter = isLocal ? localConcurrencyLimiter(this.baseUrl) : undefined;
+  }
+
+  /**
+   * Wait for a local concurrency slot (no-op for non-local providers). Callers
+   * MUST arm their timeouts only after this resolves and MUST call the returned
+   * release on every exit path.
+   */
+  private acquireSlot(signal: AbortSignal | undefined): Promise<ReleaseSlot> {
+    return this.limiter ? this.limiter.acquire(signal) : Promise.resolve(() => undefined);
   }
 
   /**
@@ -879,7 +985,39 @@ export class OpenAICompatibleProvider implements AIProvider {
     prompt: StreamPromptShape,
     carriesResponseFormat = false,
     includeTemperature = true,
+    carriesReasoningEffort = false,
   ): Promise<StreamConnection> {
+    if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    // Queue for a local concurrency slot BEFORE anything is timed: time spent
+    // waiting behind another generation must never count as a first-byte stall.
+    const release = await this.acquireSlot(opts.signal);
+    try {
+      const conn = await this.openStream(
+        url,
+        body,
+        opts,
+        prompt,
+        carriesResponseFormat,
+        includeTemperature,
+        carriesReasoningEffort,
+      );
+      return { ...conn, release };
+    } catch (err) {
+      release();
+      throw err;
+    }
+  }
+
+  /** The body of {@link connectStream}, run while holding a concurrency slot. */
+  private async openStream(
+    url: string,
+    body: Record<string, unknown>,
+    opts: ChatOptions,
+    prompt: StreamPromptShape,
+    carriesResponseFormat: boolean,
+    includeTemperature: boolean,
+    carriesReasoningEffort: boolean,
+  ): Promise<Omit<StreamConnection, "release">> {
     const controller = new AbortController();
     if (opts.signal) {
       if (opts.signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -965,6 +1103,12 @@ export class OpenAICompatibleProvider implements AIProvider {
       if (includeTemperature && isTemperatureUnsupportedBody(response.status, text)) {
         throw new TemperatureUnsupportedError(response.status, text.slice(0, 200), msg);
       }
+      // A model that cannot take `reasoning_effort` (a non-thinking model sent
+      // an explicit effort). Before the structured-output branch, which would
+      // otherwise swallow any 400 on a request carrying `response_format`.
+      if (carriesReasoningEffort && isReasoningEffortUnsupportedBody(response.status, text)) {
+        throw new ReasoningEffortRejectedError(response.status, text.slice(0, 200), msg);
+      }
       // #336 — 400/422 on a request carrying `response_format` → the runtime
       // likely can't schema-constrain; classifiable so `stream()` can retry
       // once without the field (graceful degradation). Safe to fall back here:
@@ -1035,6 +1179,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     let includeTemperature = !this.temperatureRejectedModels.has(model);
     let triedWithoutResponseFormat = false;
     let triedWithoutTemperature = false;
+    let includeReasoningEffort = !this.reasoningEffortRejectedModels.has(model);
 
     for (;;) {
       try {
@@ -1044,8 +1189,14 @@ export class OpenAICompatibleProvider implements AIProvider {
           model,
           includeResponseFormat,
           includeTemperature,
+          includeReasoningEffort,
         );
       } catch (err) {
+        if (err instanceof ReasoningEffortRejectedError && includeReasoningEffort) {
+          includeReasoningEffort = false;
+          this.noteReasoningEffortRejected(model, err, "chat");
+          continue;
+        }
         if (
           err instanceof StructuredOutputRejectedError &&
           opts.responseFormat &&
@@ -1099,6 +1250,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     model: string,
     includeResponseFormat: boolean,
     includeTemperature: boolean,
+    includeReasoningEffort = true,
   ): Promise<ChatResponse> {
     const url = `${this.baseUrl}/chat/completions`;
 
@@ -1109,8 +1261,10 @@ export class OpenAICompatibleProvider implements AIProvider {
       false,
       includeResponseFormat,
       includeTemperature,
+      includeReasoningEffort,
     );
     const carriesResponseFormat = includeResponseFormat && opts.responseFormat != null;
+    const carriesReasoningEffort = this.canFallBackFromReasoningEffort(body);
 
     log.debug("Direct chat request", {
       model,
@@ -1128,82 +1282,93 @@ export class OpenAICompatibleProvider implements AIProvider {
     // budget surfaces a clear error rather than hanging.
     const json = await this.withRetry<OpenAIChatResponse>(
       async () => {
-        const controller = new AbortController();
-        if (opts.signal) {
-          if (opts.signal.aborted) throw new DOMException("Aborted", "AbortError");
-          opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
-        }
-        // Total-request timeout so a stalled backend (e.g. a local Ollama runtime)
-        // cannot block the caller forever.
-        const timeout =
-          this.requestTimeoutMs > 0
-            ? setTimeout(() => controller.abort(), this.requestTimeoutMs)
-            : undefined;
-
-        let response: Response;
+        if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        // Queue for a local concurrency slot BEFORE the request timer starts, and
+        // hold it until the body is read (see local-concurrency-limiter.ts).
+        const release = await this.acquireSlot(opts.signal);
         try {
-          response = await fetch(url, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${this.apiKey}`,
-            },
-            body: JSON.stringify(body),
-            signal: controller.signal,
-            // Per-request undici dispatcher so undici's default 300s transport
-            // timeouts cannot preempt this provider's `requestTimeoutMs`. Scoped to
-            // this fetch — never global — so other providers keep undici defaults.
-            dispatcher: this.dispatcher,
-          } as RequestInit & { dispatcher: Dispatcher });
-        } catch (err) {
+          const controller = new AbortController();
+          if (opts.signal) {
+            if (opts.signal.aborted) throw new DOMException("Aborted", "AbortError");
+            opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
+          }
+          // Total-request timeout so a stalled backend (e.g. a local Ollama runtime)
+          // cannot block the caller forever.
+          const timeout =
+            this.requestTimeoutMs > 0
+              ? setTimeout(() => controller.abort(), this.requestTimeoutMs)
+              : undefined;
+
+          let response: Response;
+          try {
+            response = await fetch(url, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${this.apiKey}`,
+              },
+              body: JSON.stringify(body),
+              signal: controller.signal,
+              // Per-request undici dispatcher so undici's default 300s transport
+              // timeouts cannot preempt this provider's `requestTimeoutMs`. Scoped to
+              // this fetch — never global — so other providers keep undici defaults.
+              dispatcher: this.dispatcher,
+            } as RequestInit & { dispatcher: Dispatcher });
+          } catch (err) {
+            if (timeout) clearTimeout(timeout);
+            if (controller.signal.aborted && !opts.signal?.aborted) {
+              throw new Error(
+                `${this.key} chat request timed out after ${this.requestTimeoutMs}ms` +
+                  this.timeoutKnobHint(LOCAL_TIMEOUT_ENV.request),
+              );
+            }
+            throw err;
+          }
           if (timeout) clearTimeout(timeout);
-          if (controller.signal.aborted && !opts.signal?.aborted) {
-            throw new Error(
-              `${this.key} chat request timed out after ${this.requestTimeoutMs}ms` +
-                this.timeoutKnobHint(LOCAL_TIMEOUT_ENV.request),
-            );
-          }
-          throw err;
-        }
-        if (timeout) clearTimeout(timeout);
 
-        if (!response.ok) {
-          const text = await response.text().catch(() => "");
-          log.error("OpenAI-compatible provider error", {
-            provider: this.key,
-            status: response.status,
-            body: text.slice(0, 500),
-          });
-          const msg = `${this.key} returned ${response.status}: ${text.slice(0, 200)}`;
-          // 429/503 are transient → mark retryable (carrying any Retry-After).
-          if (isRetryableStatus(response.status)) {
-            throw new RetryableHttpError(
-              response.status,
-              text.slice(0, 200),
-              parseRetryAfterMs(response.headers.get("retry-after")),
-              msg,
-            );
+          if (!response.ok) {
+            const text = await response.text().catch(() => "");
+            log.error("OpenAI-compatible provider error", {
+              provider: this.key,
+              status: response.status,
+              body: text.slice(0, 500),
+            });
+            const msg = `${this.key} returned ${response.status}: ${text.slice(0, 200)}`;
+            // 429/503 are transient → mark retryable (carrying any Retry-After).
+            if (isRetryableStatus(response.status)) {
+              throw new RetryableHttpError(
+                response.status,
+                text.slice(0, 200),
+                parseRetryAfterMs(response.headers.get("retry-after")),
+                msg,
+              );
+            }
+            // A "temperature is deprecated for this model" rejection → classifiable
+            // so `chat()` can retry once WITHOUT the field. Checked BEFORE the
+            // structured-output branch: that one matches on STATUS alone (any
+            // 400/422 carrying `response_format`), so it would otherwise swallow
+            // this far more precise body match and drop `response_format` to fix a
+            // problem `response_format` never caused.
+            if (includeTemperature && isTemperatureUnsupportedBody(response.status, text)) {
+              throw new TemperatureUnsupportedError(response.status, text.slice(0, 200), msg);
+            }
+            if (carriesReasoningEffort && isReasoningEffortUnsupportedBody(response.status, text)) {
+              throw new ReasoningEffortRejectedError(response.status, text.slice(0, 200), msg);
+            }
+            // #336 — a 400/422 on a request that carried `response_format` likely
+            // means the runtime does not support schema-guided decoding; surface a
+            // classifiable error so `chat()` can retry once WITHOUT the field.
+            if (carriesResponseFormat && isStructuredOutputUnsupportedStatus(response.status)) {
+              throw new StructuredOutputRejectedError(response.status, text.slice(0, 200), msg);
+            }
+            // Everything else (4xx auth/validation) propagates immediately.
+            throw new Error(msg);
           }
-          // A "temperature is deprecated for this model" rejection → classifiable
-          // so `chat()` can retry once WITHOUT the field. Checked BEFORE the
-          // structured-output branch: that one matches on STATUS alone (any
-          // 400/422 carrying `response_format`), so it would otherwise swallow
-          // this far more precise body match and drop `response_format` to fix a
-          // problem `response_format` never caused.
-          if (includeTemperature && isTemperatureUnsupportedBody(response.status, text)) {
-            throw new TemperatureUnsupportedError(response.status, text.slice(0, 200), msg);
-          }
-          // #336 — a 400/422 on a request that carried `response_format` likely
-          // means the runtime does not support schema-guided decoding; surface a
-          // classifiable error so `chat()` can retry once WITHOUT the field.
-          if (carriesResponseFormat && isStructuredOutputUnsupportedStatus(response.status)) {
-            throw new StructuredOutputRejectedError(response.status, text.slice(0, 200), msg);
-          }
-          // Everything else (4xx auth/validation) propagates immediately.
-          throw new Error(msg);
-        }
 
-        return (await response.json()) as OpenAIChatResponse;
+          return (await response.json()) as OpenAIChatResponse;
+        } finally {
+          release();
+        }
       },
       { method: "chat", model },
     );
@@ -1284,7 +1449,8 @@ export class OpenAICompatibleProvider implements AIProvider {
     // never retried.
     const connectWith = (
       includeResponseFormat: boolean,
-      includeTemperature = true,
+      includeTemperature: boolean,
+      includeReasoningEffort: boolean,
     ): Promise<StreamConnection> => {
       const body = this.buildRequestBody(
         messages,
@@ -1293,11 +1459,21 @@ export class OpenAICompatibleProvider implements AIProvider {
         true,
         includeResponseFormat,
         includeTemperature,
+        includeReasoningEffort,
       );
       const carriesResponseFormat = includeResponseFormat && opts.responseFormat != null;
+      const carriesReasoningEffort = this.canFallBackFromReasoningEffort(body);
       return this.withRetry<StreamConnection>(
         () =>
-          this.connectStream(url, body, opts, prompt, carriesResponseFormat, includeTemperature),
+          this.connectStream(
+            url,
+            body,
+            opts,
+            prompt,
+            carriesResponseFormat,
+            includeTemperature,
+            carriesReasoningEffort,
+          ),
         { method: "stream", model },
       );
     };
@@ -1315,11 +1491,16 @@ export class OpenAICompatibleProvider implements AIProvider {
     let includeTemperature = !this.temperatureRejectedModels.has(model);
     let triedWithoutResponseFormat = false;
     let triedWithoutTemperature = false;
+    let includeReasoningEffort = !this.reasoningEffortRejectedModels.has(model);
 
     for (;;) {
       let emittedDelta = false;
       try {
-        const conn = await connectWith(includeResponseFormat, includeTemperature);
+        const conn = await connectWith(
+          includeResponseFormat,
+          includeTemperature,
+          includeReasoningEffort,
+        );
         for await (const chunk of this.consumeStream(
           conn,
           model,
@@ -1333,6 +1514,11 @@ export class OpenAICompatibleProvider implements AIProvider {
         return;
       } catch (err) {
         if (emittedDelta) throw err;
+        if (err instanceof ReasoningEffortRejectedError && includeReasoningEffort) {
+          includeReasoningEffort = false;
+          this.noteReasoningEffortRejected(model, err, "stream");
+          continue;
+        }
         if (
           err instanceof StructuredOutputRejectedError &&
           opts.responseFormat &&
@@ -1516,11 +1702,13 @@ export class OpenAICompatibleProvider implements AIProvider {
       yield { type: "done", ...(finishReason ? { finishReason } : {}) };
     } finally {
       disarmIdle();
-      try {
-        await reader.cancel();
-      } catch {
-        /* swallow */
-      }
+      // Start the cancel, then free the concurrency slot BEFORE awaiting it, so a
+      // slow teardown can never hold every other local request hostage. This
+      // `finally` runs on every exit: completion, error, watchdog abort, caller
+      // abort, and a consumer that stops iterating early (`return()`).
+      const cancelling = reader.cancel().catch(() => undefined);
+      conn.release();
+      await cancelling;
     }
   }
 
@@ -1592,6 +1780,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     stream: boolean,
     includeResponseFormat = true,
     includeTemperature = true,
+    includeReasoningEffort = true,
   ): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model,
@@ -1618,7 +1807,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     // returns empty content. `think: false` disables it so the full max_tokens
     // budget goes to the actual response. Only sent when explicitly requested
     // (local-gemma path) — Bedrock and other gateways ignore unknown fields.
-    if (this.disableThinking) body.think = false;
+    Object.assign(body, this.thinkingFields(opts, includeReasoningEffort));
     // #336 — structured (schema-constrained) output. The caller (doc-gen
     // grounding on the local/vLLM path) opts in per-call by supplying
     // `responseFormat`; we forward it verbatim as the OpenAI-compatible
@@ -1646,6 +1835,55 @@ export class OpenAICompatibleProvider implements AIProvider {
       };
     }
     return body;
+  }
+
+  /**
+   * The thinking-control fields for one request.
+   *
+   * Precedence on `local-gemma`: per-call `disableThinking` → per-call
+   * `reasoningEffort` → the constructor's `disableThinking` → nothing (model
+   * default). "Off" is `think: false` plus `reasoning_effort: "none"`, because
+   * Ollama's `/v1` endpoint ignores `think` (measured, Ollama 0.34.2). Other
+   * provider keys keep the pre-existing behaviour exactly: `think: false` from
+   * the constructor flag only, and never `reasoning_effort` (which
+   * bedrock-access-gateway would turn into Claude extended thinking).
+   */
+  private thinkingFields(
+    opts: ChatOptions,
+    includeReasoningEffort: boolean,
+  ): Record<string, unknown> {
+    if (this.key !== "local-gemma") {
+      return this.disableThinking ? { think: false } : {};
+    }
+    const sendEffort = includeReasoningEffort && this.reasoningEffortMode !== "never";
+    if (opts.disableThinking !== true && opts.reasoningEffort) {
+      return sendEffort ? { reasoning_effort: opts.reasoningEffort } : {};
+    }
+    if (opts.disableThinking === true || this.disableThinking) {
+      return sendEffort ? { think: false, reasoning_effort: "none" } : { think: false };
+    }
+    return {};
+  }
+
+  /** True when `body` carries `reasoning_effort` AND a rejection may be retried without it. */
+  private canFallBackFromReasoningEffort(body: Record<string, unknown>): boolean {
+    return body.reasoning_effort !== undefined && this.reasoningEffortMode === "auto";
+  }
+
+  private noteReasoningEffortRejected(
+    model: string,
+    err: ReasoningEffortRejectedError,
+    method: "chat" | "stream",
+  ): void {
+    this.reasoningEffortRejectedModels.add(model);
+    log.warn("Runtime rejected reasoning_effort; retrying once without it", {
+      provider: this.key,
+      method,
+      model,
+      status: err.status,
+      cause: err.bodyExcerpt.slice(0, 200),
+      knob: LOCAL_REASONING_EFFORT_ENV,
+    });
   }
 
   private formatMessages(

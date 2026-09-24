@@ -59,7 +59,9 @@ function readMode(config: ConfigService): DocsGenReasoningMode {
  *     turns adaptive thinking ON, so it is an explicit operator choice only.
  *
  * Honoured by the native `anthropic` provider (including an
- * Anthropic-compatible `ANTHROPIC_BASE_URL`); other providers ignore it.
+ * Anthropic-compatible `ANTHROPIC_BASE_URL`) and by `local-gemma` (as
+ * `reasoning_effort`; `off` → `think: false` + `reasoning_effort: "none"`);
+ * other providers ignore it.
  */
 export function resolvePhase1Reasoning(
   model: string | undefined,

@@ -298,6 +298,30 @@ prompt size in characters and the budget, and names the knob in the error. It is
 **not retried**: re-sending the same prompt repeats the whole prefill (Ollama
 logs `forcing full prompt re-processing`) and times out the same way.
 
+#### Concurrency and thinking control
+
+Ollama serves **one request per model at a time** unless `OLLAMA_NUM_PARALLEL`
+is raised, queues the rest FIFO, and sends no bytes — not even headers — for a
+queued request. METIS therefore queues its own `local-gemma` requests in a
+process-wide FIFO limiter per base URL, and starts the timeouts above only once a
+request holds a slot, so waiting behind another generation is never reported as a
+first-token stall.
+
+| Env var | Default | Governs |
+|---|---|---|
+| `LOCAL_GEMMA_MAX_CONCURRENCY` | `1` | Max in-flight requests per `LOCAL_GEMMA_BASE_URL`, across docs-gen, grounding, analysis and chat. Set it to the server's `OLLAMA_NUM_PARALLEL`. Positive integer; anything else keeps `1` and warns. |
+| `LOCAL_GEMMA_SEND_REASONING_EFFORT` | `auto` | Whether `reasoning_effort` is sent. `auto`: send; if the model rejects it, retry once without and remember the model. `always`: send, never fall back. `never`: never send. |
+
+With thinking off (the docs-gen default; `DOCS_GEN_LOCAL_ENABLE_THINKING`
+re-enables it), requests carry `think: false` **and** `reasoning_effort: "none"`.
+The second field is the one that works on Ollama's `/v1` endpoint: measured on
+Ollama 0.34.2, laguna-s-2.1 with `think: false` alone spent 800/800 output tokens
+reasoning and was cut off (`finish_reason: length`); with `reasoning_effort:
+"none"` it answered in 180 tokens with no reasoning. gemma3:12b (no thinking
+support) accepts `"none"` and returns `400 "gemma3:12b" does not support thinking`
+for any other effort, which the `auto` fallback absorbs. An explicit effort
+(`DOCS_GEN_PHASE1_REASONING=low|medium|high`) is sent as `reasoning_effort`.
+
 ### Sizing `DOCS_GEN_LOCAL_FACTS_CHAR_CAP` — the derivation
 
 The cap is a **per-section character budget** for the facts blob. It must leave
