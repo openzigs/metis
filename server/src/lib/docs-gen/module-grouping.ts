@@ -144,3 +144,97 @@ export function groupSymbolsIntoModules<S extends GroupableSymbol>(
 
   return modules.sort((a, b) => b.syms.length - a.syms.length);
 }
+
+// ============================================================================
+// Test / spec / fixture files (DOCS_GEN_PHASE1_INCLUDE_TESTS)
+// ============================================================================
+
+/**
+ * Directory segments whose files are test code, test doubles or fixtures.
+ * `testing` is deliberate: by the convention onyourleft documents in those
+ * files ("not exported from anywhere the app imports"), `src/testing/` holds
+ * fakes, harnesses and fixture builders used only by tests — e.g.
+ * `packages/store/src/testing/fakes.ts` — so it is classified as test even
+ * though it sits under `src/`.
+ */
+const TEST_DIR_SEGMENTS: ReadonlySet<string> = new Set([
+  "test",
+  "tests",
+  "__tests__",
+  "__mocks__",
+  "mocks",
+  "testing",
+  "spec",
+  "specs",
+  "e2e",
+  "fixtures",
+  "__fixtures__",
+]);
+
+/** File-name shapes of test code, across the languages the code graph parses. */
+const TEST_FILE_PATTERNS: readonly RegExp[] = [
+  // foo.test.ts, foo.spec.tsx, game.browser.spec.ts, sounds.a11y.test.tsx
+  /(^|\.)(test|spec)\.[^/]+$/i,
+  // Python / Go
+  /^test_[^/]+\.py$/i,
+  /_test\.(go|py)$/i,
+  // Java / Kotlin / C# / Scala test classes
+  /[a-z0-9](Test|Tests|Spec|IT)\.(java|kt|kts|cs|scala)$/,
+  // test-double modules by name: testing.ts, audio-testing.ts, match_testing.py
+  /(^|[-_.])testing\.[^/]+$/i,
+  // anything named a fixture: pmtiles-fixture.ts, cross-client-fixture.ts, fixtures.ts
+  /fixture/i,
+  // browser / integration test pages: harness.ts, game-harness.ts
+  /(^|[-_.])harness\.[^/]+$/i,
+  // test-runner configuration
+  /^(vitest|jest|playwright|karma|cypress)\.config\.[^/]+$/i,
+];
+
+/**
+ * True for a test, spec, test-double or fixture file. A directory segment
+ * containing "fixture" (e.g. `tools/fixture-corpus/`) counts too. Deliberately
+ * NOT matched: a production module whose name merely contains "test" (e.g.
+ * onyourleft's `packages/fit/src/synthetic-test-regions.ts`, which the
+ * package's public index exports).
+ */
+export function isTestSourcePath(filePath: string): boolean {
+  const parts = filePath.split("/");
+  const base = parts.pop() ?? "";
+  if (parts.some((seg) => TEST_DIR_SEGMENTS.has(seg.toLowerCase()) || /fixture/i.test(seg))) {
+    return true;
+  }
+  return TEST_FILE_PATTERNS.some((p) => p.test(base));
+}
+
+/** What {@link excludeTestFiles} removed, for the coverage log. */
+export interface ExcludedByPolicy {
+  modules: number;
+  files: number;
+  functions: number;
+}
+
+/**
+ * Remove test/spec/fixture files ({@link isTestSourcePath}) from every module;
+ * a module left with no symbols is dropped. Used when
+ * DOCS_GEN_PHASE1_INCLUDE_TESTS is off: the files are then neither read by the
+ * model nor mined, and are reported as excluded by policy — not as missing.
+ */
+export function excludeTestFiles<S extends GroupableSymbol, M extends SymbolModule<S>>(
+  modules: readonly M[],
+): { modules: M[]; excluded: ExcludedByPolicy } {
+  const excluded: ExcludedByPolicy = { modules: 0, files: 0, functions: 0 };
+  const kept: M[] = [];
+  for (const m of modules) {
+    const test = m.syms.filter((s) => isTestSourcePath(s.filePath));
+    if (test.length === 0) {
+      kept.push(m);
+      continue;
+    }
+    excluded.files += new Set(test.map((s) => s.filePath)).size;
+    excluded.functions += test.filter(isCallable).length;
+    const rest = m.syms.filter((s) => !isTestSourcePath(s.filePath));
+    if (rest.length === 0) excluded.modules += 1;
+    else kept.push({ ...m, syms: rest });
+  }
+  return { modules: kept, excluded };
+}

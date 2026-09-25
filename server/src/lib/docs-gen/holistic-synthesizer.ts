@@ -99,6 +99,7 @@ import {
   planPhase1Chunks,
   renderUnit,
   resolvePhase1ChunkInputTokens,
+  resolvePhase1IncludeTests,
   shouldSplitPhase1Chunk,
   splitPhase1Chunk,
   type Phase1Coverage,
@@ -150,7 +151,12 @@ import {
 // #67 — the fixed, user-safe failure vocabulary a section's exception is mapped
 // through before it can reach a persisted, client-visible warning.
 import { generationFailureMessage, isConnectionDropped } from "./generation-failure-message.js";
-import { groupSymbolsIntoModules } from "./module-grouping.js";
+import {
+  excludeTestFiles,
+  groupSymbolsIntoModules,
+  isTestSourcePath,
+  type ExcludedByPolicy,
+} from "./module-grouping.js";
 import { ClaimExtractor } from "./grounding/claim-extractor.js";
 import {
   FaithfulnessJudge,
@@ -1171,6 +1177,22 @@ export async function synthesizeHolisticDocument(
     loadModules(symbolWhere, repositories),
     loadEdges(symbolWhere),
   ]);
+  // DOCS_GEN_PHASE1_INCLUDE_TESTS=false — test/spec/fixture files are neither
+  // read nor mined, and are reported as excluded by policy (not as missing).
+  const includeTests = resolvePhase1IncludeTests();
+  let excludedByPolicy: ExcludedByPolicy | null = null;
+  if (!includeTests) {
+    const policy = excludeTestFiles(modules);
+    modules.splice(0, modules.length, ...policy.modules);
+    excludedByPolicy = policy.excluded;
+    log.info(
+      "Phase 1: test/spec/fixture files excluded by policy (DOCS_GEN_PHASE1_INCLUDE_TESTS=false)",
+      {
+        projectId,
+        ...policy.excluded,
+      },
+    );
+  }
   const scopedGraphFingerprint = graphFingerprintOf(
     symbols
       .map((symbol) => symbol.contentHash)
@@ -1285,6 +1307,7 @@ export async function synthesizeHolisticDocument(
         m.repository ? (repositories.get(m.repository.codeGraphId)?.root ?? null) : null,
         graphSummary,
         phase1.effectiveConfigHash,
+        includeTests,
       ),
     (completed, total) => {
       if (completed % progressEvery === 0 || completed === total) {
@@ -1312,6 +1335,7 @@ export async function synthesizeHolisticDocument(
     factsCount: facts.length,
     elapsedSec: Math.round((Date.now() - phase1Start) / 1000),
     ...summarizePhase1Coverage(facts),
+    ...(excludedByPolicy ? { excludedByPolicy } : {}),
   });
 
   // #330 — collect any modules whose source could not be read so we can raise a
@@ -1730,6 +1754,8 @@ export async function extractModuleFacts(
   cloneDir: string | null,
   graphSummary?: CodeGraphSummary,
   effectiveConfigHash?: string,
+  /** DOCS_GEN_PHASE1_INCLUDE_TESTS: false skips test/spec/fixture `.sql` files too. */
+  includeTests = true,
 ): Promise<ModuleFacts | null> {
   const classes = m.syms.filter((s) => s.kind === "class" || s.kind === "interface");
   const callables = m.syms.filter(isCallableSymbol);
@@ -1773,6 +1799,7 @@ export async function extractModuleFacts(
       const entries = await readdir(moduleAbsDir, { withFileTypes: true });
       const sqlFiles = entries
         .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".sql"))
+        .filter((e) => includeTests || !isTestSourcePath(path.join(m.dir, e.name)))
         .map((e) => e.name)
         .sort();
       for (const name of sqlFiles) {

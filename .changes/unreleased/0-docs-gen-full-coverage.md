@@ -13,3 +13,6 @@ section: Changed
 - The batched Business Rules section receives every mined rule: a module too
   large for one batch is split into labelled parts instead of having its
   mined-rule list capped, and mined rules cite file:line in every prompt.
+- `DOCS_GEN_PHASE1_INCLUDE_TESTS` (default on) lets a run leave test, spec
+  and fixture files out of fact extraction and rule mining; they are then
+  reported as excluded by policy rather than as missing.

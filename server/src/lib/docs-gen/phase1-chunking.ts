@@ -385,6 +385,18 @@ export interface Phase1ChunkLimits {
   minedChars: number;
 }
 
+/** Registry key: whether Phase 1 reads and mines test/spec/fixture files. */
+export const PHASE1_INCLUDE_TESTS_KEY = "DOCS_GEN_PHASE1_INCLUDE_TESTS";
+
+/**
+ * Whether Phase 1 includes test, spec and fixture files (db → env). Default
+ * true: full coverage is the safe default; a run that only wants production
+ * rules turns it off.
+ */
+export function resolvePhase1IncludeTests(config: ConfigService = getConfigService()): boolean {
+  return config.getBool(PHASE1_INCLUDE_TESTS_KEY, true);
+}
+
 /** Limits for one Phase-1 call at an output cap of `maxTokens` and an input budget in tokens. */
 export function phase1ChunkLimits(
   maxTokens: number,

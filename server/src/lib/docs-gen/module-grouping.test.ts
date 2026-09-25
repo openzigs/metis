@@ -3,7 +3,12 @@
  * dropped by the directory rules), and there is no module-count cap.
  */
 import { describe, expect, it } from "vitest";
-import { groupSymbolsIntoModules, type GroupableSymbol } from "./module-grouping.js";
+import {
+  excludeTestFiles,
+  groupSymbolsIntoModules,
+  isTestSourcePath,
+  type GroupableSymbol,
+} from "./module-grouping.js";
 
 let n = 0;
 const sym = (
@@ -108,5 +113,60 @@ describe("groupSymbolsIntoModules", () => {
       for (const fp of new Set(m.syms.map((s) => s.filePath)))
         owners.set(fp, (owners.get(fp) ?? 0) + 1);
     for (const fp of new Set(symbols.map((s) => s.filePath))) expect(owners.get(fp), fp).toBe(1);
+  });
+});
+
+describe("isTestSourcePath — checked against onyourleft's real paths", () => {
+  it.each([
+    "apps/web/src/game/three-renderer.test.ts",
+    "apps/web/browser/game.browser.spec.ts",
+    "apps/web/src/game/sounds.a11y.test.tsx",
+    "packages/store/src/testing/fakes.ts",
+    "packages/sensors/web-bluetooth/src/testing/profiles.ts",
+    "apps/web/src/ride/testing.ts",
+    "apps/web/src/game/audio-testing.ts",
+    "apps/web/src/game/route-fixtures-testing.ts",
+    "apps/web/browser/pmtiles-fixture.ts",
+    "apps/web/src/transfer/cross-client-fixture.ts",
+    "packages/fit/tools/fixture-corpus/corpus.ts",
+    "apps/web/browser/game-harness.ts",
+    "apps/web/browser/harness.ts",
+    "apps/web/vitest.config.ts",
+    "e2e/tests/login.spec.ts",
+    "src/__tests__/a.ts",
+    "pkg/foo_test.go",
+    "app/test_rules.py",
+    "src/main/kotlin/PlannerTest.kt",
+    "src/test/java/com/x/Foo.java",
+  ])("%s is test code", (p) => expect(isTestSourcePath(p)).toBe(true));
+
+  it.each([
+    "packages/fit/src/synthetic-test-regions.ts",
+    "packages/store/src/schema.ts",
+    "apps/web/src/game/three-renderer.ts",
+    "packages/domain/src/routing/validate.ts",
+    "src/latest.ts",
+    "src/contest/Contest.kt",
+    "src/orbit/ORBIT.java",
+    "src/manifest.ts",
+  ])("%s is production code", (p) => expect(isTestSourcePath(p)).toBe(false));
+});
+
+describe("excludeTestFiles", () => {
+  it("drops test files from modules, drops emptied modules, and counts what it removed", () => {
+    const modules = group([
+      sym("class", "src/a/A.ts"),
+      sym("method", "src/a/A.ts"),
+      sym("function", "src/a/A.test.ts"),
+      sym("function", "src/a/A.test.ts"),
+      sym("function", "src/a/b.ts"),
+      sym("function", "src/tests/unit/x.ts"),
+      sym("class", "src/testing/Fake.ts"),
+      sym("method", "src/testing/Fake.ts"),
+      sym("method", "src/testing/Fake.ts"),
+    ]);
+    const { modules: kept, excluded } = excludeTestFiles(modules);
+    expect(filesOf(kept)).toEqual(new Set(["src/a/A.ts", "src/a/b.ts"]));
+    expect(excluded).toEqual({ modules: 1, files: 2, functions: 4 });
   });
 });

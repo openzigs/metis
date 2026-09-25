@@ -372,4 +372,48 @@ describe("#1354 actual multi-repository synthesis", () => {
     const read = phase1Prompts.join("\n").match(/\/\/ method\d+\n/g) ?? [];
     expect(new Set(read).size).toBe(count);
   });
+
+  describe("DOCS_GEN_PHASE1_INCLUDE_TESTS", () => {
+    beforeEach(async () => {
+      await writeFile(
+        path.join(root, "a/src/rules.test.ts"),
+        'it("x", () => { if (value > 5) throw new Error("TEST_ONLY"); });',
+      );
+      db.codeSymbol.findMany.mockImplementation(async ({ where }) =>
+        ["a", "b"]
+          .filter((id) => !where.codeGraphId || where.codeGraphId === `graph-${id}`)
+          .flatMap((id) => [
+            ...symbols(id),
+            ...(id === "a"
+              ? [
+                  {
+                    id: "a-test",
+                    codeGraphId: "graph-a",
+                    qualifiedName: "rules.test",
+                    kind: "module",
+                    filePath: "src/rules.test.ts",
+                    language: "ts",
+                    startLine: 1,
+                    endLine: 1,
+                  },
+                ]
+              : []),
+          ]),
+      );
+    });
+
+    it("reads test files by default (full coverage)", async () => {
+      await synthesizeHolisticDocument("p", "architecture", "Architecture");
+      expect(phase1Prompts.join("\n")).toContain("TEST_ONLY");
+    });
+
+    it("neither reads nor mines test files when off", async () => {
+      vi.stubEnv("DOCS_GEN_PHASE1_INCLUDE_TESTS", "false");
+      await synthesizeHolisticDocument("p", "architecture", "Architecture");
+      const all = phase1Prompts.join("\n");
+      expect(all).toContain("ALPHA_ONLY");
+      expect(all).not.toContain("TEST_ONLY");
+      expect(all).not.toContain("rules.test.ts");
+    });
+  });
 });
