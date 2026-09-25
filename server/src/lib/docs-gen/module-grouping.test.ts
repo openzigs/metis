@@ -138,6 +138,10 @@ describe("isTestSourcePath — checked against onyourleft's real paths", () => {
     "app/test_rules.py",
     "src/main/kotlin/PlannerTest.kt",
     "src/test/java/com/x/Foo.java",
+    "src/Reports.Tests/Report.Tests.cs",
+    "src/Billing.UnitTests/InvoiceTest.cs",
+    "src/user.fixture.ts",
+    "tests-support/test-fixtures/a.json.ts",
   ])("%s is test code", (p) => expect(isTestSourcePath(p)).toBe(true));
 
   it.each([
@@ -149,6 +153,14 @@ describe("isTestSourcePath — checked against onyourleft's real paths", () => {
     "src/contest/Contest.kt",
     "src/orbit/ORBIT.java",
     "src/manifest.ts",
+    "src/league/fixture-service.ts",
+    "src/league/prefix-fixture-mapper.ts",
+    "src/experiments/ab-testing.ts",
+    "src/ops/load-testing.ts",
+    "src/main/java/com/x/UserSpec.java",
+    "src/main/kotlin/HotSpec.kt",
+    "src/spec.ts",
+    "src/test.ts",
   ])("%s is production code", (p) => expect(isTestSourcePath(p)).toBe(false));
 });
 

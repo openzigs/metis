@@ -20,7 +20,12 @@ export interface SectionProgressLike {
   batch?: { done: number; total: number };
 }
 
-/** 0-100, monotonic across a document's updates. */
+/**
+ * 0-100 for one update. Monotonic across sections and within a batched section
+ * except when two re-splits land before the next completion (done/total can
+ * dip, e.g. 3/4 → 4/6); the route applies a running maximum, so the bar a user
+ * sees never goes back.
+ */
 export function sectionProgressPercent(u: SectionProgressLike): number {
   const total = Math.max(u.total, 1);
   if (u.status !== "generating" && u.status !== "queued") {

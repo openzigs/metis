@@ -31,12 +31,19 @@
  */
 import { extractFormulas, type ExtractedFormula } from "../code-graph/formula-extractor.js";
 import { mineJavaRules } from "../code-graph/java-rule-miner.js";
-import { mineSasRules, mineSasWorkflow, type MinedSasStep } from "../code-graph/sas-rule-miner.js";
+import {
+  mineSasRules,
+  mineSasWorkflow,
+  renderSasDataLineage,
+  renderSasWorkflow,
+  type MinedSasStep,
+} from "../code-graph/sas-rule-miner.js";
 import { minePyRules } from "../code-graph/py-rule-miner.js";
 import { mineGoRules } from "../code-graph/go-rule-miner.js";
 import { mineTsRules } from "../code-graph/ts-rule-miner.js";
 import { mineCsRules } from "../code-graph/cs-rule-miner.js";
 import { mineKtRules } from "../code-graph/kt-rule-miner.js";
+import { mineSqlRules } from "../code-graph/sql-rule-miner.js";
 import { detectLanguage } from "../code-graph/parsers.js";
 import { toPersistedMinedRules, type PersistedMinedRule } from "./fact-slices.js";
 import { BATCH_OUTPUT_MARGIN, CHARS_PER_OUTPUT_TOKEN } from "./section-batching.js";
@@ -201,13 +208,14 @@ export const UNIT_SEPARATOR = "\n\n---\n\n";
 // ============================================================================
 
 /**
- * The per-call rule cap every line-local miner enforces (`MAX_RULES`). A unit
- * whose mining reaches it is re-mined in windows so the cap cannot drop rules.
+ * The line-local miners (TS/JS, Python, Go, C#, Kotlin, SQL) stop at a per-call
+ * rule cap (400, or 500 for SQL) by default. Phase 1 mines whole files and must
+ * not lose a rule past it, so it calls every capped miner with no cap at all
+ * (`maxRules = Infinity`) — one pass over the whole unit, so a multi-line rule
+ * (a 40-case `switch`, a `z.object({...})`, a CREATE TABLE) is never cut at a
+ * window edge. The Java and SAS miners have no cap.
  */
-export const MINER_RULE_CAP = 400;
-/** Lines per re-mining window, and the lookahead overlap each window reads past its end. */
-const MINE_WINDOW_LINES = 150;
-const MINE_WINDOW_OVERLAP = 20;
+const UNCAPPED = Number.POSITIVE_INFINITY;
 
 /** A unit with everything mined from it. */
 export interface Phase1Unit extends SourceUnit {
@@ -226,22 +234,32 @@ function mineRulesIn(
     case "java":
       return toPersistedMinedRules("java", mineJavaRules(text, filePath, baseLine, context));
     case "ts":
-      return toPersistedMinedRules("ts", mineTsRules(text, filePath, baseLine, context));
+      return toPersistedMinedRules("ts", mineTsRules(text, filePath, baseLine, context, UNCAPPED));
     case "js":
-      return toPersistedMinedRules("js", mineTsRules(text, filePath, baseLine, context));
+      return toPersistedMinedRules("js", mineTsRules(text, filePath, baseLine, context, UNCAPPED));
     case "py":
-      return toPersistedMinedRules("py", minePyRules(text, filePath, baseLine, context));
+      return toPersistedMinedRules("py", minePyRules(text, filePath, baseLine, context, UNCAPPED));
     case "go":
-      return toPersistedMinedRules("go", mineGoRules(text, filePath, baseLine, context));
+      return toPersistedMinedRules("go", mineGoRules(text, filePath, baseLine, context, UNCAPPED));
     case "cs":
-      return toPersistedMinedRules("cs", mineCsRules(text, filePath, baseLine, context));
+      return toPersistedMinedRules("cs", mineCsRules(text, filePath, baseLine, context, UNCAPPED));
     case "kt":
-      return toPersistedMinedRules("kt", mineKtRules(text, filePath, baseLine, context));
+      return toPersistedMinedRules("kt", mineKtRules(text, filePath, baseLine, context, UNCAPPED));
     case "sas":
       return toPersistedMinedRules("sas", mineSasRules(text, filePath, baseLine, context));
     default:
       return [];
   }
+}
+
+/**
+ * Every rule of one `.sql` file, mined in full at the file level (context = the
+ * file path), uncapped — the SQL miner stops at 500 by default.
+ */
+export function mineSqlFile(source: string, relPath: string): PersistedMinedRule[] {
+  return dedupeMinedRules(
+    toPersistedMinedRules("sql", mineSqlRules(source, relPath, 1, relPath, UNCAPPED)),
+  );
 }
 
 /** Identity used to de-duplicate mined rules. */
@@ -279,30 +297,18 @@ export function innermostCallableAt(
  * Run every applicable miner over the WHOLE unit, with file line numbers.
  *
  * Rule `context` is the innermost callable holding the rule's line (what the
- * old per-method loop passed), or null for module-level code. A unit whose
- * mining reaches {@link MINER_RULE_CAP} is re-mined in overlapping windows,
- * each window keeping only the rules on its own lines.
+ * old per-method loop passed), or null for module-level code. Capped miners
+ * are called uncapped (see {@link UNCAPPED}), so the result is complete.
  */
 export function mineUnit(unit: SourceUnit, symbols: readonly SymbolRange[]): Phase1Unit {
   const { filePath, startLine, text } = unit;
   const lang = detectLanguage(filePath);
-  let rules = mineRulesIn(text, filePath, startLine, null);
-  if (rules.length >= MINER_RULE_CAP) {
-    const lines = text.split("\n");
-    rules = [];
-    for (let w = 0; w < lines.length; w += MINE_WINDOW_LINES) {
-      const windowText = lines.slice(w, w + MINE_WINDOW_LINES + MINE_WINDOW_OVERLAP).join("\n");
-      const lastOwnLine = startLine + w + MINE_WINDOW_LINES - 1;
-      rules.push(
-        ...mineRulesIn(windowText, filePath, startLine + w, null).filter(
-          (r) => r.line <= lastOwnLine,
-        ),
-      );
-    }
-  }
-  rules = dedupeMinedRules(rules).map((r) => ({
+  // Only this file's callables, once per unit (the rule-context lookups below
+  // would otherwise scan every module symbol per rule).
+  const fileSymbols = symbols.filter((sym) => sym.filePath === filePath && isCallableSymbol(sym));
+  const rules = dedupeMinedRules(mineRulesIn(text, filePath, startLine, null)).map((r) => ({
     ...r,
-    context: innermostCallableAt(symbols, filePath, r.line),
+    context: innermostCallableAt(fileSymbols, filePath, r.line),
   }));
   // The formula extractor numbers lines from the start of what it is given;
   // shift them to file lines (the budgeted loop reported slice-relative ones).
@@ -312,7 +318,8 @@ export function mineUnit(unit: SourceUnit, symbols: readonly SymbolRange[]): Pha
         startLine: f.startLine + startLine - 1,
         endLine: f.endLine + startLine - 1,
         symbolContext:
-          f.symbolContext ?? innermostCallableAt(symbols, filePath, f.startLine + startLine - 1),
+          f.symbolContext ??
+          innermostCallableAt(fileSymbols, filePath, f.startLine + startLine - 1),
       }))
     : [];
   const sasSteps = lang === "sas" ? mineSasWorkflow(text, filePath, startLine).steps : [];
@@ -333,6 +340,12 @@ export function mineUnit(unit: SourceUnit, symbols: readonly SymbolRange[]): Pha
  * split (see {@link splitPhase1Chunk}).
  */
 export const PHASE1_OUTPUT_CHARS_PER_SOURCE_CHAR = 1.0;
+/**
+ * Every mined SAS DATA/PROC step becomes a WORKFLOWS step and a lineage line.
+ * Steps are rendered in full (no 6,000/4,000-char cap), so the planner budgets
+ * them like mined rules.
+ */
+export const PHASE1_OUTPUT_CHARS_PER_SAS_STEP = 200;
 /** Every mined rule must come back as a RULES bullet. */
 export const PHASE1_OUTPUT_CHARS_PER_MINED_RULE = 150;
 /**
@@ -439,11 +452,17 @@ function unitCost(u: Phase1Unit): Cost {
     minedTotal += c + 1;
   }
   const source = u.inventoryOnly ? 0 : renderUnit(u).length + UNIT_SEPARATOR.length;
+  const steps =
+    u.sasSteps.length > 0
+      ? renderSasWorkflow({ steps: u.sasSteps }, Number.POSITIVE_INFINITY).length +
+        renderSasDataLineage({ steps: u.sasSteps }, Number.POSITIVE_INFINITY).length
+      : 0;
   return {
-    input: source + minedTotal + u.formulas.reduce((n, f) => n + formulaRenderChars(f), 0),
+    input: source + minedTotal + steps + u.formulas.reduce((n, f) => n + formulaRenderChars(f), 0),
     output: Math.ceil(
       u.text.length * PHASE1_OUTPUT_CHARS_PER_SOURCE_CHAR +
-        u.rules.length * PHASE1_OUTPUT_CHARS_PER_MINED_RULE,
+        u.rules.length * PHASE1_OUTPUT_CHARS_PER_MINED_RULE +
+        u.sasSteps.length * PHASE1_OUTPUT_CHARS_PER_SAS_STEP,
     ),
     mined,
   };
@@ -613,6 +632,11 @@ export function splitPhase1Chunk(
 export const MAX_PHASE1_SPLIT_DEPTH = 4;
 export const MIN_PHASE1_SPLIT_FRACTION = 0.25;
 
+/** Whether a unit on its own fits one call at these limits. */
+export function unitFitsLimits(u: Phase1Unit, limits: Phase1ChunkLimits): boolean {
+  return fits(unitCost(u), limits);
+}
+
 /** Whether a cut-off chunk at `depth` should be split and re-extracted. */
 export function shouldSplitPhase1Chunk(
   chunk: readonly Phase1Unit[],
@@ -744,8 +768,21 @@ export function mergePhase1ChunkFacts(replies: readonly string[]): string {
 
 /** How much of a module Phase 1 read. */
 export interface Phase1Coverage {
+  /** Functions in some PLANNED chunk (planned coverage). */
   functionsIncluded: number;
   functionsTotal: number;
+  /**
+   * Functions whose chunk produced complete facts (a complete reply or a cache
+   * hit). Equals `functionsIncluded` only when no chunk failed or stayed cut off;
+   * the rest are counted below, never as read.
+   */
+  functionsExtracted: number;
+  /** Functions in a leaf chunk whose reply was still cut off (partial facts). */
+  functionsInTruncatedChunks: number;
+  /** Functions in a leaf chunk whose call failed (no facts). */
+  functionsInFailedChunks: number;
+  /** Units too large for one call even after splitting to a single line (sent over budget). */
+  oversizedUnits: number;
   sourceCharsIncluded: number;
   sourceCharsTotal: number;
   /** Planned chunks. */

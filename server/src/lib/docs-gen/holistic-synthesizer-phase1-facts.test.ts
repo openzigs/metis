@@ -10,6 +10,7 @@ import path from "node:path";
 import type { AIProvider, ChatChunk } from "../ai/types.js";
 
 const readFileMock = vi.hoisted(() => vi.fn());
+const readdirMock = vi.hoisted(() => vi.fn().mockResolvedValue([]));
 const upsertMock = vi.hoisted(() => vi.fn().mockResolvedValue({}));
 const findUniqueMock = vi.hoisted(() => vi.fn().mockResolvedValue(null));
 
@@ -27,7 +28,7 @@ vi.mock("../prisma.js", () => ({
 vi.mock("node:fs/promises", () => ({
   realpath: vi.fn(async (p: string) => path.resolve(p)),
   readFile: readFileMock,
-  readdir: vi.fn().mockResolvedValue([]),
+  readdir: readdirMock,
 }));
 
 import {
@@ -36,6 +37,7 @@ import {
   extractModuleFacts,
   factSlicesFor,
   PHASE1_SPLIT_MARKER,
+  planSectionBatches,
   sectionGroupsFor,
   selectRelevantFacts,
   summarizeFactsBudget,
@@ -611,6 +613,8 @@ describe("Phase 1 reads a module far bigger than the old budgets, in chunks", ()
     );
     expect(f!.factsTruncated).toBe(true);
     expect(f!.phase1Coverage!.truncatedChunks).toBeGreaterThan(0);
+    expect(f!.phase1Coverage!.functionsExtracted).toBe(0);
+    expect(f!.phase1Coverage!.functionsInTruncatedChunks).toBe(24);
     // Nothing that was cut off is cached as facts.
     for (const c of upsertMock.mock.calls) expect(c[0].create.facts).toBe(PHASE1_SPLIT_MARKER);
   });
@@ -632,12 +636,166 @@ describe("Phase 1 reads a module far bigger than the old budgets, in chunks", ()
     expect(f!.facts).not.toContain("(extraction failed)");
     expect(f!.phase1Coverage!.failedChunks).toBe(1);
     expect(upsertMock).toHaveBeenCalledTimes(n - 1);
+    // A failed chunk's functions are planned, never counted as extracted.
+    const cov = f!.phase1Coverage!;
+    expect(cov.functionsInFailedChunks).toBeGreaterThan(0);
+    expect(cov.functionsExtracted + cov.functionsInFailedChunks).toBe(cov.functionsIncluded);
+    expect(cov.functionsExtracted).toBeLessThan(cov.functionsIncluded);
   });
 });
 
 // ============================================================================
 // #156 — a cut-off reply is never cached as if complete
 // ============================================================================
+
+describe(".sql files are mined in full (no 500-rule cap)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    findUniqueMock.mockResolvedValue(null);
+    upsertMock.mockResolvedValue({});
+  });
+
+  it("700 CHECK constraints → 700 mined rules, persisted, and every one reaches a Rules batch", async () => {
+    const sql = Array.from(
+      { length: 700 },
+      (_, i) => `ALTER TABLE payments ADD CONSTRAINT chk_${i} CHECK (amount > ${i});`,
+    ).join("\n");
+    readdirMock.mockResolvedValueOnce([
+      { name: "schema.sql", isFile: () => true, isDirectory: () => false },
+    ]);
+    readFileMock.mockImplementation(async (p: string) => (p.endsWith(".sql") ? sql : TS_SOURCE));
+    const provider = scriptedProvider([{ text: "PURPOSE\nx", finishReason: "stop" }]);
+    const f = await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
+    const sqlRules = f!.minedRules!.filter((r) => r.language === "sql");
+    expect(sqlRules).toHaveLength(700);
+    // Persisted: across the chunk rows, every SQL rule once.
+    const persisted = upsertMock.mock.calls.flatMap(
+      (c) => JSON.parse(c[0].create.minedRulesJson) as PersistedMinedRule[],
+    );
+    expect(persisted.filter((r) => r.language === "sql")).toHaveLength(700);
+    // Reaches Rules: every rule cited in exactly one planned batch prompt.
+    const plan = planSectionBatches([f!], rulesGroup(), 150_000, 16_384);
+    const prompts = plan.batches.map((b) => b.map((m) => m.entry).join("\n")).join("\n");
+    const file = path.join("src/billing", "schema.sql");
+    for (let line = 1; line <= 700; line++) {
+      expect(prompts.split(`(${file}:${line})`).length - 1, `line ${line}`).toBe(1);
+    }
+  });
+});
+
+describe("a unit too large for one call even at one line", () => {
+  it("is counted and logged as oversized, and still sent", async () => {
+    vi.clearAllMocks();
+    findUniqueMock.mockResolvedValue(null);
+    upsertMock.mockResolvedValue({});
+    // A minified one-line file of ~200K chars.
+    const line = `export const T = [${Array.from({ length: 20_000 }, (_, i) => i).join(",")}];`;
+    readFileMock.mockResolvedValue(line);
+    const mod: ModuleGroup = {
+      dir: "src/min",
+      syms: [
+        {
+          id: "m",
+          qualifiedName: "min.js",
+          kind: "module",
+          language: "js",
+          filePath: "src/min/min.js",
+          startLine: 1,
+          endLine: 1,
+        },
+      ],
+    };
+    const prompts: string[] = [];
+    const provider = {
+      ...scriptedProvider([]),
+      async *stream(messages: Array<{ content: unknown }>): AsyncGenerator<ChatChunk> {
+        prompts.push(String(messages[messages.length - 1].content));
+        yield { type: "delta", content: "PURPOSE\nx" };
+        yield { type: "done", finishReason: "stop" };
+      },
+    } as unknown as AIProvider;
+    const f = await extractModuleFacts(mod, provider, false, "p1", "/clone");
+    expect(f!.phase1Coverage!.oversizedUnits).toBe(1);
+    expect(prompts.join("")).toContain("19999");
+  });
+});
+
+describe("SAS workflow steps are never truncated", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    findUniqueMock.mockResolvedValue(null);
+    upsertMock.mockResolvedValue({});
+  });
+
+  const STEPS = 300;
+  const sas = [
+    "%macro etl;",
+    ...Array.from({ length: STEPS }, (_, i) => [
+      `data work.out${i};`,
+      `  set work.in${i};`,
+      `  if amount > ${i};`,
+      "run;",
+    ]).flat(),
+    "%mend;",
+  ].join("\n");
+  const sasModule = (): ModuleGroup => ({
+    dir: "sas/etl",
+    syms: [
+      {
+        id: "m1",
+        qualifiedName: "etl.sas::etl",
+        kind: "function",
+        language: "sas",
+        filePath: "sas/etl/etl.sas",
+        startLine: 1,
+        endLine: STEPS * 4 + 2,
+      },
+    ],
+  });
+
+  it("appends every one of 300 steps (and its lineage) to the module's facts", async () => {
+    readFileMock.mockResolvedValue(sas);
+    const f = await extractModuleFacts(sasModule(), offlineProvider(), false, "p1", "/clone");
+    expect(f!.facts).not.toContain("truncated for prompt budget");
+    for (let i = 0; i < STEPS; i++) {
+      expect(f!.facts, `step ${i}`).toContain(`work.out${i}`);
+    }
+  });
+
+  it.each(["8192", "65536"])(
+    "gives every step to exactly one Phase-1 call (facts cap %s)",
+    async (cap) => {
+      // At a large cap one chunk holds far more than the old 6,000-char pipeline.
+      vi.stubEnv("DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS", cap);
+      readFileMock.mockResolvedValue(sas);
+      const prompts: string[] = [];
+      const provider = {
+        ...scriptedProvider([]),
+        async *stream(messages: Array<{ content: unknown }>): AsyncGenerator<ChatChunk> {
+          prompts.push(String(messages[messages.length - 1].content));
+          yield { type: "delta", content: "PURPOSE\nx" };
+          yield { type: "done", finishReason: "stop" };
+        },
+      } as unknown as AIProvider;
+      await extractModuleFacts(sasModule(), provider, false, "p1", "/clone");
+      const pipelines = prompts.map((p) =>
+        p.slice(
+          p.indexOf("=== DETERMINISTICALLY-MINED SAS STEP PIPELINE"),
+          p.indexOf("=== END SAS STEP PIPELINE"),
+        ),
+      );
+      expect(pipelines.join("")).not.toContain("truncated for prompt budget");
+      for (let i = 0; i < STEPS; i++) {
+        const needle = `**DATA work.out${i}**`;
+        expect(
+          pipelines.filter((p) => p.includes(needle)),
+          needle,
+        ).toHaveLength(1);
+      }
+      vi.unstubAllEnvs();
+    },
+  );
+});
 
 describe("#156 extractModuleFacts on a truncated reply", () => {
   beforeEach(() => {

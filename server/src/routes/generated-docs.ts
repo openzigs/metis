@@ -945,6 +945,8 @@ export async function generateDocumentAsync(
       selectedEvidence = grounding?.sources ?? [];
       const groundingForSection = buildSectionGroundingRetriever({ projectId, policy });
 
+      // The bar never goes backwards, whatever order updates arrive in.
+      let lastProgress = 0;
       const result = await synthesizeHolisticDocument(
         projectId,
         docType,
@@ -987,7 +989,7 @@ export async function generateDocumentAsync(
               "doc-generation",
               docId,
               projectId,
-              documentProgressPercent(u),
+              (lastProgress = Math.max(lastProgress, documentProgressPercent(u))),
               sectionProgressMessage(u),
             );
           },
@@ -997,7 +999,7 @@ export async function generateDocumentAsync(
               "doc-generation",
               docId,
               projectId,
-              phase1ProgressPercent(done, total),
+              (lastProgress = Math.max(lastProgress, phase1ProgressPercent(done, total))),
               phase1ProgressMessage(done, total),
             );
           },

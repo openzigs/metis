@@ -587,10 +587,10 @@ export function phase1FactsTruncatedWarning(moduleNames: readonly string[]): Doc
 }
 
 /**
- * Phase 1 reads a large module in several calls. When some of those calls fail
- * (and others succeed) the module's facts are missing the failed parts; the
- * parts that succeeded are cached, so a regeneration retries only the failed
- * ones. Names the modules.
+ * Phase 1 reads a large module in several calls. When some or all of those
+ * calls fail — or the module's extraction throws — its facts are incomplete or
+ * missing; any parts that succeeded are cached, so a regeneration retries only
+ * the failed ones. Names the modules.
  */
 export function phase1ChunksFailedWarning(moduleNames: readonly string[]): DocWarning {
   const listed = moduleNames.slice(0, TRUNCATED_MODULES_LISTED).join(", ");
@@ -602,8 +602,8 @@ export function phase1ChunksFailedWarning(moduleNames: readonly string[]): DocWa
     kind: "section-failed",
     section: "Phase 1 facts",
     message:
-      `Fact extraction failed for part of ${moduleNames.length} module(s), so their facts are incomplete: ${listed}${more}. ` +
-      `The parts that succeeded are cached; regenerate to retry only the failed parts.`,
+      `Fact extraction failed for all or part of ${moduleNames.length} module(s), so their facts are incomplete or missing: ${listed}${more}. ` +
+      `Any parts that succeeded are cached; regenerate to retry only the failed parts.`,
     severity: "warning",
   };
 }
@@ -855,4 +855,33 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
       ? "Degraded output"
       : "Needs review";
   return `${prefix} — ${parts.join("; ")}.`;
+}
+
+/**
+ * The scan for SQL-only directories (whose `.sql` constraints, triggers and
+ * views are mined) could not look at part of a repository: it stopped at its
+ * directory safety bound, or some directories could not be listed. Those
+ * directories' rules are missing from the document; this names how many.
+ */
+export function sqlScanIncompleteWarning(
+  repository: string,
+  stats: { visited: number; truncated: boolean; unreadable: readonly string[] },
+): DocWarning {
+  const parts: string[] = [];
+  if (stats.truncated) {
+    parts.push(`the scan stopped after ${stats.visited.toLocaleString("en-US")} directories`);
+  }
+  if (stats.unreadable.length > 0) {
+    const listed = stats.unreadable.slice(0, 5).join(", ");
+    const more = stats.unreadable.length > 5 ? ` and ${stats.unreadable.length - 5} more` : "";
+    parts.push(
+      `${stats.unreadable.length} director${stats.unreadable.length === 1 ? "y" : "ies"} could not be read (${listed}${more})`,
+    );
+  }
+  return {
+    kind: "source-unavailable",
+    section: `SQL schema scan (${repository})`,
+    message: `Some SQL-only directories were not mined for rules: ${parts.join("; ")}. Their constraints, triggers and views are missing from this document.`,
+    severity: "warning",
+  };
 }

@@ -173,17 +173,21 @@ const TEST_DIR_SEGMENTS: ReadonlySet<string> = new Set([
 
 /** File-name shapes of test code, across the languages the code graph parses. */
 const TEST_FILE_PATTERNS: readonly RegExp[] = [
-  // foo.test.ts, foo.spec.tsx, game.browser.spec.ts, sounds.a11y.test.tsx
-  /(^|\.)(test|spec)\.[^/]+$/i,
+  // foo.test.ts, foo.spec.tsx, game.browser.spec.ts, sounds.a11y.test.tsx —
+  // a bare `test.ts` / `spec.ts` is not enough on its own.
+  /[^/]\.(test|spec)\.[^/]+$/i,
   // Python / Go
   /^test_[^/]+\.py$/i,
   /_test\.(go|py)$/i,
-  // Java / Kotlin / C# / Scala test classes
-  /[a-z0-9](Test|Tests|Spec|IT)\.(java|kt|kts|cs|scala)$/,
+  // Java / Kotlin / C# / Scala test classes. `*Spec` is NOT matched: Spring Data
+  // `Specification`s and DDD specifications (`UserSpec.java`) are production.
+  /[a-z0-9](Test|Tests|IT)\.(java|kt|kts|cs|scala)$/,
   // test-double modules by name: testing.ts, audio-testing.ts, match_testing.py
   /(^|[-_.])testing\.[^/]+$/i,
-  // anything named a fixture: pmtiles-fixture.ts, cross-client-fixture.ts, fixtures.ts
-  /fixture/i,
+  // named fixtures: pmtiles-fixture.ts, cross-client-fixture.ts, fixtures.ts,
+  // user.fixture.ts — but not fixture-service.ts / prefix-fixture-mapper.ts,
+  // where "fixture" can be a business entity (a sports fixture).
+  /(^|[-_.])fixtures?\.[^/]+$/i,
   // browser / integration test pages: harness.ts, game-harness.ts
   /(^|[-_.])harness\.[^/]+$/i,
   // test-runner configuration
@@ -191,18 +195,34 @@ const TEST_FILE_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
- * True for a test, spec, test-double or fixture file. A directory segment
- * containing "fixture" (e.g. `tools/fixture-corpus/`) counts too. Deliberately
- * NOT matched: a production module whose name merely contains "test" (e.g.
- * onyourleft's `packages/fit/src/synthetic-test-regions.ts`, which the
- * package's public index exports).
+ * `*-testing.*` names that are production features, not test doubles
+ * (`ab-testing.ts`, `load-testing.ts` …).
+ */
+const PRODUCTION_TESTING_FEATURE =
+  /^(ab|a-b|split|multivariate|load|stress|perf|performance|canary|usability|penetration)[-_]testing\./i;
+
+/** A directory segment of test code: see {@link TEST_DIR_SEGMENTS}, plus C# test projects and fixture dirs. */
+function isTestDirSegment(seg: string): boolean {
+  return (
+    TEST_DIR_SEGMENTS.has(seg.toLowerCase()) ||
+    // C# / .NET test projects: Foo.Tests/, Foo.UnitTests/, Foo.IntegrationTests/, Foo.Test/
+    /\.(Unit|Integration|Functional|Acceptance)?Tests?$/i.test(seg) ||
+    // fixture directories: fixture-corpus/, test-fixtures/, fixtures_v2/
+    /(^|[-_])fixtures?([-_]|$)/i.test(seg)
+  );
+}
+
+/**
+ * True for a test, spec, test-double or fixture file. Deliberately NOT matched:
+ * a production module whose name merely contains "test" or "fixture" (e.g.
+ * onyourleft's `packages/fit/src/synthetic-test-regions.ts`, which the package's
+ * public index exports; `fixture-service.ts`; `ab-testing.ts`; `UserSpec.java`).
  */
 export function isTestSourcePath(filePath: string): boolean {
   const parts = filePath.split("/");
   const base = parts.pop() ?? "";
-  if (parts.some((seg) => TEST_DIR_SEGMENTS.has(seg.toLowerCase()) || /fixture/i.test(seg))) {
-    return true;
-  }
+  if (parts.some(isTestDirSegment)) return true;
+  if (PRODUCTION_TESTING_FEATURE.test(base)) return false;
   return TEST_FILE_PATTERNS.some((p) => p.test(base));
 }
 
@@ -238,3 +258,14 @@ export function excludeTestFiles<S extends GroupableSymbol, M extends SymbolModu
   }
   return { modules: kept, excluded };
 }
+
+/**
+ * Safety bound on directories visited per repository by the SQL-only-directory
+ * scan (holistic-synthesizer `discoverSqlOnlyModules`) and by the regeneration
+ * input fingerprint, so a pathological clone cannot run away. Far above any
+ * realistic source tree (the scans skip node_modules/.git/build/vendor/test
+ * dirs); reaching it raises a document warning. There is NO cap on the SQL-only
+ * modules found: the old 24-module / 2,000-directory caps dropped whole SQL-only
+ * directories silently.
+ */
+export const SQL_SCAN_DIR_CAP = 100_000;

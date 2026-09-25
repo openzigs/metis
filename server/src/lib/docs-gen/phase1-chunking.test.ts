@@ -13,10 +13,10 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { mineTsRules } from "../code-graph/ts-rule-miner.js";
 import { mineKtRules } from "../code-graph/kt-rule-miner.js";
+import { mineSqlRules } from "../code-graph/sql-rule-miner.js";
 import {
   DEFAULT_PHASE1_CHUNK_INPUT_TOKENS,
   MAX_PHASE1_SPLIT_DEPTH,
-  MINER_RULE_CAP,
   PHASE1_INPUT_CHARS_PER_TOKEN,
   buildSourceUnits,
   chunkInputChars,
@@ -24,6 +24,7 @@ import {
   isTrivialLine,
   measureChunkCoverage,
   mergePhase1ChunkFacts,
+  mineSqlFile,
   mineUnit,
   phase1ChunkLimits,
   planPhase1Chunks,
@@ -218,13 +219,53 @@ describe("mineUnit over whole files", () => {
     expect(rules.every((r) => r.line <= KT_LINES.length)).toBe(true);
   });
 
-  it("re-mines a unit that reaches the miner's rule cap in windows, losing nothing", () => {
-    const n = MINER_RULE_CAP + 150;
+  it("mines past every capped miner's default cap, losing nothing (TS 400, SQL 500)", () => {
+    const n = 550;
     const lines = Array.from({ length: n }, (_, i) => `export const LIMIT_${i} = ${i};`);
     const [u] = minedUnits("big.ts", lines, []);
     expect(u.rules).toHaveLength(n);
     expect(new Set(u.rules.map((r) => r.line)).size).toBe(n);
     expect(u.rules.every((r) => lines[r.line - 1].includes(r.expression.slice(0, 18)))).toBe(true);
+    // Precondition: the miner's own default stops at 400.
+    expect(mineTsRules(lines.join("\n"), "big.ts", 1, null)).toHaveLength(400);
+  });
+
+  it("keeps a 40-case switch whole in a Java method with more than 400 other rules", () => {
+    // The reviewer's probe: windowed re-mining cut this switch to 26 branches.
+    const lines = ["public class Big {", "  void run(String status, int x) {"];
+    for (let i = 0; i < 293; i++)
+      lines.push(`    if (x > ${i}) throw new IllegalStateException("limit ${i}");`);
+    lines.push("    switch (status) {");
+    for (let c = 0; c < 40; c++) lines.push(`      case S${c}: x = ${c}; break;`);
+    lines.push("    }");
+    for (let i = 0; i < 150; i++)
+      lines.push(`    if (x > ${1000 + i}) throw new IllegalStateException("late ${i}");`);
+    lines.push("  }", "}");
+    const symbols = [
+      {
+        kind: "method",
+        qualifiedName: "Big.run",
+        filePath: "Big.java",
+        startLine: 2,
+        endLine: lines.length - 1,
+      },
+    ];
+    const rules = minedUnits("Big.java", lines, symbols).flatMap((u) => u.rules);
+    expect(rules.length).toBeGreaterThan(400);
+    const sw = rules.filter((r) => /branches/.test(r.summary));
+    expect(sw).toHaveLength(1);
+    expect(sw[0].summary).toContain("40 branches");
+  });
+
+  it("mines every rule of a .sql file past the SQL miner's 500 cap", () => {
+    const sql = Array.from(
+      { length: 700 },
+      (_, i) => `ALTER TABLE payments ADD CONSTRAINT chk_${i} CHECK (amount > ${i});`,
+    ).join("\n");
+    expect(mineSqlRules(sql, "db/schema.sql", 1, null)).toHaveLength(500); // the default cap
+    const rules = mineSqlFile(sql, "db/schema.sql");
+    expect(rules).toHaveLength(700);
+    expect(new Set(rules.map((r) => r.line)).size).toBe(700);
   });
 
   it("shifts formula line numbers to file lines", () => {

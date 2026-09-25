@@ -1,5 +1,5 @@
 /** #1354: real roots, source extraction, cache and citation pipeline; only DB/LLM mocked. */
-import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -245,7 +245,7 @@ describe("#1354 actual multi-repository synthesis", () => {
     expect(b).not.toContain("a_field");
   });
 
-  it("retains the project-wide 24 SQL-module budget across repository scans", async () => {
+  it("reads every SQL-only directory across repositories — past the old 24-module cap", async () => {
     for (const id of ["a", "b"]) {
       for (let i = 0; i < 15; i++) {
         await mkdir(path.join(root, id, `schema${i}`));
@@ -256,7 +256,7 @@ describe("#1354 actual multi-repository synthesis", () => {
       }
     }
     await synthesizeHolisticDocument("p", "architecture", "Architecture");
-    expect(phase1Prompts).toHaveLength(26); // two code modules + 24 SQL modules
+    expect(phase1Prompts).toHaveLength(32); // two code modules + all 30 SQL modules
   });
 
   it("keeps repo-qualified facts collision-free at identical ranks, with matching blob and source metadata", () => {
@@ -472,4 +472,24 @@ describe("#1354 actual multi-repository synthesis", () => {
     // As many chunk ticks as Phase-1 calls (no cut-offs here).
     expect(phase1Prompts).toHaveLength(total);
   });
+
+  // chmod 000 does not stop root from listing a directory.
+  it.skipIf(process.getuid?.() === 0)(
+    "warns in the document when the SQL-only scan cannot read a directory",
+    async () => {
+      const locked = path.join(root, "a", "locked");
+      await mkdir(locked);
+      await writeFile(path.join(locked, "rules.sql"), "CREATE TABLE hidden (id INT NOT NULL);");
+      await chmod(locked, 0o000);
+      try {
+        const result = await synthesizeHolisticDocument("p", "architecture", "Architecture");
+        const w = result.warnings.find((x) => x.section === "SQL schema scan (a)");
+        expect(w).toBeDefined();
+        expect(w!.kind).toBe("source-unavailable");
+        expect(w!.message).toContain("locked");
+      } finally {
+        await chmod(locked, 0o755);
+      }
+    },
+  );
 });

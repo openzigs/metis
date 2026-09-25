@@ -37,7 +37,7 @@ import {
 import { renderMinedPyRules } from "../code-graph/py-rule-miner.js";
 import { renderMinedGoRules } from "../code-graph/go-rule-miner.js";
 import { renderMinedTsRules } from "../code-graph/ts-rule-miner.js";
-import { mineSqlRules, renderMinedSqlRules } from "../code-graph/sql-rule-miner.js";
+import { renderMinedSqlRules } from "../code-graph/sql-rule-miner.js";
 import { renderMinedCsRules } from "../code-graph/cs-rule-miner.js";
 import { renderMinedKtRules } from "../code-graph/kt-rule-miner.js";
 import {
@@ -79,7 +79,6 @@ import {
   renderMinedRulePage,
   renderMinedRuleInventory,
   sliceModuleFacts,
-  toPersistedMinedRules,
   type FactSlice,
   type ModuleFactSlices,
   type PersistedMinedRule,
@@ -94,12 +93,14 @@ import {
   isCallableSymbol,
   measureChunkCoverage,
   mergePhase1ChunkFacts,
+  mineSqlFile,
   mineUnit,
   phase1ChunkLimits,
   planPhase1Chunks,
   renderUnit,
   resolvePhase1ChunkInputTokens,
   resolvePhase1IncludeTests,
+  unitFitsLimits,
   shouldSplitPhase1Chunk,
   splitPhase1Chunk,
   type Phase1Coverage,
@@ -130,6 +131,7 @@ import {
   factsTruncatedWarning,
   phase1FactsTruncatedWarning,
   phase1ChunksFailedWarning,
+  sqlScanIncompleteWarning,
   sectionFailedWarning,
   sectionTruncatedWarning,
   batchTruncatedWarning,
@@ -152,6 +154,7 @@ import {
 // through before it can reach a persisted, client-visible warning.
 import { generationFailureMessage, isConnectionDropped } from "./generation-failure-message.js";
 import {
+  SQL_SCAN_DIR_CAP,
   excludeTestFiles,
   groupSymbolsIntoModules,
   isTestSourcePath,
@@ -1220,38 +1223,47 @@ export async function synthesizeHolisticDocument(
   // ModuleGroups for such dirs (relative to cloneDir, not already represented)
   // so the existing per-module SQL mining pass in extractModuleFacts runs on
   // them end to end. Best-effort and bounded; no schema-graph rebuild.
-  let sqlModuleBudget = SQL_ONLY_MODULE_CAP;
-  let sqlDirectoryBudget = SQL_SCAN_DIR_CAP;
+  // Every SQL-only directory becomes a module (no module cap). Anything the
+  // scan could not look at raises a document warning, never just a log line.
+  const sqlScanWarnings: DocWarning[] = [];
   for (const repository of repositories.values()) {
     const cloneDir = repository.root;
-    if (!cloneDir || sqlModuleBudget <= 0 || sqlDirectoryBudget <= 0) continue;
+    if (!cloneDir) continue;
+    const label = repository.repoConnectorId ?? repository.codeGraphId;
+    const stats: SqlScanStats = { visited: 0, truncated: false, unreadable: [] };
     try {
       const existingDirs = new Set(
         modules
           .filter((m) => m.repository?.codeGraphId === repository.codeGraphId)
           .map((m) => m.dir),
       );
-      const sqlOnly = await discoverSqlOnlyModules(cloneDir, existingDirs, async (dir) => {
-        if (sqlDirectoryBudget-- <= 0) throw new Error("SQL directory budget exhausted");
-        return readdir(await resolveSourcePath(cloneDir, path.relative(cloneDir, dir)), {
-          withFileTypes: true,
-        });
-      });
+      const sqlOnly = await discoverSqlOnlyModules(
+        cloneDir,
+        existingDirs,
+        async (dir) =>
+          readdir(await resolveSourcePath(cloneDir, path.relative(cloneDir, dir)), {
+            withFileTypes: true,
+          }),
+        stats,
+      );
       if (sqlOnly.length > 0) {
-        const admitted = sqlOnly.slice(0, sqlModuleBudget);
         const identity = {
           codeGraphId: repository.codeGraphId,
           repoConnectorId: repository.repoConnectorId,
         };
-        modules.push(...admitted.map((m) => ({ ...m, repository: identity })));
-        sqlModuleBudget -= admitted.length;
+        modules.push(...sqlOnly.map((m) => ({ ...m, repository: identity })));
         log.info("Synthesized SQL-only-directory modules", {
           projectId,
           count: sqlOnly.length,
         });
       }
-    } catch {
-      // best-effort — never block doc generation on the SQL-only scan
+    } catch (err) {
+      log.warn("SQL-only directory scan failed", { projectId, err: String(err) });
+      stats.unreadable.push("(scan failed)");
+    }
+    if (stats.truncated || stats.unreadable.length > 0) {
+      log.warn("SQL-only directory scan incomplete", { projectId, repository: label, ...stats });
+      sqlScanWarnings.push(sqlScanIncompleteWarning(label, stats));
     }
   }
 
@@ -1276,6 +1288,7 @@ export async function synthesizeHolisticDocument(
     // so deriveDocStatus reports "degraded" instead of a clean "ready".
     const warnings = [
       ...repositoryWarnings,
+      ...sqlScanWarnings,
       ...(rawSymbolCount > 0 ? [noModulesWarning(rawSymbolCount)] : []),
     ];
     if (warnings.length > 0) {
@@ -1353,7 +1366,7 @@ export async function synthesizeHolisticDocument(
             reportPhase1();
           },
         },
-      ),
+      ).finally(() => prepared.delete(m)),
     (completed, total) => {
       if (completed % progressEvery === 0 || completed === total) {
         log.info("Phase 1 progress", {
@@ -1365,6 +1378,8 @@ export async function synthesizeHolisticDocument(
       }
     },
   );
+  // Modules whose extraction threw: they contribute no facts at all.
+  const rejectedModules: string[] = [];
   for (let j = 0; j < results.length; j++) {
     const r = results[j];
     if (r.status === "fulfilled" && r.value) {
@@ -1374,6 +1389,7 @@ export async function synthesizeHolisticDocument(
         err: String(r.reason),
         dir: modules[j].dir,
       });
+      rejectedModules.push(modules[j].dir);
     }
   }
   // A module whose extraction threw never reported its chunks: Phase 1 is over,
@@ -1393,7 +1409,7 @@ export async function synthesizeHolisticDocument(
   // empty/ungrounded facts and the document is silently emitted at ~0% grounding
   // (the SAS `risk` Business Rules 78%→0% regression). We tally affected modules
   // out of the total set that EXPECTED to read source code.
-  const phase1Warnings: DocWarning[] = [...repositoryWarnings];
+  const phase1Warnings: DocWarning[] = [...repositoryWarnings, ...sqlScanWarnings];
   const sourceUnavailableCount = facts.filter((f) => f.sourceUnavailable).length;
   if (sourceUnavailableCount > 0) {
     const codeBackedModules = facts.filter((f) => f.methodCount > 0).length;
@@ -1420,20 +1436,20 @@ export async function synthesizeHolisticDocument(
     });
     phase1Warnings.push(phase1FactsTruncatedWarning(truncatedModules));
   }
-  // Modules where some (not all) chunk calls failed: the rest of their facts
-  // are used and cached; the failed parts are retried on the next run.
-  const partlyFailed = facts
-    .filter(
-      (f) => (f.phase1Coverage?.failedChunks ?? 0) > 0 && !f.facts.includes("(extraction failed)"),
-    )
-    .map((f) => f.moduleName);
-  if (partlyFailed.length > 0) {
-    log.warn("Phase 1 fact extraction failed for part of one or more modules", {
+  // Modules where some OR all chunk calls failed, and modules whose extraction
+  // threw: every one is named in a document warning. Parts that succeeded are
+  // used and cached; the failed parts are retried on the next run.
+  const failedModules = [
+    ...facts.filter((f) => (f.phase1Coverage?.failedChunks ?? 0) > 0).map((f) => f.moduleName),
+    ...rejectedModules,
+  ];
+  if (failedModules.length > 0) {
+    log.warn("Phase 1 fact extraction failed for all or part of one or more modules", {
       projectId,
       docType,
-      modules: partlyFailed,
+      modules: failedModules,
     });
-    phase1Warnings.push(phase1ChunksFailedWarning(partlyFailed));
+    phase1Warnings.push(phase1ChunksFailedWarning(failedModules));
   }
 
   log.info("Phase 2: synthesizing holistic document", {
@@ -1728,10 +1744,19 @@ const SQL_SCAN_SKIP_DIRS = new Set([
   "dist",
   "vendor",
 ]);
-/** Cap on synthesized SQL-only modules, same order as the per-module SQL caps. */
-const SQL_ONLY_MODULE_CAP = 24;
-/** Cap on directories visited during the scan so a huge clone can't run away. */
-const SQL_SCAN_DIR_CAP = 2000;
+// SQL_SCAN_DIR_CAP (the per-repository directory safety bound) lives in
+// module-grouping.ts so the regeneration input fingerprint uses the same one.
+export { SQL_SCAN_DIR_CAP };
+
+/** What {@link discoverSqlOnlyModules} could not look at. */
+export interface SqlScanStats {
+  /** Directories visited. */
+  visited: number;
+  /** True when the scan stopped at the directory bound with directories left. */
+  truncated: boolean;
+  /** Directories whose listing failed (skipped). */
+  unreadable: string[];
+}
 
 /**
  * Discover directories under the clone that contain `.sql` files but are NOT
@@ -1742,29 +1767,35 @@ const SQL_SCAN_DIR_CAP = 2000;
  * directories whose `dir` is relative to `cloneDir`, so the existing per-module
  * SQL mining pass in {@link extractModuleFacts} resolves and mines them.
  *
- * Bounded on every axis: skips test/build/vendor dirs, caps the number of
- * directories visited ({@link SQL_SCAN_DIR_CAP}) and the number of synthesized
- * modules ({@link SQL_ONLY_MODULE_CAP}). Best-effort — any fs error is swallowed
- * (returns whatever was found so far). The `readdir` impl is injectable for
- * tests; production passes the node:fs/promises `readdir`.
+ * Skips test/build/vendor dirs; every other directory is visited, up to the
+ * safety bound `maxDirs` ({@link SQL_SCAN_DIR_CAP}). Nothing is skipped
+ * silently: a scan that stops at the bound, and every directory whose listing
+ * failed, is reported through `stats` so the caller can warn. The `readdir`
+ * impl is injectable for tests; production passes the node:fs/promises `readdir`.
  */
 export async function discoverSqlOnlyModules(
   cloneDir: string,
   existingModuleDirs: Set<string>,
   readdirImpl: ReaddirWithTypes = (dir) => readdir(dir, { withFileTypes: true }),
+  stats: SqlScanStats = { visited: 0, truncated: false, unreadable: [] },
+  maxDirs: number = SQL_SCAN_DIR_CAP,
 ): Promise<ModuleGroup[]> {
   const out: ModuleGroup[] = [];
-  let visited = 0;
   // BFS queue of relative dirs ("" === clone root).
   const queue: string[] = [""];
-  while (queue.length > 0 && out.length < SQL_ONLY_MODULE_CAP && visited < SQL_SCAN_DIR_CAP) {
+  while (queue.length > 0) {
+    if (stats.visited >= maxDirs) {
+      stats.truncated = true;
+      break;
+    }
     const rel = queue.shift()!;
-    visited += 1;
+    stats.visited += 1;
     let entries: DirEntryLike[];
     try {
       entries = await readdirImpl(path.resolve(cloneDir, rel));
     } catch {
-      continue; // unreadable dir — skip
+      stats.unreadable.push(rel || ".");
+      continue;
     }
     let hasSql = false;
     for (const e of entries) {
@@ -1851,9 +1882,7 @@ export async function preparePhase1Module(
         try {
           const relPath = path.join(m.dir, name);
           const sqlSource = await readFile(await resolveSourcePath(cloneDir, relPath), "utf-8");
-          const rules = dedupeMinedRules(
-            toPersistedMinedRules("sql", mineSqlRules(sqlSource, relPath, 1, relPath)),
-          );
+          const rules = mineSqlFile(sqlSource, relPath);
           if (rules.length === 0) continue;
           units.push({
             filePath: relPath,
@@ -1979,15 +2008,30 @@ export async function extractModuleFacts(
   // to the facts below (so they survive the fact cache and reach Phase-2
   // generation + the citable facts set). Each chunk's prompt carries its own.
   const sasWorkflowBlock =
-    allSasSteps.length > 0 ? renderSasWorkflow({ steps: allSasSteps }, 6000) : "";
+    allSasSteps.length > 0
+      ? renderSasWorkflow({ steps: allSasSteps }, Number.POSITIVE_INFINITY)
+      : "";
   const sasStepLineageBlock =
-    allSasSteps.length > 0 ? renderSasDataLineage({ steps: allSasSteps }, 4000) : "";
+    allSasSteps.length > 0
+      ? renderSasDataLineage({ steps: allSasSteps }, Number.POSITIVE_INFINITY)
+      : "";
 
   const maxTokens = resolveFactsMaxOutputTokens(provider.model);
   const limits = phase1ChunkLimits(maxTokens, resolvePhase1ChunkInputTokens());
   // A module with nothing readable still gets its one (empty-source) call, as before.
   const planned = planPhase1Chunks(units, limits);
   const chunks: Phase1Unit[][] = planned.length > 0 ? planned : [[]];
+  // A unit that does not fit one call even after splitting down to one line
+  // (a minified file, a one-line schema dump) is sent over budget: say so.
+  const oversized = planned.flat().filter((u) => !unitFitsLimits(u, limits));
+  const oversizedUnits = oversized.length;
+  if (oversizedUnits > 0) {
+    log.warn("Phase 1 unit larger than one call even at a single line — sent over budget", {
+      modulePath: m.dir,
+      units: oversized.slice(0, 5).map((u) => `${u.filePath}:${u.startLine}-${u.endLine}`),
+      count: oversizedUnits,
+    });
+  }
   // #25 — bound a thinking-by-default model's reasoning on this mechanical
   // extraction; `{}` (no change) for every other model.
   const reasoning = resolvePhase1Reasoning(provider.model);
@@ -2041,6 +2085,12 @@ export async function extractModuleFacts(
 
   const cacheable = !provider.offline && !sourceUnavailable;
   const counters = { calls: 0, cacheHits: 0, truncated: 0, failed: 0 };
+  // Coverage by outcome: a function counts as extracted only when its chunk
+  // produced complete facts (a complete reply or a cache hit).
+  const extractedFns = new Set<string>();
+  const truncatedFns = new Set<string>();
+  const failedFns = new Set<string>();
+  const leafSymbols = (chunk: readonly Phase1Unit[]) => chunk.flatMap((u) => u.symbols);
 
   const writeChunkRow = async (
     cacheKey: string,
@@ -2124,7 +2174,8 @@ export async function extractModuleFacts(
             return splitAndExtract();
           }
           if (cached.facts !== PHASE1_SPLIT_MARKER)
-            return [{ text: cached.facts, truncated: false }];
+            for (const k of leafSymbols(chunk)) extractedFns.add(k);
+          return [{ text: cached.facts, truncated: false }];
         }
       } catch (err) {
         log.warn("Cache lookup failed (proceeding to LLM)", {
@@ -2143,6 +2194,7 @@ export async function extractModuleFacts(
     });
     if (!reply.ok) {
       counters.failed += 1;
+      for (const k of leafSymbols(chunk)) failedFns.add(k);
       log.warn("Phase 1 LLM call failed", {
         err: String(reply.error),
         modulePath: m.dir,
@@ -2175,9 +2227,11 @@ export async function extractModuleFacts(
         return splitAndExtract();
       }
       counters.truncated += 1;
+      for (const k of leafSymbols(chunk)) truncatedFns.add(k);
       return [{ text: reply.text, truncated: true }];
     }
     if (cacheable && reply.text) await writeChunkRow(cacheKey, chunk, reply.text, reply.usage);
+    for (const k of leafSymbols(chunk)) extractedFns.add(k);
     return [{ text: reply.text, truncated: false }];
   };
 
@@ -2233,6 +2287,10 @@ export async function extractModuleFacts(
   const coverage: Phase1Coverage = {
     ...measureChunkCoverage(chunks, callables, sourceCharsTotal),
     chunks: planned.length,
+    functionsExtracted: extractedFns.size,
+    functionsInTruncatedChunks: truncatedFns.size,
+    functionsInFailedChunks: failedFns.size,
+    oversizedUnits,
     calls: counters.calls,
     cacheHits: counters.cacheHits,
     truncatedChunks: counters.truncated,
@@ -2268,6 +2326,10 @@ export function summarizePhase1Coverage(facts: readonly ModuleFacts[]): Phase1Co
   const sum: Phase1Coverage = {
     functionsIncluded: 0,
     functionsTotal: 0,
+    functionsExtracted: 0,
+    functionsInTruncatedChunks: 0,
+    functionsInFailedChunks: 0,
+    oversizedUnits: 0,
     sourceCharsIncluded: 0,
     sourceCharsTotal: 0,
     chunks: 0,
@@ -2389,8 +2451,12 @@ function buildPhase1UserMessage(input: {
   const ktRules = byLanguage(["kt"]);
   const sqlRules = byLanguage(["sql"]);
   const sasWorkflow = input.sasSteps.length > 0 ? { steps: [...input.sasSteps] } : null;
-  const sasWorkflowBlock = sasWorkflow ? renderSasWorkflow(sasWorkflow, 6000) : "";
-  const sasStepLineageBlock = sasWorkflow ? renderSasDataLineage(sasWorkflow, 4000) : "";
+  const sasWorkflowBlock = sasWorkflow
+    ? renderSasWorkflow(sasWorkflow, Number.POSITIVE_INFINITY)
+    : "";
+  const sasStepLineageBlock = sasWorkflow
+    ? renderSasDataLineage(sasWorkflow, Number.POSITIVE_INFINITY)
+    : "";
   const cap = PHASE1_MINED_RENDER_CAP;
   // Each rule is labelled `file:line`, not just `L<line>`: a chunk can hold
   // several files, so a bare line number would be ambiguous. The language's own
@@ -2896,6 +2962,9 @@ async function synthesizeBatchedSection(input: {
   const { group, bundle, plan, projectId, claimExtractor, faithfulnessJudge } = input;
   let batchesTotal = plan.batches.length;
   let batchesDone = 0;
+  // Every finished batch is reported. Two re-splits before the next completion
+  // can lower done/total (3/4 → 4/6); the route keeps a running maximum, so
+  // the document's bar never goes back.
   const progress = (): void => {
     try {
       input.onBatchProgress?.(batchesDone, batchesTotal);

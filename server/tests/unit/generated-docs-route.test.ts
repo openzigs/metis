@@ -559,6 +559,14 @@ describe("generated-docs routes", () => {
             total: 2,
             batch: { done: 13, total: 52 },
           });
+          // A later update that computes LOWER (a re-split grew the total).
+          options.onSectionProgress?.({
+            section: "Rules",
+            status: "generating",
+            index: 1,
+            total: 2,
+            batch: { done: 13, total: 60 },
+          });
           options.onSectionProgress?.({
             section: "Overview",
             status: "done",
@@ -629,6 +637,18 @@ describe("generated-docs routes", () => {
         "proj-1",
         65,
         "Section 1/2: Rules (batch 13/52)",
+      );
+      // The bar never goes backwards: the lower update is reported at the high-water mark.
+      const pcts = (jobEvents.progress as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c) => c[3] as number,
+      );
+      for (let i = 1; i < pcts.length; i++) expect(pcts[i]).toBeGreaterThanOrEqual(pcts[i - 1]);
+      expect(jobEvents.progress).toHaveBeenCalledWith(
+        "doc-generation",
+        "doc-1",
+        "proj-1",
+        65,
+        "Section 1/2: Rules (batch 13/60)",
       );
     });
 
