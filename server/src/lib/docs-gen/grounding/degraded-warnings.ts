@@ -885,3 +885,42 @@ export function sqlScanIncompleteWarning(
     severity: "warning",
   };
 }
+
+/**
+ * `.sql` files in a module's directory that could not be read or mined. Their
+ * constraints, triggers and views are missing from the document; never skipped
+ * silently.
+ */
+export function sqlFilesSkippedWarning(files: readonly string[]): DocWarning {
+  const listed = files.slice(0, 10).join(", ");
+  const more = files.length > 10 ? ` and ${files.length - 10} more` : "";
+  return {
+    kind: "source-unavailable",
+    section: "Phase 1 facts",
+    message: `${files.length} SQL file(s) could not be read or mined, so their rules are missing: ${listed}${more}.`,
+    severity: "warning",
+  };
+}
+
+/**
+ * Formula extraction was not run on lines longer than `limitChars` (generated
+ * or minified code), in the named modules. Their rules were still mined; only
+ * the pre-extracted formulas of those lines are missing.
+ */
+export function formulaLinesSkippedWarning(
+  modules: ReadonlyArray<{ module: string; lines: number }>,
+  limitChars: number,
+): DocWarning {
+  const total = modules.reduce((n, m) => n + m.lines, 0);
+  const listed = modules
+    .slice(0, 10)
+    .map((m) => `${m.module} (${m.lines})`)
+    .join(", ");
+  const more = modules.length > 10 ? ` and ${modules.length - 10} more` : "";
+  return {
+    kind: "facts-truncated",
+    section: "Phase 1 facts",
+    message: `Formulas were not extracted from ${total} line(s) longer than ${limitChars.toLocaleString("en-US")} characters (generated or minified code): ${listed}${more}. Their rules were still mined.`,
+    severity: "warning",
+  };
+}

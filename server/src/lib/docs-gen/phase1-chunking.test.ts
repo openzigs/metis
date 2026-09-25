@@ -13,9 +13,14 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { mineTsRules } from "../code-graph/ts-rule-miner.js";
 import { mineKtRules } from "../code-graph/kt-rule-miner.js";
+import { minePyRules } from "../code-graph/py-rule-miner.js";
+import { mineGoRules } from "../code-graph/go-rule-miner.js";
+import { mineCsRules } from "../code-graph/cs-rule-miner.js";
 import { mineSqlRules } from "../code-graph/sql-rule-miner.js";
+import { formulaLinesSkippedWarning } from "./grounding/degraded-warnings.js";
 import {
   DEFAULT_PHASE1_CHUNK_INPUT_TOKENS,
+  FORMULA_LINE_CHAR_LIMIT,
   MAX_PHASE1_SPLIT_DEPTH,
   PHASE1_INPUT_CHARS_PER_TOKEN,
   buildSourceUnits,
@@ -230,6 +235,25 @@ describe("mineUnit over whole files", () => {
     expect(mineTsRules(lines.join("\n"), "big.ts", 1, null)).toHaveLength(400);
   });
 
+  it.each([
+    ["x.ts", (i: number) => `export const LIMIT_${i} = ${i};`, mineTsRules],
+    ["x.js", (i: number) => `export const LIMIT_${i} = ${i};`, mineTsRules],
+    ["x.py", (i: number) => `assert x > ${i}`, minePyRules],
+    ["x.go", (i: number) => `const Max${i} = ${i}`, mineGoRules],
+    ["X.cs", (i: number) => `    public const int Max${i} = ${i};`, mineCsRules],
+    ["X.kt", (i: number) => `const val MAX_${i} = ${i}`, mineKtRules],
+  ] as const)(
+    "%s: mines all 550 rules past the miner's default cap of 400",
+    (file, line, miner) => {
+      const lines = Array.from({ length: 550 }, (_, i) => line(i));
+      const mine = miner as (s: string, f: string, b: number, c: string | null) => unknown[];
+      expect(mine(lines.join("\n"), file, 1, null)).toHaveLength(400); // the default cap
+      const [u] = minedUnits(file, lines, []);
+      expect(u.rules).toHaveLength(550);
+      expect(new Set(u.rules.map((r) => r.line)).size).toBe(550);
+    },
+  );
+
   it("keeps a 40-case switch whole in a Java method with more than 400 other rules", () => {
     // The reviewer's probe: windowed re-mining cut this switch to 26 branches.
     const lines = ["public class Big {", "  void run(String status, int x) {"];
@@ -266,6 +290,28 @@ describe("mineUnit over whole files", () => {
     const rules = mineSqlFile(sql, "db/schema.sql");
     expect(rules).toHaveLength(700);
     expect(new Set(rules.map((r) => r.line)).size).toBe(700);
+  });
+
+  it("bounds formula extraction on a pathological 240K-char line, counting the skip and keeping other formulas", () => {
+    const n = 200_000; // ~20 s unbounded (quadratic); a 1 MB line took ~295 s
+    const crafted = "const s = " + "(".repeat(n / 5) + "a" + " ".repeat(n) + ";";
+    const lines = ["const RATE = 0.25;", crafted, "const total = price * RATE;"];
+    const started = Date.now();
+    const [u] = minedUnits("x.ts", lines, []);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(u.formulaLinesSkipped).toBe(1);
+    expect(u.formulas.map((f) => f.startLine).sort()).toEqual([1, 3]);
+    const w = formulaLinesSkippedWarning(
+      [{ module: "src/gen", lines: 1 }],
+      FORMULA_LINE_CHAR_LIMIT,
+    );
+    expect(w.message).toContain("1 line(s) longer than 10,000 characters");
+    expect(w.message).toContain("src/gen (1)");
+  });
+
+  it("does not skip formula extraction on ordinary code", () => {
+    const [u] = minedUnits(TS_PATH, TS_LINES, TS_SYMBOLS);
+    expect(u.formulaLinesSkipped).toBeUndefined();
   });
 
   it("shifts formula line numbers to file lines", () => {

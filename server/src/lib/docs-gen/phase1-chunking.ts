@@ -222,7 +222,21 @@ export interface Phase1Unit extends SourceUnit {
   rules: PersistedMinedRule[];
   formulas: ExtractedFormula[];
   sasSteps: MinedSasStep[];
+  /**
+   * Lines longer than {@link FORMULA_LINE_CHAR_LIMIT} that the formula
+   * extractor was not run on (generated/minified code). Counted, logged and
+   * warned about — never silent. Their rules are still mined.
+   */
+  formulaLinesSkipped?: number;
 }
+
+/**
+ * Longest line the formula extractor is run on. Its regexes backtrack
+ * quadratically on a pathological single line (a crafted 1 MB line took ~295 s);
+ * hand-written code never approaches this length, and real minified bundles
+ * are unaffected in practice, but the bound makes the worst case linear.
+ */
+export const FORMULA_LINE_CHAR_LIMIT = 10_000;
 
 function mineRulesIn(
   text: string,
@@ -312,8 +326,21 @@ export function mineUnit(unit: SourceUnit, symbols: readonly SymbolRange[]): Pha
   }));
   // The formula extractor numbers lines from the start of what it is given;
   // shift them to file lines (the budgeted loop reported slice-relative ones).
+  // Over-long lines are blanked (not removed) so line numbers stay correct.
+  let formulaLinesSkipped = 0;
+  const formulaText =
+    text.includes("\n") || text.length > FORMULA_LINE_CHAR_LIMIT
+      ? text
+          .split("\n")
+          .map((line) => {
+            if (line.length <= FORMULA_LINE_CHAR_LIMIT) return line;
+            formulaLinesSkipped += 1;
+            return "";
+          })
+          .join("\n")
+      : text;
   const formulas = lang
-    ? extractFormulas(text, filePath, lang).map((f) => ({
+    ? extractFormulas(formulaText, filePath, lang).map((f) => ({
         ...f,
         startLine: f.startLine + startLine - 1,
         endLine: f.endLine + startLine - 1,
@@ -323,7 +350,13 @@ export function mineUnit(unit: SourceUnit, symbols: readonly SymbolRange[]): Pha
       }))
     : [];
   const sasSteps = lang === "sas" ? mineSasWorkflow(text, filePath, startLine).steps : [];
-  return { ...unit, rules, formulas, sasSteps };
+  return {
+    ...unit,
+    rules,
+    formulas,
+    sasSteps,
+    ...(formulaLinesSkipped > 0 ? { formulaLinesSkipped } : {}),
+  };
 }
 
 // ============================================================================
@@ -570,13 +603,13 @@ export function planPhase1Chunks(
   for (const file of files) {
     const fileCost = sumCost(file);
     if (fits(addCost(cost, fileCost), limits)) {
-      current.push(...file);
+      for (const u of file) current.push(u);
       cost = addCost(cost, fileCost);
       continue;
     }
     close();
     if (fits(fileCost, limits)) {
-      current.push(...file);
+      for (const u of file) current.push(u);
       cost = fileCost;
       continue;
     }
@@ -783,6 +816,8 @@ export interface Phase1Coverage {
   functionsInFailedChunks: number;
   /** Units too large for one call even after splitting to a single line (sent over budget). */
   oversizedUnits: number;
+  /** Over-long lines the formula extractor skipped (see {@link FORMULA_LINE_CHAR_LIMIT}). */
+  formulaLinesSkipped: number;
   sourceCharsIncluded: number;
   sourceCharsTotal: number;
   /** Planned chunks. */

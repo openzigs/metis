@@ -61,6 +61,7 @@ vi.mock("../ai/index.js", () => ({
 import {
   synthesizeHolisticDocument,
   extractModuleFacts,
+  preparePhase1Module,
   buildSectionFactsSources,
   type ModuleGroup,
 } from "./holistic-synthesizer.js";
@@ -489,6 +490,44 @@ describe("#1354 actual multi-repository synthesis", () => {
         expect(w!.message).toContain("locked");
       } finally {
         await chmod(locked, 0o755);
+      }
+    },
+  );
+
+  it("keeps every rule of a 150,000-constraint .sql file (no argument-spread overflow)", async () => {
+    await mkdir(path.join(root, "a", "db"));
+    const n = 150_000;
+    await writeFile(
+      path.join(root, "a", "db", "schema.sql"),
+      Array.from(
+        { length: n },
+        (_, i) => `ALTER TABLE p ADD CONSTRAINT c${i} CHECK (a > ${i});`,
+      ).join("\n"),
+    );
+    const prepared = await preparePhase1Module({ dir: "db", syms: [] }, path.join(root, "a"));
+    const sqlUnits = prepared.units.filter((u) => u.inventoryOnly);
+    expect(sqlUnits).toHaveLength(1);
+    expect(sqlUnits[0].rules).toHaveLength(n);
+    expect(sqlUnits[0].endLine).toBe(n);
+    expect(prepared.skippedFiles).toEqual([]);
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "names an unreadable .sql file in a document warning instead of skipping it silently",
+    async () => {
+      await mkdir(path.join(root, "a", "src", "sql"), { recursive: true });
+      const locked = path.join(root, "a", "src", "locked.sql");
+      await writeFile(locked, "CREATE TABLE t (id INT NOT NULL);");
+      await chmod(locked, 0o000);
+      try {
+        const result = await synthesizeHolisticDocument("p", "architecture", "Architecture");
+        const w = result.warnings.find(
+          (x) => x.section === "Phase 1 facts" && x.message.includes("SQL file"),
+        );
+        expect(w).toBeDefined();
+        expect(w!.message).toContain("src/locked.sql");
+      } finally {
+        await chmod(locked, 0o644);
       }
     },
   );

@@ -866,6 +866,21 @@ describe("#156 extractModuleFacts on a truncated reply", () => {
     }
   });
 
+  it("never returns a stale split marker as facts: an unsplittable chunk goes to the model", async () => {
+    findUniqueMock.mockResolvedValue({
+      id: "row",
+      createdAt: new Date(),
+      model: "m",
+      facts: PHASE1_SPLIT_MARKER,
+    });
+    const provider = scriptedProvider([{ text: "PURPOSE\nfresh facts", finishReason: "stop" }]);
+    const f = await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
+    expect(provider.calls).toHaveLength(1);
+    expect(f!.facts).toBe("PURPOSE\nfresh facts");
+    expect(f!.facts).not.toContain("[[phase1");
+    expect(f!.phase1Coverage!.cacheHits).toBe(0);
+  });
+
   it("does not retry or flag a complete reply, and caches it once", async () => {
     const provider = scriptedProvider([{ text: "PURPOSE\nx", finishReason: "stop" }]);
     const f = await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");

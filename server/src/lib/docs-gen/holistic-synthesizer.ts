@@ -85,6 +85,7 @@ import {
 } from "./fact-slices.js";
 import { resolvePhase1Reasoning } from "./docs-gen-reasoning.js";
 import {
+  FORMULA_LINE_CHAR_LIMIT,
   PHASE1_MINED_RENDER_CAP,
   UNIT_SEPARATOR,
   buildSourceUnits,
@@ -132,6 +133,8 @@ import {
   phase1FactsTruncatedWarning,
   phase1ChunksFailedWarning,
   sqlScanIncompleteWarning,
+  sqlFilesSkippedWarning,
+  formulaLinesSkippedWarning,
   sectionFailedWarning,
   sectionTruncatedWarning,
   batchTruncatedWarning,
@@ -1056,6 +1059,8 @@ export interface ModuleFacts {
    * were cut off or failed. Absent on facts not produced by extractModuleFacts.
    */
   phase1Coverage?: Phase1Coverage;
+  /** `.sql` files of the module that could not be read or mined (a document warning names them). */
+  phase1SkippedFiles?: string[];
 }
 
 interface ProjectMeta {
@@ -1443,6 +1448,16 @@ export async function synthesizeHolisticDocument(
     ...facts.filter((f) => (f.phase1Coverage?.failedChunks ?? 0) > 0).map((f) => f.moduleName),
     ...rejectedModules,
   ];
+  const longLineModules = facts
+    .filter((f) => (f.phase1Coverage?.formulaLinesSkipped ?? 0) > 0)
+    .map((f) => ({ module: f.moduleName, lines: f.phase1Coverage!.formulaLinesSkipped }));
+  if (longLineModules.length > 0) {
+    phase1Warnings.push(formulaLinesSkippedWarning(longLineModules, FORMULA_LINE_CHAR_LIMIT));
+  }
+  const skippedSqlFiles = facts.flatMap((f) => f.phase1SkippedFiles ?? []);
+  if (skippedSqlFiles.length > 0) {
+    phase1Warnings.push(sqlFilesSkippedWarning(skippedSqlFiles));
+  }
   if (failedModules.length > 0) {
     log.warn("Phase 1 fact extraction failed for all or part of one or more modules", {
       projectId,
@@ -1825,6 +1840,8 @@ export interface PreparedPhase1Module {
   fileLines: Map<string, string[]>;
   units: Phase1Unit[];
   sourceCharsTotal: number;
+  /** `.sql` files that could not be read or mined (their rules are missing). */
+  skippedFiles: string[];
 }
 
 /**
@@ -1845,6 +1862,7 @@ export async function preparePhase1Module(
   // ------------------------------------------------------------------
   const filePaths = [...new Set(m.syms.map((s) => s.filePath))].sort();
   const fileLines = new Map<string, string[]>();
+  const skippedFiles: string[] = [];
   for (const filePath of filePaths) {
     try {
       const fullSource = await readFile(await resolveSourcePath(cloneDir, filePath), "utf-8");
@@ -1884,11 +1902,15 @@ export async function preparePhase1Module(
           const sqlSource = await readFile(await resolveSourcePath(cloneDir, relPath), "utf-8");
           const rules = mineSqlFile(sqlSource, relPath);
           if (rules.length === 0) continue;
+          // A loop, never `Math.max(...rules)`: spreading ~105K+ rules as call
+          // arguments overflows the stack.
+          let lastLine = 1;
+          for (const r of rules) if (r.line > lastLine) lastLine = r.line;
           units.push({
             filePath: relPath,
             kind: "module-level",
             startLine: 1,
-            endLine: Math.max(1, ...rules.map((r) => r.line)),
+            endLine: lastLine,
             label: relPath,
             symbols: [],
             text: "",
@@ -1897,8 +1919,15 @@ export async function preparePhase1Module(
             formulas: [],
             sasSteps: [],
           });
-        } catch {
-          // unreadable individual .sql file — skip
+        } catch (err) {
+          // Never silent: the file's rules are missing, so the document says so.
+          const relPath = path.join(m.dir, name);
+          log.warn("SQL file could not be read or mined — its rules are missing", {
+            modulePath: m.dir,
+            file: relPath,
+            err: String(err).slice(0, 200),
+          });
+          skippedFiles.push(relPath);
         }
       }
     } catch {
@@ -1906,7 +1935,7 @@ export async function preparePhase1Module(
     }
   }
 
-  return { filePaths, fileLines, units, sourceCharsTotal };
+  return { filePaths, fileLines, units, sourceCharsTotal, skippedFiles };
 }
 
 /**
@@ -1938,7 +1967,7 @@ export async function extractModuleFacts(
   const callables = m.syms.filter(isCallableSymbol);
   const methodCount = callables.length;
 
-  const { fileLines, units, sourceCharsTotal } =
+  const { fileLines, units, sourceCharsTotal, skippedFiles } =
     hooks?.prepared ?? (await preparePhase1Module(m, cloneDir, includeTests));
 
   // Issue #330 — detect the silent "source unavailable" degradation: a module
@@ -2025,6 +2054,14 @@ export async function extractModuleFacts(
   // (a minified file, a one-line schema dump) is sent over budget: say so.
   const oversized = planned.flat().filter((u) => !unitFitsLimits(u, limits));
   const oversizedUnits = oversized.length;
+  const formulaLinesSkipped = units.reduce((n, u) => n + (u.formulaLinesSkipped ?? 0), 0);
+  if (formulaLinesSkipped > 0) {
+    log.warn("Formula extraction skipped over-long lines (generated or minified code)", {
+      modulePath: m.dir,
+      lines: formulaLinesSkipped,
+      limitChars: FORMULA_LINE_CHAR_LIMIT,
+    });
+  }
   if (oversizedUnits > 0) {
     log.warn("Phase 1 unit larger than one call even at a single line — sent over budget", {
       modulePath: m.dir,
@@ -2157,7 +2194,12 @@ export async function extractModuleFacts(
         const cached = await prisma.docsGenFactCache.findUnique({
           where: { projectId_cacheKey: { projectId, cacheKey } },
         });
-        if (cached) {
+        const isMarker = cached?.facts === PHASE1_SPLIT_MARKER;
+        // A remembered split is used only when this chunk can still be split;
+        // otherwise (split rules changed) the marker is stale: never return it
+        // as facts — fall through to the model.
+        const usable = cached && (!isMarker || shouldSplitPhase1Chunk(chunk, depth, limits));
+        if (cached && usable) {
           counters.cacheHits += 1;
           prisma.docsGenFactCache
             .update({
@@ -2167,14 +2209,8 @@ export async function extractModuleFacts(
             .catch((err) => log.debug("cache touch failed", { err: String(err) }));
           // A remembered split: this chunk's reply ran past the cap last time,
           // so go straight to its halves instead of paying for the cut-off again.
-          if (
-            cached.facts === PHASE1_SPLIT_MARKER &&
-            shouldSplitPhase1Chunk(chunk, depth, limits)
-          ) {
-            return splitAndExtract();
-          }
-          if (cached.facts !== PHASE1_SPLIT_MARKER)
-            for (const k of leafSymbols(chunk)) extractedFns.add(k);
+          if (isMarker) return splitAndExtract();
+          for (const k of leafSymbols(chunk)) extractedFns.add(k);
           return [{ text: cached.facts, truncated: false }];
         }
       } catch (err) {
@@ -2250,7 +2286,13 @@ export async function extractModuleFacts(
   } else {
     const replies: Array<{ text: string; truncated: boolean }> = [];
     for (let i = 0; i < chunks.length; i++) {
-      replies.push(...(await extractChunk(chunks[i], chunks.length > 1 ? String(i + 1) : null, 0)));
+      for (const leaf of await extractChunk(
+        chunks[i],
+        chunks.length > 1 ? String(i + 1) : null,
+        0,
+      )) {
+        replies.push(leaf);
+      }
       chunkDone();
     }
     factsTruncated = replies.some((r) => r.truncated);
@@ -2291,6 +2333,7 @@ export async function extractModuleFacts(
     functionsInTruncatedChunks: truncatedFns.size,
     functionsInFailedChunks: failedFns.size,
     oversizedUnits,
+    formulaLinesSkipped,
     calls: counters.calls,
     cacheHits: counters.cacheHits,
     truncatedChunks: counters.truncated,
@@ -2311,6 +2354,7 @@ export async function extractModuleFacts(
     sourceUnavailable,
     minedRules,
     phase1Coverage: coverage,
+    ...(skippedFiles.length > 0 ? { phase1SkippedFiles: skippedFiles } : {}),
     ...(factsTruncated ? { factsTruncated } : {}),
   };
 }
@@ -2330,6 +2374,7 @@ export function summarizePhase1Coverage(facts: readonly ModuleFacts[]): Phase1Co
     functionsInTruncatedChunks: 0,
     functionsInFailedChunks: 0,
     oversizedUnits: 0,
+    formulaLinesSkipped: 0,
     sourceCharsIncluded: 0,
     sourceCharsTotal: 0,
     chunks: 0,

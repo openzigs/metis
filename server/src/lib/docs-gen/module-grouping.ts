@@ -137,7 +137,7 @@ export function groupSymbolsIntoModules<S extends GroupableSymbol>(
         modules.push(m);
         moduleOfDir.set(key, m);
       }
-      m.syms.push(...carried);
+      for (const sym of carried) m.syms.push(sym);
       covered.add(keyOf(repository, filePath));
     }
   }
@@ -181,13 +181,22 @@ const TEST_FILE_PATTERNS: readonly RegExp[] = [
   /_test\.(go|py)$/i,
   // Java / Kotlin / C# / Scala test classes. `*Spec` is NOT matched: Spring Data
   // `Specification`s and DDD specifications (`UserSpec.java`) are production.
-  /[a-z0-9](Test|Tests|IT)\.(java|kt|kts|cs|scala)$/,
+  /[a-z0-9](Test|Tests)\.(java|kt|kts|cs|scala|groovy)$/,
+  // Maven failsafe integration tests: `UserServiceIT.java`. The JVM convention
+  // is strong enough to keep, so a name like `AuditIT.java` is read as an
+  // integration test too (documented trade-off); `Audit.java`, `Kit.java`,
+  // `ORBIT.java` are production (the suffix is capital `IT` after lower case).
+  /[a-z0-9]IT\.(java|kt|kts|groovy|scala)$/,
   // test-double modules by name: testing.ts, audio-testing.ts, match_testing.py
   /(^|[-_.])testing\.[^/]+$/i,
-  // named fixtures: pmtiles-fixture.ts, cross-client-fixture.ts, fixtures.ts,
-  // user.fixture.ts — but not fixture-service.ts / prefix-fixture-mapper.ts,
-  // where "fixture" can be a business entity (a sports fixture).
-  /(^|[-_.])fixtures?\.[^/]+$/i,
+  // fixture files by the double-extension convention only: `user.fixture.ts`,
+  // `orders.fixtures.json.ts`. A bare `Fixture.java` / `fixture.ts` /
+  // `fixtures.sql` or a `match-fixture.ts` is NOT matched: "fixture" is a
+  // business entity in some domains (a sports fixture), and an ambiguous name
+  // resolves to production — reading a test file costs a little time, dropping
+  // a production file loses its rules. (onyourleft's `pmtiles-fixture.ts` and
+  // `cross-client-fixture.ts` are therefore read.)
+  /[^/.]\.fixtures?\.[^/]+$/i,
   // browser / integration test pages: harness.ts, game-harness.ts
   /(^|[-_.])harness\.[^/]+$/i,
   // test-runner configuration
@@ -207,8 +216,12 @@ function isTestDirSegment(seg: string): boolean {
     TEST_DIR_SEGMENTS.has(seg.toLowerCase()) ||
     // C# / .NET test projects: Foo.Tests/, Foo.UnitTests/, Foo.IntegrationTests/, Foo.Test/
     /\.(Unit|Integration|Functional|Acceptance)?Tests?$/i.test(seg) ||
-    // fixture directories: fixture-corpus/, test-fixtures/, fixtures_v2/
-    /(^|[-_])fixtures?([-_]|$)/i.test(seg)
+    // fixture directories: `fixtures/` (in TEST_DIR_SEGMENTS), any `*-fixtures/`
+    // or `*_fixtures/` (test-fixtures/, sports-fixtures/ — a plural fixtures
+    // directory is test data by convention), and fixture corpora/data
+    // (`fixture-corpus/`). A singular `fixture/` directory is production.
+    /[-_]fixtures$/i.test(seg) ||
+    /^fixtures?[-_](corpus|data|files)$/i.test(seg)
   );
 }
 
