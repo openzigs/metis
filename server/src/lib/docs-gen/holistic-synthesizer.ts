@@ -52,6 +52,7 @@ import {
 } from "./code-graph-summary.js";
 import { buildProvider, loadAIConfig } from "../ai/index.js";
 import { validateLocalProviderUrl } from "../ai/config.js";
+import { resolveLocalSampling } from "./local-sampling-defaults.js";
 import { AnthropicProvider } from "../ai/providers/anthropic-provider.js";
 import {
   BedrockDirectProvider,
@@ -456,8 +457,8 @@ export function docsGenTuning(kind: DocsGenProviderKind, configModel: string): D
       judgeModel: envStr("DOCS_GEN_LOCAL_JUDGE_MODEL") ?? phase2Model,
       factsCharCap: intFromEnv("DOCS_GEN_LOCAL_FACTS_CHAR_CAP", 48_000, 4_000),
       supportsCaching: false,
-      temperature: floatFromEnv("DOCS_GEN_LOCAL_TEMPERATURE", 1.0),
-      topP: floatFromEnv("DOCS_GEN_LOCAL_TOP_P", 0.95),
+      // #177 — Phase-2 (and claim/judge) sampling; Phase 1 re-resolves for its own model.
+      ...resolveLocalSampling(phase2Model),
       disableThinking: !boolFromEnv("DOCS_GEN_LOCAL_ENABLE_THINKING"),
       refine: boolFromEnv("DOCS_GEN_LOCAL_REFINE"),
       concisePrompt: boolFromEnv("DOCS_GEN_LOCAL_CONCISE_PROMPT"),
@@ -556,14 +557,16 @@ export function buildDocsGenProvider(
   if (config.provider === "local-gemma" && config.sdkProvider) {
     const tuning = docsGenTuning("local", config.model);
     const model = phase === 1 ? tuning.phase1Model : tuning.phase2Model;
+    // #177 — defaults follow the family of the model THIS phase serves.
+    const { temperature, topP } = resolveLocalSampling(model);
     log.info("Using local-gemma (Ollama) for docs-gen", {
       phase,
       model,
       baseUrl: config.sdkProvider.baseUrl.replace(/\/+$/, ""),
       defaultMaxTokens,
       factsCharCap: tuning.factsCharCap,
-      temperature: tuning.temperature,
-      topP: tuning.topP,
+      temperature,
+      topP,
       disableThinking: tuning.disableThinking,
       refine: tuning.refine,
     });
@@ -574,8 +577,8 @@ export function buildDocsGenProvider(
         model,
         providerKey: "local-gemma",
         defaultMaxTokens,
-        defaultTemperature: tuning.temperature,
-        defaultTopP: tuning.topP,
+        defaultTemperature: temperature,
+        defaultTopP: topP,
         defaultFrequencyPenalty: tuning.frequencyPenalty,
         disableThinking: tuning.disableThinking,
       }),
@@ -588,8 +591,8 @@ export function buildDocsGenProvider(
         .update(
           JSON.stringify({
             baseUrl: config.sdkProvider.baseUrl,
-            temperature: tuning.temperature,
-            topP: tuning.topP,
+            temperature,
+            topP,
             frequencyPenalty: tuning.frequencyPenalty,
             disableThinking: tuning.disableThinking,
           }),
@@ -3286,11 +3289,11 @@ export async function synthesizeFinalDocument(
       // On the LOCAL provider (small ~32K window) an over-cap facts blob risks
       // context-shift → the runtime drops the instructions → an empty/degraded
       // section with no clear cause. So: ALWAYS log the budget outcome for
-      // telemetry, and on the LOCAL path raise a `facts-truncated` DocWarning so
-      // `deriveDocStatus` marks the doc `degraded` and the operator sees the
-      // concrete remedy (raise the cap / narrow retrieval). Large-window
-      // providers (Bedrock ~200K) omit tail modules by design → log only, no
-      // warning (avoids false-flagging every big-project cloud run).
+      // telemetry, and raise a `facts-truncated` DocWarning so `deriveDocStatus`
+      // marks the doc `degraded` and the operator sees the concrete remedy
+      // (raise the cap / narrow retrieval). #175 — on EVERY provider: a Bedrock
+      // or Anthropic section that left modules out must say so on the document,
+      // not only in a server log. Selection is unchanged; only reporting is.
       const factsBudget = batchPlan
         ? {
             batches: batchPlan.batches.map((batch) => batch.length),
@@ -3309,16 +3312,15 @@ export async function synthesizeFinalDocument(
           omittedModules: factsBudget.omittedModules,
           includedChars: factsBudget.includedChars,
         });
-        if (bundle.kind === "local") {
-          warnings.push(
-            factsTruncatedWarning(
-              group.label,
-              factsBudget.omittedModules,
-              factsBudget.includedModules,
-              factsCharCap,
-            ),
-          );
-        }
+        warnings.push(
+          factsTruncatedWarning(
+            group.label,
+            factsBudget.omittedModules,
+            factsBudget.includedModules,
+            factsCharCap,
+            bundle.kind,
+          ),
+        );
       }
 
       // #267 — admit THIS section's selected module facts as citable `facts:`

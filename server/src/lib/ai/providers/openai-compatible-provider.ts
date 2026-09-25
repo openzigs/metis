@@ -24,9 +24,20 @@ export {
   LOCAL_TIMEOUT_ENV,
   MAX_LOCAL_TIMEOUT_MS,
   isCrossRegionModelId,
+  isStructuredOutputUnavailableBody,
   isStructuredOutputUnsupportedStatus,
   isTemperatureUnsupportedBody,
+  isReasoningEffortUnsupportedBody,
+  LOCAL_REASONING_EFFORT_ENV,
+  resolveLocalReasoningEffortMode,
   resolveUndiciTimeouts,
+  type LocalReasoningEffortMode,
   type OpenAICompatibleProviderOptions,
   type BedrockDirectProviderOptions,
 } from "./bedrock-direct-provider.js";
+export {
+  LOCAL_MAX_CONCURRENCY_ENV,
+  DEFAULT_LOCAL_MAX_CONCURRENCY,
+  resolveLocalMaxConcurrency,
+  resetLocalConcurrencyLimitersForTests,
+} from "./local-concurrency-limiter.js";

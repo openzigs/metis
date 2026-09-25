@@ -106,6 +106,7 @@ export const HTTP_STATUS_ERROR_CLASSES: Readonly<Record<string, StatusProvenance
   EmbeddingsClientError: "upstream", // embeddings service
   ImporterHttpError: "upstream", // arbitrary imported URL
   PagerDutyApiError: "upstream", // PagerDuty Events API
+  ReasoningEffortRejectedError: "upstream", // local runtime `reasoning_effort` probe
   RemoteCopilotClientError: "upstream", // remote Copilot service
   RetryableHttpError: "upstream", // Bedrock invoke retry loop
   SandboxClientError: "upstream", // sandbox service

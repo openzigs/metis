@@ -49,6 +49,7 @@ vi.mock("../logger.js", () => ({
 
 const {
   OpenAICompatibleProvider,
+  isStructuredOutputUnavailableBody,
   isStructuredOutputUnsupportedStatus,
   isTemperatureUnsupportedBody,
 } = await import("./openai-compatible-provider.js");
@@ -311,6 +312,28 @@ describe("isTemperatureUnsupportedBody", () => {
     expect(isTemperatureUnsupportedBody(400, "temperature must be between 0 and 1")).toBe(false);
     expect(isTemperatureUnsupportedBody(404, "temperature is deprecated")).toBe(false);
   });
+
+  it("does NOT classify an error that merely quotes a keyword-bearing model name (PR #187 review)", () => {
+    expect(
+      isTemperatureUnsupportedBody(400, 'model "temperature-deprecated-test:7b" not found'),
+    ).toBe(false);
+    expect(
+      isTemperatureUnsupportedBody(
+        400,
+        '{"error":"\\"low-temperature:8b\\" does not support tools (deprecated template)"}',
+      ),
+    ).toBe(false);
+  });
+
+  it("still classifies the plain and JSON-escaped deprecation shapes", () => {
+    expect(isTemperatureUnsupportedBody(400, "temperature is deprecated")).toBe(true);
+    expect(
+      isTemperatureUnsupportedBody(
+        422,
+        '{"error":"\\"temperature\\" is deprecated for this model"}',
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("chat() graceful degradation when runtime rejects temperature", () => {
@@ -452,5 +475,208 @@ describe("temperature rejection is remembered per model (#1229)", () => {
 
     expect(globalThis.fetch).toHaveBeenCalledTimes(4);
     expect(bodies[2]).toHaveProperty("temperature");
+  });
+});
+
+/**
+ * #176 — Ollama's MLX engine answers `501 structured output is unavailable` for
+ * `json_schema`, `json_object` and native `format` (measured on Ollama 0.34.2).
+ * That is a capability signal exactly like the 400/422 above, so it gets the
+ * same single retry without `response_format` — and, being an unambiguous
+ * body-matched answer about the MODEL, it is remembered per model like the
+ * temperature (#1229) and reasoning_effort fallbacks. A 501 about anything else
+ * still surfaces as an error.
+ */
+describe("HTTP 501 'structured output unavailable' (#176)", () => {
+  const MLX_501 = '{"error":"structured output is unavailable"}';
+
+  /** A 200 SSE body whose only frame is an in-band error (gateway / proxy shape). */
+  function sseErrorFrame(message: string): Response {
+    const frames = [`data: ${JSON.stringify({ error: { message } })}\n\n`];
+    let i = 0;
+    const enc = new TextEncoder();
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        getReader() {
+          return {
+            read: async () =>
+              i < frames.length
+                ? { value: enc.encode(frames[i++]), done: false }
+                : { value: undefined, done: true },
+            cancel: async () => undefined,
+          };
+        },
+      },
+      text: async () => "",
+    } as unknown as Response;
+  }
+
+  /** Rejects `response_format` with the MLX 501 whenever it is sent. */
+  function rejectSchemaWith501(bodies: Array<Record<string, unknown>>) {
+    return vi.fn(async (_url: unknown, init?: CapturedInit) => {
+      const body = bodyOf(init);
+      bodies.push(body);
+      if ("response_format" in body) return errorResponse(501, MLX_501);
+      return body.stream === true ? sseOk() : jsonOk();
+    }) as unknown as typeof fetch;
+  }
+
+  describe("isStructuredOutputUnavailableBody", () => {
+    it("matches a 501 whose body says structured output is unavailable", () => {
+      expect(isStructuredOutputUnavailableBody(501, MLX_501)).toBe(true);
+      expect(isStructuredOutputUnavailableBody(501, "Structured outputs are not supported")).toBe(
+        true,
+      );
+    });
+
+    it("does NOT match a 501 about something else, or another status", () => {
+      expect(isStructuredOutputUnavailableBody(501, "Not Implemented")).toBe(false);
+      expect(isStructuredOutputUnavailableBody(501, "embeddings are unavailable")).toBe(false);
+      expect(isStructuredOutputUnavailableBody(500, MLX_501)).toBe(false);
+      expect(isStructuredOutputUnavailableBody(503, MLX_501)).toBe(false);
+    });
+
+    it("does NOT match a 501 that only quotes a keyword-bearing model name (PR #187 review)", () => {
+      expect(
+        isStructuredOutputUnavailableBody(501, 'model "llama-structured-output:8b" is unavailable'),
+      ).toBe(false);
+      expect(
+        isStructuredOutputUnavailableBody(
+          501,
+          '{"error":"\\"qwen_structured_outputs:7b\\" is not implemented on this engine"}',
+        ),
+      ).toBe(false);
+    });
+
+    it("matches the JSON-wrapped and 'does not support' shapes", () => {
+      expect(
+        isStructuredOutputUnavailableBody(
+          501,
+          '{"error":{"message":"structured output is unavailable"}}',
+        ),
+      ).toBe(true);
+      expect(
+        isStructuredOutputUnavailableBody(501, "this engine does not support structured outputs"),
+      ).toBe(true);
+    });
+  });
+
+  it("chat(): retries ONCE without response_format and succeeds", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = rejectSchemaWith501(bodies);
+
+    const res = await makeProvider().chat([{ role: "user", content: "hi" }], {
+      responseFormat: SCHEMA,
+    });
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(bodies[0]).toHaveProperty("response_format");
+    expect(bodies[1]).not.toHaveProperty("response_format");
+    expect(res.content).toBe('{"claims":[]}');
+    expect(logWarn).toHaveBeenCalledTimes(1);
+  });
+
+  it("stream(): reconnects ONCE without response_format and streams the answer", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = rejectSchemaWith501(bodies);
+
+    const chunks: string[] = [];
+    for await (const chunk of makeProvider().stream([{ role: "user", content: "hi" }], {
+      responseFormat: SCHEMA,
+    })) {
+      if (chunk.type === "delta") chunks.push(chunk.content);
+    }
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(bodies[0]).toHaveProperty("response_format");
+    expect(bodies[1]).not.toHaveProperty("response_format");
+    expect(chunks.join("")).toBe("hi");
+  });
+
+  it("stream(): an in-band `501: structured output is unavailable` frame also falls back", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = vi.fn(async (_url: unknown, init?: CapturedInit) => {
+      const body = bodyOf(init);
+      bodies.push(body);
+      return "response_format" in body
+        ? sseErrorFrame("501: structured output is unavailable")
+        : sseOk();
+    }) as unknown as typeof fetch;
+
+    const chunks: string[] = [];
+    for await (const chunk of makeProvider().stream([{ role: "user", content: "hi" }], {
+      responseFormat: SCHEMA,
+    })) {
+      if (chunk.type === "delta") chunks.push(chunk.content);
+    }
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(bodies[1]).not.toHaveProperty("response_format");
+    expect(chunks.join("")).toBe("hi");
+  });
+
+  it("remembers the 501 per model: later chat() and stream() calls skip the probe", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = rejectSchemaWith501(bodies);
+    const provider = makeProvider();
+
+    await provider.chat([{ role: "user", content: "one" }], { responseFormat: SCHEMA });
+    await provider.chat([{ role: "user", content: "two" }], { responseFormat: SCHEMA });
+    await drain(provider.stream([{ role: "user", content: "three" }], { responseFormat: SCHEMA }));
+
+    // 2 for the first call (probe + retry), then 1 each.
+    expect(globalThis.fetch).toHaveBeenCalledTimes(4);
+    expect(bodies.slice(2).every((b) => !("response_format" in b))).toBe(true);
+    expect(logWarn).toHaveBeenCalledTimes(1);
+  });
+
+  it("the memo is per model: a different model still sends response_format", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = rejectSchemaWith501(bodies);
+    const provider = makeProvider();
+
+    await provider.chat([{ role: "user", content: "hi" }], { responseFormat: SCHEMA });
+    await provider.chat([{ role: "user", content: "hi" }], {
+      responseFormat: SCHEMA,
+      model: "some-other-model",
+    });
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(4);
+    expect(bodies[2]).toHaveProperty("response_format");
+  });
+
+  it("chat(): a 501 NOT about structured output is not swallowed", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      errorResponse(501, "Not Implemented"),
+    ) as unknown as typeof fetch;
+
+    await expect(
+      makeProvider().chat([{ role: "user", content: "hi" }], { responseFormat: SCHEMA }),
+    ).rejects.toThrow(/returned 501/);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(logWarn).not.toHaveBeenCalled();
+  });
+
+  it("stream(): a 501 NOT about structured output is not swallowed", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      errorResponse(501, "Not Implemented"),
+    ) as unknown as typeof fetch;
+
+    await expect(
+      drain(makeProvider().stream([{ role: "user", content: "hi" }], { responseFormat: SCHEMA })),
+    ).rejects.toThrow(/returned 501/);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("a structured-output 501 on a request WITHOUT response_format is not retried", async () => {
+    globalThis.fetch = vi.fn(async () => errorResponse(501, MLX_501)) as unknown as typeof fetch;
+
+    await expect(makeProvider().chat([{ role: "user", content: "hi" }])).rejects.toThrow(
+      /returned 501/,
+    );
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 });

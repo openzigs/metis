@@ -266,8 +266,8 @@ Record the chosen config and measured limits here (this satisfies the #332 ACs):
 | Env var | Default | What it controls | Consumed at |
 |---|---|---|---|
 | `DOCS_GEN_LOCAL_FACTS_CHAR_CAP` | `48000` | Per-section chars of module facts sent to the model. Floor `4000`; below-floor/invalid → default. | `docsGenTuning.factsCharCap` → `buildRelevantFactsBlob` |
-| `DOCS_GEN_LOCAL_TEMPERATURE` | `1.0` | Phase-2 synthesis temperature. | `tuning.temperature` |
-| `DOCS_GEN_LOCAL_TOP_P` | `0.95` | Nucleus sampling top_p. | `tuning.topP` |
+| `DOCS_GEN_LOCAL_TEMPERATURE` | per model family: `1.0` Gemma, `0.2` other/unknown | Sampling temperature for local docs-gen calls. Always sent explicitly. | `tuning.temperature` |
+| `DOCS_GEN_LOCAL_TOP_P` | `0.95` | Nucleus sampling top_p. Always sent explicitly. | `tuning.topP` |
 | `DOCS_GEN_LOCAL_ENABLE_THINKING` | unset (thinking **off**) | Set truthy to allow the model's internal reasoning block. | `tuning.disableThinking = !flag` |
 | `DOCS_GEN_LOCAL_PHASE1_MODEL` | `gemma3:4b` | Fast structured fact-extraction model. | `tuning.phase1Model` |
 | `DOCS_GEN_LOCAL_PHASE2_MODEL` | `LOCAL_GEMMA_MODEL ?? gemma3:12b` | Synthesis model (never the `gemma4:12b` reasoning default). | `tuning.phase2Model` |
@@ -297,6 +297,44 @@ A first-token timeout logs `Stream timed out before the first token` with the
 prompt size in characters and the budget, and names the knob in the error. It is
 **not retried**: re-sending the same prompt repeats the whole prefill (Ollama
 logs `forcing full prompt re-processing`) and times out the same way.
+
+#### Concurrency and thinking control
+
+Ollama serves **one request per model at a time** unless `OLLAMA_NUM_PARALLEL`
+is raised, queues the rest FIFO, and sends no bytes — not even headers — for a
+queued request. METIS therefore queues its own `local-gemma` requests in a
+process-wide FIFO limiter per server, and starts the timeouts above only once a
+request holds a slot, so waiting behind another generation is never reported as a
+first-token stall. The limiter is keyed on the server's origin (scheme, host,
+port), with `localhost`, `127.0.0.1` and `[::1]` treated as one host, so two
+settings that spell the same Ollama differently still share one limit.
+
+**Known limitation: deadlines set by callers still count queue time.** Only the
+provider's own first-byte, idle and request timers wait for a slot. A deadline a
+caller sets around the whole call starts when the call is made, and there is no
+bound on how long a request can wait in the queue. Two examples are the chat
+route's idle timeout (`AI_STREAM_IDLE_TIMEOUT_MS`, 90 s) and impact analysis's
+LLM deadline. At the default limit of 1, an interactive chat or impact analysis
+started during a long docs-gen run waits behind it and can fail on that deadline.
+The waiter is removed cleanly when that happens. This is not new: the same wait
+used to happen inside Ollama's own queue. If you need chat to stay responsive
+during docs-gen, raise `OLLAMA_NUM_PARALLEL` and `LOCAL_GEMMA_MAX_CONCURRENCY`
+together, or run docs-gen when nobody is chatting.
+
+| Env var | Default | Governs |
+|---|---|---|
+| `LOCAL_GEMMA_MAX_CONCURRENCY` | `1` | Max in-flight requests per local server (normalised origin of `LOCAL_GEMMA_BASE_URL`), across docs-gen, grounding, analysis and chat. Set it to the server's `OLLAMA_NUM_PARALLEL`. Positive integer; anything else keeps `1` and warns. |
+| `LOCAL_GEMMA_SEND_REASONING_EFFORT` | `auto` | Whether `reasoning_effort` is sent. `auto`: send; if the model rejects it, retry once without and remember the model. `always`: send, never fall back. `never`: never send. |
+
+With thinking off (the docs-gen default; `DOCS_GEN_LOCAL_ENABLE_THINKING`
+re-enables it), requests carry `think: false` **and** `reasoning_effort: "none"`.
+The second field is the one that works on Ollama's `/v1` endpoint: measured on
+Ollama 0.34.2, laguna-s-2.1 with `think: false` alone spent 800/800 output tokens
+reasoning and was cut off (`finish_reason: length`); with `reasoning_effort:
+"none"` it answered in 180 tokens with no reasoning. gemma3:12b (no thinking
+support) accepts `"none"` and returns `400 "gemma3:12b" does not support thinking`
+for any other effort, which the `auto` fallback absorbs. An explicit effort
+(`DOCS_GEN_PHASE1_REASONING=low|medium|high`) is sent as `reasoning_effort`.
 
 ### Sizing `DOCS_GEN_LOCAL_FACTS_CHAR_CAP` — the derivation
 
@@ -344,10 +382,27 @@ never past it.
 
 ### Temperature — per served model, NOT a blind 0
 
+**Shipped defaults (#177).** When `DOCS_GEN_LOCAL_TEMPERATURE` / `DOCS_GEN_LOCAL_TOP_P`
+are unset, METIS picks them **per phase**, from the family of the model that phase
+serves: Phase 1 from `DOCS_GEN_LOCAL_PHASE1_MODEL` (default `gemma3:4b`), Phase 2
+(and the claim/judge calls) from the Phase-2 model (`DOCS_GEN_LOCAL_PHASE2_MODEL`,
+else `LOCAL_GEMMA_MODEL`):
+
+| Model name contains | temperature | top_p | Why |
+|---|---|---|---|
+| `gemma` | `1.0` | `0.95` | Google's Gemma model card; lower temperatures return empty content on Gemma 4 |
+| anything else, or unknown | `0.2` | `0.95` | Conservative extraction setting: an independent evaluation measured 0.2 as the best Phase-1 extraction on laguna-s-2.1, where 1.0 was in use |
+
+Both values are **always sent** on every local docs-gen request. Ollama's `/v1`
+endpoint substitutes `temperature=1.0` and `top_p=1.0` for a field that is
+omitted, so leaving one out would silently change the sampling. So a
+`gemma3:4b` Phase 1 with a laguna Phase 2 runs extraction at 1.0 and synthesis
+at 0.2. An explicit env value always wins, and applies to both phases.
+
 - **Gemma 3 / Gemma 4 (MoE):** keep `DOCS_GEN_LOCAL_TEMPERATURE=1.0`,
   `TOP_P=0.95` (Google's model-card mandate). Lower temperatures make Gemma's MoE
   routing over-activate thinking and return **empty content** — this is why the
-  shipped default is `1.0`, not `0`. Also keep thinking **disabled** (default).
+  shipped Gemma default is `1.0`, not `0`. Also keep thinking **disabled** (default).
 - **Dense instruct models (Qwen2.5, Qwen3-with-thinking-off, Phi-4):** these do
   literal/reconstruction work faithfully at **near-deterministic** settings. Set
   `DOCS_GEN_LOCAL_TEMPERATURE=0` (or `0.1`) for the most reproducible, faithful
@@ -404,14 +459,16 @@ Now, whenever a section's facts exceed the cap:
 1. **Always** — a `log.warn("Section facts exceeded the facts char cap — modules
    omitted", …)` telemetry line is emitted (`projectId`, `section`, `provider`,
    `factsCharCap`, `includedModules`, `omittedModules`, `includedChars`).
-2. **On the LOCAL provider** — a `facts-truncated` **DocWarning** is raised, so
+2. **On every provider** — a `facts-truncated` **DocWarning** is raised, so
    `deriveDocStatus` marks the document **`degraded`** and the UI banner tells the
    operator the concrete remedy: **raise `DOCS_GEN_LOCAL_FACTS_CHAR_CAP`** (in
    lock-step with the served window) **or narrow retrieval**.
 
-Large-window cloud providers (Bedrock ~200K) omit tail modules by design and are
-**not** flagged (log-only) — the warning is scoped to the small-window local path
-where truncation genuinely degrades grounding.
+Until #175 the warning was local-only and Bedrock/Anthropic were log-only, so a
+cloud document could leave modules out with nothing on the document to say so.
+Cloud warnings now name their own knob (`DOCS_GEN_BEDROCK_FACTS_CHAR_CAP` /
+`DOCS_GEN_ANTHROPIC_FACTS_CHAR_CAP`, default 150,000); which modules are selected
+is unchanged.
 
 **Operator action when you see a `facts-truncated` warning:** the local run
 dropped relevant facts. Either raise `OLLAMA_CONTEXT_LENGTH` / vLLM

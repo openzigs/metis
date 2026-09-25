@@ -13,6 +13,7 @@ import {
   noModulesWarning,
   sourceUnavailableWarning,
   factsTruncatedWarning,
+  phase1FactsTruncatedWarning,
   sectionTruncatedWarning,
   sectionMissingWarning,
   batchTruncatedWarning,
@@ -430,8 +431,45 @@ describe("factsTruncatedWarning (#337)", () => {
 
   it("summarizeWarnings describes the truncation with the env-var remedy", () => {
     const summary = summarizeWarnings([factsTruncatedWarning("X", 2, 3, 48_000)]);
-    expect(summary).toContain("1 section(s) exceeded the local context budget");
+    expect(summary).toContain("1 section(s) exceeded the facts budget");
     expect(summary).toContain("DOCS_GEN_LOCAL_FACTS_CHAR_CAP");
+  });
+
+  // PR #187 review — the banner named the LOCAL knob for every facts-truncated
+  // warning, including the Bedrock/Anthropic ones #175 now raises.
+  it.each([
+    ["bedrock", "DOCS_GEN_BEDROCK_FACTS_CHAR_CAP"],
+    ["anthropic", "DOCS_GEN_ANTHROPIC_FACTS_CHAR_CAP"],
+  ] as const)("summarizeWarnings names the %s cap, never the local one", (provider, knob) => {
+    const summary = summarizeWarnings([factsTruncatedWarning("X", 2, 3, 150_000, provider)]);
+    expect(summary).toContain("1 section(s) exceeded the facts budget");
+    expect(summary).toContain(knob);
+    expect(summary).not.toContain("DOCS_GEN_LOCAL_FACTS_CHAR_CAP");
+    expect(summary).not.toMatch(/local/i);
+  });
+
+  it("summarizeWarnings falls back to a generic knob name when a warning names none", () => {
+    const summary = summarizeWarnings([
+      { kind: "facts-truncated", section: "X", message: "omitted", severity: "warning" },
+    ]);
+    expect(summary).toContain("raise the provider's *_FACTS_CHAR_CAP or narrow retrieval");
+  });
+
+  it("a cloud facts-truncated warning also derives 'degraded'", () => {
+    expect(deriveDocStatus([factsTruncatedWarning("X", 1, 1, 150_000, "bedrock")])).toBe(
+      "degraded",
+    );
+  });
+
+  it("summarizeWarnings reports Phase-1 output truncation with its own remedy", () => {
+    const summary = summarizeWarnings([
+      phase1FactsTruncatedWarning(["orders"]),
+      factsTruncatedWarning("X", 2, 3, 150_000, "bedrock"),
+    ]);
+    expect(summary).toContain("1 section(s) exceeded the facts budget");
+    expect(summary).toContain("fact extraction was cut off for some modules");
+    expect(summary).toContain("DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS");
+    expect(summary).not.toContain("DOCS_GEN_LOCAL_FACTS_CHAR_CAP");
   });
 
   it("serializes alongside other warnings", () => {
