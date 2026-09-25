@@ -43,3 +43,28 @@ export function localSamplingDefaults(model: string): LocalSamplingDefaults {
   const family = /gemma/i.test(model) ? GEMMA_LOCAL_SAMPLING : CONSERVATIVE_LOCAL_SAMPLING;
   return { ...family };
 }
+
+/**
+ * The sampling a local docs-gen call to `model` should use: the family default
+ * from {@link localSamplingDefaults}, overridden by `DOCS_GEN_LOCAL_TEMPERATURE`
+ * / `DOCS_GEN_LOCAL_TOP_P` when set to a finite number (same parsing as the
+ * synthesizer's other float knobs). Called with the model each PHASE actually
+ * serves, so a Gemma Phase 1 and a non-Gemma Phase 2 each get their own family's
+ * values (PR #187 review).
+ */
+export function resolveLocalSampling(
+  model: string,
+  env: NodeJS.ProcessEnv = process.env,
+): LocalSamplingDefaults {
+  const d = localSamplingDefaults(model);
+  return {
+    temperature: finiteOr(env.DOCS_GEN_LOCAL_TEMPERATURE, d.temperature),
+    topP: finiteOr(env.DOCS_GEN_LOCAL_TOP_P, d.topP),
+  };
+}
+
+function finiteOr(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) ? n : fallback;
+}

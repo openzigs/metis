@@ -166,11 +166,18 @@ export function isStructuredOutputUnsupportedStatus(status: number): boolean {
  */
 export function isStructuredOutputUnavailableBody(status: number, bodyText: string): boolean {
   if (status !== 501) return false;
-  return (
-    /structured[\s_-]*outputs?/i.test(bodyText) &&
-    /unavailable|not\s+supported|unsupported|not\s+implemented/i.test(bodyText)
-  );
+  return STRUCTURED_OUTPUT_UNAVAILABLE_PHRASE.test(bodyText);
 }
+
+/**
+ * The multi-word phrases a runtime uses to say it cannot do structured output.
+ * Matched as PHRASES (whitespace between the words) rather than two independent
+ * keywords: an Ollama model tag cannot contain whitespace, so an error that only
+ * QUOTES a model such as `llama-structured-output:8b` next to "is unavailable"
+ * can never match (PR #187 review).
+ */
+const STRUCTURED_OUTPUT_UNAVAILABLE_PHRASE =
+  /\bstructured\s+outputs?\s+(?:is|are)\s+(?:unavailable|unsupported|not\s+(?:supported|available|implemented))\b|\bdoes\s+not\s+support\s+structured\s+outputs?\b/i;
 
 /**
  * True when a non-2xx on a request carrying `response_format` means the runtime
@@ -428,7 +435,10 @@ class StructuredOutputRejectedError extends Error {
  */
 export function isTemperatureUnsupportedBody(status: number, bodyText: string): boolean {
   if (status !== 400 && status !== 422) return false;
-  return /temperature/i.test(bodyText) && /deprecat/i.test(bodyText);
+  // The FIELD, optionally quoted (backtick, or a JSON-escaped quote), followed
+  // by "is deprecated". Two independent keywords also matched a quoted model
+  // name such as "temperature-deprecated-test:7b" (PR #187 review).
+  return /\btemperature\\?["'`]?\s+is\s+deprecated\b/i.test(bodyText);
 }
 
 /**
@@ -524,8 +534,21 @@ export function resolveLocalReasoningEffortMode(
  */
 export function isReasoningEffortUnsupportedBody(status: number, bodyText: string): boolean {
   if (status !== 400 && status !== 422) return false;
-  return /reasoning|think/i.test(bodyText);
+  return REASONING_EFFORT_REJECTION.test(bodyText);
 }
+
+/**
+ * The real rejection shapes only (PR #187 review M2): Ollama's `"<model>" does
+ * not support thinking` and `invalid reasoning value|effort ...`, or a message
+ * naming the `reasoning_effort` FIELD itself. A bare /reasoning|think/ also
+ * matched model names Ollama echoes into unrelated errors
+ * (`"phi4-reasoning:14b" does not support tools`,
+ * `model "qwen3:4b-thinking-2507" not found`), and the model was then remembered
+ * as rejecting the field for good. The field name must stand alone — not be
+ * part of a longer tag like `deepseek-reasoning_effort:7b`.
+ */
+const REASONING_EFFORT_REJECTION =
+  /\bdoes\s+not\s+support\s+thinking\b|\binvalid\s+reasoning\s+(?:value|effort)\b|(?:^|[\s`'"(\[])reasoning_effort(?=$|[\s`'")\],.])/i;
 
 /**
  * Internal marker thrown when the runtime rejects the `reasoning_effort` field

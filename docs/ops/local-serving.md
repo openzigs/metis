@@ -303,13 +303,27 @@ logs `forcing full prompt re-processing`) and times out the same way.
 Ollama serves **one request per model at a time** unless `OLLAMA_NUM_PARALLEL`
 is raised, queues the rest FIFO, and sends no bytes — not even headers — for a
 queued request. METIS therefore queues its own `local-gemma` requests in a
-process-wide FIFO limiter per base URL, and starts the timeouts above only once a
+process-wide FIFO limiter per server, and starts the timeouts above only once a
 request holds a slot, so waiting behind another generation is never reported as a
-first-token stall.
+first-token stall. The limiter is keyed on the server's origin (scheme, host,
+port), with `localhost`, `127.0.0.1` and `[::1]` treated as one host, so two
+settings that spell the same Ollama differently still share one limit.
+
+**Known limitation: deadlines set by callers still count queue time.** Only the
+provider's own first-byte, idle and request timers wait for a slot. A deadline a
+caller sets around the whole call starts when the call is made, and there is no
+bound on how long a request can wait in the queue. Two examples are the chat
+route's idle timeout (`AI_STREAM_IDLE_TIMEOUT_MS`, 90 s) and impact analysis's
+LLM deadline. At the default limit of 1, an interactive chat or impact analysis
+started during a long docs-gen run waits behind it and can fail on that deadline.
+The waiter is removed cleanly when that happens. This is not new: the same wait
+used to happen inside Ollama's own queue. If you need chat to stay responsive
+during docs-gen, raise `OLLAMA_NUM_PARALLEL` and `LOCAL_GEMMA_MAX_CONCURRENCY`
+together, or run docs-gen when nobody is chatting.
 
 | Env var | Default | Governs |
 |---|---|---|
-| `LOCAL_GEMMA_MAX_CONCURRENCY` | `1` | Max in-flight requests per `LOCAL_GEMMA_BASE_URL`, across docs-gen, grounding, analysis and chat. Set it to the server's `OLLAMA_NUM_PARALLEL`. Positive integer; anything else keeps `1` and warns. |
+| `LOCAL_GEMMA_MAX_CONCURRENCY` | `1` | Max in-flight requests per local server (normalised origin of `LOCAL_GEMMA_BASE_URL`), across docs-gen, grounding, analysis and chat. Set it to the server's `OLLAMA_NUM_PARALLEL`. Positive integer; anything else keeps `1` and warns. |
 | `LOCAL_GEMMA_SEND_REASONING_EFFORT` | `auto` | Whether `reasoning_effort` is sent. `auto`: send; if the model rejects it, retry once without and remember the model. `always`: send, never fall back. `never`: never send. |
 
 With thinking off (the docs-gen default; `DOCS_GEN_LOCAL_ENABLE_THINKING`
@@ -369,8 +383,10 @@ never past it.
 ### Temperature — per served model, NOT a blind 0
 
 **Shipped defaults (#177).** When `DOCS_GEN_LOCAL_TEMPERATURE` / `DOCS_GEN_LOCAL_TOP_P`
-are unset, METIS picks them from the family of the Phase-2 model
-(`DOCS_GEN_LOCAL_PHASE2_MODEL`, else `LOCAL_GEMMA_MODEL`):
+are unset, METIS picks them **per phase**, from the family of the model that phase
+serves: Phase 1 from `DOCS_GEN_LOCAL_PHASE1_MODEL` (default `gemma3:4b`), Phase 2
+(and the claim/judge calls) from the Phase-2 model (`DOCS_GEN_LOCAL_PHASE2_MODEL`,
+else `LOCAL_GEMMA_MODEL`):
 
 | Model name contains | temperature | top_p | Why |
 |---|---|---|---|
@@ -379,10 +395,9 @@ are unset, METIS picks them from the family of the Phase-2 model
 
 Both values are **always sent** on every local docs-gen request. Ollama's `/v1`
 endpoint substitutes `temperature=1.0` and `top_p=1.0` for a field that is
-omitted, so leaving one out would silently change the sampling. One tuning
-serves both phases, so if your Phase-1 model is a different family from your
-Phase-2 model (e.g. `gemma3:4b` extraction with a non-Gemma Phase 2), set
-`DOCS_GEN_LOCAL_TEMPERATURE` explicitly. An explicit env value always wins.
+omitted, so leaving one out would silently change the sampling. So a
+`gemma3:4b` Phase 1 with a laguna Phase 2 runs extraction at 1.0 and synthesis
+at 0.2. An explicit env value always wins, and applies to both phases.
 
 - **Gemma 3 / Gemma 4 (MoE):** keep `DOCS_GEN_LOCAL_TEMPERATURE=1.0`,
   `TOP_P=0.95` (Google's model-card mandate). Lower temperatures make Gemma's MoE

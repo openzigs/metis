@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatChunk } from "../ai/types.js";
 import type { GroundingContext } from "./grounding/grounding-context.js";
+import { deriveDocStatus } from "./grounding/degraded-warnings.js";
 import {
   docsGenTuning,
   sectionGroupsFor,
@@ -119,6 +120,8 @@ describe("facts-truncated is raised for every provider kind (#175)", () => {
           `${budget.omittedModules} of ${budget.omittedModules + budget.includedModules} relevant module(s) were omitted`,
         );
       }
+      // The user-visible consequence: the document is marked degraded.
+      expect(deriveDocStatus(result.warnings)).toBe("degraded");
     },
   );
 

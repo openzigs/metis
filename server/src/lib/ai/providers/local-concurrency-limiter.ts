@@ -153,7 +153,7 @@ const limiters = new Map<string, FifoSemaphore>();
  * extractor, the judge, chat — shares it.
  */
 export function localConcurrencyLimiter(baseUrl: string): FifoSemaphore {
-  const key = baseUrl.replace(/\/+$/, "");
+  const key = limiterKey(baseUrl);
   let limiter = limiters.get(key);
   if (!limiter) {
     limiter = new FifoSemaphore(resolveLocalMaxConcurrency(), key);
@@ -165,6 +165,31 @@ export function localConcurrencyLimiter(baseUrl: string): FifoSemaphore {
     });
   }
   return limiter;
+}
+
+/** Loopback spellings that all reach the same local server. */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * The limiter key for `baseUrl`: the server's ORIGIN — scheme, host and port —
+ * because the thing being protected is one runtime, and `/v1` vs no path, letter
+ * case or a trailing slash all reach the same one. `localhost`, `127.0.0.1` and
+ * `[::1]` are folded together for the same reason; without that, two settings
+ * spelling one Ollama differently (`LOCAL_GEMMA_BASE_URL` against the resolved
+ * provider URL) got two limiters and effectively doubled the concurrency
+ * (PR #187 review). A string that does not parse as a URL keys on itself,
+ * trimmed of trailing slashes.
+ */
+function limiterKey(baseUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(baseUrl.trim());
+  } catch {
+    return baseUrl.trim().replace(/\/+$/, "");
+  }
+  const host = LOOPBACK_HOSTS.has(url.hostname) ? "localhost" : url.hostname;
+  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+  return `${url.protocol}//${host}:${port}`;
 }
 
 /** Test-only: forget every limiter so the next use re-reads the env. */

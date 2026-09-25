@@ -312,6 +312,28 @@ describe("isTemperatureUnsupportedBody", () => {
     expect(isTemperatureUnsupportedBody(400, "temperature must be between 0 and 1")).toBe(false);
     expect(isTemperatureUnsupportedBody(404, "temperature is deprecated")).toBe(false);
   });
+
+  it("does NOT classify an error that merely quotes a keyword-bearing model name (PR #187 review)", () => {
+    expect(
+      isTemperatureUnsupportedBody(400, 'model "temperature-deprecated-test:7b" not found'),
+    ).toBe(false);
+    expect(
+      isTemperatureUnsupportedBody(
+        400,
+        '{"error":"\\"low-temperature:8b\\" does not support tools (deprecated template)"}',
+      ),
+    ).toBe(false);
+  });
+
+  it("still classifies the plain and JSON-escaped deprecation shapes", () => {
+    expect(isTemperatureUnsupportedBody(400, "temperature is deprecated")).toBe(true);
+    expect(
+      isTemperatureUnsupportedBody(
+        422,
+        '{"error":"\\"temperature\\" is deprecated for this model"}',
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("chat() graceful degradation when runtime rejects temperature", () => {
@@ -515,6 +537,30 @@ describe("HTTP 501 'structured output unavailable' (#176)", () => {
       expect(isStructuredOutputUnavailableBody(501, "embeddings are unavailable")).toBe(false);
       expect(isStructuredOutputUnavailableBody(500, MLX_501)).toBe(false);
       expect(isStructuredOutputUnavailableBody(503, MLX_501)).toBe(false);
+    });
+
+    it("does NOT match a 501 that only quotes a keyword-bearing model name (PR #187 review)", () => {
+      expect(
+        isStructuredOutputUnavailableBody(501, 'model "llama-structured-output:8b" is unavailable'),
+      ).toBe(false);
+      expect(
+        isStructuredOutputUnavailableBody(
+          501,
+          '{"error":"\\"qwen_structured_outputs:7b\\" is not implemented on this engine"}',
+        ),
+      ).toBe(false);
+    });
+
+    it("matches the JSON-wrapped and 'does not support' shapes", () => {
+      expect(
+        isStructuredOutputUnavailableBody(
+          501,
+          '{"error":{"message":"structured output is unavailable"}}',
+        ),
+      ).toBe(true);
+      expect(
+        isStructuredOutputUnavailableBody(501, "this engine does not support structured outputs"),
+      ).toBe(true);
     });
   });
 

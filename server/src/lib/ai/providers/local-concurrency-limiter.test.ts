@@ -198,8 +198,58 @@ describe("LOCAL_GEMMA_MAX_CONCURRENCY parsing", () => {
     expect(logInfo).toHaveBeenCalledTimes(1);
     expect(logInfo).toHaveBeenCalledWith(
       "Local model concurrency limit in effect",
-      expect.objectContaining({ maxConcurrency: 2, target: BASE }),
+      // The key is the normalised origin, so one Ollama is one limiter.
+      expect.objectContaining({ maxConcurrency: 2, target: "http://localhost:11434" }),
     );
+  });
+});
+
+describe("limiter key normalisation (PR #187 review)", () => {
+  it.each([
+    "http://localhost:11434/v1",
+    "http://LOCALHOST:11434/v1/",
+    "http://127.0.0.1:11434",
+    "http://[::1]:11434/v1",
+    "http://127.0.0.1:11434/v1//",
+  ])("%s shares the 127.0.0.1:11434 limiter", (spelling) => {
+    expect(localConcurrencyLimiter(spelling)).toBe(localConcurrencyLimiter(BASE));
+  });
+
+  it("keeps different hosts, ports and schemes apart", () => {
+    const base = localConcurrencyLimiter(BASE);
+    expect(localConcurrencyLimiter("http://127.0.0.1:8000/v1")).not.toBe(base);
+    expect(localConcurrencyLimiter("http://10.0.0.5:11434/v1")).not.toBe(base);
+    expect(localConcurrencyLimiter("https://127.0.0.1:11434/v1")).not.toBe(base);
+  });
+
+  it("two providers spelling one host differently never exceed the limit together", async () => {
+    const f = controllableFetch();
+    const a = provider({ baseUrl: "http://localhost:11434/v1" });
+    const b = provider({ baseUrl: "http://127.0.0.1:11434/v1" });
+    const ra = a.chat([{ role: "user", content: "a" }]);
+    const rb = b.chat([{ role: "user", content: "b" }]);
+    await flush();
+    expect(f.calls).toHaveLength(1);
+    f.calls[0].resolve(jsonResponse("A"));
+    await ra;
+    await flush();
+    expect(f.calls).toHaveLength(2);
+    f.calls[1].resolve(jsonResponse("B"));
+    await rb;
+    expect(f.maxInFlight).toBe(1);
+  });
+
+  it("fills in the scheme's default port", () => {
+    expect(localConcurrencyLimiter("http://localhost/v1")).toBe(
+      localConcurrencyLimiter("http://127.0.0.1:80"),
+    );
+    expect(localConcurrencyLimiter("https://gpu-box.lan/v1")).toBe(
+      localConcurrencyLimiter("https://GPU-BOX.lan:443"),
+    );
+  });
+
+  it("an unparseable base URL still gets a (trimmed) limiter of its own", () => {
+    expect(localConcurrencyLimiter("not a url/")).toBe(localConcurrencyLimiter("not a url"));
   });
 });
 
@@ -499,6 +549,64 @@ describe("the slot is released on every exit path", () => {
     f.calls[0].resolve(s.response);
     s.delta("first");
     await run;
+    expect(limiter().inFlight).toBe(0);
+    await nextCallRuns(p, f);
+  });
+
+  it("on a chat() request timeout while in flight", async () => {
+    vi.useFakeTimers();
+    const f = controllableFetch();
+    const p = provider({ requestTimeoutMs: 1_000 });
+    const failing = p.chat([{ role: "user", content: "x" }]);
+    const settled = expect(failing).rejects.toThrow(/timed out/);
+    await vi.advanceTimersByTimeAsync(1_001);
+    await settled;
+    expect(f.calls).toHaveLength(1);
+    expect(limiter().inFlight).toBe(0);
+    vi.useRealTimers();
+    await nextCallRuns(p, f);
+  });
+
+  it("on a stream() caller abort while still queued (never sends the request)", async () => {
+    const f = controllableFetch();
+    const p = provider();
+    const first = p.chat([{ role: "user", content: "first" }]);
+    const ac = new AbortController();
+    const queued = (async () => {
+      for await (const _ of p.stream([{ role: "user", content: "queued" }], {
+        signal: ac.signal,
+      })) {
+        /* drain */
+      }
+    })();
+    await flush();
+    expect(limiter().queued).toBe(1);
+    ac.abort();
+    await expect(queued).rejects.toMatchObject({ name: "AbortError" });
+    expect(limiter().queued).toBe(0);
+    f.calls[0].resolve(jsonResponse("A"));
+    await first;
+    await nextCallRuns(p, f);
+    expect(f.calls.map(tag)).toEqual(["first", "next"]);
+  });
+
+  it("across a 429 → backoff → retry cycle: the slot is free during the sleep", async () => {
+    const f = controllableFetch();
+    const inFlightDuringSleep: number[] = [];
+    const p = provider({
+      maxAttempts: 2,
+      sleepFn: async () => {
+        inFlightDuringSleep.push(limiter().inFlight);
+      },
+    });
+    const run = p.chat([{ role: "user", content: "x" }]);
+    await flush();
+    f.calls[0].resolve(new Response("slow down", { status: 429 }));
+    await flush(20);
+    expect(inFlightDuringSleep).toEqual([0]);
+    expect(f.calls).toHaveLength(2);
+    f.calls[1].resolve(jsonResponse("ok"));
+    await expect(run).resolves.toMatchObject({ content: "ok" });
     expect(limiter().inFlight).toBe(0);
     await nextCallRuns(p, f);
   });

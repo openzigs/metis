@@ -265,6 +265,47 @@ describe("helpers", () => {
     expect(isReasoningEffortUnsupportedBody(400, "model not found")).toBe(false);
   });
 
+  // PR #187 review M2 — a bare /reasoning|think/ matched MODEL NAMES that Ollama
+  // echoes into unrelated errors, and the model was then remembered as rejecting
+  // reasoning_effort for the life of the provider.
+  it.each([
+    '"phi4-reasoning:14b" does not support tools',
+    'model "qwen3:4b-thinking-2507" not found',
+    '{"error":{"message":"\\"phi4-reasoning:14b\\" does not support tools"}}',
+    '{"error":"model \\"deepseek-reasoning_effort:7b\\" not found, try pulling it first"}',
+  ])("does NOT classify an unrelated 400 that quotes a keyword-bearing model name: %s", (body) => {
+    expect(isReasoningEffortUnsupportedBody(400, body)).toBe(false);
+  });
+
+  it.each([
+    '"qwen3:4b-thinking-2507" does not support thinking',
+    '{"error":{"message":"\\"gemma3:12b\\" does not support thinking","type":"invalid_request_error"}}',
+    'invalid reasoning value: "extreme"',
+    "invalid reasoning effort: must be one of none, low, medium, high",
+    "Unrecognized request argument supplied: reasoning_effort",
+    "unknown field `reasoning_effort`",
+  ])("classifies a genuine reasoning rejection: %s", (body) => {
+    expect(isReasoningEffortUnsupportedBody(400, body)).toBe(true);
+  });
+
+  it("an unrelated 400 naming a thinking model is surfaced and NOT remembered", async () => {
+    const tools = () =>
+      new Response(
+        JSON.stringify({ error: { message: '"phi4-reasoning:14b" does not support tools' } }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      );
+    const p = provider({ model: "phi4-reasoning:14b", disableThinking: true });
+    const bodies = mockFetch(tools, () => okJson());
+    await expect(p.chat([{ role: "user", content: "hi" }])).rejects.toThrow(
+      /does not support tools/,
+    );
+    await p.chat([{ role: "user", content: "hi" }]);
+    // One attempt for the failing call (no reasoning retry), and the next call
+    // still turns thinking off with reasoning_effort.
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1].reasoning_effort).toBe("none");
+  });
+
   it("parses the mode env, defaulting unknown values to auto with a warning", () => {
     expect(resolveLocalReasoningEffortMode(undefined)).toBe("auto");
     expect(resolveLocalReasoningEffortMode("  ")).toBe("auto");

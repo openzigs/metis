@@ -52,7 +52,7 @@ import {
 } from "./code-graph-summary.js";
 import { buildProvider, loadAIConfig } from "../ai/index.js";
 import { validateLocalProviderUrl } from "../ai/config.js";
-import { localSamplingDefaults } from "./local-sampling-defaults.js";
+import { resolveLocalSampling } from "./local-sampling-defaults.js";
 import { AnthropicProvider } from "../ai/providers/anthropic-provider.js";
 import {
   BedrockDirectProvider,
@@ -457,11 +457,8 @@ export function docsGenTuning(kind: DocsGenProviderKind, configModel: string): D
       judgeModel: envStr("DOCS_GEN_LOCAL_JUDGE_MODEL") ?? phase2Model,
       factsCharCap: intFromEnv("DOCS_GEN_LOCAL_FACTS_CHAR_CAP", 48_000, 4_000),
       supportsCaching: false,
-      temperature: floatFromEnv(
-        "DOCS_GEN_LOCAL_TEMPERATURE",
-        localSamplingDefaults(phase2Model).temperature,
-      ),
-      topP: floatFromEnv("DOCS_GEN_LOCAL_TOP_P", localSamplingDefaults(phase2Model).topP),
+      // #177 — Phase-2 (and claim/judge) sampling; Phase 1 re-resolves for its own model.
+      ...resolveLocalSampling(phase2Model),
       disableThinking: !boolFromEnv("DOCS_GEN_LOCAL_ENABLE_THINKING"),
       refine: boolFromEnv("DOCS_GEN_LOCAL_REFINE"),
       concisePrompt: boolFromEnv("DOCS_GEN_LOCAL_CONCISE_PROMPT"),
@@ -560,14 +557,16 @@ export function buildDocsGenProvider(
   if (config.provider === "local-gemma" && config.sdkProvider) {
     const tuning = docsGenTuning("local", config.model);
     const model = phase === 1 ? tuning.phase1Model : tuning.phase2Model;
+    // #177 — defaults follow the family of the model THIS phase serves.
+    const { temperature, topP } = resolveLocalSampling(model);
     log.info("Using local-gemma (Ollama) for docs-gen", {
       phase,
       model,
       baseUrl: config.sdkProvider.baseUrl.replace(/\/+$/, ""),
       defaultMaxTokens,
       factsCharCap: tuning.factsCharCap,
-      temperature: tuning.temperature,
-      topP: tuning.topP,
+      temperature,
+      topP,
       disableThinking: tuning.disableThinking,
       refine: tuning.refine,
     });
@@ -578,8 +577,8 @@ export function buildDocsGenProvider(
         model,
         providerKey: "local-gemma",
         defaultMaxTokens,
-        defaultTemperature: tuning.temperature,
-        defaultTopP: tuning.topP,
+        defaultTemperature: temperature,
+        defaultTopP: topP,
         defaultFrequencyPenalty: tuning.frequencyPenalty,
         disableThinking: tuning.disableThinking,
       }),
@@ -592,8 +591,8 @@ export function buildDocsGenProvider(
         .update(
           JSON.stringify({
             baseUrl: config.sdkProvider.baseUrl,
-            temperature: tuning.temperature,
-            topP: tuning.topP,
+            temperature,
+            topP,
             frequencyPenalty: tuning.frequencyPenalty,
             disableThinking: tuning.disableThinking,
           }),

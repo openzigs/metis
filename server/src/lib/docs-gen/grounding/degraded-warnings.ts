@@ -583,6 +583,12 @@ export function factsTruncatedWarning(
 /** The provider kinds whose per-section facts cap can raise `facts-truncated`. */
 export type FactsCapProvider = "local" | "bedrock" | "anthropic";
 
+/** The section label {@link phase1FactsTruncatedWarning} uses. */
+const PHASE1_FACTS_SECTION = "Phase 1 facts";
+
+/** The per-provider facts-cap knobs a {@link factsTruncatedWarning} message names. */
+const FACTS_CAP_KNOB = /DOCS_GEN_(?:LOCAL|BEDROCK|ANTHROPIC)_FACTS_CHAR_CAP/g;
+
 /** How many module names {@link phase1FactsTruncatedWarning} lists before summarising. */
 const TRUNCATED_MODULES_LISTED = 10;
 
@@ -601,7 +607,7 @@ export function phase1FactsTruncatedWarning(moduleNames: readonly string[]): Doc
       : "";
   return {
     kind: "facts-truncated",
-    section: "Phase 1 facts",
+    section: PHASE1_FACTS_SECTION,
     message:
       `Fact extraction for ${moduleNames.length} module(s) was cut off by the model's output ` +
       `limit even after a retry with a larger limit, so their facts are incomplete: ${listed}${more}. ` +
@@ -826,7 +832,20 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
   const ungrounded = warnings.filter((w) => w.kind === "section-ungrounded").length;
   const noModules = warnings.filter((w) => w.kind === "no-modules").length;
   const sourceUnavailable = warnings.filter((w) => w.kind === "source-unavailable").length;
-  const factsTruncated = warnings.filter((w) => w.kind === "facts-truncated").length;
+  // Two different facts-truncated causes share the kind: an INPUT facts cap per
+  // section (factsTruncatedWarning, any provider) and Phase-1 OUTPUT truncation
+  // (phase1FactsTruncatedWarning). Each gets its own remedy, and the input-cap
+  // remedy names the knob(s) the warnings themselves named (PR #187 review).
+  const factsCapWarnings = warnings.filter(
+    (w) => w.kind === "facts-truncated" && w.section !== PHASE1_FACTS_SECTION,
+  );
+  const factsTruncated = factsCapWarnings.length;
+  const phase1Truncated = warnings.some(
+    (w) => w.kind === "facts-truncated" && w.section === PHASE1_FACTS_SECTION,
+  );
+  const factsCapKnobs = [
+    ...new Set(factsCapWarnings.flatMap((w) => w.message.match(FACTS_CAP_KNOB) ?? [])),
+  ].sort();
   const outputTruncated = warnings.filter((w) => w.kind === "section-truncated").length;
   const missing = warnings.filter((w) => w.kind === "section-missing").length;
   const parts: string[] = [];
@@ -838,8 +857,13 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
     parts.push("source code could not be read — re-ingest the project and regenerate");
   if (factsTruncated > 0)
     parts.push(
-      `${factsTruncated} section(s) exceeded the local context budget — raise ` +
-        `DOCS_GEN_LOCAL_FACTS_CHAR_CAP or narrow retrieval`,
+      `${factsTruncated} section(s) exceeded the facts budget — raise ` +
+        `${factsCapKnobs.length > 0 ? factsCapKnobs.join(" / ") : "the provider's *_FACTS_CHAR_CAP"} ` +
+        `or narrow retrieval`,
+    );
+  if (phase1Truncated)
+    parts.push(
+      "fact extraction was cut off for some modules — raise DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS",
     );
   if (outputTruncated > 0)
     parts.push(
