@@ -3286,11 +3286,11 @@ export async function synthesizeFinalDocument(
       // On the LOCAL provider (small ~32K window) an over-cap facts blob risks
       // context-shift → the runtime drops the instructions → an empty/degraded
       // section with no clear cause. So: ALWAYS log the budget outcome for
-      // telemetry, and on the LOCAL path raise a `facts-truncated` DocWarning so
-      // `deriveDocStatus` marks the doc `degraded` and the operator sees the
-      // concrete remedy (raise the cap / narrow retrieval). Large-window
-      // providers (Bedrock ~200K) omit tail modules by design → log only, no
-      // warning (avoids false-flagging every big-project cloud run).
+      // telemetry, and raise a `facts-truncated` DocWarning so `deriveDocStatus`
+      // marks the doc `degraded` and the operator sees the concrete remedy
+      // (raise the cap / narrow retrieval). #175 — on EVERY provider: a Bedrock
+      // or Anthropic section that left modules out must say so on the document,
+      // not only in a server log. Selection is unchanged; only reporting is.
       const factsBudget = batchPlan
         ? {
             batches: batchPlan.batches.map((batch) => batch.length),
@@ -3309,16 +3309,15 @@ export async function synthesizeFinalDocument(
           omittedModules: factsBudget.omittedModules,
           includedChars: factsBudget.includedChars,
         });
-        if (bundle.kind === "local") {
-          warnings.push(
-            factsTruncatedWarning(
-              group.label,
-              factsBudget.omittedModules,
-              factsBudget.includedModules,
-              factsCharCap,
-            ),
-          );
-        }
+        warnings.push(
+          factsTruncatedWarning(
+            group.label,
+            factsBudget.omittedModules,
+            factsBudget.includedModules,
+            factsCharCap,
+            bundle.kind,
+          ),
+        );
       }
 
       // #267 — admit THIS section's selected module facts as citable `facts:`

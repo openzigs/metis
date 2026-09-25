@@ -528,35 +528,60 @@ export function sourceUnavailableWarning(
  *
  * It is `warning` severity, not `error`: unlike `source-unavailable` (the doc
  * was never built from source) the section WAS generated from real facts — just
- * a relevance-ranked subset. Callers only raise this when omission actually
- * occurred AND the provider window is tight (the local path); large-window
- * providers (Bedrock ~200K) omit tail modules by design and must NOT be flagged.
+ * a relevance-ranked subset. Callers raise this whenever omission actually
+ * occurred, on EVERY provider (#175): a large-window provider (Bedrock,
+ * Anthropic ~200K) that leaves modules out of a section has still left them out,
+ * and the document must say so rather than only a server log.
  *
  * @param section - the section-group label whose facts were truncated.
  * @param omittedModules - count of modules dropped to fit the cap.
  * @param includedModules - count of modules that fit and were sent.
  * @param factsCharCap - the per-section char cap the selection was capped to.
+ * @param provider - which provider's cap applied; picks the env knob and remedy
+ *   the message names. Defaults to `local` (the original, pre-#175 shape).
  */
 export function factsTruncatedWarning(
   section: string,
   omittedModules: number,
   includedModules: number,
   factsCharCap: number,
+  provider: FactsCapProvider = "local",
 ): DocWarning {
+  const omitted =
+    `so ${omittedModules} of ${omittedModules + includedModules} relevant module(s) ` +
+    `were omitted from what the model read.`;
+  if (provider !== "local") {
+    const knob =
+      provider === "anthropic"
+        ? "DOCS_GEN_ANTHROPIC_FACTS_CHAR_CAP"
+        : "DOCS_GEN_BEDROCK_FACTS_CHAR_CAP";
+    return {
+      kind: "facts-truncated",
+      section,
+      message:
+        `The "${section}" section's source facts exceeded the ${provider} facts budget ` +
+        `(${knob}=${factsCharCap} chars), ${omitted} The section was written from the ` +
+        `highest-ranked modules only and may miss content from the rest. Raise ${knob} ` +
+        `or narrow retrieval so each section's facts fit.`,
+      severity: "warning",
+    };
+  }
   return {
     kind: "facts-truncated",
     section,
     message:
       `The "${section}" section's source facts exceeded the local model's context budget ` +
-      `(DOCS_GEN_LOCAL_FACTS_CHAR_CAP=${factsCharCap} chars), so ${omittedModules} of ` +
-      `${omittedModules + includedModules} relevant module(s) were omitted from what the ` +
-      `model read. On a small (~32K) local window this risks context-shift and degraded or ` +
+      `(DOCS_GEN_LOCAL_FACTS_CHAR_CAP=${factsCharCap} chars), ${omitted} ` +
+      `On a small (~32K) local window this risks context-shift and degraded or ` +
       `empty output. Raise DOCS_GEN_LOCAL_FACTS_CHAR_CAP to fit the served model's real ` +
       `context window (in lock-step with OLLAMA_CONTEXT_LENGTH / vLLM --max-model-len), ` +
       `or narrow retrieval so each section's facts fit.`,
     severity: "warning",
   };
 }
+
+/** The provider kinds whose per-section facts cap can raise `facts-truncated`. */
+export type FactsCapProvider = "local" | "bedrock" | "anthropic";
 
 /** How many module names {@link phase1FactsTruncatedWarning} lists before summarising. */
 const TRUNCATED_MODULES_LISTED = 10;

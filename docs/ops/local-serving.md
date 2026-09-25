@@ -428,14 +428,16 @@ Now, whenever a section's facts exceed the cap:
 1. **Always** — a `log.warn("Section facts exceeded the facts char cap — modules
    omitted", …)` telemetry line is emitted (`projectId`, `section`, `provider`,
    `factsCharCap`, `includedModules`, `omittedModules`, `includedChars`).
-2. **On the LOCAL provider** — a `facts-truncated` **DocWarning** is raised, so
+2. **On every provider** — a `facts-truncated` **DocWarning** is raised, so
    `deriveDocStatus` marks the document **`degraded`** and the UI banner tells the
    operator the concrete remedy: **raise `DOCS_GEN_LOCAL_FACTS_CHAR_CAP`** (in
    lock-step with the served window) **or narrow retrieval**.
 
-Large-window cloud providers (Bedrock ~200K) omit tail modules by design and are
-**not** flagged (log-only) — the warning is scoped to the small-window local path
-where truncation genuinely degrades grounding.
+Until #175 the warning was local-only and Bedrock/Anthropic were log-only, so a
+cloud document could leave modules out with nothing on the document to say so.
+Cloud warnings now name their own knob (`DOCS_GEN_BEDROCK_FACTS_CHAR_CAP` /
+`DOCS_GEN_ANTHROPIC_FACTS_CHAR_CAP`, default 150,000); which modules are selected
+is unchanged.
 
 **Operator action when you see a `facts-truncated` warning:** the local run
 dropped relevant facts. Either raise `OLLAMA_CONTEXT_LENGTH` / vLLM
