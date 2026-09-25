@@ -220,6 +220,24 @@ describe("holistic synthesizer — path scope", () => {
     expect(streamed).toHaveLength(0);
   });
 
+  // DOCS_GEN_GROUNDING rides the same provenance manifest as the path scope.
+  it("records DOCS_GEN_GROUNDING in the provenance manifest only when it is not `on`", async () => {
+    const grounding = async (mode?: string) => {
+      vi.stubEnv("DOCS_GEN_GROUNDING", mode ?? "");
+      vi.stubEnv("DOCS_GEN_GROUNDING_SAMPLE_RATE", mode === "sample" ? "0.4" : "");
+      try {
+        const result = await synthesizeHolisticDocument("p1", "business-requirements", "BR");
+        return parseGeneratedDocVersionManifest(result.provenanceManifest!).generation.grounding;
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    };
+    expect(await grounding()).toBeUndefined();
+    expect(await grounding("on")).toBeUndefined();
+    expect(await grounding("off")).toEqual({ mode: "off" });
+    expect(await grounding("sample")).toEqual({ mode: "sample", sampleRate: 0.4, minClaims: 10 });
+  });
+
   it("an SQL-only directory outside the scope is not mined; one inside it is", async () => {
     repoRoot = await mkdtemp(path.join(tmpdir(), "path-scope-"));
     const put = async (rel: string, text: string) => {

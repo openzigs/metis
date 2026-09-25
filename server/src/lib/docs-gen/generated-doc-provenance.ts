@@ -136,6 +136,23 @@ const provenanceManifestSchema = z
             phase2: z.object({ mode: z.enum(["single", "hybrid"]) }).strict(),
           })
           .strict(),
+        /**
+         * DOCS_GEN_GROUNDING when it was not `on`: `off` (no section was
+         * fact-checked) or `sample` (scores are estimates from a sample).
+         * Absent = every claim of every section was checked.
+         */
+        grounding: z
+          .discriminatedUnion("mode", [
+            z.object({ mode: z.literal("off") }).strict(),
+            z
+              .object({
+                mode: z.literal("sample"),
+                sampleRate: z.number().gt(0).max(1),
+                minClaims: z.number().int().min(0),
+              })
+              .strict(),
+          ])
+          .optional(),
       })
       .strict(),
     graphFingerprint: z
@@ -442,6 +459,8 @@ export function buildGeneratedDocVersionManifest(input: {
   };
   sectionSynthesis?: SectionSynthesis;
   regeneration?: GeneratedDocVersionManifest["regeneration"];
+  /** DOCS_GEN_GROUNDING when it was not `on`; omitted for a full check. */
+  grounding?: NonNullable<GeneratedDocVersionManifest["generation"]["grounding"]>;
   sections: Array<{
     sectionLabel: string;
     sectionIndex: number;
@@ -515,6 +534,7 @@ export function buildGeneratedDocVersionManifest(input: {
         phase1: { version: input.phase1PromptVersion },
         phase2: { mode: input.phase2Router.hybrid ? "hybrid" : "single" },
       },
+      ...(input.grounding ? { grounding: input.grounding } : {}),
     },
     graphFingerprint: {
       algorithm: "sha256",

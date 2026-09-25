@@ -540,6 +540,54 @@ sizing, tests excluded):
 Phase-2 counts were estimated from cached facts of an earlier run and may grow
 slightly with fresh facts.)
 
+### Turning fact-checking down for a test run (`DOCS_GEN_GROUNDING`)
+
+Every section is fact-checked after it is written: its text is decomposed into
+atomic claims (one call per ~8,000-character passage, whose reply restates every
+claim) and a faithfulness judge checks each claim against the section's evidence
+(one call per 40 claims, each re-reading the whole evidence block and restating
+every claim). On a local model, one request at a time, that is about **three
+times** the writing time — the Rules section of a scoped laguna run took 24 min
+to write and 75+ min to check. For a test run where you are iterating on
+prompts or tuning, turn it down:
+
+| `DOCS_GEN_GROUNDING` | What runs | What the document says |
+|---|---|---|
+| `on` (default; also any unrecognised value, with a log warning) | Every claim of every section, exactly as before. **Keep this for production.** | Faithfulness warnings as usual. |
+| `sample` | A sample of each section's passages (`DOCS_GEN_GROUNDING_SAMPLE_RATE`, default `0.25`) is decomposed, and only their claims are judged — at least 10 claims per section when it has that many. | Every checked section carries a `grounding-sampled` warning (or, below its bar, the usual tier warning prefixed "Spot-check only" and flagged `sampled: true`); the document is `degraded`; the manifest records `generation.grounding: { mode: "sample", sampleRate, minClaims }`; sampled scores never feed the eval harness's supported-claim rate. |
+| `off` | No claim extraction, no judge. Writing, refine, batching, mined-rule and formula paging and progress reporting are unchanged. | Every section carries a `grounding-skipped` ("NOT fact-checked") warning; the document is `degraded`; the manifest records `generation.grounding: { mode: "off" }`. |
+
+```bash
+DOCS_GEN_GROUNDING=sample              # or off; unset = on
+DOCS_GEN_GROUNDING_SAMPLE_RATE=0.25    # 0 < rate <= 1; only read in sample mode
+```
+
+Both are runtime tunables (admin settings page, or `.env` + restart), read once
+at the start of each document.
+
+**How the sample is drawn.** A section is split into passages (paragraphs,
+lists, tables, fenced blocks — headings travel with the passages under them)
+and cut into `ceil(passages × rate)` evenly spaced strata; one passage per
+stratum is drawn, the one whose text hashes lowest. So the sample covers the
+whole section rather than its first part, and a re-run over the same text
+draws the same passages. If the draw yields fewer than 10 claims, further
+passages are drawn until it does or the section runs out (a section with fewer
+than 10 claims is therefore checked in full, and not labelled sampled). A
+batched section shares the 10-claim minimum across its batch replies.
+
+**Why passages and not claims.** Sampling the extracted claims would cut only
+the judge; every passage would still be decomposed, and decomposition emits as
+many output tokens as the judge. Sampling passages cuts both. On the test
+fixture (8 replies of ~36K characters, 320 claims each): `on` = 64
+decomposition + 64 judge calls over 2,560 claims; `sample` at 0.25 = 24 + 16
+calls over 640 claims. Expect the checking time of a scoped run to fall by
+roughly two-thirds to three-quarters in `sample` mode (estimated from call and
+token counts, not yet measured on hardware), and to zero in `off` mode.
+
+A document written with `sample` or `off` is never shown as `ready`. Its
+sections are not reused by a later `on` run (the fact-check mode is part of
+each section's reuse hash), so regenerating with the default re-checks them.
+
 ---
 
 ## Eval-gated rollout — the A/B gate (#335)

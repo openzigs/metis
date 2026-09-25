@@ -559,6 +559,28 @@ const res = (over: Partial<FaithfulnessResult>): FaithfulnessResult => ({
 });
 
 describe("aggregateFaithfulness", () => {
+  it("DOCS_GEN_GROUNDING=sample — sums sample coverage across batches, and adds nothing when unsampled", () => {
+    const cov = (checked: number, total: number) => ({
+      rate: 0.25,
+      passagesChecked: checked,
+      passagesTotal: total,
+      charsChecked: checked * 100,
+      charsTotal: total * 100,
+    });
+    const agg = aggregateFaithfulness("Rules", [
+      res({ sampled: cov(5, 20) }),
+      res({ sampled: cov(3, 3) }),
+    ])!;
+    expect(agg.sampled).toEqual({
+      rate: 0.25,
+      passagesChecked: 8,
+      passagesTotal: 23,
+      charsChecked: 800,
+      charsTotal: 2300,
+    });
+    expect("sampled" in aggregateFaithfulness("Rules", [res({}), res({})])!).toBe(false);
+  });
+
   it("pools claims across batches rather than averaging ratios", () => {
     const agg = aggregateFaithfulness("Rules", [
       res({

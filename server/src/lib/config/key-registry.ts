@@ -309,6 +309,23 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "OUTPUT cap (max_tokens) for one grounding CLAIM-EXTRACTION call (#152). Default 16384; claim extraction previously reused DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS. Sections are sent in passages of about 8,000 characters, and a passage whose claim list still stops at the cap is split and asked again, so raise this only when a section is reported as having exceeded its output cap. Clamped down to the claim model's known output ceiling; an unknown (e.g. local) model defaults to 8192.",
     sensitive: false,
   },
+  // ── Docs-gen fact-checking depth (fast local test runs) ───────────────
+  DOCS_GEN_GROUNDING: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.enum(["on", "sample", "off"]),
+    description:
+      "How much of each generated documentation section is fact-checked (claim extraction + faithfulness judge). on (default): every claim of every section — keep this for production. sample: a deterministic, spread-out sample of each section's passages (DOCS_GEN_GROUNDING_SAMPLE_RATE, at least 10 claims per section when it has that many) is decomposed and judged; the score is an estimate, every such section carries a grounding-sampled warning and the document is degraded, never ready. off: no claim extraction and no judge calls; every section carries a grounding-skipped warning, the provenance manifest records mode off, and the document is degraded. For fast local test runs, where fact-checking can take about three times as long as writing. An unrecognised value falls back to on.",
+    sensitive: false,
+  },
+  DOCS_GEN_GROUNDING_SAMPLE_RATE: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.coerce.number().gt(0).max(1),
+    description:
+      "Share of each section's passages fact-checked when DOCS_GEN_GROUNDING=sample (0 < rate ≤ 1, default 0.25). The passages are drawn deterministically (seeded from their text) from evenly spaced parts of the section, and topped up until at least 10 claims are judged when the section has that many. Ignored in the other modes. An invalid value falls back to 0.25.",
+    sensitive: false,
+  },
   // ── Issue #1228 — DB-schema prose OUTPUT cap (was the inherited 4096) ───
   DOCS_GEN_DB_SCHEMA_MAX_OUTPUT_TOKENS: {
     tier: "tunable",

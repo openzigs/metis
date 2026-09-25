@@ -19,6 +19,9 @@ import {
   batchTruncatedWarning,
   batchFailedWarning,
   batchUnverifiedWarning,
+  groundingSkippedWarning,
+  groundingSampledWarning,
+  markWarningSampled,
   DEFAULT_FAITHFULNESS_THRESHOLD,
   NARRATIVE_FAITHFULNESS_THRESHOLD,
   RECONSTRUCTION_FAITHFULNESS_THRESHOLD,
@@ -635,5 +638,84 @@ describe("#157 — batched-section warnings name the modules", () => {
         "the source, so the section's faithfulness score covers only 3 of its 5 parts. Review " +
         "that part against the code before relying on it.",
     );
+  });
+});
+
+describe("DOCS_GEN_GROUNDING warnings", () => {
+  const sample = {
+    rate: 0.25,
+    passagesChecked: 5,
+    passagesTotal: 20,
+    charsChecked: 1_000,
+    charsTotal: 4_000,
+  };
+
+  it("off: a not-fact-checked warning with no score, and the doc is degraded", () => {
+    const w = groundingSkippedWarning("Business Rules");
+    expect(w).toMatchObject({
+      kind: "grounding-skipped",
+      section: "Business Rules",
+      severity: "warning",
+    });
+    expect(w.message).toContain("NOT fact-checked");
+    expect(w.message).toContain("DOCS_GEN_GROUNDING=off");
+    expect(w.ratio).toBeUndefined();
+    expect(deriveDocStatus([w])).toBe("degraded");
+    expect(summarizeWarnings([w, groundingSkippedWarning("Overview")])).toBe(
+      "Needs review — 2 section(s) were not fact-checked (DOCS_GEN_GROUNDING=off).",
+    );
+  });
+
+  it("sample above the bar: labelled a spot-check estimate, carrying the sampled ratio", () => {
+    const w = groundingSampledWarning(
+      "Overview",
+      { supportedClaims: 9, totalClaims: 10, faithfulness: 0.9, threshold: 0.4 },
+      sample,
+    );
+    expect(w).toMatchObject({
+      kind: "grounding-sampled",
+      ratio: 0.9,
+      threshold: 0.4,
+      sampled: true,
+    });
+    expect(w.message).toContain("SPOT-CHECKED");
+    expect(w.message).toContain("5 of its 20 passages (about 25% of its text)");
+    expect(w.message).toContain("90% of those (9 of 10)");
+    expect(w.message).toContain("not a full verification");
+    expect(w.message).not.toContain("could not be parsed");
+    expect(deriveDocStatus([w])).toBe("degraded");
+    expect(summarizeWarnings([w])).toContain("1 section(s) were only spot-checked");
+    const unparsed = groundingSampledWarning(
+      "Overview",
+      { supportedClaims: 9, totalClaims: 10, faithfulness: 0.9, threshold: 0.4, unparseable: true },
+      sample,
+    );
+    expect(unparsed.message).toContain("could not be parsed");
+  });
+
+  it("sample below the bar: the tier warning is prefixed and flagged sampled, kind and tier kept", () => {
+    const base = sectionUnfaithfulWarning("Rules", {
+      supportedClaims: 5,
+      totalClaims: 10,
+      faithfulness: 0.5,
+      threshold: 0.8,
+    });
+    const w = markWarningSampled(base, sample);
+    expect(w.kind).toBe("section-ungrounded");
+    expect(w.tier).toBe("literal");
+    expect(w.ratio).toBe(0.5);
+    expect(w.sampled).toBe(true);
+    expect(w.message.startsWith("[Spot-check only (DOCS_GEN_GROUNDING=sample)")).toBe(true);
+    expect(w.message).toContain(base.message);
+    expect(base.sampled).toBeUndefined();
+  });
+
+  it("zero-length coverage renders 0% instead of NaN", () => {
+    const w = groundingSampledWarning(
+      "X",
+      { supportedClaims: 1, totalClaims: 1, faithfulness: 1, threshold: 0.8 },
+      { ...sample, charsChecked: 0, charsTotal: 0 },
+    );
+    expect(w.message).toContain("about 0% of its text");
   });
 });
