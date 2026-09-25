@@ -100,6 +100,8 @@ const provenanceManifestSchema = z
       .object({
         title: z.string().min(1),
         scope: z.string().min(1),
+        /** Repository-relative path prefixes a scoped document was limited to. */
+        pathPrefixes: z.array(z.string().min(1)).min(1).optional(),
         docType: z.enum(["business-requirements", "architecture", "user-guide"]).nullable(),
         generatedAt: z.string().datetime(),
       })
@@ -394,6 +396,7 @@ export function buildGeneratedDocVersionManifest(input: {
   revision: GeneratedDocRevisionKey;
   title: string;
   scope: string;
+  pathPrefixes?: readonly string[];
   docType: DocType | null;
   generatedAt: Date;
   policy: EvidencePolicy;
@@ -484,6 +487,7 @@ export function buildGeneratedDocVersionManifest(input: {
     document: {
       title: input.title,
       scope: input.scope,
+      ...(input.pathPrefixes?.length ? { pathPrefixes: [...input.pathPrefixes] } : {}),
       docType: input.docType,
       generatedAt: input.generatedAt.toISOString(),
     },

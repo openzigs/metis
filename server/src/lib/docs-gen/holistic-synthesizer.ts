@@ -109,6 +109,7 @@ import {
   type Phase1Unit,
 } from "./phase1-chunking.js";
 import { mapSettledWithConcurrency, resolvePhase1Concurrency } from "./phase1-concurrency.js";
+import { restrictToPathScope, withPathScopeBanner } from "./path-scope.js";
 import {
   loadRepositorySources,
   repositoryPathIdentity,
@@ -1152,6 +1153,8 @@ export async function synthesizeHolisticDocument(
      * Best-effort, like {@link onSectionProgress}.
      */
     onPhase1Progress?: (update: { done: number; total: number }) => void;
+    /** Repository-relative path prefixes limiting what is documented (path-scope.ts). */
+    pathPrefixes?: readonly string[];
     benchmarkProviders?: {
       phase1?: ReturnType<typeof buildDocsGenProvider>;
       phase2Router?: Phase2Router;
@@ -1163,6 +1166,7 @@ export async function synthesizeHolisticDocument(
   const grounding = options?.grounding;
   const groundingForSection = options?.groundingForSection;
   const onSectionProgress = options?.onSectionProgress;
+  const pathPrefixes = options?.pathPrefixes?.length ? options.pathPrefixes : undefined;
   log.info("Starting holistic synthesis", {
     projectId,
     docType,
@@ -1273,6 +1277,12 @@ export async function synthesizeHolisticDocument(
       log.warn("SQL-only directory scan incomplete", { projectId, repository: label, ...stats });
       sqlScanWarnings.push(sqlScanIncompleteWarning(label, stats));
     }
+  }
+  // Path scope: after SQL-only discovery so those modules are scoped too, and
+  // before the graph summary, Phase 1 and Phase 2 read any module.
+  if (pathPrefixes) {
+    const kept = restrictToPathScope(pathPrefixes, { modules, symbols, meta });
+    log.info("Path scope applied", { projectId, pathPrefixes, ...kept });
   }
 
   // #271 — build compact, budget-bounded code-graph summaries (SAS dataset
@@ -1520,6 +1530,7 @@ export async function synthesizeHolisticDocument(
     revision: provenance?.revision ?? { projectId, generatedDocumentId: "pending", version: 1 },
     title,
     scope: repoConnectorId ? "repository" : "full",
+    ...(pathPrefixes ? { pathPrefixes } : {}),
     docType,
     generatedAt: provenance?.generatedAt ?? new Date(),
     policy: provenance?.policy ?? {
@@ -1549,7 +1560,7 @@ export async function synthesizeHolisticDocument(
     regeneration,
   });
   return {
-    markdown,
+    markdown: pathPrefixes ? withPathScopeBanner(markdown, pathPrefixes) : markdown,
     warnings,
     provenanceManifest,
     sectionSupport: sections

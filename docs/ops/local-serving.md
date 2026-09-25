@@ -478,6 +478,70 @@ window — that reintroduces silent context-shift.
 
 ---
 
+## Fast test runs with a path scope
+
+A full document-generation run of a real project on a local model is a soak
+test, not an iteration loop: onyourleft (115 non-test modules) plans ~275
+Phase-1 chunks at ~3 min each plus ~130 Phase-2 section calls — well over a day
+on one local GPU. To iterate on prompts or tuning, limit the run to one or two
+business-logic sub-trees with **`pathPrefixes`**:
+
+```http
+POST /api/projects/:projectId/docs/generate
+{ "title": "Workout rules", "scope": "full", "docType": "business-requirements",
+  "pathPrefixes": ["packages/domain/src/workout/", "packages/physics/"] }
+```
+
+- Prefixes are **repository-relative** and matched segment-wise against indexed
+  file paths (`packages/fit` matches `packages/fit/x.ts`, never
+  `packages/fitness/`). At most 20, each at most 256 characters; `..`, absolute
+  or drive-letter paths and control characters are rejected with a 400. They are
+  never used to open files.
+- Only `scope: "full"` or `"repository"` accept them. A prefix list that matches
+  no indexed code is rejected up front (`400 PATH_SCOPE_EMPTY`); one that matches
+  only test files (excluded from Phase 1) fails the run with the same message.
+- Only in-scope modules enter Phase 1 and every Phase-2 section, and
+  repository-source grounding chunks outside the scope are dropped (uploaded
+  reference documents are kept). The document says it is scoped three ways: a
+  `[scope: …]` suffix on its title, a banner under its heading, and
+  `document.pathPrefixes` in the version's provenance manifest.
+- The Generate Documentation dialog has the same control: **Limit to paths
+  (optional)**, comma-separated.
+
+The runner triggers a scoped run against an already-running stack (mock auth,
+`admin`/`password` by default), prints the document id, and prints a summary —
+status, characters, sections, warnings, provenance counts — when it finishes.
+It never starts or stops a server:
+
+```bash
+node scripts/local-llm/docs-gen-scoped-run.mjs --project <projectId> \
+  --paths packages/domain/src/workout/,packages/physics/ --title "Workout rules"
+# re-attach to (or just summarise) a run already in progress
+node scripts/local-llm/docs-gen-scoped-run.mjs --project <projectId> --doc <docId>
+```
+
+Flags: `--base` (default `http://localhost:4000/api`), `--doc-type`,
+`--username`/`--password`, `--poll <s>` (30), `--max-hours <h>` (12),
+`--no-wait`. Exit 0 on `ready`/`degraded`, 1 otherwise.
+
+**Choosing a scope.** Pick sub-trees with rules, formulas and workflows, not
+rendering code, and size them with the Phase-1 chunk planner offline first.
+Every scope pays a floor of ~7 Phase-2 calls (one per section group), so a run
+cannot get much below an hour; measured for onyourleft (2026-09-25, laguna
+sizing, tests excluded):
+
+| Scope | Modules | Phase-1 chunks | Phase-2 calls | Est. local time |
+|-------|---------|----------------|---------------|-----------------|
+| `packages/domain/src/{workout,segment,analysis,pacer,trainer}/` + `packages/physics/` | 7 | 19 | 13 | ~2–3 h |
+| `packages/domain/src/{workout,analysis,pacer,trainer}/` + `packages/physics/` | 6 | 13 | 11 | ~1.5–2.5 h |
+| full project | 115 | 275 | ~130 | ~25–35 h |
+
+(~3 min per Phase-1 chunk, 5–10 min per Phase-2 call, one request at a time.
+Phase-2 counts were estimated from cached facts of an earlier run and may grow
+slightly with fresh facts.)
+
+---
+
 ## Eval-gated rollout — the A/B gate (#335)
 
 The local-first defaults (`DOCS_GEN_HYBRID_ROUTING`, `DOCS_GEN_JUDGE_ESCALATION`)

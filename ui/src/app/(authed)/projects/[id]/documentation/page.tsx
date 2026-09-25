@@ -179,6 +179,7 @@ export default function DocumentationPage(): React.ReactElement {
       docType: string;
       scopeFilter?: Record<string, unknown>;
       groundDomainWithWebResearch?: boolean;
+      pathPrefixes?: string[];
     }) =>
       apiFetch<GeneratedDoc>(`/projects/${projectId}/docs/generate`, {
         method: "POST",
@@ -298,13 +299,21 @@ export default function DocumentationPage(): React.ReactElement {
       {showGenerate && (
         <GenerateForm
           projectId={projectId}
-          onSubmit={(title, scope, docType, scopeFilter, groundDomainWithWebResearch) =>
+          onSubmit={(
+            title,
+            scope,
+            docType,
+            scopeFilter,
+            groundDomainWithWebResearch,
+            pathPrefixes,
+          ) =>
             generateMutation.mutate({
               title,
               scope,
               docType,
               scopeFilter,
               groundDomainWithWebResearch,
+              ...(pathPrefixes ? { pathPrefixes } : {}),
             })
           }
           onCancel={() => setShowGenerate(false)}
@@ -676,6 +685,7 @@ function GenerateForm({
     docType: string,
     scopeFilter: Record<string, unknown> | undefined,
     groundDomainWithWebResearch: boolean,
+    pathPrefixes?: string[],
   ) => void;
   onCancel: () => void;
   isLoading: boolean;
@@ -694,6 +704,9 @@ function GenerateForm({
   // #283 — opt-in domain web-research grounding. Default OFF to respect
   // network/cost; only meaningful for narrative business-requirements docs.
   const [groundDomainWithWebResearch, setGroundDomainWithWebResearch] = useState(false);
+  // Optional path scope: repository-relative prefixes, comma-separated.
+  // The server validates and normalises them; empty means the whole project.
+  const [pathScope, setPathScope] = useState("");
 
   // Fetch repo connectors when scope is "repository"
   const repoConnectorsQuery = useQuery<
@@ -781,12 +794,20 @@ function GenerateForm({
       docType === "business-requirements" &&
       (scope === "full" || scope === "repository") &&
       groundDomainWithWebResearch;
+    const pathPrefixes =
+      scope === "full" || scope === "repository"
+        ? pathScope
+            .split(",")
+            .map((p) => p.trim())
+            .filter(Boolean)
+        : [];
     onSubmit(
       title,
       scope,
       docType,
       Object.keys(scopeFilter).length > 0 ? scopeFilter : undefined,
       ground,
+      pathPrefixes.length > 0 ? pathPrefixes : undefined,
     );
   };
 
@@ -922,6 +943,27 @@ function GenerateForm({
             Runs web research for the project&rsquo;s business domain so narrative sections
             (Overview &amp; Domain, Core Business Capabilities) are grounded in cited sources. Off
             by default — makes external network calls when enabled.
+          </p>
+        </div>
+      )}
+
+      {(scope === "full" || scope === "repository") && (
+        <div className="space-y-1">
+          <label htmlFor="doc-path-scope-input" className="text-sm font-medium">
+            Limit to paths (optional)
+          </label>
+          <input
+            id="doc-path-scope-input"
+            type="text"
+            value={pathScope}
+            onChange={(e) => setPathScope(e.target.value)}
+            placeholder="packages/domain/src/workout/, packages/physics/"
+            className="w-full px-3 py-2 border rounded-md bg-background"
+            data-testid="doc-path-scope-input"
+          />
+          <p className="text-xs text-muted-foreground">
+            Repository-relative path prefixes, comma-separated. Only code under them is documented —
+            a fast test run; the document is marked as scoped.
           </p>
         </div>
       )}
