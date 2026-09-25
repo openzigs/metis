@@ -24,6 +24,7 @@ export {
   LOCAL_TIMEOUT_ENV,
   MAX_LOCAL_TIMEOUT_MS,
   isCrossRegionModelId,
+  isStructuredOutputUnavailableBody,
   isStructuredOutputUnsupportedStatus,
   isTemperatureUnsupportedBody,
   isReasoningEffortUnsupportedBody,

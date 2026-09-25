@@ -155,6 +155,36 @@ export function isStructuredOutputUnsupportedStatus(status: number): boolean {
 }
 
 /**
+ * #176 — True when a 501 says the runtime cannot do structured output at all.
+ * Ollama's MLX engine answers `501 structured output is unavailable` for
+ * `json_schema`, `json_object` and native `format` (measured on Ollama 0.34.2
+ * with an MLX-served model). Matched on the BODY, not the status alone: a 501
+ * about anything else is a real error and must surface. Unlike the status-only
+ * 400/422 signal this is an unambiguous answer about the model, so it is also
+ * remembered per model (see `structuredOutputUnavailableModels`). Exported for
+ * direct unit testing.
+ */
+export function isStructuredOutputUnavailableBody(status: number, bodyText: string): boolean {
+  if (status !== 501) return false;
+  return (
+    /structured[\s_-]*outputs?/i.test(bodyText) &&
+    /unavailable|not\s+supported|unsupported|not\s+implemented/i.test(bodyText)
+  );
+}
+
+/**
+ * True when a non-2xx on a request carrying `response_format` means the runtime
+ * cannot schema-constrain: a 400/422 (#336, status alone) or a structured-output
+ * 501 (#176, body-matched).
+ */
+function isStructuredOutputRejection(status: number, bodyText: string): boolean {
+  return (
+    isStructuredOutputUnsupportedStatus(status) ||
+    isStructuredOutputUnavailableBody(status, bodyText)
+  );
+}
+
+/**
  * True for HTTP statuses that Bedrock/the gateway returns on a transient
  * throttle or capacity event (429 `ThrottlingException`, 503). 4xx other than
  * 429 (e.g. 400/401/403) are caller/auth errors and must NOT be retried —
@@ -758,6 +788,16 @@ export class OpenAICompatibleProvider implements AIProvider {
    */
   private readonly reasoningEffortRejectedModels = new Set<string>();
 
+  /**
+   * #176 — resolved model ids whose runtime answered a structured-output 501
+   * (see {@link isStructuredOutputUnavailableBody}). Same rationale as
+   * {@link temperatureRejectedModels}: learn once, stop sending
+   * `response_format` to a model that can never honour it. The status-only
+   * 400/422 fallback is NOT memoised — a 400 is too broad a signal to disable
+   * structured output for the life of the provider.
+   */
+  private readonly structuredOutputUnavailableModels = new Set<string>();
+
   /** `LOCAL_GEMMA_SEND_REASONING_EFFORT`, resolved for `local-gemma` only. */
   private readonly reasoningEffortMode: LocalReasoningEffortMode;
 
@@ -1113,7 +1153,7 @@ export class OpenAICompatibleProvider implements AIProvider {
       // likely can't schema-constrain; classifiable so `stream()` can retry
       // once without the field (graceful degradation). Safe to fall back here:
       // no token has been read yet (pre-first-byte), so no partial output leaks.
-      if (carriesResponseFormat && isStructuredOutputUnsupportedStatus(response.status)) {
+      if (carriesResponseFormat && isStructuredOutputRejection(response.status, text)) {
         throw new StructuredOutputRejectedError(response.status, text.slice(0, 200), msg);
       }
       throw new Error(msg);
@@ -1174,7 +1214,8 @@ export class OpenAICompatibleProvider implements AIProvider {
     // version could only ever recover from one of them, which meant enabling
     // `responseFormat` turned a recoverable temperature 400 into a hard failure.
     // When no `responseFormat` is set this still collapses to a plain call.
-    let includeResponseFormat = true;
+    // #176 — skip `response_format` on a model known to 501 it.
+    let includeResponseFormat = !this.structuredOutputUnavailableModels.has(model);
     // #1229 — skip the probe entirely on a model already known to reject it.
     let includeTemperature = !this.temperatureRejectedModels.has(model);
     let triedWithoutResponseFormat = false;
@@ -1204,6 +1245,7 @@ export class OpenAICompatibleProvider implements AIProvider {
         ) {
           triedWithoutResponseFormat = true;
           includeResponseFormat = false;
+          this.noteStructuredOutputRejected(model, err);
           log.warn(
             "Runtime rejected structured-output response_format; retrying once without it (free-form parse fallback)",
             {
@@ -1358,7 +1400,7 @@ export class OpenAICompatibleProvider implements AIProvider {
             // #336 — a 400/422 on a request that carried `response_format` likely
             // means the runtime does not support schema-guided decoding; surface a
             // classifiable error so `chat()` can retry once WITHOUT the field.
-            if (carriesResponseFormat && isStructuredOutputUnsupportedStatus(response.status)) {
+            if (carriesResponseFormat && isStructuredOutputRejection(response.status, text)) {
               throw new StructuredOutputRejectedError(response.status, text.slice(0, 200), msg);
             }
             // Everything else (4xx auth/validation) propagates immediately.
@@ -1486,7 +1528,8 @@ export class OpenAICompatibleProvider implements AIProvider {
     // together here and the SINGLE fallback re-run is allowed for a failure seen
     // BEFORE any delta was emitted. Once a token has been yielded the stream is
     // never restarted (issue #388 hard rule), which `emittedDelta` enforces.
-    let includeResponseFormat = true;
+    // #176 — skip `response_format` on a model known to 501 it.
+    let includeResponseFormat = !this.structuredOutputUnavailableModels.has(model);
     // #1229 — skip the probe entirely on a model already known to reject it.
     let includeTemperature = !this.temperatureRejectedModels.has(model);
     let triedWithoutResponseFormat = false;
@@ -1526,6 +1569,7 @@ export class OpenAICompatibleProvider implements AIProvider {
         ) {
           triedWithoutResponseFormat = true;
           includeResponseFormat = false;
+          this.noteStructuredOutputRejected(model, err);
           log.warn(
             "Runtime rejected structured-output response_format on stream; retrying once without it (free-form parse fallback)",
             {
@@ -1664,8 +1708,9 @@ export class OpenAICompatibleProvider implements AIProvider {
               }
               if (
                 carriesResponseFormat &&
-                isStructuredOutputUnsupportedStatus(status) &&
-                /response_format|schema/i.test(streamError)
+                ((isStructuredOutputUnsupportedStatus(status) &&
+                  /response_format|schema/i.test(streamError)) ||
+                  isStructuredOutputUnavailableBody(status, streamError))
               ) {
                 throw new StructuredOutputRejectedError(status, streamError.slice(0, 200), msg);
               }
@@ -1868,6 +1913,13 @@ export class OpenAICompatibleProvider implements AIProvider {
   /** True when `body` carries `reasoning_effort` AND a rejection may be retried without it. */
   private canFallBackFromReasoningEffort(body: Record<string, unknown>): boolean {
     return body.reasoning_effort !== undefined && this.reasoningEffortMode === "auto";
+  }
+
+  /** #176 — memoise a structured-output 501 for `model`; a 400/422 is not memoised. */
+  private noteStructuredOutputRejected(model: string, err: StructuredOutputRejectedError): void {
+    if (isStructuredOutputUnavailableBody(err.status, err.bodyExcerpt)) {
+      this.structuredOutputUnavailableModels.add(model);
+    }
   }
 
   private noteReasoningEffortRejected(
