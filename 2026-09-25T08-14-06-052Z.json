@@ -1,0 +1,1971 @@
+{
+  "runId": "2026-09-25T08-14-06-052Z",
+  "schemaVersion": 1,
+  "model": "offline-stub",
+  "startedAt": "2026-09-25T08:14:06.052Z",
+  "completedAt": "2026-09-25T08:14:06.079Z",
+  "itemCount": 20,
+  "corpusPrecision": 0.9402985074626866,
+  "corpusRecall": 0.9402985074626866,
+  "corpusF1": 0.9402985074626865,
+  "meanRougeL": 0.7965886909099265,
+  "totalTokens": 2374,
+  "totalCostCents": 0,
+  "commit": "477c3e2760a10db398f3d2ffb73a54ba9dfb279c",
+  "calibration": [
+    {
+      "bucket": "0.0-0.1",
+      "lowerBound": 0,
+      "upperBound": 0.1,
+      "count": 0,
+      "meanConfidence": 0,
+      "accuracy": 0
+    },
+    {
+      "bucket": "0.1-0.2",
+      "lowerBound": 0.1,
+      "upperBound": 0.2,
+      "count": 0,
+      "meanConfidence": 0,
+      "accuracy": 0
+    },
+    {
+      "bucket": "0.2-0.3",
+      "lowerBound": 0.2,
+      "upperBound": 0.3,
+      "count": 0,
+      "meanConfidence": 0,
+      "accuracy": 0
+    },
+    {
+      "bucket": "0.3-0.4",
+      "lowerBound": 0.3,
+      "upperBound": 0.4,
+      "count": 0,
+      "meanConfidence": 0,
+      "accuracy": 0
+    },
+    {
+      "bucket": "0.4-0.5",
+      "lowerBound": 0.4,
+      "upperBound": 0.5,
+      "count": 0,
+      "meanConfidence": 0,
+      "accuracy": 0
+    },
+    {
+      "bucket": "0.5-0.6",
+      "lowerBound": 0.5,
+      "upperBound": 0.6,
+      "count": 9,
+      "meanConfidence": 0.5,
+      "accuracy": 1
+    },
+    {
+      "bucket": "0.6-0.7",
+      "lowerBound": 0.6,
+      "upperBound": 0.7,
+      "count": 0,
+      "meanConfidence": 0,
+      "accuracy": 0
+    },
+    {
+      "bucket": "0.7-0.8",
+      "lowerBound": 0.7,
+      "upperBound": 0.8,
+      "count": 18,
+      "meanConfidence": 0.6999999999999997,
+      "accuracy": 1
+    },
+    {
+      "bucket": "0.8-0.9",
+      "lowerBound": 0.8,
+      "upperBound": 0.9,
+      "count": 0,
+      "meanConfidence": 0,
+      "accuracy": 0
+    },
+    {
+      "bucket": "0.9-1.0",
+      "lowerBound": 0.9,
+      "upperBound": 1,
+      "count": 40,
+      "meanConfidence": 0.8999999999999992,
+      "accuracy": 0.9
+    }
+  ],
+  "drift": {
+    "previousF1": 0.9402985074626865,
+    "deltaF1": 0,
+    "thresholdPct": 0.05,
+    "alert": false,
+    "reason": "WITHIN_THRESHOLD",
+    "baselineRunId": "2026-09-24T07-51-37-406Z",
+    "baselineAgeDays": 1.0156093287037038,
+    "staleBaseline": false
+  },
+  "items": [
+    {
+      "itemId": "brd-01-billing",
+      "docType": "brd",
+      "title": "Subscription Billing Requirements",
+      "truePositives": 4,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.7785353535353535,
+      "matches": [
+        {
+          "expectedId": "R4",
+          "predictedId": "R4",
+          "titleSimilarity": 0.07692307692307693,
+          "rougeL": 1,
+          "confidence": 0.5
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.18181818181818182,
+          "rougeL": 0.7777777777777778,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.08333333333333333,
+          "rougeL": 0.7000000000000001,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0,
+          "rougeL": 0.6363636363636364,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Accurate proration",
+          "description": "Mid-cycle plan changes are prorated to the day.",
+          "priority": "critical"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Dunning retries",
+          "description": "Failed payments are retried on a configurable dunning schedule.",
+          "priority": "high"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Tax calculation",
+          "description": "Invoices should include jurisdiction-aware tax calculation.",
+          "priority": "medium"
+        },
+        {
+          "id": "R4",
+          "type": "chore",
+          "title": "Archive legacy invoices",
+          "description": "Invoices older than seven years may be archived to cold storage.",
+          "priority": "low"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Billing is critical and must prorate mid-cycle plan changes to the day",
+          "description": "Billing is critical and must prorate mid-cycle plan changes to the day.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "The engine must retry failed payments on a configurable dunning schedule",
+          "description": "The engine must retry failed payments on a configurable dunning schedule.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Invoices should include jurisdiction-aware tax calculation for each line item",
+          "description": "Invoices should include jurisdiction-aware tax calculation for each line item.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R4",
+          "type": "feature",
+          "title": "Invoices older than seven years may be archived to cold storage",
+          "description": "Invoices older than seven years may be archived to cold storage.",
+          "priority": "low",
+          "confidence": 0.5
+        }
+      ]
+    },
+    {
+      "itemId": "brd-02-compliance",
+      "docType": "brd",
+      "title": "Data Compliance Requirements",
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.7151515151515152,
+      "matches": [
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.07692307692307693,
+          "rougeL": 0.8799999999999999,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.08333333333333333,
+          "rougeL": 0.5454545454545454,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0,
+          "rougeL": 0.7200000000000001,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Right to erasure",
+          "description": "Personal data is erased within thirty days of a verified request.",
+          "priority": "critical"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Audit trail",
+          "description": "All access to sensitive records is recorded in an immutable audit trail.",
+          "priority": "high"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Regional data residency",
+          "description": "Customer data is stored in the customer's selected region.",
+          "priority": "high"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "The platform must erase personal data within thirty days of a verified…",
+          "description": "The platform must erase personal data within thirty days of a verified erasure request.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "All access to sensitive records must be recorded in an immutable audit…",
+          "description": "All access to sensitive records must be recorded in an immutable audit trail.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Customer data must be stored in the region selected by the customer",
+          "description": "Customer data must be stored in the region selected by the customer.",
+          "priority": "high",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "itemId": "brd-03-onboarding",
+      "docType": "brd",
+      "title": "Merchant Onboarding Requirements",
+      "truePositives": 4,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.8212576896787422,
+      "matches": [
+        {
+          "expectedId": "R4",
+          "predictedId": "R4",
+          "titleSimilarity": 0.2,
+          "rougeL": 0.9473684210526316,
+          "confidence": 0.5
+        },
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.25,
+          "rougeL": 0.9090909090909091,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.15384615384615385,
+          "rougeL": 0.761904761904762,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.18181818181818182,
+          "rougeL": 0.6666666666666665,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Identity verification",
+          "description": "New merchants complete identity verification before listing.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Guided setup checklist",
+          "description": "Merchants should be guided by a setup checklist during onboarding.",
+          "priority": "medium"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Payout account linking",
+          "description": "Merchants link a verified payout account to receive funds.",
+          "priority": "high"
+        },
+        {
+          "id": "R4",
+          "type": "feature",
+          "title": "Sandbox catalog",
+          "description": "Merchants may explore a sandbox catalog before going live.",
+          "priority": "low"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "New merchants must complete identity verification before they can list products",
+          "description": "New merchants must complete identity verification before they can list products.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Merchants should be guided by a setup checklist during the onboarding flow",
+          "description": "Merchants should be guided by a setup checklist during the onboarding flow.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Merchants must link a verified payout account before they can receive funds",
+          "description": "Merchants must link a verified payout account before they can receive funds.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R4",
+          "type": "feature",
+          "title": "Merchants may optionally explore a sandbox catalog before going live",
+          "description": "Merchants may optionally explore a sandbox catalog before going live.",
+          "priority": "low",
+          "confidence": 0.5
+        }
+      ]
+    },
+    {
+      "itemId": "brd-04-support",
+      "docType": "brd",
+      "title": "Customer Support Requirements",
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.774528914879792,
+      "matches": [
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0,
+          "rougeL": 0.8421052631578948,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0,
+          "rougeL": 0.8148148148148148,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.2,
+          "rougeL": 0.6666666666666665,
+          "confidence": 0.7
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Unified ticket inbox",
+          "description": "Agents work tickets from email, chat, and phone in one inbox.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "SLA timers",
+          "description": "Tickets should display SLA timers based on priority.",
+          "priority": "medium"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Escalation routing",
+          "description": "Breached tickets are escalated to a senior queue automatically.",
+          "priority": "high"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Agents must be able to work tickets from email, chat, and phone…",
+          "description": "Agents must be able to work tickets from email, chat, and phone in one unified inbox.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Tickets should display SLA timers calculated from the ticket priority",
+          "description": "Tickets should display SLA timers calculated from the ticket priority.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Breached tickets must be escalated to a senior queue automatically",
+          "description": "Breached tickets must be escalated to a senior queue automatically.",
+          "priority": "high",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "itemId": "brd-05-inventory",
+      "docType": "brd",
+      "title": "Inventory Management Requirements",
+      "truePositives": 4,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.7251404202205118,
+      "matches": [
+        {
+          "expectedId": "R4",
+          "predictedId": "R4",
+          "titleSimilarity": 0.3,
+          "rougeL": 0.8421052631578948,
+          "confidence": 0.5
+        },
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.23076923076923078,
+          "rougeL": 0.8181818181818181,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.18181818181818182,
+          "rougeL": 0.608695652173913,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.2727272727272727,
+          "rougeL": 0.631578947368421,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Realtime stock levels",
+          "description": "Stock levels are updated in realtime across warehouses.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Low-stock alerts",
+          "description": "Planners should receive low-stock alerts below a threshold.",
+          "priority": "medium"
+        },
+        {
+          "id": "R3",
+          "type": "bug",
+          "title": "Fix oversell race",
+          "description": "A concurrency race that oversells the last unit is fixed.",
+          "priority": "high"
+        },
+        {
+          "id": "R4",
+          "type": "feature",
+          "title": "Cycle-count export",
+          "description": "Planners may export a cycle-count worksheet weekly.",
+          "priority": "low"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "The system must update stock levels in realtime across all warehouses",
+          "description": "The system must update stock levels in realtime across all warehouses.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Planners should receive low-stock alerts when quantity falls below a configured threshold",
+          "description": "Planners should receive low-stock alerts when quantity falls below a configured threshold.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R3",
+          "type": "bug",
+          "title": "The service must fix the concurrency race that oversells the last available…",
+          "description": "The service must fix the concurrency race that oversells the last available unit.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R4",
+          "type": "feature",
+          "title": "Planners may export a cycle-count worksheet on a weekly basis",
+          "description": "Planners may export a cycle-count worksheet on a weekly basis.",
+          "priority": "low",
+          "confidence": 0.5
+        }
+      ]
+    },
+    {
+      "itemId": "brd-06-returns",
+      "docType": "brd",
+      "title": "Returns and Refunds Requirements",
+      "truePositives": 4,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.8469155844155845,
+      "matches": [
+        {
+          "expectedId": "R4",
+          "predictedId": "R4",
+          "titleSimilarity": 0.07142857142857142,
+          "rougeL": 0.9166666666666666,
+          "confidence": 0.5
+        },
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.16666666666666666,
+          "rougeL": 0.9090909090909091,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.16666666666666666,
+          "rougeL": 0.8,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.2727272727272727,
+          "rougeL": 0.761904761904762,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Initiate a return",
+          "description": "Customers initiate a return within the return window.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Automated refund",
+          "description": "Approved returns trigger an automated refund to the original method.",
+          "priority": "high"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Return label generation",
+          "description": "The system should generate a prepaid return label.",
+          "priority": "medium"
+        },
+        {
+          "id": "R4",
+          "type": "chore",
+          "title": "Migrate return reasons",
+          "description": "Legacy return reason codes may be migrated to the new taxonomy.",
+          "priority": "low"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Customers must be able to initiate a return within the published return…",
+          "description": "Customers must be able to initiate a return within the published return window.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Approved returns must trigger an automated refund to the original payment method",
+          "description": "Approved returns must trigger an automated refund to the original payment method.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "The system should generate a prepaid return label for each approved return",
+          "description": "The system should generate a prepaid return label for each approved return.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R4",
+          "type": "feature",
+          "title": "Legacy return reason codes may be migrated to the new taxonomy over…",
+          "description": "Legacy return reason codes may be migrated to the new taxonomy over time.",
+          "priority": "low",
+          "confidence": 0.5
+        }
+      ]
+    },
+    {
+      "itemId": "prd-01-auth-portal",
+      "docType": "prd",
+      "title": "Customer Authentication Portal",
+      "truePositives": 4,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.825,
+      "matches": [
+        {
+          "expectedId": "R4",
+          "predictedId": "R4",
+          "titleSimilarity": 0.07142857142857142,
+          "rougeL": 1,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.14285714285714285,
+          "rougeL": 0.8333333333333333,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.21428571428571427,
+          "rougeL": 0.8,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0,
+          "rougeL": 0.6666666666666666,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Email and password sign-in",
+          "description": "Registered customers sign in with an email address and password.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Self-service password reset",
+          "description": "Customers reset a forgotten password through an emailed reset link.",
+          "priority": "high"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Multi-factor authentication",
+          "description": "A one-time passcode is required as a second authentication factor.",
+          "priority": "critical"
+        },
+        {
+          "id": "R4",
+          "type": "feature",
+          "title": "Remember this device",
+          "description": "Customers should be able to mark a device as trusted for thirty days.",
+          "priority": "medium"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "The portal must allow registered customers to sign in with an email…",
+          "description": "The portal must allow registered customers to sign in with an email address and password.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "The system must let customers reset a forgotten password through an emailed…",
+          "description": "The system must let customers reset a forgotten password through an emailed reset link.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Sign-in is critical and must require a one-time passcode as a second…",
+          "description": "Sign-in is critical and must require a one-time passcode as a second authentication factor.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R4",
+          "type": "feature",
+          "title": "Customers should be able to mark a device as trusted for thirty…",
+          "description": "Customers should be able to mark a device as trusted for thirty days.",
+          "priority": "medium",
+          "confidence": 0.7
+        }
+      ]
+    },
+    {
+      "itemId": "prd-02-checkout",
+      "docType": "prd",
+      "title": "Storefront Checkout Flow",
+      "truePositives": 4,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.80468671679198,
+      "matches": [
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.16666666666666666,
+          "rougeL": 1,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.07692307692307693,
+          "rougeL": 0.761904761904762,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R4",
+          "predictedId": "R4",
+          "titleSimilarity": 0.23076923076923078,
+          "rougeL": 0.7200000000000001,
+          "confidence": 0.5
+        },
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.18181818181818182,
+          "rougeL": 0.7368421052631577,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Guest checkout",
+          "description": "Shoppers complete a purchase without creating an account.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Multiple payment methods",
+          "description": "Card, wallet, and bank-transfer payment methods are supported.",
+          "priority": "high"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Promotion code entry",
+          "description": "Shoppers should be able to apply a promotion code before payment.",
+          "priority": "medium"
+        },
+        {
+          "id": "R4",
+          "type": "chore",
+          "title": "Deprecate legacy cart cookie",
+          "description": "The legacy cart cookie may be removed once sessions migrate.",
+          "priority": "low"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "The checkout must allow shoppers to complete a purchase without creating an…",
+          "description": "The checkout must allow shoppers to complete a purchase without creating an account.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Checkout must support card, wallet, and bank-transfer payment methods",
+          "description": "Checkout must support card, wallet, and bank-transfer payment methods.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Shoppers should be able to apply a promotion code before payment",
+          "description": "Shoppers should be able to apply a promotion code before payment.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R4",
+          "type": "chore",
+          "title": "The legacy cart cookie may be deprecated once all sessions migrate to…",
+          "description": "The legacy cart cookie may be deprecated once all sessions migrate to the new store.",
+          "priority": "low",
+          "confidence": 0.5
+        }
+      ]
+    },
+    {
+      "itemId": "prd-03-notifications",
+      "docType": "prd",
+      "title": "Notification Preferences Center",
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.8777777777777778,
+      "matches": [
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.16666666666666666,
+          "rougeL": 1,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.15384615384615385,
+          "rougeL": 0.8333333333333333,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.08333333333333333,
+          "rougeL": 0.7999999999999999,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Per-channel opt-in",
+          "description": "Users opt in to email, SMS, and push channels independently.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Quiet hours",
+          "description": "Users should be able to define quiet hours that suppress push alerts.",
+          "priority": "medium"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Transactional override",
+          "description": "Critical transactional messages are always delivered regardless of preferences.",
+          "priority": "high"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Users must be able to opt in to email, SMS, and push…",
+          "description": "Users must be able to opt in to email, SMS, and push channels independently.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Users should be able to define quiet hours that suppress push alerts",
+          "description": "Users should be able to define quiet hours that suppress push alerts.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Critical transactional messages must always be delivered regardless of channel preferences",
+          "description": "Critical transactional messages must always be delivered regardless of channel preferences.",
+          "priority": "high",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "itemId": "prd-04-search",
+      "docType": "prd",
+      "title": "Catalog Search Revamp",
+      "truePositives": 3,
+      "falsePositives": 1,
+      "falseNegatives": 1,
+      "precision": 0.75,
+      "recall": 0.75,
+      "f1": 0.75,
+      "meanRougeL": 0.892672858617131,
+      "matches": [
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0,
+          "rougeL": 1,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R4",
+          "predictedId": "R4",
+          "titleSimilarity": 0.2222222222222222,
+          "rougeL": 0.9411764705882353,
+          "confidence": 0.5
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.18181818181818182,
+          "rougeL": 0.7368421052631579,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": null,
+          "titleSimilarity": 0,
+          "rougeL": 0,
+          "confidence": null
+        },
+        {
+          "expectedId": null,
+          "predictedId": "R3",
+          "titleSimilarity": 0,
+          "rougeL": 0,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Typeahead suggestions",
+          "description": "Search returns typeahead suggestions as the shopper types.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Faceted filters",
+          "description": "Results should be filterable by price, brand, and rating facets.",
+          "priority": "medium"
+        },
+        {
+          "id": "R3",
+          "type": "bug",
+          "title": "Fix empty-state ranking",
+          "description": "An incorrect ranking of zero-result queries is fixed.",
+          "priority": "high"
+        },
+        {
+          "id": "R4",
+          "type": "feature",
+          "title": "Recent searches",
+          "description": "Shoppers may revisit their five most recent searches.",
+          "priority": "low"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Search must return typeahead suggestions as the shopper types a query",
+          "description": "Search must return typeahead suggestions as the shopper types a query.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Results should be filterable by price, brand, and rating facets",
+          "description": "Results should be filterable by price, brand, and rating facets.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R3",
+          "type": "bug",
+          "title": "The pipeline must fix the incorrect ranking that returns zero results for…",
+          "description": "The pipeline must fix the incorrect ranking that returns zero results for valid queries.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R4",
+          "type": "feature",
+          "title": "Shoppers may optionally revisit their five most recent searches",
+          "description": "Shoppers may optionally revisit their five most recent searches.",
+          "priority": "low",
+          "confidence": 0.5
+        }
+      ]
+    },
+    {
+      "itemId": "prd-05-dashboard",
+      "docType": "prd",
+      "title": "Analytics Dashboard",
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.7723095617832461,
+      "matches": [
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.15384615384615385,
+          "rougeL": 0.8181818181818182,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.3,
+          "rougeL": 0.7368421052631579,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0,
+          "rougeL": 0.761904761904762,
+          "confidence": 0.7
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Realtime usage tiles",
+          "description": "Administrators view realtime usage tiles for the account.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Exportable reports",
+          "description": "Administrators should be able to export reports as CSV.",
+          "priority": "medium"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Role-scoped visibility",
+          "description": "Tiles are scoped to the viewer's role and permissions.",
+          "priority": "high"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "The dashboard must show administrators realtime usage tiles for the account",
+          "description": "The dashboard must show administrators realtime usage tiles for the account.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Administrators should be able to export any report as a CSV file",
+          "description": "Administrators should be able to export any report as a CSV file.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Dashboard tiles must be scoped to the viewer's role and permissions",
+          "description": "Dashboard tiles must be scoped to the viewer's role and permissions.",
+          "priority": "high",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "itemId": "prd-06-mobile-offline",
+      "docType": "prd",
+      "title": "Mobile Offline Mode",
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.724401913875598,
+      "matches": [
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.16666666666666666,
+          "rougeL": 0.7999999999999999,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.15384615384615385,
+          "rougeL": 0.7368421052631579,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0,
+          "rougeL": 0.6363636363636365,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Offline read access",
+          "description": "Users read previously loaded content while offline.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Queue offline actions",
+          "description": "Actions taken offline should be queued and synced later.",
+          "priority": "medium"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Conflict resolution",
+          "description": "Sync conflicts are resolved with a last-writer-wins policy.",
+          "priority": "high"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "The app must allow users to read previously loaded content while offline",
+          "description": "The app must allow users to read previously loaded content while offline.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Actions taken offline should be queued and synced when connectivity returns",
+          "description": "Actions taken offline should be queued and synced when connectivity returns.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "The sync engine must resolve conflicts using a last-writer-wins policy",
+          "description": "The sync engine must resolve conflicts using a last-writer-wins policy.",
+          "priority": "high",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "itemId": "prd-07-admin-roles",
+      "docType": "prd",
+      "title": "Administrative Roles and Permissions",
+      "truePositives": 2,
+      "falsePositives": 1,
+      "falseNegatives": 1,
+      "precision": 0.6666666666666666,
+      "recall": 0.6666666666666666,
+      "f1": 0.6666666666666666,
+      "meanRougeL": 0.791304347826087,
+      "matches": [
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.16666666666666666,
+          "rougeL": 0.782608695652174,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.07142857142857142,
+          "rougeL": 0.8,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": null,
+          "titleSimilarity": 0,
+          "rougeL": 0,
+          "confidence": null
+        },
+        {
+          "expectedId": null,
+          "predictedId": "R1",
+          "titleSimilarity": 0,
+          "rougeL": 0,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Least-privilege roles",
+          "description": "Administrators are granted least-privilege scoped roles.",
+          "priority": "critical"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Custom role builder",
+          "description": "Owners build custom roles from a permission catalog.",
+          "priority": "high"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Role change audit",
+          "description": "Role changes should be written to the audit log.",
+          "priority": "medium"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "The platform must grant administrators least-privilege scoped roles by default",
+          "description": "The platform must grant administrators least-privilege scoped roles by default.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Owners must be able to build custom roles from a permission catalog",
+          "description": "Owners must be able to build custom roles from a permission catalog.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Role changes should be written to the audit log with the actor…",
+          "description": "Role changes should be written to the audit log with the actor and timestamp.",
+          "priority": "medium",
+          "confidence": 0.7
+        }
+      ]
+    },
+    {
+      "itemId": "prd-08-accessibility",
+      "docType": "prd",
+      "title": "Accessibility Compliance",
+      "truePositives": 2,
+      "falsePositives": 1,
+      "falseNegatives": 1,
+      "precision": 0.6666666666666666,
+      "recall": 0.6666666666666666,
+      "f1": 0.6666666666666666,
+      "meanRougeL": 0.8722826086956523,
+      "matches": [
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.2,
+          "rougeL": 0.8750000000000001,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.23076923076923078,
+          "rougeL": 0.8695652173913044,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": null,
+          "titleSimilarity": 0,
+          "rougeL": 0,
+          "confidence": null
+        },
+        {
+          "expectedId": null,
+          "predictedId": "R1",
+          "titleSimilarity": 0,
+          "rougeL": 0,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Keyboard navigation",
+          "description": "All interactive controls are reachable by keyboard.",
+          "priority": "critical"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Screen-reader labels",
+          "description": "Controls expose descriptive labels to screen readers.",
+          "priority": "high"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Reduced-motion mode",
+          "description": "Users should be able to enable a reduced-motion mode.",
+          "priority": "medium"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Every interactive control must be reachable and operable by keyboard alone",
+          "description": "Every interactive control must be reachable and operable by keyboard alone.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Controls must expose descriptive labels to assistive screen readers",
+          "description": "Controls must expose descriptive labels to assistive screen readers.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Users should be able to enable a reduced-motion mode that limits animation",
+          "description": "Users should be able to enable a reduced-motion mode that limits animation.",
+          "priority": "medium",
+          "confidence": 0.7
+        }
+      ]
+    },
+    {
+      "itemId": "us-01-profile",
+      "docType": "user-story",
+      "title": "User Story: Profile Editing",
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.8560606060606061,
+      "matches": [
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.2,
+          "rougeL": 1,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.07692307692307693,
+          "rougeL": 0.8181818181818182,
+          "confidence": 0.5
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.15384615384615385,
+          "rougeL": 0.75,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Edit display name",
+          "description": "A member updates their display name from the profile page.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Upload avatar",
+          "description": "A member should be able to upload a profile avatar image.",
+          "priority": "medium"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Set pronouns",
+          "description": "A member may add pronouns shown next to their name.",
+          "priority": "low"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "A member must be able to update their display name from the…",
+          "description": "A member must be able to update their display name from the profile page.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "A member should be able to upload a profile avatar image",
+          "description": "A member should be able to upload a profile avatar image.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "A member may optionally add pronouns that appear next to their name",
+          "description": "A member may optionally add pronouns that appear next to their name.",
+          "priority": "low",
+          "confidence": 0.5
+        }
+      ]
+    },
+    {
+      "itemId": "us-02-cart",
+      "docType": "user-story",
+      "title": "User Story: Shopping Cart",
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.8140786749482403,
+      "matches": [
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.3333333333333333,
+          "rougeL": 0.9565217391304348,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.36363636363636365,
+          "rougeL": 0.7857142857142857,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.16666666666666666,
+          "rougeL": 0.7000000000000001,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Add item to cart",
+          "description": "A shopper adds an item to the cart from the product page.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Update quantities",
+          "description": "A shopper updates item quantities within the cart.",
+          "priority": "high"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Save cart for later",
+          "description": "A shopper should be able to save the cart for later.",
+          "priority": "medium"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "A shopper must be able to add an item to the cart…",
+          "description": "A shopper must be able to add an item to the cart from the product page.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "A shopper must be able to update item quantities within the cart",
+          "description": "A shopper must be able to update item quantities within the cart.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "A shopper should be able to save the cart for later viewing",
+          "description": "A shopper should be able to save the cart for later viewing.",
+          "priority": "medium",
+          "confidence": 0.7
+        }
+      ]
+    },
+    {
+      "itemId": "us-03-watchlist",
+      "docType": "user-story",
+      "title": "User Story: Price Watchlist",
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.7703349282296651,
+      "matches": [
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.25,
+          "rougeL": 0.9473684210526316,
+          "confidence": 0.5
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.2,
+          "rougeL": 0.7272727272727274,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.15384615384615385,
+          "rougeL": 0.6363636363636364,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Add to watchlist",
+          "description": "A buyer adds a product to a personal watchlist.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Price-drop alert",
+          "description": "A buyer is alerted when a watched price drops.",
+          "priority": "high"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Share watchlist",
+          "description": "A buyer may share a watchlist with a friend.",
+          "priority": "low"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "A buyer must be able to add a product to a personal…",
+          "description": "A buyer must be able to add a product to a personal watchlist.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "The system must alert a buyer when a watched product's price drops",
+          "description": "The system must alert a buyer when a watched product's price drops.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "A buyer may optionally share a watchlist with a friend",
+          "description": "A buyer may optionally share a watchlist with a friend.",
+          "priority": "low",
+          "confidence": 0.5
+        }
+      ]
+    },
+    {
+      "itemId": "us-04-reviews",
+      "docType": "user-story",
+      "title": "User Story: Product Reviews",
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.7107246376811593,
+      "matches": [
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.2727272727272727,
+          "rougeL": 0.9565217391304348,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.18181818181818182,
+          "rougeL": 0.6956521739130435,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.16666666666666666,
+          "rougeL": 0.48,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Submit a review",
+          "description": "A customer submits a star rating and written review.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Edit a review",
+          "description": "A customer should be able to edit a review they posted.",
+          "priority": "medium"
+        },
+        {
+          "id": "R3",
+          "type": "bug",
+          "title": "Fix duplicate submissions",
+          "description": "A defect that posts duplicate reviews on retry is fixed.",
+          "priority": "high"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "A customer must be able to submit a star rating and a…",
+          "description": "A customer must be able to submit a star rating and a written review.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "A customer should be able to edit a review they previously posted",
+          "description": "A customer should be able to edit a review they previously posted.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R3",
+          "type": "bug",
+          "title": "The service must fix the defect that posts duplicate reviews when a…",
+          "description": "The service must fix the defect that posts duplicate reviews when a submission is retried.",
+          "priority": "high",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "itemId": "us-05-orders",
+      "docType": "user-story",
+      "title": "User Story: Order Tracking",
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "meanRougeL": 0.7467912204754311,
+      "matches": [
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.08333333333333333,
+          "rougeL": 0.8421052631578948,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": "R3",
+          "titleSimilarity": 0.2,
+          "rougeL": 0.761904761904762,
+          "confidence": 0.5
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.15384615384615385,
+          "rougeL": 0.6363636363636364,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "View order status",
+          "description": "A customer views the current status of an order.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Delivery estimate",
+          "description": "A customer should see an estimated delivery date.",
+          "priority": "medium"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Reorder past purchase",
+          "description": "A customer may reorder a previous purchase in one click.",
+          "priority": "low"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "A customer must be able to view the current status of any…",
+          "description": "A customer must be able to view the current status of any order.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "A customer should see an estimated delivery date for each shipment",
+          "description": "A customer should see an estimated delivery date for each shipment.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "A customer may reorder a previous purchase with a single click",
+          "description": "A customer may reorder a previous purchase with a single click.",
+          "priority": "low",
+          "confidence": 0.5
+        }
+      ]
+    },
+    {
+      "itemId": "us-06-messaging",
+      "docType": "user-story",
+      "title": "User Story: In-App Messaging",
+      "truePositives": 2,
+      "falsePositives": 1,
+      "falseNegatives": 1,
+      "precision": 0.6666666666666666,
+      "recall": 0.6666666666666666,
+      "f1": 0.6666666666666666,
+      "meanRougeL": 0.8436363636363637,
+      "matches": [
+        {
+          "expectedId": "R2",
+          "predictedId": "R2",
+          "titleSimilarity": 0.3333333333333333,
+          "rougeL": 0.9600000000000001,
+          "confidence": 0.7
+        },
+        {
+          "expectedId": "R1",
+          "predictedId": "R1",
+          "titleSimilarity": 0.2727272727272727,
+          "rougeL": 0.7272727272727274,
+          "confidence": 0.9
+        },
+        {
+          "expectedId": "R3",
+          "predictedId": null,
+          "titleSimilarity": 0,
+          "rougeL": 0,
+          "confidence": null
+        },
+        {
+          "expectedId": null,
+          "predictedId": "R3",
+          "titleSimilarity": 0,
+          "rougeL": 0,
+          "confidence": 0.9
+        }
+      ],
+      "expected": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "Start a conversation",
+          "description": "A user starts a support conversation from any screen.",
+          "priority": "high"
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "Attach a screenshot",
+          "description": "A user should be able to attach a screenshot to a message.",
+          "priority": "medium"
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "Delivery receipts",
+          "description": "Messages display delivery and read receipts.",
+          "priority": "high"
+        }
+      ],
+      "predicted": [
+        {
+          "id": "R1",
+          "type": "feature",
+          "title": "A user must be able to start a support conversation from any…",
+          "description": "A user must be able to start a support conversation from any screen.",
+          "priority": "high",
+          "confidence": 0.9
+        },
+        {
+          "id": "R2",
+          "type": "feature",
+          "title": "A user should be able to attach a screenshot to a support…",
+          "description": "A user should be able to attach a screenshot to a support message.",
+          "priority": "medium",
+          "confidence": 0.7
+        },
+        {
+          "id": "R3",
+          "type": "feature",
+          "title": "The messaging surface must display delivery and read receipts for each message",
+          "description": "The messaging surface must display delivery and read receipts for each message.",
+          "priority": "high",
+          "confidence": 0.9
+        }
+      ]
+    }
+  ]
+}

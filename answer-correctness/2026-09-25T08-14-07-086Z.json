@@ -1,0 +1,57 @@
+{
+  "metric": "answer_correctness",
+  "corpusId": "docretrieval-01-metis-docs",
+  "reported": false,
+  "reason": "4 gold answer(s) and 0 generated answer(s) were paired, but no AI provider is configured — the resolved provider is METIS's offline stub, which returns no usable verdicts. Set real provider credentials (e.g. AI_PROVIDER=anthropic ANTHROPIC_API_KEY=…) to score this corpus. Every score is UNVERIFIABLE — none is a zero.",
+  "reasonCode": "no-judge",
+  "referenceCount": 4,
+  "aggregate": {
+    "meanRecall": null,
+    "meanPrecision": null,
+    "meanF1": null,
+    "meanAnswerClaims": null,
+    "meanReferenceClaims": null,
+    "scored": 0,
+    "unverifiable": 4
+  },
+  "perQuery": [
+    {
+      "queryId": "dq-ops-04",
+      "recall": null,
+      "precision": null,
+      "f1": null,
+      "answerClaims": 0,
+      "referenceClaims": 0,
+      "unverifiableReason": "no-claims"
+    },
+    {
+      "queryId": "dq-ops-06",
+      "recall": null,
+      "precision": null,
+      "f1": null,
+      "answerClaims": 0,
+      "referenceClaims": 0,
+      "unverifiableReason": "no-claims"
+    },
+    {
+      "queryId": "dq-sec-01",
+      "recall": null,
+      "precision": null,
+      "f1": null,
+      "answerClaims": 0,
+      "referenceClaims": 0,
+      "unverifiableReason": "no-claims"
+    },
+    {
+      "queryId": "dq-sec-02",
+      "recall": null,
+      "precision": null,
+      "f1": null,
+      "answerClaims": 0,
+      "referenceClaims": 0,
+      "unverifiableReason": "no-claims"
+    }
+  ],
+  "licensePending": false,
+  "commit": "477c3e2760a10db398f3d2ffb73a54ba9dfb279c"
+}
