@@ -52,6 +52,7 @@ import {
 } from "./code-graph-summary.js";
 import { buildProvider, loadAIConfig } from "../ai/index.js";
 import { validateLocalProviderUrl } from "../ai/config.js";
+import { localSamplingDefaults } from "./local-sampling-defaults.js";
 import { AnthropicProvider } from "../ai/providers/anthropic-provider.js";
 import {
   BedrockDirectProvider,
@@ -456,8 +457,11 @@ export function docsGenTuning(kind: DocsGenProviderKind, configModel: string): D
       judgeModel: envStr("DOCS_GEN_LOCAL_JUDGE_MODEL") ?? phase2Model,
       factsCharCap: intFromEnv("DOCS_GEN_LOCAL_FACTS_CHAR_CAP", 48_000, 4_000),
       supportsCaching: false,
-      temperature: floatFromEnv("DOCS_GEN_LOCAL_TEMPERATURE", 1.0),
-      topP: floatFromEnv("DOCS_GEN_LOCAL_TOP_P", 0.95),
+      temperature: floatFromEnv(
+        "DOCS_GEN_LOCAL_TEMPERATURE",
+        localSamplingDefaults(phase2Model).temperature,
+      ),
+      topP: floatFromEnv("DOCS_GEN_LOCAL_TOP_P", localSamplingDefaults(phase2Model).topP),
       disableThinking: !boolFromEnv("DOCS_GEN_LOCAL_ENABLE_THINKING"),
       refine: boolFromEnv("DOCS_GEN_LOCAL_REFINE"),
       concisePrompt: boolFromEnv("DOCS_GEN_LOCAL_CONCISE_PROMPT"),

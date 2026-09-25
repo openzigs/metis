@@ -266,8 +266,8 @@ Record the chosen config and measured limits here (this satisfies the #332 ACs):
 | Env var | Default | What it controls | Consumed at |
 |---|---|---|---|
 | `DOCS_GEN_LOCAL_FACTS_CHAR_CAP` | `48000` | Per-section chars of module facts sent to the model. Floor `4000`; below-floor/invalid → default. | `docsGenTuning.factsCharCap` → `buildRelevantFactsBlob` |
-| `DOCS_GEN_LOCAL_TEMPERATURE` | `1.0` | Phase-2 synthesis temperature. | `tuning.temperature` |
-| `DOCS_GEN_LOCAL_TOP_P` | `0.95` | Nucleus sampling top_p. | `tuning.topP` |
+| `DOCS_GEN_LOCAL_TEMPERATURE` | per model family: `1.0` Gemma, `0.2` other/unknown | Sampling temperature for local docs-gen calls. Always sent explicitly. | `tuning.temperature` |
+| `DOCS_GEN_LOCAL_TOP_P` | `0.95` | Nucleus sampling top_p. Always sent explicitly. | `tuning.topP` |
 | `DOCS_GEN_LOCAL_ENABLE_THINKING` | unset (thinking **off**) | Set truthy to allow the model's internal reasoning block. | `tuning.disableThinking = !flag` |
 | `DOCS_GEN_LOCAL_PHASE1_MODEL` | `gemma3:4b` | Fast structured fact-extraction model. | `tuning.phase1Model` |
 | `DOCS_GEN_LOCAL_PHASE2_MODEL` | `LOCAL_GEMMA_MODEL ?? gemma3:12b` | Synthesis model (never the `gemma4:12b` reasoning default). | `tuning.phase2Model` |
@@ -368,10 +368,26 @@ never past it.
 
 ### Temperature — per served model, NOT a blind 0
 
+**Shipped defaults (#177).** When `DOCS_GEN_LOCAL_TEMPERATURE` / `DOCS_GEN_LOCAL_TOP_P`
+are unset, METIS picks them from the family of the Phase-2 model
+(`DOCS_GEN_LOCAL_PHASE2_MODEL`, else `LOCAL_GEMMA_MODEL`):
+
+| Model name contains | temperature | top_p | Why |
+|---|---|---|---|
+| `gemma` | `1.0` | `0.95` | Google's Gemma model card; lower temperatures return empty content on Gemma 4 |
+| anything else, or unknown | `0.2` | `0.95` | Conservative extraction setting: an independent evaluation measured 0.2 as the best Phase-1 extraction on laguna-s-2.1, where 1.0 was in use |
+
+Both values are **always sent** on every local docs-gen request. Ollama's `/v1`
+endpoint substitutes `temperature=1.0` and `top_p=1.0` for a field that is
+omitted, so leaving one out would silently change the sampling. One tuning
+serves both phases, so if your Phase-1 model is a different family from your
+Phase-2 model (e.g. `gemma3:4b` extraction with a non-Gemma Phase 2), set
+`DOCS_GEN_LOCAL_TEMPERATURE` explicitly. An explicit env value always wins.
+
 - **Gemma 3 / Gemma 4 (MoE):** keep `DOCS_GEN_LOCAL_TEMPERATURE=1.0`,
   `TOP_P=0.95` (Google's model-card mandate). Lower temperatures make Gemma's MoE
   routing over-activate thinking and return **empty content** — this is why the
-  shipped default is `1.0`, not `0`. Also keep thinking **disabled** (default).
+  shipped Gemma default is `1.0`, not `0`. Also keep thinking **disabled** (default).
 - **Dense instruct models (Qwen2.5, Qwen3-with-thinking-off, Phi-4):** these do
   literal/reconstruction work faithfully at **near-deterministic** settings. Set
   `DOCS_GEN_LOCAL_TEMPERATURE=0` (or `0.1`) for the most reproducible, faithful
