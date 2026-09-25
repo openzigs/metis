@@ -540,6 +540,7 @@ describe("generated-docs routes", () => {
           _docType: string,
           _title: string,
           options: {
+            onPhase1Progress?: (update: { done: number; total: number }) => void;
             onSectionProgress?: (update: {
               section: string;
               status: string;
@@ -550,6 +551,7 @@ describe("generated-docs routes", () => {
             }) => void;
           },
         ) => {
+          options.onPhase1Progress?.({ done: 276, total: 552 });
           options.onSectionProgress?.({
             section: "Rules",
             status: "generating",
@@ -611,12 +613,21 @@ describe("generated-docs routes", () => {
       expect(jobEvents.docSection).toHaveBeenCalledWith(
         expect.objectContaining({ warning: undefined }),
       );
-      // A batched section's progress moves per batch: 1/4 of section 1 of 2.
+      // Phase 1 fills the first 60% of the bar, per chunk: half the chunks = 30%.
       expect(jobEvents.progress).toHaveBeenCalledWith(
         "doc-generation",
         "doc-1",
         "proj-1",
-        13,
+        30,
+        "Extracting facts: 276/552 chunks",
+      );
+      // A batched section's progress moves per batch: 1/4 of section 1 of 2,
+      // inside Phase 2's 60–100% share (60 + 12.5% of 40).
+      expect(jobEvents.progress).toHaveBeenCalledWith(
+        "doc-generation",
+        "doc-1",
+        "proj-1",
+        65,
         "Section 1/2: Rules (batch 13/52)",
       );
     });

@@ -38,3 +38,37 @@ export function sectionProgressMessage(u: SectionProgressLike & { section: strin
     ? `${base} (batch ${u.batch.done}/${u.batch.total})`
     : base;
 }
+
+/**
+ * Share of the document's progress bar given to Phase 1 (fact extraction);
+ * Phase 2 (section synthesis) fills the rest. 60%: with full coverage Phase 1
+ * is most of a cold run's wall time — on onyourleft ~32 h of estimated Phase-1
+ * output at 20 tok/s (554 chunks) against roughly 12–20 h for Phase 2 (72+
+ * Rules batches of ~10 min plus the other sections) — and a warm run's cached
+ * Phase 1 simply jumps to 60%. A fixed share keeps the bar monotonic without
+ * predicting either phase's duration.
+ */
+export const PHASE1_PROGRESS_SHARE = 60;
+
+/** 0..{@link PHASE1_PROGRESS_SHARE}: Phase-1 chunks completed of chunks planned. Monotonic. */
+export function phase1ProgressPercent(done: number, total: number): number {
+  if (total <= 0) return 0;
+  return Math.floor((Math.min(Math.max(done, 0), total) / total) * PHASE1_PROGRESS_SHARE);
+}
+
+/** The lifecycle message for Phase-1 progress. */
+export function phase1ProgressMessage(done: number, total: number): string {
+  return `Extracting facts: ${Math.min(done, total)}/${total} chunks`;
+}
+
+/**
+ * The document-level percentage for a section update: Phase 2 fills the bar
+ * from {@link PHASE1_PROGRESS_SHARE} to 100, so it never drops below where
+ * Phase 1 left it.
+ */
+export function documentProgressPercent(u: SectionProgressLike): number {
+  return (
+    PHASE1_PROGRESS_SHARE +
+    Math.round((sectionProgressPercent(u) * (100 - PHASE1_PROGRESS_SHARE)) / 100)
+  );
+}

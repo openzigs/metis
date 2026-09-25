@@ -1134,6 +1134,12 @@ export async function synthesizeHolisticDocument(
      */
     groundingForSection?: SectionGroundingRetriever;
     onSectionProgress?: OnSectionProgress;
+    /**
+     * Phase-1 progress: planned chunks completed of the total planned across
+     * every module (a split chunk counts once, when all its parts are done).
+     * Best-effort, like {@link onSectionProgress}.
+     */
+    onPhase1Progress?: (update: { done: number; total: number }) => void;
     benchmarkProviders?: {
       phase1?: ReturnType<typeof buildDocsGenProvider>;
       phase2Router?: Phase2Router;
@@ -1295,6 +1301,37 @@ export async function synthesizeHolisticDocument(
   const concurrency = resolvePhase1Concurrency();
   const phase1Start = Date.now();
   const progressEvery = Math.max(concurrency * 5, 1);
+  const cloneDirOf = (m: ModuleGroup) =>
+    m.repository ? (repositories.get(m.repository.codeGraphId)?.root ?? null) : null;
+
+  // Prepare every module (read, partition, mine — no model) before extracting,
+  // so the number of chunks Phase 1 will work through is known up front and
+  // progress can be reported per chunk ("Extracting facts: 212/552 chunks").
+  const phase1Limits = phase1ChunkLimits(
+    resolveFactsMaxOutputTokens(phase1.provider.model),
+    resolvePhase1ChunkInputTokens(),
+  );
+  const prepared = new Map<ModuleGroup, PreparedPhase1Module>();
+  let chunksPlanned = 0;
+  for (const m of modules) {
+    try {
+      const p = await preparePhase1Module(m, cloneDirOf(m), includeTests);
+      prepared.set(m, p);
+      chunksPlanned += Math.max(1, planPhase1Chunks(p.units, phase1Limits).length);
+    } catch {
+      chunksPlanned += 1; // extraction prepares it again (and reports the failure)
+    }
+  }
+  let chunksDone = 0;
+  const reportPhase1 = (): void => {
+    if (!options?.onPhase1Progress) return;
+    try {
+      options.onPhase1Progress({ done: Math.min(chunksDone, chunksPlanned), total: chunksPlanned });
+    } catch {
+      // progress reporting must not affect Phase 1
+    }
+  };
+  reportPhase1();
   const results = await mapSettledWithConcurrency(
     modules,
     concurrency,
@@ -1304,10 +1341,17 @@ export async function synthesizeHolisticDocument(
         phase1.provider,
         phase1.supportsCaching,
         projectId,
-        m.repository ? (repositories.get(m.repository.codeGraphId)?.root ?? null) : null,
+        cloneDirOf(m),
         graphSummary,
         phase1.effectiveConfigHash,
         includeTests,
+        {
+          prepared: prepared.get(m),
+          onChunkDone: () => {
+            chunksDone += 1;
+            reportPhase1();
+          },
+        },
       ),
     (completed, total) => {
       if (completed % progressEvery === 0 || completed === total) {
@@ -1331,6 +1375,11 @@ export async function synthesizeHolisticDocument(
       });
     }
   }
+  // A module whose extraction threw never reported its chunks: Phase 1 is over,
+  // so the bar reaches the end of its share before Phase 2 starts.
+  chunksDone = chunksPlanned;
+  reportPhase1();
+  prepared.clear();
   log.info("Phase 1 complete", {
     factsCount: facts.length,
     elapsedSec: Math.round((Date.now() - phase1Start) / 1000),
@@ -1738,29 +1787,24 @@ export async function discoverSqlOnlyModules(
 // Phase 1: per-module fact extraction
 // ============================================================================
 
+/** A module's source read, partitioned and mined — everything Phase 1 plans chunks from. */
+export interface PreparedPhase1Module {
+  filePaths: string[];
+  fileLines: Map<string, string[]>;
+  units: Phase1Unit[];
+  sourceCharsTotal: number;
+}
+
 /**
- * Phase-1 per-module fact extraction. Exported so the deterministic
- * SAS-workflow/lineage enrichment (which is appended to the returned `facts`
- * even on the offline path) is unit-testable end to end without a live model.
+ * Read, partition and mine one module (no model). Phase 1 runs it for every
+ * module before extraction starts, so the total number of chunks is known up
+ * front and progress can be reported per chunk.
  */
-/** Max ids per `symbolId IN (...)` chunk when looking up a module's rationale findings. */
-const RATIONALE_QUERY_CHUNK = 500;
-
-export async function extractModuleFacts(
+export async function preparePhase1Module(
   m: ModuleGroup,
-  provider: AIProvider,
-  supportsCaching: boolean,
-  projectId: string,
   cloneDir: string | null,
-  graphSummary?: CodeGraphSummary,
-  effectiveConfigHash?: string,
-  /** DOCS_GEN_PHASE1_INCLUDE_TESTS: false skips test/spec/fixture `.sql` files too. */
   includeTests = true,
-): Promise<ModuleFacts | null> {
-  const classes = m.syms.filter((s) => s.kind === "class" || s.kind === "interface");
-  const callables = m.syms.filter(isCallableSymbol);
-  const methodCount = callables.length;
-
+): Promise<PreparedPhase1Module> {
   // ------------------------------------------------------------------
   // Read EVERY file of the module once, in full. There is no snippet budget:
   // the module is partitioned into units (every function body and all
@@ -1831,6 +1875,41 @@ export async function extractModuleFacts(
       // module dir not present in clone (e.g. virtual module) — no SQL to mine
     }
   }
+
+  return { filePaths, fileLines, units, sourceCharsTotal };
+}
+
+/**
+ * Phase-1 per-module fact extraction. Exported so the deterministic
+ * SAS-workflow/lineage enrichment (which is appended to the returned `facts`
+ * even on the offline path) is unit-testable end to end without a live model.
+ */
+/** Max ids per `symbolId IN (...)` chunk when looking up a module's rationale findings. */
+const RATIONALE_QUERY_CHUNK = 500;
+
+export async function extractModuleFacts(
+  m: ModuleGroup,
+  provider: AIProvider,
+  supportsCaching: boolean,
+  projectId: string,
+  cloneDir: string | null,
+  graphSummary?: CodeGraphSummary,
+  effectiveConfigHash?: string,
+  /** DOCS_GEN_PHASE1_INCLUDE_TESTS: false skips test/spec/fixture `.sql` files too. */
+  includeTests = true,
+  hooks?: {
+    /** The module already prepared by {@link preparePhase1Module} (skips re-reading). */
+    prepared?: PreparedPhase1Module;
+    /** Called once per PLANNED chunk as it completes (split halves count as their chunk). */
+    onChunkDone?: () => void;
+  },
+): Promise<ModuleFacts | null> {
+  const classes = m.syms.filter((s) => s.kind === "class" || s.kind === "interface");
+  const callables = m.syms.filter(isCallableSymbol);
+  const methodCount = callables.length;
+
+  const { fileLines, units, sourceCharsTotal } =
+    hooks?.prepared ?? (await preparePhase1Module(m, cloneDir, includeTests));
 
   // Issue #330 — detect the silent "source unavailable" degradation: a module
   // with code symbols whose files could not be read AT ALL (every readFile above
@@ -2103,12 +2182,21 @@ export async function extractModuleFacts(
 
   let factsText: string;
   let factsTruncated = false;
+  const chunkDone = (): void => {
+    try {
+      hooks?.onChunkDone?.();
+    } catch {
+      // progress reporting must not affect extraction
+    }
+  };
   if (provider.offline) {
+    for (let i = 0; i < chunks.length; i++) chunkDone();
     factsText = `PURPOSE\n${moduleName} module.\n\nENTITIES\n${topClasses.map((c) => `- \`${c}\``).join("\n")}\n\nRULES\n(none extracted in offline mode)\n\nWORKFLOWS\n(none)\n\nFORMULAS\n(none)\n\nINTEGRATIONS\n(none)\n\nKEY_APIS\n(none)\n\nNOTES\n(none)`;
   } else {
     const replies: Array<{ text: string; truncated: boolean }> = [];
     for (let i = 0; i < chunks.length; i++) {
       replies.push(...(await extractChunk(chunks[i], chunks.length > 1 ? String(i + 1) : null, 0)));
+      chunkDone();
     }
     factsTruncated = replies.some((r) => r.truncated);
     factsText =

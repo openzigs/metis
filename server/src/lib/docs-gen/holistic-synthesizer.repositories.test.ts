@@ -416,4 +416,60 @@ describe("#1354 actual multi-repository synthesis", () => {
       expect(all).not.toContain("rules.test.ts");
     });
   });
+
+  it("reports Phase-1 progress per planned chunk, from 0 to the total", async () => {
+    const updates: Array<{ done: number; total: number }> = [];
+    await synthesizeHolisticDocument("p", "architecture", "Architecture", {
+      onPhase1Progress: (u) => updates.push(u),
+    });
+    // Two modules of one chunk each.
+    expect(updates[0]).toEqual({ done: 0, total: 2 });
+    expect(updates.map((u) => u.done)).toEqual([0, 1, 2, 2]);
+    expect(updates.every((u) => u.total === 2)).toBe(true);
+  });
+
+  it("counts Phase-1 progress in chunks: a module too large for one call contributes several", async () => {
+    const fns = 60;
+    await writeFile(
+      path.join(root, "a/src/rules.ts"),
+      Array.from({ length: fns }, (_, i) =>
+        [
+          `export function rule${i}(v: number) {`,
+          ...Array.from({ length: 18 }, (_, k) => `  const s${k} = v * ${k} + ${i};`),
+          "}",
+        ].join("\n"),
+      ).join("\n"),
+    );
+    db.codeSymbol.findMany.mockImplementation(async ({ where }) =>
+      ["a", "b"]
+        .filter((id) => !where.codeGraphId || where.codeGraphId === `graph-${id}`)
+        .flatMap((id) =>
+          id === "a"
+            ? Array.from({ length: fns }, (_, i) => ({
+                id: `a-${i}`,
+                codeGraphId: "graph-a",
+                qualifiedName: `rule${i}`,
+                kind: "function",
+                filePath: "src/rules.ts",
+                language: "ts",
+                startLine: i * 20 + 1,
+                endLine: i * 20 + 20,
+              }))
+            : symbols(id),
+        ),
+    );
+    const updates: Array<{ done: number; total: number }> = [];
+    await synthesizeHolisticDocument("p", "architecture", "Architecture", {
+      onPhase1Progress: (u) => updates.push(u),
+    });
+    const total = updates[0].total;
+    expect(total).toBeGreaterThan(2);
+    // One tick per planned chunk, in order, then the end-of-phase report.
+    expect(updates.map((u) => u.done)).toEqual([
+      ...Array.from({ length: total + 1 }, (_, i) => i),
+      total,
+    ]);
+    // As many chunk ticks as Phase-1 calls (no cut-offs here).
+    expect(phase1Prompts).toHaveLength(total);
+  });
 });

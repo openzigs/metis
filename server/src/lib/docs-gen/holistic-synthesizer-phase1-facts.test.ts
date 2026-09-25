@@ -539,7 +539,21 @@ describe("Phase 1 reads a module far bigger than the old budgets, in chunks", ()
   it("splits a cut-off chunk and re-extracts each half, never asking for a bigger cap", async () => {
     readFileMock.mockResolvedValue(bigTsSource(24, 40));
     const provider = sizeLimitedProvider(2);
-    const f = await extractModuleFacts(bigTsModule(24, 40), provider, false, "p1", "/clone");
+    let chunksDone = 0;
+    const f = await extractModuleFacts(
+      bigTsModule(24, 40),
+      provider,
+      false,
+      "p1",
+      "/clone",
+      undefined,
+      undefined,
+      true,
+      { onChunkDone: () => (chunksDone += 1) },
+    );
+    // Progress counts PLANNED chunks: a split chunk reports once, when both halves are done.
+    expect(chunksDone).toBe(f!.phase1Coverage!.chunks);
+    expect(provider.calls.length).toBeGreaterThan(chunksDone);
     const caps = new Set(provider.calls.map((c) => c.maxTokens));
     expect(caps.size).toBe(1);
     // Every function is in exactly one COMPLETE (≤2-function) reply.

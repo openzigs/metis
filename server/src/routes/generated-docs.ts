@@ -45,8 +45,10 @@ import {
 } from "../lib/docs-gen/holistic-synthesizer.js";
 import { generatedDocSyntheticDocumentId } from "../lib/docs-gen/generated-doc-publication.js";
 import {
+  documentProgressPercent,
+  phase1ProgressMessage,
+  phase1ProgressPercent,
   sectionProgressMessage,
-  sectionProgressPercent,
 } from "../lib/docs-gen/section-progress.js";
 import {
   generatedDocOutboxId,
@@ -978,14 +980,25 @@ export async function generateDocumentAsync(
                   }
                 : undefined,
             });
-            // Mirror progress onto the lifecycle channel (0-100). A batched
-            // section advances once per batch, not once per section.
+            // Mirror progress onto the lifecycle channel (0-100): Phase 2 fills
+            // PHASE1_PROGRESS_SHARE..100, and a batched section advances once
+            // per batch, not once per section.
             jobEvents.progress(
               "doc-generation",
               docId,
               projectId,
-              sectionProgressPercent(u),
+              documentProgressPercent(u),
               sectionProgressMessage(u),
+            );
+          },
+          // Phase 1 fills the first PHASE1_PROGRESS_SHARE of the bar, per chunk.
+          onPhase1Progress: ({ done, total }) => {
+            jobEvents.progress(
+              "doc-generation",
+              docId,
+              projectId,
+              phase1ProgressPercent(done, total),
+              phase1ProgressMessage(done, total),
             );
           },
         },
