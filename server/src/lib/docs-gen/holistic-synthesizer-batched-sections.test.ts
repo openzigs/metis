@@ -332,25 +332,93 @@ describe("planSectionBatches", () => {
     }
   });
 
-  it("estimates from the mined rules the entry RENDERS, not the uncapped list (PR #163)", () => {
+  it("pages a module's mined rules across parts instead of capping them — none dropped, none twice", () => {
     const rule = (i: number): PersistedMinedRule => ({
       language: "ts",
       kind: "guard",
       expression: `amount > ${i}`,
       summary: `amount must exceed ${i}`,
-      file: "src/x.ts",
-      line: i,
+      file: `src/x${i % 3}.ts`,
+      line: i + 1,
+      context: null,
     });
     const huge = mod(
       "huge",
-      { rules: 0 },
-      { minedRules: Array.from({ length: 2_000 }, (_, i) => rule(i)) },
+      { rules: 5 },
+      { minedRules: Array.from({ length: 400 }, (_, i) => rule(i)) },
     );
-    const [m] = planSectionBatches([huge], RULES, 150_000, 16_384).modules;
-    // The 4,000-char inventory renders a few dozen rules; 2,000 × 300 chars
-    // would claim a 600k-char reply for one module.
-    expect(m.outputChars).toBeLessThan(20_000);
-    expect(m.entry).toContain("more mined rule(s) omitted to fit the budget");
+    const plan = planSectionBatches([huge, ...pairs(3)], RULES, 150_000, 16_384);
+    const parts = plan.modules.filter((m) => m.item.moduleName === "huge");
+    expect(parts.length).toBeGreaterThan(1);
+    // Every part is labelled with the module and its part number, and fits half a batch.
+    parts.forEach((p, i) => {
+      expect(p.entry).toContain(`### MODULE: huge (part ${i + 1} of ${parts.length})`);
+      expect(p.outputChars).toBeLessThanOrEqual(plan.outputBudget);
+    });
+    // Across the planned BATCH PROMPTS (what each call reads), every rule once, cited file:line.
+    const prompts = plan.batches.map((b) => b.map((m) => m.entry).join("\n\n---\n\n")).join("\n");
+    for (let i = 0; i < 400; i++) {
+      const cite = `(src/x${i % 3}.ts:${i + 1})`;
+      expect(prompts.split(cite).length - 1, cite).toBe(1);
+    }
+    expect(prompts).not.toContain("omitted to fit the budget");
+    // No batch is over its budget.
+    for (const b of plan.batches) {
+      if (b.length > 1)
+        expect(b.reduce((n, m) => n + m.outputChars, 0)).toBeLessThanOrEqual(plan.outputBudget);
+    }
+  });
+
+  it("sends every one of 400 mined rules to exactly one Rules call of a real run", async () => {
+    const huge = mod(
+      "huge",
+      { rules: 5 },
+      {
+        minedRules: Array.from({ length: 400 }, (_, i) => ({
+          language: "kt" as const,
+          kind: "precondition",
+          expression: `require(x > ${i})`,
+          summary: `x must exceed ${i}`,
+          file: "app/Rules.kt",
+          line: i + 1,
+          context: null,
+        })),
+      },
+    );
+    const provider = fakeModel();
+    const result = await run([huge, ...pairs(3)], provider);
+    expect(result.warnings.filter((w) => w.section === RULES.label)).toEqual([]);
+    const users = callsFor(provider, RULES)
+      .map((c) => c.user)
+      .join("\n");
+    for (let i = 1; i <= 400; i++) {
+      expect(users.split(`(app/Rules.kt:${i})`).length - 1, `rule ${i}`).toBe(1);
+    }
+  });
+
+  it("renders a module that fits one batch as one entry, with its whole inventory", () => {
+    const small = mod(
+      "small",
+      { rules: 3 },
+      {
+        minedRules: Array.from({ length: 80 }, (_, i) => ({
+          language: "ts" as const,
+          kind: "guard",
+          expression: `v > ${i}`,
+          summary: `v above ${i} — a threshold the account balance must stay under`,
+          file: "src/s.ts",
+          line: i + 1,
+          context: null,
+        })),
+      },
+    );
+    const [m, ...rest] = planSectionBatches([small], RULES, 150_000, 16_384).modules;
+    expect(rest).toEqual([]);
+    expect(m.part).toBeUndefined();
+    expect(m.entry.startsWith("### MODULE: small\n")).toBe(true);
+    // Past the old 4,000-char cap (~25 rules): every rule, no "omitted" line.
+    expect(m.entry).toContain("(src/s.ts:80)");
+    expect(m.entry).not.toContain("omitted to fit the budget");
   });
 
   it("keeps the single-call selection unchanged for a group that does not batch", () => {
@@ -513,7 +581,13 @@ describe("a batch cut off at the cap is split and regenerated (bounded, #165)", 
   });
 
   it("names a single module whose own reply is too large for the cap", async () => {
-    const facts = [mod("monster", { rules: 400 }), ...pairs(2)];
+    // One fact that cannot be paged (a single bullet longer than a batch).
+    const monster = mod("monster", { rules: 0 });
+    monster.facts = monster.facts.replace(
+      "RULES\n",
+      `RULES\n- ${pad(80_000, "one enormous rule")}\n`,
+    );
+    const facts = [monster, ...pairs(2)];
     const provider = fakeModel();
     const result = await run(facts, provider);
     const warning = result.warnings.find(

@@ -378,7 +378,7 @@ describe("planPhase1Chunks", () => {
     for (const c of chunks) {
       const chars = c
         .flatMap((u) => u.rules)
-        .reduce((n, r) => n + `- L${r.line}: ${r.summary}`.length, 0);
+        .reduce((n, r) => n + `- ${r.file}:${r.line}: ${r.summary}`.length, 0);
       expect(chars).toBeLessThanOrEqual(limits.minedChars);
     }
   });

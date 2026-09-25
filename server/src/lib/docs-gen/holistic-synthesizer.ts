@@ -73,7 +73,10 @@ import {
   MINED_RULES_ENTRY_CHAR_CAP,
   countFactBullets,
   dedupeRulesAgainstMined,
+  minedRuleLineChars,
   minedRulesThatFit,
+  pageFactsText,
+  renderMinedRulePage,
   renderMinedRuleInventory,
   sliceModuleFacts,
   toPersistedMinedRules,
@@ -188,6 +191,9 @@ import {
   batchOutputBudgetChars,
   batchOutputChars,
   estimateModuleOutputChars,
+  OUTPUT_CHARS_PER_MINED_RULE,
+  OUTPUT_CHARS_PER_MODULE,
+  OUTPUT_CHARS_PER_TOPIC_CHAR,
   mergeBatchSections,
   planBatches,
   shouldResplit,
@@ -2270,6 +2276,23 @@ function buildPhase1UserMessage(input: {
   const sasWorkflowBlock = sasWorkflow ? renderSasWorkflow(sasWorkflow, 6000) : "";
   const sasStepLineageBlock = sasWorkflow ? renderSasDataLineage(sasWorkflow, 4000) : "";
   const cap = PHASE1_MINED_RENDER_CAP;
+  // Each rule is labelled `file:line`, not just `L<line>`: a chunk can hold
+  // several files, so a bare line number would be ambiguous. The language's own
+  // renderer (its kind grouping and labels) is run per file, and its `- L<n>:`
+  // prefix rewritten to `- <file>:<n>:`.
+  const byFile = (rules: never[], render: (rules: never[], maxChars: number) => string): string => {
+    const files = new Map<string, never[]>();
+    for (const r of rules) {
+      const file = (r as { filePath: string }).filePath;
+      if (!files.has(file)) files.set(file, []);
+      files.get(file)!.push(r);
+    }
+    return [...files]
+      .map(([file, fileRules]) =>
+        render(fileRules, cap).replace(/^- L(\d+):/gm, (_m, line: string) => `- ${file}:${line}:`),
+      )
+      .join("\n");
+  };
   return `Module path: \`${input.moduleName}\`
 Top classes/interfaces (${input.classCount} total): ${input.topClasses.join(", ")}
 Total methods: ${input.methodCount}
@@ -2287,25 +2310,25 @@ ${
     : ""
 }
 
-${javaRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED RULE INVENTORY (${javaRules.length} rules) ===\nThe following rules were extracted by AST-aware regex passes and are GUARANTEED to be present in the source. EVERY ONE of these MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any of them — they are not optional. Use them as a checklist; then ADD any additional rules you find by reading the source code above.\n\n${renderMinedRules(javaRules, cap)}\n=== END MINED RULES ===\n` : ""}
+${javaRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED RULE INVENTORY (${javaRules.length} rules) ===\nThe following rules were extracted by AST-aware regex passes and are GUARANTEED to be present in the source. EVERY ONE of these MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any of them — they are not optional. Use them as a checklist; then ADD any additional rules you find by reading the source code above.\n\n${byFile(javaRules, renderMinedRules)}\n=== END MINED RULES ===\n` : ""}
 
-${sasRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED SAS RULE INVENTORY (${sasRules.length} rules) ===\nThese SAS DATA-step / PROC-step rules were extracted by deterministic passes and are GUARANTEED present in the source. EVERY subsetting IF / WHERE filter, IF/THEN/ELSE branch, RETAIN, KEEP/DROP, PROC option, and macro parameter below MUST appear as a bullet in your RULES (or WORKFLOWS / ENTITIES) section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedSasRules(sasRules, cap)}\n=== END SAS MINED RULES ===\n` : ""}
+${sasRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED SAS RULE INVENTORY (${sasRules.length} rules) ===\nThese SAS DATA-step / PROC-step rules were extracted by deterministic passes and are GUARANTEED present in the source. EVERY subsetting IF / WHERE filter, IF/THEN/ELSE branch, RETAIN, KEEP/DROP, PROC option, and macro parameter below MUST appear as a bullet in your RULES (or WORKFLOWS / ENTITIES) section, paraphrased into business language. Do NOT omit any.\n\n${byFile(sasRules, renderMinedSasRules)}\n=== END SAS MINED RULES ===\n` : ""}
 
 ${sasWorkflowBlock ? `\n=== DETERMINISTICALLY-MINED SAS STEP PIPELINE (${input.sasSteps.length} steps) ===\nThis is the ACTUAL ordered DATA/PROC step pipeline extracted from the source. Use it to populate your WORKFLOWS section: describe these steps IN ORDER, what each does, and the datasets each reads/writes. Do NOT claim a module "has empty bodies" — these are the real steps.\n\n${sasWorkflowBlock}\n=== END SAS STEP PIPELINE ===\n` : ""}
 
 ${sasStepLineageBlock ? `\n=== DETERMINISTICALLY-MINED SAS DATASET LINEAGE (per step, from source) ===\nReads/writes per step, extracted from SET/MERGE/UPDATE/DATA=/OUT=/CREATE TABLE/OUTPUT. Use these to populate ENTITIES (each dataset is an entity) and to tie each WORKFLOW step to its input/output datasets.\n\n${sasStepLineageBlock}\n=== END SAS DATASET LINEAGE ===\n` : ""}
 
-${pyRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED PYTHON RULE INVENTORY (${pyRules.length} rules) ===\nThese Python rules (if/elif guards, raise/assert conditions, threshold constants, pydantic Field() constraints, validator decorators, early returns) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedPyRules(pyRules, cap)}\n=== END PYTHON MINED RULES ===\n` : ""}
+${pyRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED PYTHON RULE INVENTORY (${pyRules.length} rules) ===\nThese Python rules (if/elif guards, raise/assert conditions, threshold constants, pydantic Field() constraints, validator decorators, early returns) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(pyRules, renderMinedPyRules)}\n=== END PYTHON MINED RULES ===\n` : ""}
 
-${goRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED GO RULE INVENTORY (${goRules.length} rules) ===\nThese Go rules (guard clauses, errors.New / fmt.Errorf failure modes, switch business branches, const thresholds) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedGoRules(goRules, cap)}\n=== END GO MINED RULES ===\n` : ""}
+${goRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED GO RULE INVENTORY (${goRules.length} rules) ===\nThese Go rules (guard clauses, errors.New / fmt.Errorf failure modes, switch business branches, const thresholds) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(goRules, renderMinedGoRules)}\n=== END GO MINED RULES ===\n` : ""}
 
-${tsRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED TYPESCRIPT RULE INVENTORY (${tsRules.length} rules) ===\nThese TypeScript/JavaScript rules (if/ternary guards, thrown-error conditions, zod schema constraints, enum/union constraints, numeric/string constants) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedTsRules(tsRules, cap)}\n=== END TYPESCRIPT MINED RULES ===\n` : ""}
+${tsRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED TYPESCRIPT RULE INVENTORY (${tsRules.length} rules) ===\nThese TypeScript/JavaScript rules (if/ternary guards, thrown-error conditions, zod schema constraints, enum/union constraints, numeric/string constants) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(tsRules, renderMinedTsRules)}\n=== END TYPESCRIPT MINED RULES ===\n` : ""}
 
-${csRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED C# RULE INVENTORY (${csRules.length} rules) ===\nThese C# rules (guard clauses, ThrowIf / Guard.Against helpers, thrown exceptions, DataAnnotations validation attributes, FluentValidation rules, switch dispatch on status/enum values, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedCsRules(csRules, cap)}\n=== END C# MINED RULES ===\n` : ""}
+${csRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED C# RULE INVENTORY (${csRules.length} rules) ===\nThese C# rules (guard clauses, ThrowIf / Guard.Against helpers, thrown exceptions, DataAnnotations validation attributes, FluentValidation rules, switch dispatch on status/enum values, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(csRules, renderMinedCsRules)}\n=== END C# MINED RULES ===\n` : ""}
 
-${ktRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED KOTLIN RULE INVENTORY (${ktRules.length} rules) ===\nThese Kotlin rules (require/check preconditions, guard clauses and elvis guards, thrown exceptions, when dispatch on status/enum values, validation annotations, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedKtRules(ktRules, cap)}\n=== END KOTLIN MINED RULES ===\n` : ""}
+${ktRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED KOTLIN RULE INVENTORY (${ktRules.length} rules) ===\nThese Kotlin rules (require/check preconditions, guard clauses and elvis guards, thrown exceptions, when dispatch on status/enum values, validation annotations, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(ktRules, renderMinedKtRules)}\n=== END KOTLIN MINED RULES ===\n` : ""}
 
-${sqlRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED SQL RULE INVENTORY (${sqlRules.length} rules) ===\nThese SQL schema rules (CHECK constraints, NOT NULL, UNIQUE, PRIMARY/FOREIGN KEY referential rules, DEFAULT values, triggers, view WHERE filters, stored-proc conditionals) were extracted from the module's .sql files by deterministic passes and are GUARANTEED present. EVERY ONE below MUST appear as a bullet in your RULES (or ENTITIES) section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedSqlRules(sqlRules, cap)}\n=== END SQL MINED RULES ===\n` : ""}
+${sqlRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED SQL RULE INVENTORY (${sqlRules.length} rules) ===\nThese SQL schema rules (CHECK constraints, NOT NULL, UNIQUE, PRIMARY/FOREIGN KEY referential rules, DEFAULT values, triggers, view WHERE filters, stored-proc conditionals) were extracted from the module's .sql files by deterministic passes and are GUARANTEED present. EVERY ONE below MUST appear as a bullet in your RULES (or ENTITIES) section, paraphrased into business language. Do NOT omit any.\n\n${byFile(sqlRules, renderMinedSqlRules)}\n=== END SQL MINED RULES ===\n` : ""}
 
 ${dataLineage ? `\n=== DATA_LINEAGE (this module's dataset reads/writes, from the code graph) ===\n${dataLineage}\nWhen describing WORKFLOWS, tie each step to the datasets it reads and writes using the lineage above.\n=== END DATA_LINEAGE ===\n` : ""}
 
@@ -2793,7 +2816,7 @@ async function synthesizeBatchedSection(input: {
         input.title,
         input.docType,
         batch.map((m) => m.entry).join("\n\n---\n\n"),
-        renderFormulasBlob(batch.map((m) => m.item)),
+        renderFormulasBlob(batchFormulaItems(batch)),
         bundle.provider,
         bundle.supportsCaching,
         projectId,
@@ -2859,7 +2882,9 @@ async function synthesizeBatchedSection(input: {
       : "";
 
   const warnings: DocWarning[] = [];
-  const names = (d: { batch: SectionBatchModule[] }) => d.batch.map((m) => m.item.moduleName);
+  const names = (d: { batch: SectionBatchModule[] }) => [
+    ...new Set(d.batch.map((m) => m.item.moduleName)),
+  ];
   const cutOff = done.filter((d) => d.result.truncation.truncated);
   if (cutOff.length > 0) {
     warnings.push(
@@ -2891,7 +2916,7 @@ async function synthesizeBatchedSection(input: {
     warnings.push(
       batchFailedWarning(
         group.label,
-        f.batch.map((m) => m.item.moduleName),
+        [...new Set(f.batch.map((m) => m.item.moduleName))],
         generationFailureMessage(f.err),
       ),
     );
@@ -3244,7 +3269,7 @@ export async function synthesizeFinalDocument(
         : buildRelevantFactsBlob(facts, group, docType, factsCharCap);
       const sectionFormulasBlob = batchPlan
         ? batchPlan.batches
-            .map((batch) => renderFormulasBlob(batch.map((m) => m.item)))
+            .map((batch) => renderFormulasBlob(batchFormulaItems(batch)))
             .join("\n\n=== NEXT BATCH ===\n\n")
         : formulasBlob;
 
@@ -4329,8 +4354,134 @@ export function rankRelevantFacts(facts: ModuleFacts[], group: SectionGroup): Mo
   return scored.map((s) => s.facts);
 }
 
-/** One module of a batched section, with its rendered entry and output estimate. */
-export type SectionBatchModule = BatchCandidate<ModuleFacts> & { entry: string };
+/**
+ * One module — or one PART of a module too large for one batch — of a batched
+ * section, with its rendered entry and output estimate. `part` is set only when
+ * the module was split across parts.
+ */
+export type SectionBatchModule = BatchCandidate<ModuleFacts> & {
+  entry: string;
+  part?: { index: number; count: number };
+  /** Mined rules this entry renders (every one of the module's appears in exactly one part). */
+  minedRules?: readonly PersistedMinedRule[];
+};
+
+/** The facts objects whose extracted formulas a batch documents: each module once, by its first part. */
+function batchFormulaItems(batch: readonly SectionBatchModule[]): ModuleFacts[] {
+  return batch.filter((m) => !m.part || m.part.index === 1).map((m) => m.item);
+}
+
+/**
+ * The entries one module contributes to a batched section. Nothing is capped:
+ * the module's topic slices and EVERY mined rule are rendered (LLM rule bullets
+ * that restate a mined rule are removed, since each mined rule is rendered). A
+ * module that fits one batch is one entry, rendered exactly as before. A module
+ * that does not is split into parts — topic pages first, then pages of mined
+ * rules — each labelled with the module's name and part number so the model
+ * attributes it, and each sized to half a batch so parts still pack with other
+ * modules. Every mined rule is in exactly one part.
+ */
+export function batchedModuleEntries(
+  f: ModuleFacts,
+  group: SectionGroup,
+  limits: { inputCap: number; outputBudget: number },
+  formulas: number,
+): SectionBatchModule[] {
+  const header = `### MODULE: ${f.moduleName}\n(${f.classCount} classes, ${f.methodCount} methods)`;
+  const slices = moduleFactSlices(f);
+  const wanted = new Set(factSlicesFor(group));
+  const mined = readsMinedRules(group) ? (f.minedRules ?? []) : [];
+  const summary = wanted.has("summary") ? slices.summary : "";
+  const topics: string[] = [];
+  for (const slice of FACT_SLICES) {
+    if (slice === "summary" || !wanted.has(slice) || !slices[slice]) continue;
+    topics.push(slice === "rules" ? dedupeRulesAgainstMined(slices.rules, mined) : slices[slice]);
+  }
+  const topicText = topics.join("\n\n");
+  const estimate = (topicChars: number, rules: number) =>
+    estimateModuleOutputChars({ topicChars, minedRules: rules });
+  const render = (label: string, body: string[]) =>
+    body.length > 0 ? `${label}\n\n${body.join("\n\n")}` : label;
+
+  const whole = render(
+    header,
+    [summary, topicText, renderMinedRulePage(mined, 0, mined.length)].filter(Boolean),
+  );
+  if (
+    whole.length <= limits.inputCap &&
+    estimate(topicText.length, mined.length) <= limits.outputBudget
+  ) {
+    return [
+      {
+        item: f,
+        entry: whole,
+        inputChars: whole.length,
+        listItems: formulas,
+        outputChars: estimate(topicText.length, mined.length),
+        minedRules: mined,
+      },
+    ];
+  }
+
+  // Half a batch per part, in both directions.
+  const partOutput = Math.max(
+    OUTPUT_CHARS_PER_MINED_RULE,
+    Math.floor(limits.outputBudget / 2) - OUTPUT_CHARS_PER_MODULE,
+  );
+  const partInput = Math.max(2_000, Math.floor(limits.inputCap / 2));
+  const pages: Array<{
+    body: string;
+    topicChars: number;
+    rules: PersistedMinedRule[];
+    from: number;
+  }> = [];
+  for (const page of pageFactsText(
+    topicText,
+    Math.min(partInput, Math.floor(partOutput / OUTPUT_CHARS_PER_TOPIC_CHAR)),
+  )) {
+    pages.push({ body: page, topicChars: page.length, rules: [], from: 0 });
+  }
+  let from = 0;
+  while (from < mined.length) {
+    let to = from;
+    let chars = 0;
+    while (
+      to < mined.length &&
+      (to === from ||
+        ((to - from + 1) * OUTPUT_CHARS_PER_MINED_RULE <= partOutput &&
+          chars + minedRuleLineChars(mined[to]) <= partInput))
+    ) {
+      chars += minedRuleLineChars(mined[to]);
+      to += 1;
+    }
+    const rules = mined.slice(from, to);
+    pages.push({
+      body: renderMinedRulePage(rules, from, mined.length),
+      topicChars: 0,
+      rules,
+      from,
+    });
+    from = to;
+  }
+  if (pages.length === 0) pages.push({ body: "", topicChars: 0, rules: [], from: 0 });
+  const count = pages.length;
+  return pages.map((page, i) => {
+    const label =
+      count > 1
+        ? `### MODULE: ${f.moduleName} (part ${i + 1} of ${count})\n(${f.classCount} classes, ${f.methodCount} methods)`
+        : header;
+    const entry = render(label, [i === 0 ? summary : "", page.body].filter(Boolean));
+    return {
+      item: f,
+      entry,
+      inputChars: entry.length,
+      listItems: i === 0 ? formulas : 0,
+      outputChars: estimate(page.topicChars, page.rules.length),
+      minedRules: page.rules,
+      ...(count > 1 ? { part: { index: i + 1, count } } : {}),
+    };
+  });
+}
 
 /** How a batched section's modules are split across calls (#157). */
 export interface SectionBatchPlan {
@@ -4369,27 +4520,19 @@ export function planSectionBatches(
   // carrying some is on topic, and a batch never holds more than its block
   // renders (PR #169 review).
   const readsFormulas = factSlicesFor(group).includes("formulas");
+  const outputBudget = batchOutputBudgetChars(maxTokens);
   for (const f of rankRelevantFacts(facts, group)) {
     const parts = factsModuleParts(f, group);
     const formulas = readsFormulas ? distinctFormulas([f]).length : 0;
-    if (parts.topicChars === 0 && parts.renderedMinedRules === 0 && formulas === 0) {
+    const minedCount = readsMinedRules(group) ? (f.minedRules?.length ?? 0) : 0;
+    if (parts.topicChars === 0 && minedCount === 0 && formulas === 0) {
       skipped.push(f.moduleName);
       continue;
     }
-    const entry =
-      parts.body.length > 0 ? `${parts.header}\n\n${parts.body.join("\n\n")}` : parts.header;
-    modules.push({
-      item: f,
-      entry,
-      inputChars: entry.length,
-      listItems: formulas,
-      outputChars: estimateModuleOutputChars({
-        topicChars: parts.topicChars,
-        minedRules: parts.renderedMinedRules,
-      }),
-    });
+    modules.push(
+      ...batchedModuleEntries(f, group, { inputCap: factsCharCap, outputBudget }, formulas),
+    );
   }
-  const outputBudget = batchOutputBudgetChars(maxTokens);
   const batches = planBatches(modules, {
     inputCap: factsCharCap,
     outputBudget,

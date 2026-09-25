@@ -10,3 +10,6 @@ section: Changed
   the module rules used to drop are now documented, with no module-count cap.
 - Batched sections are no longer run through the refine pass, a cut-off draft
   is never refined, and generation progress advances once per batch.
+- The batched Business Rules section receives every mined rule: a module too
+  large for one batch is split into labelled parts instead of having its
+  mined-rule list capped, and mined rules cite file:line in every prompt.

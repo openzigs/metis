@@ -323,6 +323,21 @@ describe("#155 a TypeScript module's guard clauses reach the Rules section input
     expect(source.text).toMatch(/\(src\/billing\/billing\.ts:2\)/);
   });
 
+  it("labels each mined rule in the Phase-1 prompt with file:line, not a bare line number", async () => {
+    const prompts: string[] = [];
+    const provider = {
+      ...scriptedProvider([{ text: "PURPOSE\nx", finishReason: "stop" }]),
+      async *stream(messages: Array<{ content: unknown }>): AsyncGenerator<ChatChunk> {
+        prompts.push(String(messages[messages.length - 1].content));
+        yield { type: "delta", content: "PURPOSE\nx" };
+        yield { type: "done", finishReason: "stop" };
+      },
+    } as unknown as AIProvider;
+    await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
+    expect(prompts[0]).toMatch(/^- src\/billing\/billing\.ts:2: /m);
+    expect(prompts[0]).not.toMatch(/^- L\d+:/m);
+  });
+
   it("does not send the mined inventory to a section that does not read rules", async () => {
     const f = await extractModuleFacts(tsModule(), offlineProvider(), false, "p1", "/clone");
     const blob = buildRelevantFactsBlob([f!], integrationsGroup(), "business-requirements");

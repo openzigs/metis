@@ -402,9 +402,9 @@ function inventoryBucket(r: PersistedMinedRule): string {
   return r.language === "js" ? "ts" : r.language;
 }
 
-/** Characters one rule adds to its language's rendered inventory (`- L<line>: <summary>`). */
+/** Characters one rule adds to its language's rendered inventory (`- <file>:<line>: <summary>`). */
 export function minedRuleRenderChars(r: PersistedMinedRule): number {
-  return `- L${r.line}: ${r.summary}`.length;
+  return `- ${r.file}:${r.line}: ${r.summary}`.length;
 }
 
 /** Characters one formula adds to the prompt's pre-extracted formulas list. */
