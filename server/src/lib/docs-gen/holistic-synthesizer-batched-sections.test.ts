@@ -488,6 +488,56 @@ describe("Calculations reads every module's extracted formulas", () => {
       }
     }
   });
+
+  it("#172 pages one module's 300 formulas across labelled parts: each in exactly one batch", () => {
+    const big = withFormulas(mod("ledger", { rules: 2, formulas: 2 }), 300);
+    const plan = planSectionBatches([big, ...pairs(2)], CALCS, 150_000, 16_384);
+    const parts = plan.modules.filter((m) => m.item.moduleName === "ledger");
+    expect(parts.length).toBeGreaterThan(1);
+    parts.forEach((p, i) =>
+      expect(p.entry).toContain(`### MODULE: ledger (part ${i + 1} of ${parts.length})`),
+    );
+    const assigned = plan.batches.flatMap((b) =>
+      b
+        .filter((m) => m.item.moduleName === "ledger")
+        .flatMap((m) => (m.formulas ?? []).map((f) => f.expression)),
+    );
+    expect(assigned).toHaveLength(300);
+    expect(new Set(assigned).size).toBe(300);
+    for (const b of plan.batches) {
+      expect(b.reduce((n, m) => n + (m.listItems ?? 0), 0)).toBeLessThanOrEqual(80);
+    }
+  });
+
+  it("#172 pages a module whose formulas alone overflow the 80-entry block (issue's 99-formula case)", () => {
+    // 99 formulas: small enough in output to fit one batch, but more than one
+    // batch's formulas block holds — so it is paged, not cut to 80.
+    const m99 = withFormulas(mod("route", { rules: 1, formulas: 1 }), 99);
+    const plan = planSectionBatches([m99], CALCS, 150_000, 16_384);
+    expect(plan.modules.length).toBeGreaterThan(1);
+    const assigned = plan.modules.flatMap((m) => (m.formulas ?? []).map((f) => f.expression));
+    expect(new Set(assigned).size).toBe(99);
+    expect(assigned).toHaveLength(99);
+    for (const b of plan.batches) {
+      expect(b.reduce((n, m) => n + (m.listItems ?? 0), 0)).toBeLessThanOrEqual(80);
+    }
+  });
+
+  it("#172 a real Calculations run gives every one of 300 formulas to exactly one call", async () => {
+    const big = withFormulas(mod("ledger", { rules: 2, formulas: 2 }), 300);
+    const provider = fakeModel();
+    const result = await run([big, ...pairs(2)], provider);
+    expect(result.warnings.filter((w) => w.section === CALCS.label)).toEqual([]);
+    const blocks = callsFor(provider, CALCS).map((c) => formulasOf(c.user));
+    expect(blocks.length).toBeGreaterThan(1);
+    for (let i = 0; i < 300; i++) {
+      const needle = `ledger_total_${i} =`;
+      expect(
+        blocks.filter((b) => b.includes(needle)),
+        needle,
+      ).toHaveLength(1);
+    }
+  });
 });
 
 describe("DOCS_GEN_BATCHED_SECTIONS — the operator's kill-switch", () => {

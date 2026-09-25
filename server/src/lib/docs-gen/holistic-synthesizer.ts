@@ -197,6 +197,7 @@ import {
   batchOutputBudgetChars,
   batchOutputChars,
   estimateModuleOutputChars,
+  OUTPUT_CHARS_PER_FORMULA,
   OUTPUT_CHARS_PER_MINED_RULE,
   OUTPUT_CHARS_PER_MODULE,
   OUTPUT_CHARS_PER_TOPIC_CHAR,
@@ -2931,7 +2932,7 @@ async function synthesizeBatchedSection(input: {
         input.title,
         input.docType,
         batch.map((m) => m.entry).join("\n\n---\n\n"),
-        renderFormulasBlob(batchFormulaItems(batch)),
+        renderBatchFormulas(group, batch),
         bundle.provider,
         bundle.supportsCaching,
         projectId,
@@ -3384,7 +3385,7 @@ export async function synthesizeFinalDocument(
         : buildRelevantFactsBlob(facts, group, docType, factsCharCap);
       const sectionFormulasBlob = batchPlan
         ? batchPlan.batches
-            .map((batch) => renderFormulasBlob(batchFormulaItems(batch)))
+            .map((batch) => renderBatchFormulas(group, batch))
             .join("\n\n=== NEXT BATCH ===\n\n")
         : formulasBlob;
 
@@ -3964,17 +3965,9 @@ const FORMULAS_BLOCK_CAP = 80;
 function distinctFormulas(
   facts: readonly ModuleFacts[],
 ): Array<ExtractedFormula & { repository?: RepositoryIdentity }> {
-  const seenExpr = new Set<string>();
-  const out: Array<ExtractedFormula & { repository?: RepositoryIdentity }> = [];
-  for (const f of facts) {
-    for (const formula of f.formulas) {
-      const identity = repositoryPathIdentity(f.repository, formula.expression);
-      if (seenExpr.has(identity)) continue;
-      seenExpr.add(identity);
-      out.push({ ...formula, repository: f.repository });
-    }
-  }
-  return out;
+  return distinctFormulaList(
+    facts.flatMap((f) => f.formulas.map((formula) => ({ formula, repository: f.repository }))),
+  );
 }
 
 /**
@@ -3985,10 +3978,30 @@ function distinctFormulas(
  * restating the same project-wide list.
  */
 function renderFormulasBlob(facts: readonly ModuleFacts[]): string {
-  const allFormulas = distinctFormulas(facts);
-  return allFormulas.length > 0
-    ? allFormulas
-        .slice(0, FORMULAS_BLOCK_CAP)
+  return renderFormulaList(distinctFormulas(facts).slice(0, FORMULAS_BLOCK_CAP));
+}
+
+/** Formulas without repeats of one expression within a repository, in order. */
+function distinctFormulaList(
+  list: ReadonlyArray<{ formula: ExtractedFormula; repository?: RepositoryIdentity }>,
+): Array<ExtractedFormula & { repository?: RepositoryIdentity }> {
+  const seen = new Set<string>();
+  const out: Array<ExtractedFormula & { repository?: RepositoryIdentity }> = [];
+  for (const { formula, repository } of list) {
+    const identity = repositoryPathIdentity(repository, formula.expression);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    out.push({ ...formula, repository });
+  }
+  return out;
+}
+
+/** Render formulas as the prompt's source-formulas block (every one given; no cap here). */
+function renderFormulaList(
+  formulas: ReadonlyArray<ExtractedFormula & { repository?: RepositoryIdentity }>,
+): string {
+  return formulas.length > 0
+    ? formulas
         .map(
           (f) =>
             `- ${f.repository ? `[${f.repository.repoConnectorId ?? f.repository.codeGraphId}] ` : ""}${f.kind}: ${f.expression.slice(0, 250)}`,
@@ -4479,11 +4492,37 @@ export type SectionBatchModule = BatchCandidate<ModuleFacts> & {
   part?: { index: number; count: number };
   /** Mined rules this entry renders (every one of the module's appears in exactly one part). */
   minedRules?: readonly PersistedMinedRule[];
+  /**
+   * #172 — for a group whose topic is formulas (Calculations): the module's
+   * distinct extracted formulas this entry's batch documents. Every one of the
+   * module's appears in exactly one part.
+   */
+  formulas?: readonly ExtractedFormula[];
 };
 
-/** The facts objects whose extracted formulas a batch documents: each module once, by its first part. */
+/** The facts objects whose extracted formulas a batch shows as context: each module once, by its first part. */
 function batchFormulaItems(batch: readonly SectionBatchModule[]): ModuleFacts[] {
   return batch.filter((m) => !m.part || m.part.index === 1).map((m) => m.item);
+}
+
+/**
+ * The source-formulas block of one batch. For a Calculations group (#172) it is
+ * the formulas assigned to the batch's entries, rendered in full — the planner
+ * keeps each batch within {@link FORMULAS_BLOCK_CAP}, paging a module's formulas
+ * across parts, so nothing is cut. Other groups show the batch's formulas as
+ * context, under the cap, as before.
+ */
+function renderBatchFormulas(group: SectionGroup, batch: readonly SectionBatchModule[]): string {
+  if (!factSlicesFor(group).includes("formulas")) {
+    return renderFormulasBlob(batchFormulaItems(batch));
+  }
+  return renderFormulaList(
+    distinctFormulaList(
+      batch.flatMap((m) =>
+        (m.formulas ?? []).map((formula) => ({ formula, repository: m.item.repository })),
+      ),
+    ),
+  );
 }
 
 /**
@@ -4500,7 +4539,8 @@ export function batchedModuleEntries(
   f: ModuleFacts,
   group: SectionGroup,
   limits: { inputCap: number; outputBudget: number },
-  formulas: number,
+  /** #172 — the module's distinct extracted formulas, for a Calculations group; else []. */
+  formulas: readonly ExtractedFormula[],
 ): SectionBatchModule[] {
   const header = `### MODULE: ${f.moduleName}\n(${f.classCount} classes, ${f.methodCount} methods)`;
   const slices = moduleFactSlices(f);
@@ -4513,8 +4553,8 @@ export function batchedModuleEntries(
     topics.push(slice === "rules" ? dedupeRulesAgainstMined(slices.rules, mined) : slices[slice]);
   }
   const topicText = topics.join("\n\n");
-  const estimate = (topicChars: number, rules: number) =>
-    estimateModuleOutputChars({ topicChars, minedRules: rules });
+  const estimate = (topicChars: number, rules: number, formulaCount = 0) =>
+    estimateModuleOutputChars({ topicChars, minedRules: rules, formulas: formulaCount });
   const render = (label: string, body: string[]) =>
     body.length > 0 ? `${label}\n\n${body.join("\n\n")}` : label;
 
@@ -4524,16 +4564,18 @@ export function batchedModuleEntries(
   );
   if (
     whole.length <= limits.inputCap &&
-    estimate(topicText.length, mined.length) <= limits.outputBudget
+    formulas.length <= FORMULAS_BLOCK_CAP &&
+    estimate(topicText.length, mined.length, formulas.length) <= limits.outputBudget
   ) {
     return [
       {
         item: f,
         entry: whole,
         inputChars: whole.length,
-        listItems: formulas,
-        outputChars: estimate(topicText.length, mined.length),
+        listItems: formulas.length,
+        outputChars: estimate(topicText.length, mined.length, formulas.length),
         minedRules: mined,
+        formulas,
       },
     ];
   }
@@ -4549,6 +4591,7 @@ export function batchedModuleEntries(
     topicChars: number;
     rules: PersistedMinedRule[];
     from: number;
+    formulas?: readonly ExtractedFormula[];
   }> = [];
   for (const page of pageFactsText(
     topicText,
@@ -4578,6 +4621,26 @@ export function batchedModuleEntries(
     });
     from = to;
   }
+  // #172 — then pages of extracted formulas, each within half the batch
+  // formulas block and half a batch's output.
+  const perFormulaPage = Math.max(
+    1,
+    Math.min(Math.floor(FORMULAS_BLOCK_CAP / 2), Math.floor(partOutput / OUTPUT_CHARS_PER_FORMULA)),
+  );
+  for (let k = 0; k < formulas.length; k += perFormulaPage) {
+    const page = formulas.slice(k, k + perFormulaPage);
+    const range =
+      page.length === formulas.length
+        ? `all ${formulas.length}`
+        : `${k + 1}–${k + page.length} of ${formulas.length}`;
+    pages.push({
+      body: `EXTRACTED FORMULAS: this part covers this module's extracted formulas ${range}; they are listed in this call's source-extracted formulas block.`,
+      topicChars: 0,
+      rules: [],
+      from: 0,
+      formulas: page,
+    });
+  }
   if (pages.length === 0) pages.push({ body: "", topicChars: 0, rules: [], from: 0 });
   const count = pages.length;
   return pages.map((page, i) => {
@@ -4590,9 +4653,10 @@ export function batchedModuleEntries(
       item: f,
       entry,
       inputChars: entry.length,
-      listItems: i === 0 ? formulas : 0,
-      outputChars: estimate(page.topicChars, page.rules.length),
+      listItems: page.formulas?.length ?? 0,
+      outputChars: estimate(page.topicChars, page.rules.length, page.formulas?.length ?? 0),
       minedRules: page.rules,
+      formulas: page.formulas ?? [],
       ...(count > 1 ? { part: { index: i + 1, count } } : {}),
     };
   });
@@ -4638,9 +4702,9 @@ export function planSectionBatches(
   const outputBudget = batchOutputBudgetChars(maxTokens);
   for (const f of rankRelevantFacts(facts, group)) {
     const parts = factsModuleParts(f, group);
-    const formulas = readsFormulas ? distinctFormulas([f]).length : 0;
+    const formulas = readsFormulas ? distinctFormulas([f]) : [];
     const minedCount = readsMinedRules(group) ? (f.minedRules?.length ?? 0) : 0;
-    if (parts.topicChars === 0 && minedCount === 0 && formulas === 0) {
+    if (parts.topicChars === 0 && minedCount === 0 && formulas.length === 0) {
       skipped.push(f.moduleName);
       continue;
     }
