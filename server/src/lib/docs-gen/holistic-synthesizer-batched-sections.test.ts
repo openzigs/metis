@@ -818,3 +818,119 @@ describe("judge-gated escalation of a batched section", () => {
     expect(result.markdown).toContain("Rule from p0** [cloud]");
   });
 });
+
+// ── Refine (#118) and progress on the batched path ────────────────────────
+
+/** A LOCAL provider (refine applies only to local-gemma) that records refine calls. */
+function localModelWithRefine(options: FakeOptions = {}): {
+  provider: AIProvider & { calls: Call[] };
+  refines: string[];
+  order: string[];
+} {
+  const inner = fakeModel(options);
+  const refines: string[] = [];
+  const order: string[] = [];
+  const provider = {
+    ...inner,
+    key: "local-gemma",
+    async *stream(messages: ChatMessage[], opts?: ChatOptions): AsyncGenerator<ChatChunk> {
+      const system = String(messages[0].content);
+      const user = String(messages[messages.length - 1].content);
+      if (system.includes("documentation fixer")) {
+        const label = /this "(.+?)" section/.exec(user)?.[1] ?? "?";
+        refines.push(label);
+        order.push(`refine:${label}`);
+        yield { type: "delta", content: user.slice(user.indexOf("##")) };
+        yield { type: "done", finishReason: "stop" };
+        return;
+      }
+      order.push(`draft:${/Section group: \*\*(.+?)\*\*/.exec(user)?.[1] ?? "?"}`);
+      yield* inner.stream(messages, opts);
+    },
+  } as unknown as AIProvider & { calls: Call[] };
+  return { provider, refines, order };
+}
+
+function localRouter(provider: AIProvider): Phase2Router {
+  const tuning = { ...docsGenTuning("local", provider.model), refine: true };
+  return {
+    primary: { kind: "local", provider, supportsCaching: false, factsCharCap: 150_000, tuning },
+  };
+}
+
+describe("the refine pass (#118) on the batched path", () => {
+  it("never refines a batch reply; single-call groups are still refined", async () => {
+    const { provider, refines } = localModelWithRefine();
+    await synthesizeFinalDocument(
+      onyourleftSized().slice(0, 12),
+      META,
+      "business-requirements",
+      "BRD",
+      localRouter(provider),
+      "p1",
+    );
+    const batchedLabels = new Set(BATCHED.map((g) => g.label));
+    expect(callsFor(provider, RULES).length).toBeGreaterThan(1);
+    expect(refines.filter((l) => batchedLabels.has(l))).toEqual([]);
+    const single = sectionGroupsFor("business-requirements").filter((g) => !g.batched);
+    expect(refines.sort()).toEqual(single.map((g) => g.label).sort());
+  });
+
+  it("checks truncation first: a cut-off single-call draft is not refined", async () => {
+    const overview = sectionGroupsFor("business-requirements").find((g) => !g.batched)!;
+    const { provider, refines } = localModelWithRefine({
+      cutOff: (c) => c.group === overview.label,
+    });
+    const result = await synthesizeFinalDocument(
+      onyourleftSized().slice(0, 12),
+      META,
+      "business-requirements",
+      "BRD",
+      localRouter(provider),
+      "p1",
+    );
+    expect(refines).not.toContain(overview.label);
+    // The other single-call groups were complete, so they were refined.
+    expect(refines.length).toBeGreaterThan(0);
+    expect(
+      result.warnings.some((w) => w.kind === "section-truncated" && w.section === overview.label),
+    ).toBe(true);
+  });
+});
+
+describe("per-batch progress", () => {
+  it("reports every finished batch of a batched section, so progress moves within it", async () => {
+    const updates: Array<{
+      section: string;
+      status: string;
+      batch?: { done: number; total: number };
+    }> = [];
+    const provider = fakeModel({ cutOff: (c) => c.group === RULES.label && c.modules.length > 5 });
+    await synthesizeFinalDocument(
+      onyourleftSized(),
+      META,
+      "business-requirements",
+      "BRD",
+      routerFor(provider),
+      "p1",
+      undefined,
+      (u) => updates.push(u),
+    );
+    const rules = updates.filter((u) => u.section === RULES.label && u.batch);
+    const calls = callsFor(provider, RULES).length;
+    // One update per batch that FINISHED; a cut-off call that was split is not
+    // a finished batch — its two halves are.
+    expect(rules.length).toBeGreaterThan(1);
+    expect(calls).toBeGreaterThan(rules.length);
+    // done counts up by one; total grows only when a cut-off batch is split.
+    expect(rules.map((u) => u.batch!.done)).toEqual(rules.map((_, i) => i + 1));
+    const last = rules[rules.length - 1].batch!;
+    expect(last.done).toBe(last.total);
+    expect(rules).toHaveLength(last.total);
+    expect(last.total).toBeGreaterThan(rules[0].batch!.total); // a split happened
+    // A cut-off batch counts as done once it is split, so each split adds one to the total.
+    for (let i = 1; i < rules.length; i++) {
+      expect(rules[i].batch!.total).toBeGreaterThanOrEqual(rules[i - 1].batch!.total);
+    }
+  });
+});

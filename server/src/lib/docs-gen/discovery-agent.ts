@@ -14,6 +14,7 @@ import { buildProvider, loadAIConfig } from "../ai/index.js";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import type { Language } from "../code-graph/parsers.js";
 import { resolveSectionMaxOutputTokens } from "./output-caps.js";
+import { isSasBusinessSymbol } from "./module-grouping.js";
 
 const log = createChildLogger("docs-gen:discovery");
 
@@ -149,14 +150,10 @@ export async function runDiscoveryAgent(
 }
 
 /**
- * A SAS-origin business-logic symbol: a `function` symbol (macro, DATA step,
- * or PROC step) produced by the SAS parser. SAS programs have no
- * classes/interfaces, so the documentable-module filter treats ≥3 of these as
- * a documentable unit without requiring a class/interface. Issue #200.
+ * A SAS-origin business-logic symbol (Issue #200). Defined with the module
+ * grouping it gates; re-exported here for existing callers.
  */
-export function isSasBusinessSymbol(sym: { kind: string; language?: string | null }): boolean {
-  return sym.language === "sas" && sym.kind === "function";
-}
+export { isSasBusinessSymbol };
 
 /**
  * NEW: Domain-level business requirements synthesis.

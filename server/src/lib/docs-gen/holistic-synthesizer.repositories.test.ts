@@ -351,12 +351,11 @@ describe("#1354 actual multi-repository synthesis", () => {
     },
   );
 
-  it.each([
-    [10, 10],
-    [50, 50],
-    [100, 80],
-  ])("reads at most the existing method cap for %i short methods", async (count, expected) => {
-    await writeFile(path.join(root, "a/src/rules.ts"), "return 1;\n");
+  it.each([10, 50, 100])("reads every one of %i short methods (no method cap)", async (count) => {
+    await writeFile(
+      path.join(root, "a/src/rules.ts"),
+      Array.from({ length: count }, (_, i) => `return ${i};`).join("\n"),
+    );
     const m: ModuleGroup = {
       dir: "src",
       repository: identity("a"),
@@ -365,11 +364,12 @@ describe("#1354 actual multi-repository synthesis", () => {
         qualifiedName: `method${i}`,
         kind: "method",
         filePath: "src/rules.ts",
-        startLine: 1,
-        endLine: 1,
+        startLine: i + 1,
+        endLine: i + 1,
       })),
     };
     await extractModuleFacts(m, provider, false, "p", path.join(root, "a"));
-    expect((phase1Prompts[0].match(/\/\/ method/g) ?? []).length).toBe(expected);
+    const read = phase1Prompts.join("\n").match(/\/\/ method\d+\n/g) ?? [];
+    expect(new Set(read).size).toBe(count);
   });
 });

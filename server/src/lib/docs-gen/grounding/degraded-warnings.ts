@@ -563,7 +563,8 @@ const TRUNCATED_MODULES_LISTED = 10;
 
 /**
  * #156 — Phase-1 fact extraction for one or more modules was cut off by the
- * OUTPUT-token cap, even after one retry with a larger cap. Their facts are
+ * OUTPUT-token cap, even after the cut-off part was split down as far as it
+ * goes (Phase 1 splits instead of retrying with a larger cap). Their facts are
  * incomplete (used for this run, never cached), so every section that reads
  * them may miss rules, workflows or formulas. Names the modules so an operator
  * knows where to look, and the knob that fixes it.
@@ -579,8 +580,30 @@ export function phase1FactsTruncatedWarning(moduleNames: readonly string[]): Doc
     section: "Phase 1 facts",
     message:
       `Fact extraction for ${moduleNames.length} module(s) was cut off by the model's output ` +
-      `limit even after a retry with a larger limit, so their facts are incomplete: ${listed}${more}. ` +
+      `limit even after their code was split into the smallest parts that could explain it, so their facts are incomplete: ${listed}${more}. ` +
       `Raise DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS or use a model with a larger output limit, then regenerate.`,
+    severity: "warning",
+  };
+}
+
+/**
+ * Phase 1 reads a large module in several calls. When some of those calls fail
+ * (and others succeed) the module's facts are missing the failed parts; the
+ * parts that succeeded are cached, so a regeneration retries only the failed
+ * ones. Names the modules.
+ */
+export function phase1ChunksFailedWarning(moduleNames: readonly string[]): DocWarning {
+  const listed = moduleNames.slice(0, TRUNCATED_MODULES_LISTED).join(", ");
+  const more =
+    moduleNames.length > TRUNCATED_MODULES_LISTED
+      ? ` and ${moduleNames.length - TRUNCATED_MODULES_LISTED} more`
+      : "";
+  return {
+    kind: "section-failed",
+    section: "Phase 1 facts",
+    message:
+      `Fact extraction failed for part of ${moduleNames.length} module(s), so their facts are incomplete: ${listed}${more}. ` +
+      `The parts that succeeded are cached; regenerate to retry only the failed parts.`,
     severity: "warning",
   };
 }

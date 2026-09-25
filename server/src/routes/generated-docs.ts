@@ -45,6 +45,10 @@ import {
 } from "../lib/docs-gen/holistic-synthesizer.js";
 import { generatedDocSyntheticDocumentId } from "../lib/docs-gen/generated-doc-publication.js";
 import {
+  sectionProgressMessage,
+  sectionProgressPercent,
+} from "../lib/docs-gen/section-progress.js";
+import {
   generatedDocOutboxId,
   persistGeneratedDocTask,
   dispatchGeneratedDocTask,
@@ -974,13 +978,14 @@ export async function generateDocumentAsync(
                   }
                 : undefined,
             });
-            // Mirror coarse progress onto the lifecycle channel (0-100).
+            // Mirror progress onto the lifecycle channel (0-100). A batched
+            // section advances once per batch, not once per section.
             jobEvents.progress(
               "doc-generation",
               docId,
               projectId,
-              Math.round((u.index / Math.max(u.total, 1)) * 100),
-              `Section ${u.index}/${u.total}: ${u.section}`,
+              sectionProgressPercent(u),
+              sectionProgressMessage(u),
             );
           },
         },

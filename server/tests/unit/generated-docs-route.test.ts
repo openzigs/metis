@@ -546,9 +546,17 @@ describe("generated-docs routes", () => {
               index: number;
               total: number;
               warning?: { kind: string; severity: string; message: string };
+              batch?: { done: number; total: number };
             }) => void;
           },
         ) => {
+          options.onSectionProgress?.({
+            section: "Rules",
+            status: "generating",
+            index: 1,
+            total: 2,
+            batch: { done: 13, total: 52 },
+          });
           options.onSectionProgress?.({
             section: "Overview",
             status: "done",
@@ -602,6 +610,14 @@ describe("generated-docs routes", () => {
       );
       expect(jobEvents.docSection).toHaveBeenCalledWith(
         expect.objectContaining({ warning: undefined }),
+      );
+      // A batched section's progress moves per batch: 1/4 of section 1 of 2.
+      expect(jobEvents.progress).toHaveBeenCalledWith(
+        "doc-generation",
+        "doc-1",
+        "proj-1",
+        13,
+        "Section 1/2: Rules (batch 13/52)",
       );
     });
 

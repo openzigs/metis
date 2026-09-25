@@ -35,7 +35,7 @@ import {
   buildSectionFactsSources,
   extractModuleFacts,
   factSlicesFor,
-  phase1RetryMaxTokens,
+  PHASE1_SPLIT_MARKER,
   sectionGroupsFor,
   selectRelevantFacts,
   summarizeFactsBudget,
@@ -45,6 +45,7 @@ import {
   type SectionGroup,
 } from "./holistic-synthesizer.js";
 import type { PersistedMinedRule } from "./fact-slices.js";
+import { MAX_PHASE1_SPLIT_DEPTH } from "./phase1-chunking.js";
 
 const DOC_TYPES: DocType[] = ["business-requirements", "architecture", "user-guide"];
 
@@ -380,7 +381,7 @@ describe("#155 a TypeScript module's guard clauses reach the Rules section input
     expect(blob.match(/LIMIT_59_VALUE/g)).toHaveLength(1);
   });
 
-  it("persists every language's rules and reads them back through the cache", async () => {
+  it("persists every mined rule with its chunk, and a cache hit re-mines instead of reading rules back", async () => {
     const provider = scriptedProvider([
       { text: "PURPOSE\nBilling.\n\nRULES\n- r", finishReason: "stop" },
     ]);
@@ -391,57 +392,223 @@ describe("#155 a TypeScript module's guard clauses reach the Rules section input
     expect(persisted.length).toBeGreaterThan(0);
     expect(persisted.every((r) => r.language === "ts")).toBe(true);
     expect(persisted[0]).toMatchObject({ file: "src/billing/billing.ts" });
+    expect(first!.minedRules).toEqual(persisted);
 
-    // Second run: the row comes back from the cache. The rules returned must be
-    // the ones READ from the row, not re-derived — prove it by making the row
-    // differ from what mining would produce.
-    const fromRow: PersistedMinedRule[] = [{ ...persisted[0], summary: "READ FROM CACHE ROW" }];
+    // Second run: the chunk's reply comes from the cache. Mining is
+    // deterministic and runs on every call, so the rules are this run's — a
+    // row that disagrees (or is a legacy Java-only shape) cannot leak in.
     findUniqueMock.mockResolvedValue({
       ...written,
       id: "row1",
       createdAt: new Date(),
-      minedRulesJson: JSON.stringify(fromRow),
+      minedRulesJson: JSON.stringify([{ kind: "throw", expression: "x", filePath: "A.java" }]),
     });
     const second = await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
     expect(provider.calls).toHaveLength(1); // cache hit — no second LLM call
-    expect(second!.minedRules).toEqual(fromRow);
-    expect(first!.minedRules).toEqual(persisted);
+    expect(second!.facts).toBe("PURPOSE\nBilling.\n\nRULES\n- r");
+    expect(second!.minedRules).toEqual(persisted);
+  });
+});
+
+// ============================================================================
+// Phase 1 reads every function: truncation splits, it never doubles the cap
+// ============================================================================
+
+/** `n` TypeScript functions of ~`lines` lines each, one per line range. */
+function bigTsSource(n: number, lines: number): string {
+  return Array.from({ length: n }, (_, i) =>
+    [
+      `export function rule${i}(amount: number) {`,
+      ...Array.from({ length: lines - 2 }, (_, k) =>
+        k % 10 === 0
+          ? `  if (amount > ${i * 1000 + k}) { throw new Error("limit ${i}.${k} exceeded"); }`
+          : `  const step${k} = amount * ${k};`,
+      ),
+      "}",
+    ].join("\n"),
+  ).join("\n");
+}
+
+function bigTsModule(n: number, lines: number): ModuleGroup {
+  return {
+    dir: "src/limits",
+    syms: Array.from({ length: n }, (_, i) => ({
+      id: `f${i}`,
+      codeGraphId: "graph-a",
+      qualifiedName: `limits.ts::rule${i}`,
+      kind: "function",
+      language: "ts",
+      filePath: "src/limits/limits.ts",
+      startLine: i * lines + 1,
+      endLine: (i + 1) * lines,
+    })),
+  };
+}
+
+/** A provider that is cut off whenever it is given more than `maxFns` functions. */
+function sizeLimitedProvider(maxFns: number): AIProvider & {
+  prompts: string[];
+  calls: Array<{ maxTokens?: number }>;
+} {
+  const prompts: string[] = [];
+  const calls: Array<{ maxTokens?: number }> = [];
+  return {
+    key: "scripted",
+    model: "mock-local-model",
+    offline: false,
+    prompts,
+    calls,
+    chat: vi.fn(),
+    embed: vi.fn(),
+    models: vi.fn().mockResolvedValue(["mock"]),
+    ping: vi.fn().mockResolvedValue(true),
+    async *stream(
+      messages: Array<{ content: unknown }>,
+      opts: { maxTokens?: number },
+    ): AsyncGenerator<ChatChunk> {
+      const user = String(messages[messages.length - 1].content);
+      prompts.push(user);
+      calls.push({ maxTokens: opts.maxTokens });
+      const fns = [...user.matchAll(/^\/\/ limits\.ts::(rule\d+)/gm)].map((m) => m[1]);
+      const cut = fns.length > maxFns;
+      yield {
+        type: "delta",
+        content: `PURPOSE\nLimits.\n\nRULES\n${fns.map((f) => `- ${f} enforces its limit`).join("\n")}`,
+      };
+      yield { type: "done", finishReason: cut ? "length" : "stop" };
+    },
+  } as unknown as AIProvider & { prompts: string[]; calls: Array<{ maxTokens?: number }> };
+}
+
+describe("Phase 1 reads a module far bigger than the old budgets, in chunks", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    findUniqueMock.mockResolvedValue(null);
+    upsertMock.mockResolvedValue({});
   });
 
-  it("re-mines on a cache hit whose row is a legacy Java-only inventory", async () => {
-    const provider = scriptedProvider([{ text: "PURPOSE\nx", finishReason: "stop" }]);
-    findUniqueMock.mockResolvedValue({
-      id: "row1",
-      createdAt: new Date(),
-      classCount: 0,
-      methodCount: 1,
-      facts: "PURPOSE\nx",
-      formulasJson: "[]",
-      topClassesJson: "[]",
-      minedRulesJson: JSON.stringify([{ kind: "throw", expression: "x", filePath: "A.java" }]),
+  it("puts every function in some call and merges the chunk facts into one module", async () => {
+    // 120 functions x 40 lines: >3x the old 80-method cap and ~10x the 60K-char budget.
+    readFileMock.mockResolvedValue(bigTsSource(120, 40));
+    const provider = sizeLimitedProvider(1_000);
+    const f = await extractModuleFacts(bigTsModule(120, 40), provider, false, "p1", "/clone");
+    expect(provider.calls.length).toBeGreaterThan(1);
+    const read = provider.prompts.flatMap((p) =>
+      [...p.matchAll(/^\/\/ limits\.ts::(rule\d+)$/gm)].map((m) => m[1]),
+    );
+    expect(read).toHaveLength(120);
+    expect(new Set(read).size).toBe(120);
+    // One merged RULES section carrying every chunk's bullets, once each.
+    expect(f!.facts.match(/^RULES$/gm)).toHaveLength(1);
+    for (let i = 0; i < 120; i++) expect(f!.facts).toContain(`- rule${i} enforces its limit`);
+    expect(f!.phase1Coverage).toMatchObject({
+      functionsIncluded: 120,
+      functionsTotal: 120,
+      chunks: provider.calls.length,
+      truncatedChunks: 0,
+      failedChunks: 0,
     });
-    const f = await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
-    expect(f!.minedRules!.some((r) => r.language === "ts")).toBe(true);
+    // Every function's rules are mined — none depends on a snippet budget —
+    // each once, at its file line, attributed to its function.
+    for (let i = 0; i < 120; i++) {
+      const own = f!.minedRules!.filter((r) => r.context === `limits.ts::rule${i}`);
+      expect(own.length, `rule${i}`).toBeGreaterThan(0);
+      expect(own.every((r) => r.line > i * 40 && r.line <= (i + 1) * 40)).toBe(true);
+    }
+    const keys = f!.minedRules!.map((r) => `${r.line}|${r.kind}|${r.expression}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    // Each chunk is cached on its own.
+    expect(upsertMock).toHaveBeenCalledTimes(provider.calls.length);
+  });
+
+  it("splits a cut-off chunk and re-extracts each half, never asking for a bigger cap", async () => {
+    readFileMock.mockResolvedValue(bigTsSource(24, 40));
+    const provider = sizeLimitedProvider(2);
+    const f = await extractModuleFacts(bigTsModule(24, 40), provider, false, "p1", "/clone");
+    const caps = new Set(provider.calls.map((c) => c.maxTokens));
+    expect(caps.size).toBe(1);
+    // Every function is in exactly one COMPLETE (≤2-function) reply.
+    const complete = provider.prompts
+      .map((p) => [...p.matchAll(/^\/\/ limits\.ts::(rule\d+)$/gm)].map((m) => m[1]))
+      .filter((fns) => fns.length <= 2)
+      .flat();
+    expect(complete.sort()).toEqual(Array.from({ length: 24 }, (_, i) => `rule${i}`).sort());
+    expect(f!.factsTruncated).toBeUndefined();
+    // Cut-off replies are never cached as facts: their chunk gets a split
+    // marker, and each complete half is cached as itself.
+    const cached = upsertMock.mock.calls.map((c) => c[0].create.facts as string);
+    expect(cached.filter((t) => t === PHASE1_SPLIT_MARKER).length).toBeGreaterThan(0);
+    const factsRows = cached.filter((t) => t !== PHASE1_SPLIT_MARKER);
+    expect(factsRows).toHaveLength(
+      provider.calls.length - cached.filter((t) => t === PHASE1_SPLIT_MARKER).length,
+    );
+  });
+
+  it("a re-run follows the remembered splits straight to the cached halves (no calls)", async () => {
+    readFileMock.mockResolvedValue(bigTsSource(24, 40));
+    const store = new Map<string, { facts: string }>();
+    upsertMock.mockImplementation(
+      async (args: {
+        where: { projectId_cacheKey: { cacheKey: string } };
+        create: { facts: string };
+      }) => {
+        store.set(args.where.projectId_cacheKey.cacheKey, { facts: args.create.facts });
+        return {};
+      },
+    );
+    findUniqueMock.mockImplementation(
+      async (args: { where: { projectId_cacheKey: { cacheKey: string } } }) => {
+        const row = store.get(args.where.projectId_cacheKey.cacheKey);
+        return row ? { id: "r", createdAt: new Date(), model: "m", ...row } : null;
+      },
+    );
+    const first = sizeLimitedProvider(2);
+    const a = await extractModuleFacts(bigTsModule(24, 40), first, false, "p1", "/clone");
+    const second = sizeLimitedProvider(2);
+    const b = await extractModuleFacts(bigTsModule(24, 40), second, false, "p1", "/clone");
+    expect(first.calls.length).toBeGreaterThan(0);
+    expect(second.calls).toHaveLength(0);
+    expect(b!.facts).toBe(a!.facts);
+    expect(b!.phase1Coverage!.cacheHits).toBeGreaterThan(0);
+  });
+
+  it("bounds the splitting: a model that is always cut off costs a bounded number of calls", async () => {
+    readFileMock.mockResolvedValue(bigTsSource(24, 40));
+    const provider = sizeLimitedProvider(-1); // cut off on every call
+    const f = await extractModuleFacts(bigTsModule(24, 40), provider, false, "p1", "/clone");
+    const planned = f!.phase1Coverage!.chunks;
+    expect(provider.calls.length).toBeLessThanOrEqual(
+      planned * (2 ** (MAX_PHASE1_SPLIT_DEPTH + 1) - 1),
+    );
+    expect(f!.factsTruncated).toBe(true);
+    expect(f!.phase1Coverage!.truncatedChunks).toBeGreaterThan(0);
+    // Nothing that was cut off is cached as facts.
+    for (const c of upsertMock.mock.calls) expect(c[0].create.facts).toBe(PHASE1_SPLIT_MARKER);
+  });
+
+  it("keeps the other chunks' facts when one chunk's call fails, and caches only those", async () => {
+    readFileMock.mockResolvedValue(bigTsSource(60, 40));
+    let n = 0;
+    const base = sizeLimitedProvider(1_000);
+    const provider = {
+      ...base,
+      async *stream(messages: Array<{ content: unknown }>, opts: { maxTokens?: number }) {
+        n += 1;
+        if (n === 1) throw new Error("400 bad request");
+        yield* base.stream(messages as never, opts as never);
+      },
+    } as unknown as AIProvider;
+    const f = await extractModuleFacts(bigTsModule(60, 40), provider, false, "p1", "/clone");
+    expect(n).toBeGreaterThan(1);
+    expect(f!.facts).not.toContain("(extraction failed)");
+    expect(f!.phase1Coverage!.failedChunks).toBe(1);
+    expect(upsertMock).toHaveBeenCalledTimes(n - 1);
   });
 });
 
 // ============================================================================
-// #156 — truncated Phase-1 replies are retried once and never cached
+// #156 — a cut-off reply is never cached as if complete
 // ============================================================================
-
-describe("#156 phase1RetryMaxTokens", () => {
-  it("doubles the cap for a model with no known ceiling", () => {
-    expect(phase1RetryMaxTokens(8192, "gemma3:12b")).toBe(16384);
-  });
-
-  it("clamps the retry to the model's known output ceiling", () => {
-    expect(phase1RetryMaxTokens(6000, "anthropic.claude-3-5-haiku-20241022-v1:0")).toBe(8192);
-  });
-
-  it("returns null when the cap is already at the ceiling (nothing larger to ask for)", () => {
-    expect(phase1RetryMaxTokens(8192, "anthropic.claude-3-5-haiku-20241022-v1:0")).toBeNull();
-  });
-});
 
 describe("#156 extractModuleFacts on a truncated reply", () => {
   beforeEach(() => {
@@ -451,30 +618,16 @@ describe("#156 extractModuleFacts on a truncated reply", () => {
     readFileMock.mockResolvedValue(TS_SOURCE);
   });
 
-  it("retries once with a larger cap and caches the complete retry", async () => {
-    const provider = scriptedProvider([
-      { text: "PURPOSE\nBilling.\n\nRULES\n- cut off mid", finishReason: "length" },
-      { text: "PURPOSE\nBilling.\n\nRULES\n- complete rule", finishReason: "stop" },
-    ]);
-    const f = await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
-    expect(provider.calls).toHaveLength(2);
-    expect(provider.calls[1].maxTokens).toBe(provider.calls[0].maxTokens! * 2);
-    expect(f!.facts).toContain("complete rule");
-    expect(f!.factsTruncated).toBeUndefined();
-    expect(upsertMock).toHaveBeenCalledTimes(1);
-    expect(upsertMock.mock.calls[0][0].create.facts).toContain("complete rule");
-  });
-
-  it("does not cache facts that are still truncated after the retry, and flags them", async () => {
+  it("keeps a small chunk's cut-off reply for this run, flags it, and does not cache it", async () => {
+    // One 9-line function cannot explain a cut-off (the model is running away),
+    // so it is not split: one call, partial facts, never cached.
     const provider = scriptedProvider([
       { text: "PURPOSE\nBilling.\n\nRULES\n- cut off", finishReason: "length" },
     ]);
     const f = await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
-    expect(provider.calls).toHaveLength(2);
+    expect(provider.calls).toHaveLength(1);
     expect(f!.factsTruncated).toBe(true);
-    // The partial facts are still used for this run...
     expect(f!.facts).toContain("cut off");
-    // ...but never cached as if complete.
     expect(upsertMock).not.toHaveBeenCalled();
   });
 
@@ -487,35 +640,6 @@ describe("#156 extractModuleFacts on a truncated reply", () => {
     const f = await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
     expect(f!.factsTruncated).toBe(true);
     expect(f!.facts).not.toContain("No response text");
-    expect(upsertMock).not.toHaveBeenCalled();
-  });
-
-  it("does not retry when the cap is already the model's ceiling, and does not cache", async () => {
-    const provider = scriptedProvider(
-      [{ text: "PURPOSE\nx\n\nRULES\n- cut", finishReason: "max_tokens" }],
-      "anthropic.claude-3-5-haiku-20241022-v1:0",
-    );
-    const f = await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
-    expect(provider.calls).toHaveLength(1);
-    expect(f!.factsTruncated).toBe(true);
-    expect(upsertMock).not.toHaveBeenCalled();
-  });
-
-  it("keeps the first truncated reply when the larger-cap retry itself fails", async () => {
-    let call = 0;
-    const provider = {
-      ...scriptedProvider([]),
-      async *stream(): AsyncGenerator<ChatChunk> {
-        call += 1;
-        if (call > 1) throw new Error("model crashed");
-        yield { type: "delta", content: "PURPOSE\nBilling.\n\nRULES\n- partial" };
-        yield { type: "done", finishReason: "length" };
-      },
-    } as unknown as AIProvider;
-    const f = await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
-    expect(call).toBe(2);
-    expect(f!.facts).toContain("partial");
-    expect(f!.factsTruncated).toBe(true);
     expect(upsertMock).not.toHaveBeenCalled();
   });
 
@@ -555,7 +679,7 @@ describe("#156 extractModuleFacts on a truncated reply", () => {
     }
   });
 
-  it("does not retry or flag a complete reply", async () => {
+  it("does not retry or flag a complete reply, and caches it once", async () => {
     const provider = scriptedProvider([{ text: "PURPOSE\nx", finishReason: "stop" }]);
     const f = await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
     expect(provider.calls).toHaveLength(1);
