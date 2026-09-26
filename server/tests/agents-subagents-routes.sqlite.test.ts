@@ -570,6 +570,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
         await send(sid, "SCN-DELEGATE go");
         const runId = String((await toolParts(sid))[0]!.subAgentRunId);
+        const own = await as(alice).get(`/api/ai/sessions/${sid}/subagent-runs/${runId}`);
+        expect(own.status).toBe(200);
+        // Rate-limited like every session-scoped read (conversationRateLimiter).
+        expect(own.headers["ratelimit-limit"]).toBeDefined();
         expect((await as(bob).get(`/api/ai/sessions/${sid}/subagent-runs/${runId}`)).status).toBe(
           404,
         );
