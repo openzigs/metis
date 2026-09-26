@@ -14,7 +14,7 @@
  * Reads the loaded {@link AIConfig} and returns the right `AIProvider`
  * implementation. `offlineProvider` is the test seam for the offline stub.
  */
-import { AIConfigError, AIProviderError } from "../errors.js";
+import { AIConfigError, AIProviderError, AIProviderRetiredError } from "../errors.js";
 import type { AIConfig } from "../config.js";
 import type { AIProvider } from "../types.js";
 import {
@@ -65,7 +65,7 @@ function buildBaseProvider(opts: BuildProviderOptions): AIProvider {
   // #149 — a retired key (e.g. a project override or stored session still
   // naming `copilot-native`) is refused by name, never routed elsewhere.
   if (isRetiredProviderKey(cfg.provider)) {
-    throw new AIConfigError(retiredProviderMessage(cfg.provider, "project"), {
+    throw new AIProviderRetiredError(retiredProviderMessage(cfg.provider, "project"), {
       retiredProvider: cfg.provider,
     });
   }

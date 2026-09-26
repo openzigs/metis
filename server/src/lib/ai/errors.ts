@@ -6,6 +6,7 @@ export type AIErrorCode =
   | "AI_OFFLINE"
   | "AI_PROVIDER_ERROR"
   | "AI_CONFIG_INVALID"
+  | "AI_PROVIDER_RETIRED"
   | "AI_RATE_LIMITED"
   | "AI_CANCELLED"
   | "AI_TOOL_DENIED"
@@ -40,9 +41,31 @@ export class AIProviderError extends AIError {
 }
 
 export class AIConfigError extends AIError {
-  constructor(message: string, details?: unknown) {
-    super("AI_CONFIG_INVALID", message, 500, details);
+  constructor(
+    message: string,
+    details?: unknown,
+    /** Subclasses only: a more specific code/status for the same config failure. */
+    shape: { code: AIErrorCode; status: number } = { code: "AI_CONFIG_INVALID", status: 500 },
+  ) {
+    super(shape.code, message, shape.status, details);
     this.name = "AIConfigError";
+  }
+}
+
+/**
+ * #149 — the configuration selects a provider METIS no longer ships (today
+ * `copilot-native`), wherever it came from: env, the runtime configuration, a
+ * project override. Still an {@link AIConfigError} (every `instanceof` catch
+ * that refuses to fall back keeps doing so), but it answers **409
+ * `AI_PROVIDER_RETIRED`** — the same code a session or project override gets —
+ * rather than a generic 500 `AI_CONFIG_INVALID`. The message is built only by
+ * `retiredProviderMessage` (fixed text plus the matched retired key), so it is
+ * safe to show the caller and is what tells them what to change.
+ */
+export class AIProviderRetiredError extends AIConfigError {
+  constructor(message: string, details?: unknown) {
+    super(message, details, { code: "AI_PROVIDER_RETIRED", status: 409 });
+    this.name = "AIProviderRetiredError";
   }
 }
 

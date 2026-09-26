@@ -592,10 +592,10 @@ describe("/api/projects/:projectId/spec-kit provider injection (#381)", () => {
   });
 
   it("a project override naming a retired provider is a 409 AI_PROVIDER_RETIRED, like chat (#149)", async () => {
-    const { AIConfigError } = await import("../src/lib/ai/errors.js");
+    const { AIProviderRetiredError } = await import("../src/lib/ai/errors.js");
     const { retiredProviderMessage } = await import("../src/lib/ai/retired-providers.js");
     resolveProjectProvider.mockRejectedValueOnce(
-      new AIConfigError(retiredProviderMessage("copilot-native", "project"), {
+      new AIProviderRetiredError(retiredProviderMessage("copilot-native", "project"), {
         retiredProvider: "copilot-native",
       }),
     );

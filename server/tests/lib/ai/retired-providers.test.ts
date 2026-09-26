@@ -4,10 +4,12 @@
  * one message that names the supported providers and the migration note —
  * never fall through to another provider:
  *
- *   • `AI_PROVIDER` in env                 → `loadAIConfig` + the boot check
+ *   • `AI_PROVIDER` in env                 → `loadAIConfig` + the pre-I/O boot check
  *   • `AI_PROVIDER` in the runtime config  → `loadAIConfig` (it overlays env)
- *                                            + the boot-time runtime check
- *   • a Copilot-era env fallback name      → `loadAIConfig`, naming the rename
+ *                                            + the effective boot check (logged)
+ *   • a Copilot-era env fallback name      → `loadAIConfig`, naming the rename,
+ *                                            + the effective boot check (fatal) —
+ *                                            both over the SAME overlaid view
  *   • the runtime-config write path        → the registry schema
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,7 +26,7 @@ import {
   loadAIConfig,
   SUPPORTED_PROVIDER_KEYS,
 } from "../../../src/lib/ai/config.js";
-import { AIConfigError } from "../../../src/lib/ai/errors.js";
+import { AIConfigError, AIProviderRetiredError } from "../../../src/lib/ai/errors.js";
 import {
   COPILOT_MIGRATION_DOC,
   findRetiredEnvRenames,
@@ -35,11 +37,33 @@ import { __resetConfigSingleton, getConfigService } from "../../../src/lib/confi
 import { getKeyDef } from "../../../src/lib/config/key-registry.js";
 import {
   assertStartupAIProviderConfig,
-  assertStartupRuntimeAIProvider,
+  assertStartupEffectiveAIProviderConfig,
+  isBootTolerableAIConfigError,
 } from "../../../src/index.js";
 
+/** Prime the ConfigService caches as `loadSecrets()` / `loadTunables()` would. */
+function primeOverlay(opts: {
+  secrets?: Record<string, string>;
+  tunables?: Record<string, string>;
+}) {
+  const svc = getConfigService();
+  for (const [k, v] of Object.entries(opts.secrets ?? {})) {
+    // @ts-expect-error — test seam: the vault preload cache.
+    svc["secretCache"].set(k, v);
+  }
+  for (const [k, v] of Object.entries(opts.tunables ?? {})) {
+    // @ts-expect-error — test seam: the runtime_config preload cache.
+    svc["tunableCache"].set(k, v);
+    // @ts-expect-error — see above.
+    svc["tunableDbBacked"].add(k);
+  }
+}
+
 beforeEach(() => __resetConfigSingleton());
-afterEach(() => __resetConfigSingleton());
+afterEach(() => {
+  vi.restoreAllMocks();
+  __resetConfigSingleton();
+});
 
 /** Every supported key, verbatim, in the message. */
 function expectNamesSupportedProviders(message: string): void {
@@ -171,33 +195,138 @@ describe("boot-time checks (#149)", () => {
     expect(() => assertStartupAIProviderConfig({ AI_PROVIDER: "copilot-native" })).toThrow(
       /GitHub Copilot support was removed/,
     );
+    expect(() => assertStartupAIProviderConfig({ AI_PROVIDER: " Copilot-Native " })).toThrow(
+      AIProviderRetiredError,
+    );
     expect(() => assertStartupAIProviderConfig({ AI_PROVIDER: "offline-stub" })).not.toThrow();
     expect(() => assertStartupAIProviderConfig({})).not.toThrow();
   });
 
-  it("assertStartupAIProviderConfig names an un-renamed Copilot-era variable", () => {
+  it("an env AI_PROVIDER=copilot-native is never boot-tolerable — the process must exit", async () => {
+    let caught: unknown;
+    try {
+      assertStartupAIProviderConfig({ AI_PROVIDER: "copilot-native" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isBootTolerableAIConfigError(caught)).toBe(false);
+    // The effective check refuses it the same way (were the pre-I/O check skipped).
+    await expect(
+      assertStartupEffectiveAIProviderConfig({ AI_PROVIDER: "copilot-native" }, async () => {}),
+    ).rejects.toSatisfy((err: unknown) => !isBootTolerableAIConfigError(err));
+  });
+
+  it("the pre-I/O check leaves the rename check to the effective check (it needs the overlay)", () => {
     expect(() =>
       assertStartupAIProviderConfig({
         AI_PROVIDER: "openai",
         COPILOT_PROVIDER_BASE_URL: "https://x",
       }),
-    ).toThrow(/COPILOT_PROVIDER_BASE_URL → OPENAI_BASE_URL/);
+    ).not.toThrow();
   });
 
-  it("assertStartupRuntimeAIProvider throws for a runtime-config row naming copilot-native", async () => {
-    await expect(assertStartupRuntimeAIProvider(async () => "copilot-native")).rejects.toThrow(
-      /runtime configuration .* selects AI provider "copilot-native"/,
-    );
-    await expect(assertStartupRuntimeAIProvider(async () => "anthropic")).resolves.toBeUndefined();
-    await expect(assertStartupRuntimeAIProvider(async () => null)).resolves.toBeUndefined();
+  describe("the effective check applies the request path's rule to the request path's view (A1)", () => {
+    const leftoverKey = {
+      AI_PROVIDER: "openai",
+      OPENAI_BASE_URL: "https://api.openai.com/v1",
+      COPILOT_PROVIDER_API_KEY: "sk-legacy",
+    };
+    const leftoverModel = {
+      AI_PROVIDER: "openai",
+      OPENAI_BASE_URL: "https://api.openai.com/v1",
+      OPENAI_API_KEY: "sk",
+      // Not the shipped default (gpt-4.1), which is exempt as harmless to drop.
+      COPILOT_MODEL: "gpt-4o",
+    };
+
+    it("boots: a leftover COPILOT_PROVIDER_API_KEY in env with OPENAI_API_KEY in the vault", async () => {
+      const preload = async () => primeOverlay({ secrets: { OPENAI_API_KEY: "sk-vault" } });
+      await expect(assertStartupEffectiveAIProviderConfig(leftoverKey, preload)).resolves.toBe(
+        undefined,
+      );
+      // …and the first request agrees: same view, same answer.
+      expect(loadAIConfig(leftoverKey).provider).toBe("openai");
+    });
+
+    it("boots: COPILOT_MODEL in env with AI_DEFAULT_MODEL in the runtime configuration", async () => {
+      const preload = async () => primeOverlay({ tunables: { AI_DEFAULT_MODEL: "gpt-4o-mini" } });
+      await expect(assertStartupEffectiveAIProviderConfig(leftoverModel, preload)).resolves.toBe(
+        undefined,
+      );
+      expect(loadAIConfig(leftoverModel).model).toBe("gpt-4o-mini");
+    });
+
+    it("still refuses both when nothing overlays the retired name — and the refusal is fatal", async () => {
+      for (const [env, rename] of [
+        [leftoverKey, /COPILOT_PROVIDER_API_KEY → OPENAI_API_KEY/],
+        [leftoverModel, /COPILOT_MODEL → AI_MODEL/],
+      ] as const) {
+        let caught: unknown;
+        try {
+          await assertStartupEffectiveAIProviderConfig(env, async () => {});
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(AIConfigError);
+        expect((caught as Error).message).toMatch(rename);
+        expect(isBootTolerableAIConfigError(caught)).toBe(false);
+        // The request path refuses the same configuration identically.
+        expect(() => loadAIConfig(env)).toThrow(rename);
+      }
+    });
+
+    it("an un-renamed COPILOT_PROVIDER_BASE_URL is refused, naming the rename", async () => {
+      await expect(
+        assertStartupEffectiveAIProviderConfig(
+          { AI_PROVIDER: "openai", COPILOT_PROVIDER_BASE_URL: "https://x" },
+          async () => {},
+        ),
+      ).rejects.toThrow(/COPILOT_PROVIDER_BASE_URL → OPENAI_BASE_URL/);
+    });
+
+    it("a runtime-config row naming copilot-native is refused but boot-tolerable (fixed in Admin → Settings)", async () => {
+      const preload = async () => primeOverlay({ tunables: { AI_PROVIDER: "copilot-native" } });
+      let caught: unknown;
+      try {
+        await assertStartupEffectiveAIProviderConfig(
+          { AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "sk-ant" },
+          preload,
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(AIProviderRetiredError);
+      expect((caught as Error).message).toMatch(
+        /runtime configuration .* selects AI provider "copilot-native"/,
+      );
+      expect(isBootTolerableAIConfigError(caught)).toBe(true);
+    });
+
+    it("the default preload loads the vault secrets and the runtime tunables first", async () => {
+      const svc = getConfigService();
+      const secrets = vi.spyOn(svc, "loadSecrets").mockResolvedValue(undefined);
+      const tunables = vi.spyOn(svc, "loadTunables").mockResolvedValue(undefined);
+      await assertStartupEffectiveAIProviderConfig({ AI_PROVIDER: "offline-stub" });
+      expect(secrets).toHaveBeenCalledTimes(1);
+      expect(tunables).toHaveBeenCalledTimes(1);
+    });
+
+    it("a failing preload is not fatal on its own: the check falls back to env, like requests do", async () => {
+      const svc = getConfigService();
+      vi.spyOn(svc, "loadSecrets").mockRejectedValue(new Error("vault down"));
+      vi.spyOn(svc, "loadTunables").mockRejectedValue(new Error("db down"));
+      await expect(
+        assertStartupEffectiveAIProviderConfig({ AI_PROVIDER: "offline-stub" }),
+      ).resolves.toBeUndefined();
+    });
   });
 
-  it("the default reader looks up the AI_PROVIDER runtime_config row", async () => {
-    const { prisma } = await import("../../../src/lib/prisma.js");
-    const findUnique = prisma.runtimeConfig.findUnique as unknown as ReturnType<typeof vi.fn>;
-    findUnique.mockResolvedValueOnce({ key: "AI_PROVIDER", value: "copilot-native" });
-    await expect(assertStartupRuntimeAIProvider()).rejects.toThrow(/copilot-native/);
-    expect(findUnique).toHaveBeenCalledWith({ where: { key: "AI_PROVIDER" } });
+  it("isBootTolerableAIConfigError is false for anything that is not a runtime-config retirement", () => {
+    expect(isBootTolerableAIConfigError(new AIConfigError("x"))).toBe(false);
+    expect(isBootTolerableAIConfigError(new Error("x"))).toBe(false);
+    expect(
+      isBootTolerableAIConfigError(new AIProviderRetiredError("x", { source: "AI_PROVIDER" })),
+    ).toBe(false);
   });
 
   it("assertNoRetiredProviderConfig names the runtime config only when the value came from it", () => {
@@ -210,5 +339,44 @@ describe("boot-time checks (#149)", () => {
         { AI_PROVIDER: "copilot-native" },
       ),
     ).toThrow(/runtime configuration/);
+  });
+});
+
+describe("a retired provider is a 409 AI_PROVIDER_RETIRED wherever it is selected (A3)", () => {
+  it("from env: the request path's error carries 409 / AI_PROVIDER_RETIRED and stays an AIConfigError", () => {
+    let caught: unknown;
+    try {
+      loadAIConfig({ AI_PROVIDER: "copilot-native" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(AIProviderRetiredError);
+    // Still a config error: every `instanceof AIConfigError` refusal keeps refusing.
+    expect(caught).toBeInstanceOf(AIConfigError);
+    expect(caught).toMatchObject({ status: 409, code: "AI_PROVIDER_RETIRED" });
+  });
+
+  it("from the runtime configuration: the same code, status and actionable message", () => {
+    primeOverlay({ tunables: { AI_PROVIDER: "copilot-native" } });
+    let caught: unknown;
+    try {
+      loadAIConfig({ AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "sk-ant" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toMatchObject({ status: 409, code: "AI_PROVIDER_RETIRED" });
+    expectNamesSupportedProviders((caught as Error).message);
+    expect((caught as Error).message).toContain(COPILOT_MIGRATION_DOC);
+  });
+
+  it("a rename refusal is NOT a retirement: it stays a 500 AI_CONFIG_INVALID", () => {
+    let caught: unknown;
+    try {
+      loadAIConfig({ AI_PROVIDER: "openai", COPILOT_PROVIDER_BASE_URL: "https://x" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).not.toBeInstanceOf(AIProviderRetiredError);
+    expect(caught).toMatchObject({ status: 500, code: "AI_CONFIG_INVALID" });
   });
 });

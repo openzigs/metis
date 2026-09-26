@@ -58,6 +58,7 @@ const { errorHandler, notFoundHandler } = await import("../src/middleware/error-
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { COMPACTION_SYSTEM_PROMPT } = await import("../src/lib/async/compaction.js");
 const { getTokenTracker } = await import("../src/lib/ai/token-tracker.js");
+const { getConfigService } = await import("../src/lib/config/config-service.js");
 const { getPendingUsageWrites } = await import("../src/lib/finops/token-tracker.js");
 
 /** Both usage recorders persist on a microtask; wait until they have landed. */
@@ -1033,6 +1034,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await db.aISession.count()).toBe(before);
       } finally {
         await db.project.update({ where: { id: ids.project }, data: { aiProviderId: null } });
+      }
+    });
+
+    it("a runtime-config AI_PROVIDER naming copilot-native is the same 409 AI_PROVIDER_RETIRED — not a 500", async () => {
+      // Admin → Settings wins over env (#258); prime the cache as loadTunables() would.
+      const svc = getConfigService() as unknown as {
+        tunableCache: { set(k: string, v: string): void };
+        tunableDbBacked: Set<string>;
+      };
+      svc.tunableCache.set("AI_PROVIDER", "copilot-native");
+      svc.tunableDbBacked.add("AI_PROVIDER");
+      try {
+        const before = await db.aISession.count();
+        const res = await as(alice).post("/api/ai/sessions", { projectId: ids.project });
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe("AI_PROVIDER_RETIRED");
+        expect(res.body.error.message).toContain(
+          'The runtime configuration (Admin → Settings) selects AI provider "copilot-native"',
+        );
+        expect(res.body.error.message).toContain("anthropic");
+        expect(res.body.error.message).toContain("docs/MIGRATING_FROM_COPILOT.md");
+        expect(await db.aISession.count()).toBe(before);
+      } finally {
+        // Without the db-backed mark the overlay ignores the cached value.
+        svc.tunableDbBacked.delete("AI_PROVIDER");
       }
     });
   },

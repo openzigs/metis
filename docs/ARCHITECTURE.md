@@ -499,7 +499,7 @@ The factory (`buildProvider`) reads `loadAIConfig(env)` and returns (#134):
 | `offline-stub` / `AI_OFFLINE=1` | `OfflineStubProvider` |
 | `anthropic` | `AnthropicProvider` (native, or DeepSeek via `ANTHROPIC_BASE_URL`) |
 | `local-gemma` / `bedrock-gateway` / `openai` / `azure` | `OpenAICompatibleProvider` (direct HTTP) |
-| `copilot-native` | **Removed (#149).** `loadAIConfig`, the boot check and the factory all refuse it by name with a message naming the supported providers and [MIGRATING_FROM_COPILOT.md](./MIGRATING_FROM_COPILOT.md); an unknown key is an `AIConfigError` too — never a fall-through to another provider. |
+| `copilot-native` | **Removed (#149).** `loadAIConfig`, the boot check and the factory all refuse it by name (`AIProviderRetiredError`, a `409 AI_PROVIDER_RETIRED` `AIConfigError`) with a message naming the supported providers and [MIGRATING_FROM_COPILOT.md](./MIGRATING_FROM_COPILOT.md); an unknown key is an `AIConfigError` too — never a fall-through to another provider. Boot runs the request path's rule over the request path's view (env + the Admin → Settings overlay, after `loadSecrets`/`loadTunables`), so the two never disagree; only an env `AI_PROVIDER=copilot-native` is refused earlier, before any I/O. |
 
 `loadAIConfig` validates env via zod and refuses public LLM hosts (`api.openai.com`, `api.anthropic.com`, etc.) so a stray env var cannot exfiltrate prompts.
 

@@ -30,6 +30,9 @@ const sessions: Row[] = [];
 const agents = new Map<string, { tools: string }>();
 const approvalRows = vi.hoisted(() => [] as Row[]);
 const aiMessageRows = vi.hoisted(() => [] as FakeAiMessageRow[]);
+// Library skills every `skill.findMany` returns (empty = none). The #142 wire
+// tests fill it so a session's `loadedSkillIds` resolves to a real catalog.
+const skillRows = vi.hoisted(() => [] as Row[]);
 // The project's workspace. `null` = a legacy open project every signed-in user
 // reaches; a workspace id the caller's token does not carry = access LOST.
 const projectState = vi.hoisted(() => ({ workspaceId: null as string | null }));
@@ -103,7 +106,9 @@ vi.mock("../src/lib/prisma.js", async () => {
   const agent = {
     findFirst: vi.fn(async ({ where }: { where: Row }) => agents.get(String(where.id)) ?? null),
   };
+  const skill = { findMany: vi.fn(async () => skillRows) };
   const models: Record<string, unknown> = {
+    skill,
     aISession,
     project,
     aIToolApproval,
@@ -1038,6 +1043,7 @@ describe("#142 real providers carry the session's tools on the wire", () => {
 
   afterEach(() => {
     __setSessionRuntime(null);
+    skillRows.length = 0;
   });
 
   const PROVIDERS: Array<{ name: string; make: () => AIProvider }> = [
@@ -1091,6 +1097,18 @@ describe("#142 real providers carry the session's tools on the wire", () => {
     // `count_rows` is high risk: auto-approve it so the call runs unattended.
     const sid = await newSession(app, { policy: { high: "auto" } });
     if (withSkills) {
+      // A real, enabled library skill: with no project allow-list rows every
+      // enabled skill is allowed, so the catalog resolves and `load_skill` is
+      // offered. Without the row the id resolves to nothing and the "WITH
+      // skills" case would silently be a second "without skills" case.
+      skillRows.push({
+        id: "skill-a",
+        key: "skill-a",
+        name: "Skill A",
+        description: "A test skill.",
+        version: "1.0.0",
+        instructions: "Do the thing.",
+      });
       (sessions.find((s) => s.id === sid) as Row).loadedSkillIds = JSON.stringify(["skill-a"]);
     }
     return sid;
@@ -1109,6 +1127,10 @@ describe("#142 real providers carry the session's tools on the wire", () => {
         for (const names of wireToolNames()) {
           expect(names).toContain("count_rows");
           expect(names.some((n) => n.startsWith("mcp_github_list_issues"))).toBe(true);
+          // #146 — the skills arrive through `load_skill`, offered on every
+          // request of a session that has skills and on none of one without.
+          if (withSkills) expect(names).toContain("load_skill");
+          else expect(names).not.toContain("load_skill");
         }
       });
 
@@ -1124,6 +1146,10 @@ describe("#142 real providers carry the session's tools on the wire", () => {
         for (const names of wireToolNames()) {
           expect(names).toContain("count_rows");
           expect(names.some((n) => n.startsWith("mcp_github_list_issues"))).toBe(true);
+          // #146 — the skills arrive through `load_skill`, offered on every
+          // request of a session that has skills and on none of one without.
+          if (withSkills) expect(names).toContain("load_skill");
+          else expect(names).not.toContain("load_skill");
         }
       });
     }

@@ -22,7 +22,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 }));
 
 import { resolveProjectProvider } from "../src/lib/ai/project-provider.js";
-import { AIConfigError, AIProviderError } from "../src/lib/ai/errors.js";
+import { AIConfigError, AIProviderError, AIProviderRetiredError } from "../src/lib/ai/errors.js";
 import { isRetiredProviderError } from "../src/lib/ai/retired-providers.js";
 
 beforeEach(() => {
@@ -47,6 +47,7 @@ describe("resolveProjectProvider — retired project override (#149)", () => {
 
     expect(err).toBeInstanceOf(AIConfigError);
     expect(err).not.toBeInstanceOf(AIProviderError);
+    expect(err).toMatchObject({ status: 409, code: "AI_PROVIDER_RETIRED" });
     expect(isRetiredProviderError(err)).toBe(true);
     expect((err as Error).message).toContain(
       `This project's AI provider override is "copilot-native"`,
@@ -62,10 +63,16 @@ describe("resolveProjectProvider — retired project override (#149)", () => {
 });
 
 describe("isRetiredProviderError", () => {
-  it("is true only for a config error carrying the retired key", () => {
+  it("is true only for the retired-provider refusal", () => {
+    expect(
+      isRetiredProviderError(
+        new AIProviderRetiredError("x", { retiredProvider: "copilot-native" }),
+      ),
+    ).toBe(true);
+    // A plain config error is not one, whatever its details say.
     expect(
       isRetiredProviderError(new AIConfigError("x", { retiredProvider: "copilot-native" })),
-    ).toBe(true);
+    ).toBe(false);
     expect(isRetiredProviderError(new AIConfigError("x"))).toBe(false);
     expect(isRetiredProviderError(new AIConfigError("x", { other: 1 }))).toBe(false);
     expect(

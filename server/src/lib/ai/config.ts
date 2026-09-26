@@ -17,7 +17,7 @@
  */
 import { z } from "zod";
 import { isLoopbackHostname, isPrivateIp } from "@metis/shared";
-import { AIConfigError } from "./errors.js";
+import { AIConfigError, AIProviderRetiredError } from "./errors.js";
 import type { ProviderKey } from "./types.js";
 import { getConfigService } from "../config/config-service.js";
 import { HAIKU_MODEL_ID, SONNET_MODEL_ID } from "./model-router.js";
@@ -497,6 +497,19 @@ export function loadAIConfig(env: NodeJS.ProcessEnv = process.env): AIConfig {
 }
 
 /**
+ * #149 — {@link assertNoRetiredProviderConfig} over exactly the view
+ * {@link loadAIConfig} validates: `env` with the Admin → Settings overlay
+ * (vault-backed keys, `runtime_config` tunables) applied. The boot check calls
+ * this AFTER preloading the ConfigService caches, so startup and every request
+ * apply one rule to one view — a deployment the request path accepts (e.g. a
+ * leftover `COPILOT_PROVIDER_API_KEY` with `OPENAI_API_KEY` in the vault) is
+ * never refused at boot, and one it refuses is never started "healthy".
+ */
+export function assertNoRetiredEffectiveProviderConfig(env: NodeJS.ProcessEnv = process.env): void {
+  assertNoRetiredProviderConfig(env, applyConfigServiceOverlay(env));
+}
+
+/**
  * #149 — refuse a retired provider, and a retired Copilot-era env name the
  * chosen provider used to fall back to, BEFORE schema validation (whose
  * generic "Invalid enum value" would not say what to do). Runs over the merged
@@ -512,11 +525,12 @@ export function assertNoRetiredProviderConfig(
 ): void {
   const selected = merged.AI_PROVIDER;
   if (isRetiredProviderKey(selected)) {
-    const fromRuntimeConfig = raw.AI_PROVIDER !== selected;
-    throw new AIConfigError(
-      retiredProviderMessage(selected, fromRuntimeConfig ? "runtime-config" : "AI_PROVIDER"),
-      { retiredProvider: selected.trim(), migration: COPILOT_MIGRATION_DOC },
-    );
+    const source = raw.AI_PROVIDER !== selected ? "runtime-config" : "AI_PROVIDER";
+    throw new AIProviderRetiredError(retiredProviderMessage(selected, source), {
+      retiredProvider: selected.trim(),
+      source,
+      migration: COPILOT_MIGRATION_DOC,
+    });
   }
   if (truthy(merged.AI_OFFLINE)) return;
   // A leftover `COPILOT_MODEL` equal to the openai/azure default (the value
