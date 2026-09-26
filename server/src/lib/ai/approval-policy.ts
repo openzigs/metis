@@ -190,7 +190,13 @@ export class ApprovalGateService implements ApprovalGate {
       decision: ApprovalDecision,
       reason?: string,
     ): Promise<GateResult> => {
-      await this.audit(bound, argsHash, decision, reason);
+      const recorded = await this.audit(bound, argsHash, decision, reason);
+      // #142 — every approval decision is recorded. An ALLOW that could not be
+      // written is refused: a tool must never run with no approval row behind
+      // it. (A denial stands either way; its failed write is logged.)
+      if (allowed && !recorded) {
+        return { allowed: false, decision: "error", reason: "audit_write_failed" };
+      }
       return { allowed, decision, ...(reason ? { reason } : {}) };
     };
 
@@ -226,12 +232,15 @@ export class ApprovalGateService implements ApprovalGate {
     }
     if (answer === "expired") return finish(false, "expired", "approval_timeout");
     const approved = answer === true || answer === "approve";
-    if (approved && policy === "prompt-once" && !input.forcePrompt) {
-      this.remembered.add(`${input.risk}:${input.toolName}`);
-    }
-    return approved
-      ? finish(true, "approve", policy === "prompt-once" ? "prompt-once" : undefined)
-      : finish(false, "deny", "user_denied");
+    if (!approved) return finish(false, "deny", "user_denied");
+    // Only a `prompt-once` answer is tagged as one: that tag is what the
+    // session memory looks up, so a forced (MCP `requireApproval`) or
+    // `always-prompt` approval must never be mistaken for it later.
+    const once = policy === "prompt-once" && !input.forcePrompt;
+    const result = await finish(true, "approve", once ? "prompt-once" : undefined);
+    // Remembered only once the approval is on record (an unrecorded one was refused).
+    if (once && result.allowed) this.remembered.add(`${input.risk}:${input.toolName}`);
+    return result;
   }
 
   private async isRemembered(toolName: string, risk: RiskLevel): Promise<boolean> {
@@ -255,8 +264,8 @@ export class ApprovalGateService implements ApprovalGate {
     argsHash: string,
     decision: ApprovalDecision,
     reason?: string,
-  ): Promise<void> {
-    if (!this.opts.persist) return;
+  ): Promise<boolean> {
+    if (!this.opts.persist) return true;
     try {
       await prisma.aIToolApproval.create({
         data: {
@@ -269,27 +278,32 @@ export class ApprovalGateService implements ApprovalGate {
           reason: reason ?? null,
         },
       });
+      return true;
     } catch (err) {
       log.error("Approval audit write failed", {
         sessionId: input.sessionId,
         toolName: input.toolName,
         error: (err as Error).message,
       });
+      return false;
     }
   }
 }
 
 /**
  * #142 — `prompt-once` memory backed by the audit table: a person approved this
- * tool, at this risk, earlier in THIS session. Only rows the gate itself wrote
- * count (`decision = approve`); an automatic approval never does.
+ * tool, at this risk, earlier in THIS session, in answer to a `prompt-once`
+ * prompt. Only rows the gate itself wrote count (`decision = approve`,
+ * `reason = prompt-once`); an automatic approval never does, and neither does
+ * an approval given under `always-prompt` or a forced MCP prompt — each of
+ * those admitted one call, not the tool for the rest of the session.
  */
 export function sessionApprovalMemory(
   sessionId: string,
 ): (toolName: string, risk: RiskLevel) => Promise<boolean> {
   return async (toolName, risk) => {
     const row = await prisma.aIToolApproval.findFirst({
-      where: { sessionId, toolName, risk, decision: "approve" },
+      where: { sessionId, toolName, risk, decision: "approve", reason: "prompt-once" },
       select: { id: true },
     });
     return row !== null;

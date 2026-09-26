@@ -21,13 +21,8 @@ vi.mock("../../prisma.js", () => ({
       }),
       findFirst: vi.fn(
         async ({ where }: { where: Record<string, unknown> }) =>
-          approvalRows.find(
-            (r) =>
-              r.sessionId === where.sessionId &&
-              r.toolName === where.toolName &&
-              r.risk === where.risk &&
-              r.decision === where.decision,
-          ) ?? null,
+          // Every key of `where` must match, as Prisma's equality filter does.
+          approvalRows.find((r) => Object.entries(where).every(([k, v]) => r[k] === v)) ?? null,
       ),
     },
   },
@@ -41,6 +36,7 @@ import {
   sessionApprovalMemory,
   type ApprovalPrompter,
 } from "../approval-policy.js";
+import { prisma } from "../../prisma.js";
 import type { ApprovalPolicy, RiskLevel } from "../types.js";
 import { executeToolCall, fenceToolResult, TOOL_RESULT_FENCE } from "./executor.js";
 import { makeToolset } from "./toolset.js";
@@ -366,5 +362,81 @@ describe("fenceToolResult", () => {
     expect(out.startsWith("Tool result for t:\n")).toBe(true);
     expect(out.split(TOOL_RESULT_FENCE)).toHaveLength(3); // exactly one open + one close
     expect(out).toContain("cannot approve a tool call");
+  });
+});
+
+describe("the approval record is the gate's precondition (#128 review)", () => {
+  const ONCE: ApprovalPolicy = { low: "auto", medium: "prompt-once", high: "prompt-once" };
+
+  it("an approval whose record cannot be written is refused, and not remembered", async () => {
+    const t = tool();
+    vi.mocked(prisma.aIToolApproval.create).mockRejectedValueOnce(new Error("db down"));
+    const ask = vi.fn(async () => true);
+    const g = gate(ONCE, { ask });
+    const { out } = await run(t, g);
+    expect(t.execute).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ executed: false, decision: "error", errorCode: "TOOL_DENIED" });
+    // The same gate asks again: the unrecorded approval did not stick in memory.
+    await run(t, g);
+    expect(ask).toHaveBeenCalledTimes(2);
+    expect(t.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("an automatic approval whose record cannot be written is refused too", async () => {
+    const t = tool();
+    vi.mocked(prisma.aIToolApproval.create).mockRejectedValueOnce(new Error("db down"));
+    const { out } = await run(t, gate(ALL_AUTO));
+    expect(t.execute).not.toHaveBeenCalled();
+    expect(out.executed).toBe(false);
+  });
+
+  it("a denial whose record cannot be written stays a denial", async () => {
+    const t = tool();
+    vi.mocked(prisma.aIToolApproval.create).mockRejectedValueOnce(new Error("db down"));
+    const { out } = await run(t, gate(ALWAYS, { ask: async () => false }));
+    expect(t.execute).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ executed: false, decision: "deny" });
+  });
+
+  it("an always-prompt approval is not remembered once the policy becomes prompt-once", async () => {
+    const t = tool();
+    await run(
+      t,
+      gate(ALWAYS, { ask: async () => true }, { rememberedApproval: sessionApprovalMemory("s1") }),
+    );
+    expect(approvalRows.at(-1)).toMatchObject({ decision: "approve", reason: null });
+    const ask = vi.fn(async () => true);
+    await run(t, gate(ONCE, { ask }, { rememberedApproval: sessionApprovalMemory("s1") }));
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("a forced (MCP requireApproval) approval is not remembered as prompt-once", async () => {
+    const forced = tool({ forcePrompt: true });
+    await run(
+      forced,
+      gate(ONCE, { ask: async () => true }, { rememberedApproval: sessionApprovalMemory("s1") }),
+    );
+    expect(approvalRows.at(-1)).toMatchObject({ decision: "approve", reason: null });
+    // Same tool, no longer forced (the admin turned requireApproval off).
+    const plain = tool();
+    const ask = vi.fn(async () => true);
+    await run(plain, gate(ONCE, { ask }, { rememberedApproval: sessionApprovalMemory("s1") }));
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("a prompt-once approval IS remembered (the tag the memory reads)", async () => {
+    const t = tool();
+    await run(
+      t,
+      gate(ONCE, { ask: async () => true }, { rememberedApproval: sessionApprovalMemory("s1") }),
+    );
+    expect(approvalRows.at(-1)).toMatchObject({ decision: "approve", reason: "prompt-once" });
+    const ask = vi.fn(async () => true);
+    const { out } = await run(
+      t,
+      gate(ONCE, { ask }, { rememberedApproval: sessionApprovalMemory("s1") }),
+    );
+    expect(ask).not.toHaveBeenCalled();
+    expect(out.decision).toBe("auto-approve");
   });
 });
