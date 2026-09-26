@@ -127,9 +127,11 @@ describe("isTestSourcePath — checked against onyourleft's real paths", () => {
     "apps/web/src/game/audio-testing.ts",
     "apps/web/src/game/route-fixtures-testing.ts",
     "packages/fit/tools/fixture-corpus/corpus.ts",
-    "apps/web/browser/game-harness.ts",
-    "apps/web/browser/harness.ts",
     "apps/web/vitest.config.ts",
+    "src/test-harness.ts",
+    "tests/support/test_harness.py",
+    "src/spec/models/user_spec.rb",
+    "src/main/java/com/x/PaymentSplitTest.java",
     "e2e/tests/login.spec.ts",
     "src/__tests__/a.ts",
     "pkg/foo_test.go",
@@ -171,6 +173,17 @@ describe("isTestSourcePath — checked against onyourleft's real paths", () => {
     "src/main/kotlin/HotSpec.kt",
     "src/spec.ts",
     "src/test.ts",
+    // #191 — an ambiguous name resolves to production (reading a test file
+    // costs a little time; dropping a production file loses its rules).
+    "src/wire-harness.ts", // a wiring harness in automotive code
+    "src/harness.ts",
+    "apps/web/browser/harness.ts",
+    "apps/web/browser/game-harness.ts",
+    "src/specs/order.ts", // product specifications
+    "specs/001-checkout/plan.ts",
+    "src/main/java/com/x/SplitTest.java", // an A/B split-test feature
+    "src/main/java/com/x/AbTest.java",
+    "src/main/kotlin/MultivariateTests.kt",
   ])("%s is production code", (p) => expect(isTestSourcePath(p)).toBe(false));
 });
 

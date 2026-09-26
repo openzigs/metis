@@ -649,15 +649,6 @@ describe("generated-docs routes", () => {
             total: 2,
             batch: { done: 13, total: 52 },
           });
-          // #178 — many batches split before the next finished: 14/80 is a
-          // lower fraction than 13/52, and the bar must not move back.
-          options.onSectionProgress?.({
-            section: "Rules",
-            status: "generating",
-            index: 1,
-            total: 2,
-            batch: { done: 14, total: 80 },
-          });
           options.onSectionProgress?.({
             section: "Overview",
             status: "done",
@@ -729,16 +720,59 @@ describe("generated-docs routes", () => {
         65,
         "Section 1/2: Rules (batch 13/52)",
       );
-      expect(jobEvents.progress).toHaveBeenCalledWith(
-        "doc-generation",
-        "doc-1",
-        "proj-1",
-        65,
-        "Section 1/2: Rules (batch 14/80)",
+    });
+
+    // #208 — its own test (it sat inside the fallbacks test above).
+    it("never moves the progress bar back when a batched section's batch total grows", async () => {
+      (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "doc-1",
+        projectId: "proj-1",
+        title: "Doc",
+        scope: "full",
+        scopeFilter: JSON.stringify({ docType: "user-guide" }),
+        evidencePolicy: "{}",
+      });
+      (prisma.generatedDocumentVersion.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(
+        null,
       );
-      const percents = (jobEvents.progress as ReturnType<typeof vi.fn>).mock.calls
-        .filter(([kind, id]) => kind === "doc-generation" && id === "doc-1")
-        .map(([, , , percent]) => percent as number);
+      (prisma.generatedDocument.update as ReturnType<typeof vi.fn>).mockResolvedValue({});
+      (prisma.codeSymbol.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+      const rules = (done: number, total: number) => ({
+        section: "Rules",
+        status: "generating",
+        index: 1,
+        total: 2,
+        batch: { done, total },
+      });
+      (synthesizeHolisticDocument as ReturnType<typeof vi.fn>).mockImplementation(
+        async (
+          _projectId: string,
+          _docType: string,
+          _title: string,
+          options: { onSectionProgress?: (update: ReturnType<typeof rules>) => void },
+        ) => {
+          options.onSectionProgress?.(rules(13, 52));
+          // #178 — many batches split before the next finished: 14/80 is a
+          // lower fraction than 13/52, and the bar must not move back.
+          options.onSectionProgress?.(rules(14, 80));
+          options.onSectionProgress?.(rules(60, 80));
+          return { markdown: "# User Guide", warnings: [] };
+        },
+      );
+
+      await generateDocumentAsync("doc-1", "proj-1");
+
+      const calls = (jobEvents.progress as ReturnType<typeof vi.fn>).mock.calls.filter(
+        ([kind, id]) => kind === "doc-generation" && id === "doc-1",
+      );
+      const at = (message: string) => calls.find((c) => c[4] === message)?.[3];
+      // 13/52 of section 1 of 2 inside Phase 2's 60–100% share: 60 + 12.5% of 40.
+      expect(at("Section 1/2: Rules (batch 13/52)")).toBe(65);
+      // 14/80 alone would be 63.5: the bar holds at 65 instead of going back.
+      expect(at("Section 1/2: Rules (batch 14/80)")).toBe(65);
+      // ...and moves on once the section really is further along (60 + 37.5% of 40).
+      expect(at("Section 1/2: Rules (batch 60/80)")).toBe(75);
+      const percents = calls.map(([, , , percent]) => percent as number);
       for (let i = 1; i < percents.length; i++) {
         expect(percents[i]).toBeGreaterThanOrEqual(percents[i - 1]);
       }

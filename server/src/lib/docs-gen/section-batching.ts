@@ -214,6 +214,23 @@ export function shouldResplit(
   );
 }
 
+/**
+ * #208 — why a cut-off multi-module batch that {@link shouldResplit} did not
+ * split was kept whole, decided from the batch's OWN size. A batch too small
+ * for its size to explain the cut-off is a runaway model; any other batch was
+ * refused only because the section's re-split allowance had run out. Reading
+ * the shared allowance instead made the label depend on which batches had
+ * finished first under Phase-2 concurrency.
+ */
+export function keptWholeReason(
+  batch: readonly BatchCandidate<unknown>[],
+  outputBudget: number,
+): "allowance" | "runaway" {
+  return batchOutputChars(batch) >= MIN_SPLIT_BUDGET_FRACTION * outputBudget
+    ? "allowance"
+    : "runaway";
+}
+
 // ---------------------------------------------------------------------------
 // Merge
 // ---------------------------------------------------------------------------

@@ -742,8 +742,22 @@ export function factsTruncatedWarning(
 /** The provider kinds whose per-section facts cap can raise `facts-truncated`. */
 export type FactsCapProvider = "local" | "bedrock" | "anthropic";
 
-/** The section label {@link phase1FactsTruncatedWarning} uses. */
-const PHASE1_FACTS_SECTION = "Phase 1 facts";
+/**
+ * The section label of the Phase-1 fact-extraction warnings
+ * ({@link phase1FactsTruncatedWarning}, {@link phase1ChunksFailedWarning}).
+ * `summarizeWarnings` tells causes that share a kind apart by section label, so
+ * every Phase-1 cause with its own remedy has its own label (#191).
+ */
+export const PHASE1_FACTS_SECTION = "Phase 1 facts";
+
+/** The section label of {@link sqlFilesSkippedWarning}. */
+export const SQL_FILES_SECTION = "SQL files";
+
+/** The section label of {@link formulaLinesSkippedWarning}. */
+export const FORMULA_EXTRACTION_SECTION = "Formula extraction";
+
+/** The section-label prefix of {@link sqlScanIncompleteWarning} (one per repository). */
+export const SQL_SCAN_SECTION_PREFIX = "SQL schema scan (";
 
 /** The per-provider facts-cap knobs a {@link factsTruncatedWarning} message names. */
 const FACTS_CAP_KNOB = /DOCS_GEN_(?:LOCAL|BEDROCK|ANTHROPIC)_FACTS_CHAR_CAP/g;
@@ -790,7 +804,7 @@ export function phase1ChunksFailedWarning(moduleNames: readonly string[]): DocWa
       : "";
   return {
     kind: "section-failed",
-    section: "Phase 1 facts",
+    section: PHASE1_FACTS_SECTION,
     message:
       `Fact extraction failed for all or part of ${moduleNames.length} module(s), so their facts are incomplete or missing: ${listed}${more}. ` +
       `Any parts that succeeded are cached; regenerate to retry only the failed parts.`,
@@ -1010,24 +1024,36 @@ export function serializeWarnings(warnings: DocWarning[]): string | null {
  */
 export function summarizeWarnings(warnings: DocWarning[]): string {
   if (warnings.length === 0) return "";
-  const failed = warnings.filter((w) => w.kind === "section-failed").length;
+  // #191 — Phase-1 causes that share a kind with a section-level one are told
+  // apart by their own section label, so each gets the remedy for ITS cause.
+  const isSqlFiles = (w: DocWarning) => w.section === SQL_FILES_SECTION;
+  const isSqlScan = (w: DocWarning) => w.section.startsWith(SQL_SCAN_SECTION_PREFIX);
+  const isFormulaSkip = (w: DocWarning) => w.section === FORMULA_EXTRACTION_SECTION;
+  const isPhase1 = (w: DocWarning) => w.section === PHASE1_FACTS_SECTION;
+  const failed = warnings.filter((w) => w.kind === "section-failed" && !isPhase1(w)).length;
+  const phase1Failed = warnings.some((w) => w.kind === "section-failed" && isPhase1(w));
   const ungroundedWarnings = warnings.filter((w) => w.kind === "section-ungrounded");
   const ungrounded = ungroundedWarnings.length;
   // #186 — a below-bar score from a SAMPLE is an estimate; the line says so.
   const ungroundedSampled = ungroundedWarnings.filter((w) => w.sampled === true).length;
   const noModules = warnings.filter((w) => w.kind === "no-modules").length;
-  const sourceUnavailable = warnings.filter((w) => w.kind === "source-unavailable").length;
+  const sourceUnavailable = warnings.filter(
+    (w) => w.kind === "source-unavailable" && !isSqlFiles(w) && !isSqlScan(w),
+  ).length;
+  const sqlFilesSkipped = warnings.some((w) => w.kind === "source-unavailable" && isSqlFiles(w));
+  const sqlScanIncomplete = warnings.filter(
+    (w) => w.kind === "source-unavailable" && isSqlScan(w),
+  ).length;
+  const formulaSkipped = warnings.some((w) => w.kind === "facts-truncated" && isFormulaSkip(w));
   // Two different facts-truncated causes share the kind: an INPUT facts cap per
   // section (factsTruncatedWarning, any provider) and Phase-1 OUTPUT truncation
   // (phase1FactsTruncatedWarning). Each gets its own remedy, and the input-cap
   // remedy names the knob(s) the warnings themselves named (PR #187 review).
   const factsCapWarnings = warnings.filter(
-    (w) => w.kind === "facts-truncated" && w.section !== PHASE1_FACTS_SECTION,
+    (w) => w.kind === "facts-truncated" && !isPhase1(w) && !isFormulaSkip(w),
   );
   const factsTruncated = factsCapWarnings.length;
-  const phase1Truncated = warnings.some(
-    (w) => w.kind === "facts-truncated" && w.section === PHASE1_FACTS_SECTION,
-  );
+  const phase1Truncated = warnings.some((w) => w.kind === "facts-truncated" && isPhase1(w));
   const factsCapKnobs = [
     ...new Set(factsCapWarnings.flatMap((w) => w.message.match(FACTS_CAP_KNOB) ?? [])),
   ].sort();
@@ -1040,6 +1066,10 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
   const runSpotChecked = warnings.some((w) => w.kind === "grounding-sampled" && w.runLevel);
   const parts: string[] = [];
   if (failed > 0) parts.push(`${failed} section(s) failed to generate`);
+  if (phase1Failed)
+    parts.push(
+      "fact extraction failed for all or part of some modules — regenerate to retry only the failed parts",
+    );
   if (ungrounded > 0)
     parts.push(
       `${ungrounded} section(s) include statements not auto-verified against the source` +
@@ -1052,6 +1082,22 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
   if (noModules > 0) parts.push("no documentable modules were found despite indexed code");
   if (sourceUnavailable > 0)
     parts.push("source code could not be read — re-ingest the project and regenerate");
+  if (sqlFilesSkipped)
+    parts.push(
+      "some SQL file(s) or directories could not be read, so their rules are missing — " +
+        "check that the server can read them (permissions, encoding), then regenerate",
+    );
+  if (sqlScanIncomplete > 0)
+    parts.push(
+      `the SQL-only-directory scan could not look at every directory of ${sqlScanIncomplete} ` +
+        `repositor${sqlScanIncomplete === 1 ? "y" : "ies"} — give the server read access to ` +
+        `the directories the warning names; its directory bound is a fixed safety limit`,
+    );
+  if (formulaSkipped)
+    parts.push(
+      "formula pre-extraction skipped over-long runs of generated or minified code " +
+        "(their rules were still mined, and no setting changes this)",
+    );
   if (factsTruncated > 0)
     parts.push(
       `${factsTruncated} section(s) exceeded the facts budget — raise ` +
@@ -1084,8 +1130,14 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
   // soft "Needs review" reserved for unverified-but-likely-correct content.
   // #1226 — a truncated or missing section is the same class of hard problem:
   // the document is objectively incomplete, not merely unverified.
+  // #191 — rules from SQL the scan or the reader could not reach are missing
+  // too: the document is incomplete, not merely unverified.
   const prefix =
-    sourceUnavailable > 0 || outputTruncated > 0 || missing > 0
+    sourceUnavailable > 0 ||
+    sqlFilesSkipped ||
+    sqlScanIncomplete > 0 ||
+    outputTruncated > 0 ||
+    missing > 0
       ? "Degraded output"
       : "Needs review";
   return `${prefix} — ${parts.join("; ")}.`;
@@ -1114,38 +1166,63 @@ export function sqlScanIncompleteWarning(
   }
   return {
     kind: "source-unavailable",
-    section: `SQL schema scan (${repository})`,
-    message: `Some SQL-only directories were not mined for rules: ${parts.join("; ")}. Their constraints, triggers and views are missing from this document.`,
+    section: `${SQL_SCAN_SECTION_PREFIX}${repository})`,
+    message:
+      `Some SQL-only directories were not mined for rules: ${parts.join("; ")}. Their constraints, triggers and views are missing from this document.` +
+      (stats.unreadable.length > 0
+        ? " Give the server read access to the directories named, then regenerate."
+        : "") +
+      (stats.truncated ? " The directory bound is a fixed safety limit." : ""),
     severity: "warning",
   };
 }
 
 /**
- * `.sql` files in a module's directory that could not be read or mined. Their
- * constraints, triggers and views are missing from the document; never skipped
- * silently.
+ * `.sql` files in a module's directory that could not be read or mined, and
+ * module directories that could not be listed at all (so none of their `.sql`
+ * files was seen). Their constraints, triggers and views are missing from the
+ * document; never skipped silently. The remedy is read access on the server —
+ * re-ingesting a project whose files the server cannot read changes nothing.
  */
-export function sqlFilesSkippedWarning(files: readonly string[]): DocWarning {
-  const listed = files.slice(0, 10).join(", ");
-  const more = files.length > 10 ? ` and ${files.length - 10} more` : "";
+export function sqlFilesSkippedWarning(
+  files: readonly string[],
+  directories: readonly string[] = [],
+): DocWarning {
+  const name = (items: readonly string[]) =>
+    items.slice(0, 10).join(", ") + (items.length > 10 ? ` and ${items.length - 10} more` : "");
+  const parts: string[] = [];
+  if (files.length > 0) {
+    parts.push(
+      `${files.length} SQL file(s) could not be read or mined, so their rules are missing: ${name(files)}`,
+    );
+  }
+  if (directories.length > 0) {
+    parts.push(
+      `${directories.length} module director${directories.length === 1 ? "y" : "ies"} could not be listed, so none of ${directories.length === 1 ? "its" : "their"} SQL files was mined: ${name(directories)}`,
+    );
+  }
   return {
     kind: "source-unavailable",
-    section: "Phase 1 facts",
-    message: `${files.length} SQL file(s) could not be read or mined, so their rules are missing: ${listed}${more}.`,
+    section: SQL_FILES_SECTION,
+    message: `${parts.join(". ")}. Check that the server can read them, then regenerate.`,
     severity: "warning",
   };
 }
 
 /**
- * Formula extraction was not run on lines longer than `limitChars` (generated
- * or minified code), in the named modules. Their rules were still mined; only
- * the pre-extracted formulas of those lines are missing.
+ * Formula pre-extraction was not run on parts of over-long lines (#191):
+ * runs longer than `limitChars` with no `;`, `{`, `}` or `,` to split them at —
+ * embedded data or long literals in generated or minified code. A long line
+ * is otherwise split at those boundaries and every part is extracted. Rules on
+ * those lines were still mined and the model still read them; only the
+ * pre-extracted formula list lacks them.
  */
 export function formulaLinesSkippedWarning(
   modules: ReadonlyArray<{ module: string; lines: number }>,
   limitChars: number,
 ): DocWarning {
-  const total = modules.reduce((n, m) => n + m.lines, 0);
+  let total = 0;
+  for (const m of modules) total += m.lines;
   const listed = modules
     .slice(0, 10)
     .map((m) => `${m.module} (${m.lines})`)
@@ -1153,8 +1230,13 @@ export function formulaLinesSkippedWarning(
   const more = modules.length > 10 ? ` and ${modules.length - 10} more` : "";
   return {
     kind: "facts-truncated",
-    section: "Phase 1 facts",
-    message: `Formulas were not extracted from ${total} line(s) longer than ${limitChars.toLocaleString("en-US")} characters (generated or minified code): ${listed}${more}. Their rules were still mined.`,
+    section: FORMULA_EXTRACTION_SECTION,
+    message:
+      `Formulas were not pre-extracted from parts of ${total} line(s) — runs longer than ` +
+      `${limitChars.toLocaleString("en-US")} characters with no ";", "{", "}" or "," to split at, ` +
+      `typical of generated or minified code: ${listed}${more}. Their rules were still mined ` +
+      `and the model still read them. No setting changes this; if the code is hand-written, ` +
+      `break those lines up.`,
     severity: "warning",
   };
 }

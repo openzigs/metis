@@ -125,6 +125,8 @@ interface FakeOptions {
   empty?: (call: Call) => boolean;
   /** #178 — milliseconds a call takes, so calls can finish out of order. */
   delayMs?: (call: Call) => number;
+  /** #208 — milliseconds between a call's first chunk and its end. */
+  tailMs?: (call: Call) => number;
   /** #178 — report token usage for every call. */
   usage?: { promptTokens: number; completionTokens: number; cacheReadTokens?: number };
 }
@@ -135,6 +137,8 @@ interface Concurrency {
   finished: Call[];
   /** Most calls in flight at once. */
   peak: number;
+  /** #208 — `start:`, `first:` (first chunk) and `end:` per call, keyed by its lead module. */
+  events: string[];
 }
 
 function fakeModel(
@@ -169,7 +173,10 @@ function fakeModel(
     const capChars = Math.floor(maxTokens * CHARS_PER_TOKEN);
     const cut = text.length > capChars || options.cutOff?.(call) === true;
     if (cut) text = text.slice(0, Math.min(text.length, capChars, 400));
+    p.events.push(`first:${group}:${modules[0]}`);
     yield { type: "delta", content: text };
+    const tail = options.tailMs?.(call) ?? 0;
+    if (tail > 0) await new Promise((r) => setTimeout(r, tail));
     if (options.usage) yield { type: "usage", usage: options.usage };
     yield { type: "done", finishReason: cut ? "length" : "stop" };
   }
@@ -180,6 +187,7 @@ function fakeModel(
     calls,
     finished: [] as Call[],
     peak: 0,
+    events: [] as string[],
     async *stream(messages: ChatMessage[], opts?: ChatOptions): AsyncGenerator<ChatChunk> {
       const user = String(messages[messages.length - 1].content);
       const group = /Section group: \*\*(.+?)\*\*/.exec(user)?.[1] ?? "?";
@@ -191,6 +199,7 @@ function fakeModel(
       const maxTokens = (opts as { maxTokens?: number } | undefined)?.maxTokens ?? 0;
       const call: Call = { group, modules, user, maxTokens };
       calls.push(call);
+      p.events.push(`start:${group}:${modules[0]}`);
       inFlight += 1;
       p.peak = Math.max(p.peak, inFlight);
       try {
@@ -199,6 +208,7 @@ function fakeModel(
         yield* reply(call);
       } finally {
         inFlight -= 1;
+        p.events.push(`end:${group}:${modules[0]}`);
         p.finished.push(call);
       }
     },
@@ -218,12 +228,12 @@ function fakeModel(
   return p as unknown as AIProvider & { calls: Call[] } & Concurrency;
 }
 
-function routerFor(provider: AIProvider): Phase2Router {
+function routerFor(provider: AIProvider, supportsCaching = false): Phase2Router {
   const tuning = docsGenTuning("anthropic", provider.model);
   const bundle: Phase2ProviderBundle = {
     kind: "anthropic",
     provider,
-    supportsCaching: false,
+    supportsCaching,
     factsCharCap: tuning.factsCharCap,
     tuning,
   };
@@ -1217,6 +1227,87 @@ describe("#178 — a batched section's batches run through a bounded pool", () =
     const warning = result.warnings.find((w) => w.section === RULES.label)!;
     expect(warning.message).toContain("re-split allowance");
     expect(warning.message).toContain('"p0"');
+  });
+
+  it("labels a kept-whole batch by its own size, whatever order the batches finish in (#208)", async () => {
+    // PR #181 re-review: "allowance" vs "runaway" was read from the shared
+    // re-split budget when a batch FINISHED. A runaway batch finishing after
+    // other batches had spent the budget to exactly 0 read as "allowance".
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "8192");
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "2");
+    const facts = [
+      ...Array.from({ length: 4 }, (_, i) => mod(`q${i}`, { rules: 28 })),
+      mod("tiny1", { rules: 1 }),
+      mod("tiny2", { rules: 1 }),
+    ];
+    const plan = planSectionBatches(facts, RULES, 150_000, 8_192);
+    expect(plan.batches.map((b) => b.map((m) => m.item.moduleName))).toEqual([
+      ["q0", "q1", "q2", "q3"],
+      ["tiny1", "tiny2"],
+    ]);
+    const isTiny = (c: Call) => c.modules[0] === "tiny1";
+    const warningFor = async (tinyMs: number, bigMs: number) => {
+      const provider = fakeModel({
+        cutOff: (c) => c.group === RULES.label,
+        delayMs: (c) => (c.group !== RULES.label ? 0 : isTiny(c) ? tinyMs : bigMs),
+      });
+      const result = await run(facts, provider);
+      const finished = provider.finished.filter((c) => c.group === RULES.label);
+      return {
+        tinyLast: isTiny(finished[finished.length - 1]),
+        message: result.warnings.find(
+          (w) => w.section === RULES.label && w.kind === "section-truncated",
+        )!.message,
+      };
+    };
+    const tinyFirst = await warningFor(1, 30);
+    const tinyLast = await warningFor(150, 1);
+    // The calls really did finish in the two orders...
+    expect(tinyFirst.tinyLast).toBe(false);
+    expect(tinyLast.tinyLast).toBe(true);
+    // ...and the user-visible text is the same.
+    expect(tinyLast.message).toBe(tinyFirst.message);
+    expect(tinyLast.message).toContain('the batch covering "tiny1", "tiny2" was cut off although');
+    expect(tinyLast.message).toContain(
+      'the batch covering "q2", "q3" was not split again because the section\'s re-split allowance',
+    );
+  });
+
+  it("with prompt caching, starts the other batches once the first batch's reply has begun (#208)", async () => {
+    // Anthropic: "a cache entry only becomes available after the first response
+    // begins" — four batches sent at once would each WRITE the section's cached
+    // system prompt. The first batch runs alone until its reply starts.
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "4");
+    const provider = fakeModel({
+      delayMs: (c) => (c.group === RULES.label ? 20 : 0),
+      tailMs: (c) => (c.group === RULES.label ? 40 : 0),
+    });
+    await synthesizeFinalDocument(
+      onyourleftSized(),
+      META,
+      "business-requirements",
+      "BRD",
+      routerFor(provider, true),
+      "p1",
+    );
+    const rules = provider.events.filter((e) => e.includes(`:${RULES.label}:`));
+    const lead = rules[0].split(":").pop();
+    const firstChunk = rules.indexOf(`first:${RULES.label}:${lead}`);
+    const firstEnd = rules.indexOf(`end:${RULES.label}:${lead}`);
+    const secondStart = rules.findIndex((e, i) => i > 0 && e.startsWith("start:"));
+    expect(secondStart).toBeGreaterThan(firstChunk);
+    // ...but not after the first batch has FINISHED: warm-up waits for the
+    // reply to begin, not for the whole call.
+    expect(secondStart).toBeLessThan(firstEnd);
+    expect(provider.peak).toBe(4);
+  });
+
+  it("without prompt caching, fans out at once", async () => {
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "4");
+    const provider = fakeModel({ delayMs: (c) => (c.group === RULES.label ? 20 : 0) });
+    await run(onyourleftSized(), provider);
+    const rules = provider.events.filter((e) => e.includes(`:${RULES.label}:`));
+    expect(rules.slice(0, 4).every((e) => e.startsWith("start:"))).toBe(true);
   });
 
   it("reports per-batch progress monotonically while batches finish out of order and split", async () => {

@@ -440,6 +440,33 @@ describe("captureGenerationInputs", () => {
     expect(mocks.resolve).toHaveBeenCalledWith(root, "z-source");
   });
 
+  it("scans a directory with 200,000 subdirectories without an argument-spread overflow (#191)", async () => {
+    // `queue.push(...children)` passed every child as a call argument and threw
+    // a RangeError past ~130k on Node 22, failing the whole capture.
+    mocks.list.mockResolvedValueOnce(
+      Array.from({ length: 200_000 }, (_, i) => ({
+        name: `d${i}`,
+        isFile: () => false,
+        isDirectory: () => true,
+      })),
+    );
+    const fs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const sources =
+      await vi.importActual<typeof import("./repository-sources.js")>("./repository-sources.js");
+    mocks.list.mockImplementation(async () => []);
+    mocks.resolve.mockImplementation(async (base: string, relative: string) =>
+      path.join(base, relative),
+    );
+    try {
+      await expect(capture()).resolves.toBeDefined();
+      // The safety bound still applies: SQL_SCAN_DIR_CAP directories are listed.
+      expect(mocks.list.mock.calls.length).toBe(100_000);
+    } finally {
+      mocks.list.mockReset().mockImplementation(fs.readdir as never);
+      mocks.resolve.mockReset().mockImplementation(sources.resolveSourcePath);
+    }
+  });
+
   it("keeps same-path inputs in different repositories distinct", async () => {
     mocks.symbols.mockResolvedValue([
       symbol(),
