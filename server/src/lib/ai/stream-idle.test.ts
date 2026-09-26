@@ -90,3 +90,41 @@ describe("withIdleTimeout (#1366)", () => {
     await expect(collect(withIdleTimeout(boom(), 1000))).rejects.toThrow("provider exploded");
   });
 });
+
+describe("withIdleTimeout — #127 start after the local slot is acquired", () => {
+  it("does not count time queued before the gate opens", async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    async function* slowStart(): AsyncGenerator<string> {
+      await new Promise((r) => setTimeout(r, 60)); // queued behind another generation
+      yield "a";
+    }
+    const run = collect(withIdleTimeout(slowStart(), 30, undefined, gate));
+    setTimeout(() => open(), 45); // slot acquired; first token 15ms later
+    expect(await run).toEqual(["a"]);
+  });
+
+  it("still times out once the gate has opened", async () => {
+    await expect(
+      collect(withIdleTimeout(stallsAfter<string>([]), 20, undefined, Promise.resolve())),
+    ).rejects.toBeInstanceOf(StreamIdleTimeoutError);
+  });
+
+  it("a rejected gate arms the clock too", async () => {
+    await expect(
+      collect(
+        withIdleTimeout(stallsAfter<string>([]), 20, undefined, Promise.reject(new Error("x"))),
+      ),
+    ).rejects.toBeInstanceOf(StreamIdleTimeoutError);
+  });
+
+  it("without the gate the same queue wait IS a stall (the behaviour the gate fixes)", async () => {
+    async function* slowStart(): AsyncGenerator<string> {
+      await new Promise((r) => setTimeout(r, 60));
+      yield "a";
+    }
+    await expect(collect(withIdleTimeout(slowStart(), 30))).rejects.toBeInstanceOf(
+      StreamIdleTimeoutError,
+    );
+  });
+});

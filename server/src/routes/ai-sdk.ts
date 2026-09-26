@@ -6,7 +6,9 @@
  *   POST  /api/ai/sessions/:id/approve-plan     — approve|reject pending plan
  *   GET   /api/ai/sessions/:id/plan             — fetch latest plan
  *   GET   /api/ai/sessions?status=resumable     — resumable sessions
- *   POST  /api/ai/sessions/:id/resume           — rehydrate snapshot
+ *
+ * Resume and manual compaction moved to `ai-conversation.ts` with the
+ * server-owned transcript (#127).
  *
  * These hang off a separate router so the existing `/api/ai` module stays
  * focused on chat/streaming.
@@ -22,10 +24,9 @@ import {
   getCurrentPlan,
   recordPendingPlan,
 } from "../lib/ai/plan-mode.js";
-import { SessionSnapshotError, listResumable, rehydrate } from "../lib/ai/session-snapshot.js";
+import { listResumable } from "../lib/ai/session-snapshot.js";
 import { SDK_REASONING_EFFORTS } from "@metis/shared";
 import { prisma } from "../lib/prisma.js";
-import { compactSession } from "../lib/async/compaction.js";
 import { getAsyncRunner } from "../lib/async/runner.js";
 
 function ok<T>(data: T): { success: true; data: T } {
@@ -40,7 +41,6 @@ function actorId(req: Request): string {
 function rethrow(err: unknown): never {
   if (err instanceof ModelSwitchError) throw new AppError(400, "MODEL_SWITCH", err.message);
   if (err instanceof PlanStateError) throw new AppError(409, "PLAN_STATE", err.message);
-  if (err instanceof SessionSnapshotError) throw new AppError(404, "SESSION_RESUME", err.message);
   throw err;
 }
 
@@ -85,16 +85,6 @@ export function aiSdkRouter(): Router {
     }
     const sessions = await listResumable(actorId(req));
     res.json(ok(sessions));
-  });
-
-  r.post("/sessions/:id/resume", requireAuth, async (req: Request, res: Response) => {
-    await assertOwner(req, String(req.params.id));
-    try {
-      const result = await rehydrate(String(req.params.id));
-      res.json(ok(result));
-    } catch (err) {
-      rethrow(err);
-    }
   });
 
   r.patch("/sessions/:id/model", requireAuth, async (req: Request, res: Response) => {
@@ -148,18 +138,6 @@ export function aiSdkRouter(): Router {
       res.json(ok(decided));
     } catch (err) {
       rethrow(err);
-    }
-  });
-
-  // Epic #156 (#150) — POST /api/ai/sessions/:id/compact — on-demand
-  // compaction triggered by the chat /compact slash command.
-  r.post("/sessions/:id/compact", requireAuth, async (req: Request, res: Response) => {
-    await assertOwner(req, String(req.params.id));
-    try {
-      const result = await compactSession(String(req.params.id));
-      res.json(ok(result));
-    } catch (err) {
-      throw new AppError(500, "COMPACT_FAILED", (err as Error).message);
     }
   });
 

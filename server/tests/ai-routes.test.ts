@@ -12,6 +12,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import express from "express";
+import type { FakeAiMessageRow } from "./helpers/fake-ai-message.js";
 import jwt from "jsonwebtoken";
 
 // ── Prisma mock ────────────────────────────────────────────────────────────
@@ -35,8 +36,14 @@ const sessions: Session[] = [];
 const tokenRows: Array<Record<string, unknown>> = [];
 const approvalRows: Array<Record<string, unknown>> = [];
 
-vi.mock("../src/lib/prisma.js", () => ({
-  prisma: {
+// #136 — the transcript store needs a working `aIMessage` model.
+const aiMessageRows = vi.hoisted(() => [] as FakeAiMessageRow[]);
+
+vi.mock("../src/lib/prisma.js", async () => {
+  const { createFakeAiMessageDelegate } = await import("./helpers/fake-ai-message.js");
+  const prisma: Record<string, unknown> = {
+    aIMessage: createFakeAiMessageDelegate(aiMessageRows),
+    $transaction: async (fn: (tx: unknown) => unknown) => fn(prisma),
     aISession: {
       create: vi.fn(async ({ data }: { data: Partial<Session> }) => {
         const row: Session = {
@@ -84,8 +91,9 @@ vi.mock("../src/lib/prisma.js", () => ({
       findMany: vi.fn(async () => approvalRows),
     },
     auditLog: { create: vi.fn(async () => undefined) },
-  },
-}));
+  };
+  return { prisma };
+});
 
 // ── Vault mock — M2 BYOK key resolution path ──────────────────────────────
 const vaultRead = vi.fn(async (id: string) => ({
@@ -127,6 +135,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   sessions.length = 0;
+  aiMessageRows.length = 0;
   tokenRows.length = 0;
   approvalRows.length = 0;
   setAIProviderForTests(new OfflineStubProvider());
@@ -697,5 +706,148 @@ describe("PATCH /api/ai/sessions/:id cleanup", () => {
       .id;
     await auth(request(app).patch(`/api/ai/sessions/${sessionId}`).send({ title: "rename" }));
     expect(destroy).not.toHaveBeenCalled();
+  });
+});
+
+// ── Epic #127 — server-owned transcript on the chat routes ───────────────
+describe("#127 chat routes on the server transcript", () => {
+  function stubProvider(over: Partial<AIProviderForTest>): AIProviderForTest {
+    return {
+      key: "offline-stub",
+      model: "stub",
+      offline: true,
+      async chat() {
+        return {
+          content: "ok",
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "stub",
+          provider: "offline-stub",
+        };
+      },
+      async *stream() {
+        yield { type: "delta", content: "ok" } as ChatChunk;
+        yield { type: "done" } as ChatChunk;
+      },
+      async embed() {
+        return { vectors: [], dimension: 0, model: "stub" };
+      },
+      async models() {
+        return ["stub"];
+      },
+      async ping() {
+        return true;
+      },
+      ...over,
+    };
+  }
+  const env = (k: string, v: string | undefined) => {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  };
+
+  it("#127 — a local stream's idle clock starts after its slot is acquired", async () => {
+    const prev = process.env.AI_STREAM_IDLE_TIMEOUT_MS;
+    env("AI_STREAM_IDLE_TIMEOUT_MS", "40");
+    setAIProviderForTests(
+      stubProvider({
+        key: "local-gemma",
+        async *stream(_m, opts) {
+          await new Promise((r) => setTimeout(r, 90)); // queued behind another generation
+          opts?.onSlotAcquired?.();
+          yield { type: "delta", content: "after the queue" } as ChatChunk;
+          yield { type: "done" } as ChatChunk;
+        },
+      }),
+    );
+    try {
+      const app = makeApp();
+      const sessionId = (await auth(request(app).post("/api/ai/sessions").send({}))).body.data
+        .session.id;
+      const res = await auth(
+        request(app).post("/api/ai/stream").send({ sessionId, message: "hi" }),
+      );
+      expect(res.text).not.toContain("STREAM_IDLE_TIMEOUT");
+      expect(res.text).toContain("after the queue");
+    } finally {
+      env("AI_STREAM_IDLE_TIMEOUT_MS", prev);
+    }
+  });
+
+  it("a prompt that cannot fit the window even after compacting is refused with 413, and recorded", async () => {
+    const prev = process.env.CHAT_CONTEXT_WINDOW_FALLBACK;
+    env("CHAT_CONTEXT_WINDOW_FALLBACK", "1024");
+    try {
+      const app = makeApp();
+      const sessionId = (await auth(request(app).post("/api/ai/sessions").send({}))).body.data
+        .session.id;
+      const res = await auth(
+        request(app)
+          .post("/api/ai/chat")
+          .send({ sessionId, message: "z".repeat(20_000) }),
+      );
+      expect(res.status).toBe(413);
+      expect(res.body.error.code).toBe("CHAT_CONTEXT_OVERFLOW");
+      expect(res.body.error.details).toMatchObject({
+        contextWindow: 1024,
+        contextWindowSource: "fallback",
+      });
+      const rows = aiMessageRows.filter((r) => r.sessionId === sessionId);
+      expect(rows.map((r) => r.role)).toEqual(["user", "assistant"]);
+      expect(JSON.parse(rows[1]!.meta!).error.code).toBe("CHAT_CONTEXT_OVERFLOW");
+    } finally {
+      env("CHAT_CONTEXT_WINDOW_FALLBACK", prev);
+    }
+  });
+
+  it("a failed compaction does not fail a turn that still fits", async () => {
+    const prev = process.env.CHAT_CONTEXT_WINDOW_FALLBACK;
+    env("CHAT_CONTEXT_WINDOW_FALLBACK", "2000");
+    setAIProviderForTests(
+      stubProvider({
+        async chat() {
+          throw new Error("summariser down");
+        },
+      }),
+    );
+    try {
+      const app = makeApp();
+      const sessionId = (await auth(request(app).post("/api/ai/sessions").send({}))).body.data
+        .session.id;
+      let last = "";
+      for (let i = 0; i < 6; i++) {
+        last = (
+          await auth(
+            request(app)
+              .post("/api/ai/stream")
+              .send({ sessionId, message: `m${i} ` + "w".repeat(1_200) }),
+          )
+        ).text;
+        if (i < 3) expect(last).toContain("event: done");
+      }
+      // Eventually the prompt no longer fits and the turn is refused — but the
+      // earlier over-watermark turns ran uncompacted instead of failing.
+      expect(aiMessageRows.filter((r) => r.kind === "summary")).toHaveLength(0);
+      expect(aiMessageRows.every((r) => r.compactedAt === null)).toBe(true);
+    } finally {
+      env("CHAT_CONTEXT_WINDOW_FALLBACK", prev);
+    }
+  });
+
+  it("a stream the client stops is kept as an incomplete reply", async () => {
+    setAIProviderForTests(
+      stubProvider({
+        async *stream() {
+          yield { type: "delta", content: "part" } as ChatChunk;
+          throw Object.assign(new Error("aborted"), { name: "AbortError" });
+        },
+      }),
+    );
+    const app = makeApp();
+    const sessionId = (await auth(request(app).post("/api/ai/sessions").send({}))).body.data.session
+      .id;
+    await auth(request(app).post("/api/ai/stream").send({ sessionId, message: "hi" }));
+    const reply = aiMessageRows.find((r) => r.sessionId === sessionId && r.role === "assistant")!;
+    expect(JSON.parse(reply.content)).toEqual([{ type: "text", text: "part" }]);
+    expect(JSON.parse(reply.meta!).error.code).toBe("ABORTED");
   });
 });

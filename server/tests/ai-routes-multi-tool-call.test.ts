@@ -12,6 +12,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import express from "express";
+import type { FakeAiMessageRow } from "./helpers/fake-ai-message.js";
 
 type Row = Record<string, unknown>;
 const sessions: Row[] = [];
@@ -21,7 +22,11 @@ const sessions: Row[] = [];
  * every other model the route touches on a project-scoped session (skills,
  * safety settings, usage rows, snapshots) answers with "nothing stored".
  */
-vi.mock("../src/lib/prisma.js", () => {
+// #136 — the transcript store needs a working `aIMessage` model.
+const aiMessageRows = vi.hoisted(() => [] as FakeAiMessageRow[]);
+
+vi.mock("../src/lib/prisma.js", async () => {
+  const { createFakeAiMessageDelegate } = await import("./helpers/fake-ai-message.js");
   const generic = (): Record<string, unknown> =>
     new Proxy(
       {},
@@ -60,15 +65,25 @@ vi.mock("../src/lib/prisma.js", () => {
       return row;
     }),
   };
-  const models: Record<string, unknown> = { aISession };
-  return {
-    prisma: new Proxy(models, {
-      get: (target, key: string) => {
-        if (!(key in target)) target[key] = generic();
-        return target[key];
-      },
-    }),
+  // #136 — chat reads now check project access; the project exists and has no
+  // workspace (open to every authenticated user, as legacy projects are).
+  const project = {
+    findUnique: vi.fn(async () => ({ workspaceId: null, contextCompactionThreshold: null })),
+    findFirst: vi.fn(async () => ({ aiProviderId: null, aiModel: null })),
   };
+  const models: Record<string, unknown> = {
+    aISession,
+    project,
+    aIMessage: createFakeAiMessageDelegate(aiMessageRows),
+  };
+  const prisma: Record<string, unknown> = new Proxy(models, {
+    get: (target, key: string) => {
+      if (key === "$transaction") return async (fn: (tx: unknown) => unknown) => fn(prisma);
+      if (!(key in target)) target[key] = generic();
+      return target[key];
+    },
+  });
+  return { prisma };
 });
 
 /** Stub code tools that record the order they ran in. */
@@ -156,6 +171,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   sessions.length = 0;
+  aiMessageRows.length = 0;
   executed.length = 0;
   __resetAIRateLimiter();
 });

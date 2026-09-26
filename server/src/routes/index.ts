@@ -29,6 +29,7 @@ import { hooksRouter } from "./hooks.js";
 import { skillDirectoriesRouter } from "./skill-directories.js";
 import { pluginsRouter } from "./plugins.js";
 import { aiSdkRouter } from "./ai-sdk.js";
+import { aiConversationRouter } from "./ai-conversation.js";
 import { backgroundRunsRouter } from "./background-runs.js";
 import { projectTriggersRouter, triggersWebhookRouter } from "./triggers.js";
 import { acpRouter } from "./acp.js";
@@ -99,6 +100,8 @@ export function apiRouter(): Router {
   // Epic #748 — SSO authentication routes (SAML + OIDC).
   r.use("/auth", authRateLimiter, ssoRouter());
   r.use("/ai", aiRouter());
+  // Epic #127 — transcript, resume, fork and compaction on the server-owned transcript.
+  r.use("/ai", aiConversationRouter());
   // Epic #165 — SDK alignment routes mounted alongside the existing AI router.
   r.use("/ai", aiSdkRouter());
   r.use("/projects", projectsRouter());

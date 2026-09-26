@@ -634,3 +634,36 @@ describe("the slot is released on every exit path", () => {
     await nextCallRuns(p, f);
   });
 });
+
+describe("#127 — onSlotAcquired tells the caller when the queue wait is over", () => {
+  it("fires only once a queued stream holds the slot, before its request is sent", async () => {
+    const f = controllableFetch();
+    const p = provider();
+    const events: string[] = [];
+    const s1 = manualSse();
+    const run1 = (async () => {
+      for await (const _ of p.stream([{ role: "user", content: "first" }], {
+        onSlotAcquired: () => events.push("slot:first"),
+      })) {
+        /* drain */
+      }
+    })();
+    const run2 = (async () => {
+      for await (const _ of p.stream([{ role: "user", content: "queued" }], {
+        onSlotAcquired: () => events.push(`slot:queued(sent=${f.calls.length})`),
+      })) {
+        /* drain */
+      }
+    })();
+    await flush();
+    expect(events).toEqual(["slot:first"]); // the second is still waiting
+    f.calls[0].resolve(s1.response);
+    s1.delta("x");
+    s1.finish();
+    await run1;
+    await flush();
+    expect(events).toEqual(["slot:first", "slot:queued(sent=1)"]);
+    f.calls[1].resolve(sseOnce("y"));
+    await run2;
+  });
+});

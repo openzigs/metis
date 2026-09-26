@@ -1,245 +1,136 @@
 /**
- * Epic #515 / Issue #519 — Adaptive context window watermark with proactive
- * compaction.
+ * Epic #515 / Issue #519 — context-window watermark, revived by #138.
  *
- * - Watermark = configurable percentage of model context limit (default: 80%)
- * - Model context limits stored in config
- * - Checks context size before each turn; triggers compaction if above watermark
- * - Compaction is gradual: summarize oldest 25% of history first
- * - Integrates with existing compaction.ts (calls its summarization logic)
- * - Logs when compaction triggers with before/after token counts
- * - Does NOT compact if session has fewer than 5 turns
+ * This module was never imported: chat trimmed history with a fixed sliding
+ * window instead, which silently dropped old turns. It is now the trigger for
+ * automatic compaction on every chat turn (`lib/async/compaction.ts`).
+ *
+ * #138 changes from the original:
+ *
+ *   • The context window comes from the MODEL CATALOG (#135) —
+ *     {@link resolveContextWindow} — not from a hardcoded table here that had
+ *     already drifted (it listed Sonnet 4.6 at 200K; the catalog has 1M). When
+ *     the catalog does not know the window, an explicit, configurable fallback
+ *     is used and REPORTED as a fallback, never passed off as the real window.
+ *   • Tokens come from the calibrated estimator (#137), not characters ÷ 4.
+ *   • The watermark decides WHETHER to compact. Which turns to fold is the
+ *     compactor's job, because it needs turn boundaries this module never had.
  */
+import { lookupCatalogEntry } from "../ai/model-catalog.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("context-watermark");
 
-/** Known model context limits (in tokens). */
-export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
-  "us.anthropic.claude-sonnet-4-6": 200_000,
-  "anthropic.claude-sonnet-4-6": 200_000,
-  "claude-sonnet-4-20250514": 200_000,
-  "claude-3-5-sonnet-20241022": 200_000,
-  "claude-3-opus-20240229": 200_000,
-  "gpt-4o": 128_000,
-  "gpt-4o-mini": 128_000,
-  "gpt-4-turbo": 128_000,
-  "gpt-4": 8_192,
-  "gpt-3.5-turbo": 16_385,
-  o1: 200_000,
-  "o1-mini": 128_000,
-  o3: 200_000,
-  "o3-mini": 200_000,
-  "o4-mini": 200_000,
-};
+/** Default watermark: compact once the prompt reaches 80% of the window. */
+export const DEFAULT_WATERMARK_PERCENT = 80;
+/** Bounds on a configured watermark percentage. */
+export const MIN_WATERMARK_PERCENT = 10;
+export const MAX_WATERMARK_PERCENT = 95;
 
-/** Default context limit when model is unknown. */
-const DEFAULT_CONTEXT_LIMIT = 128_000;
+/**
+ * Window assumed when the catalog does not know the model's (a local model
+ * that discovery has not described yet, or an id no source lists). 32,768 is
+ * deliberately modest: an under-estimate only compacts early, while an
+ * over-estimate would let the prompt overflow a small local context. Operators
+ * with a larger window set it per model in `AI_MODEL_CATALOG_OVERRIDES`.
+ */
+export const DEFAULT_CONTEXT_WINDOW_FALLBACK = 32_768;
 
-/** Default watermark percentage (0-1). */
-const DEFAULT_WATERMARK_PERCENTAGE = 0.8;
+export type ContextWindowSource = "catalog" | "fallback";
 
-/** Minimum turns before compaction is allowed. */
-const MIN_TURNS_FOR_COMPACTION = 5;
-
-/** Fraction of oldest turns to summarize per compaction pass. */
-const COMPACTION_FRACTION = 0.25;
-
-/** Characters per token approximation. */
-const CHARS_PER_TOKEN = 4;
-
-export interface ContextWatermarkOptions {
-  /** Model name to look up context limit. */
-  model?: string;
-  /** Override context limit in tokens (ignores model lookup). */
-  contextLimit?: number;
-  /** Watermark percentage (0-1). Default: 0.8. */
-  watermarkPercentage?: number;
-  /** Minimum turns before compaction is allowed. Default: 5. */
-  minTurns?: number;
-  /** Fraction of oldest turns to summarize. Default: 0.25. */
-  compactionFraction?: number;
+export interface ResolvedContextWindow {
+  tokens: number;
+  source: ContextWindowSource;
 }
 
-export interface ChatTurn {
-  role: "system" | "user" | "assistant" | "tool";
-  content: string;
+/**
+ * The context window for `provider:model`, from the model catalog. `fallback`
+ * (a positive integer ≥ 1,024) replaces {@link DEFAULT_CONTEXT_WINDOW_FALLBACK}
+ * when set.
+ */
+export function resolveContextWindow(
+  provider: string,
+  model: string,
+  opts: { fallback?: number; env?: NodeJS.ProcessEnv } = {},
+): ResolvedContextWindow {
+  const window = lookupCatalogEntry(provider, model, opts.env)?.contextWindow;
+  if (typeof window === "number" && window > 0) return { tokens: window, source: "catalog" };
+  const fallback =
+    typeof opts.fallback === "number" && Number.isFinite(opts.fallback) && opts.fallback >= 1024
+      ? Math.floor(opts.fallback)
+      : DEFAULT_CONTEXT_WINDOW_FALLBACK;
+  return { tokens: fallback, source: "fallback" };
+}
+
+/** Clamp a configured watermark percentage into the supported band. */
+export function clampWatermarkPercent(raw: number | undefined): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_WATERMARK_PERCENT;
+  return Math.min(MAX_WATERMARK_PERCENT, Math.max(MIN_WATERMARK_PERCENT, Math.round(raw)));
+}
+
+export interface ContextWatermarkOptions {
+  contextWindow: ResolvedContextWindow;
+  /** Percentage of the window at which to compact (default 80). */
+  watermarkPercent?: number;
+  /**
+   * An absolute token ceiling that caps the watermark from above — the
+   * per-project `contextCompactionThreshold` / `CONTEXT_COMPACTION_THRESHOLD_TOKENS`
+   * setting that existed before #138. Never raises the watermark.
+   */
+  thresholdTokens?: number | null;
 }
 
 export interface WatermarkCheckResult {
-  /** Whether compaction was triggered. */
-  compactionTriggered: boolean;
-  /** Current token usage. */
-  currentTokens: number;
-  /** The watermark threshold in tokens. */
+  /** The estimated prompt is at or above the watermark. */
+  overWatermark: boolean;
+  /** The estimated prompt does not fit the window at all. */
+  overWindow: boolean;
+  estimatedTokens: number;
   watermarkTokens: number;
-  /** Context limit for the model. */
-  contextLimit: number;
-  /** Utilization percentage (0-1). */
+  contextWindow: number;
+  contextWindowSource: ContextWindowSource;
+  /** estimatedTokens ÷ contextWindow. */
   utilization: number;
-  /** Reason if compaction was skipped. */
-  skipReason?: string;
 }
 
-export interface CompactionRequest {
-  /** Messages to compact. */
-  messages: ChatTurn[];
-  /** Number of oldest non-system turns to summarize. */
-  turnsToSummarize: number;
-  /** Before token count. */
-  beforeTokens: number;
-}
-
-/**
- * Estimate tokens for a single message.
- */
-export function estimateTokens(text: string): number {
-  if (!text) return 0;
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
-}
-
-/**
- * Calculate total tokens across all messages.
- */
-export function totalTokens(messages: ChatTurn[]): number {
-  return messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
-}
-
-/**
- * Get the context limit for a model.
- */
-export function getModelContextLimit(model?: string): number {
-  if (!model) return DEFAULT_CONTEXT_LIMIT;
-  const limit = MODEL_CONTEXT_LIMITS[model];
-  if (limit) return limit;
-
-  // Try prefix matching (e.g. "claude-sonnet-4-..." matches "claude-sonnet-4-20250514")
-  for (const [key, value] of Object.entries(MODEL_CONTEXT_LIMITS)) {
-    if (model.startsWith(key.split("-").slice(0, 3).join("-"))) {
-      return value;
-    }
-  }
-
-  return DEFAULT_CONTEXT_LIMIT;
-}
-
-/**
- * Count non-system turns in a message array.
- */
-export function countNonSystemTurns(messages: ChatTurn[]): number {
-  return messages.filter((m) => m.role !== "system").length;
-}
-
-/**
- * Context watermark monitor. Checks context size against model limits and
- * triggers gradual compaction when the watermark is exceeded.
- */
+/** Decides, from an estimated prompt size, whether a turn must compact first. */
 export class ContextWatermark {
-  private readonly contextLimit: number;
-  private readonly watermarkPercentage: number;
-  private readonly watermarkTokens: number;
-  private readonly minTurns: number;
-  private readonly compactionFraction: number;
+  readonly contextWindow: number;
+  readonly contextWindowSource: ContextWindowSource;
+  readonly watermarkPercent: number;
+  readonly watermarkTokens: number;
 
-  constructor(options: ContextWatermarkOptions = {}) {
-    this.contextLimit = options.contextLimit ?? getModelContextLimit(options.model);
-    this.watermarkPercentage = options.watermarkPercentage ?? DEFAULT_WATERMARK_PERCENTAGE;
-    this.watermarkTokens = Math.floor(this.contextLimit * this.watermarkPercentage);
-    this.minTurns = options.minTurns ?? MIN_TURNS_FOR_COMPACTION;
-    this.compactionFraction = options.compactionFraction ?? COMPACTION_FRACTION;
+  constructor(options: ContextWatermarkOptions) {
+    this.contextWindow = options.contextWindow.tokens;
+    this.contextWindowSource = options.contextWindow.source;
+    this.watermarkPercent = clampWatermarkPercent(options.watermarkPercent);
+    const fromPercent = Math.floor((this.contextWindow * this.watermarkPercent) / 100);
+    const threshold = options.thresholdTokens;
+    this.watermarkTokens =
+      typeof threshold === "number" && threshold > 0
+        ? Math.min(fromPercent, threshold)
+        : fromPercent;
   }
 
-  /**
-   * Check if context has exceeded the watermark and return a compaction
-   * request if needed. Does NOT perform the compaction itself — the caller
-   * is responsible for executing it via the existing compaction.ts logic.
-   */
-  check(messages: ChatTurn[]): WatermarkCheckResult & { compactionRequest?: CompactionRequest } {
-    const currentTokens = totalTokens(messages);
-    const utilization = currentTokens / this.contextLimit;
-
-    const baseResult: WatermarkCheckResult = {
-      compactionTriggered: false,
-      currentTokens,
+  check(estimatedTokens: number): WatermarkCheckResult {
+    const result: WatermarkCheckResult = {
+      overWatermark: estimatedTokens >= this.watermarkTokens,
+      overWindow: estimatedTokens > this.contextWindow,
+      estimatedTokens,
       watermarkTokens: this.watermarkTokens,
-      contextLimit: this.contextLimit,
-      utilization,
+      contextWindow: this.contextWindow,
+      contextWindowSource: this.contextWindowSource,
+      utilization: this.contextWindow > 0 ? estimatedTokens / this.contextWindow : 1,
     };
-
-    // Below watermark: no action needed
-    if (currentTokens <= this.watermarkTokens) {
-      return baseResult;
-    }
-
-    // Check minimum turns
-    const nonSystemTurns = countNonSystemTurns(messages);
-    if (nonSystemTurns < this.minTurns) {
-      log.info("Context above watermark but too few turns for compaction", {
-        currentTokens,
+    if (result.overWatermark) {
+      log.info("Context watermark reached", {
+        estimatedTokens,
         watermarkTokens: this.watermarkTokens,
-        nonSystemTurns,
-        minTurns: this.minTurns,
+        contextWindow: this.contextWindow,
+        contextWindowSource: this.contextWindowSource,
+        utilization: Math.round(result.utilization * 100),
       });
-      return {
-        ...baseResult,
-        skipReason: `Too few turns (${nonSystemTurns} < ${this.minTurns})`,
-      };
     }
-
-    // Calculate turns to summarize (oldest 25% of non-system turns)
-    const turnsToSummarize = Math.max(1, Math.floor(nonSystemTurns * this.compactionFraction));
-
-    log.info("Context watermark exceeded, requesting compaction", {
-      currentTokens,
-      watermarkTokens: this.watermarkTokens,
-      utilization: Math.round(utilization * 100),
-      nonSystemTurns,
-      turnsToSummarize,
-    });
-
-    return {
-      ...baseResult,
-      compactionTriggered: true,
-      compactionRequest: {
-        messages,
-        turnsToSummarize,
-        beforeTokens: currentTokens,
-      },
-    };
-  }
-
-  /**
-   * Get the current watermark threshold in tokens.
-   */
-  getWatermarkTokens(): number {
-    return this.watermarkTokens;
-  }
-
-  /**
-   * Get the model context limit.
-   */
-  getContextLimit(): number {
-    return this.contextLimit;
-  }
-
-  /**
-   * Get watermark percentage.
-   */
-  getWatermarkPercentage(): number {
-    return this.watermarkPercentage;
-  }
-
-  /**
-   * Helper to log compaction results (call after executing compaction).
-   */
-  logCompactionResult(beforeTokens: number, afterTokens: number): void {
-    const saved = beforeTokens - afterTokens;
-    const savedPct = Math.round((saved / beforeTokens) * 100);
-    log.info("Context compaction completed", {
-      beforeTokens,
-      afterTokens,
-      savedTokens: saved,
-      savedPercentage: savedPct,
-    });
+    return result;
   }
 }

@@ -1,202 +1,461 @@
 /**
- * Epic #156 (#150) — Context compaction.
+ * Epic #156 (#150) — context compaction, rebuilt by #138 on the server-owned
+ * transcript (#136).
  *
- * Implements both auto + on-demand summarization of older turns. Pure
- * functions for the message-array reshaping; the side-effecting glue is in
- * `compactSession()` which loads the session, mutates the snapshot, and
- * writes the new `lastCompactedAt` + `compactionCount` fields.
+ * Before #138 this ran only from the manual `/compact` endpoint, over the
+ * session `snapshot` JSON, and its automatic path had no caller; chat relied on
+ * a sliding window that silently dropped old turns. Now:
+ *
+ *   • it runs before EVERY chat model call when the estimated prompt reaches the
+ *     watermark (`lib/analysis/context-watermark.ts`, a share of the catalog's
+ *     context window), and on demand from `POST /api/ai/sessions/:id/compact`;
+ *   • the oldest turns are summarised into ONE pinned summary row, and the rows
+ *     it replaces are MARKED compacted — never deleted, never rewritten — so
+ *     the full conversation stays readable and nothing goes missing silently;
+ *   • the system prompt and cacheable prefix are not transcript rows at all, so
+ *     compaction cannot touch them: it only ever folds `ai_messages` rows;
+ *   • a summary that runs into its output cap is kept but flagged
+ *     (`meta.summaryTruncated`), and an EMPTY summary aborts the compaction —
+ *     marking rows folded into nothing would lose them.
  */
+import { randomUUID } from "node:crypto";
+import type { AIProvider, ChatMessage, ProviderKey, TokenUsage } from "../ai/types.js";
 import { prisma } from "../prisma.js";
+import { createChildLogger } from "../logger.js";
+import { getTokenTracker } from "../ai/token-tracker.js";
+import { recordUsage as recordProjectUsage } from "../finops/token-tracker.js";
+import {
+  messageRowData,
+  nextOrdinal,
+  fromRow,
+  partsText,
+  type StoredMessage,
+} from "../ai/conversation/transcript-store.js";
+import {
+  capToolResult,
+  rowMessages,
+  type ContextBuildOptions,
+} from "../ai/conversation/context-builder.js";
+import {
+  contextInputTokens,
+  estimateMessagesTokens,
+  estimateTextTokens,
+  type TokenRatio,
+} from "../ai/conversation/token-estimator.js";
+import type { ResolvedContextWindow } from "../analysis/context-watermark.js";
 
-export interface ChatTurn {
-  role: "system" | "user" | "assistant" | "tool";
-  content: string;
+const log = createChildLogger("compaction");
+
+export const COMPACTION_SYSTEM_PROMPT =
+  "You are a context compactor for a chat assistant. You are given an existing summary of the " +
+  "earliest part of a conversation (possibly empty) and the next part of the conversation. " +
+  "Write ONE updated summary that replaces both. Preserve every concrete decision, fact, number, " +
+  "citation, file path, identifier, open question and unresolved TODO, and who asked for what. " +
+  "Drop pleasantries and repetition. Write plain prose or terse bullets; no preamble.";
+
+/** Default output cap for one summariser call. */
+export const DEFAULT_SUMMARY_MAX_TOKENS = 2_048;
+/** After compacting, aim for the prompt to occupy at most this share of the window. */
+export const COMPACTION_TARGET_SHARE = 0.5;
+/** Share of the window one summariser call's INPUT may use. */
+export const SUMMARY_INPUT_SHARE = 0.5;
+
+export interface SummaryResult {
+  text: string;
+  usage: TokenUsage | null;
+  finishReason?: string;
 }
 
-export interface CompactionResult {
-  before: ChatTurn[];
-  after: ChatTurn[];
-  beforeTokens: number;
-  afterTokens: number;
-  summarizedTurns: number;
-}
-
-/** Cheap token approximation: ~1 token / 4 characters. Matches Anthropic
- *  documented heuristic and is more than sufficient for threshold gating. */
-export function estimateTokens(text: string): number {
-  if (!text) return 0;
-  return Math.ceil(text.length / 4);
-}
-
-export function totalTokens(messages: ChatTurn[]): number {
-  return messages.reduce((s, m) => s + estimateTokens(m.content), 0);
-}
-
-export type Summarizer = (turns: ChatTurn[]) => Promise<string>;
-
-const SYSTEM_PROMPT =
-  "You are a context compactor. Summarize the prior turns preserving every concrete decision, " +
-  "fact, citation, file path, and unresolved TODO. Be terse — 30% of the original length max. " +
-  "Output a single coherent paragraph.";
-
-export interface CompactOptions {
-  thresholdTokens?: number;
-  /** Fraction of oldest turns to summarize (default 0.7 — keep newest 30%). */
-  oldestFraction?: number;
-  summarizer?: Summarizer;
-}
-
-const DEFAULT_THRESHOLD = 60_000;
+/** Fold `transcript` into `priorSummary`, returning the replacement summary. */
+export type Summarizer = (input: {
+  priorSummary: string | null;
+  transcript: string;
+}) => Promise<SummaryResult>;
 
 /**
- * Reshape a message array by summarizing the oldest fraction. Pure — the
- * `summarizer` is the only side-effecting input. Returns the new array AND
- * the original so callers can audit the diff.
+ * Who a summary call is billed to. Providers do not record their own usage —
+ * only callers do — so a summariser that skipped this would be invisible to
+ * cost tracking and to the project budget (PR #205 review).
  */
-export async function compactMessages(
-  messages: ChatTurn[],
-  opts: CompactOptions = {},
-): Promise<CompactionResult> {
-  const threshold = opts.thresholdTokens ?? DEFAULT_THRESHOLD;
-  const fraction = opts.oldestFraction ?? 0.7;
-  const beforeTokens = totalTokens(messages);
-  if (beforeTokens <= threshold) {
-    return {
-      before: messages,
-      after: messages,
-      beforeTokens,
-      afterTokens: beforeTokens,
-      summarizedTurns: 0,
-    };
-  }
-
-  // Always preserve any leading system messages verbatim — the system prompt
-  // is identity-defining and must not be replaced.
-  let leadingSystem = 0;
-  while (leadingSystem < messages.length && messages[leadingSystem]!.role === "system") {
-    leadingSystem++;
-  }
-  const head = messages.slice(0, leadingSystem);
-  const body = messages.slice(leadingSystem);
-  const summarizeCount = Math.max(1, Math.floor(body.length * fraction));
-  const toSummarize = body.slice(0, summarizeCount);
-  const tail = body.slice(summarizeCount);
-
-  const summarize = opts.summarizer ?? defaultSummarizer;
-  const summary = await summarize(toSummarize);
-  const after: ChatTurn[] = [
-    ...head,
-    {
-      role: "system",
-      content: `[Compacted summary of ${toSummarize.length} prior turns]\n${summary}`,
-    },
-    ...tail,
-  ];
-  return {
-    before: messages,
-    after,
-    beforeTokens,
-    afterTokens: totalTokens(after),
-    summarizedTurns: toSummarize.length,
-  };
-}
-
-const defaultSummarizer: Summarizer = async (turns) => {
-  // Default deterministic summarizer — concatenates head/tail of each turn.
-  // The route-level handler injects a real LLM-backed summarizer. Tests use
-  // a canned summarizer so the assertions are stable.
-  const lines = turns.map((t) => `${t.role}: ${truncate(t.content, 60)}`);
-  return lines.join(" | ");
-};
-
-function truncate(s: string, n: number): string {
-  if (s.length <= n) return s;
-  return `${s.slice(0, n - 1)}…`;
-}
-
-export interface SessionLike {
-  id: string;
-  snapshot: string | null;
-  compactionCount: number;
+export interface SummaryMeter {
+  sessionId: string;
+  userId: string;
   projectId: string | null;
 }
 
 /**
- * Compact a session's message history. Returns `{compacted: false}` when the
- * snapshot is below threshold. The session snapshot string is JSON of
- * `{ messages: ChatTurn[] }` — extra fields are passed through.
+ * Record one summary call in both usage stores: the per-user `AITokenUsage`
+ * rollup (tagged `agentStep: "compaction"`) and, for a project session, the
+ * per-project `TokenUsage` table the budget enforcer reads.
  */
-export async function compactSession(
-  sessionId: string,
-  opts: CompactOptions = {},
-): Promise<{
-  compacted: boolean;
-  before: number;
-  after: number;
-  summarizedTurns: number;
-}> {
-  const session = await prisma.aISession.findUnique({
-    where: { id: sessionId },
-    select: { id: true, snapshot: true, compactionCount: true, projectId: true },
+function meterSummaryCall(
+  meter: SummaryMeter,
+  res: { provider: ProviderKey; model: string; usage: TokenUsage | null | undefined },
+  requestedModel: string,
+): void {
+  if (!res.usage) return;
+  const model = res.model || requestedModel;
+  getTokenTracker().record({
+    sessionId: meter.sessionId,
+    userId: meter.userId,
+    provider: res.provider,
+    model,
+    usage: res.usage,
+    projectId: meter.projectId ?? undefined,
+    agentStep: "compaction",
   });
-  if (!session) throw new Error("SESSION_NOT_FOUND");
-  const snap: { messages?: ChatTurn[]; [k: string]: unknown } = session.snapshot
-    ? (JSON.parse(String(session.snapshot)) as { messages?: ChatTurn[] })
-    : { messages: [] };
-  const messages: ChatTurn[] = Array.isArray(snap.messages) ? snap.messages : [];
-
-  const threshold = await resolveThreshold(session.projectId, opts.thresholdTokens);
-  const result = await compactMessages(messages, { ...opts, thresholdTokens: threshold });
-  if (result.summarizedTurns === 0) {
-    return {
-      compacted: false,
-      before: result.beforeTokens,
-      after: result.afterTokens,
-      summarizedTurns: 0,
-    };
+  if (meter.projectId) {
+    recordProjectUsage({
+      projectId: meter.projectId,
+      sessionId: meter.sessionId,
+      provider: res.provider,
+      model,
+      inputTokens: res.usage.promptTokens,
+      outputTokens: res.usage.completionTokens,
+      cacheReadTokens: res.usage.cacheReadTokens,
+      cacheWriteTokens: res.usage.cacheWriteTokens,
+    });
   }
-  const newSnapshot = JSON.stringify({ ...snap, messages: result.after });
-  await prisma.aISession.update({
-    where: { id: sessionId },
-    data: {
-      snapshot: newSnapshot,
-      snapshotUpdatedAt: new Date(),
-      lastCompactedAt: new Date(),
-      compactionCount: { increment: 1 },
-    },
-  });
-  return {
-    compacted: true,
-    before: result.beforeTokens,
-    after: result.afterTokens,
-    summarizedTurns: result.summarizedTurns,
+}
+
+/**
+ * The provider-backed summariser the chat routes use. Every call is metered as
+ * soon as it returns, so a compaction that later fails (empty summary, lost
+ * race) still has its spend recorded.
+ */
+export function providerSummarizer(
+  provider: AIProvider,
+  opts: { model: string; signal?: AbortSignal; maxTokens?: number; meter: SummaryMeter },
+): Summarizer {
+  return async ({ priorSummary, transcript }) => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: COMPACTION_SYSTEM_PROMPT },
+      {
+        role: "user",
+        content:
+          `Existing summary:\n${priorSummary?.trim() ? priorSummary : "(none)"}\n\n` +
+          `Conversation to fold in:\n${transcript}\n\nWrite the updated summary.`,
+      },
+    ];
+    // Deliberately NO `sessionId`: a stateful adapter would otherwise record the
+    // summariser's exchange as part of the user's chat.
+    const res = await provider.chat(messages, {
+      model: opts.model,
+      signal: opts.signal,
+      maxTokens: opts.maxTokens ?? DEFAULT_SUMMARY_MAX_TOKENS,
+      disableThinking: true,
+      callType: "chat",
+    });
+    meterSummaryCall(opts.meter, res, opts.model);
+    return { text: res.content, usage: res.usage, finishReason: res.finishReason };
   };
 }
 
-/** Auto-compaction wrapper used by chat hot path. Cheap when below threshold. */
-export async function compactIfNeeded(
-  sessionId: string,
-  opts: CompactOptions = {},
-): Promise<{ compacted: boolean }> {
-  const r = await compactSession(sessionId, opts);
-  return { compacted: r.compacted };
-}
-
-async function resolveThreshold(
-  projectId: string | null,
-  override: number | undefined,
-): Promise<number> {
-  if (override) return override;
-  if (projectId) {
-    const proj = await prisma.project.findUnique({
-      where: { id: projectId },
-      select: { contextCompactionThreshold: true },
-    });
-    if (proj?.contextCompactionThreshold) return proj.contextCompactionThreshold;
+export class CompactionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CompactionError";
   }
-  const env = Number.parseInt(process.env.CONTEXT_COMPACTION_THRESHOLD_TOKENS ?? "", 10);
-  if (Number.isFinite(env) && env > 0) return env;
-  return DEFAULT_THRESHOLD;
 }
 
-export const COMPACTION_SYSTEM_PROMPT = SYSTEM_PROMPT;
+/** Group message rows into turns: a user row plus the replies that follow it. */
+export function groupTurns(rows: readonly StoredMessage[]): StoredMessage[][] {
+  const groups: StoredMessage[][] = [];
+  for (const r of rows) {
+    if (r.role === "user" || groups.length === 0) groups.push([r]);
+    else groups[groups.length - 1]!.push(r);
+  }
+  return groups;
+}
+
+export interface CompactionPlan {
+  /** Message rows to fold (oldest first). */
+  fold: StoredMessage[];
+  /** Existing summaries, folded into the new one. */
+  priorSummaries: StoredMessage[];
+  /** Rows that stay in context verbatim. */
+  keep: StoredMessage[];
+}
+
+/**
+ * Decide which turns to fold. Walks back from the newest turn, keeping whole
+ * turns while they fit `tailBudgetTokens`; the first turn that does not fit,
+ * and everything older, is folded. The newest `keepMinTurns` turns are kept
+ * regardless of the budget. Returns `null` when there is nothing to fold.
+ */
+export function planCompaction(
+  activeRows: readonly StoredMessage[],
+  opts: {
+    ratio: TokenRatio;
+    tailBudgetTokens: number;
+    keepMinTurns: number;
+  },
+): CompactionPlan | null {
+  const active = activeRows.filter((r) => r.compactedAt === null);
+  const priorSummaries = active.filter((r) => r.kind === "summary");
+  const groups = groupTurns(active.filter((r) => r.kind !== "summary"));
+  const cost = (g: StoredMessage[]): number =>
+    g.reduce((n, r) => n + estimateMessagesTokens(rowMessages(r), opts.ratio), 0);
+
+  let used = 0;
+  let firstKept = groups.length;
+  for (let i = groups.length - 1; i >= 0; i--) {
+    const c = cost(groups[i]!);
+    const forced = groups.length - i <= opts.keepMinTurns;
+    if (!forced && used + c > opts.tailBudgetTokens) break;
+    used += c;
+    firstKept = i;
+  }
+  const fold = groups.slice(0, firstKept).flat();
+  if (fold.length === 0) return null;
+  return { fold, priorSummaries, keep: groups.slice(firstKept).flat() };
+}
+
+/** Render rows as plain text for the summariser; tool results capped. */
+function renderForSummary(rows: readonly StoredMessage[], toolResultMaxChars: number): string[] {
+  return rows.map((r) => {
+    const lines = [`#${r.ordinal} ${r.role}: ${partsText(r.parts)}`];
+    for (const p of r.parts) {
+      if (p.type === "tool_result") {
+        lines.push(
+          `  tool ${p.name} returned: ${capToolResult(p.text, toolResultMaxChars, r.ordinal).text}`,
+        );
+      }
+    }
+    return lines.join("\n");
+  });
+}
+
+/**
+ * Batch rendered lines so each summariser call's input fits `budgetTokens`. A
+ * single line larger than the budget is split, never dropped.
+ */
+export function batchForSummary(
+  lines: readonly string[],
+  budgetTokens: number,
+  ratio: TokenRatio,
+): string[] {
+  const maxChars = Math.max(1_000, Math.floor(budgetTokens * ratio.charsPerToken));
+  const pieces: string[] = [];
+  for (const line of lines) {
+    for (let i = 0; i < line.length; i += maxChars) pieces.push(line.slice(i, i + maxChars));
+    if (line.length === 0) pieces.push(line);
+  }
+  const batches: string[] = [];
+  let current = "";
+  for (const piece of pieces) {
+    if (current && current.length + piece.length + 1 > maxChars) {
+      batches.push(current);
+      current = "";
+    }
+    current = current ? `${current}\n${piece}` : piece;
+  }
+  if (current) batches.push(current);
+  return batches;
+}
+
+export interface CompactTranscriptInput {
+  sessionId: string;
+  /** The session's ACTIVE rows (not yet folded), in ordinal order. */
+  activeRows: readonly StoredMessage[];
+  ratio: TokenRatio;
+  build: ContextBuildOptions;
+  contextWindow: ResolvedContextWindow;
+  /** Tokens of everything compaction cannot touch: system prefix, RAG, new message. */
+  fixedTokens: number;
+  /** The whole prompt's estimate before compacting (for the record). */
+  estimatedTokensBefore: number;
+  summarizer: Summarizer;
+  /** Manual `/compact`: fold everything but the newest turn, whatever the size. */
+  force?: boolean;
+  provider?: string | null;
+  model?: string | null;
+}
+
+export interface CompactionOutcome {
+  summary: StoredMessage;
+  compactedMessages: number;
+  fromOrdinal: number;
+  toOrdinal: number;
+  estimatedTokensBefore: number;
+  estimatedTokensAfter: number;
+  contextWindow: number;
+  contextWindowSource: ResolvedContextWindow["source"];
+  /** Rows now in context: the new summary plus the kept rows. */
+  activeRows: StoredMessage[];
+}
+
+function sumUsage(a: TokenUsage | null, b: TokenUsage | null): TokenUsage | null {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    promptTokens: a.promptTokens + b.promptTokens,
+    completionTokens: a.completionTokens + b.completionTokens,
+    totalTokens: a.totalTokens + b.totalTokens,
+    cacheReadTokens: (a.cacheReadTokens ?? 0) + (b.cacheReadTokens ?? 0),
+    cacheWriteTokens: (a.cacheWriteTokens ?? 0) + (b.cacheWriteTokens ?? 0),
+  };
+}
+
+const MAX_PERSIST_ATTEMPTS = 3;
+
+/**
+ * Fold the oldest turns of a session into one summary row. Returns `null` when
+ * there is nothing to fold, or when another request compacted the same rows
+ * first (its summary then already stands in for them).
+ */
+export async function compactTranscript(
+  input: CompactTranscriptInput,
+): Promise<CompactionOutcome | null> {
+  const window = input.contextWindow.tokens;
+  const tailBudgetTokens = input.force
+    ? 0
+    : Math.max(0, Math.floor(window * COMPACTION_TARGET_SHARE) - input.fixedTokens);
+  const plan = planCompaction(input.activeRows, {
+    ratio: input.ratio,
+    tailBudgetTokens,
+    keepMinTurns: input.force ? 1 : 0,
+  });
+  if (!plan) return null;
+
+  // ── Summarise, in as many calls as it takes to fit the window ──────────
+  const budget = Math.max(1_024, Math.floor(window * SUMMARY_INPUT_SHARE));
+  const batches = batchForSummary(
+    renderForSummary(plan.fold, input.build.toolResultMaxChars),
+    budget,
+    input.ratio,
+  );
+  let running: string | null =
+    plan.priorSummaries.length > 0
+      ? plan.priorSummaries.map((s) => partsText(s.parts)).join("\n\n")
+      : null;
+  let usage: TokenUsage | null = null;
+  let chars = 0;
+  let truncated = false;
+  for (const transcript of batches) {
+    const res = await input.summarizer({ priorSummary: running, transcript });
+    usage = sumUsage(usage, res.usage);
+    chars += (running?.length ?? 0) + transcript.length;
+    if (res.finishReason === "length" || res.finishReason === "max_tokens") truncated = true;
+    running = res.text;
+  }
+  if (!running || !running.trim()) {
+    throw new CompactionError("The summariser returned an empty summary; nothing was compacted.");
+  }
+  if (truncated) {
+    log.warn("Compaction summary hit its output cap; it is kept and flagged", {
+      sessionId: input.sessionId,
+    });
+  }
+
+  // ── Coverage: the new summary stands in for its prior summaries' ranges too
+  const folded = plan.fold;
+  const priorFrom = plan.priorSummaries
+    .map((s) => s.meta.fromOrdinal)
+    .filter((v): v is number => typeof v === "number");
+  const priorCount = plan.priorSummaries.reduce(
+    (n, s) => n + (typeof s.meta.messageCount === "number" ? s.meta.messageCount : 0),
+    0,
+  );
+  const fromOrdinal = Math.min(...priorFrom, ...folded.map((r) => r.ordinal));
+  const toOrdinal = Math.max(...folded.map((r) => r.ordinal));
+  const messageCount = priorCount + folded.length;
+
+  const summaryText = running;
+  const summaryId = randomUUID();
+  const foldIds = [...folded, ...plan.priorSummaries].map((r) => r.id);
+  const summaryEstimate = estimateTextTokens(summaryText, input.ratio);
+
+  const keptTokens = plan.keep.reduce(
+    (n, r) => n + estimateMessagesTokens(rowMessages(r), input.ratio),
+    0,
+  );
+  const estimatedTokensAfter = input.fixedTokens + summaryEstimate + keptTokens;
+  const now = new Date();
+  const meta = {
+    fromOrdinal,
+    toOrdinal,
+    messageCount,
+    contextWindow: window,
+    contextWindowSource: input.contextWindow.source,
+    estimatedTokensBefore: input.estimatedTokensBefore,
+    estimatedTokensAfter,
+    summaryCalls: batches.length,
+    ...(truncated ? { summaryTruncated: true } : {}),
+    ...(input.force ? { manual: true } : {}),
+  };
+
+  for (let attempt = 0; attempt < MAX_PERSIST_ATTEMPTS; attempt++) {
+    try {
+      const summaryRow = await prisma.$transaction(async (tx) => {
+        const marked = await tx.aIMessage.updateMany({
+          where: { sessionId: input.sessionId, id: { in: foldIds }, compactedAt: null },
+          data: { compactedAt: now, compactedIntoId: summaryId },
+        });
+        if (marked.count !== foldIds.length) throw new ConcurrentCompaction();
+        const ordinal = await nextOrdinal(input.sessionId, tx);
+        const row = await tx.aIMessage.create({
+          data: {
+            id: summaryId,
+            ...messageRowData(input.sessionId, ordinal, {
+              role: "system",
+              kind: "summary",
+              parts: [{ type: "text", text: summaryText }],
+              estimatedTokens: summaryEstimate,
+              usage: usage
+                ? {
+                    inputTokens: contextInputTokens(input.provider ?? "", usage),
+                    outputTokens: usage.completionTokens,
+                    cacheReadTokens: usage.cacheReadTokens ?? null,
+                    cacheWriteTokens: usage.cacheWriteTokens ?? null,
+                  }
+                : null,
+              promptChars: chars,
+              provider: input.provider ?? null,
+              model: input.model ?? null,
+              finishReason: truncated ? "length" : null,
+              meta,
+            }),
+          },
+        });
+        await tx.aISession.update({
+          where: { id: input.sessionId },
+          data: { lastCompactedAt: now, compactionCount: { increment: 1 } },
+        });
+        return fromRow(row);
+      });
+      log.info("Compacted conversation", {
+        sessionId: input.sessionId,
+        compactedMessages: folded.length,
+        fromOrdinal,
+        toOrdinal,
+        estimatedTokensBefore: input.estimatedTokensBefore,
+        estimatedTokensAfter,
+        contextWindow: window,
+        contextWindowSource: input.contextWindow.source,
+      });
+      return {
+        summary: summaryRow,
+        compactedMessages: folded.length,
+        fromOrdinal,
+        toOrdinal,
+        estimatedTokensBefore: input.estimatedTokensBefore,
+        estimatedTokensAfter,
+        contextWindow: window,
+        contextWindowSource: input.contextWindow.source,
+        activeRows: [summaryRow, ...plan.keep],
+      };
+    } catch (err) {
+      if (err instanceof ConcurrentCompaction) {
+        log.info("Another request compacted this conversation first", {
+          sessionId: input.sessionId,
+        });
+        return null;
+      }
+      if ((err as { code?: unknown }).code !== "P2002") throw err;
+    }
+  }
+  throw new CompactionError("Could not allocate a transcript position for the summary.");
+}
+
+class ConcurrentCompaction extends Error {}

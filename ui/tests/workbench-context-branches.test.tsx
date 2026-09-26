@@ -118,10 +118,11 @@ describe("WorkbenchPage — composeWithContext branches", () => {
     // streamChat should have been called with composed message (including context)
     await waitFor(() => expect(streamChatMock).toHaveBeenCalled());
     const call = streamChatMock.mock.calls[0];
-    const messages = call[1] as Array<{ content: string }>;
-    const userMessage = messages.find((m) => m.content.includes("analyze this"));
+    // #136 — only the new (composed) message is sent; the server keeps history.
+    const message = call[1] as string;
+    expect(message).toContain("analyze this");
     // With context, the message should include "Context attachments"
-    expect(userMessage?.content).toContain("Context attachments");
+    expect(message).toContain("Context attachments");
   });
 
   it("sends message without context docs (empty attachments branch)", async () => {
@@ -144,10 +145,8 @@ describe("WorkbenchPage — composeWithContext branches", () => {
 
     await waitFor(() => expect(streamChatMock).toHaveBeenCalled());
     const call = streamChatMock.mock.calls[0];
-    const messages = call[1] as Array<{ content: string }>;
-    const userMessage = messages.find((m) => m.content.includes("hello"));
     // Without context, the message should be just the raw input
-    expect(userMessage?.content).toBe("hello");
+    expect(call[1]).toBe("hello");
   });
 
   it("panel resizer changes layout on drag", async () => {

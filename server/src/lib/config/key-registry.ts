@@ -352,6 +352,38 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Master enable for fused passive code-graph retrieval in chat + Spec-Kit RAG (#714). OFF by default. When on, project-scoped sessions additionally query the code graph / symbol index (HybridCodeSearch) and merge deduped symbol hits — each with a filePath:startLine-endLine locator — into the retrieved-knowledge system block (volatile tail; the byte-stable lead is untouched). When off, no code-graph query is issued and behaviour is byte-identical to today.",
     sensitive: false,
   },
+  CHAT_COMPACTION_WATERMARK_PERCENT: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(10).max(95),
+    description:
+      "Share of the model's context window (from the model catalog) at which a chat turn first summarises its oldest turns (#138). Default 80. The summarised messages are kept in the transcript and marked compacted — never deleted. A project's contextCompactionThreshold, or CONTEXT_COMPACTION_THRESHOLD_TOKENS, caps it from above.",
+    sensitive: false,
+  },
+  CHAT_CONTEXT_WINDOW_FALLBACK: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(1024),
+    description:
+      "Context window (tokens) chat assumes when the model catalog does not know the model's (#138) — e.g. a local model discovery has not described yet. Default 32768: too small only compacts early, too large can overflow a small local context. Set a model's real window with AI_MODEL_CATALOG_OVERRIDES instead where you can.",
+    sensitive: false,
+  },
+  CHAT_TOOL_RESULT_MAX_TOKENS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().positive(),
+    description:
+      "Largest tool result (tokens, estimated) a chat turn puts in the model's context (#138). Longer results are truncated with a marker; the full result is kept in the conversation transcript. Default 2000.",
+    sensitive: false,
+  },
+  CHAT_COMPACTION_SUMMARY_MAX_TOKENS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().positive(),
+    description:
+      "Output cap (max_tokens) for one chat-compaction summary call (#138). Default 2048. A summary that hits the cap is kept and flagged as truncated in the transcript.",
+    sensitive: false,
+  },
   CHAT_FUSED_CODE_TOKEN_BUDGET: {
     tier: "tunable",
     valueType: "int",

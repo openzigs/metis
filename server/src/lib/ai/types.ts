@@ -385,6 +385,15 @@ export interface ChatOptions {
   tools?: ChatToolSpec[];
   /** #131 — see {@link ChatToolChoice}. Ignored when `tools` is empty. */
   toolChoice?: ChatToolChoice;
+  /**
+   * #127 — called by a provider that QUEUES requests (the `local-gemma`
+   * per-base-URL concurrency limiter) once this request's slot is acquired and
+   * before its stream is opened, on every attempt. A caller that runs its own
+   * deadline over the stream (chat's idle timeout) starts it here, so time spent
+   * waiting behind another generation is not counted as a stall. Providers that
+   * do not queue never call it.
+   */
+  onSlotAcquired?: () => void;
 }
 
 export interface EmbedResult {

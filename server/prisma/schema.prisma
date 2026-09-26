@@ -2743,6 +2743,11 @@ model AISession {
   /// Epic #156 (#150) — context compaction.
   lastCompactedAt        DateTime?
   compactionCount        Int       @default(0)
+  /// #139 — set on a session created by `POST /api/ai/sessions/:id/fork`: the
+  /// source session and the transcript ordinal the fork was taken at. Plain
+  /// columns, not a relation, so deleting the source never touches the fork.
+  forkedFromSessionId    String?
+  forkedFromOrdinal      Int?
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
   deletedAt              DateTime?
@@ -2750,6 +2755,8 @@ model AISession {
   user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   project            Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
   agent              Agent?              @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  /// #136 — the server-owned transcript.
+  messages           AIMessage[]
   tokenUsages        AITokenUsage[]
   toolApprovals      AIToolApproval[]
   plans              SessionPlan[]
@@ -2761,6 +2768,53 @@ model AISession {
   @@index([status])
   @@index([agentId])
   @@map("ai_sessions")
+}
+
+/// #136 — one message of a chat session's SERVER-OWNED transcript. The browser
+/// sends only the new user message; every earlier turn is read from here, so a
+/// client can no longer forge prior assistant or tool messages.
+///
+/// Rows are never deleted by compaction (#138): a folded message gets
+/// `compactedAt` + `compactedIntoId` and stays readable, and the summary that
+/// replaced it in the model's context is its own row (`kind = "summary"`).
+model AIMessage {
+  id               String    @id @default(cuid())
+  sessionId        String
+  /// 1-based position in the session's transcript; unique per session.
+  ordinal          Int
+  /// user | assistant | system (system only for kind = "summary").
+  role             String
+  /// message | summary
+  kind             String    @default("message")
+  /// JSON array of content parts: text, tool_call, tool_result.
+  content          String
+  /// #137 — pre-send estimate of this message's own tokens.
+  estimatedTokens  Int       @default(0)
+  /// #137 — provider-reported usage of the call that PRODUCED this row
+  /// (assistant replies and summaries). NULL = the provider reported nothing.
+  inputTokens      Int?
+  outputTokens     Int?
+  cacheReadTokens  Int?
+  cacheWriteTokens Int?
+  /// #137 — characters of the whole prompt that call sent; with the reported
+  /// input tokens it calibrates the chars-per-token estimate for this model.
+  promptChars      Int?
+  provider         String?
+  model            String?
+  finishReason     String?
+  /// #138 — set when this row was folded into a summary. It is excluded from
+  /// the model's context from then on, never deleted.
+  compactedAt      DateTime?
+  compactedIntoId  String?
+  /// JSON: summary coverage, stream error, legacy-snapshot import marker.
+  meta             String?
+  createdAt        DateTime  @default(now())
+
+  session AISession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, ordinal])
+  @@index([sessionId, compactedAt])
+  @@map("ai_messages")
 }
 
 model AITokenUsage {

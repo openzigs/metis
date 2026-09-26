@@ -67,6 +67,7 @@ export const HTTP_STATUS_ERROR_CLASSES: Readonly<Record<string, StatusProvenance
   BudgetExceededError: "own",
   ChangeAnalysisError: "own",
   ConnectorError: "own",
+  ContextOverflowError: "own", // #138 — 413, the chat prompt cannot fit the model's window
   CostCapExceededError: "own",
   GateUnmetError: "own",
   ImpactAnalysisError: "own",

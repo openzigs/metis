@@ -79,7 +79,7 @@ describe("streamChat idle timeout (#1366)", () => {
   it("yields a terminal error event when the stream goes silent mid-answer", async () => {
     mockStream([frame("delta", { content: "partial " })], true);
     const events = [];
-    for await (const ev of streamChat("s1", [{ role: "user", content: "hi" }], undefined, 25)) {
+    for await (const ev of streamChat("s1", "hi", undefined, 25)) {
       events.push(ev);
     }
     expect(events[0]).toEqual({ type: "delta", content: "partial " });
@@ -92,7 +92,7 @@ describe("streamChat idle timeout (#1366)", () => {
     mockStream([frame("delta", { content: "partial" })], true);
     let finallyRan = false;
     try {
-      for await (const _ of streamChat("s1", [{ role: "user", content: "hi" }], undefined, 25)) {
+      for await (const _ of streamChat("s1", "hi", undefined, 25)) {
         void _;
       }
     } finally {
@@ -104,7 +104,7 @@ describe("streamChat idle timeout (#1366)", () => {
   it("preserves everything streamed before the stall", async () => {
     mockStream([frame("delta", { content: "one " }), frame("delta", { content: "two" })], true);
     let text = "";
-    for await (const ev of streamChat("s1", [{ role: "user", content: "hi" }], undefined, 25)) {
+    for await (const ev of streamChat("s1", "hi", undefined, 25)) {
       if (ev.type === "delta") text += ev.content;
     }
     expect(text).toBe("one two");
@@ -112,7 +112,7 @@ describe("streamChat idle timeout (#1366)", () => {
 
   it("cancels the reader so the socket is released, not leaked", async () => {
     const b = mockStream([], true);
-    for await (const _ of streamChat("s1", [{ role: "user", content: "hi" }], undefined, 20)) {
+    for await (const _ of streamChat("s1", "hi", undefined, 20)) {
       void _;
     }
     expect(b.cancel).toHaveBeenCalled();
@@ -132,7 +132,7 @@ describe("streamChat idle timeout (#1366)", () => {
     };
     streamFetch.mockResolvedValue({ ok: true, status: 200, body: { getReader: () => reader } });
     const events = [];
-    for await (const ev of streamChat("s1", [{ role: "user", content: "hi" }], undefined, 30)) {
+    for await (const ev of streamChat("s1", "hi", undefined, 30)) {
       events.push(ev);
     }
     expect(reads).toBeGreaterThan(1);
@@ -143,7 +143,7 @@ describe("streamChat idle timeout (#1366)", () => {
   it("passes a healthy stream through untouched", async () => {
     mockStream([frame("delta", { content: "all good" }), frame("done", { type: "done" })], false);
     const events = [];
-    for await (const ev of streamChat("s1", [{ role: "user", content: "hi" }], undefined, 5000)) {
+    for await (const ev of streamChat("s1", "hi", undefined, 5000)) {
       events.push(ev);
     }
     expect(events).toEqual([{ type: "delta", content: "all good" }, { type: "done" }]);
@@ -152,7 +152,7 @@ describe("streamChat idle timeout (#1366)", () => {
   it("is disabled by a non-positive budget", async () => {
     mockStream([frame("delta", { content: "x" })], false);
     const events = [];
-    for await (const ev of streamChat("s1", [{ role: "user", content: "hi" }], undefined, 0)) {
+    for await (const ev of streamChat("s1", "hi", undefined, 0)) {
       events.push(ev);
     }
     expect(events).toEqual([{ type: "delta", content: "x" }]);
