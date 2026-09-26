@@ -289,4 +289,65 @@ describe("MarkdownPreviewer — progressive rendering (#190)", () => {
       },
     );
   });
+
+  describe("headings with a reference link or a footnote reference (#227)", () => {
+    const references = [
+      "# Doc",
+      "## See [the spec][spec]",
+      "Body.",
+      "",
+      "[spec]: https://example.com/spec",
+      "## Rules[^1]",
+      "Body with a note.[^1]",
+      "",
+      "[^1]: A footnote.",
+      "## Both [the spec][spec] and a note[^2]",
+      "Body.",
+      "## Later [the Spec][SPEC]",
+      "Body.",
+      "## Notes[^2]",
+      "Body.",
+      "## Definitions",
+      "[^2]: Second note.",
+    ].join("\n");
+    const EXPECTED = [
+      "doc",
+      "see-the-spec",
+      "rules",
+      "both-the-spec-and-a-note",
+      "later-the-spec",
+      "notes",
+      "definitions",
+    ];
+
+    it("every TOC link names the id the rendered heading carries", () => {
+      const { container } = render(<MarkdownPreviewer content={references} />);
+      const hrefs = [...container.querySelectorAll('[data-testid="markdown-toc"] a')].map((a) =>
+        a.getAttribute("href")!.slice(1),
+      );
+      expect(hrefs).toEqual(EXPECTED);
+      for (const section of [...pending(container)]) intersect(section);
+      expect(pending(container)).toHaveLength(0);
+      // remark-rehype adds its own "Footnotes" heading (#footnote-label) above
+      // a section's footnote list; it is not a document heading.
+      const headingIds = [
+        ...container.querySelectorAll(
+          '[data-testid="markdown-content"] :is(h1,h2,h3):not(#footnote-label)',
+        ),
+      ].map((h) => h.id);
+      expect(headingIds).toEqual(EXPECTED);
+    });
+
+    it.each(EXPECTED.slice(1))(
+      "a deep link to #%s renders and scrolls to that heading",
+      async (id) => {
+        window.location.hash = `#${encodeURIComponent(id)}`;
+        const { container } = render(<MarkdownPreviewer content={references} />);
+        await act(async () => {});
+        const target = container.querySelector(`[data-section-rendered] [id="${id}"]`);
+        expect(target).not.toBeNull();
+        expect(scrollIntoView.mock.contexts).toContain(target);
+      },
+    );
+  });
 });

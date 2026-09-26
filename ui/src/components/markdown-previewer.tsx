@@ -29,6 +29,7 @@ import { DiagramViewer } from "./diagram-viewer";
 import {
   splitMarkdownSections,
   remarkSectionSlugs,
+  type Definitions,
   type MarkdownSection,
 } from "@/lib/markdown-sections";
 
@@ -75,6 +76,7 @@ export function MarkdownPreviewer({
     sections,
     toc: tocEntries,
     sectionOfId,
+    definitions,
   } = useMemo(() => splitMarkdownSections(repairedContent), [repairedContent]);
   const sectionCount = sections.length;
 
@@ -285,6 +287,7 @@ export function MarkdownPreviewer({
               <MemoizedSection
                 markdown={section.markdown}
                 slugOccurrences={section.slugOccurrences}
+                definitions={definitions}
                 mermaidSvgs={mermaidSvgs}
               />
             </div>
@@ -330,12 +333,15 @@ function PendingSection({ section }: { section: MarkdownSection }): React.ReactE
 interface SectionProps {
   markdown: string;
   slugOccurrences: Readonly<Record<string, number>>;
+  /** Every definition in the document, so heading ids resolve references (#227). */
+  definitions: Definitions;
   mermaidSvgs: Map<string, string>;
 }
 
 const MemoizedSection = memo(function Section({
   markdown,
   slugOccurrences,
+  definitions,
   mermaidSvgs,
 }: SectionProps) {
   return (
@@ -343,7 +349,7 @@ const MemoizedSection = memo(function Section({
       remarkPlugins={[
         remarkGfm,
         remarkMath,
-        [remarkSectionSlugs, { occurrences: slugOccurrences }],
+        [remarkSectionSlugs, { occurrences: slugOccurrences, definitions }],
       ]}
       rehypePlugins={[rehypeKatex]}
       components={{
