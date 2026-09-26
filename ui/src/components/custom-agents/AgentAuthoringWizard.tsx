@@ -6,7 +6,8 @@
  * Multi-step flow surfaced at `/workspaces/:id/agents/new`:
  *   1. name  — agent name + target project
  *   2. prompt — system prompt with a starter template gallery
- *   3. tools  — allowed-tool picker
+ *   3. tools  — allowed-tool picker (the REAL tool registry, #129), the skills
+ *               the agent carries, and its approval-policy override
  *   4. model  — model + reasoning-effort picker
  *   5. playground — create the agent (draft) and run a sample invocation,
  *      proving it returns a completion (epic AC #1: within 5s).
@@ -24,7 +25,8 @@ import { Label } from "@/components/ui/label";
 import { sdkApi, type CreateCustomAgentInput } from "@/lib/sdk-alignment-api";
 import { projectsApi } from "@/lib/projects-api";
 import { modelCatalogApi, formatModelPrice } from "@/lib/model-catalog-api";
-import type { SdkReasoningEffort } from "@metis/shared";
+import { skillsApi } from "@/lib/library-api";
+import type { CustomAgentApprovalPolicy, SdkReasoningEffort } from "@metis/shared";
 
 /**
  * Playground input cap — mirrors the backend's MAX_INVOKE_PAYLOAD_CHARS (20k).
@@ -59,14 +61,23 @@ const TEMPLATES: ReadonlyArray<{ id: string; label: string; description: string;
     },
   ] as const;
 
-/** Tools selectable in step 3 — mirrors the analyst tool surface. */
-const AVAILABLE_TOOLS: readonly string[] = [
-  "knowledge_search",
-  "web_search",
-  "read_document",
-  "code_search",
-  "create_issue",
-] as const;
+/**
+ * Epic #129 — step 3 lists the tools the server actually has (`GET /ai/tools`),
+ * plus the one agent-level grant: calling other agents. Before #129 this was a
+ * hard-coded list of names no tool carried, so a wizard-made agent's allowlist
+ * could never admit a real tool.
+ */
+const SUBAGENT_TOOL_REF = "agent:*";
+
+type RiskKey = keyof CustomAgentApprovalPolicy;
+type ApprovalChoice = "" | NonNullable<CustomAgentApprovalPolicy[RiskKey]>;
+const APPROVAL_CHOICES: ReadonlyArray<{ value: ApprovalChoice; label: string }> = [
+  { value: "", label: "Session default" },
+  { value: "prompt-once", label: "Ask once per session" },
+  { value: "always-prompt", label: "Ask every time" },
+  { value: "deny", label: "Never" },
+];
+const RISKS: readonly RiskKey[] = ["low", "medium", "high"];
 
 /** The "inherit" choice in step 4; the rest come from the model catalog (#135). */
 const DEFAULT_MODEL_OPTION = { value: "", label: "Default (project/workspace)" } as const;
@@ -96,6 +107,12 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
   const [tools, setTools] = useState<string[]>([]);
   const [model, setModel] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState<"" | SdkReasoningEffort>("");
+  const [skillKeys, setSkillKeys] = useState<string[]>([]);
+  const [approval, setApproval] = useState<Record<RiskKey, ApprovalChoice>>({
+    low: "",
+    medium: "",
+    high: "",
+  });
 
   const [playgroundInput, setPlaygroundInput] = useState("");
   // Cache the created agent id so repeated playground runs re-use it.
@@ -112,6 +129,19 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
     queryKey: ["ai-model-catalog", "provider"],
     queryFn: () => modelCatalogApi.list(),
   });
+  const toolsQuery = useQuery({
+    queryKey: ["ai-tools"],
+    queryFn: () => sdkApi.listTools(),
+  });
+  const availableTools = [
+    ...(toolsQuery.data?.tools ?? []).map((t) => t.name).sort(),
+    SUBAGENT_TOOL_REF,
+  ];
+  const skillsQuery = useQuery({
+    queryKey: ["library-skills", "wizard"],
+    queryFn: () => skillsApi.list(),
+  });
+  const availableSkills = (skillsQuery.data?.items ?? []).filter((s) => s.enabled && !s.archived);
   const modelOptions = [
     DEFAULT_MODEL_OPTION,
     ...(modelsQuery.data?.models ?? []).map((m) => {
@@ -129,7 +159,22 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
       tools,
       model: model || null,
       reasoningEffort: reasoningEffort || null,
+      ...(skillKeys.length > 0 ? { skillKeys } : {}),
+      ...(approvalOverride() ? { approvalPolicy: approvalOverride() } : {}),
     };
+  }
+
+  function approvalOverride(): CustomAgentApprovalPolicy | null {
+    const out: CustomAgentApprovalPolicy = {};
+    for (const r of RISKS) {
+      const choice = approval[r];
+      if (choice !== "") out[r] = choice;
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  }
+
+  function toggleSkill(key: string) {
+    setSkillKeys((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
   }
 
   const playground = useMutation({
@@ -278,11 +323,16 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
           <div className="space-y-3" data-testid="wizard-step-tools">
             <Label>Allowed tools</Label>
             <p className="text-xs text-muted-foreground">
-              Pick the tools this agent may call during an analysis run. The playground itself runs
-              prompt-only.
+              Pick the tools this agent may call when a chat delegates a task to it. Every call
+              still needs the approval its session asks for. The playground itself runs prompt-only.
             </p>
+            {toolsQuery.isError && (
+              <p className="text-xs text-destructive" role="alert">
+                Failed to load tools.
+              </p>
+            )}
             <ul className="space-y-2">
-              {AVAILABLE_TOOLS.map((tool) => (
+              {availableTools.map((tool) => (
                 <li key={tool} className="flex items-center gap-2">
                   <input
                     type="checkbox"
@@ -292,11 +342,66 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
                     onChange={() => toggleTool(tool)}
                   />
                   <Label htmlFor={`wizard-tool-${tool}`} className="text-sm font-normal">
-                    {tool}
+                    {tool === SUBAGENT_TOOL_REF ? "Delegate to other agents (agent:*)" : tool}
                   </Label>
                 </li>
               ))}
             </ul>
+            <div className="space-y-2 pt-2" data-testid="wizard-skills">
+              <Label>Skills</Label>
+              <p className="text-xs text-muted-foreground">
+                Only a skill&apos;s name and description are shown to the model; it reads the full
+                instructions when it needs them.
+              </p>
+              {availableSkills.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No skills in the library yet.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {availableSkills.map((sk) => (
+                    <li key={sk.id} className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id={`wizard-skill-${sk.key}`}
+                        data-testid={`wizard-skill-${sk.key}`}
+                        checked={skillKeys.includes(sk.key)}
+                        onChange={() => toggleSkill(sk.key)}
+                      />
+                      <Label htmlFor={`wizard-skill-${sk.key}`} className="text-sm font-normal">
+                        {sk.name}
+                      </Label>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="space-y-2 pt-2" data-testid="wizard-approval">
+              <Label>Approval</Label>
+              <p className="text-xs text-muted-foreground">
+                Ask for approval more often than the session would. An agent can never ask less.
+              </p>
+              {RISKS.map((risk) => (
+                <div key={risk} className="flex items-center gap-2">
+                  <Label htmlFor={`wizard-approval-${risk}`} className="w-28 text-sm font-normal">
+                    {risk} risk
+                  </Label>
+                  <select
+                    id={`wizard-approval-${risk}`}
+                    data-testid={`wizard-approval-${risk}`}
+                    className="rounded-md border bg-background p-1 text-sm"
+                    value={approval[risk]}
+                    onChange={(e) =>
+                      setApproval((prev) => ({ ...prev, [risk]: e.target.value as ApprovalChoice }))
+                    }
+                  >
+                    {APPROVAL_CHOICES.map((c) => (
+                      <option key={c.value} value={c.value}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

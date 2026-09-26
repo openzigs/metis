@@ -16,8 +16,14 @@ vi.mock("./api-client", () => ({
   ApiError: class ApiError extends Error {},
 }));
 
-const { streamChat, parseSseFrame, parseToolEvent, transcriptToDisplay, decideToolApproval } =
-  await import("./ai-client");
+const {
+  streamChat,
+  parseSseFrame,
+  parseToolEvent,
+  transcriptToDisplay,
+  decideToolApproval,
+  getSubAgentRun,
+} = await import("./ai-client");
 
 const encoder = new TextEncoder();
 const frame = (event: string, data: unknown) =>
@@ -154,5 +160,39 @@ describe("decideToolApproval", () => {
       method: "POST",
       body: { decision: "deny" },
     });
+  });
+});
+
+describe("sub-agent runs (#147)", () => {
+  it("a transcript tool call keeps its link to the sub-agent run", () => {
+    const rows = [
+      {
+        id: "m1",
+        ordinal: 2,
+        role: "assistant",
+        kind: "message",
+        compactedAt: null,
+        parts: [
+          { type: "tool_call", id: "c1", name: "agent:custom:x", args: {} },
+          {
+            type: "tool_result",
+            toolCallId: "c1",
+            name: "agent:custom:x",
+            text: "done",
+            decision: "auto-approve",
+            subAgentRunId: "run-7",
+          },
+        ],
+      },
+    ] as unknown as TranscriptMessageDto[];
+    const [turn] = transcriptToDisplay(rows);
+    expect(turn!.toolCalls![0]).toMatchObject({ subAgentRunId: "run-7" });
+  });
+
+  it("reads a run from the session's own route (ids encoded)", async () => {
+    apiFetch.mockResolvedValue({ run: { id: "run 7" } });
+    const run = await getSubAgentRun("s/1", "run 7");
+    expect(run).toEqual({ id: "run 7" });
+    expect(apiFetch).toHaveBeenCalledWith("/ai/sessions/s%2F1/subagent-runs/run%207");
   });
 });

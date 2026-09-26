@@ -501,7 +501,7 @@ export default function ChatPage() {
                       </span>
                     )}
                     {m.role === "assistant" && m.toolCalls ? (
-                      <TranscriptToolCalls calls={m.toolCalls} />
+                      <TranscriptToolCalls calls={m.toolCalls} sessionId={session?.id ?? null} />
                     ) : null}
                     {m.incomplete ? (
                       <p
@@ -530,6 +530,7 @@ export default function ChatPage() {
           )}
         </PausableLiveRegion>
         <ToolActivityList
+          sessionId={session?.id ?? null}
           items={toolApprovals.items}
           deciding={toolApprovals.deciding}
           onDecide={(item, decision) => void toolApprovals.decide(item, decision)}

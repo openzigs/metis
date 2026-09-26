@@ -14,6 +14,7 @@
 import { Button } from "@/components/ui/button";
 import type { TranscriptToolCall } from "@/lib/ai-client";
 import { decisionLabel, toolErrorText, type ToolActivity } from "@/lib/tool-activity";
+import { SubAgentRunDetails } from "@/components/chat/subagent-run";
 
 function statusText(a: ToolActivity): string {
   switch (a.phase) {
@@ -33,9 +34,11 @@ export interface ToolActivityListProps {
   onDecide: (item: ToolActivity, decision: "approve" | "deny") => void;
   /** Approval ids with a decision in flight (buttons disabled). */
   deciding?: ReadonlySet<string>;
+  /** #147 — the session, so a sub-agent call can link to its stored transcript. */
+  sessionId?: string | null;
 }
 
-export function ToolActivityList({ items, onDecide, deciding }: ToolActivityListProps) {
+export function ToolActivityList({ items, onDecide, deciding, sessionId }: ToolActivityListProps) {
   if (items.length === 0) return null;
   return (
     <ul className="space-y-1" data-testid="tool-activity" aria-label="Tool activity">
@@ -51,6 +54,11 @@ export function ToolActivityList({ items, onDecide, deciding }: ToolActivityList
             <details open={awaiting}>
               <summary className="cursor-pointer select-none">
                 <span className="font-medium">{a.name}</span>
+                {a.viaAgent ? (
+                  <span className="ml-1 text-muted-foreground" data-testid="tool-via-agent">
+                    via {a.viaAgent.name}
+                  </span>
+                ) : null}
                 {a.risk ? (
                   <span className="ml-1 text-muted-foreground">({a.risk} risk)</span>
                 ) : null}
@@ -80,6 +88,9 @@ export function ToolActivityList({ items, onDecide, deciding }: ToolActivityList
                     {a.resultPreview}
                   </pre>
                 </div>
+              ) : null}
+              {a.subAgentRunId && sessionId ? (
+                <SubAgentRunDetails sessionId={sessionId} runId={a.subAgentRunId} />
               ) : null}
               {awaiting ? (
                 <div className="mt-2 flex items-center gap-2">
@@ -117,7 +128,14 @@ export function ToolActivityList({ items, onDecide, deciding }: ToolActivityList
   );
 }
 
-export function TranscriptToolCalls({ calls }: { calls: readonly TranscriptToolCall[] }) {
+export function TranscriptToolCalls({
+  calls,
+  sessionId,
+}: {
+  calls: readonly TranscriptToolCall[];
+  /** #147 — the session, so a sub-agent call can link to its stored transcript. */
+  sessionId?: string | null;
+}) {
   if (calls.length === 0) return null;
   return (
     <details className="mt-1 text-xs" data-testid="transcript-tool-calls">
@@ -142,6 +160,9 @@ export function TranscriptToolCalls({ calls }: { calls: readonly TranscriptToolC
                 <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-1">
                   {c.resultPreview}
                 </pre>
+              ) : null}
+              {c.subAgentRunId && sessionId ? (
+                <SubAgentRunDetails sessionId={sessionId} runId={c.subAgentRunId} />
               ) : null}
             </details>
           </li>

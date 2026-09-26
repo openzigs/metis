@@ -124,6 +124,18 @@ export default defineConfig({
             // rest of the deterministic suite is unaffected. No LLM keys needed.
             AI_REPLAY: process.env.AI_REPLAY ?? "1",
             AI_FIXTURE_DIR: LLM_FIXTURE_DIR,
+            // Epic #129 (#148) — a script book makes the offline stub return
+            // real native tool calls, selected by a marker in the message, so
+            // `agents-skills.spec.ts` drives a whole tool loop. Unset (the
+            // default) leaves the stub exactly as before. Needs AI_REPLAY=0.
+            ...(process.env.AI_OFFLINE_SCRIPT_FILE
+              ? {
+                  AI_OFFLINE_SCRIPT_FILE: path.resolve(
+                    REPO_ROOT,
+                    process.env.AI_OFFLINE_SCRIPT_FILE,
+                  ),
+                }
+              : {}),
             EMBED_BACKEND: "offline",
             VECTOR_STORE: "local",
             AUTH_MODE: "mock",

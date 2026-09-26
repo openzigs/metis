@@ -1593,6 +1593,15 @@ export class AnalysisOrchestrator {
               failed: customPhase.results.filter((r) => r.error).length,
             });
           }
+          for (const r of customPhase.results) {
+            for (const warning of r.warnings ?? []) {
+              log.warn("Custom agent warning during analysis", {
+                analysisId,
+                agentId: r.agentId,
+                warning,
+              });
+            }
+          }
         } catch (err) {
           // Phase wrapper should never throw, but never let it sink the run.
           log.warn("Custom-agent phase failed", {

@@ -11,6 +11,7 @@ import type {
   CompactionEventDto,
   ForkSessionResponse,
   ResumeSessionResponse,
+  SubAgentRunDto,
   TranscriptMessageDto,
   TranscriptResponse,
 } from "@metis/shared";
@@ -165,6 +166,16 @@ export interface TranscriptToolCall {
   /** `false` when the call never ran. */
   executed: boolean;
   resultPreview: string;
+  /** #147 — the sub-agent run this call started (its stored transcript). */
+  subAgentRunId?: string;
+}
+
+/** #147 — a sub-agent run's stored transcript (`GET /ai/sessions/:id/subagent-runs/:runId`). */
+export async function getSubAgentRun(sessionId: string, runId: string): Promise<SubAgentRunDto> {
+  const res = await apiFetch<{ run: SubAgentRunDto }>(
+    `/ai/sessions/${encodeURIComponent(sessionId)}/subagent-runs/${encodeURIComponent(runId)}`,
+  );
+  return res.run;
 }
 
 const TOOL_PREVIEW_CHARS = 400;
@@ -180,6 +191,7 @@ function transcriptToolCalls(parts: TranscriptMessageDto["parts"]): TranscriptTo
       ...(p.decision ? { decision: p.decision } : {}),
       ...(p.errorCode ? { errorCode: p.errorCode } : {}),
       executed: p.executed !== false,
+      ...(p.subAgentRunId ? { subAgentRunId: p.subAgentRunId } : {}),
       resultPreview:
         p.text.length > TOOL_PREVIEW_CHARS ? `${p.text.slice(0, TOOL_PREVIEW_CHARS)}…` : p.text,
     });

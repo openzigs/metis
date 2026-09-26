@@ -12,12 +12,26 @@
  */
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
-import type { CustomAgentDefinition, CustomAgentDto, SdkReasoningEffort } from "@metis/shared";
+import type {
+  CustomAgentApprovalPolicy,
+  CustomAgentDefinition,
+  CustomAgentDto,
+  SdkReasoningEffort,
+} from "@metis/shared";
+import {
+  ApprovalOverrideError,
+  parseApprovalOverride,
+  readStoredOverride,
+} from "../agent-runtime/policy.js";
+import { assertNoSecrets, DefinitionSecretError } from "../agent-runtime/secret-scan.js";
 
 export class CustomAgentError extends Error {}
 
 const NAME_RE = /^[A-Za-z][A-Za-z0-9 _-]{1,63}$/;
 const REASONING_EFFORTS = new Set(["low", "medium", "high"]);
+/** Epic #129 (#145) — library skill keys an agent may carry. */
+const SKILL_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,79}$/;
+export const MAX_AGENT_SKILLS = 32;
 
 interface AgentRow {
   id: string;
@@ -28,19 +42,27 @@ interface AgentRow {
   tools: string;
   model: string | null;
   reasoningEffort: string | null;
+  /** Epic #129 (#145) — absent on rows read by pre-#129 test doubles. */
+  skillKeys?: string | null;
+  approvalPolicy?: string | null;
+  version?: string | null;
   isBuiltIn: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
 
-function toDto(r: AgentRow): CustomAgentDto {
-  let tools: string[] = [];
+function jsonStrings(raw: string | null | undefined): string[] {
+  if (!raw) return [];
   try {
-    const parsed = JSON.parse(r.tools);
-    if (Array.isArray(parsed)) tools = parsed.filter((t): t is string => typeof t === "string");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : [];
   } catch {
-    tools = [];
+    return [];
   }
+}
+
+function toDto(r: AgentRow): CustomAgentDto {
+  const tools = jsonStrings(r.tools);
   return {
     id: r.id,
     projectId: r.projectId,
@@ -50,6 +72,10 @@ function toDto(r: AgentRow): CustomAgentDto {
     tools,
     model: r.model,
     reasoningEffort: (r.reasoningEffort as SdkReasoningEffort | null) ?? null,
+    skillKeys: jsonStrings(r.skillKeys),
+    approvalPolicy:
+      (readStoredOverride(r.approvalPolicy) as CustomAgentApprovalPolicy | null) ?? null,
+    version: r.version || "1.0.0",
     isBuiltIn: r.isBuiltIn,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
@@ -73,6 +99,58 @@ function validate(def: Partial<CustomAgentDefinition>, opts: { allowEmpty?: bool
   if (def.reasoningEffort != null && !REASONING_EFFORTS.has(def.reasoningEffort)) {
     throw new CustomAgentError("reasoningEffort must be low|medium|high");
   }
+  // Epic #129 (#145) — skills, the approval override, and no credentials in
+  // the text every project member and the model provider will see.
+  if (def.skillKeys != null) {
+    if (
+      !Array.isArray(def.skillKeys) ||
+      def.skillKeys.length > MAX_AGENT_SKILLS ||
+      def.skillKeys.some((k) => typeof k !== "string" || !SKILL_KEY_RE.test(k))
+    ) {
+      throw new CustomAgentError(
+        `skillKeys must be at most ${MAX_AGENT_SKILLS} skill keys (lowercase letters, digits, '.', '_', '-')`,
+      );
+    }
+  }
+  if (def.approvalPolicy != null) {
+    try {
+      parseApprovalOverride(def.approvalPolicy);
+    } catch (err) {
+      throw new CustomAgentError((err as ApprovalOverrideError).message);
+    }
+  }
+  try {
+    assertNoSecrets({ systemPrompt: def.systemPrompt, description: def.description });
+  } catch (err) {
+    throw new CustomAgentError((err as DefinitionSecretError).message);
+  }
+}
+
+/** Every skill key must name an existing, enabled library skill. */
+async function assertSkillsExist(keys: readonly string[] | null | undefined): Promise<void> {
+  if (!keys || keys.length === 0) return;
+  const unique = [...new Set(keys)];
+  const rows = await prisma.skill.findMany({
+    where: { key: { in: unique }, deletedAt: null, archivedAt: null, enabled: true },
+    select: { key: true },
+  });
+  const found = new Set(rows.map((r) => r.key));
+  const missing = unique.filter((k) => !found.has(k));
+  if (missing.length > 0) {
+    throw new CustomAgentError(`Unknown or disabled skills: ${missing.join(", ")}`);
+  }
+}
+
+function overrideJson(v: CustomAgentApprovalPolicy | null | undefined): string | null {
+  const parsed = parseApprovalOverride(v ?? null);
+  return parsed ? JSON.stringify(parsed) : null;
+}
+
+/** Bump `major.minor.patch` (or append `.1`); any other shape restarts at 1.0.1. */
+export function nextAgentVersion(current: string | null | undefined): string {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(current ?? "");
+  if (!m) return "1.0.1";
+  return `${m[1]}.${m[2]}.${Number(m[3]) + 1}`;
 }
 
 const BUILT_INS: ReadonlyArray<CustomAgentDefinition & { description: string }> = [
@@ -190,6 +268,7 @@ export async function createAgent(
   actorId?: string,
 ): Promise<CustomAgentDto> {
   validate(input);
+  await assertSkillsExist(input.skillKeys);
   const existing = await prisma.customAgent.findFirst({
     where: { projectId: input.projectId, name: input.name },
   });
@@ -203,6 +282,10 @@ export async function createAgent(
       tools: JSON.stringify(input.tools),
       model: input.model ?? null,
       reasoningEffort: input.reasoningEffort ?? null,
+      ...(input.skillKeys && input.skillKeys.length > 0
+        ? { skillKeys: JSON.stringify([...new Set(input.skillKeys)]) }
+        : {}),
+      ...(input.approvalPolicy ? { approvalPolicy: overrideJson(input.approvalPolicy) } : {}),
       isBuiltIn: false,
     },
   });
@@ -226,6 +309,7 @@ export async function updateAgent(
     throw new CustomAgentError("Built-in agents cannot be modified");
   }
   validate(patch, { allowEmpty: true });
+  await assertSkillsExist(patch.skillKeys);
   const row = await prisma.customAgent.update({
     where: { id },
     data: {
@@ -235,6 +319,14 @@ export async function updateAgent(
       tools: patch.tools != null ? JSON.stringify(patch.tools) : undefined,
       model: patch.model,
       reasoningEffort: patch.reasoningEffort,
+      ...(patch.skillKeys !== undefined
+        ? { skillKeys: JSON.stringify([...new Set(patch.skillKeys ?? [])]) }
+        : {}),
+      ...(patch.approvalPolicy !== undefined
+        ? { approvalPolicy: overrideJson(patch.approvalPolicy) }
+        : {}),
+      // Epic #129 (#145) — every change is a new version of the definition.
+      version: nextAgentVersion((existing as AgentRow).version),
     },
   });
   audit({

@@ -66,6 +66,7 @@ function defaultProvider(): AIProvider {
 }
 
 const reasoningEffort = z.enum(["low", "medium", "high"]);
+const approvalAction = z.enum(["auto", "prompt-once", "always-prompt", "deny"]);
 
 const createSchema = z.object({
   projectId: z.string().min(1),
@@ -79,6 +80,17 @@ const createSchema = z.object({
   tools: z.array(z.string()).max(64).default([]),
   model: z.string().max(80).nullish(),
   reasoningEffort: reasoningEffort.nullish(),
+  // Epic #129 (#145) — the rest of the one agent definition. Values are
+  // validated by the service (skills must exist; the override is tighten-only).
+  skillKeys: z.array(z.string().max(80)).max(32).optional(),
+  approvalPolicy: z
+    .object({
+      low: approvalAction.optional(),
+      medium: approvalAction.optional(),
+      high: approvalAction.optional(),
+    })
+    .strict()
+    .nullish(),
 });
 
 const patchSchema = createSchema.partial().omit({ projectId: true });
@@ -301,6 +313,7 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
         provider: makeProvider(),
         agent,
         input,
+        projectId,
       });
       auditInvocation({
         actorId: req.user.userId,

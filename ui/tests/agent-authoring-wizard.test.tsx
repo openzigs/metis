@@ -20,6 +20,13 @@ vi.mock("@/lib/sdk-alignment-api", async () => {
       ...actual.sdkApi,
       invokeAgent: vi.fn(),
       createAgent: vi.fn(),
+      // #129 — the tool step lists the server's real registry.
+      listTools: vi.fn(async () => ({
+        tools: [
+          { name: "search-knowledge", description: "Search", risk: "low" },
+          { name: "inspect_schema", description: "Inspect", risk: "medium" },
+        ],
+      })),
     },
   };
 });
@@ -59,6 +66,23 @@ vi.mock("@/lib/model-catalog-api", async () => {
         models: [
           entry("us.anthropic.claude-haiku-4-5-20251001-v1:0", "Claude Haiku 4.5"),
           entry("us.anthropic.claude-sonnet-5", "Claude Sonnet 5"),
+        ],
+      })),
+    },
+  };
+});
+
+// #129 — the skills the wizard offers come from the library.
+vi.mock("@/lib/library-api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/library-api")>("@/lib/library-api");
+  return {
+    ...actual,
+    skillsApi: {
+      ...actual.skillsApi,
+      list: vi.fn(async () => ({
+        items: [
+          { id: "s1", key: "style-guide", name: "Style guide", enabled: true, archived: false },
+          { id: "s2", key: "old-skill", name: "Old skill", enabled: false, archived: false },
         ],
       })),
     },
@@ -282,7 +306,7 @@ describe("<AgentAuthoringWizard /> (#84)", () => {
       name: "My Analyst",
       description: "",
       systemPrompt: "Prompt.",
-      tools: ["web_search"],
+      tools: ["search-knowledge"],
       isBuiltIn: false,
       createdAt: "",
       updatedAt: "",
@@ -301,7 +325,8 @@ describe("<AgentAuthoringWizard /> (#84)", () => {
     fireEvent.click(screen.getByTestId("wizard-next")); // prompt
     fireEvent.change(screen.getByTestId("wizard-prompt-input"), { target: { value: "Prompt." } });
     fireEvent.click(screen.getByTestId("wizard-next")); // tools
-    fireEvent.click(screen.getByTestId("wizard-tool-web_search"));
+    // #129 — a tool the server really has (the list is fetched, so wait for it).
+    fireEvent.click(await screen.findByTestId("wizard-tool-search-knowledge"));
     fireEvent.click(screen.getByTestId("wizard-next")); // model
     fireEvent.change(screen.getByTestId("wizard-model-select"), {
       target: { value: "us.anthropic.claude-sonnet-5" },
@@ -317,7 +342,7 @@ describe("<AgentAuthoringWizard /> (#84)", () => {
         expect.objectContaining({
           model: "us.anthropic.claude-sonnet-5",
           reasoningEffort: "high",
-          tools: ["web_search"],
+          tools: ["search-knowledge"],
         }),
       ),
     );
@@ -397,5 +422,76 @@ describe("<AgentAuthoringWizard /> (#84)", () => {
     expect(screen.getByTestId("wizard-step-prompt")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("wizard-back"));
     expect(screen.getByTestId("wizard-step-name")).toBeInTheDocument();
+  });
+});
+
+describe("<AgentAuthoringWizard /> — the one agent definition (#129)", () => {
+  async function toToolsStep() {
+    renderWizard();
+    await flush();
+    fireEvent.change(screen.getByTestId("wizard-name-input"), { target: { value: "My Analyst" } });
+    fireEvent.change(screen.getByTestId("wizard-project-select"), { target: { value: "proj-1" } });
+    fireEvent.click(screen.getByTestId("wizard-next"));
+    fireEvent.change(screen.getByTestId("wizard-prompt-input"), { target: { value: "Prompt." } });
+    fireEvent.click(screen.getByTestId("wizard-next"));
+    await flush();
+  }
+
+  it("offers the server's REAL tools (plus delegating to agents), not hard-coded names", async () => {
+    await toToolsStep();
+    await waitFor(() =>
+      expect(screen.getByTestId("wizard-tool-search-knowledge")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("wizard-tool-inspect_schema")).toBeInTheDocument();
+    expect(screen.getByTestId("wizard-tool-agent:*")).toBeInTheDocument();
+    expect(screen.queryByTestId("wizard-tool-knowledge_search")).toBeNull();
+  });
+
+  it("sends the chosen tools, skills and approval override when the agent is saved", async () => {
+    createAgent.mockResolvedValue({ id: "agent-9", projectId: "proj-1", name: "My Analyst" });
+    invokeAgent.mockResolvedValue({
+      content: "ok",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "m",
+      provider: "p",
+    });
+    await toToolsStep();
+    await waitFor(() => expect(screen.getByTestId("wizard-skill-style-guide")).toBeInTheDocument());
+    // A disabled library skill is not offered.
+    expect(screen.queryByTestId("wizard-skill-old-skill")).toBeNull();
+    fireEvent.click(screen.getByTestId("wizard-tool-search-knowledge"));
+    fireEvent.click(screen.getByTestId("wizard-skill-style-guide"));
+    fireEvent.change(screen.getByTestId("wizard-approval-high"), { target: { value: "deny" } });
+    fireEvent.click(screen.getByTestId("wizard-next")); // model
+    fireEvent.click(screen.getByTestId("wizard-next")); // playground
+    fireEvent.change(screen.getByTestId("wizard-playground-input"), { target: { value: "Go." } });
+    fireEvent.click(screen.getByTestId("wizard-playground-run"));
+    await waitFor(() => expect(createAgent).toHaveBeenCalled());
+    expect(createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tools: ["search-knowledge"],
+        skillKeys: ["style-guide"],
+        approvalPolicy: { high: "deny" },
+      }),
+    );
+  });
+
+  it("sends no skills and no override when none were chosen", async () => {
+    createAgent.mockResolvedValue({ id: "agent-10", projectId: "proj-1", name: "My Analyst" });
+    invokeAgent.mockResolvedValue({
+      content: "ok",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "m",
+      provider: "p",
+    });
+    await toToolsStep();
+    fireEvent.click(screen.getByTestId("wizard-next"));
+    fireEvent.click(screen.getByTestId("wizard-next"));
+    fireEvent.change(screen.getByTestId("wizard-playground-input"), { target: { value: "Go." } });
+    fireEvent.click(screen.getByTestId("wizard-playground-run"));
+    await waitFor(() => expect(createAgent).toHaveBeenCalled());
+    const input = createAgent.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input).not.toHaveProperty("skillKeys");
+    expect(input).not.toHaveProperty("approvalPolicy");
   });
 });

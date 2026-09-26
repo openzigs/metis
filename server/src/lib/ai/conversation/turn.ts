@@ -304,6 +304,8 @@ export interface ReplyToolCall {
   errorCode?: string;
   /** #142 — `false` when the call never ran (denied, expired, unknown, invalid). */
   executed?: boolean;
+  /** #147 — the sub-agent run this call started (its stored transcript). */
+  subAgentRunId?: string;
 }
 
 export interface RecordReplyInput {
@@ -337,6 +339,8 @@ export async function recordReply(input: RecordReplyInput): Promise<StoredMessag
       ...(c.decision ? { decision: c.decision } : {}),
       ...(c.errorCode ? { errorCode: c.errorCode } : {}),
       ...(c.executed === false ? { executed: false } : {}),
+      // #147 — the link from this turn to the sub-agent's stored transcript.
+      ...(c.subAgentRunId ? { subAgentRunId: c.subAgentRunId } : {}),
     });
   });
   if (input.text) parts.push({ type: "text", text: input.text });

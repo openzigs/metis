@@ -11,6 +11,7 @@
  * callers can filter telemetry / refuse to display fake answers in prod.
  */
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
 import { embedTexts } from "../embeddings.js";
 import { NO_PROVIDER_CAPABILITIES, type ProviderCapabilities } from "../capabilities.js";
 import type {
@@ -75,6 +76,28 @@ export interface OfflineScriptTurn {
   usage?: Partial<TokenUsage>;
   /** Defaults to `"tool_calls"` when the turn calls tools, else `"stop"`. */
   finishReason?: string;
+  /**
+   * #148 — script-book expectations on the request's SYSTEM messages. When one
+   * fails, the turn is replaced by a plain-text failure reply (no tool calls),
+   * so an end-to-end test that cannot see the prompt still goes red when, for
+   * example, a skill body is pasted into it.
+   */
+  expectInSystem?: string[];
+  expectNotInSystem?: string[];
+}
+
+/**
+ * #148 — a SCRIPT BOOK: scripted conversations selected by content, so one
+ * long-running server (the Playwright stack) can drive several multi-turn tool
+ * loops without shared, order-dependent state. A request matches the first
+ * scenario whose `match` marker appears in the LAST user message; the turn
+ * played is the number of assistant messages after that user message — so
+ * turn N of a loop is always the same reply, whatever else the server did.
+ * A sub-agent's request matches on the task it was given (its own user
+ * message). Requests that match nothing get the deterministic hash reply.
+ */
+export interface OfflineScriptBook {
+  scenarios: Array<{ match: string; turns: OfflineScriptTurn[] }>;
 }
 
 export interface OfflineStubProviderOptions {
@@ -85,6 +108,49 @@ export interface OfflineStubProviderOptions {
    * script runs out, calls fall back to the deterministic hash reply.
    */
   script?: OfflineScriptTurn[];
+  /** #148 — content-selected scripted conversations (see {@link OfflineScriptBook}). */
+  book?: OfflineScriptBook;
+}
+
+/** #148 — the env var naming a script-book JSON file (tests and e2e only). */
+export const OFFLINE_SCRIPT_FILE_ENV = "AI_OFFLINE_SCRIPT_FILE";
+
+/**
+ * Read the script book named by `AI_OFFLINE_SCRIPT_FILE`, or `undefined` when
+ * unset or unreadable (an unreadable book is logged to stderr and ignored —
+ * the stub then behaves exactly as it always has). Refused outright under
+ * `NODE_ENV=production`: a stray env var must never make a deployed offline
+ * stub emit scripted tool calls.
+ */
+export function loadOfflineScriptBook(
+  env: NodeJS.ProcessEnv = process.env,
+): OfflineScriptBook | undefined {
+  const file = env[OFFLINE_SCRIPT_FILE_ENV]?.trim();
+  if (!file) return undefined;
+  if (env.NODE_ENV === "production") {
+    process.stderr.write(
+      `[offline-stub] ignoring ${OFFLINE_SCRIPT_FILE_ENV}: script books are for tests and e2e only, never production\n`,
+    );
+    return undefined;
+  }
+  try {
+    const raw = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    const scenarios = (raw as { scenarios?: unknown }).scenarios;
+    if (!Array.isArray(scenarios)) throw new Error("scenarios must be an array");
+    const book: OfflineScriptBook = { scenarios: [] };
+    for (const sc of scenarios as Array<Record<string, unknown>>) {
+      if (typeof sc.match !== "string" || sc.match.length < 4 || !Array.isArray(sc.turns)) {
+        throw new Error("each scenario needs a match marker (4+ chars) and turns[]");
+      }
+      book.scenarios.push({ match: sc.match, turns: sc.turns as OfflineScriptTurn[] });
+    }
+    return book;
+  } catch (err) {
+    process.stderr.write(
+      `[offline-stub] ignoring ${OFFLINE_SCRIPT_FILE_ENV}: ${(err as Error).message}\n`,
+    );
+    return undefined;
+  }
 }
 
 export class OfflineStubProvider implements AIProvider {
@@ -104,20 +170,62 @@ export class OfflineStubProvider implements AIProvider {
   /** #131 — every request a scripted stub received, for assertions. */
   readonly requests: Array<{ messages: ChatMessage[]; opts: ChatOptions }> = [];
   private readonly script: OfflineScriptTurn[] | undefined;
+  private readonly book: OfflineScriptBook | undefined;
 
   constructor(opts: OfflineStubProviderOptions = {}) {
     this.script = opts.script ? [...opts.script] : undefined;
-    this.capabilities = this.script
-      ? { ...NO_PROVIDER_CAPABILITIES, nativeToolCalls: true }
-      : NO_PROVIDER_CAPABILITIES;
+    this.book = opts.book;
+    this.capabilities =
+      this.script || this.book
+        ? { ...NO_PROVIDER_CAPABILITIES, nativeToolCalls: true }
+        : NO_PROVIDER_CAPABILITIES;
+  }
+
+  /** #148 — the stub the server builds: scripted by `AI_OFFLINE_SCRIPT_FILE` when set. */
+  static fromEnv(env: NodeJS.ProcessEnv = process.env): OfflineStubProvider {
+    const book = loadOfflineScriptBook(env);
+    return new OfflineStubProvider(book ? { book } : {});
   }
 
   /** The next scripted turn, recording the request; `undefined` when unscripted/exhausted. */
   private nextTurn(messages: ChatMessage[], opts: ChatOptions): OfflineScriptTurn | undefined {
+    if (this.book) return this.bookTurn(messages, opts);
     if (!this.script) return undefined;
     const { signal: _signal, ...rest } = opts;
     this.requests.push({ messages, opts: rest });
     return this.script.shift();
+  }
+
+  private bookTurn(messages: ChatMessage[], opts: ChatOptions): OfflineScriptTurn | undefined {
+    let lastUser = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]!.role === "user") {
+        lastUser = i;
+        break;
+      }
+    }
+    if (lastUser < 0) return undefined;
+    const text = messageText(messages[lastUser]!);
+    const scenario = this.book!.scenarios.find((s) => text.includes(s.match));
+    if (!scenario) return undefined;
+    const { signal: _signal, ...rest } = opts;
+    this.requests.push({ messages, opts: rest });
+    const index = messages.slice(lastUser + 1).filter((m) => m.role === "assistant").length;
+    const turn = scenario.turns[index];
+    if (!turn) return undefined;
+    const system = messages
+      .filter((m) => m.role === "system")
+      .map((m) => messageText(m))
+      .concat(opts.systemMessage ? [opts.systemMessage] : [])
+      .join("\n");
+    const missing = (turn.expectInSystem ?? []).filter((t) => !system.includes(t));
+    const present = (turn.expectNotInSystem ?? []).filter((t) => system.includes(t));
+    if (missing.length > 0 || present.length > 0) {
+      return {
+        content: `[offline-stub] SCRIPT EXPECTATION FAILED (${scenario.match} turn ${index}): missing ${JSON.stringify(missing)}, unexpected ${JSON.stringify(present)}`,
+      };
+    }
+    return turn;
   }
 
   async chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResponse> {

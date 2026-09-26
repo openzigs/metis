@@ -4,7 +4,9 @@
  * Runs every custom agent ENABLED for the project (via the
  * `CustomAgentEnablement` join) alongside the built-in specialists during an
  * analysis run. Each agent is invoked through the shared, injection-resistant
- * {@link invokeCustomAgent} path with the project framing as its input.
+ * {@link invokeCustomAgent} path with the project framing as its input — which
+ * is the one agent runtime (`agent-runtime/run-agent.ts`) chat sub-agents use
+ * too (#129 / #145).
  *
  * Design notes:
  *  - Failures are isolated per-agent: one agent throwing never aborts the
@@ -34,6 +36,8 @@ export interface CustomAgentResult {
   content: string;
   usage: TokenUsage;
   error?: string;
+  /** e.g. the agent's saved model could not be used — never silent (#145). */
+  warnings?: string[];
 }
 
 export interface CustomAgentPhaseResult {
@@ -75,12 +79,15 @@ export async function runEnabledCustomAgents(
           agent,
           input: framedInput,
           signal: input.signal,
+          // #129 — the project's skill allow-list filters the agent's skills.
+          projectId: input.projectId,
         });
         return {
           agentId: agent.id,
           agentName: agent.name,
           content: res.content,
           usage: res.usage,
+          ...(res.warnings ? { warnings: res.warnings } : {}),
         };
       } catch (err) {
         log.warn("Custom agent failed during analysis", {

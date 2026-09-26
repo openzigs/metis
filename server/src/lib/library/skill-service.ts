@@ -15,6 +15,13 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { bumpVersion, parseSkillSource, slugifyKey, type SkillFrontmatter } from "./frontmatter.js";
+import { assertNoSecrets, DefinitionSecretError } from "../agent-runtime/secret-scan.js";
+import {
+  SkillBundleError,
+  validateSkillFiles,
+  type SkillFileInput,
+  type ValidatedSkillFile,
+} from "../agent-runtime/skill-bundle.js";
 
 export class SkillServiceError extends Error {
   constructor(
@@ -39,6 +46,11 @@ export interface SkillUpsertInput {
   source: string;
   /** Where the source came from \u2014 stored on the Skill row for audit. */
   origin?: string;
+  /**
+   * Epic #129 (#146) — the Agent Skills directory's supporting files. On
+   * update, `undefined` keeps the stored files and an array replaces them.
+   */
+  files?: SkillFileInput[];
 }
 
 export interface SkillSummary {
@@ -100,6 +112,38 @@ function fromManifest(raw: string): SkillFrontmatter {
     // fall through
   }
   return { name: "unknown", description: "", version: "0.1.0" } as SkillFrontmatter;
+}
+
+/** Epic #129 — validate a skill's text + supporting files before any write. */
+function checkSkillContent(
+  body: string,
+  description: string | undefined,
+  files: SkillFileInput[] | undefined,
+): ValidatedSkillFile[] | undefined {
+  try {
+    assertNoSecrets({ instructions: body, description });
+  } catch (err) {
+    throw new SkillServiceError(
+      400,
+      "SKILL_CONTAINS_SECRET",
+      (err as DefinitionSecretError).message,
+    );
+  }
+  if (files === undefined) return undefined;
+  try {
+    return validateSkillFiles(files);
+  } catch (err) {
+    throw new SkillServiceError(400, "SKILL_BUNDLE_INVALID", (err as SkillBundleError).message);
+  }
+}
+
+function fileRows(files: ValidatedSkillFile[]) {
+  return files.map((f) => ({
+    path: f.path,
+    content: f.content,
+    sizeBytes: f.sizeBytes,
+    sha256: f.sha256,
+  }));
 }
 
 export class SkillService {
@@ -177,6 +221,7 @@ export class SkillService {
   // ── Write ───────────────────────────────────────────────────────────
   async create(input: SkillUpsertInput, actor: ActorRef): Promise<SkillDetail> {
     const parsed = parseSkillSource(input.source);
+    const files = checkSkillContent(parsed.body, parsed.frontmatter.description, input.files);
     const key = input.key ?? slugifyKey(parsed.frontmatter.name);
     const existing = await this.db.skill.findUnique({ where: { key } });
     if (existing && !existing.deletedAt) {
@@ -215,9 +260,16 @@ export class SkillService {
             deletedAt: null,
             archivedAt: null,
             enabled: true,
+            // A re-created (previously deleted) skill never keeps old files.
+            files: { deleteMany: {}, ...(files ? { create: fileRows(files) } : {}) },
           },
         })
-      : await this.db.skill.create({ data });
+      : await this.db.skill.create({
+          data: {
+            ...data,
+            ...(files && files.length > 0 ? { files: { create: fileRows(files) } } : {}),
+          },
+        });
     audit({
       actor: { id: actor.id },
       action: "skill.create",
@@ -238,7 +290,8 @@ export class SkillService {
       throw new SkillServiceError(404, "SKILL_NOT_FOUND", "Skill not found");
     }
     const parsed = parseSkillSource(input.source);
-    if (parsed.contentSha256 === existing.contentSha256) {
+    const files = checkSkillContent(parsed.body, parsed.frontmatter.description, input.files);
+    if (parsed.contentSha256 === existing.contentSha256 && files === undefined) {
       throw new SkillServiceError(
         409,
         "SKILL_NO_CHANGE",
@@ -262,6 +315,7 @@ export class SkillService {
         version: nextVersion,
         contentSha256: parsed.contentSha256,
         source: input.origin ?? existing.source,
+        ...(files !== undefined ? { files: { deleteMany: {}, create: fileRows(files) } } : {}),
         versions: {
           create: {
             version: nextVersion,

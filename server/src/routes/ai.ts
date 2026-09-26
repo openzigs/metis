@@ -103,6 +103,10 @@ import {
 } from "../lib/code-graph/project-code-searcher.js";
 import { getConfigService } from "../lib/config/config-service.js";
 import { getModelCatalog } from "../lib/ai/model-catalog.js";
+import { resolveAgentModel } from "../lib/agent-runtime/definition.js";
+import { renderSkillCatalog, type SkillCatalogEntry } from "../lib/agent-runtime/skills.js";
+import { getSubAgentRun } from "../lib/agent-runtime/subagents.js";
+import type { ChatOptions as SubAgentChatOptions } from "../lib/ai/types.js";
 import { modelCatalogRateLimiter } from "../middleware/model-catalog-rate-limit.js";
 
 const log = createChildLogger("ai-routes");
@@ -529,6 +533,13 @@ export async function buildLibrarySystemMessages(
    * byte-identical to before this feature.
    */
   toolSchemas?: string,
+  /**
+   * #146 — how this turn's skills reach the model. `progressive`: the catalog
+   * (names + descriptions) only; bodies arrive through `load_skill`. `inline`:
+   * the whole bodies of the catalog's skills (a model that cannot take
+   * `load_skill`). Absent: the pre-#146 behaviour (every loaded skill's body).
+   */
+  skills?: { mode: "progressive" | "inline"; catalog: readonly SkillCatalogEntry[] },
 ): Promise<AssembledChatSystem> {
   // Stable — agent persona bound to the session.
   let persona: string | null = null;
@@ -552,6 +563,14 @@ export async function buildLibrarySystemMessages(
     if (Array.isArray(v)) skillIds = v.filter((x): x is string => typeof x === "string");
   } catch {
     skillIds = [];
+  }
+  if (skills?.mode === "progressive") {
+    const block = renderSkillCatalog(skills.catalog);
+    if (block) skillBlocks.push(block);
+    skillIds = [];
+  } else if (skills) {
+    // Inline: only the skills the session may use (allow-list filtered).
+    skillIds = skills.catalog.map((c) => c.id);
   }
   if (skillIds.length > 0) {
     const rows = await prisma.skill.findMany({
@@ -725,6 +744,63 @@ function replyToolCall(r: ChatToolRecord): ReplyToolCall {
     ...(r.decision ? { decision: r.decision } : {}),
     ...(r.errorCode ? { errorCode: r.errorCode } : {}),
     executed: r.executed,
+    ...(r.subAgentRunId ? { subAgentRunId: r.subAgentRunId } : {}),
+  };
+}
+
+/**
+ * #147 — bind this turn's live context onto the sub-agent tools before the loop
+ * runs: the abort signal, where tool events go, the provider options every
+ * sub-agent call carries (the cache posture — never the parent's `sessionId`,
+ * model, reasoning effort or local-slot callback: a sub-agent starts FRESH),
+ * the tool-result cap, and the session's token accounting for its calls.
+ */
+function bindSubAgents(
+  tools: SessionToolRuntime,
+  live: {
+    signal: AbortSignal;
+    onToolEvent: (event: ToolEvent) => void;
+    providerChatOptions: Partial<SubAgentChatOptions>;
+    toolResultMaxChars: number;
+    meter: { sessionId: string; userId: string; projectId: string | null };
+  },
+): void {
+  const ctx = tools.subAgents;
+  if (!ctx) return;
+  const {
+    sessionId: _sessionId,
+    model: _model,
+    reasoningEffort: _effort,
+    onSlotAcquired: _slot,
+    signal: _signal,
+    ...providerChatOptions
+  } = live.providerChatOptions;
+  ctx.signal = live.signal;
+  ctx.onToolEvent = live.onToolEvent;
+  ctx.providerChatOptions = providerChatOptions;
+  ctx.toolResultMaxChars = live.toolResultMaxChars;
+  ctx.onUsage = (usage, model) => {
+    getTokenTracker().record({
+      sessionId: live.meter.sessionId,
+      userId: live.meter.userId,
+      provider: ctx.provider.key,
+      model,
+      usage,
+      agentStep: "subagent",
+      ...(live.meter.projectId ? { projectId: live.meter.projectId } : {}),
+    });
+    if (live.meter.projectId) {
+      recordProjectUsage({
+        projectId: live.meter.projectId,
+        sessionId: live.meter.sessionId,
+        provider: ctx.provider.key,
+        model,
+        inputTokens: usage.promptTokens,
+        outputTokens: usage.completionTokens,
+        cacheReadTokens: usage.cacheReadTokens,
+        cacheWriteTokens: usage.cacheWriteTokens,
+      });
+    }
   };
 }
 
@@ -758,6 +834,7 @@ export function aiRouter(): Router {
     // override.
     let resolvedProvider: typeof cfg.provider = cfg.provider;
     let resolvedModel: string = parsed.data.model ?? cfg.model;
+    let projectPinnedModel = false;
 
     // Resolve the effective project scope up-front. Ids may arrive as
     // `projectId` or via the `projectIds` scope selector — both are
@@ -807,6 +884,7 @@ export function aiRouter(): Router {
         }
         if (project.aiModel && parsed.data.model === undefined) {
           resolvedModel = project.aiModel;
+          projectPinnedModel = true;
         }
       }
     }
@@ -817,6 +895,7 @@ export function aiRouter(): Router {
     // SessionRuntimeError; the session is never created in that case.
     let agentSnapshot: string | null = null;
     let resolvedAgentId: string | null = null;
+    const sessionWarnings: string[] = [];
     let initialSkillIds: string[] = [];
     if (parsed.data.agentId || parsed.data.agentKey) {
       try {
@@ -832,6 +911,14 @@ export function aiRouter(): Router {
           model: resolved.agent.model,
         });
         initialSkillIds = [...resolved.autoLoadedSkillIds];
+        // #145 — the agent's saved model, when neither the request nor the
+        // project chose one. A saved model that cannot be used on this
+        // provider is never swapped silently: the reply carries the warning.
+        if (resolved.agent.model && parsed.data.model === undefined && !projectPinnedModel) {
+          const chosen = resolveAgentModel(resolvedProvider, resolved.agent.model, resolvedModel);
+          resolvedModel = chosen.model ?? resolvedModel;
+          if (chosen.warning) sessionWarnings.push(chosen.warning);
+        }
       } catch (err) {
         if (err instanceof SessionRuntimeError) {
           throw new AppError(err.status, err.code, err.message);
@@ -893,6 +980,7 @@ export function aiRouter(): Router {
           degraded: scopeDegradationReason !== null,
           ...(scopeDegradationReason ? { reason: scopeDegradationReason } : {}),
         },
+        ...(sessionWarnings.length > 0 ? { warnings: sessionWarnings } : {}),
       }),
     );
   });
@@ -1007,6 +1095,21 @@ export function aiRouter(): Router {
         take: 200,
       });
       res.json(ok({ rows }));
+    },
+  );
+
+  // #147 — a sub-agent run's stored transcript, linked from the parent turn's
+  // tool call (`subAgentRunId`). Read through the SAME session authorisation
+  // as the transcript, and scoped by session AND run id.
+  r.get(
+    "/sessions/:id/subagent-runs/:runId",
+    requireAuth,
+    conversationRateLimiter,
+    async (req: Request, res: Response) => {
+      const session = await loadAuthorizedSession(req.user, String(req.params.id));
+      const run = await getSubAgentRun(session.id, String(req.params.runId));
+      if (!run) throw new AppError(404, "NOT_FOUND", "Sub-agent run not found");
+      res.json(ok({ run }));
     },
   );
 
@@ -1138,7 +1241,10 @@ export function aiRouter(): Router {
         provider: providerInstance,
         model,
       });
-      const librarySystem = await buildLibrarySystemMessages(session, toolLead(tools));
+      const librarySystem = await buildLibrarySystemMessages(session, toolLead(tools), {
+        mode: tools.skillMode,
+        catalog: tools.skillCatalog,
+      });
       // #700 — emit the byte-stable lead (persona + skills + tool schemas) first,
       // then the volatile tail (Chronicle), then the per-request user
       // `systemMessage` override, so the cacheable prefix stays byte-identical.
@@ -1259,7 +1365,16 @@ export function aiRouter(): Router {
       // runs; prompts reach the owner over the session's socket room. Otherwise,
       // the single non-loop provider call as before.
       let response: ChatResponse;
-      if (tools.mode !== "off" && session.projectId) {
+      // #146 — an unscoped session may run the loop too: its only tool is
+      // `load_skill` (resolveSessionTools never offers it anything else).
+      if (tools.mode !== "off") {
+        bindSubAgents(tools, {
+          signal: ac.signal,
+          onToolEvent: emitToolEventToSession,
+          providerChatOptions: chatProviderOptions,
+          toolResultMaxChars: turn.build.toolResultMaxChars,
+          meter: { sessionId: session.id, userId, projectId: session.projectId },
+        });
         const loop = await runChatToolTurn(
           providerInstance,
           {
@@ -1613,7 +1728,10 @@ export function aiRouter(): Router {
         provider: streamProvider,
         model,
       });
-      const librarySystem = await buildLibrarySystemMessages(session, toolLead(tools));
+      const librarySystem = await buildLibrarySystemMessages(session, toolLead(tools), {
+        mode: tools.skillMode,
+        catalog: tools.skillCatalog,
+      });
       // #700 — emit the byte-stable lead (persona + skills + tool schemas) first,
       // then the volatile tail (Chronicle), then the per-request user
       // `systemMessage` override, so the cacheable prefix stays byte-identical.
@@ -1661,7 +1779,14 @@ export function aiRouter(): Router {
         ...(slot ? { onSlotAcquired: slot.resolve } : {}),
       };
 
-      if (tools.mode !== "off" && session.projectId) {
+      if (tools.mode !== "off") {
+        bindSubAgents(tools, {
+          signal: ac.signal,
+          onToolEvent,
+          providerChatOptions: streamProviderOptions,
+          toolResultMaxChars: turn.build.toolResultMaxChars,
+          meter: { sessionId: session.id, userId, projectId: session.projectId },
+        });
         // #140 — bounded tool loop (shared with analysis). Every call passes the
         // session's approval gate before it runs (#142) and is reported as a
         // `tool_event` frame (#143). NATIVE turns stream their text as it

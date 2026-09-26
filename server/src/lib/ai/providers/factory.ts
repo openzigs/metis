@@ -70,10 +70,10 @@ const DIRECT_OPENAI_COMPATIBLE_KEYS: ReadonlySet<ProviderKey> = new Set([
 function buildBaseProvider(opts: BuildProviderOptions): AIProvider {
   const cfg = opts.config;
   if (opts.forceOffline || cfg.offline || cfg.provider === "offline-stub") {
-    return opts.offlineProvider ?? new OfflineStubProvider();
+    return opts.offlineProvider ?? OfflineStubProvider.fromEnv();
   }
   if (!isCopilotKey(cfg.provider)) {
-    return opts.offlineProvider ?? new OfflineStubProvider();
+    return opts.offlineProvider ?? OfflineStubProvider.fromEnv();
   }
 
   // Native Anthropic provider (#285). Anthropic's Messages API is NOT

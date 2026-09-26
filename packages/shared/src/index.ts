@@ -54,6 +54,8 @@ export * from "./source-offer.js";
 export * from "./model-catalog.js";
 // Epic #127 — the server-owned chat transcript (`/api/ai/sessions/:id/messages`, resume, fork).
 export * from "./conversation.js";
+// Epic #129 — one agent definition, progressive skills and sub-agents.
+export * from "./agents.js";
 
 export const SHARED_PACKAGE_NAME = "@metis/shared";
 

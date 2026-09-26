@@ -42,6 +42,14 @@ const SKILL_TOP_LEVEL_KEYS = new Set([
   "argument-hint",
   "model",
   "displayName",
+  // Epic #129 (#146) — the open Agent Skills `SKILL.md` fields, so a skill
+  // written for another tool imports unchanged. `allowed-tools` is stored as
+  // an informational hint only: it NEVER pre-approves a tool in METIS — every
+  // call still passes the session's approval gate.
+  "license",
+  "compatibility",
+  "metadata",
+  "allowed-tools",
 ]);
 
 const AGENT_TOP_LEVEL_KEYS = new Set([
@@ -56,9 +64,14 @@ const AGENT_TOP_LEVEL_KEYS = new Set([
   "version",
   "argument-hint",
   "applyTo",
+  // Epic #129 (#145) — the rest of the one agent definition.
+  "reasoningEffort",
+  "approvalPolicy",
 ]);
 
 const KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+
+const approvalAction = z.enum(["auto", "prompt-once", "always-prompt", "deny"]);
 
 const stringList = (max: number) => z.array(z.string().min(1).max(120)).max(max).default([]);
 
@@ -75,6 +88,13 @@ export const skillFrontmatterSchema = z
     "argument-hint": z.string().max(500).optional(),
     model: z.string().max(120).optional(),
     displayName: z.string().max(120).optional(),
+    license: z.string().max(500).optional(),
+    compatibility: z.string().min(1).max(500).optional(),
+    metadata: z
+      .record(z.string().max(64), z.string().max(1_000))
+      .refine((m) => Object.keys(m).length <= 32, "metadata may have at most 32 keys")
+      .optional(),
+    "allowed-tools": z.string().max(1_000).optional(),
   })
   .strict();
 
@@ -91,6 +111,15 @@ export const agentFrontmatterSchema = z
     version: z.string().max(40).default("0.1.0"),
     "argument-hint": z.string().max(500).optional(),
     applyTo: z.string().max(500).optional(),
+    reasoningEffort: z.enum(["low", "medium", "high"]).optional(),
+    approvalPolicy: z
+      .object({
+        low: approvalAction.optional(),
+        medium: approvalAction.optional(),
+        high: approvalAction.optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

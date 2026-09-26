@@ -3,6 +3,7 @@
  */
 import { apiFetch } from "@/lib/api-client";
 import type {
+  CustomAgentApprovalPolicy,
   CustomAgentDto,
   HookSubscriptionDto,
   ResumableSessionDto,
@@ -21,6 +22,17 @@ export interface CreateCustomAgentInput {
   tools?: string[];
   model?: string | null;
   reasoningEffort?: SdkReasoningEffort | null;
+  /** Epic #129 (#145) — library skill keys the agent carries. */
+  skillKeys?: string[];
+  /** Epic #129 (#145) — approval override; the server only lets it tighten. */
+  approvalPolicy?: CustomAgentApprovalPolicy | null;
+}
+
+/** A tool an agent's allowlist may name (`GET /ai/tools`). */
+export interface ToolDescriptorDto {
+  name: string;
+  description: string;
+  risk: "low" | "medium" | "high";
 }
 
 /** Token accounting returned by the playground invocation (Epic #260 / #83). */
@@ -59,6 +71,8 @@ export const sdkApi = {
       }).toString()}`,
     ),
   getAgent: (id: string) => apiFetch<CustomAgentDto>(`/custom-agents/${id}`),
+  /** Epic #129 — the tools an agent's allowlist may name (the real registry). */
+  listTools: () => apiFetch<{ tools: ToolDescriptorDto[] }>("/ai/tools"),
   createAgent: (input: CreateCustomAgentInput) =>
     apiFetch<CustomAgentDto>("/custom-agents", { method: "POST", body: input }),
   updateAgent: (id: string, patch: Partial<CreateCustomAgentInput>) =>

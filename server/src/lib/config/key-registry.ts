@@ -681,6 +681,47 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Offer METIS and MCP tools to the model in chat and stream (#140). ON by default. Applies only to project-scoped sessions on a model the catalog marks tool-capable: the tools go as NATIVE tool definitions, only MCP servers the project may use are offered, and EVERY call passes the session's approval gate (#142) before it runs — its low/medium/high policy, its agent's tool allowlist, and a prompt to the session's owner when the policy asks for one. Off: no METIS/MCP tools are offered (the code-search tools still follow CHAT_CODE_SEARCH_TOOLS).",
     sensitive: false,
   },
+  // ── Epic #129 — agents and skills ─────────────────────────────────────
+  CHAT_PROGRESSIVE_SKILLS: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Load a chat's skills progressively (#146). ON by default. On a tool-capable model the prompt carries each available skill's name and description only, and the model calls `load_skill` to read a skill's full instructions (or one of its supporting files) when the task needs it; the call passes the session's approval gate and re-checks the project's skill allow-list. Off, or on a model that cannot take tools: the whole skill bodies are pasted into the prompt as before.",
+    sensitive: false,
+  },
+  CHAT_SUBAGENTS: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Offer a project's agents to its chats as tools (#147). ON by default. Each custom agent the project owns or has enabled, and each library agent explicitly enabled for it, becomes a tool the chat's agent may delegate a task to; the sub-agent runs in a fresh context with its own persona, skills and tool allowlist (never more tools than its caller), and every tool it calls passes the same session's approval gate. Requires CHAT_TOOLS.",
+    sensitive: false,
+  },
+  SUBAGENT_MAX_DEPTH: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(0).max(4),
+    description:
+      "How deep sub-agent calls may nest (#147). 1 = the chat's agent may call sub-agents but they may not call further ones; 0 = no sub-agents. Default 2, maximum 4.",
+    sensitive: false,
+  },
+  SUBAGENT_TOKEN_BUDGET: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(0).max(5_000_000),
+    description:
+      "Tokens that ALL sub-agent calls made while answering one chat message may spend together (#147). A sub-agent that would start past the budget does not run, and one that runs out stops; both are recorded. It is checked before each model call, so the call that crosses it can overshoot by one response. Default 200000.",
+    sensitive: false,
+  },
+  SUBAGENT_MAX_TURNS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(1).max(12),
+    description:
+      "Model turns one sub-agent run may take (tool calls plus its answer) (#147). Default 6, maximum 12.",
+    sensitive: false,
+  },
   AI_TOOL_APPROVAL_TIMEOUT_MS: {
     tier: "tunable",
     valueType: "int",

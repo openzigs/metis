@@ -16,6 +16,9 @@ import { audit } from "../audit/audit-service.js";
 import { bumpVersion, parseAgentSource, slugifyKey, type AgentFrontmatter } from "./frontmatter.js";
 import { getToolRegistry, type ToolRegistry } from "../ai/tool-registry.js";
 import { CHAT_CODE_TOOL_NAMES } from "../analysis/tools/chat-code-tool-names.js";
+import { LOAD_SKILL_TOOL_NAME, SUBAGENT_TOOL_PREFIX } from "@metis/shared";
+import { parseAgentRef } from "../agent-runtime/definition.js";
+import { assertNoSecrets, DefinitionSecretError } from "../agent-runtime/secret-scan.js";
 
 export class AgentServiceError extends Error {
   constructor(
@@ -143,6 +146,16 @@ export class AgentService {
     const unknown: string[] = [];
     for (const ref of tools) {
       if (ref === "mcp:*") continue; // entire MCP namespace blanket grant
+      // Epic #129 — the agent tools: `load_skill` (#146) and sub-agents (#147):
+      // `agent:*`, `agent:library:*`, `agent:custom:*`, or one agent's ref.
+      if (ref === LOAD_SKILL_TOOL_NAME) continue;
+      if (ref.startsWith(SUBAGENT_TOOL_PREFIX)) {
+        const rest = ref.slice(SUBAGENT_TOOL_PREFIX.length);
+        if (rest === "*" || rest === "library:*" || rest === "custom:*") continue;
+        if (parseAgentRef(rest)) continue;
+        unknown.push(ref);
+        continue;
+      }
       if (ref.endsWith(":*")) {
         // Namespace wildcard — accepted only if at least one tool with
         // that prefix is currently registered. This means agents can
@@ -160,6 +173,19 @@ export class AgentService {
         400,
         "AGENT_TOOL_REF_UNKNOWN",
         `tools[] references unknown tools: ${unknown.join(", ")}`,
+      );
+    }
+  }
+
+  /** Epic #129 — no credentials in text every chat and provider will see. */
+  private assertNoSecrets(body: string, description: string | undefined): void {
+    try {
+      assertNoSecrets({ systemPrompt: body, description });
+    } catch (err) {
+      throw new AgentServiceError(
+        400,
+        "AGENT_CONTAINS_SECRET",
+        (err as DefinitionSecretError).message,
       );
     }
   }
@@ -270,6 +296,7 @@ export class AgentService {
   async create(input: AgentUpsertInput, actor: ActorRef): Promise<AgentDetail> {
     const parsed = parseAgentSource(input.source);
     this.validateToolRefs(parsed.frontmatter.tools);
+    this.assertNoSecrets(parsed.body, parsed.frontmatter.description);
     const key = input.key ?? slugifyKey(parsed.frontmatter.name);
     const existing = await this.db.agent.findUnique({ where: { key } });
     if (existing && !existing.deletedAt) {
@@ -289,6 +316,11 @@ export class AgentService {
       handoffs: toJsonArray(parsed.frontmatter.handoffs),
       manifest: manifestJson,
       version: parsed.frontmatter.version ?? "0.1.0",
+      // Epic #129 (#145) — the definition fields the frontmatter now carries.
+      reasoningEffort: parsed.frontmatter.reasoningEffort ?? null,
+      approvalPolicy: parsed.frontmatter.approvalPolicy
+        ? JSON.stringify(parsed.frontmatter.approvalPolicy)
+        : null,
       contentSha256: parsed.contentSha256,
       source: input.origin ?? "inline",
       ...(actor.id ? { createdBy: { connect: { id: actor.id } } } : {}),
@@ -355,6 +387,7 @@ export class AgentService {
       );
     }
     this.validateToolRefs(parsed.frontmatter.tools);
+    this.assertNoSecrets(parsed.body, parsed.frontmatter.description);
     const versions = new Set(existing.versions.map((v) => v.version));
     const proposed = parsed.frontmatter.version ?? existing.version;
     const nextVersion =
@@ -385,6 +418,10 @@ export class AgentService {
           handoffs: toJsonArray(parsed.frontmatter.handoffs),
           manifest: manifestJson,
           version: nextVersion,
+          reasoningEffort: parsed.frontmatter.reasoningEffort ?? null,
+          approvalPolicy: parsed.frontmatter.approvalPolicy
+            ? JSON.stringify(parsed.frontmatter.approvalPolicy)
+            : null,
           contentSha256: parsed.contentSha256,
           source: input.origin ?? existing.source,
           ...(parsed.contentSha256 !== existing.contentSha256

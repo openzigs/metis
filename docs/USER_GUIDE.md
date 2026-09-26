@@ -2288,6 +2288,88 @@ Copilot chat is offered only the code-search tools (when
 If the chat uses an agent, the agent's tool list also applies: a tool the agent
 does not list is refused, even when the policy would allow it. An MCP server
 set to **require approval** asks you on every call, whatever the policy says.
+An agent can also ask for approval **more** often than the chat's policy (its
+approval override) — never less.
+
+### 14.3.1 Agents and skills
+
+**One kind of agent.** Library agents (Admin → Agents) and your project's
+custom agents (Settings → Custom agents) now carry the same things: a persona,
+the skills they use, the tools they may call, a preferred model, how much they
+ask for approval, and a version that goes up on every change. Existing agents
+of both kinds keep everything they had. An agent's preferred model is always used
+on a local model, Copilot and Azure (whose model names are yours to choose); on
+Anthropic, OpenAI and the Bedrock gateway it is used when the model list knows it
+for that provider (an operator can add one with `AI_MODEL_CATALOG_OVERRIDES`).
+When a preferred model cannot be used, the chat's model runs instead and you are
+told so — on the new chat, on the hand-off's result, or on the agent run — never
+silently.
+
+**Skills load when they are needed.** The skills a chat has (the agent's own
+plus any you add) are listed to the AI by name and description only. When one
+fits your request, the AI opens it — you see a `load_skill` call in the tool
+activity — and it applies for that reply. A skill your project has switched off
+(in its skills allow-list or its disabled skills) is not listed and cannot be
+opened. Administrators can go back to pasting every
+skill in full with `CHAT_PROGRESSIVE_SKILLS=false`; models that cannot use
+tools (including the GitHub Copilot provider) always get the full text.
+
+**Importing skills from other tools.** METIS reads the open Agent Skills
+`SKILL.md` format, including `license`, `compatibility`, `metadata` and
+`allowed-tools` (kept for reference — it never approves a tool in METIS).
+Import a skill's whole folder and its supporting files (`references/`,
+`assets/`, `scripts/` …) come with it: the AI can open one by name with
+`load_skill`, and nothing in them is ever run. A file must be text, at most
+64 KB (32 files, 512 KB per skill), inside the skill's folder, with a plain name
+(letters, digits, `.`, `_`, `-`, spaces). A file that does not qualify — an
+image, a `.DS_Store` or `__MACOSX` entry, an oddly named file, one past the
+limits — is left out and listed with its reason in the import result
+(`skippedFiles`); the skill itself still imports. A `SKILL.md`
+with broken frontmatter is refused with the reason (for example
+"Frontmatter key 'execute' is not allowed", or "File must begin with a `---`
+YAML frontmatter block"). Agent and skill text that contains a credential
+(an API key, a token, a private key) is refused — it would be sent to the AI
+and shown to everyone on the project.
+
+**Agents helping agents.** In a project chat, the chat's agent can hand a task
+to another agent the project may use — its own custom agents, those enabled for
+it, and library agents explicitly enabled for it — when the agent's tool list
+allows it (`agent:*` for any of them). You see the hand-off as a tool call
+(approved like any medium-risk tool) and, under it, the other agent's own tool
+calls marked "via <agent>". The other agent starts fresh with only the task it
+was given, uses only the tools on its own list (and never a tool the calling
+agent did not have), and every tool it calls asks **you**, in this chat, for
+approval exactly as the chat would. Open **Sub-agent transcript** on the call
+to see the task, what it did and its answer. Limits stop runaway hand-offs:
+`SUBAGENT_MAX_DEPTH` (default 2 levels), `SUBAGENT_TOKEN_BUDGET` (default
+200,000 tokens across all hand-offs in one reply) and `SUBAGENT_MAX_TURNS`
+(default 6 model turns each). The token budget is checked before each model
+call, so the call that crosses it can overshoot it by one response. An agent
+whose tool list names another agent exactly is always offered it. Otherwise at
+most 16 agents are offered to one agent as hand-off targets (library agents
+first, then custom agents by name) — counted after its tool list has narrowed
+them; past that the rest are not offered and the server logs which. An approval rule on the chat's agent (for example "always ask for
+low-risk tools") also applies to every agent it hands off to, at every level.
+Turn hand-offs off with `CHAT_SUBAGENTS=false`.
+
+**Agents and skills — local-model smoke run (manual).** The CI end-to-end test
+(`e2e/tests/agents-skills.spec.ts`) drives this flow with a scripted model. To
+see it with a real local model (Ollama):
+
+1. Pull a tool-capable model (for example `ollama pull qwen3:8b`) and start
+   METIS with `AI_PROVIDER=local-gemma`, `LOCAL_GEMMA_BASE_URL=http://localhost:11434/v1`
+   and `LOCAL_GEMMA_MODEL=qwen3:8b`.
+2. As an admin, add a skill (Admin → Skills) named `release-notes` whose
+   description says "Use when asked for release notes", and a library agent
+   whose frontmatter lists `tools: [score_grounding]`, `approvalPolicy: {low: always-prompt}`,
+   with the skill as a default skill.
+3. Open a project chat, pick the agent, and ask for release notes. Expect: a
+   `load_skill` call waiting for your approval (the agent asks for more than
+   the chat's default), the answer following the skill, and — if the model
+   tries a tool the agent does not list — "Not allowed for this agent".
+4. With `LOCAL_GEMMA_MAX_CONCURRENCY=1` (the default), add a custom agent with
+   `agent:*` in the lead agent's tools and ask it to delegate; the hand-off
+   completes and the local model never runs two requests at once.
 
 ### 14.4 Token Budget
 
