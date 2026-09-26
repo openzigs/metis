@@ -33,7 +33,9 @@ const ADVICE = {
   sectionFailed: "section(s) failed to generate",
   formula: "formula pre-extraction skipped",
   sqlFiles: "SQL file(s) or director",
-  sqlScan: "SQL-only-directory scan",
+  // PR #225 review — the scan's two causes take different remedies.
+  sqlScanUnreadable: "give the server read access to the directories the warning names",
+  sqlScanBound: "stopped at its directory bound",
   phase1Failed: "fact extraction failed for all or part of",
 } as const;
 type Advice = keyof typeof ADVICE;
@@ -93,20 +95,21 @@ const CASES: Array<{
       truncated: true,
       unreadable: [],
     }),
-    advice: "sqlScan",
+    advice: "sqlScanBound",
     prefix: "Degraded output",
   },
   {
     name: "SQL scan with unreadable directories",
     warning: sqlScanIncompleteWarning("repo", { visited: 9, truncated: false, unreadable: ["x"] }),
-    advice: "sqlScan",
+    advice: "sqlScanUnreadable",
     prefix: "Degraded output",
   },
   {
     name: "failed Phase-1 chunks",
     warning: phase1ChunksFailedWarning(["m"]),
     advice: "phase1Failed",
-    prefix: "Needs review",
+    // PR #225 review — a module's missing facts leave the document incomplete.
+    prefix: "Degraded output",
   },
 ];
 
@@ -149,6 +152,35 @@ describe("#191 — each Phase-1 warning's summary advice matches its cause", () 
     expect(w.message).toContain("2 module director");
     expect(w.message).toContain("reports, etl");
     expect(sqlFilesSkippedWarning([], ["x"]).message).not.toContain("0 SQL file");
+  });
+
+  it("gives a SQL scan that hit BOTH causes both remedies, counted per repository", () => {
+    const both = sqlScanIncompleteWarning("a", {
+      visited: 100_000,
+      truncated: true,
+      unreadable: ["x"],
+    });
+    const bound = sqlScanIncompleteWarning("b", {
+      visited: 100_000,
+      truncated: true,
+      unreadable: [],
+    });
+    const summary = summarizeWarnings([both, bound]);
+    expect(summary).toContain("could not read some directories of 1 repository —");
+    expect(summary).toContain("stopped at its directory bound in 2 repositories —");
+  });
+
+  it("does not blame permissions alone for skipped SQL, and never encoding", () => {
+    // PR #225 review — a confinement refusal (#217) or a mining failure is not
+    // fixed by read access, and `readFile(…, "utf-8")` never fails on encoding.
+    for (const text of [
+      summarizeWarnings([sqlFilesSkippedWarning(["db/a.sql"], ["db"])]),
+      sqlFilesSkippedWarning(["db/a.sql"], ["db"]).message,
+    ]) {
+      expect(text).not.toContain("encoding");
+      expect(text).toContain("outside the repository");
+      expect(text).toContain("miner rejects");
+    }
   });
 
   it("counts the modules whose facts failed, not sections", () => {

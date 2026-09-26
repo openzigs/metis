@@ -123,6 +123,8 @@ interface FakeOptions {
   fail?: (call: Call) => boolean;
   /** Return an empty reply (a zero-token stream that still ends "stop"). */
   empty?: (call: Call) => boolean;
+  /** #208 — end the stream with NO chunk at all (a connection closed before any output). */
+  silent?: (call: Call) => boolean;
   /** #178 — milliseconds a call takes, so calls can finish out of order. */
   delayMs?: (call: Call) => number;
   /** #208 — milliseconds between a call's first chunk and its end. */
@@ -154,6 +156,7 @@ function fakeModel(
       call.user.indexOf("=== END MODULE FACTS ==="),
     );
     if (options.fail?.(call)) throw new Error("upstream exploded with a secret stack trace");
+    if (options.silent?.(call)) return;
     if (options.empty?.(call)) {
       yield { type: "done", finishReason: "stop" };
       return;
@@ -1301,6 +1304,51 @@ describe("#178 — a batched section's batches run through a bounded pool", () =
     expect(secondStart).toBeLessThan(firstEnd);
     expect(provider.peak).toBe(4);
   });
+
+  // PR #225 review — the warm-up is released in a `finally` as well as on the
+  // first chunk. Without it, a first batch that ends before its reply begins
+  // leaves every other batch awaiting the warm-up forever and generation hangs
+  // silently. The bounded timeout makes that regression fail fast, not hang CI.
+  const firstRulesCall = () => {
+    let seen = false;
+    return (c: Call) => {
+      if (c.group !== RULES.label || seen) return false;
+      seen = true;
+      return true;
+    };
+  };
+  it.each([
+    ["throws before its reply begins", "fail"],
+    ["ends with no chunk at all", "silent"],
+  ] as const)(
+    "with prompt caching, the other batches still run when the first batch %s (#208)",
+    async (_label, how) => {
+      vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "4");
+      const provider = fakeModel({ [how]: firstRulesCall() });
+      const result = await synthesizeFinalDocument(
+        onyourleftSized(),
+        META,
+        "business-requirements",
+        "BRD",
+        routerFor(provider, true),
+        "p1",
+      );
+      const calls = callsFor(provider, RULES);
+      expect(calls.length).toBeGreaterThanOrEqual(4);
+      const lead = calls[0].modules[0];
+      // Every other batch ran and landed in the section...
+      const rules = sectionOf(result.markdown, RULES.label);
+      for (const c of calls.slice(1)) expect(rules).toContain(`Rule from ${c.modules[0]}**`);
+      expect(rules).not.toContain(`Rule from ${lead}**`);
+      // ...and the first batch's loss is surfaced, naming its modules.
+      const warning = result.warnings.find(
+        (w) => w.section === RULES.label && w.kind === "section-failed",
+      )!;
+      expect(warning.severity).toBe("error");
+      expect(warning.message).toContain(`"${lead}"`);
+    },
+    5_000,
+  );
 
   it("without prompt caching, fans out at once", async () => {
     vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "4");

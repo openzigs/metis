@@ -1041,8 +1041,14 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
     (w) => w.kind === "source-unavailable" && !isSqlFiles(w) && !isSqlScan(w),
   ).length;
   const sqlFilesSkipped = warnings.some((w) => w.kind === "source-unavailable" && isSqlFiles(w));
-  const sqlScanIncomplete = warnings.filter(
-    (w) => w.kind === "source-unavailable" && isSqlScan(w),
+  // PR #225 review — the scan's two causes take different remedies, so each is
+  // counted from the advice its own warning printed (one shared constant each).
+  const sqlScanWarnings = warnings.filter((w) => w.kind === "source-unavailable" && isSqlScan(w));
+  const sqlScanUnreadable = sqlScanWarnings.filter((w) =>
+    w.message.includes(SQL_SCAN_UNREADABLE_REMEDY),
+  ).length;
+  const sqlScanBounded = sqlScanWarnings.filter((w) =>
+    w.message.includes(SQL_SCAN_BOUND_NOTE),
   ).length;
   const formulaSkipped = warnings.some((w) => w.kind === "facts-truncated" && isFormulaSkip(w));
   // Two different facts-truncated causes share the kind: an INPUT facts cap per
@@ -1084,14 +1090,21 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
     parts.push("source code could not be read — re-ingest the project and regenerate");
   if (sqlFilesSkipped)
     parts.push(
-      "some SQL file(s) or directories could not be read, so their rules are missing — " +
-        "check that the server can read them (permissions, encoding), then regenerate",
+      "some SQL file(s) or directories could not be read or mined, so their rules are missing — " +
+        "the server log gives each one's reason: grant read access and regenerate for a " +
+        "permission error; a file the miner rejects, or a path that resolves outside the " +
+        "repository (refused by design), stays skipped",
     );
-  if (sqlScanIncomplete > 0)
+  const repos = (n: number) => `${n} repositor${n === 1 ? "y" : "ies"}`;
+  if (sqlScanUnreadable > 0)
     parts.push(
-      `the SQL-only-directory scan could not look at every directory of ${sqlScanIncomplete} ` +
-        `repositor${sqlScanIncomplete === 1 ? "y" : "ies"} — give the server read access to ` +
-        `the directories the warning names; its directory bound is a fixed safety limit`,
+      `the SQL-only-directory scan could not read some directories of ${repos(sqlScanUnreadable)} ` +
+        `— give the server read access to the directories the warning names, then regenerate`,
+    );
+  if (sqlScanBounded > 0)
+    parts.push(
+      `the SQL-only-directory scan stopped at its directory bound in ${repos(sqlScanBounded)} ` +
+        `— the bound is a fixed safety limit, so directories past it stay unmined`,
     );
   if (formulaSkipped)
     parts.push(
@@ -1131,17 +1144,25 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
   // #1226 — a truncated or missing section is the same class of hard problem:
   // the document is objectively incomplete, not merely unverified.
   // #191 — rules from SQL the scan or the reader could not reach are missing
-  // too: the document is incomplete, not merely unverified.
+  // too: the document is incomplete, not merely unverified. So are the facts of
+  // a module whose Phase-1 extraction failed (PR #225 review).
   const prefix =
     sourceUnavailable > 0 ||
+    phase1Failed ||
     sqlFilesSkipped ||
-    sqlScanIncomplete > 0 ||
+    sqlScanWarnings.length > 0 ||
     outputTruncated > 0 ||
     missing > 0
       ? "Degraded output"
       : "Needs review";
   return `${prefix} — ${parts.join("; ")}.`;
 }
+
+/** The remedy a SQL-scan warning prints when directories could not be listed. */
+const SQL_SCAN_UNREADABLE_REMEDY =
+  " Give the server read access to the directories named, then regenerate.";
+/** What a SQL-scan warning says when the scan stopped at its directory bound. */
+const SQL_SCAN_BOUND_NOTE = " The directory bound is a fixed safety limit.";
 
 /**
  * The scan for SQL-only directories (whose `.sql` constraints, triggers and
@@ -1169,10 +1190,8 @@ export function sqlScanIncompleteWarning(
     section: `${SQL_SCAN_SECTION_PREFIX}${repository})`,
     message:
       `Some SQL-only directories were not mined for rules: ${parts.join("; ")}. Their constraints, triggers and views are missing from this document.` +
-      (stats.unreadable.length > 0
-        ? " Give the server read access to the directories named, then regenerate."
-        : "") +
-      (stats.truncated ? " The directory bound is a fixed safety limit." : ""),
+      (stats.unreadable.length > 0 ? SQL_SCAN_UNREADABLE_REMEDY : "") +
+      (stats.truncated ? SQL_SCAN_BOUND_NOTE : ""),
     severity: "warning",
   };
 }
@@ -1181,8 +1200,11 @@ export function sqlScanIncompleteWarning(
  * `.sql` files in a module's directory that could not be read or mined, and
  * module directories that could not be listed at all (so none of their `.sql`
  * files was seen). Their constraints, triggers and views are missing from the
- * document; never skipped silently. The remedy is read access on the server —
- * re-ingesting a project whose files the server cannot read changes nothing.
+ * document; never skipped silently. For a permission error the remedy is read
+ * access on the server — re-ingesting a project whose files the server cannot
+ * read changes nothing. A file the miner rejects, or a path that resolves
+ * outside the clone (refused by design, #217), stays skipped whatever the
+ * access; the server log gives each one's reason.
  */
 export function sqlFilesSkippedWarning(
   files: readonly string[],
@@ -1204,7 +1226,10 @@ export function sqlFilesSkippedWarning(
   return {
     kind: "source-unavailable",
     section: SQL_FILES_SECTION,
-    message: `${parts.join(". ")}. Check that the server can read them, then regenerate.`,
+    message:
+      `${parts.join(". ")}. If the server lacks read access, grant it and regenerate; a file ` +
+      "the SQL miner rejects, or a path that resolves outside the repository (refused by " +
+      "design), stays skipped.",
     severity: "warning",
   };
 }

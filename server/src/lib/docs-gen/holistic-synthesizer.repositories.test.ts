@@ -552,7 +552,7 @@ describe("#1354 actual multi-repository synthesis", () => {
         expect(w!.message).toContain("src/locked.sql");
         // #191 — the advice fits a file the server cannot read.
         const summary = summarizeWarnings([w!]);
-        expect(summary).toContain("check that the server can read them");
+        expect(summary).toContain("grant read access and regenerate");
         expect(summary).not.toContain("re-ingest");
       } finally {
         await chmod(locked, 0o644);
