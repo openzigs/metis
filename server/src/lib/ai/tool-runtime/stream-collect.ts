@@ -7,6 +7,7 @@
  * recovered from prose (`native` unset) is not a call on this path: executing
  * text the model improvised is exactly what native calling replaces.
  */
+import { withIdleTimeout } from "../stream-idle.js";
 import type { ChatChunk, ChatResponse, ChatToolCall, ProviderKey, TokenUsage } from "../types.js";
 
 export interface CollectOptions {
@@ -49,4 +50,28 @@ export async function collectStream(
     ...(toolCalls.length > 0 ? { toolCalls } : {}),
     ...(nativeContent ? { nativeContent } : {}),
   };
+}
+
+export interface GuardedCollectOptions extends CollectOptions {
+  /** Idle cap between chunks (`<= 0` disables it). */
+  idleMs: number;
+  /** Runs before the idle error propagates, so the caller can abort upstream. */
+  onIdleTimeout?: () => void;
+  /** The first idle clock starts only once this settles (slot acquired). */
+  startAfter?: Promise<unknown>;
+}
+
+/**
+ * The /stream route's model call for a native tool turn: the provider stream
+ * under the idle guard, collected into one reply. Kept here — not inlined in
+ * the route — so the slot-release tests exercise exactly the composition the
+ * route runs (#128 review: a test that skipped the idle wrapper passed while
+ * the route leaked the local concurrency slot).
+ */
+export function collectGuardedStream(
+  chunks: AsyncIterable<ChatChunk>,
+  opts: GuardedCollectOptions,
+): Promise<ChatResponse> {
+  const { idleMs, onIdleTimeout, startAfter, ...collect } = opts;
+  return collectStream(withIdleTimeout(chunks, idleMs, onIdleTimeout, startAfter), collect);
 }

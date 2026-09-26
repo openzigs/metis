@@ -58,39 +58,64 @@ export async function* withIdleTimeout<T>(
   }
   const iterator = source[Symbol.asyncIterator]();
   let gate: Promise<unknown> | undefined = startAfter;
-  for (;;) {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let settled = false;
-    const arm = (resolve: (v: typeof IDLE) => void): void => {
-      if (settled) return;
-      timer = setTimeout(() => resolve(IDLE), idleMs);
-      timer.unref?.();
-    };
-    const idle = new Promise<typeof IDLE>((resolve) => {
-      if (gate)
-        void gate.then(
-          () => arm(resolve),
-          () => arm(resolve),
-        );
-      else arm(resolve);
-    });
-    gate = undefined;
-    let winner: IteratorResult<T> | typeof IDLE;
-    try {
-      winner = await Promise.race([iterator.next(), idle]);
-    } finally {
-      settled = true;
-      if (timer) clearTimeout(timer);
+  // #128 — true once the source itself is finished (it reported `done`, threw,
+  // or was already told to stop by the idle path). Anything else that leaves
+  // this generator — a consumer that `break`s after the provider's `done`
+  // chunk, a `collectStream`, a throw in the consumer's loop body — must pass
+  // the stop on to the source, or the provider's `finally` (which releases the
+  // local concurrency slot) never runs and every later local call on that base
+  // URL queues behind a slot nobody will ever free.
+  let sourceFinished = false;
+  try {
+    for (;;) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+      const arm = (resolve: (v: typeof IDLE) => void): void => {
+        if (settled) return;
+        timer = setTimeout(() => resolve(IDLE), idleMs);
+        timer.unref?.();
+      };
+      const idle = new Promise<typeof IDLE>((resolve) => {
+        if (gate)
+          void gate.then(
+            () => arm(resolve),
+            () => arm(resolve),
+          );
+        else arm(resolve);
+      });
+      gate = undefined;
+      let winner: IteratorResult<T> | typeof IDLE;
+      try {
+        winner = await Promise.race([iterator.next(), idle]);
+      } catch (err) {
+        sourceFinished = true; // a source that threw is already closed
+        throw err;
+      } finally {
+        settled = true;
+        if (timer) clearTimeout(timer);
+      }
+      if (winner === IDLE) {
+        sourceFinished = true;
+        onTimeout?.();
+        // Deliberately NOT awaited: `return()` on a generator with a pending
+        // `next()` is queued behind it, so awaiting here would hang for exactly
+        // as long as the stall we are escaping.
+        void Promise.resolve(iterator.return?.(undefined as never)).catch(() => {});
+        throw new StreamIdleTimeoutError(idleMs);
+      }
+      if (winner.done) {
+        sourceFinished = true;
+        return;
+      }
+      yield winner.value;
     }
-    if (winner === IDLE) {
-      onTimeout?.();
-      // Deliberately NOT awaited: `return()` on a generator with a pending
-      // `next()` is queued behind it, so awaiting here would hang for exactly
-      // as long as the stall we are escaping.
+  } finally {
+    if (!sourceFinished) {
+      // We only get here from a `yield` (the consumer stopped early), so the
+      // source has no pending `next()` and `return()` runs its `finally` now.
+      // Not awaited, for the same reason as above: a teardown that awaits a
+      // stuck socket must not hold the consumer.
       void Promise.resolve(iterator.return?.(undefined as never)).catch(() => {});
-      throw new StreamIdleTimeoutError(idleMs);
     }
-    if (winner.done) return;
-    yield winner.value;
   }
 }

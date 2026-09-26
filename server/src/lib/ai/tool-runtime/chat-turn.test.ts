@@ -34,7 +34,7 @@ import type { ApprovalPolicy } from "../types.js";
 import { ToolApprovalBroker } from "./approval-broker.js";
 import { runChatToolTurn, type ChatToolRecord } from "./chat-turn.js";
 import { brokerPrompter } from "./prompter.js";
-import { collectStream } from "./stream-collect.js";
+import { collectGuardedStream } from "./stream-collect.js";
 import { makeToolset } from "./toolset.js";
 import type { RuntimeTool, ToolEvent } from "./types.js";
 
@@ -366,10 +366,13 @@ describe("local provider: no concurrency slot held while approving or executing"
         onToolEvent: onEvent,
         ...(streaming
           ? {
+              // The route's exact composition: idle guard + collect (#128
+              // review — a caller without the guard hid a leaked slot).
               callModel: (m, o) =>
-                collectStream(provider.stream(m, o), {
+                collectGuardedStream(provider.stream(m, o), {
                   provider: provider.key,
                   model: "gemma3:12b",
+                  idleMs: 60_000,
                 }),
             }
           : {}),

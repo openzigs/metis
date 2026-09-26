@@ -64,7 +64,7 @@ import {
   type SessionToolRuntime,
 } from "../lib/ai/tool-runtime/session-tools.js";
 import { runChatToolTurn, type ChatToolRecord } from "../lib/ai/tool-runtime/chat-turn.js";
-import { collectStream } from "../lib/ai/tool-runtime/stream-collect.js";
+import { collectGuardedStream } from "../lib/ai/tool-runtime/stream-collect.js";
 import type { ToolEvent } from "../lib/ai/tool-runtime/types.js";
 import { toolApprovalsRouter } from "./ai-tool-approvals.js";
 import { getSocketServer } from "../lib/socket/registry.js";
@@ -1689,19 +1689,17 @@ export function aiRouter(): Router {
                     const turnSlot = streamProvider.key === "local-gemma" ? slotSignal() : null;
                     // Separate one model turn's text from the previous one's.
                     let first = streamedText.length > 0 && !streamedText.endsWith("\n");
-                    return collectStream(
-                      withIdleTimeout(
-                        streamProvider.stream(m, {
-                          ...o,
-                          ...(turnSlot ? { onSlotAcquired: turnSlot.resolve } : {}),
-                        }),
-                        limits.idleTimeoutMs,
-                        () => ac.abort(),
-                        turnSlot?.promise,
-                      ),
+                    return collectGuardedStream(
+                      streamProvider.stream(m, {
+                        ...o,
+                        ...(turnSlot ? { onSlotAcquired: turnSlot.resolve } : {}),
+                      }),
                       {
                         provider: streamProvider.key,
                         model,
+                        idleMs: limits.idleTimeoutMs,
+                        onIdleTimeout: () => ac.abort(),
+                        ...(turnSlot ? { startAfter: turnSlot.promise } : {}),
                         onDelta: (text) => {
                           if (first && text) {
                             streamDelta("\n\n");
