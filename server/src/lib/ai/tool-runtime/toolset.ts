@@ -119,6 +119,7 @@ function registryRuntimeTool(
   view: ToolRuntimeView,
   wireName: string,
   forcePrompt: boolean,
+  forcePromptNow?: () => Promise<boolean>,
 ): RuntimeTool {
   return {
     name: view.name,
@@ -128,6 +129,7 @@ function registryRuntimeTool(
     risk: view.risk,
     source: view.origin?.kind === "mcp" ? "mcp" : "metis",
     ...(forcePrompt ? { forcePrompt: true } : {}),
+    ...(forcePromptNow ? { forcePromptNow } : {}),
     validate: (args) => (registry.validate(view.name, args) ? { ok: true, args } : { ok: false }),
     async execute(args, ctx) {
       // The runtime's gate has ALREADY decided this call; the registry still
@@ -200,6 +202,7 @@ export async function buildSessionToolset(input: BuildToolsetInput): Promise<Run
     if (tools.some((t) => t.name === view.name)) continue;
     if (!allowedByAgent(view.name, input.agentAllowlist)) continue;
     let forcePrompt = false;
+    let forcePromptNow: (() => Promise<boolean>) | undefined;
     if (view.origin?.kind === "mcp") {
       const serverId = view.origin.serverId;
       if (!input.mcp || !allowedServers.has(serverId)) continue;
@@ -215,8 +218,17 @@ export async function buildSessionToolset(input: BuildToolsetInput): Promise<Run
       const bare = view.name.split(":").slice(2).join(":");
       if (gov.allowlist && !gov.allowlist.includes(bare)) continue;
       forcePrompt = gov.requireApproval;
+      // The snapshot above decides what is OFFERED; whether a person must
+      // approve is read again at call time, so an admin switching
+      // `requireApproval` on mid-turn applies to the very next call. A server
+      // whose governance is gone or unreadable by then forces the prompt.
+      const mcp = input.mcp;
+      forcePromptNow = async () => (await mcp.governance(serverId))?.requireApproval ?? true;
     }
-    add((wire) => registryRuntimeTool(input.registry, view, wire, forcePrompt), view.name);
+    add(
+      (wire) => registryRuntimeTool(input.registry, view, wire, forcePrompt, forcePromptNow),
+      view.name,
+    );
   }
   return makeToolset(tools);
 }

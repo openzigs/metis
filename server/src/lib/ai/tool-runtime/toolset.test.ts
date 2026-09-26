@@ -246,3 +246,36 @@ describe("zodToJsonSchema", () => {
     expect(toolParametersSchema(z.string())).toEqual({ type: "object", properties: {} });
   });
 });
+
+describe("MCP requireApproval is read per call, not per toolset (#128 review)", () => {
+  it("switching requireApproval on mid-turn forces the next call's prompt", async () => {
+    let requireApproval = false;
+    const set = await buildSessionToolset({
+      ctx: CTX,
+      registry: registryWith(mcpDef("github", "list_issues")),
+      mcp: {
+        allowedServerIds: async () => new Set(["srv-github"]),
+        governance: async () => ({ allowlist: null, requireApproval }),
+      },
+    });
+    const t = set.tools[0]!;
+    expect(t.forcePrompt).toBeUndefined();
+    await expect(t.forcePromptNow!()).resolves.toBe(false);
+    requireApproval = true;
+    await expect(t.forcePromptNow!()).resolves.toBe(true);
+  });
+
+  it("governance gone by call time forces the prompt", async () => {
+    let gone = false;
+    const set = await buildSessionToolset({
+      ctx: CTX,
+      registry: registryWith(mcpDef("github", "list_issues")),
+      mcp: {
+        allowedServerIds: async () => new Set(["srv-github"]),
+        governance: async () => (gone ? null : { allowlist: null, requireApproval: false }),
+      },
+    });
+    gone = true;
+    await expect(set.tools[0]!.forcePromptNow!()).resolves.toBe(true);
+  });
+});

@@ -48,6 +48,12 @@ export interface RuntimeTool {
    * policy says (an MCP server whose governance sets `requireApproval`).
    */
   forcePrompt?: boolean;
+  /**
+   * Re-read, per call, whether a person must approve it (an MCP server's
+   * `requireApproval` may be switched on mid-turn). Consulted when
+   * `forcePrompt` is not already set; a failed read forces the prompt.
+   */
+  forcePromptNow?: () => Promise<boolean>;
   /** Validate raw model arguments BEFORE anyone is asked to approve them. */
   validate(args: unknown): { ok: true; args: unknown } | { ok: false };
   execute(args: unknown, ctx: RuntimeToolContext): Promise<RuntimeToolResult>;

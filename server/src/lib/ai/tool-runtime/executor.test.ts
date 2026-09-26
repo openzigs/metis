@@ -440,3 +440,34 @@ describe("the approval record is the gate's precondition (#128 review)", () => {
     expect(out.decision).toBe("auto-approve");
   });
 });
+
+describe("a per-call forcePrompt read reaches the gate (#128 review)", () => {
+  it("auto policy still prompts when the tool's live governance now demands it", async () => {
+    const ask = vi.fn(async () => false);
+    const t = tool({ forcePromptNow: async () => true });
+    const { out } = await run(t, gate(ALL_AUTO, { ask }));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(t.execute).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ executed: false, decision: "deny" });
+  });
+
+  it("an unreadable live governance forces the prompt (fails closed)", async () => {
+    const ask = vi.fn(async () => false);
+    const t = tool({
+      forcePromptNow: async () => {
+        throw new Error("db down");
+      },
+    });
+    const { out } = await run(t, gate(ALL_AUTO, { ask }));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(out.executed).toBe(false);
+  });
+
+  it("live governance that does not demand approval leaves the policy in charge", async () => {
+    const ask = vi.fn(async () => false);
+    const t = tool({ forcePromptNow: async () => false });
+    const { out } = await run(t, gate(ALL_AUTO, { ask }));
+    expect(ask).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ executed: true, decision: "auto-approve" });
+  });
+});

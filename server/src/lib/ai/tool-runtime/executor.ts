@@ -146,6 +146,14 @@ export async function executeToolCall(
   }
 
   // ── The gate. Nothing below runs unless it allowed THIS call. ──────────
+  let forcePrompt = tool.forcePrompt === true;
+  if (!forcePrompt && tool.forcePromptNow) {
+    try {
+      forcePrompt = await tool.forcePromptNow();
+    } catch {
+      forcePrompt = true; // unreadable governance: ask a person, never skip
+    }
+  }
   const decision = await deps.gate.evaluate({
     sessionId: deps.ctx.sessionId,
     userId: deps.ctx.userId,
@@ -153,7 +161,7 @@ export async function executeToolCall(
     risk: tool.risk,
     args: call.args,
     callId: call.id,
-    ...(tool.forcePrompt ? { forcePrompt: true } : {}),
+    ...(forcePrompt ? { forcePrompt: true } : {}),
   });
   if (!decision.allowed) {
     const code: ToolErrorCode =
