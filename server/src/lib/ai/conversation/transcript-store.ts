@@ -190,6 +190,63 @@ export async function listMessages(sessionId: string, db: Db = prisma): Promise<
   return rows.map(fromRow);
 }
 
+export interface TranscriptPage {
+  rows: StoredMessage[];
+  /** Rows at or before `afterOrdinal` folded by a summary in `rows`. */
+  compactionUpdates: Array<{ ordinal: number; compactedAt: Date | null; compactedIntoId: string }>;
+  /** Rows past this page exist. */
+  hasMore: boolean;
+  /** The last ordinal this page covers (`afterOrdinal` when it is empty). */
+  nextAfterOrdinal: number;
+}
+
+/**
+ * #212 — one page of a session's transcript: rows with `ordinal > afterOrdinal`,
+ * oldest first, at most `limit`, plus the compaction state of earlier rows that
+ * a summary ON THIS PAGE has since folded. Compaction only ever appends a
+ * summary and marks older rows (`compactedAt`, `compactedIntoId`), so those are
+ * exactly the rows a reader holding everything up to `afterOrdinal` has stale.
+ * One extra row is read to know whether more exist — never guessed from a count.
+ */
+export async function listMessagesPage(
+  sessionId: string,
+  opts: { afterOrdinal: number; limit: number },
+  db: Db = prisma,
+): Promise<TranscriptPage> {
+  const limit = Math.max(1, Math.floor(opts.limit));
+  const afterOrdinal = Math.max(0, Math.floor(opts.afterOrdinal));
+  const fetched = await db.aIMessage.findMany({
+    where: { sessionId, ordinal: { gt: afterOrdinal } },
+    orderBy: { ordinal: "asc" },
+    take: limit + 1,
+  });
+  const hasMore = fetched.length > limit;
+  const rows = (hasMore ? fetched.slice(0, limit) : fetched).map(fromRow);
+  const summaryIds = rows.filter((r) => r.kind === "summary").map((r) => r.id);
+  const folded =
+    afterOrdinal > 0 && summaryIds.length > 0
+      ? await db.aIMessage.findMany({
+          where: {
+            sessionId,
+            ordinal: { lte: afterOrdinal },
+            compactedIntoId: { in: summaryIds },
+          },
+          orderBy: { ordinal: "asc" },
+          select: { ordinal: true, compactedAt: true, compactedIntoId: true },
+        })
+      : [];
+  return {
+    rows,
+    compactionUpdates: folded.map((r) => ({
+      ordinal: r.ordinal,
+      compactedAt: r.compactedAt,
+      compactedIntoId: r.compactedIntoId!,
+    })),
+    hasMore,
+    nextAfterOrdinal: rows.at(-1)?.ordinal ?? afterOrdinal,
+  };
+}
+
 /** The rows the model still sees: everything not folded into a summary. */
 export async function listActiveMessages(
   sessionId: string,
@@ -261,12 +318,12 @@ export async function copyTranscriptPrefix(
       createdAt: r.createdAt,
     };
   });
-  // Insert one by one: `createMany` is fine on Postgres, but keeping to plain
-  // `create` keeps the unit fakes honest about what the store relies on.
-  for (const data of copied) {
-    await db.aIMessage.create({ data });
-  }
-  return copied.length;
+  // #212 — one batched insert, not a round trip per row. Supported by both the
+  // SQLite and the Postgres adapters; the ids are generated above, so a copied
+  // row's `compactedIntoId` can point at a copied summary in the same batch.
+  if (copied.length === 0) return 0;
+  const { count } = await db.aIMessage.createMany({ data: copied });
+  return count;
 }
 
 // ── DTO ────────────────────────────────────────────────────────────────────

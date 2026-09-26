@@ -62,6 +62,54 @@ export function resolveContextWindow(
   return { tokens: fallback, source: "fallback" };
 }
 
+/**
+ * #213 — the chat answer cap, decided: chat sends NO `maxTokens` for its answer
+ * (the provider's own default applies, and the output-cap / truncation handling
+ * is unchanged), but the overflow check and the compaction target RESERVE room
+ * for it. The reserve is
+ *
+ *     min(catalog maxOutputTokens, CHAT_ANSWER_RESERVE_PERCENT % of the window)
+ *
+ * — the percentage alone when the catalog does not know the model's output cap.
+ * Reserving the catalog's full `maxOutputTokens` blindly would raise false 413s:
+ * it is tens of thousands of tokens on some models, far past a chat answer, and
+ * would refuse conversations that would have been answered. 10% of the window
+ * (3,276 tokens on the 32,768 fallback; 20,000 on a 200K model) holds any
+ * ordinary answer. 0 turns the reserve off (the pre-#213 behaviour).
+ */
+export const DEFAULT_ANSWER_RESERVE_PERCENT = 10;
+/** Upper bound on a configured reserve: past half the window, nothing fits. */
+export const MAX_ANSWER_RESERVE_PERCENT = 50;
+
+export type AnswerReserveSource = "catalog" | "window-share" | "off";
+
+export interface AnswerReserve {
+  tokens: number;
+  /** `catalog` = the model's catalog output cap was the smaller bound. */
+  source: AnswerReserveSource;
+}
+
+/** Clamp a configured answer-reserve percentage into 0..50. */
+export function clampAnswerReservePercent(raw: number | undefined): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_ANSWER_RESERVE_PERCENT;
+  return Math.min(MAX_ANSWER_RESERVE_PERCENT, Math.max(0, Math.round(raw)));
+}
+
+/** #213 — the tokens a chat turn keeps free in the window for the reply. */
+export function resolveAnswerReserve(
+  provider: string,
+  model: string,
+  contextWindowTokens: number,
+  opts: { percent?: number; env?: NodeJS.ProcessEnv } = {},
+): AnswerReserve {
+  const percent = clampAnswerReservePercent(opts.percent);
+  if (percent === 0 || contextWindowTokens <= 0) return { tokens: 0, source: "off" };
+  const share = Math.floor((contextWindowTokens * percent) / 100);
+  const cap = lookupCatalogEntry(provider, model, opts.env)?.maxOutputTokens;
+  if (typeof cap === "number" && cap > 0 && cap < share) return { tokens: cap, source: "catalog" };
+  return { tokens: share, source: "window-share" };
+}
+
 /** Clamp a configured watermark percentage into the supported band. */
 export function clampWatermarkPercent(raw: number | undefined): number {
   if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_WATERMARK_PERCENT;
@@ -78,15 +126,24 @@ export interface ContextWatermarkOptions {
    * setting that existed before #138. Never raises the watermark.
    */
   thresholdTokens?: number | null;
+  /**
+   * #213 — tokens kept free for the reply ({@link resolveAnswerReserve}). The
+   * prompt overflows when prompt + reserve exceeds the window, and the
+   * watermark never sits above window − reserve, so a turn always tries to
+   * compact before it is refused.
+   */
+  answerReserveTokens?: number;
 }
 
 export interface WatermarkCheckResult {
   /** The estimated prompt is at or above the watermark. */
   overWatermark: boolean;
-  /** The estimated prompt does not fit the window at all. */
+  /** The estimated prompt plus the answer reserve does not fit the window. */
   overWindow: boolean;
   estimatedTokens: number;
   watermarkTokens: number;
+  /** #213 — tokens kept free for the reply. */
+  answerReserveTokens: number;
   contextWindow: number;
   contextWindowSource: ContextWindowSource;
   /** estimatedTokens ÷ contextWindow. */
@@ -99,25 +156,35 @@ export class ContextWatermark {
   readonly contextWindowSource: ContextWindowSource;
   readonly watermarkPercent: number;
   readonly watermarkTokens: number;
+  readonly answerReserveTokens: number;
 
   constructor(options: ContextWatermarkOptions) {
     this.contextWindow = options.contextWindow.tokens;
     this.contextWindowSource = options.contextWindow.source;
     this.watermarkPercent = clampWatermarkPercent(options.watermarkPercent);
+    const reserve = options.answerReserveTokens;
+    this.answerReserveTokens =
+      typeof reserve === "number" && Number.isFinite(reserve) && reserve > 0
+        ? Math.min(Math.floor(reserve), this.contextWindow)
+        : 0;
     const fromPercent = Math.floor((this.contextWindow * this.watermarkPercent) / 100);
     const threshold = options.thresholdTokens;
-    this.watermarkTokens =
+    const capped =
       typeof threshold === "number" && threshold > 0
         ? Math.min(fromPercent, threshold)
         : fromPercent;
+    // A watermark above the usable window would let a prompt overflow (413)
+    // without ever trying to compact first.
+    this.watermarkTokens = Math.min(capped, this.contextWindow - this.answerReserveTokens);
   }
 
   check(estimatedTokens: number): WatermarkCheckResult {
     const result: WatermarkCheckResult = {
       overWatermark: estimatedTokens >= this.watermarkTokens,
-      overWindow: estimatedTokens > this.contextWindow,
+      overWindow: estimatedTokens + this.answerReserveTokens > this.contextWindow,
       estimatedTokens,
       watermarkTokens: this.watermarkTokens,
+      answerReserveTokens: this.answerReserveTokens,
       contextWindow: this.contextWindow,
       contextWindowSource: this.contextWindowSource,
       utilization: this.contextWindow > 0 ? estimatedTokens / this.contextWindow : 1,

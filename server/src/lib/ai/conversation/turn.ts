@@ -18,6 +18,8 @@ import { createChildLogger } from "../../logger.js";
 import { getConfigService } from "../../config/config-service.js";
 import {
   ContextWatermark,
+  DEFAULT_ANSWER_RESERVE_PERCENT,
+  resolveAnswerReserve,
   resolveContextWindow,
   type ResolvedContextWindow,
   type WatermarkCheckResult,
@@ -61,6 +63,8 @@ export interface ChatTurnConfig {
   summaryMaxTokens: number;
   /** Absolute cap on the watermark: project setting, else env. */
   thresholdTokens: number | null;
+  /** #213 — share of the window kept free for the reply (0 = none). */
+  answerReservePercent: number;
 }
 
 function positive(n: number): number | null {
@@ -81,6 +85,10 @@ export function loadChatTurnConfig(projectThreshold?: number | null): ChatTurnCo
     thresholdTokens:
       (projectThreshold && projectThreshold > 0 ? projectThreshold : null) ??
       positive(Number.parseInt(process.env.CONTEXT_COMPACTION_THRESHOLD_TOKENS ?? "", 10)),
+    answerReservePercent: cfg.getNumber(
+      "CHAT_ANSWER_RESERVE_PERCENT",
+      DEFAULT_ANSWER_RESERVE_PERCENT,
+    ),
   };
 }
 
@@ -91,10 +99,13 @@ export class ContextOverflowError extends Error {
   constructor(
     readonly estimatedTokens: number,
     readonly contextWindow: ResolvedContextWindow,
+    /** #213 — tokens kept free for the reply, counted against the window. */
+    readonly answerReserveTokens = 0,
   ) {
     super(
       `This conversation no longer fits the model's context window (about ${estimatedTokens} ` +
-        `tokens against ${contextWindow.tokens}${contextWindow.source === "fallback" ? ", an assumed window" : ""}), ` +
+        `tokens${answerReserveTokens > 0 ? `, plus ${answerReserveTokens} kept free for the reply,` : ""} ` +
+        `against ${contextWindow.tokens}${contextWindow.source === "fallback" ? ", an assumed window" : ""}), ` +
         "even after summarising older turns. Start a new chat or fork from an earlier message.",
     );
     this.name = "ContextOverflowError";
@@ -190,10 +201,14 @@ export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn
   const contextWindow = resolveContextWindow(input.provider, input.model, {
     fallback: input.config.contextWindowFallback,
   });
+  const answerReserve = resolveAnswerReserve(input.provider, input.model, contextWindow.tokens, {
+    percent: input.config.answerReservePercent,
+  });
   const watermarkGate = new ContextWatermark({
     contextWindow,
     watermarkPercent: input.config.watermarkPercent,
     thresholdTokens: input.config.thresholdTokens,
+    answerReserveTokens: answerReserve.tokens,
   });
 
   const fixed = [...input.prefix, ...input.beforeUser, userMessage];
@@ -212,6 +227,7 @@ export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn
         ratio,
         build,
         contextWindow,
+        answerReserveTokens: watermarkGate.answerReserveTokens,
         fixedTokens,
         estimatedTokensBefore: estimate,
         summarizer: input.summarizer,
@@ -255,7 +271,11 @@ export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn
     }
   }
   if (watermark.overWindow) {
-    const overflow = new ContextOverflowError(estimate, contextWindow);
+    const overflow = new ContextOverflowError(
+      estimate,
+      contextWindow,
+      watermarkGate.answerReserveTokens,
+    );
     // The question is already on record; so is the reason it got no answer.
     await recordReply({
       sessionId,

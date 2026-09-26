@@ -231,3 +231,102 @@ describe("importLegacySnapshot", () => {
     expect(await store.countMessages("s")).toBe(0);
   });
 });
+
+// #212 — fork copies in one batched insert; the read pages.
+describe("copyTranscriptPrefix (#212)", () => {
+  it("copies the prefix in ONE createMany, same ordinals, compaction re-pointed", async () => {
+    for (let i = 1; i <= 4; i++) await store.appendMessage("src", user(`m${i}`));
+    const d = delegate.current as {
+      create: (a: unknown) => Promise<unknown>;
+      createMany: (a: unknown) => Promise<unknown>;
+    };
+    const createSpy = vi.spyOn(d, "create");
+    const manySpy = vi.spyOn(d, "createMany");
+    try {
+      expect(await store.copyTranscriptPrefix("src", "dst", 3)).toBe(3);
+      expect(manySpy).toHaveBeenCalledTimes(1);
+      expect(createSpy).not.toHaveBeenCalled();
+    } finally {
+      createSpy.mockRestore();
+      manySpy.mockRestore();
+    }
+    const copied = await store.listMessages("dst");
+    expect(copied.map((r) => [r.ordinal, partsTextOf(r)])).toEqual([
+      [1, "m1"],
+      [2, "m2"],
+      [3, "m3"],
+    ]);
+  });
+
+  it("an empty prefix inserts nothing", async () => {
+    await store.appendMessage("src", user("m1"));
+    expect(await store.copyTranscriptPrefix("src", "dst", 0)).toBe(0);
+    expect(await store.countMessages("dst")).toBe(0);
+  });
+
+  it("a batch that clashes on (sessionId, ordinal) fails whole and writes nothing", async () => {
+    for (let i = 1; i <= 3; i++) await store.appendMessage("src", user(`m${i}`));
+    await store.appendMessage("dst", user("already here")); // ordinal 1 taken
+    await expect(store.copyTranscriptPrefix("src", "dst", 3)).rejects.toMatchObject({
+      code: "P2002",
+    });
+    expect(await store.countMessages("dst")).toBe(1);
+    const d = delegate.current as { createMany: (a: unknown) => Promise<unknown> };
+    // Within one batch, too.
+    await expect(
+      d.createMany({
+        data: [
+          { sessionId: "x", ordinal: 1, role: "user", content: "[]" },
+          { sessionId: "x", ordinal: 1, role: "user", content: "[]" },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "P2002" });
+    expect(await store.countMessages("x")).toBe(0);
+  });
+});
+
+describe("listMessagesPage (#212)", () => {
+  it("returns rows after the cursor, at most `limit`, and whether more exist", async () => {
+    for (let i = 1; i <= 5; i++) await store.appendMessage("s", user(`m${i}`));
+    const p1 = await store.listMessagesPage("s", { afterOrdinal: 0, limit: 2 });
+    expect(p1.rows.map((r) => r.ordinal)).toEqual([1, 2]);
+    expect(p1).toMatchObject({ hasMore: true, nextAfterOrdinal: 2, compactionUpdates: [] });
+    const p3 = await store.listMessagesPage("s", { afterOrdinal: 4, limit: 2 });
+    expect(p3.rows.map((r) => r.ordinal)).toEqual([5]);
+    expect(p3).toMatchObject({ hasMore: false, nextAfterOrdinal: 5 });
+    const none = await store.listMessagesPage("s", { afterOrdinal: 5, limit: 2 });
+    expect(none).toMatchObject({ rows: [], hasMore: false, nextAfterOrdinal: 5 });
+  });
+
+  it("reports rows at or before the cursor folded by a summary on the page", async () => {
+    for (let i = 1; i <= 4; i++) await store.appendMessage("s", user(`m${i}`));
+    const summary = await store.appendMessage("s", {
+      role: "system",
+      kind: "summary",
+      parts: [{ type: "text", text: "S" }],
+      estimatedTokens: 1,
+    });
+    const when = new Date("2026-09-01T00:00:00Z");
+    for (const r of rows.filter((x) => x.sessionId === "s" && x.ordinal <= 3)) {
+      r.compactedAt = when;
+      r.compactedIntoId = summary.id;
+    }
+    const page = await store.listMessagesPage("s", { afterOrdinal: 4, limit: 10 });
+    expect(page.rows.map((r) => r.ordinal)).toEqual([5]);
+    expect(page.compactionUpdates).toEqual(
+      [1, 2, 3].map((ordinal) => ({
+        ordinal,
+        compactedAt: when,
+        compactedIntoId: summary.id,
+      })),
+    );
+    // The summary on a LATER page is not this page's business.
+    const early = await store.listMessagesPage("s", { afterOrdinal: 2, limit: 1 });
+    expect(early.rows.map((r) => r.ordinal)).toEqual([3]);
+    expect(early.compactionUpdates).toEqual([]);
+  });
+});
+
+function partsTextOf(r: { parts: Array<{ type: string; text?: string }> }): string {
+  return r.parts.map((p) => p.text ?? "").join("");
+}

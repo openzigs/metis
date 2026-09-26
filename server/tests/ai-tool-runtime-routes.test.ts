@@ -641,6 +641,42 @@ describe("#142 the approval gate through the routes", () => {
     ]);
   });
 
+  // #210 — a code-tool turn on /stream is metered into the per-project store
+  // the budget gate reads: every model call of the loop, summed, in one row.
+  it("/stream meters a code-tool turn's summed usage into the project store (#210)", async () => {
+    const { setUsageEmitter } = await import("../src/lib/finops/token-tracker.js");
+    const ticks: Array<Record<string, unknown>> = [];
+    setUsageEmitter((_projectId, payload) => ticks.push(payload));
+    try {
+      stubModel([
+        {
+          content: "Let me count.",
+          toolCalls: [{ id: "c1", name: "count_rows", args: { table: "t" } }],
+          usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+        },
+        {
+          content: "There are 7.",
+          usage: { promptTokens: 150, completionTokens: 20, totalTokens: 170 },
+        },
+      ]);
+      const app = makeApp();
+      const sid = await newSession(app, { policy: { high: "auto" } });
+      const res = await stream(app, sid);
+      expect(res.text).toContain("event: done");
+      expect(dangerExec).toHaveBeenCalledTimes(1);
+      expect(ticks).toHaveLength(1);
+      expect(ticks[0]).toMatchObject({
+        projectId: "proj-1",
+        sessionId: sid,
+        inputTokens: 250,
+        outputTokens: 30,
+        totalTokens: 280,
+      });
+    } finally {
+      setUsageEmitter(null);
+    }
+  });
+
   it("/chat returns and records each native turn's text too, not only the last", async () => {
     stubModel([
       {

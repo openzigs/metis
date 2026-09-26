@@ -2415,8 +2415,12 @@ Both fields persist on the `Project` row and are read at session-create time. Th
   agent, skills and project, and opens it; the original chat is unchanged.
 - Operators can tune this with `CHAT_COMPACTION_WATERMARK_PERCENT`,
   `CHAT_CONTEXT_WINDOW_FALLBACK` (used, and reported, when the catalog does not
-  know a model's window), `CHAT_TOOL_RESULT_MAX_TOKENS` and
-  `CHAT_COMPACTION_SUMMARY_MAX_TOKENS`. A model's real context window and its
+  know a model's window), `CHAT_TOOL_RESULT_MAX_TOKENS`,
+  `CHAT_COMPACTION_SUMMARY_MAX_TOKENS` and `CHAT_ANSWER_RESERVE_PERCENT` — the
+  share of the window kept free for the answer (default 10%, never more than the
+  model's own output limit; 0 turns it off). A conversation that no longer fits
+  with that room left is summarised first and refused only if it still does not
+  fit. A model's real context window and its
   characters-per-token figure can be set in `AI_MODEL_CATALOG_OVERRIDES`
   (`contextWindow`, `charsPerToken`).
 

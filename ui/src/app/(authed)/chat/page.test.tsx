@@ -39,7 +39,11 @@ vi.mock("@/lib/ai-client", async (importOriginal) => {
       },
       scope: null,
     })),
-    getTranscript: vi.fn(async () => []),
+    getTranscriptSince: vi.fn(async (_id: string, afterOrdinal: number) => ({
+      afterOrdinal,
+      rows: [],
+      compactionUpdates: [],
+    })),
     decideToolApproval: (...a: unknown[]) => decideToolApproval(...a),
     streamChat: async function* () {
       for (const ev of streamEvents) yield ev;

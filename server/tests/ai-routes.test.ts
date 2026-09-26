@@ -716,6 +716,47 @@ describe("#127 chat routes on the server transcript", () => {
     }
   });
 
+  // #213 — the overflow check reserves room for the reply: a prompt that fits
+  // the window but not the window less the reserve is refused; with the reserve
+  // off, the same prompt is answered.
+  it("a prompt that fits the window but leaves no room for the reply is refused with 413 (#213)", async () => {
+    const prevWindow = process.env.CHAT_CONTEXT_WINDOW_FALLBACK;
+    const prevReserve = process.env.CHAT_ANSWER_RESERVE_PERCENT;
+    env("CHAT_CONTEXT_WINDOW_FALLBACK", "10000");
+    try {
+      const app = makeApp();
+      const ask = async () => {
+        const sessionId = (await auth(request(app).post("/api/ai/sessions").send({}))).body.data
+          .session.id;
+        // ~9,500 tokens at the default 3 chars per token: inside the 10,000
+        // window, outside it once 1,000 (10%) is kept for the reply.
+        return auth(
+          request(app)
+            .post("/api/ai/chat")
+            .send({ sessionId, message: "z".repeat(28_500) }),
+        );
+      };
+      const refused = await ask();
+      expect(refused.status).toBe(413);
+      expect(refused.body.error.code).toBe("CHAT_CONTEXT_OVERFLOW");
+      expect(refused.body.error.details).toMatchObject({
+        contextWindow: 10_000,
+        answerReserveTokens: 1_000,
+      });
+      const estimated = refused.body.error.details.estimatedTokens as number;
+      expect(estimated).toBeLessThanOrEqual(10_000); // it would have fit with no reserve
+      expect(estimated + 1_000).toBeGreaterThan(10_000);
+      expect(refused.body.error.message).toContain("kept free for the reply");
+
+      env("CHAT_ANSWER_RESERVE_PERCENT", "0");
+      const answered = await ask();
+      expect(answered.status).toBe(200);
+    } finally {
+      env("CHAT_CONTEXT_WINDOW_FALLBACK", prevWindow);
+      env("CHAT_ANSWER_RESERVE_PERCENT", prevReserve);
+    }
+  });
+
   it("a failed compaction does not fail a turn that still fits", async () => {
     const prev = process.env.CHAT_CONTEXT_WINDOW_FALLBACK;
     env("CHAT_CONTEXT_WINDOW_FALLBACK", "2000");

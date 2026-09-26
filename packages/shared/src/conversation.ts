@@ -81,10 +81,38 @@ export interface TranscriptMessageDto {
   createdAt: string;
 }
 
-/** `GET /api/ai/sessions/:id/messages` */
+/**
+ * #212 — a row at or before the reader's `afterOrdinal` that compaction has
+ * since folded into a summary on this page. Compaction changes nothing else
+ * about a row, so this is everything the reader needs to bring its copy up to
+ * date without downloading the row again.
+ */
+export interface TranscriptCompactionUpdate {
+  ordinal: number;
+  compactedAt: string | null;
+  compactedIntoId: string | null;
+}
+
+/** #212 — the server-side cap on one page of `GET /api/ai/sessions/:id/messages`. */
+export const TRANSCRIPT_PAGE_MAX = 500;
+
+/**
+ * `GET /api/ai/sessions/:id/messages[?afterOrdinal=N][&limit=M]`
+ *
+ * #212 — paged: `messages` are the rows with `ordinal > afterOrdinal` (0 when
+ * absent), oldest first, at most `limit` (capped at {@link TRANSCRIPT_PAGE_MAX}).
+ * `hasMore` is `true` when rows past this page exist — a reader that stops
+ * before `hasMore` is `false` is NOT holding the whole transcript; the next page
+ * is `afterOrdinal = nextAfterOrdinal`.
+ */
 export interface TranscriptResponse {
   sessionId: string;
   messages: TranscriptMessageDto[];
+  /** Rows at or before `afterOrdinal` folded by a summary on this page. */
+  compactionUpdates: TranscriptCompactionUpdate[];
+  hasMore: boolean;
+  /** The last ordinal this page covers (`afterOrdinal` when it is empty). */
+  nextAfterOrdinal: number;
 }
 
 /** SSE `compaction` frame on `/api/ai/stream`, and `compaction` on `/api/ai/chat`. */
