@@ -332,25 +332,93 @@ describe("planSectionBatches", () => {
     }
   });
 
-  it("estimates from the mined rules the entry RENDERS, not the uncapped list (PR #163)", () => {
+  it("pages a module's mined rules across parts instead of capping them — none dropped, none twice", () => {
     const rule = (i: number): PersistedMinedRule => ({
       language: "ts",
       kind: "guard",
       expression: `amount > ${i}`,
       summary: `amount must exceed ${i}`,
-      file: "src/x.ts",
-      line: i,
+      file: `src/x${i % 3}.ts`,
+      line: i + 1,
+      context: null,
     });
     const huge = mod(
       "huge",
-      { rules: 0 },
-      { minedRules: Array.from({ length: 2_000 }, (_, i) => rule(i)) },
+      { rules: 5 },
+      { minedRules: Array.from({ length: 400 }, (_, i) => rule(i)) },
     );
-    const [m] = planSectionBatches([huge], RULES, 150_000, 16_384).modules;
-    // The 4,000-char inventory renders a few dozen rules; 2,000 × 300 chars
-    // would claim a 600k-char reply for one module.
-    expect(m.outputChars).toBeLessThan(20_000);
-    expect(m.entry).toContain("more mined rule(s) omitted to fit the budget");
+    const plan = planSectionBatches([huge, ...pairs(3)], RULES, 150_000, 16_384);
+    const parts = plan.modules.filter((m) => m.item.moduleName === "huge");
+    expect(parts.length).toBeGreaterThan(1);
+    // Every part is labelled with the module and its part number, and fits half a batch.
+    parts.forEach((p, i) => {
+      expect(p.entry).toContain(`### MODULE: huge (part ${i + 1} of ${parts.length})`);
+      expect(p.outputChars).toBeLessThanOrEqual(plan.outputBudget);
+    });
+    // Across the planned BATCH PROMPTS (what each call reads), every rule once, cited file:line.
+    const prompts = plan.batches.map((b) => b.map((m) => m.entry).join("\n\n---\n\n")).join("\n");
+    for (let i = 0; i < 400; i++) {
+      const cite = `(src/x${i % 3}.ts:${i + 1})`;
+      expect(prompts.split(cite).length - 1, cite).toBe(1);
+    }
+    expect(prompts).not.toContain("omitted to fit the budget");
+    // No batch is over its budget.
+    for (const b of plan.batches) {
+      if (b.length > 1)
+        expect(b.reduce((n, m) => n + m.outputChars, 0)).toBeLessThanOrEqual(plan.outputBudget);
+    }
+  });
+
+  it("sends every one of 400 mined rules to exactly one Rules call of a real run", async () => {
+    const huge = mod(
+      "huge",
+      { rules: 5 },
+      {
+        minedRules: Array.from({ length: 400 }, (_, i) => ({
+          language: "kt" as const,
+          kind: "precondition",
+          expression: `require(x > ${i})`,
+          summary: `x must exceed ${i}`,
+          file: "app/Rules.kt",
+          line: i + 1,
+          context: null,
+        })),
+      },
+    );
+    const provider = fakeModel();
+    const result = await run([huge, ...pairs(3)], provider);
+    expect(result.warnings.filter((w) => w.section === RULES.label)).toEqual([]);
+    const users = callsFor(provider, RULES)
+      .map((c) => c.user)
+      .join("\n");
+    for (let i = 1; i <= 400; i++) {
+      expect(users.split(`(app/Rules.kt:${i})`).length - 1, `rule ${i}`).toBe(1);
+    }
+  });
+
+  it("renders a module that fits one batch as one entry, with its whole inventory", () => {
+    const small = mod(
+      "small",
+      { rules: 3 },
+      {
+        minedRules: Array.from({ length: 80 }, (_, i) => ({
+          language: "ts" as const,
+          kind: "guard",
+          expression: `v > ${i}`,
+          summary: `v above ${i} — a threshold the account balance must stay under`,
+          file: "src/s.ts",
+          line: i + 1,
+          context: null,
+        })),
+      },
+    );
+    const [m, ...rest] = planSectionBatches([small], RULES, 150_000, 16_384).modules;
+    expect(rest).toEqual([]);
+    expect(m.part).toBeUndefined();
+    expect(m.entry.startsWith("### MODULE: small\n")).toBe(true);
+    // Past the old 4,000-char cap (~25 rules): every rule, no "omitted" line.
+    expect(m.entry).toContain("(src/s.ts:80)");
+    expect(m.entry).not.toContain("omitted to fit the budget");
   });
 
   it("keeps the single-call selection unchanged for a group that does not batch", () => {
@@ -418,6 +486,56 @@ describe("Calculations reads every module's extracted formulas", () => {
           `${f.moduleName}_total_${i}`,
         ).toBe(true);
       }
+    }
+  });
+
+  it("#172 pages one module's 300 formulas across labelled parts: each in exactly one batch", () => {
+    const big = withFormulas(mod("ledger", { rules: 2, formulas: 2 }), 300);
+    const plan = planSectionBatches([big, ...pairs(2)], CALCS, 150_000, 16_384);
+    const parts = plan.modules.filter((m) => m.item.moduleName === "ledger");
+    expect(parts.length).toBeGreaterThan(1);
+    parts.forEach((p, i) =>
+      expect(p.entry).toContain(`### MODULE: ledger (part ${i + 1} of ${parts.length})`),
+    );
+    const assigned = plan.batches.flatMap((b) =>
+      b
+        .filter((m) => m.item.moduleName === "ledger")
+        .flatMap((m) => (m.formulas ?? []).map((f) => f.expression)),
+    );
+    expect(assigned).toHaveLength(300);
+    expect(new Set(assigned).size).toBe(300);
+    for (const b of plan.batches) {
+      expect(b.reduce((n, m) => n + (m.listItems ?? 0), 0)).toBeLessThanOrEqual(80);
+    }
+  });
+
+  it("#172 pages a module whose formulas alone overflow the 80-entry block (issue's 99-formula case)", () => {
+    // 99 formulas: small enough in output to fit one batch, but more than one
+    // batch's formulas block holds — so it is paged, not cut to 80.
+    const m99 = withFormulas(mod("route", { rules: 1, formulas: 1 }), 99);
+    const plan = planSectionBatches([m99], CALCS, 150_000, 16_384);
+    expect(plan.modules.length).toBeGreaterThan(1);
+    const assigned = plan.modules.flatMap((m) => (m.formulas ?? []).map((f) => f.expression));
+    expect(new Set(assigned).size).toBe(99);
+    expect(assigned).toHaveLength(99);
+    for (const b of plan.batches) {
+      expect(b.reduce((n, m) => n + (m.listItems ?? 0), 0)).toBeLessThanOrEqual(80);
+    }
+  });
+
+  it("#172 a real Calculations run gives every one of 300 formulas to exactly one call", async () => {
+    const big = withFormulas(mod("ledger", { rules: 2, formulas: 2 }), 300);
+    const provider = fakeModel();
+    const result = await run([big, ...pairs(2)], provider);
+    expect(result.warnings.filter((w) => w.section === CALCS.label)).toEqual([]);
+    const blocks = callsFor(provider, CALCS).map((c) => formulasOf(c.user));
+    expect(blocks.length).toBeGreaterThan(1);
+    for (let i = 0; i < 300; i++) {
+      const needle = `ledger_total_${i} =`;
+      expect(
+        blocks.filter((b) => b.includes(needle)),
+        needle,
+      ).toHaveLength(1);
     }
   });
 });
@@ -513,7 +631,13 @@ describe("a batch cut off at the cap is split and regenerated (bounded, #165)", 
   });
 
   it("names a single module whose own reply is too large for the cap", async () => {
-    const facts = [mod("monster", { rules: 400 }), ...pairs(2)];
+    // One fact that cannot be paged (a single bullet longer than a batch).
+    const monster = mod("monster", { rules: 0 });
+    monster.facts = monster.facts.replace(
+      "RULES\n",
+      `RULES\n- ${pad(80_000, "one enormous rule")}\n`,
+    );
+    const facts = [monster, ...pairs(2)];
     const provider = fakeModel();
     const result = await run(facts, provider);
     const warning = result.warnings.find(
@@ -816,5 +940,121 @@ describe("judge-gated escalation of a batched section", () => {
     expect(rules.providerKind).toBe("anthropic");
     expect(result.warnings.filter((w) => w.section === RULES.label)).toEqual([]);
     expect(result.markdown).toContain("Rule from p0** [cloud]");
+  });
+});
+
+// ── Refine (#118) and progress on the batched path ────────────────────────
+
+/** A LOCAL provider (refine applies only to local-gemma) that records refine calls. */
+function localModelWithRefine(options: FakeOptions = {}): {
+  provider: AIProvider & { calls: Call[] };
+  refines: string[];
+  order: string[];
+} {
+  const inner = fakeModel(options);
+  const refines: string[] = [];
+  const order: string[] = [];
+  const provider = {
+    ...inner,
+    key: "local-gemma",
+    async *stream(messages: ChatMessage[], opts?: ChatOptions): AsyncGenerator<ChatChunk> {
+      const system = String(messages[0].content);
+      const user = String(messages[messages.length - 1].content);
+      if (system.includes("documentation fixer")) {
+        const label = /this "(.+?)" section/.exec(user)?.[1] ?? "?";
+        refines.push(label);
+        order.push(`refine:${label}`);
+        yield { type: "delta", content: user.slice(user.indexOf("##")) };
+        yield { type: "done", finishReason: "stop" };
+        return;
+      }
+      order.push(`draft:${/Section group: \*\*(.+?)\*\*/.exec(user)?.[1] ?? "?"}`);
+      yield* inner.stream(messages, opts);
+    },
+  } as unknown as AIProvider & { calls: Call[] };
+  return { provider, refines, order };
+}
+
+function localRouter(provider: AIProvider): Phase2Router {
+  const tuning = { ...docsGenTuning("local", provider.model), refine: true };
+  return {
+    primary: { kind: "local", provider, supportsCaching: false, factsCharCap: 150_000, tuning },
+  };
+}
+
+describe("the refine pass (#118) on the batched path", () => {
+  it("never refines a batch reply; single-call groups are still refined", async () => {
+    const { provider, refines } = localModelWithRefine();
+    await synthesizeFinalDocument(
+      onyourleftSized().slice(0, 12),
+      META,
+      "business-requirements",
+      "BRD",
+      localRouter(provider),
+      "p1",
+    );
+    const batchedLabels = new Set(BATCHED.map((g) => g.label));
+    expect(callsFor(provider, RULES).length).toBeGreaterThan(1);
+    expect(refines.filter((l) => batchedLabels.has(l))).toEqual([]);
+    const single = sectionGroupsFor("business-requirements").filter((g) => !g.batched);
+    expect(refines.sort()).toEqual(single.map((g) => g.label).sort());
+  });
+
+  it("checks truncation first: a cut-off single-call draft is not refined", async () => {
+    const overview = sectionGroupsFor("business-requirements").find((g) => !g.batched)!;
+    const { provider, refines } = localModelWithRefine({
+      cutOff: (c) => c.group === overview.label,
+    });
+    const result = await synthesizeFinalDocument(
+      onyourleftSized().slice(0, 12),
+      META,
+      "business-requirements",
+      "BRD",
+      localRouter(provider),
+      "p1",
+    );
+    expect(refines).not.toContain(overview.label);
+    // The other single-call groups were complete, so they were refined.
+    expect(refines.length).toBeGreaterThan(0);
+    expect(
+      result.warnings.some((w) => w.kind === "section-truncated" && w.section === overview.label),
+    ).toBe(true);
+  });
+});
+
+describe("per-batch progress", () => {
+  it("reports every finished batch of a batched section, so progress moves within it", async () => {
+    const updates: Array<{
+      section: string;
+      status: string;
+      batch?: { done: number; total: number };
+    }> = [];
+    const provider = fakeModel({ cutOff: (c) => c.group === RULES.label && c.modules.length > 5 });
+    await synthesizeFinalDocument(
+      onyourleftSized(),
+      META,
+      "business-requirements",
+      "BRD",
+      routerFor(provider),
+      "p1",
+      undefined,
+      (u) => updates.push(u),
+    );
+    const rules = updates.filter((u) => u.section === RULES.label && u.batch);
+    const calls = callsFor(provider, RULES).length;
+    // One update per batch that FINISHED; a cut-off call that was split is not
+    // a finished batch — its two halves are.
+    expect(rules.length).toBeGreaterThan(1);
+    expect(calls).toBeGreaterThan(rules.length);
+    // done counts up by one; total grows only when a cut-off batch is split.
+    expect(rules.map((u) => u.batch!.done)).toEqual(rules.map((_, i) => i + 1));
+    const last = rules[rules.length - 1].batch!;
+    expect(last.done).toBe(last.total);
+    expect(rules).toHaveLength(last.total);
+    expect(last.total).toBeGreaterThan(rules[0].batch!.total); // a split happened
+    // A cut-off batch counts as done once it is split, so each split adds one to the total.
+    for (let i = 1; i < rules.length; i++) {
+      expect(rules[i].batch!.total).toBeGreaterThanOrEqual(rules[i - 1].batch!.total);
+    }
   });
 });

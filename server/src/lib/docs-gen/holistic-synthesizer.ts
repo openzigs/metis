@@ -26,22 +26,20 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
-import { extractFormulas, type ExtractedFormula } from "../code-graph/formula-extractor.js";
-import { mineJavaRules, renderMinedRules, type MinedRule } from "../code-graph/java-rule-miner.js";
+import type { ExtractedFormula } from "../code-graph/formula-extractor.js";
+import { renderMinedRules } from "../code-graph/java-rule-miner.js";
 import {
-  mineSasRules,
   renderMinedSasRules,
-  mineSasWorkflow,
   renderSasWorkflow,
   renderSasDataLineage,
   type MinedSasStep,
 } from "../code-graph/sas-rule-miner.js";
-import { minePyRules, renderMinedPyRules } from "../code-graph/py-rule-miner.js";
-import { mineGoRules, renderMinedGoRules } from "../code-graph/go-rule-miner.js";
-import { mineTsRules, renderMinedTsRules } from "../code-graph/ts-rule-miner.js";
-import { mineSqlRules, renderMinedSqlRules } from "../code-graph/sql-rule-miner.js";
-import { mineCsRules, renderMinedCsRules } from "../code-graph/cs-rule-miner.js";
-import { mineKtRules, renderMinedKtRules } from "../code-graph/kt-rule-miner.js";
+import { renderMinedPyRules } from "../code-graph/py-rule-miner.js";
+import { renderMinedGoRules } from "../code-graph/go-rule-miner.js";
+import { renderMinedTsRules } from "../code-graph/ts-rule-miner.js";
+import { renderMinedSqlRules } from "../code-graph/sql-rule-miner.js";
+import { renderMinedCsRules } from "../code-graph/cs-rule-miner.js";
+import { renderMinedKtRules } from "../code-graph/kt-rule-miner.js";
 import {
   buildCodeGraphSummary,
   renderCrossModuleDeps,
@@ -67,7 +65,6 @@ import {
   type TruncationDetection,
 } from "./truncation.js";
 import {
-  modelOutputCeiling,
   resolveClaimMaxOutputTokens,
   resolveFactsMaxOutputTokens,
   resolveSectionMaxOutputTokens,
@@ -77,16 +74,40 @@ import {
   MINED_RULES_ENTRY_CHAR_CAP,
   countFactBullets,
   dedupeRulesAgainstMined,
+  minedRuleLineChars,
   minedRulesThatFit,
-  parsePersistedMinedRules,
+  pageFactsText,
+  renderMinedRulePage,
   renderMinedRuleInventory,
   sliceModuleFacts,
-  toPersistedMinedRules,
   type FactSlice,
   type ModuleFactSlices,
   type PersistedMinedRule,
 } from "./fact-slices.js";
 import { resolvePhase1Reasoning } from "./docs-gen-reasoning.js";
+import {
+  FORMULA_LINE_CHAR_LIMIT,
+  PHASE1_MINED_RENDER_CAP,
+  UNIT_SEPARATOR,
+  buildSourceUnits,
+  chunkOutputChars,
+  dedupeMinedRules,
+  isCallableSymbol,
+  measureChunkCoverage,
+  mergePhase1ChunkFacts,
+  mineSqlFile,
+  mineUnit,
+  phase1ChunkLimits,
+  planPhase1Chunks,
+  renderUnit,
+  resolvePhase1ChunkInputTokens,
+  resolvePhase1IncludeTests,
+  unitFitsLimits,
+  shouldSplitPhase1Chunk,
+  splitPhase1Chunk,
+  type Phase1Coverage,
+  type Phase1Unit,
+} from "./phase1-chunking.js";
 import { mapSettledWithConcurrency, resolvePhase1Concurrency } from "./phase1-concurrency.js";
 import {
   loadRepositorySources,
@@ -95,7 +116,6 @@ import {
   type RepositoryIdentity,
   type RepositorySource,
 } from "./repository-sources.js";
-import { detectLanguage } from "../code-graph/parsers.js";
 import { isJunkSourcePath } from "@metis/shared";
 import { recordUsage } from "../finops/index.js";
 import {
@@ -112,6 +132,10 @@ import {
   sourceUnavailableWarning,
   factsTruncatedWarning,
   phase1FactsTruncatedWarning,
+  phase1ChunksFailedWarning,
+  sqlScanIncompleteWarning,
+  sqlFilesSkippedWarning,
+  formulaLinesSkippedWarning,
   sectionFailedWarning,
   sectionTruncatedWarning,
   batchTruncatedWarning,
@@ -133,7 +157,13 @@ import {
 // #67 — the fixed, user-safe failure vocabulary a section's exception is mapped
 // through before it can reach a persisted, client-visible warning.
 import { generationFailureMessage, isConnectionDropped } from "./generation-failure-message.js";
-import { isSasBusinessSymbol } from "./discovery-agent.js";
+import {
+  SQL_SCAN_DIR_CAP,
+  excludeTestFiles,
+  groupSymbolsIntoModules,
+  isTestSourcePath,
+  type ExcludedByPolicy,
+} from "./module-grouping.js";
 import { ClaimExtractor } from "./grounding/claim-extractor.js";
 import {
   FaithfulnessJudge,
@@ -174,6 +204,10 @@ import {
   batchOutputBudgetChars,
   batchOutputChars,
   estimateModuleOutputChars,
+  OUTPUT_CHARS_PER_FORMULA,
+  OUTPUT_CHARS_PER_MINED_RULE,
+  OUTPUT_CHARS_PER_MODULE,
+  OUTPUT_CHARS_PER_TOPIC_CHAR,
   mergeBatchSections,
   planBatches,
   shouldResplit,
@@ -233,7 +267,10 @@ export function singleShotPromptCaching(supportsCaching: boolean): { system: tru
  */
 // 4 — #154/#155/#156: headings are now parsed into topic slices, every
 // language's mined rules are persisted, and truncated replies are no longer cached.
-const PHASE1_PROMPT_VERSION = 4;
+// 5 — full coverage: a module is read in chunks (every function, all
+// module-level code, no snippet budget); the prompt names the part it is
+// reading; the cache holds one row per chunk (plus split markers).
+const PHASE1_PROMPT_VERSION = 5;
 export { PHASE1_PROMPT_VERSION, GENERATED_DOC_PROVENANCE_SCHEMA_VERSION };
 
 /**
@@ -1013,11 +1050,20 @@ export interface ModuleFacts {
    */
   minedRules?: PersistedMinedRule[];
   /**
-   * #156 — true when the Phase-1 reply was still cut off by the output-token cap
-   * after the one larger-cap retry. The (partial) facts are used for this run
-   * but never cached, and the caller raises a warning naming the module.
+   * #156 — true when a Phase-1 reply was still cut off by the output-token cap
+   * after its chunk was split down as far as it goes (a single line range of
+   * one function). The (partial) facts are used for this run but never cached,
+   * and the caller raises a warning naming the module.
    */
   factsTruncated?: boolean;
+  /**
+   * How much of the module Phase 1 read: functions and source characters
+   * included vs total, chunks planned, calls made, cache hits, and chunks that
+   * were cut off or failed. Absent on facts not produced by extractModuleFacts.
+   */
+  phase1Coverage?: Phase1Coverage;
+  /** `.sql` files of the module that could not be read or mined (a document warning names them). */
+  phase1SkippedFiles?: string[];
 }
 
 interface ProjectMeta {
@@ -1046,6 +1092,12 @@ export interface SectionProgressUpdate {
   index: number;
   total: number;
   warning?: DocWarning;
+  /**
+   * For a batched section while it generates: batches finished of batches
+   * planned (a re-split adds one), so progress can advance per batch
+   * (see section-progress.ts).
+   */
+  batch?: { done: number; total: number };
 }
 export type OnSectionProgress = (update: SectionProgressUpdate) => void;
 
@@ -1094,6 +1146,12 @@ export async function synthesizeHolisticDocument(
      */
     groundingForSection?: SectionGroundingRetriever;
     onSectionProgress?: OnSectionProgress;
+    /**
+     * Phase-1 progress: planned chunks completed of the total planned across
+     * every module (a split chunk counts once, when all its parts are done).
+     * Best-effort, like {@link onSectionProgress}.
+     */
+    onPhase1Progress?: (update: { done: number; total: number }) => void;
     benchmarkProviders?: {
       phase1?: ReturnType<typeof buildDocsGenProvider>;
       phase2Router?: Phase2Router;
@@ -1137,6 +1195,22 @@ export async function synthesizeHolisticDocument(
     loadModules(symbolWhere, repositories),
     loadEdges(symbolWhere),
   ]);
+  // DOCS_GEN_PHASE1_INCLUDE_TESTS=false — test/spec/fixture files are neither
+  // read nor mined, and are reported as excluded by policy (not as missing).
+  const includeTests = resolvePhase1IncludeTests();
+  let excludedByPolicy: ExcludedByPolicy | null = null;
+  if (!includeTests) {
+    const policy = excludeTestFiles(modules);
+    modules.splice(0, modules.length, ...policy.modules);
+    excludedByPolicy = policy.excluded;
+    log.info(
+      "Phase 1: test/spec/fixture files excluded by policy (DOCS_GEN_PHASE1_INCLUDE_TESTS=false)",
+      {
+        projectId,
+        ...policy.excluded,
+      },
+    );
+  }
   const scopedGraphFingerprint = graphFingerprintOf(
     symbols
       .map((symbol) => symbol.contentHash)
@@ -1157,38 +1231,47 @@ export async function synthesizeHolisticDocument(
   // ModuleGroups for such dirs (relative to cloneDir, not already represented)
   // so the existing per-module SQL mining pass in extractModuleFacts runs on
   // them end to end. Best-effort and bounded; no schema-graph rebuild.
-  let sqlModuleBudget = SQL_ONLY_MODULE_CAP;
-  let sqlDirectoryBudget = SQL_SCAN_DIR_CAP;
+  // Every SQL-only directory becomes a module (no module cap). Anything the
+  // scan could not look at raises a document warning, never just a log line.
+  const sqlScanWarnings: DocWarning[] = [];
   for (const repository of repositories.values()) {
     const cloneDir = repository.root;
-    if (!cloneDir || sqlModuleBudget <= 0 || sqlDirectoryBudget <= 0) continue;
+    if (!cloneDir) continue;
+    const label = repository.repoConnectorId ?? repository.codeGraphId;
+    const stats: SqlScanStats = { visited: 0, truncated: false, unreadable: [] };
     try {
       const existingDirs = new Set(
         modules
           .filter((m) => m.repository?.codeGraphId === repository.codeGraphId)
           .map((m) => m.dir),
       );
-      const sqlOnly = await discoverSqlOnlyModules(cloneDir, existingDirs, async (dir) => {
-        if (sqlDirectoryBudget-- <= 0) throw new Error("SQL directory budget exhausted");
-        return readdir(await resolveSourcePath(cloneDir, path.relative(cloneDir, dir)), {
-          withFileTypes: true,
-        });
-      });
+      const sqlOnly = await discoverSqlOnlyModules(
+        cloneDir,
+        existingDirs,
+        async (dir) =>
+          readdir(await resolveSourcePath(cloneDir, path.relative(cloneDir, dir)), {
+            withFileTypes: true,
+          }),
+        stats,
+      );
       if (sqlOnly.length > 0) {
-        const admitted = sqlOnly.slice(0, sqlModuleBudget);
         const identity = {
           codeGraphId: repository.codeGraphId,
           repoConnectorId: repository.repoConnectorId,
         };
-        modules.push(...admitted.map((m) => ({ ...m, repository: identity })));
-        sqlModuleBudget -= admitted.length;
+        modules.push(...sqlOnly.map((m) => ({ ...m, repository: identity })));
         log.info("Synthesized SQL-only-directory modules", {
           projectId,
           count: sqlOnly.length,
         });
       }
-    } catch {
-      // best-effort — never block doc generation on the SQL-only scan
+    } catch (err) {
+      log.warn("SQL-only directory scan failed", { projectId, err: String(err) });
+      stats.unreadable.push("(scan failed)");
+    }
+    if (stats.truncated || stats.unreadable.length > 0) {
+      log.warn("SQL-only directory scan incomplete", { projectId, repository: label, ...stats });
+      sqlScanWarnings.push(sqlScanIncompleteWarning(label, stats));
     }
   }
 
@@ -1213,6 +1296,7 @@ export async function synthesizeHolisticDocument(
     // so deriveDocStatus reports "degraded" instead of a clean "ready".
     const warnings = [
       ...repositoryWarnings,
+      ...sqlScanWarnings,
       ...(rawSymbolCount > 0 ? [noModulesWarning(rawSymbolCount)] : []),
     ];
     if (warnings.length > 0) {
@@ -1239,6 +1323,37 @@ export async function synthesizeHolisticDocument(
   const concurrency = resolvePhase1Concurrency();
   const phase1Start = Date.now();
   const progressEvery = Math.max(concurrency * 5, 1);
+  const cloneDirOf = (m: ModuleGroup) =>
+    m.repository ? (repositories.get(m.repository.codeGraphId)?.root ?? null) : null;
+
+  // Prepare every module (read, partition, mine — no model) before extracting,
+  // so the number of chunks Phase 1 will work through is known up front and
+  // progress can be reported per chunk ("Extracting facts: 212/552 chunks").
+  const phase1Limits = phase1ChunkLimits(
+    resolveFactsMaxOutputTokens(phase1.provider.model),
+    resolvePhase1ChunkInputTokens(),
+  );
+  const prepared = new Map<ModuleGroup, PreparedPhase1Module>();
+  let chunksPlanned = 0;
+  for (const m of modules) {
+    try {
+      const p = await preparePhase1Module(m, cloneDirOf(m), includeTests);
+      prepared.set(m, p);
+      chunksPlanned += Math.max(1, planPhase1Chunks(p.units, phase1Limits).length);
+    } catch {
+      chunksPlanned += 1; // extraction prepares it again (and reports the failure)
+    }
+  }
+  let chunksDone = 0;
+  const reportPhase1 = (): void => {
+    if (!options?.onPhase1Progress) return;
+    try {
+      options.onPhase1Progress({ done: Math.min(chunksDone, chunksPlanned), total: chunksPlanned });
+    } catch {
+      // progress reporting must not affect Phase 1
+    }
+  };
+  reportPhase1();
   const results = await mapSettledWithConcurrency(
     modules,
     concurrency,
@@ -1248,10 +1363,18 @@ export async function synthesizeHolisticDocument(
         phase1.provider,
         phase1.supportsCaching,
         projectId,
-        m.repository ? (repositories.get(m.repository.codeGraphId)?.root ?? null) : null,
+        cloneDirOf(m),
         graphSummary,
         phase1.effectiveConfigHash,
-      ),
+        includeTests,
+        {
+          prepared: prepared.get(m),
+          onChunkDone: () => {
+            chunksDone += 1;
+            reportPhase1();
+          },
+        },
+      ).finally(() => prepared.delete(m)),
     (completed, total) => {
       if (completed % progressEvery === 0 || completed === total) {
         log.info("Phase 1 progress", {
@@ -1263,6 +1386,8 @@ export async function synthesizeHolisticDocument(
       }
     },
   );
+  // Modules whose extraction threw: they contribute no facts at all.
+  const rejectedModules: string[] = [];
   for (let j = 0; j < results.length; j++) {
     const r = results[j];
     if (r.status === "fulfilled" && r.value) {
@@ -1272,11 +1397,19 @@ export async function synthesizeHolisticDocument(
         err: String(r.reason),
         dir: modules[j].dir,
       });
+      rejectedModules.push(modules[j].dir);
     }
   }
+  // A module whose extraction threw never reported its chunks: Phase 1 is over,
+  // so the bar reaches the end of its share before Phase 2 starts.
+  chunksDone = chunksPlanned;
+  reportPhase1();
+  prepared.clear();
   log.info("Phase 1 complete", {
     factsCount: facts.length,
     elapsedSec: Math.round((Date.now() - phase1Start) / 1000),
+    ...summarizePhase1Coverage(facts),
+    ...(excludedByPolicy ? { excludedByPolicy } : {}),
   });
 
   // #330 — collect any modules whose source could not be read so we can raise a
@@ -1284,7 +1417,7 @@ export async function synthesizeHolisticDocument(
   // empty/ungrounded facts and the document is silently emitted at ~0% grounding
   // (the SAS `risk` Business Rules 78%→0% regression). We tally affected modules
   // out of the total set that EXPECTED to read source code.
-  const phase1Warnings: DocWarning[] = [...repositoryWarnings];
+  const phase1Warnings: DocWarning[] = [...repositoryWarnings, ...sqlScanWarnings];
   const sourceUnavailableCount = facts.filter((f) => f.sourceUnavailable).length;
   if (sourceUnavailableCount > 0) {
     const codeBackedModules = facts.filter((f) => f.methodCount > 0).length;
@@ -1310,6 +1443,31 @@ export async function synthesizeHolisticDocument(
       modules: truncatedModules,
     });
     phase1Warnings.push(phase1FactsTruncatedWarning(truncatedModules));
+  }
+  // Modules where some OR all chunk calls failed, and modules whose extraction
+  // threw: every one is named in a document warning. Parts that succeeded are
+  // used and cached; the failed parts are retried on the next run.
+  const failedModules = [
+    ...facts.filter((f) => (f.phase1Coverage?.failedChunks ?? 0) > 0).map((f) => f.moduleName),
+    ...rejectedModules,
+  ];
+  const longLineModules = facts
+    .filter((f) => (f.phase1Coverage?.formulaLinesSkipped ?? 0) > 0)
+    .map((f) => ({ module: f.moduleName, lines: f.phase1Coverage!.formulaLinesSkipped }));
+  if (longLineModules.length > 0) {
+    phase1Warnings.push(formulaLinesSkippedWarning(longLineModules, FORMULA_LINE_CHAR_LIMIT));
+  }
+  const skippedSqlFiles = facts.flatMap((f) => f.phase1SkippedFiles ?? []);
+  if (skippedSqlFiles.length > 0) {
+    phase1Warnings.push(sqlFilesSkippedWarning(skippedSqlFiles));
+  }
+  if (failedModules.length > 0) {
+    log.warn("Phase 1 fact extraction failed for all or part of one or more modules", {
+      projectId,
+      docType,
+      modules: failedModules,
+    });
+    phase1Warnings.push(phase1ChunksFailedWarning(failedModules));
   }
 
   log.info("Phase 2: synthesizing holistic document", {
@@ -1548,84 +1706,21 @@ async function loadModules(
   // re-ingest. (SAS doc-gen grounding fix.)
   const symbols = symbolsAll.filter((s) => !isJunkSourcePath(s.filePath));
   const rawSymbolCount = symbols.length;
-  const moduleMap = new Map<string, ModuleGroup>();
-  for (const sym of symbols) {
-    if (sym.kind === "module" || sym.kind === "type") continue;
-    const dir = sym.filePath.split("/").slice(0, -1).join("/");
-    if (
-      dir.includes("/test/") ||
-      dir.includes("/tests/") ||
-      dir.includes("/generated/") ||
-      dir.includes("/node_modules/") ||
-      dir.includes("/build/") ||
-      dir.includes("/target/") ||
-      dir.includes("/.next/")
-    ) {
-      continue;
-    }
-    const repository: RepositoryIdentity = {
+  // Every file of every directory lands in some module, and there is no
+  // module-count cap (the old top-150 cut decided which code was never read) —
+  // see module-grouping.ts. Phase-2 batching reads every module.
+  const modules: ModuleGroup[] = groupSymbolsIntoModules(
+    symbols,
+    (sym) => ({
       codeGraphId: sym.codeGraphId,
       repoConnectorId: repositories.get(sym.codeGraphId)?.repoConnectorId ?? null,
-    };
-    const key = repositoryPathIdentity(repository, dir);
-    if (!moduleMap.has(key)) moduleMap.set(key, { dir, repository, syms: [] });
-    moduleMap.get(key)!.syms.push(sym);
-  }
-
-  // Split mega-modules (>200 symbols) into per-file sub-modules.
-  // This ensures we actually read code from all important classes, not just
-  // the top 20 methods from a 5000-symbol directory.
-  const SPLIT_THRESHOLD = 200;
-  const finalModules: ModuleGroup[] = [];
-
-  for (const { dir, syms, repository } of moduleMap.values()) {
-    if (syms.length <= SPLIT_THRESHOLD) {
-      // Normal module — keep as-is if it qualifies.
-      //
-      // Standard rule (unchanged): ≥1 class/interface OR ≥4 methods/functions,
-      // AND ≥3 symbols total. SAS programs have no classes/interfaces (they are
-      // `%macro` blocks, DATA steps, and PROC steps — all `function` symbols
-      // from the SAS parser), so a SAS dir with exactly 3 functions is dropped
-      // by the standard rule. Mirror discovery-agent's relaxation: a directory
-      // also qualifies when it has ≥3 SAS business-logic symbols, regardless of
-      // class/interface count. The non-SAS rule is unchanged. (SAS doc-gen bug.)
-      const standard =
-        (syms.filter((s) => s.kind === "class" || s.kind === "interface").length >= 1 ||
-          syms.filter((s) => s.kind === "method" || s.kind === "function").length >= 4) &&
-        syms.length >= 3;
-      const sasRelaxed = syms.filter(isSasBusinessSymbol).length >= 3;
-      if (standard || sasRelaxed) {
-        finalModules.push({ dir, syms, repository });
-      }
-    } else {
-      // Mega-module: split by source file. Each file becomes its own module if
-      // it qualifies. Standard: ≥1 class/interface AND ≥3 symbols. SAS files
-      // never have a class, so apply the SAME SAS relaxation per-file: ≥3 SAS
-      // business-logic symbols qualifies the file. (SAS doc-gen bug.)
-      const byFile = new Map<string, ModuleGroup["syms"]>();
-      for (const s of syms) {
-        if (!byFile.has(s.filePath)) byFile.set(s.filePath, []);
-        byFile.get(s.filePath)!.push(s);
-      }
-      for (const [filePath, fileSyms] of byFile.entries()) {
-        const standard =
-          fileSyms.filter((s) => s.kind === "class" || s.kind === "interface").length >= 1 &&
-          fileSyms.length >= 3;
-        const sasRelaxed = fileSyms.filter(isSasBusinessSymbol).length >= 3;
-        if (standard || sasRelaxed) {
-          // Use filePath (without extension) as the module "dir" for naming purposes.
-          finalModules.push({ dir: filePath.replace(/\.[^.]+$/, ""), syms: fileSyms, repository });
-        }
-      }
-    }
-  }
-
-  // Bumped from 50 -> 150: at 50, only ~3% of a 1,487-file monolith's files were
-  // contributing facts. 150 modules at the per-module budget below covers
-  // ~70% of source. Phase 2 still ranks-and-tiers via buildRelevantFactsBlob,
-  // so extra modules don't blow the synthesis budget — they just give us a
-  // larger candidate pool of high-density rule-bearing modules.
-  const modules = finalModules.sort((a, b) => b.syms.length - a.syms.length).slice(0, 150);
+    }),
+    repositoryPathIdentity,
+  );
+  log.info("Documentable modules", {
+    modules: modules.length,
+    symbols: modules.reduce((n, m) => n + m.syms.length, 0),
+  });
   // #271 — return the raw symbols too so the caller can build the code-graph
   // summary (lineage + cross-module deps) without re-querying the DB.
   const graphSymbols: GraphSymbol[] = symbols.map((s) => ({
@@ -1667,10 +1762,19 @@ const SQL_SCAN_SKIP_DIRS = new Set([
   "dist",
   "vendor",
 ]);
-/** Cap on synthesized SQL-only modules, same order as the per-module SQL caps. */
-const SQL_ONLY_MODULE_CAP = 24;
-/** Cap on directories visited during the scan so a huge clone can't run away. */
-const SQL_SCAN_DIR_CAP = 2000;
+// SQL_SCAN_DIR_CAP (the per-repository directory safety bound) lives in
+// module-grouping.ts so the regeneration input fingerprint uses the same one.
+export { SQL_SCAN_DIR_CAP };
+
+/** What {@link discoverSqlOnlyModules} could not look at. */
+export interface SqlScanStats {
+  /** Directories visited. */
+  visited: number;
+  /** True when the scan stopped at the directory bound with directories left. */
+  truncated: boolean;
+  /** Directories whose listing failed (skipped). */
+  unreadable: string[];
+}
 
 /**
  * Discover directories under the clone that contain `.sql` files but are NOT
@@ -1681,29 +1785,35 @@ const SQL_SCAN_DIR_CAP = 2000;
  * directories whose `dir` is relative to `cloneDir`, so the existing per-module
  * SQL mining pass in {@link extractModuleFacts} resolves and mines them.
  *
- * Bounded on every axis: skips test/build/vendor dirs, caps the number of
- * directories visited ({@link SQL_SCAN_DIR_CAP}) and the number of synthesized
- * modules ({@link SQL_ONLY_MODULE_CAP}). Best-effort — any fs error is swallowed
- * (returns whatever was found so far). The `readdir` impl is injectable for
- * tests; production passes the node:fs/promises `readdir`.
+ * Skips test/build/vendor dirs; every other directory is visited, up to the
+ * safety bound `maxDirs` ({@link SQL_SCAN_DIR_CAP}). Nothing is skipped
+ * silently: a scan that stops at the bound, and every directory whose listing
+ * failed, is reported through `stats` so the caller can warn. The `readdir`
+ * impl is injectable for tests; production passes the node:fs/promises `readdir`.
  */
 export async function discoverSqlOnlyModules(
   cloneDir: string,
   existingModuleDirs: Set<string>,
   readdirImpl: ReaddirWithTypes = (dir) => readdir(dir, { withFileTypes: true }),
+  stats: SqlScanStats = { visited: 0, truncated: false, unreadable: [] },
+  maxDirs: number = SQL_SCAN_DIR_CAP,
 ): Promise<ModuleGroup[]> {
   const out: ModuleGroup[] = [];
-  let visited = 0;
   // BFS queue of relative dirs ("" === clone root).
   const queue: string[] = [""];
-  while (queue.length > 0 && out.length < SQL_ONLY_MODULE_CAP && visited < SQL_SCAN_DIR_CAP) {
+  while (queue.length > 0) {
+    if (stats.visited >= maxDirs) {
+      stats.truncated = true;
+      break;
+    }
     const rel = queue.shift()!;
-    visited += 1;
+    stats.visited += 1;
     let entries: DirEntryLike[];
     try {
       entries = await readdirImpl(path.resolve(cloneDir, rel));
     } catch {
-      continue; // unreadable dir — skip
+      stats.unreadable.push(rel || ".");
+      continue;
     }
     let hasSql = false;
     for (const e of entries) {
@@ -1727,6 +1837,110 @@ export async function discoverSqlOnlyModules(
 // Phase 1: per-module fact extraction
 // ============================================================================
 
+/** A module's source read, partitioned and mined — everything Phase 1 plans chunks from. */
+export interface PreparedPhase1Module {
+  filePaths: string[];
+  fileLines: Map<string, string[]>;
+  units: Phase1Unit[];
+  sourceCharsTotal: number;
+  /** `.sql` files that could not be read or mined (their rules are missing). */
+  skippedFiles: string[];
+}
+
+/**
+ * Read, partition and mine one module (no model). Phase 1 runs it for every
+ * module before extraction starts, so the total number of chunks is known up
+ * front and progress can be reported per chunk.
+ */
+export async function preparePhase1Module(
+  m: ModuleGroup,
+  cloneDir: string | null,
+  includeTests = true,
+): Promise<PreparedPhase1Module> {
+  // ------------------------------------------------------------------
+  // Read EVERY file of the module once, in full. There is no snippet budget:
+  // the module is partitioned into units (every function body and all
+  // module-level code), every miner runs over every unit, and the units are
+  // packed into as many Phase-1 calls as they need (phase1-chunking.ts).
+  // ------------------------------------------------------------------
+  const filePaths = [...new Set(m.syms.map((s) => s.filePath))].sort();
+  const fileLines = new Map<string, string[]>();
+  const skippedFiles: string[] = [];
+  for (const filePath of filePaths) {
+    try {
+      const fullSource = await readFile(await resolveSourcePath(cloneDir, filePath), "utf-8");
+      fileLines.set(filePath, fullSource.split("\n"));
+    } catch {
+      // unreadable — file may have been deleted or path is wrong
+    }
+  }
+  const units: Phase1Unit[] = [];
+  let sourceCharsTotal = 0;
+  for (const filePath of filePaths) {
+    const lines = fileLines.get(filePath);
+    if (!lines) continue;
+    sourceCharsTotal += lines.join("\n").length;
+    for (const unit of buildSourceUnits(filePath, lines, m.syms)) {
+      units.push(mineUnit(unit, m.syms));
+    }
+  }
+
+  // #274 — SQL file-level mining. SQL is NOT a code-graph-parsed language, so
+  // there are no CodeSymbol rows to dispatch on: every `.sql` file in this
+  // module's directory is mined in full at the FILE level (baseLine = 1,
+  // context = file path). Its rules travel as an inventory-only unit so they
+  // are chunked like any other. Best-effort: any fs/parse failure is swallowed.
+  if (cloneDir) {
+    try {
+      const moduleAbsDir = await resolveSourcePath(cloneDir, m.dir);
+      const entries = await readdir(moduleAbsDir, { withFileTypes: true });
+      const sqlFiles = entries
+        .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".sql"))
+        .filter((e) => includeTests || !isTestSourcePath(path.join(m.dir, e.name)))
+        .map((e) => e.name)
+        .sort();
+      for (const name of sqlFiles) {
+        try {
+          const relPath = path.join(m.dir, name);
+          const sqlSource = await readFile(await resolveSourcePath(cloneDir, relPath), "utf-8");
+          const rules = mineSqlFile(sqlSource, relPath);
+          if (rules.length === 0) continue;
+          // A loop, never `Math.max(...rules)`: spreading ~105K+ rules as call
+          // arguments overflows the stack.
+          let lastLine = 1;
+          for (const r of rules) if (r.line > lastLine) lastLine = r.line;
+          units.push({
+            filePath: relPath,
+            kind: "module-level",
+            startLine: 1,
+            endLine: lastLine,
+            label: relPath,
+            symbols: [],
+            text: "",
+            inventoryOnly: true,
+            rules,
+            formulas: [],
+            sasSteps: [],
+          });
+        } catch (err) {
+          // Never silent: the file's rules are missing, so the document says so.
+          const relPath = path.join(m.dir, name);
+          log.warn("SQL file could not be read or mined — its rules are missing", {
+            modulePath: m.dir,
+            file: relPath,
+            err: String(err).slice(0, 200),
+          });
+          skippedFiles.push(relPath);
+        }
+      }
+    } catch {
+      // module dir not present in clone (e.g. virtual module) — no SQL to mine
+    }
+  }
+
+  return { filePaths, fileLines, units, sourceCharsTotal, skippedFiles };
+}
+
 /**
  * Phase-1 per-module fact extraction. Exported so the deterministic
  * SAS-workflow/lineage enrichment (which is appended to the returned `facts`
@@ -1743,175 +1957,33 @@ export async function extractModuleFacts(
   cloneDir: string | null,
   graphSummary?: CodeGraphSummary,
   effectiveConfigHash?: string,
+  /** DOCS_GEN_PHASE1_INCLUDE_TESTS: false skips test/spec/fixture `.sql` files too. */
+  includeTests = true,
+  hooks?: {
+    /** The module already prepared by {@link preparePhase1Module} (skips re-reading). */
+    prepared?: PreparedPhase1Module;
+    /** Called once per PLANNED chunk as it completes (split halves count as their chunk). */
+    onChunkDone?: () => void;
+  },
 ): Promise<ModuleFacts | null> {
   const classes = m.syms.filter((s) => s.kind === "class" || s.kind === "interface");
-  // Sorted by size DESC so largest (most rule-dense) methods are read
-  // first within the budget. Many Java validators have 30-60 small
-  // methods — caps below intentionally generous to avoid silent drops.
-  const allMethods = m.syms
-    .filter((s) => s.kind === "method" || s.kind === "function")
-    .sort((a, b) => b.endLine - b.startLine - (a.endLine - a.startLine));
+  const callables = m.syms.filter(isCallableSymbol);
+  const methodCount = callables.length;
 
-  // Dynamic per-module budget. Tiny utility modules don't need 60K of
-  // snippet context — we were paying ~3x more per module than necessary.
-  // Tier by total symbol count (rough proxy for module complexity):
-  const symCount = m.syms.length;
-  let snippetBudget: number;
-  let methodCap: number;
-  if (symCount <= 10) {
-    snippetBudget = 18_000;
-    methodCap = 25;
-  } else if (symCount <= 50) {
-    snippetBudget = 36_000;
-    methodCap = 50;
-  } else {
-    snippetBudget = 60_000;
-    methodCap = 80;
-  }
-  const methods = allMethods.slice(0, methodCap);
+  const { fileLines, units, sourceCharsTotal, skippedFiles } =
+    hooks?.prepared ?? (await preparePhase1Module(m, cloneDir, includeTests));
 
-  // CRITICAL FIX: previously the loop did `if (filesRead.has(sym.filePath)) continue;`
-  // which meant only the FIRST method per file was ever sliced. Now we read each file
-  // ONCE (cached), then slice EVERY method from it. Coverage of method
-  // bodies jumps from ~10% to ~95% within the budget.
-  const codeSnippets: string[] = [];
-  const allFormulas: ExtractedFormula[] = [];
-  const allMinedRules: MinedRule[] = [];
-  // #271 — SAS-mined rules (subsetting IF/WHERE/retain, PROC options, macro
-  // params). Separate array because the SAS miner has its own rule shape.
-  const allSasRules: ReturnType<typeof mineSasRules> = [];
-  // SAS workflow steps (DATA/PROC pipeline) + per-step dataset lineage, mined
-  // deterministically from the same SAS slices. These populate the WORKFLOWS and
-  // DATA_LINEAGE facts so the Workflows / Data-Model sections describe REAL step
-  // sequences + dataset reads/writes instead of inferred structure (SAS doc-gen
-  // grounding fix).
-  const allSasSteps: MinedSasStep[] = [];
-  // #274 — Python / Go / TS+JS mined rules. Each miner has its OWN rule shape
-  // (distinct `kind` unions), so each gets a dedicated array, mirroring SAS.
-  const allPyRules: ReturnType<typeof minePyRules> = [];
-  const allGoRules: ReturnType<typeof mineGoRules> = [];
-  const allTsRules: ReturnType<typeof mineTsRules> = [];
-  // #158 / #159 — C# and Kotlin mined rules, each in its own rule shape.
-  const allCsRules: ReturnType<typeof mineCsRules> = [];
-  const allKtRules: ReturnType<typeof mineKtRules> = [];
-  // #274 — SQL rules are mined at the FILE level (no CodeSymbol rows for .sql);
-  // populated by a separate bounded clone-dir pass below, not the symbol loop.
-  const allSqlRules: ReturnType<typeof mineSqlRules> = [];
-  const fileSourceCache = new Map<string, string[]>();
-  const SNIPPET_BUDGET = snippetBudget;
-  let totalChars = 0;
-
-  for (const sym of methods) {
-    if (totalChars > SNIPPET_BUDGET) break;
-    try {
-      const sourceId = repositoryPathIdentity(m.repository, sym.filePath);
-      let lines = fileSourceCache.get(sourceId);
-      if (!lines) {
-        const absPath = await resolveSourcePath(cloneDir, sym.filePath);
-        const fullSource = await readFile(absPath, "utf-8");
-        lines = fullSource.split("\n");
-        fileSourceCache.set(sourceId, lines);
-      }
-      // Per-method slice cap bumped from 120 -> 300 lines so we don't
-      // truncate long state-machine switches or multi-step validators.
-      const slice = lines
-        .slice(sym.startLine - 1, Math.min(sym.endLine, sym.startLine + 300))
-        .join("\n");
-      codeSnippets.push(`// ${sym.qualifiedName}\n${slice}`);
-      totalChars += slice.length;
-      const lang = detectLanguage(sym.filePath);
-      if (lang) {
-        allFormulas.push(...extractFormulas(slice, sym.filePath, lang));
-      }
-      // Java-specific deterministic rule mining: catches Bean Validation
-      // annotations, Preconditions.checkArgument, throw new XxxException,
-      // and switch/case state machines that the LLM frequently glosses over.
-      if (lang === "java") {
-        allMinedRules.push(...mineJavaRules(slice, sym.filePath, sym.startLine, sym.qualifiedName));
-      }
-      // #271 — SAS-specific deterministic rule mining: subsetting IF / WHERE
-      // row filters, IF/THEN/ELSE branch logic, RETAIN carried state,
-      // KEEP/DROP field selection, PROC options + SQL clauses, and macro
-      // parameter contracts — the SAS business logic the LLM glosses over.
-      if (lang === "sas") {
-        allSasRules.push(...mineSasRules(slice, sym.filePath, sym.startLine, sym.qualifiedName));
-        // Mine the DATA/PROC step pipeline + per-step dataset lineage from the
-        // same slice so Workflows / Data-Model facts are grounded in real code.
-        allSasSteps.push(...mineSasWorkflow(slice, sym.filePath, sym.startLine).steps);
-      }
-      // #274 — Python deterministic rule mining: if/elif guards & validations,
-      // raise/assert conditions, threshold constants, pydantic Field()
-      // constraints, validator decorators, early returns.
-      if (lang === "py") {
-        allPyRules.push(...minePyRules(slice, sym.filePath, sym.startLine, sym.qualifiedName));
-      }
-      // #274 — Go deterministic rule mining: guard clauses, errors.New /
-      // fmt.Errorf failure modes, switch business branches, const thresholds.
-      if (lang === "go") {
-        allGoRules.push(...mineGoRules(slice, sym.filePath, sym.startLine, sym.qualifiedName));
-      }
-      // #274 — TS/JS deterministic rule mining: if/ternary guards, thrown-error
-      // conditions, zod schema constraints, enum/union constraints, constants.
-      if (lang === "ts" || lang === "js") {
-        allTsRules.push(...mineTsRules(slice, sym.filePath, sym.startLine, sym.qualifiedName));
-      }
-      if (lang === "cs") {
-        allCsRules.push(...mineCsRules(slice, sym.filePath, sym.startLine, sym.qualifiedName));
-      }
-      if (lang === "kt") {
-        allKtRules.push(...mineKtRules(slice, sym.filePath, sym.startLine, sym.qualifiedName));
-      }
-    } catch {
-      // unreadable — file may have been deleted or path is wrong
-    }
-  }
-
-  // #274 — SQL file-level mining. SQL is NOT a code-graph-parsed language, so
-  // there are no CodeSymbol rows to dispatch on. Instead we scan this module's
-  // directory under the clone dir for `.sql` files and mine each at the FILE
-  // level (baseLine = 1, context = file path). Bounded by SQL_FILE_CAP files
-  // and SQL_CHAR_CAP total chars to keep extraction cheap, mirroring the
-  // snippet budget above. Best-effort: any fs/parse failure is swallowed.
-  if (cloneDir) {
-    const SQL_FILE_CAP = 12;
-    const SQL_CHAR_CAP = 80_000;
-    try {
-      const moduleAbsDir = await resolveSourcePath(cloneDir, m.dir);
-      const entries = await readdir(moduleAbsDir, { withFileTypes: true });
-      const sqlFiles = entries
-        .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".sql"))
-        .slice(0, SQL_FILE_CAP);
-      let sqlChars = 0;
-      for (const e of sqlFiles) {
-        if (sqlChars > SQL_CHAR_CAP) break;
-        try {
-          const relPath = path.join(m.dir, e.name);
-          const sqlSource = await readFile(await resolveSourcePath(cloneDir, relPath), "utf-8");
-          sqlChars += sqlSource.length;
-          allSqlRules.push(...mineSqlRules(sqlSource.slice(0, SQL_CHAR_CAP), relPath, 1, relPath));
-        } catch {
-          // unreadable individual .sql file — skip
-        }
-      }
-    } catch {
-      // module dir not present in clone (e.g. virtual module) — no SQL to mine
-    }
-  }
-
-  // Issue #330 — detect the silent "source unavailable" degradation. A module
-  // that HAS code-symbol methods to read but read ZERO source files (every
-  // readFile above threw into the swallow-catch) produced empty facts: the
-  // clone/extract dir is missing or was purged, or a cache-key change forced a
-  // rebuild against files no longer on disk. We flag this so the caller raises a
-  // LOUD document warning instead of silently shipping a 0%-grounded doc, and we
-  // skip the cache write below so the empty facts don't poison future runs.
+  // Issue #330 — detect the silent "source unavailable" degradation: a module
+  // with code symbols whose files could not be read AT ALL (every readFile above
+  // threw). Such facts come from no source; the caller raises a LOUD document
+  // warning, and nothing below is cached so the empty facts cannot poison future
+  // runs. SQL-only and virtual SAS-only ModuleGroups carry no symbols by design,
+  // so a zero-file read there is normal, not a degradation.
   //
   // We only flag modules that EXPECTED to read source (≥1 method/function
-  // symbol). SQL-only and virtual SAS-only ModuleGroups carry no readable code
-  // symbols by design (their content is mined from the clone dir separately),
-  // so a zero-file read there is normal, not a degradation.
-  const expectedReadableFiles = new Set(methods.map((s) => s.filePath)).size;
-  const sourceUnavailable = expectedReadableFiles > 0 && fileSourceCache.size === 0;
+  // symbol), as before.
+  const expectedReadableFiles = new Set(callables.map((s) => s.filePath)).size;
+  const sourceUnavailable = expectedReadableFiles > 0 && fileLines.size === 0;
   if (sourceUnavailable) {
     log.warn("Module source unavailable — facts extracted from no source", {
       modulePath: m.dir,
@@ -1952,80 +2024,392 @@ export async function extractModuleFacts(
 
   // #271 — DATA_LINEAGE for this module (SAS dataset input/output), derived
   // deterministically from the code graph's `references`/`metadata.lineage`
-  // edges. Spliced into both the Phase-1 prompt (so the LLM ties rules to
+  // edges. Spliced into every Phase-1 prompt (so the LLM ties rules to
   // datasets) and the returned facts (so Phase-2 synthesis sees it).
   const dataLineage =
     graphSummary?.perModuleLineage.get(repositoryPathIdentity(m.repository, m.dir)) ?? null;
 
-  // #155 — every language's mined rules in ONE language-neutral shape. This is
-  // what is persisted (`minedRulesJson`) and what reaches the Rules section
-  // directly; before #155 only the Java rules were persisted and the rest were
-  // discarded once the Phase-1 prompt had been built.
-  const minedRules: PersistedMinedRule[] = [
-    ...toPersistedMinedRules("java", allMinedRules),
-    ...toPersistedMinedRules(
-      "ts",
-      allTsRules.filter((r) => detectLanguage(r.filePath) !== "js"),
-    ),
-    ...toPersistedMinedRules(
-      "js",
-      allTsRules.filter((r) => detectLanguage(r.filePath) === "js"),
-    ),
-    ...toPersistedMinedRules("py", allPyRules),
-    ...toPersistedMinedRules("go", allGoRules),
-    ...toPersistedMinedRules("sas", allSasRules),
-    ...toPersistedMinedRules("sql", allSqlRules),
-    ...toPersistedMinedRules("cs", allCsRules),
-    ...toPersistedMinedRules("kt", allKtRules),
-  ];
+  // #155 — every language's mined rules in ONE language-neutral shape: what is
+  // persisted (`minedRulesJson`) and what reaches the Rules section directly.
+  // Mined from every unit, so no rule depends on an LLM budget.
+  const minedRules: PersistedMinedRule[] = dedupeMinedRules(units.flatMap((u) => u.rules));
+  const allFormulas: ExtractedFormula[] = units.flatMap((u) => u.formulas);
+  const allSasSteps: MinedSasStep[] = units.flatMap((u) => u.sasSteps);
 
-  // SAS workflow + source-derived dataset lineage, rendered once and reused in
-  // BOTH the Phase-1 prompt and the appended facts (so they survive the fact
-  // cache and reach Phase-2 generation + the citable facts set). These are
-  // source-derived (per-step), complementing the code-graph `dataLineage` above
-  // and filling it in when the graph edges are thin/empty for this module.
-  const sasWorkflow = allSasSteps.length > 0 ? { steps: allSasSteps } : null;
-  const sasWorkflowBlock = sasWorkflow ? renderSasWorkflow(sasWorkflow, 6000) : "";
-  const sasStepLineageBlock = sasWorkflow ? renderSasDataLineage(sasWorkflow, 4000) : "";
+  // SAS workflow + source-derived dataset lineage for the WHOLE module, appended
+  // to the facts below (so they survive the fact cache and reach Phase-2
+  // generation + the citable facts set). Each chunk's prompt carries its own.
+  const sasWorkflowBlock =
+    allSasSteps.length > 0
+      ? renderSasWorkflow({ steps: allSasSteps }, Number.POSITIVE_INFINITY)
+      : "";
+  const sasStepLineageBlock =
+    allSasSteps.length > 0
+      ? renderSasDataLineage({ steps: allSasSteps }, Number.POSITIVE_INFINITY)
+      : "";
 
-  // ------------------------------------------------------------------
-  // Phase-1 source fingerprints (lookup follows prompt construction below).
-  //
-  // Keep these module-local: lineage/mined changes must invalidate this module,
-  // not every module in the project. Prompt hashes also cover selected symbol
-  // metadata, rationale findings and the exact rendered/truncated inventories.
-  //
-  // Source mining still runs on every call, including hits. Persist formulas
-  // alongside facts, but also key their complete metadata (not just the rendered
-  // prompt subset) so changed symbol ranges cannot return stale locations.
-  // ------------------------------------------------------------------
-  const fileShas = Array.from(fileSourceCache.entries())
-    .map(([fp, lines]) => `${fp}:${createHash("sha1").update(lines.join("\n")).digest("hex")}`)
-    .sort();
-  const minedFingerprint = createHash("sha1")
-    .update(
-      [
-        ...allMinedRules.map((r) => `${r.kind}|${r.expression}`),
-        // #271 — SAS rules + DATA_LINEAGE participate in the fingerprint so a
-        // change to either (new dataset edge, new mined SAS rule) invalidates
-        // the cached LLM facts.
-        ...allSasRules.map((r) => `${r.kind}|${r.expression}`),
-        // SAS workflow steps + source-derived lineage participate in the
-        // fingerprint so a change to the step pipeline invalidates cached facts.
-        ...allSasSteps.map(
-          (s) => `step|${s.kind}|${s.name}|${s.reads.join(",")}|${s.writes.join(",")}`,
-        ),
-        // #274 — Python / Go / TS / SQL mined rules participate in the
-        // fingerprint so any new mined rule invalidates the cached LLM facts.
-        ...allPyRules.map((r) => `${r.kind}|${r.expression}`),
-        ...allGoRules.map((r) => `${r.kind}|${r.expression}`),
-        ...allTsRules.map((r) => `${r.kind}|${r.expression}`),
-        ...allSqlRules.map((r) => `${r.kind}|${r.expression}`),
-        `lineage:${dataLineage ?? ""}`,
-      ].join("\n"),
-    )
-    .digest("hex");
-  const systemMessage = `You are a senior software analyst. You will be given source code from one module of a larger system. Extract a COMPREHENSIVE, STRUCTURED set of facts about this module. Your output will be combined with facts from many other modules to produce a holistic document.
+  const maxTokens = resolveFactsMaxOutputTokens(provider.model);
+  const limits = phase1ChunkLimits(maxTokens, resolvePhase1ChunkInputTokens());
+  // A module with nothing readable still gets its one (empty-source) call, as before.
+  const planned = planPhase1Chunks(units, limits);
+  const chunks: Phase1Unit[][] = planned.length > 0 ? planned : [[]];
+  // A unit that does not fit one call even after splitting down to one line
+  // (a minified file, a one-line schema dump) is sent over budget: say so.
+  const oversized = planned.flat().filter((u) => !unitFitsLimits(u, limits));
+  const oversizedUnits = oversized.length;
+  const formulaLinesSkipped = units.reduce((n, u) => n + (u.formulaLinesSkipped ?? 0), 0);
+  if (formulaLinesSkipped > 0) {
+    log.warn("Formula extraction skipped over-long lines (generated or minified code)", {
+      modulePath: m.dir,
+      lines: formulaLinesSkipped,
+      limitChars: FORMULA_LINE_CHAR_LIMIT,
+    });
+  }
+  if (oversizedUnits > 0) {
+    log.warn("Phase 1 unit larger than one call even at a single line — sent over budget", {
+      modulePath: m.dir,
+      units: oversized.slice(0, 5).map((u) => `${u.filePath}:${u.startLine}-${u.endLine}`),
+      count: oversizedUnits,
+    });
+  }
+  // #25 — bound a thinking-by-default model's reasoning on this mechanical
+  // extraction; `{}` (no change) for every other model.
+  const reasoning = resolvePhase1Reasoning(provider.model);
+
+  const buildMessages = (chunk: readonly Phase1Unit[], part: string | null): ChatMessage[] => {
+    const code = chunk.filter((u) => !u.inventoryOnly);
+    const rules = chunk.flatMap((u) => u.rules);
+    const formulas = chunk.flatMap((u) => u.formulas);
+    const steps = chunk.flatMap((u) => u.sasSteps);
+    const partFunctions = new Set(chunk.flatMap((u) => u.symbols)).size;
+    return [
+      { role: "system", content: PHASE1_SYSTEM_MESSAGE },
+      {
+        role: "user",
+        content: buildPhase1UserMessage({
+          moduleName,
+          classCount: classes.length,
+          topClasses,
+          methodCount,
+          part: part ? { label: part, functions: partFunctions } : null,
+          code: code.map(renderUnit).join(UNIT_SEPARATOR),
+          formulas,
+          rules,
+          sasSteps: steps,
+          dataLineage,
+          rationale,
+        }),
+      },
+    ];
+  };
+
+  const chunkCacheKey = (messages: ChatMessage[]): string =>
+    createHash("sha256")
+      .update(
+        JSON.stringify({
+          module: repositoryPathIdentity(m.repository, m.dir),
+          promptVersion: PHASE1_PROMPT_VERSION,
+          system: createHash("sha256").update(String(messages[0].content)).digest("hex"),
+          user: createHash("sha256").update(String(messages[1].content)).digest("hex"),
+          provider: provider.key,
+          model: provider.model ?? "default",
+          effectiveConfigHash,
+          maxTokens,
+          supportsCaching,
+          // Facts extracted at a different reasoning setting are different facts;
+          // omitted when empty so an unchanged (Claude) request keeps its key.
+          ...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
+        }),
+      )
+      .digest("hex");
+
+  const cacheable = !provider.offline && !sourceUnavailable;
+  const counters = { calls: 0, cacheHits: 0, truncated: 0, failed: 0 };
+  // Coverage by outcome: a function counts as extracted only when its chunk
+  // produced complete facts (a complete reply or a cache hit).
+  const extractedFns = new Set<string>();
+  const truncatedFns = new Set<string>();
+  const failedFns = new Set<string>();
+  const leafSymbols = (chunk: readonly Phase1Unit[]) => chunk.flatMap((u) => u.symbols);
+
+  const writeChunkRow = async (
+    cacheKey: string,
+    chunk: readonly Phase1Unit[],
+    facts: string,
+    usage: { promptTokens: number; completionTokens: number; cacheReadTokens: number },
+  ): Promise<void> => {
+    try {
+      const fileFingerprint = createHash("sha1")
+        .update(chunk.map((u) => `${u.filePath}:${u.startLine}-${u.endLine}:${u.text}`).join("\n"))
+        .digest("hex")
+        .slice(0, 16);
+      const row = {
+        facts,
+        formulasJson: JSON.stringify(chunk.flatMap((u) => u.formulas)),
+        minedRulesJson: JSON.stringify(chunk.flatMap((u) => u.rules)),
+        topClassesJson: JSON.stringify(topClasses),
+        model: provider.model ?? "unknown",
+        inputTokens: usage.promptTokens,
+        outputTokens: usage.completionTokens,
+        cacheReadTokens: usage.cacheReadTokens,
+      };
+      await prisma.docsGenFactCache.upsert({
+        where: { projectId_cacheKey: { projectId, cacheKey } },
+        create: {
+          projectId,
+          cacheKey,
+          modulePath: m.dir,
+          fileFingerprint,
+          promptVersion: PHASE1_PROMPT_VERSION,
+          classCount: classes.length,
+          methodCount,
+          ...row,
+        },
+        update: { ...row, lastUsedAt: new Date() },
+      });
+    } catch (err) {
+      log.debug("cache write failed", { err: String(err), modulePath: m.dir });
+    }
+  };
+
+  /**
+   * Extract one chunk. A reply cut off by the output cap is not retried with a
+   * bigger cap: the chunk is split in half and each half extracted, bounded by
+   * {@link shouldSplitPhase1Chunk}. Returns the leaf replies in source order.
+   */
+  const extractChunk = async (
+    chunk: Phase1Unit[],
+    part: string | null,
+    depth: number,
+  ): Promise<Array<{ text: string; truncated: boolean }>> => {
+    const messages = buildMessages(chunk, part);
+    const cacheKey = chunkCacheKey(messages);
+    const splitAndExtract = async (): Promise<Array<{ text: string; truncated: boolean }>> => {
+      const [first, second] = splitPhase1Chunk(chunk)!;
+      const base = part ?? "1";
+      return [
+        ...(await extractChunk(first, `${base}.1`, depth + 1)),
+        ...(await extractChunk(second, `${base}.2`, depth + 1)),
+      ];
+    };
+    if (cacheable) {
+      try {
+        const cached = await prisma.docsGenFactCache.findUnique({
+          where: { projectId_cacheKey: { projectId, cacheKey } },
+        });
+        const isMarker = cached?.facts === PHASE1_SPLIT_MARKER;
+        // A remembered split is used only when this chunk can still be split;
+        // otherwise (split rules changed) the marker is stale: never return it
+        // as facts — fall through to the model.
+        const usable = cached && (!isMarker || shouldSplitPhase1Chunk(chunk, depth, limits));
+        if (cached && usable) {
+          counters.cacheHits += 1;
+          prisma.docsGenFactCache
+            .update({
+              where: { id: cached.id },
+              data: { lastUsedAt: new Date(), hitCount: { increment: 1 } },
+            })
+            .catch((err) => log.debug("cache touch failed", { err: String(err) }));
+          // A remembered split: this chunk's reply ran past the cap last time,
+          // so go straight to its halves instead of paying for the cut-off again.
+          if (isMarker) return splitAndExtract();
+          for (const k of leafSymbols(chunk)) extractedFns.add(k);
+          return [{ text: cached.facts, truncated: false }];
+        }
+      } catch (err) {
+        log.warn("Cache lookup failed (proceeding to LLM)", {
+          err: String(err),
+          modulePath: m.dir,
+        });
+      }
+    }
+    counters.calls += 1;
+    const reply = await streamPhase1Facts(provider, messages, {
+      projectId,
+      modulePath: part ? `${m.dir}#${part}` : m.dir,
+      maxTokens,
+      reasoning,
+      supportsCaching,
+    });
+    if (!reply.ok) {
+      counters.failed += 1;
+      for (const k of leafSymbols(chunk)) failedFns.add(k);
+      log.warn("Phase 1 LLM call failed", {
+        err: String(reply.error),
+        modulePath: m.dir,
+        part,
+      });
+      return [];
+    }
+    if (reply.truncation.truncated) {
+      const split = shouldSplitPhase1Chunk(chunk, depth, limits);
+      log.warn(
+        split
+          ? "Phase 1 chunk cut off by the output cap; splitting it and re-extracting each half"
+          : "Phase 1 chunk cut off by the output cap and cannot be split further — keeping partial facts, not caching",
+        {
+          modulePath: m.dir,
+          moduleName,
+          part,
+          depth,
+          units: chunk.length,
+          lines: chunk.map((u) => `${u.filePath}:${u.startLine}-${u.endLine}`).slice(0, 5),
+          estimatedReplyChars: chunkOutputChars(chunk),
+          replyChars: reply.text.length,
+          maxTokens,
+          finishReason: reply.truncation.reason,
+          signals: reply.truncation.signals,
+        },
+      );
+      if (split) {
+        if (cacheable) await writeChunkRow(cacheKey, chunk, PHASE1_SPLIT_MARKER, reply.usage);
+        return splitAndExtract();
+      }
+      counters.truncated += 1;
+      for (const k of leafSymbols(chunk)) truncatedFns.add(k);
+      return [{ text: reply.text, truncated: true }];
+    }
+    if (cacheable && reply.text) await writeChunkRow(cacheKey, chunk, reply.text, reply.usage);
+    for (const k of leafSymbols(chunk)) extractedFns.add(k);
+    return [{ text: reply.text, truncated: false }];
+  };
+
+  let factsText: string;
+  let factsTruncated = false;
+  const chunkDone = (): void => {
+    try {
+      hooks?.onChunkDone?.();
+    } catch {
+      // progress reporting must not affect extraction
+    }
+  };
+  if (provider.offline) {
+    for (let i = 0; i < chunks.length; i++) chunkDone();
+    factsText = `PURPOSE\n${moduleName} module.\n\nENTITIES\n${topClasses.map((c) => `- \`${c}\``).join("\n")}\n\nRULES\n(none extracted in offline mode)\n\nWORKFLOWS\n(none)\n\nFORMULAS\n(none)\n\nINTEGRATIONS\n(none)\n\nKEY_APIS\n(none)\n\nNOTES\n(none)`;
+  } else {
+    const replies: Array<{ text: string; truncated: boolean }> = [];
+    for (let i = 0; i < chunks.length; i++) {
+      for (const leaf of await extractChunk(
+        chunks[i],
+        chunks.length > 1 ? String(i + 1) : null,
+        0,
+      )) {
+        replies.push(leaf);
+      }
+      chunkDone();
+    }
+    factsTruncated = replies.some((r) => r.truncated);
+    factsText =
+      replies.length > 0
+        ? mergePhase1ChunkFacts(replies.map((r) => r.text))
+        : `PURPOSE\n${moduleName} (extraction failed)\n\nENTITIES\n${topClasses.map((c) => `- \`${c}\``).join("\n")}`;
+  }
+
+  // #271 — append a deterministic DATA_LINEAGE section so the dataset
+  // input/output flow survives the Phase-1 fact cache AND reaches Phase-2
+  // synthesis verbatim (via factsModuleEntry), regardless of whether the LLM
+  // chose to echo it. Idempotent: only append when not already present.
+  if (dataLineage && !factsText.includes("\nDATA_LINEAGE\n")) {
+    factsText = `${factsText.trimEnd()}\n\nDATA_LINEAGE\n${dataLineage}`;
+  }
+
+  // SAS doc-gen grounding fix — append the deterministically-mined DATA/PROC
+  // step pipeline + source-derived per-step lineage to the facts so they:
+  //   (1) reach Phase-2 generation via `factsModuleEntry`, and
+  //   (2) become CITABLE grounding sources (buildSectionFactsSources renders the
+  //       same `factsModuleEntry`), so workflow/lineage claims resolve instead of
+  //       being judged unsupported.
+  // We use the WORKFLOWS / DATA_LINEAGE header tokens so selectRelevantFacts
+  // scores these modules for the Key Workflows + Data & Domain Model sections.
+  // Idempotent via the distinct sub-headers.
+  if (sasWorkflowBlock && !factsText.includes("DETERMINISTIC SAS STEP PIPELINE")) {
+    factsText = `${factsText.trimEnd()}\n\nWORKFLOWS\n(DETERMINISTIC SAS STEP PIPELINE — source-grounded, mined from DATA/PROC steps)\n${sasWorkflowBlock}`;
+  }
+  if (sasStepLineageBlock && !factsText.includes("DETERMINISTIC SAS DATASET LINEAGE")) {
+    factsText = `${factsText.trimEnd()}\n\nDATA_LINEAGE\n(DETERMINISTIC SAS DATASET LINEAGE — source-grounded, per step)\n${sasStepLineageBlock}`;
+  }
+
+  const coverage: Phase1Coverage = {
+    ...measureChunkCoverage(chunks, callables, sourceCharsTotal),
+    chunks: planned.length,
+    functionsExtracted: extractedFns.size,
+    functionsInTruncatedChunks: truncatedFns.size,
+    functionsInFailedChunks: failedFns.size,
+    oversizedUnits,
+    formulaLinesSkipped,
+    calls: counters.calls,
+    cacheHits: counters.cacheHits,
+    truncatedChunks: counters.truncated,
+    failedChunks: counters.failed,
+  };
+  log.info("Phase 1 module coverage", { modulePath: m.dir, moduleName, ...coverage });
+
+  return {
+    repository: m.repository,
+    modulePath: m.dir,
+    moduleName,
+    classCount: classes.length,
+    methodCount,
+    facts: factsText,
+    formulas: allFormulas,
+    topClasses,
+    dataLineage,
+    sourceUnavailable,
+    minedRules,
+    phase1Coverage: coverage,
+    ...(skippedFiles.length > 0 ? { phase1SkippedFiles: skippedFiles } : {}),
+    ...(factsTruncated ? { factsTruncated } : {}),
+  };
+}
+
+/**
+ * Project-level Phase-1 coverage: the sums of every module's
+ * {@link Phase1Coverage}, logged when Phase 1 completes.
+ */
+export function summarizePhase1Coverage(facts: readonly ModuleFacts[]): Phase1Coverage & {
+  modules: number;
+  functionsPct: number;
+} {
+  const sum: Phase1Coverage = {
+    functionsIncluded: 0,
+    functionsTotal: 0,
+    functionsExtracted: 0,
+    functionsInTruncatedChunks: 0,
+    functionsInFailedChunks: 0,
+    oversizedUnits: 0,
+    formulaLinesSkipped: 0,
+    sourceCharsIncluded: 0,
+    sourceCharsTotal: 0,
+    chunks: 0,
+    calls: 0,
+    cacheHits: 0,
+    truncatedChunks: 0,
+    failedChunks: 0,
+  };
+  for (const f of facts) {
+    if (!f.phase1Coverage) continue;
+    for (const key of Object.keys(sum) as Array<keyof Phase1Coverage>) {
+      sum[key] += f.phase1Coverage[key];
+    }
+  }
+  return {
+    modules: facts.length,
+    ...sum,
+    functionsPct:
+      sum.functionsTotal > 0
+        ? Math.round((1000 * sum.functionsIncluded) / sum.functionsTotal) / 10
+        : 100,
+  };
+}
+
+/**
+ * Stored as a chunk's cached facts when its reply ran past the output cap and
+ * the chunk was split: the next run goes straight to the halves (each cached
+ * on its own) instead of paying for the cut-off reply again. Never facts.
+ */
+export const PHASE1_SPLIT_MARKER = "[[phase1: chunk split — reply exceeded the output cap]]";
+
+const PHASE1_SYSTEM_MESSAGE = `You are a senior software analyst. You will be given source code from one module of a larger system. Extract a COMPREHENSIVE, STRUCTURED set of facts about this module. Your output will be combined with facts from many other modules to produce a holistic document.
 
 OUTPUT FORMAT (use these exact section headings):
 
@@ -2077,286 +2461,110 @@ ABSOLUTE RULES:
 5. Be EXHAUSTIVE — there is NO word limit on this fact extraction. If a module enforces 60 distinct rules, output 60 bullets in RULES. Do not summarize, do not abbreviate, do not omit "obvious" checks. The downstream synthesis pass cannot recover facts you discard here. Quantity of facts > prose quality. A 1500-word fact dump is BETTER than a 600-word polished summary.
 6. Write each heading ALONE on its own line, spelled exactly as above (no "#", no "**", no numbering). A program splits your output on these headings and sends each topic only to the document section that needs it, so a fact under the wrong heading reaches the wrong section.`;
 
-  const userMessage = `Module path: \`${moduleName}\`
-Top classes/interfaces (${classes.length} total): ${topClasses.join(", ")}
-Total methods: ${m.syms.filter((s) => s.kind === "method" || s.kind === "function").length}
-
-Source code (largest methods first, full bodies — this is the COMPLETE business logic, extract EVERY rule and check you see):
+/** The Phase-1 user turn for one chunk of a module. */
+function buildPhase1UserMessage(input: {
+  moduleName: string;
+  classCount: number;
+  topClasses: readonly string[];
+  methodCount: number;
+  /** Set when the module is read in more than one call. */
+  part: { label: string; functions: number } | null;
+  code: string;
+  formulas: readonly ExtractedFormula[];
+  rules: readonly PersistedMinedRule[];
+  sasSteps: readonly MinedSasStep[];
+  dataLineage: string | null;
+  rationale: ReadonlyArray<{ body: string }>;
+}): string {
+  const { formulas, dataLineage, rationale } = input;
+  // Each language's miner renders its own inventory; the persisted shape maps
+  // back onto the fields the renderers read (kind, line, summary).
+  const byLanguage = (langs: readonly string[]) =>
+    input.rules
+      .filter((r) => langs.includes(r.language))
+      .map((r) => ({
+        kind: r.kind,
+        expression: r.expression,
+        summary: r.summary,
+        filePath: r.file,
+        line: r.line,
+        context: r.context,
+      })) as never[];
+  const javaRules = byLanguage(["java"]);
+  const sasRules = byLanguage(["sas"]);
+  const pyRules = byLanguage(["py"]);
+  const goRules = byLanguage(["go"]);
+  const tsRules = byLanguage(["ts", "js"]);
+  const csRules = byLanguage(["cs"]);
+  const ktRules = byLanguage(["kt"]);
+  const sqlRules = byLanguage(["sql"]);
+  const sasWorkflow = input.sasSteps.length > 0 ? { steps: [...input.sasSteps] } : null;
+  const sasWorkflowBlock = sasWorkflow
+    ? renderSasWorkflow(sasWorkflow, Number.POSITIVE_INFINITY)
+    : "";
+  const sasStepLineageBlock = sasWorkflow
+    ? renderSasDataLineage(sasWorkflow, Number.POSITIVE_INFINITY)
+    : "";
+  const cap = PHASE1_MINED_RENDER_CAP;
+  // Each rule is labelled `file:line`, not just `L<line>`: a chunk can hold
+  // several files, so a bare line number would be ambiguous. The language's own
+  // renderer (its kind grouping and labels) is run per file, and its `- L<n>:`
+  // prefix rewritten to `- <file>:<n>:`.
+  const byFile = (rules: never[], render: (rules: never[], maxChars: number) => string): string => {
+    const files = new Map<string, never[]>();
+    for (const r of rules) {
+      const file = (r as { filePath: string }).filePath;
+      if (!files.has(file)) files.set(file, []);
+      files.get(file)!.push(r);
+    }
+    return [...files]
+      .map(([file, fileRules]) =>
+        render(fileRules, cap).replace(/^- L(\d+):/gm, (_m, line: string) => `- ${file}:${line}:`),
+      )
+      .join("\n");
+  };
+  return `Module path: \`${input.moduleName}\`
+Top classes/interfaces (${input.classCount} total): ${input.topClasses.join(", ")}
+Total methods: ${input.methodCount}
+${input.part ? `\nThis module is too large for one call, so it is read in parts. THIS is part ${input.part.label}: ${input.part.functions} of its ${input.methodCount} functions plus module-level code. Extract every fact from THIS part; the parts' facts are merged afterwards, so do not describe code you were not given.\n` : ""}
+Source code (grouped by file, in source order, full bodies, plus module-level code — this is the COMPLETE business logic, extract EVERY rule and check you see):
 \`\`\`
-${codeSnippets.join("\n\n---\n\n").slice(0, 60000)}
+${input.code}
 \`\`\`
 
 ${
-  allFormulas.length > 0
-    ? `Pre-extracted formulas/constants/conditionals (deterministic regex pass — these are STARTING POINTS, find more in the source above):\n${allFormulas
-        .slice(0, 60)
+  formulas.length > 0
+    ? `Pre-extracted formulas/constants/conditionals (deterministic regex pass — these are STARTING POINTS, find more in the source above):\n${formulas
         .map((f) => `- ${f.kind}: ${f.expression.slice(0, 200)}`)
         .join("\n")}`
     : ""
 }
 
-${allMinedRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED RULE INVENTORY (${allMinedRules.length} rules) ===\nThe following rules were extracted by AST-aware regex passes and are GUARANTEED to be present in the source. EVERY ONE of these MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any of them — they are not optional. Use them as a checklist; then ADD any additional rules you find by reading the source code above.\n\n${renderMinedRules(allMinedRules, 12000)}\n=== END MINED RULES ===\n` : ""}
+${javaRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED RULE INVENTORY (${javaRules.length} rules) ===\nThe following rules were extracted by AST-aware regex passes and are GUARANTEED to be present in the source. EVERY ONE of these MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any of them — they are not optional. Use them as a checklist; then ADD any additional rules you find by reading the source code above.\n\n${byFile(javaRules, renderMinedRules)}\n=== END MINED RULES ===\n` : ""}
 
-${allSasRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED SAS RULE INVENTORY (${allSasRules.length} rules) ===\nThese SAS DATA-step / PROC-step rules were extracted by deterministic passes and are GUARANTEED present in the source. EVERY subsetting IF / WHERE filter, IF/THEN/ELSE branch, RETAIN, KEEP/DROP, PROC option, and macro parameter below MUST appear as a bullet in your RULES (or WORKFLOWS / ENTITIES) section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedSasRules(allSasRules, 12000)}\n=== END SAS MINED RULES ===\n` : ""}
+${sasRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED SAS RULE INVENTORY (${sasRules.length} rules) ===\nThese SAS DATA-step / PROC-step rules were extracted by deterministic passes and are GUARANTEED present in the source. EVERY subsetting IF / WHERE filter, IF/THEN/ELSE branch, RETAIN, KEEP/DROP, PROC option, and macro parameter below MUST appear as a bullet in your RULES (or WORKFLOWS / ENTITIES) section, paraphrased into business language. Do NOT omit any.\n\n${byFile(sasRules, renderMinedSasRules)}\n=== END SAS MINED RULES ===\n` : ""}
 
-${sasWorkflowBlock ? `\n=== DETERMINISTICALLY-MINED SAS STEP PIPELINE (${allSasSteps.length} steps) ===\nThis is the ACTUAL ordered DATA/PROC step pipeline extracted from the source. Use it to populate your WORKFLOWS section: describe these steps IN ORDER, what each does, and the datasets each reads/writes. Do NOT claim a module "has empty bodies" — these are the real steps.\n\n${sasWorkflowBlock}\n=== END SAS STEP PIPELINE ===\n` : ""}
+${sasWorkflowBlock ? `\n=== DETERMINISTICALLY-MINED SAS STEP PIPELINE (${input.sasSteps.length} steps) ===\nThis is the ACTUAL ordered DATA/PROC step pipeline extracted from the source. Use it to populate your WORKFLOWS section: describe these steps IN ORDER, what each does, and the datasets each reads/writes. Do NOT claim a module "has empty bodies" — these are the real steps.\n\n${sasWorkflowBlock}\n=== END SAS STEP PIPELINE ===\n` : ""}
 
 ${sasStepLineageBlock ? `\n=== DETERMINISTICALLY-MINED SAS DATASET LINEAGE (per step, from source) ===\nReads/writes per step, extracted from SET/MERGE/UPDATE/DATA=/OUT=/CREATE TABLE/OUTPUT. Use these to populate ENTITIES (each dataset is an entity) and to tie each WORKFLOW step to its input/output datasets.\n\n${sasStepLineageBlock}\n=== END SAS DATASET LINEAGE ===\n` : ""}
 
-${allPyRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED PYTHON RULE INVENTORY (${allPyRules.length} rules) ===\nThese Python rules (if/elif guards, raise/assert conditions, threshold constants, pydantic Field() constraints, validator decorators, early returns) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedPyRules(allPyRules, 12000)}\n=== END PYTHON MINED RULES ===\n` : ""}
+${pyRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED PYTHON RULE INVENTORY (${pyRules.length} rules) ===\nThese Python rules (if/elif guards, raise/assert conditions, threshold constants, pydantic Field() constraints, validator decorators, early returns) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(pyRules, renderMinedPyRules)}\n=== END PYTHON MINED RULES ===\n` : ""}
 
-${allGoRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED GO RULE INVENTORY (${allGoRules.length} rules) ===\nThese Go rules (guard clauses, errors.New / fmt.Errorf failure modes, switch business branches, const thresholds) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedGoRules(allGoRules, 12000)}\n=== END GO MINED RULES ===\n` : ""}
+${goRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED GO RULE INVENTORY (${goRules.length} rules) ===\nThese Go rules (guard clauses, errors.New / fmt.Errorf failure modes, switch business branches, const thresholds) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(goRules, renderMinedGoRules)}\n=== END GO MINED RULES ===\n` : ""}
 
-${allTsRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED TYPESCRIPT RULE INVENTORY (${allTsRules.length} rules) ===\nThese TypeScript/JavaScript rules (if/ternary guards, thrown-error conditions, zod schema constraints, enum/union constraints, numeric/string constants) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedTsRules(allTsRules, 12000)}\n=== END TYPESCRIPT MINED RULES ===\n` : ""}
+${tsRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED TYPESCRIPT RULE INVENTORY (${tsRules.length} rules) ===\nThese TypeScript/JavaScript rules (if/ternary guards, thrown-error conditions, zod schema constraints, enum/union constraints, numeric/string constants) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(tsRules, renderMinedTsRules)}\n=== END TYPESCRIPT MINED RULES ===\n` : ""}
 
-${allCsRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED C# RULE INVENTORY (${allCsRules.length} rules) ===\nThese C# rules (guard clauses, ThrowIf / Guard.Against helpers, thrown exceptions, DataAnnotations validation attributes, FluentValidation rules, switch dispatch on status/enum values, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedCsRules(allCsRules, 12000)}\n=== END C# MINED RULES ===\n` : ""}
+${csRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED C# RULE INVENTORY (${csRules.length} rules) ===\nThese C# rules (guard clauses, ThrowIf / Guard.Against helpers, thrown exceptions, DataAnnotations validation attributes, FluentValidation rules, switch dispatch on status/enum values, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(csRules, renderMinedCsRules)}\n=== END C# MINED RULES ===\n` : ""}
 
-${allKtRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED KOTLIN RULE INVENTORY (${allKtRules.length} rules) ===\nThese Kotlin rules (require/check preconditions, guard clauses and elvis guards, thrown exceptions, when dispatch on status/enum values, validation annotations, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedKtRules(allKtRules, 12000)}\n=== END KOTLIN MINED RULES ===\n` : ""}
+${ktRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED KOTLIN RULE INVENTORY (${ktRules.length} rules) ===\nThese Kotlin rules (require/check preconditions, guard clauses and elvis guards, thrown exceptions, when dispatch on status/enum values, validation annotations, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(ktRules, renderMinedKtRules)}\n=== END KOTLIN MINED RULES ===\n` : ""}
 
-${allSqlRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED SQL RULE INVENTORY (${allSqlRules.length} rules) ===\nThese SQL schema rules (CHECK constraints, NOT NULL, UNIQUE, PRIMARY/FOREIGN KEY referential rules, DEFAULT values, triggers, view WHERE filters, stored-proc conditionals) were extracted from the module's .sql files by deterministic passes and are GUARANTEED present. EVERY ONE below MUST appear as a bullet in your RULES (or ENTITIES) section, paraphrased into business language. Do NOT omit any.\n\n${renderMinedSqlRules(allSqlRules, 12000)}\n=== END SQL MINED RULES ===\n` : ""}
+${sqlRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED SQL RULE INVENTORY (${sqlRules.length} rules) ===\nThese SQL schema rules (CHECK constraints, NOT NULL, UNIQUE, PRIMARY/FOREIGN KEY referential rules, DEFAULT values, triggers, view WHERE filters, stored-proc conditionals) were extracted from the module's .sql files by deterministic passes and are GUARANTEED present. EVERY ONE below MUST appear as a bullet in your RULES (or ENTITIES) section, paraphrased into business language. Do NOT omit any.\n\n${byFile(sqlRules, renderMinedSqlRules)}\n=== END SQL MINED RULES ===\n` : ""}
 
 ${dataLineage ? `\n=== DATA_LINEAGE (this module's dataset reads/writes, from the code graph) ===\n${dataLineage}\nWhen describing WORKFLOWS, tie each step to the datasets it reads and writes using the lineage above.\n=== END DATA_LINEAGE ===\n` : ""}
 
 ${rationale.length > 0 ? `Developer rationale comments:\n${rationale.map((r) => `- ${r.body.slice(0, 200)}`).join("\n")}` : ""}
 
 Extract ALL facts now. Be EXHAUSTIVE — every validation, every conditional, every business rule.`;
-
-  const messages: ChatMessage[] = [
-    { role: "system", content: systemMessage },
-    { role: "user", content: userMessage },
-  ];
-
-  const maxTokens = resolveFactsMaxOutputTokens(provider.model);
-  // #25 — bound a thinking-by-default model's reasoning on this mechanical
-  // extraction; `{}` (no change) for every other model.
-  const reasoning = resolvePhase1Reasoning(provider.model);
-  const cacheKey = createHash("sha256")
-    .update(
-      JSON.stringify({
-        module: repositoryPathIdentity(m.repository, m.dir),
-        fileShas,
-        minedFingerprint,
-        formulas: allFormulas,
-        promptVersion: PHASE1_PROMPT_VERSION,
-        system: createHash("sha256").update(systemMessage).digest("hex"),
-        user: createHash("sha256").update(userMessage).digest("hex"),
-        provider: provider.key,
-        model: provider.model ?? "default",
-        effectiveConfigHash,
-        maxTokens,
-        supportsCaching,
-        // Facts extracted at a different reasoning setting are different facts;
-        // omitted when empty so an unchanged (Claude) request keeps its key.
-        ...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
-      }),
-    )
-    .digest("hex");
-
-  if (!provider.offline && !sourceUnavailable) {
-    try {
-      const cached = await prisma.docsGenFactCache.findUnique({
-        where: { projectId_cacheKey: { projectId, cacheKey } },
-      });
-      if (cached) {
-        log.info("Phase 1 cache HIT", {
-          modulePath: m.dir,
-          model: cached.model,
-          age: Math.round((Date.now() - cached.createdAt.getTime()) / 1000),
-        });
-        // Touch lastUsedAt + bump hit counter (fire-and-forget; no need
-        // to block on the write).
-        prisma.docsGenFactCache
-          .update({
-            where: { id: cached.id },
-            data: { lastUsedAt: new Date(), hitCount: { increment: 1 } },
-          })
-          .catch((err) => log.debug("cache touch failed", { err: String(err) }));
-        return {
-          repository: m.repository,
-          modulePath: m.dir,
-          moduleName,
-          classCount: cached.classCount,
-          methodCount: cached.methodCount,
-          facts: cached.facts,
-          formulas: JSON.parse(cached.formulasJson) as ExtractedFormula[],
-          topClasses: JSON.parse(cached.topClassesJson) as string[],
-          // The module-local fingerprint includes lineage, so a hit means
-          // the lineage embedded in the cached facts is still current.
-          dataLineage,
-          // #155 — read the persisted inventory back through the cache (the key
-          // covers every source file's hash, so its lines are current). A legacy
-          // Java-only row cannot be parsed as the new shape → use this run's.
-          minedRules: parsePersistedMinedRules(cached.minedRulesJson) ?? minedRules,
-        };
-      }
-    } catch (err) {
-      log.warn("Cache lookup failed (proceeding to LLM)", {
-        err: String(err),
-        modulePath: m.dir,
-      });
-    }
-  }
-
-  let factsText: string = "";
-  let usagePromptTokens = 0;
-  let usageCompletionTokens = 0;
-  let usageCacheReadTokens = 0;
-  // #156 — true when the reply was still cut off by the output cap after the
-  // one larger-cap retry; such facts are used for this run but never cached.
-  let factsTruncated = false;
-  if (provider.offline) {
-    factsText = `PURPOSE\n${moduleName} module.\n\nENTITIES\n${topClasses.map((c) => `- \`${c}\``).join("\n")}\n\nRULES\n(none extracted in offline mode)\n\nWORKFLOWS\n(none)\n\nFORMULAS\n(none)\n\nINTEGRATIONS\n(none)\n\nKEY_APIS\n(none)\n\nNOTES\n(none)`;
-  } else {
-    let reply = await streamPhase1Facts(provider, messages, {
-      projectId,
-      modulePath: m.dir,
-      maxTokens,
-      reasoning,
-      supportsCaching,
-    });
-    // #156 — a reply that stopped at the OUTPUT cap is incomplete: 12 of 143
-    // onyourleft modules were cut at gemma3:12b's 8,192 tokens and cached as if
-    // complete. Retry ONCE with a larger cap (bounded by the model's known
-    // ceiling); if there is no larger cap to give, or the retry is cut off too,
-    // keep the partial facts for this run but flag them so they are not cached.
-    if (reply.ok && reply.truncation.truncated) {
-      const retryCap = phase1RetryMaxTokens(maxTokens, provider.model);
-      log.warn("Phase 1 facts truncated by the output-token cap", {
-        modulePath: m.dir,
-        moduleName,
-        maxTokens,
-        retryOutputCap: retryCap,
-        finishReason: reply.truncation.reason,
-        signals: reply.truncation.signals,
-      });
-      if (retryCap !== null) {
-        const retry = await streamPhase1Facts(provider, messages, {
-          projectId,
-          modulePath: m.dir,
-          maxTokens: retryCap,
-          reasoning,
-          supportsCaching,
-        });
-        // A failed retry keeps the first (truncated) reply rather than
-        // throwing the partial facts away.
-        if (retry.ok) reply = retry;
-      }
-      factsTruncated = reply.truncation.truncated;
-      if (factsTruncated) {
-        log.warn("Phase 1 facts still truncated after retry — not caching", {
-          modulePath: m.dir,
-          moduleName,
-          maxTokens: retryCap ?? maxTokens,
-        });
-      }
-    }
-    if (reply.ok) {
-      factsText = reply.text;
-      usagePromptTokens = reply.usage.promptTokens;
-      usageCompletionTokens = reply.usage.completionTokens;
-      usageCacheReadTokens = reply.usage.cacheReadTokens;
-    } else {
-      log.warn("Phase 1 LLM call failed", { err: String(reply.error), modulePath: m.dir });
-      factsText = `PURPOSE\n${moduleName} (extraction failed)\n\nENTITIES\n${topClasses.map((c) => `- \`${c}\``).join("\n")}`;
-    }
-  }
-
-  // #271 — append a deterministic DATA_LINEAGE section so the dataset
-  // input/output flow survives the Phase-1 fact cache AND reaches Phase-2
-  // synthesis verbatim (via factsModuleEntry), regardless of whether the LLM
-  // chose to echo it. Idempotent: only append when not already present.
-  if (dataLineage && !factsText.includes("\nDATA_LINEAGE\n")) {
-    factsText = `${factsText.trimEnd()}\n\nDATA_LINEAGE\n${dataLineage}`;
-  }
-
-  // SAS doc-gen grounding fix — append the deterministically-mined DATA/PROC
-  // step pipeline + source-derived per-step lineage to the facts so they:
-  //   (1) survive the Phase-1 fact cache (stored in `facts`),
-  //   (2) reach Phase-2 generation via `factsModuleEntry`, and
-  //   (3) become CITABLE grounding sources (buildSectionFactsSources renders the
-  //       same `factsModuleEntry`), so workflow/lineage claims resolve instead of
-  //       being judged unsupported.
-  // We use the WORKFLOWS / DATA_LINEAGE header tokens so selectRelevantFacts
-  // scores these modules for the Key Workflows + Data & Domain Model sections.
-  // The model previously wrote meta-commentary ("empty bodies") here; these are
-  // the real, source-grounded steps. Idempotent via the distinct sub-headers.
-  if (sasWorkflowBlock && !factsText.includes("DETERMINISTIC SAS STEP PIPELINE")) {
-    factsText = `${factsText.trimEnd()}\n\nWORKFLOWS\n(DETERMINISTIC SAS STEP PIPELINE — source-grounded, mined from DATA/PROC steps)\n${sasWorkflowBlock}`;
-  }
-  if (sasStepLineageBlock && !factsText.includes("DETERMINISTIC SAS DATASET LINEAGE")) {
-    factsText = `${factsText.trimEnd()}\n\nDATA_LINEAGE\n(DETERMINISTIC SAS DATASET LINEAGE — source-grounded, per step)\n${sasStepLineageBlock}`;
-  }
-
-  // Persist to cache (best-effort; failures here must NOT break the
-  // synthesis pipeline). Skip on the synthetic offline output and on
-  // failure-fallback output to avoid poisoning the cache.
-  if (
-    !provider.offline &&
-    factsText &&
-    !factsText.includes("(extraction failed)") &&
-    // #330 — never persist facts extracted from zero source: a cache HIT would
-    // later return the empty facts WITHOUT re-attempting the read, hiding the
-    // degradation permanently even after the source is restored.
-    !sourceUnavailable &&
-    // #156 — never persist facts the output cap cut short: every later run
-    // would reuse the incomplete version.
-    !factsTruncated
-  ) {
-    try {
-      const fileFingerprint = createHash("sha1")
-        .update(fileShas.join("\n"))
-        .digest("hex")
-        .slice(0, 16);
-      await prisma.docsGenFactCache.upsert({
-        where: { projectId_cacheKey: { projectId, cacheKey } },
-        create: {
-          projectId,
-          cacheKey,
-          modulePath: m.dir,
-          fileFingerprint,
-          model: provider.model ?? "unknown",
-          promptVersion: PHASE1_PROMPT_VERSION,
-          facts: factsText,
-          formulasJson: JSON.stringify(allFormulas),
-          minedRulesJson: JSON.stringify(minedRules),
-          topClassesJson: JSON.stringify(topClasses),
-          classCount: classes.length,
-          methodCount: m.syms.filter((s) => s.kind === "method" || s.kind === "function").length,
-          inputTokens: usagePromptTokens,
-          outputTokens: usageCompletionTokens,
-          cacheReadTokens: usageCacheReadTokens,
-        },
-        update: {
-          facts: factsText,
-          formulasJson: JSON.stringify(allFormulas),
-          minedRulesJson: JSON.stringify(minedRules),
-          topClassesJson: JSON.stringify(topClasses),
-          model: provider.model ?? "unknown",
-          inputTokens: usagePromptTokens,
-          outputTokens: usageCompletionTokens,
-          cacheReadTokens: usageCacheReadTokens,
-          lastUsedAt: new Date(),
-        },
-      });
-    } catch (err) {
-      log.debug("cache write failed", { err: String(err), modulePath: m.dir });
-    }
-  }
-
-  return {
-    repository: m.repository,
-    modulePath: m.dir,
-    moduleName,
-    classCount: classes.length,
-    methodCount: m.syms.filter((s) => s.kind === "method" || s.kind === "function").length,
-    facts: factsText,
-    formulas: allFormulas,
-    topClasses,
-    dataLineage,
-    sourceUnavailable,
-    minedRules,
-    ...(factsTruncated ? { factsTruncated } : {}),
-  };
 }
 
 /** Outcome of one Phase-1 facts stream (after the gateway-error retry). */
@@ -2368,18 +2576,6 @@ type Phase1Reply =
       usage: { promptTokens: number; completionTokens: number; cacheReadTokens: number };
     }
   | { ok: false; error: unknown };
-
-/**
- * #156 — the larger OUTPUT cap for the one retry of a truncated Phase-1 reply:
- * double the cap, clamped to the model's known output ceiling. `null` when the
- * cap is already at that ceiling, so there is nothing larger to ask for.
- */
-export function phase1RetryMaxTokens(maxTokens: number, model: string | undefined): number | null {
-  const ceiling = modelOutputCeiling(model);
-  const doubled = maxTokens * 2;
-  const retry = ceiling === null ? doubled : Math.min(doubled, ceiling);
-  return retry > maxTokens ? retry : null;
-}
 
 /**
  * Stream one Phase-1 fact extraction and report whether the reply was cut off
@@ -2808,8 +3004,22 @@ async function synthesizeBatchedSection(input: {
   plan: SectionBatchPlan;
   projectId: string;
   flowBlob: string;
+  /** Called after every batch finishes (written, failed, or split). */
+  onBatchProgress?: (done: number, total: number) => void;
 }): Promise<BatchedSectionResult> {
   const { group, bundle, plan, projectId, claimExtractor, faithfulnessJudge } = input;
+  let batchesTotal = plan.batches.length;
+  let batchesDone = 0;
+  // Every finished batch is reported. Two re-splits before the next completion
+  // can lower done/total (3/4 → 4/6); the route keeps a running maximum, so
+  // the document's bar never goes back.
+  const progress = (): void => {
+    try {
+      input.onBatchProgress?.(batchesDone, batchesTotal);
+    } catch {
+      // progress reporting must not affect the section
+    }
+  };
   const startedAt = Date.now();
   const sources = batchFactsSources(plan);
   const sourceOf = new Map(plan.modules.map((m, i) => [m, sources[i]]));
@@ -2839,7 +3049,7 @@ async function synthesizeBatchedSection(input: {
         input.title,
         input.docType,
         batch.map((m) => m.entry).join("\n\n---\n\n"),
-        renderFormulasBlob(batch.map((m) => m.item)),
+        renderBatchFormulas(group, batch),
         bundle.provider,
         bundle.supportsCaching,
         projectId,
@@ -2847,6 +3057,11 @@ async function synthesizeBatchedSection(input: {
         grounding ? renderGroundingBlock(grounding) : "",
         input.flowBlob,
         batchNoteFor(group, batch.includes(lead), batch.length, plan.modules.length),
+        // A batch reply is never refined: it is one part of a section merged
+        // deterministically, so a second full-length rewrite per batch (#118)
+        // only doubles the section's wall time. Refine stays for single-call
+        // groups.
+        false,
       );
     } catch (err) {
       log.warn("Section batch failed", {
@@ -2856,10 +3071,14 @@ async function synthesizeBatchedSection(input: {
         err: String(err),
       });
       failed.push({ batch, err });
+      batchesDone += 1;
+      progress();
       return;
     }
     if (shouldResplit(batch, result.truncation.truncated, resplitsLeft, plan.outputBudget)) {
       resplitsLeft -= 1;
+      // One planned batch becomes two.
+      batchesTotal += 1;
       const [first, second] = splitBatch(batch)!;
       log.warn("Section batch cut off by the output cap; splitting it and regenerating", {
         projectId,
@@ -2879,6 +3098,8 @@ async function synthesizeBatchedSection(input: {
           : ("runaway" as const)
         : undefined;
     done.push({ batch, result, grounding, ...(keptWhole ? { keptWhole } : {}) });
+    batchesDone += 1;
+    progress();
   };
 
   for (const batch of plan.batches) await runBatch(batch);
@@ -2894,7 +3115,9 @@ async function synthesizeBatchedSection(input: {
       : "";
 
   const warnings: DocWarning[] = [];
-  const names = (d: { batch: SectionBatchModule[] }) => d.batch.map((m) => m.item.moduleName);
+  const names = (d: { batch: SectionBatchModule[] }) => [
+    ...new Set(d.batch.map((m) => m.item.moduleName)),
+  ];
   const cutOff = done.filter((d) => d.result.truncation.truncated);
   if (cutOff.length > 0) {
     warnings.push(
@@ -2926,7 +3149,7 @@ async function synthesizeBatchedSection(input: {
     warnings.push(
       batchFailedWarning(
         group.label,
-        f.batch.map((m) => m.item.moduleName),
+        [...new Set(f.batch.map((m) => m.item.moduleName))],
         generationFailureMessage(f.err),
       ),
     );
@@ -3279,7 +3502,7 @@ export async function synthesizeFinalDocument(
         : buildRelevantFactsBlob(facts, group, docType, factsCharCap);
       const sectionFormulasBlob = batchPlan
         ? batchPlan.batches
-            .map((batch) => renderFormulasBlob(batch.map((m) => m.item)))
+            .map((batch) => renderBatchFormulas(group, batch))
             .join("\n\n=== NEXT BATCH ===\n\n")
         : formulasBlob;
 
@@ -3452,6 +3675,14 @@ export async function synthesizeFinalDocument(
           plan: batchPlan,
           projectId,
           flowBlob,
+          onBatchProgress: (done, total) =>
+            reportSection({
+              section: group.label,
+              status: "generating",
+              index: gi + 1,
+              total: groups.length,
+              batch: { done, total },
+            }),
         });
         validated = batched.outcome;
         batchWarnings = batched.warnings;
@@ -3850,17 +4081,9 @@ const FORMULAS_BLOCK_CAP = 80;
 function distinctFormulas(
   facts: readonly ModuleFacts[],
 ): Array<ExtractedFormula & { repository?: RepositoryIdentity }> {
-  const seenExpr = new Set<string>();
-  const out: Array<ExtractedFormula & { repository?: RepositoryIdentity }> = [];
-  for (const f of facts) {
-    for (const formula of f.formulas) {
-      const identity = repositoryPathIdentity(f.repository, formula.expression);
-      if (seenExpr.has(identity)) continue;
-      seenExpr.add(identity);
-      out.push({ ...formula, repository: f.repository });
-    }
-  }
-  return out;
+  return distinctFormulaList(
+    facts.flatMap((f) => f.formulas.map((formula) => ({ formula, repository: f.repository }))),
+  );
 }
 
 /**
@@ -3871,10 +4094,30 @@ function distinctFormulas(
  * restating the same project-wide list.
  */
 function renderFormulasBlob(facts: readonly ModuleFacts[]): string {
-  const allFormulas = distinctFormulas(facts);
-  return allFormulas.length > 0
-    ? allFormulas
-        .slice(0, FORMULAS_BLOCK_CAP)
+  return renderFormulaList(distinctFormulas(facts).slice(0, FORMULAS_BLOCK_CAP));
+}
+
+/** Formulas without repeats of one expression within a repository, in order. */
+function distinctFormulaList(
+  list: ReadonlyArray<{ formula: ExtractedFormula; repository?: RepositoryIdentity }>,
+): Array<ExtractedFormula & { repository?: RepositoryIdentity }> {
+  const seen = new Set<string>();
+  const out: Array<ExtractedFormula & { repository?: RepositoryIdentity }> = [];
+  for (const { formula, repository } of list) {
+    const identity = repositoryPathIdentity(repository, formula.expression);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    out.push({ ...formula, repository });
+  }
+  return out;
+}
+
+/** Render formulas as the prompt's source-formulas block (every one given; no cap here). */
+function renderFormulaList(
+  formulas: ReadonlyArray<ExtractedFormula & { repository?: RepositoryIdentity }>,
+): string {
+  return formulas.length > 0
+    ? formulas
         .map(
           (f) =>
             `- ${f.repository ? `[${f.repository.repoConnectorId ?? f.repository.codeGraphId}] ` : ""}${f.kind}: ${f.expression.slice(0, 250)}`,
@@ -4355,8 +4598,185 @@ export function rankRelevantFacts(facts: ModuleFacts[], group: SectionGroup): Mo
   return scored.map((s) => s.facts);
 }
 
-/** One module of a batched section, with its rendered entry and output estimate. */
-export type SectionBatchModule = BatchCandidate<ModuleFacts> & { entry: string };
+/**
+ * One module — or one PART of a module too large for one batch — of a batched
+ * section, with its rendered entry and output estimate. `part` is set only when
+ * the module was split across parts.
+ */
+export type SectionBatchModule = BatchCandidate<ModuleFacts> & {
+  entry: string;
+  part?: { index: number; count: number };
+  /** Mined rules this entry renders (every one of the module's appears in exactly one part). */
+  minedRules?: readonly PersistedMinedRule[];
+  /**
+   * #172 — for a group whose topic is formulas (Calculations): the module's
+   * distinct extracted formulas this entry's batch documents. Every one of the
+   * module's appears in exactly one part.
+   */
+  formulas?: readonly ExtractedFormula[];
+};
+
+/** The facts objects whose extracted formulas a batch shows as context: each module once, by its first part. */
+function batchFormulaItems(batch: readonly SectionBatchModule[]): ModuleFacts[] {
+  return batch.filter((m) => !m.part || m.part.index === 1).map((m) => m.item);
+}
+
+/**
+ * The source-formulas block of one batch. For a Calculations group (#172) it is
+ * the formulas assigned to the batch's entries, rendered in full — the planner
+ * keeps each batch within {@link FORMULAS_BLOCK_CAP}, paging a module's formulas
+ * across parts, so nothing is cut. Other groups show the batch's formulas as
+ * context, under the cap, as before.
+ */
+function renderBatchFormulas(group: SectionGroup, batch: readonly SectionBatchModule[]): string {
+  if (!factSlicesFor(group).includes("formulas")) {
+    return renderFormulasBlob(batchFormulaItems(batch));
+  }
+  return renderFormulaList(
+    distinctFormulaList(
+      batch.flatMap((m) =>
+        (m.formulas ?? []).map((formula) => ({ formula, repository: m.item.repository })),
+      ),
+    ),
+  );
+}
+
+/**
+ * The entries one module contributes to a batched section. Nothing is capped:
+ * the module's topic slices and EVERY mined rule are rendered (LLM rule bullets
+ * that restate a mined rule are removed, since each mined rule is rendered). A
+ * module that fits one batch is one entry, rendered exactly as before. A module
+ * that does not is split into parts — topic pages first, then pages of mined
+ * rules — each labelled with the module's name and part number so the model
+ * attributes it, and each sized to half a batch so parts still pack with other
+ * modules. Every mined rule is in exactly one part.
+ */
+export function batchedModuleEntries(
+  f: ModuleFacts,
+  group: SectionGroup,
+  limits: { inputCap: number; outputBudget: number },
+  /** #172 — the module's distinct extracted formulas, for a Calculations group; else []. */
+  formulas: readonly ExtractedFormula[],
+): SectionBatchModule[] {
+  const header = `### MODULE: ${f.moduleName}\n(${f.classCount} classes, ${f.methodCount} methods)`;
+  const slices = moduleFactSlices(f);
+  const wanted = new Set(factSlicesFor(group));
+  const mined = readsMinedRules(group) ? (f.minedRules ?? []) : [];
+  const summary = wanted.has("summary") ? slices.summary : "";
+  const topics: string[] = [];
+  for (const slice of FACT_SLICES) {
+    if (slice === "summary" || !wanted.has(slice) || !slices[slice]) continue;
+    topics.push(slice === "rules" ? dedupeRulesAgainstMined(slices.rules, mined) : slices[slice]);
+  }
+  const topicText = topics.join("\n\n");
+  const estimate = (topicChars: number, rules: number, formulaCount = 0) =>
+    estimateModuleOutputChars({ topicChars, minedRules: rules, formulas: formulaCount });
+  const render = (label: string, body: string[]) =>
+    body.length > 0 ? `${label}\n\n${body.join("\n\n")}` : label;
+
+  const whole = render(
+    header,
+    [summary, topicText, renderMinedRulePage(mined, 0, mined.length)].filter(Boolean),
+  );
+  if (
+    whole.length <= limits.inputCap &&
+    formulas.length <= FORMULAS_BLOCK_CAP &&
+    estimate(topicText.length, mined.length, formulas.length) <= limits.outputBudget
+  ) {
+    return [
+      {
+        item: f,
+        entry: whole,
+        inputChars: whole.length,
+        listItems: formulas.length,
+        outputChars: estimate(topicText.length, mined.length, formulas.length),
+        minedRules: mined,
+        formulas,
+      },
+    ];
+  }
+
+  // Half a batch per part, in both directions.
+  const partOutput = Math.max(
+    OUTPUT_CHARS_PER_MINED_RULE,
+    Math.floor(limits.outputBudget / 2) - OUTPUT_CHARS_PER_MODULE,
+  );
+  const partInput = Math.max(2_000, Math.floor(limits.inputCap / 2));
+  const pages: Array<{
+    body: string;
+    topicChars: number;
+    rules: PersistedMinedRule[];
+    from: number;
+    formulas?: readonly ExtractedFormula[];
+  }> = [];
+  for (const page of pageFactsText(
+    topicText,
+    Math.min(partInput, Math.floor(partOutput / OUTPUT_CHARS_PER_TOPIC_CHAR)),
+  )) {
+    pages.push({ body: page, topicChars: page.length, rules: [], from: 0 });
+  }
+  let from = 0;
+  while (from < mined.length) {
+    let to = from;
+    let chars = 0;
+    while (
+      to < mined.length &&
+      (to === from ||
+        ((to - from + 1) * OUTPUT_CHARS_PER_MINED_RULE <= partOutput &&
+          chars + minedRuleLineChars(mined[to]) <= partInput))
+    ) {
+      chars += minedRuleLineChars(mined[to]);
+      to += 1;
+    }
+    const rules = mined.slice(from, to);
+    pages.push({
+      body: renderMinedRulePage(rules, from, mined.length),
+      topicChars: 0,
+      rules,
+      from,
+    });
+    from = to;
+  }
+  // #172 — then pages of extracted formulas, each within half the batch
+  // formulas block and half a batch's output.
+  const perFormulaPage = Math.max(
+    1,
+    Math.min(Math.floor(FORMULAS_BLOCK_CAP / 2), Math.floor(partOutput / OUTPUT_CHARS_PER_FORMULA)),
+  );
+  for (let k = 0; k < formulas.length; k += perFormulaPage) {
+    const page = formulas.slice(k, k + perFormulaPage);
+    const range =
+      page.length === formulas.length
+        ? `all ${formulas.length}`
+        : `${k + 1}–${k + page.length} of ${formulas.length}`;
+    pages.push({
+      body: `EXTRACTED FORMULAS: this part covers this module's extracted formulas ${range}; they are listed in this call's source-extracted formulas block.`,
+      topicChars: 0,
+      rules: [],
+      from: 0,
+      formulas: page,
+    });
+  }
+  if (pages.length === 0) pages.push({ body: "", topicChars: 0, rules: [], from: 0 });
+  const count = pages.length;
+  return pages.map((page, i) => {
+    const label =
+      count > 1
+        ? `### MODULE: ${f.moduleName} (part ${i + 1} of ${count})\n(${f.classCount} classes, ${f.methodCount} methods)`
+        : header;
+    const entry = render(label, [i === 0 ? summary : "", page.body].filter(Boolean));
+    return {
+      item: f,
+      entry,
+      inputChars: entry.length,
+      listItems: page.formulas?.length ?? 0,
+      outputChars: estimate(page.topicChars, page.rules.length, page.formulas?.length ?? 0),
+      minedRules: page.rules,
+      formulas: page.formulas ?? [],
+      ...(count > 1 ? { part: { index: i + 1, count } } : {}),
+    };
+  });
+}
 
 /** How a batched section's modules are split across calls (#157). */
 export interface SectionBatchPlan {
@@ -4395,27 +4815,19 @@ export function planSectionBatches(
   // carrying some is on topic, and a batch never holds more than its block
   // renders (PR #169 review).
   const readsFormulas = factSlicesFor(group).includes("formulas");
+  const outputBudget = batchOutputBudgetChars(maxTokens);
   for (const f of rankRelevantFacts(facts, group)) {
     const parts = factsModuleParts(f, group);
-    const formulas = readsFormulas ? distinctFormulas([f]).length : 0;
-    if (parts.topicChars === 0 && parts.renderedMinedRules === 0 && formulas === 0) {
+    const formulas = readsFormulas ? distinctFormulas([f]) : [];
+    const minedCount = readsMinedRules(group) ? (f.minedRules?.length ?? 0) : 0;
+    if (parts.topicChars === 0 && minedCount === 0 && formulas.length === 0) {
       skipped.push(f.moduleName);
       continue;
     }
-    const entry =
-      parts.body.length > 0 ? `${parts.header}\n\n${parts.body.join("\n\n")}` : parts.header;
-    modules.push({
-      item: f,
-      entry,
-      inputChars: entry.length,
-      listItems: formulas,
-      outputChars: estimateModuleOutputChars({
-        topicChars: parts.topicChars,
-        minedRules: parts.renderedMinedRules,
-      }),
-    });
+    modules.push(
+      ...batchedModuleEntries(f, group, { inputCap: factsCharCap, outputBudget }, formulas),
+    );
   }
-  const outputBudget = batchOutputBudgetChars(maxTokens);
   const batches = planBatches(modules, {
     inputCap: factsCharCap,
     outputBudget,
@@ -4619,6 +5031,7 @@ async function generateSectionGroup(
   groundingBlock = "",
   flowBlob = "",
   batchNote = "",
+  allowRefine = true,
 ): Promise<SectionGroupResult> {
   const isLocal = provider.key === "local-gemma";
   const { systemMessage, userMessage } = buildSectionPrompts(
@@ -4687,7 +5100,19 @@ async function generateSectionGroup(
   // it must NOT shorten or summarize (an earlier "tighten prose" version
   // halved the detail). Never runs for Bedrock; never blocks the doc: any
   // failure or a shorter result falls back to the cleaned draft.
-  if (tuning.refine && isLocal && content.length > 0) {
+  //
+  // Ordering: the refine pass runs only AFTER the draft's truncation check, and
+  // only on a complete draft. A cut-off draft is not refined — refining cannot
+  // restore what the cap cut, and a batched caller discards and re-splits a
+  // cut-off batch anyway (it used to be refined first, then thrown away). A
+  // batch reply is never refined at all (`allowRefine = false`).
+  if (truncation.truncated && tuning.refine && isLocal) {
+    log.info("Section refine pass skipped: draft was cut off by the output cap", {
+      projectId,
+      group: group.id,
+    });
+  }
+  if (tuning.refine && allowRefine && isLocal && content.length > 0 && !truncation.truncated) {
     try {
       const refineSystem = `You are a meticulous technical documentation fixer. You are given one Markdown section. Return the SAME section with ONLY mechanical defects repaired. This is a fix-up pass, NOT an edit.
 

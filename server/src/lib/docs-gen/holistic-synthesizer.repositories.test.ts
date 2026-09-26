@@ -1,5 +1,5 @@
 /** #1354: real roots, source extraction, cache and citation pipeline; only DB/LLM mocked. */
-import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -61,6 +61,7 @@ vi.mock("../ai/index.js", () => ({
 import {
   synthesizeHolisticDocument,
   extractModuleFacts,
+  preparePhase1Module,
   buildSectionFactsSources,
   type ModuleGroup,
 } from "./holistic-synthesizer.js";
@@ -245,7 +246,7 @@ describe("#1354 actual multi-repository synthesis", () => {
     expect(b).not.toContain("a_field");
   });
 
-  it("retains the project-wide 24 SQL-module budget across repository scans", async () => {
+  it("reads every SQL-only directory across repositories — past the old 24-module cap", async () => {
     for (const id of ["a", "b"]) {
       for (let i = 0; i < 15; i++) {
         await mkdir(path.join(root, id, `schema${i}`));
@@ -256,7 +257,7 @@ describe("#1354 actual multi-repository synthesis", () => {
       }
     }
     await synthesizeHolisticDocument("p", "architecture", "Architecture");
-    expect(phase1Prompts).toHaveLength(26); // two code modules + 24 SQL modules
+    expect(phase1Prompts).toHaveLength(32); // two code modules + all 30 SQL modules
   });
 
   it("keeps repo-qualified facts collision-free at identical ranks, with matching blob and source metadata", () => {
@@ -351,12 +352,11 @@ describe("#1354 actual multi-repository synthesis", () => {
     },
   );
 
-  it.each([
-    [10, 10],
-    [50, 50],
-    [100, 80],
-  ])("reads at most the existing method cap for %i short methods", async (count, expected) => {
-    await writeFile(path.join(root, "a/src/rules.ts"), "return 1;\n");
+  it.each([10, 50, 100])("reads every one of %i short methods (no method cap)", async (count) => {
+    await writeFile(
+      path.join(root, "a/src/rules.ts"),
+      Array.from({ length: count }, (_, i) => `return ${i};`).join("\n"),
+    );
     const m: ModuleGroup = {
       dir: "src",
       repository: identity("a"),
@@ -365,11 +365,170 @@ describe("#1354 actual multi-repository synthesis", () => {
         qualifiedName: `method${i}`,
         kind: "method",
         filePath: "src/rules.ts",
-        startLine: 1,
-        endLine: 1,
+        startLine: i + 1,
+        endLine: i + 1,
       })),
     };
     await extractModuleFacts(m, provider, false, "p", path.join(root, "a"));
-    expect((phase1Prompts[0].match(/\/\/ method/g) ?? []).length).toBe(expected);
+    const read = phase1Prompts.join("\n").match(/\/\/ method\d+\n/g) ?? [];
+    expect(new Set(read).size).toBe(count);
   });
+
+  describe("DOCS_GEN_PHASE1_INCLUDE_TESTS", () => {
+    beforeEach(async () => {
+      await writeFile(
+        path.join(root, "a/src/rules.test.ts"),
+        'it("x", () => { if (value > 5) throw new Error("TEST_ONLY"); });',
+      );
+      db.codeSymbol.findMany.mockImplementation(async ({ where }) =>
+        ["a", "b"]
+          .filter((id) => !where.codeGraphId || where.codeGraphId === `graph-${id}`)
+          .flatMap((id) => [
+            ...symbols(id),
+            ...(id === "a"
+              ? [
+                  {
+                    id: "a-test",
+                    codeGraphId: "graph-a",
+                    qualifiedName: "rules.test",
+                    kind: "module",
+                    filePath: "src/rules.test.ts",
+                    language: "ts",
+                    startLine: 1,
+                    endLine: 1,
+                  },
+                ]
+              : []),
+          ]),
+      );
+    });
+
+    it("reads test files by default (full coverage)", async () => {
+      await synthesizeHolisticDocument("p", "architecture", "Architecture");
+      expect(phase1Prompts.join("\n")).toContain("TEST_ONLY");
+    });
+
+    it("neither reads nor mines test files when off", async () => {
+      vi.stubEnv("DOCS_GEN_PHASE1_INCLUDE_TESTS", "false");
+      await synthesizeHolisticDocument("p", "architecture", "Architecture");
+      const all = phase1Prompts.join("\n");
+      expect(all).toContain("ALPHA_ONLY");
+      expect(all).not.toContain("TEST_ONLY");
+      expect(all).not.toContain("rules.test.ts");
+    });
+  });
+
+  it("reports Phase-1 progress per planned chunk, from 0 to the total", async () => {
+    const updates: Array<{ done: number; total: number }> = [];
+    await synthesizeHolisticDocument("p", "architecture", "Architecture", {
+      onPhase1Progress: (u) => updates.push(u),
+    });
+    // Two modules of one chunk each.
+    expect(updates[0]).toEqual({ done: 0, total: 2 });
+    expect(updates.map((u) => u.done)).toEqual([0, 1, 2, 2]);
+    expect(updates.every((u) => u.total === 2)).toBe(true);
+  });
+
+  it("counts Phase-1 progress in chunks: a module too large for one call contributes several", async () => {
+    const fns = 60;
+    await writeFile(
+      path.join(root, "a/src/rules.ts"),
+      Array.from({ length: fns }, (_, i) =>
+        [
+          `export function rule${i}(v: number) {`,
+          ...Array.from({ length: 18 }, (_, k) => `  const s${k} = v * ${k} + ${i};`),
+          "}",
+        ].join("\n"),
+      ).join("\n"),
+    );
+    db.codeSymbol.findMany.mockImplementation(async ({ where }) =>
+      ["a", "b"]
+        .filter((id) => !where.codeGraphId || where.codeGraphId === `graph-${id}`)
+        .flatMap((id) =>
+          id === "a"
+            ? Array.from({ length: fns }, (_, i) => ({
+                id: `a-${i}`,
+                codeGraphId: "graph-a",
+                qualifiedName: `rule${i}`,
+                kind: "function",
+                filePath: "src/rules.ts",
+                language: "ts",
+                startLine: i * 20 + 1,
+                endLine: i * 20 + 20,
+              }))
+            : symbols(id),
+        ),
+    );
+    const updates: Array<{ done: number; total: number }> = [];
+    await synthesizeHolisticDocument("p", "architecture", "Architecture", {
+      onPhase1Progress: (u) => updates.push(u),
+    });
+    const total = updates[0].total;
+    expect(total).toBeGreaterThan(2);
+    // One tick per planned chunk, in order, then the end-of-phase report.
+    expect(updates.map((u) => u.done)).toEqual([
+      ...Array.from({ length: total + 1 }, (_, i) => i),
+      total,
+    ]);
+    // As many chunk ticks as Phase-1 calls (no cut-offs here).
+    expect(phase1Prompts).toHaveLength(total);
+  });
+
+  // chmod 000 does not stop root from listing a directory.
+  it.skipIf(process.getuid?.() === 0)(
+    "warns in the document when the SQL-only scan cannot read a directory",
+    async () => {
+      const locked = path.join(root, "a", "locked");
+      await mkdir(locked);
+      await writeFile(path.join(locked, "rules.sql"), "CREATE TABLE hidden (id INT NOT NULL);");
+      await chmod(locked, 0o000);
+      try {
+        const result = await synthesizeHolisticDocument("p", "architecture", "Architecture");
+        const w = result.warnings.find((x) => x.section === "SQL schema scan (a)");
+        expect(w).toBeDefined();
+        expect(w!.kind).toBe("source-unavailable");
+        expect(w!.message).toContain("locked");
+      } finally {
+        await chmod(locked, 0o755);
+      }
+    },
+  );
+
+  it("keeps every rule of a 150,000-constraint .sql file (no argument-spread overflow)", async () => {
+    await mkdir(path.join(root, "a", "db"));
+    const n = 150_000;
+    await writeFile(
+      path.join(root, "a", "db", "schema.sql"),
+      Array.from(
+        { length: n },
+        (_, i) => `ALTER TABLE p ADD CONSTRAINT c${i} CHECK (a > ${i});`,
+      ).join("\n"),
+    );
+    const prepared = await preparePhase1Module({ dir: "db", syms: [] }, path.join(root, "a"));
+    const sqlUnits = prepared.units.filter((u) => u.inventoryOnly);
+    expect(sqlUnits).toHaveLength(1);
+    expect(sqlUnits[0].rules).toHaveLength(n);
+    expect(sqlUnits[0].endLine).toBe(n);
+    expect(prepared.skippedFiles).toEqual([]);
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "names an unreadable .sql file in a document warning instead of skipping it silently",
+    async () => {
+      await mkdir(path.join(root, "a", "src", "sql"), { recursive: true });
+      const locked = path.join(root, "a", "src", "locked.sql");
+      await writeFile(locked, "CREATE TABLE t (id INT NOT NULL);");
+      await chmod(locked, 0o000);
+      try {
+        const result = await synthesizeHolisticDocument("p", "architecture", "Architecture");
+        const w = result.warnings.find(
+          (x) => x.section === "Phase 1 facts" && x.message.includes("SQL file"),
+        );
+        expect(w).toBeDefined();
+        expect(w!.message).toContain("src/locked.sql");
+      } finally {
+        await chmod(locked, 0o644);
+      }
+    },
+  );
 });

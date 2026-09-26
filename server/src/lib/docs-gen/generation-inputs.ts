@@ -12,6 +12,7 @@ import { resolveFactsMaxOutputTokens, resolveSectionMaxOutputTokens } from "./ou
 import { resolveGroundingK } from "./grounding/grounding-retrieval.js";
 import { readdir, readFile } from "node:fs/promises";
 import { loadRepositorySources, resolveSourcePath } from "./repository-sources.js";
+import { SQL_SCAN_DIR_CAP } from "./module-grouping.js";
 import { loadAIConfig } from "../ai/config.js";
 import { isJunkSourcePath } from "@metis/shared";
 
@@ -203,13 +204,11 @@ export async function captureGenerationInputs(
         const children = await readdir(await resolveSourcePath(root, relative), {
           withFileTypes: true,
         });
-        let chars = 0;
-        for (const entry of children
-          .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".sql"))
-          .slice(0, 12)) {
-          if (chars > 80_000) break;
-          const content = await read(relative ? `${relative}/${entry.name}` : entry.name, "sql");
-          chars += content?.length ?? 0;
+        // Every .sql file in full, as Phase 1 mines them (no file or char cap).
+        for (const entry of children.filter(
+          (e) => e.isFile() && e.name.toLowerCase().endsWith(".sql"),
+        )) {
+          await read(relative ? `${relative}/${entry.name}` : entry.name, "sql");
         }
         return children
           .filter((e) => e.isDirectory() && !SQL_SKIP.has(e.name) && !e.name.startsWith("."))
@@ -218,11 +217,11 @@ export async function captureGenerationInputs(
         return [];
       }
     };
-    // A bounded conservative superset of holistic's 24 selected SQL-only modules.
-    // Keep a per-repository 2000-directory budget: exhausting one clone must not
-    // hide inputs from another. No arbitrary non-SQL source-tree contents read.
+    // Every SQL-only directory holistic synthesis mines, within the same
+    // per-repository safety bound: exhausting one clone must not hide inputs
+    // from another. No arbitrary non-SQL source-tree contents read.
     const queue = [""];
-    for (let visited = 0; queue.length && visited < 2000; visited++) {
+    for (let visited = 0; queue.length && visited < SQL_SCAN_DIR_CAP; visited++) {
       queue.push(...(await scan(queue.shift()!)));
     }
     // Symbol-derived modules can lie beyond the SQL discovery budget; include

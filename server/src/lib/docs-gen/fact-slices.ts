@@ -357,3 +357,59 @@ export function renderMinedRuleInventory(
   if (omitted > 0) lines.push(`- (${omitted} more mined rule(s) omitted to fit the budget)`);
   return [minedInventoryHeader(rules.length), ...lines].join("\n");
 }
+
+/** Characters one mined rule adds to a rendered inventory (its line plus newline). */
+export function minedRuleLineChars(r: PersistedMinedRule): number {
+  return minedRuleLine(r).length + 1;
+}
+
+/**
+ * One page of a module's mined rules, rendered in full (no char cap): the
+ * batched Rules section (#157) pages a module's inventory across batches so no
+ * mined rule is ever dropped. `from` is the 0-based index of the page's first
+ * rule in the module's whole inventory of `total` rules.
+ */
+export function renderMinedRulePage(
+  rules: readonly PersistedMinedRule[],
+  from: number,
+  total: number,
+): string {
+  if (rules.length === 0) return "";
+  const range =
+    rules.length === total
+      ? `${total} rule(s)`
+      : `rules ${from + 1}–${from + rules.length} of ${total}`;
+  return [
+    `${MINED_RULES_HEADING} (deterministically mined from source — ${range}; each cites file:line)`,
+    ...rules.map(minedRuleLine),
+  ].join("\n");
+}
+
+/**
+ * Split facts text into pages of at most `maxChars`, cutting only before a line
+ * that starts a new item (a heading or a top-level bullet), so no fact is split
+ * across pages. An item longer than `maxChars` becomes a page of its own, and
+ * a page that starts inside a section repeats that section's heading.
+ */
+export function pageFactsText(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return text ? [text] : [];
+  const pages: string[] = [];
+  let current: string[] = [];
+  let size = 0;
+  // A page that starts mid-section repeats the section's heading, so its facts
+  // still say what they are.
+  let heading: string | null = null;
+  for (const line of text.split("\n")) {
+    const startsItem = !/^\s/.test(line);
+    if (startsItem && current.length > 0 && size + line.length + 1 > maxChars) {
+      pages.push(current.join("\n").trim());
+      current = heading && headingOf(line) === null ? [`${heading} (continued)`] : [];
+      size = current.join("\n").length;
+    }
+    if (headingOf(line) !== null) heading = line.trim();
+    current.push(line);
+    size += line.length + 1;
+  }
+  if (current.length > 0) pages.push(current.join("\n").trim());
+  return pages.filter((p) => p.length > 0);
+}

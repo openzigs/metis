@@ -1,0 +1,38 @@
+// Synthetic Kotlin fixture for the Phase-1 full-coverage tests: a class with
+// validated properties (module-level code no method symbol covers), a method
+// with a NESTED local function, and a top-level function.
+package dev.example.workout
+
+import jakarta.validation.constraints.Max
+import jakarta.validation.constraints.Min
+
+const val MAX_INTERVALS = 64
+private const val MIN_WATTS = 50
+
+class WorkoutPlanner(
+    @field:Min(1) @field:Max(240) val durationMinutes: Int,
+    @field:Min(0) val ftp: Int,
+) {
+    fun plan(intervals: List<Int>): List<Int> {
+        require(intervals.isNotEmpty()) { "a workout needs at least one interval" }
+        if (intervals.size > MAX_INTERVALS) {
+            throw IllegalArgumentException("too many intervals")
+        }
+        fun clamp(watts: Int): Int {
+            if (watts < MIN_WATTS) return MIN_WATTS
+            return watts
+        }
+        return intervals.map { clamp(it) }
+    }
+
+    fun zoneOf(watts: Int): String = when {
+        watts < ftp * 55 / 100 -> "recovery"
+        watts < ftp * 75 / 100 -> "endurance"
+        else -> "threshold"
+    }
+}
+
+fun describe(planner: WorkoutPlanner): String {
+    check(planner.ftp > 0) { "ftp must be set before describing a plan" }
+    return "plan for ${planner.durationMinutes} minutes"
+}

@@ -594,7 +594,8 @@ const TRUNCATED_MODULES_LISTED = 10;
 
 /**
  * #156 — Phase-1 fact extraction for one or more modules was cut off by the
- * OUTPUT-token cap, even after one retry with a larger cap. Their facts are
+ * OUTPUT-token cap, even after the cut-off part was split down as far as it
+ * goes (Phase 1 splits instead of retrying with a larger cap). Their facts are
  * incomplete (used for this run, never cached), so every section that reads
  * them may miss rules, workflows or formulas. Names the modules so an operator
  * knows where to look, and the knob that fixes it.
@@ -610,8 +611,30 @@ export function phase1FactsTruncatedWarning(moduleNames: readonly string[]): Doc
     section: PHASE1_FACTS_SECTION,
     message:
       `Fact extraction for ${moduleNames.length} module(s) was cut off by the model's output ` +
-      `limit even after a retry with a larger limit, so their facts are incomplete: ${listed}${more}. ` +
+      `limit even after their code was split into the smallest parts that could explain it, so their facts are incomplete: ${listed}${more}. ` +
       `Raise DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS or use a model with a larger output limit, then regenerate.`,
+    severity: "warning",
+  };
+}
+
+/**
+ * Phase 1 reads a large module in several calls. When some or all of those
+ * calls fail — or the module's extraction throws — its facts are incomplete or
+ * missing; any parts that succeeded are cached, so a regeneration retries only
+ * the failed ones. Names the modules.
+ */
+export function phase1ChunksFailedWarning(moduleNames: readonly string[]): DocWarning {
+  const listed = moduleNames.slice(0, TRUNCATED_MODULES_LISTED).join(", ");
+  const more =
+    moduleNames.length > TRUNCATED_MODULES_LISTED
+      ? ` and ${moduleNames.length - TRUNCATED_MODULES_LISTED} more`
+      : "";
+  return {
+    kind: "section-failed",
+    section: "Phase 1 facts",
+    message:
+      `Fact extraction failed for all or part of ${moduleNames.length} module(s), so their facts are incomplete or missing: ${listed}${more}. ` +
+      `Any parts that succeeded are cached; regenerate to retry only the failed parts.`,
     severity: "warning",
   };
 }
@@ -881,4 +904,72 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
       ? "Degraded output"
       : "Needs review";
   return `${prefix} — ${parts.join("; ")}.`;
+}
+
+/**
+ * The scan for SQL-only directories (whose `.sql` constraints, triggers and
+ * views are mined) could not look at part of a repository: it stopped at its
+ * directory safety bound, or some directories could not be listed. Those
+ * directories' rules are missing from the document; this names how many.
+ */
+export function sqlScanIncompleteWarning(
+  repository: string,
+  stats: { visited: number; truncated: boolean; unreadable: readonly string[] },
+): DocWarning {
+  const parts: string[] = [];
+  if (stats.truncated) {
+    parts.push(`the scan stopped after ${stats.visited.toLocaleString("en-US")} directories`);
+  }
+  if (stats.unreadable.length > 0) {
+    const listed = stats.unreadable.slice(0, 5).join(", ");
+    const more = stats.unreadable.length > 5 ? ` and ${stats.unreadable.length - 5} more` : "";
+    parts.push(
+      `${stats.unreadable.length} director${stats.unreadable.length === 1 ? "y" : "ies"} could not be read (${listed}${more})`,
+    );
+  }
+  return {
+    kind: "source-unavailable",
+    section: `SQL schema scan (${repository})`,
+    message: `Some SQL-only directories were not mined for rules: ${parts.join("; ")}. Their constraints, triggers and views are missing from this document.`,
+    severity: "warning",
+  };
+}
+
+/**
+ * `.sql` files in a module's directory that could not be read or mined. Their
+ * constraints, triggers and views are missing from the document; never skipped
+ * silently.
+ */
+export function sqlFilesSkippedWarning(files: readonly string[]): DocWarning {
+  const listed = files.slice(0, 10).join(", ");
+  const more = files.length > 10 ? ` and ${files.length - 10} more` : "";
+  return {
+    kind: "source-unavailable",
+    section: "Phase 1 facts",
+    message: `${files.length} SQL file(s) could not be read or mined, so their rules are missing: ${listed}${more}.`,
+    severity: "warning",
+  };
+}
+
+/**
+ * Formula extraction was not run on lines longer than `limitChars` (generated
+ * or minified code), in the named modules. Their rules were still mined; only
+ * the pre-extracted formulas of those lines are missing.
+ */
+export function formulaLinesSkippedWarning(
+  modules: ReadonlyArray<{ module: string; lines: number }>,
+  limitChars: number,
+): DocWarning {
+  const total = modules.reduce((n, m) => n + m.lines, 0);
+  const listed = modules
+    .slice(0, 10)
+    .map((m) => `${m.module} (${m.lines})`)
+    .join(", ");
+  const more = modules.length > 10 ? ` and ${modules.length - 10} more` : "";
+  return {
+    kind: "facts-truncated",
+    section: "Phase 1 facts",
+    message: `Formulas were not extracted from ${total} line(s) longer than ${limitChars.toLocaleString("en-US")} characters (generated or minified code): ${listed}${more}. Their rules were still mined.`,
+    severity: "warning",
+  };
 }

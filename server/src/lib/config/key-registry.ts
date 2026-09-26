@@ -260,6 +260,22 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "#25 — how many Phase-1 module fact extractions docs-gen keeps in flight at once (1-64, default 3). A worker pool: the next module starts the moment any extraction finishes. Wall-clock time for a large project scales roughly with modules ÷ this value, so a 174-module project at ~23 s per module takes about an hour at 1 and about 22 minutes at 3. Raise it when the provider allows more parallel requests (DeepSeek documents a 500-request concurrency limit for deepseek-v4-pro); keep it low behind a gateway with request-rate or idle-timeout limits.",
     sensitive: false,
   },
+  DOCS_GEN_PHASE1_CHUNK_INPUT_TOKENS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(1_000).max(262_144),
+    description:
+      "Most INPUT tokens (source code + pre-extracted formulas + mined-rule inventory) one Phase-1 docs-gen fact-extraction call reads (default 24000). Phase 1 reads every function and all module-level code of every module; a module larger than one call is read in several calls (chunks), each also sized so its estimated reply fits DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS. Converted to characters at 3.5 chars/token (laguna-s-2.1's tokenizer measured 3.66–3.95 on TypeScript). Keep it modest (≤ ~40000): local prompt processing slows sharply with length. The prompt plus the output cap must fit the served context.",
+    sensitive: false,
+  },
+  DOCS_GEN_PHASE1_INCLUDE_TESTS: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Whether Phase-1 docs-gen fact extraction reads and mines test, spec and fixture files (default true — full coverage). When false, files matching the test-path rules (*.test.* / *.spec.*, test_*.py, *_test.go, *Test.java/kt, test/tests/__tests__/testing/spec/e2e/fixtures directories, *testing.* and *fixture* files, *-harness.* pages, test-runner configs) are neither sent to the model nor mined, and the coverage log reports them as excluded by policy. On onyourleft test files are about half the source, so turning this off roughly halves Phase-1 time.",
+    sensitive: false,
+  },
   DOCS_GEN_REASONING_ALLOWANCE_TOKENS: {
     tier: "tunable",
     valueType: "int",
