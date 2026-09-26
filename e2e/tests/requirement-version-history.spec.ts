@@ -168,8 +168,8 @@ test.describe("Epic #770 — Requirement version history", () => {
     await test.step("open the inline history panel", async () => {
       await history.open();
       await expect(history.timeline).toBeVisible();
-      // At least the two edits we made are present.
-      expect(await history.versionButtons.count()).toBeGreaterThanOrEqual(2);
+      // At least the two edits we made are present (retrying — #234).
+      await expect(history.versionButtons.nth(1)).toBeVisible();
     });
 
     await test.step("selecting two versions reveals the diff", async () => {
@@ -193,7 +193,7 @@ test.describe("Epic #770 — Requirement version history", () => {
     await expect(history.timeline).toBeVisible();
 
     const buttons = history.versionButtons;
-    expect(await buttons.count()).toBeGreaterThanOrEqual(2);
+    await expect(buttons.nth(1)).toBeVisible();
 
     await test.step("activate the newest version with Enter", async () => {
       // `press` focuses the element first, proving it is keyboard-focusable.
@@ -350,7 +350,7 @@ test.describe("Epic #770 — Requirement version history", () => {
 
     await test.step("the developer can still read the version timeline", async () => {
       await expect(history.timeline).toBeVisible();
-      expect(await history.versionButtons.count()).toBeGreaterThanOrEqual(2);
+      await expect(history.versionButtons.nth(1)).toBeVisible();
     });
 
     await test.step("no Restore button is rendered for the developer", async () => {

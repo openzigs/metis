@@ -127,8 +127,7 @@ test.describe("Issue Templates — Epic #595", () => {
     });
 
     await test.step("Verify 4 default templates total", async () => {
-      const count = await templatePage.templateCards.count();
-      expect(count).toBe(4);
+      await expect(templatePage.templateCards).toHaveCount(4);
     });
   });
 
@@ -247,8 +246,7 @@ test.describe("Issue Templates — Epic #595", () => {
       await expect(templatePage.templateCard("GitHub Epic (copy)")).toBeVisible({
         timeout: 15_000,
       });
-      const newCount = await templatePage.templateCards.count();
-      expect(newCount).toBe(initialCount + 1);
+      await expect(templatePage.templateCards).toHaveCount(initialCount + 1);
     });
 
     await test.step("Cloned template is not marked as default", async () => {
