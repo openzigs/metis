@@ -678,5 +678,30 @@ export function aggregateFaithfulness(
     supportedAttributions: verified.flatMap((r) => r.supportedAttributions),
     ...(unparseable ? { unparseable } : {}),
     ...(results.some((r) => r.truncated) ? { truncated: true as const } : {}),
+    ...pooledSample(results),
+  };
+}
+
+/**
+ * DOCS_GEN_GROUNDING=sample — every batch scored in sample mode carries its
+ * coverage (a batch small enough to check whole counts all of its passages as
+ * checked), so the section's coverage is the sum over batches. Nothing when no
+ * batch was scored in sample mode.
+ */
+function pooledSample(
+  results: readonly FaithfulnessResult[],
+): { sampled: NonNullable<FaithfulnessResult["sampled"]> } | Record<string, never> {
+  const sampled = results.map((r) => r.sampled).filter((s) => s !== undefined);
+  if (sampled.length === 0) return {};
+  const sum = (key: "passagesChecked" | "passagesTotal" | "charsChecked" | "charsTotal") =>
+    sampled.reduce((n, s) => n + s[key], 0);
+  return {
+    sampled: {
+      rate: sampled[0].rate,
+      passagesChecked: sum("passagesChecked"),
+      passagesTotal: sum("passagesTotal"),
+      charsChecked: sum("charsChecked"),
+      charsTotal: sum("charsTotal"),
+    },
   };
 }

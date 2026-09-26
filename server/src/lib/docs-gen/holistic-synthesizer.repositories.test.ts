@@ -494,6 +494,23 @@ describe("#1354 actual multi-repository synthesis", () => {
     },
   );
 
+  it("#185 — reads only the in-scope .sql files of a module when a prefix names one file", async () => {
+    await mkdir(path.join(root, "a", "db"));
+    await writeFile(path.join(root, "a", "db", "in.sql"), "CREATE TABLE t (id INT NOT NULL);");
+    await writeFile(path.join(root, "a", "db", "sibling.sql"), "CREATE TABLE u (id INT NOT NULL);");
+    const sqlFilesRead = async (prefixes?: string[] | null) =>
+      (
+        await preparePhase1Module({ dir: "db", syms: [] }, path.join(root, "a"), true, prefixes)
+      ).units
+        .filter((u) => u.inventoryOnly)
+        .map((u) => u.filePath);
+    expect(await sqlFilesRead(["db/in.sql"])).toEqual(["db/in.sql"]);
+    // A directory prefix, or no scope, still reads every .sql file there.
+    expect(await sqlFilesRead(["db"])).toEqual(["db/in.sql", "db/sibling.sql"]);
+    expect(await sqlFilesRead(null)).toEqual(["db/in.sql", "db/sibling.sql"]);
+    expect(await sqlFilesRead()).toEqual(["db/in.sql", "db/sibling.sql"]);
+  });
+
   it("keeps every rule of a 150,000-constraint .sql file (no argument-spread overflow)", async () => {
     await mkdir(path.join(root, "a", "db"));
     const n = 150_000;

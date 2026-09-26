@@ -814,7 +814,7 @@ describe("generated-doc publication compatibility", () => {
         version: 3,
         revisionId,
       }),
-    ).rejects.toThrow(/embedder returned 1 vectors for 2 generated-doc chunks/);
+    ).rejects.toThrow(/embedder returned 1 vectors for a batch of 2 texts/);
 
     expect(writeQuarantine).not.toHaveBeenCalled();
     expect(approveDocument).not.toHaveBeenCalled();

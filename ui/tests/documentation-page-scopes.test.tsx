@@ -369,6 +369,54 @@ describe("DocumentationPage — GenerateForm scope selection", () => {
     });
   });
 
+  it("sends no pathPrefixes when 'Limit to paths' is left empty", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByTestId("generate-docs-btn"));
+    fireEvent.change(await screen.findByTestId("doc-path-scope-input"), {
+      target: { value: " , " },
+    });
+    fireEvent.click(screen.getByTestId("submit-generate"));
+
+    await waitFor(() => {
+      const call = mockApiFetch.mock.calls.find(
+        (c) => typeof c[0] === "string" && (c[0] as string).includes("/docs/generate"),
+      );
+      expect(call).toBeDefined();
+      expect((call![1] as { body: Record<string, unknown> }).body).not.toHaveProperty(
+        "pathPrefixes",
+      );
+    });
+  });
+
+  it("sends the trimmed 'Limit to paths' prefixes as pathPrefixes", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByTestId("generate-docs-btn"));
+    fireEvent.change(await screen.findByLabelText("Limit to paths (optional)"), {
+      target: { value: " packages/fit/ ,packages/domain/src,, packages/physics/" },
+    });
+    fireEvent.click(screen.getByTestId("submit-generate"));
+
+    await waitFor(() => {
+      const call = mockApiFetch.mock.calls.find(
+        (c) => typeof c[0] === "string" && (c[0] as string).includes("/docs/generate"),
+      );
+      expect(call).toBeDefined();
+      expect((call![1] as { body: { pathPrefixes?: string[] } }).body.pathPrefixes).toEqual([
+        "packages/fit/",
+        "packages/domain/src",
+        "packages/physics/",
+      ]);
+    });
+  });
+
+  it("hides 'Limit to paths' for scopes that do not support it", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByTestId("generate-docs-btn"));
+    expect(await screen.findByTestId("doc-path-scope-input")).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("doc-scope-select"), { target: { value: "module" } });
+    expect(screen.queryByTestId("doc-path-scope-input")).not.toBeInTheDocument();
+  });
+
   // Issue #58 — screen-reader audit. The GenerateForm controls were labelled by
   // bare <label> elements with no htmlFor/id association — invisible to SR users
   // (announced as unlabelled comboboxes). They are now programmatically named.

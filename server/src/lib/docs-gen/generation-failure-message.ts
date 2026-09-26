@@ -13,6 +13,7 @@
  */
 import { GENERATION_INTERRUPTED_MESSAGE } from "./interrupted-generations.js";
 import { sectionFailedWarning } from "./grounding/degraded-warnings.js";
+import { PATH_SCOPE_EMPTY_CODE } from "./path-scope.js";
 
 export const GENERATION_FAILED_MESSAGE =
   "Document generation failed. The details are in the server log; regenerate the document to try again.";
@@ -69,6 +70,10 @@ export const GENERATION_PROVIDER_DROPPED_MESSAGE =
 export const GENERATION_PROVIDER_CLOSED_MESSAGE =
   "The AI provider closed the connection before sending any response. The host accepted the request and then hung up — often a model runner that crashed or restarted, a proxy or load balancer timeout, or a runtime that refused the request; check the provider's own log, then regenerate the document.";
 
+/** The document's path scope matched no documentable (non-test) code. */
+export const GENERATION_PATH_SCOPE_EMPTY_MESSAGE =
+  "The document's path scope matched no documentable code (test files are excluded). Check the path prefixes — they are repository-relative, for example packages/fit/ — then generate again.";
+
 /** Every string a client may receive as a failed generation's `errorMessage`. */
 const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   GENERATION_INTERRUPTED_MESSAGE,
@@ -82,6 +87,7 @@ const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   GENERATION_PROVIDER_TLS_MESSAGE,
   GENERATION_PROVIDER_DROPPED_MESSAGE,
   GENERATION_PROVIDER_CLOSED_MESSAGE,
+  GENERATION_PATH_SCOPE_EMPTY_MESSAGE,
 ]);
 
 // An HTTP status named as one: "returned 402", "status 429", "HTTP 401",
@@ -294,6 +300,7 @@ export function generationFailureMessage(err: unknown): string {
   const status = readStatus(err);
   const message = readMessage(err);
 
+  if (readCode(err) === PATH_SCOPE_EMPTY_CODE) return GENERATION_PATH_SCOPE_EMPTY_MESSAGE;
   if (readCode(err) === "BUDGET_EXCEEDED" || /monthly budget exceeded/i.test(message)) {
     return GENERATION_BUDGET_EXCEEDED_MESSAGE;
   }

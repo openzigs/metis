@@ -20,7 +20,11 @@ export type DocWarningKind =
   /** #1226 — the model's OUTPUT was cut off by the max-tokens cap. */
   | "section-truncated"
   /** #1226 — a declared section group produced nothing in the final document. */
-  | "section-missing";
+  | "section-missing"
+  /** DOCS_GEN_GROUNDING=off — the section was never fact-checked. */
+  | "grounding-skipped"
+  /** DOCS_GEN_GROUNDING=sample — only a sample of the section was fact-checked. */
+  | "grounding-sampled";
 
 export type DocWarningSeverity = "warning" | "error";
 
@@ -96,6 +100,23 @@ export interface DocWarning {
    * warning kind, none of which is ever built from an exception.
    */
   detailSafe?: boolean;
+  /**
+   * DOCS_GEN_GROUNDING=sample — true when the `ratio` on this warning was
+   * computed from a SAMPLE of the section's statements, never from all of
+   * them. Set on every faithfulness warning a sampled check produces, so a
+   * sampled score can never be read as a full verification.
+   */
+  sampled?: boolean;
+  /**
+   * DOCS_GEN_GROUNDING=sample / off — true on the ONE document-level marker
+   * {@link groundingModeRunWarning} adds for the whole run, never on a
+   * per-section warning. Status rests on at least one warning existing
+   * ({@link deriveDocStatus}), and per-section markers can all be absent (a
+   * sample that happened to reach every passage, a section with nothing to
+   * check), so the run's mode needs a marker of its own. Counts of sections
+   * exclude it.
+   */
+  runLevel?: boolean;
 }
 
 /**
@@ -451,6 +472,144 @@ export function groundingUnparseableWarning(
       `Section "${section}" was not fully verified against the source: ${what}. Review it ` +
       `against the code before relying on it. ${remedy}`,
     severity: "warning",
+  };
+}
+
+/** How much of a section a sampled fact-check covered (DOCS_GEN_GROUNDING=sample). */
+export interface GroundingSampleCoverage {
+  /** The configured sample rate in (0, 1]. */
+  rate: number;
+  /** Passages (paragraphs, list blocks, tables) whose statements were checked. */
+  passagesChecked: number;
+  /** Passages in the section. */
+  passagesTotal: number;
+  /** Characters of the section those passages hold. */
+  charsChecked: number;
+  /** Characters of the section's passages in total. */
+  charsTotal: number;
+}
+
+/** "checked N of M passages (about P% of its text)" — shared sample wording. */
+function describeSample(sample: GroundingSampleCoverage): string {
+  const pct =
+    sample.charsTotal > 0 ? Math.round((sample.charsChecked / sample.charsTotal) * 100) : 0;
+  return `${sample.passagesChecked} of its ${sample.passagesTotal} passages (about ${pct}% of its text)`;
+}
+
+/**
+ * DOCS_GEN_GROUNDING=off — the section was written but never fact-checked: no
+ * claim extraction and no faithfulness judge ran. A warning (so the document is
+ * `degraded`, never a clean `ready`) because an unchecked section must not look
+ * verified. No `ratio`: no score exists.
+ */
+export function groundingSkippedWarning(section: string): DocWarning {
+  return {
+    kind: "grounding-skipped",
+    section,
+    message:
+      `Section "${section}" was NOT fact-checked: grounding verification was switched off for ` +
+      `this run (DOCS_GEN_GROUNDING=off), so none of its statements were checked against the ` +
+      `source. Review it against the code before relying on it, or regenerate with ` +
+      `DOCS_GEN_GROUNDING=on for a full check.`,
+    severity: "warning",
+  };
+}
+
+/**
+ * DOCS_GEN_GROUNDING=sample — a section whose SAMPLED faithfulness met its bar.
+ * Still a warning: a sample is an estimate, not a verification, so the section
+ * must not read as fully checked. Carries the sampled `ratio`, flagged
+ * `sampled: true`.
+ */
+export function groundingSampledWarning(
+  section: string,
+  result: {
+    supportedClaims: number;
+    totalClaims: number;
+    faithfulness: number;
+    threshold: number;
+    unparseable?: boolean;
+  },
+  sample: GroundingSampleCoverage,
+): DocWarning {
+  const pct = Math.round(result.faithfulness * 100);
+  const thresholdPct = Math.round(result.threshold * 100);
+  return {
+    kind: "grounding-sampled",
+    section,
+    message:
+      `Section "${section}" was only SPOT-CHECKED (DOCS_GEN_GROUNDING=sample): statements from ` +
+      `${describeSample(sample)} were checked against the source, and ${pct}% of those ` +
+      `(${result.supportedClaims} of ${result.totalClaims}) were supported (bar ${thresholdPct}%). ` +
+      `This is an estimate from a sample, not a full verification — the rest of the section was ` +
+      `not checked.` +
+      (result.unparseable
+        ? " Some of the grounding model's replies could not be parsed, so part of the sample went unchecked too."
+        : ""),
+    severity: "warning",
+    ratio: result.faithfulness,
+    threshold: result.threshold,
+    sampled: true,
+  };
+}
+
+/**
+ * DOCS_GEN_GROUNDING=sample — relabel a below-bar faithfulness warning whose
+ * score came from a sample: the message says so up front and the warning is
+ * flagged `sampled: true`. Kind, tier and ratio are unchanged, so the UI's
+ * tier framing still applies.
+ */
+export function markWarningSampled(
+  warning: DocWarning,
+  sample: GroundingSampleCoverage,
+): DocWarning {
+  return {
+    ...warning,
+    message:
+      `[Spot-check only (DOCS_GEN_GROUNDING=sample): statements from ${describeSample(sample)} ` +
+      `were checked; the figures below are an estimate from that sample, not a full ` +
+      `verification.] ${warning.message}`,
+    sampled: true,
+  };
+}
+
+/** The section label {@link groundingModeRunWarning} uses: it concerns the whole document. */
+export const GROUNDING_RUN_SECTION = "Document";
+
+/**
+ * DOCS_GEN_GROUNDING=sample / off — the document-level marker every non-`on`
+ * run carries, so the document is `degraded` and never `ready` however its
+ * sections fared: a per-section `grounding-sampled` warning is only raised
+ * where the sample left part of a section unchecked, and neither mode marks a
+ * section that had nothing to check. `undefined` for a full-check run.
+ */
+export function groundingModeRunWarning(
+  record: { mode: "sample"; sampleRate: number } | { mode: "off" } | undefined,
+): DocWarning | undefined {
+  if (!record) return undefined;
+  if (record.mode === "off") {
+    return {
+      kind: "grounding-skipped",
+      section: GROUNDING_RUN_SECTION,
+      message:
+        "This document was generated with fact-checking switched off (DOCS_GEN_GROUNDING=off): " +
+        "none of its statements were checked against the source. Regenerate with " +
+        "DOCS_GEN_GROUNDING=on for a full check.",
+      severity: "warning",
+      runLevel: true,
+    };
+  }
+  const pct = Math.round(record.sampleRate * 100);
+  return {
+    kind: "grounding-sampled",
+    section: GROUNDING_RUN_SECTION,
+    message:
+      `This document was only SPOT-CHECKED (DOCS_GEN_GROUNDING=sample, about ${pct}% of each ` +
+      `section's passages): its faithfulness figures are estimates from a sample, not a full ` +
+      `verification, even for a section whose sample happened to cover all of it. Regenerate ` +
+      `with DOCS_GEN_GROUNDING=on for a full check.`,
+    severity: "warning",
+    runLevel: true,
   };
 }
 
@@ -852,7 +1011,10 @@ export function serializeWarnings(warnings: DocWarning[]): string | null {
 export function summarizeWarnings(warnings: DocWarning[]): string {
   if (warnings.length === 0) return "";
   const failed = warnings.filter((w) => w.kind === "section-failed").length;
-  const ungrounded = warnings.filter((w) => w.kind === "section-ungrounded").length;
+  const ungroundedWarnings = warnings.filter((w) => w.kind === "section-ungrounded");
+  const ungrounded = ungroundedWarnings.length;
+  // #186 — a below-bar score from a SAMPLE is an estimate; the line says so.
+  const ungroundedSampled = ungroundedWarnings.filter((w) => w.sampled === true).length;
   const noModules = warnings.filter((w) => w.kind === "no-modules").length;
   const sourceUnavailable = warnings.filter((w) => w.kind === "source-unavailable").length;
   // Two different facts-truncated causes share the kind: an INPUT facts cap per
@@ -871,10 +1033,22 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
   ].sort();
   const outputTruncated = warnings.filter((w) => w.kind === "section-truncated").length;
   const missing = warnings.filter((w) => w.kind === "section-missing").length;
+  // Section counts exclude the run-level marker, which speaks for the document.
+  const notChecked = warnings.filter((w) => w.kind === "grounding-skipped" && !w.runLevel).length;
+  const spotChecked = warnings.filter((w) => w.kind === "grounding-sampled" && !w.runLevel).length;
+  const runNotChecked = warnings.some((w) => w.kind === "grounding-skipped" && w.runLevel);
+  const runSpotChecked = warnings.some((w) => w.kind === "grounding-sampled" && w.runLevel);
   const parts: string[] = [];
   if (failed > 0) parts.push(`${failed} section(s) failed to generate`);
   if (ungrounded > 0)
-    parts.push(`${ungrounded} section(s) include statements not auto-verified against the source`);
+    parts.push(
+      `${ungrounded} section(s) include statements not auto-verified against the source` +
+        (ungroundedSampled === 0
+          ? ""
+          : ungroundedSampled === ungrounded
+            ? " (scored from a sample, DOCS_GEN_GROUNDING=sample)"
+            : ` (${ungroundedSampled} scored from a sample, DOCS_GEN_GROUNDING=sample)`),
+    );
   if (noModules > 0) parts.push("no documentable modules were found despite indexed code");
   if (sourceUnavailable > 0)
     parts.push("source code could not be read — re-ingest the project and regenerate");
@@ -894,6 +1068,17 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
         `DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS and regenerate`,
     );
   if (missing > 0) parts.push(`${missing} declared section(s) are missing from the document`);
+  if (notChecked > 0)
+    parts.push(`${notChecked} section(s) were not fact-checked (DOCS_GEN_GROUNDING=off)`);
+  if (spotChecked > 0)
+    parts.push(`${spotChecked} section(s) were only spot-checked (DOCS_GEN_GROUNDING=sample)`);
+  // The run-level marker adds a line only when no section line already says it.
+  if (runNotChecked && notChecked === 0)
+    parts.push("fact-checking was switched off for this run (DOCS_GEN_GROUNDING=off)");
+  if (runSpotChecked && spotChecked === 0 && ungroundedSampled === 0)
+    parts.push(
+      "fact-checking ran on a sample (DOCS_GEN_GROUNDING=sample) — its scores are estimates, not a full verification",
+    );
   // #330 — a source-unavailable warning is a hard problem (the doc wasn't built
   // from source), so use the alarming "Degraded output" prefix rather than the
   // soft "Needs review" reserved for unverified-but-likely-correct content.

@@ -60,6 +60,15 @@ import {
 } from "../lib/docs-gen/generated-doc-outbox.js";
 import { captureGenerationInputs } from "../lib/docs-gen/generation-inputs.js";
 import {
+  PATH_SCOPE_EMPTY_CODE,
+  pathPrefixesSchema,
+  pathScopeLabel,
+  pathScopeWhere,
+  probePathScope,
+  readStoredPathScope,
+  scopedDocumentTitle,
+} from "../lib/docs-gen/path-scope.js";
+import {
   legacyGeneratedDocVersionManifest,
   parseGeneratedDocVersionManifest,
 } from "../lib/docs-gen/generated-doc-provenance.js";
@@ -169,8 +178,27 @@ const generateSchema = z
      * BEFORE synthesis, so the per-section grounding set includes them.
      */
     groundDomainWithWebResearch: z.boolean().optional().default(false),
+    /**
+     * Path scope: repository-relative prefixes (e.g. `["packages/fit/"]`). Only
+     * code under them is documented. `full` / `repository` scopes only.
+     */
+    pathPrefixes: pathPrefixesSchema.optional(),
   })
   .superRefine((data, ctx) => {
+    if (data.pathPrefixes && data.scope !== "full" && data.scope !== "repository") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "pathPrefixes is only supported when scope is 'full' or 'repository'",
+        path: ["pathPrefixes"],
+      });
+    }
+    if (Object.prototype.hasOwnProperty.call(data.scopeFilter, "pathPrefixes")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Pass pathPrefixes at the top level of the request, not inside scopeFilter",
+        path: ["scopeFilter", "pathPrefixes"],
+      });
+    }
     if (
       data.scope === "repository" &&
       typeof (data.scopeFilter as Record<string, unknown>).repoConnectorId !== "string"
@@ -271,8 +299,38 @@ export function generatedDocsRouter(): Router {
       });
       if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
 
+      let scopedCodeGraphId: string | undefined;
       if (parsed.data.scope === "repository") {
-        await requireRepositoryGraph(projectId, parsed.data.scopeFilter.repoConnectorId as string);
+        scopedCodeGraphId = await requireRepositoryGraph(
+          projectId,
+          parsed.data.scopeFilter.repoConnectorId as string,
+        );
+      }
+      const pathPrefixes = parsed.data.pathPrefixes;
+      if (pathPrefixes) {
+        // Fail fast with a clear 400 instead of a long run that ends empty.
+        // The DB filter over-matches (unescaped LIKE), so each candidate is
+        // confirmed exactly; see probePathScope.
+        const probe = await probePathScope(pathPrefixes, ({ afterId, take }) =>
+          prisma.codeSymbol.findMany({
+            where: {
+              projectId,
+              ...(scopedCodeGraphId ? { codeGraphId: scopedCodeGraphId } : {}),
+              ...(afterId ? { id: { gt: afterId } } : {}),
+              OR: pathScopeWhere(pathPrefixes),
+            },
+            select: { id: true, filePath: true },
+            orderBy: { id: "asc" },
+            take,
+          }),
+        );
+        if (probe === "none") {
+          throw new AppError(
+            400,
+            PATH_SCOPE_EMPTY_CODE,
+            `No indexed code matches pathPrefixes (${pathScopeLabel(pathPrefixes)}). Prefixes are repository-relative, e.g. packages/fit/.`,
+          );
+        }
       }
       // req.user is authenticated by the existing route gate, NOT scope metadata.
       if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
@@ -285,7 +343,10 @@ export function generatedDocsRouter(): Router {
         data: {
           projectId,
           evidencePolicy,
-          title: parsed.data.title,
+          // A scoped document says so in its title, so it is never mistaken for a full one.
+          title: pathPrefixes
+            ? scopedDocumentTitle(parsed.data.title, pathPrefixes)
+            : parsed.data.title,
           scope: parsed.data.scope,
           // Stash docType + actorId inside scopeFilter so we don't need a schema migration.
           scopeFilter: JSON.stringify({
@@ -294,6 +355,7 @@ export function generatedDocsRouter(): Router {
             actorId: req.user?.userId ?? "system",
             // #283 — stash the opt-in domain web-research flag (no schema migration).
             groundDomainWithWebResearch: parsed.data.groundDomainWithWebResearch,
+            ...(pathPrefixes ? { pathPrefixes } : {}),
           }),
           autoUpdate: parsed.data.autoUpdate,
           status: "pending",
@@ -1043,6 +1105,7 @@ export async function generateDocumentAsync(
         docType = filter.docType as DocType;
       }
       const repoConnectorId = policy.repoConnectorId;
+      const pathPrefixes = readStoredPathScope(filter) ?? undefined;
 
       // #283 — opt-in domain web-research grounding. When enabled on the
       // Generate Documentation flow, run the existing WebResearchAugmenter for
@@ -1105,9 +1168,14 @@ export async function generateDocumentAsync(
         projectId,
         policy,
         query: `${doc?.title ?? ""} ${docType.replace(/-/g, " ")}`.trim(),
+        ...(pathPrefixes ? { pathPrefixes } : {}),
       });
       selectedEvidence = grounding?.sources ?? [];
-      const groundingForSection = buildSectionGroundingRetriever({ projectId, policy });
+      const groundingForSection = buildSectionGroundingRetriever({
+        projectId,
+        policy,
+        ...(pathPrefixes ? { pathPrefixes } : {}),
+      });
 
       // The bar never goes backwards, whatever order updates arrive in.
       let lastProgress = 0;
@@ -1127,6 +1195,7 @@ export async function generateDocumentAsync(
             policy,
           },
           ...(repoConnectorId ? { repoConnectorId } : {}),
+          ...(pathPrefixes ? { pathPrefixes } : {}),
           ...(grounding ? { grounding } : {}),
           groundingForSection,
           // #243 — per-section live progress + degraded/failed warnings.

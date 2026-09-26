@@ -207,7 +207,7 @@ export function buildSchedulerHandlerOverrides(
       }),
     publishGeneratedDocument:
       opts.publishGeneratedDocument ??
-      (async (generatedDocumentId, projectId, version, revisionId, signal) => {
+      (async (generatedDocumentId, projectId, version, revisionId, signal, options) => {
         abortGuard(signal);
         const result = await publishGeneratedDocRevision(
           {
@@ -216,7 +216,7 @@ export function buildSchedulerHandlerOverrides(
             version,
             revisionId,
           },
-          { signal },
+          { signal, onProgress: options?.onProgress, finalAttempt: options?.finalAttempt },
         );
         abortGuard(signal);
         return result;

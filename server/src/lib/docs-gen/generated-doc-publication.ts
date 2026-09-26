@@ -3,10 +3,12 @@ import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getDocumentStorage, type StorageBackend } from "../documents/storage.js";
 import { getEmbedder, type Embedder } from "../rag/embedder.js";
+import type { AclSubject } from "@metis/shared";
 import { writeQuarantine, approveDocument, shouldAutoApprove } from "../rag/quarantine.js";
 import { getSchedulerBootstrap } from "../scheduler/index.js";
 import { getVectorStore } from "../rag/vector-store.js";
 import { getBM25Index } from "../rag/bm25-index.js";
+import { embedInBoundedBatches } from "../rag/embed-batched.js";
 import {
   generatedDocRevisionId,
   slugifySectionLabel,
@@ -16,9 +18,28 @@ import { resolveEvidencePolicy } from "./evidence-policy.js";
 
 const log = createChildLogger("docs-gen:publication");
 
-const CHUNK_SIZE = 1500;
+/** Hard upper bound, in characters, on every generated-doc chunk (#189). */
+export const CHUNK_SIZE = 1500;
 
-export const DOCSGEN_CHUNKER_IDENTITY = `docsgen:v1:${CHUNK_SIZE}`;
+/**
+ * v2 (#189): v1 bounded a chunk only at paragraph boundaries, so one paragraph
+ * longer than CHUNK_SIZE (a large table, a fenced block) became one chunk of any
+ * size — 51,081 characters in the document that hung the server. v2 splits such a
+ * paragraph on lines, then on characters, so no chunk exceeds CHUNK_SIZE.
+ */
+export const DOCSGEN_CHUNKER_IDENTITY = `docsgen:v2:${CHUNK_SIZE}`;
+
+/**
+ * Chunk-metadata label carried by every generated-doc chunk (#189). A generated
+ * document is DERIVED output — possibly degraded, possibly scoped to part of the
+ * project — never a primary source. Docs-gen grounding already refuses it
+ * (`evidence-filter.ts`); the label makes the same fact readable to any other
+ * consumer of the chunk.
+ */
+export const GENERATED_DOC_EVIDENCE_CLASS = "derived-generated-doc";
+
+/** Texts per embed call during publication (#189): bounded, never the whole document. */
+export const PUBLICATION_EMBED_BATCH_SIZE = 32;
 export const GENERATED_DOC_PUBLICATION_TASK_TYPE = "publish-generated-document";
 
 export interface GeneratedDocPublicationRequest extends GeneratedDocRevisionKey {
@@ -33,8 +54,21 @@ export type GeneratedDocDeletionRequest = GeneratedDocPublicationTaskPayload & {
   createdById?: string | null;
 };
 
+export interface GeneratedDocPublicationProgress {
+  step: "embed";
+  current: number;
+  total: number;
+}
+
 export interface GeneratedDocPublicationDeps {
   signal?: AbortSignal;
+  /** #189 — progress after each bounded embed batch. */
+  onProgress?: (progress: GeneratedDocPublicationProgress) => void;
+  /**
+   * #189 — this is the task's last attempt. A failure then marks the synthetic
+   * document `failed` instead of leaving it `processing` forever.
+   */
+  finalAttempt?: boolean;
   storage?: StorageBackend;
   embedder?: Embedder;
   enqueueTask?: (input: {
@@ -194,42 +228,28 @@ export async function publishGeneratedDocRevision(
   }
 
   const chunks = chunkGeneratedMarkdown(version.content);
-  const embeddings = chunks.length
-    ? await embedder.embed(chunks.map((chunk) => chunk.text))
-    : { model: "empty", identity: "empty", vectors: [] };
-  if (embeddings.vectors.length !== chunks.length) {
-    throw new Error(
-      `embedder returned ${embeddings.vectors.length} vectors for ${chunks.length} generated-doc chunks`,
-    );
+  try {
+    await embedAndQuarantine({
+      payload,
+      syntheticDocumentId,
+      filename,
+      chunks,
+      embedder,
+      aclSubjects: [...policy.aclSubjects],
+      doc,
+      deps,
+    });
+  } catch (err) {
+    if (!deps.signal?.aborted) {
+      await recordPublicationFailure(
+        syntheticDocumentId,
+        payload.projectId,
+        err,
+        deps.finalAttempt ?? false,
+      );
+    }
+    throw err;
   }
-
-  deps.signal?.throwIfAborted();
-  await writeQuarantine({
-    onlyIfUnpublished: true,
-    documentId: syntheticDocumentId,
-    projectId: payload.projectId,
-    filename,
-    chunks: chunks.map((chunk, index) => ({
-      ord: index,
-      text: chunk.text,
-      md5: createHash("md5").update(chunk.text).digest("hex"),
-      embedding: embeddings.vectors[index] as number[],
-      headings: chunk.heading ? [chunk.heading] : [],
-      metadata: {
-        source: "generated-doc",
-        generatedDocumentId: payload.generatedDocumentId,
-        generatedDocumentVersion: payload.version,
-        generatedRevisionId: payload.revisionId,
-        historyProvenance: "versioned",
-        chunkIndex: index,
-        sectionSlug: chunk.sectionSlug,
-        sectionIndex: chunk.sectionIndex,
-      },
-    })),
-    embeddingModel: embeddings.identity ?? embeddings.model,
-    chunkerIdentity: DOCSGEN_CHUNKER_IDENTITY,
-    aclSubjects: [...policy.aclSubjects],
-  });
 
   const fencedBeforeApprove = await readPublicationSnapshot(payload);
   if (fencedBeforeApprove.status !== "publishable") {
@@ -244,6 +264,7 @@ export async function publishGeneratedDocRevision(
       await reconcileSyntheticDocumentRemoval(syntheticDocumentId, payload.projectId);
       return handleUnpublishableSnapshot(payload, syntheticDocumentId, finalSnapshot);
     }
+    await markAwaitingReview(syntheticDocumentId, payload.projectId);
     await removeOlderPublications(payload);
     return { status: "published", chunkCount: chunks.length, syntheticDocumentId };
   }
@@ -260,6 +281,121 @@ export async function publishGeneratedDocRevision(
   }
   await removeOlderPublications(payload);
   return { status: "published", chunkCount: result.chunkCount, syntheticDocumentId };
+}
+
+type GeneratedDocChunk = ReturnType<typeof chunkGeneratedMarkdown>[number];
+
+/**
+ * #189 — embed in bounded batches (progress + a cancellation point between them;
+ * never the whole document in one call), then park the chunks in quarantine.
+ */
+async function embedAndQuarantine(input: {
+  payload: GeneratedDocPublicationTaskPayload;
+  syntheticDocumentId: string;
+  filename: string;
+  chunks: GeneratedDocChunk[];
+  embedder: Pick<Embedder, "embed">;
+  aclSubjects: AclSubject[];
+  doc: { status: string; scope: string };
+  deps: GeneratedDocPublicationDeps;
+}): Promise<void> {
+  const { payload, chunks, deps } = input;
+  const embeddings = chunks.length
+    ? await embedInBoundedBatches(
+        input.embedder,
+        chunks.map((chunk) => chunk.text),
+        {
+          batchSize: PUBLICATION_EMBED_BATCH_SIZE,
+          signal: deps.signal,
+          onProgress: (current, total) => deps.onProgress?.({ step: "embed", current, total }),
+        },
+      )
+    : { model: "empty", identity: "empty", vectors: [] };
+  if (embeddings.vectors.length !== chunks.length) {
+    throw new Error(
+      `embedder returned ${embeddings.vectors.length} vectors for ${chunks.length} generated-doc chunks`,
+    );
+  }
+
+  deps.signal?.throwIfAborted();
+  await writeQuarantine({
+    onlyIfUnpublished: true,
+    documentId: input.syntheticDocumentId,
+    projectId: payload.projectId,
+    filename: input.filename,
+    chunks: chunks.map((chunk, index) => ({
+      ord: index,
+      text: chunk.text,
+      md5: createHash("md5").update(chunk.text).digest("hex"),
+      embedding: embeddings.vectors[index] as number[],
+      headings: chunk.heading ? [chunk.heading] : [],
+      metadata: {
+        source: "generated-doc",
+        generatedDocumentId: payload.generatedDocumentId,
+        generatedDocumentVersion: payload.version,
+        generatedRevisionId: payload.revisionId,
+        historyProvenance: "versioned",
+        chunkIndex: index,
+        sectionSlug: chunk.sectionSlug,
+        sectionIndex: chunk.sectionIndex,
+        evidenceClass: GENERATED_DOC_EVIDENCE_CLASS,
+        generatedDocumentStatus: input.doc.status,
+        generatedDocumentScope: input.doc.scope,
+      },
+    })),
+    embeddingModel: embeddings.identity ?? embeddings.model,
+    chunkerIdentity: DOCSGEN_CHUNKER_IDENTITY,
+    aclSubjects: input.aclSubjects,
+  });
+}
+
+/**
+ * #189 — chunks parked for operator review are a FINISHED ingest, exactly as for
+ * an uploaded document (`knowledge-service.ingestDocument` marks it `ready` with a
+ * pending-review badge). Before this, the synthetic row stayed `processing`
+ * forever, so every non-auto-approved generated document looked stuck.
+ */
+export async function markAwaitingReview(
+  syntheticDocumentId: string,
+  projectId: string,
+): Promise<void> {
+  await prisma.document.updateMany({
+    where: { id: syntheticDocumentId, projectId, deletedAt: null, indexState: "quarantined" },
+    data: { status: "ready", errorMessage: null, processedAt: new Date() },
+  });
+}
+
+/**
+ * #189 — record a failed attempt on the synthetic document. A retry is still
+ * coming unless this was the last attempt, so only then is the row `failed`;
+ * either way the reason is visible instead of a silent `processing`.
+ */
+async function recordPublicationFailure(
+  syntheticDocumentId: string,
+  projectId: string,
+  err: unknown,
+  terminal: boolean,
+): Promise<void> {
+  const message = `generated-doc publication failed: ${(err as Error)?.message ?? String(err)}`;
+  try {
+    await prisma.document.updateMany({
+      where: {
+        id: syntheticDocumentId,
+        projectId,
+        deletedAt: null,
+        indexState: { in: ["pending", "quarantined"] },
+      },
+      data: {
+        errorMessage: message,
+        ...(terminal ? { status: "failed", processedAt: new Date() } : {}),
+      },
+    });
+  } catch (recordErr) {
+    log.warn("Could not record generated-doc publication failure", {
+      syntheticDocumentId,
+      error: (recordErr as Error).message,
+    });
+  }
 }
 
 async function removeOlderPublications(payload: GeneratedDocPublicationTaskPayload): Promise<void> {
@@ -290,6 +426,7 @@ type PublicationSnapshot =
         id: string;
         projectId: string;
         title: string;
+        status: string;
         deletedAt: Date | null;
         evidencePolicy: string | null;
         scope: string;
@@ -305,7 +442,7 @@ type PublicationSnapshot =
   | { status: "missing-version"; latestVersion: number | null }
   | { status: "superseded"; latestRevisionId: string | null };
 
-async function readPublicationSnapshot(
+export async function readPublicationSnapshot(
   payload: GeneratedDocPublicationTaskPayload,
 ): Promise<PublicationSnapshot> {
   const doc = await prisma.generatedDocument.findFirst({
@@ -317,6 +454,7 @@ async function readPublicationSnapshot(
       id: true,
       projectId: true,
       title: true,
+      status: true,
       deletedAt: true,
       evidencePolicy: true,
       scope: true,
@@ -374,7 +512,7 @@ function handleUnpublishableSnapshot(
   return { status: "skipped", reason: "superseded", syntheticDocumentId };
 }
 
-async function reconcileSyntheticDocumentRemoval(
+export async function reconcileSyntheticDocumentRemoval(
   syntheticDocumentId: string,
   projectId: string,
 ): Promise<void> {
@@ -468,7 +606,8 @@ function generatedDocFilename(generatedDocumentId: string): string {
   return `generated-doc-${generatedDocumentId}.md`;
 }
 
-function chunkGeneratedMarkdown(
+/** Exported for tests (#189): every returned chunk is at most {@link CHUNK_SIZE} characters. */
+export function chunkGeneratedMarkdown(
   markdown: string,
 ): Array<{ text: string; sectionSlug: string; sectionIndex: number; heading: string | null }> {
   if (!markdown.trim()) return [];
@@ -482,29 +621,62 @@ function chunkGeneratedMarkdown(
   for (const [sectionIndex, section] of sections.entries()) {
     const heading = sectionHeading(section);
     const sectionSlug = slugifySectionLabel(heading ?? `section-${sectionIndex + 1}`);
-    if (section.length <= CHUNK_SIZE) {
-      if (section.trim()) {
-        chunks.push({ text: section.trim(), sectionSlug, sectionIndex, heading });
+    const push = (text: string) => {
+      for (const piece of splitOversized(text.trim(), CHUNK_SIZE)) {
+        const trimmed = piece.trim();
+        if (trimmed) chunks.push({ text: trimmed, sectionSlug, sectionIndex, heading });
       }
+    };
+    if (section.length <= CHUNK_SIZE) {
+      push(section);
       continue;
     }
     const paragraphs = section.split(/\n\n+/);
     let current = "";
     for (const para of paragraphs) {
       if (current.length + para.length + 2 > CHUNK_SIZE) {
-        if (current.trim()) {
-          chunks.push({ text: current.trim(), sectionSlug, sectionIndex, heading });
-        }
+        push(current);
         current = para;
       } else {
         current += (current ? "\n\n" : "") + para;
       }
     }
-    if (current.trim()) {
-      chunks.push({ text: current.trim(), sectionSlug, sectionIndex, heading });
-    }
+    push(current);
   }
   return chunks;
+}
+
+/**
+ * #189 — split `text` so no piece exceeds `max` characters: on line breaks first
+ * (a table or a code block stays row-aligned), then, for a single line longer than
+ * `max`, at `max` — never inside a UTF-16 surrogate pair.
+ */
+export function splitOversized(text: string, max: number): string[] {
+  if (text.length <= max) return [text];
+  const pieces: string[] = [];
+  let current = "";
+  const flush = () => {
+    if (current) pieces.push(current);
+    current = "";
+  };
+  for (const line of text.split("\n")) {
+    if (line.length > max) {
+      flush();
+      let start = 0;
+      while (start < line.length) {
+        let end = Math.min(start + max, line.length);
+        const code = line.charCodeAt(end - 1);
+        if (end < line.length && code >= 0xd800 && code <= 0xdbff) end -= 1;
+        pieces.push(line.slice(start, end));
+        start = end;
+      }
+      continue;
+    }
+    if (current && current.length + 1 + line.length > max) flush();
+    current = current ? `${current}\n${line}` : line;
+  }
+  flush();
+  return pieces;
 }
 
 function sectionHeading(section: string): string | null {

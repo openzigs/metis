@@ -100,6 +100,8 @@ const provenanceManifestSchema = z
       .object({
         title: z.string().min(1),
         scope: z.string().min(1),
+        /** Repository-relative path prefixes a scoped document was limited to. */
+        pathPrefixes: z.array(z.string().min(1)).min(1).optional(),
         docType: z.enum(["business-requirements", "architecture", "user-guide"]).nullable(),
         generatedAt: z.string().datetime(),
       })
@@ -134,6 +136,23 @@ const provenanceManifestSchema = z
             phase2: z.object({ mode: z.enum(["single", "hybrid"]) }).strict(),
           })
           .strict(),
+        /**
+         * DOCS_GEN_GROUNDING when it was not `on`: `off` (no section was
+         * fact-checked) or `sample` (scores are estimates from a sample).
+         * Absent = every claim of every section was checked.
+         */
+        grounding: z
+          .discriminatedUnion("mode", [
+            z.object({ mode: z.literal("off") }).strict(),
+            z
+              .object({
+                mode: z.literal("sample"),
+                sampleRate: z.number().gt(0).max(1),
+                minClaims: z.number().int().min(0),
+              })
+              .strict(),
+          ])
+          .optional(),
       })
       .strict(),
     graphFingerprint: z
@@ -394,6 +413,7 @@ export function buildGeneratedDocVersionManifest(input: {
   revision: GeneratedDocRevisionKey;
   title: string;
   scope: string;
+  pathPrefixes?: readonly string[];
   docType: DocType | null;
   generatedAt: Date;
   policy: EvidencePolicy;
@@ -439,6 +459,8 @@ export function buildGeneratedDocVersionManifest(input: {
   };
   sectionSynthesis?: SectionSynthesis;
   regeneration?: GeneratedDocVersionManifest["regeneration"];
+  /** DOCS_GEN_GROUNDING when it was not `on`; omitted for a full check. */
+  grounding?: NonNullable<GeneratedDocVersionManifest["generation"]["grounding"]>;
   sections: Array<{
     sectionLabel: string;
     sectionIndex: number;
@@ -484,6 +506,7 @@ export function buildGeneratedDocVersionManifest(input: {
     document: {
       title: input.title,
       scope: input.scope,
+      ...(input.pathPrefixes?.length ? { pathPrefixes: [...input.pathPrefixes] } : {}),
       docType: input.docType,
       generatedAt: input.generatedAt.toISOString(),
     },
@@ -511,6 +534,7 @@ export function buildGeneratedDocVersionManifest(input: {
         phase1: { version: input.phase1PromptVersion },
         phase2: { mode: input.phase2Router.hybrid ? "hybrid" : "single" },
       },
+      ...(input.grounding ? { grounding: input.grounding } : {}),
     },
     graphFingerprint: {
       algorithm: "sha256",

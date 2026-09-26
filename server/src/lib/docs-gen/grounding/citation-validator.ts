@@ -15,6 +15,7 @@
 import type { GroundingContext } from "./grounding-context.js";
 import type { GroundedClaim, ClaimExtractor } from "./claim-extractor.js";
 import type { ClaimVerdict, FaithfulnessJudge } from "./faithfulness-judge.js";
+import type { GroundingSampleCoverage } from "./degraded-warnings.js";
 
 /** Why a claim failed grounding. */
 export type UngroundedReason = "no-citation" | "unresolved-citation";
@@ -228,6 +229,12 @@ export interface FaithfulnessResult {
    * structured-output mode.
    */
   truncated?: true;
+  /**
+   * DOCS_GEN_GROUNDING=sample — present when the claims were drawn from a
+   * SAMPLE of the section, so the ratio is an estimate, not a verification.
+   * Absent on a full check (the only kind before sampling existed).
+   */
+  sampled?: GroundingSampleCoverage;
 }
 
 /** Minimal extractor surface needed for scoring (eases testing/mocking). */
@@ -290,6 +297,21 @@ export async function scoreFaithfulness(
       ...(truncated ? { truncated: true as const } : {}),
     };
   }
+  return judgeDecomposedClaims(section, claims, ctx, deps);
+}
+
+/**
+ * The judging half of {@link scoreFaithfulness}: score already-decomposed
+ * `claims` against `ctx`. Shared with the sampled check
+ * (DOCS_GEN_GROUNDING=sample), which decomposes only part of a section, so both
+ * paths grade claims identically.
+ */
+export async function judgeDecomposedClaims(
+  section: string,
+  claims: readonly GroundedClaim[],
+  ctx: GroundingContext,
+  deps: ScoreFaithfulnessDeps,
+): Promise<FaithfulnessResult> {
   if (claims.length === 0) {
     // No substantive claims → nothing to verify; clean and (trivially) fine.
     return {
@@ -350,6 +372,15 @@ export function aggregateVerdicts(section: string, verdicts: ClaimVerdict[]): Fa
   };
 }
 
+/**
+ * DOCS_GEN_GROUNDING=sample — true when `result` was computed from only PART of
+ * its section, i.e. its score is an estimate. A sample that happened to cover
+ * every passage is a full check and is not partial.
+ */
+export function isPartialSample(result: Pick<FaithfulnessResult, "sampled">): boolean {
+  return result.sampled != null && result.sampled.passagesChecked < result.sampled.passagesTotal;
+}
+
 /** Compact, human-readable summary of a faithfulness result (warnings/logs). */
 export function summarizeFaithfulness(result: FaithfulnessResult): string {
   if (!result.verified) {
@@ -359,6 +390,11 @@ export function summarizeFaithfulness(result: FaithfulnessResult): string {
   const parts = [`${result.supportedClaims}/${result.totalClaims} claims supported (${pct}%)`];
   if (result.unsupportedClaims.length > 0) {
     parts.push(`${result.unsupportedClaims.length} unsupported`);
+  }
+  if (result.sampled && isPartialSample(result)) {
+    parts.push(
+      `SAMPLED: ${result.sampled.passagesChecked}/${result.sampled.passagesTotal} passages checked`,
+    );
   }
   return parts.join("; ");
 }
