@@ -116,6 +116,20 @@ describe("script book", () => {
     expect(loadOfflineScriptBook({})).toBeUndefined();
   });
 
+  it("is REFUSED under NODE_ENV=production: a stray env var can never make a deployed stub emit tool calls", () => {
+    const f = bookFile(JSON.stringify(BOOK));
+    const warn = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const env = { [OFFLINE_SCRIPT_FILE_ENV]: f, NODE_ENV: "production" };
+      expect(loadOfflineScriptBook(env)).toBeUndefined();
+      expect(OfflineStubProvider.fromEnv(env).capabilities.nativeToolCalls).toBe(false);
+      expect(warn).toHaveBeenCalled();
+      expect(String(warn.mock.calls[0]![0])).toContain("production");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("an unreadable or malformed book is ignored with a warning — the stub behaves as it always has", () => {
     const warn = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {

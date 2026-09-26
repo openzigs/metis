@@ -2334,7 +2334,13 @@ approval exactly as the chat would. Open **Sub-agent transcript** on the call
 to see the task, what it did and its answer. Limits stop runaway hand-offs:
 `SUBAGENT_MAX_DEPTH` (default 2 levels), `SUBAGENT_TOKEN_BUDGET` (default
 200,000 tokens across all hand-offs in one reply) and `SUBAGENT_MAX_TURNS`
-(default 6 model turns each). Turn hand-offs off with `CHAT_SUBAGENTS=false`.
+(default 6 model turns each). The token budget is checked before each model
+call, so the call that crosses it can overshoot it by one response. At most 16
+agents are offered to a chat as hand-off targets (library agents first, then
+custom agents by name); past that the rest are not offered and the server logs
+a warning. An approval rule on the chat's agent (for example "always ask for
+low-risk tools") also applies to every agent it hands off to, at every level.
+Turn hand-offs off with `CHAT_SUBAGENTS=false`.
 
 **Agents and skills — local-model smoke run (manual).** The CI end-to-end test
 (`e2e/tests/agents-skills.spec.ts`) drives this flow with a scripted model. To

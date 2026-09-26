@@ -118,13 +118,21 @@ export const OFFLINE_SCRIPT_FILE_ENV = "AI_OFFLINE_SCRIPT_FILE";
 /**
  * Read the script book named by `AI_OFFLINE_SCRIPT_FILE`, or `undefined` when
  * unset or unreadable (an unreadable book is logged to stderr and ignored —
- * the stub then behaves exactly as it always has).
+ * the stub then behaves exactly as it always has). Refused outright under
+ * `NODE_ENV=production`: a stray env var must never make a deployed offline
+ * stub emit scripted tool calls.
  */
 export function loadOfflineScriptBook(
   env: NodeJS.ProcessEnv = process.env,
 ): OfflineScriptBook | undefined {
   const file = env[OFFLINE_SCRIPT_FILE_ENV]?.trim();
   if (!file) return undefined;
+  if (env.NODE_ENV === "production") {
+    process.stderr.write(
+      `[offline-stub] ignoring ${OFFLINE_SCRIPT_FILE_ENV}: script books are for tests and e2e only, never production\n`,
+    );
+    return undefined;
+  }
   try {
     const raw = JSON.parse(readFileSync(file, "utf8")) as unknown;
     const scenarios = (raw as { scenarios?: unknown }).scenarios;

@@ -45,6 +45,7 @@ import {
   SubAgentBudget,
   loadSubAgentLimits,
   subAgentTools,
+  type AgentToolOwner,
   type AgentToolsContext,
   type SubAgentRunRecord,
   type SubAgentRunStore,
@@ -118,18 +119,15 @@ function ctxFor(provider: AIProvider, over: Partial<AgentToolsContext> = {}): Ag
   return {
     provider,
     model: "m",
-    session: {
-      id: "s1",
-      userId: "u1",
-      projectId: "p1",
-      policy: JSON.stringify({ low: "auto", medium: "auto", high: "auto" }),
-    },
+    session: { id: "s1", userId: "u1", projectId: "p1" },
     callable: [],
     limits: { maxDepth: 2, tokenBudget: 1_000_000, maxTurns: 6 },
     budget: new SubAgentBudget(1_000_000),
     ...over,
   };
 }
+
+const ALL_AUTO = { low: "auto", medium: "auto", high: "auto" } as const;
 
 const rctx = { sessionId: "s1", userId: "u1", projectId: "p1", callId: "call-1" };
 
@@ -172,7 +170,7 @@ describe("subAgentTools — which agents an owner may call", () => {
 
   it("none at or past the depth limit", () => {
     const ctx = ctxFor(provider, { callable: [a, b] });
-    const owner = { runId: null, allowlist: null, baseToolset: makeToolset([]) };
+    const owner = { runId: null, allowlist: null, baseToolset: makeToolset([]), policy: ALL_AUTO };
     expect(subAgentTools(ctx, { ...owner, depth: 1 }, new Set())).toHaveLength(2);
     expect(subAgentTools(ctx, { ...owner, depth: 2 }, new Set())).toHaveLength(0);
   });
@@ -188,6 +186,7 @@ describe("subAgentTools — which agents an owner may call", () => {
         runId: null,
         allowlist: ["agent:custom:alpha", "agent:custom:alpha2"],
         baseToolset: makeToolset([]),
+        policy: ALL_AUTO,
         selfRef: "custom:beta",
       },
       taken,
@@ -202,7 +201,7 @@ describe("subAgentTools — which agents an owner may call", () => {
   it("validates the delegated task before anything runs", () => {
     const [t] = subAgentTools(
       ctxFor(provider, { callable: [a] }),
-      { depth: 0, runId: null, allowlist: null, baseToolset: makeToolset([]) },
+      { depth: 0, runId: null, allowlist: null, baseToolset: makeToolset([]), policy: ALL_AUTO },
       new Set(),
     );
     expect(t!.validate({ task: "do it" }).ok).toBe(true);
@@ -219,12 +218,20 @@ describe("running a sub-agent", () => {
     target: AgentDefinitionDto,
     over: Partial<AgentToolsContext> = {},
     base: RuntimeTool[] = [],
+    ownerOver: Partial<AgentToolOwner> = {},
   ) {
     const mem = memoryStore();
     const ctx = ctxFor(provider, { callable: [target], store: mem.store, ...over });
     const [t] = subAgentTools(
       ctx,
-      { depth: 0, runId: null, allowlist: null, baseToolset: makeToolset(base) },
+      {
+        depth: 0,
+        runId: null,
+        allowlist: null,
+        baseToolset: makeToolset(base),
+        policy: ALL_AUTO,
+        ...ownerOver,
+      },
       new Set(),
     );
     return { t: t!, ...mem, ctx };
@@ -408,5 +415,136 @@ describe("running a sub-agent", () => {
     expect(broker.request).toHaveBeenCalledTimes(1);
     expect(readRun).not.toHaveBeenCalled();
     expect(approvals.find((a) => a.toolName === "read")).toMatchObject({ decision: "deny" });
+  });
+
+  // ── Review of PR #239: a restriction on one level must reach every level below ──
+
+  it("the CALLER's policy reaches the sub-agent: caller {low: always-prompt}, sub-agent no override ⇒ a low tool still prompts", async () => {
+    const d = def("x", { toolAllowlist: ["read"] });
+    storeRow(d);
+    const readRun = vi.fn(async () => ({ text: "read ok" }));
+    const provider = new OfflineStubProvider({
+      script: [{ toolCalls: [{ id: "r", name: "read", args: {} }] }, { content: "done" }],
+    });
+    const broker = { request: vi.fn(async () => "deny" as const) };
+    const { t } = setup(provider, d, { broker: broker as never }, [tool("read", readRun)], {
+      policy: { ...ALL_AUTO, low: "always-prompt" },
+    });
+    await t.execute({ task: "go" }, rctx);
+    expect(broker.request).toHaveBeenCalledTimes(1);
+    expect(readRun).not.toHaveBeenCalled();
+    expect(approvals.find((a) => a.toolName === "read")).toMatchObject({
+      decision: "deny",
+      sessionId: "s1",
+      userId: "u1",
+    });
+  });
+
+  it("…and a MIDDLE agent's override reaches the agent it delegates to (sub-sub-agent)", async () => {
+    const middle = def("middle", { toolAllowlist: ["read", "agent:custom:inner"] });
+    const inner = def("inner", { toolAllowlist: ["read"] });
+    storeRow(middle);
+    storeRow(inner);
+    rows.custom.get("middle")!.approvalPolicy = JSON.stringify({ low: "always-prompt" });
+    const readRun = vi.fn(async () => ({ text: "read ok" }));
+    const provider = new OfflineStubProvider({
+      script: [
+        { toolCalls: [{ id: "m1", name: "agent_inner", args: { task: "read it" } }] },
+        { toolCalls: [{ id: "i1", name: "read", args: {} }] },
+        { content: "inner done" },
+        { content: "middle done" },
+      ],
+    });
+    const broker = { request: vi.fn(async () => "deny" as const) };
+    const mem = memoryStore();
+    const ctx = ctxFor(provider, {
+      callable: [middle, inner],
+      store: mem.store,
+      broker: broker as never,
+    });
+    const [t] = subAgentTools(
+      ctx,
+      {
+        depth: 0,
+        runId: null,
+        allowlist: ["agent:custom:middle"],
+        baseToolset: makeToolset([tool("read", readRun)]),
+        policy: ALL_AUTO,
+      },
+      new Set(),
+    );
+    await t!.execute({ task: "go" }, rctx);
+    // The inner agent really ran (depth 2) and really named `read`…
+    expect(mem.created.map((c) => [c.agentRef, c.depth])).toEqual([
+      ["custom:middle", 1],
+      ["custom:inner", 2],
+    ]);
+    // …and the middle agent's `low: always-prompt` still held for it.
+    expect(broker.request).toHaveBeenCalledTimes(1);
+    expect(broker.request.mock.calls[0]![0]).toMatchObject({ toolName: "read" });
+    expect(readRun).not.toHaveBeenCalled();
+  });
+
+  it("a tool WITHHELD from the caller is still refused AND recorded when a sub-agent names it", async () => {
+    const d = def("x", { toolAllowlist: ["read"] });
+    storeRow(d);
+    const provider = new OfflineStubProvider({
+      script: [{ toolCalls: [{ id: "s", name: "secret", args: {} }] }, { content: "done" }],
+    });
+    const mem = memoryStore();
+    const ctx = ctxFor(provider, { callable: [d], store: mem.store });
+    const [t] = subAgentTools(
+      ctx,
+      {
+        depth: 0,
+        runId: null,
+        allowlist: null,
+        baseToolset: makeToolset([tool("read")], [{ name: "secret", risk: "high" }]),
+        policy: ALL_AUTO,
+      },
+      new Set(),
+    );
+    await t!.execute({ task: "go" }, rctx);
+    expect(approvals.find((a) => a.toolName === "secret")).toMatchObject({
+      decision: "deny",
+      reason: "not_in_agent_allowlist",
+      sessionId: "s1",
+      userId: "u1",
+    });
+    expect(mem.completed.get("run-1")!.toolCalls[0]).toMatchObject({
+      tool: "secret",
+      executed: false,
+    });
+  });
+
+  it("a sub-agent's tool events and approval requests carry call ids NAMESPACED by its run (no collision with the caller's)", async () => {
+    const d = def("x", { toolAllowlist: ["read"] });
+    storeRow(d);
+    rows.custom.get("x")!.approvalPolicy = JSON.stringify({ low: "always-prompt" });
+    const provider = new OfflineStubProvider({
+      // The same id the caller used for the delegation itself.
+      script: [{ toolCalls: [{ id: "call-1", name: "read", args: {} }] }, { content: "done" }],
+    });
+    const events: Array<Record<string, unknown>> = [];
+    const broker = {
+      request: vi.fn(async (_req: unknown, onTicket: (t: unknown) => void) => {
+        onTicket({ approvalId: "ap-1", expiresAt: Date.now() + 1000 });
+        return "deny" as const;
+      }),
+    };
+    const { t } = setup(
+      provider,
+      d,
+      { broker: broker as never, onToolEvent: (e) => events.push(e as never) },
+      [tool("read")],
+    );
+    await t.execute({ task: "go" }, rctx);
+    expect(events.length).toBeGreaterThan(0);
+    for (const e of events) {
+      expect(e.callId).toBe("run-1/call-1");
+      expect(e.viaAgent).toMatchObject({ name: "Agent x", parentCallId: "call-1", depth: 1 });
+    }
+    expect(events.some((e) => e.phase === "awaiting_approval")).toBe(true);
+    expect(broker.request.mock.calls[0]![0]).toMatchObject({ callId: "run-1/call-1" });
   });
 });

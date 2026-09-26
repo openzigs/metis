@@ -612,6 +612,35 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(ask).toMatchObject({ name: "danger_write", viaAgent: { name: "Writer", depth: 1 } });
       });
 
+      it("the chat agent's approval override reaches its sub-agent: {low: always-prompt} on the caller, none on the sub-agent ⇒ the sub-agent's low tool still prompts", async () => {
+        await db.agent.update({
+          where: { id: IDS.lead },
+          data: { approvalPolicy: JSON.stringify({ low: "always-prompt" }) },
+        });
+        try {
+          // The delegation (medium) runs unprompted; count_rows is LOW — `auto`
+          // for the session, but the calling agent said low must prompt.
+          const sid = await newSession({
+            projectId: IDS.project,
+            agentId: IDS.lead,
+            policy: { medium: "auto" },
+          });
+          const pending = send(sid, "SCN-DELEGATE go").then((r) => r);
+          const p = await waitForPending(sid);
+          expect(p.toolName).toBe("count_rows");
+          await decide(sid, p.approvalId, "deny");
+          const res = await pending;
+          expect(res.status).toBe(200);
+          expect(countExec).not.toHaveBeenCalled();
+          const row = await db.aIToolApproval.findFirst({
+            where: { sessionId: sid, toolName: "count_rows" },
+          });
+          expect(row).toMatchObject({ decision: "deny", reason: "user_denied", userId: IDS.alice });
+        } finally {
+          await db.agent.update({ where: { id: IDS.lead }, data: { approvalPolicy: null } });
+        }
+      });
+
       it("…and approved, it runs exactly once", async () => {
         const sid = await newSession({
           projectId: IDS.project,

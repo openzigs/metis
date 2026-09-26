@@ -191,7 +191,10 @@ export interface ResolveSessionToolsInput {
     agentId: string | null;
     /** #146 — the session's skills (JSON array of ids). */
     loadedSkillIds?: string;
-    /** #147 — the session's stored policy (the sub-agents' gates start from it). */
+    /**
+     * #147 — the session's stored policy. Tightened by the session agent's
+     * override, it is the policy the sub-agents' gates start from.
+     */
     policy?: string;
   };
   provider: AIProvider;
@@ -302,12 +305,7 @@ export async function resolveSessionTools(
         const ctx: AgentToolsContext = {
           provider: input.provider,
           model: input.model,
-          session: {
-            id: input.session.id,
-            userId: input.session.userId,
-            projectId,
-            policy: input.session.policy ?? "",
-          },
+          session: { id: input.session.id, userId: input.session.userId, projectId },
           callable,
           limits,
           budget: new SubAgentBudget(limits.tokenBudget),
@@ -320,7 +318,15 @@ export async function resolveSessionTools(
         };
         const tools = subAgentTools(
           ctx,
-          { depth: 0, runId: null, allowlist: agentAllowlist, baseToolset: base },
+          {
+            depth: 0,
+            runId: null,
+            allowlist: agentAllowlist,
+            baseToolset: base,
+            // Exactly what the session gate enforces (see `sessionGate`): the
+            // session agent's override travels down to every sub-agent.
+            policy: effectivePolicy(parsePolicyJson(input.session.policy), agent.approvalOverride),
+          },
           taken,
         );
         if (tools.length > 0) {

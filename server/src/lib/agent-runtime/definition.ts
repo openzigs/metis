@@ -25,8 +25,11 @@ import type {
 } from "@metis/shared";
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
+import { createChildLogger } from "../logger.js";
 import { lookupCatalogEntry } from "../ai/model-catalog.js";
 import { readStoredOverride } from "./policy.js";
+
+const log = createChildLogger("agent-definition");
 
 const REASONING = new Set(["low", "medium", "high"]);
 
@@ -193,6 +196,8 @@ export async function loadAgentDefinition(
  *     The library's "no rows ⇒ everything" picker default is deliberately NOT
  *     used here: exposing every library agent as a tool is an opt-in, not a
  *     side effect of installing an agent.
+ * At most `limit` (default 16) are returned — library agents first, then custom
+ * agents by name; past the cap the rest are dropped with a warning.
  */
 export async function listCallableAgents(
   projectId: string,
@@ -227,7 +232,16 @@ export async function listCallableAgents(
           include: LIBRARY_INCLUDE,
           orderBy: { key: "asc" },
         });
-  return [...library.map(libraryDefinition), ...custom.map(customDefinition)].slice(0, limit);
+  const all = [...library.map(libraryDefinition), ...custom.map(customDefinition)];
+  if (all.length > limit) {
+    // Never silent: the agents past the cap are simply not offered as tools.
+    log.warn("More callable agents than can be offered as tools; the rest are not offered", {
+      projectId,
+      callable: all.length,
+      offered: limit,
+    });
+  }
+  return all.slice(0, limit);
 }
 
 /**

@@ -8,15 +8,24 @@
  *   • A sub-agent call is itself a tool call: it passes the caller's approval
  *     gate (risk `medium`) and is audited like any other.
  *   • A sub-agent gets a gate of its OWN, bound to the SAME session and user,
- *     with the session's policy tightened by the agent's override — so every
- *     tool it calls still needs the same person's approval. A sub-agent is
- *     never an approval bypass.
+ *     whose policy is its CALLER's effective policy (the session's, tightened
+ *     by every agent above it) tightened again by its own override — so every
+ *     tool it calls still needs the same person's approval, at least as often
+ *     as its caller's would. A sub-agent is never an approval bypass.
+ *   • Every per-agent restriction is passed DOWN each level explicitly (the
+ *     policy, the toolset, the withheld list): a sub-agent's gate is built
+ *     separately, so nothing reaches it that is not handed to it.
  *   • A sub-agent's tools are its caller's tools INTERSECTED with its own
  *     allowlist: it can never use a tool outside its allowlist, and it can never
  *     gain a tool its caller did not have. Its gate's allowlist is exactly that
  *     toolset, so a name it was not given is refused and recorded.
  *   • Depth (`SUBAGENT_MAX_DEPTH`) and a token budget shared by the whole tree
- *     for one reply (`SUBAGENT_TOKEN_BUDGET`) stop runaway recursion.
+ *     for one reply (`SUBAGENT_TOKEN_BUDGET`) stop runaway recursion. The
+ *     budget is checked BEFORE each model call and charged after it, so it is
+ *     a soft cap: the call that crosses it may overshoot by one response.
+ *   • A sub-agent's tool events and approval requests carry call ids
+ *     namespaced by its run (`<runId>/<callId>`), so they never collide with
+ *     the caller's in the UI (a fresh loop's fallback ids restart at `call_1`).
  *   • Each run's transcript is stored (`ai_subagent_runs`) and linked from the
  *     caller's tool call (`subAgentRunId`).
  *
@@ -33,6 +42,7 @@ import { createChildLogger } from "../logger.js";
 import { getConfigService } from "../config/config-service.js";
 import type {
   AIProvider,
+  ApprovalPolicy,
   ChatMessage,
   ChatOptions,
   ChatResponse,
@@ -42,7 +52,6 @@ import { resolveCapabilities } from "../ai/capabilities.js";
 import {
   ApprovalGateService,
   matchesToolRef,
-  parsePolicyJson,
   sessionApprovalMemory,
 } from "../ai/approval-policy.js";
 import {
@@ -224,7 +233,12 @@ export interface AgentToolsContext {
   provider: AIProvider;
   /** The session's model (a sub-agent without a catalog-known preference uses it). */
   model: string;
-  session: { id: string; userId: string; projectId: string | null; policy: string };
+  /**
+   * The session a sub-agent's gate is bound to. Its POLICY is deliberately not
+   * here: the policy a sub-agent starts from is its caller's EFFECTIVE policy
+   * (`AgentToolOwner.policy`), never the bare session policy.
+   */
+  session: { id: string; userId: string; projectId: string | null };
   /** Agents this project may call (see `listCallableAgents`). */
   callable: readonly AgentDefinitionDto[];
   limits: SubAgentLimits;
@@ -252,8 +266,19 @@ export interface AgentToolOwner {
   runId: string | null;
   /** The owner's allowlist; `null` admits every callable agent. */
   allowlist: readonly string[] | null;
-  /** The owner's own (non-agent) tools — what a sub-agent may be given. */
+  /**
+   * The owner's own (non-agent) tools — what a sub-agent may be given. Its
+   * `withheldTools` are inherited, so a sub-agent naming one is refused AND
+   * recorded exactly as the owner would be.
+   */
   baseToolset: RuntimeToolset;
+  /**
+   * The owner's EFFECTIVE approval policy — the session's, tightened by the
+   * override of every agent from the session's own down to this owner. A
+   * sub-agent's gate starts from it and can only tighten it further. Required,
+   * so no owner can be built that silently falls back to the session's policy.
+   */
+  policy: ApprovalPolicy;
   /** The owner's own ref (an agent never calls itself). */
   selfRef?: string;
 }
@@ -385,10 +410,22 @@ async function runSubAgent(
     db,
     ...(ctx.allowlist ? { allowlist: ctx.allowlist } : {}),
   });
-  const via = { name: def.name, parentCallId: rctx.callId ?? "unknown", depth };
+  // Call ids are namespaced by the run: the caller's own ids (and a fresh
+  // loop's `call_1` fallback) would otherwise collide in the UI, which keys a
+  // row — and its approval prompt — on the call id alone.
+  const ns = (id: string): string => (id.startsWith(`${run.id}/`) ? id : `${run.id}/${id}`);
+  const parentCallId = rctx.callId ?? "unknown";
+  const via = {
+    name: def.name,
+    parentCallId: owner.runId ? `${owner.runId}/${parentCallId}` : parentCallId,
+    depth,
+  };
   const onToolEvent = ctx.onToolEvent
-    ? (ev: ToolEvent) => ctx.onToolEvent!({ ...ev, viaAgent: ev.viaAgent ?? via })
+    ? (ev: ToolEvent) =>
+        ctx.onToolEvent!({ ...ev, callId: ns(ev.callId), viaAgent: ev.viaAgent ?? via })
     : undefined;
+  // The caller's effective policy, tightened by this agent's own override.
+  const policy = effectivePolicy(owner.policy, def.approvalPolicy);
   const turns: string[] = [];
   const records: ChatToolRecord[] = [];
   let usage: TokenUsage = { ...ZERO };
@@ -409,8 +446,17 @@ async function runSubAgent(
   try {
     let content: string;
     if (native) {
-      const toolset = childToolset(ctx, owner, def, run.id, catalog);
-      const policy = effectivePolicy(parsePolicyJson(ctx.session.policy), def.approvalPolicy);
+      const toolset = childToolset(ctx, owner, def, run.id, catalog, policy);
+      const prompter = brokerPrompter({
+        broker: ctx.broker ?? getToolApprovalBroker(),
+        toolset,
+        projectId: ctx.session.projectId,
+        ...(ctx.approvalTimeoutMs && ctx.approvalTimeoutMs > 0
+          ? { timeoutMs: ctx.approvalTimeoutMs }
+          : {}),
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+        ...(onToolEvent ? { onEvent: onToolEvent } : {}),
+      });
       const gate = new ApprovalGateService({
         sessionId: ctx.session.id,
         userId: ctx.session.userId,
@@ -418,16 +464,10 @@ async function runSubAgent(
         // Exactly the tools this sub-agent was given: anything else is refused.
         agentAllowlist: toolset.tools.map((t) => t.name),
         rememberedApproval: sessionApprovalMemory(ctx.session.id),
-        prompter: brokerPrompter({
-          broker: ctx.broker ?? getToolApprovalBroker(),
-          toolset,
-          projectId: ctx.session.projectId,
-          ...(ctx.approvalTimeoutMs && ctx.approvalTimeoutMs > 0
-            ? { timeoutMs: ctx.approvalTimeoutMs }
-            : {}),
-          ...(ctx.signal ? { signal: ctx.signal } : {}),
-          ...(onToolEvent ? { onEvent: onToolEvent } : {}),
-        }),
+        // The pending approval carries the same namespaced id as the events.
+        prompter: {
+          ask: (req) => prompter.ask(req.callId ? { ...req, callId: ns(req.callId) } : req),
+        },
       });
       const result = await runAgent({
         provider: ctx.provider,
@@ -555,8 +595,9 @@ function addUsage(a: TokenUsage, b: Partial<TokenUsage> | undefined): TokenUsage
 /**
  * A sub-agent's toolset: its caller's own tools INTERSECTED with its allowlist
  * (`null` inherits them all), plus its own `load_skill` and — below the depth
- * limit — the sub-agents IT may call. The caller's tools it may not use are
- * recorded as withheld, so a call to one is refused as an allowlist denial.
+ * limit — the sub-agents IT may call. The caller's tools it may not use, and
+ * every tool withheld from the caller itself, are recorded as withheld, so a
+ * call to one is refused as an allowlist denial (and recorded).
  */
 function childToolset(
   ctx: AgentToolsContext,
@@ -564,10 +605,11 @@ function childToolset(
   def: AgentDefinitionDto,
   runId: string,
   catalog: Awaited<ReturnType<typeof resolveSkillCatalog>>,
+  policy: ApprovalPolicy,
 ): RuntimeToolset {
   const allow = def.toolAllowlist;
   const base: RuntimeTool[] = [];
-  const withheld: WithheldTool[] = [];
+  const withheld: WithheldTool[] = [...owner.baseToolset.withheldTools];
   for (const t of owner.baseToolset.tools) {
     if (admits(allow, t.name)) base.push(t);
     else withheld.push({ name: t.name, risk: t.risk });
@@ -589,7 +631,8 @@ function childToolset(
     depth: owner.depth + 1,
     runId,
     allowlist: allow,
-    baseToolset: makeToolset(base),
+    baseToolset: makeToolset(base, withheld),
+    policy,
     selfRef: def.ref,
   };
   own.push(...subAgentTools(ctx, childOwner, taken));

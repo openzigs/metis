@@ -711,7 +711,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "int",
     schema: z.coerce.number().int().min(0).max(5_000_000),
     description:
-      "Tokens that ALL sub-agent calls made while answering one chat message may spend together (#147). A sub-agent that would start past the budget does not run, and one that runs out stops; both are recorded. Default 200000.",
+      "Tokens that ALL sub-agent calls made while answering one chat message may spend together (#147). A sub-agent that would start past the budget does not run, and one that runs out stops; both are recorded. It is checked before each model call, so the call that crosses it can overshoot by one response. Default 200000.",
     sensitive: false,
   },
   SUBAGENT_MAX_TURNS: {
