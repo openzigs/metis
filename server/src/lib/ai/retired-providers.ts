@@ -16,6 +16,7 @@
  * base URL, key or model.
  */
 import { AI_PROVIDER_KEYS } from "@metis/shared";
+import { AIConfigError } from "./errors.js";
 
 /** Provider keys that were supported once and are now refused by name. */
 export const RETIRED_PROVIDER_KEYS = ["copilot-native"] as const;
@@ -29,6 +30,17 @@ export function isRetiredProviderKey(value: unknown): value is RetiredProviderKe
   if (typeof value !== "string") return false;
   const v = value.trim().toLowerCase();
   return (RETIRED_PROVIDER_KEYS as readonly string[]).includes(v);
+}
+
+/**
+ * True for the refusal the factory and config loader throw when a retired
+ * provider is selected: an {@link AIConfigError} whose details name it. Callers
+ * use this to pass the refusal through unchanged instead of re-labelling it.
+ */
+export function isRetiredProviderError(err: unknown): err is AIConfigError {
+  if (!(err instanceof AIConfigError)) return false;
+  const details = err.details as { retiredProvider?: unknown } | undefined;
+  return typeof details?.retiredProvider === "string";
 }
 
 /** Where a retired provider name was found — shapes the first sentence only. */

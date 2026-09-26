@@ -22,7 +22,7 @@ METIS never silently swaps a removed provider for another one. On most deploymen
 |---|---|
 | `AI_PROVIDER=copilot-native` in the environment | The server **refuses to start**. The log names the supported providers and this page. |
 | `AI_PROVIDER` set to `copilot-native` in the runtime configuration (Admin → Settings) | The server starts, logs an error at boot, and **refuses every AI call** with the same message until you change the setting. (It cannot refuse to start: the fix is made in the running app.) The settings page no longer accepts `copilot-native`. |
-| A project's AI provider override is `copilot-native` | New chat sessions in that project are refused (`409 AI_PROVIDER_RETIRED`), and the project's provider picker shows the value as "no longer supported". Choose another provider or the global default and save. |
+| A project's AI provider override is `copilot-native` | New chat sessions and Spec Kit commands in that project are refused (`409 AI_PROVIDER_RETIRED`), and the project's provider picker shows the value as "no longer supported". Choose another provider or the global default and save. |
 | A chat session created on `copilot-native` | The session stays **readable** — transcript, resume and the session list all work — but it is **read-only**: sending a message, streaming, compacting, forking or queuing an async message answers `409 AI_SESSION_PROVIDER_RETIRED`, and the chat page shows a notice and disables the composer. Start a new chat. |
 | `COPILOT_PROVIDER_BASE_URL` / `COPILOT_PROVIDER_API_KEY` / `COPILOT_MODEL` with `AI_PROVIDER=openai` or `azure`, and the new name unset | The server refuses to start and names each rename (below). These were read as a fallback until #149. |
 
@@ -64,7 +64,11 @@ METIS never silently swaps a removed provider for another one. On most deploymen
 5. **Morph `apply_diff` users only:** the Morph call used to run inside the sidecar. It now
    runs in the server: set `MORPH_APPLY_ENABLED=true` and `MORPH_API_KEY` on the **server**
    (optionally `MORPH_API_URL`, `MORPH_MODEL`, `MORPH_APPLY_TIMEOUT_MS`). Without them the
-   tool falls back to a local whole-file rewrite, exactly as before.
+   tool falls back to a local whole-file rewrite, exactly as before. The shipped
+   `docker-compose*.yml` files and Helm chart do **not** forward any `MORPH_*` variable to the
+   server container, so add them yourself: under the `server` service's `environment:` in
+   Compose, or under `server.env` in your Helm values (keep `MORPH_API_KEY` in a Secret, not
+   in plain values).
 
 6. **Optional cleanup on disk.** Per-session Copilot home directories lived under
    `$METIS_SESSIONS_HOME` (default `~/.metis-sessions`) and Copilot auth under

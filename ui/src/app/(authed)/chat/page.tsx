@@ -209,6 +209,9 @@ export default function ChatPage() {
     setMessages([]);
     setError(null);
     setCompactionNote(null);
+    // Per-session UI state is reset here AND in the session-load effect; a
+    // read-only notice left over from a resumed session would lock the new one.
+    setReadOnlyReason(null);
     setSession(null);
     void (async () => {
       try {

@@ -140,7 +140,7 @@ jobs:
       # This gate previously allowed 1200 MB. That was NOT the real budget — it
       # was an arm64 allowance, because the runner was arm64 and a
       # native pnpm install there pulled in ~650 MB of arm64-specific platform
-      # binaries (@lancedb, @github/copilot-sdk, @napi-rs/canvas) that the amd64
+      # binaries (@lancedb, @napi-rs/canvas, and the since-removed Copilot SDK) that the amd64
       # equivalents do not carry. GitHub-hosted runners are amd64, so the build
       # is native and the documented amd64 budget applies again. Leaving 1200
       # here would have left the gate 3.4x looser than intended, silently

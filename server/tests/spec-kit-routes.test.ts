@@ -591,6 +591,24 @@ describe("/api/projects/:projectId/spec-kit provider injection (#381)", () => {
     expect(res.body.error.code).toBe("AI_PROVIDER_KEY_UNAVAILABLE");
   });
 
+  it("a project override naming a retired provider is a 409 AI_PROVIDER_RETIRED, like chat (#149)", async () => {
+    const { AIConfigError } = await import("../src/lib/ai/errors.js");
+    const { retiredProviderMessage } = await import("../src/lib/ai/retired-providers.js");
+    resolveProjectProvider.mockRejectedValueOnce(
+      new AIConfigError(retiredProviderMessage("copilot-native", "project"), {
+        retiredProvider: "copilot-native",
+      }),
+    );
+    const res = await request(makeApp())
+      .post("/api/projects/p1/spec-kit/commands/specify")
+      .send({ input: "x" });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("AI_PROVIDER_RETIRED");
+    expect(res.body.error.message).toContain('override is "copilot-native"');
+    const { runSpecify } = await import("../src/lib/spec-kit/commands/specify.js");
+    expect(runSpecify).not.toHaveBeenCalled();
+  });
+
   it("implement does NOT resolve a provider (no LLM call)", async () => {
     const res = await request(makeApp())
       .post("/api/projects/p1/spec-kit/commands/implement")

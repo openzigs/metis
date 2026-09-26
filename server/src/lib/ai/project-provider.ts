@@ -23,6 +23,7 @@
 import { loadAIConfig, type AIConfig } from "./config.js";
 import { buildProvider } from "./providers/factory.js";
 import { AIProviderError } from "./errors.js";
+import { isRetiredProviderError } from "./retired-providers.js";
 import type { AIProvider, ProviderKey } from "./types.js";
 import { prisma } from "../prisma.js";
 
@@ -78,6 +79,9 @@ export async function resolveProjectProvider(projectId: string): Promise<AIProvi
   try {
     return buildProvider({ config });
   } catch (err) {
+    // #149 — a project override naming a removed provider is not a credentials
+    // problem: pass the refusal through so the route answers 409, as chat does.
+    if (isRetiredProviderError(err)) throw err;
     // Re-shape any provider-construction failure into the typed 502 the route
     // maps to AI_PROVIDER_KEY_UNAVAILABLE. The message is the SDK/config
     // message (never the key itself); details are dropped to avoid leaking
