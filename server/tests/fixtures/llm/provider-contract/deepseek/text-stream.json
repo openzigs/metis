@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "runtime": "deepseek",
+  "wire": "anthropic-messages",
+  "scenario": "text-stream",
+  "key": "a8a88b030d13605cd4e34203b26fa9863e2008e609c24c1da82d6537272cc905",
+  "model": "deepseek-v4-pro",
+  "recordedAt": "2026-09-26T16:02:03.312Z",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/anthropic/v1/messages",
+        "body": {
+          "model": "deepseek-v4-pro",
+          "max_tokens": 512,
+          "messages": [
+            {
+              "role": "user",
+              "content": "Reply with exactly: Streamed answer."
+            }
+          ],
+          "system": "You are producing a contract-test recording. Follow the instruction exactly.",
+          "thinking": {
+            "type": "disabled"
+          },
+          "stream": true
+        }
+      },
+      "response": {
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "sse": [
+          "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_recorded\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4-pro\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":25,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":0,\"service_tier\":\"standard\"}}}",
+          "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+          "event: ping\ndata: {\"type\":\"ping\"}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Stream\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ed\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" answer\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\".\"}}",
+          "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}",
+          "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":25,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":4,\"service_tier\":\"standard\"}}",
+          "event: message_stop\ndata: {\"type\":\"message_stop\"}"
+        ]
+      }
+    }
+  ],
+  "result": {
+    "kind": "stream",
+    "chunks": [
+      {
+        "type": "delta",
+        "content": "Stream"
+      },
+      {
+        "type": "delta",
+        "content": "ed"
+      },
+      {
+        "type": "delta",
+        "content": " answer"
+      },
+      {
+        "type": "delta",
+        "content": "."
+      },
+      {
+        "type": "usage",
+        "usage": {
+          "promptTokens": 25,
+          "completionTokens": 4,
+          "totalTokens": 29,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0
+        }
+      },
+      {
+        "type": "done",
+        "finishReason": "end_turn"
+      }
+    ]
+  }
+}

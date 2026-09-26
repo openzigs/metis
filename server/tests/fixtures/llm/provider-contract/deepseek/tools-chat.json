@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "runtime": "deepseek",
+  "wire": "anthropic-messages",
+  "scenario": "tools-chat",
+  "key": "5268ff5fb449aa3fcf9322390ef0ab9ba5946661e1c43f0e4c68b3090922beff",
+  "model": "deepseek-v4-pro",
+  "recordedAt": "2026-09-26T16:02:09.326Z",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/anthropic/v1/messages",
+        "body": {
+          "model": "deepseek-v4-pro",
+          "max_tokens": 512,
+          "messages": [
+            {
+              "role": "user",
+              "content": "Call BOTH tools now, in this order, in one turn: search_code with query \"interest rate\", then read_file with path \"src/Loan.java\". Do not write any text."
+            }
+          ],
+          "tools": [
+            {
+              "name": "search_code",
+              "description": "Search the indexed code base.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": ["query"]
+              }
+            },
+            {
+              "name": "read_file",
+              "description": "Read one file.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": ["path"]
+              }
+            }
+          ],
+          "tool_choice": {
+            "type": "auto"
+          },
+          "system": "You are producing a contract-test recording. Follow the instruction exactly.",
+          "thinking": {
+            "type": "disabled"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "json": {
+          "id": "msg_recorded",
+          "type": "message",
+          "role": "assistant",
+          "model": "deepseek-v4-pro",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "call_00_baNPZbDc7ZqL0vb0fmNQ4699",
+              "name": "search_code",
+              "input": {
+                "query": "interest rate"
+              }
+            },
+            {
+              "type": "tool_use",
+              "id": "call_01_ifGCqsoqQGdJjgzPMJiL7742",
+              "name": "read_file",
+              "input": {
+                "path": "src/Loan.java"
+              }
+            }
+          ],
+          "stop_reason": "tool_use",
+          "stop_sequence": null,
+          "usage": {
+            "input_tokens": 367,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 77,
+            "service_tier": "standard"
+          }
+        }
+      }
+    }
+  ],
+  "result": {
+    "kind": "chat",
+    "response": {
+      "content": "",
+      "usage": {
+        "promptTokens": 367,
+        "completionTokens": 77,
+        "totalTokens": 444,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0
+      },
+      "model": "deepseek-v4-pro",
+      "provider": "anthropic",
+      "finishReason": "tool_use",
+      "toolCalls": [
+        {
+          "id": "call_00_baNPZbDc7ZqL0vb0fmNQ4699",
+          "name": "search_code",
+          "args": {
+            "query": "interest rate"
+          }
+        },
+        {
+          "id": "call_01_ifGCqsoqQGdJjgzPMJiL7742",
+          "name": "read_file",
+          "args": {
+            "path": "src/Loan.java"
+          }
+        }
+      ]
+    }
+  }
+}

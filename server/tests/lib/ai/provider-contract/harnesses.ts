@@ -4,8 +4,14 @@
  *
  * The OpenAI-compatible replies follow the documented wire shapes of each
  * runtime family (they are hand-written from the vendors' API references, NOT
- * live recordings — no test here touches a network; capturing real
- * `AI_RECORD=1` fixtures for these runtimes is tracked in #197):
+ * live recordings — no test here touches a network). Live recordings for
+ * DeepSeek and Ollama now exist (#197, `recorded.ts` and
+ * `provider-contract-recorded.test.ts`), and pin where they differ from these
+ * shapes: Ollama 0.34.2 ends a tool-call turn with `finish_reason:
+ * "tool_calls"` (not `stop`), sends `content: ""` (not `null`) beside
+ * `tool_calls`, and streams reasoning in a separate `reasoning` field. The
+ * older shapes stay here so the adapter keeps tolerating them. OpenAI and
+ * Azure are still unrecorded (#197):
  *   • `openai`  — Chat Completions; streamed `tool_calls` split into fragments
  *                 that INTERLEAVE across two calls by `index`.
  *   • `azure`   — as OpenAI plus Azure's `prompt_filter_results` preamble frame

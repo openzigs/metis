@@ -481,6 +481,11 @@ prompt the last tool carries the breakpoint. `OfflineStubProvider({ script })`
 replays scripted turns, tool calls included, so a tool loop runs with no network.
 `server/tests/lib/ai/provider-contract/` holds the shared contract suite; the
 matrix test runs it for every provider key through the real factory.
+Its wire shapes are hand-written from vendor references; `provider-contract-recorded.test.ts`
+(#197) replays the same kinds of scenario from traffic recorded live
+(`AI_RECORD=1`) against DeepSeek's Anthropic-compatible endpoint and Ollama's
+`/v1`, through the real adapters, offline. Fixtures live in
+`server/tests/fixtures/llm/provider-contract/`; OpenAI and Azure are not recorded yet.
 
 #### Model catalog (#135)
 

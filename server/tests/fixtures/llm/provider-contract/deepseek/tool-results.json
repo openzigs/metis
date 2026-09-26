@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "runtime": "deepseek",
+  "wire": "anthropic-messages",
+  "scenario": "tool-results",
+  "key": "67f8c9c22dc00335d4fdd6a6c006adf4c88f7a49396d83f049e2a6777e8fa067",
+  "model": "deepseek-v4-pro",
+  "recordedAt": "2026-09-26T16:02:19.587Z",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/anthropic/v1/messages",
+        "body": {
+          "model": "deepseek-v4-pro",
+          "max_tokens": 512,
+          "messages": [
+            {
+              "role": "user",
+              "content": "What is the interest rate in src/Loan.java? Use the tools."
+            },
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "call_1",
+                  "name": "search_code",
+                  "input": {
+                    "query": "interest rate"
+                  }
+                },
+                {
+                  "type": "tool_use",
+                  "id": "call_2",
+                  "name": "read_file",
+                  "input": {
+                    "path": "src/Loan.java"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "call_1",
+                  "content": "src/Loan.java:12 double rate = 0.05;"
+                },
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "call_2",
+                  "content": "class Loan { double rate = 0.05; }"
+                }
+              ]
+            }
+          ],
+          "tools": [
+            {
+              "name": "search_code",
+              "description": "Search the indexed code base.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": ["query"]
+              }
+            },
+            {
+              "name": "read_file",
+              "description": "Read one file.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": ["path"]
+              }
+            }
+          ],
+          "system": "You are producing a contract-test recording. Follow the instruction exactly.",
+          "thinking": {
+            "type": "disabled"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "json": {
+          "id": "msg_recorded",
+          "type": "message",
+          "role": "assistant",
+          "model": "deepseek-v4-pro",
+          "content": [
+            {
+              "type": "text",
+              "text": "The interest rate in `src/Loan.java` is **0.05** (i.e., 5%)."
+            }
+          ],
+          "stop_reason": "end_turn",
+          "stop_sequence": null,
+          "usage": {
+            "input_tokens": 209,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 256,
+            "output_tokens": 23,
+            "service_tier": "standard"
+          }
+        }
+      }
+    }
+  ],
+  "result": {
+    "kind": "chat",
+    "response": {
+      "content": "The interest rate in `src/Loan.java` is **0.05** (i.e., 5%).",
+      "usage": {
+        "promptTokens": 209,
+        "completionTokens": 23,
+        "totalTokens": 232,
+        "cacheReadTokens": 256,
+        "cacheWriteTokens": 0
+      },
+      "model": "deepseek-v4-pro",
+      "provider": "anthropic",
+      "finishReason": "end_turn"
+    }
+  }
+}

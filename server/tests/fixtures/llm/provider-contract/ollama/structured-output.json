@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "runtime": "ollama",
+  "wire": "openai-chat-completions",
+  "scenario": "structured-output",
+  "key": "0b07bb8b658250654d743a7cd70c61fbb987d414c44f8936e19cf6eeb5d79fd3",
+  "model": "laguna-s-2.1",
+  "recordedAt": "2026-09-26T16:02:37.443Z",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "laguna-s-2.1",
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are producing a contract-test recording. Follow the instruction exactly."
+            },
+            {
+              "role": "user",
+              "content": "Is 2 + 2 equal to 4? Reply with only a JSON object of the form {\"ok\": <boolean>}."
+            }
+          ],
+          "max_tokens": 512,
+          "temperature": 0.2,
+          "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+              "name": "verdict",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ok": {
+                    "type": "boolean"
+                  }
+                },
+                "required": ["ok"],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "json": {
+          "id": "chatcmpl-recorded",
+          "object": "chat.completion",
+          "created": 1790438557,
+          "model": "laguna-s-2.1",
+          "system_fingerprint": "fp_ollama",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "{\"ok\": true}"
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 55,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens": 7,
+            "total_tokens": 62
+          }
+        }
+      }
+    }
+  ],
+  "result": {
+    "kind": "chat",
+    "response": {
+      "content": "{\"ok\": true}",
+      "usage": {
+        "promptTokens": 55,
+        "completionTokens": 7,
+        "totalTokens": 62,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0
+      },
+      "model": "laguna-s-2.1",
+      "provider": "local-gemma",
+      "finishReason": "stop"
+    }
+  }
+}
