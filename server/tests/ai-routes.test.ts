@@ -370,6 +370,52 @@ describe("GET /api/ai/tools", () => {
   });
 });
 
+describe("GET /api/ai/models (#135)", () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    for (const k of ["AI_PROVIDER", "AI_OFFLINE", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"]) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it("rejects anonymous calls", async () => {
+    const res = await request(makeApp()).get("/api/ai/models");
+    expect(res.status).toBe(401);
+  });
+
+  it("returns the configured provider's catalog with prices and capabilities", async () => {
+    process.env.AI_OFFLINE = "0";
+    process.env.AI_PROVIDER = "anthropic";
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    process.env.ANTHROPIC_MODEL = "claude-sonnet-5";
+    const res = await auth(request(makeApp()).get("/api/ai/models"));
+    expect(res.status).toBe(200);
+    expect(res.body.data.provider).toBe("anthropic");
+    expect(res.body.data.defaultModel).toBe("claude-sonnet-5");
+    const sonnet = res.body.data.models.find((m: { id: string }) => m.id === "claude-sonnet-5");
+    expect(sonnet).toMatchObject({
+      displayName: "Claude Sonnet 5",
+      contextWindow: 1_000_000,
+      price: { inputPerMTok: 2, outputPerMTok: 10 },
+      capabilities: { tools: true, jsonSchema: true },
+    });
+  });
+
+  it("?scope=router lists the ModelRouter's models; any other scope is the provider list", async () => {
+    const router = await auth(request(makeApp()).get("/api/ai/models?scope=router"));
+    expect(router.body.data.models.map((m: { id: string }) => m.id)).toEqual([
+      "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "us.anthropic.claude-sonnet-5",
+      "us.anthropic.claude-fable-5",
+      "us.anthropic.claude-opus-4-8",
+    ]);
+    const other = await auth(request(makeApp()).get("/api/ai/models?scope=../../etc"));
+    expect(other.status).toBe(200);
+    expect(other.body.data.models.some((m: { routerTier?: string }) => m.routerTier)).toBe(false);
+  });
+});
+
 describe("auth headers", () => {
   it("verifies the JWT before any route runs", async () => {
     const bad = jwt.sign({ x: 1 }, "wrong-secret");

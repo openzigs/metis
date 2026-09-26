@@ -108,6 +108,19 @@ const aiEnvSchema = z
     LOCAL_GEMMA_MODEL: z.string().min(1).max(200).optional(),
     LOCAL_GEMMA_API_KEY: z.string().min(1).optional(),
 
+    // #134 — openai / azure are served by the direct OpenAI-compatible client.
+    // These are the native names; the COPILOT_PROVIDER_* matrix below is still
+    // read as a fallback so existing deployments keep working unchanged.
+    OPENAI_BASE_URL: z.string().url().optional(),
+    OPENAI_API_KEY: z.string().min(1).optional(),
+    AZURE_OPENAI_ENDPOINT: z.string().url().optional(),
+    AZURE_OPENAI_API_KEY: z.string().min(1).optional(),
+    AZURE_OPENAI_API_VERSION: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}(-preview)?$/, "must look like 2024-10-21 or 2025-01-01-preview")
+      .optional(),
+    AZURE_OPENAI_DEPLOYMENT: z.string().min(1).max(200).optional(),
+
     COPILOT_PROVIDER_TYPE: z.enum(BYOK_TYPE_KEYS).optional(),
     COPILOT_PROVIDER_BASE_URL: z.string().url().optional(),
     COPILOT_PROVIDER_API_KEY: z.string().optional(),
@@ -136,6 +149,10 @@ export interface BYOKProviderConfig {
    * (`ANTHROPIC_AUTH_TOKEN`). Ignored by the OpenAI-compatible BYOK paths.
    */
   authToken?: string;
+  /** #134 — Azure OpenAI data-plane `api-version` (azure only). */
+  apiVersion?: string;
+  /** #134 — Azure OpenAI deployment name; defaults to the model id (azure only). */
+  deployment?: string;
 }
 
 export interface AIConfig {
@@ -164,6 +181,8 @@ const DEFAULT_RATE_WINDOW_MS = 15 * 60 * 1000;
 const DEFAULT_RATE_MAX = 60;
 const DEFAULT_PING_TIMEOUT_MS = 1500;
 const DEFAULT_COPILOT_MODEL = "gpt-4.1";
+/** #134 — Azure OpenAI GA data-plane version (mirrors the provider default). */
+const DEFAULT_AZURE_API_VERSION = "2024-10-21";
 const DEFAULT_BEDROCK_MODEL = SONNET_MODEL_ID;
 const DEFAULT_LOCAL_GEMMA_MODEL = "gemma4:12b";
 /** Native Anthropic default — BARE id (not the Bedrock `us.anthropic.*` form). */
@@ -252,13 +271,33 @@ export function buildSdkProvider(env: AIEnv): BYOKProviderConfig | undefined {
     };
   }
 
-  // openai/azure via the BYOK env-var matrix (R-SDK-14).
-  const baseUrl = trimmed(env.COPILOT_PROVIDER_BASE_URL);
-  const apiKey = trimmed(env.COPILOT_PROVIDER_API_KEY);
+  // openai/azure (#134) — the native OPENAI_* / AZURE_OPENAI_* names first,
+  // then the legacy BYOK env-var matrix (R-SDK-14).
+  if (provider === "azure") {
+    const baseUrl = trimmed(env.AZURE_OPENAI_ENDPOINT) ?? trimmed(env.COPILOT_PROVIDER_BASE_URL);
+    const apiKey = trimmed(env.AZURE_OPENAI_API_KEY) ?? trimmed(env.COPILOT_PROVIDER_API_KEY);
+    if (!baseUrl) {
+      throw new AIConfigError(
+        "azure provider requires AZURE_OPENAI_ENDPOINT (or COPILOT_PROVIDER_BASE_URL)",
+        { missing: ["AZURE_OPENAI_ENDPOINT"] },
+      );
+    }
+    const deployment = trimmed(env.AZURE_OPENAI_DEPLOYMENT);
+    return {
+      type: "azure",
+      baseUrl,
+      apiKey,
+      apiVersion: trimmed(env.AZURE_OPENAI_API_VERSION) ?? DEFAULT_AZURE_API_VERSION,
+      ...(deployment ? { deployment } : {}),
+    };
+  }
+  const baseUrl = trimmed(env.OPENAI_BASE_URL) ?? trimmed(env.COPILOT_PROVIDER_BASE_URL);
+  const apiKey = trimmed(env.OPENAI_API_KEY) ?? trimmed(env.COPILOT_PROVIDER_API_KEY);
   if (!baseUrl) {
-    throw new AIConfigError(`${provider} provider requires COPILOT_PROVIDER_BASE_URL`, {
-      missing: ["COPILOT_PROVIDER_BASE_URL"],
-    });
+    throw new AIConfigError(
+      `${provider} provider requires OPENAI_BASE_URL (or COPILOT_PROVIDER_BASE_URL)`,
+      { missing: ["OPENAI_BASE_URL"] },
+    );
   }
   return { type: provider, baseUrl, apiKey };
 }

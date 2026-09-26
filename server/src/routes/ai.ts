@@ -18,7 +18,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import type { ApiResponse, SdkReasoningEffort } from "@metis/shared";
+import type { ApiResponse, ModelCatalogResponse, SdkReasoningEffort } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { aiRateLimiter } from "../middleware/ai-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -79,6 +79,7 @@ import {
   createDefaultSymbolLineLookup,
 } from "../lib/code-graph/project-code-searcher.js";
 import { getConfigService } from "../lib/config/config-service.js";
+import { getModelCatalog } from "../lib/ai/model-catalog.js";
 
 const log = createChildLogger("ai-routes");
 
@@ -897,6 +898,17 @@ export function aiRouter(): Router {
   // ── Tool inspection ─────────────────────────────────────────────────────
   r.get("/tools", requireAuth, (_req: Request, res: Response) => {
     res.json(ok({ tools: getToolRegistry().list() }));
+  });
+
+  // ── Model catalog (#135) ─────────────────────────────────────────────────
+  // The one model list every picker renders from. `?scope=router` lists the
+  // models the analysis ModelRouter can select; the default lists the
+  // configured provider's models (local runtimes are discovered, bounded and
+  // cached). No caller input reaches a URL: the only query value is an enum.
+  r.get("/models", requireAuth, async (req: Request, res: Response) => {
+    const scope = req.query.scope === "router" ? "router" : "provider";
+    const catalog = await getModelCatalog({ config: loadAIConfig(), scope });
+    res.json(ok<ModelCatalogResponse>(catalog));
   });
 
   // ── Chat (non-stream) ────────────────────────────────────────────────────

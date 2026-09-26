@@ -134,8 +134,24 @@ const makeAnthropic = (script: string[]): AIProvider => {
   return new AnthropicProvider({ apiKey: "k", model: "claude-sonnet-4-6" });
 };
 
+/**
+ * #133 — the native Anthropic endpoint now honours `responseFormat` (as
+ * `output_config.format`), so the portable-path parity this file pins is run
+ * against the Anthropic client configuration that still cannot: DeepSeek's
+ * Anthropic-compatible endpoint (it accepts only `effort` in `output_config`).
+ * The native endpoint's structured path is pinned separately below.
+ */
+const makeAnthropicPortable = (script: string[]): AIProvider => {
+  scriptAnthropic(script);
+  return new AnthropicProvider({
+    apiKey: "k",
+    model: "deepseek-v4-pro",
+    baseUrl: "https://api.deepseek.com/anthropic",
+  });
+};
+
 const ADAPTERS: Array<{ name: string; build: (script: string[]) => AIProvider }> = [
-  { name: "anthropic", build: makeAnthropic },
+  { name: "anthropic (DeepSeek endpoint)", build: makeAnthropicPortable },
   { name: "copilot", build: makeCopilot },
 ];
 
@@ -220,6 +236,34 @@ describe.each(ADAPTERS)("$name adapter — structured verdict parity", ({ build 
     );
     expect(outcome.usedResponseFormat).toBe(false);
     expect(outcome.status).toBe("verdict");
+  });
+});
+
+describe("anthropic adapter (native endpoint) — structured output (#133)", () => {
+  it("declares responseFormat support and sends it as output_config.format", async () => {
+    const provider = makeAnthropic([VALID]);
+    expect(supportsResponseFormat(provider)).toBe(true);
+    const outcome = await requestStructuredVerdict(
+      provider,
+      makeRequest({ responseFormat: RESPONSE_FORMAT }),
+    );
+    expect(outcome.usedResponseFormat).toBe(true);
+    expect(outcome.status).toBe("verdict");
+    const body = createSpy.mock.calls[0]![0] as { output_config?: { format?: unknown } };
+    expect(body.output_config?.format).toEqual({
+      type: "json_schema",
+      // Fitted to the Messages API subset by the SDK's transformJSONSchema.
+      schema: { type: "object", properties: {}, additionalProperties: false },
+    });
+  });
+
+  it("still recovers from prose through the parse-and-retry path", async () => {
+    const outcome = await requestStructuredVerdict(
+      makeAnthropic([PROSE, VALID]),
+      makeRequest({ responseFormat: RESPONSE_FORMAT }),
+    );
+    expect(outcome.status).toBe("verdict");
+    expect(outcome.attempts).toBe(2);
   });
 });
 

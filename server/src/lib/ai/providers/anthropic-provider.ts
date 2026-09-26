@@ -23,14 +23,20 @@
  * The API key is never logged.
  */
 import Anthropic from "@anthropic-ai/sdk";
+import { transformJSONSchema } from "@anthropic-ai/sdk/lib/transform-json-schema";
 import { createChildLogger } from "../../logger.js";
 import { AIProviderError } from "../errors.js";
+import { isDeepSeekEndpoint } from "./anthropic-endpoint.js";
+
+export { isDeepSeekEndpoint };
 import { ToolTagStreamParser } from "./tool-tag-parser.js";
 import { boundNonStreamingOutputTokens } from "../nonstreaming-output-bound.js";
 import {
   createUnsupportedResponseFormatWarner,
+  createUnsupportedToolsWarner,
   type ProviderCapabilities,
 } from "../capabilities.js";
+import { catalogCapabilities } from "../model-catalog.js";
 import {
   cacheControlFor,
   resolveAnthropicCacheTtl,
@@ -43,6 +49,7 @@ import {
   type ChatMessage,
   type ChatOptions,
   type ChatResponse,
+  type ChatToolCall,
   type EmbedResult,
   type ProviderKey,
   type TokenUsage,
@@ -126,7 +133,7 @@ interface AnthropicUsage {
 
 /** Minimal shape of the SDK `Message` we depend on. */
 interface AnthropicMessage {
-  content?: Array<{ type?: string; text?: string }>;
+  content?: Array<{ type?: string; text?: string; id?: string; name?: string; input?: unknown }>;
   model?: string;
   usage?: AnthropicUsage;
   /** #1226 — `"max_tokens"` here means the output cap truncated the answer. */
@@ -143,25 +150,62 @@ interface AnthropicTextBlock {
   cache_control?: CacheControl;
 }
 
+/** #133 — an assistant `tool_use` block replayed from {@link ChatMessage.toolCalls}. */
+interface AnthropicToolUseBlock {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: unknown;
+  cache_control?: CacheControl;
+}
+
+/** #133 — a `tool_result` block answering one `tool_use` by id. */
+interface AnthropicToolResultBlock {
+  type: "tool_result";
+  tool_use_id: string;
+  content: string;
+  is_error?: boolean;
+  cache_control?: CacheControl;
+}
+
+/** Any content block this adapter emits. */
+type AnthropicBlock = AnthropicTextBlock | AnthropicToolUseBlock | AnthropicToolResultBlock;
+
+/** One Messages API turn as this adapter builds it. */
+interface AnthropicApiMessage {
+  role: "user" | "assistant";
+  content: string | AnthropicBlock[];
+}
+
+/** #133 — a `tools[]` entry; `cache_control` only ever on the last one. */
+interface AnthropicToolParam {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  cache_control?: CacheControl;
+}
+
 export class AnthropicProvider implements AIProvider {
   readonly key: ProviderKey = "anthropic";
   readonly offline = false;
   /**
-   * #1115 — capability honesty.
+   * #1115 / #133 — capability honesty.
    *
-   * `responseFormat: false` — the Anthropic Messages API has no
-   * `response_format`/`json_schema` request field. Structure is enforced there
-   * by forcing a tool call, which this adapter does not do (it sends no
-   * `tools`), so a supplied schema is dropped.
+   * `nativeToolCalls: true` — `ChatOptions.tools` are sent as Messages API
+   * `tools`, `tool_use` blocks come back as typed tool calls, and `tool`
+   * messages go back as `tool_result` blocks. DeepSeek's Anthropic-compatible
+   * endpoint supports all three (api-docs.deepseek.com/guides/anthropic_api).
    *
-   * `nativeToolCalls: false` — following from the same fact: with no `tools` on
-   * the request there is no native tool-call channel, which is exactly why
-   * `stream()` runs a {@link ToolTagStreamParser} over the visible text.
+   * `responseFormat` / `jsonSchema` — a `json_schema` response format is sent as
+   * `output_config.format` on the native API. DeepSeek's endpoint accepts only
+   * `effort` inside `output_config`, so there — and for `json_object`, which
+   * the Messages API has no mode for — the format is dropped with a one-time
+   * warning. The tool-tag parser still runs over visible text for models that
+   * improvise `<tool_call>` prose.
    */
-  readonly capabilities: ProviderCapabilities = {
-    responseFormat: false,
-    nativeToolCalls: false,
-  };
+  readonly capabilities: ProviderCapabilities;
+  /** One-time warning when tools are dropped for a non-tool-capable model. */
+  private readonly unsupportedTools = createUnsupportedToolsWarner(log, "anthropic");
   /** Emits a ONE-TIME warning when a caller supplies a schema we must drop. */
   private readonly unsupportedResponseFormat = createUnsupportedResponseFormatWarner(
     log,
@@ -181,6 +225,12 @@ export class AnthropicProvider implements AIProvider {
     this.defaultMaxTokens = opts.defaultMaxTokens ?? DEFAULT_MAX_TOKENS;
     this.streamMaxTokens = opts.streamMaxTokens ?? DEFAULT_STREAM_MAX_TOKENS;
     this.deepSeekEndpoint = isDeepSeekEndpoint(opts.baseUrl);
+    this.capabilities = {
+      responseFormat: !this.deepSeekEndpoint,
+      nativeToolCalls: true,
+      jsonSchema: !this.deepSeekEndpoint,
+      jsonObject: false,
+    };
     // Only pass auth fields that are actually set so the SDK can apply its own
     // env-var defaults. We never log the key/token.
     this.client = new Anthropic({
@@ -194,14 +244,41 @@ export class AnthropicProvider implements AIProvider {
     return this.defaultModel;
   }
 
+  /**
+   * #131 — per-model capabilities from the model catalog (#135), with the
+   * endpoint's limits applied: DeepSeek's endpoint never honours
+   * `output_config.format`.
+   */
+  capabilitiesFor(model: string): ProviderCapabilities {
+    const caps = catalogCapabilities("anthropic", normalizeAnthropicModelId(model));
+    const jsonSchema = caps.jsonSchema === true && !this.deepSeekEndpoint;
+    const jsonObject = caps.jsonObject === true && !this.deepSeekEndpoint;
+    return { ...caps, jsonSchema, jsonObject, responseFormat: jsonSchema || jsonObject };
+  }
+
+  /**
+   * #133 — the structured-output format to send for this call, or `undefined`
+   * (dropped with the one-time warning) when this endpoint/model cannot honour
+   * it. Only `json_schema` has a Messages API equivalent.
+   */
+  private structuredFormat(opts: ChatOptions, model: string): Record<string, unknown> | undefined {
+    const rf = opts.responseFormat;
+    if (!rf) return undefined;
+    if (rf.type === "json_schema" && this.capabilitiesFor(model).jsonSchema) {
+      return { type: "json_schema", schema: toAnthropicSchema(rf.json_schema.schema) };
+    }
+    this.unsupportedResponseFormat(rf);
+    return undefined;
+  }
+
   async chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResponse> {
     if (opts.signal?.aborted) throw makeAbortError();
-    this.unsupportedResponseFormat(opts.responseFormat);
     // Normalize at the provider boundary: callers (and `model-router`) may pass
     // a Bedrock-style id (`us.anthropic.…-v1:0`) which the direct Messages API
     // rejects — strip it to the bare id the SDK accepts.
     const model = normalizeAnthropicModelId(opts.model ?? this.defaultModel);
-    const params = this.buildRequest(messages, opts, model, this.defaultMaxTokens);
+    const format = this.structuredFormat(opts, model);
+    const params = this.buildRequest(messages, opts, model, this.defaultMaxTokens, format);
     // #1257 — the LAST line of defence, and the only one every non-streaming
     // caller passes through. `messages.create` runs the SDK's own
     // `calculateNonstreamingTimeout` (this client carries no `timeout`) and
@@ -227,15 +304,13 @@ export class AnthropicProvider implements AIProvider {
 
     let message: AnthropicMessage;
     try {
-      message = (await this.client.messages.create(
-        params as never,
-        opts.signal ? { signal: opts.signal } : undefined,
-      )) as AnthropicMessage;
+      message = await this.createWithFormatFallback(params, opts, model);
     } catch (err) {
       throw this.mapError(err, "chat");
     }
 
     const usage = mapUsage(message.usage);
+    const toolCalls = extractToolCalls(message.content);
     logCacheUsage("chat", usage);
     logOutputBudget("chat", params.max_tokens, usage, message.stop_reason);
     return {
@@ -249,20 +324,74 @@ export class AnthropicProvider implements AIProvider {
       // "no evidence" rather than "cap hit". Anthropic spells it `max_tokens`
       // where the OpenAI-compatible wire format says `length`.
       ...(message.stop_reason ? { finishReason: message.stop_reason } : {}),
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
     };
+  }
+
+  /**
+   * #133 — `messages.create`, with the #336-style graceful degradation for
+   * structured output: a 400 on a request that carried `output_config.format`
+   * (a schema the API's structured-output subset rejects, or a model that
+   * lacks the feature) is retried ONCE without the format, so the caller's
+   * parse-and-repair path runs instead of the call failing. Every other error
+   * propagates unchanged.
+   */
+  private async createWithFormatFallback(
+    params: Record<string, unknown>,
+    opts: ChatOptions,
+    model: string,
+  ): Promise<AnthropicMessage> {
+    const reqOpts = opts.signal ? { signal: opts.signal } : undefined;
+    try {
+      return (await this.client.messages.create(params as never, reqOpts)) as AnthropicMessage;
+    } catch (err) {
+      if (!carriesFormat(params) || readStatus(err) !== 400) throw err;
+      log.warn(
+        "Anthropic rejected output_config.format; retrying once without it (free-form parse fallback)",
+        { model, status: 400, cause: err instanceof Error ? err.message.slice(0, 200) : "" },
+      );
+      return (await this.client.messages.create(
+        withoutFormat(params) as never,
+        reqOpts,
+      )) as AnthropicMessage;
+    }
   }
 
   async *stream(messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<ChatChunk> {
     if (opts.signal?.aborted) throw makeAbortError();
-    this.unsupportedResponseFormat(opts.responseFormat);
     // Normalize at the provider boundary (see chat()): the direct Messages API
     // streaming endpoint also rejects Bedrock-style ids.
     const model = normalizeAnthropicModelId(opts.model ?? this.defaultModel);
-    const params = this.buildRequest(messages, opts, model, this.streamMaxTokens);
+    const format = this.structuredFormat(opts, model);
+    const params = this.buildRequest(messages, opts, model, this.streamMaxTokens, format);
+    // #133 — the same single structured-output degrade as chat(), allowed only
+    // while nothing has been yielded (a 400 arrives before the first event).
+    let emitted = false;
+    try {
+      for await (const chunk of this.streamOnce(params, opts)) {
+        emitted = true;
+        yield chunk;
+      }
+    } catch (err) {
+      if (emitted || !carriesFormat(params) || readStatus(err) !== 400) throw err;
+      log.warn(
+        "Anthropic rejected output_config.format on stream; retrying once without it (free-form parse fallback)",
+        { model, status: 400 },
+      );
+      yield* this.streamOnce(withoutFormat(params), opts);
+    }
+  }
+
+  /** One streamed Messages API call, translated into {@link ChatChunk}s. */
+  private async *streamOnce(
+    params: Record<string, unknown>,
+    opts: ChatOptions,
+  ): AsyncGenerator<ChatChunk> {
+    const model = params.model as string;
 
     log.debug("Anthropic stream request", {
       model,
-      messageCount: messages.length,
+      messageCount: (params.messages as unknown[]).length,
       maxTokens: params.max_tokens,
     });
 
@@ -295,6 +424,18 @@ export class AnthropicProvider implements AIProvider {
       }
       for (const chunk of toolTagParser.flush()) yield chunk;
       const final = (await handle.finalMessage()) as AnthropicMessage;
+      // #133 — native tool calls, from the SDK-assembled final message (it has
+      // already joined each block's `input_json_delta` fragments), in the order
+      // the model emitted them.
+      for (const call of extractToolCalls(final.content)) {
+        yield {
+          type: "tool_call",
+          name: call.name,
+          arguments: call.args,
+          toolCallId: call.id,
+          native: true,
+        };
+      }
       const usage = mapUsage(final.usage);
       logCacheUsage("stream", usage);
       // #1257 — streaming is NOT subject to the SDK's non-streaming bound, but
@@ -369,6 +510,7 @@ export class AnthropicProvider implements AIProvider {
     opts: ChatOptions,
     model: string,
     defaultMaxTokens: number,
+    format?: Record<string, unknown>,
   ): Record<string, unknown> {
     const cacheSystem = opts.promptCaching?.system === true;
     const cacheMessages = opts.promptCaching?.messages === true;
@@ -381,13 +523,49 @@ export class AnthropicProvider implements AIProvider {
     if (opts.systemMessage) systemParts.push(opts.systemMessage);
     // Each non-system turn's content is either a plain string or, when we need
     // to attach a cache breakpoint, a content-block array (the SDK accepts both).
-    const apiMessages: Array<{
-      role: "user" | "assistant";
-      content: string | AnthropicTextBlock[];
-    }> = [];
+    const apiMessages: AnthropicApiMessage[] = [];
     for (const msg of messages) {
       if (msg.role === "system") {
         systemParts.push(messageText(msg));
+        continue;
+      }
+      // #133 — an assistant turn that called tools replays its `tool_use`
+      // blocks; a `tool` result with a call id becomes a `tool_result` block.
+      // Consecutive results are merged into ONE user turn, which is what the
+      // API expects after a turn with several parallel calls.
+      if (msg.role === "assistant" && msg.toolCalls && msg.toolCalls.length > 0) {
+        const text = messageText(msg);
+        apiMessages.push({
+          role: "assistant",
+          content: [
+            ...(text.length > 0 ? [{ type: "text" as const, text }] : []),
+            ...msg.toolCalls.map((c) => ({
+              type: "tool_use" as const,
+              id: c.id,
+              name: c.name,
+              input: c.args ?? {},
+            })),
+          ],
+        });
+        continue;
+      }
+      if (msg.role === "tool" && msg.toolCallId) {
+        const block: AnthropicToolResultBlock = {
+          type: "tool_result",
+          tool_use_id: msg.toolCallId,
+          content: messageText(msg),
+          ...(msg.isError ? { is_error: true } : {}),
+        };
+        const prev = apiMessages[apiMessages.length - 1];
+        if (
+          prev?.role === "user" &&
+          Array.isArray(prev.content) &&
+          isToolResultTurn(prev.content)
+        ) {
+          prev.content.push(block);
+        } else {
+          apiMessages.push({ role: "user", content: [block] });
+        }
         continue;
       }
       // No assistant prefill (current models 400 on a trailing assistant turn
@@ -413,6 +591,20 @@ export class AnthropicProvider implements AIProvider {
       max_tokens: opts.maxTokens ?? defaultMaxTokens,
       messages: apiMessages,
     };
+
+    // #133 — native tools. The Messages API renders `tools` BEFORE `system`,
+    // so tool definitions sit inside the cacheable prefix: a system breakpoint
+    // already covers them. With no system prompt to carry the breakpoint, the
+    // LAST tool carries it instead (#696/#700: stable lead first).
+    const tools = this.toolParams(opts, model);
+    if (tools) {
+      if (cacheSystem && systemParts.length === 0) {
+        tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: cacheControl };
+      }
+      body.tools = tools;
+      const choice = toolChoiceParam(opts.toolChoice);
+      if (choice) body.tool_choice = choice;
+    }
 
     if (systemParts.length > 0) {
       const systemText = systemParts.join("\n\n");
@@ -440,7 +632,29 @@ export class AnthropicProvider implements AIProvider {
       body.thinking = { type: this.deepSeekEndpoint ? "enabled" : "adaptive" };
       body.output_config = { effort: opts.reasoningEffort };
     }
+    // #133 — structured output rides `output_config.format`, next to any effort.
+    if (format) {
+      body.output_config = { ...((body.output_config as object | undefined) ?? {}), format };
+    }
     return body;
+  }
+
+  /**
+   * #133 — the `tools` param, or `undefined` when none are to be sent: no tools
+   * supplied, tools disabled, or the catalog marks the model not tool-capable
+   * (dropped with a one-time warning).
+   */
+  private toolParams(opts: ChatOptions, model: string): AnthropicToolParam[] | undefined {
+    if (!opts.tools || opts.tools.length === 0 || opts.disableTools) return undefined;
+    if (!this.capabilitiesFor(model).nativeToolCalls) {
+      this.unsupportedTools(model, opts.tools);
+      return undefined;
+    }
+    return opts.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.parameters,
+    }));
   }
 
   /**
@@ -458,20 +672,6 @@ export class AnthropicProvider implements AIProvider {
   }
 }
 
-/**
- * #25 — true when `baseUrl` is DeepSeek's Anthropic-compatible API
- * (`https://api.deepseek.com/anthropic`), keyed on the documented host. A
- * missing or unparseable URL is the SDK default (api.anthropic.com) → false.
- */
-export function isDeepSeekEndpoint(baseUrl: string | undefined): boolean {
-  if (!baseUrl?.trim()) return false;
-  try {
-    return /(^|\.)deepseek\.com$/i.test(new URL(baseUrl.trim()).hostname);
-  } catch {
-    return false;
-  }
-}
-
 /** Read a numeric `status` off an SDK error, if present. */
 function readStatus(err: unknown): number | undefined {
   if (err && typeof err === "object" && "status" in err) {
@@ -479,6 +679,59 @@ function readStatus(err: unknown): number | undefined {
     if (typeof s === "number") return s;
   }
   return undefined;
+}
+
+/** #133 — true when every block of a user turn is a `tool_result`. */
+function isToolResultTurn(content: AnthropicBlock[]): boolean {
+  return content.length > 0 && content.every((b) => b.type === "tool_result");
+}
+
+/** #133 — typed tool calls from a response's `tool_use` blocks, in order. */
+function extractToolCalls(content: AnthropicMessage["content"]): ChatToolCall[] {
+  if (!content) return [];
+  return content
+    .filter((b) => b.type === "tool_use" && typeof b.name === "string")
+    .map((b, i) => ({ id: b.id ?? `toolu_${i}`, name: b.name as string, args: b.input ?? {} }));
+}
+
+/** #133 — {@link ChatOptions.toolChoice} → Messages API `tool_choice`. */
+function toolChoiceParam(choice: ChatOptions["toolChoice"]): Record<string, unknown> | undefined {
+  if (choice === undefined) return undefined;
+  if (choice === "auto") return { type: "auto" };
+  if (choice === "none") return { type: "none" };
+  if (choice === "required") return { type: "any" };
+  return { type: "tool", name: choice.name };
+}
+
+/**
+ * #133 — fit a JSON Schema to the Messages API structured-output subset with
+ * the SDK's own `transformJSONSchema` (the transform its `messages.parse()`
+ * helpers apply): every object gets `additionalProperties: false`, and
+ * unsupported constraints (`minimum`, `maxLength`, …) move into the property
+ * `description` instead of 400-ing the call. A schema the transform cannot
+ * handle (no `type`) is sent as-is — the 400 fallback then covers it.
+ */
+function toAnthropicSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  try {
+    return transformJSONSchema(schema as never) as Record<string, unknown>;
+  } catch {
+    return schema;
+  }
+}
+
+/** #133 — the request carries `output_config.format`. */
+function carriesFormat(params: Record<string, unknown>): boolean {
+  const oc = params.output_config as { format?: unknown } | undefined;
+  return oc?.format !== undefined;
+}
+
+/** #133 — a copy of `params` with `output_config.format` removed (effort kept). */
+function withoutFormat(params: Record<string, unknown>): Record<string, unknown> {
+  const { format: _format, ...rest } = (params.output_config ?? {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...params };
+  if (Object.keys(rest).length > 0) out.output_config = rest;
+  else delete out.output_config;
+  return out;
 }
 
 /** Concatenate all `text` content blocks of a Messages API response. */
@@ -580,7 +833,7 @@ function toTextBlocks(content: ChatMessage["content"]): AnthropicTextBlock[] | n
  * per-claim batches. No-op when there is no user message. Mutates in place.
  */
 function markLastUserBlockForCaching(
-  apiMessages: Array<{ role: "user" | "assistant"; content: string | AnthropicTextBlock[] }>,
+  apiMessages: AnthropicApiMessage[],
   cacheControl: CacheControl,
 ): void {
   // Find the last user turn (the stable facts/source prefix lives there).
@@ -595,7 +848,7 @@ function markLastUserBlockForCaching(
 
   const target = apiMessages[idx];
   // Normalise to block form so we can attach cache_control to a single block.
-  const blocks: AnthropicTextBlock[] =
+  const blocks: AnthropicBlock[] =
     typeof target.content === "string" ? [{ type: "text", text: target.content }] : target.content;
   if (blocks.length === 0) return;
   // Anthropic caches the prefix UP TO the breakpoint, so the marker belongs on

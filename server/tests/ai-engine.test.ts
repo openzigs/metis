@@ -18,6 +18,7 @@ import {
   OfflineStubProvider,
   __resetProviderSingleton,
 } from "../src/lib/ai/index.js";
+import { OpenAICompatibleProvider } from "../src/lib/ai/providers/openai-compatible-provider.js";
 import type { CopilotClientLike, CopilotSessionLike } from "../src/lib/ai/copilot-wrapper.js";
 import type { ChatChunk } from "../src/lib/ai/types.js";
 
@@ -358,14 +359,14 @@ describe("buildProvider", () => {
     expect(p).toBeInstanceOf(OfflineStubProvider);
   });
 
-  it("constructs a CopilotProvider with the BYOK config", () => {
+  // #134 — only `copilot-native` still reaches the Copilot wrapper. Before
+  // #134 this test built a CopilotProvider for `bedrock-gateway` (BYOK); the
+  // wrapper-construction path it pinned is now exercised through the one key
+  // that still takes it, and bedrock-gateway's new routing is pinned below.
+  it("constructs a CopilotProvider through the wrapper factory for copilot-native", () => {
     const seen: Array<unknown> = [];
     const p = buildProvider({
-      config: loadAIConfig({
-        AI_PROVIDER: "bedrock-gateway",
-        BEDROCK_GATEWAY_URL: "http://x:1",
-        BEDROCK_GATEWAY_API_KEY: "y",
-      }),
+      config: loadAIConfig({ AI_PROVIDER: "copilot-native", COPILOT_MODEL: "gpt-4.1" }),
       wrapperFactory: (opts) => {
         seen.push(opts);
         return new CopilotWrapper({
@@ -375,7 +376,22 @@ describe("buildProvider", () => {
       },
     });
     expect(p).toBeInstanceOf(CopilotProvider);
-    expect((seen[0] as { provider?: { baseUrl?: string } }).provider?.baseUrl).toBe("http://x:1");
+    expect((seen[0] as { model?: string }).model).toBe("gpt-4.1");
+  });
+
+  it("builds bedrock-gateway as the direct client and never calls the wrapper factory (#134)", () => {
+    const wrapperFactory = vi.fn();
+    const p = buildProvider({
+      config: loadAIConfig({
+        AI_PROVIDER: "bedrock-gateway",
+        BEDROCK_GATEWAY_URL: "http://x:1",
+        BEDROCK_GATEWAY_API_KEY: "y",
+      }),
+      wrapperFactory,
+    });
+    expect(p).toBeInstanceOf(OpenAICompatibleProvider);
+    expect(p.key).toBe("bedrock-gateway");
+    expect(wrapperFactory).not.toHaveBeenCalled();
   });
 
   it("getProvider memoizes after reset", () => {
@@ -393,11 +409,9 @@ describe("buildProvider", () => {
     try {
       let receivedClient: unknown;
       buildProvider({
-        config: loadAIConfig({
-          AI_PROVIDER: "bedrock-gateway",
-          BEDROCK_GATEWAY_URL: "http://x:1",
-          BEDROCK_GATEWAY_API_KEY: "y",
-        }),
+        // #134 — the sidecar applies to the wrapper path, which only
+        // copilot-native takes now (was bedrock-gateway).
+        config: loadAIConfig({ AI_PROVIDER: "copilot-native" }),
         wrapperFactory: (opts) => {
           receivedClient = (opts as { client?: unknown }).client;
           return new CopilotWrapper({ ...opts, client: makeClientStub() });
@@ -429,11 +443,8 @@ describe("buildProvider", () => {
     try {
       expect(() =>
         buildProvider({
-          config: loadAIConfig({
-            AI_PROVIDER: "bedrock-gateway",
-            BEDROCK_GATEWAY_URL: "http://x:1",
-            BEDROCK_GATEWAY_API_KEY: "y",
-          }),
+          // #134 — see above: copilot-native is the wrapper path now.
+          config: loadAIConfig({ AI_PROVIDER: "copilot-native" }),
         }),
       ).toThrow(/copilot sidecar client/);
     } finally {

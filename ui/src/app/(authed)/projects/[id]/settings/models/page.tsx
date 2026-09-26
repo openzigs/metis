@@ -11,44 +11,33 @@
 import { useParams, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { modelPreferencesApi, type ModelPreferencesInput } from "@/lib/model-preferences-api";
+import {
+  modelPreferencesApi,
+  type ModelPreferencesData,
+  type ModelPreferencesInput,
+} from "@/lib/model-preferences-api";
+import { formatModelPrice } from "@/lib/model-catalog-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 
-const HAIKU_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
-const SONNET_ID = "us.anthropic.claude-sonnet-5";
-const FABLE_ID = "us.anthropic.claude-fable-5";
-const OPUS_ID = "us.anthropic.claude-opus-4-8";
+/**
+ * #135 — the model options come from the server's model catalog (the
+ * `availableModels` of the preferences response, which the server builds from
+ * the catalog's router scope). Only the tier wording lives here.
+ */
+const TIER_DESCRIPTIONS: Record<string, string> = {
+  fast: "Faster and cheaper — best for simple tasks",
+  balanced: "More capable — best for complex reasoning",
+  complex: "Highest capability — most expensive",
+};
 
-const MODEL_OPTIONS = [
-  {
-    value: "auto",
-    label: "Auto (recommended)",
-    description: "Let METIS choose the best model per task",
-  },
-  {
-    value: HAIKU_ID,
-    label: "Claude Haiku 4.5",
-    description: "Faster and cheaper — best for simple tasks",
-  },
-  {
-    value: SONNET_ID,
-    label: "Claude Sonnet 5",
-    description: "More capable — best for complex reasoning",
-  },
-  {
-    value: FABLE_ID,
-    label: "Claude Fable 5",
-    description: "Lightweight alternate model",
-  },
-  {
-    value: OPUS_ID,
-    label: "Claude Opus 4.8",
-    description: "Highest capability — most expensive",
-  },
-] as const;
+const AUTO_OPTION = {
+  value: "auto",
+  label: "Auto (recommended)",
+  description: "Let METIS choose the best model per task",
+};
 
 const TASK_TYPES = [
   "document_analysis",
@@ -68,6 +57,8 @@ export default function ProjectModelSettingsPage() {
     queryFn: () => modelPreferencesApi.get(projectId),
     enabled: Boolean(projectId),
   });
+
+  const modelOptions = [AUTO_OPTION, ...(data?.availableModels ?? []).map(toOption)];
 
   const [defaultModel, setDefaultModel] = useState<string>("auto");
   const [overrides, setOverrides] = useState<Record<string, string>>({});
@@ -132,7 +123,7 @@ export default function ProjectModelSettingsPage() {
           value={defaultModel}
           onChange={(e) => setDefaultModel(e.target.value)}
         >
-          {MODEL_OPTIONS.map((opt) => (
+          {modelOptions.map((opt) => (
             <option key={opt.value} value={opt.value}>
               {opt.label} — {opt.description}
             </option>
@@ -206,10 +197,11 @@ export default function ProjectModelSettingsPage() {
                   }}
                 >
                   <option value="">Auto</option>
-                  <option value={HAIKU_ID}>Haiku</option>
-                  <option value={SONNET_ID}>Sonnet</option>
-                  <option value={FABLE_ID}>Fable</option>
-                  <option value={OPUS_ID}>Opus</option>
+                  {(data?.availableModels ?? []).map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
                 </select>
               </div>
             ))}
@@ -239,4 +231,11 @@ export default function ProjectModelSettingsPage() {
       </p>
     </div>
   );
+}
+
+/** One catalog model → a picker option: tier wording plus its price when known. */
+function toOption(m: ModelPreferencesData["availableModels"][number]) {
+  const price = formatModelPrice({ price: m.price ?? null });
+  const tier = TIER_DESCRIPTIONS[m.tier] ?? m.tier;
+  return { value: m.id, label: m.name, description: price ? `${tier} (${price})` : tier };
 }

@@ -38,7 +38,8 @@ import {
   type ReleaseSlot,
 } from "./local-concurrency-limiter.js";
 import { messageText } from "../types.js";
-import type { ProviderCapabilities } from "../capabilities.js";
+import { createUnsupportedToolsWarner, type ProviderCapabilities } from "../capabilities.js";
+import { catalogCapabilities } from "../model-catalog.js";
 import type {
   AIProvider,
   ChatChunk,
@@ -46,6 +47,7 @@ import type {
   ChatMessage,
   ChatOptions,
   ChatResponse,
+  ChatToolCall,
   EmbedResult,
   ProviderKey,
   TokenUsage,
@@ -566,6 +568,45 @@ class ReasoningEffortRejectedError extends Error {
   }
 }
 
+/**
+ * #132 — true when a client-error body says the model cannot take `tools`.
+ * Ollama answers `400 registry.ollama.ai/library/gemma3:12b does not support
+ * tools` (and `"<model>" does not support tools`). Matched as the PHRASE, so a
+ * model name that merely contains "tools" (`toolsmith:7b`) cannot match, and a
+ * 400 about anything else is left alone. Exported for direct unit testing.
+ */
+export function isToolsUnsupportedBody(status: number, bodyText: string): boolean {
+  if (status !== 400 && status !== 422) return false;
+  return /\bdoes\s+not\s+support\s+tools\b/i.test(bodyText);
+}
+
+/** Internal marker: the runtime rejected `tools`; retry once without them. */
+class ToolsRejectedError extends Error {
+  constructor(
+    readonly status: number,
+    readonly bodyExcerpt: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ToolsRejectedError";
+  }
+}
+
+/** Default Azure OpenAI data-plane `api-version` (GA). */
+export const DEFAULT_AZURE_API_VERSION = "2024-10-21";
+
+/**
+ * #132 — Azure OpenAI addressing. Azure serves chat completions at
+ * `{endpoint}/openai/deployments/{deployment}/chat/completions?api-version=…`
+ * and authenticates with an `api-key` header rather than a bearer token.
+ */
+export interface AzureOpenAIOptions {
+  /** Data-plane API version, e.g. `2024-10-21`. */
+  apiVersion: string;
+  /** Deployment name; defaults to the request's model id. */
+  deployment?: string;
+}
+
 export interface OpenAICompatibleProviderOptions {
   baseUrl: string;
   apiKey: string;
@@ -624,6 +665,8 @@ export interface OpenAICompatibleProviderOptions {
   disableThinking?: boolean;
   /** Model ID → application inference profile ARN mapping for per-app cost tracking. */
   modelProfileMap?: Record<string, string>;
+  /** #132 — set for the `azure` provider key; see {@link AzureOpenAIOptions}. */
+  azure?: AzureOpenAIOptions;
   /**
    * Inactivity timeout (ms) BETWEEN streamed chunks once the model has begun
    * emitting tokens. The timer resets on every SSE chunk, so a long-but-
@@ -678,10 +721,22 @@ export interface OpenAICompatibleProviderOptions {
 /** Back-compat alias — see {@link OpenAICompatibleProviderOptions}. */
 export type BedrockDirectProviderOptions = OpenAICompatibleProviderOptions;
 
+/** A tool call on a non-streamed OpenAI-compatible message. */
+interface OpenAIToolCall {
+  id?: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+}
+
+/** A streamed tool-call fragment; `index` ties the fragments of one call together. */
+interface OpenAIToolCallDelta extends OpenAIToolCall {
+  index?: number;
+}
+
 interface OpenAIChatResponse {
   choices?: Array<{
-    message?: { content?: string };
-    delta?: { content?: string };
+    message?: { content?: string | null; tool_calls?: OpenAIToolCall[] };
+    delta?: { content?: string | null; tool_calls?: OpenAIToolCallDelta[] };
     finish_reason?: string;
   }>;
   usage?: {
@@ -745,17 +800,19 @@ export class OpenAICompatibleProvider implements AIProvider {
   readonly key: ProviderKey;
   readonly offline = false;
   /**
-   * #1115 — capability honesty. This is the ONE adapter that honours
-   * `responseFormat`: {@link buildRequestBody} forwards it verbatim as the
-   * OpenAI-compatible `response_format` field on both `chat()` and `stream()`,
-   * with a single degrade-retry when the runtime rejects it (#336).
+   * #1115 — capability honesty. {@link buildRequestBody} forwards
+   * `responseFormat` verbatim as the OpenAI-compatible `response_format` field
+   * on both `chat()` and `stream()`, with a single degrade-retry when the
+   * runtime rejects it (#336).
    *
-   * `nativeToolCalls: false` — no `tools` are sent on the request, so tool
-   * calls only ever surface via {@link ToolTagStreamParser} scraping the text.
+   * #132 — `nativeToolCalls: true`: `ChatOptions.tools` are sent as `tools` /
+   * `tool_choice`, and `tool_calls` (streamed deltas included) come back as
+   * typed tool calls. This is the adapter-wide answer; a particular model can
+   * say otherwise through {@link capabilitiesFor} (the model catalog, #135).
    */
   readonly capabilities: ProviderCapabilities = {
     responseFormat: true,
-    nativeToolCalls: false,
+    nativeToolCalls: true,
   };
   private readonly baseUrl: string;
   private readonly apiKey: string;
@@ -827,6 +884,20 @@ export class OpenAICompatibleProvider implements AIProvider {
   /** Process-wide per-base-URL FIFO limiter; `local-gemma` only. */
   private readonly limiter: FifoSemaphore | undefined;
 
+  /**
+   * #132 — resolved model ids whose runtime rejected `tools` (see
+   * {@link isToolsUnsupportedBody}). Same rationale as
+   * {@link temperatureRejectedModels}: a model that cannot take tools never
+   * will, so stop paying the 400.
+   */
+  private readonly toolsRejectedModels = new Set<string>();
+
+  /** One-time warning when tools are dropped for a model that cannot take them. */
+  private readonly unsupportedTools: (model: string, tools: readonly unknown[] | undefined) => void;
+
+  /** #132 — Azure addressing, when this instance serves the `azure` key. */
+  private readonly azure: AzureOpenAIOptions | undefined;
+
   constructor(opts: OpenAICompatibleProviderOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
     this.apiKey = opts.apiKey;
@@ -874,6 +945,51 @@ export class OpenAICompatibleProvider implements AIProvider {
     const isLocal = this.key === "local-gemma";
     this.reasoningEffortMode = isLocal ? resolveLocalReasoningEffortMode() : "never";
     this.limiter = isLocal ? localConcurrencyLimiter(this.baseUrl) : undefined;
+    this.azure = opts.azure;
+    this.unsupportedTools = createUnsupportedToolsWarner(log, this.key);
+  }
+
+  /**
+   * #131 — per-model capabilities, from the model catalog (#135). An unknown
+   * model gets this provider key's defaults, which match {@link capabilities}.
+   */
+  capabilitiesFor(model: string): ProviderCapabilities {
+    return catalogCapabilities(this.key, model);
+  }
+
+  /**
+   * #132 — whether `opts.tools` go on the wire for `requestedModel`: only when
+   * the caller supplied some, did not disable tools, the catalog says the model
+   * is tool-capable, and the runtime has not already rejected them. A drop is
+   * logged once per model.
+   */
+  private shouldSendTools(opts: ChatOptions, requestedModel: string, resolved: string): boolean {
+    if (!opts.tools || opts.tools.length === 0 || opts.disableTools) return false;
+    if (!this.capabilitiesFor(requestedModel).nativeToolCalls) {
+      this.unsupportedTools(requestedModel, opts.tools);
+      return false;
+    }
+    return !this.toolsRejectedModels.has(resolved);
+  }
+
+  /** #132 — the chat-completions URL: Azure's deployment form, or `{base}/chat/completions`. */
+  private chatUrl(model: string): string {
+    if (!this.azure) return `${this.baseUrl}/chat/completions`;
+    const deployment = encodeURIComponent(this.azure.deployment ?? model);
+    const version = encodeURIComponent(this.azure.apiVersion);
+    return `${this.baseUrl}/openai/deployments/${deployment}/chat/completions?api-version=${version}`;
+  }
+
+  /** #132 — the model-listing URL used by `models()` / `ping()`. */
+  private modelsUrl(): string {
+    return this.azure
+      ? `${this.baseUrl}/openai/models?api-version=${encodeURIComponent(this.azure.apiVersion)}`
+      : `${this.baseUrl}/models`;
+  }
+
+  /** #132 — Azure authenticates with `api-key`; everything else with a bearer token. */
+  private authHeaders(): Record<string, string> {
+    return this.azure ? { "api-key": this.apiKey } : { Authorization: `Bearer ${this.apiKey}` };
   }
 
   /**
@@ -1049,6 +1165,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     carriesResponseFormat = false,
     includeTemperature = true,
     carriesReasoningEffort = false,
+    carriesTools = false,
   ): Promise<StreamConnection> {
     if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
     // Queue for a local concurrency slot BEFORE anything is timed: time spent
@@ -1063,6 +1180,7 @@ export class OpenAICompatibleProvider implements AIProvider {
         carriesResponseFormat,
         includeTemperature,
         carriesReasoningEffort,
+        carriesTools,
       );
       return { ...conn, release };
     } catch (err) {
@@ -1080,6 +1198,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     carriesResponseFormat: boolean,
     includeTemperature: boolean,
     carriesReasoningEffort: boolean,
+    carriesTools: boolean,
   ): Promise<Omit<StreamConnection, "release">> {
     const controller = new AbortController();
     if (opts.signal) {
@@ -1122,7 +1241,7 @@ export class OpenAICompatibleProvider implements AIProvider {
         headers: {
           "Content-Type": "application/json",
           Accept: "text/event-stream",
-          Authorization: `Bearer ${this.apiKey}`,
+          ...this.authHeaders(),
         },
         body: JSON.stringify(body),
         signal: controller.signal,
@@ -1171,6 +1290,11 @@ export class OpenAICompatibleProvider implements AIProvider {
       // otherwise swallow any 400 on a request carrying `response_format`.
       if (carriesReasoningEffort && isReasoningEffortUnsupportedBody(response.status, text)) {
         throw new ReasoningEffortRejectedError(response.status, text.slice(0, 200), msg);
+      }
+      // #132 — a model that cannot take `tools`. Also before the status-only
+      // structured-output branch, for the same reason.
+      if (carriesTools && isToolsUnsupportedBody(response.status, text)) {
+        throw new ToolsRejectedError(response.status, text.slice(0, 200), msg);
       }
       // #336 — 400/422 on a request carrying `response_format` → the runtime
       // likely can't schema-constrain; classifiable so `stream()` can retry
@@ -1228,7 +1352,10 @@ export class OpenAICompatibleProvider implements AIProvider {
   }
 
   async chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResponse> {
-    const model = this.resolveModel(opts.model ?? this.defaultModel);
+    const requestedModel = opts.model ?? this.defaultModel;
+    const model = this.resolveModel(requestedModel);
+    // #132 — tools, decided once per call; a runtime rejection drops them once.
+    let includeTools = this.shouldSendTools(opts, requestedModel, model);
 
     // #336 — structured-output graceful degradation, plus the `temperature`
     // deprecation fallback. A runtime may reject BOTH fields (Claude Sonnet 5
@@ -1254,11 +1381,17 @@ export class OpenAICompatibleProvider implements AIProvider {
           includeResponseFormat,
           includeTemperature,
           includeReasoningEffort,
+          includeTools,
         );
       } catch (err) {
         if (err instanceof ReasoningEffortRejectedError && includeReasoningEffort) {
           includeReasoningEffort = false;
           this.noteReasoningEffortRejected(model, err, "chat");
+          continue;
+        }
+        if (err instanceof ToolsRejectedError && includeTools) {
+          includeTools = false;
+          this.noteToolsRejected(model, err, "chat");
           continue;
         }
         if (
@@ -1316,8 +1449,9 @@ export class OpenAICompatibleProvider implements AIProvider {
     includeResponseFormat: boolean,
     includeTemperature: boolean,
     includeReasoningEffort = true,
+    includeTools = false,
   ): Promise<ChatResponse> {
-    const url = `${this.baseUrl}/chat/completions`;
+    const url = this.chatUrl(model);
 
     const body = this.buildRequestBody(
       messages,
@@ -1327,6 +1461,7 @@ export class OpenAICompatibleProvider implements AIProvider {
       includeResponseFormat,
       includeTemperature,
       includeReasoningEffort,
+      includeTools,
     );
     const carriesResponseFormat = includeResponseFormat && opts.responseFormat != null;
     const carriesReasoningEffort = this.canFallBackFromReasoningEffort(body);
@@ -1370,7 +1505,7 @@ export class OpenAICompatibleProvider implements AIProvider {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                Authorization: `Bearer ${this.apiKey}`,
+                ...this.authHeaders(),
               },
               body: JSON.stringify(body),
               signal: controller.signal,
@@ -1420,6 +1555,9 @@ export class OpenAICompatibleProvider implements AIProvider {
             if (carriesReasoningEffort && isReasoningEffortUnsupportedBody(response.status, text)) {
               throw new ReasoningEffortRejectedError(response.status, text.slice(0, 200), msg);
             }
+            if (includeTools && isToolsUnsupportedBody(response.status, text)) {
+              throw new ToolsRejectedError(response.status, text.slice(0, 200), msg);
+            }
             // #336 — a 400/422 on a request that carried `response_format` likely
             // means the runtime does not support schema-guided decoding; surface a
             // classifiable error so `chat()` can retry once WITHOUT the field.
@@ -1439,6 +1577,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     );
 
     const content = json.choices?.[0]?.message?.content ?? "";
+    const toolCalls = parseToolCalls(json.choices?.[0]?.message?.tool_calls);
     const cached = json.usage?.prompt_tokens_details?.cached_tokens ?? 0;
     const usage: TokenUsage = {
       promptTokens: json.usage?.prompt_tokens ?? 0,
@@ -1478,12 +1617,16 @@ export class OpenAICompatibleProvider implements AIProvider {
       ...(json.choices?.[0]?.finish_reason !== undefined
         ? { finishReason: json.choices[0].finish_reason }
         : {}),
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
     };
   }
 
   async *stream(messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<ChatChunk> {
-    const model = this.resolveModel(opts.model ?? this.defaultModel);
-    const url = `${this.baseUrl}/chat/completions`;
+    const requestedModel = opts.model ?? this.defaultModel;
+    const model = this.resolveModel(requestedModel);
+    const url = this.chatUrl(model);
+    // #132 — see chat().
+    let includeTools = this.shouldSendTools(opts, requestedModel, model);
 
     log.debug("Direct stream request", {
       model,
@@ -1516,6 +1659,7 @@ export class OpenAICompatibleProvider implements AIProvider {
       includeResponseFormat: boolean,
       includeTemperature: boolean,
       includeReasoningEffort: boolean,
+      sendTools: boolean,
     ): Promise<StreamConnection> => {
       const body = this.buildRequestBody(
         messages,
@@ -1525,6 +1669,7 @@ export class OpenAICompatibleProvider implements AIProvider {
         includeResponseFormat,
         includeTemperature,
         includeReasoningEffort,
+        sendTools,
       );
       const carriesResponseFormat = includeResponseFormat && opts.responseFormat != null;
       const carriesReasoningEffort = this.canFallBackFromReasoningEffort(body);
@@ -1538,6 +1683,7 @@ export class OpenAICompatibleProvider implements AIProvider {
             carriesResponseFormat,
             includeTemperature,
             carriesReasoningEffort,
+            sendTools,
           ),
         { method: "stream", model },
       );
@@ -1566,6 +1712,7 @@ export class OpenAICompatibleProvider implements AIProvider {
           includeResponseFormat,
           includeTemperature,
           includeReasoningEffort,
+          includeTools,
         );
         for await (const chunk of this.consumeStream(
           conn,
@@ -1574,7 +1721,7 @@ export class OpenAICompatibleProvider implements AIProvider {
           includeTemperature,
           includeResponseFormat && opts.responseFormat != null,
         )) {
-          if (chunk.type === "delta") emittedDelta = true;
+          if (chunk.type === "delta" || chunk.type === "tool_call") emittedDelta = true;
           yield chunk;
         }
         return;
@@ -1583,6 +1730,11 @@ export class OpenAICompatibleProvider implements AIProvider {
         if (err instanceof ReasoningEffortRejectedError && includeReasoningEffort) {
           includeReasoningEffort = false;
           this.noteReasoningEffortRejected(model, err, "stream");
+          continue;
+        }
+        if (err instanceof ToolsRejectedError && includeTools) {
+          includeTools = false;
+          this.noteToolsRejected(model, err, "stream");
           continue;
         }
         if (
@@ -1655,6 +1807,10 @@ export class OpenAICompatibleProvider implements AIProvider {
     // #718 — strip inline <tool_call>/<tool_response> XML hallucinated into the
     // text stream, converting it to structured events instead of leaking tags.
     const toolTagParser = new ToolTagStreamParser();
+    // #132 — native tool calls arrive as `delta.tool_calls` fragments keyed by
+    // `index`: the id and name on the first, the JSON arguments split across
+    // many. Assembled here and emitted, in index order, before `usage`/`done`.
+    const toolCallAssembler = new ToolCallDeltaAssembler();
 
     try {
       while (true) {
@@ -1696,6 +1852,7 @@ export class OpenAICompatibleProvider implements AIProvider {
             if (payload === "[DONE]") {
               disarmIdle();
               for (const chunk of toolTagParser.flush()) yield chunk;
+              for (const chunk of toolCallAssembler.flush()) yield chunk;
               if (finalUsage) {
                 this.emitCacheTelemetry(finalUsage, model, opts);
                 yield { type: "usage", usage: finalUsage };
@@ -1743,6 +1900,7 @@ export class OpenAICompatibleProvider implements AIProvider {
             if (delta) {
               for (const chunk of toolTagParser.push(delta)) yield chunk;
             }
+            toolCallAssembler.push(parsed.choices?.[0]?.delta?.tool_calls);
             // #1226 — the stop signal rides a LATE frame (usually the one with
             // an empty delta), so keep the most recent non-empty value.
             const frameFinishReason = parsed.choices?.[0]?.finish_reason;
@@ -1763,6 +1921,7 @@ export class OpenAICompatibleProvider implements AIProvider {
         }
       }
       for (const chunk of toolTagParser.flush()) yield chunk;
+      for (const chunk of toolCallAssembler.flush()) yield chunk;
       if (finalUsage) {
         this.emitCacheTelemetry(finalUsage, model, opts);
         yield { type: "usage", usage: finalUsage };
@@ -1806,8 +1965,8 @@ export class OpenAICompatibleProvider implements AIProvider {
 
   async models(): Promise<string[]> {
     try {
-      const resp = await fetch(`${this.baseUrl}/models`, {
-        headers: { Authorization: `Bearer ${this.apiKey}` },
+      const resp = await fetch(this.modelsUrl(), {
+        headers: this.authHeaders(),
         signal: AbortSignal.timeout(5000),
       });
       if (!resp.ok) return [this.defaultModel];
@@ -1820,8 +1979,8 @@ export class OpenAICompatibleProvider implements AIProvider {
 
   async ping(): Promise<boolean> {
     try {
-      const resp = await fetch(`${this.baseUrl}/models`, {
-        headers: { Authorization: `Bearer ${this.apiKey}` },
+      const resp = await fetch(this.modelsUrl(), {
+        headers: this.authHeaders(),
         signal: AbortSignal.timeout(5000),
       });
       return resp.ok;
@@ -1849,12 +2008,19 @@ export class OpenAICompatibleProvider implements AIProvider {
     includeResponseFormat = true,
     includeTemperature = true,
     includeReasoningEffort = true,
+    includeTools = false,
   ): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model,
       messages: this.formatMessages(messages, opts.systemMessage),
-      max_tokens: opts.maxTokens ?? this.defaultMaxTokens,
     };
+    // #134 — OpenAI and Azure OpenAI take `max_completion_tokens`; their
+    // reasoning models reject `max_tokens` outright. Every other runtime
+    // (Ollama, vLLM, LM Studio, bedrock-access-gateway) keeps `max_tokens`,
+    // byte-for-byte as before.
+    const maxTokensField =
+      this.key === "openai" || this.key === "azure" ? "max_completion_tokens" : "max_tokens";
+    body[maxTokensField] = opts.maxTokens ?? this.defaultMaxTokens;
     if (includeTemperature) {
       body.temperature = opts.temperature ?? this.defaultTemperature;
     }
@@ -1888,6 +2054,20 @@ export class OpenAICompatibleProvider implements AIProvider {
     // once WITHOUT it (see {@link isStructuredOutputUnsupportedStatus}).
     if (includeResponseFormat && opts.responseFormat) {
       body.response_format = opts.responseFormat;
+    }
+    // #132 — native tools. `includeTools` is false unless the caller supplied
+    // tools AND this model may take them (see `shouldSendTools`).
+    if (includeTools && opts.tools && opts.tools.length > 0) {
+      body.tools = opts.tools.map((t) => ({
+        type: "function",
+        function: { name: t.name, description: t.description, parameters: t.parameters },
+      }));
+      if (opts.toolChoice !== undefined) {
+        body.tool_choice =
+          typeof opts.toolChoice === "string"
+            ? opts.toolChoice
+            : { type: "function", function: { name: opts.toolChoice.name } };
+      }
     }
     if (stream) {
       body.stream = true;
@@ -1938,6 +2118,22 @@ export class OpenAICompatibleProvider implements AIProvider {
     return body.reasoning_effort !== undefined && this.reasoningEffortMode === "auto";
   }
 
+  /** #132 — remember that `model` rejects `tools` and log the one retry. */
+  private noteToolsRejected(
+    model: string,
+    err: ToolsRejectedError,
+    method: "chat" | "stream",
+  ): void {
+    this.toolsRejectedModels.add(model);
+    log.warn("Runtime rejected tools; retrying once without them", {
+      provider: this.key,
+      method,
+      model,
+      status: err.status,
+      cause: err.bodyExcerpt.slice(0, 200),
+    });
+  }
+
   /** #176 — memoise a structured-output 501 for `model`; a 400/422 is not memoised. */
   private noteStructuredOutputRejected(model: string, err: StructuredOutputRejectedError): void {
     if (isStructuredOutputUnavailableBody(err.status, err.bodyExcerpt)) {
@@ -1961,18 +2157,109 @@ export class OpenAICompatibleProvider implements AIProvider {
     });
   }
 
+  /**
+   * Serialise the conversation. A plain message keeps the exact
+   * `{ role, content }` shape it always had. #132 adds the two tool shapes:
+   * an assistant turn that made calls carries `tool_calls` (arguments
+   * re-serialised to the JSON string the wire format requires), and a `tool`
+   * result carries the `tool_call_id` it answers.
+   */
   private formatMessages(
     messages: ChatMessage[],
     systemMessage?: string,
-  ): Array<{ role: string; content: string | ChatContentPart[] }> {
-    const formatted: Array<{ role: string; content: string | ChatContentPart[] }> = [];
+  ): Array<Record<string, unknown>> {
+    const formatted: Array<Record<string, unknown>> = [];
     if (systemMessage) {
       formatted.push({ role: "system", content: systemMessage });
     }
     for (const msg of messages) {
-      formatted.push({ role: msg.role, content: msg.content });
+      if (msg.role === "assistant" && msg.toolCalls && msg.toolCalls.length > 0) {
+        const text = messageText(msg);
+        formatted.push({
+          role: "assistant",
+          content: text.length > 0 ? text : null,
+          tool_calls: msg.toolCalls.map((c) => ({
+            id: c.id,
+            type: "function",
+            function: {
+              name: c.name,
+              arguments: typeof c.args === "string" ? c.args : JSON.stringify(c.args ?? {}),
+            },
+          })),
+        });
+        continue;
+      }
+      if (msg.role === "tool" && msg.toolCallId) {
+        formatted.push({ role: "tool", tool_call_id: msg.toolCallId, content: messageText(msg) });
+        continue;
+      }
+      formatted.push({ role: msg.role, content: msg.content as string | ChatContentPart[] });
     }
     return formatted;
+  }
+}
+
+/**
+ * #132 — parse JSON tool-call arguments. Invalid JSON is kept as the raw string
+ * so a malformed call is visible to the caller rather than silently becoming
+ * `{}`; an empty string (a call with no arguments) becomes `{}`.
+ */
+function parseToolArgs(raw: string | undefined): unknown {
+  if (raw == null || raw.trim().length === 0) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/** #132 — typed tool calls from a non-streamed message, in the order returned. */
+function parseToolCalls(calls: OpenAIToolCall[] | undefined): ChatToolCall[] {
+  if (!Array.isArray(calls)) return [];
+  const out: ChatToolCall[] = [];
+  calls.forEach((c, i) => {
+    const name = c.function?.name;
+    if (!name) return;
+    out.push({ id: c.id ?? `call_${i}`, name, args: parseToolArgs(c.function?.arguments) });
+  });
+  return out;
+}
+
+/**
+ * #132 — assembles streamed `delta.tool_calls` fragments. OpenAI-compatible
+ * servers send each call's `id` and `function.name` on its first fragment and
+ * then split `function.arguments` across any number of later ones, keyed by
+ * `index` — several calls may interleave. Exported for direct unit testing.
+ */
+export class ToolCallDeltaAssembler {
+  private readonly calls = new Map<number, { id?: string; name: string; args: string }>();
+
+  push(deltas: OpenAIToolCallDelta[] | undefined): void {
+    if (!Array.isArray(deltas)) return;
+    for (const d of deltas) {
+      const index = typeof d.index === "number" ? d.index : this.calls.size;
+      const entry = this.calls.get(index) ?? { name: "", args: "" };
+      if (d.id) entry.id = d.id;
+      if (d.function?.name) entry.name += d.function.name;
+      if (d.function?.arguments) entry.args += d.function.arguments;
+      this.calls.set(index, entry);
+    }
+  }
+
+  /** Emit every assembled call once, in index order, then reset. */
+  *flush(): Generator<ChatChunk> {
+    const ordered = [...this.calls.entries()].sort(([a], [b]) => a - b);
+    this.calls.clear();
+    for (const [index, c] of ordered) {
+      if (!c.name) continue;
+      yield {
+        type: "tool_call",
+        name: c.name,
+        arguments: parseToolArgs(c.args),
+        toolCallId: c.id ?? `call_${index}`,
+        native: true,
+      };
+    }
   }
 }
 

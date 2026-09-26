@@ -21,8 +21,8 @@ import {
   FABLE_MODEL_ID,
   OPUS_MODEL_ID,
   LEGACY_SONNET_MODEL_ID,
-  MODEL_REGISTRY,
 } from "../lib/ai/model-router.js";
+import { routerCatalog } from "../lib/ai/model-catalog.js";
 import {
   estimateAnalysisRunTokens,
   profileAnalysisRun,
@@ -77,7 +77,17 @@ export function initModelPreferenceRouter(): Router {
           defaultModel: pref?.defaultModel ?? null,
           taskTypeOverrides: pref ? safeParse(pref.taskTypeOverrides) : {},
           budgetDowngradeThreshold: pref?.budgetDowngradeThreshold ?? null,
-          availableModels: MODEL_REGISTRY,
+          // #135 — the router's models as the catalog describes them (name,
+          // tier, context window, price, capabilities) — the settings picker
+          // renders from this, never from a list of its own.
+          availableModels: routerCatalog().map((m) => ({
+            id: m.id,
+            name: m.displayName,
+            tier: m.routerTier,
+            contextWindow: m.contextWindow,
+            price: m.price,
+            capabilities: m.capabilities,
+          })),
         }),
       );
     },

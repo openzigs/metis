@@ -35,6 +35,36 @@ vi.mock("@/lib/projects-api", async () => {
   };
 });
 
+// #135 — the model step renders from the server-side catalog, so the test
+// serves one (the same ids the wizard offered when they were hardcoded).
+vi.mock("@/lib/model-catalog-api", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/model-catalog-api")>("@/lib/model-catalog-api");
+  const entry = (id: string, displayName: string) => ({
+    provider: "bedrock-gateway",
+    id,
+    displayName,
+    contextWindow: null,
+    maxOutputTokens: null,
+    price: null,
+    capabilities: { tools: true, jsonSchema: true, jsonObject: true, vision: true, thinking: true },
+    source: "builtin",
+  });
+  return {
+    ...actual,
+    modelCatalogApi: {
+      list: vi.fn(async () => ({
+        provider: "bedrock-gateway",
+        defaultModel: "us.anthropic.claude-sonnet-5",
+        models: [
+          entry("us.anthropic.claude-haiku-4-5-20251001-v1:0", "Claude Haiku 4.5"),
+          entry("us.anthropic.claude-sonnet-5", "Claude Sonnet 5"),
+        ],
+      })),
+    },
+  };
+});
+
 import { sdkApi } from "@/lib/sdk-alignment-api";
 import { projectsApi } from "@/lib/projects-api";
 
