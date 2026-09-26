@@ -14,8 +14,18 @@
  *   {@link rehypeSectionSlugs} continues from there.
  * - **Code fences.** A `## ` line inside a fenced code block is not a heading,
  *   and splitting there would cut the fence in two.
+ *
+ * #196 — the splitter's ids (TOC links, pending-section anchors, deep-link
+ * lookup) and the rendered ids come from ONE function, {@link headingSlugText},
+ * applied to the same parsed heading. The splitter parses each heading line
+ * with the renderer's own markdown grammar, so `_emphasis_`, `&amp;` and the
+ * like reduce to the text the reader sees on both sides.
  */
 import GithubSlugger from "github-slugger";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
 
 export interface MarkdownHeading {
   id: string;
@@ -49,15 +59,36 @@ export interface SplitDocument {
 const HEADING = /^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/;
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
+/** A markdown AST node, as far as slugging needs one. */
+export interface MdastNode {
+  type: string;
+  value?: string;
+  depth?: number;
+  children?: MdastNode[];
+  data?: { hProperties?: Record<string, unknown> } & Record<string, unknown>;
+}
+
 /**
- * The plain text `rehype-slug` sees for a heading's inline markdown: link and
- * image syntax reduced to their text, emphasis and code markers dropped.
+ * The text a heading's id is slugged from: what the reader sees, with
+ * emphasis, code, link and entity syntax resolved. Image alt text and raw
+ * inline HTML are excluded, because neither renders as heading text (the
+ * previewer does not render raw HTML), so ids match what `rehype-slug` gives a
+ * whole-document render. The ONLY source of heading ids, used by both the
+ * splitter and {@link remarkSectionSlugs}.
  */
-export function headingText(inline: string): string {
-  return inline
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/[`*]/g, "")
-    .trim();
+export function headingSlugText(node: MdastNode): string {
+  if (node.type === "html" || node.type === "image" || node.type === "imageReference") return "";
+  if (typeof node.value === "string") return node.value;
+  return (node.children ?? []).map(headingSlugText).join("");
+}
+
+/** Parses markdown with the same grammar extensions the previewer renders with. */
+const headingParser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).freeze();
+
+/** The parsed heading an ATX heading line produces, or `undefined`. */
+function parseHeadingLine(line: string): MdastNode | undefined {
+  const [first] = (headingParser.parse(line.trimStart()) as MdastNode).children ?? [];
+  return first?.type === "heading" ? first : undefined;
 }
 
 export function splitMarkdownSections(markdown: string): SplitDocument {
@@ -100,9 +131,10 @@ export function splitMarkdownSections(markdown: string): SplitDocument {
       continue;
     }
     const match = HEADING.exec(line);
-    if (match) {
+    const parsed = match ? parseHeadingLine(line) : undefined;
+    if (match && parsed) {
       const level = match[1].length;
-      const text = headingText(match[2]);
+      const text = headingSlugText(parsed);
       if (level === 2 || level === 3) {
         flush();
         current = { headingIds: [], slugOccurrences: { ...slugger.occurrences } };
@@ -120,32 +152,25 @@ export function splitMarkdownSections(markdown: string): SplitDocument {
   return { sections, toc, sectionOfId };
 }
 
-interface HastNode {
-  type: string;
-  tagName?: string;
-  value?: string;
-  properties?: Record<string, unknown>;
-  children?: HastNode[];
-}
-
-function hastText(node: HastNode): string {
-  if (node.type === "text") return node.value ?? "";
-  return (node.children ?? []).map(hastText).join("");
-}
-
 /**
- * A `rehype-slug` that continues the whole document's de-duplication counter
- * from `occurrences` instead of starting at zero, so a section rendered on its
- * own gets the ids a single whole-document render would have produced.
+ * A remark plugin that gives every heading the id the splitter gave it:
+ * {@link headingSlugText} of the parsed heading, de-duplicated by a counter
+ * that continues from `occurrences` (the whole document's counts before this
+ * section) instead of starting at zero.
  */
-export function rehypeSectionSlugs(options: { occurrences: Readonly<Record<string, number>> }) {
-  return (tree: HastNode) => {
+export function remarkSectionSlugs(options: { occurrences: Readonly<Record<string, number>> }) {
+  return (tree: MdastNode) => {
     const slugger = new GithubSlugger();
     slugger.occurrences = { ...options.occurrences };
-    const visit = (node: HastNode) => {
-      if (node.type === "element" && /^h[1-6]$/.test(node.tagName ?? "")) {
-        node.properties = node.properties ?? {};
-        if (!node.properties.id) node.properties.id = slugger.slug(hastText(node));
+    const visit = (node: MdastNode) => {
+      if (node.type === "heading") {
+        const hProperties = node.data?.hProperties ?? {};
+        if (!hProperties.id) {
+          node.data = {
+            ...node.data,
+            hProperties: { ...hProperties, id: slugger.slug(headingSlugText(node)) },
+          };
+        }
         return;
       }
       node.children?.forEach(visit);

@@ -8,6 +8,7 @@
  *   GET    /:docId               — get a single document (content + summary metadata)
  *   GET    /:docId/versions/:versionId                 — one version's markdown (#190)
  *   GET    /:docId/versions/:versionId/provenance      — its provenance manifest (#190)
+ *   GET    /:docId/versions/:versionId/provenance/summary — the panel's summary of it (#196)
  *   GET    /:docId/versions/:versionId/changed-symbols — its changed symbols, paged (#190)
  *   GET    /:docId/export        — export as PDF or Word
  *   GET    /:docId/schema-graph  — structured schema graph (Epic #895)
@@ -39,8 +40,13 @@ import {
   graphFingerprintOf,
   graphFingerprintOfValue,
   generatedDocRevisionId,
-  normalizeGeneratedDocVersionRecord,
 } from "../lib/docs-gen/generated-doc-provenance.js";
+import {
+  cachedChangedSymbols,
+  cachedProvenanceSummary,
+  type GeneratedDocProvenanceSummary,
+  type GeneratedDocVersionRowKey,
+} from "../lib/docs-gen/generated-doc-version-reads.js";
 import {
   PHASE1_PROMPT_VERSION,
   buildDocsGenProvider,
@@ -91,11 +97,7 @@ import { publicIndexingErrorMessage } from "../lib/rag/indexing-failure-message.
 
 const log = createChildLogger("generated-docs");
 
-type IndexingVersion = {
-  version: number;
-  revisionId: string | null;
-  provenanceManifest: string | null;
-};
+type IndexingVersion = { version: number; revisionId: string | null };
 type PublicationState = { status: string; errorMessage: string | null };
 
 function publicationId(projectId: string, docId: string, version?: IndexingVersion) {
@@ -109,19 +111,20 @@ function publicationId(projectId: string, docId: string, version?: IndexingVersi
     : null;
 }
 
-function canUseLegacyIndex(version: IndexingVersion | undefined, outbox?: PublicationState) {
+/**
+ * Pre-publication versions can have a backfilled revision ID. A real current
+ * manifest (or an unreadable one) is not evidence of a legacy publication; a
+ * version with no stored manifest is. #196 — the manifest is consulted only
+ * when there is no outbox, and through the per-version summary cache.
+ */
+async function canUseLegacyIndex(
+  version: GeneratedDocVersionRowKey | undefined,
+  outbox?: PublicationState,
+): Promise<boolean> {
   if (outbox) return false;
-  // Pre-publication versions can have a backfilled revision ID. A real current
-  // manifest (or an unreadable one) is not evidence of a legacy publication.
-  if (!version?.provenanceManifest) return true;
-  try {
-    return (
-      parseGeneratedDocVersionManifest(version.provenanceManifest).legacy.historicalCitations ===
-      "legacy-unknown"
-    );
-  } catch {
-    return false;
-  }
+  if (!version) return true;
+  const summary = await versionSummary(version);
+  return summary?.legacy.historicalCitations === "legacy-unknown";
 }
 
 function unpublishedIndex(outbox?: PublicationState | null) {
@@ -237,24 +240,44 @@ async function storedManifest(documentId: string, versionId: string): Promise<st
 }
 
 /**
+ * #196 — a version's provenance summary, reading and parsing its (possibly
+ * multi-megabyte) manifest at most once per process. `null` = unreadable.
+ */
+function versionSummary(
+  row: GeneratedDocVersionRowKey,
+): Promise<GeneratedDocProvenanceSummary | null> {
+  return cachedProvenanceSummary(row, () => storedManifest(row.documentId, row.versionId));
+}
+
+function rowKey(
+  projectId: string,
+  documentId: string,
+  version: { id: string; version: number; createdAt: Date },
+): GeneratedDocVersionRowKey {
+  return {
+    projectId,
+    documentId,
+    versionId: version.id,
+    version: version.version,
+    createdAt: version.createdAt,
+  };
+}
+
+/**
  * #190 — the revision id the detail payload has always reported, without
  * loading the (potentially multi-megabyte) manifest for rows that store it.
  */
 async function versionRevisionId(
   projectId: string,
   generatedDocumentId: string,
-  version: { id: string; version: number; revisionId: string | null },
+  version: { id: string; version: number; revisionId: string | null; createdAt: Date },
 ): Promise<string> {
   if (version.revisionId) return version.revisionId;
-  return normalizeGeneratedDocVersionRecord(
-    {
-      documentId: generatedDocumentId,
-      version: version.version,
-      revisionId: null as string | null,
-      provenanceManifest: await storedManifest(generatedDocumentId, version.id),
-    },
-    { projectId, generatedDocumentId },
-  ).revisionId;
+  const summary = await versionSummary(rowKey(projectId, generatedDocumentId, version));
+  if (!summary) {
+    throw new AppError(500, "PROVENANCE_CORRUPT", "Stored provenance manifest is not readable");
+  }
+  return summary.revisionId;
 }
 
 const refreshAuthenticatedUser: RequestHandler =
@@ -390,7 +413,7 @@ export function generatedDocsRouter(): Router {
         versions: {
           orderBy: { version: "desc" },
           take: 1,
-          select: { version: true, revisionId: true, provenanceManifest: true },
+          select: { id: true, version: true, revisionId: true, createdAt: true },
         },
       },
     });
@@ -448,21 +471,23 @@ export function generatedDocsRouter(): Router {
         },
       ]),
     );
-    res.json({
-      data: docs.map((doc) => {
-        const outbox = outboxes.get(publicationId(projectId, doc.id, doc.versions?.[0]) ?? "");
+    const data = await Promise.all(
+      docs.map(async (doc) => {
+        const latest = doc.versions?.[0];
+        const outbox = outboxes.get(publicationId(projectId, doc.id, latest) ?? "");
         return {
           ...doc,
           versions: doc.versions?.map(({ revisionId }) => ({ revisionId })),
           indexing:
             indexByGeneratedDocId.get(identityByDocument.get(doc.id)!) ??
-            (canUseLegacyIndex(doc.versions?.[0], outbox)
+            ((await canUseLegacyIndex(latest && rowKey(projectId, doc.id, latest), outbox))
               ? indexByGeneratedDocId.get(generatedDocSyntheticDocumentId(doc.id))
               : undefined) ??
             unpublishedIndex(outbox),
         };
       }),
-    });
+    );
+    res.json({ data });
   });
 
   // GET /:docId — get single document. #190 — the content once plus summary
@@ -497,11 +522,7 @@ export function generatedDocsRouter(): Router {
     });
     if (!doc) throw new AppError(404, "DOC_NOT_FOUND", "Generated document not found");
     const latest = doc.versions[0];
-    const outboxId = publicationId(
-      projectId,
-      doc.id,
-      latest && { ...latest, provenanceManifest: null },
-    );
+    const outboxId = publicationId(projectId, doc.id, latest);
     const outbox = outboxId
       ? await prisma.task.findUnique({
           where: { id: outboxId, projectId },
@@ -525,10 +546,7 @@ export function generatedDocsRouter(): Router {
         select: indexingSelect,
       })) ??
       (latest?.revisionId &&
-      canUseLegacyIndex(
-        { ...latest, provenanceManifest: await storedManifest(docId, latest.id) },
-        outbox ?? undefined,
-      )
+      (await canUseLegacyIndex(rowKey(projectId, docId, latest), outbox ?? undefined))
         ? await prisma.document.findFirst({
             where: { id: generatedDocSyntheticDocumentId(doc.id), projectId, deletedAt: null },
             select: indexingSelect,
@@ -639,8 +657,29 @@ export function generatedDocsRouter(): Router {
     },
   );
 
+  // GET /:docId/versions/:versionId/provenance/summary — #196: the handful of
+  // fields the Provenance panel shows. The full manifest above is only fetched
+  // when the user asks to download it.
+  r.get(
+    "/:docId/versions/:versionId/provenance/summary",
+    requirePermission("project.read"),
+    async (req: Request, res: Response) => {
+      const { projectId, docId, version } = await findVersion(req, {
+        id: true,
+        version: true,
+        createdAt: true,
+      });
+      const summary = await versionSummary(rowKey(projectId, docId, version));
+      if (!summary) {
+        throw new AppError(500, "PROVENANCE_CORRUPT", "Stored provenance manifest is not readable");
+      }
+      res.json({ data: summary });
+    },
+  );
+
   // GET /:docId/versions/:versionId/changed-symbols?offset=&limit= — a page of
-  // the symbols the version regenerated, with the total.
+  // the symbols the version regenerated, with the total. #196 — the stored
+  // array is parsed once per version and paged from the cache after that.
   const changedSymbolsQuery = z.object({
     offset: z.coerce.number().int().min(0).default(0),
     limit: z.coerce.number().int().min(1).max(5000).default(500),
@@ -651,14 +690,19 @@ export function generatedDocsRouter(): Router {
     async (req: Request, res: Response) => {
       const page = changedSymbolsQuery.safeParse(req.query);
       if (!page.success) throw new AppError(400, "VALIDATION_ERROR", page.error.message);
-      const { version } = await findVersion(req, { changedSymbols: true });
-      let symbols: unknown;
-      try {
-        symbols = JSON.parse(version.changedSymbols);
-      } catch {
-        symbols = null;
-      }
-      if (!Array.isArray(symbols)) {
+      const { projectId, docId, version } = await findVersion(req, {
+        id: true,
+        version: true,
+        createdAt: true,
+      });
+      const symbols = await cachedChangedSymbols(rowKey(projectId, docId, version), async () => {
+        const stored = await prisma.generatedDocumentVersion.findFirst({
+          where: { id: version.id, documentId: docId },
+          select: { changedSymbols: true },
+        });
+        return stored?.changedSymbols ?? "[]";
+      });
+      if (!symbols) {
         throw new AppError(
           500,
           "CHANGED_SYMBOLS_CORRUPT",

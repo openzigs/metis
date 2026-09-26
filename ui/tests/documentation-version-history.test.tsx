@@ -76,18 +76,20 @@ const VERSION_BODIES: Record<string, string> = {
   v2: "# Version 2 body",
 };
 
-const PROVENANCE = {
-  revision: { revisionId: "gendoc:proj_test:doc_1:v2", version: 2 },
-  document: { generatedAt: "2026-06-02T00:00:00.000Z" },
-  generation: {
-    pipeline: "holistic",
-    model: { phase1: { model: "fact-model" }, phase2: { model: "prose-model" } },
-  },
-  sourceFingerprints: [{}, {}, {}],
-  selectedEvidence: { primary: [{}, {}] },
-  sections: [{}, {}, {}, {}],
+/** #196 — the panel reads the summary endpoint, never the full manifest. */
+const PROVENANCE_SUMMARY = {
+  revisionId: "gendoc:proj_test:doc_1:v2",
+  version: 2,
+  generatedAt: "2026-06-02T00:00:00.000Z",
+  pipeline: "holistic",
+  models: { phase1: "fact-model", phase2: "prose-model" },
+  sectionCount: 4,
+  selectedEvidenceCount: 2,
+  sourceCount: 3,
   historicalCitations: { status: "unknown", mode: "legacy-unknown" },
+  legacy: { historicalCitations: "legacy-unknown" },
 };
+const FULL_MANIFEST = { revision: { revisionId: "gendoc:proj_test:doc_1:v2" }, sections: [] };
 
 function setup(detail: Record<string, unknown>) {
   mockApiFetch.mockImplementation(async (path: string) => {
@@ -96,7 +98,8 @@ function setup(detail: Record<string, unknown>) {
     if (version) {
       const [, id, sub, query] = version;
       if (!sub) return { id, content: VERSION_BODIES[id] };
-      if (sub === "/provenance") return PROVENANCE;
+      if (sub === "/provenance/summary") return PROVENANCE_SUMMARY;
+      if (sub === "/provenance") return FULL_MANIFEST;
       if (sub === "/changed-symbols") {
         expect(query).toBe("?limit=200");
         return { total: 1234, offset: 0, items: ["billing.Invoice.total", "billing.Tax.rate"] };
@@ -294,9 +297,14 @@ describe("DocumentationPage — version history", () => {
     expect(within(provenance).getByText("holistic")).toBeInTheDocument();
     expect(within(provenance).getByText(/fact-model/)).toBeInTheDocument();
     expect(within(provenance).getByText("2 selected from 3 sources")).toBeInTheDocument();
+    expect(within(provenance).getByText("4")).toBeInTheDocument();
     // Opening one panel closes the other.
     expect(screen.queryByTestId("version-symbols-v2")).not.toBeInTheDocument();
-    expect(artifactCalls()).toHaveLength(2);
+    // #196 — the summary, not the (tens of megabytes) manifest.
+    expect(artifactCalls()).toEqual([
+      `/projects/proj_test/docs/${DOC_ID}/versions/v2/changed-symbols?limit=200`,
+      `/projects/proj_test/docs/${DOC_ID}/versions/v2/provenance/summary`,
+    ]);
 
     // Closing and re-opening reuses the fetched artifact (versions are immutable).
     fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
@@ -304,6 +312,58 @@ describe("DocumentationPage — version history", () => {
     fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
     await screen.findByText("gendoc:proj_test:doc_1:v2");
     expect(artifactCalls()).toHaveLength(2);
+  });
+
+  it("fetches the full manifest only when the user downloads it (#196)", async () => {
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:manifest");
+    const revokeObjectURL = vi.fn();
+    Object.assign(URL, { createObjectURL, revokeObjectURL });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+    );
+    await openDoc();
+    const manifestCalls = () =>
+      mockApiFetch.mock.calls
+        .map(([path]) => String(path))
+        .filter((p) => p.endsWith("/provenance"));
+
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    await within(panel).findByText("gendoc:proj_test:doc_1:v2");
+    expect(manifestCalls()).toEqual([]);
+
+    fireEvent.click(within(panel).getByRole("button", { name: "Download full manifest" }));
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+    expect(manifestCalls()).toEqual([`/projects/proj_test/docs/${DOC_ID}/versions/v2/provenance`]);
+    const blob = createObjectURL.mock.calls[0][0];
+    expect(JSON.parse(await blob.text())).toEqual(FULL_MANIFEST);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:manifest");
+    click.mockRestore();
+  });
+
+  it("says so when the full manifest cannot be downloaded (#196)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+    );
+    const base = mockApiFetch.getMockImplementation()!;
+    mockApiFetch.mockImplementation(async (path: string, ...rest: unknown[]) => {
+      if (String(path).endsWith("/provenance")) throw new Error("500");
+      return (base as (p: string, ...r: unknown[]) => Promise<unknown>)(path, ...rest);
+    });
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    fireEvent.click(await within(panel).findByRole("button", { name: "Download full manifest" }));
+    expect(await within(panel).findByText("Could not download the manifest.")).toBeInTheDocument();
   });
 
   it("reports an artifact that fails to load", async () => {
