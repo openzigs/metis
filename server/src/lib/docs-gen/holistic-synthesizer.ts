@@ -109,6 +109,7 @@ import {
   type Phase1Unit,
 } from "./phase1-chunking.js";
 import { mapSettledWithConcurrency, resolvePhase1Concurrency } from "./phase1-concurrency.js";
+import { isInPathScope, restrictToPathScope, withPathScopeBanner } from "./path-scope.js";
 import {
   loadRepositorySources,
   repositoryPathIdentity,
@@ -146,6 +147,10 @@ import {
   sectionPartlyGroundedWarning,
   sectionUnderReconstructedWarning,
   groundingUnparseableWarning,
+  groundingModeRunWarning,
+  groundingSampledWarning,
+  groundingSkippedWarning,
+  markWarningSampled,
   resolveSectionFaithfulnessThreshold,
   tierForSection,
   type DocWarningTier,
@@ -178,10 +183,17 @@ import {
   type StructuredOutputMode,
 } from "./grounding/structured-output-schemas.js";
 import {
-  scoreFaithfulness,
+  isPartialSample,
   summarizeFaithfulness,
   type FaithfulnessResult,
 } from "./grounding/citation-validator.js";
+import {
+  FULL_GROUNDING,
+  groundingPolicyRecord,
+  resolveGroundingPolicy,
+  scoreUnderPolicy,
+  type GroundingPolicy,
+} from "./grounding/grounding-mode.js";
 import {
   GENERATED_DOC_PROVENANCE_SCHEMA_VERSION,
   buildGeneratedDocVersionManifest,
@@ -1152,6 +1164,8 @@ export async function synthesizeHolisticDocument(
      * Best-effort, like {@link onSectionProgress}.
      */
     onPhase1Progress?: (update: { done: number; total: number }) => void;
+    /** Repository-relative path prefixes limiting what is documented (path-scope.ts). */
+    pathPrefixes?: readonly string[];
     benchmarkProviders?: {
       phase1?: ReturnType<typeof buildDocsGenProvider>;
       phase2Router?: Phase2Router;
@@ -1163,6 +1177,7 @@ export async function synthesizeHolisticDocument(
   const grounding = options?.grounding;
   const groundingForSection = options?.groundingForSection;
   const onSectionProgress = options?.onSectionProgress;
+  const pathPrefixes = options?.pathPrefixes?.length ? options.pathPrefixes : undefined;
   log.info("Starting holistic synthesis", {
     projectId,
     docType,
@@ -1274,6 +1289,12 @@ export async function synthesizeHolisticDocument(
       sqlScanWarnings.push(sqlScanIncompleteWarning(label, stats));
     }
   }
+  // Path scope: after SQL-only discovery so those modules are scoped too, and
+  // before the graph summary, Phase 1 and Phase 2 read any module.
+  if (pathPrefixes) {
+    const kept = restrictToPathScope(pathPrefixes, { modules, symbols, meta });
+    log.info("Path scope applied", { projectId, pathPrefixes, ...kept });
+  }
 
   // #271 — build compact, budget-bounded code-graph summaries (SAS dataset
   // lineage + cross-module dependency/call flow) from the SAME DB rows the
@@ -1337,7 +1358,7 @@ export async function synthesizeHolisticDocument(
   let chunksPlanned = 0;
   for (const m of modules) {
     try {
-      const p = await preparePhase1Module(m, cloneDirOf(m), includeTests);
+      const p = await preparePhase1Module(m, cloneDirOf(m), includeTests, pathPrefixes);
       prepared.set(m, p);
       chunksPlanned += Math.max(1, planPhase1Chunks(p.units, phase1Limits).length);
     } catch {
@@ -1369,6 +1390,7 @@ export async function synthesizeHolisticDocument(
         includeTests,
         {
           prepared: prepared.get(m),
+          pathPrefixes,
           onChunkDone: () => {
             chunksDone += 1;
             reportPhase1();
@@ -1484,6 +1506,7 @@ export async function synthesizeHolisticDocument(
     selectedEvidence,
     sectionSynthesis,
     regeneration,
+    grounding: groundingRecord,
   } = await synthesizeFinalDocument(
     facts,
     meta,
@@ -1520,6 +1543,7 @@ export async function synthesizeHolisticDocument(
     revision: provenance?.revision ?? { projectId, generatedDocumentId: "pending", version: 1 },
     title,
     scope: repoConnectorId ? "repository" : "full",
+    ...(pathPrefixes ? { pathPrefixes } : {}),
     docType,
     generatedAt: provenance?.generatedAt ?? new Date(),
     policy: provenance?.policy ?? {
@@ -1547,25 +1571,40 @@ export async function synthesizeHolisticDocument(
     sections,
     sectionSynthesis,
     regeneration,
+    ...(groundingRecord ? { grounding: groundingRecord } : {}),
   });
   return {
-    markdown,
+    markdown: pathPrefixes ? withPathScopeBanner(markdown, pathPrefixes) : markdown,
     warnings,
     provenanceManifest,
-    sectionSupport: sections
-      .map((section) => {
-        const record = sectionSynthesis?.records.find(
-          (candidate) => candidate.metadata.sectionIndex === section.sectionIndex,
-        );
-        const score = record?.score;
-        if (!score || score.result.totalClaims === 0) return null;
-        return {
-          supportedClaims: score.result.supportedClaims,
-          totalClaims: score.result.totalClaims,
-        };
-      })
-      .filter((value): value is { supportedClaims: number; totalClaims: number } => value !== null),
+    sectionSupport: verifiedSectionSupport(sections, sectionSynthesis),
   };
+}
+
+/**
+ * The verified claim-support counts of each synthesized section, for the eval
+ * harness's supported-claim rate. A section with no score or no claims has
+ * none; nor does a SAMPLED score (DOCS_GEN_GROUNDING=sample), which is an
+ * estimate, never a verified section-level support score.
+ * @internal — exported for testing.
+ */
+export function verifiedSectionSupport(
+  sections: ReadonlyArray<{ sectionIndex: number }>,
+  sectionSynthesis: SectionSynthesis | undefined,
+): Array<{ supportedClaims: number; totalClaims: number }> {
+  return sections
+    .map((section) => {
+      const record = sectionSynthesis?.records.find(
+        (candidate) => candidate.metadata.sectionIndex === section.sectionIndex,
+      );
+      const score = record?.score;
+      if (!score || score.result.totalClaims === 0 || isPartialSample(score.result)) return null;
+      return {
+        supportedClaims: score.result.supportedClaims,
+        totalClaims: score.result.totalClaims,
+      };
+    })
+    .filter((value): value is { supportedClaims: number; totalClaims: number } => value !== null);
 }
 
 // ============================================================================
@@ -1856,6 +1895,12 @@ export async function preparePhase1Module(
   m: ModuleGroup,
   cloneDir: string | null,
   includeTests = true,
+  /**
+   * #185 — the run's path scope. A module kept by {@link restrictToPathScope}
+   * keeps its whole directory, so the `.sql` files read from that directory
+   * are scoped here too: a prefix naming one file never pulls in its siblings.
+   */
+  pathPrefixes?: readonly string[] | null,
 ): Promise<PreparedPhase1Module> {
   // ------------------------------------------------------------------
   // Read EVERY file of the module once, in full. There is no snippet budget:
@@ -1897,6 +1942,7 @@ export async function preparePhase1Module(
       const sqlFiles = entries
         .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".sql"))
         .filter((e) => includeTests || !isTestSourcePath(path.join(m.dir, e.name)))
+        .filter((e) => !pathPrefixes || isInPathScope(path.join(m.dir, e.name), pathPrefixes))
         .map((e) => e.name)
         .sort();
       for (const name of sqlFiles) {
@@ -1962,6 +2008,8 @@ export async function extractModuleFacts(
   hooks?: {
     /** The module already prepared by {@link preparePhase1Module} (skips re-reading). */
     prepared?: PreparedPhase1Module;
+    /** #185 — the run's path scope, for a module that must be prepared here. */
+    pathPrefixes?: readonly string[] | null;
     /** Called once per PLANNED chunk as it completes (split halves count as their chunk). */
     onChunkDone?: () => void;
   },
@@ -1971,7 +2019,7 @@ export async function extractModuleFacts(
   const methodCount = callables.length;
 
   const { fileLines, units, sourceCharsTotal, skippedFiles } =
-    hooks?.prepared ?? (await preparePhase1Module(m, cloneDir, includeTests));
+    hooks?.prepared ?? (await preparePhase1Module(m, cloneDir, includeTests, hooks?.pathPrefixes));
 
   // Issue #330 — detect the silent "source unavailable" degradation: a module
   // with code symbols whose files could not be read AT ALL (every readFile above
@@ -2813,6 +2861,8 @@ async function validateSectionGrounding(
    * warning-copy variant to emit when below the bar).
    */
   section?: { threshold?: number; narrative?: boolean; reconstruction?: boolean },
+  /** DOCS_GEN_GROUNDING — how much of the section to check (default: all of it). */
+  policy: GroundingPolicy = FULL_GROUNDING,
 ): Promise<SectionGroundingOutcome> {
   if (
     !claimExtractor ||
@@ -2823,9 +2873,18 @@ async function validateSectionGrounding(
   ) {
     return { markdown: sectionMarkdown, warning: null, score: null };
   }
+  // DOCS_GEN_GROUNDING=off — no extraction, no judge; the section is recorded
+  // as not fact-checked so it can never read as verified.
+  if (policy.mode === "off") {
+    return {
+      markdown: sectionMarkdown,
+      warning: groundingSkippedWarning(sectionLabel),
+      score: null,
+    };
+  }
 
   try {
-    const result = await scoreFaithfulness(sectionLabel, sectionMarkdown, grounding, {
+    const result = await scoreUnderPolicy(policy, sectionLabel, sectionMarkdown, grounding, {
       extractor: claimExtractor,
       judge: faithfulnessJudge,
     });
@@ -2885,7 +2944,27 @@ function gradeFaithfulness(
   // override (narrative sections set a lower bar) wins over the global default.
   const threshold = resolveSectionFaithfulnessThreshold(section?.threshold);
   const score = { faithfulness: result.faithfulness, threshold, result };
+  // DOCS_GEN_GROUNDING=sample — a score from part of the section is an
+  // estimate: it always carries a warning that says so, never a clean `ready`.
+  const sample = result.sampled && isPartialSample(result) ? result.sampled : null;
   if (result.faithfulness >= threshold) {
+    if (sample) {
+      return {
+        markdown: sectionMarkdown,
+        warning: groundingSampledWarning(
+          sectionLabel,
+          {
+            supportedClaims: result.supportedClaims,
+            totalClaims: result.totalClaims,
+            faithfulness: result.faithfulness,
+            threshold,
+            unparseable: result.unparseable != null,
+          },
+          sample,
+        ),
+        score,
+      };
+    }
     // Faithful enough — accurate synthesis stays `ready`, unless some of the
     // judge's batches were unparseable and their claims went unscored (#117).
     return { markdown: sectionMarkdown, warning: unparseableWarning, score };
@@ -2908,7 +2987,8 @@ function gradeFaithfulness(
   //     source" — the gap is mandated structural inference, not fabrication.
   //   - literal (Business Rules, Integrations): "may be unreliable" — an
   //     unsupported claim genuinely signals fabrication.
-  const warning = buildFaithfulnessWarning(sectionLabel, result, threshold, section);
+  const tierWarning = buildFaithfulnessWarning(sectionLabel, result, threshold, section);
+  const warning = sample ? markWarningSampled(tierWarning, sample) : tierWarning;
   return { markdown: sectionMarkdown, warning, score };
 }
 
@@ -3006,6 +3086,8 @@ async function synthesizeBatchedSection(input: {
   flowBlob: string;
   /** Called after every batch finishes (written, failed, or split). */
   onBatchProgress?: (done: number, total: number) => void;
+  /** DOCS_GEN_GROUNDING — how much of each batch reply to check (default: all). */
+  grounding?: GroundingPolicy;
 }): Promise<BatchedSectionResult> {
   const { group, bundle, plan, projectId, claimExtractor, faithfulnessJudge } = input;
   let batchesTotal = plan.batches.length;
@@ -3161,15 +3243,27 @@ async function synthesizeBatchedSection(input: {
   const results: FaithfulnessResult[] = [];
   // Replies the pooled score does not cover: unverified, or scoring threw.
   const unchecked: typeof replies = [];
-  if (claimExtractor && faithfulnessJudge) {
+  const policy = input.grounding ?? FULL_GROUNDING;
+  // DOCS_GEN_GROUNDING=off — no batch is decomposed or judged; the section is
+  // recorded as not fact-checked below.
+  const skipped = policy.mode === "off" && claimExtractor != null && faithfulnessJudge != null;
+  // DOCS_GEN_GROUNDING=sample — the per-SECTION claim minimum is shared
+  // across its batch replies, so a many-batch section does not judge a
+  // minimum per batch.
+  const batchMinClaims = Math.ceil(policy.minClaims / Math.max(1, replies.length));
+  if (claimExtractor && faithfulnessJudge && !skipped) {
     for (const d of replies) {
       try {
         // Always built when an extractor exists (runBatch); an empty context
         // is scored as unverified by scoreFaithfulness itself.
-        const r = await scoreFaithfulness(group.label, d.result.markdown.trim(), d.grounding!, {
-          extractor: claimExtractor,
-          judge: faithfulnessJudge,
-        });
+        const r = await scoreUnderPolicy(
+          policy,
+          group.label,
+          d.result.markdown.trim(),
+          d.grounding!,
+          { extractor: claimExtractor, judge: faithfulnessJudge },
+          batchMinClaims,
+        );
         results.push(r);
         if (!r.verified) unchecked.push(d);
       } catch (err) {
@@ -3196,13 +3290,15 @@ async function synthesizeBatchedSection(input: {
     );
   }
   const outcome: SectionGroundingOutcome =
-    pooled && markdown
-      ? gradeFaithfulness(group.label, markdown, pooled, projectId, {
-          threshold: group.faithfulnessThreshold,
-          narrative: group.narrative,
-          reconstruction: group.reconstruction,
-        })
-      : { markdown, warning: null, score: null };
+    skipped && markdown
+      ? { markdown, warning: groundingSkippedWarning(group.label), score: null }
+      : pooled && markdown
+        ? gradeFaithfulness(group.label, markdown, pooled, projectId, {
+            threshold: group.faithfulnessThreshold,
+            narrative: group.narrative,
+            reconstruction: group.reconstruction,
+          })
+        : { markdown, warning: null, score: null };
 
   log.info("Batched section synthesized", {
     projectId,
@@ -3261,6 +3357,8 @@ export async function synthesizeFinalDocument(
     selectedEvidence: GroundingSource[];
     sectionSynthesis?: SectionSynthesis;
     regeneration?: GeneratedDocVersionManifest["regeneration"];
+    /** DOCS_GEN_GROUNDING when it was not `on` (absent = every claim checked). */
+    grounding?: ReturnType<typeof groundingPolicyRecord>;
   }
 > {
   // #243 — best-effort per-section progress reporting; never breaks synthesis.
@@ -3323,6 +3421,9 @@ export async function synthesizeFinalDocument(
   // counter that bounds the total re-runs (and, per-section, the at-most-one
   // guard is structural: each section escalates in a single non-looping branch).
   const escalationConfig = resolveEscalationConfig();
+  // DOCS_GEN_GROUNDING — read ONCE per document, like the escalation config.
+  const groundingPolicy = resolveGroundingPolicy();
+  const groundingRecord = groundingPolicyRecord(groundingPolicy);
   const sharedEscalationEnabled = escalationConfig.enabled && router.hybrid != null;
   const previousRecords = reusableSectionRecords(
     reuse?.effectiveConfigHash ? reuse.previousManifest?.sectionSynthesis : undefined,
@@ -3620,6 +3721,9 @@ export async function synthesizeFinalDocument(
               ? null
               : [CLAIM_DECOMPOSITION_RESPONSE_FORMAT, FAITHFULNESS_VERDICTS_RESPONSE_FORMAT],
           threshold: resolveSectionFaithfulnessThreshold(group.faithfulnessThreshold),
+          // Absent for `on`, so a full-check run hashes exactly as before and a
+          // section is never reused across fact-check modes.
+          ...(groundingRecord ? { grounding: groundingRecord } : {}),
         }),
         prompts: JSON.stringify(prompts),
       });
@@ -3675,6 +3779,7 @@ export async function synthesizeFinalDocument(
           plan: batchPlan,
           projectId,
           flowBlob,
+          grounding: groundingPolicy,
           onBatchProgress: (done, total) =>
             reportSection({
               section: group.label,
@@ -3719,6 +3824,7 @@ export async function synthesizeFinalDocument(
           projectId,
           // #283 — per-section gating carried on the group definition.
           sectionGating,
+          groundingPolicy,
         );
       }
 
@@ -3782,6 +3888,7 @@ export async function synthesizeFinalDocument(
               plan: escPlan,
               projectId,
               flowBlob,
+              grounding: groundingPolicy,
             });
             const escScore = escBatched.outcome.score?.faithfulness ?? null;
             const keptEscalated = escScore == null ? true : escScore >= localScore;
@@ -3836,6 +3943,7 @@ export async function synthesizeFinalDocument(
               escGrounding,
               projectId,
               sectionGating,
+              groundingPolicy,
             );
             // Keep whichever output scored HIGHER. Ties (or an unverifiable
             // escalated re-run) keep the escalated output — the cloud provider is
@@ -4035,6 +4143,10 @@ export async function synthesizeFinalDocument(
     });
     warnings.push(warning);
   }
+  // #186 — a sample or off run is never `ready`, whatever its sections did:
+  // one document-level marker, since per-section markers can all be absent.
+  const runWarning = groundingModeRunWarning(groundingRecord);
+  if (runWarning) warnings.push(runWarning);
   // #1360 — last, so heading matching above sees exactly what each group produced.
   const readableBody = stripLeakedSourceIds(body);
   return {
@@ -4042,6 +4154,7 @@ export async function synthesizeFinalDocument(
     warnings,
     sections: manifestSections,
     selectedEvidence: [...selectedEvidenceById.values()],
+    ...(groundingRecord ? { grounding: groundingRecord } : {}),
     ...(synthesisRecords.length === groups.length
       ? {
           sectionSynthesis: {

@@ -65,6 +65,17 @@ interface DocWarning {
    * legacy count-based warning.
    */
   tier?: "narrative" | "reconstruction" | "literal";
+  /**
+   * #186 — true when `ratio` came from a SAMPLE of the section's statements
+   * (DOCS_GEN_GROUNDING=sample), never from all of them. Rendered as a sampled
+   * figure so an estimate is never read as a full verification.
+   */
+  sampled?: boolean;
+  /**
+   * #186 — true on the one DOCUMENT-level DOCS_GEN_GROUNDING marker (sample or
+   * off), never on a per-section warning, so section counts can exclude it.
+   */
+  runLevel?: boolean;
 }
 
 interface GeneratedDoc {
@@ -179,6 +190,7 @@ export default function DocumentationPage(): React.ReactElement {
       docType: string;
       scopeFilter?: Record<string, unknown>;
       groundDomainWithWebResearch?: boolean;
+      pathPrefixes?: string[];
     }) =>
       apiFetch<GeneratedDoc>(`/projects/${projectId}/docs/generate`, {
         method: "POST",
@@ -298,13 +310,21 @@ export default function DocumentationPage(): React.ReactElement {
       {showGenerate && (
         <GenerateForm
           projectId={projectId}
-          onSubmit={(title, scope, docType, scopeFilter, groundDomainWithWebResearch) =>
+          onSubmit={(
+            title,
+            scope,
+            docType,
+            scopeFilter,
+            groundDomainWithWebResearch,
+            pathPrefixes,
+          ) =>
             generateMutation.mutate({
               title,
               scope,
               docType,
               scopeFilter,
               groundDomainWithWebResearch,
+              ...(pathPrefixes ? { pathPrefixes } : {}),
             })
           }
           onCancel={() => setShowGenerate(false)}
@@ -676,6 +696,7 @@ function GenerateForm({
     docType: string,
     scopeFilter: Record<string, unknown> | undefined,
     groundDomainWithWebResearch: boolean,
+    pathPrefixes?: string[],
   ) => void;
   onCancel: () => void;
   isLoading: boolean;
@@ -694,6 +715,9 @@ function GenerateForm({
   // #283 — opt-in domain web-research grounding. Default OFF to respect
   // network/cost; only meaningful for narrative business-requirements docs.
   const [groundDomainWithWebResearch, setGroundDomainWithWebResearch] = useState(false);
+  // Optional path scope: repository-relative prefixes, comma-separated.
+  // The server validates and normalises them; empty means the whole project.
+  const [pathScope, setPathScope] = useState("");
 
   // Fetch repo connectors when scope is "repository"
   const repoConnectorsQuery = useQuery<
@@ -781,12 +805,20 @@ function GenerateForm({
       docType === "business-requirements" &&
       (scope === "full" || scope === "repository") &&
       groundDomainWithWebResearch;
+    const pathPrefixes =
+      scope === "full" || scope === "repository"
+        ? pathScope
+            .split(",")
+            .map((p) => p.trim())
+            .filter(Boolean)
+        : [];
     onSubmit(
       title,
       scope,
       docType,
       Object.keys(scopeFilter).length > 0 ? scopeFilter : undefined,
       ground,
+      pathPrefixes.length > 0 ? pathPrefixes : undefined,
     );
   };
 
@@ -922,6 +954,27 @@ function GenerateForm({
             Runs web research for the project&rsquo;s business domain so narrative sections
             (Overview &amp; Domain, Core Business Capabilities) are grounded in cited sources. Off
             by default — makes external network calls when enabled.
+          </p>
+        </div>
+      )}
+
+      {(scope === "full" || scope === "repository") && (
+        <div className="space-y-1">
+          <label htmlFor="doc-path-scope-input" className="text-sm font-medium">
+            Limit to paths (optional)
+          </label>
+          <input
+            id="doc-path-scope-input"
+            type="text"
+            value={pathScope}
+            onChange={(e) => setPathScope(e.target.value)}
+            placeholder="packages/domain/src/workout/, packages/physics/"
+            className="w-full px-3 py-2 border rounded-md bg-background"
+            data-testid="doc-path-scope-input"
+          />
+          <p className="text-xs text-muted-foreground">
+            Repository-relative path prefixes, comma-separated. Only code under them is documented —
+            a fast test run; the document is marked as scoped.
           </p>
         </div>
       )}
@@ -1223,7 +1276,8 @@ export function formatWarningDetail(w: DocWarning): string {
     const pct = Math.round(w.ratio * 100);
     const thresholdPct =
       typeof w.threshold === "number" ? ` (threshold ${Math.round(w.threshold * 100)}%)` : "";
-    return `${w.message} [faithfulness ${pct}%${thresholdPct}]${tierRangeTag(w)}`;
+    const label = w.sampled === true ? "sampled faithfulness" : "faithfulness";
+    return `${w.message} [${label} ${pct}%${thresholdPct}]${tierRangeTag(w)}`;
   }
   return `${w.message}${tierRangeTag(w)}`;
 }
@@ -1255,6 +1309,9 @@ export function classifyWarningSeverity(warnings: DocWarning[]): {
     // (the doc was built from little/no source) are always concerning.
     if (w.kind === "section-failed" || w.kind === "no-modules" || w.kind === "source-unavailable")
       return true;
+    // #186 — a section that was not, or only partly, fact-checked has no
+    // full-check result to fall short of; groundingModeNotice says so instead.
+    if (w.kind === "grounding-skipped" || w.kind === "grounding-sampled") return false;
     // A literal code-derived section below its bar is worth verifying.
     if (w.tier === "literal") return true;
     // Within-tolerance tiers (narrative/reconstruction) are NOT concerning.
@@ -1271,6 +1328,37 @@ export function classifyWarningSeverity(warnings: DocWarning[]): {
     ),
   );
   return { reviewRecommended: concerning.length > 0, concerningSections };
+}
+
+/**
+ * #186 — the banner line for a document generated with fact-checking switched
+ * off or sampled (DOCS_GEN_GROUNDING). `null` for a fully checked document.
+ * Without it the tier headline would call an unchecked document "grounded"
+ * and a spot-check estimate a verified result. Exported for unit testing.
+ */
+export function groundingModeNotice(warnings: DocWarning[]): string | null {
+  const notices: string[] = [];
+  // The document-level marker is not a section, so it is never counted as one.
+  const skipped = warnings.filter((w) => w.kind === "grounding-skipped" && !w.runLevel).length;
+  if (skipped > 0) {
+    notices.push(
+      `Not fact-checked: ${skipped} section(s) were generated with fact-checking switched off ` +
+        `(DOCS_GEN_GROUNDING=off), so their statements were never checked against the source.`,
+    );
+  } else if (warnings.some((w) => w.kind === "grounding-skipped")) {
+    notices.push(
+      "Not fact-checked: this document was generated with fact-checking switched off " +
+        "(DOCS_GEN_GROUNDING=off), so its statements were never checked against the source.",
+    );
+  }
+  if (warnings.some((w) => w.kind === "grounding-sampled" || w.sampled === true)) {
+    notices.push(
+      "Spot-checked only: fact-checking ran on a sample of each section " +
+        "(DOCS_GEN_GROUNDING=sample), so the faithfulness figures below are estimates, " +
+        "not a full verification.",
+    );
+  }
+  return notices.length > 0 ? notices.join(" ") : null;
 }
 
 /**
@@ -1326,20 +1414,29 @@ export function DegradedWarningsBanner({
   // look. We deliberately do NOT fabricate an "N of M sections" count: the
   // warnings list contains only FLAGGED sections, never the document total.
   const { reviewRecommended, concerningSections } = classifyWarningSeverity(warnings);
+  const modeNotice = groundingModeNotice(warnings);
 
-  const headline = reviewRecommended
+  // #186 — with fact-checking off or sampled, nothing verified that "most
+  // sections are grounded", so a review headline states only the problem.
+  const groundedLead = modeNotice ? "" : "Most sections are grounded; ";
+  const tierHeadline = reviewRecommended
     ? concerningSections.length > 0
-      ? `Most sections are grounded; ${formatSectionList(concerningSections)} ${
+      ? `${groundedLead}${formatSectionList(concerningSections)} ${
           concerningSections.length === 1 ? "falls" : "fall"
         } short of the code-fidelity bar and ${
           concerningSections.length === 1 ? "is" : "are"
         } worth verifying.`
-      : "Most sections are grounded; the sections below fall short of the code-fidelity bar and are worth verifying."
+      : `${modeNotice ? "The" : "Most sections are grounded; the"} sections below fall short of the code-fidelity bar and are worth verifying.`
     : "Grounded within normal tolerance — some narrative/reconstruction sections blend source-code facts with inferred domain context (expected for these section types). See the breakdown below.";
+  // #186 — with fact-checking off or sampled, "grounded within tolerance" is a
+  // claim nothing verified: the mode notice replaces it, and precedes a
+  // review headline that names genuinely short sections.
+  const headline = modeNotice && !reviewRecommended ? null : tierHeadline;
 
   return (
     <Card className="border-amber-300 bg-amber-50 p-4" role="alert">
-      <p className="font-medium text-amber-900">{headline}</p>
+      {modeNotice && <p className="font-medium text-amber-900">{modeNotice}</p>}
+      {headline && <p className="font-medium text-amber-900">{headline}</p>}
       {warnings.length > 0 && (
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-800">
           {warnings.map((w, i) => (

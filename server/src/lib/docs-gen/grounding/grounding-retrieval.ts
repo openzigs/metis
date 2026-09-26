@@ -15,6 +15,8 @@ import { createChildLogger } from "../../logger.js";
 import { getKnowledgeService } from "../../rag/knowledge-service.js";
 import { getLatestWebResearch } from "../../analysis/analysis-service.js";
 import { assertEvidencePolicy, type EvidencePolicy } from "../evidence-policy.js";
+import { extractRepoRelPath } from "../../rag/fused-code-context.js";
+import { isInPathScope } from "../path-scope.js";
 import type { SearchOptions } from "../../rag/knowledge-service.js";
 import {
   buildGroundingContext,
@@ -58,6 +60,11 @@ export interface BuildProjectGroundingInput {
   k?: number;
   /** Char budget for the assembled grounding text. */
   charBudget?: number;
+  /**
+   * Path scope: repository-source chunks outside these repository-relative
+   * prefixes are dropped. Reference documents (non-source chunks) are kept.
+   */
+  pathPrefixes?: readonly string[];
 }
 
 /**
@@ -214,6 +221,7 @@ export function buildSectionGroundingRetriever(
       query: req.query,
       policy: input.policy,
       k,
+      ...(input.pathPrefixes ? { pathPrefixes: input.pathPrefixes } : {}),
     });
     const digests = await webDigests();
     const ctx = buildGroundingContext({
@@ -243,8 +251,14 @@ async function retrieveRagChunks(
       actor: input.policy.actor,
       evidencePolicy: input.policy,
     });
+    const scope = input.pathPrefixes;
     return result.hits
       .filter((h) => !isJunkSourcePath(h.filename))
+      .filter((h) => {
+        if (!scope) return true;
+        const rel = extractRepoRelPath(h.filename);
+        return rel === null || isInPathScope(rel, scope);
+      })
       .map((h) => ({
         documentId: h.documentId,
         chunkId: h.chunkId,

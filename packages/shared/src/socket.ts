@@ -167,7 +167,11 @@ export interface DocSectionProgressEvent {
       // #1226 — the model was cut off by the output-token cap, or the section
       // never reached the assembled document.
       | "section-truncated"
-      | "section-missing";
+      | "section-missing"
+      // DOCS_GEN_GROUNDING=off / sample — the section was not, or only
+      // partly, fact-checked.
+      | "grounding-skipped"
+      | "grounding-sampled";
     severity: "warning" | "error";
     message: string;
   };

@@ -478,6 +478,124 @@ window — that reintroduces silent context-shift.
 
 ---
 
+## Fast test runs with a path scope
+
+A full document-generation run of a real project on a local model is a soak
+test, not an iteration loop: onyourleft (115 non-test modules) plans ~275
+Phase-1 chunks at ~3 min each plus ~130 Phase-2 section calls — well over a day
+on one local GPU. To iterate on prompts or tuning, limit the run to one or two
+business-logic sub-trees with **`pathPrefixes`**:
+
+```http
+POST /api/projects/:projectId/docs/generate
+{ "title": "Workout rules", "scope": "full", "docType": "business-requirements",
+  "pathPrefixes": ["packages/domain/src/workout/", "packages/physics/"] }
+```
+
+- Prefixes are **repository-relative** and matched segment-wise against indexed
+  file paths (`packages/fit` matches `packages/fit/x.ts`, never
+  `packages/fitness/`). At most 20, each at most 256 characters; `..`, absolute
+  or drive-letter paths and control characters are rejected with a 400. They are
+  never used to open files.
+- Only `scope: "full"` or `"repository"` accept them. A prefix list that matches
+  no indexed code is rejected up front (`400 PATH_SCOPE_EMPTY`); one that matches
+  only test files (excluded from Phase 1) fails the run with the same message.
+  The up-front check confirms each database candidate against the exact,
+  segment-wise matcher, because the database prefix filter treats `%` and `_` as
+  wildcards (and SQLite compares case-insensitively): `pack_ges/` is an empty
+  scope, not a match for `packages/`.
+- Only in-scope modules enter Phase 1 and every Phase-2 section, and
+  repository-source grounding chunks outside the scope are dropped (uploaded
+  reference documents are kept). The document says it is scoped three ways: a
+  `[scope: …]` suffix on its title, a banner under its heading, and
+  `document.pathPrefixes` in the version's provenance manifest.
+- The Generate Documentation dialog has the same control: **Limit to paths
+  (optional)**, comma-separated.
+
+The runner triggers a scoped run against an already-running stack (mock auth,
+`admin`/`password` by default), prints the document id, and prints a summary —
+status, characters, sections, warnings and path scope — when it finishes. It
+reads only the detail route's own fields (never the version provenance
+manifests), and retries an unreadable detail response up to three times in a
+row before failing with a clear error. It never starts or stops a server:
+
+```bash
+node scripts/local-llm/docs-gen-scoped-run.mjs --project <projectId> \
+  --paths packages/domain/src/workout/,packages/physics/ --title "Workout rules"
+# re-attach to (or just summarise) a run already in progress
+node scripts/local-llm/docs-gen-scoped-run.mjs --project <projectId> --doc <docId>
+```
+
+Flags: `--base` (default `http://localhost:4000/api`), `--doc-type`,
+`--username`/`--password`, `--poll <s>` (30), `--max-hours <h>` (12),
+`--no-wait`. Exit 0 on `ready`/`degraded`, 1 otherwise.
+
+**Choosing a scope.** Pick sub-trees with rules, formulas and workflows, not
+rendering code, and size them with the Phase-1 chunk planner offline first.
+Every scope pays a floor of ~7 Phase-2 calls (one per section group), so a run
+cannot get much below an hour; measured for onyourleft (2026-09-25, laguna
+sizing, tests excluded):
+
+| Scope | Modules | Phase-1 chunks | Phase-2 calls | Est. local time |
+|-------|---------|----------------|---------------|-----------------|
+| `packages/domain/src/{workout,segment,analysis,pacer,trainer}/` + `packages/physics/` | 7 | 19 | 13 | ~2–3 h |
+| `packages/domain/src/{workout,analysis,pacer,trainer}/` + `packages/physics/` | 6 | 13 | 11 | ~1.5–2.5 h |
+| full project | 115 | 275 | ~130 | ~25–35 h |
+
+(~3 min per Phase-1 chunk, 5–10 min per Phase-2 call, one request at a time.
+Phase-2 counts were estimated from cached facts of an earlier run and may grow
+slightly with fresh facts.)
+
+### Turning fact-checking down for a test run (`DOCS_GEN_GROUNDING`)
+
+Every section is fact-checked after it is written: its text is decomposed into
+atomic claims (one call per ~8,000-character passage, whose reply restates every
+claim) and a faithfulness judge checks each claim against the section's evidence
+(one call per 40 claims, each re-reading the whole evidence block and restating
+every claim). On a local model, one request at a time, that is about **three
+times** the writing time — the Rules section of a scoped laguna run took 24 min
+to write and 75+ min to check. For a test run where you are iterating on
+prompts or tuning, turn it down:
+
+| `DOCS_GEN_GROUNDING` | What runs | What the document says |
+|---|---|---|
+| `on` (default; also any unrecognised value, with a log warning) | Every claim of every section, exactly as before. **Keep this for production.** | Faithfulness warnings as usual. |
+| `sample` | A sample of each section's passages (`DOCS_GEN_GROUNDING_SAMPLE_RATE`, default `0.25`) is decomposed, and only their claims are judged — at least 10 claims per section when it has that many. | The document carries one document-level `grounding-sampled` warning (`runLevel: true`), so it is `degraded` and never `ready` even when every section's sample happened to cover all of it; each section the sample only partly covered carries its own `grounding-sampled` warning (or, below its bar, the usual tier warning prefixed "Spot-check only" and flagged `sampled: true`); the manifest records `generation.grounding: { mode: "sample", sampleRate, minClaims }`; sampled scores never feed the eval harness's supported-claim rate. |
+| `off` | No claim extraction, no judge. Writing, refine, batching, mined-rule and formula paging and progress reporting are unchanged. | Every section carries a `grounding-skipped` ("NOT fact-checked") warning, and so does the document (`runLevel: true`), so it is `degraded` even when no section had anything to check; the manifest records `generation.grounding: { mode: "off" }`. |
+
+```bash
+DOCS_GEN_GROUNDING=sample              # or off; unset = on
+DOCS_GEN_GROUNDING_SAMPLE_RATE=0.25    # 0 < rate <= 1; only read in sample mode
+```
+
+Both are runtime tunables (admin settings page, or `.env` + restart), read once
+at the start of each document.
+
+**How the sample is drawn.** A section is split into passages (paragraphs,
+lists, tables, fenced blocks — headings travel with the passages under them)
+and cut into `ceil(passages × rate)` evenly spaced strata; one passage per
+stratum is drawn, the one whose text hashes lowest. So the sample covers the
+whole section rather than its first part, and a re-run over the same text
+draws the same passages. If the draw yields fewer than 10 claims, further
+passages are drawn until it does or the section runs out (a section with fewer
+than 10 claims is therefore checked in full, and not labelled sampled). A
+batched section shares the 10-claim minimum across its batch replies.
+
+**Why passages and not claims.** Sampling the extracted claims would cut only
+the judge; every passage would still be decomposed, and decomposition emits as
+many output tokens as the judge. Sampling passages cuts both. On the test
+fixture (8 replies of ~36K characters, 320 claims each): `on` = 64
+decomposition + 64 judge calls over 2,560 claims; `sample` at 0.25 = 24 + 16
+calls over 640 claims. Expect the checking time of a scoped run to fall by
+roughly two-thirds to three-quarters in `sample` mode (estimated from call and
+token counts, not yet measured on hardware), and to zero in `off` mode.
+
+A document written with `sample` or `off` is never shown as `ready`. Its
+sections are not reused by a later `on` run (the fact-check mode is part of
+each section's reuse hash), so regenerating with the default re-checks them.
+
+---
+
 ## Eval-gated rollout — the A/B gate (#335)
 
 The local-first defaults (`DOCS_GEN_HYBRID_ROUTING`, `DOCS_GEN_JUDGE_ESCALATION`)

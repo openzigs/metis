@@ -11,6 +11,7 @@ import {
   classifyWarningSeverity,
   formatSectionList,
   canShowSchemaGraphTabs,
+  groundingModeNotice,
 } from "@/app/(authed)/projects/[id]/documentation/page";
 
 const W = (message: string) => ({
@@ -296,5 +297,38 @@ describe("canShowSchemaGraphTabs (#1228)", () => {
   it("never shows them for a non-database document", () => {
     expect(canShowSchemaGraphTabs(false, "ready")).toBe(false);
     expect(canShowSchemaGraphTabs(false, "degraded")).toBe(false);
+  });
+});
+
+describe("DOCS_GEN_GROUNDING labelling (#186)", () => {
+  it("formatWarningDetail labels a sampled ratio as sampled", () => {
+    expect(
+      formatWarningDetail({ ...tierWarning("Business Rules", "literal"), sampled: true }),
+    ).toContain("[sampled faithfulness 30% (threshold 80%)]");
+    expect(formatWarningDetail(tierWarning("Business Rules", "literal"))).toContain(
+      "[faithfulness 30% (threshold 80%)]",
+    );
+  });
+
+  it("grounding-skipped / grounding-sampled are not 'short of the bar'", () => {
+    const { reviewRecommended, concerningSections } = classifyWarningSeverity([
+      { kind: "grounding-skipped", section: "A", message: "x", severity: "warning" },
+      { kind: "grounding-sampled", section: "B", message: "x", severity: "warning", sampled: true },
+    ]);
+    expect(reviewRecommended).toBe(false);
+    expect(concerningSections).toEqual([]);
+  });
+
+  it("groundingModeNotice names the mode, or is null for a fully checked document", () => {
+    expect(groundingModeNotice([tierWarning("A", "literal")])).toBeNull();
+    expect(
+      groundingModeNotice([
+        { kind: "grounding-skipped", section: "A", message: "x", severity: "warning" },
+      ]),
+    ).toMatch(/^Not fact-checked: 1 section\(s\).*DOCS_GEN_GROUNDING=off/);
+    // A below-bar warning flagged sampled is enough: no grounding-sampled needed.
+    expect(groundingModeNotice([{ ...tierWarning("A", "literal"), sampled: true }])).toMatch(
+      /^Spot-checked only: .*DOCS_GEN_GROUNDING=sample/,
+    );
   });
 });

@@ -26,6 +26,8 @@ const warningSchema = z
       "facts-truncated",
       "section-truncated",
       "section-missing",
+      "grounding-skipped",
+      "grounding-sampled",
     ]),
     section: z.string(),
     message: z.string(),
@@ -34,6 +36,7 @@ const warningSchema = z
     threshold: z.number().optional(),
     domainContext: z.boolean().optional(),
     tier: z.enum(["narrative", "reconstruction", "literal"]).optional(),
+    sampled: z.boolean().optional(),
   })
   .strict();
 
