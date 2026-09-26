@@ -93,7 +93,7 @@ describe("generated-docs subtree — workspace scope (#674)", () => {
 
   it("serves the document for an in-tenant caller", async () => {
     projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-a" });
-    generatedDocumentFindFirst.mockResolvedValueOnce({ id: "doc-9", versions: [] });
+    generatedDocumentFindFirst.mockResolvedValueOnce({ id: "doc-9", content: "", versions: [] });
     const res = await request(app).get("/api/projects/project-a01/docs/doc-9");
     expect(res.status).toBe(200);
     expect(res.body.data.id).toBe("doc-9");
@@ -101,7 +101,7 @@ describe("generated-docs subtree — workspace scope (#674)", () => {
 
   it("lets a system admin bypass the workspace scope", async () => {
     currentUser = { userId: "admin-1", username: "admin", role: "admin" };
-    generatedDocumentFindFirst.mockResolvedValueOnce({ id: "doc-9", versions: [] });
+    generatedDocumentFindFirst.mockResolvedValueOnce({ id: "doc-9", content: "", versions: [] });
     const res = await request(app).get("/api/projects/project-b01/docs/doc-9");
     expect(res.status).toBe(200);
     expect(projectFindUnique).not.toHaveBeenCalled();

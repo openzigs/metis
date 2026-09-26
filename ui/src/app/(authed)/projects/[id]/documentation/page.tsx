@@ -28,6 +28,7 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { MarkdownPreviewer } from "@/components/markdown-previewer";
 import { SchemaGraphExplorer } from "@/components/schema-graph-explorer";
+import { VersionArtifacts } from "@/components/documentation/version-artifacts";
 import type { DocSectionProgressEvent, SchemaGraph } from "@metis/shared";
 
 interface DocWarning {
@@ -98,17 +99,16 @@ interface GeneratedDoc {
   generatedAt: string | null;
   createdAt: string;
   content?: string;
+  /**
+   * #190 — version summaries only. A version's body, provenance manifest and
+   * changed symbols are fetched from their own endpoints when opened.
+   */
   versions?: Array<{
     id: string;
     version: number;
+    revisionId?: string;
     diffSummary: string | null;
     createdAt: string;
-    /**
-     * Full per-version markdown. The detail endpoint
-     * (`GET /docs/:id`) already includes this on each version row, so a
-     * previous version can be viewed read-only without an extra request.
-     */
-    content?: string;
   }>;
 }
 
@@ -121,8 +121,8 @@ export default function DocumentationPage(): React.ReactElement {
   const [titleDraft, setTitleDraft] = useState("");
   const [detailTab, setDetailTab] = useState<"document" | "graph">("document");
   // Read-only "view a previous version" selection. Holds the version id of a
-  // non-latest version whose content is being viewed; null = show latest. The
-  // content is already in the doc-detail payload, so this needs no extra fetch.
+  // non-latest version whose content is being viewed; null = show latest.
+  // #190 — its body is fetched on selection, not shipped with the detail.
   const [viewingVersionId, setViewingVersionId] = useState<string | null>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
@@ -147,6 +147,18 @@ export default function DocumentationPage(): React.ReactElement {
     queryKey: ["generated-docs", projectId, selectedDoc],
     queryFn: () => apiFetch<GeneratedDoc>(`/projects/${projectId}/docs/${selectedDoc}`),
     enabled: Boolean(selectedDoc),
+  });
+
+  // #190 — a previous version's body, fetched only when the user opens it.
+  // Versions are immutable, so a fetched body never goes stale.
+  const versionBody = useQuery<{ id: string; content: string }>({
+    queryKey: ["generated-docs", projectId, selectedDoc, "version", viewingVersionId],
+    queryFn: () =>
+      apiFetch<{ id: string; content: string }>(
+        `/projects/${projectId}/docs/${selectedDoc}/versions/${viewingVersionId}`,
+      ),
+    enabled: Boolean(selectedDoc) && Boolean(viewingVersionId),
+    staleTime: Infinity,
   });
 
   // Lazily fetch the structured schema graph only when the Schema Graph tab is
@@ -540,7 +552,24 @@ export default function DocumentationPage(): React.ReactElement {
                 viewingVersionId != null
                   ? versions.find((v) => v.id === viewingVersionId)
                   : undefined;
-              const shownContent = viewing?.content ?? docDetail.data.content;
+              const shownContent = viewing
+                ? versionBody.data?.id === viewing.id
+                  ? versionBody.data.content
+                  : undefined
+                : docDetail.data.content;
+              if (viewing && shownContent === undefined) {
+                return (
+                  <p
+                    className="text-sm text-muted-foreground"
+                    role="status"
+                    data-testid="version-view-loading"
+                  >
+                    {versionBody.isError
+                      ? `Could not load v${viewing.version}.`
+                      : `Loading v${viewing.version}…`}
+                  </p>
+                );
+              }
               return (
                 shownContent && (
                   <div>
@@ -570,10 +599,10 @@ export default function DocumentationPage(): React.ReactElement {
             })()
           )}
 
-          {/* Version history (#... follow-up) — render whenever the detail
-              payload carries versions; mark the latest and allow viewing a
-              previous version's content read-only (content is already in the
-              payload, so no extra fetch). */}
+          {/* Version history — render whenever the detail payload carries
+              versions; mark the latest and allow viewing a previous version's
+              content read-only. #190 — the body, provenance and changed
+              symbols are each fetched only when the user opens them. */}
           {docDetail.data.versions && docDetail.data.versions.length >= 1 && (
             <Card className="p-4" data-testid="version-history">
               <h3 className="font-semibold mb-2">Version History</h3>
@@ -582,34 +611,42 @@ export default function DocumentationPage(): React.ReactElement {
                   // Array is ordered version-desc → index 0 is the latest.
                   const isLatest = i === 0;
                   const isViewing = viewingVersionId === v.id;
-                  const canView = !isLatest && typeof v.content === "string";
+                  const canView = !isLatest;
                   return (
-                    <li key={v.id} className="flex items-center justify-between gap-3">
-                      <span className="flex items-center gap-2">
-                        {canView ? (
-                          <button
-                            type="button"
-                            className="text-left text-primary underline hover:no-underline"
-                            onClick={() => setViewingVersionId(v.id)}
-                            data-testid={`version-view-${v.id}`}
-                            aria-pressed={isViewing}
-                          >
-                            v{v.version}: {v.diffSummary ?? "Full generation"}
-                          </button>
-                        ) : (
-                          <span>
-                            v{v.version}: {v.diffSummary ?? "Full generation"}
-                          </span>
-                        )}
-                        {isLatest && (
-                          <span className="rounded bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-700">
-                            Current
-                          </span>
-                        )}
-                      </span>
-                      <span className="text-muted-foreground">
-                        {new Date(v.createdAt).toLocaleDateString()}
-                      </span>
+                    <li key={v.id} className="space-y-1">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="flex items-center gap-2">
+                          {canView ? (
+                            <button
+                              type="button"
+                              className="text-left text-primary underline hover:no-underline"
+                              onClick={() => setViewingVersionId(v.id)}
+                              data-testid={`version-view-${v.id}`}
+                              aria-pressed={isViewing}
+                            >
+                              v{v.version}: {v.diffSummary ?? "Full generation"}
+                            </button>
+                          ) : (
+                            <span>
+                              v{v.version}: {v.diffSummary ?? "Full generation"}
+                            </span>
+                          )}
+                          {isLatest && (
+                            <span className="rounded bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-700">
+                              Current
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-muted-foreground">
+                          {new Date(v.createdAt).toLocaleDateString()}
+                        </span>
+                      </div>
+                      <VersionArtifacts
+                        projectId={projectId}
+                        docId={selectedDoc}
+                        versionId={v.id}
+                        version={v.version}
+                      />
                     </li>
                   );
                 })}

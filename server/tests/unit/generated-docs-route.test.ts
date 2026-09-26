@@ -936,6 +936,7 @@ describe("generated-docs routes", () => {
       vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
         id: "doc-1",
         title: "Doc",
+        content: "",
         status: "ready",
         versions: [
           { id: "v1", documentId: "doc-1", version: 1, revisionId: null, provenanceManifest: null },
@@ -961,6 +962,7 @@ describe("generated-docs routes", () => {
       // task, whose errorMessage is just as raw.
       vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
         id: "doc-1",
+        content: "",
         versions: [
           {
             id: "v1",
@@ -988,6 +990,7 @@ describe("generated-docs routes", () => {
     it("#98 — names an unreachable embedding host on the indexing status line", async () => {
       vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
         id: "doc-1",
+        content: "",
         versions: [
           { id: "v1", documentId: "doc-1", version: 1, revisionId: null, provenanceManifest: null },
         ],
@@ -1008,6 +1011,7 @@ describe("generated-docs routes", () => {
     it("falls back to legacy indexing health only when the revision-owned row is absent", async () => {
       vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
         id: "doc-1",
+        content: "",
         versions: [
           {
             id: "v1",
@@ -1145,12 +1149,8 @@ describe("generated-docs routes", () => {
           version: 1,
         }),
       );
-      expect(
-        parseGeneratedDocVersionManifest(res.body.data.versions[0].provenanceManifest),
-      ).toMatchObject({
-        historicalCitations: { status: "unknown", mode: "legacy-unknown" },
-        legacy: { historicalCitations: "legacy-unknown" },
-      });
+      // #190 — the manifest is its own endpoint, never part of the detail payload.
+      expect(res.body.data.versions[0]).not.toHaveProperty("provenanceManifest");
     });
 
     it("preserves immutable stored provenance for versioned rows", async () => {
@@ -1193,36 +1193,15 @@ describe("generated-docs routes", () => {
         historicalCitations: { status: "unavailable", mode: "not-retained" },
         legacy: { historicalCitations: "not-retained" },
       });
-      (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
-        id: "doc-1",
-        title: "Doc",
-        content: "# Hello",
-        versions: [
-          {
-            id: "v2",
-            documentId: "doc-1",
-            version: 2,
-            revisionId: generatedDocRevisionId({
-              projectId: "proj-1",
-              generatedDocumentId: "doc-1",
-              version: 2,
-            }),
-            provenanceManifest: manifest,
-          },
-        ],
-      });
-      (prisma.document.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
-        indexState: "indexed",
-        status: "ready",
-        chunkCount: 2,
-        errorMessage: null,
-        processedAt: new Date("2026-01-02T00:00:00.000Z"),
-      });
+      vi.mocked(prisma.generatedDocumentVersion.findFirst).mockResolvedValue({
+        version: 2,
+        provenanceManifest: manifest,
+      } as never);
 
-      const res = await request(app).get("/projects/proj-1/docs/doc-1");
+      const res = await request(app).get("/projects/proj-1/docs/doc-1/versions/v2/provenance");
 
       expect(res.status).toBe(200);
-      expect(JSON.parse(res.body.data.versions[0].provenanceManifest)).toEqual({
+      expect(res.body.data).toEqual({
         ...JSON.parse(manifest),
         graphFingerprint: {
           algorithm: "sha256",
@@ -1267,36 +1246,15 @@ describe("generated-docs routes", () => {
         historicalCitations: { status: "unavailable", mode: "legacy-unknown" },
         legacy: { historicalCitations: "legacy-unknown" },
       });
-      (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
-        id: "doc-1",
-        title: "Doc",
-        content: "# Hello",
-        versions: [
-          {
-            id: "v2",
-            documentId: "doc-1",
-            version: 2,
-            revisionId: generatedDocRevisionId({
-              projectId: "proj-1",
-              generatedDocumentId: "doc-1",
-              version: 2,
-            }),
-            provenanceManifest: manifest,
-          },
-        ],
-      });
-      (prisma.document.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
-        indexState: "indexed",
-        status: "ready",
-        chunkCount: 2,
-        errorMessage: null,
-        processedAt: new Date("2026-01-02T00:00:00.000Z"),
-      });
+      vi.mocked(prisma.generatedDocumentVersion.findFirst).mockResolvedValue({
+        version: 2,
+        provenanceManifest: manifest,
+      } as never);
 
-      const res = await request(app).get("/projects/proj-1/docs/doc-1");
+      const res = await request(app).get("/projects/proj-1/docs/doc-1/versions/v2/provenance");
 
       expect(res.status).toBe(200);
-      expect(JSON.parse(res.body.data.versions[0].provenanceManifest)).toMatchObject({
+      expect(res.body.data).toMatchObject({
         generation: { pipeline: "holistic" },
       });
     });

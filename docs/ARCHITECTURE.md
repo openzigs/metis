@@ -3499,22 +3499,28 @@ Recovery is at-least-once.
 |--------|------|---------|------------|
 | `POST` | `/generate` | Trigger documentation generation (async, returns 202) | 5 req/15min per user |
 | `GET` | `/` | List generated documents for a project, including separate indexing state from the synthetic `Document` row | — |
-| `GET` | `/:docId` | Get a single document with content, version history, and separate indexing state | — |
+| `GET` | `/:docId` | Get a single document: its content once, plus summary metadata, the five latest version summaries (`id`, `version`, `revisionId`, `diffSummary`, `createdAt`) and separate indexing state | — |
+| `GET` | `/:docId/versions/:versionId` | One version's markdown body (#190) | — |
+| `GET` | `/:docId/versions/:versionId/provenance` | One version's provenance manifest (#190) | — |
+| `GET` | `/:docId/versions/:versionId/changed-symbols?offset=&limit=` | A page (default 500, max 5,000) of one version's changed symbols, with `total` (#190) | — |
 | `GET` | `/:docId/export?format=pdf\|docx` | Download in specified format | — |
 | `PATCH` | `/:docId` | Update document metadata (title, autoUpdate flag) | — |
 | `DELETE` | `/:docId` | Soft-delete a generated document | — |
 
-The version-history response now returns a stable per-version `revisionId` and a
-serialized provenance manifest for every row. New rows return the stored manifest
-verbatim; legacy rows are normalized at read time so clients can distinguish
-`versioned` history from `legacy-unknown` history without pretending old evidence
-snapshots existed.
+Every version summary carries a stable `revisionId`. A version's provenance manifest
+comes from its own endpoint (#190 — for a full-coverage document the manifest alone
+was 17.5 MB of a 27 MB detail response): new rows return the stored manifest; legacy
+rows are normalized at read time so clients can distinguish `versioned` history from
+`legacy-unknown` history without pretending old evidence snapshots existed. The
+per-version endpoints sit behind the same `requireProjectAccess` gate and
+`project.read` permission as the detail route, and look a version up through its
+document's project, so a foreign version id is a 404.
 
 ### UI Components
 
 | Component | Path | Purpose |
 |-----------|------|---------|
-| `MarkdownPreviewer` | `ui/src/components/markdown-previewer.tsx` | Rich renderer: Mermaid diagrams (rendered as SVG via `mermaid.render()`), KaTeX math formulas, syntax-highlighted code blocks, GFM tables. Includes URL sanitization to block `javascript:`/`data:` protocols |
+| `MarkdownPreviewer` | `ui/src/components/markdown-previewer.tsx` | Rich renderer: Mermaid diagrams (rendered as SVG via `mermaid.render()`), KaTeX math formulas, syntax-highlighted code blocks, GFM tables. Includes URL sanitization to block `javascript:`/`data:` protocols. #190 — renders progressively: `ui/src/lib/markdown-sections.ts` splits the content at H2/H3 (fence-aware) and each section gets its own react-markdown pass when it nears the viewport, is picked from the TOC, or is the URL-hash target; until then it shows as plain text (find-in-page still works). Heading ids continue one document-wide slug counter across sections, so repeated headings keep distinct ids |
 | Documentation Page | `ui/src/app/(authed)/projects/[id]/documentation/page.tsx` | Generation controls with scope selector, document card grid, detail view with TOC sidebar, export buttons, version history, and separate generation-vs-indexing status badges/summaries |
 
 ### Key Libraries
