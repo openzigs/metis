@@ -16,7 +16,9 @@ vi.mock("../src/lib/prisma.js", () => ({
 
 import {
   SOURCE_INGEST_STALE_MS,
+  OVERSIZE_PATHS_NAMED,
   describeIndexGap,
+  describeOversizeInScope,
   effectiveSourceIngestStatus,
   parseSourceIngestState,
   repositoryIndexWarnings,
@@ -228,7 +230,7 @@ describe("repositoryIndexWarnings", () => {
       },
     ]);
 
-    const warnings = await repositoryIndexWarnings("p1", undefined, NOW);
+    const warnings = await repositoryIndexWarnings("p1", { now: NOW });
 
     expect(warnings.map((w) => w.message.match(/repository "([^"]+)"/)?.[1])).toEqual([
       "legacy",
@@ -250,7 +252,7 @@ describe("repositoryIndexWarnings", () => {
 
   it("narrows to the document's repository, scoped by project", async () => {
     h.findMany.mockResolvedValue([]);
-    await repositoryIndexWarnings("p1", "repo-a", NOW);
+    await repositoryIndexWarnings("p1", { repoConnectorId: "repo-a", now: NOW });
     expect(h.findMany.mock.calls[0]?.[0].where).toEqual({
       projectId: "p1",
       deletedAt: null,
@@ -261,5 +263,103 @@ describe("repositoryIndexWarnings", () => {
   it("returns no warning rather than failing generation when the read fails", async () => {
     h.findMany.mockRejectedValue(new Error("db down"));
     await expect(repositoryIndexWarnings("p1")).resolves.toEqual([]);
+  });
+
+  describe("#217 oversize files in the document's scope", () => {
+    const oversize = (paths: string[], tooLarge = paths.length) =>
+      JSON.stringify(
+        state({
+          skipped: { cap: 0, tooLarge, unreadable: 0, excludedTests: 0 },
+          skippedPaths: { tooLarge: paths },
+        }),
+      );
+
+    it("degrades a document whose scope contains a skipped file, naming it", async () => {
+      h.findMany.mockResolvedValue([
+        { id: "a", label: "app", sourceIngestState: oversize(["src/billing/rules.ts"]) },
+      ]);
+      const warnings = await repositoryIndexWarnings("p1", {
+        pathPrefixes: ["src/billing"],
+        now: NOW,
+      });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatchObject({
+        kind: "source-unavailable",
+        section: "Document",
+        severity: "warning",
+      });
+      expect(warnings[0]!.message).toContain('repository "app"');
+      expect(warnings[0]!.message).toContain("src/billing/rules.ts");
+      expect(warnings[0]!.message).toContain("1 file(s) in scope were not indexed");
+    });
+
+    it("degrades an unscoped (full / repository) document for any skipped file", async () => {
+      h.findMany.mockResolvedValue([
+        { id: "a", label: "app", sourceIngestState: oversize(["vendor/bundle.js"]) },
+      ]);
+      const warnings = await repositoryIndexWarnings("p1", { repoConnectorId: "a", now: NOW });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]!.message).toContain("vendor/bundle.js");
+    });
+
+    it("does not degrade a document scoped away from every skipped file", async () => {
+      h.findMany.mockResolvedValue([
+        // `src/billingx` must not match the `src/billing` prefix (segment-aware).
+        {
+          id: "a",
+          label: "app",
+          sourceIngestState: oversize(["vendor/bundle.js", "src/billingx/big.ts"]),
+        },
+      ]);
+      await expect(
+        repositoryIndexWarnings("p1", { pathPrefixes: ["src/billing"], now: NOW }),
+      ).resolves.toEqual([]);
+    });
+
+    it("bounds the named list and counts the rest", () => {
+      const paths = Array.from({ length: OVERSIZE_PATHS_NAMED + 3 }, (_, i) => `src/f${i}.ts`);
+      const text = describeOversizeInScope(
+        state({
+          skipped: { cap: 0, tooLarge: paths.length, unreadable: 0, excludedTests: 0 },
+          skippedPaths: { tooLarge: paths },
+        }),
+      )!;
+      expect(text).toContain(`${paths.length} file(s) in scope`);
+      expect(text).toContain(`src/f${OVERSIZE_PATHS_NAMED - 1}.ts and 3 more`);
+      expect(text).not.toContain(`src/f${OVERSIZE_PATHS_NAMED}.ts`);
+    });
+
+    it("counts unrecorded oversize paths as possibly in scope (they cannot be ruled out)", () => {
+      // 25 skipped, only 1 path recorded (the cap, or a pre-#217 state with none).
+      const text = describeOversizeInScope(
+        state({
+          skipped: { cap: 0, tooLarge: 25, unreadable: 0, excludedTests: 0 },
+          skippedPaths: { tooLarge: ["vendor/bundle.js"] },
+        }),
+        ["src/billing"],
+      );
+      expect(text).toContain("24 further oversize file(s)");
+      expect(text).not.toContain("vendor/bundle.js");
+      const legacy = describeOversizeInScope(
+        state({ skipped: { cap: 0, tooLarge: 2, unreadable: 0, excludedTests: 0 } }),
+        ["src"],
+      );
+      expect(legacy).toContain("2 further oversize file(s)");
+    });
+
+    it("is null with no oversize file or no recorded state", () => {
+      expect(describeOversizeInScope(state())).toBeNull();
+      expect(describeOversizeInScope(null)).toBeNull();
+    });
+
+    it("stays a separate warning from the run-level gap, which ignores oversize files", () => {
+      const s = state({
+        status: "partial",
+        skipped: { cap: 2, tooLarge: 1, unreadable: 0, excludedTests: 0 },
+        skippedPaths: { tooLarge: ["src/big.ts"] },
+      });
+      expect(describeIndexGap(s, NOW)).not.toContain("REPO_SOURCE_MAX_FILE_BYTES");
+      expect(describeOversizeInScope(s, ["src"])).toContain("src/big.ts");
+    });
   });
 });

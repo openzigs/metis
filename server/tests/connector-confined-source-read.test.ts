@@ -200,6 +200,61 @@ describe("readConfinedSourceFile", () => {
     expect(res).toEqual({ ok: false, reason: "too-large", sizeBytes: 20 + 4096 });
   });
 
+  it("never reads more than maxFileBytes + 1 bytes from a file far larger than the ceiling", async () => {
+    // The size check passes (20 bytes); the file then grows to 4 MiB before the
+    // content read. Every byte the handle hands back — through `read` or a
+    // whole-file `readFile` — is counted: a read that followed the file to EOF
+    // and size-checked afterwards buffers the whole 4 MiB and fails here.
+    const file = path.join(root, "src", "a.ts");
+    const maxFileBytes = 1024;
+    const grownBy = 4 * 1024 * 1024;
+    const probe = await fs.open(file, "r");
+    const proto = Object.getPrototypeOf(probe) as fs.FileHandle;
+    await probe.close();
+    let requested = 0;
+    let returned = 0;
+    const realRead = proto.read;
+    const realReadFile = proto.readFile;
+    vi.spyOn(proto, "read").mockImplementation(async function (
+      this: fs.FileHandle,
+      ...args: unknown[]
+    ) {
+      const length = typeof args[2] === "number" ? args[2] : (args[0] as Buffer).length;
+      requested += length;
+      const res = await (realRead as (...a: unknown[]) => Promise<{ bytesRead: number }>).apply(
+        this,
+        args,
+      );
+      returned += res.bytesRead;
+      return res;
+    } as never);
+    vi.spyOn(proto, "readFile").mockImplementation(async function (
+      this: fs.FileHandle,
+      ...args: unknown[]
+    ) {
+      const res = await (realReadFile as (...a: unknown[]) => Promise<Buffer | string>).apply(
+        this,
+        args,
+      );
+      requested += Buffer.byteLength(res);
+      returned += Buffer.byteLength(res);
+      return res;
+    } as never);
+    const realRealpath = fs.realpath.bind(fs);
+    vi.spyOn(fs, "realpath").mockImplementation((async (p: string) => {
+      await fs.appendFile(file, Buffer.alloc(grownBy, 0x78));
+      return realRealpath(p);
+    }) as never);
+
+    const res = await readConfinedSourceFile(file, { boundary: root, maxFileBytes });
+
+    expect(res).toEqual({ ok: false, reason: "too-large", sizeBytes: 20 + grownBy });
+    // The content was read through the handle at all (not bypassed), and bounded.
+    expect(returned).toBeGreaterThan(0);
+    expect(returned).toBeLessThanOrEqual(maxFileBytes + 1);
+    expect(requested).toBeLessThanOrEqual(maxFileBytes + 1);
+  });
+
   it("reads a file of exactly the ceiling whole", async () => {
     const body = "y".repeat(1024);
     await fs.writeFile(path.join(root, "src", "a.ts"), body);

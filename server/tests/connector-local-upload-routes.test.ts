@@ -450,6 +450,90 @@ describe("per-connector ingest guard on the sync routes (#217)", () => {
   }
 });
 
+/** Let background work started by a request (a `void`-ed promise) run to its next await. */
+async function settleBackground(): Promise<void> {
+  for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
+}
+
+// #217 — create-with-autoIngest starts the deep ingest in the background; it
+// takes the same per-connector lease, so a busy connector is not ingested twice.
+describe("per-connector ingest guard on create-with-autoIngest (#217)", () => {
+  const createGithub = (token: string) =>
+    request(app)
+      .post("/api/projects/proj_1/connectors/repos")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        label: "repo",
+        provider: "github",
+        ownerOrOrg: "acme",
+        repoName: "backend",
+        autoIngest: true,
+      });
+  let restoreCreate: (() => void) | undefined;
+
+  beforeEach(() => {
+    const original = h.createRepoConnector.getMockImplementation()!;
+    h.createRepoConnector.mockImplementation(async (_projectId, input) => ({
+      id: "repo_github_x",
+      provider: input.provider,
+      label: input.label,
+      localPath: undefined,
+    }));
+    restoreCreate = () => h.createRepoConnector.mockImplementation(original);
+  });
+
+  afterEach(() => restoreCreate?.());
+
+  it("does not start a second ingest while another entry point holds the connector", async () => {
+    const token = await login("admin");
+    const lease = acquireConnectorIngest("repo_github_x", "scheduled-refresh");
+    try {
+      const res = await createGithub(token);
+      expect(res.status).toBe(201);
+      expect(res.body.data.autoIngestTriggered).toBe(true);
+      await settleBackground();
+      expect(shallowCloneRepo).not.toHaveBeenCalled();
+      expect(ingestSourceAsKnowledge).not.toHaveBeenCalled();
+      // The refusal leaves the holder's claim intact.
+      expect(isConnectorIngestActive("repo_github_x")).toBe(true);
+    } finally {
+      lease.release();
+    }
+  });
+
+  it("holds the lease for its run, refuses a concurrent auto-ingest, then releases it", async () => {
+    const token = await login("admin");
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    let during: { active: boolean; lease?: { connectorId: string; held: boolean } } | undefined;
+    vi.mocked(ingestSourceAsKnowledge).mockImplementationOnce(async (...args) => {
+      const lease = args[4]?.lease;
+      during = {
+        active: isConnectorIngestActive("repo_github_x"),
+        ...(lease ? { lease: { connectorId: lease.connectorId, held: lease.held } } : {}),
+      };
+      await gate;
+      return { documentsCreated: 1, documentsUpdated: 0, chunkCount: 1, failures: 0 };
+    });
+
+    expect((await createGithub(token)).status).toBe(201);
+    await vi.waitFor(() => expect(ingestSourceAsKnowledge).toHaveBeenCalledTimes(1));
+    expect(during).toEqual({
+      active: true,
+      lease: { connectorId: "repo_github_x", held: true },
+    });
+
+    // A second create-with-autoIngest for the same connector while the first runs.
+    expect((await createGithub(token)).status).toBe(201);
+    await settleBackground();
+    expect(shallowCloneRepo).toHaveBeenCalledTimes(1);
+    expect(ingestSourceAsKnowledge).toHaveBeenCalledTimes(1);
+
+    open();
+    await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
+  });
+});
+
 // #114 — the auto-ingest (create-with-autoIngest) progress socket event carried
 // the raw exception text (paths, git stderr, SQL) to the browser as both `step`
 // and `errorMessage`.
