@@ -4,8 +4,10 @@
  * Verifies the Version History card:
  *  - renders when the doc detail payload includes a `versions` array (>= 1),
  *  - marks the current/latest version,
- *  - lets a user view a previous version's content read-only (the content is
- *    already in the API payload — no extra fetch),
+ *  - lets a user view a previous version's content read-only — #190: the body
+ *    is fetched from its own endpoint only when the user opens that version,
+ *  - fetches a version's changed symbols and provenance only when the matching
+ *    panel is opened (#190),
  *  - is NOT rendered (and does not crash / fabricate history) when the payload
  *    has no versions.
  */
@@ -69,9 +71,37 @@ function docDetail(overrides: Record<string, unknown> = {}) {
  * Wire apiFetch so the docs list returns one card and the detail call returns
  * `detail`. Returns a render helper that selects the doc to open the detail view.
  */
+const VERSION_BODIES: Record<string, string> = {
+  v3: "# Version 3 body",
+  v2: "# Version 2 body",
+};
+
+const PROVENANCE = {
+  revision: { revisionId: "gendoc:proj_test:doc_1:v2", version: 2 },
+  document: { generatedAt: "2026-06-02T00:00:00.000Z" },
+  generation: {
+    pipeline: "holistic",
+    model: { phase1: { model: "fact-model" }, phase2: { model: "prose-model" } },
+  },
+  sourceFingerprints: [{}, {}, {}],
+  selectedEvidence: { primary: [{}, {}] },
+  sections: [{}, {}, {}, {}],
+  historicalCitations: { status: "unknown", mode: "legacy-unknown" },
+};
+
 function setup(detail: Record<string, unknown>) {
   mockApiFetch.mockImplementation(async (path: string) => {
     if (typeof path === "string" && path.endsWith(`/docs/${DOC_ID}`)) return detail;
+    const version = /\/docs\/doc_1\/versions\/([^/?]+)(\/[^?]*)?(\?.*)?$/.exec(path);
+    if (version) {
+      const [, id, sub, query] = version;
+      if (!sub) return { id, content: VERSION_BODIES[id] };
+      if (sub === "/provenance") return PROVENANCE;
+      if (sub === "/changed-symbols") {
+        expect(query).toBe("?limit=200");
+        return { total: 1234, offset: 0, items: ["billing.Invoice.total", "billing.Tax.rate"] };
+      }
+    }
     if (typeof path === "string" && path.endsWith("/docs")) {
       return [
         {
@@ -120,14 +150,12 @@ describe("DocumentationPage — version history", () => {
             version: 3,
             diffSummary: "Refined overview",
             createdAt: "2026-06-03T00:00:00.000Z",
-            content: "# Version 3",
           },
           {
             id: "v2",
             version: 2,
             diffSummary: "Added schema",
             createdAt: "2026-06-02T00:00:00.000Z",
-            content: "# Version 2",
           },
         ],
       }),
@@ -156,7 +184,6 @@ describe("DocumentationPage — version history", () => {
             version: 1,
             diffSummary: null,
             createdAt: "2026-06-01T00:00:00.000Z",
-            content: "# Version 1",
           },
         ],
       }),
@@ -169,7 +196,7 @@ describe("DocumentationPage — version history", () => {
     expect(within(section).getByText(/Full generation/)).toBeInTheDocument();
   });
 
-  it("lets the user view a previous version's content read-only without an extra fetch", async () => {
+  it("fetches a previous version's body only when the user opens it (#190)", async () => {
     setup(
       docDetail({
         content: "# Latest content",
@@ -179,24 +206,23 @@ describe("DocumentationPage — version history", () => {
             version: 3,
             diffSummary: "Latest",
             createdAt: "2026-06-03T00:00:00.000Z",
-            content: "# Version 3 body",
           },
           {
             id: "v2",
             version: 2,
             diffSummary: "Older",
             createdAt: "2026-06-02T00:00:00.000Z",
-            content: "# Version 2 body",
           },
         ],
       }),
     );
     await openDoc();
 
-    // Initially the latest content is shown.
+    // Initially the latest content is shown, and no version body was fetched.
     expect(screen.getByTestId("markdown-previewer")).toHaveTextContent("Latest content");
-
-    const callsBefore = mockApiFetch.mock.calls.length;
+    const versionCalls = () =>
+      mockApiFetch.mock.calls.filter(([path]) => String(path).includes("/versions/"));
+    expect(versionCalls()).toHaveLength(0);
 
     // Click the older (non-current) version to view it.
     const section = screen.getByTestId("version-history");
@@ -206,14 +232,98 @@ describe("DocumentationPage — version history", () => {
     await waitFor(() => {
       expect(screen.getByTestId("markdown-previewer")).toHaveTextContent("Version 2 body");
     });
-    // No additional API call — content came from the existing payload.
-    expect(mockApiFetch.mock.calls.length).toBe(callsBefore);
+    expect(versionCalls().map(([path]) => path)).toEqual([
+      `/projects/proj_test/docs/${DOC_ID}/versions/v2`,
+    ]);
+    expect(screen.getByTestId("version-view-banner")).toHaveTextContent("Viewing v2");
 
     // A way back to the latest exists.
     fireEvent.click(screen.getByTestId("version-history-back-to-latest"));
     await waitFor(() => {
       expect(screen.getByTestId("markdown-previewer")).toHaveTextContent("Latest content");
     });
+  });
+
+  it("says so when a previous version's body cannot be loaded", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v3", version: 3, diffSummary: "Latest", createdAt: "2026-06-03T00:00:00.000Z" },
+          { id: "gone", version: 2, diffSummary: "Older", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+    );
+    const base = mockApiFetch.getMockImplementation()!;
+    mockApiFetch.mockImplementation(async (path: string, ...rest: unknown[]) => {
+      if (String(path).endsWith("/versions/gone")) throw new Error("404");
+      return (base as (p: string, ...r: unknown[]) => Promise<unknown>)(path, ...rest);
+    });
+    await openDoc();
+    const olderRow = within(screen.getByTestId("version-history")).getAllByRole("listitem")[1];
+    fireEvent.click(within(olderRow).getByText(/Older/));
+    expect(await screen.findByText("Could not load v2.")).toBeInTheDocument();
+  });
+
+  it("fetches changed symbols and provenance only when their panel is opened (#190)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+    );
+    await openDoc();
+    const artifactCalls = () =>
+      mockApiFetch.mock.calls
+        .map(([path]) => String(path))
+        .filter((path) => /changed-symbols|provenance/.test(path));
+    expect(artifactCalls()).toEqual([]);
+
+    fireEvent.click(screen.getByTestId("version-symbols-toggle-v2"));
+    const symbols = await screen.findByTestId("version-symbols-v2");
+    expect(await within(symbols).findByText("1,234 changed symbols in v2")).toBeInTheDocument();
+    expect(within(symbols).getByText("billing.Invoice.total")).toBeInTheDocument();
+    expect(within(symbols).getByText("Showing the first 2.")).toBeInTheDocument();
+    expect(artifactCalls()).toEqual([
+      `/projects/proj_test/docs/${DOC_ID}/versions/v2/changed-symbols?limit=200`,
+    ]);
+
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const provenance = await screen.findByTestId("version-provenance-v2");
+    expect(await within(provenance).findByText("gendoc:proj_test:doc_1:v2")).toBeInTheDocument();
+    expect(within(provenance).getByText("holistic")).toBeInTheDocument();
+    expect(within(provenance).getByText(/fact-model/)).toBeInTheDocument();
+    expect(within(provenance).getByText("2 selected from 3 sources")).toBeInTheDocument();
+    // Opening one panel closes the other.
+    expect(screen.queryByTestId("version-symbols-v2")).not.toBeInTheDocument();
+    expect(artifactCalls()).toHaveLength(2);
+
+    // Closing and re-opening reuses the fetched artifact (versions are immutable).
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    expect(screen.queryByTestId("version-provenance-v2")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    await screen.findByText("gendoc:proj_test:doc_1:v2");
+    expect(artifactCalls()).toHaveLength(2);
+  });
+
+  it("reports an artifact that fails to load", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+    );
+    const base = mockApiFetch.getMockImplementation()!;
+    mockApiFetch.mockImplementation(async (path: string, ...rest: unknown[]) => {
+      if (/changed-symbols|provenance/.test(String(path))) throw new Error("500");
+      return (base as (p: string, ...r: unknown[]) => Promise<unknown>)(path, ...rest);
+    });
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-symbols-toggle-v2"));
+    expect(await screen.findByText("Could not load the changed symbols.")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    expect(await screen.findByText("Could not load the provenance manifest.")).toBeInTheDocument();
   });
 
   it("does not render the version-history section (no fake history) when versions are absent", async () => {

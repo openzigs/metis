@@ -61,10 +61,20 @@ vi.mock("../src/lib/prisma.js", () => {
       findUnique: vi.fn(async () => ({ name: "P", workspaceId: "ws-1" })),
     },
     generatedDocument: {
-      findFirst: vi.fn(async ({ where, include }: { where: Where; include?: unknown }) => {
-        const row = rows().find((r) => matches(r, where));
-        return row ? { ...row, ...(include ? { versions: [] } : {}) } : null;
-      }),
+      findFirst: vi.fn(
+        async ({
+          where,
+          include,
+          select,
+        }: {
+          where: Where;
+          include?: unknown;
+          select?: { versions?: unknown };
+        }) => {
+          const row = rows().find((r) => matches(r, where));
+          return row ? { ...row, ...(include || select?.versions ? { versions: [] } : {}) } : null;
+        },
+      ),
       findMany: vi.fn(async ({ where }: { where: Where }) =>
         rows()
           .filter((r) => matches(r, where))
@@ -177,6 +187,7 @@ function seed(over: Partial<Row> = {}): Row {
     scope: "database",
     scopeFilter: JSON.stringify({ dbConnectorId: "db-1" }),
     evidencePolicy: "{}",
+    content: "",
     status: "pending",
     errorMessage: null,
     codeGraphHash: "previous-hash",

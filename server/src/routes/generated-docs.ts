@@ -5,7 +5,10 @@
  * Routes:
  *   POST   /generate             — trigger doc generation for a project
  *   GET    /                     — list generated documents
- *   GET    /:docId               — get a single document
+ *   GET    /:docId               — get a single document (content + summary metadata)
+ *   GET    /:docId/versions/:versionId                 — one version's markdown (#190)
+ *   GET    /:docId/versions/:versionId/provenance      — its provenance manifest (#190)
+ *   GET    /:docId/versions/:versionId/changed-symbols — its changed symbols, paged (#190)
  *   GET    /:docId/export        — export as PDF or Word
  *   GET    /:docId/schema-graph  — structured schema graph (Epic #895)
  *   PATCH  /:docId               — update metadata (title, autoUpdate)
@@ -56,7 +59,10 @@ import {
   dispatchGeneratedDocTask,
 } from "../lib/docs-gen/generated-doc-outbox.js";
 import { captureGenerationInputs } from "../lib/docs-gen/generation-inputs.js";
-import { parseGeneratedDocVersionManifest } from "../lib/docs-gen/generated-doc-provenance.js";
+import {
+  legacyGeneratedDocVersionManifest,
+  parseGeneratedDocVersionManifest,
+} from "../lib/docs-gen/generated-doc-provenance.js";
 import {
   planRegeneration,
   type GenerationInputSnapshot,
@@ -191,6 +197,36 @@ const updateSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   autoUpdate: z.boolean().optional(),
 });
+
+/** #190 — a version's stored manifest, read only when a caller needs it. */
+async function storedManifest(documentId: string, versionId: string): Promise<string | null> {
+  const stored = await prisma.generatedDocumentVersion.findFirst({
+    where: { id: versionId, documentId },
+    select: { provenanceManifest: true },
+  });
+  return stored?.provenanceManifest ?? null;
+}
+
+/**
+ * #190 — the revision id the detail payload has always reported, without
+ * loading the (potentially multi-megabyte) manifest for rows that store it.
+ */
+async function versionRevisionId(
+  projectId: string,
+  generatedDocumentId: string,
+  version: { id: string; version: number; revisionId: string | null },
+): Promise<string> {
+  if (version.revisionId) return version.revisionId;
+  return normalizeGeneratedDocVersionRecord(
+    {
+      documentId: generatedDocumentId,
+      version: version.version,
+      revisionId: null as string | null,
+      provenanceManifest: await storedManifest(generatedDocumentId, version.id),
+    },
+    { projectId, generatedDocumentId },
+  ).revisionId;
+}
 
 const refreshAuthenticatedUser: RequestHandler =
   authMiddleware.refreshAuthenticatedUser ?? ((_req, _res, next) => next());
@@ -366,54 +402,81 @@ export function generatedDocsRouter(): Router {
     });
   });
 
-  // GET /:docId — get single document
+  // GET /:docId — get single document. #190 — the content once plus summary
+  // metadata. Version bodies, provenance manifests and changed symbols can be
+  // tens of megabytes for a full-coverage document, so each has its own
+  // endpoint below and is fetched only when the viewer opens that panel.
   r.get("/:docId", requirePermission("project.read"), async (req: Request, res: Response) => {
     const projectId = getProjectId(req);
     const docId = getDocId(req);
     const doc = await prisma.generatedDocument.findFirst({
       where: { id: docId, projectId, deletedAt: null },
-      include: {
-        versions: { orderBy: { version: "desc" }, take: 5 },
+      select: {
+        id: true,
+        projectId: true,
+        title: true,
+        scope: true,
+        scopeFilter: true,
+        content: true,
+        status: true,
+        errorMessage: true,
+        warnings: true,
+        autoUpdate: true,
+        generatedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        versions: {
+          orderBy: { version: "desc" },
+          take: 5,
+          select: { id: true, version: true, revisionId: true, diffSummary: true, createdAt: true },
+        },
       },
     });
     if (!doc) throw new AppError(404, "DOC_NOT_FOUND", "Generated document not found");
-    const outboxId = publicationId(projectId, doc.id, doc.versions[0]);
+    const latest = doc.versions[0];
+    const outboxId = publicationId(
+      projectId,
+      doc.id,
+      latest && { ...latest, provenanceManifest: null },
+    );
     const outbox = outboxId
       ? await prisma.task.findUnique({
           where: { id: outboxId, projectId },
           select: { status: true, errorMessage: true },
         })
       : null;
+    const indexingSelect = {
+      indexState: true,
+      status: true,
+      chunkCount: true,
+      errorMessage: true,
+      processedAt: true,
+    } as const;
     const syntheticDocument =
       (await prisma.document.findFirst({
         where: {
-          id: generatedDocSyntheticDocumentId(doc.id, doc.versions[0]?.revisionId),
+          id: generatedDocSyntheticDocumentId(doc.id, latest?.revisionId),
           projectId,
           deletedAt: null,
         },
-        select: {
-          indexState: true,
-          status: true,
-          chunkCount: true,
-          errorMessage: true,
-          processedAt: true,
-        },
+        select: indexingSelect,
       })) ??
-      (doc.versions[0]?.revisionId && canUseLegacyIndex(doc.versions[0], outbox ?? undefined)
+      (latest?.revisionId &&
+      canUseLegacyIndex(
+        { ...latest, provenanceManifest: await storedManifest(docId, latest.id) },
+        outbox ?? undefined,
+      )
         ? await prisma.document.findFirst({
             where: { id: generatedDocSyntheticDocumentId(doc.id), projectId, deletedAt: null },
-            select: {
-              indexState: true,
-              status: true,
-              chunkCount: true,
-              errorMessage: true,
-              processedAt: true,
-            },
+            select: indexingSelect,
           })
         : null);
+    const { content, versions, ...meta } = doc;
     res.json({
       data: {
-        ...doc,
+        ...meta,
+        content,
+        contentLength: content.length,
         // #52 — never the raw exception text a pre-#52 row may still hold.
         errorMessage: publicGenerationErrorMessage(doc.status, doc.errorMessage),
         // #67 — same rule for the DEGRADED path: a `section-failed` warning
@@ -435,15 +498,116 @@ export function generatedDocsRouter(): Router {
               processedAt: syntheticDocument.processedAt,
             }
           : unpublishedIndex(outbox),
-        versions: doc.versions.map((version) =>
-          normalizeGeneratedDocVersionRecord(version, {
-            projectId,
-            generatedDocumentId: doc.id,
-          }),
+        versions: await Promise.all(
+          versions.map(async (version) => ({
+            id: version.id,
+            version: version.version,
+            revisionId: await versionRevisionId(projectId, docId, version),
+            diffSummary: version.diffSummary,
+            createdAt: version.createdAt,
+          })),
         ),
       },
     });
   });
+
+  // #190 — the heavy per-version fields, each behind its own request. The
+  // router-level `requireProjectAccess` and the same `project.read` permission
+  // as the detail route apply; the version is looked up through its document's
+  // project, so a version id from another project or document is a 404.
+  const findVersion = async <S extends Prisma.GeneratedDocumentVersionSelect>(
+    req: Request,
+    select: S,
+  ) => {
+    const projectId = getProjectId(req);
+    const docId = getDocId(req);
+    const versionId = Array.isArray(req.params.versionId)
+      ? req.params.versionId[0]
+      : req.params.versionId;
+    const version = await prisma.generatedDocumentVersion.findFirst({
+      where: { id: versionId, documentId: docId, document: { projectId, deletedAt: null } },
+      select,
+    });
+    if (!version) throw new AppError(404, "DOC_VERSION_NOT_FOUND", "Document version not found");
+    return { projectId, docId, version };
+  };
+
+  // GET /:docId/versions/:versionId — one version's full markdown body.
+  r.get(
+    "/:docId/versions/:versionId",
+    requirePermission("project.read"),
+    async (req: Request, res: Response) => {
+      const { projectId, docId, version } = await findVersion(req, {
+        id: true,
+        version: true,
+        revisionId: true,
+        diffSummary: true,
+        createdAt: true,
+        content: true,
+      });
+      res.json({
+        data: { ...version, revisionId: await versionRevisionId(projectId, docId, version) },
+      });
+    },
+  );
+
+  // GET /:docId/versions/:versionId/provenance — the version's provenance manifest.
+  r.get(
+    "/:docId/versions/:versionId/provenance",
+    requirePermission("project.read"),
+    async (req: Request, res: Response) => {
+      const { projectId, docId, version } = await findVersion(req, {
+        version: true,
+        provenanceManifest: true,
+      });
+      let manifest;
+      try {
+        manifest = version.provenanceManifest
+          ? parseGeneratedDocVersionManifest(version.provenanceManifest)
+          : legacyGeneratedDocVersionManifest({
+              projectId,
+              generatedDocumentId: docId,
+              version: version.version,
+            });
+      } catch {
+        throw new AppError(500, "PROVENANCE_CORRUPT", "Stored provenance manifest is not readable");
+      }
+      res.json({ data: manifest });
+    },
+  );
+
+  // GET /:docId/versions/:versionId/changed-symbols?offset=&limit= — a page of
+  // the symbols the version regenerated, with the total.
+  const changedSymbolsQuery = z.object({
+    offset: z.coerce.number().int().min(0).default(0),
+    limit: z.coerce.number().int().min(1).max(5000).default(500),
+  });
+  r.get(
+    "/:docId/versions/:versionId/changed-symbols",
+    requirePermission("project.read"),
+    async (req: Request, res: Response) => {
+      const page = changedSymbolsQuery.safeParse(req.query);
+      if (!page.success) throw new AppError(400, "VALIDATION_ERROR", page.error.message);
+      const { version } = await findVersion(req, { changedSymbols: true });
+      let symbols: unknown;
+      try {
+        symbols = JSON.parse(version.changedSymbols);
+      } catch {
+        symbols = null;
+      }
+      if (!Array.isArray(symbols)) {
+        throw new AppError(
+          500,
+          "CHANGED_SYMBOLS_CORRUPT",
+          "Stored changed symbols are not readable",
+        );
+      }
+      const { offset, limit } = page.data;
+      res.json({
+        data: { total: symbols.length, offset, items: symbols.slice(offset, offset + limit) },
+      });
+    },
+  );
 
   // GET /:docId/export — export PDF, Word, or Markdown
   r.get(
