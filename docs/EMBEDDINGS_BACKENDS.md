@@ -735,9 +735,14 @@ document) so the chunker runs again.
 
 **`doc:v2` → `doc:v3` (#201).** v3 also bounds a chunk with non-ASCII text by the
 model's token input, charging each such character its UTF-8 bytes. A CJK or emoji
-chunk is no longer truncated at the model's 2,048-token input. Pure-ASCII chunks are cut exactly as v2 cut them: re-ingesting an
-all-ASCII document reproduces its chunks byte-for-byte, so the documents that need
-the re-ingest are the ones with non-ASCII text.
+chunk is no longer truncated at the model's 2,048-token input.
+
+After upgrading, `status` reports chunker drift for **every** project ingested under
+v2, all-ASCII ones included: drift is judged by the recorded chunker identity, not by
+the text. Re-ingest them all to clear it. Order the work by content: a project with
+non-ASCII text has truncated chunks that the re-ingest actually repairs, so do those
+first. An all-ASCII project is cut exactly as v2 cut it, so its re-ingest reproduces
+the same chunks byte-for-byte and changes only the recorded identity; it can wait.
 
 ### Reading the report
 

@@ -39,7 +39,14 @@ jobs:
         run: pnpm --filter @metis/shared run build
       - name: Build server
         run: pnpm --filter @metis/server run build
-      # Downloads the weights (~150 MB) from the Hugging Face hub on each run.
+      # The weights (~150 MB) come from the Hugging Face hub only on a cache miss, so
+      # a hub outage or rate limit does not turn a warm run red. The key names the
+      # model; bump it when the model or its revision changes.
+      - name: Cache model weights
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.cache/transformers
+          key: transformers-gte-modernbert-base-v1-${{ runner.os }}
       - name: Real model in the embed worker, from dist
         working-directory: server
         run: pnpm exec vitest run tests/embed-worker-real-model.test.ts

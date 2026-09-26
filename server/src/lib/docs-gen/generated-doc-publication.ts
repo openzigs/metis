@@ -418,6 +418,33 @@ async function recordPublicationFailure(
   const message = cancelled
     ? `${GENERATED_DOC_PUBLICATION_CANCELLED}: ${detail}`
     : `generated-doc publication failed: ${detail}`;
+  await writePublicationOutcome(syntheticDocumentId, projectId, message, terminal);
+}
+
+/**
+ * #201 — settle the synthetic row of a publication a user cancelled while it was
+ * still queued. The handler never runs for such a task, so without this the
+ * placeholder written at enqueue stayed `pending` with no message until the next
+ * leader restart's repair.
+ */
+export async function settleCancelledGeneratedDocPublication(
+  payload: GeneratedDocPublicationTaskPayload,
+  reason: string,
+): Promise<void> {
+  await writePublicationOutcome(
+    generatedDocSyntheticDocumentId(payload.generatedDocumentId, payload.revisionId),
+    payload.projectId,
+    `${GENERATED_DOC_PUBLICATION_CANCELLED}: ${reason}`,
+    true,
+  );
+}
+
+async function writePublicationOutcome(
+  syntheticDocumentId: string,
+  projectId: string,
+  message: string,
+  terminal: boolean,
+): Promise<void> {
   try {
     await prisma.document.updateMany({
       where: {

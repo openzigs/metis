@@ -157,6 +157,23 @@ async function reconcileOne(
     return;
   }
 
+  if (task?.status === "cancelled") {
+    // #201 — a user's cancellation is never overridden (the task is not re-run),
+    // but the row is settled: a cancelled publication is not `processing`. It is
+    // checked before parked chunks: a cancellation that landed after the chunks
+    // were written must not be turned into a `ready` row awaiting review.
+    await prisma.document.updateMany({
+      where: { id: row.id, projectId: row.projectId, deletedAt: null },
+      data: {
+        status: "failed",
+        errorMessage: `${GENERATED_DOC_PUBLICATION_CANCELLED}: ${task.errorMessage ?? "cancelled"}`,
+        processedAt: new Date(),
+      },
+    });
+    report.cancelled.push(row.id);
+    return;
+  }
+
   const parked = await prisma.quarantineChunk.count({
     where: { documentId: row.id, ord: { gte: 0 } },
   });
@@ -175,20 +192,6 @@ async function reconcileOne(
       },
     });
     report.failed.push(row.id);
-    return;
-  }
-  if (task?.status === "cancelled") {
-    // #201 — a user's cancellation is never overridden (the task is not re-run),
-    // but the row is settled: a cancelled publication is not `processing`.
-    await prisma.document.updateMany({
-      where: { id: row.id, projectId: row.projectId, deletedAt: null },
-      data: {
-        status: "failed",
-        errorMessage: `${GENERATED_DOC_PUBLICATION_CANCELLED}: ${task.errorMessage ?? "cancelled"}`,
-        processedAt: new Date(),
-      },
-    });
-    report.cancelled.push(row.id);
     return;
   }
 

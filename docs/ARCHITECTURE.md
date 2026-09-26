@@ -1237,15 +1237,22 @@ generated document held `/healthz` and every API request for minutes.
   `MAX_EMBED_SEQUENCE_TOKENS` = 2,048. The chunkers keep each input under that cap: ASCII text by
   its character window, and (#201) text with non-ASCII characters by a 2,046-token budget
   (`EMBED_INPUT_MAX_BYTES`) in which each such character costs its UTF-8 bytes. A byte-level BPE
-  token covers at least one byte, so the bound holds for CJK and emoji
+  token covers at least one byte, so that part is a hard bound, and it is what keeps CJK and emoji
+  whole. The ASCII part is the character window's assumption, not a proof: in `rag/chunker.ts` at
+  the default `chunkSize` of 2,048, a mostly-ASCII window can reach 2,047 bytes, one over the
+  budget, which English BPE (several characters per token) never comes near
   (`rag/embed-input-budget.ts`, `rag/chunker.ts`; chunker identities `doc:v3`, `docsgen:v3`).
 - **Publication outcome.** Generated-document publication (`docs-gen/generated-doc-publication.ts`)
   records an outcome on the synthetic `gendoc-*` document for every way an attempt can end. A
   user's cancellation is `failed` with "cancelled". A failure or timeout records its reason, and is
   `failed` on the last attempt. A shutdown records nothing, because the durable outbox replays the
   task. The queue passes the abort's cause to the handler as a typed signal reason
-  (`scheduler/task-abort.ts`). At startup, `reconcileStrandedGeneratedDocPublications` settles any
-  synthetic row that no live task owns.
+  (`scheduler/task-abort.ts`). A task cancelled before its handler runs (still queued, or
+  cancelled while the queue was claiming it) never reaches that code, so the queue calls the
+  registration's `onCancelledBeforeRun` hook instead, and the publication settles its placeholder
+  row as cancelled there. At startup, `reconcileStrandedGeneratedDocPublications` settles any
+  synthetic row that no live task owns; a cancelled task outranks parked review chunks, so a
+  cancelled publication is never marked ready.
 - **One ONNX thread per process.** `onnxruntime-node` aborts the process when sessions are live on
   two threads at once. For example, `RAG_RERANK=1` runs the in-process reranker on the main thread
   while the embedder runs in the worker. See #222. The sidecar backend avoids this, because every

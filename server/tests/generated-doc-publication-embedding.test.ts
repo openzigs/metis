@@ -48,9 +48,18 @@ import {
   GENERATED_DOC_EVIDENCE_CLASS,
   PUBLICATION_EMBED_BATCH_SIZE,
   chunkGeneratedMarkdown,
+  enqueueGeneratedDocPublication,
   publishGeneratedDocRevision,
+  settleCancelledGeneratedDocPublication,
   splitOversized,
 } from "../src/lib/docs-gen/generated-doc-publication.js";
+import { TaskQueue } from "../src/lib/scheduler/task-queue.js";
+import { createPrismaTaskStore } from "../src/lib/scheduler/task-store.js";
+import {
+  InMemoryTaskHandlerRegistry,
+  registerBuiltInHandlers,
+} from "../src/lib/scheduler/task-handlers.js";
+import type { TaskRecord } from "../src/lib/scheduler/types.js";
 import {
   parseSyntheticDocumentId,
   reconcileStrandedGeneratedDocPublications,
@@ -685,6 +694,133 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       });
     });
 
+    /**
+     * #201 — the cancellation contract travels on the queue's `signal.reason`, so
+     * a handler test that builds its own abort signal cannot see a queue that
+     * stops providing it. These run the publication through the real TaskQueue,
+     * its Prisma store and the built-in handler registration.
+     */
+    describe("through the real TaskQueue", () => {
+      const queues: TaskQueue[] = [];
+      afterEach(async () => {
+        await Promise.all(queues.splice(0).map((queue) => queue.shutdown()));
+      });
+
+      function realQueue(embedder: unknown) {
+        const runs: Promise<unknown>[] = [];
+        const registry = new InMemoryTaskHandlerRegistry();
+        registerBuiltInHandlers(registry, {
+          httpWebhookHandler: async () => ({}),
+          publishGeneratedDocument: (generatedDocumentId, projectId, v, revisionId, signal, o) => {
+            const run = publishGeneratedDocRevision(
+              { generatedDocumentId, projectId, version: v, revisionId },
+              { signal, storage, embedder: embedder as never, ...o },
+            );
+            runs.push(run.catch(() => undefined));
+            return run;
+          },
+          settleCancelledGeneratedDocPublication,
+        });
+        const noop = () => {};
+        const queue = new TaskQueue(
+          createPrismaTaskStore(),
+          registry,
+          { schedulerStatus: noop, taskStatus: noop, taskProgress: noop },
+          {
+            concurrency: 1,
+            tickMs: 1000,
+            defaultTimeoutMs: 3_600_000,
+            retryBackoffMs: 3_600_000,
+            retryBackoffMaxMs: 3_600_000,
+            minCronIntervalSec: 60,
+            enabled: true,
+          },
+        );
+        queues.push(queue);
+        return { queue, runs };
+      }
+
+      async function enqueueThrough(
+        queue: TaskQueue,
+        extra: { scheduledFor?: Date } = {},
+      ): Promise<TaskRecord> {
+        let task: TaskRecord | undefined;
+        await enqueueGeneratedDocPublication(
+          { ...payload(), markdown: "queued" },
+          {
+            storage,
+            enqueueTask: async (input) => {
+              task = await queue.enqueue({ ...input, ...extra });
+            },
+          },
+        );
+        return task as TaskRecord;
+      }
+
+      it("settles the placeholder of a publication cancelled while still queued", async () => {
+        await version(1, largeDocument(5_000));
+        const { calls, embedder } = recordingEmbedder();
+        const { queue } = realQueue(embedder);
+        // Not due for an hour: it is queued, whatever the machine's load.
+        const task = await enqueueThrough(queue, {
+          scheduledFor: new Date(Date.now() + 3_600_000),
+        });
+        expect(await db.document.findUniqueOrThrow({ where: { id: syntheticId() } })).toMatchObject(
+          { status: "pending", errorMessage: null },
+        );
+
+        expect(await queue.cancel(task.id, "cancelled by initiator")).toBe(true);
+
+        expect(calls).toHaveLength(0);
+        expect(await db.task.findUniqueOrThrow({ where: { id: task.id } })).toMatchObject({
+          status: "cancelled",
+        });
+        const row = await db.document.findUniqueOrThrow({ where: { id: syntheticId() } });
+        expect(row).toMatchObject({
+          status: "failed",
+          errorMessage: "generated-doc publication cancelled: cancelled by initiator",
+        });
+        expect(row.processedAt).not.toBeNull();
+      });
+
+      it("records a user's cancellation of a running publication as cancelled", async () => {
+        await version(1, largeDocument(60_000));
+        let cancelling: Promise<boolean> | undefined;
+        let taskId!: (id: string) => void;
+        const enqueued = new Promise<string>((resolve) => {
+          taskId = resolve;
+        });
+        const inner = recordingEmbedder();
+        const embedder = {
+          embed: async (texts: string[]) => {
+            const out = await (inner.embedder as { embed(t: string[]): Promise<unknown> }).embed(
+              texts,
+            );
+            // `real` is initialised long before the first batch is embedded.
+            cancelling ??= real.queue.cancel(await enqueued, "cancelled by initiator");
+            return out;
+          },
+        };
+        const real = realQueue(embedder);
+        const task = await enqueueThrough(real.queue);
+        taskId(task.id);
+        while (real.runs.length === 0 || !cancelling) await new Promise((r) => setImmediate(r));
+        await Promise.all(real.runs);
+        expect(await cancelling).toBe(true);
+
+        expect(inner.calls).toHaveLength(1);
+        expect(await db.task.findUniqueOrThrow({ where: { id: task.id } })).toMatchObject({
+          status: "cancelled",
+        });
+        expect(await db.document.findUniqueOrThrow({ where: { id: syntheticId() } })).toMatchObject(
+          {
+            status: "failed",
+            errorMessage: "generated-doc publication cancelled: cancelled by initiator",
+          },
+        );
+      });
+    });
+
     describe("reconcileStrandedGeneratedDocPublications", () => {
       async function seedSynthetic(
         p: ReturnType<typeof payload>,
@@ -863,6 +999,25 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
           dispatchTask: async () => {},
         });
         expect(again.cancelled).toEqual([]);
+      });
+
+      it("#201 — a cancellation outranks parked chunks: the row is never marked ready", async () => {
+        const cancelled = payload(1);
+        await version(1, "cancelled after parking");
+        await seedSynthetic(cancelled, { indexState: "quarantined", chunks: 2 });
+        await seedTask(cancelled, "cancelled", "cancelled by user");
+
+        const report = await reconcileStrandedGeneratedDocPublications({
+          dispatchTask: async () => {},
+        });
+        expect(report.cancelled).toEqual([syntheticId(cancelled)]);
+        expect(report.finalized).toEqual([]);
+        expect(
+          await db.document.findUniqueOrThrow({ where: { id: syntheticId(cancelled) } }),
+        ).toMatchObject({
+          status: "failed",
+          errorMessage: "generated-doc publication cancelled: cancelled by user",
+        });
       });
 
       it("removes a synthetic row whose revision names no version", async () => {

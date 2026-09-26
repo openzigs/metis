@@ -139,7 +139,9 @@ export class TaskQueue {
       if (entry.timer) clearTimeout(entry.timer);
       const updated = await this.store.markCancelled(taskId, reason, new Date());
       this.emitStatus(updated);
-      return updated.status === "cancelled";
+      if (updated.status !== "cancelled") return false;
+      await this.settleCancelledBeforeRun(entry.task, reason);
+      return true;
     }
     // Running — abort + cleanup happens when the handler returns.
     const running = this.running.get(taskId);
@@ -205,6 +207,21 @@ export class TaskQueue {
   }
 
   // ---------- internals ----------
+
+  /** #201 — let the handler settle state it owns for a task that never ran. */
+  private async settleCancelledBeforeRun(task: TaskRecord, reason: string): Promise<void> {
+    const settle = this.registry.get(task.type)?.onCancelledBeforeRun;
+    if (!settle) return;
+    try {
+      await settle(task, reason);
+    } catch (err) {
+      log.warn("Could not settle a task cancelled before it ran", {
+        taskId: task.id,
+        type: task.type,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
 
   private insertPending(entry: PendingEntry): void {
     // Stable insertion-sort by priority then enqueue order.
@@ -286,6 +303,14 @@ export class TaskQueue {
     if (controller.signal.aborted || this.stopped) {
       try {
         await this.persistInterruption(entry, "aborted before dispatch");
+        // A user's cancel that won the claim race: the handler never runs either.
+        if (entry.abortSource === "user") {
+          const reason: unknown = controller.signal.reason;
+          await this.settleCancelledBeforeRun(
+            running,
+            reason instanceof Error ? reason.message : String(reason),
+          );
+        }
       } finally {
         this.running.delete(task.id);
         void this.dispatch();

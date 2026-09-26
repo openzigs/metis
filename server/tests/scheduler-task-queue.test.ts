@@ -800,6 +800,108 @@ describe("TaskQueue cancellation", () => {
     expect(rows.get(task.id)?.status).toBe("cancelled");
   });
 
+  it("#201 — settles a queued task's handler-owned state when it is cancelled before running", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const handler = vi.fn<TaskHandlerFn>(async () => ({}));
+    const settled: Array<{ id: string; reason: string }> = [];
+    registry.register({
+      type: "owns-state",
+      description: "",
+      handler,
+      onCancelledBeforeRun: async (task, reason) => {
+        settled.push({ id: task.id, reason });
+      },
+    });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig);
+    // Not due yet: it stays queued, whatever the machine's load.
+    const queued = await queue.enqueue({
+      type: "owns-state",
+      scheduledFor: new Date(Date.now() + 3_600_000),
+    });
+    expect(await queue.cancel(queued.id, "cancelled by alice")).toBe(true);
+    expect(rows.get(queued.id)?.status).toBe("cancelled");
+    expect(settled).toEqual([{ id: queued.id, reason: "cancelled by alice" }]);
+    expect(handler).not.toHaveBeenCalled();
+    await queue.shutdown();
+  });
+
+  it("#201 — a settle hook that throws never turns a persisted cancellation into a failure", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    registry.register({
+      type: "owns-state",
+      description: "",
+      handler: async () => ({}),
+      onCancelledBeforeRun: async () => {
+        throw new Error("db down");
+      },
+    });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig);
+    const queued = await queue.enqueue({
+      type: "owns-state",
+      scheduledFor: new Date(Date.now() + 3_600_000),
+    });
+    expect(await queue.cancel(queued.id)).toBe(true);
+    expect(rows.get(queued.id)?.status).toBe("cancelled");
+    await queue.shutdown();
+  });
+
+  it("#201 — settles when a user's cancel wins the race with the running claim", async () => {
+    const { store, rows } = makeStore();
+    let claimed: () => void = () => {};
+    const claimGate = new Promise<void>((resolve) => {
+      claimed = resolve;
+    });
+    const markRunning = store.markRunning.bind(store);
+    store.markRunning = async (id, attempt, now) => {
+      await claimGate;
+      return markRunning(id, attempt, now);
+    };
+    const registry = new InMemoryTaskHandlerRegistry();
+    const handler = vi.fn<TaskHandlerFn>(async () => ({}));
+    const settled: string[] = [];
+    registry.register({
+      type: "regenerate-generated-document",
+      description: "",
+      handler,
+      onCancelledBeforeRun: async (_task, reason) => {
+        settled.push(reason);
+      },
+    });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig);
+    const task = await queue.enqueue({ type: "regenerate-generated-document" });
+    // The claim is in flight: the task holds a slot but its handler has not run.
+    expect(queue.snapshot()).toMatchObject({ running: 1, queueDepth: 0 });
+    expect(await queue.cancel(task.id, "cancelled by alice")).toBe(true);
+    claimed();
+    for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
+    expect(handler).not.toHaveBeenCalled();
+    expect(rows.get(task.id)?.status).toBe("cancelled");
+    expect(settled).toEqual(["cancelled by alice"]);
+  });
+
+  it("#201 — a cancel of a task that already ran does not call the settle hook", async () => {
+    const { store } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const settle = vi.fn(async () => {});
+    registry.register({
+      type: "long",
+      description: "",
+      handler: (ctx) =>
+        new Promise((_resolve, reject) => {
+          ctx.signal.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+      onCancelledBeforeRun: settle,
+    });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig);
+    const task = await queue.enqueue({ type: "long" });
+    for (let i = 0; i < 3; i += 1) await new Promise((r) => setImmediate(r));
+    expect(await queue.cancel(task.id)).toBe(true);
+    for (let i = 0; i < 3; i += 1) await new Promise((r) => setImmediate(r));
+    expect(settle).not.toHaveBeenCalled();
+  });
+
   it("returns false when cancelling an unknown task", async () => {
     const { store } = makeStore();
     const registry = new InMemoryTaskHandlerRegistry();
