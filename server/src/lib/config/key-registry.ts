@@ -302,7 +302,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       .min(1024)
       .max(16 * 1024 * 1024),
     description:
-      "Largest repository source file (bytes) the RAG ingest embeds (#182; default 1048576 = 1 MiB). A file up to this size is split into chunks and indexed whole — the old 64 KB limit silently skipped every larger file. A file above it is skipped, logged by path and counted, and the connector records the ingest as partial. The ceiling exists for generated or vendored blobs (bundles, lockfile-sized JSON), whose embedding time grows with their size.",
+      "Largest repository source file (bytes) the RAG ingest embeds (#182; default 1048576 = 1 MiB). A file up to this size is split into chunks and indexed whole — the old 64 KB limit silently skipped every larger file. A file above it is skipped, logged by path, counted and listed on the connector; it does not make the ingest partial or mark generated documents degraded (#217). The ceiling exists for generated or vendored blobs (bundles, lockfile-sized JSON), whose embedding time grows with their size.",
     sensitive: false,
   },
   REPO_SOURCE_INCLUDE_TESTS: {

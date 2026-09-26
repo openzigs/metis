@@ -26,12 +26,20 @@ export type EffectiveSourceIngestStatus = SourceIngestStatus | "interrupted";
 export interface SourceIngestSkipped {
   /** Selected by order but past `REPO_SOURCE_MAX_FILES`. */
   cap: number;
-  /** Larger than `REPO_SOURCE_MAX_FILE_BYTES`. */
+  /**
+   * Larger than `REPO_SOURCE_MAX_FILE_BYTES`. #217: reported on the connector
+   * (with the paths in `skippedPaths.tooLarge`), not a gap — see `settledStatus`.
+   */
   tooLarge: number;
   /** Could not be stat'ed or read. */
   unreadable: number;
   /** Test/spec/fixture files left out by `REPO_SOURCE_INCLUDE_TESTS=false` (policy, not a gap). */
   excludedTests: number;
+  /**
+   * #217 — lockfiles and minified bundles left out by policy (not a gap). Absent
+   * from states recorded before #217.
+   */
+  excludedGenerated?: number;
 }
 
 export interface SourceIngestState {
@@ -55,6 +63,8 @@ export interface SourceIngestState {
   failed: number;
   chunkCount: number;
   skipped: SourceIngestSkipped;
+  /** #217 — which files were skipped as oversize (first {@link SKIPPED_PATHS_RECORDED}). */
+  skippedPaths?: { tooLarge: string[] };
   limits: { maxFiles: number; maxFileBytes: number; includeTests: boolean };
   /** Reduced error message for a `failed` run. */
   error?: string;
@@ -67,6 +77,9 @@ export interface SourceIngestState {
  * on the in-process model, so ten minutes of silence means the process is gone.
  */
 export const SOURCE_INGEST_STALE_MS = 10 * 60 * 1000;
+
+/** How many oversize paths the state records for the connector view. */
+export const SKIPPED_PATHS_RECORDED = 20;
 
 /** Indexed so far: new, re-embedded, and unchanged files. */
 export function indexedCount(state: SourceIngestState): number {
@@ -88,15 +101,31 @@ export function effectiveSourceIngestStatus(
   state: SourceIngestState,
   now: number = Date.now(),
 ): EffectiveSourceIngestStatus {
+  // #217 — a state recorded `partial` under the #209 policy only for oversize
+  // files outlives the policy change; re-derive rather than trust the stored
+  // status, so the connector view and document warnings agree.
+  if (state.status === "partial") return settledStatus(state);
   if (state.status !== "running") return state.status;
   const beat = Date.parse(state.heartbeatAt);
   return Number.isFinite(beat) && now - beat <= SOURCE_INGEST_STALE_MS ? "running" : "interrupted";
 }
 
-/** Settled status of a finished run: `partial` whenever any selected or eligible file is missing. */
+/**
+ * Settled status of a finished run: `partial` whenever a file the run should
+ * have indexed is missing — past the budget, unreadable, or failed to embed.
+ *
+ * #217 decision: a file over `REPO_SOURCE_MAX_FILE_BYTES` is NOT a gap. It is
+ * almost always generated (a bundle, a data dump, a vendored build), it is
+ * skipped by an explicit operator setting, and under #209 one such file made
+ * every document generated against the repository `degraded` — a warning on
+ * every document that says nothing about the document. It is reported instead:
+ * counted in `skipped.tooLarge`, listed in `skippedPaths.tooLarge` on the
+ * connector's `sourceIngest`, and logged by path. Policy exclusions (tests,
+ * lockfiles, minified bundles) are not gaps either.
+ */
 export function settledStatus(state: SourceIngestState): "completed" | "partial" {
-  const { cap, tooLarge, unreadable } = state.skipped;
-  return cap + tooLarge + unreadable + state.failed > 0 ? "partial" : "completed";
+  const { cap, unreadable } = state.skipped;
+  return cap + unreadable + state.failed > 0 ? "partial" : "completed";
 }
 
 /**
@@ -144,9 +173,6 @@ export function describeIndexGap(
   const reasons: string[] = [];
   if (state.skipped.cap > 0) {
     reasons.push(`${state.skipped.cap} past the REPO_SOURCE_MAX_FILES limit`);
-  }
-  if (state.skipped.tooLarge > 0) {
-    reasons.push(`${state.skipped.tooLarge} over REPO_SOURCE_MAX_FILE_BYTES`);
   }
   if (state.skipped.unreadable > 0) reasons.push(`${state.skipped.unreadable} unreadable`);
   if (state.failed > 0) reasons.push(`${state.failed} failed to embed`);

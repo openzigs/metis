@@ -211,6 +211,10 @@ import {
   getRepoConnectorEmitter,
 } from "../src/lib/connectors/repo/repo-service.js";
 import { REPO_INGEST_FAILED_MESSAGE } from "../src/routes/connectors.js";
+import {
+  acquireConnectorIngest,
+  isConnectorIngestActive,
+} from "../src/lib/connectors/ingest-guard.js";
 import { discoverAndUpsertConnections } from "../src/lib/connectors/repo/connection-discovery.js";
 import {
   bootstrapScheduler,
@@ -382,6 +386,45 @@ describe("provider routing on deep-ingest", () => {
     expect(resolveNonGitIngestRoot).toHaveBeenCalledTimes(1);
     expect(shallowCloneRepo).not.toHaveBeenCalled();
   });
+});
+
+// #217 — one per-connector guard shared by the sync routes, the scheduled
+// refresh and the eval runner. The routes take it before any clone/graph work.
+describe("per-connector ingest guard on the sync routes (#217)", () => {
+  for (const route of ["deep-ingest", "refresh-ingest"] as const) {
+    it(`${route} answers 409 INGEST_IN_PROGRESS while another entry point holds the connector`, async () => {
+      const token = await login("admin");
+      const lease = acquireConnectorIngest("repo_github_x", "scheduled-refresh");
+      try {
+        const res = await request(app)
+          .post(`/api/projects/proj_1/connectors/repos/repo_github_x/${route}`)
+          .set("Authorization", `Bearer ${token}`);
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe("INGEST_IN_PROGRESS");
+        expect(ingestSourceAsKnowledge).not.toHaveBeenCalled();
+        // The refusal leaves the holder's claim intact.
+        expect(isConnectorIngestActive("repo_github_x")).toBe(true);
+      } finally {
+        lease.release();
+      }
+    });
+
+    it(`${route} holds the guard for the run, hands its lease to the source ingest, then releases it`, async () => {
+      const token = await login("admin");
+      let leaseSeen: unknown;
+      vi.mocked(ingestSourceAsKnowledge).mockImplementationOnce(async (...args) => {
+        const lease = args[4]?.lease;
+        leaseSeen = lease && { connectorId: lease.connectorId, held: lease.held };
+        return { documentsCreated: 1, documentsUpdated: 0, chunkCount: 1, failures: 0 };
+      });
+      const res = await request(app)
+        .post(`/api/projects/proj_1/connectors/repos/repo_github_x/${route}`)
+        .set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(leaseSeen).toMatchObject({ connectorId: "repo_github_x", held: true });
+      expect(isConnectorIngestActive("repo_github_x")).toBe(false);
+    });
+  }
 });
 
 // #114 — the auto-ingest (create-with-autoIngest) progress socket event carried

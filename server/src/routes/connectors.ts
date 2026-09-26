@@ -45,6 +45,11 @@ import {
 } from "../middleware/connector-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import { ConnectorError } from "../lib/connectors/types.js";
+import {
+  INGEST_IN_PROGRESS,
+  tryAcquireConnectorIngest,
+  type ConnectorIngestLease,
+} from "../lib/connectors/ingest-guard.js";
 import { isDriverDetailCode, sanitizeDriverError } from "../lib/connectors/driver-error.js";
 import {
   createDbConnector,
@@ -170,8 +175,13 @@ function projectIdOf(req: Request): string {
 export const REPO_INGEST_FAILED_MESSAGE =
   "Repository ingestion failed. The details are in the server log; run the ingest again to retry.";
 
-/** In-memory concurrency guard: connectors currently being ingested (#663 review). */
-const activeIngests = new Set<string>();
+/**
+ * Concurrency guard (#663 review): the per-connector ingest lease (#217), shared
+ * with the scheduled refresh and the eval runner rather than private to this router.
+ */
+function ingestInProgress(): AppError {
+  return new AppError(409, INGEST_IN_PROGRESS, "An ingest is already running for this connector");
+}
 
 /**
  * Issue #288 — resolve the directory an ingest should walk, branching on
@@ -196,10 +206,8 @@ async function resolveIngestSource(
 
 async function triggerDeepIngest(projectId: string, connectorId: string, userId: string) {
   // Concurrency guard — prevent duplicate parallel ingests on the same connector
-  if (activeIngests.has(connectorId)) {
-    return;
-  }
-  activeIngests.add(connectorId);
+  const lease = tryAcquireConnectorIngest(connectorId, "auto-ingest");
+  if (!lease) return;
 
   const emitter = getRepoConnectorEmitter();
   const emitProgress = (step: string, current: number) =>
@@ -241,6 +249,7 @@ async function triggerDeepIngest(projectId: string, connectorId: string, userId:
     emitProgress("Ingesting source code", 3);
     const srcSummary = await ingestSourceAsKnowledge(projectId, connectorId, userId, source.path, {
       boundary: source.boundary,
+      lease,
     });
     let metadataSucceeded = true;
     emitProgress("Indexing metadata", 4);
@@ -291,7 +300,7 @@ async function triggerDeepIngest(projectId: string, connectorId: string, userId:
     });
     throw err;
   } finally {
-    activeIngests.delete(connectorId);
+    lease.release();
   }
 }
 
@@ -564,14 +573,6 @@ export function connectorsRouter(): Router {
       try {
         const projectId = projectIdOf(req);
         const id = String(req.params.id);
-        // Concurrency guard
-        if (activeIngests.has(id)) {
-          throw new AppError(
-            409,
-            "INGEST_IN_PROGRESS",
-            "Deep-ingest is already running for this connector",
-          );
-        }
         const a = actor(req);
         const emitter = getRepoConnectorEmitter();
         const emitProgress = (step: string, current: number) =>
@@ -584,7 +585,9 @@ export function connectorsRouter(): Router {
             current,
             total: 5,
           });
-        activeIngests.add(id);
+        // Concurrency guard — claimed immediately before the try that releases it.
+        const lease = tryAcquireConnectorIngest(id, "deep-ingest");
+        if (!lease) throw ingestInProgress();
         try {
           // Step 1: resolve source (github clones; local/upload skip the clone)
           emitProgress("Resolving source", 1);
@@ -614,6 +617,7 @@ export function connectorsRouter(): Router {
           emitProgress("Ingesting source code", 3);
           const srcSummary = await ingestSourceAsKnowledge(projectId, id, a, source.path, {
             boundary: source.boundary,
+            lease,
           });
           // Step 4: also run metadata ingest for RAG chunks (github only)
           emitProgress("Indexing metadata", 4);
@@ -672,7 +676,7 @@ export function connectorsRouter(): Router {
             }),
           );
         } finally {
-          activeIngests.delete(id);
+          lease.release();
         }
       } catch (err) {
         rethrow(err);
@@ -689,6 +693,7 @@ export function connectorsRouter(): Router {
     requireAuth,
     requirePermission("connector.write"),
     async (req, res) => {
+      let lease: ConnectorIngestLease | null = null;
       try {
         const projectId = projectIdOf(req);
         const id = String(req.params.id);
@@ -696,6 +701,10 @@ export function connectorsRouter(): Router {
         // Step 1: github pulls (or re-clones); local re-validates path; upload
         // re-extracts the stored archive. Both non-git providers skip the clone.
         const conn = await getRepoConnector(projectId, id);
+        // #217 — claimed once the connector is known to be this project's, and
+        // before the pull, so a concurrent refresh never races this one's clone.
+        lease = tryAcquireConnectorIngest(id, "refresh-ingest");
+        if (!lease) throw ingestInProgress();
         const isNonGit =
           conn.provider === REPO_PROVIDER_LOCAL || conn.provider === REPO_PROVIDER_UPLOAD;
         let clone: { path: string; sizeBytes: number; pulled: boolean; filesChanged: number };
@@ -729,6 +738,7 @@ export function connectorsRouter(): Router {
         // Step 3: incremental RAG knowledge ingest
         const srcSummary = await ingestSourceAsKnowledge(projectId, id, a, clone.path, {
           boundary,
+          lease,
         });
         // Step 4: refresh metadata (README, head SHA, etc.) — github only
         let metadataSucceeded = true;
@@ -786,6 +796,8 @@ export function connectorsRouter(): Router {
         );
       } catch (err) {
         rethrow(err);
+      } finally {
+        lease?.release();
       }
     },
   );

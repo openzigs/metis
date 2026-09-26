@@ -2119,7 +2119,7 @@ The "Brain" summary gives the AI an instant high-level understanding of a codeba
 - Outbound network allow-list (`REPO_ALLOWED_HOSTS`, optional `*.example.com` wildcards). RFC1918 + loopback are blocked unless `CONNECTOR_ALLOW_LOOPBACK=true`.
 - Shallow clones into `REPO_CLONE_DIR` via `simple-git` for repos that need on-disk inspection.
 - A RAG-ingestion bridge (`connector-ingest.ts`) that emits a synthetic `Document` row (filename `connector:repo:{id}:metadata`) and runs it through the Phase 5 `KnowledgeService` so connector output participates in retrieval. PII is scrubbed first (`pii-redactor.ts`).
-- Repository source (`ingestSourceAsKnowledge`, #182) is embedded as one `connector:repo:{id}:src/{path}` document per file. The walk sizes every eligible file, then orders production code → configuration → tests (`isTestSourcePath`) before the `REPO_SOURCE_MAX_FILES` budget applies; files up to `REPO_SOURCE_MAX_FILE_BYTES` are chunked through the #189 bounded-batch embed path. The run's state (`running` → `completed` / `partial` / `failed`, with counts and a heartbeat) is written to `repo_connections.sourceIngestState` before any work and settled at the end (`source-ingest-state.ts`); a `running` state with a stale heartbeat reads as `interrupted`, a re-sync resumes by checksum and re-embeds documents left un-indexed, and document generation adds a `source-unavailable` warning when the index behind it is partial.
+- Repository source (`ingestSourceAsKnowledge`, #182) is embedded as one `connector:repo:{id}:src/{path}` document per file. The walk sizes every eligible file, then orders production code → configuration → tests (`isTestSourcePath`) before the `REPO_SOURCE_MAX_FILES` budget applies; files up to `REPO_SOURCE_MAX_FILE_BYTES` are chunked through the #189 bounded-batch embed path. The run's state (`running` → `completed` / `partial` / `failed`, with counts and a heartbeat) is written to `repo_connections.sourceIngestState` before any work and settled at the end (`source-ingest-state.ts`); a `running` state with a stale heartbeat reads as `interrupted`, a re-sync resumes by checksum and re-embeds documents left un-indexed, and document generation adds a `source-unavailable` warning when the index behind it is partial. #217: each file is read through a handle (`confined-source-read.ts`: `O_NOFOLLOW`, an inode check against the path, and for `local` connectors a realpath re-check against the boundary), so a symlink swapped in after the walk is never followed; lockfiles and `*.min.js` are excluded by policy (`skipped.excludedGenerated`); and a file over `REPO_SOURCE_MAX_FILE_BYTES` is reported on the connector (`skipped.tooLarge`, `skippedPaths.tooLarge`) without making the index partial.
 - Live progress over Socket.IO room `connector:{id}` (events `connector:status`, `connector:progress`).
 
 **AST summary cache rebuild (Issue #122).** `POST /api/projects/:projectId/repositories/:repoId/rebuild-cache` (`server/src/routes/ast-cache.ts`) rebuilds the per-file AST summary cache used by the code-overview and analysis tooling. It verifies the `RepoConnection`, then calls `pullOrCloneRepo` to materialise the connector's clone directory and `rebuildCacheFromCloneDir(cache, cloneDir)` (`server/src/lib/analysis/ast-summary-cache.ts`) to walk every supported source file (skipping vendored/build directories and oversized blobs) and re-index it via `ASTSummaryCache.rebuildForFiles`. The endpoint returns real statistics (`indexedFiles`, `skippedFiles`, `totalSymbols`, `discoveredFiles`); the repositories tab surfaces these (and any failure) inline. This replaced an earlier stub that only echoed cache stats.
@@ -6177,9 +6177,13 @@ The deep-ingest pipeline runs as a fire-and-forget background task (5 steps: clo
 
 ### 34.3 Concurrency Guard
 
-An in-memory `Set<connectorId>` prevents duplicate parallel ingests on the same connector. If a second request arrives while an ingest is running:
+One in-process lease per connector (`server/src/lib/connectors/ingest-guard.ts`, #217) is shared by every entry point that ingests a repository, so two runs never race a clone or interleave `sourceIngestState` writes. If a second request arrives while an ingest is running:
 - **Auto-ingest**: silently skipped (the background trigger returns immediately).
-- **Manual deep-ingest route**: returns `409 INGEST_IN_PROGRESS`.
+- **Manual deep-ingest and refresh-ingest routes**: return `409 INGEST_IN_PROGRESS`, before any clone or code-graph work.
+- **Scheduled `refresh-repo-connector`**: fails the run with the same 409 error, before it pulls.
+- **`ingestSourceAsKnowledge` without a lease** (the docs-gen eval runner): claims the connector itself and refuses the same way.
+
+The lease is per process; a multi-replica deployment would need a database-level claim.
 
 ### 34.4 Multi-Repo Token Budget
 

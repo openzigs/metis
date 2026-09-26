@@ -71,8 +71,10 @@ describe("effective status", () => {
   });
 
   it("settled states are reported as recorded", () => {
+    // A partial state carries the gap that made it partial (#217 re-derives from it).
+    const gap = { cap: 1, tooLarge: 0, unreadable: 0, excludedTests: 0 };
     for (const status of ["completed", "partial", "failed"] as const) {
-      expect(effectiveSourceIngestStatus(state({ status }), NOW)).toBe(status);
+      expect(effectiveSourceIngestStatus(state({ status, skipped: gap }), NOW)).toBe(status);
     }
   });
 });
@@ -84,11 +86,23 @@ describe("settledStatus", () => {
     expect(
       settledStatus(state({ skipped: { cap: 0, tooLarge: 0, unreadable: 0, excludedTests: 4 } })),
     ).toBe("completed");
+    expect(
+      settledStatus(
+        state({
+          skipped: { cap: 0, tooLarge: 0, unreadable: 0, excludedTests: 0, excludedGenerated: 3 },
+        }),
+      ),
+    ).toBe("completed");
+  });
+
+  it("#217: a file over REPO_SOURCE_MAX_FILE_BYTES is reported, not a gap", () => {
+    expect(
+      settledStatus(state({ skipped: { cap: 0, tooLarge: 2, unreadable: 0, excludedTests: 0 } })),
+    ).toBe("completed");
   });
 
   it.each([
     ["cap", { cap: 1, tooLarge: 0, unreadable: 0, excludedTests: 0 }, 0],
-    ["tooLarge", { cap: 0, tooLarge: 1, unreadable: 0, excludedTests: 0 }, 0],
     ["unreadable", { cap: 0, tooLarge: 0, unreadable: 1, excludedTests: 0 }, 0],
     ["failed", { cap: 0, tooLarge: 0, unreadable: 0, excludedTests: 0 }, 1],
   ])("is partial when %s > 0", (_name, skipped, failed) => {
@@ -128,7 +142,7 @@ describe("describeIndexGap", () => {
     expect(describeIndexGap(null, NOW)).toContain("never recorded");
   });
 
-  it("names the budget, the size ceiling, unreadable files and embed failures", () => {
+  it("names the budget, unreadable files and embed failures — not oversize files (#217)", () => {
     const gap = describeIndexGap(
       state({
         status: "partial",
@@ -139,8 +153,33 @@ describe("describeIndexGap", () => {
     );
     expect(gap).toBe(
       "10 of 10 eligible source file(s) are indexed (5 past the REPO_SOURCE_MAX_FILES limit, " +
-        "2 over REPO_SOURCE_MAX_FILE_BYTES, 1 unreadable, 1 failed to embed)",
+        "1 unreadable, 1 failed to embed)",
     );
+  });
+
+  it("#217: a state recorded partial only for oversize files (pre-#217 policy) is no gap", () => {
+    // #209 settled such a run as `partial`; the stored row outlives the policy
+    // change, so the reader re-derives rather than trusting the stored status.
+    const legacy = state({
+      status: "partial",
+      skipped: { cap: 0, tooLarge: 1, unreadable: 0, excludedTests: 0 },
+    });
+    expect(describeIndexGap(legacy, NOW)).toBeNull();
+    // The connector view reads the same, so it never says "partial" while documents say complete.
+    expect(sourceIngestSummary(JSON.stringify(legacy), NOW)).toMatchObject({
+      status: "partial",
+      effectiveStatus: "completed",
+    });
+    // A genuinely partial state stays partial.
+    expect(
+      effectiveSourceIngestStatus(
+        state({
+          status: "partial",
+          skipped: { cap: 1, tooLarge: 1, unreadable: 0, excludedTests: 0 },
+        }),
+        NOW,
+      ),
+    ).toBe("partial");
   });
 
   it("describes running, interrupted and failed runs", () => {
