@@ -109,7 +109,7 @@ import {
   type Phase1Unit,
 } from "./phase1-chunking.js";
 import { mapSettledWithConcurrency, resolvePhase1Concurrency } from "./phase1-concurrency.js";
-import { restrictToPathScope, withPathScopeBanner } from "./path-scope.js";
+import { isInPathScope, restrictToPathScope, withPathScopeBanner } from "./path-scope.js";
 import {
   loadRepositorySources,
   repositoryPathIdentity,
@@ -147,6 +147,7 @@ import {
   sectionPartlyGroundedWarning,
   sectionUnderReconstructedWarning,
   groundingUnparseableWarning,
+  groundingModeRunWarning,
   groundingSampledWarning,
   groundingSkippedWarning,
   markWarningSampled,
@@ -1357,7 +1358,7 @@ export async function synthesizeHolisticDocument(
   let chunksPlanned = 0;
   for (const m of modules) {
     try {
-      const p = await preparePhase1Module(m, cloneDirOf(m), includeTests);
+      const p = await preparePhase1Module(m, cloneDirOf(m), includeTests, pathPrefixes);
       prepared.set(m, p);
       chunksPlanned += Math.max(1, planPhase1Chunks(p.units, phase1Limits).length);
     } catch {
@@ -1389,6 +1390,7 @@ export async function synthesizeHolisticDocument(
         includeTests,
         {
           prepared: prepared.get(m),
+          pathPrefixes,
           onChunkDone: () => {
             chunksDone += 1;
             reportPhase1();
@@ -1893,6 +1895,12 @@ export async function preparePhase1Module(
   m: ModuleGroup,
   cloneDir: string | null,
   includeTests = true,
+  /**
+   * #185 — the run's path scope. A module kept by {@link restrictToPathScope}
+   * keeps its whole directory, so the `.sql` files read from that directory
+   * are scoped here too: a prefix naming one file never pulls in its siblings.
+   */
+  pathPrefixes?: readonly string[] | null,
 ): Promise<PreparedPhase1Module> {
   // ------------------------------------------------------------------
   // Read EVERY file of the module once, in full. There is no snippet budget:
@@ -1934,6 +1942,7 @@ export async function preparePhase1Module(
       const sqlFiles = entries
         .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".sql"))
         .filter((e) => includeTests || !isTestSourcePath(path.join(m.dir, e.name)))
+        .filter((e) => !pathPrefixes || isInPathScope(path.join(m.dir, e.name), pathPrefixes))
         .map((e) => e.name)
         .sort();
       for (const name of sqlFiles) {
@@ -1999,6 +2008,8 @@ export async function extractModuleFacts(
   hooks?: {
     /** The module already prepared by {@link preparePhase1Module} (skips re-reading). */
     prepared?: PreparedPhase1Module;
+    /** #185 — the run's path scope, for a module that must be prepared here. */
+    pathPrefixes?: readonly string[] | null;
     /** Called once per PLANNED chunk as it completes (split halves count as their chunk). */
     onChunkDone?: () => void;
   },
@@ -2008,7 +2019,7 @@ export async function extractModuleFacts(
   const methodCount = callables.length;
 
   const { fileLines, units, sourceCharsTotal, skippedFiles } =
-    hooks?.prepared ?? (await preparePhase1Module(m, cloneDir, includeTests));
+    hooks?.prepared ?? (await preparePhase1Module(m, cloneDir, includeTests, hooks?.pathPrefixes));
 
   // Issue #330 — detect the silent "source unavailable" degradation: a module
   // with code symbols whose files could not be read AT ALL (every readFile above
@@ -4132,6 +4143,10 @@ export async function synthesizeFinalDocument(
     });
     warnings.push(warning);
   }
+  // #186 — a sample or off run is never `ready`, whatever its sections did:
+  // one document-level marker, since per-section markers can all be absent.
+  const runWarning = groundingModeRunWarning(groundingRecord);
+  if (runWarning) warnings.push(runWarning);
   // #1360 — last, so heading matching above sees exactly what each group produced.
   const readableBody = stripLeakedSourceIds(body);
   return {

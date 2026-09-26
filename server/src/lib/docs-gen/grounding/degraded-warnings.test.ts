@@ -22,6 +22,8 @@ import {
   groundingSkippedWarning,
   groundingSampledWarning,
   markWarningSampled,
+  groundingModeRunWarning,
+  GROUNDING_RUN_SECTION,
   DEFAULT_FAITHFULNESS_THRESHOLD,
   NARRATIVE_FAITHFULNESS_THRESHOLD,
   RECONSTRUCTION_FAITHFULNESS_THRESHOLD,
@@ -745,6 +747,62 @@ describe("DOCS_GEN_GROUNDING warnings", () => {
       "2 section(s) include statements not auto-verified against the source " +
         "(1 scored from a sample, DOCS_GEN_GROUNDING=sample)",
     );
+  });
+
+  it("run-level marker: none for `on`, one document-level warning for sample and off", () => {
+    expect(groundingModeRunWarning(undefined)).toBeUndefined();
+    const off = groundingModeRunWarning({ mode: "off" })!;
+    expect(off).toMatchObject({
+      kind: "grounding-skipped",
+      section: GROUNDING_RUN_SECTION,
+      severity: "warning",
+      runLevel: true,
+    });
+    expect(off.ratio).toBeUndefined();
+    const sampled = groundingModeRunWarning({ mode: "sample", sampleRate: 0.25 })!;
+    expect(sampled).toMatchObject({
+      kind: "grounding-sampled",
+      section: GROUNDING_RUN_SECTION,
+      runLevel: true,
+    });
+    expect(sampled.message).toContain("about 25% of each section's passages");
+    expect(sampled.sampled).toBeUndefined();
+    // Alone, each makes the document degraded and says why.
+    expect(deriveDocStatus([off])).toBe("degraded");
+    expect(deriveDocStatus([sampled])).toBe("degraded");
+    expect(summarizeWarnings([off])).toBe(
+      "Needs review — fact-checking was switched off for this run (DOCS_GEN_GROUNDING=off).",
+    );
+    expect(summarizeWarnings([sampled])).toBe(
+      "Needs review — fact-checking ran on a sample (DOCS_GEN_GROUNDING=sample) — its scores " +
+        "are estimates, not a full verification.",
+    );
+  });
+
+  it("run-level marker: never counted as a section, and silent when a section line already says it", () => {
+    const off = groundingModeRunWarning({ mode: "off" })!;
+    expect(summarizeWarnings([groundingSkippedWarning("Overview"), off])).toBe(
+      "Needs review — 1 section(s) were not fact-checked (DOCS_GEN_GROUNDING=off).",
+    );
+    const run = groundingModeRunWarning({ mode: "sample", sampleRate: 0.25 })!;
+    const above = groundingSampledWarning(
+      "Overview",
+      { supportedClaims: 9, totalClaims: 10, faithfulness: 0.9, threshold: 0.4 },
+      sample,
+    );
+    expect(summarizeWarnings([above, run])).toBe(
+      "Needs review — 1 section(s) were only spot-checked (DOCS_GEN_GROUNDING=sample).",
+    );
+    const below = markWarningSampled(
+      sectionUnfaithfulWarning("Rules", {
+        supportedClaims: 5,
+        totalClaims: 10,
+        faithfulness: 0.5,
+        threshold: 0.8,
+      }),
+      sample,
+    );
+    expect(summarizeWarnings([below, run])).not.toContain("fact-checking ran on a sample");
   });
 
   it("zero-length coverage renders 0% instead of NaN", () => {

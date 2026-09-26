@@ -107,6 +107,16 @@ export interface DocWarning {
    * sampled score can never be read as a full verification.
    */
   sampled?: boolean;
+  /**
+   * DOCS_GEN_GROUNDING=sample / off — true on the ONE document-level marker
+   * {@link groundingModeRunWarning} adds for the whole run, never on a
+   * per-section warning. Status rests on at least one warning existing
+   * ({@link deriveDocStatus}), and per-section markers can all be absent (a
+   * sample that happened to reach every passage, a section with nothing to
+   * check), so the run's mode needs a marker of its own. Counts of sections
+   * exclude it.
+   */
+  runLevel?: boolean;
 }
 
 /**
@@ -563,6 +573,46 @@ export function markWarningSampled(
   };
 }
 
+/** The section label {@link groundingModeRunWarning} uses: it concerns the whole document. */
+export const GROUNDING_RUN_SECTION = "Document";
+
+/**
+ * DOCS_GEN_GROUNDING=sample / off — the document-level marker every non-`on`
+ * run carries, so the document is `degraded` and never `ready` however its
+ * sections fared: a per-section `grounding-sampled` warning is only raised
+ * where the sample left part of a section unchecked, and neither mode marks a
+ * section that had nothing to check. `undefined` for a full-check run.
+ */
+export function groundingModeRunWarning(
+  record: { mode: "sample"; sampleRate: number } | { mode: "off" } | undefined,
+): DocWarning | undefined {
+  if (!record) return undefined;
+  if (record.mode === "off") {
+    return {
+      kind: "grounding-skipped",
+      section: GROUNDING_RUN_SECTION,
+      message:
+        "This document was generated with fact-checking switched off (DOCS_GEN_GROUNDING=off): " +
+        "none of its statements were checked against the source. Regenerate with " +
+        "DOCS_GEN_GROUNDING=on for a full check.",
+      severity: "warning",
+      runLevel: true,
+    };
+  }
+  const pct = Math.round(record.sampleRate * 100);
+  return {
+    kind: "grounding-sampled",
+    section: GROUNDING_RUN_SECTION,
+    message:
+      `This document was only SPOT-CHECKED (DOCS_GEN_GROUNDING=sample, about ${pct}% of each ` +
+      `section's passages): its faithfulness figures are estimates from a sample, not a full ` +
+      `verification, even for a section whose sample happened to cover all of it. Regenerate ` +
+      `with DOCS_GEN_GROUNDING=on for a full check.`,
+    severity: "warning",
+    runLevel: true,
+  };
+}
+
 /**
  * Build a warning for the case where the project HAS indexed code symbols but
  * none of them survived the documentable-module filter, so synthesis produced an
@@ -983,8 +1033,11 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
   ].sort();
   const outputTruncated = warnings.filter((w) => w.kind === "section-truncated").length;
   const missing = warnings.filter((w) => w.kind === "section-missing").length;
-  const notChecked = warnings.filter((w) => w.kind === "grounding-skipped").length;
-  const spotChecked = warnings.filter((w) => w.kind === "grounding-sampled").length;
+  // Section counts exclude the run-level marker, which speaks for the document.
+  const notChecked = warnings.filter((w) => w.kind === "grounding-skipped" && !w.runLevel).length;
+  const spotChecked = warnings.filter((w) => w.kind === "grounding-sampled" && !w.runLevel).length;
+  const runNotChecked = warnings.some((w) => w.kind === "grounding-skipped" && w.runLevel);
+  const runSpotChecked = warnings.some((w) => w.kind === "grounding-sampled" && w.runLevel);
   const parts: string[] = [];
   if (failed > 0) parts.push(`${failed} section(s) failed to generate`);
   if (ungrounded > 0)
@@ -1019,6 +1072,13 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
     parts.push(`${notChecked} section(s) were not fact-checked (DOCS_GEN_GROUNDING=off)`);
   if (spotChecked > 0)
     parts.push(`${spotChecked} section(s) were only spot-checked (DOCS_GEN_GROUNDING=sample)`);
+  // The run-level marker adds a line only when no section line already says it.
+  if (runNotChecked && notChecked === 0)
+    parts.push("fact-checking was switched off for this run (DOCS_GEN_GROUNDING=off)");
+  if (runSpotChecked && spotChecked === 0 && ungroundedSampled === 0)
+    parts.push(
+      "fact-checking ran on a sample (DOCS_GEN_GROUNDING=sample) — its scores are estimates, not a full verification",
+    );
   // #330 — a source-unavailable warning is a hard problem (the doc wasn't built
   // from source), so use the alarming "Degraded output" prefix rather than the
   // soft "Needs review" reserved for unverified-but-likely-correct content.

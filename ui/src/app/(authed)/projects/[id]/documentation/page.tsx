@@ -71,6 +71,11 @@ interface DocWarning {
    * figure so an estimate is never read as a full verification.
    */
   sampled?: boolean;
+  /**
+   * #186 — true on the one DOCUMENT-level DOCS_GEN_GROUNDING marker (sample or
+   * off), never on a per-section warning, so section counts can exclude it.
+   */
+  runLevel?: boolean;
 }
 
 interface GeneratedDoc {
@@ -1333,11 +1338,17 @@ export function classifyWarningSeverity(warnings: DocWarning[]): {
  */
 export function groundingModeNotice(warnings: DocWarning[]): string | null {
   const notices: string[] = [];
-  const skipped = warnings.filter((w) => w.kind === "grounding-skipped").length;
+  // The document-level marker is not a section, so it is never counted as one.
+  const skipped = warnings.filter((w) => w.kind === "grounding-skipped" && !w.runLevel).length;
   if (skipped > 0) {
     notices.push(
       `Not fact-checked: ${skipped} section(s) were generated with fact-checking switched off ` +
         `(DOCS_GEN_GROUNDING=off), so their statements were never checked against the source.`,
+    );
+  } else if (warnings.some((w) => w.kind === "grounding-skipped")) {
+    notices.push(
+      "Not fact-checked: this document was generated with fact-checking switched off " +
+        "(DOCS_GEN_GROUNDING=off), so its statements were never checked against the source.",
     );
   }
   if (warnings.some((w) => w.kind === "grounding-sampled" || w.sampled === true)) {
@@ -1405,14 +1416,17 @@ export function DegradedWarningsBanner({
   const { reviewRecommended, concerningSections } = classifyWarningSeverity(warnings);
   const modeNotice = groundingModeNotice(warnings);
 
+  // #186 — with fact-checking off or sampled, nothing verified that "most
+  // sections are grounded", so a review headline states only the problem.
+  const groundedLead = modeNotice ? "" : "Most sections are grounded; ";
   const tierHeadline = reviewRecommended
     ? concerningSections.length > 0
-      ? `Most sections are grounded; ${formatSectionList(concerningSections)} ${
+      ? `${groundedLead}${formatSectionList(concerningSections)} ${
           concerningSections.length === 1 ? "falls" : "fall"
         } short of the code-fidelity bar and ${
           concerningSections.length === 1 ? "is" : "are"
         } worth verifying.`
-      : "Most sections are grounded; the sections below fall short of the code-fidelity bar and are worth verifying."
+      : `${modeNotice ? "The" : "Most sections are grounded; the"} sections below fall short of the code-fidelity bar and are worth verifying.`
     : "Grounded within normal tolerance — some narrative/reconstruction sections blend source-code facts with inferred domain context (expected for these section types). See the breakdown below.";
   // #186 — with fact-checking off or sampled, "grounded within tolerance" is a
   // claim nothing verified: the mode notice replaces it, and precedes a

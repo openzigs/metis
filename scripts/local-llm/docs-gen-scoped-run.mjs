@@ -13,7 +13,10 @@
  * status, content, warnings, scope/scopeFilter), never the version provenance
  * manifests, which #190 moves to their own endpoints. An unreadable detail
  * response (a body that is not JSON, or one with no document status) is
- * retried a few times rather than dereferenced.
+ * retried a few times rather than dereferenced, and a poll whose request fails
+ * outright (the server restarting under `tsx watch`, a dropped connection) is
+ * retried for a few minutes rather than ending an hours-long watch. Starting a
+ * generation is never retried: a POST that may have landed is not repeated.
  *
  * It talks to an ALREADY RUNNING local stack over HTTP with mock auth. It never
  * starts or stops a server, and never talks to the model host itself.
@@ -49,6 +52,12 @@ const DOC_TYPES = new Set(["business-requirements", "architecture", "user-guide"
 const RUNNING = new Set(["pending", "generating"]);
 /** Consecutive unreadable detail responses tolerated before giving up. */
 export const MAX_UNREADABLE_POLLS = 3;
+/**
+ * Consecutive detail polls whose request failed outright (no HTTP response at
+ * all) tolerated before giving up — about five minutes at the default poll,
+ * room for a local server restart.
+ */
+export const MAX_UNREACHABLE_POLLS = 10;
 
 /**
  * A 2xx response whose body is not JSON. Distinct from an HTTP error so the
@@ -60,6 +69,19 @@ export class UnreadableResponseError extends Error {
   constructor(message) {
     super(message);
     this.name = "UnreadableResponseError";
+  }
+}
+
+/**
+ * A request that got no HTTP response at all: the fetch itself rejected
+ * (connection refused or reset, DNS, a server mid-restart). The poll loop
+ * retries it; nothing else does.
+ */
+export class RequestFailedError extends Error {
+  /** @param {string} message */
+  constructor(message) {
+    super(message);
+    this.name = "RequestFailedError";
   }
 }
 
@@ -227,8 +249,21 @@ export function summarizeDocument(doc) {
 export function createClient(opts, fetchImpl = globalThis.fetch) {
   /** @type {string | null} */
   let token = null;
+  /**
+   * @param {string} path
+   * @param {RequestInit} init
+   */
+  const send = async (path, init) => {
+    try {
+      return await fetchImpl(`${opts.base}${path}`, init);
+    } catch (err) {
+      throw new RequestFailedError(
+        `${init.method} ${path}: request failed (${err instanceof Error ? err.message : String(err)})`,
+      );
+    }
+  };
   const login = async () => {
-    const res = await fetchImpl(`${opts.base}/auth/login`, {
+    const res = await send("/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ username: opts.username, password: opts.password }),
@@ -249,7 +284,7 @@ export function createClient(opts, fetchImpl = globalThis.fetch) {
    */
   const call = async (method, path, payload, retried = false) => {
     if (!token) await login();
-    const res = await fetchImpl(`${opts.base}${path}`, {
+    const res = await send(path, {
       method,
       headers: {
         authorization: `Bearer ${token}`,
@@ -322,6 +357,7 @@ export async function run(opts, deps = {}) {
   const started = now();
   let lastStatus = null;
   let unreadable = 0;
+  let unreachable = 0;
   for (;;) {
     /** @type {Json} */
     let data = null;
@@ -331,9 +367,21 @@ export async function run(opts, deps = {}) {
       const body = await client.call("GET", `${docsPath}/${encodeURIComponent(watchedId)}`);
       data = body?.data;
     } catch (err) {
+      if (err instanceof RequestFailedError) {
+        unreachable += 1;
+        if (unreachable >= MAX_UNREACHABLE_POLLS) {
+          throw new Error(
+            `doc ${watchedId}: ${unreachable} failed detail requests in a row (last: ${err.message})`,
+          );
+        }
+        log(`detail request failed (${err.message}); retrying`);
+        await sleep(opts.pollMs);
+        continue;
+      }
       if (!(err instanceof UnreadableResponseError)) throw err;
       problem = err.message;
     }
+    unreachable = 0;
     if (!data || typeof data !== "object" || typeof data.status !== "string") {
       unreadable += 1;
       if (unreadable >= MAX_UNREADABLE_POLLS) {

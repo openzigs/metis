@@ -21,6 +21,7 @@ vi.mock("../finops/index.js", async (importOriginal) => {
 
 import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../ai/types.js";
 import type { GroundingContext } from "./grounding/grounding-context.js";
+import { deriveDocStatus, summarizeWarnings } from "./grounding/degraded-warnings.js";
 import {
   docsGenTuning,
   sectionGroupsFor,
@@ -72,6 +73,8 @@ const GROUPS = sectionGroupsFor("business-requirements");
 const RULES = GROUPS.find((g) => g.id === "rules")!;
 const BATCHED_LABELS = new Set(GROUPS.filter((g) => g.batched).map((g) => g.label));
 const PASSAGES_PER_REPLY = 16;
+/** When true the judge supports every claim, so no section falls below its bar. */
+let judgeSupportsAll = false;
 
 function ragGrounding(): GroundingContext {
   return {
@@ -134,7 +137,8 @@ function fakeModel(passagesPerReply: number): AIProvider & { log: Log } {
             verdicts: claims.map((claim) => ({
               claim,
               // The second line of every Rules passage is unsupported (50% < 80%).
-              supported: !(claim.includes(RULES.label) && /\d+b of/.test(claim)),
+              supported:
+                judgeSupportsAll || !(claim.includes(RULES.label) && /\d+b of/.test(claim)),
               sourceIds: [],
             })),
           }),
@@ -178,7 +182,12 @@ function routerFor(provider: AIProvider): Phase2Router {
   return { primary: bundle };
 }
 
-async function run(mode?: string, rate?: string, passagesPerReply = PASSAGES_PER_REPLY) {
+async function run(
+  mode?: string,
+  rate?: string,
+  passagesPerReply = PASSAGES_PER_REPLY,
+  grounding: GroundingContext = ragGrounding(),
+) {
   if (mode !== undefined) vi.stubEnv("DOCS_GEN_GROUNDING", mode);
   if (rate !== undefined) vi.stubEnv("DOCS_GEN_GROUNDING_SAMPLE_RATE", rate);
   const provider = fakeModel(passagesPerReply);
@@ -189,7 +198,7 @@ async function run(mode?: string, rate?: string, passagesPerReply = PASSAGES_PER
     "BRD",
     routerFor(provider),
     "p1",
-    ragGrounding(),
+    grounding,
     undefined,
     undefined,
     undefined,
@@ -202,6 +211,7 @@ const judgeCallsClaims = (log: Log) => log.judged.flat().length;
 const allClaims = (log: Log) => log.decomposed.flatMap((p) => p.match(/^Statement .+$/gm) ?? []);
 
 beforeEach(() => {
+  judgeSupportsAll = false;
   vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "4096");
   vi.stubEnv("DOCS_GEN_JUDGE_ESCALATION", "0");
   vi.stubEnv("DOCS_GEN_GROUNDING", "");
@@ -271,7 +281,7 @@ describe("DOCS_GEN_GROUNDING=off", () => {
 
   it("marks every section not fact-checked, batched and single-call alike, and records the mode", async () => {
     const { result } = await run("off");
-    const skipped = result.warnings.filter((w) => w.kind === "grounding-skipped");
+    const skipped = result.warnings.filter((w) => w.kind === "grounding-skipped" && !w.runLevel);
     expect(skipped.map((w) => w.section).sort()).toEqual(GROUPS.map((g) => g.label).sort());
     for (const w of skipped) {
       expect(w.severity).toBe("warning");
@@ -280,8 +290,28 @@ describe("DOCS_GEN_GROUNDING=off", () => {
     }
     expect(result.warnings.some((w) => w.kind === "section-ungrounded")).toBe(false);
     expect(result.grounding).toEqual({ mode: "off" });
+    // Plus exactly one document-level marker for the run.
+    const marker = result.warnings.filter((w) => w.runLevel);
+    expect(marker).toHaveLength(1);
+    expect(marker[0].kind).toBe("grounding-skipped");
     // No score is recorded for any section.
     expect(result.sectionSynthesis!.records.every((r) => r.score === null)).toBe(true);
+  });
+
+  it("is degraded, never ready, even when no section had anything to check", async () => {
+    const empty = {
+      sources: [],
+      sourceIds: new Set(),
+      isEmpty: true,
+    } as unknown as GroundingContext;
+    const on = await run("on", undefined, PASSAGES_PER_REPLY, empty);
+    expect(deriveDocStatus(on.result.warnings)).toBe("ready");
+    const { result } = await run("off", undefined, PASSAGES_PER_REPLY, empty);
+    expect(result.warnings.filter((w) => !w.runLevel)).toEqual([]);
+    expect(deriveDocStatus(result.warnings)).toBe("degraded");
+    expect(summarizeWarnings(result.warnings)).toContain(
+      "fact-checking was switched off for this run (DOCS_GEN_GROUNDING=off)",
+    );
   });
 
   it("never reuses a section across modes: the section config hash differs from `on`", async () => {
@@ -387,6 +417,32 @@ describe("DOCS_GEN_GROUNDING=sample", () => {
     }
     expect(result.grounding).toEqual({ mode: "sample", sampleRate: 0.25, minClaims: 10 });
     expect(BATCHED_LABELS.size).toBeGreaterThan(0);
+  });
+
+  it("is degraded, never ready, when every section's sample covered all of it (#193 review)", async () => {
+    judgeSupportsAll = true;
+    // Rate 1 draws every passage: each section is checked in full and clears its bar.
+    const full = await run("sample", "1");
+    // Two passages a reply (4 claims < the 10-claim minimum): topped up to all of it.
+    const small = await run("sample", undefined, 2);
+    for (const { result } of [full, small]) {
+      for (const rec of result.sectionSynthesis!.records) {
+        const s = rec.score!.result.sampled!;
+        expect(s.passagesChecked).toBe(s.passagesTotal);
+      }
+      // No section is marked — the draw reached everything — yet the run is not `ready`.
+      expect(result.warnings.filter((w) => !w.runLevel)).toEqual([]);
+      const marker = result.warnings.filter((w) => w.runLevel);
+      expect(marker).toHaveLength(1);
+      expect(marker[0].kind).toBe("grounding-sampled");
+      expect(marker[0].message).toContain("estimates from a sample, not a full verification");
+      expect(deriveDocStatus(result.warnings)).toBe("degraded");
+      expect(summarizeWarnings(result.warnings)).toContain(
+        "fact-checking ran on a sample (DOCS_GEN_GROUNDING=sample)",
+      );
+    }
+    // The same fixture under `on` is ready, so the marker is the mode's alone.
+    expect(deriveDocStatus((await run("on")).result.warnings)).toBe("ready");
   });
 
   it("never reports a sampled score as a verified section-level support score (eval harness)", async () => {

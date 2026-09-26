@@ -3,8 +3,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
   createClient,
+  MAX_UNREACHABLE_POLLS,
   parseArgs,
   pathScopeOf,
+  RequestFailedError,
   resolveOptions,
   run,
   sectionHeadings,
@@ -371,6 +373,90 @@ describe("run", () => {
       { fetch, log: vi.fn(), sleep: async () => {} },
     );
     expect(result.status).toBe("ready");
+  });
+
+  it("a poll whose request fails outright (server restarting) is retried, not fatal", async () => {
+    const replies: Array<Response | Error> = [
+      new TypeError("fetch failed"),
+      new TypeError("fetch failed"),
+      json(200, { data: { id: "d2", status: "generating" } }),
+      new TypeError("fetch failed"),
+      json(200, { data: { id: "d2", status: "ready", content: "" } }),
+    ];
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/auth/login")) return json(200, { data: { accessToken: "t" } });
+      const next = replies.shift()!;
+      if (next instanceof Error) throw next;
+      return next;
+    });
+    const log = vi.fn();
+    const result = await run({ ...opts, doc: "d2" }, { fetch, log, sleep: async () => {} });
+    expect(result.status).toBe("ready");
+    expect(log).toHaveBeenCalledWith(
+      "detail request failed (GET /projects/p1/docs/d2: request failed (fetch failed)); retrying",
+    );
+  });
+
+  it("gives up after MAX_UNREACHABLE_POLLS failed requests in a row", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/auth/login")) return json(200, { data: { accessToken: "t" } });
+      throw new TypeError("connect ECONNREFUSED");
+    });
+    const sleep = vi.fn(async () => {});
+    await expect(run({ ...opts, doc: "d2" }, { fetch, log: vi.fn(), sleep })).rejects.toThrow(
+      `doc d2: ${MAX_UNREACHABLE_POLLS} failed detail requests in a row (last: GET /projects/p1/docs/d2: request failed (connect ECONNREFUSED))`,
+    );
+    expect(sleep).toHaveBeenCalledTimes(MAX_UNREACHABLE_POLLS - 1);
+  });
+
+  it("a good poll resets the failed-request count (only CONSECUTIVE failures give up)", async () => {
+    const down = () => Array.from({ length: MAX_UNREACHABLE_POLLS - 1 }, () => new TypeError("x"));
+    const replies: Array<Response | Error> = [
+      ...down(),
+      json(200, { data: { id: "d2", status: "generating" } }),
+      ...down(),
+      json(200, { data: { id: "d2", status: "ready", content: "" } }),
+    ];
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/auth/login")) return json(200, { data: { accessToken: "t" } });
+      const next = replies.shift()!;
+      if (next instanceof Error) throw next;
+      return next;
+    });
+    const result = await run(
+      { ...opts, doc: "d2" },
+      { fetch, log: vi.fn(), sleep: async () => {} },
+    );
+    expect(result.status).toBe("ready");
+  });
+
+  it("a failed login while polling is retried like any failed request", async () => {
+    let logins = 0;
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/auth/login")) {
+        logins += 1;
+        if (logins === 1) throw new TypeError("fetch failed");
+        return json(200, { data: { accessToken: "t" } });
+      }
+      return json(200, { data: { id: "d2", status: "ready", content: "" } });
+    });
+    const result = await run(
+      { ...opts, doc: "d2" },
+      { fetch, log: vi.fn(), sleep: async () => {} },
+    );
+    expect(result.status).toBe("ready");
+  });
+
+  it("never retries starting a generation whose request failed", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/auth/login")) return json(200, { data: { accessToken: "t" } });
+      throw new TypeError("fetch failed");
+    });
+    const err = await run(opts, { fetch, log: vi.fn(), sleep: async () => {} }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(RequestFailedError);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("an HTTP error while polling is not retried", async () => {
