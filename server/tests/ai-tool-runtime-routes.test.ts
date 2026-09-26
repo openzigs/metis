@@ -854,6 +854,9 @@ describe("#142 the approval gate through the routes", () => {
       expect(r.opts.withholdSdkBuiltinTools).toBe(true);
       expect(r.opts.disableTools).toBeUndefined();
     }
+    // The follow-up call that carries the tool result still offers the tools.
+    expect(model.requests[1]!.messages.some((m) => m.role === "tool")).toBe(true);
+    expect(model.requests[1]!.opts.tools!.map((t) => t.name)).toContain("count_rows");
   });
 
   it("an agent whose tool list is corrupt gets no tools at all (fails closed)", async () => {
@@ -889,7 +892,29 @@ describe("#142 real providers carry the session's tools on the wire", () => {
   let server: Server;
   let base = "";
 
-  function anthropicReply(res: ServerResponse, streaming: boolean): void {
+  /**
+   * Whether this request already answers a tool call: an Anthropic
+   * `tool_result` block, or an OpenAI-compatible `tool` message. The FIRST
+   * request of a turn gets a genuine tool call back; the one carrying its
+   * result gets the final text — so every turn makes at least two model calls.
+   */
+  function carriesToolResult(body: Record<string, unknown>): boolean {
+    const messages = (body.messages as Array<Record<string, unknown>> | undefined) ?? [];
+    return messages.some(
+      (m) =>
+        m.role === "tool" ||
+        (Array.isArray(m.content) &&
+          (m.content as Array<Record<string, unknown>>).some((c) => c.type === "tool_result")),
+    );
+  }
+
+  const TOOL_ARGS = JSON.stringify({ table: "t" });
+
+  function anthropicReply(res: ServerResponse, streaming: boolean, callTool: boolean): void {
+    const content = callTool
+      ? [{ type: "tool_use", id: "toolu_1", name: "count_rows", input: { table: "t" } }]
+      : [{ type: "text", text: "done" }];
+    const stop = callTool ? "tool_use" : "end_turn";
     if (!streaming) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
@@ -898,8 +923,8 @@ describe("#142 real providers carry the session's tools on the wire", () => {
           type: "message",
           role: "assistant",
           model: "claude-sonnet-4-6",
-          content: [{ type: "text", text: "done" }],
-          stop_reason: "end_turn",
+          content,
+          stop_reason: stop,
           stop_sequence: null,
           usage: { input_tokens: 5, output_tokens: 2 },
         }),
@@ -909,6 +934,17 @@ describe("#142 real providers carry the session's tools on the wire", () => {
     res.writeHead(200, { "content-type": "text/event-stream" });
     const ev = (type: string, data: Record<string, unknown>) =>
       `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+    const block = callTool
+      ? ev("content_block_start", {
+          index: 0,
+          content_block: { type: "tool_use", id: "toolu_1", name: "count_rows", input: {} },
+        }) +
+        ev("content_block_delta", {
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: TOOL_ARGS },
+        })
+      : ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } }) +
+        ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "done" } });
     res.end(
       ev("message_start", {
         message: {
@@ -922,19 +958,24 @@ describe("#142 real providers carry the session's tools on the wire", () => {
           usage: { input_tokens: 5, output_tokens: 1 },
         },
       }) +
-        ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } }) +
-        ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "done" } }) +
+        block +
         ev("content_block_stop", { index: 0 }) +
         ev("message_delta", {
-          delta: { stop_reason: "end_turn", stop_sequence: null },
+          delta: { stop_reason: stop, stop_sequence: null },
           usage: { output_tokens: 2 },
         }) +
         ev("message_stop", {}),
     );
   }
 
-  function openAiReply(res: ServerResponse, streaming: boolean): void {
+  function openAiReply(res: ServerResponse, streaming: boolean, callTool: boolean): void {
     const usage = { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 };
+    const toolCall = {
+      id: "call_1",
+      type: "function",
+      function: { name: "count_rows", arguments: TOOL_ARGS },
+    };
+    const finish = callTool ? "tool_calls" : "stop";
     if (!streaming) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
@@ -943,7 +984,13 @@ describe("#142 real providers carry the session's tools on the wire", () => {
           object: "chat.completion",
           model: "m",
           choices: [
-            { index: 0, message: { role: "assistant", content: "done" }, finish_reason: "stop" },
+            {
+              index: 0,
+              message: callTool
+                ? { role: "assistant", content: null, tool_calls: [toolCall] }
+                : { role: "assistant", content: "done" },
+              finish_reason: finish,
+            },
           ],
           usage,
         }),
@@ -955,9 +1002,17 @@ describe("#142 real providers carry the session's tools on the wire", () => {
     res.end(
       chunk({
         id: "c1",
-        choices: [{ index: 0, delta: { content: "done" }, finish_reason: null }],
+        choices: [
+          {
+            index: 0,
+            delta: callTool
+              ? { role: "assistant", tool_calls: [{ index: 0, ...toolCall }] }
+              : { content: "done" },
+            finish_reason: null,
+          },
+        ],
       }) +
-        chunk({ id: "c1", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage }) +
+        chunk({ id: "c1", choices: [{ index: 0, delta: {}, finish_reason: finish }], usage }) +
         "data: [DONE]\n\n",
     );
   }
@@ -970,8 +1025,9 @@ describe("#142 real providers carry the session's tools on the wire", () => {
         const body = (raw ? JSON.parse(raw) : {}) as Record<string, unknown>;
         bodies.push({ url: req.url ?? "", body });
         const streaming = body.stream === true;
-        if ((req.url ?? "").includes("/messages")) anthropicReply(res, streaming);
-        else openAiReply(res, streaming);
+        const callTool = !carriesToolResult(body);
+        if ((req.url ?? "").includes("/messages")) anthropicReply(res, streaming, callTool);
+        else openAiReply(res, streaming, callTool);
       });
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
@@ -1022,7 +1078,13 @@ describe("#142 real providers carry the session's tools on the wire", () => {
   /** The tool names on every model request body this turn sent. */
   function wireToolNames(): string[][] {
     const modelCalls = bodies.filter((b) => /\/(messages|chat\/completions)$/.test(b.url));
-    expect(modelCalls.length).toBeGreaterThan(0);
+    // The tool call was answered and sent back: turn 1 plus the follow-up that
+    // carries the tool result — the call a first-turn-only bug would strip.
+    expect(modelCalls.length).toBeGreaterThanOrEqual(2);
+    expect(carriesToolResult(modelCalls[0]!.body)).toBe(false);
+    expect(carriesToolResult(modelCalls.at(-1)!.body)).toBe(true);
+    // The tool actually ran (auto-approved) — the result is genuine.
+    expect(dangerExec).toHaveBeenCalledTimes(1);
     return modelCalls.map((b) =>
       ((b.body.tools as Array<Record<string, unknown>> | undefined) ?? []).map((t) =>
         // Anthropic: { name }; OpenAI-compatible: { type: "function", function: { name } }.
@@ -1032,7 +1094,8 @@ describe("#142 real providers carry the session's tools on the wire", () => {
   }
 
   async function session(app: express.Express, withSkills: boolean): Promise<string> {
-    const sid = await newSession(app);
+    // `count_rows` is high risk: auto-approve it so the call runs unattended.
+    const sid = await newSession(app, { policy: { high: "auto" } });
     if (withSkills) {
       (sessions.find((s) => s.id === sid) as Row).loadedSkillIds = JSON.stringify(["skill-a"]);
       __setSessionRuntime({
@@ -1050,7 +1113,7 @@ describe("#142 real providers carry the session's tools on the wire", () => {
     for (const withSkills of [false, true]) {
       const label = `${p.name}, scoped session ${withSkills ? "WITH" : "without"} skills`;
 
-      it(`/stream — ${label}: the METIS tools are in the outgoing request`, async () => {
+      it(`/stream — ${label}: the METIS tools are in EVERY outgoing request, tool-result follow-up included`, async () => {
         setAIProviderForTests(p.make());
         const app = makeApp();
         const sid = await session(app, withSkills);
@@ -1062,7 +1125,7 @@ describe("#142 real providers carry the session's tools on the wire", () => {
         }
       });
 
-      it(`/chat — ${label}: the METIS tools are in the outgoing request`, async () => {
+      it(`/chat — ${label}: the METIS tools are in EVERY outgoing request, tool-result follow-up included`, async () => {
         setAIProviderForTests(p.make());
         const app = makeApp();
         const sid = await session(app, withSkills);
