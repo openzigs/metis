@@ -49,6 +49,7 @@ import {
   type VectorStore,
 } from "./vector-store.js";
 import { CONTENT_TYPE_MISMATCH, parseDocument } from "../documents/parsers.js";
+import { embedInBoundedBatches } from "./embed-batched.js";
 import { getDocumentStorage, type StorageBackend } from "../documents/storage.js";
 import { onArchive } from "../projects/project-service.js";
 import { createChildLogger } from "../logger.js";
@@ -516,7 +517,12 @@ export class KnowledgeService {
 
     let embeddings;
     try {
-      embeddings = await this.embedder.embed(chunks.map((c) => c.text));
+      // #182 — bounded batches (the #189 bulk path): a repository file up to
+      // REPO_SOURCE_MAX_FILE_BYTES is hundreds of chunks, never one embed call.
+      embeddings = await embedInBoundedBatches(
+        this.embedder,
+        chunks.map((c) => c.text),
+      );
     } catch (err) {
       return this.markFailed(
         doc.projectId,

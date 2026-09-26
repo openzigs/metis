@@ -1239,7 +1239,14 @@ export async function generateDocumentAsync(
         },
       );
       markdown = result.markdown;
-      docWarnings = result.warnings;
+      // #182 — sections were grounded against the repository index; when that
+      // index is partial (capped, failed, interrupted, never recorded), say so,
+      // so the document is `degraded` rather than looking fully grounded.
+      const { repositoryIndexWarnings } = await import("../lib/connectors/source-ingest-state.js");
+      docWarnings = [
+        ...result.warnings,
+        ...(await repositoryIndexWarnings(projectId, repoConnectorId)),
+      ];
       synthesizedProvenanceManifest = result.provenanceManifest ?? null;
       manifestSections = result.provenanceManifest
         ? ((JSON.parse(result.provenanceManifest) as { sections?: typeof manifestSections })

@@ -832,7 +832,7 @@ Using illustrative IDs:
 | Bounded source budgets (18K/36K/60K chars, 25/50/80 methods per module) | Keeps prompts affordable | Can omit real behavior in very large modules |
 | Concurrency cap (3 modules) | Avoids gateway idle-timeout failures | Serializes large projects into more rounds |
 | q8 quantization | 8-bit weights use about one quarter of fp32 weight storage; total runtime RAM savings vary | Forward passes run one text at a time to avoid batch-dependent vector drift — measured **1.87× wall time** vs single-batch inference for 64 texts ([embed-model-config.ts](../server/src/lib/rag/embed-model-config.ts#L337-L357)) |
-| Source-as-knowledge grounding cap | Bounds source-document ingestion volume | Capped at 200 files / 64 KiB each ([connector-ingest.ts](../server/src/lib/connectors/connector-ingest.ts#L339-L340)) — not the same limit as graph ingestion or a per-prompt cap |
+| Source-as-knowledge grounding budget (#182) | Bounds source-document ingestion volume | `REPO_SOURCE_MAX_FILES` (default 5,000) files, taken production code → configuration → tests (`isTestSourcePath`), each group in path order; files up to `REPO_SOURCE_MAX_FILE_BYTES` (default 1 MiB) are chunked, larger ones skipped and counted ([connector-ingest.ts](../server/src/lib/connectors/connector-ingest.ts)). Each run's outcome is recorded on the connector (`sourceIngestState`); a partial, interrupted or unrecorded index makes a generated document `degraded`. Not the same limit as graph ingestion or a per-prompt cap |
 
 ### What has actually been measured
 

@@ -1,0 +1,13 @@
+-- Issue #182 — record the outcome of every repository-source RAG ingest.
+--
+-- The `connector.repo.source-ingest` audit row was written only AFTER the ingest
+-- loop returned, so an ingest interrupted part-way (a dev-server restart, a
+-- crash) left no record at all: onyourleft's index held 174 of ~860 eligible
+-- files with nothing saying so. This column holds the latest run's state as JSON
+-- (written at start, heartbeated during, settled at the end): status, eligible /
+-- selected / indexed counts, what was skipped and why, and the limits in force.
+--
+-- NULLABLE and not backfilled: NULL means the connector was ingested before
+-- #182, so its coverage was never recorded. Readers treat that as UNKNOWN
+-- coverage (document generation warns and asks for a re-sync), never as complete.
+ALTER TABLE "repo_connections" ADD COLUMN "sourceIngestState" TEXT;

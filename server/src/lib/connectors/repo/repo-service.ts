@@ -39,6 +39,7 @@ import { ConnectorError, NOOP_EMITTER, type ConnectorEmitter } from "../types.js
 import { isDriverDetailCode, sanitizeDriverError } from "../driver-error.js";
 import { resolveVaultRef } from "../vault-resolver.js";
 import { validateLocalSourcePath } from "./local-source.js";
+import { sourceIngestSummary } from "../source-ingest-state.js";
 import {
   cleanupExtraction,
   extractArchiveBuffer,
@@ -1163,6 +1164,7 @@ function toApi(row: {
   lastTestedAt: Date | null;
   lastIngestAt: Date | null;
   lastCommitSha: string | null;
+  sourceIngestState?: string | null;
   createdById: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -1192,6 +1194,9 @@ function toApi(row: {
     lastTestedAt: row.lastTestedAt,
     lastIngestAt: row.lastIngestAt,
     lastCommitSha: row.lastCommitSha,
+    // #182 — the latest source ingest's outcome (null: never recorded), with an
+    // interrupted run reported as such rather than as still running.
+    sourceIngest: sourceIngestSummary(row.sourceIngestState),
     createdById: row.createdById,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
