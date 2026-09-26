@@ -21,7 +21,11 @@ import { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
-import { createMigratedSqlite, type MigratedSqlite } from "./helpers/sqlite-migrated-db.js";
+import {
+  createMigratedSqlite,
+  type MigratedSqlite,
+  MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
+} from "./helpers/sqlite-migrated-db.js";
 import type { ToolDefinition } from "../src/lib/ai/types.js";
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
@@ -79,7 +83,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         risk: "low",
         exec: async () => ({ text: "" }),
       } as ToolDefinition);
-    });
+    }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
       await db?.$disconnect();

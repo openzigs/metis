@@ -17,7 +17,11 @@ import { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
-import { createMigratedSqlite, type MigratedSqlite } from "./helpers/sqlite-migrated-db.js";
+import {
+  createMigratedSqlite,
+  type MigratedSqlite,
+  MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
+} from "./helpers/sqlite-migrated-db.js";
 import { bodyMarker, IDS, SKILLS, seedAgentsFixture } from "./helpers/agents-fixture.js";
 import type { ChatMessage, ToolDefinition } from "../src/lib/ai/types.js";
 
@@ -312,7 +316,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         issueTokens({ userId, username: userId, role: "developer", permissions: [] }).accessToken;
       alice = tok(IDS.alice);
       bob = tok(IDS.bob);
-    });
+    }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
       await db?.$disconnect();
