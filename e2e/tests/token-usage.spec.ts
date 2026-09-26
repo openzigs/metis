@@ -543,12 +543,11 @@ test.describe("Epic #594 — Token Usage Tracking & Cost Allocation", () => {
       });
 
       await test.step("Verify budget section is present", async () => {
-        // Either the budget card with progress bar or the no-budget card
-        const budgetVisible = await usagePage.budgetCard.isVisible().catch(() => false);
-        const noBudgetVisible = await usagePage.noBudgetCard.isVisible().catch(() => false);
-        expect(budgetVisible || noBudgetVisible).toBe(true);
+        // Either the budget card with progress bar or the no-budget card.
+        // #234 — retry until one renders, then branch on which one did.
+        await expect(usagePage.budgetCard.or(usagePage.noBudgetCard)).toBeVisible();
 
-        if (budgetVisible) {
+        if (await usagePage.budgetCard.isVisible()) {
           await expect(usagePage.budgetProgressBar).toBeVisible();
         }
       });
@@ -636,9 +635,7 @@ test.describe("Epic #594 — Token Usage Tracking & Cost Allocation", () => {
       });
 
       await test.step("Verify day chart or empty state", async () => {
-        const chartVisible = await usagePage.byDayChart.isVisible().catch(() => false);
-        const emptyVisible = await usagePage.byDayEmpty.isVisible().catch(() => false);
-        expect(chartVisible || emptyVisible).toBe(true);
+        await expect(usagePage.byDayChart.or(usagePage.byDayEmpty)).toBeVisible();
       });
     });
 
@@ -652,9 +649,7 @@ test.describe("Epic #594 — Token Usage Tracking & Cost Allocation", () => {
       });
 
       await test.step("Verify by-provider table or empty state", async () => {
-        const tableVisible = await usagePage.byProviderTable.isVisible().catch(() => false);
-        const emptyVisible = await usagePage.byProviderEmpty.isVisible().catch(() => false);
-        expect(tableVisible || emptyVisible).toBe(true);
+        await expect(usagePage.byProviderTable.or(usagePage.byProviderEmpty)).toBeVisible();
       });
     });
   });
