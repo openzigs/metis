@@ -23,7 +23,10 @@ import {
   pullOrCloneRepo,
   testRepoConnector,
 } from "../connectors/repo/repo-service.js";
-import { publishGeneratedDocRevision } from "../docs-gen/generated-doc-publication.js";
+import {
+  publishGeneratedDocRevision,
+  settleCancelledGeneratedDocPublication,
+} from "../docs-gen/generated-doc-publication.js";
 import { buildCodeGraphSchemaWiring, inspectDbConnector } from "../connectors/db/db-service.js";
 import {
   ingestDbSchema,
@@ -231,5 +234,6 @@ export function buildSchedulerHandlerOverrides(
         abortGuard(signal);
         return result;
       }),
+    settleCancelledGeneratedDocPublication,
   };
 }

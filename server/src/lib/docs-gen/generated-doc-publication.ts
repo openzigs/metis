@@ -6,9 +6,15 @@ import { getEmbedder, type Embedder } from "../rag/embedder.js";
 import type { AclSubject } from "@metis/shared";
 import { writeQuarantine, approveDocument, shouldAutoApprove } from "../rag/quarantine.js";
 import { getSchedulerBootstrap } from "../scheduler/index.js";
+import { taskAbortSource } from "../scheduler/task-abort.js";
 import { getVectorStore } from "../rag/vector-store.js";
 import { getBM25Index } from "../rag/bm25-index.js";
 import { embedInBoundedBatches } from "../rag/embed-batched.js";
+import {
+  EMBED_INPUT_MAX_BYTES,
+  exceedsEmbedInputBudget,
+  splitToByteBudget,
+} from "../rag/embed-input-budget.js";
 import {
   generatedDocRevisionId,
   slugifySectionLabel,
@@ -18,7 +24,11 @@ import { resolveEvidencePolicy } from "./evidence-policy.js";
 
 const log = createChildLogger("docs-gen:publication");
 
-/** Hard upper bound, in characters, on every generated-doc chunk (#189). */
+/**
+ * Hard upper bound, in characters, on every generated-doc chunk (#189). A chunk
+ * holding non-ASCII text is also bounded by {@link EMBED_INPUT_MAX_BYTES} UTF-8
+ * bytes (#201).
+ */
 export const CHUNK_SIZE = 1500;
 
 /**
@@ -26,8 +36,13 @@ export const CHUNK_SIZE = 1500;
  * longer than CHUNK_SIZE (a large table, a fenced block) became one chunk of any
  * size — 51,081 characters in the document that hung the server. v2 splits such a
  * paragraph on lines, then on characters, so no chunk exceeds CHUNK_SIZE.
+ *
+ * v3 (#201): v2's characters did not bound tokens for non-ASCII text — 1,500 CJK
+ * characters can exceed the model's 2,048-token input and be truncated. v3 also
+ * splits such a chunk to at most {@link EMBED_INPUT_MAX_BYTES} UTF-8 bytes. ASCII
+ * chunks are unchanged.
  */
-export const DOCSGEN_CHUNKER_IDENTITY = `docsgen:v2:${CHUNK_SIZE}`;
+export const DOCSGEN_CHUNKER_IDENTITY = `docsgen:v3:${CHUNK_SIZE}`;
 
 /**
  * Chunk-metadata label carried by every generated-doc chunk (#189). A generated
@@ -41,6 +56,8 @@ export const GENERATED_DOC_EVIDENCE_CLASS = "derived-generated-doc";
 /** Texts per embed call during publication (#189): bounded, never the whole document. */
 export const PUBLICATION_EMBED_BATCH_SIZE = 32;
 export const GENERATED_DOC_PUBLICATION_TASK_TYPE = "publish-generated-document";
+/** #201 — `errorMessage` prefix of a publication a user cancelled. */
+export const GENERATED_DOC_PUBLICATION_CANCELLED = "generated-doc publication cancelled";
 
 export interface GeneratedDocPublicationRequest extends GeneratedDocRevisionKey {
   markdown: string;
@@ -181,6 +198,24 @@ export async function publishGeneratedDocRevision(
     payload.generatedDocumentId,
     payload.revisionId,
   );
+  try {
+    return await publishRevision(payload, syntheticDocumentId, deps);
+  } catch (err) {
+    // #201 — every exit path leaves an outcome on the synthetic row, not only an
+    // embed failure: a user's cancellation and a final-attempt timeout used to
+    // leave it `processing` with no message (a cancellation, forever).
+    await recordPublicationFailure(syntheticDocumentId, payload.projectId, err, deps);
+    throw err;
+  }
+}
+
+type PublicationResult = Awaited<ReturnType<typeof publishGeneratedDocRevision>>;
+
+async function publishRevision(
+  payload: GeneratedDocPublicationTaskPayload,
+  syntheticDocumentId: string,
+  deps: GeneratedDocPublicationDeps,
+): Promise<PublicationResult> {
   deps.signal?.throwIfAborted();
   const snapshot = await readPublicationSnapshot(payload);
   if (snapshot.status !== "publishable") {
@@ -228,28 +263,16 @@ export async function publishGeneratedDocRevision(
   }
 
   const chunks = chunkGeneratedMarkdown(version.content);
-  try {
-    await embedAndQuarantine({
-      payload,
-      syntheticDocumentId,
-      filename,
-      chunks,
-      embedder,
-      aclSubjects: [...policy.aclSubjects],
-      doc,
-      deps,
-    });
-  } catch (err) {
-    if (!deps.signal?.aborted) {
-      await recordPublicationFailure(
-        syntheticDocumentId,
-        payload.projectId,
-        err,
-        deps.finalAttempt ?? false,
-      );
-    }
-    throw err;
-  }
+  await embedAndQuarantine({
+    payload,
+    syntheticDocumentId,
+    filename,
+    chunks,
+    embedder,
+    aclSubjects: [...policy.aclSubjects],
+    doc,
+    deps,
+  });
 
   const fencedBeforeApprove = await readPublicationSnapshot(payload);
   if (fencedBeforeApprove.status !== "publishable") {
@@ -366,23 +389,70 @@ export async function markAwaitingReview(
 }
 
 /**
- * #189 — record a failed attempt on the synthetic document. A retry is still
- * coming unless this was the last attempt, so only then is the row `failed`;
- * either way the reason is visible instead of a silent `processing`.
+ * #189/#201 — record why a publication attempt ended without publishing.
+ *
+ * - A user's cancellation is terminal: `failed`, "cancelled". Recovery never
+ *   re-runs a cancelled task, so without this the row stayed `processing` forever.
+ * - A failure or a timeout is a failed attempt: the reason is always recorded, and
+ *   the row is `failed` only on the last attempt (a retry is still coming).
+ * - A shutdown records nothing: the durable outbox replays the task on the next
+ *   start, and the row's `processing` is still true. An abort by a caller's own
+ *   controller (no `TaskAbortError`) is treated the same way.
+ *
+ * A `ready` row is never written: once a publication has an outcome (parked for
+ * review, published) it keeps it, whatever fails afterwards.
  */
 async function recordPublicationFailure(
   syntheticDocumentId: string,
   projectId: string,
   err: unknown,
+  deps: GeneratedDocPublicationDeps,
+): Promise<void> {
+  const aborted = deps.signal?.aborted ?? false;
+  const source = taskAbortSource(deps.signal);
+  if (aborted && source !== "user" && source !== "timeout") return;
+  const reason = aborted ? deps.signal?.reason : err;
+  const detail = (reason as Error)?.message ?? String(reason);
+  const cancelled = source === "user";
+  const terminal = cancelled || (deps.finalAttempt ?? false);
+  const message = cancelled
+    ? `${GENERATED_DOC_PUBLICATION_CANCELLED}: ${detail}`
+    : `generated-doc publication failed: ${detail}`;
+  await writePublicationOutcome(syntheticDocumentId, projectId, message, terminal);
+}
+
+/**
+ * #201 — settle the synthetic row of a publication a user cancelled while it was
+ * still queued. The handler never runs for such a task, so without this the
+ * placeholder written at enqueue stayed `pending` with no message until the next
+ * leader restart's repair.
+ */
+export async function settleCancelledGeneratedDocPublication(
+  payload: GeneratedDocPublicationTaskPayload,
+  reason: string,
+): Promise<void> {
+  await writePublicationOutcome(
+    generatedDocSyntheticDocumentId(payload.generatedDocumentId, payload.revisionId),
+    payload.projectId,
+    `${GENERATED_DOC_PUBLICATION_CANCELLED}: ${reason}`,
+    true,
+  );
+}
+
+async function writePublicationOutcome(
+  syntheticDocumentId: string,
+  projectId: string,
+  message: string,
   terminal: boolean,
 ): Promise<void> {
-  const message = `generated-doc publication failed: ${(err as Error)?.message ?? String(err)}`;
   try {
     await prisma.document.updateMany({
       where: {
         id: syntheticDocumentId,
         projectId,
         deletedAt: null,
+        // A retried task may find its own earlier `failed`; never a `ready` row.
+        status: { in: ["pending", "processing", "failed"] },
         indexState: { in: ["pending", "quarantined"] },
       },
       data: {
@@ -606,7 +676,10 @@ function generatedDocFilename(generatedDocumentId: string): string {
   return `generated-doc-${generatedDocumentId}.md`;
 }
 
-/** Exported for tests (#189): every returned chunk is at most {@link CHUNK_SIZE} characters. */
+/**
+ * Exported for tests (#189): every returned chunk is at most {@link CHUNK_SIZE}
+ * characters and, if it holds non-ASCII text, {@link EMBED_INPUT_MAX_BYTES} bytes (#201).
+ */
 export function chunkGeneratedMarkdown(
   markdown: string,
 ): Array<{ text: string; sectionSlug: string; sectionIndex: number; heading: string | null }> {
@@ -623,8 +696,15 @@ export function chunkGeneratedMarkdown(
     const sectionSlug = slugifySectionLabel(heading ?? `section-${sectionIndex + 1}`);
     const push = (text: string) => {
       for (const piece of splitOversized(text.trim(), CHUNK_SIZE)) {
-        const trimmed = piece.trim();
-        if (trimmed) chunks.push({ text: trimmed, sectionSlug, sectionIndex, heading });
+        // #201 — non-ASCII text is bounded by bytes too: 1,500 CJK characters is
+        // ~4,500 bytes, past the model's 2,048-token input.
+        const bounded = exceedsEmbedInputBudget(piece)
+          ? splitToByteBudget(piece, EMBED_INPUT_MAX_BYTES)
+          : [piece];
+        for (const part of bounded) {
+          const trimmed = part.trim();
+          if (trimmed) chunks.push({ text: trimmed, sectionSlug, sectionIndex, heading });
+        }
       }
     };
     if (section.length <= CHUNK_SIZE) {

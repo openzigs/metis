@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => {
     runBatch: vi.fn(async () => ({ status: "completed" })),
     startAnalysis: vi.fn(async () => ({ id: "analysis_1" })),
     publishGeneratedDocRevision: vi.fn(async () => ({ status: "published", chunkCount: 2 })),
+    settleCancelledGeneratedDocPublication: vi.fn(async () => {}),
     checkIncrementalRegeneration: vi.fn(async () => {}),
     runRegenerationTask: vi.fn(async () => {}),
     ingestRepoMetadata: vi.fn(async () => ({ failures: 0 })),
@@ -104,6 +105,7 @@ vi.mock("../src/lib/ai/index.js", () => ({
 }));
 vi.mock("../src/lib/docs-gen/generated-doc-publication.js", () => ({
   publishGeneratedDocRevision: mocks.publishGeneratedDocRevision,
+  settleCancelledGeneratedDocPublication: mocks.settleCancelledGeneratedDocPublication,
 }));
 vi.mock("../src/lib/docs-gen/incremental.js", () => ({
   checkIncrementalRegeneration: mocks.checkIncrementalRegeneration,
@@ -343,6 +345,21 @@ describe("buildSchedulerHandlerOverrides", () => {
       onProgress,
       finalAttempt: true,
     });
+  });
+
+  it("#201 — wires the settle hook for a publication cancelled before it ran", async () => {
+    const overrides = buildSchedulerHandlerOverrides();
+    const payload = {
+      generatedDocumentId: "doc-1",
+      projectId: "proj-1",
+      version: 5,
+      revisionId: "rev-5",
+    };
+    await overrides.settleCancelledGeneratedDocPublication!(payload, "cancelled by alice");
+    expect(mocks.settleCancelledGeneratedDocPublication).toHaveBeenCalledWith(
+      payload,
+      "cancelled by alice",
+    );
   });
 
   it("rerun-analysis uses autopilot rails when the project enables them", async () => {

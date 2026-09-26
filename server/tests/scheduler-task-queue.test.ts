@@ -7,6 +7,7 @@ vi.mock("../src/lib/prisma.js", () => ({ prisma: {} }));
 
 import { TaskQueue, type TaskStore } from "../src/lib/scheduler/task-queue.js";
 import { InMemoryTaskHandlerRegistry } from "../src/lib/scheduler/task-handlers.js";
+import { taskAbortSource } from "../src/lib/scheduler/task-abort.js";
 import {
   SchedulerError,
   type EnqueueTaskInput,
@@ -799,6 +800,108 @@ describe("TaskQueue cancellation", () => {
     expect(rows.get(task.id)?.status).toBe("cancelled");
   });
 
+  it("#201 — settles a queued task's handler-owned state when it is cancelled before running", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const handler = vi.fn<TaskHandlerFn>(async () => ({}));
+    const settled: Array<{ id: string; reason: string }> = [];
+    registry.register({
+      type: "owns-state",
+      description: "",
+      handler,
+      onCancelledBeforeRun: async (task, reason) => {
+        settled.push({ id: task.id, reason });
+      },
+    });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig);
+    // Not due yet: it stays queued, whatever the machine's load.
+    const queued = await queue.enqueue({
+      type: "owns-state",
+      scheduledFor: new Date(Date.now() + 3_600_000),
+    });
+    expect(await queue.cancel(queued.id, "cancelled by alice")).toBe(true);
+    expect(rows.get(queued.id)?.status).toBe("cancelled");
+    expect(settled).toEqual([{ id: queued.id, reason: "cancelled by alice" }]);
+    expect(handler).not.toHaveBeenCalled();
+    await queue.shutdown();
+  });
+
+  it("#201 — a settle hook that throws never turns a persisted cancellation into a failure", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    registry.register({
+      type: "owns-state",
+      description: "",
+      handler: async () => ({}),
+      onCancelledBeforeRun: async () => {
+        throw new Error("db down");
+      },
+    });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig);
+    const queued = await queue.enqueue({
+      type: "owns-state",
+      scheduledFor: new Date(Date.now() + 3_600_000),
+    });
+    expect(await queue.cancel(queued.id)).toBe(true);
+    expect(rows.get(queued.id)?.status).toBe("cancelled");
+    await queue.shutdown();
+  });
+
+  it("#201 — settles when a user's cancel wins the race with the running claim", async () => {
+    const { store, rows } = makeStore();
+    let claimed: () => void = () => {};
+    const claimGate = new Promise<void>((resolve) => {
+      claimed = resolve;
+    });
+    const markRunning = store.markRunning.bind(store);
+    store.markRunning = async (id, attempt, now) => {
+      await claimGate;
+      return markRunning(id, attempt, now);
+    };
+    const registry = new InMemoryTaskHandlerRegistry();
+    const handler = vi.fn<TaskHandlerFn>(async () => ({}));
+    const settled: string[] = [];
+    registry.register({
+      type: "regenerate-generated-document",
+      description: "",
+      handler,
+      onCancelledBeforeRun: async (_task, reason) => {
+        settled.push(reason);
+      },
+    });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig);
+    const task = await queue.enqueue({ type: "regenerate-generated-document" });
+    // The claim is in flight: the task holds a slot but its handler has not run.
+    expect(queue.snapshot()).toMatchObject({ running: 1, queueDepth: 0 });
+    expect(await queue.cancel(task.id, "cancelled by alice")).toBe(true);
+    claimed();
+    for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
+    expect(handler).not.toHaveBeenCalled();
+    expect(rows.get(task.id)?.status).toBe("cancelled");
+    expect(settled).toEqual(["cancelled by alice"]);
+  });
+
+  it("#201 — a cancel of a task that already ran does not call the settle hook", async () => {
+    const { store } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const settle = vi.fn(async () => {});
+    registry.register({
+      type: "long",
+      description: "",
+      handler: (ctx) =>
+        new Promise((_resolve, reject) => {
+          ctx.signal.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+      onCancelledBeforeRun: settle,
+    });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig);
+    const task = await queue.enqueue({ type: "long" });
+    for (let i = 0; i < 3; i += 1) await new Promise((r) => setImmediate(r));
+    expect(await queue.cancel(task.id)).toBe(true);
+    for (let i = 0; i < 3; i += 1) await new Promise((r) => setImmediate(r));
+    expect(settle).not.toHaveBeenCalled();
+  });
+
   it("returns false when cancelling an unknown task", async () => {
     const { store } = makeStore();
     const registry = new InMemoryTaskHandlerRegistry();
@@ -901,5 +1004,55 @@ describe("TaskQueue progress + shutdown", () => {
     const snap = queue.snapshot();
     expect(snap.running).toBe(1);
     expect(snap.queueDepth).toBe(1);
+  });
+});
+
+/**
+ * Issue #201 — a handler can tell WHY its signal was aborted. Generated-doc
+ * publication records a cancellation as terminal, a timeout as a failed attempt,
+ * and a shutdown as nothing (the outbox replays it); it can only do that if the
+ * queue says which one happened.
+ */
+describe("TaskQueue abort provenance (#201)", () => {
+  it.each([
+    ["user", "cancel"],
+    ["timeout", "timeout"],
+    ["shutdown", "shutdown"],
+  ] as const)("reports %s as the abort source on the handler's signal", async (source, via) => {
+    vi.useFakeTimers();
+    const { store } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const seen: Array<string | undefined> = [];
+    registry.register({
+      type: "long",
+      description: "",
+      handler: async ({ signal }) => {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        seen.push(taskAbortSource(signal));
+        signal.throwIfAborted();
+      },
+    });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, {
+      ...baseConfig,
+      defaultTimeoutMs: 10,
+    });
+    const task = await queue.enqueue({ type: "long", maxAttempts: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    if (via === "cancel") await queue.cancel(task.id);
+    if (via === "timeout") await vi.advanceTimersByTimeAsync(10);
+    if (via === "shutdown") await queue.shutdown();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([source]);
+    await queue.shutdown();
+  });
+
+  it("reports no source for a signal the queue did not abort", () => {
+    const controller = new AbortController();
+    expect(taskAbortSource(controller.signal)).toBeUndefined();
+    expect(taskAbortSource(undefined)).toBeUndefined();
+    controller.abort(new Error("caller's own abort"));
+    expect(taskAbortSource(controller.signal)).toBeUndefined();
   });
 });

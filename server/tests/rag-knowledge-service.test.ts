@@ -265,6 +265,7 @@ import {
 } from "../src/lib/rag/knowledge-service.js";
 import { approveDocument } from "../src/lib/rag/quarantine.js";
 import { Embedder } from "../src/lib/rag/embedder.js";
+import { EMBED_INPUT_MAX_BYTES } from "../src/lib/rag/embed-input-budget.js";
 import { buildSearchKnowledgeTool } from "../src/lib/rag/search-knowledge-tool.js";
 
 let storageRoot: string;
@@ -373,7 +374,7 @@ describe("KnowledgeService.ingestDocument", () => {
     for (const c of written) {
       // The service's OWN effective options, not the shipped default — a tag that
       // ignored configuration would report drift on every non-default deployment.
-      expect(c.chunkerIdentity).toBe("doc:v2:256/32");
+      expect(c.chunkerIdentity).toBe("doc:v3:256/32");
     }
   });
 
@@ -416,6 +417,33 @@ describe("KnowledgeService.ingestDocument", () => {
     expect(Math.max(...sizes)).toBeLessThanOrEqual(32);
     expect(sizes.reduce((a, b) => a + b, 0)).toBe(result.chunkCount);
     expect(await store.count("pb")).toBe(result.chunkCount);
+  });
+
+  /**
+   * Issue #201 — an uploaded CJK/emoji document reaches the embedder in inputs the
+   * model can take whole. At the shipped 2048/256 a Japanese chunk was 6,144 bytes
+   * (2,365 real tokens) and was truncated at 2,048.
+   */
+  it("hands the embedder no CJK or emoji input over the token budget", async () => {
+    const embedder = new Embedder();
+    const embedSpy = vi.spyOn(embedder, "embed");
+    svc = new KnowledgeService({ storage, vectorStore: store, embedder });
+    const text = [
+      Array.from(
+        { length: 200 },
+        (_, i) => `${i}：検索拡張生成は文書の内容を理解する仕組みです。`,
+      ).join("\n"),
+      "😀🚀🎉🧪".repeat(600),
+    ].join("\n\n");
+    await seedDocument("dj", "pj", text);
+    const result = await svc.ingestDocument("dj");
+
+    const inputs = embedSpy.mock.calls.flatMap(([texts]) => texts);
+    expect(inputs.length).toBe(result.chunkCount);
+    expect(Math.max(...inputs.map((t) => Buffer.byteLength(t, "utf8")))).toBeLessThanOrEqual(
+      EMBED_INPUT_MAX_BYTES,
+    );
+    expect(await store.count("pj")).toBe(result.chunkCount);
   });
 
   it("emits document:status events for the lifecycle", async () => {

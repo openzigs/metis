@@ -1239,6 +1239,52 @@ This hybrid approach catches both semantically related content (even when differ
 | **Vector Store** | In-memory storage in development; production uses LanceDB for persistence. Supports cosine similarity search (vector) and BM25 search (keywords). |
 | **Converter Registry** | Pluggable system for converting different file formats to plain text. Supports: Markdown, plain text, 18+ code file types. PDF/DOCX/XLSX use mock converters in development. |
 
+#### 8.4.1 The in-process embed worker (#189, #201)
+
+When the embedder is in-process (`xenova`, `embeddinggemma`), the ONNX model runs in a
+**`worker_thread`**, not on the server's main thread (`server/src/lib/rag/embed-worker-pipeline.ts`).
+`onnxruntime-node` runs inference synchronously on the calling thread, so before #189 one large
+generated document held `/healthz` and every API request for minutes.
+
+- **What runs where.** The worker loads `@huggingface/transformers` and holds the tokenizer, the
+  weights and the forward pass. `XenovaEmbedder` keeps everything else on the main thread: the #807
+  forward-batch policy, pooling, Matryoshka truncation and the embedding identity. It posts one
+  forward batch at a time (at most `EMBED_WORKER_MAX_TEXTS_PER_CALL` = 16 texts). The worker serves
+  calls in arrival order, so a chat query waits for at most one forward pass behind an ingest.
+- **Lifecycle.** One worker per pipeline, started on first use and `unref`'d while idle. If the
+  worker dies, in-flight calls reject and the next call starts a fresh worker.
+  `EMBED_INPROCESS_RUNTIME=inline` restores the old main-thread behaviour. Only tests use it,
+  because a module mock does not cross a thread boundary.
+- **Bounded inputs.** Document ingest (uploads and repository sources) and generated-document
+  publication embed through `embedInBoundedBatches` (`rag/embed-batched.ts`): 32 texts per call,
+  with an abort check and a progress callback between batches. The tokenizer is capped at
+  `MAX_EMBED_SEQUENCE_TOKENS` = 2,048. The chunkers keep each input under that cap: ASCII text by
+  its character window, and (#201) text with non-ASCII characters by a 2,046-token budget
+  (`EMBED_INPUT_MAX_BYTES`) in which each such character costs its UTF-8 bytes. A byte-level BPE
+  token covers at least one byte, so that part is a hard bound, and it is what keeps CJK and emoji
+  whole. The ASCII part is the character window's assumption, not a proof: in `rag/chunker.ts` at
+  the default `chunkSize` of 2,048, a mostly-ASCII window can reach 2,047 bytes, one over the
+  budget, which English BPE (several characters per token) never comes near
+  (`rag/embed-input-budget.ts`, `rag/chunker.ts`; chunker identities `doc:v3`, `docsgen:v3`).
+- **Publication outcome.** Generated-document publication (`docs-gen/generated-doc-publication.ts`)
+  records an outcome on the synthetic `gendoc-*` document for every way an attempt can end. A
+  user's cancellation is `failed` with "cancelled". A failure or timeout records its reason, and is
+  `failed` on the last attempt. A shutdown records nothing, because the durable outbox replays the
+  task. The queue passes the abort's cause to the handler as a typed signal reason
+  (`scheduler/task-abort.ts`). A task cancelled before its handler runs (still queued, or
+  cancelled while the queue was claiming it) never reaches that code, so the queue calls the
+  registration's `onCancelledBeforeRun` hook instead, and the publication settles its placeholder
+  row as cancelled there. At startup, `reconcileStrandedGeneratedDocPublications` settles any
+  synthetic row that no live task owns; a cancelled task outranks parked review chunks, so a
+  cancelled publication is never marked ready.
+- **One ONNX thread per process.** `onnxruntime-node` aborts the process when sessions are live on
+  two threads at once. For example, `RAG_RERANK=1` runs the in-process reranker on the main thread
+  while the embedder runs in the worker. See #222. The sidecar backend avoids this, because every
+  model runs out of process.
+- **Real-model check.** PR suites use a stub model. `server/tests/embed-worker-real-model.test.ts`
+  (opt-in, `EMBED_REAL_MODEL_TEST=1`) loads the real `gte-modernbert-base` in the worker from the
+  built `dist` under plain `node`. `.github/workflows/embed-real-model-nightly.yml` runs it nightly.
+
 ### 8.5 Cross-Project Federated Search (Epic #526)
 
 The federated search service extends single-project RAG with cross-project retrieval. It allows users to search across all projects they have access to from the Chat interface.

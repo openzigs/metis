@@ -80,6 +80,8 @@ export function bootstrapScheduler(opts: BootstrapSchedulerOptions = {}): Schedu
     rerunAnalysis: opts.handlerOverrides?.rerunAnalysis,
     publishBatch: opts.handlerOverrides?.publishBatch,
     publishGeneratedDocument: opts.handlerOverrides?.publishGeneratedDocument,
+    settleCancelledGeneratedDocPublication:
+      opts.handlerOverrides?.settleCancelledGeneratedDocPublication,
     regenerateGeneratedDocument: opts.handlerOverrides?.regenerateGeneratedDocument,
     runScannerScan:
       opts.handlerOverrides?.runScannerScan ??

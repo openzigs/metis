@@ -244,6 +244,7 @@ vi.mock("../src/lib/docs-gen/generated-doc-publication.js", () => ({
   GENERATED_DOC_PUBLICATION_TASK_TYPE: "publish-generated-document",
   enqueueGeneratedDocPublication: state.publications,
   publishGeneratedDocRevision: state.publications,
+  settleCancelledGeneratedDocPublication: vi.fn(),
   enqueueGeneratedDocDeletion: vi.fn(),
   generatedDocSyntheticDocumentId: (id: string) => `gendoc-${id}`,
 }));

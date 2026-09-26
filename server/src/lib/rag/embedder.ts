@@ -84,6 +84,7 @@ import {
   type InProcessEmbedRuntime,
   type WorkerTransformersEnv,
 } from "./embed-worker-pipeline.js";
+import { MAX_EMBED_SEQUENCE_TOKENS } from "./embed-input-budget.js";
 
 const log = createChildLogger("rag-embedder");
 
@@ -176,13 +177,13 @@ interface XenovaPipeline {
  * `onnxruntime::Softmax` → `MlasComputeSoftmaxThreaded` frame and the 4–5 GB RSS
  * seen in the hung server, fed by a 51,081-character generated-doc chunk.
  *
- * 2,048 covers every chunk METIS produces (the document chunker's default window is
- * 2,048 CHARACTERS, the generated-doc chunker's 1,500, and a BPE token covers at
- * least one character), so no stored vector changes, while the worst-case row costs
- * 1/16 of the full-context softmax. The chunkers are the primary bound; this is the
- * backstop for a caller that forgets.
+ * The worst-case row costs 1/16 of the full-context softmax. The chunkers are the
+ * primary bound: ASCII chunks by their character windows, and (#201) any chunk
+ * holding non-ASCII text by its UTF-8 byte length — see `embed-input-budget.ts`,
+ * which also records why "a token covers at least one character" was not enough.
+ * This cap is the backstop for a caller that forgets.
  */
-export const MAX_EMBED_SEQUENCE_TOKENS = 2048;
+export { MAX_EMBED_SEQUENCE_TOKENS };
 
 /**
  * Issue #189 — texts per model call in the WORKER runtime. The #807 policy already

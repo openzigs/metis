@@ -109,14 +109,20 @@ export class SingletonJobs {
     this.running = true;
     log.info("starting cluster-singleton scheduler + background jobs (leader)");
     // Central scheduler cron registration (DB-backed ScheduledJobs).
-    this.sched.scheduler
-      .start()
+    this.sched.scheduler.start().then(
       // #189 — AFTER durable task recovery has re-queued live publication tasks,
       // settle any generated-doc synthetic row that no task will ever finish.
-      .then(() => reconcileStrandedGeneratedDocPublications())
-      .catch((err) => {
+      // #201 — its own catch: a repair failure is not a scheduler start failure.
+      () =>
+        reconcileStrandedGeneratedDocPublications().catch((err) => {
+          log.warn("Generated-doc publication startup repair failed", {
+            error: (err as Error).message,
+          });
+        }),
+      (err) => {
         log.warn("Scheduler start failed", { error: (err as Error).message });
-      });
+      },
+    );
     // Scattered interval jobs — each fires once cluster-wide now they run only
     // on the leader. Epic refs: #736 (SLA), #48/#49/#52 (FinOps), #413 (revocation).
     this.handles = [
