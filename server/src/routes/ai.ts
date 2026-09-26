@@ -21,6 +21,7 @@ import { z } from "zod";
 import type { ApiResponse, CompactionEventDto, ModelCatalogResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { aiRateLimiter } from "../middleware/ai-rate-limit.js";
+import { conversationRateLimiter } from "../middleware/conversation-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { buildSystemBlock as buildChronicleBlock } from "../lib/memory/chronicle.js";
@@ -799,97 +800,118 @@ export function aiRouter(): Router {
     );
   });
 
-  r.get("/sessions/:id", requireAuth, async (req: Request, res: Response) => {
-    const session = await loadAuthorizedSession(req.user, String(req.params.id));
-    res.json(ok({ session: { ...session, policy: parsePolicyJson(session.policy) } }));
-  });
+  r.get(
+    "/sessions/:id",
+    requireAuth,
+    conversationRateLimiter,
+    async (req: Request, res: Response) => {
+      const session = await loadAuthorizedSession(req.user, String(req.params.id));
+      res.json(ok({ session: { ...session, policy: parsePolicyJson(session.policy) } }));
+    },
+  );
 
-  r.patch("/sessions/:id", requireAuth, async (req: Request, res: Response) => {
-    const parsed = updateSessionSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      throw new AppError(400, "VALIDATION_ERROR", "Invalid session update", {
-        issues: parsed.error.flatten(),
-      });
-    }
-    const existing = await loadAuthorizedSession(req.user, String(req.params.id));
-    const policy = parsed.data.policy
-      ? policyToJson(
-          normalizePolicy({ ...parsePolicyJson(existing.policy), ...parsed.data.policy }),
-        )
-      : existing.policy;
-    const updated = await prisma.aISession.update({
-      where: { id: existing.id },
-      data: {
-        ...(parsed.data.title ? { title: parsed.data.title } : {}),
-        ...(parsed.data.status ? { status: parsed.data.status } : {}),
-        policy,
-      },
-    });
-
-    // M3 — when a session transitions to a terminal state, tear down its
-    // per-session COPILOT_HOME directory and any in-memory SDK session. We
-    // best-effort the call (logged on failure) so a cleanup hiccup never
-    // blocks the user from archiving a session.
-    const becameTerminal = parsed.data.status === "archived" || parsed.data.status === "terminated";
-    const wasActive = existing.status !== parsed.data.status;
-    if (becameTerminal && wasActive) {
-      try {
-        const p = provider();
-        const maybeDestroy = (p as { destroySession?: (id: string) => Promise<void> })
-          .destroySession;
-        if (typeof maybeDestroy === "function") {
-          await maybeDestroy.call(p, existing.id);
-        }
-      } catch (err) {
-        log.warn("AI session cleanup failed", {
-          sessionId: existing.id,
-          error: (err as Error).message,
+  r.patch(
+    "/sessions/:id",
+    requireAuth,
+    conversationRateLimiter,
+    async (req: Request, res: Response) => {
+      const parsed = updateSessionSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid session update", {
+          issues: parsed.error.flatten(),
         });
       }
-    }
+      const existing = await loadAuthorizedSession(req.user, String(req.params.id));
+      const policy = parsed.data.policy
+        ? policyToJson(
+            normalizePolicy({ ...parsePolicyJson(existing.policy), ...parsed.data.policy }),
+          )
+        : existing.policy;
+      const updated = await prisma.aISession.update({
+        where: { id: existing.id },
+        data: {
+          ...(parsed.data.title ? { title: parsed.data.title } : {}),
+          ...(parsed.data.status ? { status: parsed.data.status } : {}),
+          policy,
+        },
+      });
 
-    res.json(ok({ session: { ...updated, policy: parsePolicyJson(updated.policy) } }));
-  });
+      // M3 — when a session transitions to a terminal state, tear down its
+      // per-session COPILOT_HOME directory and any in-memory SDK session. We
+      // best-effort the call (logged on failure) so a cleanup hiccup never
+      // blocks the user from archiving a session.
+      const becameTerminal =
+        parsed.data.status === "archived" || parsed.data.status === "terminated";
+      const wasActive = existing.status !== parsed.data.status;
+      if (becameTerminal && wasActive) {
+        try {
+          const p = provider();
+          const maybeDestroy = (p as { destroySession?: (id: string) => Promise<void> })
+            .destroySession;
+          if (typeof maybeDestroy === "function") {
+            await maybeDestroy.call(p, existing.id);
+          }
+        } catch (err) {
+          log.warn("AI session cleanup failed", {
+            sessionId: existing.id,
+            error: (err as Error).message,
+          });
+        }
+      }
 
-  r.get("/sessions/:id/usage", requireAuth, async (req: Request, res: Response) => {
-    const session = await loadAuthorizedSession(req.user, String(req.params.id));
-    const rows = await prisma.aITokenUsage.findMany({
-      where: { sessionId: session.id },
-      orderBy: { ts: "desc" },
-      take: 200,
-    });
-    const totals = rows.reduce(
-      (acc, r) => ({
-        promptTokens: acc.promptTokens + r.promptTokens,
-        completionTokens: acc.completionTokens + r.completionTokens,
-        totalTokens: acc.totalTokens + r.totalTokens,
-        cacheReadTokens: acc.cacheReadTokens + r.cacheReadTokens,
-        cacheWriteTokens: acc.cacheWriteTokens + r.cacheWriteTokens,
-      }),
-      {
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-      },
-    );
-    res.json(ok({ session: { id: session.id }, totals, rows }));
-  });
+      res.json(ok({ session: { ...updated, policy: parsePolicyJson(updated.policy) } }));
+    },
+  );
 
-  r.get("/sessions/:id/approvals", requireAuth, async (req: Request, res: Response) => {
-    const session = await loadAuthorizedSession(req.user, String(req.params.id));
-    const tool = typeof req.query.tool === "string" ? req.query.tool : undefined;
-    const rows = await prisma.aIToolApproval.findMany({
-      where: {
-        sessionId: session.id,
-        ...(tool ? { toolName: tool } : {}),
-      },
-      orderBy: { ts: "desc" },
-      take: 200,
-    });
-    res.json(ok({ rows }));
-  });
+  r.get(
+    "/sessions/:id/usage",
+    requireAuth,
+    conversationRateLimiter,
+    async (req: Request, res: Response) => {
+      const session = await loadAuthorizedSession(req.user, String(req.params.id));
+      const rows = await prisma.aITokenUsage.findMany({
+        where: { sessionId: session.id },
+        orderBy: { ts: "desc" },
+        take: 200,
+      });
+      const totals = rows.reduce(
+        (acc, r) => ({
+          promptTokens: acc.promptTokens + r.promptTokens,
+          completionTokens: acc.completionTokens + r.completionTokens,
+          totalTokens: acc.totalTokens + r.totalTokens,
+          cacheReadTokens: acc.cacheReadTokens + r.cacheReadTokens,
+          cacheWriteTokens: acc.cacheWriteTokens + r.cacheWriteTokens,
+        }),
+        {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        },
+      );
+      res.json(ok({ session: { id: session.id }, totals, rows }));
+    },
+  );
+
+  r.get(
+    "/sessions/:id/approvals",
+    requireAuth,
+    conversationRateLimiter,
+    async (req: Request, res: Response) => {
+      const session = await loadAuthorizedSession(req.user, String(req.params.id));
+      const tool = typeof req.query.tool === "string" ? req.query.tool : undefined;
+      const rows = await prisma.aIToolApproval.findMany({
+        where: {
+          sessionId: session.id,
+          ...(tool ? { toolName: tool } : {}),
+        },
+        orderBy: { ts: "desc" },
+        take: 200,
+      });
+      res.json(ok({ rows }));
+    },
+  );
 
   r.get("/usage/today", requireAuth, async (req: Request, res: Response) => {
     const userId = userIdOrThrow(req);

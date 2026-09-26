@@ -583,6 +583,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(rows.map((r: { ordinal: number }) => r.ordinal)).toEqual([1, 2, 3, 4]);
     });
 
+    it("every session-scoped read and write is rate-limited (RateLimit headers present)", async () => {
+      const sid = await newSession(alice);
+      await send(alice, sid, "q");
+      const probes = [
+        await transcript(alice, sid),
+        await as(alice).post(`/api/ai/sessions/${sid}/resume`),
+        await as(alice).post(`/api/ai/sessions/${sid}/fork`, { fromOrdinal: 2 }),
+        await as(alice).post(`/api/ai/sessions/${sid}/compact`),
+        await as(alice).get(`/api/ai/sessions/${sid}`),
+        await as(alice).get(`/api/ai/sessions/${sid}/usage`),
+        await as(alice).get(`/api/ai/sessions/${sid}/approvals`),
+        await request(app())
+          .patch(`/api/ai/sessions/${sid}`)
+          .set("Authorization", `Bearer ${alice}`)
+          .send({ title: "t" }),
+      ];
+      for (const p of probes) expect(p.headers["ratelimit-limit"], p.req.path).toBeDefined();
+    });
+
     it("resume refuses a session past its 24-hour window", async () => {
       const sid = await newSession(alice);
       await send(alice, sid, "old");
