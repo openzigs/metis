@@ -244,7 +244,9 @@ describe("POST /projects/:projectId/docs/generate — pathPrefixes", () => {
     vi.clearAllMocks();
     auth.user = ADMIN;
     mocked(prisma.project.findFirst).mockResolvedValue({ id: "proj-1" });
-    mocked(prisma.codeSymbol.findFirst).mockResolvedValue({ id: "sym-1" });
+    mocked(prisma.codeSymbol.findMany).mockResolvedValue([
+      { id: "sym-1", filePath: "packages/fit/a.ts" },
+    ]);
     mocked(prisma.generatedDocument.create).mockImplementation(async ({ data }) => ({
       id: "doc-1",
       ...data,
@@ -272,14 +274,47 @@ describe("POST /projects/:projectId/docs/generate — pathPrefixes", () => {
 
   it("checks for a match with a parameterised, segment-aware prefix query", async () => {
     await post({ pathPrefixes: ["packages/fit"] });
-    expect(prisma.codeSymbol.findFirst).toHaveBeenCalledWith({
+    expect(prisma.codeSymbol.findMany).toHaveBeenCalledWith({
       where: {
         projectId: "proj-1",
         OR: [{ filePath: "packages/fit" }, { filePath: { startsWith: "packages/fit/" } }],
       },
-      select: { id: true },
+      select: { id: true, filePath: true },
+      orderBy: { id: "asc" },
+      take: 500,
     });
   });
+
+  it("pages the candidate scan by id", async () => {
+    mocked(prisma.codeSymbol.findMany)
+      .mockResolvedValueOnce(
+        Array.from({ length: 500 }, (_, i) => ({ id: `s${i}`, filePath: "other/x.ts" })),
+      )
+      .mockResolvedValueOnce([{ id: "t1", filePath: "packages/fit/a.ts" }]);
+    const res = await post({ pathPrefixes: ["packages/fit"] });
+    expect(res.status).toBe(202);
+    expect(mocked(prisma.codeSymbol.findMany).mock.calls[1][0].where).toMatchObject({
+      projectId: "proj-1",
+      id: { gt: "s499" },
+    });
+  });
+
+  // Prisma's `startsWith` is `LIKE (? || '%')` with `%`/`_` unescaped (and
+  // case-insensitive on SQLite), so the DB can return rows the scope does not
+  // contain. They must not satisfy the check: the run would then fail later
+  // with PATH_SCOPE_EMPTY after the caller was told the scope was fine.
+  it.each([["pack_ges/fit"], ["pack%/fit"], ["Packages/Fit"]])(
+    "a LIKE false positive for %s is still a 400 PATH_SCOPE_EMPTY",
+    async (prefix) => {
+      mocked(prisma.codeSymbol.findMany)
+        .mockResolvedValueOnce([{ id: "sym-1", filePath: "packages/fit/a.ts" }])
+        .mockResolvedValue([]);
+      const res = await post({ pathPrefixes: [prefix] });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("PATH_SCOPE_EMPTY");
+      expect(prisma.generatedDocument.create).not.toHaveBeenCalled();
+    },
+  );
 
   it("scopes the match check to the repository graph for repository scope", async () => {
     mocked(requireRepositoryGraph).mockResolvedValueOnce("graph-a");
@@ -288,7 +323,7 @@ describe("POST /projects/:projectId/docs/generate — pathPrefixes", () => {
       scopeFilter: { repoConnectorId: "repo-a" },
       pathPrefixes: ["packages/fit"],
     });
-    expect(mocked(prisma.codeSymbol.findFirst).mock.calls[0][0].where.codeGraphId).toBe("graph-a");
+    expect(mocked(prisma.codeSymbol.findMany).mock.calls[0][0].where.codeGraphId).toBe("graph-a");
   });
 
   it("leaves an unscoped request unchanged", async () => {
@@ -297,7 +332,7 @@ describe("POST /projects/:projectId/docs/generate — pathPrefixes", () => {
     const data = mocked(prisma.generatedDocument.create).mock.calls[0][0].data;
     expect(data.title).toBe("BR");
     expect(JSON.parse(data.scopeFilter)).not.toHaveProperty("pathPrefixes");
-    expect(prisma.codeSymbol.findFirst).not.toHaveBeenCalled();
+    expect(prisma.codeSymbol.findMany).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -316,7 +351,7 @@ describe("POST /projects/:projectId/docs/generate — pathPrefixes", () => {
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
     expect(prisma.generatedDocument.create).not.toHaveBeenCalled();
-    expect(prisma.codeSymbol.findFirst).not.toHaveBeenCalled();
+    expect(prisma.codeSymbol.findMany).not.toHaveBeenCalled();
   });
 
   it("rejects pathPrefixes on a non-holistic scope", async () => {
@@ -337,12 +372,21 @@ describe("POST /projects/:projectId/docs/generate — pathPrefixes", () => {
     mocked(prisma.project.findUnique).mockResolvedValueOnce({ workspaceId: "ws-other" });
     const res = await post({ pathPrefixes: ["packages/fit/"] });
     expect(res.status).toBe(404);
-    expect(prisma.codeSymbol.findFirst).not.toHaveBeenCalled();
+    expect(prisma.codeSymbol.findMany).not.toHaveBeenCalled();
     expect(prisma.generatedDocument.create).not.toHaveBeenCalled();
   });
 
+  it("an inconclusive scan (page cap reached) is accepted, not reported empty", async () => {
+    mocked(prisma.codeSymbol.findMany).mockImplementation(async () =>
+      Array.from({ length: 500 }, (_, i) => ({ id: `s${i}`, filePath: "packagesXfit/x.ts" })),
+    );
+    const res = await post({ pathPrefixes: ["packages_fit"] });
+    expect(res.status).toBe(202);
+    expect(prisma.codeSymbol.findMany).toHaveBeenCalledTimes(20);
+  });
+
   it("returns a clear 400 when the prefixes match no indexed code", async () => {
-    mocked(prisma.codeSymbol.findFirst).mockResolvedValue(null);
+    mocked(prisma.codeSymbol.findMany).mockResolvedValue([]);
     const res = await post({ pathPrefixes: ["packages/nope/"] });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("PATH_SCOPE_EMPTY");

@@ -6,8 +6,14 @@
  * limited to a few repository-relative path prefixes (`pathPrefixes` on
  * POST /api/projects/:id/docs/generate), prints the document id, polls until it
  * finishes and prints a summary: status, characters, sections, warnings and the
- * provenance counts. See docs/ops/local-serving.md, "Fast test runs with a path
+ * path scope. See docs/ops/local-serving.md, "Fast test runs with a path
  * scope".
+ *
+ * It reads only the fields that stay on the document detail route (id, title,
+ * status, content, warnings, scope/scopeFilter), never the version provenance
+ * manifests, which #190 moves to their own endpoints. An unreadable detail
+ * response (a body that is not JSON, or one with no document status) is
+ * retried a few times rather than dereferenced.
  *
  * It talks to an ALREADY RUNNING local stack over HTTP with mock auth. It never
  * starts or stops a server, and never talks to the model host itself.
@@ -41,6 +47,21 @@ import { pathToFileURL } from "node:url";
 
 const DOC_TYPES = new Set(["business-requirements", "architecture", "user-guide"]);
 const RUNNING = new Set(["pending", "generating"]);
+/** Consecutive unreadable detail responses tolerated before giving up. */
+export const MAX_UNREADABLE_POLLS = 3;
+
+/**
+ * A 2xx response whose body is not JSON. Distinct from an HTTP error so the
+ * poll loop can retry it: at the end of a real run the finished document's
+ * detail response arrived this way, and the old client turned it into `{}`.
+ */
+export class UnreadableResponseError extends Error {
+  /** @param {string} message */
+  constructor(message) {
+    super(message);
+    this.name = "UnreadableResponseError";
+  }
+}
 
 /**
  * @typedef {object} Options
@@ -143,6 +164,26 @@ export function sectionHeadings(markdown) {
 }
 
 /**
+ * The document's path scope, from `scopeFilter.pathPrefixes` on the detail
+ * payload (stored as a JSON string; an object is accepted too). `null` when
+ * the document is unscoped or the filter cannot be read.
+ * @param {Json} doc
+ * @returns {string[] | null}
+ */
+export function pathScopeOf(doc) {
+  let filter = doc?.scopeFilter;
+  if (typeof filter === "string") {
+    try {
+      filter = JSON.parse(filter);
+    } catch {
+      return null;
+    }
+  }
+  const prefixes = filter?.pathPrefixes;
+  return Array.isArray(prefixes) && prefixes.length > 0 ? prefixes.map(String) : null;
+}
+
+/**
  * Build the printable summary of a finished document (the GET /:docId payload).
  * Pure, so it is testable without a server.
  * @param {Json} doc
@@ -171,36 +212,10 @@ export function summarizeDocument(doc) {
     );
   }
 
-  const raw = doc?.versions?.[0]?.provenanceManifest;
-  let manifest = null;
-  try {
-    manifest = typeof raw === "string" ? JSON.parse(raw) : (raw ?? null);
-  } catch {
-    manifest = null;
-  }
-  if (manifest) {
-    const scope = manifest.document?.pathPrefixes;
-    lines.push(
-      `Scope:    ${Array.isArray(scope) ? scope.map((p) => `${p}/`).join(", ") : "full project (no path scope)"}`,
-    );
-    const sections = Array.isArray(manifest.sections) ? manifest.sections : [];
-    const primary = manifest.selectedEvidence?.primary;
-    const evidence = Array.isArray(primary) ? primary.length : 0;
-    lines.push(
-      `Provenance: ${sections.length} section record(s), ${evidence} selected evidence source(s)`,
-    );
-    for (const s of sections) {
-      lines.push(
-        `  - ${s.sectionLabel}: ${s.providerKind}/${s.model}, facts ${s.factsSourceIds?.length ?? 0}, grounding ${s.groundingSourceIds?.length ?? 0}`,
-      );
-    }
-    const models = manifest.generation?.model;
-    if (models) {
-      lines.push(`Models:   phase1=${models.phase1?.model} phase2=${models.phase2?.model}`);
-    }
-  } else {
-    lines.push("Provenance: none recorded");
-  }
+  const scope = pathScopeOf(doc);
+  lines.push(
+    `Scope:    ${scope ? scope.map((p) => `${p}/`).join(", ") : "full project (no path scope)"}`,
+  );
   return lines.join("\n");
 }
 
@@ -248,7 +263,17 @@ export function createClient(opts, fetchImpl = globalThis.fetch) {
       return call(method, path, payload, true);
     }
     /** @type {Json} */
-    const body = await res.json().catch(() => ({}));
+    let body;
+    try {
+      body = await res.json();
+    } catch {
+      if (res.ok) {
+        throw new UnreadableResponseError(
+          `${method} ${path} → ${res.status}: response body was not valid JSON`,
+        );
+      }
+      body = {};
+    }
     if (!res.ok) {
       throw new Error(
         `${method} ${path} → ${res.status}: ${body?.error?.code ?? ""} ${body?.error?.message ?? ""}`.trim(),
@@ -296,8 +321,31 @@ export async function run(opts, deps = {}) {
   const watchedId = docId;
   const started = now();
   let lastStatus = null;
+  let unreadable = 0;
   for (;;) {
-    const { data } = await client.call("GET", `${docsPath}/${encodeURIComponent(watchedId)}`);
+    /** @type {Json} */
+    let data = null;
+    /** @type {string} */
+    let problem = "the response had no document status";
+    try {
+      const body = await client.call("GET", `${docsPath}/${encodeURIComponent(watchedId)}`);
+      data = body?.data;
+    } catch (err) {
+      if (!(err instanceof UnreadableResponseError)) throw err;
+      problem = err.message;
+    }
+    if (!data || typeof data !== "object" || typeof data.status !== "string") {
+      unreadable += 1;
+      if (unreadable >= MAX_UNREADABLE_POLLS) {
+        throw new Error(
+          `doc ${watchedId}: ${unreadable} unreadable detail responses in a row (last: ${problem})`,
+        );
+      }
+      log(`unreadable detail response (${problem}); retrying`);
+      await sleep(opts.pollMs);
+      continue;
+    }
+    unreadable = 0;
     if (data.status !== lastStatus) {
       log(`[${Math.round((now() - started) / 60000)} min] status: ${data.status}`);
       lastStatus = data.status;

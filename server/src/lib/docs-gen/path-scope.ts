@@ -120,14 +120,53 @@ export function isInPathScope(filePath: string, prefixes: readonly string[]): bo
 }
 
 /**
- * Prisma `OR` fragment selecting code symbols inside the scope, with the same
- * segment-aware semantics as {@link isInPathScope}. The prefixes are bound as
- * query parameters by Prisma, never interpolated into SQL.
+ * Prisma `OR` fragment selecting CANDIDATE code symbols for the scope. The
+ * prefixes are bound as query parameters by Prisma, never interpolated into
+ * SQL — but Prisma 7 compiles `startsWith` to `LIKE (? || '%')` without
+ * escaping `%` or `_` (and SQLite's LIKE is ASCII case-insensitive), so this
+ * over-matches: `pack_ges/` selects `packages/…`. Use it only as a coarse
+ * filter and confirm each row with {@link isInPathScope}, as
+ * {@link probePathScope} does. Escaping is not an option: SQLite LIKE has no
+ * default escape character, so a backslash would be matched literally there.
  */
 export function pathScopeWhere(
   prefixes: readonly string[],
 ): Array<{ filePath: string } | { filePath: { startsWith: string } }> {
   return prefixes.flatMap((p) => [{ filePath: p }, { filePath: { startsWith: `${p}/` } }]);
+}
+
+/** Candidate rows fetched per page by {@link probePathScope}. */
+export const PATH_SCOPE_PROBE_PAGE_SIZE = 500;
+/** Pages {@link probePathScope} reads before giving up with `"unknown"`. */
+export const PATH_SCOPE_PROBE_MAX_PAGES = 20;
+
+/** Outcome of {@link probePathScope}. */
+export type PathScopeProbe = "match" | "none" | "unknown";
+
+/**
+ * Whether any stored file path is inside the scope, EXACTLY. `fetchPage`
+ * returns candidate rows (the {@link pathScopeWhere} filter, ordered by id,
+ * after `afterId`); each is confirmed with {@link isInPathScope}, so a LIKE
+ * wildcard or case false positive never counts. In the normal case the first
+ * candidate confirms. `"unknown"` when the page cap is reached without a
+ * confirmed match: the caller must not report the scope as empty then — the
+ * run-time {@link restrictToPathScope} check is authoritative.
+ */
+export async function probePathScope(
+  prefixes: readonly string[],
+  fetchPage: (page: {
+    afterId: string | undefined;
+    take: number;
+  }) => Promise<ReadonlyArray<{ id: string; filePath: string }>>,
+): Promise<PathScopeProbe> {
+  let afterId: string | undefined;
+  for (let page = 0; page < PATH_SCOPE_PROBE_MAX_PAGES; page += 1) {
+    const rows = await fetchPage({ afterId, take: PATH_SCOPE_PROBE_PAGE_SIZE });
+    if (rows.some((r) => isInPathScope(r.filePath, prefixes))) return "match";
+    if (rows.length < PATH_SCOPE_PROBE_PAGE_SIZE) return "none";
+    afterId = rows[rows.length - 1].id;
+  }
+  return "unknown";
 }
 
 interface ScopableModule {
@@ -195,13 +234,28 @@ export function scopedDocumentTitle(title: string, prefixes: readonly string[]):
 }
 
 /**
+ * A CommonMark code span that holds `text` verbatim, whatever backticks it
+ * contains: the delimiter is one backtick longer than the longest run inside,
+ * and the content is space-padded when it starts or ends with a backtick.
+ * Prefixes are user input written into markdown (OWASP A03); with a plain
+ * single-backtick span, a backtick in a prefix closed the span and the rest
+ * rendered as markdown — an external image or link in every viewer's browser.
+ */
+function markdownCodeSpan(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(longest + 1);
+  const pad = text.startsWith("`") || text.endsWith("`") ? " " : "";
+  return `${fence}${pad}${text}${pad}${fence}`;
+}
+
+/**
  * Insert the scope banner directly under the document's H1 (or at the top
  * when there is none), so the rendered document states it is partial.
  */
 export function withPathScopeBanner(markdown: string, prefixes: readonly string[]): string {
   const banner =
     `> **Scoped document — not a full-project document.** Generated only from ` +
-    `${prefixes.map((p) => `\`${p}/\``).join(", ")}; modules outside these paths were not read.\n`;
+    `${prefixes.map((p) => markdownCodeSpan(`${p}/`)).join(", ")}; modules outside these paths were not read.\n`;
   if (markdown.startsWith("# ")) {
     const eol = markdown.indexOf("\n");
     if (eol === -1) return `${markdown}\n\n${banner}`;

@@ -65,6 +65,12 @@ interface DocWarning {
    * legacy count-based warning.
    */
   tier?: "narrative" | "reconstruction" | "literal";
+  /**
+   * #186 — true when `ratio` came from a SAMPLE of the section's statements
+   * (DOCS_GEN_GROUNDING=sample), never from all of them. Rendered as a sampled
+   * figure so an estimate is never read as a full verification.
+   */
+  sampled?: boolean;
 }
 
 interface GeneratedDoc {
@@ -1265,7 +1271,8 @@ export function formatWarningDetail(w: DocWarning): string {
     const pct = Math.round(w.ratio * 100);
     const thresholdPct =
       typeof w.threshold === "number" ? ` (threshold ${Math.round(w.threshold * 100)}%)` : "";
-    return `${w.message} [faithfulness ${pct}%${thresholdPct}]${tierRangeTag(w)}`;
+    const label = w.sampled === true ? "sampled faithfulness" : "faithfulness";
+    return `${w.message} [${label} ${pct}%${thresholdPct}]${tierRangeTag(w)}`;
   }
   return `${w.message}${tierRangeTag(w)}`;
 }
@@ -1297,6 +1304,9 @@ export function classifyWarningSeverity(warnings: DocWarning[]): {
     // (the doc was built from little/no source) are always concerning.
     if (w.kind === "section-failed" || w.kind === "no-modules" || w.kind === "source-unavailable")
       return true;
+    // #186 — a section that was not, or only partly, fact-checked has no
+    // full-check result to fall short of; groundingModeNotice says so instead.
+    if (w.kind === "grounding-skipped" || w.kind === "grounding-sampled") return false;
     // A literal code-derived section below its bar is worth verifying.
     if (w.tier === "literal") return true;
     // Within-tolerance tiers (narrative/reconstruction) are NOT concerning.
@@ -1313,6 +1323,31 @@ export function classifyWarningSeverity(warnings: DocWarning[]): {
     ),
   );
   return { reviewRecommended: concerning.length > 0, concerningSections };
+}
+
+/**
+ * #186 — the banner line for a document generated with fact-checking switched
+ * off or sampled (DOCS_GEN_GROUNDING). `null` for a fully checked document.
+ * Without it the tier headline would call an unchecked document "grounded"
+ * and a spot-check estimate a verified result. Exported for unit testing.
+ */
+export function groundingModeNotice(warnings: DocWarning[]): string | null {
+  const notices: string[] = [];
+  const skipped = warnings.filter((w) => w.kind === "grounding-skipped").length;
+  if (skipped > 0) {
+    notices.push(
+      `Not fact-checked: ${skipped} section(s) were generated with fact-checking switched off ` +
+        `(DOCS_GEN_GROUNDING=off), so their statements were never checked against the source.`,
+    );
+  }
+  if (warnings.some((w) => w.kind === "grounding-sampled" || w.sampled === true)) {
+    notices.push(
+      "Spot-checked only: fact-checking ran on a sample of each section " +
+        "(DOCS_GEN_GROUNDING=sample), so the faithfulness figures below are estimates, " +
+        "not a full verification.",
+    );
+  }
+  return notices.length > 0 ? notices.join(" ") : null;
 }
 
 /**
@@ -1368,8 +1403,9 @@ export function DegradedWarningsBanner({
   // look. We deliberately do NOT fabricate an "N of M sections" count: the
   // warnings list contains only FLAGGED sections, never the document total.
   const { reviewRecommended, concerningSections } = classifyWarningSeverity(warnings);
+  const modeNotice = groundingModeNotice(warnings);
 
-  const headline = reviewRecommended
+  const tierHeadline = reviewRecommended
     ? concerningSections.length > 0
       ? `Most sections are grounded; ${formatSectionList(concerningSections)} ${
           concerningSections.length === 1 ? "falls" : "fall"
@@ -1378,10 +1414,15 @@ export function DegradedWarningsBanner({
         } worth verifying.`
       : "Most sections are grounded; the sections below fall short of the code-fidelity bar and are worth verifying."
     : "Grounded within normal tolerance — some narrative/reconstruction sections blend source-code facts with inferred domain context (expected for these section types). See the breakdown below.";
+  // #186 — with fact-checking off or sampled, "grounded within tolerance" is a
+  // claim nothing verified: the mode notice replaces it, and precedes a
+  // review headline that names genuinely short sections.
+  const headline = modeNotice && !reviewRecommended ? null : tierHeadline;
 
   return (
     <Card className="border-amber-300 bg-amber-50 p-4" role="alert">
-      <p className="font-medium text-amber-900">{headline}</p>
+      {modeNotice && <p className="font-medium text-amber-900">{modeNotice}</p>}
+      {headline && <p className="font-medium text-amber-900">{headline}</p>}
       {warnings.length > 0 && (
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-800">
           {warnings.map((w, i) => (

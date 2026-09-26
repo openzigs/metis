@@ -146,3 +146,62 @@ describe("DegradedWarningsBanner — a11y + styling preserved", () => {
     expect(container.querySelector(".border-amber-300")).not.toBeNull();
   });
 });
+
+describe("DegradedWarningsBanner — DOCS_GEN_GROUNDING off / sample (#186)", () => {
+  const skipped = (section: string) => ({
+    kind: "grounding-skipped",
+    section,
+    message: `Section "${section}" was NOT fact-checked.`,
+    severity: "warning",
+  });
+  const spotChecked = (section: string) => ({
+    kind: "grounding-sampled",
+    section,
+    message: `Section "${section}" was only SPOT-CHECKED.`,
+    severity: "warning",
+    ratio: 0.9,
+    threshold: 0.8,
+    sampled: true,
+  });
+
+  it("an unchecked (off) document never claims its sections are grounded or short of the bar", () => {
+    render(
+      <DegradedWarningsBanner
+        warnings={[skipped("Business Rules"), skipped("Key Workflows")]}
+        errorMessage={null}
+      />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(/Not fact-checked: 2 section\(s\)/);
+    expect(alert).not.toHaveTextContent(/grounded/i);
+    expect(alert).not.toHaveTextContent(/code-fidelity bar/i);
+  });
+
+  it("a spot-checked (sample) document says its figures are estimates and never 'within tolerance'", () => {
+    render(
+      <DegradedWarningsBanner warnings={[spotChecked("Business Rules")]} errorMessage={null} />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(/Spot-checked only/);
+    expect(alert).toHaveTextContent(/\[sampled faithfulness 90% \(threshold 80%\)\]/);
+    expect(alert).not.toHaveTextContent(/within normal tolerance/i);
+    expect(alert).not.toHaveTextContent(/falls? short of the code-fidelity bar/i);
+  });
+
+  it("keeps the review headline for real problems and adds the sample notice", () => {
+    render(
+      <DegradedWarningsBanner
+        warnings={[
+          spotChecked("Overview"),
+          { ...tierWarning("Business Rules", "literal"), sampled: true },
+        ]}
+        errorMessage={null}
+      />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(/Spot-checked only/);
+    expect(alert).toHaveTextContent(/"Business Rules" falls short of the code-fidelity bar/);
+    // The spot-checked section is listed, but never named as short of the bar.
+    expect(alert).not.toHaveTextContent(/"Overview"[^.]*short of the code-fidelity bar/);
+  });
+});

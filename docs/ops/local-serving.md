@@ -500,6 +500,10 @@ POST /api/projects/:projectId/docs/generate
 - Only `scope: "full"` or `"repository"` accept them. A prefix list that matches
   no indexed code is rejected up front (`400 PATH_SCOPE_EMPTY`); one that matches
   only test files (excluded from Phase 1) fails the run with the same message.
+  The up-front check confirms each database candidate against the exact,
+  segment-wise matcher, because the database prefix filter treats `%` and `_` as
+  wildcards (and SQLite compares case-insensitively): `pack_ges/` is an empty
+  scope, not a match for `packages/`.
 - Only in-scope modules enter Phase 1 and every Phase-2 section, and
   repository-source grounding chunks outside the scope are dropped (uploaded
   reference documents are kept). The document says it is scoped three ways: a
@@ -510,8 +514,10 @@ POST /api/projects/:projectId/docs/generate
 
 The runner triggers a scoped run against an already-running stack (mock auth,
 `admin`/`password` by default), prints the document id, and prints a summary —
-status, characters, sections, warnings, provenance counts — when it finishes.
-It never starts or stops a server:
+status, characters, sections, warnings and path scope — when it finishes. It
+reads only the detail route's own fields (never the version provenance
+manifests), and retries an unreadable detail response up to three times in a
+row before failing with a clear error. It never starts or stops a server:
 
 ```bash
 node scripts/local-llm/docs-gen-scoped-run.mjs --project <projectId> \

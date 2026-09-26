@@ -710,6 +710,43 @@ describe("DOCS_GEN_GROUNDING warnings", () => {
     expect(base.sampled).toBeUndefined();
   });
 
+  it("summarizeWarnings says a below-bar score was sampled, on the merged kind/section grouping", () => {
+    const below = markWarningSampled(
+      sectionUnfaithfulWarning("Rules", {
+        supportedClaims: 5,
+        totalClaims: 10,
+        faithfulness: 0.5,
+        threshold: 0.8,
+      }),
+      sample,
+    );
+    const above = groundingSampledWarning(
+      "Overview",
+      { supportedClaims: 9, totalClaims: 10, faithfulness: 0.9, threshold: 0.4 },
+      sample,
+    );
+    expect(summarizeWarnings([below, above])).toBe(
+      "Needs review — 1 section(s) include statements not auto-verified against the source " +
+        "(scored from a sample, DOCS_GEN_GROUNDING=sample); " +
+        "1 section(s) were only spot-checked (DOCS_GEN_GROUNDING=sample).",
+    );
+    // A fully checked below-bar section keeps the unqualified wording.
+    const full = sectionUnfaithfulWarning("Rules", {
+      supportedClaims: 5,
+      totalClaims: 10,
+      faithfulness: 0.5,
+      threshold: 0.8,
+    });
+    expect(summarizeWarnings([full])).toBe(
+      "Needs review — 1 section(s) include statements not auto-verified against the source.",
+    );
+    // Mixed: only the sampled share is qualified.
+    expect(summarizeWarnings([full, below])).toContain(
+      "2 section(s) include statements not auto-verified against the source " +
+        "(1 scored from a sample, DOCS_GEN_GROUNDING=sample)",
+    );
+  });
+
   it("zero-length coverage renders 0% instead of NaN", () => {
     const w = groundingSampledWarning(
       "X",

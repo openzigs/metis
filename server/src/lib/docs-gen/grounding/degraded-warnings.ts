@@ -961,7 +961,10 @@ export function serializeWarnings(warnings: DocWarning[]): string | null {
 export function summarizeWarnings(warnings: DocWarning[]): string {
   if (warnings.length === 0) return "";
   const failed = warnings.filter((w) => w.kind === "section-failed").length;
-  const ungrounded = warnings.filter((w) => w.kind === "section-ungrounded").length;
+  const ungroundedWarnings = warnings.filter((w) => w.kind === "section-ungrounded");
+  const ungrounded = ungroundedWarnings.length;
+  // #186 — a below-bar score from a SAMPLE is an estimate; the line says so.
+  const ungroundedSampled = ungroundedWarnings.filter((w) => w.sampled === true).length;
   const noModules = warnings.filter((w) => w.kind === "no-modules").length;
   const sourceUnavailable = warnings.filter((w) => w.kind === "source-unavailable").length;
   // Two different facts-truncated causes share the kind: an INPUT facts cap per
@@ -985,7 +988,14 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
   const parts: string[] = [];
   if (failed > 0) parts.push(`${failed} section(s) failed to generate`);
   if (ungrounded > 0)
-    parts.push(`${ungrounded} section(s) include statements not auto-verified against the source`);
+    parts.push(
+      `${ungrounded} section(s) include statements not auto-verified against the source` +
+        (ungroundedSampled === 0
+          ? ""
+          : ungroundedSampled === ungrounded
+            ? " (scored from a sample, DOCS_GEN_GROUNDING=sample)"
+            : ` (${ungroundedSampled} scored from a sample, DOCS_GEN_GROUNDING=sample)`),
+    );
   if (noModules > 0) parts.push("no documentable modules were found despite indexed code");
   if (sourceUnavailable > 0)
     parts.push("source code could not be read — re-ingest the project and regenerate");

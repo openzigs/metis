@@ -4,10 +4,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createClient,
   parseArgs,
+  pathScopeOf,
   resolveOptions,
   run,
   sectionHeadings,
   summarizeDocument,
+  UnreadableResponseError,
 } from "./docs-gen-scoped-run.mjs";
 
 const json = (status: number, body: unknown) =>
@@ -78,33 +80,20 @@ describe("sectionHeadings", () => {
 });
 
 describe("summarizeDocument", () => {
-  it("prints status, chars, sections, warnings and provenance", () => {
+  it("prints status, chars, sections, warnings and the path scope", () => {
     const text = summarizeDocument({
       id: "d1",
       title: "BR [scope: packages/fit/]",
       status: "degraded",
+      scope: "full",
+      scopeFilter: JSON.stringify({
+        docType: "business-requirements",
+        pathPrefixes: ["packages/fit"],
+      }),
       content: "# BR\n\n## Business Rules\n\n## Calculations\n",
       warnings: [
         { kind: "section-failed", severity: "error", section: "Calculations", message: "boom" },
         { kind: "section-failed", severity: "error", message: "again" },
-      ],
-      versions: [
-        {
-          provenanceManifest: JSON.stringify({
-            document: { pathPrefixes: ["packages/fit"] },
-            selectedEvidence: { primary: [{}, {}] },
-            sections: [
-              {
-                sectionLabel: "Business Rules",
-                providerKind: "local",
-                model: "laguna",
-                factsSourceIds: ["a"],
-                groundingSourceIds: ["b", "c"],
-              },
-            ],
-            generation: { model: { phase1: { model: "p1m" }, phase2: { model: "p2m" } } },
-          }),
-        },
       ],
     });
     expect(text).toContain("Status:   degraded");
@@ -113,26 +102,37 @@ describe("summarizeDocument", () => {
     expect(text).toContain("by kind: section-failed=2");
     expect(text).toContain("[error] section-failed (Calculations): boom");
     expect(text).toContain("Scope:    packages/fit/");
-    expect(text).toContain("Provenance: 1 section record(s), 2 selected evidence source(s)");
-    expect(text).toContain("Business Rules: local/laguna, facts 1, grounding 2");
-    expect(text).toContain("phase1=p1m phase2=p2m");
   });
 
-  it("copes with a failed doc and no manifest", () => {
+  it("never reads the version provenance manifests (#190 moves them off the detail route)", () => {
     const text = summarizeDocument({
-      id: "d1",
-      status: "failed",
-      errorMessage: "nope",
-      versions: [],
+      status: "ready",
+      scopeFilter: "{}",
+      versions: [{ provenanceManifest: JSON.stringify({ document: { pathPrefixes: ["x"] } }) }],
     });
+    expect(text).toContain("full project (no path scope)");
+    expect(text).not.toContain("Provenance");
+  });
+
+  it("copes with a failed doc and a missing or unreadable scope filter", () => {
+    const text = summarizeDocument({ id: "d1", status: "failed", errorMessage: "nope" });
     expect(text).toContain("Error:    nope");
-    expect(text).toContain("Provenance: none recorded");
-    expect(summarizeDocument({ versions: [{ provenanceManifest: "{bad" }] })).toContain(
-      "none recorded",
-    );
-    expect(summarizeDocument({ versions: [{ provenanceManifest: "{}" }] })).toContain(
-      "full project (no path scope)",
-    );
+    expect(text).toContain("full project (no path scope)");
+  });
+});
+
+describe("pathScopeOf", () => {
+  it("reads scopeFilter as a JSON string or an object", () => {
+    expect(pathScopeOf({ scopeFilter: '{"pathPrefixes":["a","b/c"]}' })).toEqual(["a", "b/c"]);
+    expect(pathScopeOf({ scopeFilter: { pathPrefixes: ["a"] } })).toEqual(["a"]);
+  });
+
+  it("returns null when unscoped or unreadable", () => {
+    expect(pathScopeOf({ scopeFilter: "{bad" })).toBeNull();
+    expect(pathScopeOf({ scopeFilter: '{"pathPrefixes":[]}' })).toBeNull();
+    expect(pathScopeOf({ scopeFilter: '{"pathPrefixes":"a"}' })).toBeNull();
+    expect(pathScopeOf({})).toBeNull();
+    expect(pathScopeOf(null)).toBeNull();
   });
 });
 
@@ -170,6 +170,39 @@ describe("createClient", () => {
       .mockResolvedValueOnce(json(400, { error: { code: "PATH_SCOPE_EMPTY", message: "none" } }));
     await expect(createClient({ base: "b" }, fetch).call("POST", "/g", {})).rejects.toThrow(
       "POST /g → 400: PATH_SCOPE_EMPTY none",
+    );
+  });
+});
+
+describe("createClient — unreadable bodies", () => {
+  const broken = (status: number) =>
+    ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => {
+        throw new SyntaxError("bad json");
+      },
+    }) as unknown as Response;
+
+  it("a 2xx body that is not JSON is an UnreadableResponseError, never `{}`", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(json(200, { data: { accessToken: "t" } }))
+      .mockResolvedValueOnce(broken(200));
+    const err = await createClient({ base: "b" }, fetch)
+      .call("GET", "/d")
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnreadableResponseError);
+    expect(String(err)).toContain("GET /d → 200: response body was not valid JSON");
+  });
+
+  it("a non-2xx body that is not JSON still reports the HTTP status", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(json(200, { data: { accessToken: "t" } }))
+      .mockResolvedValueOnce(broken(502));
+    await expect(createClient({ base: "b" }, fetch).call("GET", "/d")).rejects.toThrow(
+      /^GET \/d → 502:/,
     );
   });
 });
@@ -248,6 +281,108 @@ describe("run", () => {
     );
     expect(result.status).toBe("timeout");
     expect(result.summary).toContain("still generating");
+  });
+
+  // The crash seen at the end of a real run: the detail response for the
+  // finished (large) document came back 200 with a body that was not valid
+  // JSON, the client swallowed the parse error as `{}`, and the poll loop
+  // read `data.status` off `undefined`.
+  const unparseable = (status = 200) =>
+    ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => {
+        throw new SyntaxError("Unexpected end of JSON input");
+      },
+    }) as unknown as Response;
+
+  it("survives an unparseable completion response and summarises the next good one", async () => {
+    const replies = [
+      json(200, { data: { id: "d2", status: "generating" } }),
+      unparseable(),
+      json(200, {
+        data: {
+          id: "d2",
+          title: "T [scope: packages/fit/]",
+          status: "degraded",
+          scope: "full",
+          scopeFilter: JSON.stringify({
+            docType: "business-requirements",
+            pathPrefixes: ["packages/fit"],
+          }),
+          content: "# T\n\n## A\n",
+          warnings: [{ kind: "grounding-sampled", severity: "warning", message: "spot" }],
+          // PR #190 detail shape: versions carry no manifest and no content.
+          versions: [{ id: "v1", version: 1, revisionId: "r1" }],
+        },
+      }),
+    ];
+    const fetch = vi.fn(async (url: string) =>
+      url.endsWith("/auth/login") ? json(200, { data: { accessToken: "t" } }) : replies.shift()!,
+    );
+    const log = vi.fn();
+    const result = await run({ ...opts, doc: "d2" }, { fetch, log, sleep: async () => {} });
+    expect(result.status).toBe("degraded");
+    expect(result.summary).toContain("Scope:    packages/fit/");
+    expect(result.summary).toContain("by kind: grounding-sampled=1");
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/unreadable detail response/));
+  });
+
+  it("a detail response without a document status is retried, not dereferenced", async () => {
+    const replies = [
+      json(200, {}),
+      json(200, { data: null }),
+      json(200, { data: { id: "d2", status: "ready", content: "" } }),
+    ];
+    const fetch = vi.fn(async (url: string) =>
+      url.endsWith("/auth/login") ? json(200, { data: { accessToken: "t" } }) : replies.shift()!,
+    );
+    const result = await run(
+      { ...opts, doc: "d2" },
+      { fetch, log: vi.fn(), sleep: async () => {} },
+    );
+    expect(result.status).toBe("ready");
+  });
+
+  it("gives up with a clear error after repeated unreadable detail responses", async () => {
+    const fetch = vi.fn(async (url: string) =>
+      url.endsWith("/auth/login") ? json(200, { data: { accessToken: "t" } }) : unparseable(),
+    );
+    const sleep = vi.fn(async () => {});
+    await expect(run({ ...opts, doc: "d2" }, { fetch, log: vi.fn(), sleep })).rejects.toThrow(
+      /doc d2: 3 unreadable detail responses in a row .*not valid JSON/,
+    );
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it("a good poll resets the unreadable count (only CONSECUTIVE failures give up)", async () => {
+    const replies = [
+      unparseable(),
+      json(200, { data: { id: "d2", status: "generating" } }),
+      unparseable(),
+      unparseable(),
+      json(200, { data: { id: "d2", status: "ready", content: "" } }),
+    ];
+    const fetch = vi.fn(async (url: string) =>
+      url.endsWith("/auth/login") ? json(200, { data: { accessToken: "t" } }) : replies.shift()!,
+    );
+    const result = await run(
+      { ...opts, doc: "d2" },
+      { fetch, log: vi.fn(), sleep: async () => {} },
+    );
+    expect(result.status).toBe("ready");
+  });
+
+  it("an HTTP error while polling is not retried", async () => {
+    const fetch = vi.fn(async (url: string) =>
+      url.endsWith("/auth/login")
+        ? json(200, { data: { accessToken: "t" } })
+        : json(404, { error: { code: "DOC_NOT_FOUND", message: "gone" } }),
+    );
+    await expect(
+      run({ ...opts, doc: "d2" }, { fetch, log: vi.fn(), sleep: async () => {} }),
+    ).rejects.toThrow(/404: DOC_NOT_FOUND gone/);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("fails when generate returns no id", async () => {

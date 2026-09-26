@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { micromark } from "micromark";
+import { describe, expect, it, vi } from "vitest";
 import {
   MAX_PATH_PREFIXES,
   MAX_PATH_PREFIX_LENGTH,
@@ -8,6 +9,9 @@ import {
   pathPrefixesSchema,
   pathScopeLabel,
   pathScopeWhere,
+  probePathScope,
+  PATH_SCOPE_PROBE_MAX_PAGES,
+  PATH_SCOPE_PROBE_PAGE_SIZE,
   readStoredPathScope,
   restrictToPathScope,
   scopedDocumentTitle,
@@ -119,6 +123,61 @@ describe("pathScopeWhere", () => {
   });
 });
 
+describe("probePathScope", () => {
+  // Prisma 7.8 compiles `startsWith` to `LIKE (? || '%')` with no escaping of
+  // `%`/`_` and (SQLite) ASCII-case-insensitive matching — measured against a
+  // scratch SQLite DB: `pack_ges/` and `pack%/` both matched
+  // `packages/fit/a.ts`. The DB result is therefore only a candidate set.
+  const rows = (...paths: string[]) => paths.map((filePath, i) => ({ id: `s${i}`, filePath }));
+
+  it("confirms a DB candidate with the exact, segment-aware matcher", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(rows("packages/fit/a.ts"));
+    await expect(probePathScope(["packages/fit"], fetch)).resolves.toBe("match");
+    expect(fetch).toHaveBeenCalledWith({ afterId: undefined, take: PATH_SCOPE_PROBE_PAGE_SIZE });
+  });
+
+  it.each([
+    ["an underscore wildcard", "pack_ges/fit"],
+    ["a percent wildcard", "pack%"],
+    ["a case-only difference", "Packages/Fit"],
+  ])("a LIKE false positive from %s is not a match", async (_label, prefix) => {
+    const fetch = vi.fn().mockResolvedValueOnce(rows("packages/fit/a.ts")).mockResolvedValue([]);
+    await expect(probePathScope([prefix], fetch)).resolves.toBe("none");
+  });
+
+  it("pages past false positives by id until a real match", async () => {
+    const page1 = Array.from({ length: PATH_SCOPE_PROBE_PAGE_SIZE }, (_, i) => ({
+      id: `a${String(i).padStart(4, "0")}`,
+      filePath: "my-modules/x.ts",
+    }));
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(page1)
+      .mockResolvedValueOnce(rows("my_modules/y.ts"));
+    await expect(probePathScope(["my_modules"], fetch)).resolves.toBe("match");
+    expect(fetch).toHaveBeenNthCalledWith(2, {
+      afterId: page1[page1.length - 1].id,
+      take: PATH_SCOPE_PROBE_PAGE_SIZE,
+    });
+  });
+
+  it("a short page ends the scan with no match", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(rows("other/x.ts"));
+    await expect(probePathScope(["packages/fit"], fetch)).resolves.toBe("none");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops at the page cap and reports unknown rather than a false empty", async () => {
+    const full = Array.from({ length: PATH_SCOPE_PROBE_PAGE_SIZE }, (_, i) => ({
+      id: `b${i}`,
+      filePath: "packagesXfit/x.ts",
+    }));
+    const fetch = vi.fn().mockResolvedValue(full);
+    await expect(probePathScope(["packages_fit"], fetch)).resolves.toBe("unknown");
+    expect(fetch).toHaveBeenCalledTimes(PATH_SCOPE_PROBE_MAX_PAGES);
+  });
+});
+
 describe("restrictToPathScope", () => {
   const sym = (filePath: string) => ({ filePath });
   const fixture = () => ({
@@ -208,6 +267,27 @@ describe("title and banner", () => {
     );
     expect(out).toContain("`packages/fit/`");
     expect(out).toContain("\n\n> header");
+  });
+
+  // OWASP A03 — a prefix is user input written into markdown. A backtick in it
+  // must not close the code span and let the rest render as markdown (an
+  // external image beacon, a link) in every viewer's browser.
+  it("keeps a prefix with backticks inside its code span (no markdown injection)", () => {
+    const evil = "a` ![x](https://evil.example/b.png) [go](https://evil.example) `b";
+    const html = micromark(withPathScopeBanner("# T\n", [evil]));
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<a ");
+    expect(html).toContain(
+      "<code>a` ![x](https://evil.example/b.png) [go](https://evil.example) `b/</code>",
+    );
+  });
+
+  it("renders an ordinary prefix as a plain code span", () => {
+    expect(micromark(withPathScopeBanner("# T\n", ["packages/fit"]))).toContain(
+      "<code>packages/fit/</code>",
+    );
+    // A prefix that starts or ends with a backtick is padded so the span still parses.
+    expect(micromark(withPathScopeBanner("# T\n", ["`x"]))).toContain("<code>`x/</code>");
   });
 
   it("handles a lone H1 and a document without one", () => {

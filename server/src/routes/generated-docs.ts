@@ -64,6 +64,7 @@ import {
   pathPrefixesSchema,
   pathScopeLabel,
   pathScopeWhere,
+  probePathScope,
   readStoredPathScope,
   scopedDocumentTitle,
 } from "../lib/docs-gen/path-scope.js";
@@ -308,15 +309,22 @@ export function generatedDocsRouter(): Router {
       const pathPrefixes = parsed.data.pathPrefixes;
       if (pathPrefixes) {
         // Fail fast with a clear 400 instead of a long run that ends empty.
-        const match = await prisma.codeSymbol.findFirst({
-          where: {
-            projectId,
-            ...(scopedCodeGraphId ? { codeGraphId: scopedCodeGraphId } : {}),
-            OR: pathScopeWhere(pathPrefixes),
-          },
-          select: { id: true },
-        });
-        if (!match) {
+        // The DB filter over-matches (unescaped LIKE), so each candidate is
+        // confirmed exactly; see probePathScope.
+        const probe = await probePathScope(pathPrefixes, ({ afterId, take }) =>
+          prisma.codeSymbol.findMany({
+            where: {
+              projectId,
+              ...(scopedCodeGraphId ? { codeGraphId: scopedCodeGraphId } : {}),
+              ...(afterId ? { id: { gt: afterId } } : {}),
+              OR: pathScopeWhere(pathPrefixes),
+            },
+            select: { id: true, filePath: true },
+            orderBy: { id: "asc" },
+            take,
+          }),
+        );
+        if (probe === "none") {
           throw new AppError(
             400,
             PATH_SCOPE_EMPTY_CODE,
