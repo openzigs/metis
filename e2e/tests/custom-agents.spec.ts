@@ -143,6 +143,41 @@ test.describe("Epic #260 — Custom Analyst Agents", () => {
         }),
       );
 
+      // #135 — the model step renders from the server's model catalog. Serve a
+      // deterministic one (the e2e server runs the offline stub, whose catalog
+      // lists only `offline-stub`).
+      await page.route("**/api/ai/models", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            success: true,
+            data: {
+              provider: "bedrock-gateway",
+              defaultModel: "us.anthropic.claude-sonnet-5",
+              models: [
+                {
+                  provider: "bedrock-gateway",
+                  id: "us.anthropic.claude-sonnet-5",
+                  displayName: "Claude Sonnet 5",
+                  contextWindow: 1000000,
+                  maxOutputTokens: 128000,
+                  price: { inputPerMTok: 2.2, outputPerMTok: 11 },
+                  capabilities: {
+                    tools: true,
+                    jsonSchema: true,
+                    jsonObject: true,
+                    vision: true,
+                    thinking: true,
+                  },
+                  source: "builtin",
+                },
+              ],
+            },
+          }),
+        }),
+      );
+
       const wizard = new AgentWizardPage(page);
       await wizard.goto(ctx.workspaceId);
 
@@ -180,9 +215,12 @@ test.describe("Epic #260 — Custom Analyst Agents", () => {
 
       await test.step("Step 4 — model + reasoning picker", async () => {
         await expect(wizard.stepPanel("model")).toBeVisible();
-        // Must be one of MODEL_OPTIONS in AgentAuthoringWizard.tsx — an id the
+        // Must be a model the catalog (stubbed above) offers — an id the
         // dropdown does not offer makes `selectOption` wait until the test times
         // out.
+        await expect(
+          wizard.modelSelect.locator("option", { hasText: "Claude Sonnet 5" }),
+        ).toHaveCount(1);
         await wizard.modelSelect.selectOption("us.anthropic.claude-sonnet-5");
         await wizard.reasoningSelect.selectOption("medium");
         await wizard.next();
