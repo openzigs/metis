@@ -99,6 +99,7 @@ import {
   mineUnit,
   phase1ChunkLimits,
   planPhase1Chunks,
+  type Phase1ChunkLimits,
   renderUnit,
   resolvePhase1ChunkInputTokens,
   resolvePhase1IncludeTests,
@@ -225,6 +226,7 @@ import {
   mergeBatchSections,
   planBatches,
   shouldResplit,
+  keptWholeReason,
   splitBatch,
   type BatchCandidate,
 } from "./section-batching.js";
@@ -1078,6 +1080,8 @@ export interface ModuleFacts {
   phase1Coverage?: Phase1Coverage;
   /** `.sql` files of the module that could not be read or mined (a document warning names them). */
   phase1SkippedFiles?: string[];
+  /** #191 — the module's directory could not be listed, so none of its `.sql` files was mined. */
+  phase1SkippedDirectories?: string[];
 }
 
 interface ProjectMeta {
@@ -1233,7 +1237,8 @@ async function runHolisticSynthesis(
   let excludedByPolicy: ExcludedByPolicy | null = null;
   if (!includeTests) {
     const policy = excludeTestFiles(modules);
-    modules.splice(0, modules.length, ...policy.modules);
+    modules.length = 0;
+    for (const m of policy.modules) modules.push(m);
     excludedByPolicy = policy.excluded;
     log.info(
       "Phase 1: test/spec/fixture files excluded by policy (DOCS_GEN_PHASE1_INCLUDE_TESTS=false)",
@@ -1291,7 +1296,9 @@ async function runHolisticSynthesis(
           codeGraphId: repository.codeGraphId,
           repoConnectorId: repository.repoConnectorId,
         };
-        modules.push(...sqlOnly.map((m) => ({ ...m, repository: identity })));
+        // A loop, never `push(...sqlOnly)`: up to SQL_SCAN_DIR_CAP modules as
+        // call arguments is within reach of the stack limit (#191).
+        for (const m of sqlOnly) modules.push({ ...m, repository: identity });
         log.info("Synthesized SQL-only-directory modules", {
           projectId,
           count: sqlOnly.length,
@@ -1367,21 +1374,16 @@ async function runHolisticSynthesis(
   // Prepare every module (read, partition, mine — no model) before extracting,
   // so the number of chunks Phase 1 will work through is known up front and
   // progress can be reported per chunk ("Extracting facts: 212/552 chunks").
-  const phase1Limits = phase1ChunkLimits(
-    resolveFactsMaxOutputTokens(phase1.provider.model),
-    resolvePhase1ChunkInputTokens(),
+  // Only the modules extraction starts with are kept prepared (#191).
+  const { prepared, chunksPlanned } = await countPhase1Chunks(
+    modules,
+    (m) => preparePhase1Module(m, cloneDirOf(m), includeTests, pathPrefixes),
+    phase1ChunkLimits(
+      resolveFactsMaxOutputTokens(phase1.provider.model),
+      resolvePhase1ChunkInputTokens(),
+    ),
+    concurrency,
   );
-  const prepared = new Map<ModuleGroup, PreparedPhase1Module>();
-  let chunksPlanned = 0;
-  for (const m of modules) {
-    try {
-      const p = await preparePhase1Module(m, cloneDirOf(m), includeTests, pathPrefixes);
-      prepared.set(m, p);
-      chunksPlanned += Math.max(1, planPhase1Chunks(p.units, phase1Limits).length);
-    } catch {
-      chunksPlanned += 1; // extraction prepares it again (and reports the failure)
-    }
-  }
   let chunksDone = 0;
   const reportPhase1 = (): void => {
     if (!options?.onPhase1Progress) return;
@@ -1497,8 +1499,9 @@ async function runHolisticSynthesis(
     phase1Warnings.push(formulaLinesSkippedWarning(longLineModules, FORMULA_LINE_CHAR_LIMIT));
   }
   const skippedSqlFiles = facts.flatMap((f) => f.phase1SkippedFiles ?? []);
-  if (skippedSqlFiles.length > 0) {
-    phase1Warnings.push(sqlFilesSkippedWarning(skippedSqlFiles));
+  const skippedSqlDirectories = facts.flatMap((f) => f.phase1SkippedDirectories ?? []);
+  if (skippedSqlFiles.length > 0 || skippedSqlDirectories.length > 0) {
+    phase1Warnings.push(sqlFilesSkippedWarning(skippedSqlFiles, skippedSqlDirectories));
   }
   if (failedModules.length > 0) {
     log.warn("Phase 1 fact extraction failed for all or part of one or more modules", {
@@ -1855,14 +1858,15 @@ export async function discoverSqlOnlyModules(
   maxDirs: number = SQL_SCAN_DIR_CAP,
 ): Promise<ModuleGroup[]> {
   const out: ModuleGroup[] = [];
-  // BFS queue of relative dirs ("" === clone root).
+  // BFS queue of relative dirs ("" === clone root), read by index: `shift()`
+  // copies a large array on every call, quadratic for a wide tree (#191).
   const queue: string[] = [""];
-  while (queue.length > 0) {
+  for (let head = 0; head < queue.length; head++) {
     if (stats.visited >= maxDirs) {
       stats.truncated = true;
       break;
     }
-    const rel = queue.shift()!;
+    const rel = queue[head];
     stats.visited += 1;
     let entries: DirEntryLike[];
     try {
@@ -1901,6 +1905,43 @@ export interface PreparedPhase1Module {
   sourceCharsTotal: number;
   /** `.sql` files that could not be read or mined (their rules are missing). */
   skippedFiles: string[];
+  /**
+   * #191 — the module directory, when it exists but could not be listed
+   * (permissions, I/O, a path that escapes the clone): none of its `.sql`
+   * files was mined. A directory that does not exist is not listed here.
+   */
+  skippedDirectories: string[];
+}
+
+/**
+ * #191 (N5) — the number of Phase-1 chunks every module will take, counted up
+ * front so progress is reported per chunk. Counting prepares each module (read,
+ * partition, mine), but keeps only the first `keep` prepared — the modules the
+ * extraction pool starts with; extraction prepares the rest again as it
+ * reaches them. Holding every prepared module until its extraction started
+ * made Phase 1's peak heap grow with the whole project's source (one 2 MB file
+ * alone holds ~75 MB) rather than with the modules in flight. A module that
+ * fails to prepare counts one chunk; extraction prepares it again and reports
+ * the failure.
+ */
+export async function countPhase1Chunks(
+  modules: readonly ModuleGroup[],
+  prepare: (m: ModuleGroup) => Promise<PreparedPhase1Module>,
+  limits: Phase1ChunkLimits,
+  keep: number,
+): Promise<{ prepared: Map<ModuleGroup, PreparedPhase1Module>; chunksPlanned: number }> {
+  const prepared = new Map<ModuleGroup, PreparedPhase1Module>();
+  let chunksPlanned = 0;
+  for (const m of modules) {
+    try {
+      const p = await prepare(m);
+      chunksPlanned += Math.max(1, planPhase1Chunks(p.units, limits).length);
+      if (prepared.size < keep) prepared.set(m, p);
+    } catch {
+      chunksPlanned += 1;
+    }
+  }
+  return { prepared, chunksPlanned };
 }
 
 /**
@@ -1928,6 +1969,7 @@ export async function preparePhase1Module(
   const filePaths = [...new Set(m.syms.map((s) => s.filePath))].sort();
   const fileLines = new Map<string, string[]>();
   const skippedFiles: string[] = [];
+  const skippedDirectories: string[] = [];
   for (const filePath of filePaths) {
     try {
       const fullSource = await readFile(await resolveSourcePath(cloneDir, filePath), "utf-8");
@@ -1951,7 +1993,9 @@ export async function preparePhase1Module(
   // there are no CodeSymbol rows to dispatch on: every `.sql` file in this
   // module's directory is mined in full at the FILE level (baseLine = 1,
   // context = file path). Its rules travel as an inventory-only unit so they
-  // are chunked like any other. Best-effort: any fs/parse failure is swallowed.
+  // are chunked like any other. Nothing is skipped silently: a `.sql` file that
+  // cannot be read or mined, and a module directory that exists but cannot be
+  // listed, are both named in a document warning (#191).
   if (cloneDir) {
     try {
       const moduleAbsDir = await resolveSourcePath(cloneDir, m.dir);
@@ -1996,12 +2040,21 @@ export async function preparePhase1Module(
           skippedFiles.push(relPath);
         }
       }
-    } catch {
-      // module dir not present in clone (e.g. virtual module) — no SQL to mine
+    } catch (err) {
+      // A directory that is not there (a virtual module named after a file) has
+      // no SQL to mine. Any other failure hides every `.sql` file in it.
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") {
+        log.warn("Module directory could not be listed — its SQL files' rules are missing", {
+          modulePath: m.dir,
+          err: String(err).slice(0, 200),
+        });
+        skippedDirectories.push(m.dir || ".");
+      }
     }
   }
 
-  return { filePaths, fileLines, units, sourceCharsTotal, skippedFiles };
+  return { filePaths, fileLines, units, sourceCharsTotal, skippedFiles, skippedDirectories };
 }
 
 /**
@@ -2035,7 +2088,7 @@ export async function extractModuleFacts(
   const callables = m.syms.filter(isCallableSymbol);
   const methodCount = callables.length;
 
-  const { fileLines, units, sourceCharsTotal, skippedFiles } =
+  const { fileLines, units, sourceCharsTotal, skippedFiles, skippedDirectories } =
     hooks?.prepared ?? (await preparePhase1Module(m, cloneDir, includeTests, hooks?.pathPrefixes));
 
   // Issue #330 — detect the silent "source unavailable" degradation: a module
@@ -2124,11 +2177,14 @@ export async function extractModuleFacts(
   const oversizedUnits = oversized.length;
   const formulaLinesSkipped = units.reduce((n, u) => n + (u.formulaLinesSkipped ?? 0), 0);
   if (formulaLinesSkipped > 0) {
-    log.warn("Formula extraction skipped over-long lines (generated or minified code)", {
-      modulePath: m.dir,
-      lines: formulaLinesSkipped,
-      limitChars: FORMULA_LINE_CHAR_LIMIT,
-    });
+    log.warn(
+      "Formula extraction skipped over-long runs with nothing to split at (generated or minified code)",
+      {
+        modulePath: m.dir,
+        lines: formulaLinesSkipped,
+        limitChars: FORMULA_LINE_CHAR_LIMIT,
+      },
+    );
   }
   if (oversizedUnits > 0) {
     log.warn("Phase 1 unit larger than one call even at a single line — sent over budget", {
@@ -2423,6 +2479,7 @@ export async function extractModuleFacts(
     minedRules,
     phase1Coverage: coverage,
     ...(skippedFiles.length > 0 ? { phase1SkippedFiles: skippedFiles } : {}),
+    ...(skippedDirectories.length > 0 ? { phase1SkippedDirectories: skippedDirectories } : {}),
     ...(factsTruncated ? { factsTruncated } : {}),
   };
 }
@@ -3163,7 +3220,10 @@ async function synthesizeBatchedSection(input: {
 
   // Returns the batch's outcomes in PLAN order: a split batch returns its first
   // half's outcomes before its second's, whatever order the calls finish in.
-  const runBatch = async (batch: SectionBatchModule[]): Promise<BatchOutcome[]> => {
+  const runBatch = async (
+    batch: SectionBatchModule[],
+    onFirstOutput?: () => void,
+  ): Promise<BatchOutcome[]> => {
     const batchSources = batch.map((m) => sourceOf.get(m)!);
     const grounding = claimExtractor
       ? mergeFactsIntoContext(input.baseGrounding, batchSources, bundle.factsCharCap)
@@ -3190,6 +3250,7 @@ async function synthesizeBatchedSection(input: {
         // only doubles the section's wall time. Refine stays for single-call
         // groups.
         false,
+        onFirstOutput,
       );
     } catch (err) {
       log.warn("Section batch failed", {
@@ -3219,11 +3280,11 @@ async function synthesizeBatchedSection(input: {
       const secondOutcomes = await runBatch(second);
       return [...firstOutcomes, ...secondOutcomes];
     }
+    // #208 — from the batch's own size, never the shared allowance: the
+    // allowance's value here depends on which batches finished first.
     const keptWhole =
       result.truncation.truncated && batch.length > 1
-        ? resplitsLeft <= 0
-          ? ("allowance" as const)
-          : ("runaway" as const)
+        ? keptWholeReason(batch, plan.outputBudget)
         : undefined;
     batchesDone += 1;
     progress();
@@ -3231,8 +3292,33 @@ async function synthesizeBatchedSection(input: {
   };
 
   const concurrency = resolvePhase2Concurrency(bundle.provider.key);
-  const settled = await mapSettledWithConcurrency(plan.batches, concurrency, (batch) =>
-    runBatch(batch),
+  // #208 — with prompt caching, the first batch runs alone until its reply
+  // begins: a provider's cache entry becomes available only then, so batches
+  // sent together would each pay to WRITE the section's system prompt instead
+  // of one write and the rest reads. The wait is the first call's time to first
+  // token, not the whole call; a first call that fails releases the rest too.
+  let releaseRest = (): void => {};
+  const warmUp =
+    bundle.supportsCaching && concurrency > 1 && plan.batches.length > 1
+      ? new Promise<void>((resolve) => {
+          releaseRest = resolve;
+        })
+      : null;
+  const settled = await mapSettledWithConcurrency(
+    plan.batches,
+    concurrency,
+    async (batch, index) => {
+      if (!warmUp) return runBatch(batch);
+      if (index === 0) {
+        try {
+          return await runBatch(batch, releaseRest);
+        } finally {
+          releaseRest();
+        }
+      }
+      await warmUp;
+      return runBatch(batch);
+    },
   );
   const outcomes: BatchOutcome[] = [];
   for (const s of settled) {
@@ -5207,6 +5293,8 @@ async function generateSectionGroup(
   flowBlob = "",
   batchNote = "",
   allowRefine = true,
+  /** #208 — called once, when the draft call's reply begins (the prompt cache is written). */
+  onFirstOutput?: () => void,
 ): Promise<SectionGroupResult> {
   const isLocal = provider.key === "local-gemma";
   const { systemMessage, userMessage } = buildSectionPrompts(
@@ -5243,6 +5331,7 @@ async function generateSectionGroup(
         supportsCaching,
         projectId,
         progress,
+        onFirstChunk: onFirstOutput,
       });
     } catch (err) {
       if (
@@ -5372,6 +5461,8 @@ async function streamSectionContent(
     projectId?: string;
     /** #114 — counts chunks received, so a caller can tell a mid-stream drop. */
     progress?: { chunks: number };
+    /** #208 — called when the first chunk of the reply arrives. */
+    onFirstChunk?: () => void;
   },
 ): Promise<SectionStreamResult> {
   const messages: ChatMessage[] = [
@@ -5388,6 +5479,7 @@ async function streamSectionContent(
   // #1226 — configurable OUTPUT cap (was hardcoded 8192), clamped to the
   // model's known ceiling.
   const maxTokens = resolveSectionMaxOutputTokens(provider.model);
+  let firstChunk = true;
   for await (const chunk of provider.stream(messages, {
     sessionId: opts.sessionId,
     disableTools: true,
@@ -5402,6 +5494,10 @@ async function streamSectionContent(
     // read to amortise it (#389). #anthropic-prompt-caching.
     promptCaching: singleShotPromptCaching(opts.supportsCaching),
   })) {
+    if (firstChunk) {
+      firstChunk = false;
+      opts.onFirstChunk?.();
+    }
     if (opts.progress) opts.progress.chunks += 1;
     if (chunk.type === "delta") {
       chunks.push(chunk.content);

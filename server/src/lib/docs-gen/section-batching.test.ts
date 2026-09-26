@@ -21,6 +21,7 @@ import {
   MIN_SPLIT_BUDGET_FRACTION,
   planBatches,
   shouldResplit,
+  keptWholeReason,
   splitBatch,
   topicKey,
   type BatchCandidate,
@@ -119,6 +120,19 @@ describe("splitBatch", () => {
 
   it("cannot split a single module", () => {
     expect(splitBatch([cand("a", 1, 1)])).toBeNull();
+  });
+});
+
+describe("keptWholeReason — decided from the batch's own size (#208)", () => {
+  it("is runaway exactly when the size could not have been split, whatever the budget", () => {
+    const budget = 10_000;
+    const small = [cand("a", 1, 1_000), cand("b", 1, 1_499)];
+    const edge = [cand("a", 1, 1_000), cand("b", 1, 1_500)];
+    expect(keptWholeReason(small, budget)).toBe("runaway");
+    expect(keptWholeReason(edge, budget)).toBe("allowance");
+    // Agrees with shouldResplit: with budget left, only a runaway is refused.
+    expect(shouldResplit(small, true, 5, budget)).toBe(false);
+    expect(shouldResplit(edge, true, 5, budget)).toBe(true);
   });
 });
 

@@ -164,8 +164,9 @@ const TEST_DIR_SEGMENTS: ReadonlySet<string> = new Set([
   "__mocks__",
   "mocks",
   "testing",
+  // `spec/` is RSpec's convention; `specs/` is NOT listed — it holds product
+  // specifications as often as tests (#191: ambiguous → production).
   "spec",
-  "specs",
   "e2e",
   "fixtures",
   "__fixtures__",
@@ -197,8 +198,11 @@ const TEST_FILE_PATTERNS: readonly RegExp[] = [
   // a production file loses its rules. (onyourleft's `pmtiles-fixture.ts` and
   // `cross-client-fixture.ts` are therefore read.)
   /[^/.]\.fixtures?\.[^/]+$/i,
-  // browser / integration test pages: harness.ts, game-harness.ts
-  /(^|[-_.])harness\.[^/]+$/i,
+  // test harnesses by name: test-harness.ts, test_harness.py, testharness.js.
+  // A bare `harness.ts` / `wire-harness.ts` is NOT matched: "harness" is a
+  // domain word (a wiring harness), so the ambiguous name resolves to
+  // production (#191). A harness inside a test directory is still test code.
+  /(^|[-_.])test[-_.]?harness\.[^/]+$/i,
   // test-runner configuration
   /^(vitest|jest|playwright|karma|cypress)\.config\.[^/]+$/i,
 ];
@@ -209,6 +213,14 @@ const TEST_FILE_PATTERNS: readonly RegExp[] = [
  */
 const PRODUCTION_TESTING_FEATURE =
   /^(ab|a-b|split|multivariate|load|stress|perf|performance|canary|usability|penetration)[-_]testing\./i;
+
+/**
+ * JVM / .NET class names that end in `Test` because they model an A/B test
+ * (`SplitTest.java`, `AbTest.java`, `MultivariateTests.kt`), not because they
+ * test a class (#191). Only the bare feature name: `PaymentSplitTest.java`
+ * tests `PaymentSplit` and stays test code.
+ */
+const PRODUCTION_TEST_FEATURE_CLASS = /^(Split|Ab|AB|Multivariate)Tests?\.[^/.]+$/;
 
 /** A directory segment of test code: see {@link TEST_DIR_SEGMENTS}, plus C# test projects and fixture dirs. */
 function isTestDirSegment(seg: string): boolean {
@@ -235,7 +247,8 @@ export function isTestSourcePath(filePath: string): boolean {
   const parts = filePath.split("/");
   const base = parts.pop() ?? "";
   if (parts.some(isTestDirSegment)) return true;
-  if (PRODUCTION_TESTING_FEATURE.test(base)) return false;
+  if (PRODUCTION_TESTING_FEATURE.test(base) || PRODUCTION_TEST_FEATURE_CLASS.test(base))
+    return false;
   return TEST_FILE_PATTERNS.some((p) => p.test(base));
 }
 

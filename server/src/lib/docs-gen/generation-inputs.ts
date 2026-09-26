@@ -220,9 +220,12 @@ export async function captureGenerationInputs(
     // Every SQL-only directory holistic synthesis mines, within the same
     // per-repository safety bound: exhausting one clone must not hide inputs
     // from another. No arbitrary non-SQL source-tree contents read.
+    // A read index, never `queue.shift()` (which copies a large array on every
+    // call), and a loop, never `push(...children)` (spreading one directory's
+    // children as call arguments overflows the stack past ~130k) — #191.
     const queue = [""];
-    for (let visited = 0; queue.length && visited < SQL_SCAN_DIR_CAP; visited++) {
-      queue.push(...(await scan(queue.shift()!)));
+    for (let head = 0; head < queue.length && head < SQL_SCAN_DIR_CAP; head++) {
+      for (const child of await scan(queue[head])) queue.push(child);
     }
     // Symbol-derived modules can lie beyond the SQL discovery budget; include
     // their directories (and virtual mega-module dirs) without recursive scans.

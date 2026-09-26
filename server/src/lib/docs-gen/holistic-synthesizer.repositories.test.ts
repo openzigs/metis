@@ -62,6 +62,7 @@ import {
   synthesizeHolisticDocument,
   extractModuleFacts,
   preparePhase1Module,
+  countPhase1Chunks,
   buildSectionFactsSources,
   type ModuleGroup,
 } from "./holistic-synthesizer.js";
@@ -72,6 +73,12 @@ import {
 } from "./grounding/grounding-context.js";
 import { buildCodeGraphSummary } from "./code-graph-summary.js";
 import { repositoryPathIdentity } from "./repository-identity.js";
+import { phase1ChunkLimits } from "./phase1-chunking.js";
+import {
+  deriveDocStatus,
+  SQL_FILES_SECTION,
+  summarizeWarnings,
+} from "./grounding/degraded-warnings.js";
 
 let root: string;
 const cache = new Map<string, Record<string, unknown>>();
@@ -539,13 +546,77 @@ describe("#1354 actual multi-repository synthesis", () => {
       try {
         const result = await synthesizeHolisticDocument("p", "architecture", "Architecture");
         const w = result.warnings.find(
-          (x) => x.section === "Phase 1 facts" && x.message.includes("SQL file"),
+          (x) => x.section === SQL_FILES_SECTION && x.message.includes("SQL file"),
         );
         expect(w).toBeDefined();
         expect(w!.message).toContain("src/locked.sql");
+        // #191 — the advice fits a file the server cannot read.
+        const summary = summarizeWarnings([w!]);
+        expect(summary).toContain("grant read access and regenerate");
+        expect(summary).not.toContain("re-ingest");
       } finally {
         await chmod(locked, 0o644);
       }
     },
   );
+
+  // #191 (L3) — the module-directory listing no longer fails silently.
+  it.skipIf(process.getuid?.() === 0)(
+    "names a module directory that exists but cannot be listed, so none of its SQL is mined",
+    async () => {
+      await writeFile(
+        path.join(root, "a", "src", "schema.sql"),
+        "CREATE TABLE t (id INT NOT NULL);",
+      );
+      const src = path.join(root, "a", "src");
+      // Traversable (so its source file is still read) but not listable.
+      await chmod(src, 0o300);
+      try {
+        const prepared = await preparePhase1Module(
+          { dir: "src", syms: symbols("a") } as unknown as ModuleGroup,
+          path.join(root, "a"),
+        );
+        expect(prepared.fileLines.has("src/rules.ts")).toBe(true);
+        expect(prepared.skippedDirectories).toEqual(["src"]);
+        const result = await synthesizeHolisticDocument("p", "architecture", "Architecture");
+        const w = result.warnings.find((x) => x.section === SQL_FILES_SECTION);
+        expect(w).toBeDefined();
+        expect(w!.message).toContain("1 module directory could not be listed");
+        expect(w!.message).toContain("src");
+        expect(deriveDocStatus(result.warnings)).toBe("degraded");
+      } finally {
+        await chmod(src, 0o755);
+      }
+    },
+  );
+
+  // #191 (N5) — counting chunks up front no longer holds every prepared module.
+  it("counts every module's chunks but keeps only the modules extraction starts with", async () => {
+    const modules = Array.from(
+      { length: 5 },
+      (_, i) => ({ dir: `m${i}`, syms: [] }) as ModuleGroup,
+    );
+    const prepare = vi.fn(async (m: ModuleGroup) => {
+      if (m.dir === "m3") throw new Error("unreadable");
+      return preparePhase1Module(
+        { dir: "src", syms: symbols("a") } as unknown as ModuleGroup,
+        path.join(root, "a"),
+      );
+    });
+    const limits = phase1ChunkLimits(8192);
+    const { prepared, chunksPlanned } = await countPhase1Chunks(modules, prepare, limits, 2);
+    expect(prepare).toHaveBeenCalledTimes(5);
+    // Four prepared modules of one chunk each, and one that failed (one chunk).
+    expect(chunksPlanned).toBe(5);
+    expect([...prepared.keys()].map((m) => m.dir)).toEqual(["m0", "m1"]);
+  });
+
+  it("stays quiet for a module directory that does not exist (a virtual module)", async () => {
+    const prepared = await preparePhase1Module(
+      { dir: "src/rules", syms: [] },
+      path.join(root, "a"),
+    );
+    expect(prepared.skippedDirectories).toEqual([]);
+    expect(prepared.skippedFiles).toEqual([]);
+  });
 });

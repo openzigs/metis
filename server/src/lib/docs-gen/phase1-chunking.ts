@@ -223,20 +223,89 @@ export interface Phase1Unit extends SourceUnit {
   formulas: ExtractedFormula[];
   sasSteps: MinedSasStep[];
   /**
-   * Lines longer than {@link FORMULA_LINE_CHAR_LIMIT} that the formula
-   * extractor was not run on (generated/minified code). Counted, logged and
-   * warned about — never silent. Their rules are still mined.
+   * Lines with a part the formula extractor was not run on: a run longer than
+   * {@link FORMULA_LINE_CHAR_LIMIT} with no `;`, `{`, `}` or `,` to split it at
+   * (embedded data, long literals). Counted, logged and warned about — never
+   * silent. Their rules are still mined.
    */
   formulaLinesSkipped?: number;
 }
 
 /**
- * Longest line the formula extractor is run on. Its regexes backtrack
- * quadratically on a pathological single line (a crafted 1 MB line took ~295 s);
- * hand-written code never approaches this length, and real minified bundles
- * are unaffected in practice, but the bound makes the worst case linear.
+ * Longest line the formula extractor is given. Its regexes backtrack
+ * quadratically on a pathological single line (a crafted 1 MB line took ~295 s),
+ * so a longer line is split into parts no longer than this
+ * ({@link splitLongLine}), which keeps the worst case linear in the line's
+ * length without losing the formulas of minified-but-meaningful code (#191).
  */
 export const FORMULA_LINE_CHAR_LIMIT = 10_000;
+
+/** `text` cut after every character in `delimiters`, delimiters kept. Linear. */
+function splitAfter(text: string, delimiters: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (delimiters.includes(text[i])) {
+      parts.push(text.slice(start, i + 1));
+      start = i + 1;
+    }
+  }
+  if (start < text.length) parts.push(text.slice(start));
+  return parts;
+}
+
+/**
+ * How a line must START for any formula-extractor pattern to match it: every
+ * pattern is anchored at the line start and is either `if …` (a validation or
+ * business rule) or up to a few keywords, a name, an optional `: Type`, then
+ * `=` / `:=` (a constant or calculation). Tested on a bounded head only.
+ */
+const FORMULA_HEAD = /^\s*(?:if\b|(?:[\w$]+\s+){0,6}[\w$]+\s*(?::\s*[\w$]+\s*)?:?=)/;
+const FORMULA_HEAD_CHARS = 512;
+
+/**
+ * Whether the extractor could find a formula in `part`: false when its first
+ * {@link FORMULA_HEAD_CHARS} characters do not start the way every pattern
+ * needs — a base64 source map or an embedded data string. (A formula whose
+ * keywords and name alone run past 512 characters is not code anyone wrote.)
+ */
+function couldHoldFormula(part: string): boolean {
+  return FORMULA_HEAD.test(part.slice(0, FORMULA_HEAD_CHARS));
+}
+
+/**
+ * #191 — an over-long line as parts the formula extractor can read, each at
+ * most `limit` characters: cut after every statement end (`;`) and block
+ * brace (`{`, `}`) — so `function f(){if(a > b){` reads as the formatted
+ * code's `if (a > b) {` line would — and, only for a part still too long,
+ * after every `,` (the comma is
+ * a separator, so it is dropped). A part that is still too long has nothing to
+ * split at (embedded data, a long literal) and is left out; `skipped` counts
+ * those of them that could hold a formula at all — a base64 source map or a
+ * data blob cannot, so leaving it out loses nothing and is not reported
+ * (a vendored minified bundle does not degrade the document for it). Every
+ * cut is a linear scan, and each part is bounded, so
+ * extraction over the parts is linear in the line's length.
+ */
+export function splitLongLine(
+  line: string,
+  limit: number = FORMULA_LINE_CHAR_LIMIT,
+): { parts: string[]; skipped: number } {
+  const parts: string[] = [];
+  let skipped = 0;
+  for (const statement of splitAfter(line, ";{}")) {
+    if (statement.length <= limit) {
+      parts.push(statement);
+      continue;
+    }
+    for (const item of splitAfter(statement, ",")) {
+      const part = item.endsWith(",") ? item.slice(0, -1) : item;
+      if (part.length <= limit) parts.push(part);
+      else if (couldHoldFormula(part)) skipped += 1;
+    }
+  }
+  return { parts, skipped };
+}
 
 function mineRulesIn(
   text: string,
@@ -326,27 +395,44 @@ export function mineUnit(unit: SourceUnit, symbols: readonly SymbolRange[]): Pha
   }));
   // The formula extractor numbers lines from the start of what it is given;
   // shift them to file lines (the budgeted loop reported slice-relative ones).
-  // Over-long lines are blanked (not removed) so line numbers stay correct.
+  // #191 — an over-long line is given to the extractor as its parts, one per
+  // line; `lineOf` maps each of those lines back to the unit line it came from.
   let formulaLinesSkipped = 0;
-  const formulaText =
-    text.includes("\n") || text.length > FORMULA_LINE_CHAR_LIMIT
-      ? text
-          .split("\n")
-          .map((line) => {
-            if (line.length <= FORMULA_LINE_CHAR_LIMIT) return line;
-            formulaLinesSkipped += 1;
-            return "";
-          })
-          .join("\n")
-      : text;
+  let formulaText = text;
+  let lineOf: number[] | null = null;
+  if (text.length > FORMULA_LINE_CHAR_LIMIT) {
+    const sourceLines = text.split("\n");
+    if (sourceLines.some((line) => line.length > FORMULA_LINE_CHAR_LIMIT)) {
+      const extractorLines: string[] = [];
+      const origin: number[] = [];
+      sourceLines.forEach((line, i) => {
+        if (line.length <= FORMULA_LINE_CHAR_LIMIT) {
+          extractorLines.push(line);
+          origin.push(i + 1);
+          return;
+        }
+        const { parts, skipped } = splitLongLine(line);
+        if (skipped > 0) formulaLinesSkipped += 1;
+        for (const part of parts) {
+          extractorLines.push(part);
+          origin.push(i + 1);
+        }
+      });
+      formulaText = extractorLines.join("\n");
+      lineOf = origin;
+    }
+  }
+  const unitLine = (extractorLine: number): number =>
+    (lineOf ? (lineOf[extractorLine - 1] ?? lineOf[lineOf.length - 1] ?? 1) : extractorLine) +
+    startLine -
+    1;
   const formulas = lang
     ? extractFormulas(formulaText, filePath, lang).map((f) => ({
         ...f,
-        startLine: f.startLine + startLine - 1,
-        endLine: f.endLine + startLine - 1,
+        startLine: unitLine(f.startLine),
+        endLine: unitLine(f.endLine),
         symbolContext:
-          f.symbolContext ??
-          innermostCallableAt(fileSymbols, filePath, f.startLine + startLine - 1),
+          f.symbolContext ?? innermostCallableAt(fileSymbols, filePath, unitLine(f.startLine)),
       }))
     : [];
   const sasSteps = lang === "sas" ? mineSasWorkflow(text, filePath, startLine).steps : [];

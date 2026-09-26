@@ -21,6 +21,7 @@ import { formulaLinesSkippedWarning } from "./grounding/degraded-warnings.js";
 import {
   DEFAULT_PHASE1_CHUNK_INPUT_TOKENS,
   FORMULA_LINE_CHAR_LIMIT,
+  splitLongLine,
   MAX_PHASE1_SPLIT_DEPTH,
   PHASE1_INPUT_CHARS_PER_TOKEN,
   buildSourceUnits,
@@ -305,8 +306,101 @@ describe("mineUnit over whole files", () => {
       [{ module: "src/gen", lines: 1 }],
       FORMULA_LINE_CHAR_LIMIT,
     );
-    expect(w.message).toContain("1 line(s) longer than 10,000 characters");
+    expect(w.message).toContain("parts of 1 line(s)");
+    expect(w.message).toContain("longer than 10,000 characters");
     expect(w.message).toContain("src/gen (1)");
+  });
+
+  // #191 (L1) — an over-long line is split at statement boundaries, never blanked.
+  it("extracts every formula of 400 ordinary statements on one 12k-character line", () => {
+    const statements = Array.from(
+      { length: 400 },
+      (_, i) => `const v${i} = a${i} * b${i} + c${i};`,
+    );
+    const long = statements.join("");
+    expect(long.length).toBeGreaterThan(FORMULA_LINE_CHAR_LIMIT);
+    const [oneLine] = minedUnits("min.ts", ["const RATE = 0.25;", long], []);
+    const [perLine] = minedUnits("min.ts", ["const RATE = 0.25;", ...statements], []);
+    expect(perLine.formulas.filter((f) => f.startLine > 1)).toHaveLength(400);
+    expect(oneLine.formulaLinesSkipped).toBeUndefined();
+    const onLine2 = oneLine.formulas.filter((f) => f.startLine === 2);
+    expect(onLine2).toHaveLength(400);
+    // Same formulas as the one-statement-per-line file; only the line numbers differ.
+    expect(onLine2.map((f) => f.expression)).toEqual(
+      perLine.formulas.filter((f) => f.startLine > 1).map((f) => f.expression),
+    );
+    expect(oneLine.formulas.find((f) => f.name === "RATE")?.startLine).toBe(1);
+  });
+
+  it("splits at braces and, only when a part is still too long, at `,`", () => {
+    // Minified: functions and blocks with no `;`, then one long comma list.
+    const fns = Array.from(
+      { length: 300 },
+      (_, i) => `function f${i}(){if(amount > limit${i} && rate < max${i}){x()}}`,
+    ).join("");
+    const commas = Array.from({ length: 700 }, (_, i) => `t${i} = p${i} * q${i} + r${i}`).join(",");
+    expect(fns.length).toBeGreaterThan(FORMULA_LINE_CHAR_LIMIT);
+    expect(commas.length).toBeGreaterThan(FORMULA_LINE_CHAR_LIMIT);
+    const [u] = minedUnits("bundle.js", [fns, commas, "var TAX = 0.2;"], []);
+    expect(u.formulaLinesSkipped).toBeUndefined();
+    const rules = u.formulas.filter((f) => f.kind === "business-rule" && f.startLine === 1);
+    expect(rules).toHaveLength(300);
+    const sums = u.formulas.filter((f) => f.kind === "arithmetic" && f.startLine === 2);
+    expect(sums).toHaveLength(700);
+    // The separating comma is not part of any expression.
+    for (const f of sums) expect(f.expression.endsWith(",")).toBe(false);
+    expect(u.formulas.find((f) => f.name === "TAX")?.startLine).toBe(3);
+  });
+
+  it("skips only the over-long part of a line, keeping the formulas around it", () => {
+    const blob = `const DATA = "${"x".repeat(FORMULA_LINE_CHAR_LIMIT + 10)}";`;
+    const line = `var total = price * qty + fee;${blob}var net = total - discount * 2;`;
+    const [u] = minedUnits("app.js", [line], []);
+    expect(u.formulaLinesSkipped).toBe(1);
+    expect(u.formulas.map((f) => f.name).sort()).toEqual(["net", "total"]);
+    for (const f of u.formulas) expect(f.startLine).toBe(1);
+  });
+
+  it("does not report an embedded data blob that no formula pattern could match", () => {
+    // A minified bundle's inline source map: nothing to split the base64 at.
+    const b64 = "eyJ2ZXJzaW9uIjozLCJmaWxl".repeat(1_000);
+    const map = `var n = a * b + c * d;//# sourceMappingURL=data:application/json;charset=utf-8;base64,${b64}`;
+    const [u] = minedUnits("vendor.min.js", [map], []);
+    expect(u.formulaLinesSkipped).toBeUndefined();
+    expect(u.formulas.map((f) => f.name)).toEqual(["n"]);
+    // An over-long part that COULD hold a formula is still counted.
+    const assigned = `var n = a * b + c * d;var blob = "${"x".repeat(FORMULA_LINE_CHAR_LIMIT)}"`;
+    expect(minedUnits("vendor.min.js", [assigned], [])[0].formulaLinesSkipped).toBe(1);
+    const cond = `if (${"a && ".repeat(3_000)}b) `;
+    expect(splitLongLine(cond).skipped).toBe(1);
+  });
+
+  it("never gives the extractor a part longer than the limit, and loses no text it keeps", () => {
+    // The bound that keeps extraction linear: no part exceeds the limit. Checked
+    // structurally, not by wall-clock time, so a busy machine cannot fail it.
+    const limit = 50;
+    const pieces = ["a = b * c;", "{", "}", "x".repeat(70), ",", "y = 1,", "z".repeat(60) + ";"];
+    for (let seed = 1; seed <= 200; seed++) {
+      let line = "";
+      for (let k = 0, r = seed; k < 30; k++, r = (r * 48271) % 2147483647) {
+        line += pieces[r % pieces.length];
+      }
+      const { parts, skipped } = splitLongLine(line, limit);
+      for (const part of parts) expect(part.length).toBeLessThanOrEqual(limit);
+      // Kept parts appear in order in the line; only whole over-long runs and
+      // separating commas are left out.
+      let at = 0;
+      for (const part of parts) {
+        const found = line.indexOf(part, at);
+        expect(found).toBeGreaterThanOrEqual(0);
+        at = found + part.length;
+      }
+      expect(skipped).toBeGreaterThanOrEqual(0);
+    }
+    // A pathological part under the limit is still extracted; one over it is not.
+    const part = "x = " + "(".repeat(1_000) + "a" + " ".repeat(8_000) + ";";
+    expect(part.length).toBeLessThan(FORMULA_LINE_CHAR_LIMIT);
+    expect(splitLongLine(part.repeat(3)).parts).toEqual([part, part, part]);
   });
 
   it("does not skip formula extraction on ordinary code", () => {

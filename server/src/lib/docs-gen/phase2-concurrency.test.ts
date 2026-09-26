@@ -65,3 +65,52 @@ describe("resolvePhase2Concurrency (#178)", () => {
     expect(resolvePhase2Concurrency("bedrock-gateway", unset)).toBe(4);
   });
 });
+
+describe("an openai provider pointed at a self-hosted server (#208)", () => {
+  it("defaults to 1 when the base URL's host is loopback or a private address", () => {
+    for (const url of [
+      "http://localhost:8000/v1",
+      "http://127.0.0.1:11434/v1",
+      "http://[::1]:8080/v1",
+      "http://10.0.0.5:8000/v1",
+      "https://192.168.1.20/v1",
+      "http://172.16.4.2:9000/v1",
+    ]) {
+      expect(defaultPhase2Concurrency("openai", { OPENAI_BASE_URL: url }), url).toBe(1);
+      expect(resolvePhase2Concurrency("openai", stubConfig(), { OPENAI_BASE_URL: url }), url).toBe(
+        1,
+      );
+    }
+    // COPILOT_PROVIDER_BASE_URL is the provider's fallback base URL.
+    expect(
+      defaultPhase2Concurrency("openai", { COPILOT_PROVIDER_BASE_URL: "http://localhost:1234/v1" }),
+    ).toBe(1);
+  });
+
+  it("keeps the cloud default for a public host, an unset or unparsable URL", () => {
+    for (const env of [
+      { OPENAI_BASE_URL: "https://api.openai.com/v1" },
+      { OPENAI_BASE_URL: "https://llm.example.com/v1" },
+      { OPENAI_BASE_URL: "not a url" },
+      {},
+    ]) {
+      expect(defaultPhase2Concurrency("openai", env), JSON.stringify(env)).toBe(4);
+    }
+    // OPENAI_BASE_URL wins over the fallback, as it does in the provider config.
+    expect(
+      defaultPhase2Concurrency("openai", {
+        OPENAI_BASE_URL: "https://api.openai.com/v1",
+        COPILOT_PROVIDER_BASE_URL: "http://localhost:1234/v1",
+      }),
+    ).toBe(4);
+  });
+
+  it("applies only to the openai provider, and an explicit setting still wins", () => {
+    const env = { OPENAI_BASE_URL: "http://localhost:8000/v1" };
+    expect(defaultPhase2Concurrency("anthropic", env)).toBe(4);
+    expect(defaultPhase2Concurrency("bedrock-gateway", env)).toBe(4);
+    expect(
+      resolvePhase2Concurrency("openai", stubConfig({ [PHASE2_CONCURRENCY_KEY]: 6 }), env),
+    ).toBe(6);
+  });
+});

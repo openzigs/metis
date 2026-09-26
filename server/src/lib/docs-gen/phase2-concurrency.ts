@@ -19,7 +19,14 @@
  * provider added later — defaults to 1 until someone decides otherwise, so a
  * new provider never inherits parallelism by accident (PR #181 review). An
  * explicit registry value wins for every provider kind.
+ *
+ * #208 — the `openai` provider also serves self-hosted OpenAI-compatible
+ * servers (vLLM, llama.cpp, LM Studio) through `OPENAI_BASE_URL`, and the
+ * local limiter only covers `local-gemma`. So `openai` gets the local default
+ * when its base URL's host is loopback or a private IP address: a local server
+ * would otherwise receive four unqueued batch calls at once.
  */
+import { isLoopbackHostname, isPrivateIp } from "@metis/shared";
 import { getConfigService, type ConfigService } from "../config/config-service.js";
 
 /** Registry key for the Phase-2 batch concurrency limit. */
@@ -48,13 +55,39 @@ export const CLOUD_PROVIDER_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The default Phase-2 concurrency for a provider, by its key: the cloud
- * default for a listed cloud provider, 1 for local-gemma and everything else.
+ * The base URL the `openai` provider sends to: `OPENAI_BASE_URL`, falling back
+ * to `COPILOT_PROVIDER_BASE_URL`, exactly as the provider config resolves it.
  */
-export function defaultPhase2Concurrency(providerKey: string): number {
-  return CLOUD_PROVIDER_KEYS.has(providerKey)
-    ? DEFAULT_PHASE2_CONCURRENCY_CLOUD
-    : DEFAULT_PHASE2_CONCURRENCY_LOCAL;
+function openaiBaseUrl(env: NodeJS.ProcessEnv): string | undefined {
+  return env.OPENAI_BASE_URL?.trim() || env.COPILOT_PROVIDER_BASE_URL?.trim() || undefined;
+}
+
+/** True when `url`'s host is loopback or a private IP literal. */
+function isSelfHostedUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return false;
+  }
+  return isLoopbackHostname(host) || isPrivateIp(host);
+}
+
+/**
+ * The default Phase-2 concurrency for a provider, by its key: the cloud
+ * default for a listed cloud provider, 1 for local-gemma and everything else —
+ * and 1 for `openai` pointed at a loopback or private host (#208).
+ */
+export function defaultPhase2Concurrency(
+  providerKey: string,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  if (!CLOUD_PROVIDER_KEYS.has(providerKey)) return DEFAULT_PHASE2_CONCURRENCY_LOCAL;
+  if (providerKey === "openai" && isSelfHostedUrl(openaiBaseUrl(env))) {
+    return DEFAULT_PHASE2_CONCURRENCY_LOCAL;
+  }
+  return DEFAULT_PHASE2_CONCURRENCY_CLOUD;
 }
 
 /**
@@ -65,8 +98,9 @@ export function defaultPhase2Concurrency(providerKey: string): number {
 export function resolvePhase2Concurrency(
   providerKey: string,
   config: ConfigService = getConfigService(),
+  env: NodeJS.ProcessEnv = process.env,
 ): number {
-  const fallback = defaultPhase2Concurrency(providerKey);
+  const fallback = defaultPhase2Concurrency(providerKey, env);
   const raw = config.getNumber(PHASE2_CONCURRENCY_KEY, fallback);
   if (!Number.isFinite(raw) || raw < 1) return fallback;
   return Math.min(Math.floor(raw), MAX_PHASE2_CONCURRENCY);
