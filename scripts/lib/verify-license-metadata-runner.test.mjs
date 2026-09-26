@@ -62,6 +62,13 @@ function makeRepo(files) {
   }
 
   execFileSync("git", ["init", "-q"], { cwd: dir });
+  // No background maintenance. `git commit` can start auto-maintenance/gc as a
+  // detached process (the default in recent git), which may still be writing
+  // under `.git` when afterEach deletes the fixture — `rmSync` then failed with
+  // ENOTEMPTY on `.git` (CI run 36264768706, PR #242). Turning it off removes
+  // the writer instead of retrying around it.
+  execFileSync("git", ["config", "maintenance.auto", "false"], { cwd: dir });
+  execFileSync("git", ["config", "gc.auto", "0"], { cwd: dir });
   execFileSync("git", ["config", "user.email", "gate@example.invalid"], { cwd: dir });
   execFileSync("git", ["config", "user.name", "gate"], { cwd: dir });
   execFileSync("git", ["add", "-A"], { cwd: dir });
