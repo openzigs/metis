@@ -6,7 +6,7 @@
  * products-rate-limit.ts pattern — keyed by userId when authenticated, IP
  * otherwise; 120 req / 15 min by default (a picker loads it once per open).
  */
-import rateLimit, { ipKeyGenerator, type RateLimitRequestHandler } from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { clusterRateLimitStore } from "./cluster-rate-limit-store.js";
 import type { RequestHandler } from "express";
 import type { ApiResponse } from "@metis/shared";
@@ -26,37 +26,29 @@ function intFromEnv(name: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-function buildModelCatalogLimiter(): RateLimitRequestHandler {
-  return rateLimit({
-    store: clusterRateLimitStore("model-catalog"),
-    windowMs: intFromEnv("MODEL_CATALOG_RATE_LIMIT_WINDOW_MS", FIFTEEN_MIN_MS),
-    max: intFromEnv("MODEL_CATALOG_RATE_LIMIT_MAX", DEFAULT_MAX),
-    standardHeaders: true,
-    legacyHeaders: false,
-    keyGenerator: (req, res) => {
-      const userId = req.user?.userId;
-      if (userId) return `user:${userId}`;
-      return `ip:${ipKeyGenerator(req.ip ?? "", res.req?.socket?.remoteFamily === "IPv6" ? 64 : 32)}`;
-    },
-    message: {
-      success: false,
-      error: {
-        code: "MODEL_CATALOG_RATE_LIMITED",
-        message: "Too many model catalog requests — slow down",
-      },
-    } satisfies ApiResponse,
-  });
-}
-
-// Initialised at module scope — express-rate-limit@8 throws if rateLimit() is
-// called inside a request handler.
-let limiter: RateLimitRequestHandler = buildModelCatalogLimiter();
-
+/**
+ * Module-scoped and exported as the `rateLimit()` handler itself (not wrapped),
+ * so static analysis (CodeQL `js/missing-rate-limiting`) can see it. The cap is
+ * read per request, so `MODEL_CATALOG_RATE_LIMIT_MAX` takes effect without a
+ * restart; the window is fixed at construction.
+ */
 // `as unknown as RequestHandler` bridges the Express 4↔5 type split.
-export const modelCatalogRateLimiter: RequestHandler = (req, res, next) =>
-  (limiter as unknown as RequestHandler)(req, res, next);
-
-/** Test seam — re-create the limiter so env overrides set before this call take effect. */
-export function __resetModelCatalogRateLimiter(): void {
-  limiter = buildModelCatalogLimiter();
-}
+export const modelCatalogRateLimiter: RequestHandler = rateLimit({
+  store: clusterRateLimitStore("model-catalog"),
+  windowMs: intFromEnv("MODEL_CATALOG_RATE_LIMIT_WINDOW_MS", FIFTEEN_MIN_MS),
+  limit: () => intFromEnv("MODEL_CATALOG_RATE_LIMIT_MAX", DEFAULT_MAX),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req, res) => {
+    const userId = req.user?.userId;
+    if (userId) return `user:${userId}`;
+    return `ip:${ipKeyGenerator(req.ip ?? "", res.req?.socket?.remoteFamily === "IPv6" ? 64 : 32)}`;
+  },
+  message: {
+    success: false,
+    error: {
+      code: "MODEL_CATALOG_RATE_LIMITED",
+      message: "Too many model catalog requests — slow down",
+    },
+  } satisfies ApiResponse,
+}) as unknown as RequestHandler;

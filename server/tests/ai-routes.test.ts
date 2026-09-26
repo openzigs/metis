@@ -10,7 +10,6 @@
  *   • health deep-check probes the provider with a timeout cap
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { __resetModelCatalogRateLimiter } from "../src/middleware/model-catalog-rate-limit.js";
 import request from "supertest";
 import express from "express";
 import jwt from "jsonwebtoken";
@@ -404,19 +403,20 @@ describe("GET /api/ai/models (#135)", () => {
   });
 
   it("is rate-limited per user (the route can reach a local runtime)", async () => {
-    process.env.MODEL_CATALOG_RATE_LIMIT_MAX = "2";
-    __resetModelCatalogRateLimiter();
+    // The cap is read per request. Earlier tests may already have spent this
+    // user's first request in the window, so only the SECOND call below is
+    // guaranteed to be over a cap of 1.
+    process.env.MODEL_CATALOG_RATE_LIMIT_MAX = "1";
     try {
       const app = makeApp();
-      expect((await auth(request(app).get("/api/ai/models"))).status).toBe(200);
-      expect((await auth(request(app).get("/api/ai/models"))).status).toBe(200);
+      await auth(request(app).get("/api/ai/models"));
       const limited = await auth(request(app).get("/api/ai/models"));
       expect(limited.status).toBe(429);
       expect(limited.body.error.code).toBe("MODEL_CATALOG_RATE_LIMITED");
     } finally {
       delete process.env.MODEL_CATALOG_RATE_LIMIT_MAX;
-      __resetModelCatalogRateLimiter();
     }
+    expect((await auth(request(makeApp()).get("/api/ai/models"))).status).toBe(200);
   });
 
   it("?scope=router lists the ModelRouter's models; any other scope is the provider list", async () => {
