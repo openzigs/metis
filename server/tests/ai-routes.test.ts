@@ -10,6 +10,7 @@
  *   • health deep-check probes the provider with a timeout cap
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { __resetModelCatalogRateLimiter } from "../src/middleware/model-catalog-rate-limit.js";
 import request from "supertest";
 import express from "express";
 import jwt from "jsonwebtoken";
@@ -400,6 +401,22 @@ describe("GET /api/ai/models (#135)", () => {
       price: { inputPerMTok: 2, outputPerMTok: 10 },
       capabilities: { tools: true, jsonSchema: true },
     });
+  });
+
+  it("is rate-limited per user (the route can reach a local runtime)", async () => {
+    process.env.MODEL_CATALOG_RATE_LIMIT_MAX = "2";
+    __resetModelCatalogRateLimiter();
+    try {
+      const app = makeApp();
+      expect((await auth(request(app).get("/api/ai/models"))).status).toBe(200);
+      expect((await auth(request(app).get("/api/ai/models"))).status).toBe(200);
+      const limited = await auth(request(app).get("/api/ai/models"));
+      expect(limited.status).toBe(429);
+      expect(limited.body.error.code).toBe("MODEL_CATALOG_RATE_LIMITED");
+    } finally {
+      delete process.env.MODEL_CATALOG_RATE_LIMIT_MAX;
+      __resetModelCatalogRateLimiter();
+    }
   });
 
   it("?scope=router lists the ModelRouter's models; any other scope is the provider list", async () => {

@@ -80,6 +80,7 @@ import {
 } from "../lib/code-graph/project-code-searcher.js";
 import { getConfigService } from "../lib/config/config-service.js";
 import { getModelCatalog } from "../lib/ai/model-catalog.js";
+import { modelCatalogRateLimiter } from "../middleware/model-catalog-rate-limit.js";
 
 const log = createChildLogger("ai-routes");
 
@@ -905,7 +906,7 @@ export function aiRouter(): Router {
   // models the analysis ModelRouter can select; the default lists the
   // configured provider's models (local runtimes are discovered, bounded and
   // cached). No caller input reaches a URL: the only query value is an enum.
-  r.get("/models", requireAuth, async (req: Request, res: Response) => {
+  r.get("/models", requireAuth, modelCatalogRateLimiter, async (req: Request, res: Response) => {
     const scope = req.query.scope === "router" ? "router" : "provider";
     const catalog = await getModelCatalog({ config: loadAIConfig(), scope });
     res.json(ok<ModelCatalogResponse>(catalog));
