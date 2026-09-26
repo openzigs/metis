@@ -4,7 +4,8 @@
  *
  * The OpenAI-compatible replies follow the documented wire shapes of each
  * runtime family (they are hand-written from the vendors' API references, NOT
- * live recordings — no test here touches a network):
+ * live recordings — no test here touches a network; capturing real
+ * `AI_RECORD=1` fixtures for these runtimes is tracked in #197):
  *   • `openai`  — Chat Completions; streamed `tool_calls` split into fragments
  *                 that INTERLEAVE across two calls by `index`.
  *   • `azure`   — as OpenAI plus Azure's `prompt_filter_results` preamble frame

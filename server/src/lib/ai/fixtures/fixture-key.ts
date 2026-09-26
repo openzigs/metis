@@ -71,7 +71,10 @@ export function keyedOptions(opts: ChatOptions = {}): KeyedChatOptions {
   if (opts.frequencyPenalty !== undefined) out.frequencyPenalty = opts.frequencyPenalty;
   if (opts.presencePenalty !== undefined) out.presencePenalty = opts.presencePenalty;
   if (opts.seed !== undefined) out.seed = opts.seed;
-  // #131 — keyed only when set, so every pre-#131 fixture key is unchanged.
+  // #131 — keyed only when set, so a request that sets none of these keeps
+  // its pre-#131 key. A fixture recorded for a request that DID set
+  // `responseFormat` or `tools` (or whose messages carry `toolCalls` /
+  // `isError`) gets a new key and must be re-recorded.
   if (opts.tools !== undefined && opts.tools.length > 0) out.tools = opts.tools;
   if (opts.toolChoice !== undefined) out.toolChoice = opts.toolChoice;
   if (opts.responseFormat !== undefined) out.responseFormat = opts.responseFormat;

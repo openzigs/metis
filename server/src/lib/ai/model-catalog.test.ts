@@ -233,6 +233,27 @@ describe("local discovery", () => {
     expect(f).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps at most 8 /api/show requests in flight and preserves listing order", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const listed = Array.from({ length: 30 }, (_, i) => ({ id: `m${i}` }));
+    const f = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/models")) return new Response(JSON.stringify({ data: listed }));
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight -= 1;
+      const id = (JSON.parse(String(init?.body)) as { model: string }).model;
+      return new Response(
+        JSON.stringify({ model_info: { "gemma3.context_length": Number(id.slice(1)) + 1 } }),
+      );
+    });
+    const models = await discoverLocalModels("http://127.0.0.1:11434/v1", "k", f as never);
+    expect(peak).toBe(8);
+    expect(models.map((m) => m.id)).toEqual(listed.map((m) => m.id));
+    expect(models.map((m) => m.contextWindow)).toEqual(listed.map((_, i) => i + 1));
+  });
+
   it("caches for the TTL, then asks again", async () => {
     let now = 1_000;
     const f = ollamaFetch();
@@ -295,9 +316,26 @@ describe("getModelCatalog", () => {
       source: "configured",
       price: null,
     });
-    expect(
-      res.models.filter((m) => m.source !== "configured").every((m) => !m.capabilities.jsonSchema),
-    ).toBe(true);
+    // PR #194 review: the configured entry is included, not skipped.
+    expect(res.models.every((m) => !m.capabilities.jsonSchema)).toBe(true);
+    // DeepSeek serves its own models: no built-in Claude entries at Anthropic prices.
+    expect(res.models.map((m) => m.id)).toEqual(["deepseek-v4-pro"]);
+  });
+
+  it("never prices a claude-* name behind DeepSeek at Anthropic's list price", async () => {
+    const res = await getModelCatalog({
+      config: cfg({
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        sdkProvider: { type: "anthropic", baseUrl: "https://api.deepseek.com/anthropic" },
+      }),
+      env: { [MODEL_CATALOG_OVERRIDES_ENV]: JSON.stringify({ "anthropic:claude-haiku-4-5": {} }) },
+    });
+    expect(res.models.map((m) => m.id).sort()).toEqual(["claude-haiku-4-5", "claude-sonnet-4-6"]);
+    for (const m of res.models) {
+      expect(m.price).toBeNull();
+      expect(m.capabilities.jsonSchema).toBe(false);
+    }
   });
 
   it("discovers local models and appends override-only models", async () => {

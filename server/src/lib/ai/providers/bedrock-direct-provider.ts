@@ -2225,38 +2225,59 @@ function parseToolCalls(calls: OpenAIToolCall[] | undefined): ChatToolCall[] {
   return out;
 }
 
+interface PendingToolCall {
+  index: number;
+  id?: string;
+  name: string;
+  args: string;
+}
+
 /**
  * #132 — assembles streamed `delta.tool_calls` fragments. OpenAI-compatible
  * servers send each call's `id` and `function.name` on its first fragment and
  * then split `function.arguments` across any number of later ones, keyed by
  * `index` — several calls may interleave. Exported for direct unit testing.
+ *
+ * PR #194 review — two tolerances for runtimes that stray from that shape:
+ *   • a name repeated on a later fragment of the same call REPLACES rather than
+ *     appends (`search_code` never becomes `search_codesearch_code`);
+ *   • a fragment carrying a NEW `id` at an index already in use starts a new
+ *     call instead of being merged into the earlier one. Calls sharing an
+ *     index keep their arrival order.
  */
 export class ToolCallDeltaAssembler {
-  private readonly calls = new Map<number, { id?: string; name: string; args: string }>();
+  private calls: PendingToolCall[] = [];
+  /** The call currently open at each index — the one later fragments extend. */
+  private readonly open = new Map<number, PendingToolCall>();
 
   push(deltas: OpenAIToolCallDelta[] | undefined): void {
     if (!Array.isArray(deltas)) return;
     for (const d of deltas) {
-      const index = typeof d.index === "number" ? d.index : this.calls.size;
-      const entry = this.calls.get(index) ?? { name: "", args: "" };
+      const index = typeof d.index === "number" ? d.index : this.open.size;
+      let entry = this.open.get(index);
+      if (!entry || (d.id && entry.id && d.id !== entry.id)) {
+        entry = { index, name: "", args: "" };
+        this.calls.push(entry);
+        this.open.set(index, entry);
+      }
       if (d.id) entry.id = d.id;
-      if (d.function?.name) entry.name += d.function.name;
+      if (d.function?.name) entry.name = d.function.name;
       if (d.function?.arguments) entry.args += d.function.arguments;
-      this.calls.set(index, entry);
     }
   }
 
-  /** Emit every assembled call once, in index order, then reset. */
+  /** Emit every assembled call once, in index order (stable by arrival), then reset. */
   *flush(): Generator<ChatChunk> {
-    const ordered = [...this.calls.entries()].sort(([a], [b]) => a - b);
-    this.calls.clear();
-    for (const [index, c] of ordered) {
+    const ordered = [...this.calls].sort((a, b) => a.index - b.index);
+    this.calls = [];
+    this.open.clear();
+    for (const c of ordered) {
       if (!c.name) continue;
       yield {
         type: "tool_call",
         name: c.name,
         arguments: parseToolArgs(c.args),
-        toolCallId: c.id ?? `call_${index}`,
+        toolCallId: c.id ?? `call_${c.index}`,
         native: true,
       };
     }

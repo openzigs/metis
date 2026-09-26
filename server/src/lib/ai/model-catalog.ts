@@ -60,6 +60,12 @@ export const DISCOVERY_TTL_MS = 60_000;
 const DISCOVERY_TIMEOUT_MS = 2_000;
 /** Bound on the models a single discovery asks `/api/show` about. */
 const MAX_DISCOVERED_MODELS = 50;
+/**
+ * PR #194 review — at most this many `/api/show` requests in flight at once, so
+ * discovering a runtime with many models never fires 50 requests together at a
+ * host that may be serving generation with a concurrency of one.
+ */
+const DISCOVERY_CONCURRENCY = 8;
 
 /**
  * Capabilities assumed for a model the catalog has no entry for, per provider.
@@ -271,10 +277,14 @@ function maxOutputFor(id: string): number | null {
  * `resolveRate` returns cents per 1k tokens; `X cents/1k === X/10 USD/MTok`,
  * so the conversion is ×10. Exported so the divergence test can compare.
  */
-export function catalogPrice(provider: string, id: string): ModelCatalogPrice | null {
+export function catalogPrice(
+  provider: string,
+  id: string,
+  env?: NodeJS.ProcessEnv,
+): ModelCatalogPrice | null {
   let rate;
   try {
-    rate = resolveRate(provider, id);
+    rate = resolveRate(provider, id, env ? { env } : {});
   } catch {
     return null;
   }
@@ -408,11 +418,20 @@ export async function discoverLocalModels(
 
   // Ollama's native API lives at the origin root; `/v1` is its OpenAI shim.
   const nativeRoot = base.replace(/\/v1$/, "");
-  const models = await Promise.all(
-    ids.map(async ({ id, maxLen }): Promise<DiscoveredModel> => {
-      if (maxLen !== null) return { id, contextWindow: maxLen };
-      return { id, ...(await showOllamaModel(nativeRoot, id, headers, fetchImpl)) };
-    }),
+  const models: DiscoveredModel[] = new Array(ids.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < ids.length) {
+      const i = next++;
+      const { id, maxLen } = ids[i];
+      models[i] =
+        maxLen !== null
+          ? { id, contextWindow: maxLen }
+          : { id, ...(await showOllamaModel(nativeRoot, id, headers, fetchImpl)) };
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(DISCOVERY_CONCURRENCY, ids.length) }, () => worker()),
   );
   discoveryCache.set(base, { at: now(), models });
   return models;
@@ -583,7 +602,13 @@ export async function getModelCatalog(opts: GetModelCatalogOptions): Promise<Mod
   }
 
   const provider = config.provider;
-  const ids: string[] = BUILTIN_MODELS.filter((m) => m.provider === provider).map((m) => m.id);
+  // PR #194 review — DeepSeek's Anthropic-compatible endpoint serves its OWN
+  // models (it maps `claude-*` names onto them), so the built-in Claude entries,
+  // with Anthropic's context windows and list prices, are not offered there.
+  const deepSeek = provider === "anthropic" && isDeepSeekEndpoint(config.sdkProvider?.baseUrl);
+  const ids: string[] = deepSeek
+    ? []
+    : BUILTIN_MODELS.filter((m) => m.provider === provider).map((m) => m.id);
   if (provider === "local-gemma" && config.sdkProvider?.baseUrl) {
     const discovered = await discoverLocalModels(
       config.sdkProvider.baseUrl,
@@ -598,13 +623,19 @@ export async function getModelCatalog(opts: GetModelCatalogOptions): Promise<Mod
     if (p === provider && !ids.includes(id)) ids.push(id);
   }
 
-  const deepSeek = provider === "anthropic" && isDeepSeekEndpoint(config.sdkProvider?.baseUrl);
+  // Price against the endpoint actually configured, so Anthropic's list prices
+  // are never applied to it (an operator's MODEL_PRICES entry still wins).
+  const priceEnv: NodeJS.ProcessEnv | undefined = deepSeek
+    ? { ...env, ANTHROPIC_BASE_URL: config.sdkProvider?.baseUrl }
+    : undefined;
+  const deepSeekEntry = (m: ModelCatalogEntry): ModelCatalogEntry =>
+    withoutJsonSchema({ ...m, price: catalogPrice(provider, m.id, priceEnv) });
   const models = ids
     .map((id) => lookupCatalogEntry(provider, id, env))
     .filter((m): m is ModelCatalogEntry => m !== undefined)
-    .map((m) => (deepSeek ? withoutJsonSchema(m) : m));
+    .map((m) => (deepSeek ? deepSeekEntry(m) : m));
   if (config.model && !models.some((m) => m.id === config.model)) {
-    models.unshift({
+    const configured: ModelCatalogEntry = {
       provider,
       id: config.model,
       displayName: config.model,
@@ -613,7 +644,8 @@ export async function getModelCatalog(opts: GetModelCatalogOptions): Promise<Mod
       price: catalogPrice(provider, config.model),
       capabilities: defaultCapabilities(provider),
       source: "configured",
-    });
+    };
+    models.unshift(deepSeek ? deepSeekEntry(configured) : configured);
   }
   return { provider, defaultModel: config.model, models };
 }

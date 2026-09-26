@@ -133,6 +133,53 @@ describe("ToolCallDeltaAssembler", () => {
       { type: "tool_call", name: "x", arguments: {}, toolCallId: "call_0", native: true },
     ]);
   });
+
+  // PR #194 review — runtimes that repeat the name, or reuse an index.
+  it("does not double a name that is repeated on a later fragment", () => {
+    const a = new ToolCallDeltaAssembler();
+    a.push([{ index: 0, id: "a", function: { name: "search_code", arguments: '{"q":' } }]);
+    a.push([{ index: 0, function: { name: "search_code", arguments: '"x"}' } }]);
+    expect([...a.flush()]).toEqual([
+      {
+        type: "tool_call",
+        name: "search_code",
+        arguments: { q: "x" },
+        toolCallId: "a",
+        native: true,
+      },
+    ]);
+  });
+
+  it("starts a new call when a new id arrives at an index already in use", () => {
+    const a = new ToolCallDeltaAssembler();
+    a.push([{ index: 0, id: "a", function: { name: "search_code", arguments: '{"q":"1"}' } }]);
+    a.push([{ index: 0, id: "b", function: { name: "read_file", arguments: '{"p":"2"}' } }]);
+    a.push([{ index: 0, id: "c", function: { name: "search_code", arguments: '{"q":' } }]);
+    a.push([{ index: 0, function: { arguments: '"3"}' } }]);
+    expect([...a.flush()]).toEqual([
+      {
+        type: "tool_call",
+        name: "search_code",
+        arguments: { q: "1" },
+        toolCallId: "a",
+        native: true,
+      },
+      {
+        type: "tool_call",
+        name: "read_file",
+        arguments: { p: "2" },
+        toolCallId: "b",
+        native: true,
+      },
+      {
+        type: "tool_call",
+        name: "search_code",
+        arguments: { q: "3" },
+        toolCallId: "c",
+        native: true,
+      },
+    ]);
+  });
 });
 
 describe("isToolsUnsupportedBody", () => {

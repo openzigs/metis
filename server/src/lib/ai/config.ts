@@ -80,6 +80,13 @@ const trimmed = (raw: string | undefined): string | undefined => {
   return t.length === 0 ? undefined : t;
 };
 
+/** #134 — an empty / whitespace-only env value validates as if it were absent. */
+const blankAsUnset = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess(
+    (raw) => (typeof raw === "string" && raw.trim().length === 0 ? undefined : raw),
+    schema.optional(),
+  );
+
 const aiEnvSchema = z
   .object({
     AI_PROVIDER: z.enum(PROVIDER_KEYS).default("offline-stub"),
@@ -111,15 +118,20 @@ const aiEnvSchema = z
     // #134 — openai / azure are served by the direct OpenAI-compatible client.
     // These are the native names; the COPILOT_PROVIDER_* matrix below is still
     // read as a fallback so existing deployments keep working unchanged.
-    OPENAI_BASE_URL: z.string().url().optional(),
-    OPENAI_API_KEY: z.string().min(1).optional(),
-    AZURE_OPENAI_ENDPOINT: z.string().url().optional(),
-    AZURE_OPENAI_API_KEY: z.string().min(1).optional(),
-    AZURE_OPENAI_API_VERSION: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}(-preview)?$/, "must look like 2024-10-21 or 2025-01-01-preview")
-      .optional(),
-    AZURE_OPENAI_DEPLOYMENT: z.string().min(1).max(200).optional(),
+    // A blank value is treated as UNSET: the schema validates every key
+    // whatever AI_PROVIDER is, and OPENAI_API_KEY was already read elsewhere
+    // (holistic-synthesizer) before #134, so an empty placeholder in `.env`
+    // must never break config for an unrelated provider such as local-gemma.
+    OPENAI_BASE_URL: blankAsUnset(z.string().url()),
+    OPENAI_API_KEY: blankAsUnset(z.string().min(1)),
+    AZURE_OPENAI_ENDPOINT: blankAsUnset(z.string().url()),
+    AZURE_OPENAI_API_KEY: blankAsUnset(z.string().min(1)),
+    AZURE_OPENAI_API_VERSION: blankAsUnset(
+      z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}(-preview)?$/, "must look like 2024-10-21 or 2025-01-01-preview"),
+    ),
+    AZURE_OPENAI_DEPLOYMENT: blankAsUnset(z.string().min(1).max(200)),
 
     COPILOT_PROVIDER_TYPE: z.enum(BYOK_TYPE_KEYS).optional(),
     COPILOT_PROVIDER_BASE_URL: z.string().url().optional(),
