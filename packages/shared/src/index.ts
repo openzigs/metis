@@ -52,6 +52,8 @@ export * from "./net/index.js";
 export * from "./source-offer.js";
 // #135 — the model catalog wire shape (`GET /api/ai/models`, every model picker).
 export * from "./model-catalog.js";
+// Epic #127 — the server-owned chat transcript (`/api/ai/sessions/:id/messages`, resume, fork).
+export * from "./conversation.js";
 
 export const SHARED_PACKAGE_NAME = "@metis/shared";
 

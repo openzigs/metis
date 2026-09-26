@@ -19,6 +19,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import express from "express";
+import type { FakeAiMessageRow } from "./helpers/fake-ai-message.js";
 
 type Session = {
   id: string;
@@ -38,8 +39,14 @@ type Session = {
 
 const sessions: Session[] = [];
 
-vi.mock("../src/lib/prisma.js", () => ({
-  prisma: {
+// #136 — the transcript store needs a working `aIMessage` model.
+const aiMessageRows = vi.hoisted(() => [] as FakeAiMessageRow[]);
+
+vi.mock("../src/lib/prisma.js", async () => {
+  const { createFakeAiMessageDelegate } = await import("./helpers/fake-ai-message.js");
+  const prisma: Record<string, unknown> = {
+    aIMessage: createFakeAiMessageDelegate(aiMessageRows),
+    $transaction: async (fn: (tx: unknown) => unknown) => fn(prisma),
     aISession: {
       create: vi.fn(async ({ data }: { data: Partial<Session> }) => {
         const row: Session = {
@@ -75,8 +82,9 @@ vi.mock("../src/lib/prisma.js", () => ({
     aITokenUsage: { create: vi.fn(async () => undefined), findMany: vi.fn(async () => []) },
     aIToolApproval: { create: vi.fn(async () => undefined), findMany: vi.fn(async () => []) },
     auditLog: { create: vi.fn(async () => undefined) },
-  },
-}));
+  };
+  return { prisma };
+});
 
 vi.mock("../src/lib/vault/vault-service.js", () => ({
   getVaultService: () => ({ read: vi.fn(async () => ({ plaintext: "x" })) }),
@@ -127,6 +135,7 @@ let recorder: RecordingScorer;
 
 beforeEach(() => {
   sessions.length = 0;
+  aiMessageRows.length = 0;
   setAIProviderForTests(new OfflineStubProvider());
   __resetAIRateLimiter();
   recorder = new RecordingScorer();

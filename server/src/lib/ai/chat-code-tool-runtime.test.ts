@@ -224,3 +224,75 @@ describe("runChatCodeToolTurn", () => {
     expect(result.finalResponse).toBe("Direct answer without any tool.");
   });
 });
+
+describe("runChatCodeToolTurn — #138 tool-result cap", () => {
+  function tool(name: string, run: () => Promise<ToolResult>): AgentTool {
+    return {
+      name,
+      description: name,
+      parameters: { type: "object", properties: {} },
+      execute: run,
+    };
+  }
+
+  it("caps an oversized result in the model's context and returns the full one for the transcript", async () => {
+    const big = "R".repeat(500);
+    const { provider, chat } = scriptedProvider([
+      '{"tool": "search_code_graph", "args": {"query": "Foo"}}',
+      "done",
+    ]);
+    const result = await runChatCodeToolTurn(
+      provider,
+      {
+        messages: [{ role: "user", content: "q" }],
+        tools: [tool("search_code_graph", async () => ({ content: big }))],
+        projectId: "p",
+      },
+      { toolResultMaxChars: 50 },
+    );
+    const fed = JSON.stringify(chat.mock.calls[1][0]);
+    expect(fed).toContain("tool result truncated: showing the first 50 of 500 characters");
+    expect(fed).not.toContain("R".repeat(51));
+    expect(result.toolResults).toEqual([
+      { tool: "search_code_graph", args: { query: "Foo" }, result: big, truncated: true },
+    ]);
+  });
+
+  it("stays aligned when a tool throws or the model names an unknown tool", async () => {
+    const { provider } = scriptedProvider([
+      '{"tool": "search_code_graph", "args": {}}',
+      '{"tool": "nope", "args": {}}',
+      '{"tool": "search_code_symbols", "args": {}}',
+      "done",
+    ]);
+    const result = await runChatCodeToolTurn(
+      provider,
+      {
+        messages: [{ role: "user", content: "q" }],
+        tools: [
+          tool("search_code_graph", async () => {
+            throw new Error("boom");
+          }),
+          tool("search_code_symbols", async () => ({ content: "SYMS" })),
+        ],
+        projectId: "p",
+      },
+      { toolResultMaxChars: 1000, maxTurns: 4 },
+    );
+    const byTool = Object.fromEntries(result.toolResults.map((r) => [r.tool, r]));
+    expect(byTool.search_code_graph!.result).toContain("boom");
+    expect(byTool.search_code_graph!.isError).toBe(true);
+    expect(byTool.nope!.result).toContain("Unknown tool");
+    expect(byTool.search_code_symbols!.result).toBe("SYMS");
+  });
+
+  it("without a cap, results pass through untouched", async () => {
+    const { provider, chat } = scriptedProvider(['{"tool": "t", "args": {}}', "done"]);
+    await runChatCodeToolTurn(provider, {
+      messages: [{ role: "user", content: "q" }],
+      tools: [tool("t", async () => ({ content: "Z".repeat(300) }))],
+      projectId: "p",
+    });
+    expect(JSON.stringify(chat.mock.calls[1][0])).toContain("Z".repeat(300));
+  });
+});

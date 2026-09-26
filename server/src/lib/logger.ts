@@ -109,6 +109,9 @@ const TOKEN_COUNT_META_KEYS: ReadonlySet<string> = new Set(
     "tokensBefore",
     "tokensAfter",
     "originalTokens",
+    // #138 — chat compaction's before/after estimates.
+    "estimatedTokensBefore",
+    "estimatedTokensAfter",
     // Caps and budgets.
     "maxTokens",
     "maxOutputTokens",

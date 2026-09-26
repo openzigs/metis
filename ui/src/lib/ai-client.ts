@@ -6,6 +6,13 @@
  * (`response.body.getReader()`) parsing SSE frames inline so we don't pull
  * a dedicated EventSource polyfill.
  */
+import type {
+  CompactionEventDto,
+  ForkSessionResponse,
+  ResumeSessionResponse,
+  TranscriptMessageDto,
+  TranscriptResponse,
+} from "@metis/shared";
 import { apiFetch, ApiError, streamFetch } from "./api-client";
 import { stripToolTags } from "./strip-tool-tags";
 
@@ -44,6 +51,8 @@ export interface TokenUsage {
 
 export type StreamEvent =
   | { type: "delta"; content: string }
+  /** #138 — older turns were summarised before this answer (kept in the transcript). */
+  | { type: "compaction"; compaction: CompactionEventDto }
   | { type: "tool_call"; name: string; arguments: unknown; risk: RiskLevel }
   | { type: "usage"; usage: TokenUsage }
   | { type: "done" }
@@ -103,6 +112,9 @@ export async function getSession(id: string): Promise<AISession> {
  * reload reset the transcript to the empty state and the conversation was
  * unrecoverable. This rehydrates one instead.
  *
+ * #139 — the conversation now comes from the SERVER transcript
+ * (`POST /ai/sessions/:id/resume`), never from a client snapshot.
+ *
  * Returns `null` for any failure — an expired 24-hour window, a deleted session,
  * a session id left over from another environment — so the caller can fall back
  * to creating a fresh session rather than showing an error for a stale id the
@@ -110,7 +122,65 @@ export async function getSession(id: string): Promise<AISession> {
  */
 export interface ResumedChat {
   session: AISession;
-  messages: ChatMessage[];
+  messages: DisplayTurn[];
+}
+
+/**
+ * One transcript row as the chat page renders it. `ordinal` is the server's
+ * position — what "fork from here" sends back. Summaries render as a note;
+ * compacted rows stay visible, flagged.
+ */
+export interface DisplayTurn {
+  role: "user" | "assistant" | "summary";
+  content: string;
+  ordinal: number;
+  compacted: boolean;
+  /** The reply ended early; the partial text is kept and labelled. */
+  incomplete?: string;
+  /** Summaries only: the range of messages they stand in for. */
+  summaryOf?: { fromOrdinal: number; toOrdinal: number; messageCount: number };
+  /** Tools the assistant used for this reply. */
+  tools?: string[];
+}
+
+export function transcriptToDisplay(rows: readonly TranscriptMessageDto[]): DisplayTurn[] {
+  const out: DisplayTurn[] = [];
+  for (const r of rows) {
+    const text = r.parts
+      .filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")
+      .map((p) => p.text)
+      .join("\n");
+    if (r.kind === "summary") {
+      out.push({
+        role: "summary",
+        content: text,
+        ordinal: r.ordinal,
+        compacted: r.compactedAt !== null,
+        ...(r.summaryOf ? { summaryOf: r.summaryOf } : {}),
+      });
+      continue;
+    }
+    if (r.role !== "user" && r.role !== "assistant") continue;
+    const tools = r.parts
+      .filter((p) => p.type === "tool_call")
+      .map((p) => (p as { name: string }).name);
+    out.push({
+      role: r.role,
+      content: text,
+      ordinal: r.ordinal,
+      compacted: r.compactedAt !== null,
+      ...(r.incomplete ? { incomplete: r.incomplete.message || r.incomplete.code } : {}),
+      ...(tools.length > 0 ? { tools } : {}),
+    });
+  }
+  return out;
+}
+
+export async function getTranscript(sessionId: string): Promise<DisplayTurn[]> {
+  const res = await apiFetch<TranscriptResponse>(
+    `/ai/sessions/${encodeURIComponent(sessionId)}/messages`,
+  );
+  return transcriptToDisplay(res.messages);
 }
 
 export async function resumeChatSession(id: string): Promise<ResumedChat | null> {
@@ -118,17 +188,25 @@ export async function resumeChatSession(id: string): Promise<ResumedChat | null>
     // Encoded: `id` reaches here from a `?sessionId=` query param, and an
     // unencoded value could otherwise steer the request at a different route.
     const encoded = encodeURIComponent(id);
-    const res = await apiFetch<{
-      snapshot: { messages?: ChatMessage[] } | null;
-    }>(`/ai/sessions/${encoded}/resume`, { method: "POST" });
+    const res = await apiFetch<ResumeSessionResponse>(`/ai/sessions/${encoded}/resume`, {
+      method: "POST",
+    });
     const session = await getSession(id);
-    const messages = (res.snapshot?.messages ?? []).filter(
-      (m) => m.role === "user" || m.role === "assistant",
-    );
-    return { session, messages };
+    return { session, messages: transcriptToDisplay(res.messages ?? []) };
   } catch {
     return null;
   }
+}
+
+/** #139 — start a new session from an earlier assistant reply. */
+export async function forkChatSession(
+  id: string,
+  fromOrdinal: number,
+): Promise<ForkSessionResponse> {
+  return apiFetch<ForkSessionResponse>(`/ai/sessions/${encodeURIComponent(id)}/fork`, {
+    method: "POST",
+    body: { fromOrdinal },
+  });
 }
 
 const ACTIVE_SESSION_KEY = "metis.chat.activeSessionId";
@@ -164,13 +242,14 @@ export async function updateSession(
   return res.session;
 }
 
+/** #136 — send only the new user message; the server holds the history. */
 export async function chat(
   sessionId: string,
-  messages: ChatMessage[],
+  message: string,
 ): Promise<{ content: string; usage: TokenUsage }> {
   const res = await apiFetch<{ response: { content: string; usage: TokenUsage } }>("/ai/chat", {
     method: "POST",
-    body: { sessionId, messages },
+    body: { sessionId, message },
   });
   return res.response;
 }
@@ -219,14 +298,15 @@ const IDLE = Symbol("idle");
  */
 export async function* streamChat(
   sessionId: string,
-  messages: ChatMessage[],
+  message: string,
   signal?: AbortSignal,
   idleTimeoutMs: number = STREAM_IDLE_TIMEOUT_MS,
 ): AsyncGenerator<StreamEvent> {
+  // #136 — only the new user message goes up; the server owns the history.
   const res = await streamFetch("/ai/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ sessionId, messages }),
+    body: JSON.stringify({ sessionId, message }),
     signal,
   });
   if (!res.ok || !res.body) {
@@ -320,6 +400,8 @@ export function parseSseFrame(frame: string): StreamEvent | null {
     }
     case "usage":
       return { type: "usage", usage: payload as TokenUsage };
+    case "compaction":
+      return { type: "compaction", compaction: payload as CompactionEventDto };
     case "done":
       return { type: "done" };
     case "error": {

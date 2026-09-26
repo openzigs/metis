@@ -305,6 +305,13 @@ const overrideSchema = z
     displayName: z.string().min(1).max(200).optional(),
     contextWindow: z.number().int().nonnegative().optional(),
     maxOutputTokens: z.number().int().nonnegative().optional(),
+    /**
+     * #137 — characters per token for this model's tokenizer, used to estimate
+     * a chat prompt's size before it is sent (until the session has reported
+     * usage of its own to calibrate from). Measure it as prompt characters ÷
+     * provider-reported input tokens.
+     */
+    charsPerToken: z.number().min(1).max(8).optional(),
     capabilities: z
       .object({
         tools: z.boolean().optional(),
@@ -567,6 +574,35 @@ export function catalogCapabilities(
     vision: caps.vision,
     thinking: caps.thinking,
   };
+}
+
+/**
+ * #137 — measured characters-per-token ratios by model family, for estimating a
+ * prompt's tokens before the session has reported usage to calibrate from. Only
+ * families with a measurement IN THIS REPO are listed; everything else falls
+ * back to the estimator's conservative default.
+ *
+ *   • laguna — 3.23 chars/token: prompt characters ÷ recorded input tokens over
+ *     133 real Phase-1 docs-gen prompts on laguna-s-2.1 (see
+ *     `PHASE1_INPUT_CHARS_PER_TOKEN` in `docs-gen/phase1-chunking.ts`).
+ */
+const FAMILY_CHARS_PER_TOKEN: ReadonlyArray<{ pattern: RegExp; charsPerToken: number }> = [
+  { pattern: /(^|[/:])laguna/i, charsPerToken: 3.23 },
+];
+
+/**
+ * #137 — the catalog's characters-per-token ratio for `provider:model`: an
+ * operator override (`AI_MODEL_CATALOG_OVERRIDES` `charsPerToken`) wins over a
+ * measured family ratio. `null` when the catalog has no figure.
+ */
+export function catalogCharsPerToken(
+  provider: string,
+  model: string,
+  env: NodeJS.ProcessEnv = process.env,
+): number | null {
+  const override = readCatalogOverrides(env).get(`${provider}:${model}`)?.charsPerToken;
+  if (override !== undefined) return override;
+  return FAMILY_CHARS_PER_TOKEN.find((f) => f.pattern.test(model))?.charsPerToken ?? null;
 }
 
 /**

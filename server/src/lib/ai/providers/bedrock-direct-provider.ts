@@ -1172,6 +1172,9 @@ export class OpenAICompatibleProvider implements AIProvider {
     // waiting behind another generation must never count as a first-byte stall.
     const release = await this.acquireSlot(opts.signal);
     try {
+      // #127 — tell a caller that times the stream when the queue wait is over,
+      // so its own idle deadline can start here rather than at enqueue.
+      opts.onSlotAcquired?.();
       const conn = await this.openStream(
         url,
         body,

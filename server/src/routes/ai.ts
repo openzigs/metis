@@ -18,7 +18,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import type { ApiResponse, ModelCatalogResponse, SdkReasoningEffort } from "@metis/shared";
+import type { ApiResponse, CompactionEventDto, ModelCatalogResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { aiRateLimiter } from "../middleware/ai-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -55,6 +55,7 @@ import type {
   ChatMessage,
   ChatOptions,
   ChatResponse,
+  TokenUsage,
 } from "../lib/ai/index.js";
 import { buildChatCodeToolRuntime, runChatCodeToolTurn } from "../lib/ai/chat-code-tool-runtime.js";
 import {
@@ -62,7 +63,18 @@ import {
   StreamIdleTimeoutError,
   STREAM_IDLE_TIMEOUT_CODE,
 } from "../lib/ai/stream-idle.js";
-import { writeSnapshot } from "../lib/ai/session-snapshot.js";
+import { effectiveModel } from "../lib/ai/model-switch.js";
+import { loadAuthorizedSession } from "../lib/ai/conversation/session-access.js";
+import {
+  ContextOverflowError,
+  loadChatTurnConfig,
+  prepareTurn,
+  recordReply,
+  writeDerivedSnapshot,
+  type PreparedTurn,
+  type ReplyToolCall,
+} from "../lib/ai/conversation/turn.js";
+import { providerSummarizer, type CompactionOutcome } from "../lib/async/compaction.js";
 import { getOnlineEvalScorer } from "../lib/eval/online/scorer.js";
 import { messageText } from "../lib/ai/index.js";
 import { AIError, AIOfflineError } from "../lib/ai/errors.js";
@@ -137,6 +149,16 @@ export function setAIProviderForTests(p: AIProvider | null): void {
 }
 
 /**
+ * #138 — the provider a session's chat turns use, with its BYOK key resolved.
+ * The manual `/compact` route summarises with the same model and credentials.
+ */
+export async function chatProviderForSession(session: {
+  providerSecretRef: string | null;
+}): Promise<AIProvider> {
+  return provider({ apiKeyOverride: await resolveProviderKey(session.providerSecretRef) });
+}
+
+/**
  * #700 — the prompt-cache posture shared by the non-stream `/chat` and SSE
  * `/stream` routes. `callType` attributes both to the "chat" workload in the
  * cache-hit telemetry (#699); `promptCaching.system` requests caching of the
@@ -153,49 +175,22 @@ export const CHAT_CACHE_OPTS = {
 } as const satisfies Pick<ChatOptions, "callType" | "promptCaching">;
 
 /**
- * Epic #647 / Issue #654 — Sliding window that keeps only the last N
- * user/assistant turn pairs. System messages are always preserved.
- */
-export function windowHistory(messages: ChatMessage[], maxTurns: number): ChatMessage[] {
-  if (maxTurns <= 0) return messages;
-
-  const system: ChatMessage[] = [];
-  const nonSystem: ChatMessage[] = [];
-
-  for (const msg of messages) {
-    if (msg.role === "system") {
-      system.push(msg);
-    } else {
-      nonSystem.push(msg);
-    }
-  }
-
-  // Find the index of the Nth-from-last user message — include from there.
-  const userIndices: number[] = [];
-  for (let i = 0; i < nonSystem.length; i++) {
-    if (nonSystem[i].role === "user") userIndices.push(i);
-  }
-
-  if (userIndices.length <= maxTurns) return [...system, ...nonSystem];
-
-  // Keep the last `maxTurns` user messages and everything after the cut point
-  const cutAt = userIndices[userIndices.length - maxTurns];
-  return [...system, ...nonSystem.slice(cutAt)];
-}
-
-/**
  * Epic #647 / Issue #653 — Estimate per-component token breakdown.
- * Uses 4 chars ≈ 1 token approximation.
+ * #137 — `charsPerToken` is the turn's calibrated ratio; the 4 chars ≈ 1 token
+ * default remains only for callers that have none.
  */
-export function estimateBreakdown(parts: {
-  systemMessages: ChatMessage[];
-  libraryMessages: ChatMessage[];
-  historyMessages: ChatMessage[];
-  userMessage: string;
-  codeContext?: string;
-  toolsJson?: string;
-}): Record<string, number> {
-  const est = (text: string) => Math.ceil(text.length / 4);
+export function estimateBreakdown(
+  parts: {
+    systemMessages: ChatMessage[];
+    libraryMessages: ChatMessage[];
+    historyMessages: ChatMessage[];
+    userMessage: string;
+    codeContext?: string;
+    toolsJson?: string;
+  },
+  charsPerToken = 4,
+): Record<string, number> {
+  const est = (text: string) => Math.ceil(text.length / charsPerToken);
   return {
     system_prompt: parts.systemMessages.reduce((sum, m) => sum + est(messageText(m)), 0),
     library_context: parts.libraryMessages.reduce((sum, m) => sum + est(messageText(m)), 0),
@@ -236,13 +231,83 @@ const messageSchema = z.object({
   toolCallId: z.string().max(120).optional(),
 });
 
+/**
+ * #136 — the chat routes take ONLY the new user message: `message`. The server
+ * owns every earlier turn. `messages` is still accepted for older clients, but
+ * only as a single `user` message — any other role, or more than one message,
+ * is client-supplied history and is refused with 400 `CLIENT_HISTORY_REJECTED`.
+ */
 const chatBodySchema = z.object({
   sessionId: z.string().min(1),
-  messages: z.array(messageSchema).min(1).max(100),
+  message: z.string().min(1).max(40_000).optional(),
+  messages: z.array(messageSchema).min(1).max(100).optional(),
   model: z.string().max(120).optional(),
   systemMessage: z.string().max(20_000).optional(),
   reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
 });
+
+type ChatBody = z.infer<typeof chatBodySchema>;
+
+export const CLIENT_HISTORY_REJECTED = "CLIENT_HISTORY_REJECTED";
+
+/** The new user message of a chat request, or a 400 explaining why not. */
+export function newUserMessage(body: ChatBody): string {
+  if (body.message !== undefined && body.messages !== undefined) {
+    throw new AppError(400, "VALIDATION_ERROR", "Send `message` or `messages`, not both");
+  }
+  if (body.message !== undefined) return body.message;
+  const msgs = body.messages ?? [];
+  if (msgs.length === 0) {
+    throw new AppError(400, "VALIDATION_ERROR", "Invalid chat payload: `message` is required");
+  }
+  if (msgs.length > 1 || msgs[0]!.role !== "user") {
+    throw new AppError(
+      400,
+      CLIENT_HISTORY_REJECTED,
+      "The server keeps this conversation's history. Send only the new user message " +
+        "(`message`); earlier user, assistant, system or tool messages are not accepted.",
+      { roles: msgs.map((m) => m.role) },
+    );
+  }
+  return msgs[0]!.content;
+}
+
+/** A session's stored reasoning effort, when it is one the providers accept. */
+function sessionReasoningEffort(value: string | null): ChatOptions["reasoningEffort"] | undefined {
+  return value === "low" || value === "medium" || value === "high" ? value : undefined;
+}
+
+/** #138 — a project's compaction threshold (tokens), when it sets one. */
+async function loadProjectCompactionThreshold(projectId: string | null): Promise<number | null> {
+  if (!projectId) return null;
+  const row = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { contextCompactionThreshold: true },
+  });
+  return row?.contextCompactionThreshold ?? null;
+}
+
+function compactionEvent(c: CompactionOutcome): CompactionEventDto {
+  return {
+    summaryOrdinal: c.summary.ordinal,
+    compactedMessages: c.compactedMessages,
+    fromOrdinal: c.fromOrdinal,
+    toOrdinal: c.toOrdinal,
+    estimatedTokensBefore: c.estimatedTokensBefore,
+    estimatedTokensAfter: c.estimatedTokensAfter,
+    contextWindow: c.contextWindow,
+    contextWindowSource: c.contextWindowSource,
+  };
+}
+
+/** A settle-once promise the local provider resolves when it holds a slot. */
+function slotSignal(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
 
 const policySchema = z.object({
   low: z.enum(["auto", "prompt-once", "always-prompt", "deny"]),
@@ -277,14 +342,6 @@ function userIdOrThrow(req: Request): string {
   return id;
 }
 
-async function loadSession(sessionId: string, userId: string) {
-  const session = await prisma.aISession.findFirst({
-    where: { id: sessionId, userId, deletedAt: null },
-  });
-  if (!session) throw new AppError(404, "AI_SESSION_NOT_FOUND", "Session not found");
-  return session;
-}
-
 /** Epic #164 — fetch the project's current safetyMode (cached per request). */
 async function loadSafetyMode(projectId: string): Promise<"strict" | "standard" | "off"> {
   const row = await prisma.project.findUnique({
@@ -297,17 +354,6 @@ async function loadSafetyMode(projectId: string): Promise<"strict" | "standard" 
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
-}
-
-/** Parse a JSON-encoded string column into a string[], tolerating corruption. */
-function safeJsonArray(raw: string | null | undefined): string[] {
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
-  } catch {
-    return [];
-  }
 }
 
 function aiErrorToAppError(err: unknown): AppError {
@@ -754,20 +800,18 @@ export function aiRouter(): Router {
   });
 
   r.get("/sessions/:id", requireAuth, async (req: Request, res: Response) => {
-    const userId = userIdOrThrow(req);
-    const session = await loadSession(String(req.params.id), userId);
+    const session = await loadAuthorizedSession(req.user, String(req.params.id));
     res.json(ok({ session: { ...session, policy: parsePolicyJson(session.policy) } }));
   });
 
   r.patch("/sessions/:id", requireAuth, async (req: Request, res: Response) => {
-    const userId = userIdOrThrow(req);
     const parsed = updateSessionSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
       throw new AppError(400, "VALIDATION_ERROR", "Invalid session update", {
         issues: parsed.error.flatten(),
       });
     }
-    const existing = await loadSession(String(req.params.id), userId);
+    const existing = await loadAuthorizedSession(req.user, String(req.params.id));
     const policy = parsed.data.policy
       ? policyToJson(
           normalizePolicy({ ...parsePolicyJson(existing.policy), ...parsed.data.policy }),
@@ -808,8 +852,7 @@ export function aiRouter(): Router {
   });
 
   r.get("/sessions/:id/usage", requireAuth, async (req: Request, res: Response) => {
-    const userId = userIdOrThrow(req);
-    const session = await loadSession(String(req.params.id), userId);
+    const session = await loadAuthorizedSession(req.user, String(req.params.id));
     const rows = await prisma.aITokenUsage.findMany({
       where: { sessionId: session.id },
       orderBy: { ts: "desc" },
@@ -835,8 +878,7 @@ export function aiRouter(): Router {
   });
 
   r.get("/sessions/:id/approvals", requireAuth, async (req: Request, res: Response) => {
-    const userId = userIdOrThrow(req);
-    const session = await loadSession(String(req.params.id), userId);
+    const session = await loadAuthorizedSession(req.user, String(req.params.id));
     const tool = typeof req.query.tool === "string" ? req.query.tool : undefined;
     const rows = await prisma.aIToolApproval.findMany({
       where: {
@@ -921,7 +963,14 @@ export function aiRouter(): Router {
         issues: parsed.error.flatten(),
       });
     }
-    const session = await loadSession(parsed.data.sessionId, userId);
+    const userInput = newUserMessage(parsed.data);
+    // #136 — ownership AND project access, the same rule every transcript read uses.
+    const session = await loadAuthorizedSession(req.user, parsed.data.sessionId);
+    // #127 — the session's `/model` switch (#165) is honoured: `currentModel`
+    // was written by the switch and never read by chat before.
+    const model = parsed.data.model ?? effectiveModel(session);
+    const reasoningEffort =
+      parsed.data.reasoningEffort ?? sessionReasoningEffort(session.currentReasoningEffort);
     // #713 — decide whether the agentic code-search tools are offered this
     // request (env flag + project-scoped session). Their schemas ride in the
     // byte-stable prompt lead; when disabled the schema block is "" and the
@@ -930,35 +979,15 @@ export function aiRouter(): Router {
       enabled: getConfigService().getBool("CHAT_CODE_SEARCH_TOOLS", false),
       projectId: session.projectId,
     });
-    const messages: ChatMessage[] = [];
     const librarySystem = await buildLibrarySystemMessages(session, codeTools.schemaBlock);
     // #700 — emit the byte-stable lead (persona + skills + tool schemas) first,
     // then the volatile tail (Chronicle), then the per-request user
     // `systemMessage` override, so the cacheable prefix stays byte-identical.
-    messages.push(...librarySystem.stable);
-    messages.push(...librarySystem.volatile);
+    // #138 — none of these is a transcript row, so compaction never touches them.
+    const prefix: ChatMessage[] = [...librarySystem.stable, ...librarySystem.volatile];
     if (parsed.data.systemMessage) {
-      messages.push({ role: "system", content: parsed.data.systemMessage });
+      prefix.push({ role: "system", content: parsed.data.systemMessage });
     }
-    messages.push(...parsed.data.messages);
-
-    // Auto-RAG: inject relevant knowledge context for project-scoped sessions.
-    // Issue #1321 — the observer needs the retrieved contexts as the model saw
-    // them; the builder hands them over directly (no re-parsing of its block).
-    const ragCapture: RagContextCapture = { contexts: [] };
-    const ragContext = await buildAutoRagContext(
-      session.projectId,
-      messages,
-      undefined,
-      ragCapture,
-    );
-    if (ragContext) {
-      messages.splice(messages.length - 1, 0, { role: "system", content: ragContext });
-    }
-
-    // Epic #647 / Issue #654 — sliding window for chat history
-    const maxTurns = intEnv(process.env.AI_MAX_HISTORY_TURNS, 20, 0);
-    const windowedMessages = maxTurns > 0 ? windowHistory(messages, maxTurns) : messages;
 
     const ac = new AbortController();
     req.on("aborted", () => ac.abort());
@@ -966,6 +995,8 @@ export function aiRouter(): Router {
       if (!res.writableEnded) ac.abort();
     });
 
+    let prepared: PreparedTurn | null = null;
+    let providerKey: string = loadAIConfig().provider;
     try {
       const apiKeyOverride = await resolveProviderKey(session.providerSecretRef);
       const sdkOpts = await buildSdkSkillRuntime(session);
@@ -974,41 +1005,90 @@ export function aiRouter(): Router {
       if (session.projectId) {
         await assertWithinBudget(session.projectId);
       }
-      // Epic #164 — input safety pass on the last user message.
-      const lastUser = [...windowedMessages].reverse().find((m) => m.role === "user");
-      if (lastUser && session.projectId) {
-        const safe = await applySafety(messageText(lastUser), {
+      // Epic #164 — input safety pass on the new user message. The transcript
+      // stores what the model is sent, so a redaction is never undone later.
+      let userText = userInput;
+      if (session.projectId) {
+        const safe = await applySafety(userInput, {
           projectId: session.projectId,
           sessionId: session.id,
           provider: session.provider,
           mode: await loadSafetyMode(session.projectId),
           direction: "input",
         });
-        if (safe.redacted) lastUser.content = safe.text;
+        if (safe.redacted) userText = safe.text;
       }
+
+      const providerInstance = provider({ apiKeyOverride });
+      providerKey = providerInstance.key;
+
+      // Auto-RAG: inject relevant knowledge context for project-scoped sessions.
+      // Issue #1321 — the observer needs the retrieved contexts as the model saw
+      // them; the builder hands them over directly (no re-parsing of its block).
+      const ragCapture: RagContextCapture = { contexts: [] };
+      const ragContext = await buildAutoRagContext(
+        session.projectId,
+        [{ role: "user", content: userText }],
+        undefined,
+        ragCapture,
+      );
+
+      // #136/#138 — persist the question, load the server-owned history, and
+      // compact it first if the prompt has reached the watermark.
+      const turnConfig = loadChatTurnConfig(
+        await loadProjectCompactionThreshold(session.projectId),
+      );
+      prepared = await prepareTurn({
+        session,
+        userText,
+        prefix,
+        beforeUser: ragContext ? [{ role: "system", content: ragContext }] : [],
+        provider: providerInstance.key,
+        model,
+        summarizer: providerSummarizer(providerInstance, {
+          model,
+          signal: ac.signal,
+          maxTokens: turnConfig.summaryMaxTokens,
+        }),
+        config: turnConfig,
+      });
+      const turn = prepared;
+      const promptMessages = turn.messages;
 
       // Epic #647 / Issue #651 — semantic cache lookup
       const semanticCache = getSemanticCache();
-      const providerInstance = provider({ apiKeyOverride });
       let cachedEmbedding: number[] | undefined;
       let cachedSystemHash: string | undefined;
-      if (semanticCache.enabled && lastUser) {
+      if (semanticCache.enabled) {
         try {
-          const embedResult = await providerInstance.embed([messageText(lastUser)]);
+          const embedResult = await providerInstance.embed([userText]);
           cachedEmbedding = embedResult.vectors[0];
           cachedSystemHash = hashPrompt(
-            windowedMessages
+            promptMessages
               .filter((m) => m.role === "system")
               .map((m) => messageText(m))
               .join("\n"),
           );
           const cacheHit = await semanticCache.lookup(
             cachedEmbedding,
-            parsed.data.model ?? session.model,
+            model,
             cachedSystemHash,
             session.projectId ?? undefined,
           );
           if (cacheHit && !shouldSkipCache(cacheHit.response)) {
+            // #136 — a cached answer is still an answer the user saw: record it,
+            // or the transcript would hold a question with no reply.
+            const cachedRow = await recordReply({
+              sessionId: session.id,
+              text: cacheHit.response,
+              usage: null,
+              provider: providerInstance.key,
+              model,
+              promptChars: null,
+              ratio: turn.ratio,
+              meta: { cached: true },
+            });
+            await writeDerivedSnapshot(session);
             // Issue #1321 — deliberately NOT observed. A cached answer was
             // generated against a different request's retrieval, so scoring it
             // against *this* request's contexts would measure the semantic
@@ -1019,10 +1099,12 @@ export function aiRouter(): Router {
                 response: {
                   content: cacheHit.response,
                   usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-                  model: parsed.data.model ?? session.model,
+                  model,
                   provider: loadAIConfig().provider,
                   cached: true,
                 },
+                transcript: { userOrdinal: turn.userRow.ordinal, replyOrdinal: cachedRow.ordinal },
+                ...(turn.compaction ? { compaction: compactionEvent(turn.compaction) } : {}),
               }),
             );
             return;
@@ -1036,12 +1118,12 @@ export function aiRouter(): Router {
 
       const chatProviderOptions: Partial<ChatOptions> = {
         sessionId: session.id,
-        model: parsed.data.model ?? session.model,
+        model,
         signal: ac.signal,
         // #700 — chat cache posture (see CHAT_CACHE_OPTS): tag the workload for
         // telemetry and cache the byte-stable system prefix only.
         ...CHAT_CACHE_OPTS,
-        ...(parsed.data.reasoningEffort ? { reasoningEffort: parsed.data.reasoningEffort } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
         ...sdkOpts,
       };
 
@@ -1050,24 +1132,30 @@ export function aiRouter(): Router {
       // search_code_graph / search_code_symbols scoped to session.projectId,
       // then answer. Otherwise, the single non-loop provider call as before.
       let response: ChatResponse;
+      let toolCalls: ReplyToolCall[] = [];
       if (codeTools.enabled && session.projectId) {
-        const turn = await runChatCodeToolTurn(
+        const loop = await runChatCodeToolTurn(
           providerInstance,
           {
-            messages: windowedMessages,
+            messages: promptMessages,
             tools: codeTools.tools,
             projectId: session.projectId,
           },
-          { signal: ac.signal, providerChatOptions: chatProviderOptions },
+          {
+            signal: ac.signal,
+            providerChatOptions: chatProviderOptions,
+            toolResultMaxChars: turn.build.toolResultMaxChars,
+          },
         );
+        toolCalls = loop.toolResults;
         response = {
-          content: turn.finalResponse,
-          usage: turn.usage,
-          model: parsed.data.model ?? session.model,
+          content: loop.finalResponse,
+          usage: loop.usage,
+          model,
           provider: loadAIConfig().provider,
         };
       } else {
-        response = await providerInstance.chat(windowedMessages, chatProviderOptions);
+        response = await providerInstance.chat(promptMessages, chatProviderOptions);
       }
 
       // Epic #164 — output safety pass + per-project usage telemetry.
@@ -1093,15 +1181,33 @@ export function aiRouter(): Router {
         });
       }
 
-      // Epic #647 / Issue #653 — per-request token breakdown
-      const systemMsgs = windowedMessages.filter((m) => m.role === "system");
-      const historyMsgs = windowedMessages.filter((m) => m.role !== "system");
-      const breakdown = estimateBreakdown({
-        systemMessages: systemMsgs.filter((m) => !librarySystem.all.includes(m)),
-        libraryMessages: librarySystem.all,
-        historyMessages: historyMsgs.slice(0, -1),
-        userMessage: lastUser ? messageText(lastUser) : "",
+      // #136/#137 — the reply, with the provider-reported usage, into the transcript.
+      const replyRow = await recordReply({
+        sessionId: session.id,
+        text: outContent,
+        toolCalls,
+        usage: response.usage,
+        provider: providerInstance.key,
+        model: response.model || model,
+        finishReason: response.finishReason ?? null,
+        promptChars: turn.promptChars,
+        ratio: turn.ratio,
       });
+      await writeDerivedSnapshot(session);
+
+      // Epic #647 / Issue #653 — per-request token breakdown
+      const historyMsgs = promptMessages.filter((m) => m.role !== "system");
+      const breakdown = estimateBreakdown(
+        {
+          systemMessages: promptMessages.filter(
+            (m) => m.role === "system" && !librarySystem.all.includes(m),
+          ),
+          libraryMessages: librarySystem.all,
+          historyMessages: historyMsgs.slice(0, -1),
+          userMessage: userText,
+        },
+        turn.ratio.charsPerToken,
+      );
 
       getTokenTracker().record({
         sessionId: session.id,
@@ -1109,7 +1215,7 @@ export function aiRouter(): Router {
         provider: response.provider,
         model: response.model,
         usage: response.usage,
-        prompt: windowedMessages.map((m) => messageText(m)).join("\n"),
+        prompt: promptMessages.map((m) => messageText(m)).join("\n"),
         // Issue #428 — stamp the direct projectId so the AITokenUsage row is
         // discoverable by both the direct-column and session-relation filters
         // in UsageService.projectUsage, keeping detail views consistent with
@@ -1121,7 +1227,6 @@ export function aiRouter(): Router {
       // Epic #647 / Issue #651 — store in semantic cache on miss
       if (
         semanticCache.enabled &&
-        lastUser &&
         cachedEmbedding &&
         cachedSystemHash &&
         !shouldSkipCache(outContent)
@@ -1146,12 +1251,18 @@ export function aiRouter(): Router {
         metadata: {
           provider: response.provider,
           model: response.model,
-          promptHash: hashPrompt(windowedMessages.map((m) => messageText(m)).join("\n")),
+          promptHash: hashPrompt(promptMessages.map((m) => messageText(m)).join("\n")),
           tokens: response.usage,
           offline: response.offline ?? false,
         },
       });
-      res.json(ok({ response: { ...response, content: outContent } }));
+      res.json(
+        ok({
+          response: { ...response, content: outContent },
+          transcript: { userOrdinal: turn.userRow.ordinal, replyOrdinal: replyRow.ordinal },
+          ...(turn.compaction ? { compaction: compactionEvent(turn.compaction) } : {}),
+        }),
+      );
 
       // Issue #1321 — online eval observer. Deliberately AFTER the response is
       // written and deliberately NOT awaited: `observe` returns void, defers
@@ -1160,11 +1271,16 @@ export function aiRouter(): Router {
       // the user just received. Default OFF (`ONLINE_EVAL_ENABLED`).
       getOnlineEvalScorer().observe({
         surface: "chat",
-        question: lastUser ? messageText(lastUser) : "",
+        question: userText,
         answer: outContent,
         contexts: ragCapture.contexts,
       });
     } catch (err) {
+      // #136 — the question is already in the transcript; record that its turn
+      // failed, so the history never shows an unanswered question with no reason.
+      if (prepared) {
+        await recordFailedTurn(session.id, err, "", prepared, providerKey, model);
+      }
       if (err instanceof SafetyDeniedError) {
         throw new AppError(err.status, err.code, err.message, { findings: err.findings });
       }
@@ -1172,6 +1288,13 @@ export function aiRouter(): Router {
         throw new AppError(err.status, err.code, err.message, {
           usedTokens: err.usedTokens,
           budget: err.budget,
+        });
+      }
+      if (err instanceof ContextOverflowError) {
+        throw new AppError(err.status, err.code, err.message, {
+          estimatedTokens: err.estimatedTokens,
+          contextWindow: err.contextWindow.tokens,
+          contextWindowSource: err.contextWindow.source,
         });
       }
       throw aiErrorToAppError(err);
@@ -1187,7 +1310,11 @@ export function aiRouter(): Router {
         issues: parsed.error.flatten(),
       });
     }
-    const session = await loadSession(parsed.data.sessionId, userId);
+    const userText = newUserMessage(parsed.data);
+    const session = await loadAuthorizedSession(req.user, parsed.data.sessionId);
+    const model = parsed.data.model ?? effectiveModel(session);
+    const reasoningEffort =
+      parsed.data.reasoningEffort ?? sessionReasoningEffort(session.currentReasoningEffort);
     // #713 — decide whether the agentic code-search tools are offered this
     // request (env flag + project-scoped session). Their schemas ride in the
     // byte-stable prompt lead; when disabled the schema block is "" and the
@@ -1196,35 +1323,24 @@ export function aiRouter(): Router {
       enabled: getConfigService().getBool("CHAT_CODE_SEARCH_TOOLS", false),
       projectId: session.projectId,
     });
-    const messages: ChatMessage[] = [];
     const librarySystem = await buildLibrarySystemMessages(session, codeTools.schemaBlock);
     // #700 — emit the byte-stable lead (persona + skills + tool schemas) first,
     // then the volatile tail (Chronicle), then the per-request user
     // `systemMessage` override, so the cacheable prefix stays byte-identical.
-    messages.push(...librarySystem.stable);
-    messages.push(...librarySystem.volatile);
+    const prefix: ChatMessage[] = [...librarySystem.stable, ...librarySystem.volatile];
     if (parsed.data.systemMessage) {
-      messages.push({ role: "system", content: parsed.data.systemMessage });
+      prefix.push({ role: "system", content: parsed.data.systemMessage });
     }
-    messages.push(...parsed.data.messages);
 
     // Auto-RAG: inject relevant knowledge context for project-scoped sessions.
     // Issue #1321 — see the /chat route: contexts come from the builder.
     const ragCapture: RagContextCapture = { contexts: [] };
     const ragContext = await buildAutoRagContext(
       session.projectId,
-      messages,
+      [{ role: "user", content: userText }],
       undefined,
       ragCapture,
     );
-    if (ragContext) {
-      messages.splice(messages.length - 1, 0, { role: "system", content: ragContext });
-    }
-
-    // Epic #647 / Issue #654 — sliding window for stream history
-    const streamMaxTurns = intEnv(process.env.AI_MAX_HISTORY_TURNS, 20, 0);
-    const windowedMessages =
-      streamMaxTurns > 0 ? windowHistory(messages, streamMaxTurns) : messages;
 
     res.status(200);
     res.setHeader("Content-Type", "text/event-stream");
@@ -1251,8 +1367,11 @@ export function aiRouter(): Router {
     //     for healthy streams; a truly idle socket gets reaped.
     //   • SSE keep-alive comment ping so proxies/load balancers don't
     //     close the connection on their own idle policy.
-    //   • Hard ceiling per stream — no provider call should ever
-    //     legitimately exceed this. Sends an `error` SSE frame then ends.
+    //   • Hard ceiling per phase — no provider call should ever legitimately
+    //     exceed this. Sends an `error` SSE frame then ends. #127 — it is armed
+    //     once for the turn's preparation (which may include a compaction
+    //     summary call) and RE-ARMED for the answer, so compacting never eats
+    //     into the answer's own budget.
     //
     // All three timers are cleared in the `finally` block below so they
     // never leak past the request lifetime.
@@ -1268,31 +1387,42 @@ export function aiRouter(): Router {
         clearInterval(heartbeat);
       }
     }, limits.heartbeatIntervalMs);
-    const hardCeiling = setTimeout(() => {
-      // #1366 — this used to write `{ error: "timeout" }`, a shape the client's
-      // `parseSseFrame` does not read (it takes `message`/`code`), so even the
-      // one timeout the server DID detect surfaced as a blank error.
-      log.warn("AI stream exceeded its hard duration ceiling", {
-        sessionId: session.id,
-        userId,
-        hardCeilingMs: limits.hardCeilingMs,
-      });
-      try {
-        res.write(
-          `event: error\ndata: ${JSON.stringify({
-            code: "STREAM_MAX_DURATION",
-            message: `The response was stopped after ${Math.round(limits.hardCeilingMs / 1000)}s. Any partial answer above is incomplete.`,
-          })}\n\n`,
-        );
-      } catch {
-        /* nothing left to write */
-      }
-      ac.abort();
-      safeEnd();
-    }, limits.hardCeilingMs);
-    // Keep timers from blocking process exit during graceful shutdown tests.
+    let hardCeiling: ReturnType<typeof setTimeout> | undefined;
+    // Why the turn was stopped, when the server stopped it (recorded on the reply).
+    let stoppedBy: { code: string; message: string } | null = null;
+    const armHardCeiling = (): void => {
+      if (hardCeiling) clearTimeout(hardCeiling);
+      hardCeiling = setTimeout(() => {
+        stoppedBy = {
+          code: "STREAM_MAX_DURATION",
+          message: `The response was stopped after ${Math.round(limits.hardCeilingMs / 1000)}s.`,
+        };
+        // #1366 — this used to write `{ error: "timeout" }`, a shape the client's
+        // `parseSseFrame` does not read (it takes `message`/`code`), so even the
+        // one timeout the server DID detect surfaced as a blank error.
+        log.warn("AI stream exceeded its hard duration ceiling", {
+          sessionId: session.id,
+          userId,
+          hardCeilingMs: limits.hardCeilingMs,
+        });
+        try {
+          res.write(
+            `event: error\ndata: ${JSON.stringify({
+              code: "STREAM_MAX_DURATION",
+              message: `The response was stopped after ${Math.round(limits.hardCeilingMs / 1000)}s. Any partial answer above is incomplete.`,
+            })}\n\n`,
+          );
+        } catch {
+          /* nothing left to write */
+        }
+        ac.abort();
+        safeEnd();
+      }, limits.hardCeilingMs);
+      // Keep timers from blocking process exit during graceful shutdown tests.
+      hardCeiling.unref?.();
+    };
+    armHardCeiling();
     heartbeat.unref?.();
-    hardCeiling.unref?.();
 
     req.on("aborted", () => ac.abort());
     res.on("close", () => ac.abort());
@@ -1302,13 +1432,10 @@ export function aiRouter(): Router {
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
-    let aggregateUsage = {
-      promptTokens: 0,
-      completionTokens: 0,
-      totalTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-    };
+    // #137 — `null` until the provider reports usage: an unreported turn is
+    // recorded as unreported, never as zero tokens.
+    let reportedUsage: TokenUsage | null = null;
+    let finishReason: string | null = null;
 
     // Issue #1321 — online eval observer. `/api/ai/stream` is the route the
     // product actually calls (`ui/src/lib/ai-client.ts` `streamChat`, used by
@@ -1321,25 +1448,56 @@ export function aiRouter(): Router {
     const onlineEval = getOnlineEvalScorer();
     const observeOnline = onlineEval.enabled();
     let observedAnswer = "";
-    // #1367 — the answer is also needed unconditionally now, to snapshot the
-    // turn. Kept separate from `observedAnswer` so the eval sampler's own
-    // enable/disable semantics are unchanged.
+    // #136 — the answer as streamed, persisted into the transcript whether the
+    // stream completes or not.
     let finalAnswer = "";
+    let toolCalls: ReplyToolCall[] = [];
+    let prepared: PreparedTurn | null = null;
+    let providerKey: string = loadAIConfig().provider;
 
     try {
       const apiKeyOverride = await resolveProviderKey(session.providerSecretRef);
       const sdkOpts = await buildSdkSkillRuntime(session);
 
       const streamProvider = provider({ apiKeyOverride });
+      providerKey = streamProvider.key;
 
+      const turnConfig = loadChatTurnConfig(
+        await loadProjectCompactionThreshold(session.projectId),
+      );
+      prepared = await prepareTurn({
+        session,
+        userText,
+        prefix,
+        beforeUser: ragContext ? [{ role: "system", content: ragContext }] : [],
+        provider: streamProvider.key,
+        model,
+        summarizer: providerSummarizer(streamProvider, {
+          model,
+          signal: ac.signal,
+          maxTokens: turnConfig.summaryMaxTokens,
+        }),
+        config: turnConfig,
+      });
+      const turn = prepared;
+      if (turn.compaction) send("compaction", compactionEvent(turn.compaction));
+
+      // A fresh ceiling for the answer itself (see M1 above).
+      armHardCeiling();
+
+      // #127 — the local provider queues behind a per-base-URL concurrency
+      // limiter; the idle clock starts when its slot is acquired, not while it
+      // waits behind another generation.
+      const slot = streamProvider.key === "local-gemma" ? slotSignal() : null;
       const streamProviderOptions: Partial<ChatOptions> = {
         sessionId: session.id,
-        model: parsed.data.model ?? session.model,
+        model,
         signal: ac.signal,
         // #700 — same cache posture as the non-stream /chat route.
         ...CHAT_CACHE_OPTS,
-        ...(parsed.data.reasoningEffort ? { reasoningEffort: parsed.data.reasoningEffort } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
         ...sdkOpts,
+        ...(slot ? { onSlotAcquired: slot.resolve } : {}),
       };
 
       if (codeTools.enabled && session.projectId) {
@@ -1348,29 +1506,27 @@ export function aiRouter(): Router {
         // never involved and no protocol string leaks as a delta. Each executed
         // tool call surfaces as a structured `tool_call` frame; the final answer
         // is streamed as one delta. Tools are scoped to session.projectId.
-        const turn = await runChatCodeToolTurn(
+        const loop = await runChatCodeToolTurn(
           streamProvider,
           {
-            messages: windowedMessages,
+            messages: turn.messages,
             tools: codeTools.tools,
             projectId: session.projectId,
           },
           {
             signal: ac.signal,
             providerChatOptions: streamProviderOptions,
+            toolResultMaxChars: turn.build.toolResultMaxChars,
             onToolCall: (c) =>
               send("tool_call", { type: "tool_call", name: c.tool, arguments: c.args }),
           },
         );
-        if (turn.finalResponse) send("delta", { type: "delta", content: turn.finalResponse });
-        if (observeOnline) observedAnswer = turn.finalResponse;
-        finalAnswer = turn.finalResponse;
-        aggregateUsage = {
-          ...turn.usage,
-          cacheReadTokens: turn.usage.cacheReadTokens ?? 0,
-          cacheWriteTokens: turn.usage.cacheWriteTokens ?? 0,
-        };
-        send("usage", { type: "usage", usage: turn.usage });
+        toolCalls = loop.toolResults;
+        if (loop.finalResponse) send("delta", { type: "delta", content: loop.finalResponse });
+        if (observeOnline) observedAnswer = loop.finalResponse;
+        finalAnswer = loop.finalResponse;
+        reportedUsage = loop.usage;
+        send("usage", { type: "usage", usage: loop.usage });
         send("done", { type: "done" });
       } else {
         // #1366 — the provider iterable is wrapped so a stream that goes silent
@@ -1378,72 +1534,61 @@ export function aiRouter(): Router {
         // been written to the socket, so the partial answer survives; the catch
         // below turns the throw into a user-visible `error` frame.
         const guarded = withIdleTimeout(
-          streamProvider.stream(windowedMessages, streamProviderOptions),
+          streamProvider.stream(turn.messages, streamProviderOptions),
           limits.idleTimeoutMs,
           () => ac.abort(),
+          slot?.promise,
         );
         for await (const chunk of guarded) {
           const c = chunk as ChatChunk;
-          if (c.type === "usage")
-            aggregateUsage = {
-              ...c.usage,
-              cacheReadTokens: c.usage.cacheReadTokens ?? 0,
-              cacheWriteTokens: c.usage.cacheWriteTokens ?? 0,
-            };
+          if (c.type === "usage") reportedUsage = c.usage;
           if (observeOnline && c.type === "delta") observedAnswer += c.content;
           if (c.type === "delta") finalAnswer += c.content;
+          if (c.type === "done") finishReason = c.finishReason ?? null;
           send(c.type, c);
           if (c.type === "done") break;
         }
       }
-      // #1367 — persist the turn so the session is resumable.
-      //
-      // Which of the issue's two candidate causes was it? Both, in layers, and
-      // the distinction matters. The AISession ROW was always written at
-      // session-create, so the session record existed and was merely unlisted —
-      // but its CONVERSATION was never persisted at all, because nothing in the
-      // product ever called `writeSnapshot`. `snapshotUpdatedAt` therefore
-      // stayed null forever, and `listResumable` filters on
-      // `snapshotUpdatedAt: { gte: cutoff }`, which a null can never satisfy.
-      // So the fix is to START WRITING snapshots, not to relax the list query:
-      // relaxing it would have listed sessions that had nothing to resume.
-      //
-      // Snapshotting on every completed turn (rather than every Nth message)
-      // means a reload never loses more than the turn in flight. Failures are
-      // logged and swallowed: the user already has their answer, and losing
-      // resumability must never fail a successful stream.
+
+      // #136/#137 — the reply and its reported usage into the transcript; the
+      // session snapshot (#1367) is now derived from it.
       try {
-        await writeSnapshot(session.id, {
-          v: 1,
-          messages: [
-            ...parsed.data.messages.map((m) => ({
-              role: m.role,
-              content: messageText(m),
-              ...(m.name ? { name: m.name } : {}),
-            })),
-            { role: "assistant" as const, content: finalAnswer },
-          ],
-          currentModel: session.currentModel ?? session.model,
-          currentReasoningEffort:
-            (session.currentReasoningEffort as SdkReasoningEffort | null) ?? null,
-          loadedSkillIds: safeJsonArray(session.loadedSkillIds),
-          customAgentIds: session.agentId ? [session.agentId] : [],
+        await recordReply({
+          sessionId: session.id,
+          text: finalAnswer,
+          toolCalls,
+          usage: reportedUsage,
+          provider: streamProvider.key,
+          model,
+          finishReason,
+          promptChars: turn.promptChars,
+          ratio: turn.ratio,
         });
-      } catch (snapshotErr) {
-        log.warn("Failed to snapshot AI session after stream turn", {
+        await writeDerivedSnapshot(session);
+      } catch (persistErr) {
+        log.error("Failed to persist the chat reply to the transcript", {
           sessionId: session.id,
           userId,
-          error: snapshotErr instanceof Error ? snapshotErr.message : String(snapshotErr),
+          error: persistErr instanceof Error ? persistErr.message : String(persistErr),
         });
       }
 
+      const usageForTelemetry = reportedUsage ?? {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+      };
       getTokenTracker().record({
         sessionId: session.id,
         userId,
         provider: loadAIConfig().provider,
-        model: parsed.data.model ?? session.model,
-        usage: aggregateUsage,
-        prompt: windowedMessages.map((m) => messageText(m)).join("\n"),
+        model,
+        usage: {
+          ...usageForTelemetry,
+          cacheReadTokens: usageForTelemetry.cacheReadTokens ?? 0,
+          cacheWriteTokens: usageForTelemetry.cacheWriteTokens ?? 0,
+        },
+        prompt: turn.messages.map((m) => messageText(m)).join("\n"),
         // Issue #428 — stamp the direct projectId (see streaming path above).
         projectId: session.projectId ?? undefined,
       });
@@ -1452,8 +1597,8 @@ export function aiRouter(): Router {
         action: "ai.stream",
         target: { type: "ai_session", id: session.id },
         metadata: {
-          tokens: aggregateUsage,
-          promptHash: hashPrompt(windowedMessages.map((m) => messageText(m)).join("\n")),
+          tokens: usageForTelemetry,
+          promptHash: hashPrompt(turn.messages.map((m) => messageText(m)).join("\n")),
         },
       });
 
@@ -1463,15 +1608,15 @@ export function aiRouter(): Router {
       // this stream nor change what the user just received. Only reached on the
       // success path — a stream that errored has no answer worth scoring.
       if (observeOnline && observedAnswer) {
-        const lastUserMsg = [...windowedMessages].reverse().find((m) => m.role === "user");
         onlineEval.observe({
           surface: "chat",
-          question: lastUserMsg ? messageText(lastUserMsg) : "",
+          question: userText,
           answer: observedAnswer,
           contexts: ragCapture.contexts,
         });
       }
     } catch (err) {
+      let frame: { code: string; message: string };
       if (err instanceof StreamIdleTimeoutError) {
         // #1366 AC — logged with the session id so a stall can be diagnosed
         // afterwards. The silent 13-minute hang left no server-side trace at all.
@@ -1479,24 +1624,97 @@ export function aiRouter(): Router {
           sessionId: session.id,
           userId,
           idleMs: err.idleMs,
-          model: parsed.data.model ?? session.model,
+          model,
         });
-        send("error", {
+        frame = {
           code: STREAM_IDLE_TIMEOUT_CODE,
           message: `The model stopped responding after ${Math.round(err.idleMs / 1000)}s of silence. Any partial answer above is incomplete — try again.`,
-        });
+        };
+      } else if (stoppedBy) {
+        frame = stoppedBy;
+      } else if ((err as Error)?.name === "AbortError") {
+        frame = { code: "ABORTED", message: "The response was stopped before it finished." };
       } else {
-        send("error", {
-          code: err instanceof AIError ? err.code : "AI_PROVIDER_ERROR",
+        frame = {
+          code:
+            err instanceof AIError || err instanceof ContextOverflowError
+              ? err.code
+              : "AI_PROVIDER_ERROR",
           message: err instanceof Error ? err.message : String(err),
-        });
+        };
+      }
+      try {
+        send("error", frame);
+      } catch {
+        /* socket already gone */
+      }
+      // #136 — whatever was streamed before the failure is what the user saw;
+      // keep it, marked incomplete, rather than dropping the turn.
+      if (prepared) {
+        await recordFailedTurn(
+          session.id,
+          frame,
+          finalAnswer,
+          prepared,
+          providerKey,
+          model,
+          toolCalls,
+        );
+        await writeDerivedSnapshot(session).catch(() => undefined);
       }
     } finally {
       clearInterval(heartbeat);
-      clearTimeout(hardCeiling);
+      if (hardCeiling) clearTimeout(hardCeiling);
       safeEnd();
     }
   });
 
   return r;
+}
+
+/**
+ * #136 — record a turn that failed after its question was persisted: the
+ * partial answer (possibly empty) as an assistant row marked incomplete. Never
+ * throws — the caller is already reporting the original failure.
+ */
+async function recordFailedTurn(
+  sessionId: string,
+  err: unknown,
+  partial: string,
+  turn: PreparedTurn,
+  provider: string,
+  model: string,
+  toolCalls: ReplyToolCall[] = [],
+): Promise<void> {
+  const error =
+    err && typeof err === "object" && "code" in err && "message" in err && !(err instanceof Error)
+      ? (err as { code: string; message: string })
+      : {
+          code:
+            (err as { code?: unknown })?.code &&
+            typeof (err as { code?: unknown }).code === "string"
+              ? String((err as { code: string }).code)
+              : (err as Error)?.name === "AbortError"
+                ? "ABORTED"
+                : "AI_PROVIDER_ERROR",
+          message: err instanceof Error ? err.message : String(err),
+        };
+  try {
+    await recordReply({
+      sessionId,
+      text: partial,
+      toolCalls,
+      usage: null,
+      provider,
+      model,
+      promptChars: turn.promptChars,
+      ratio: turn.ratio,
+      error,
+    });
+  } catch (persistErr) {
+    log.error("Failed to record a failed chat turn in the transcript", {
+      sessionId,
+      error: persistErr instanceof Error ? persistErr.message : String(persistErr),
+    });
+  }
 }

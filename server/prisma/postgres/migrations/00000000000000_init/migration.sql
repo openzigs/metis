@@ -1056,11 +1056,37 @@ CREATE TABLE "ai_sessions" (
     "snapshotUpdatedAt" TIMESTAMP(3),
     "lastCompactedAt" TIMESTAMP(3),
     "compactionCount" INTEGER NOT NULL DEFAULT 0,
+    "forkedFromSessionId" TEXT,
+    "forkedFromOrdinal" INTEGER,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
     "deletedAt" TIMESTAMP(3),
 
     CONSTRAINT "ai_sessions_pkey" PRIMARY KEY ("id")
+);
+
+CREATE TABLE "ai_messages" (
+    "id" TEXT NOT NULL,
+    "sessionId" TEXT NOT NULL,
+    "ordinal" INTEGER NOT NULL,
+    "role" TEXT NOT NULL,
+    "kind" TEXT NOT NULL DEFAULT 'message',
+    "content" TEXT NOT NULL,
+    "estimatedTokens" INTEGER NOT NULL DEFAULT 0,
+    "inputTokens" INTEGER,
+    "outputTokens" INTEGER,
+    "cacheReadTokens" INTEGER,
+    "cacheWriteTokens" INTEGER,
+    "promptChars" INTEGER,
+    "provider" TEXT,
+    "model" TEXT,
+    "finishReason" TEXT,
+    "compactedAt" TIMESTAMP(3),
+    "compactedIntoId" TEXT,
+    "meta" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "ai_messages_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -2285,6 +2311,12 @@ CREATE INDEX "ai_sessions_status_idx" ON "ai_sessions"("status");
 CREATE INDEX "ai_sessions_agentId_idx" ON "ai_sessions"("agentId");
 
 -- CreateIndex
+CREATE INDEX "ai_messages_sessionId_compactedAt_idx" ON "ai_messages"("sessionId", "compactedAt");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "ai_messages_sessionId_ordinal_key" ON "ai_messages"("sessionId", "ordinal");
+
+-- CreateIndex
 CREATE INDEX "ai_token_usages_sessionId_ts_idx" ON "ai_token_usages"("sessionId", "ts");
 
 -- CreateIndex
@@ -2895,6 +2927,9 @@ ALTER TABLE "ai_sessions" ADD CONSTRAINT "ai_sessions_projectId_fkey" FOREIGN KE
 
 -- AddForeignKey
 ALTER TABLE "ai_sessions" ADD CONSTRAINT "ai_sessions_agentId_fkey" FOREIGN KEY ("agentId") REFERENCES "agents"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "ai_messages" ADD CONSTRAINT "ai_messages_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ai_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "ai_token_usages" ADD CONSTRAINT "ai_token_usages_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ai_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;

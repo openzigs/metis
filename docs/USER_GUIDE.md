@@ -2275,6 +2275,30 @@ Both fields persist on the `Project` row and are read at session-create time. Th
 
 > **Which models can I pick?** Every model picker (project **Model Preferences** and the custom-agent wizard) lists the server's model catalog (`GET /api/ai/models`): name, context window, price per million tokens and capabilities (tools, JSON schema, JSON object, vision, thinking). For a local runtime the catalog asks the runtime which models it serves and their context length. Correct anything it cannot know with `AI_MODEL_CATALOG_OVERRIDES`, a JSON object keyed `"<provider>:<model>"`, e.g. `{"local-gemma:laguna-s-2.1":{"contextWindow":262144,"capabilities":{"jsonSchema":false}}}`. A model marked `"tools": false` is never sent tools.
 
+### 14.5a Conversation history, compaction, resume and fork
+
+- **The server keeps the conversation.** Each message you send is stored with
+  the session; the browser sends only your new message. Reloading the page, or
+  opening the chat from **Sessions → Resume**, shows the conversation exactly as
+  the server recorded it — including a reply that was cut off (marked
+  *Incomplete answer*).
+- **Long conversations are summarised, not trimmed.** When a conversation
+  approaches the model's context window (80% by default, from the model
+  catalog), the oldest messages are summarised for the model. You will see a
+  note above the chat; the summarised messages stay in the history, marked
+  *summarised*, and a *Summary of earlier messages* block shows what the model
+  now reads instead. Nothing is deleted. Very large tool results are shortened
+  for the model the same way — the full result stays in the history.
+- **Fork from here.** Every answer has a *Fork from here* link. It starts a new
+  chat containing the conversation up to that answer, with the same model,
+  agent, skills and project, and opens it; the original chat is unchanged.
+- Operators can tune this with `CHAT_COMPACTION_WATERMARK_PERCENT`,
+  `CHAT_CONTEXT_WINDOW_FALLBACK` (used, and reported, when the catalog does not
+  know a model's window), `CHAT_TOOL_RESULT_MAX_TOKENS` and
+  `CHAT_COMPACTION_SUMMARY_MAX_TOKENS`. A model's real context window and its
+  characters-per-token figure can be set in `AI_MODEL_CATALOG_OVERRIDES`
+  (`contextWindow`, `charsPerToken`).
+
 ### 14.6 Cross-Project Search
 
 By default, the AI Chat searches only within the current project's knowledge base. With the **Project Scope Selector**, you can search across multiple projects simultaneously.

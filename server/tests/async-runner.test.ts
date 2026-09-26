@@ -208,7 +208,6 @@ import {
   type RunnerEmitter,
 } from "../src/lib/async/runner.js";
 import { selectGroupWinner, submitGroup } from "../src/lib/async/best-of-n.js";
-import { compactSession } from "../src/lib/async/compaction.js";
 
 beforeEach(() => reset());
 afterEach(() => setAsyncRunnerForTests(null));
@@ -459,65 +458,9 @@ describe("Best-of-N (#148)", () => {
   });
 });
 
-describe("compactSession (#150)", () => {
-  it("rewrites the session snapshot when above threshold", async () => {
-    const messages = Array.from({ length: 20 }, (_, i) => ({
-      role: i % 2 === 0 ? "user" : "assistant",
-      content: "x".repeat(2_000),
-    }));
-    tables.sessions.set("s1", {
-      id: "s1",
-      projectId: "p1",
-      compactionCount: 0,
-      snapshot: JSON.stringify({ messages }),
-    });
-    tables.projects.set("p1", { id: "p1", contextCompactionThreshold: 1_000 });
-    const r = await compactSession("s1");
-    expect(r.compacted).toBe(true);
-    expect(r.summarizedTurns).toBeGreaterThan(0);
-    const snap = JSON.parse(tables.sessions.get("s1").snapshot);
-    expect(snap.messages.length).toBeLessThan(messages.length);
-    expect(tables.sessions.get("s1").compactionCount).toBe(1);
-    expect(tables.sessions.get("s1").lastCompactedAt).toBeInstanceOf(Date);
-  });
-
-  it("is a no-op when below threshold", async () => {
-    tables.sessions.set("s2", {
-      id: "s2",
-      projectId: "p1",
-      compactionCount: 0,
-      snapshot: JSON.stringify({
-        messages: [{ role: "user", content: "tiny" }],
-      }),
-    });
-    tables.projects.set("p1", { id: "p1", contextCompactionThreshold: 100_000 });
-    const r = await compactSession("s2");
-    expect(r.compacted).toBe(false);
-    expect(tables.sessions.get("s2").compactionCount).toBe(0);
-  });
-
-  it("preserves message-array shape post-compaction", async () => {
-    const head = { role: "system", content: "you are X" };
-    const messages: any[] = [head];
-    for (let i = 0; i < 12; i++) messages.push({ role: "user", content: "y".repeat(5_000) });
-    tables.sessions.set("s3", {
-      id: "s3",
-      projectId: null,
-      compactionCount: 0,
-      snapshot: JSON.stringify({ messages }),
-    });
-    process.env.CONTEXT_COMPACTION_THRESHOLD_TOKENS = "100";
-    const r = await compactSession("s3", {
-      summarizer: async () => "CANNED_SUMMARY",
-    });
-    expect(r.compacted).toBe(true);
-    const snap = JSON.parse(tables.sessions.get("s3").snapshot);
-    expect(snap.messages[0]).toEqual(head);
-    expect(snap.messages[1].role).toBe("system");
-    expect(snap.messages[1].content).toContain("CANNED_SUMMARY");
-    delete process.env.CONTEXT_COMPACTION_THRESHOLD_TOKENS;
-  });
-});
+// #138 — compaction moved onto the server-owned transcript; its tests (over the
+// watermark compacts once, below never does, counters bump, the prefix is never
+// folded) live in src/lib/async/compaction.test.ts and tests/ai-conversation*.test.ts.
 
 describe("AsyncRunner — extras for coverage (#146)", () => {
   it("getAsyncRunner returns the singleton; configureAsyncRunner replaces it", async () => {

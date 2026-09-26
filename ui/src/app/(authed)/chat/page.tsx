@@ -9,16 +9,18 @@
  * happens server-side; this page is the user-facing seam.
  */
 import { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PausableLiveRegion } from "@/components/a11y/pausable-live-region";
 import {
   type AISession,
-  type ChatMessage,
+  type DisplayTurn,
   type SessionScope,
   type StreamEvent,
   createSessionWithScope,
+  forkChatSession,
+  getTranscript,
   loadActiveSessionId,
   resumeChatSession,
   storeActiveSessionId,
@@ -32,8 +34,15 @@ import { ChatMarkdown } from "@/components/chat/chat-markdown";
 import { sanitizeAssistantText } from "@/lib/sanitize-assistant-text";
 import { recentTracker } from "@/lib/recent-tracker";
 
-interface DisplayMessage extends ChatMessage {
+/**
+ * #136 — a transcript row as rendered. Rows that came from the server carry
+ * their `ordinal` (what "fork from here" sends back); the two optimistic rows of
+ * a turn in flight have none until the transcript is re-read after the turn.
+ */
+interface DisplayMessage extends Partial<Omit<DisplayTurn, "role" | "content">> {
   id: string;
+  role: DisplayTurn["role"];
+  content: string;
   isError?: boolean;
   /**
    * #1366 — the turn ended before the model finished. The partial text is kept
@@ -58,7 +67,12 @@ const SUGGESTED_PROMPTS: { title: string; prompt: string }[] = [
   { title: "Draft a plan", prompt: "Help me draft an implementation plan for a new feature." },
 ];
 
+function fromServer(rows: DisplayTurn[]): DisplayMessage[] {
+  return rows.map((m) => ({ ...m, id: `o${m.ordinal}` }));
+}
+
 export default function ChatPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const projectId = searchParams.get("projectId") ?? undefined;
   // #1367 — /sessions "Resume" navigates here with the session to rehydrate.
@@ -73,6 +87,15 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // #138 — shown when older turns were summarised to fit the model's context.
+  const [compactionNote, setCompactionNote] = useState<string | null>(null);
+  const [forking, setForking] = useState(false);
+  // The session on screen now — a transcript read that lands after the user
+  // switched sessions must not overwrite the new one.
+  const sessionIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    sessionIdRef.current = session?.id ?? null;
+  }, [session]);
   const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   // Only the FIRST run of the session effect may resume. A later run means the
@@ -118,7 +141,7 @@ export default function ChatPage() {
           const restored = await resumeChatSession(restoreId);
           if (restored && !cancelled) {
             setSession(restored.session);
-            setMessages(restored.messages.map((m) => ({ ...m, id: crypto.randomUUID() })));
+            setMessages(fromServer(restored.messages));
             storeActiveSessionId(restored.session.id);
             return;
           }
@@ -170,6 +193,7 @@ export default function ChatPage() {
     storeActiveSessionId(null);
     setMessages([]);
     setError(null);
+    setCompactionNote(null);
     setSession(null);
     void (async () => {
       try {
@@ -215,18 +239,15 @@ export default function ChatPage() {
       role: "assistant",
       content: "",
     };
-    const next = [...messages, userMsg, assistantMsg];
-    setMessages(next);
+    setMessages([...messages, userMsg, assistantMsg]);
     setInput("");
     setStreaming(true);
     setError(null);
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const wireMessages: ChatMessage[] = next
-        .filter((m) => m.id !== assistantMsg.id)
-        .map(({ role, content, name }) => ({ role, content, ...(name ? { name } : {}) }));
-      for await (const ev of streamChat(session.id, wireMessages, controller.signal)) {
+      // #136 — only the new message goes up; the server holds the history.
+      for await (const ev of streamChat(session.id, userMsg.content, controller.signal)) {
         handleEvent(ev, assistantMsg.id);
       }
     } catch (err) {
@@ -238,6 +259,15 @@ export default function ChatPage() {
     } finally {
       setStreaming(false);
       abortRef.current = null;
+      // #136 — re-render from the server transcript: it is the record, and it
+      // carries the ordinals "fork from here" needs. A failed read keeps what
+      // is on screen.
+      const sessionId = session.id;
+      void getTranscript(sessionId)
+        .then((rows) => {
+          if (sessionIdRef.current === sessionId) setMessages(fromServer(rows));
+        })
+        .catch(() => undefined);
       // #1367 — dashboard "Recent activity" read an empty localStorage store
       // because nothing in chat ever wrote to it. Record the session once a turn
       // has actually happened, so the widget reflects real chat activity.
@@ -248,6 +278,22 @@ export default function ChatPage() {
         href: `/chat?sessionId=${encodeURIComponent(session.id)}`,
         ...(session.projectId ? { projectId: session.projectId } : {}),
       });
+    }
+  }
+
+  // #139 — start a new session from this reply, keeping model, agent and skills.
+  async function handleFork(ordinal: number) {
+    if (!session || forking || streaming) return;
+    setForking(true);
+    setError(null);
+    try {
+      const forked = await forkChatSession(session.id, ordinal);
+      storeActiveSessionId(forked.session.id);
+      router.push(`/chat?sessionId=${encodeURIComponent(forked.session.id)}`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setForking(false);
     }
   }
 
@@ -296,6 +342,11 @@ export default function ChatPage() {
         });
         setError(ev.message);
         break;
+      case "compaction":
+        setCompactionNote(
+          `Older messages (${ev.compaction.compactedMessages}) were summarised to fit the model's context. They are still in this conversation's history below.`,
+        );
+        break;
       case "usage":
       case "done":
         break;
@@ -336,6 +387,15 @@ export default function ChatPage() {
           </div>
         </div>
         <ScopeDegradationNotice scope={sessionScope} />
+        {compactionNote ? (
+          <p
+            role="status"
+            data-testid="chat-compaction-note"
+            className="text-xs text-muted-foreground"
+          >
+            {compactionNote}
+          </p>
+        ) : null}
         {error ? (
           <div
             role="alert"
@@ -383,32 +443,68 @@ export default function ChatPage() {
             </div>
           ) : (
             <ul className="space-y-3">
-              {messages.map((m) => (
-                <li key={m.id} className={`text-sm ${m.isError ? "text-destructive" : ""}`}>
-                  <strong className="mr-2 capitalize">{m.role}:</strong>
-                  {m.isError ? (
-                    <span className="whitespace-pre-wrap">{`⚠ ${m.content}`}</span>
-                  ) : m.role === "assistant" && m.content ? (
-                    <ChatMarkdown
-                      content={sanitizeAssistantText(m.content)}
-                      streaming={streaming && m === messages[messages.length - 1]}
-                    />
-                  ) : (
-                    <span className="whitespace-pre-wrap">
-                      {m.content || (streaming ? "…" : "")}
-                    </span>
-                  )}
-                  {m.incomplete ? (
-                    <p
-                      role="status"
-                      data-testid="incomplete-answer-notice"
-                      className="mt-1 rounded border border-amber-500/60 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-400"
-                    >
-                      Incomplete answer — {m.incomplete}
-                    </p>
-                  ) : null}
-                </li>
-              ))}
+              {messages.map((m) =>
+                m.role === "summary" ? (
+                  <li
+                    key={m.id}
+                    data-testid="chat-summary"
+                    className="rounded border border-dashed p-2 text-xs text-muted-foreground"
+                  >
+                    <strong className="mr-1">Summary of earlier messages</strong>
+                    {m.summaryOf
+                      ? `(#${m.summaryOf.fromOrdinal}–#${m.summaryOf.toOrdinal}, ${m.summaryOf.messageCount} messages)`
+                      : null}
+                    <span className="mt-1 block whitespace-pre-wrap">{m.content}</span>
+                  </li>
+                ) : (
+                  <li
+                    key={m.id}
+                    className={`text-sm ${m.isError ? "text-destructive" : ""} ${m.compacted ? "opacity-60" : ""}`}
+                  >
+                    <strong className="mr-2 capitalize">{m.role}:</strong>
+                    {m.compacted ? (
+                      <span
+                        className="mr-2 rounded bg-muted px-1 text-[10px] uppercase"
+                        title="Summarised for the model; kept here in full"
+                      >
+                        summarised
+                      </span>
+                    ) : null}
+                    {m.isError ? (
+                      <span className="whitespace-pre-wrap">{`⚠ ${m.content}`}</span>
+                    ) : m.role === "assistant" && m.content ? (
+                      <ChatMarkdown
+                        content={sanitizeAssistantText(m.content)}
+                        streaming={streaming && m === messages[messages.length - 1]}
+                      />
+                    ) : (
+                      <span className="whitespace-pre-wrap">
+                        {m.content || (streaming ? "…" : "")}
+                      </span>
+                    )}
+                    {m.incomplete ? (
+                      <p
+                        role="status"
+                        data-testid="incomplete-answer-notice"
+                        className="mt-1 rounded border border-amber-500/60 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-400"
+                      >
+                        Incomplete answer — {m.incomplete}
+                      </p>
+                    ) : null}
+                    {m.role === "assistant" && m.ordinal !== undefined && !streaming ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleFork(m.ordinal!)}
+                        disabled={forking}
+                        data-testid={`chat-fork-${m.ordinal}`}
+                        className="mt-1 block text-xs text-muted-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        Fork from here
+                      </button>
+                    ) : null}
+                  </li>
+                ),
+              )}
             </ul>
           )}
         </PausableLiveRegion>

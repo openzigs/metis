@@ -44,22 +44,42 @@ export async function* withIdleTimeout<T>(
   source: AsyncIterable<T>,
   idleMs: number,
   onTimeout?: () => void,
+  /**
+   * #127 — when given, the FIRST idle clock starts only once this settles (the
+   * provider acquired its local concurrency slot), so time queued behind
+   * another generation is never counted as a stall. Later chunks are timed
+   * from the previous chunk as usual.
+   */
+  startAfter?: Promise<unknown>,
 ): AsyncGenerator<T> {
   if (!Number.isFinite(idleMs) || idleMs <= 0) {
     yield* source;
     return;
   }
   const iterator = source[Symbol.asyncIterator]();
+  let gate: Promise<unknown> | undefined = startAfter;
   for (;;) {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const idle = new Promise<typeof IDLE>((resolve) => {
+    let settled = false;
+    const arm = (resolve: (v: typeof IDLE) => void): void => {
+      if (settled) return;
       timer = setTimeout(() => resolve(IDLE), idleMs);
       timer.unref?.();
+    };
+    const idle = new Promise<typeof IDLE>((resolve) => {
+      if (gate)
+        void gate.then(
+          () => arm(resolve),
+          () => arm(resolve),
+        );
+      else arm(resolve);
     });
+    gate = undefined;
     let winner: IteratorResult<T> | typeof IDLE;
     try {
       winner = await Promise.race([iterator.next(), idle]);
     } finally {
+      settled = true;
       if (timer) clearTimeout(timer);
     }
     if (winner === IDLE) {

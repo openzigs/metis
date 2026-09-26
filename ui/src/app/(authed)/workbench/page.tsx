@@ -171,18 +171,15 @@ export default function WorkbenchPage() {
       role: "assistant",
       content: "",
     };
-    const next = [...messages, userMsg, assistantMsg];
-    setMessages(next);
+    setMessages([...messages, userMsg, assistantMsg]);
     setInput("");
     setStreaming(true);
     setError(null);
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const wireMessages: ChatMessage[] = next
-        .filter((m) => m.id !== assistantMsg.id)
-        .map(({ role, content, name }) => ({ role, content, ...(name ? { name } : {}) }));
-      for await (const ev of streamChat(session.id, wireMessages, controller.signal)) {
+      // #136 — only the new message goes up; the server holds the history.
+      for await (const ev of streamChat(session.id, composed, controller.signal)) {
         handleStream(ev, assistantMsg.id);
       }
     } catch (err) {

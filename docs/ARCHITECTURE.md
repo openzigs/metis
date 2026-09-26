@@ -4940,7 +4940,7 @@ Agent runs are async-by-default, event-triggered, parallelizable with best-of-N,
 - **Triggers (#147)** — `server/src/lib/async/triggers.ts` validates HMAC-SHA256 signatures using `crypto.timingSafeEqual`. Three schemes: generic (`${ts}.${body}` template, `X-Signature` + `X-Timestamp`), GitHub (`X-Hub-Signature-256: sha256=<hex>`), Slack (`v0:${ts}:${body}` with `X-Slack-Signature` + `X-Slack-Request-Timestamp`). Timestamps with >5 min skew are rejected. Routes mounted at `/api/triggers/*` and `/api/webhooks/*`. `app.ts`'s `express.json({verify})` callback captures the raw body **only** when `req.originalUrl` matches those prefixes — non-trigger routes still take the parsed-JSON-only fast path.
 - **Best-of-N (#148)** — `server/src/lib/async/best-of-n.ts` provides `submitGroup({n: 1..8, selectionMethod})` that spawns N runs sharing a `runGroupId`. `selectGroupWinner()` returns null until every member has settled; `highest-score` sorts by score desc; `judge-llm` falls back to a deterministic score+id sort when the judge is unavailable. The default `scoreText()` is length + citation-count × 50.
 - **Mid-run steering (#149)** — `RunMessage` is a FIFO queue per run. `POST /api/runs/:id/steer` enqueues with the next ord; `ctx.nextSteer()` drains queued → delivered atomically. Handlers poll `nextSteer()` between phases so steers shape the next thought without blocking the current one.
-- **Context compaction (#150)** — `server/src/lib/async/compaction.ts` summarises a session's history once token estimate exceeds `CONTEXT_COMPACTION_THRESHOLD_TOKENS` (env) or `Project.contextCompactionThreshold` (default 60000). Leading system messages are preserved; the oldest 70 % is replaced with one summary turn; `AISession.compactionCount` increments and `lastCompactedAt` updates. `compactIfNeeded()` is the hot-path helper.
+- **Context compaction (#150)** — rebuilt by #138 on the server-owned transcript; see [Server-owned chat conversation (Epic #127)](#server-owned-chat-conversation-epic-127). `CONTEXT_COMPACTION_THRESHOLD_TOKENS` and `Project.contextCompactionThreshold` still cap the watermark from above; `AISession.compactionCount` / `lastCompactedAt` still record each pass.
 
 Socket.IO surfaces emit `bg-run:status` to the `project:{id}` room and `bg-run:step` to per-run `run:{runId}` rooms; clients call `subscribe:bg-run` / `unsubscribe:bg-run` to opt in. UI surfaces are the dashboard `ActiveRunsWidget` and the `/settings/triggers` page.
 
@@ -5710,7 +5710,7 @@ flowchart TD
 |---|---|---|
 | `SKILL_LOADING` | `lazy` | `eager` (full injection) or `lazy` (manifests only) |
 | `TOOL_RESULT_SUMMARY_THRESHOLD` | `500` | Token threshold for progressive result summarization |
-| `CONTEXT_COMPACTION_THRESHOLD_TOKENS` | `60000` | Existing compaction threshold (watermark integrates) |
+| `CONTEXT_COMPACTION_THRESHOLD_TOKENS` | unset | Absolute cap on the chat compaction watermark (#138); the watermark itself is `CHAT_COMPACTION_WATERMARK_PERCENT` of the catalog context window |
 
 ### 28.4 Design Decisions
 
@@ -6519,3 +6519,46 @@ Phase 4 does not change the budget; it only surfaces it. The summary tile
 reads `GET …/runs/:runId/budget` and renders `usedCents / limitCents`. The
 export route does not consume budget (no LLM calls), so budget exhaustion
 never blocks an export.
+
+## Server-owned chat conversation (Epic #127)
+
+Until #127 the browser held the chat transcript and resent it on every turn;
+the server trusted whatever history arrived and trimmed it with a sliding
+window (`windowHistory`, now removed). A client could forge earlier assistant
+or tool messages, and old turns were silently dropped.
+
+```mermaid
+sequenceDiagram
+  participant UI
+  participant API as /api/ai/stream
+  participant T as ai_messages
+  participant C as Compactor
+  participant P as Provider
+  UI->>API: { sessionId, message }  (new message only)
+  API->>T: append user row, load active rows
+  API->>C: estimate ≥ watermark? (catalog window)
+  C->>P: summarise oldest turns
+  C-->>T: summary row + mark folded rows compacted
+  API->>P: prefix + summary + recent turns + RAG + message
+  P-->>API: stream + usage
+  API->>T: append reply with reported usage
+  API-->>UI: SSE (compaction, delta, usage, done)
+```
+
+| Piece | Where | What it does |
+|---|---|---|
+| Transcript | `ai_messages` (`server/prisma/schema.prisma` `AIMessage`); `server/src/lib/ai/conversation/transcript-store.ts` | One row per message, `(sessionId, ordinal)` unique; content parts (`text`, `tool_call`, `tool_result`); provider-reported input/output/cache tokens (NULL when not reported) and the prompt's character count; `compactedAt` / `compactedIntoId` on folded rows. Rows are never deleted by compaction. |
+| Request contract | `server/src/routes/ai.ts` `newUserMessage` | `/chat` and `/stream` take `message` (the new user message). Legacy `messages` is accepted only as ONE `user` message; any other role or more than one message is `400 CLIENT_HISTORY_REJECTED`. |
+| Turn | `server/src/lib/ai/conversation/turn.ts` | Persists the question first, builds history from active rows (`context-builder.ts`), estimates, compacts, and records the reply — including a reply that failed or was stopped (kept, `meta.error`), a semantic-cache hit (`meta.cached`) and a context overflow (`413 CHAT_CONTEXT_OVERFLOW`). The session `snapshot` is now derived from the transcript. |
+| Token accounting (#137) | `server/src/lib/ai/conversation/token-estimator.ts` | After a call: `contextInputTokens` per provider (Anthropic input + cache read + cache write; OpenAI-compatible `prompt_tokens`). Before a call: characters ÷ a ratio chosen calibrated (this session's reported turns on the same model) → catalog (`AI_MODEL_CATALOG_OVERRIDES` `charsPerToken`, measured families) → default 3.0. No tokenizer ships in the repo. |
+| Watermark + compaction (#138) | `server/src/lib/analysis/context-watermark.ts`, `server/src/lib/async/compaction.ts` | Window from the model catalog (`resolveContextWindow`), fallback `CHAT_CONTEXT_WINDOW_FALLBACK` reported as `fallback`. At `CHAT_COMPACTION_WATERMARK_PERCENT` (80) the oldest whole turns are summarised (in several calls if needed) into one pinned summary row so the prompt drops to ~50% of the window. The system prompt and cacheable prefix are not transcript rows and are never compacted. An empty summary aborts the pass; a capped one is kept and flagged. |
+| Tool results | `chat-code-tool-runtime.ts`, `context-builder.ts` | In the live code-tool loop, a result over `CHAT_TOOL_RESULT_MAX_TOKENS` is truncated with a marker in the model's copy; the full text is stored in the transcript. Past tool results are never replayed into later turns (they are untrusted data), and the summary is sent in the user role, never as a system message. |
+| Resume / fork (#139) | `server/src/routes/ai-conversation.ts`, `conversation-service.ts` | `GET /sessions/:id/messages`, `POST /sessions/:id/resume` (transcript + model, reasoning effort, agent, skills, plan-mode from the session row), `POST /sessions/:id/fork { fromOrdinal }` (copies rows ≤ ordinal with their compaction state, and the session state; `forkedFromSessionId`/`forkedFromOrdinal`), `POST /sessions/:id/compact`. Rate-limited by `conversationRateLimiter`. |
+| Authorisation | `server/src/lib/ai/conversation/session-access.ts` | Every chat and transcript route requires session ownership AND `assertProjectAccess` on the session's project; every failure is the same 404. Forks inherit owner and project, so they are authorised exactly like the source. |
+| Pre-transcript sessions | `legacy-snapshot.ts` | A session with no rows but a v1 snapshot has its user/assistant text imported once (`meta.importedFrom`). |
+| Local queue deadline | `stream-idle.ts`, `ChatOptions.onSlotAcquired` | The `local-gemma` provider signals when its concurrency slot is acquired; chat's idle timeout starts then, so queue time is not a stall. The hard ceiling is re-armed after compaction so a summary call never eats the answer's budget. |
+
+The `/model` switch (`currentModel`, #165) is now honoured by chat; before
+#127 it was written and never read.
+
+<!-- Last updated: 2026-09-26 by delivery:code-issue resolving #127 -->

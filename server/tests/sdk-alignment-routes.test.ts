@@ -675,18 +675,16 @@ describe("ai-sdk routes (#120-122)", () => {
     expect(res.body.data.length).toBe(1);
   });
 
-  it("forbids resuming another user's session", async () => {
-    const res = await request(makeApp())
-      .post("/api/ai/sessions/s1/resume")
-      .set("Authorization", `Bearer ${userToken}`);
-    expect(res.status).toBe(403);
-  });
-
-  it("resumes the user's own session", async () => {
-    const res = await request(makeApp())
-      .post("/api/ai/sessions/s1/resume")
-      .set("Authorization", `Bearer ${adminToken}`);
-    expect(res.status).toBe(200);
+  // #139 — resume moved to `routes/ai-conversation.ts` and now reads the server
+  // transcript. Its ownership (another user: 404, not 403 — no existence leak)
+  // and own-session tests live in `tests/ai-conversation.sqlite.test.ts`.
+  it("no longer serves resume from the SDK router", async () => {
+    for (const token of [adminToken, userToken]) {
+      const res = await request(makeApp())
+        .post("/api/ai/sessions/s1/resume")
+        .set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(404);
+    }
   });
 
   it("switches the model via PATCH", async () => {

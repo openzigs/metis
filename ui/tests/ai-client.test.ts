@@ -124,8 +124,14 @@ describe("ai-client REST", () => {
         },
       }),
     );
-    const r = await chat("s1", [{ role: "user", content: "hello" }]);
+    const r = await chat("s1", "hello");
     expect(r.content).toBe("hi");
+    // #136 — only the new message goes up.
+    const [, chatInit] = fetchMock.mock.calls.at(-1)!;
+    expect(JSON.parse(String((chatInit as RequestInit).body))).toEqual({
+      sessionId: "s1",
+      message: "hello",
+    });
   });
 });
 
@@ -206,16 +212,35 @@ describe("streamChat", () => {
       "event: done\ndata: {}\n\n";
     fetchMock.mockResolvedValueOnce(sseResponse(body));
     const events: StreamEvent[] = [];
-    for await (const ev of streamChat("s1", [{ role: "user", content: "hi" }])) {
+    for await (const ev of streamChat("s1", "hi")) {
       events.push(ev);
     }
     expect(events.map((e) => e.type)).toEqual(["delta", "delta", "usage", "done"]);
+    // #136 — the request carries only the new message, never history.
+    const [, init] = fetchMock.mock.calls.at(-1)!;
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({
+      sessionId: "s1",
+      message: "hi",
+    });
+  });
+
+  it("#138 — parses a compaction frame", async () => {
+    const body =
+      'event: compaction\ndata: {"compactedMessages":6,"summaryOrdinal":13}\n\n' +
+      "event: done\ndata: {}\n\n";
+    fetchMock.mockResolvedValueOnce(sseResponse(body));
+    const events: StreamEvent[] = [];
+    for await (const ev of streamChat("s1", "hi")) events.push(ev);
+    expect(events[0]).toEqual({
+      type: "compaction",
+      compaction: { compactedMessages: 6, summaryOrdinal: 13 },
+    });
   });
 
   it("throws an ApiError when the response is not OK", async () => {
     fetchMock.mockResolvedValueOnce(sseResponse("", 500));
     await expect(async () => {
-      for await (const _ of streamChat("s1", [{ role: "user", content: "x" }])) {
+      for await (const _ of streamChat("s1", "x")) {
         // exhaust
       }
     }).rejects.toThrow();
@@ -226,7 +251,7 @@ describe("streamChat", () => {
       'event: error\ndata: {"code":"AI_PROVIDER_ERROR","message":"400 400 status code (no body)"}\n\n';
     fetchMock.mockResolvedValueOnce(sseResponse(body));
     const events: StreamEvent[] = [];
-    for await (const ev of streamChat("s1", [{ role: "user", content: "hi" }])) {
+    for await (const ev of streamChat("s1", "hi")) {
       events.push(ev);
     }
     expect(events).toHaveLength(1);
@@ -250,7 +275,7 @@ describe("streamChat — 401 → refresh → retry chain", () => {
       .mockResolvedValueOnce(sseResponse(goodBody)); // retry succeeds
 
     const events: StreamEvent[] = [];
-    for await (const ev of streamChat("s1", [{ role: "user", content: "hi" }])) {
+    for await (const ev of streamChat("s1", "hi")) {
       events.push(ev);
     }
     expect(events.map((e) => e.type)).toEqual(["delta", "done"]);
@@ -268,7 +293,7 @@ describe("streamChat — 401 → refresh → retry chain", () => {
       .mockResolvedValueOnce(jsonResponse({ success: false }, 401)); // refresh 401
 
     await expect(async () => {
-      for await (const _ of streamChat("s1", [{ role: "user", content: "x" }])) {
+      for await (const _ of streamChat("s1", "x")) {
         // exhaust
       }
     }).rejects.toMatchObject({ name: "ApiError", status: 401 });
@@ -284,7 +309,7 @@ describe("streamChat — 401 → refresh → retry chain", () => {
       .mockResolvedValueOnce(sseResponse("", 401)); // retry still 401
 
     await expect(async () => {
-      for await (const _ of streamChat("s1", [{ role: "user", content: "x" }])) {
+      for await (const _ of streamChat("s1", "x")) {
         // exhaust
       }
     }).rejects.toMatchObject({ name: "ApiError", status: 401 });
