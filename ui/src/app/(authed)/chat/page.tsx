@@ -21,7 +21,9 @@ import {
   type StreamEvent,
   createSessionWithScope,
   forkChatSession,
-  getTranscript,
+  getTranscriptSince,
+  lastHeldOrdinal,
+  mergeTranscriptDelta,
   loadActiveSessionId,
   resumeChatSession,
   storeActiveSessionId,
@@ -281,12 +283,16 @@ export default function ChatPage() {
       setStreaming(false);
       abortRef.current = null;
       // #136 — re-render from the server transcript: it is the record, and it
-      // carries the ordinals "fork from here" needs. A failed read keeps what
-      // is on screen.
+      // carries the ordinals "fork from here" needs. #212 — only what changed:
+      // the rows after the last one this page already held (this turn's, and a
+      // compaction summary), plus the compaction state of held rows a summary
+      // folded. A failed read keeps what is on screen.
       const sessionId = session.id;
-      void getTranscript(sessionId)
-        .then((rows) => {
-          if (sessionIdRef.current === sessionId) setMessages(fromServer(rows));
+      const afterOrdinal = lastHeldOrdinal(messages);
+      void getTranscriptSince(sessionId, afterOrdinal)
+        .then((delta) => {
+          if (sessionIdRef.current !== sessionId) return;
+          setMessages((prev) => mergeTranscriptDelta(prev, delta, (m) => fromServer([m])[0]!));
         })
         .catch(() => undefined);
       // #1367 — dashboard "Recent activity" read an empty localStorage store

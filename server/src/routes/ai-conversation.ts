@@ -1,8 +1,9 @@
 /**
  * Epic #127 — the server-owned conversation of a chat session.
  *
- *   GET  /api/ai/sessions/:id/messages   — the full transcript (#136), compacted
- *                                          rows included and marked
+ *   GET  /api/ai/sessions/:id/messages   — the transcript (#136), compacted rows
+ *                                          included and marked; paged by
+ *                                          `afterOrdinal` / `limit` (#212)
  *   POST /api/ai/sessions/:id/resume     — transcript + model/agent/skills/plan
  *                                          state, from server data only (#139)
  *   POST /api/ai/sessions/:id/fork       — new session from an earlier reply (#139)
@@ -13,14 +14,14 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import type { TranscriptResponse } from "@metis/shared";
+import { TRANSCRIPT_PAGE_MAX, type TranscriptResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { AppError } from "../middleware/error-handler.js";
 import { conversationRateLimiter } from "../middleware/conversation-rate-limit.js";
 import {
   compactSessionOnDemand,
   forkSession,
-  readTranscript,
+  readTranscriptPage,
   resumeSession,
 } from "../lib/ai/conversation/conversation-service.js";
 import { CompactionError } from "../lib/async/compaction.js";
@@ -31,6 +32,18 @@ import { chatProviderForSession } from "./ai.js";
 function ok<T>(data: T): { success: true; data: T } {
   return { success: true, data };
 }
+
+// #212 — a page past the server maximum is clamped to it, and `hasMore` says
+// the reader has not got everything; nothing is dropped silently.
+const pageQuerySchema = z.object({
+  afterOrdinal: z.coerce.number().int().min(0).default(0),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(TRANSCRIPT_PAGE_MAX)
+    .transform((n) => Math.min(n, TRANSCRIPT_PAGE_MAX)),
+});
 
 const forkSchema = z.object({
   fromOrdinal: z.number().int().min(1),
@@ -44,8 +57,17 @@ export function aiConversationRouter(): Router {
     requireAuth,
     conversationRateLimiter,
     async (req: Request, res: Response) => {
-      const { session, messages } = await readTranscript(req.user, String(req.params.id));
-      res.json(ok<TranscriptResponse>({ sessionId: session.id, messages }));
+      const parsed = pageQuerySchema.safeParse(req.query ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid transcript page", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      res.json(
+        ok<TranscriptResponse>(
+          await readTranscriptPage(req.user, String(req.params.id), parsed.data),
+        ),
+      );
     },
   );
 

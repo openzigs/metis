@@ -404,6 +404,14 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Context window (tokens) chat assumes when the model catalog does not know the model's (#138) — e.g. a local model discovery has not described yet. Default 32768: too small only compacts early, too large can overflow a small local context. Set a model's real window with AI_MODEL_CATALOG_OVERRIDES instead where you can.",
     sensitive: false,
   },
+  CHAT_ANSWER_RESERVE_PERCENT: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(0).max(50),
+    description:
+      "Share of the model's context window a chat turn keeps free for the reply (#213). Default 10. The reserve is the smaller of this share and the model's catalog maxOutputTokens; a prompt that does not fit the window less the reserve is summarised first and refused (413) only if it still does not fit. Chat sends no max_tokens for the answer, so this changes no request. 0 turns the reserve off.",
+    sensitive: false,
+  },
   CHAT_TOOL_RESULT_MAX_TOKENS: {
     tier: "tunable",
     valueType: "int",

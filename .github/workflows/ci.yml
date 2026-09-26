@@ -666,6 +666,14 @@ jobs:
         working-directory: server
         run: pnpm test:integration config-secret-vault-postgres
 
+      # Issue #212 — prove the chat transcript's batched fork copy (one createMany)
+      # and paged read on real Postgres: same ordinals, compaction re-pointed at
+      # the copied summary, a unique-index clash writes nothing, and `hasMore` /
+      # compaction updates on a page. The SQLite route suite covers the other adapter.
+      - name: Prove transcript fork + paging on real Postgres
+        working-directory: server
+        run: pnpm test:integration transcript-fork-postgres
+
       # Issue #543 (Epic #518) — prove the pgvector-backed RAG vector store gives
       # retrieval parity AND multi-replica read/write safety against the same real
       # Postgres: two separately-constructed store instances (= two pods) sharing

@@ -25,6 +25,9 @@ const {
   loadActiveSessionId,
   transcriptToDisplay,
   getTranscript,
+  getTranscriptSince,
+  lastHeldOrdinal,
+  mergeTranscriptDelta,
   forkChatSession,
 } = await import("./ai-client");
 
@@ -181,12 +184,113 @@ describe("resumeChatSession (#1367, #139)", () => {
 
 describe("getTranscript / forkChatSession", () => {
   it("reads the transcript with the id encoded", async () => {
-    apiFetch.mockResolvedValue({ sessionId: "x", messages: TRANSCRIPT.slice(0, 1) });
+    apiFetch.mockResolvedValue({
+      sessionId: "x",
+      messages: TRANSCRIPT.slice(0, 1),
+      compactionUpdates: [],
+      hasMore: false,
+      nextAfterOrdinal: 1,
+    });
     const rows = await getTranscript("a/b");
-    expect(apiFetch).toHaveBeenCalledWith("/ai/sessions/a%2Fb/messages");
+    expect(apiFetch).toHaveBeenCalledWith("/ai/sessions/a%2Fb/messages?afterOrdinal=0");
     expect(rows[0]!.ordinal).toBe(1);
   });
 
+  // #212 — a paged read is followed to the end; a page that claims more but
+  // does not advance is an error, never a silently short transcript.
+  it("follows every page until the server says there is no more", async () => {
+    const page = (messages: TranscriptMessageDto[], hasMore: boolean, next: number) => ({
+      sessionId: "s",
+      messages,
+      compactionUpdates: [],
+      hasMore,
+      nextAfterOrdinal: next,
+    });
+    apiFetch
+      .mockResolvedValueOnce(
+        page([row({ ordinal: 3, parts: [{ type: "text", text: "c" }] })], true, 3),
+      )
+      .mockResolvedValueOnce(
+        page(
+          [row({ ordinal: 4, role: "assistant", parts: [{ type: "text", text: "d" }] })],
+          false,
+          4,
+        ),
+      );
+    const delta = await getTranscriptSince("s", 2);
+    expect(apiFetch.mock.calls.map((c) => c[0])).toEqual([
+      "/ai/sessions/s/messages?afterOrdinal=2",
+      "/ai/sessions/s/messages?afterOrdinal=3",
+    ]);
+    expect(delta.afterOrdinal).toBe(2);
+    expect(delta.rows.map((r) => r.ordinal)).toEqual([3, 4]);
+
+    apiFetch.mockReset();
+    apiFetch.mockResolvedValue(page([], true, 2));
+    await expect(getTranscriptSince("s", 2)).rejects.toThrow(/could not be read in full/);
+  });
+
+  it("carries compaction updates for rows the reader already holds", async () => {
+    apiFetch.mockResolvedValue({
+      sessionId: "s",
+      messages: [row({ ordinal: 7, role: "system", kind: "summary", parts: [] })],
+      compactionUpdates: [
+        { ordinal: 1, compactedAt: "2026-01-02T00:00:00.000Z", compactedIntoId: "m7" },
+      ],
+      hasMore: false,
+      nextAfterOrdinal: 7,
+    });
+    const delta = await getTranscriptSince("s", 6);
+    expect(delta.compactionUpdates).toEqual([{ ordinal: 1, compacted: true }]);
+    expect(delta.rows.map((r) => r.role)).toEqual(["summary"]);
+  });
+});
+
+describe("mergeTranscriptDelta / lastHeldOrdinal (#212)", () => {
+  type Held = { id: string; ordinal?: number; compacted?: boolean; content: string };
+  const wrap = (m: { ordinal: number; compacted: boolean; content: string }): Held => ({
+    id: `o${m.ordinal}`,
+    ordinal: m.ordinal,
+    compacted: m.compacted,
+    content: m.content,
+  });
+
+  it("the last held ordinal ignores optimistic rows", () => {
+    expect(lastHeldOrdinal([])).toBe(0);
+    expect(lastHeldOrdinal([{ ordinal: 1 }, { ordinal: 4 }, {}, { ordinal: 2 }])).toBe(4);
+  });
+
+  it("keeps held rows, replaces the optimistic ones, appends new rows and applies compaction", () => {
+    const held: Held[] = [
+      { id: "o1", ordinal: 1, compacted: false, content: "q1" },
+      { id: "o2", ordinal: 2, compacted: false, content: "a1" },
+      { id: "tmp-user", content: "q2" },
+      { id: "tmp-assistant", content: "a2 (streamed)" },
+    ];
+    const merged = mergeTranscriptDelta(
+      held,
+      {
+        afterOrdinal: 2,
+        rows: [
+          { role: "user", content: "q2", ordinal: 3, compacted: false },
+          { role: "assistant", content: "a2", ordinal: 4, compacted: false },
+        ],
+        compactionUpdates: [{ ordinal: 1, compacted: true }],
+      },
+      wrap,
+    );
+    expect(merged.map((m) => [m.id, m.content, m.compacted])).toEqual([
+      ["o1", "q1", true],
+      ["o2", "a1", false],
+      ["o3", "q2", false],
+      ["o4", "a2", false],
+    ]);
+    // The held array itself is not mutated.
+    expect(held[0]!.compacted).toBe(false);
+  });
+});
+
+describe("forkChatSession", () => {
   it("forks from an ordinal", async () => {
     apiFetch.mockResolvedValue({ session: { id: "fork" }, copiedMessages: 2 });
     const res = await forkChatSession("s 1", 2);

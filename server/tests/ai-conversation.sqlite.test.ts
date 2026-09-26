@@ -440,14 +440,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       model.embed = async () => ({ vectors: [[1, 0, 0]], dimension: 3, model: "stub" });
       try {
         const sid = await newSession(alice);
-        // The cache stores under the served model and looks up under the
-        // requested one, so the scripted model answers as the session's model.
-        const sessionModel = (await db.aISession.findUnique({ where: { id: sid } }))!.model;
-        const realChat = model.chat.bind(model);
-        model.chat = async (m: ChatMessage[], o?: ChatOptions) => ({
-          ...(await realChat(m, o)),
-          model: sessionModel,
-        });
         const first = await as(alice).post("/api/ai/chat", { sessionId: sid, message: "same q" });
         expect(first.status).toBe(200);
         const chatCalls = () => model.calls.filter((c) => c.kind === "chat").length;
@@ -473,6 +465,111 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         delete process.env.SEMANTIC_CACHE_ENABLED;
         __resetSemanticCacheSingleton();
       }
+    });
+
+    // #211 — the cache stores and looks up under the same key: the REQUESTED
+    // model. A provider that reports another id (an alias, a profile ARN, a
+    // gateway rewrite) used to leave every stored answer unreachable.
+    it("#211 — /chat semantic cache hits on the second identical turn when the served model differs", async () => {
+      process.env.SEMANTIC_CACHE_ENABLED = "1";
+      const { __resetSemanticCacheSingleton } = await import("../src/lib/ai/semantic-cache.js");
+      __resetSemanticCacheSingleton();
+      model.embed = async () => ({ vectors: [[0, 1, 0]], dimension: 3, model: "stub" });
+      const realChat = model.chat.bind(model);
+      model.chat = async (m: ChatMessage[], o?: ChatOptions) => ({
+        ...(await realChat(m, o)),
+        model: "served-alias-not-the-requested-id",
+      });
+      try {
+        const sid = await newSession(alice);
+        const requested = (await db.aISession.findUnique({ where: { id: sid } }))!.model;
+        expect(requested).not.toBe("served-alias-not-the-requested-id");
+        const first = await as(alice).post("/api/ai/chat", { sessionId: sid, message: "q211" });
+        expect(first.status).toBe(200);
+        expect(first.body.data.response.cached).toBeUndefined();
+        const chatCalls = () => model.calls.filter((c) => c.kind === "chat").length;
+        const before = chatCalls();
+        const second = await as(alice).post("/api/ai/chat", { sessionId: sid, message: "q211" });
+        expect(second.status).toBe(200);
+        expect(second.body.data.response.cached).toBe(true);
+        expect(second.body.data.response.content).toBe(first.body.data.response.content);
+        expect(chatCalls()).toBe(before);
+      } finally {
+        delete process.env.SEMANTIC_CACHE_ENABLED;
+        __resetSemanticCacheSingleton();
+      }
+    });
+
+    // ── #210 — /stream is metered and gated like /chat ──────────────────────
+
+    async function budgetProject(id: string): Promise<void> {
+      await db.project.create({
+        data: { id, name: id, slug: id, createdById: ids.alice, workspaceId: ids.ws },
+      });
+    }
+
+    it("#210 — a streamed project turn writes its reported usage to TokenUsage, once", async () => {
+      const sid = await newSession(alice, ids.project);
+      const res = await send(alice, sid, "metered");
+      expect(res.text).toContain("event: done");
+      await usageSettled();
+      const rows = await db.tokenUsage.findMany({ where: { sessionId: sid } });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        projectId: ids.project,
+        provider: "offline-stub",
+        inputTokens: 200,
+        outputTokens: 40,
+        totalTokens: 240,
+      });
+      // The per-user store is written too, and not twice.
+      expect(await db.aITokenUsage.count({ where: { sessionId: sid } })).toBe(1);
+    });
+
+    it("#210 — an unscoped streamed turn writes no project usage", async () => {
+      const sid = await newSession(alice);
+      await send(alice, sid, "no project");
+      await usageSettled();
+      expect(await db.tokenUsage.count({ where: { sessionId: sid } })).toBe(0);
+    });
+
+    it("#210 — /stream refuses a project over its budget with 402 before the model is called", async () => {
+      await budgetProject("p-stream-budget");
+      const sid = await newSession(alice, "p-stream-budget");
+      await db.project.update({
+        where: { id: "p-stream-budget" },
+        data: { monthlyTokenBudget: 300 },
+      });
+      // 240 tokens: under the budget, so the turn runs and is metered.
+      expect((await send(alice, sid, "first")).text).toContain("event: done");
+      await usageSettled();
+      // 480 tokens: the gate still passed (240 < 300); now the budget is spent.
+      expect((await send(alice, sid, "second")).text).toContain("event: done");
+      await usageSettled();
+      const calls = model.calls.length;
+      const refused = await send(alice, sid, "third");
+      expect(refused.status).toBe(402);
+      expect(refused.body.error.code).toBe("BUDGET_EXCEEDED");
+      expect(refused.body.error.details).toMatchObject({ usedTokens: 480, budget: 300 });
+      expect(model.calls.length).toBe(calls);
+      // Refused before the question was persisted: nothing half-recorded.
+      const rows = (await transcript(alice, sid)).body.data.messages;
+      expect(rows).toHaveLength(4);
+    });
+
+    it("#210 — a failure after the streamed reply is stored never adds a second, error-marked reply", async () => {
+      const sid = await newSession(alice, ids.project);
+      const spy = vi.spyOn(getTokenTracker(), "record").mockImplementation(() => {
+        throw new Error("tracker exploded");
+      });
+      try {
+        await send(alice, sid, "q");
+      } finally {
+        spy.mockRestore();
+      }
+      const rows = (await transcript(alice, sid)).body.data.messages;
+      expect(rows.map((r: { role: string }) => r.role)).toEqual(["user", "assistant"]);
+      expect(rows[1].incomplete ?? null).toBeNull();
     });
 
     // ── #138 — automatic compaction ────────────────────────────────────────
@@ -501,10 +598,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       }
       expect(crossedAt).toBeGreaterThan(0); // turns before it were below the watermark
-      expect(model.summaries).toBe(1); // crossing compacts exactly once
+      // Crossing compacts once — one summary row (asserted below), in as many
+      // summariser calls as the folded turns need (#213's answer reserve folds
+      // one more turn at this tight window, which takes two calls).
+      const summariserCalls = model.summaries;
+      expect(summariserCalls).toBeGreaterThan(0);
       const after = await send(alice, sid, big(99));
       expect(after.text).not.toContain("event: compaction"); // and is then back under it
-      expect(model.summaries).toBe(1);
+      expect(model.summaries).toBe(summariserCalls);
       const turns = crossedAt + 2;
 
       const ev = JSON.parse(/event: compaction\ndata: (.+)/.exec(crossing)![1]!);
@@ -542,7 +643,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const calls = model.streamCalls();
       const last = calls[calls.length - 1]!.messages;
       expect(
-        last.some((m) => typeof m.content === "string" && m.content.includes("SUMMARY-1")),
+        last.some(
+          (m) => typeof m.content === "string" && m.content.includes(`SUMMARY-${summariserCalls}`),
+        ),
       ).toBe(true);
       expect(last.some((m) => m.content === big(0))).toBe(false);
       const prefixOf = (msgs: ChatMessage[]) =>
@@ -613,16 +716,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         promptTokens: 120,
         completionTokens: 30,
       });
-      // The project store (what the budget reads) holds the summary call. The
-      // streamed turns before it write nothing there — a gap that predates this
-      // epic and is tracked separately — so the summary is the only row.
-      const projectRows = await db.tokenUsage.findMany({ where: { sessionId: sid } });
-      expect(projectRows).toHaveLength(1);
-      expect(projectRows[0]).toMatchObject({
-        projectId: ids.project,
-        inputTokens: 120,
-        outputTokens: 30,
+      // The project store (what the budget reads) holds the summary call, and
+      // (#210) each streamed turn before it — the summary exactly once.
+      const projectRows = await db.tokenUsage.findMany({
+        where: { sessionId: sid },
+        orderBy: { createdAt: "asc" },
       });
+      expect(projectRows.map((r) => [r.inputTokens, r.outputTokens])).toEqual([
+        [200, 40],
+        [200, 40],
+        [200, 40],
+        [120, 30],
+      ]);
+      expect(projectRows.every((r) => r.projectId === ids.project)).toBe(true);
     });
 
     it("automatic compaction records the summariser's usage too", async () => {
@@ -630,18 +736,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const sid = await newSession(alice, ids.project);
       const big = (i: number) => `turn ${i} ` + "lorem ipsum dolor ".repeat(60);
       for (let i = 0; i < 12 && model.summaries === 0; i++) await send(alice, sid, big(i));
-      expect(model.summaries).toBe(1);
+      // One compaction, metered once per summariser call it made.
+      const calls = model.summaries;
+      expect(calls).toBeGreaterThan(0);
+      expect(await db.aIMessage.count({ where: { sessionId: sid, kind: "summary" } })).toBe(1);
       // The summary (a user-role message) is joined to the first kept question.
       expect(noAdjacentUsers(model.streamCalls().at(-1)!.messages)).toBe(true);
       await usageSettled();
       expect(
         await db.aITokenUsage.count({ where: { sessionId: sid, agentStep: "compaction" } }),
-      ).toBe(1);
+      ).toBe(calls);
       expect(
         await db.tokenUsage.count({
           where: { sessionId: sid, inputTokens: 120, outputTokens: 30 },
         }),
-      ).toBe(1);
+      ).toBe(calls);
     });
 
     it("manual /compact refuses a project over its monthly budget without calling the model", async () => {
@@ -678,6 +787,107 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(
         await db.aIMessage.count({ where: { sessionId: sid, NOT: { compactedAt: null } } }),
       ).toBe(0);
+    });
+
+    // ── #212 — the transcript read is paged ─────────────────────────────────
+
+    it("#212 — pages by afterOrdinal/limit and says when there is more", async () => {
+      const sid = await newSession(alice);
+      for (let i = 0; i < 3; i++) await send(alice, sid, `p${i}`);
+      const first = await as(alice).get(`/api/ai/sessions/${sid}/messages?limit=4`);
+      expect(first.status).toBe(200);
+      expect(first.body.data.messages.map((m: { ordinal: number }) => m.ordinal)).toEqual([
+        1, 2, 3, 4,
+      ]);
+      expect(first.body.data).toMatchObject({ hasMore: true, nextAfterOrdinal: 4 });
+      const rest = await as(alice).get(
+        `/api/ai/sessions/${sid}/messages?afterOrdinal=${first.body.data.nextAfterOrdinal}&limit=4`,
+      );
+      expect(rest.body.data.messages.map((m: { ordinal: number }) => m.ordinal)).toEqual([5, 6]);
+      expect(rest.body.data).toMatchObject({ hasMore: false, nextAfterOrdinal: 6 });
+      // Exactly `limit` rows left is not "more".
+      const exact = await as(alice).get(`/api/ai/sessions/${sid}/messages?afterOrdinal=2&limit=4`);
+      expect(exact.body.data).toMatchObject({ hasMore: false, nextAfterOrdinal: 6 });
+      // Past the end: empty, nothing more, the cursor stays put.
+      const past = await as(alice).get(`/api/ai/sessions/${sid}/messages?afterOrdinal=6`);
+      expect(past.body.data).toMatchObject({
+        messages: [],
+        compactionUpdates: [],
+        hasMore: false,
+        nextAfterOrdinal: 6,
+      });
+    });
+
+    it("#212 — a read is capped at the server maximum, and says it did not return everything", async () => {
+      const { TRANSCRIPT_PAGE_MAX } = await import("@metis/shared");
+      const sid = await newSession(alice);
+      const total = TRANSCRIPT_PAGE_MAX + 3;
+      await db.aIMessage.createMany({
+        data: Array.from({ length: total }, (_, i) => ({
+          sessionId: sid,
+          ordinal: i + 1,
+          role: i % 2 === 0 ? "user" : "assistant",
+          kind: "message",
+          content: JSON.stringify([{ type: "text", text: `r${i + 1}` }]),
+          estimatedTokens: 1,
+        })),
+      });
+      for (const url of [
+        `/api/ai/sessions/${sid}/messages`,
+        `/api/ai/sessions/${sid}/messages?limit=100000`,
+      ]) {
+        const res = await as(alice).get(url);
+        expect(res.status).toBe(200);
+        expect(res.body.data.messages).toHaveLength(TRANSCRIPT_PAGE_MAX);
+        expect(res.body.data).toMatchObject({
+          hasMore: true,
+          nextAfterOrdinal: TRANSCRIPT_PAGE_MAX,
+        });
+      }
+      const tail = await as(alice).get(
+        `/api/ai/sessions/${sid}/messages?afterOrdinal=${TRANSCRIPT_PAGE_MAX}`,
+      );
+      expect(tail.body.data.messages).toHaveLength(3);
+      expect(tail.body.data.hasMore).toBe(false);
+    });
+
+    it("#212 — a page after a compaction carries the compaction state of the rows it folded", async () => {
+      const sid = await newSession(alice);
+      for (let i = 0; i < 3; i++) await send(alice, sid, `c${i}`);
+      // The reader holds ordinals 1..6; then the session compacts (summary = 7).
+      const compact = await as(alice).post(`/api/ai/sessions/${sid}/compact`);
+      expect(compact.body.data.compacted).toBe(true);
+      const delta = await as(alice).get(`/api/ai/sessions/${sid}/messages?afterOrdinal=6`);
+      const [summary] = delta.body.data.messages;
+      expect(delta.body.data.messages).toHaveLength(1);
+      expect(summary).toMatchObject({ ordinal: 7, kind: "summary" });
+      const updates = delta.body.data.compactionUpdates as Array<{
+        ordinal: number;
+        compactedAt: string | null;
+        compactedIntoId: string;
+      }>;
+      expect(updates.map((u) => u.ordinal)).toEqual([1, 2, 3, 4]);
+      expect(updates.every((u) => u.compactedIntoId === summary.id && u.compactedAt)).toBe(true);
+      // They agree with a full read — the delta is not a second source of truth.
+      const full = (await transcript(alice, sid)).body.data.messages as Array<{
+        ordinal: number;
+        compactedIntoId: string | null;
+      }>;
+      expect(full.filter((r) => r.compactedIntoId === summary.id).map((r) => r.ordinal)).toEqual(
+        updates.map((u) => u.ordinal),
+      );
+      // A reader already holding the summary gets no updates for it again.
+      const after = await as(alice).get(`/api/ai/sessions/${sid}/messages?afterOrdinal=7`);
+      expect(after.body.data.compactionUpdates).toEqual([]);
+    });
+
+    it("#212 — a malformed page is a 400, never a silent full read", async () => {
+      const sid = await newSession(alice);
+      for (const q of ["limit=0", "afterOrdinal=-1", "limit=abc", "afterOrdinal=1.5"]) {
+        const res = await as(alice).get(`/api/ai/sessions/${sid}/messages?${q}`);
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe("VALIDATION_ERROR");
+      }
     });
 
     // ── #139 — resume and fork ─────────────────────────────────────────────

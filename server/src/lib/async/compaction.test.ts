@@ -135,6 +135,31 @@ describe("compactTranscript", () => {
     expect(out.activeRows[0]!.id).toBe(summary.id);
   });
 
+  // #213 — the target is half the window LESS the answer reserve, so a
+  // compacted prompt keeps the same room for the reply the overflow check wants.
+  it("the compaction target leaves the answer reserve free (#213)", async () => {
+    const summarizer = async () => ({ text: "SUM", usage: null });
+    const keptAfter = async (sessionId: string, answerReserveTokens?: number) => {
+      const active = await seed(sessionId, 4, 100); // ~216 tokens per turn
+      const out = (await compactTranscript({
+        sessionId,
+        activeRows: active,
+        ratio,
+        build,
+        contextWindow: window,
+        ...(answerReserveTokens !== undefined ? { answerReserveTokens } : {}),
+        fixedTokens: 0,
+        estimatedTokensBefore: 900,
+        summarizer,
+      }))!;
+      return out.activeRows.filter((r) => r.kind !== "summary").map((r) => r.ordinal);
+    };
+    // No reserve: the tail budget is 500 — two whole turns fit.
+    expect(await keptAfter("no-reserve")).toEqual([5, 6, 7, 8]);
+    // A 200-token reserve: the budget is (1000 − 200) / 2 = 400 — one turn fits.
+    expect(await keptAfter("reserve", 200)).toEqual([7, 8]);
+  });
+
   it("a second compaction folds the previous summary in, and the coverage accumulates", async () => {
     let active = await seed("s", 4, 100);
     const summarizer = vi.fn(async ({ priorSummary }: { priorSummary: string | null }) => ({

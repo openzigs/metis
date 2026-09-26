@@ -240,11 +240,79 @@ export function transcriptToDisplay(rows: readonly TranscriptMessageDto[]): Disp
   return out;
 }
 
+/**
+ * #212 — what changed in a transcript after the ordinal a reader already holds:
+ * the rows past it, and the compaction state of rows at or before it that a
+ * newer summary has folded (compaction changes nothing else about a row).
+ */
+export interface TranscriptDelta {
+  afterOrdinal: number;
+  rows: DisplayTurn[];
+  compactionUpdates: Array<{ ordinal: number; compacted: boolean }>;
+}
+
+/**
+ * #212 — read the transcript past `afterOrdinal`, page by page until the server
+ * says there is no more. A page that claims more but does not advance is an
+ * error, never a silently short transcript.
+ */
+export async function getTranscriptSince(
+  sessionId: string,
+  afterOrdinal: number,
+): Promise<TranscriptDelta> {
+  const rows: TranscriptResponse["messages"] = [];
+  const updates: TranscriptResponse["compactionUpdates"] = [];
+  let cursor = afterOrdinal;
+  for (;;) {
+    const res = await apiFetch<TranscriptResponse>(
+      `/ai/sessions/${encodeURIComponent(sessionId)}/messages?afterOrdinal=${cursor}`,
+    );
+    rows.push(...res.messages);
+    updates.push(...(res.compactionUpdates ?? []));
+    if (!res.hasMore) break;
+    if (!(res.nextAfterOrdinal > cursor)) {
+      throw new Error("The transcript could not be read in full.");
+    }
+    cursor = res.nextAfterOrdinal;
+  }
+  return {
+    afterOrdinal,
+    rows: transcriptToDisplay(rows),
+    compactionUpdates: updates.map((u) => ({
+      ordinal: u.ordinal,
+      compacted: u.compactedAt !== null,
+    })),
+  };
+}
+
+/** The whole transcript, every page of it. */
 export async function getTranscript(sessionId: string): Promise<DisplayTurn[]> {
-  const res = await apiFetch<TranscriptResponse>(
-    `/ai/sessions/${encodeURIComponent(sessionId)}/messages`,
+  return (await getTranscriptSince(sessionId, 0)).rows;
+}
+
+/** The newest server ordinal among rows a reader holds (0 when it holds none). */
+export function lastHeldOrdinal(rows: ReadonlyArray<{ ordinal?: number }>): number {
+  return rows.reduce((max, r) => (r.ordinal !== undefined && r.ordinal > max ? r.ordinal : max), 0);
+}
+
+/**
+ * #212 — fold a {@link TranscriptDelta} into the rows a reader holds: rows from
+ * the server up to `afterOrdinal` are kept, rows with no ordinal (the optimistic
+ * rows of a turn in flight) are replaced by the delta's rows, and compaction
+ * updates are applied to whichever row they name.
+ */
+export function mergeTranscriptDelta<T extends { ordinal?: number; compacted?: boolean }>(
+  held: readonly T[],
+  delta: TranscriptDelta,
+  fromServer: (row: DisplayTurn) => T,
+): T[] {
+  const updates = new Map(delta.compactionUpdates.map((u) => [u.ordinal, u.compacted]));
+  const kept = held.filter((m) => m.ordinal !== undefined && m.ordinal <= delta.afterOrdinal);
+  return [...kept, ...delta.rows.map(fromServer)].map((m) =>
+    m.ordinal !== undefined && updates.has(m.ordinal)
+      ? { ...m, compacted: updates.get(m.ordinal)! }
+      : m,
   );
-  return transcriptToDisplay(res.messages);
 }
 
 export async function resumeChatSession(id: string): Promise<ResumedChat | null> {

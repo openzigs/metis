@@ -1391,9 +1391,12 @@ export function aiRouter(): Router {
         !shouldSkipCache(outContent)
       ) {
         try {
+          // #211 — stored under the REQUESTED model, the key the lookup above
+          // uses. The served id (an alias, a profile ARN, a gateway rewrite) can
+          // differ, and an entry keyed on it could never be found again.
           await semanticCache.store(
             cachedEmbedding,
-            response.model,
+            model,
             cachedSystemHash,
             outContent,
             session.projectId ?? undefined,
@@ -1454,6 +1457,7 @@ export function aiRouter(): Router {
           estimatedTokens: err.estimatedTokens,
           contextWindow: err.contextWindow.tokens,
           contextWindowSource: err.contextWindow.source,
+          answerReserveTokens: err.answerReserveTokens,
         });
       }
       throw aiErrorToAppError(err);
@@ -1473,6 +1477,21 @@ export function aiRouter(): Router {
     const session = await loadAuthorizedSession(req.user, parsed.data.sessionId);
     // #149 — refused before the SSE stream opens, so it is a plain 409.
     assertSessionAcceptsTurns(session);
+    // #210 — the project budget gate, as on /chat: before any model call, and
+    // before the SSE stream opens so an exhausted budget is a plain 402.
+    if (session.projectId) {
+      try {
+        await assertWithinBudget(session.projectId);
+      } catch (err) {
+        if (err instanceof BudgetExceededError) {
+          throw new AppError(err.status, err.code, err.message, {
+            usedTokens: err.usedTokens,
+            budget: err.budget,
+          });
+        }
+        throw err;
+      }
+    }
     const model = parsed.data.model ?? effectiveModel(session);
     const reasoningEffort =
       parsed.data.reasoningEffort ?? sessionReasoningEffort(session.currentReasoningEffort);
@@ -1617,6 +1636,9 @@ export function aiRouter(): Router {
     const toolCalls: ReplyToolCall[] = [];
     let prepared: PreparedTurn | null = null;
     let providerKey: string = loadAIConfig().provider;
+    // Set once the reply is on record: a later failure (usage accounting, say)
+    // must not add a second, error-marked reply to the same question — as /chat.
+    let replyRecorded = false;
 
     try {
       const apiKeyOverride = await resolveProviderKey(session.providerSecretRef);
@@ -1812,6 +1834,7 @@ export function aiRouter(): Router {
           promptChars: calibrationPromptChars(turn, toolCalls),
           ratio: turn.ratio,
         });
+        replyRecorded = true;
         await writeDerivedSnapshot(session);
       } catch (persistErr) {
         log.error("Failed to persist the chat reply to the transcript", {
@@ -1840,6 +1863,22 @@ export function aiRouter(): Router {
         // Issue #428 — stamp the direct projectId (see streaming path above).
         projectId: session.projectId ?? undefined,
       });
+      // #210 — the per-project store the budget gate reads, as /chat writes it.
+      // `reportedUsage` is the whole turn: every model call of a code-tool loop
+      // summed (sub-agent calls meter themselves through `bindSubAgents`, and a
+      // compaction summary through its summariser, so neither is counted here).
+      if (session.projectId && reportedUsage) {
+        recordProjectUsage({
+          projectId: session.projectId,
+          sessionId: session.id,
+          provider: streamProvider.key,
+          model,
+          inputTokens: reportedUsage.promptTokens,
+          outputTokens: reportedUsage.completionTokens,
+          cacheReadTokens: reportedUsage.cacheReadTokens,
+          cacheWriteTokens: reportedUsage.cacheWriteTokens,
+        });
+      }
       audit({
         actor: { id: userId },
         action: "ai.stream",
@@ -1898,7 +1937,7 @@ export function aiRouter(): Router {
       }
       // #136 — whatever was streamed before the failure is what the user saw;
       // keep it, marked incomplete, rather than dropping the turn.
-      if (prepared) {
+      if (prepared && !replyRecorded) {
         await recordFailedTurn(
           session.id,
           frame,

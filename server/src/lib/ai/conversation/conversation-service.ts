@@ -17,6 +17,7 @@ import type {
   ForkSessionResponse,
   ResumeSessionResponse,
   SdkReasoningEffort,
+  TranscriptResponse,
 } from "@metis/shared";
 import { prisma } from "../../prisma.js";
 import { AppError } from "../../../middleware/error-handler.js";
@@ -28,9 +29,11 @@ import {
 } from "./session-access.js";
 import {
   copyTranscriptPrefix,
+  countMessages,
   getMessageByOrdinal,
   listActiveMessages,
   listMessages,
+  listMessagesPage,
   toDto,
 } from "./transcript-store.js";
 import { importLegacySnapshot } from "./legacy-snapshot.js";
@@ -76,6 +79,35 @@ export function sessionStateDto(s: AISession): ResumeSessionResponse["session"] 
     updatedAt: s.updatedAt.toISOString(),
     // #149 — set when the session can be read but no longer take a turn.
     readOnlyReason: sessionReadOnlyReason(s),
+  };
+}
+
+/**
+ * #212 — one page of the transcript of a session the caller may read (see
+ * {@link listMessagesPage}). A first read (`afterOrdinal` 0) of a session from
+ * before the server owned its transcript imports its snapshot first, exactly
+ * as the full read does.
+ */
+export async function readTranscriptPage(
+  user: AuthPayload | undefined,
+  sessionId: string,
+  opts: { afterOrdinal: number; limit: number },
+): Promise<TranscriptResponse> {
+  const session = await loadAuthorizedSession(user, sessionId);
+  if (opts.afterOrdinal <= 0 && session.snapshot && (await countMessages(session.id)) === 0) {
+    await importLegacySnapshot(session.id, session.snapshot);
+  }
+  const page = await listMessagesPage(session.id, opts);
+  return {
+    sessionId: session.id,
+    messages: page.rows.map(toDto),
+    compactionUpdates: page.compactionUpdates.map((u) => ({
+      ordinal: u.ordinal,
+      compactedAt: u.compactedAt ? u.compactedAt.toISOString() : null,
+      compactedIntoId: u.compactedIntoId,
+    })),
+    hasMore: page.hasMore,
+    nextAfterOrdinal: page.nextAfterOrdinal,
   };
 }
 

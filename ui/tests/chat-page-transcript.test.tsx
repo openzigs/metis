@@ -1,7 +1,8 @@
 /**
  * Epic #127 — the chat page on the server-owned transcript:
  *   • a turn sends ONLY the new message (#136);
- *   • after the turn the page re-renders from the server transcript (#136);
+ *   • after the turn the page re-renders from the server transcript (#136) —
+ *     reading only the rows after the last ordinal it holds (#212);
  *   • compacted rows stay visible and a summary renders as a note (#138);
  *   • "Fork from here" forks at that reply and opens the fork (#139).
  */
@@ -21,7 +22,7 @@ vi.mock("@/lib/ai-client", async () => {
     createSessionWithScope: vi.fn(),
     resumeChatSession: vi.fn(),
     streamChat: vi.fn(),
-    getTranscript: vi.fn(),
+    getTranscriptSince: vi.fn(),
     forkChatSession: vi.fn(),
   };
 });
@@ -44,7 +45,7 @@ vi.mock("@/lib/recent-tracker", () => ({ recentTracker: { touch: vi.fn() } }));
 const createMock = vi.mocked(aiClient.createSessionWithScope);
 const resumeMock = vi.mocked(aiClient.resumeChatSession);
 const streamMock = vi.mocked(aiClient.streamChat);
-const transcriptMock = vi.mocked(aiClient.getTranscript);
+const transcriptMock = vi.mocked(aiClient.getTranscriptSince);
 const forkMock = vi.mocked(aiClient.forkChatSession);
 
 const session = {
@@ -83,12 +84,14 @@ describe("<ChatPage /> on the server transcript (#127)", () => {
       yield { type: "done" };
     }
     streamMock.mockReturnValue(reply());
-    transcriptMock.mockResolvedValue([
-      { role: "user", content: "earlier q", ordinal: 1, compacted: true },
-      { role: "summary", content: "the summary", ordinal: 3, compacted: false },
-      { role: "user", content: "new q", ordinal: 4, compacted: false },
-      { role: "assistant", content: "server answer", ordinal: 5, compacted: false },
-    ]);
+    transcriptMock.mockResolvedValue({
+      afterOrdinal: 3,
+      rows: [
+        { role: "user", content: "new q", ordinal: 4, compacted: false },
+        { role: "assistant", content: "server answer", ordinal: 5, compacted: false },
+      ],
+      compactionUpdates: [],
+    });
 
     const user = userEvent.setup();
     render(<ChatPage />, { wrapper: makeWrapper() });
@@ -103,7 +106,9 @@ describe("<ChatPage /> on the server transcript (#127)", () => {
     expect(streamMock.mock.calls[0]![0]).toBe("sess-1");
     expect(streamMock.mock.calls[0]![1]).toBe("new q");
     await waitFor(() => expect(screen.getByText("server answer")).toBeInTheDocument());
-    expect(transcriptMock).toHaveBeenCalledWith("sess-1");
+    // #212 — only what follows the newest row the page already held.
+    expect(transcriptMock).toHaveBeenCalledWith("sess-1", 3);
+    expect(screen.getByText(/earlier q/)).toBeInTheDocument();
     expect(screen.getByTestId("chat-compaction-note")).toHaveTextContent("Older messages (2)");
     expect(screen.getByTestId("chat-fork-5")).toBeInTheDocument();
   });
@@ -196,12 +201,18 @@ describe("<ChatPage /> on the server transcript (#127)", () => {
       yield { type: "done" };
     }
     streamMock.mockReturnValue(reply());
-    transcriptMock.mockResolvedValue([
-      { role: "user", content: "q", ordinal: 1, compacted: true },
-      { role: "summary", content: "s", ordinal: 3, compacted: false },
-      { role: "user", content: "new q", ordinal: 4, compacted: false },
-      { role: "assistant", content: "server answer", ordinal: 5, compacted: false },
-    ]);
+    transcriptMock.mockResolvedValue({
+      afterOrdinal: 2,
+      rows: [
+        { role: "summary", content: "s", ordinal: 3, compacted: false },
+        { role: "user", content: "new q", ordinal: 4, compacted: false },
+        { role: "assistant", content: "server answer", ordinal: 5, compacted: false },
+      ],
+      compactionUpdates: [
+        { ordinal: 1, compacted: true },
+        { ordinal: 2, compacted: true },
+      ],
+    });
     forkMock.mockResolvedValue({ session: { id: "sess-fork" }, copiedMessages: 4 } as never);
     const user = userEvent.setup();
     render(<ChatPage />, { wrapper: makeWrapper() });

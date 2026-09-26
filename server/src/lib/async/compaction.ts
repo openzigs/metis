@@ -261,6 +261,12 @@ export interface CompactTranscriptInput {
   ratio: TokenRatio;
   build: ContextBuildOptions;
   contextWindow: ResolvedContextWindow;
+  /**
+   * #213 — tokens the turn keeps free for the reply. The compaction target is
+   * a share of the window LESS this reserve, so a compacted prompt leaves the
+   * same headroom the overflow check demands.
+   */
+  answerReserveTokens?: number;
   /** Tokens of everything compaction cannot touch: system prefix, RAG, new message. */
   fixedTokens: number;
   /** The whole prompt's estimate before compacting (for the record). */
@@ -308,9 +314,10 @@ export async function compactTranscript(
   input: CompactTranscriptInput,
 ): Promise<CompactionOutcome | null> {
   const window = input.contextWindow.tokens;
+  const usableWindow = Math.max(0, window - Math.max(0, input.answerReserveTokens ?? 0));
   const tailBudgetTokens = input.force
     ? 0
-    : Math.max(0, Math.floor(window * COMPACTION_TARGET_SHARE) - input.fixedTokens);
+    : Math.max(0, Math.floor(usableWindow * COMPACTION_TARGET_SHARE) - input.fixedTokens);
   const plan = planCompaction(input.activeRows, {
     ratio: input.ratio,
     tailBudgetTokens,
