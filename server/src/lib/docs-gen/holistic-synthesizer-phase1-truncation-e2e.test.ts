@@ -43,6 +43,7 @@ vi.mock("../prisma.js", () => ({
 }));
 
 let phase1FinishReason = "length";
+let phase1Throws = false;
 
 function makeProvider(): AIProvider {
   return {
@@ -60,6 +61,7 @@ function makeProvider(): AIProvider {
         yield { type: "done" };
         return;
       }
+      if (phase1Throws) throw new Error("400 bad request");
       yield { type: "delta", content: "PURPOSE\nmod.\n\nRULES\n- cut off mid-" };
       yield { type: "done", finishReason: phase1FinishReason };
     },
@@ -124,6 +126,7 @@ describe("synthesizeHolisticDocument — #156 truncated Phase-1 facts", () => {
     delete process.env.BEDROCK_GATEWAY_BASE_URL;
     process.env.AI_OFFLINE = "0";
     phase1FinishReason = "length";
+    phase1Throws = false;
     seedPrisma();
   });
 
@@ -146,5 +149,28 @@ describe("synthesizeHolisticDocument — #156 truncated Phase-1 facts", () => {
     phase1FinishReason = "stop";
     const result = await synthesizeHolisticDocument("p1", "architecture", "Arch");
     expect(result.warnings.some((x) => x.section === "Phase 1 facts")).toBe(false);
+  });
+
+  it("names a module whose chunks ALL failed in a document warning", async () => {
+    phase1Throws = true;
+    const result = await synthesizeHolisticDocument("p1", "architecture", "Arch");
+    const w = result.warnings.find(
+      (x) => x.section === "Phase 1 facts" && x.kind === "section-failed",
+    );
+    expect(w).toBeDefined();
+    expect(w!.message).toContain("src/billing");
+    expect(mockPrisma.docsGenFactCache.upsert).not.toHaveBeenCalled();
+  });
+
+  it("names a module whose extraction threw (rejected) in a document warning", async () => {
+    phase1FinishReason = "stop";
+    mockPrisma.finding.findMany.mockRejectedValue(new Error("db exploded"));
+    const result = await synthesizeHolisticDocument("p1", "architecture", "Arch");
+    const w = result.warnings.find(
+      (x) => x.section === "Phase 1 facts" && x.kind === "section-failed",
+    );
+    expect(w).toBeDefined();
+    expect(w!.message).toContain("src/billing");
+    expect(w!.message).not.toContain("db exploded");
   });
 });

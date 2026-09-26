@@ -413,14 +413,14 @@ describe("captureGenerationInputs", () => {
     expect((await capture()).fingerprint).toBe(empty.fingerprint);
   });
 
-  it("caps SQL reads at twelve files and stops after the holistic character budget", async () => {
+  it("fingerprints every SQL file in full, as Phase 1 mines them (no file or character cap)", async () => {
     for (let i = 0; i < 14; i++) await file(`sql/${String(i).padStart(2, "0")}.sql`, "SELECT 1;");
-    expect(keys(await capture(), "sql")).toHaveLength(12);
+    expect(keys(await capture(), "sql")).toHaveLength(14);
     await file("sql/00.sql", "x".repeat(80_001));
-    expect(keys(await capture(), "sql")).toHaveLength(1);
+    expect(keys(await capture(), "sql")).toHaveLength(14);
   });
 
-  it("bounds discovery to 2000 directories but includes known source directories beyond the cap", async () => {
+  it("discovers past the old 2000-directory budget, within the shared safety bound", async () => {
     await file("z-source/mod.ts", "full source");
     await file("z-source/schema.sql", "SELECT 1;");
     mocks.symbols.mockResolvedValue([symbol({ filePath: "z-source/mod.ts" })]);
@@ -436,8 +436,7 @@ describe("captureGenerationInputs", () => {
     expect(keys(snapshot, "sql")).toHaveLength(1);
     expect(
       mocks.resolve.mock.calls.filter(([, relative]) => relative.startsWith("empty-")),
-    ).toHaveLength(1999);
-    expect(mocks.resolve).not.toHaveBeenCalledWith(root, "empty-1999");
+    ).toHaveLength(2100);
     expect(mocks.resolve).toHaveBeenCalledWith(root, "z-source");
   });
 

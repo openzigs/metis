@@ -48,6 +48,13 @@ export const OUTPUT_CHARS_PER_TOPIC_CHAR = 1.25;
  */
 export const OUTPUT_CHARS_PER_MINED_RULE = 300;
 
+/**
+ * Output characters per extracted formula a Calculations batch documents (#172):
+ * a description, the expression and its terms — about as long as a mined rule's
+ * entry, less the condition/action structure.
+ */
+export const OUTPUT_CHARS_PER_FORMULA = 250;
+
 /** Fixed per-module output overhead: headings, a table header, a lead sentence. */
 export const OUTPUT_CHARS_PER_MODULE = 300;
 
@@ -77,11 +84,14 @@ export function batchOutputBudgetChars(maxTokens: number): number {
 export function estimateModuleOutputChars(input: {
   topicChars: number;
   minedRules: number;
+  /** Extracted formulas the entry's batch documents (Calculations only). */
+  formulas?: number;
 }): number {
   return Math.ceil(
     OUTPUT_CHARS_PER_MODULE +
       input.topicChars * OUTPUT_CHARS_PER_TOPIC_CHAR +
-      input.minedRules * OUTPUT_CHARS_PER_MINED_RULE,
+      input.minedRules * OUTPUT_CHARS_PER_MINED_RULE +
+      (input.formulas ?? 0) * OUTPUT_CHARS_PER_FORMULA,
   );
 }
 

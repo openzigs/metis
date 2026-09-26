@@ -540,15 +540,33 @@ describe("generated-docs routes", () => {
           _docType: string,
           _title: string,
           options: {
+            onPhase1Progress?: (update: { done: number; total: number }) => void;
             onSectionProgress?: (update: {
               section: string;
               status: string;
               index: number;
               total: number;
               warning?: { kind: string; severity: string; message: string };
+              batch?: { done: number; total: number };
             }) => void;
           },
         ) => {
+          options.onPhase1Progress?.({ done: 276, total: 552 });
+          options.onSectionProgress?.({
+            section: "Rules",
+            status: "generating",
+            index: 1,
+            total: 2,
+            batch: { done: 13, total: 52 },
+          });
+          // A later update that computes LOWER (a re-split grew the total).
+          options.onSectionProgress?.({
+            section: "Rules",
+            status: "generating",
+            index: 1,
+            total: 2,
+            batch: { done: 13, total: 60 },
+          });
           options.onSectionProgress?.({
             section: "Overview",
             status: "done",
@@ -602,6 +620,35 @@ describe("generated-docs routes", () => {
       );
       expect(jobEvents.docSection).toHaveBeenCalledWith(
         expect.objectContaining({ warning: undefined }),
+      );
+      // Phase 1 fills the first 60% of the bar, per chunk: half the chunks = 30%.
+      expect(jobEvents.progress).toHaveBeenCalledWith(
+        "doc-generation",
+        "doc-1",
+        "proj-1",
+        30,
+        "Extracting facts: 276/552 chunks",
+      );
+      // A batched section's progress moves per batch: 1/4 of section 1 of 2,
+      // inside Phase 2's 60–100% share (60 + 12.5% of 40).
+      expect(jobEvents.progress).toHaveBeenCalledWith(
+        "doc-generation",
+        "doc-1",
+        "proj-1",
+        65,
+        "Section 1/2: Rules (batch 13/52)",
+      );
+      // The bar never goes backwards: the lower update is reported at the high-water mark.
+      const pcts = (jobEvents.progress as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c) => c[3] as number,
+      );
+      for (let i = 1; i < pcts.length; i++) expect(pcts[i]).toBeGreaterThanOrEqual(pcts[i - 1]);
+      expect(jobEvents.progress).toHaveBeenCalledWith(
+        "doc-generation",
+        "doc-1",
+        "proj-1",
+        65,
+        "Section 1/2: Rules (batch 13/60)",
       );
     });
 

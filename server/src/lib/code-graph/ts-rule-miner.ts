@@ -97,11 +97,16 @@ export function mineTsRules(
   filePath: string,
   baseLine: number,
   context: string | null = null,
+  /**
+   * Most rules returned (default {@link MAX_RULES}). Docs-gen Phase 1 passes
+   * `Infinity`: it mines whole files and must not lose any rule past the cap.
+   */
+  maxRules: number = MAX_RULES,
 ): MinedTsRule[] {
   const rules: MinedTsRule[] = [];
   const lines = source.split("\n");
 
-  for (let i = 0; i < lines.length && rules.length < MAX_RULES; i++) {
+  for (let i = 0; i < lines.length && rules.length < maxRules; i++) {
     const raw = lines[i];
     const line = raw.trim();
     const lineNum = baseLine + i;

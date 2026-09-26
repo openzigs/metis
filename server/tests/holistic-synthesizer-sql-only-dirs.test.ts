@@ -9,7 +9,11 @@
  * existing per-module SQL mining pass runs on them end to end.
  */
 import { describe, expect, it } from "vitest";
-import { discoverSqlOnlyModules } from "../src/lib/docs-gen/holistic-synthesizer.js";
+import {
+  SQL_SCAN_DIR_CAP,
+  discoverSqlOnlyModules,
+} from "../src/lib/docs-gen/holistic-synthesizer.js";
+import { sqlScanIncompleteWarning } from "../src/lib/docs-gen/grounding/degraded-warnings.js";
 
 /**
  * Build a fake readdir(withFileTypes) implementation backed by an in-memory
@@ -99,16 +103,58 @@ describe("discoverSqlOnlyModules", () => {
     expect(mods).toHaveLength(0);
   });
 
-  it("is bounded — caps the number of synthesized modules", async () => {
-    // 50 sibling dirs each with a .sql file; helper must cap output.
+  it("finds every SQL-only directory — past the old 24-module cap", async () => {
+    // 50 sibling dirs each with a .sql file: every one is a module.
     const root = Array.from({ length: 50 }, (_, i) => ({ name: `d${i}`, dir: true }));
     const tree: Record<string, Array<{ name: string; dir: boolean }>> = { "": root };
     for (let i = 0; i < 50; i++) {
       tree[`d${i}`] = [{ name: "s.sql", dir: false }];
     }
-    const mods = await discoverSqlOnlyModules(CLONE, new Set<string>(), fakeReaddir(tree));
-    expect(mods.length).toBeGreaterThan(0);
-    expect(mods.length).toBeLessThanOrEqual(24);
+    const stats = { visited: 0, truncated: false, unreadable: [] as string[] };
+    const mods = await discoverSqlOnlyModules(CLONE, new Set<string>(), fakeReaddir(tree), stats);
+    expect(mods).toHaveLength(50);
+    expect(stats).toEqual({ visited: 51, truncated: false, unreadable: [] });
+  });
+
+  it("visits past the old 2,000-directory cap", async () => {
+    const n = 2_500;
+    const tree: Record<string, Array<{ name: string; dir: boolean }>> = {
+      "": Array.from({ length: n }, (_, i) => ({ name: `d${i}`, dir: true })),
+    };
+    for (let i = 0; i < n; i++)
+      tree[`d${i}`] = i === n - 1 ? [{ name: "last.sql", dir: false }] : [];
+    const stats = { visited: 0, truncated: false, unreadable: [] as string[] };
+    const mods = await discoverSqlOnlyModules(CLONE, new Set<string>(), fakeReaddir(tree), stats);
+    expect(mods.map((m) => m.dir)).toEqual([`d${n - 1}`]);
+    expect(stats.truncated).toBe(false);
+    expect(SQL_SCAN_DIR_CAP).toBeGreaterThanOrEqual(100_000);
+  });
+
+  it("reports a scan that stops at its safety bound, and unreadable directories, instead of hiding them", async () => {
+    const root = Array.from({ length: 10 }, (_, i) => ({ name: `d${i}`, dir: true }));
+    const tree: Record<string, Array<{ name: string; dir: boolean }>> = { "": root };
+    for (let i = 0; i < 10; i++) tree[`d${i}`] = [{ name: "s.sql", dir: false }];
+    const stats = { visited: 0, truncated: false, unreadable: [] as string[] };
+    const mods = await discoverSqlOnlyModules(
+      CLONE,
+      new Set<string>(),
+      fakeReaddir(tree),
+      stats,
+      4,
+    );
+    expect(mods).toHaveLength(3);
+    expect(stats.truncated).toBe(true);
+    const failing = async (dir: string) => {
+      if (dir.endsWith("d3")) throw new Error("EACCES");
+      return fakeReaddir(tree)(dir);
+    };
+    const s2 = { visited: 0, truncated: false, unreadable: [] as string[] };
+    await discoverSqlOnlyModules(CLONE, new Set<string>(), failing, s2);
+    expect(s2.unreadable).toEqual(["d3"]);
+    const w = sqlScanIncompleteWarning("repo-a", { ...stats, unreadable: ["d3"] });
+    expect(w.kind).toBe("source-unavailable");
+    expect(w.message).toContain("stopped after 4 directories");
+    expect(w.message).toContain("1 directory could not be read (d3)");
   });
 
   it("returns empty when readdir throws on the root", async () => {

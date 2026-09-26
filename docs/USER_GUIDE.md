@@ -3791,21 +3791,25 @@ For a **mid-size service (~200 files, 40 modules)**:
 
 > Estimates assume [Anthropic's current pricing](https://www.anthropic.com/pricing): Haiku 4.5 at $0.80/MTok input · $4.00/MTok output · $0.08/MTok cache read; Sonnet 4.6 at $3.00/MTok input · $15.00/MTok output · $0.30/MTok cache read.
 
-#### Dynamic Snippet Budgets
+#### Full-Coverage Reading
 
-Phase 1 also applies tiered context budgets so tiny utility modules don't consume the same tokens as large domain classes:
+Phase 1 reads **every** function body and all module-level code (top-level
+constants, schemas, config objects) of every module — there is no per-module
+snippet budget or method cap. A module too large for one call is read in
+several calls (chunks), each sized so its input fits
+`DOCS_GEN_PHASE1_CHUNK_INPUT_TOKENS` (default 24,000) and its estimated reply
+fits `DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS`; the chunks' facts are merged per
+section. A reply that is still cut off is split in half and re-read, not
+retried with a larger cap. Each chunk is cached on its own, so a re-run after
+a partial failure only re-reads the failed parts. Every deterministic rule
+miner runs over all of the code, independent of any model budget.
 
-| Module size | Code context sent | Methods read |
-|-------------|------------------|--------------|
-| ≤ 10 symbols | 18,000 chars | up to 25 |
-| 11–50 symbols | 36,000 chars | up to 50 |
-| > 50 symbols | 60,000 chars | up to 80 |
-
-This alone reduces Phase 1 cost by 30–40% compared to sending a fixed maximum budget to every module.
+Reading everything costs more calls on a large project: plan for the Phase-1
+call count to grow roughly with source size rather than module count.
 
 ### 30.11 Phase 1 Fact Cache
 
-The most powerful cost-reduction feature is the **Phase 1 Fact Cache** — METIS remembers the structured facts it extracted from each module and reuses them on subsequent runs without making any AI calls.
+The most powerful cost-reduction feature is the **Phase 1 Fact Cache** — METIS remembers the structured facts it extracted from each module (per chunk) and reuses them on subsequent runs without making any AI calls.
 
 #### How It Works
 

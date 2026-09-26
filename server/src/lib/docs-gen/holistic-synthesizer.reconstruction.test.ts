@@ -28,7 +28,7 @@ const mockPrisma = {
   codeGraph: { findFirst: vi.fn(), findMany: vi.fn() },
   finding: { findMany: vi.fn() },
   repoConnection: { findFirst: vi.fn() },
-  docsGenFactCache: { findUnique: vi.fn(), upsert: vi.fn() },
+  docsGenFactCache: { findUnique: vi.fn(), upsert: vi.fn(), update: vi.fn() },
 };
 
 vi.mock("../prisma.js", () => ({
@@ -49,6 +49,7 @@ vi.mock("../prisma.js", () => ({
     docsGenFactCache: {
       findUnique: (...a: unknown[]) => mockPrisma.docsGenFactCache.findUnique(...a),
       upsert: (...a: unknown[]) => mockPrisma.docsGenFactCache.upsert(...a),
+      update: (...a: unknown[]) => mockPrisma.docsGenFactCache.update(...a),
     },
   },
 }));
@@ -234,17 +235,21 @@ describe("#271 reconstruction-grade synthesis (SAS lineage + cross-module + rule
     expect(p1).toContain("work.flagged");
   });
 
-  it("persists DATA_LINEAGE into the cached/returned facts text (survives cache)", async () => {
-    await synthesizeHolisticDocument("p1", "business-requirements", "BRD");
-    // The facts written to cache must carry the DATA_LINEAGE section so Phase-2
-    // sees it via factsModuleEntry even on a later cache hit.
-    const upserts = mockPrisma.docsGenFactCache.upsert.mock.calls;
-    expect(upserts.length).toBeGreaterThan(0);
-    const anyFactsHaveLineage = upserts.some((c) => {
-      const args = c[0] as { create?: { facts?: string } };
-      return (args.create?.facts ?? "").includes("DATA_LINEAGE");
+  it("re-appends DATA_LINEAGE to cached chunk facts, so a cache hit still carries it", async () => {
+    // Phase 1 caches each chunk's raw reply; DATA_LINEAGE is deterministic and
+    // appended to the module's facts on every run, hit or miss.
+    mockPrisma.docsGenFactCache.update.mockResolvedValue({});
+    mockPrisma.docsGenFactCache.findUnique.mockResolvedValue({
+      id: "row",
+      createdAt: new Date(),
+      model: "mock",
+      facts: "PURPOSE\nCached facts without lineage.",
     });
-    expect(anyFactsHaveLineage).toBe(true);
+    await synthesizeHolisticDocument("p1", "business-requirements", "BRD");
+    expect(capturedPrompts.filter((p) => p.phase === "phase1")).toHaveLength(0);
+    expect(phase2Text()).toContain("Cached facts without lineage.");
+    expect(phase2Text()).toContain("DATA_LINEAGE");
+    expect(phase2Text()).toContain("work.flagged");
   });
 
   it("feeds the cross-module flow + dataset lineage chain into the Phase-2 synthesis prompt", async () => {

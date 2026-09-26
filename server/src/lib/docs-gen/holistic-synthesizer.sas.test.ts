@@ -139,17 +139,18 @@ describe("holistic synthesizer — SAS module filter (loadModules)", () => {
     expect(result.markdown).toContain("SAS prose.");
   });
 
-  it("normal branch: a SAS directory with only 2 function symbols stays below the ≥3 threshold (empty doc)", async () => {
+  it("normal branch: a SAS directory with only 2 function symbols is still documented (nothing is dropped)", async () => {
     mockPrisma.codeSymbol.findMany.mockResolvedValue([
       sasFn("s1", "macroClean"),
       sasFn("s2", "dataLoad"),
     ] as never);
 
     const result = await synthesizeHolisticDocument("p1", "architecture", "Arch");
-    // Below threshold → no module qualifies → empty doc, but symbols existed so
-    // the silent-failure guard must surface a degraded warning.
-    expect(result.markdown).toContain("No documentable modules");
-    expect(result.warnings.length).toBeGreaterThan(0);
+    // Below the ≥3 threshold the directory is not a module by the directory
+    // rules, but its files are gathered into a per-directory module rather
+    // than left unread.
+    expect(result.markdown).not.toContain("No documentable modules");
+    expect(result.markdown).toContain("SAS prose.");
   });
 
   it("mega-module branch: a >200-symbol graph with a SAS file holding ≥3 function symbols qualifies that file", async () => {
@@ -178,7 +179,7 @@ describe("holistic synthesizer — SAS module filter (loadModules)", () => {
     expect(result.markdown).toContain("SAS prose.");
   });
 
-  it("mega-module branch: a noise dir with no class and a SAS file with only 2 SAS functions yields an empty doc", async () => {
+  it("mega-module branch: a class-less file of a split directory and a 2-function SAS file are still documented", async () => {
     const noise = Array.from({ length: 250 }, (_, i) => ({
       id: `n${i}`,
       codeGraphId: "graph-a",
@@ -196,13 +197,14 @@ describe("holistic synthesizer — SAS module filter (loadModules)", () => {
     ] as never);
 
     const result = await synthesizeHolisticDocument("p1", "architecture", "Arch");
-    expect(result.markdown).toContain("No documentable modules");
-    // Symbols existed → degraded, not silent ready.
-    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.markdown).not.toContain("No documentable modules");
   });
 
   it("emits a degraded-output warning when modules are empty BUT raw symbols existed", async () => {
-    mockPrisma.codeSymbol.findMany.mockResolvedValue([sasFn("s1", "onlyOne")] as never);
+    // Only a symbol under an excluded (test) directory: indexed, never documented.
+    mockPrisma.codeSymbol.findMany.mockResolvedValue([
+      sasFn("s1", "onlyOne", "sas/tests/unit/fixture.sas"),
+    ] as never);
 
     const result = await synthesizeHolisticDocument("p1", "architecture", "Arch");
     expect(result.markdown).toContain("No documentable modules");
