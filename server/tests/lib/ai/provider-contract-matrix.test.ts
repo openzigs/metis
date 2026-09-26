@@ -224,6 +224,66 @@ describe("anthropic routing (#134)", () => {
   });
 });
 
+/**
+ * #198 — contract scenario: a two-turn tool loop with `reasoningEffort` set, on
+ * both Anthropic endpoints built through the real factory. The turn that
+ * issued `tool_use` goes back with its thinking blocks verbatim and in order,
+ * and the tool results answer it by id.
+ */
+describe("anthropic two-turn tool loop with reasoningEffort (#198)", () => {
+  const THINK = { type: "thinking", thinking: "", signature: "sig" };
+  const USE = { type: "tool_use", id: "toolu_1", name: "search_code", input: { q: "x" } };
+  const reply = (content: unknown[], stop: string) => ({
+    content,
+    model: "claude-sonnet-5",
+    stop_reason: stop,
+    usage: { input_tokens: 3, output_tokens: 2 },
+  });
+
+  it.each([
+    ["native endpoint", () => ANTHROPIC_ENV, "adaptive"],
+    ["DeepSeek endpoint", () => DEEPSEEK_ENV, "enabled"],
+  ])("%s", async (_l, env, thinking) => {
+    createSpy.mockReset();
+    createSpy
+      .mockResolvedValueOnce(reply([THINK, USE], "tool_use"))
+      .mockResolvedValueOnce(reply([{ type: "text", text: "done" }], "end_turn"));
+    const p = build(env());
+    const tools = [
+      { name: "search_code", description: "s", parameters: { type: "object", properties: {} } },
+    ];
+    const first = await p.chat([{ role: "user", content: "go" }], {
+      tools,
+      reasoningEffort: "high",
+    });
+    expect(first.nativeContent).toEqual({ provider: "anthropic", blocks: [THINK, USE] });
+    const second = await p.chat(
+      [
+        { role: "user", content: "go" },
+        {
+          role: "assistant",
+          content: first.content,
+          toolCalls: first.toolCalls,
+          nativeContent: first.nativeContent,
+        },
+        { role: "tool", toolCallId: "toolu_1", name: "search_code", content: "hit" },
+      ],
+      { tools, reasoningEffort: "high" },
+    );
+    expect(second.content).toBe("done");
+    const params = createSpy.mock.calls[1]![0] as {
+      thinking: unknown;
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    expect(params.thinking).toEqual({ type: thinking });
+    expect(params.messages[1]).toEqual({ role: "assistant", content: [THINK, USE] });
+    expect(params.messages[2]).toEqual({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "hit" }],
+    });
+  });
+});
+
 // ── Offline stub ──────────────────────────────────────────────────────────
 
 runProviderContract("offline-stub (scripted)", offlineStubHarness);

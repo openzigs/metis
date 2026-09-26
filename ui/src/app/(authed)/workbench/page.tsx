@@ -35,6 +35,8 @@ import { LoadedSkillsPanel } from "@/components/chat/loaded-skills-panel";
 import { AgentPicker } from "@/components/chat/agent-picker";
 import { SlashCommandPopover } from "@/components/chat/slash-command-popover";
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
+import { ToolActivityList } from "@/components/chat/tool-activity";
+import { useToolApprovals } from "@/hooks/use-tool-approvals";
 import { consumeRunPayload } from "@/lib/templates";
 import { phase12QueryKeys } from "@/lib/phase12-query-keys";
 
@@ -53,6 +55,12 @@ export default function WorkbenchPage() {
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // #142/#143 — a project-scoped Workbench session is offered the same tools
+  // as Chat, so it must show their calls and answer their approval prompts
+  // exactly as Chat does (same hook, same component). Without this a prompt
+  // raised here waited out its timeout and the call was refused.
+  const toolApprovals = useToolApprovals(session?.id ?? null, setError);
+  const resetToolActivity = toolApprovals.reset;
 
   // Persist layout whenever it changes.
   useEffect(() => {
@@ -110,6 +118,7 @@ export default function WorkbenchPage() {
     abortRef.current?.abort();
     setSession(null);
     setMessages([]);
+    resetToolActivity();
     void (async () => {
       try {
         const s = await createSession({
@@ -134,7 +143,7 @@ export default function WorkbenchPage() {
       cancelled = true;
       abortRef.current?.abort();
     };
-  }, [activeProjectId, layout.agentKey]);
+  }, [activeProjectId, layout.agentKey, resetToolActivity]);
 
   const contextDocs = useMemo<DocumentRow[]>(() => {
     const all = documents.data?.items ?? [];
@@ -172,6 +181,7 @@ export default function WorkbenchPage() {
       content: "",
     };
     setMessages([...messages, userMsg, assistantMsg]);
+    resetToolActivity();
     setInput("");
     setStreaming(true);
     setError(null);
@@ -195,13 +205,12 @@ export default function WorkbenchPage() {
       setMessages((prev) =>
         prev.map((m) => (m.id === assistantMsgId ? { ...m, content: m.content + ev.content } : m)),
       );
-    } else if (ev.type === "tool_call") {
-      if (ev.risk !== "low") {
-        const ok = window.confirm(
-          `Allow ${ev.risk}-risk tool "${ev.name}"?\n\nArgs: ${JSON.stringify(ev.arguments)}`,
-        );
-        if (!ok) abortRef.current?.abort();
-      }
+    } else if (ev.type === "tool_event") {
+      // #142 — the server's approval gate decides every call; the owner answers
+      // its `awaiting_approval` prompt in the list below. (The `tool_call`
+      // frame arrives only AFTER a call was decided, so the confirm() that used
+      // to hang off it decided nothing — it is gone.)
+      toolApprovals.apply(ev);
     } else if (ev.type === "error") {
       setMessages((prev) =>
         prev.map((m) =>
@@ -420,6 +429,15 @@ export default function WorkbenchPage() {
               </ul>
             )}
           </div>
+          {toolApprovals.items.length > 0 ? (
+            <div className="mt-2 max-h-48 overflow-y-auto">
+              <ToolActivityList
+                items={toolApprovals.items}
+                deciding={toolApprovals.deciding}
+                onDecide={(item, decision) => void toolApprovals.decide(item, decision)}
+              />
+            </div>
+          ) : null}
           <form
             className="relative mt-2 flex gap-2"
             onSubmit={(e) => {

@@ -4,6 +4,7 @@
  */
 import type { AGENT_RESULT_STATUSES, ANALYSIS_AGENT_KEYS } from "./constants.js";
 import type { AnalysisCapability, AnalysisSkippedRepo } from "./analysis.js";
+import type { AiToolEvent } from "./conversation.js";
 
 export interface ProjectRoomEvent {
   projectId: string;
@@ -309,6 +310,9 @@ export interface ServerToClientEvents {
     timeoutMs: number;
     ts: number;
   }) => void;
+  // Epic #128 / #143 — chat tool-call lifecycle, into the `session:{id}` room
+  // (joined only by the session's owner). `awaiting_approval` is the prompt.
+  "ai:tool:event": (data: AiToolEvent) => void;
   "mcp:approval:decided": (data: {
     approvalId: string;
     sessionId: string;

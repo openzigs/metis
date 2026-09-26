@@ -12,6 +12,9 @@ import { makeWrapper } from "./test-utils";
 import WorkbenchPage from "@/app/(authed)/workbench/page";
 import * as aiClient from "@/lib/ai-client";
 
+// #142 — the page joins its session's socket room; no real socket in unit tests.
+vi.mock("@/lib/socket-client", () => ({ useSocket: () => null }));
+
 vi.mock("@/lib/ai-client", async () => {
   const actual = await vi.importActual<typeof import("@/lib/ai-client")>("@/lib/ai-client");
   return {

@@ -145,6 +145,10 @@ describe("streamAIReply", () => {
     expect(capturedOpts?.promptCaching).toEqual({ system: true });
     // `messages` caching is intentionally NOT requested (unique final turn).
     expect((capturedOpts?.promptCaching as { messages?: boolean }).messages).toBeUndefined();
+    // #142 — a discussion reply offers no tools, and withholds the Copilot
+    // SDK's built-ins (they would run with no approval gate behind them).
+    expect(capturedOpts?.disableTools).toBe(true);
+    expect(capturedOpts?.tools).toBeUndefined();
   });
 
   it("records exactly one AITokenUsage row for the AI reply (session-linked)", async () => {

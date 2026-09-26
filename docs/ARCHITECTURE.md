@@ -654,17 +654,36 @@ Token counts per category use a character-based estimator (1 token ≈ 4 chars).
                                     └─────────────┘  └──────────┘
 ```
 
-### 6.4 Tool registry + approval gate
+### 6.4 Tool runtime + enforced approval gate (epic #128)
 
-`ToolRegistry` registers tools with explicit `risk: 'low' | 'medium' | 'high'`, a zod argument schema, and an `exec` function. `invoke` validates args (throws `AIToolInvalidArgsError`) and consults the per-session `ApprovalGate` before running:
+`ToolRegistry` registers tools with explicit `risk: 'low' | 'medium' | 'high'`, a zod argument schema, and an `exec` function. `invoke` validates args (throws `AIToolInvalidArgsError`) and consults an `ApprovalGate`; since #142 the gate argument is **required** (it used to default to allow-all, so a caller that forgot it ran any tool unprompted).
+
+**One runtime (`server/src/lib/ai/tool-runtime/`).** Until #128 the approval gate was never instantiated and the registry was only *listed*. Chat (`/api/ai/chat`, `/api/ai/stream`) now offers a project-scoped session its tools and runs them server-side:
+
+| Piece | File | Role |
+| --- | --- | --- |
+| Toolset | `toolset.ts` | METIS registry tools (JSON Schema derived from zod by `json-schema.ts`, or an MCP server's own `inputSchema`), MCP tools **only from servers the project may use** (`MCPRegistryService.listForProject`) and admitted by each server's governance allowlist, and — with `CHAT_CODE_SEARCH_TOOLS` — the code-search tools. `search-knowledge-global` is never offered (it crosses projects). Canonical names such as `mcp:github:list_issues` are mapped to provider-safe wire names (`^[a-zA-Z0-9_-]{1,64}$`) and back. |
+| Session tools | `session-tools.ts` | Mode per turn: **native** when the model catalog marks the model tool-capable, **text** (the #713 code tools on the textual protocol, byte-identical prompt) otherwise, **off** for an unscoped session (#1368) or `CHAT_TOOLS=false`. Loads the agent's `tools:` allowlist (an agent that can no longer be read gets **no** tools). |
+| Loop | `chat-turn.ts` → `analysis/agent-loop.ts` | The shared agent loop, in native mode: tool definitions on `ChatOptions.tools`, calls from `ChatResponse.toolCalls`, results as `tool` messages answering each call id (calls over the per-reply cap are answered with an error, never left open). Results are capped in the model's copy (#138), fenced as untrusted data (`fence.ts`), and recorded in full. `/stream` streams each native turn's text as it arrives through `collectGuardedStream` (`stream-collect.ts`), one idle guard and one local slot per model call; `/chat` returns the same joined text (`replyText`), not only the last turn's. |
+| Executor | `executor.ts` | Per call: `started` → validate args (before anyone is asked) → **gate** → execute → `result` / `error`. A refused call never reaches `execute`. Every call is audited (`ai.tool.call`: actor, session, tool, args hash, outcome, decision). |
+| Gate | `lib/ai/approval-policy.ts` | `ApprovalGateService.evaluate`: bound to ONE session and user (any other identity is refused); agent allowlist first (refuses even under `auto`); then the risk policy; `forcePrompt` (MCP `requireApproval`, re-read at call time so a mid-turn change applies to the next call; unreadable governance forces the prompt) always asks; `prompt-once` is remembered per **session** from `AIToolApproval` rows a person approved in answer to a `prompt-once` prompt (`reason = prompt-once` — an `always-prompt` or forced approval admits one call only). One `AIToolApproval` row per decision, and an allow whose row cannot be written is refused (`error`, `audit_write_failed`). |
+| Broker + prompter | `approval-broker.ts`, `prompter.ts` | A prompt registers a pending approval under an unguessable `apr_<uuid>` bound to session, owner, project and args hash, emits `awaiting_approval`, and waits. Only `POST /api/ai/sessions/:id/approvals/:approvalId` (owner + project access via `loadAuthorizedSession`) can answer it; the entry is removed as it resolves, so a replay, another user/session/project, a forged id and a late answer all get the same 404. Unanswered after `AI_TOOL_APPROVAL_TIMEOUT_MS` (default 120 s) ⇒ `expired` = denied; an aborted turn denies. In-process, like the MCP approvals — multi-replica chat needs sticky sessions. |
 
 | Risk | Default policy | Behaviour |
 | --- | --- | --- |
 | `low` | `auto` | runs without prompting, audit row written |
-| `medium` | `prompt-once` | prompts on first call per (sessionId, toolName), then auto-approves identical args |
-| `high` | `always-prompt` | prompts on every invocation regardless of arg fingerprint |
+| `medium` | `prompt-once` | prompts on the first call per (session, tool, risk), then auto-approves |
+| `high` | `always-prompt` | prompts on every invocation |
 
-Each policy supports `auto | prompt-once | always-prompt | deny`. Decisions are persisted to `AIToolApproval` with `approve | deny | auto-approve | expired | error` and a sorted-key SHA-256 arg hash, giving full traceability without leaking inputs. The policy is a JSON column on `AISession` (`PATCH /api/ai/sessions/:id` to update).
+Each policy supports `auto | prompt-once | always-prompt | deny`. Decisions are persisted to `AIToolApproval` with `approve | deny | auto-approve | expired | error` and a sorted-key SHA-256 arg hash. The transcript's `tool_result` part carries the call's `decision`, `errorCode` and `executed: false` for a refused call, so a denial is on record, never a silent gap.
+
+**Events (#143).** Each step is a `tool_event` SSE frame and an `ai:tool:event` in the session's socket room (joined only by the session's owner — `subscribe:session` now authorises like every session read). Errors use a fixed vocabulary (`TOOL_DENIED`, `TOOL_APPROVAL_EXPIRED`, `TOOL_NOT_ALLOWED`, `TOOL_UNKNOWN`, `TOOL_INVALID_ARGS`, `TOOL_FAILED`); a tool's exception text stays in the server log and never reaches the stream or the transcript. The stream's hard ceiling is paused while a person decides. **Every page that sends a turn on a session answers its prompts**: the `/chat` page and the Workbench share `useToolApprovals` (`ui/src/hooks/use-tool-approvals.ts` — the turn's `tool_event` frames plus the session room, and `decideToolApproval`) and render `ToolActivityList` (`ui/src/components/chat/tool-activity.tsx`) with Approve / Deny. No other surface drives a tool-bearing turn: discussion replies, custom-agent playground runs and the async `chat` run kind offer no tools.
+
+**Copilot SDK built-ins.** The Copilot SDK carries its own tools (shell, file write, URL fetch, …) that would run under the provider's `onPermissionRequest`, never this gate. Every chat call asks for them withheld with `withholdSdkBuiltinTools` (set by `buildSdkSkillRuntime`), a flag only the Copilot provider reads: it maps to `availableTools: []`, and its permission handler refuses every request (`rejectSdkPermission`). It is deliberately **not** `disableTools`, which means "send no tools" on every provider — the Anthropic and OpenAI-compatible clients drop `tools` from the request when it is set, so using it here would strip METIS's own tools from every chat. `disableTools` stays on the pure-text callers that offer no tools (discussion replies, custom-agent playground runs, analysis/docs-gen synthesis), and on Copilot it withholds the built-ins too. The SDK hands the handler the full request (a shell request's `fullCommandText`, a write's `fileName` and `diff`), so routing it through the gate would be possible; refusing everything is the least-risk interim because the Copilot provider is removed in P4 (#130). Non-chat text-synthesis callers that set neither flag keep the earlier behaviour until then. The Copilot provider declares `nativeToolCalls: false` — it never reads `ChatOptions.tools` — so a Copilot chat gets the code tools on the text protocol (with `CHAT_CODE_SEARCH_TOOLS`) rather than native tools it would silently drop.
+
+**Local provider.** The loop asks for approval and runs tools only between provider calls, so the per-base-URL concurrency slot (#127) is never held across a human decision or a tool run. That depends on every reader that stops at `done` returning the provider stream: `withIdleTimeout` (`stream-idle.ts`) passes an early stop (`break`, `collectStream`, a throw in the consumer) on to the source, whose `finally` releases the slot — without it the next local call on that base URL waited forever.
+
+**Spans (#144).** Every direct-provider `chat`/`stream` (OpenAI-compatible and Anthropic clients) is one `chat {model}` CLIENT span with `gen_ai.provider.name`, request/response model, input/output and cache read/write tokens, finish reason, latency, and — on streams — `gen_ai.response.time_to_first_chunk` measured from the local slot's acquisition, with the queue wait recorded separately. A chat tool turn is an `invoke_agent chat` span; its model and `execute_tool` spans nest under it. Prompt and completion text are recorded only with `OTEL_GENAI_CAPTURE_CONTENT=true`.
 
 ### 6.5 Embeddings (R-Embed-1)
 
@@ -687,10 +706,12 @@ Each policy supports `auto | prompt-once | always-prompt | deny`. Decisions are 
 | `PATCH` | `/sessions/:id` | Update title / policy |
 | `GET` | `/sessions/:id/usage` | In-memory + today's persisted token totals |
 | `GET` | `/sessions/:id/approvals` | Recent approval audit rows |
+| `GET` | `/sessions/:id/approvals/pending` | The owner's pending tool approvals (#142) |
+| `POST` | `/sessions/:id/approvals/:approvalId` | Approve or deny a pending tool call — owner only, single use (#142) |
 | `GET` | `/usage/today` | Per-user daily rollup |
 | `GET` | `/tools` | List registered tools with risk |
 | `POST` | `/chat` | Non-stream completion (rate-limited) |
-| `POST` | `/stream` | SSE stream: `delta` / `tool_call` / `usage` / `done` / `error` (rate-limited) |
+| `POST` | `/stream` | SSE stream: `delta` / `tool_call` / `tool_event` (#143) / `usage` / `done` / `error` (rate-limited) |
 
 The SSE endpoint sets `Content-Type: text/event-stream`, `Cache-Control: no-cache, no-transform`, `Connection: keep-alive`, `X-Accel-Buffering: no`, and binds an `AbortController` to `req.aborted` + `res.close` so a client disconnect cancels the upstream provider call within one chunk.
 
@@ -777,6 +798,8 @@ Every field is overrideable via `ANALYSIS_PERSONA_<AGENT>_NAME|ROLE|AVATAR|DESCR
 ### 7.3 Agentic Tool-Calling Loop (Epic #473)
 
 When a project has a **code graph** (from deep-ingest) and the document agent extracts **structured requirements**, the code agent automatically upgrades from single-shot to **agentic mode** — a multi-turn loop where the LLM can call tools to investigate the codebase.
+
+**Native tool calls (#141).** With `ANALYSIS_NATIVE_TOOL_CALLS=true` and a model the catalog marks tool-capable, the loop offers its tools as native definitions and reads calls from the provider's tool channel (several per reply, run in order); the text-protocol manifest is not rendered and `parseToolCall` is not used. The default stays the text protocol until the analysis quality harness has been re-run against a live model. Chat always uses native calls on a tool-capable model (§6.4).
 
 **Architecture:**
 
@@ -1045,6 +1068,7 @@ The `ServerToClientEvents` contract (`packages/shared/src/socket.ts`) is the sin
 | `document:status` | `lib/rag/socket-emitter.ts` (room `project:{id}`) | `…/documents/page.tsx` | live |
 | `auth:ok` / `heartbeat` | `lib/socket/server.ts` | socket-client plumbing | allow-listed (protocol/handshake) |
 | `mcp:status` / `mcp:approval:requested` / `mcp:approval:decided` | `lib/mcp/index.ts` | — | allow-listed (admin/protocol, no UI by design) |
+| `ai:tool:event` | `routes/ai.ts` (room `session:{id}`, joined only by the session's owner — #142; payload `AiToolEvent`: phase `started` / `awaiting_approval` / `result` / `error`, bounded previews, fixed-vocabulary error codes) | `hooks/use-session-tool-events.ts` via `hooks/use-tool-approvals.ts` (chat and Workbench pages: live tool activity + Approve / Deny) | live (#143) |
 | `usage:tick` / `bg-run:status` / `bg-run:step` | `server.ts` | — | allow-listed, **deferred to Epic #406** (progress UI) |
 | `connector:status` | `lib/connectors/socket-emitter.ts` | — | allow-listed, **deferred to Epic #406** |
 | `presence:error` | `lib/collaboration/presence.ts` | — | allow-listed, **deferred to Epic #406** |

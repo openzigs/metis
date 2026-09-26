@@ -11,6 +11,8 @@ import {
 } from "../src/lib/mcp/tool-bridge.js";
 import { getToolRegistry, __resetToolRegistrySingleton } from "../src/lib/ai/tool-registry.js";
 const resetToolRegistry = __resetToolRegistrySingleton;
+/** #142 — `invoke` requires a gate; these tests exercise the bridge, not the gate. */
+const allowGate = { decide: async () => true };
 import type { MCPServerConfig, MCPTransportClient } from "../src/lib/mcp/types.js";
 
 // #876 — `tool-bridge.ts` touches `lastUsedAt` for the idle reaper with a fire-and-forget
@@ -159,6 +161,7 @@ describe("MCPToolBridge invocation", () => {
       "mcp:cool-server:read_file",
       {},
       { sessionId: "s", userId: "u", projectId: "proj1" },
+      allowGate,
     );
     expect(denied.isError).toBe(true);
     expect(denied.text).toMatch(/allow-list/);
@@ -168,10 +171,16 @@ describe("MCPToolBridge invocation", () => {
       "mcp:cool-server:read_file",
       {},
       { sessionId: "s", userId: "u", projectId: "proj1" },
+      allowGate,
     );
     expect(result.isError).toBe(false);
     // Allowed: no project (admin session)
-    const r2 = await tools.invoke("mcp:cool-server:read_file", {}, { sessionId: "s", userId: "u" });
+    const r2 = await tools.invoke(
+      "mcp:cool-server:read_file",
+      {},
+      { sessionId: "s", userId: "u" },
+      allowGate,
+    );
     expect(r2.isError).toBe(false);
     bridge.shutdown();
   });
@@ -217,6 +226,7 @@ describe("MCPToolBridge cross-project isolation (SEC-6)", () => {
       "mcp:cool-server:read_file",
       {},
       { sessionId: "s", userId: "u", projectId: "proj-b" },
+      allowGate,
     );
     expect(denied.isError).toBe(true);
     expect(denied.text).toMatch(/cross-project/);
@@ -244,6 +254,7 @@ describe("MCPToolBridge cross-project isolation (SEC-6)", () => {
       "mcp:cool-server:read_file",
       {},
       { sessionId: "s", userId: "u", projectId: "proj-a" },
+      allowGate,
     );
     expect(ok.isError).toBe(false);
     bridge.shutdown();
@@ -275,6 +286,7 @@ describe("MCPToolBridge audit completeness (SEC-8 / R-E5)", () => {
       "mcp:cool-server:read_file",
       { path: "/tmp/x" },
       { sessionId: "s", userId: "u" },
+      allowGate,
     );
     const evt = auditEvents.find((e) => e.action === "mcp.tool.invoke");
     expect(evt).toBeTruthy();
@@ -306,6 +318,7 @@ describe("MCPToolBridge audit completeness (SEC-8 / R-E5)", () => {
       "mcp:cool-server:read_file",
       {},
       { sessionId: "s", userId: "u", projectId: "proj-x" },
+      allowGate,
     );
     const evt = auditEvents.find((e) => e.metadata?.decision === "denied");
     expect(evt).toBeTruthy();

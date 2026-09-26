@@ -25,6 +25,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { transformJSONSchema } from "@anthropic-ai/sdk/lib/transform-json-schema";
 import { createChildLogger } from "../../logger.js";
+import { lastUserText, traceModelChat, traceModelStream } from "../../otel/genai-spans.js";
 import { AIProviderError } from "../errors.js";
 import { isDeepSeekEndpoint } from "./anthropic-endpoint.js";
 
@@ -51,6 +52,7 @@ import {
   type ChatResponse,
   type ChatToolCall,
   type EmbedResult,
+  type NativeAssistantContent,
   type ProviderKey,
   type TokenUsage,
 } from "../types.js";
@@ -217,6 +219,8 @@ export class AnthropicProvider implements AIProvider {
   private readonly streamMaxTokens: number;
   /** #25 — `baseUrl` is DeepSeek's Anthropic-compatible endpoint. */
   private readonly deepSeekEndpoint: boolean;
+  /** #198 — warn once per instance when a forced tool choice is downgraded. */
+  private forcedChoiceWarned = false;
 
   constructor(opts: AnthropicProviderOptions) {
     // Normalize the configured default so the bare id is reported consistently
@@ -271,7 +275,47 @@ export class AnthropicProvider implements AIProvider {
     return undefined;
   }
 
-  async chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResponse> {
+  /**
+   * #144 — every model call is one OpenTelemetry GenAI span (provider, model,
+   * usage, cache hits, latency; no prompt or completion content unless
+   * `OTEL_GENAI_CAPTURE_CONTENT=true`). The untraced call is unchanged.
+   */
+  chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResponse> {
+    return traceModelChat(
+      {
+        provider: this.key,
+        model: opts.model ?? this.model,
+        callType: opts.callType,
+        prompt: () => lastUserText(messages),
+      },
+      () => this.chatUntraced(messages, opts),
+    );
+  }
+
+  /** #144 — see {@link chat}; also records time-to-first-chunk and queue wait. */
+  stream(messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<ChatChunk> {
+    return traceModelStream(
+      {
+        provider: this.key,
+        model: opts.model ?? this.model,
+        callType: opts.callType,
+        prompt: () => lastUserText(messages),
+      },
+      ({ onSlotAcquired }) =>
+        this.streamUntraced(messages, {
+          ...opts,
+          onSlotAcquired: () => {
+            onSlotAcquired();
+            opts.onSlotAcquired?.();
+          },
+        }),
+    );
+  }
+
+  private async chatUntraced(
+    messages: ChatMessage[],
+    opts: ChatOptions = {},
+  ): Promise<ChatResponse> {
     if (opts.signal?.aborted) throw makeAbortError();
     // Normalize at the provider boundary: callers (and `model-router`) may pass
     // a Bedrock-style id (`us.anthropic.…-v1:0`) which the direct Messages API
@@ -311,6 +355,7 @@ export class AnthropicProvider implements AIProvider {
 
     const usage = mapUsage(message.usage);
     const toolCalls = extractToolCalls(message.content);
+    const nativeContent = extractNativeContent(message.content);
     logCacheUsage("chat", usage);
     logOutputBudget("chat", params.max_tokens, usage, message.stop_reason);
     return {
@@ -325,6 +370,7 @@ export class AnthropicProvider implements AIProvider {
       // where the OpenAI-compatible wire format says `length`.
       ...(message.stop_reason ? { finishReason: message.stop_reason } : {}),
       ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      ...(nativeContent ? { nativeContent } : {}),
     };
   }
 
@@ -357,7 +403,10 @@ export class AnthropicProvider implements AIProvider {
     }
   }
 
-  async *stream(messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<ChatChunk> {
+  private async *streamUntraced(
+    messages: ChatMessage[],
+    opts: ChatOptions = {},
+  ): AsyncGenerator<ChatChunk> {
     if (opts.signal?.aborted) throw makeAbortError();
     // Normalize at the provider boundary (see chat()): the direct Messages API
     // streaming endpoint also rejects Bedrock-style ids.
@@ -443,8 +492,14 @@ export class AnthropicProvider implements AIProvider {
       logOutputBudget("stream", params.max_tokens, usage, final.stop_reason);
       yield { type: "usage", usage };
       // #1226 — forward the stop reason so callers can tell a cap-truncated
-      // answer (`"max_tokens"`) from a cleanly-completed one.
-      yield { type: "done", ...(final.stop_reason ? { finishReason: final.stop_reason } : {}) };
+      // answer (`"max_tokens"`) from a cleanly-completed one. #198 — and the
+      // turn's reasoning blocks, when a tool loop must replay them.
+      const nativeContent = extractNativeContent(final.content);
+      yield {
+        type: "done",
+        ...(final.stop_reason ? { finishReason: final.stop_reason } : {}),
+        ...(nativeContent ? { nativeContent } : {}),
+      };
     } catch (err) {
       throw this.mapError(err, "stream");
     } finally {
@@ -534,6 +589,17 @@ export class AnthropicProvider implements AIProvider {
       // Consecutive results are merged into ONE user turn, which is what the
       // API expects after a turn with several parallel calls.
       if (msg.role === "assistant" && msg.toolCalls && msg.toolCalls.length > 0) {
+        // #198 — with extended thinking the API requires this turn's
+        // `thinking` / `redacted_thinking` blocks back, complete, unmodified
+        // and in the order generated (interleaved with the `tool_use` blocks
+        // they preceded), so a turn this adapter produced is replayed verbatim.
+        if (msg.nativeContent?.provider === "anthropic" && msg.nativeContent.blocks.length > 0) {
+          apiMessages.push({
+            role: "assistant",
+            content: msg.nativeContent.blocks as AnthropicBlock[],
+          });
+          continue;
+        }
         const text = messageText(msg);
         apiMessages.push({
           role: "assistant",
@@ -602,7 +668,7 @@ export class AnthropicProvider implements AIProvider {
         tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: cacheControl };
       }
       body.tools = tools;
-      const choice = toolChoiceParam(opts.toolChoice);
+      const choice = toolChoiceParam(this.effectiveToolChoice(opts));
       if (choice) body.tool_choice = choice;
     }
 
@@ -637,6 +703,31 @@ export class AnthropicProvider implements AIProvider {
       body.output_config = { ...((body.output_config as object | undefined) ?? {}), format };
     }
     return body;
+  }
+
+  /**
+   * #198 — the tool choice actually sent. Forcing a tool (`required` → `any`,
+   * `{ name }` → `tool`) is rejected by the API while thinking is on in manual
+   * mode (DeepSeek's `enabled`) and on several adaptive-thinking models, whereas
+   * `auto` is accepted everywhere. The explicit policy: when the caller asks for
+   * reasoning AND a forced choice, the REASONING is kept and the choice is
+   * downgraded to `auto`, with a one-time warning — the caller's tool loop
+   * already handles a turn that calls no tool. `disableThinking` removes the
+   * conflict, so the forced choice is then sent unchanged.
+   */
+  private effectiveToolChoice(opts: ChatOptions): ChatOptions["toolChoice"] {
+    const choice = opts.toolChoice;
+    const forced = choice === "required" || (typeof choice === "object" && choice !== null);
+    const thinkingOn = !opts.disableThinking && !!opts.reasoningEffort;
+    if (!forced || !thinkingOn) return choice;
+    if (!this.forcedChoiceWarned) {
+      this.forcedChoiceWarned = true;
+      log.warn(
+        "Forced tool choice is incompatible with thinking; sending tool_choice auto and keeping the reasoning effort",
+        { requested: typeof choice === "object" ? "tool" : choice },
+      );
+    }
+    return "auto";
   }
 
   /**
@@ -692,6 +783,22 @@ function extractToolCalls(content: AnthropicMessage["content"]): ChatToolCall[] 
   return content
     .filter((b) => b.type === "tool_use" && typeof b.name === "string")
     .map((b, i) => ({ id: b.id ?? `toolu_${i}`, name: b.name as string, args: b.input ?? {} }));
+}
+
+/**
+ * #198 — the turn's own content blocks, verbatim and in order, when they include
+ * reasoning (`thinking` / `redacted_thinking`) AND a `tool_use`: exactly the
+ * turns a tool loop must replay unmodified. `undefined` otherwise, so a turn
+ * without thinking replays through the ordinary text + `tool_use` path.
+ */
+function extractNativeContent(
+  content: AnthropicMessage["content"],
+): NativeAssistantContent | undefined {
+  if (!content || content.length === 0) return undefined;
+  const reasoning = content.some((b) => b.type === "thinking" || b.type === "redacted_thinking");
+  const toolUse = content.some((b) => b.type === "tool_use");
+  if (!reasoning || !toolUse) return undefined;
+  return { provider: "anthropic", blocks: content.map((b) => ({ ...b })) };
 }
 
 /** #133 — {@link ChatOptions.toolChoice} → Messages API `tool_choice`. */

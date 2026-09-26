@@ -156,6 +156,10 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
       // inert on the Copilot SDK/gateway path (transparent gateway caching).
       callType: "discussion",
       promptCaching: { system: true },
+      // #142 — a discussion reply is pure text: no tool is offered, and on the
+      // Copilot SDK its built-in shell/write tools are withheld (they would
+      // run with no approval gate behind them).
+      disableTools: true,
       ...(signal ? { signal } : {}),
     })) {
       if (chunk.type === "delta") {

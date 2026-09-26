@@ -30,6 +30,7 @@
  */
 import { Agent, type Dispatcher } from "undici";
 import { createChildLogger } from "../../logger.js";
+import { lastUserText, traceModelChat, traceModelStream } from "../../otel/genai-spans.js";
 import { recordCacheHit } from "../cache-hit-telemetry.js";
 import { ToolTagStreamParser } from "./tool-tag-parser.js";
 import {
@@ -1354,7 +1355,47 @@ export class OpenAICompatibleProvider implements AIProvider {
     return new FirstTokenTimeoutError(ms, prompt.chars, prompt.messageCount, message);
   }
 
-  async chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResponse> {
+  /**
+   * #144 — every model call is one OpenTelemetry GenAI span (provider, model,
+   * usage, cache hits, latency; no prompt or completion content unless
+   * `OTEL_GENAI_CAPTURE_CONTENT=true`). The untraced call is unchanged.
+   */
+  chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResponse> {
+    return traceModelChat(
+      {
+        provider: this.key,
+        model: opts.model ?? this.model,
+        callType: opts.callType,
+        prompt: () => lastUserText(messages),
+      },
+      () => this.chatUntraced(messages, opts),
+    );
+  }
+
+  /** #144 — see {@link chat}; also records time-to-first-chunk and queue wait. */
+  stream(messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<ChatChunk> {
+    return traceModelStream(
+      {
+        provider: this.key,
+        model: opts.model ?? this.model,
+        callType: opts.callType,
+        prompt: () => lastUserText(messages),
+      },
+      ({ onSlotAcquired }) =>
+        this.streamUntraced(messages, {
+          ...opts,
+          onSlotAcquired: () => {
+            onSlotAcquired();
+            opts.onSlotAcquired?.();
+          },
+        }),
+    );
+  }
+
+  private async chatUntraced(
+    messages: ChatMessage[],
+    opts: ChatOptions = {},
+  ): Promise<ChatResponse> {
     const requestedModel = opts.model ?? this.defaultModel;
     const model = this.resolveModel(requestedModel);
     // #132 — tools, decided once per call; a runtime rejection drops them once.
@@ -1624,7 +1665,10 @@ export class OpenAICompatibleProvider implements AIProvider {
     };
   }
 
-  async *stream(messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<ChatChunk> {
+  private async *streamUntraced(
+    messages: ChatMessage[],
+    opts: ChatOptions = {},
+  ): AsyncGenerator<ChatChunk> {
     const requestedModel = opts.model ?? this.defaultModel;
     const model = this.resolveModel(requestedModel);
     const url = this.chatUrl(model);

@@ -23,6 +23,8 @@ import {
 } from "../lib/mcp/mcp-importer.js";
 import { fetchRegistry } from "../lib/mcp/registry-client.js";
 import { decideApproval } from "../lib/mcp/approval.js";
+import { prisma } from "../lib/prisma.js";
+import { loadAuthorizedSession } from "../lib/ai/conversation/session-access.js";
 import {
   searchFederated,
   getEntryById,
@@ -710,6 +712,19 @@ export function mcpRouter(): Router {
     const decision = (req.body ?? {}).decision;
     if (decision !== "approved" && decision !== "denied") {
       throw new AppError(400, "VALIDATION_ERROR", "decision must be approved|denied");
+    }
+    // #142 — only the owner of the chat session the approval was raised in
+    // (who can still reach its project) may answer it, and only while it is
+    // pending. `mcp.write` alone let ANY writer approve another user's call.
+    const pendingRow = await prisma.mCPToolApproval.findFirst({
+      where: { id, status: "pending" },
+      select: { sessionId: true },
+    });
+    if (!pendingRow) throw new AppError(404, "NOT_FOUND", "No pending approval with that id");
+    try {
+      await loadAuthorizedSession(req.user, pendingRow.sessionId);
+    } catch {
+      throw new AppError(404, "NOT_FOUND", "No pending approval with that id");
     }
     const status = await decideApproval(id, decision, actor.id);
     audit({

@@ -15,6 +15,7 @@ import { prisma as defaultPrisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { bumpVersion, parseAgentSource, slugifyKey, type AgentFrontmatter } from "./frontmatter.js";
 import { getToolRegistry, type ToolRegistry } from "../ai/tool-registry.js";
+import { CHAT_CODE_TOOL_NAMES } from "../analysis/tools/chat-code-tool-names.js";
 
 export class AgentServiceError extends Error {
   constructor(
@@ -129,7 +130,9 @@ export class AgentService {
   private validateToolRefs(tools: readonly string[] | undefined): void {
     if (!tools || tools.length === 0) return;
     const registry = this.toolRegistry();
-    const known = new Set(registry.list().map((t) => t.name));
+    // #142 — the chat code-search tools are offered by the tool runtime, not
+    // the registry, but an agent's allowlist may still name them.
+    const known = new Set([...registry.list().map((t) => t.name), ...CHAT_CODE_TOOL_NAMES]);
     const knownPrefixes = new Set<string>();
     for (const name of known) {
       if (name.startsWith("mcp:")) {

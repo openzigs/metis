@@ -14,7 +14,19 @@ export type TranscriptPart =
   /** A tool the model called during the turn. */
   | { type: "tool_call"; id: string; name: string; args: unknown }
   /** What that tool returned. Stored in full; only the model's copy is capped. */
-  | { type: "tool_result"; toolCallId: string; name: string; text: string; isError?: boolean };
+  | {
+      type: "tool_result";
+      toolCallId: string;
+      name: string;
+      text: string;
+      isError?: boolean;
+      /** #142 — the approval gate's decision (`auto-approve`, `approve`, `deny`, `expired`, …). */
+      decision?: string;
+      /** #143 — fixed-vocabulary code when the call was refused or failed. */
+      errorCode?: string;
+      /** #142 — `false` when the call never ran; absent means it ran. */
+      executed?: boolean;
+    };
 
 export type TranscriptRole = "user" | "assistant" | "system";
 
@@ -123,4 +135,48 @@ export interface ForkSessionResponse {
   session: ResumeSessionResponse["session"];
   /** Rows copied into the new session (ordinals 1..fromOrdinal of the source). */
   copiedMessages: number;
+}
+
+/**
+ * Epic #128 / #143 — one step of one tool call in a chat turn, streamed as the
+ * SSE `tool_event` frame and emitted to the session's socket room as
+ * `ai:tool:event`. `awaiting_approval` carries the `approvalId` the session's
+ * owner approves or denies (`POST /api/ai/sessions/:id/approvals/:approvalId`).
+ * Error text is from a fixed vocabulary — never a raw exception message.
+ */
+export type AiToolEventPhase = "started" | "awaiting_approval" | "result" | "error";
+
+export interface AiToolEvent {
+  type: "tool_event";
+  phase: AiToolEventPhase;
+  sessionId: string;
+  callId: string;
+  name: string;
+  risk: "low" | "medium" | "high" | null;
+  source: "metis" | "mcp" | "code" | null;
+  argsPreview?: string;
+  argsHiddenChars?: boolean;
+  approvalId?: string;
+  expiresAt?: string;
+  resultPreview?: string;
+  isError?: boolean;
+  code?:
+    | "TOOL_DENIED"
+    | "TOOL_APPROVAL_EXPIRED"
+    | "TOOL_NOT_ALLOWED"
+    | "TOOL_UNKNOWN"
+    | "TOOL_INVALID_ARGS"
+    | "TOOL_FAILED"
+    | "TOOL_CALL_LIMIT";
+  message?: string;
+  ts: number;
+}
+
+/** #142 — `GET /api/ai/sessions/:id/approvals/pending`. */
+export interface PendingToolApprovalDto {
+  approvalId: string;
+  sessionId: string;
+  toolName: string;
+  callId: string | null;
+  expiresAt: string;
 }

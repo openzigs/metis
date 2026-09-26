@@ -114,6 +114,20 @@ export interface ChatToolCall {
   args: unknown;
 }
 
+/**
+ * #198 — a provider's OWN content blocks for one assistant turn, kept opaque and
+ * in their original order so a tool loop can replay the turn verbatim. The
+ * Anthropic Messages API requires the assistant turn that issued `tool_use` to be
+ * sent back with its `thinking` / `redacted_thinking` blocks (signature and all,
+ * unmodified, in the order generated) when extended thinking is on. Only the
+ * provider named here reads it; every other adapter ignores it, so a model switch
+ * mid-conversation never sends one provider's blocks to another.
+ */
+export interface NativeAssistantContent {
+  provider: "anthropic";
+  blocks: unknown[];
+}
+
 export interface ChatMessage {
   /**
    * `"tool"` is the tool-RESULT role (#131): a message carrying the output of a
@@ -135,6 +149,12 @@ export interface ChatMessage {
   toolCalls?: ChatToolCall[];
   /** #131 — on a `tool` message: the tool failed (Anthropic `is_error`). */
   isError?: boolean;
+  /**
+   * #198 — on an `assistant` message: the provider's own blocks for this turn
+   * (see {@link NativeAssistantContent}). Echo {@link ChatResponse.nativeContent}
+   * here when replaying a tool-calling turn.
+   */
+  nativeContent?: NativeAssistantContent;
 }
 
 export interface TokenUsage {
@@ -175,6 +195,12 @@ export interface ChatResponse {
    * order the model emitted them. Absent when the model called no tool.
    */
   toolCalls?: ChatToolCall[];
+  /**
+   * #198 — set only when the turn carried reasoning blocks that must be replayed
+   * with its tool calls (Anthropic extended thinking). Copy it onto the
+   * assistant {@link ChatMessage} of the next request.
+   */
+  nativeContent?: NativeAssistantContent;
 }
 
 export type ChatChunk =
@@ -200,7 +226,12 @@ export type ChatChunk =
    * at the output cap is indistinguishable from one that finished cleanly.
    * Optional: adapters that cannot surface it simply omit it.
    */
-  | { type: "done"; finishReason?: string };
+  | {
+      type: "done";
+      finishReason?: string;
+      /** #198 — the streaming counterpart of {@link ChatResponse.nativeContent}. */
+      nativeContent?: NativeAssistantContent;
+    };
 
 /**
  * OpenAI-compatible `response_format: { type: "json_schema", ... }` payload
@@ -289,8 +320,21 @@ export interface ChatOptions {
    * would otherwise be tempted to call file/search tools instead of
    * producing prose from the supplied context. Maps to the Copilot SDK
    * `availableTools: []` setting.
+   *
+   * Every provider reads this as "send NO tools" — the native-Anthropic and
+   * OpenAI-compatible providers drop `tools` from the request when it is set.
+   * Never set it on a call that carries METIS's own `tools`; to withhold only
+   * the Copilot SDK's built-ins, use {@link withholdSdkBuiltinTools}.
    */
   disableTools?: boolean;
+  /**
+   * #142 — withhold the GitHub Copilot SDK's OWN built-in tools (shell, file
+   * write, URL fetch, …) from the session and refuse every SDK permission
+   * request, WITHOUT touching the caller's `tools`. Read only by the Copilot
+   * provider; every other provider ignores it. Chat sessions set it on every
+   * call: the only tools a chat may run are METIS's, through its approval gate.
+   */
+  withholdSdkBuiltinTools?: boolean;
   /**
    * Hint to the provider to enable prompt caching for parts of the request.
    * Cache hits are reported via `usage.cacheReadTokens` (writes via
@@ -424,12 +468,30 @@ export const DEFAULT_APPROVAL_POLICY: Readonly<ApprovalPolicy> = Object.freeze({
 
 export type ApprovalDecision = "approve" | "auto-approve" | "deny" | "expired" | "error";
 
+/**
+ * #140 — where a registered tool comes from. MCP tools carry their server id so
+ * the tool runtime can offer only servers the session's project may use.
+ */
+export interface ToolOrigin {
+  kind: "mcp";
+  serverId: string;
+  serverLabel: string;
+}
+
 export interface ToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
   name: string;
   description: string;
   /** Zod schema describing the tool's argument shape. */
   schema: TSchema;
   risk: RiskLevel;
+  /** #140 — set by the MCP bridge; absent for METIS's own tools. */
+  origin?: ToolOrigin;
+  /**
+   * #140 — the JSON Schema a model is shown for the arguments, when the tool
+   * has a better one than its zod schema describes (an MCP tool's own
+   * `inputSchema`). The zod schema still validates every call.
+   */
+  parameters?: Record<string, unknown>;
   /**
    * Tool implementation. The signature is constrained to a `ToolContext` so
    * MCP/agent code can correlate audit entries back to the calling session.
@@ -442,6 +504,13 @@ export interface ToolContext {
   userId: string;
   /** Optional project scope for project-aware tools. */
   projectId?: string;
+  /**
+   * #142 — set ONLY by the tool runtime, after the session's approval gate has
+   * already decided this exact call (a person approved it where the policy
+   * required that). The MCP bridge then skips its own, UI-less per-server
+   * approval prompt instead of asking twice.
+   */
+  gateDecided?: boolean;
   /** Logger child — agents/tests inject one. */
   log?: {
     info: (msg: string, meta?: unknown) => void;
