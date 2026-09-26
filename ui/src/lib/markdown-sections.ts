@@ -80,6 +80,8 @@ const BRACKETED = /\[([^[\]]+)\]/g;
 
 /** A label as the markdown parser matches it: whitespace collapsed, case folded. */
 function normalizeLabel(label: string): string {
+  // Lower then upper, exactly as micromark's normalizeIdentifier does: some
+  // characters (e.g. `ẞ`) only fold together through both steps.
   return label
     .replace(/[\t\n\r ]+/g, " ")
     .trim()
@@ -116,10 +118,11 @@ function fenceTracker(): (line: string) => boolean {
 }
 
 /**
- * Every definition label in the document. A definition cannot interrupt a paragraph, so a definition-shaped line counts only where
- * a block may start: after a blank line, a heading, a fence or a link
- * definition. A footnote definition's text is a paragraph, so after one only
- * another footnote definition starts; a link definition there is continuation.
+ * Every definition label in the document. A definition cannot interrupt a
+ * paragraph, so a definition-shaped line counts only where a block may start:
+ * after a blank line, a heading, a fence or a link definition. A footnote
+ * definition's text is a paragraph, so after one only another footnote
+ * definition starts; a link definition there is continuation.
  */
 function collectDefinitions(markdown: string): Definitions {
   const definitions = new Map<string, string>();
@@ -260,15 +263,25 @@ export function remarkSectionSlugs(options: {
   return (tree: MdastNode, file: { value?: unknown }) => {
     const slugger = new GithubSlugger();
     slugger.occurrences = { ...options.occurrences };
-    const markdown = String(file.value ?? "");
+    // react-markdown passes a string; a byte buffer is decoded the way
+    // remark-parse decodes it, so node offsets index the same text.
+    const markdown =
+      // `isView`, not `instanceof`: a buffer from another realm is still bytes.
+      ArrayBuffer.isView(file.value)
+        ? new TextDecoder().decode(file.value)
+        : String(file.value ?? "");
     const visit = (node: MdastNode) => {
       if (node.type === "heading") {
         const hProperties = node.data?.hProperties ?? {};
         if (!hProperties.id) {
-          // A heading with no source span (made by another plugin) keeps its own text.
+          // Slug the heading as parsed from its OWN source, like the splitter
+          // does: `node` was parsed with its whole section, so a definition in
+          // that section the collector missed would resolve here and not
+          // there. A heading with no source span (made by another plugin)
+          // keeps its own text.
           const { start, end } = node.position ?? {};
           const source = markdown.slice(start?.offset ?? 0, end?.offset ?? 0);
-          const text = headingText(node, source, options.definitions);
+          const text = headingText(parseHeading(source) ?? node, source, options.definitions);
           node.data = {
             ...node.data,
             hProperties: { ...hProperties, id: slugger.slug(text) },

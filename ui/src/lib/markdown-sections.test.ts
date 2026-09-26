@@ -8,6 +8,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
 import rehypeSlug from "rehype-slug";
 import remarkGfm from "remark-gfm";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
 import { remarkSectionSlugs, splitMarkdownSections, type MdastNode } from "@/lib/markdown-sections";
 
 function headingIds(html: string): string[] {
@@ -301,5 +303,43 @@ describe("heading ids with reference links and footnote references (#227)", () =
     const { toc, definitions } = splitMarkdownSections("## A [b][c]\n## D[^1]");
     expect(definitions.size).toBe(0);
     expect(toc.map((e) => e.id)).toEqual(["a-bc", "d1"]);
+  });
+});
+
+/**
+ * #227 review — a definition in the heading's OWN section that the definition
+ * collector does not see (after a thematic break or indented code, inside a
+ * blockquote or a list item). The renderer's parse of the section sees it; the
+ * splitter's parse of the heading line alone does not. Both sides must still
+ * slug the same input, so the TOC id and the rendered id agree.
+ */
+describe("heading ids when a same-section definition is not collected (#227)", () => {
+  it.each([
+    [
+      "after a thematic break",
+      "## See [the spec][spec]\nBody.\n\n---\n[spec]: https://example.com",
+    ],
+    ["inside a blockquote", "## See [the spec][spec]\nBody.\n\n> [spec]: https://example.com"],
+    ["inside a list item", "## See [the spec][spec]\nBody.\n\n- [spec]: https://example.com"],
+    [
+      "after an indented code block",
+      "## See [the spec][spec]\nBody.\n\n    code\n[spec]: https://example.com",
+    ],
+    ["footnote inside a blockquote", "## Rules[^1]\nBody.[^1]\n\n> [^1]: A footnote."],
+  ])("%s: the TOC id is the rendered id", (_, markdown) => {
+    const tocIds = splitMarkdownSections(markdown).toc.map((e) => e.id);
+    expect(tocIds).toHaveLength(1);
+    expect(sectionedIds(markdown)).toEqual(tocIds);
+  });
+});
+
+describe("remarkSectionSlugs source text", () => {
+  it("decodes a byte-buffer file so heading offsets index the same text", () => {
+    const markdown = "Überblick.\n\n## See [the spec][spec]";
+    const tree = unified().use(remarkParse).parse(markdown) as MdastNode;
+    remarkSectionSlugs({ occurrences: {}, definitions: new Map([["SPEC", "[spec]: x"]]) })(tree, {
+      value: new TextEncoder().encode(markdown),
+    });
+    expect(tree.children?.[1].data?.hProperties?.id).toBe("see-the-spec");
   });
 });
