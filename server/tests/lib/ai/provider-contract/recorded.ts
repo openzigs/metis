@@ -21,8 +21,10 @@
  * ## What a replay checks
  *
  *   1. The adapter sends the requests the recording saw, in order: same method,
- *      same path, and the same contract-relevant request view (model, tool
- *      names, tool choice, response format, tool-call and tool-result ids).
+ *      same path, the same contract-relevant request view (model, tool
+ *      names, tool choice, response format, tool-call and tool-result ids),
+ *      and the same CONTENT — system prompt, turn text, tool-call arguments
+ *      and tool-result content ({@link viewRecordedContent}).
  *   2. Its parsed output equals the output recorded from the live run.
  *   3. The scenario's own contract assertions hold (see `scenarios`).
  *
@@ -264,6 +266,104 @@ export function viewRecordedRequest(
   return { ...view, model: body?.model };
 }
 
+/**
+ * One conversation turn as the runtime received it, wire-neutral. Text is the
+ * concatenation of every text part; tool arguments are PARSED, so key order and
+ * whitespace in a JSON string never count as a divergence.
+ */
+export interface ContentTurn {
+  role: string;
+  text: string;
+  toolCalls: Array<{ id: string; name: string; args: unknown }>;
+  toolResults: Array<{ id: string; content: string }>;
+}
+
+/** Everything the model actually reads: the system prompt and every turn. */
+export interface ContentView {
+  system: string;
+  turns: ContentTurn[];
+}
+
+/** Join the text of a string, a text-block array, or `null` (→ ""). */
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter(
+      (b): b is { type: string; text: string } => b?.type === "text" && typeof b.text === "string",
+    )
+    .map((b) => b.text)
+    .join("");
+}
+
+function parseArgs(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw ?? {};
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * #197 review — the CONTENT of a request, per wire format: the system prompt,
+ * each turn's text, each tool call's name + arguments, and each tool result's
+ * content. {@link viewRecordedRequest} only sees ids and names, so an adapter
+ * that blanked a tool result or dropped the system prompt still replayed green.
+ *
+ * Normalised away, because they vary without changing what the model reads:
+ * `cache_control` markers, `null` vs `""` content, a string vs a text-block
+ * array, and JSON-string vs object tool arguments. The rest of the body
+ * (sampling knobs, `thinking`, `stream`) is deliberately not compared: it is
+ * adapter policy that can change without a paid re-record, and the scenario
+ * input it derives from is already pinned by the fixture key.
+ */
+export function viewRecordedContent(
+  wire: WireFormat,
+  body: Record<string, unknown> | null,
+): ContentView {
+  const messages = (body?.messages as Array<Record<string, unknown>> | undefined) ?? [];
+  if (wire === "anthropic-messages") {
+    return {
+      system: textOf(body?.system),
+      turns: messages.map((m) => {
+        const blocks = Array.isArray(m.content)
+          ? (m.content as Array<Record<string, unknown>>)
+          : [];
+        return {
+          role: String(m.role),
+          text: textOf(m.content),
+          toolCalls: blocks
+            .filter((b) => b.type === "tool_use")
+            .map((b) => ({ id: String(b.id), name: String(b.name), args: b.input ?? {} })),
+          toolResults: blocks
+            .filter((b) => b.type === "tool_result")
+            .map((b) => ({ id: String(b.tool_use_id), content: textOf(b.content) })),
+        };
+      }),
+    };
+  }
+  const system = messages
+    .filter((m) => m.role === "system")
+    .map((m) => textOf(m.content))
+    .join("\n");
+  return {
+    system,
+    turns: messages
+      .filter((m) => m.role !== "system")
+      .map((m) => ({
+        role: String(m.role),
+        text: m.role === "tool" ? "" : textOf(m.content),
+        toolCalls: (
+          (m.tool_calls as Array<{ id: string; function: { name: string; arguments: unknown } }>) ??
+          []
+        ).map((c) => ({ id: c.id, name: c.function.name, args: parseArgs(c.function.arguments) })),
+        toolResults:
+          m.role === "tool" ? [{ id: String(m.tool_call_id), content: textOf(m.content) }] : [],
+      })),
+  };
+}
+
 /** Raised when the adapter's traffic diverges from the recording. */
 export class ReplayDivergenceError extends Error {
   constructor(message: string) {
@@ -315,6 +415,14 @@ export function installReplayFetch(fixture: RecordedFixture) {
     if (want !== got) {
       return reject(
         `${label}: request diverges from the recording\n  recorded: ${want}\n  sent:     ${got}`,
+      );
+    }
+    const wantContent = JSON.stringify(viewRecordedContent(fixture.wire, next.request.body));
+    const gotContent = JSON.stringify(viewRecordedContent(fixture.wire, actual.body));
+    if (wantContent !== gotContent) {
+      return reject(
+        `${label}: request content diverges from the recording\n` +
+          `  recorded: ${wantContent}\n  sent:     ${gotContent}`,
       );
     }
     return toResponse(next.response);

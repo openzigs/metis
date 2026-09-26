@@ -16,6 +16,12 @@ stored; URLs keep path + query only), the `fixtureKey` of the scenario request
 (a changed scenario fails as stale until re-recorded), and the adapter's parsed
 result from the live run.
 
+On replay the adapter's outgoing request must match the recorded one in its
+contract fields (model, tool names, tool choice, response format, call/result
+ids) **and its content**: system prompt, turn text, tool-call arguments and
+tool-result content. Sampling knobs (`temperature`, `thinking`, `max_tokens`)
+are not compared, so a change there does not force a paid re-record.
+
 ## Re-recording
 
 Costs real API spend and needs the Ollama host; a maintainer runs it:
@@ -28,7 +34,10 @@ LOCAL_GEMMA_BASE_URL=http://<ollama-host>:11434/v1 \
 npx vitest run tests/lib/ai/provider-contract-recorded.test.ts
 ```
 
-Drop `AI_RECORD_OVERWRITE` to fill only missing fixtures. A runtime whose
+Drop `AI_RECORD_OVERWRITE` to fill only missing fixtures. A record run makes
+exactly one attempt per request: the Anthropic SDK is built with
+`maxRetries: 0`, the OpenAI-compatible client with `AI_MAX_RETRIES=1`, the test
+itself does not re-run, and a fixture with a non-2xx exchange is refused. A runtime whose
 credentials are absent is replayed, never recorded. Before committing, run
 `node scripts/verify-no-company-identifiers.mjs`; the hygiene tests in the
 same file also scan every fixture for keys, auth headers, cookies, private IPs

@@ -51,6 +51,7 @@ import {
   scenarioRequest,
   scrubText,
   teeFetch,
+  viewRecordedContent,
   viewRecordedRequest,
   writeFixture,
   type RecordedFixture,
@@ -85,6 +86,21 @@ interface RecordedRuntime {
 }
 
 const DEEPSEEK_URL = "https://api.deepseek.com/anthropic";
+
+/**
+ * The LAN base URL AND its host / hostname: a runtime can echo the host without
+ * the `/v1` path, and a hostname (`gpu-box.lan`, `*.local`, an IPv6 ULA) is not
+ * caught by the private-IPv4 scrub.
+ */
+function hostSecrets(base: string | undefined): string[] {
+  if (!base) return [];
+  try {
+    const u = new URL(base);
+    return [base, u.host, u.hostname.replace(/^\[|\]$/g, "")];
+  } catch {
+    return [base];
+  }
+}
 
 const RUNTIMES: RecordedRuntime[] = [
   {
@@ -133,23 +149,57 @@ const RUNTIMES: RecordedRuntime[] = [
         LOCAL_GEMMA_MODEL: "laguna-s-2.1",
       };
     },
-    secrets: () => [process.env.LOCAL_GEMMA_BASE_URL ?? ""],
+    secrets: () => hostSecrets(process.env.LOCAL_GEMMA_BASE_URL),
   },
 ];
+
+/** The client-level retry budget of a built adapter (see {@link buildAdapter}). */
+function clientRetries(provider: AIProvider): { sdkMaxRetries?: number; maxAttempts?: number } {
+  const p = provider as unknown as { client?: { maxRetries?: number }; maxAttempts?: number };
+  return {
+    ...(p.client?.maxRetries !== undefined ? { sdkMaxRetries: p.client.maxRetries } : {}),
+    ...(p.maxAttempts !== undefined ? { maxAttempts: p.maxAttempts } : {}),
+  };
+}
 
 /**
  * Build through the real factory WITHOUT the #234 `chat()`-level recorder in
  * front: under `AI_RECORD=1` `buildProvider` would wrap the adapter, and this
  * suite's subject is the adapter itself.
+ *
+ * `record: true` also turns off every client-level retry, because a retry in
+ * a record run is a second paid call and would tee a failed exchange into the
+ * fixture. vitest's `retry: 0` only stops the TEST re-running; the adapters
+ * retry on their own: the Anthropic SDK (`maxRetries`, default 2; the adapter
+ * exposes no option for it, so it is set on the built client) and the
+ * OpenAI-compatible client (`AI_MAX_RETRIES`, read at construction; `1` = one
+ * attempt, no retry).
  */
-function buildAdapter(env: NodeJS.ProcessEnv): AIProvider {
-  const saved = { AI_RECORD: process.env.AI_RECORD, AI_REPLAY: process.env.AI_REPLAY };
+function buildAdapter(env: NodeJS.ProcessEnv, { record = false } = {}): AIProvider {
+  const saved = {
+    AI_RECORD: process.env.AI_RECORD,
+    AI_REPLAY: process.env.AI_REPLAY,
+    AI_MAX_RETRIES: process.env.AI_MAX_RETRIES,
+  };
   delete process.env.AI_RECORD;
   delete process.env.AI_REPLAY;
+  if (record) process.env.AI_MAX_RETRIES = "1";
   try {
-    return buildProvider({ config: loadAIConfig(env) });
+    const provider = buildProvider({ config: loadAIConfig(env) });
+    if (record) {
+      const client = (provider as unknown as { client?: { maxRetries?: number } }).client;
+      if (client && typeof client.maxRetries === "number") client.maxRetries = 0;
+      const r = clientRetries(provider);
+      if ((r.sdkMaxRetries ?? 0) !== 0 || (r.maxAttempts ?? 1) !== 1) {
+        throw new Error(`record run would retry a paid call: ${JSON.stringify(r)}`);
+      }
+    }
+    return provider;
   } finally {
-    for (const [k, v] of Object.entries(saved)) if (v !== undefined) process.env[k] = v;
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
   }
 }
 
@@ -356,12 +406,19 @@ async function record(rt: RecordedRuntime, sc: RecordedScenario, env: NodeJS.Pro
   const tee = teeFetch(rt.secrets());
   let result: RecordedResult;
   try {
-    result = await runScenario(buildAdapter(env), scenario, rt.model);
+    result = await runScenario(buildAdapter(env, { record: true }), scenario, rt.model);
   } catch (err) {
     await tee.finish(); // always restore the real fetch
     throw err;
   }
   const recorded = await tee.finish();
+  const failed = recorded.filter((ex) => ex.response.status >= 400);
+  if (failed.length > 0) {
+    throw new Error(
+      `${rt.name}/${sc.name}: refusing to write a fixture with a failed exchange ` +
+        `(${failed.map((ex) => ex.response.status).join(", ")})`,
+    );
+  }
   const fixture: RecordedFixture = {
     version: 1,
     runtime: rt.name,
@@ -381,8 +438,10 @@ async function record(rt: RecordedRuntime, sc: RecordedScenario, env: NodeJS.Pro
 for (const rt of RUNTIMES) {
   describe(`recorded provider contract: ${rt.name} (${rt.wire}, ${rt.model})`, () => {
     for (const sc of SCENARIOS) {
-      // A live record run must never retry: a retry is another paid call.
-      const opts = { timeout: 180_000, ...(truthy(process.env.AI_RECORD) ? { retry: 0 } : {}) };
+      // A live record run must never re-run the test (a re-run is another paid
+      // call; client-level retries are off too, see buildAdapter) and gets a
+      // live-model timeout. A replay is local and keeps the default timeout.
+      const opts = truthy(process.env.AI_RECORD) ? { timeout: 180_000, retry: 0 } : {};
       it(`${sc.name} replays through the real adapter`, opts, async () => {
         const live = truthy(process.env.AI_RECORD) ? rt.liveEnv() : null;
         if (live && (truthy(process.env.AI_RECORD_OVERWRITE) || !readFixture(rt.name, sc.name))) {
@@ -454,6 +513,73 @@ describe("recorded fixtures are load-bearing (#197 revert-to-red)", () => {
     ).rejects.toBeInstanceOf(ReplayDivergenceError);
   });
 
+  // #197 review: the request check must see CONTENT, not just ids. Each edit
+  // below makes the recording disagree with what the adapter sends in exactly
+  // one content field; before viewRecordedContent every one of them replayed green.
+  it("deepseek: a recorded tool_result with different content diverges", async () => {
+    const f = load("deepseek", "tool-results");
+    const body = f.exchanges[0]!.request.body as { messages: Array<{ content: unknown }> };
+    const results = body.messages.at(-1)!.content as Array<{ content: string }>;
+    results[0]!.content = "";
+    await expect(
+      checkReplay(runtime("deepseek"), scenario("tool-results"), f),
+    ).rejects.toBeInstanceOf(ReplayDivergenceError);
+  });
+
+  it("deepseek: a recorded request with a different system prompt diverges", async () => {
+    const f = load("deepseek", "text-chat");
+    (f.exchanges[0]!.request.body as { system: string }).system = "Something else.";
+    await expect(checkReplay(runtime("deepseek"), scenario("text-chat"), f)).rejects.toBeInstanceOf(
+      ReplayDivergenceError,
+    );
+  });
+
+  it("deepseek: a recorded tool_use with different arguments diverges", async () => {
+    const f = load("deepseek", "tool-results");
+    const body = f.exchanges[0]!.request.body as { messages: Array<{ content: unknown }> };
+    const calls = body.messages[1]!.content as Array<{ input: Record<string, unknown> }>;
+    calls[0]!.input = { query: "principal" };
+    await expect(
+      checkReplay(runtime("deepseek"), scenario("tool-results"), f),
+    ).rejects.toBeInstanceOf(ReplayDivergenceError);
+  });
+
+  it("ollama: a recorded tool message with different content diverges", async () => {
+    const f = load("ollama", "tool-results");
+    const body = f.exchanges[0]!.request.body as { messages: Array<Record<string, unknown>> };
+    body.messages.filter((m) => m.role === "tool").at(-1)!.content = "";
+    await expect(
+      checkReplay(runtime("ollama"), scenario("tool-results"), f),
+    ).rejects.toBeInstanceOf(ReplayDivergenceError);
+  });
+
+  it("ollama: a recorded request with a different system message or user text diverges", async () => {
+    for (const edit of [
+      (m: Record<string, unknown>) => m.role === "system" && (m.content = "Something else."),
+      (m: Record<string, unknown>) => m.role === "user" && (m.content = "Reply with: 41."),
+    ]) {
+      const f = load("ollama", "text-chat");
+      (
+        f.exchanges[0]!.request.body as { messages: Array<Record<string, unknown>> }
+      ).messages.forEach(edit);
+      await expect(checkReplay(runtime("ollama"), scenario("text-chat"), f)).rejects.toBeInstanceOf(
+        ReplayDivergenceError,
+      );
+    }
+  });
+
+  it("ollama: a recorded tool_calls entry with different arguments diverges", async () => {
+    const f = load("ollama", "tool-results");
+    const body = f.exchanges[0]!.request.body as {
+      messages: Array<{ tool_calls?: Array<{ function: { arguments: string } }> }>;
+    };
+    body.messages.find((m) => m.tool_calls)!.tool_calls![1]!.function.arguments =
+      '{"path":"src/Other.java"}';
+    await expect(
+      checkReplay(runtime("ollama"), scenario("tool-results"), f),
+    ).rejects.toBeInstanceOf(ReplayDivergenceError);
+  });
+
   it("ollama: dropping one streamed tool_call delta fails the replay", async () => {
     const f = load("ollama", "tools-stream");
     const sse = f.exchanges[0]!.response.sse!;
@@ -493,6 +619,76 @@ describe("recorded fixtures are load-bearing (#197 revert-to-red)", () => {
       ReplayDivergenceError,
     );
   });
+});
+
+describe("viewRecordedContent normalises only what does not change the prompt (#197)", () => {
+  it("anthropic: cache_control, string vs text blocks and block extras are ignored", () => {
+    const a = viewRecordedContent("anthropic-messages", {
+      system: "S",
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "c1", content: "r" }],
+        },
+      ],
+    });
+    const b = viewRecordedContent("anthropic-messages", {
+      system: [{ type: "text", text: "S", cache_control: { type: "ephemeral" } }],
+      messages: [
+        { role: "user", content: [{ type: "text", text: "hi", cache_control: {} }] },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "c1", content: [{ type: "text", text: "r" }] },
+          ],
+        },
+      ],
+    });
+    expect(b).toEqual(a);
+    expect(a.turns[1]!.toolResults).toEqual([{ id: "c1", content: "r" }]);
+  });
+
+  it("openai: null vs empty content and argument key order are ignored; content is not", () => {
+    const view = (content: unknown, args: string, tool = "r") =>
+      viewRecordedContent("openai-chat-completions", {
+        messages: [
+          { role: "system", content: "S" },
+          {
+            role: "assistant",
+            content,
+            tool_calls: [{ id: "c1", function: { name: "f", arguments: args } }],
+          },
+          { role: "tool", tool_call_id: "c1", content: tool },
+        ],
+      });
+    expect(view(null, '{"a":1,"b":2}')).toEqual(view("", '{ "b": 2, "a": 1 }'));
+    expect(view(null, '{"a":1}')).not.toEqual(view(null, '{"a":2}'));
+    expect(view(null, "{}", "r")).not.toEqual(view(null, "{}", ""));
+    expect(view(null, "{}").system).toBe("S");
+  });
+});
+
+// ── Record mode never retries a paid call (#197 review) ──────────────────
+
+describe("record-mode adapters are built with client retries disabled (#197)", () => {
+  it.each(RUNTIMES.map((rt) => [rt.name, rt] as const))(
+    "%s: record build has no SDK/client retry; the default build does (control)",
+    (_name, rt) => {
+      const envBefore = process.env.AI_MAX_RETRIES;
+      const recordRetries = clientRetries(buildAdapter(rt.replayEnv, { record: true }));
+      const defaultRetries = clientRetries(buildAdapter(rt.replayEnv));
+      if (rt.wire === "anthropic-messages") {
+        expect(recordRetries).toEqual({ sdkMaxRetries: 0 });
+        expect(defaultRetries.sdkMaxRetries).toBeGreaterThan(0);
+      } else {
+        expect(recordRetries).toEqual({ maxAttempts: 1 });
+        expect(defaultRetries.maxAttempts).toBeGreaterThan(1);
+      }
+      // The env override is scoped to the build.
+      expect(process.env.AI_MAX_RETRIES).toBe(envBefore);
+    },
+  );
 });
 
 // ── Recorded wire shapes vs the hand-written harnesses (#197 divergences) ──
@@ -595,7 +791,7 @@ describe("recorded fixture hygiene (#197)", () => {
       `{"id":"msg_01AbC","x":"${secret}"}`,
       '{"id":"chatcmpl-9f8e","k":"sk-abcdefghijkl"}',
       '{"id":"140b98a0-b5cd-4da4-9992-6b3b3edf2943"}',
-      "http://192.168.68.58:11434/v1 and 10.0.0.7",
+      "http://192.168.1.20:11434/v1 and 10.0.0.7",
     ].join("\n");
     const clean = scrubText(dirty, [secret]);
     for (const [label, pattern] of FORBIDDEN_FIXTURE_PATTERNS) {
@@ -605,6 +801,17 @@ describe("recorded fixture hygiene (#197)", () => {
     expect(clean).toContain('"id":"msg_recorded"');
     expect(clean).toContain('"id":"chatcmpl-recorded"');
     expect(clean).toContain("http://local-model-host:11434/v1");
+  });
+
+  it("a LAN hostname is scrubbed even when echoed without the base URL's path", () => {
+    const secrets = hostSecrets("http://gpu-box.lan:11434/v1");
+    const clean = scrubText('{"host":"gpu-box.lan:11434","h":"gpu-box.lan"}', secrets);
+    expect(clean).not.toContain("gpu-box");
+    const v6 = scrubText(
+      '{"h":"fd12:3456:789a::1"}',
+      hostSecrets("http://[fd12:3456:789a::1]:11434/v1"),
+    );
+    expect(v6).not.toContain("fd12:3456");
   });
 
   it("teeFetch records path, body and scrubbed reply — never a header — and restores fetch", async () => {
