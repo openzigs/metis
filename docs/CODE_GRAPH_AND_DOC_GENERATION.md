@@ -503,6 +503,9 @@ runs in stages:
 3. **Synthesize documentation section by section**, selecting relevant module
    facts and pulling in retrieved knowledge-corpus/web evidence
    ([holistic-synthesizer.ts](../server/src/lib/docs-gen/holistic-synthesizer.ts#L2426-L2538)).
+   The enumerative sections are written in batches; up to
+   `DOCS_GEN_PHASE2_CONCURRENCY` batches run at once (default 1 on local-gemma,
+   4 on cloud providers) and their replies are merged in plan order.
 4. **Extract atomic claims and check them against the supplied evidence**,
    warning when a section's faithfulness score falls below threshold
    ([holistic-synthesizer.ts](../server/src/lib/docs-gen/holistic-synthesizer.ts#L2158-L2235)).

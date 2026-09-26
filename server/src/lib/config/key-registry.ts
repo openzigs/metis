@@ -260,6 +260,14 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "#25 — how many Phase-1 module fact extractions docs-gen keeps in flight at once (1-64, default 3). A worker pool: the next module starts the moment any extraction finishes. Wall-clock time for a large project scales roughly with modules ÷ this value, so a 174-module project at ~23 s per module takes about an hour at 1 and about 22 minutes at 3. Raise it when the provider allows more parallel requests (DeepSeek documents a 500-request concurrency limit for deepseek-v4-pro); keep it low behind a gateway with request-rate or idle-timeout limits.",
     sensitive: false,
   },
+  DOCS_GEN_PHASE2_CONCURRENCY: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(1).max(64),
+    description:
+      "#178 — how many Phase-2 batch calls of one batched docs-gen section (Business Rules, Key Workflows, Calculations, Data Model) run at once (1-64). Unset, the default depends on the provider: 1 for local-gemma (the local provider's LOCAL_GEMMA_MAX_CONCURRENCY limiter already holds requests to the server's real parallelism) 4 for the cloud providers bedrock-gateway, anthropic, openai and azure, and 1 for every other provider (copilot-native, offline-stub, any new key). A set value applies to every provider. Batch replies are always merged in plan order, so the section is the same whatever order the calls finish in — unless the section's re-split budget runs out, in which case which cut-off batch gets the last re-split depends on which reply arrives first. Raise it where the account's request and token quotas allow; lower it behind a gateway with request-rate limits.",
+    sensitive: false,
+  },
   DOCS_GEN_PHASE1_CHUNK_INPUT_TOKENS: {
     tier: "tunable",
     valueType: "int",
