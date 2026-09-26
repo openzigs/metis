@@ -601,7 +601,8 @@ async function collectSourceCandidates(
   for await (const absPath of walkSourceFiles(root, { boundary })) {
     const relPath = path.relative(root, absPath).split(path.sep).join("/");
     try {
-      // lstat: the walk only yields regular files; never follow a link swapped in since.
+      // lstat: the walk only yields regular files; reject one swapped for a link since.
+      // This does not cover a swap between here and the later readFile.
       const stat = await fs.lstat(absPath);
       if (!stat.isFile()) {
         unreadable.push(relPath);

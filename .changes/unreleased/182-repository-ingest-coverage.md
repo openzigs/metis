@@ -10,3 +10,5 @@ section: Fixed
 - Files over 64 KB are chunked and indexed instead of silently skipped.
 - Each sync records its progress and result, a re-run resumes an interrupted
   one, and documents grounded on an incomplete index are marked for review.
+- After upgrading, documents generated before a repository's next sync read as
+  degraded ("coverage never recorded"); re-sync each repository once to clear it.

@@ -482,3 +482,76 @@ describe("boundary (#288) is preserved", () => {
     }
   });
 });
+
+/**
+ * PR #209 review — the test above passes with or without `boundary`, because a
+ * symlinked entry is never yielded by the walk (`Dirent.isFile()` is false for a
+ * link). These tests pin the `local` provider's realpath boundary itself through
+ * the #182 candidate-collection path, and prove the outside content is never read.
+ */
+describe("local-source realpath boundary through candidate collection (#288, #182)", () => {
+  const SECRET = "export const secret = 'LEAKED-OUTSIDE-BOUNDARY';\n";
+  let outside: string;
+
+  beforeEach(async () => {
+    outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "metis-182-out-")));
+    await fs.mkdir(path.join(outside, "pkg"), { recursive: true });
+    await fs.writeFile(path.join(outside, "secret.ts"), SECRET);
+    await fs.writeFile(path.join(outside, "pkg", "nested.ts"), SECRET);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  /** Every path `fs.readFile` was asked for during the run. */
+  function spyReads(): () => string[] {
+    const spy = vi.spyOn(fs, "readFile");
+    return () => spy.mock.calls.map((c) => String(c[0]));
+  }
+
+  function expectOutsideUntouched(reads: string[]): void {
+    expect(reads.filter((p) => p.startsWith(outside) || p.includes("secret"))).toEqual([]);
+    expect([...h.bodies.values()].some((b) => b.includes("LEAKED-OUTSIDE-BOUNDARY"))).toBe(false);
+    expect(ingestedPaths().some((p) => p.includes("secret") || p.includes("nested"))).toBe(false);
+  }
+
+  it("a symlinked file and a symlinked directory escaping the root are neither selected nor read; a normal file is indexed", async () => {
+    await writeFiles({ "src/a.ts": "export const a = 1;\n" });
+    await fs.symlink(path.join(outside, "secret.ts"), path.join(root, "src", "secret.ts")); // (a)
+    await fs.symlink(path.join(outside, "pkg"), path.join(root, "linked-pkg")); // (b)
+    const reads = spyReads();
+
+    const summary = await ingestSourceAsKnowledge("p1", "c1", "u1", root, { boundary: root });
+
+    expect(ingestedPaths()).toEqual(["src/a.ts"]); // (c)
+    expect(summary.documentsCreated).toBe(1);
+    expect(reads()).toContain(path.join(root, "src", "a.ts"));
+    // Dropped by the walk itself: never eligible, so never counted as a skip.
+    expect(lastState()).toMatchObject({ status: "completed", eligible: 1, selected: 1 });
+    expect(lastState().skipped).toEqual({ cap: 0, tooLarge: 0, unreadable: 0, excludedTests: 0 });
+    expectOutsideUntouched(reads());
+  });
+
+  it("a validated root later swapped for a symlink to elsewhere yields nothing — only the realpath boundary catches this", async () => {
+    // `resolveIngestSource` validates the local path and passes its realpath as
+    // both the walk root and the boundary. If that directory is then replaced by
+    // a symlink, `readdir` follows it and every entry is a REGULAR file outside
+    // the boundary: the Dirent type check cannot tell, the realpath check can.
+    const validated = path.join(root, "checkout");
+    await writeFiles({ "checkout/a.ts": "export const a = 1;\n" });
+    await fs.rename(validated, path.join(root, "checkout.orig"));
+    await fs.symlink(outside, validated);
+    const reads = spyReads();
+
+    const summary = await ingestSourceAsKnowledge("p1", "c1", "u1", validated, {
+      boundary: validated,
+    });
+
+    expect(ingestedPaths()).toEqual([]);
+    expect(summary.documentsCreated).toBe(0);
+    expect(lastState()).toMatchObject({ eligible: 0, selected: 0 });
+    expectOutsideUntouched(reads());
+  });
+});
