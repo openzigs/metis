@@ -21,6 +21,8 @@ import {
 import { ToolRegistry } from "../tool-registry.js";
 
 const ctx = { sessionId: "s1", userId: "u1" } as const;
+/** #142 — `invoke` requires a gate; these tests exercise the tool, not the gate. */
+const allowGate = { decide: async () => true };
 
 describe("apply_diff tool", () => {
   it("schema requires non-empty patch", () => {
@@ -109,13 +111,20 @@ describe("apply_diff tool", () => {
       isEnabled: () => true,
       client: { apply } as never,
     });
-    const out = await reg.invoke(APPLY_DIFF_TOOL_NAME, { original: "a", patch: "b" }, ctx);
+    const out = await reg.invoke(
+      APPLY_DIFF_TOOL_NAME,
+      { original: "a", patch: "b" },
+      ctx,
+      allowGate,
+    );
     expect(out.text).toBe("ok");
   });
 
   it("rejects invalid args via the registry's zod gate", async () => {
     const reg = new ToolRegistry();
     registerApplyDiff(reg, { isEnabled: () => false });
-    await expect(reg.invoke(APPLY_DIFF_TOOL_NAME, { original: "a" }, ctx)).rejects.toThrow();
+    await expect(
+      reg.invoke(APPLY_DIFF_TOOL_NAME, { original: "a" }, ctx, allowGate),
+    ).rejects.toThrow();
   });
 });

@@ -2240,17 +2240,48 @@ You can ask the AI about anything related to your projects:
 
 ### 14.3 AI Tools
 
-During a conversation, the AI can use tools to take actions:
+In a chat scoped to a project, on a model that supports tool calling, the AI
+can use tools to look things up or act for you:
 
 | Tool | What It Does |
 |---|---|
-| **Search Knowledge Base** | Searches your uploaded documents for relevant information |
+| **Search Knowledge Base** | Searches the project's uploaded documents |
 | **Inspect Database** | Examines a connected database's schema |
-| **Query Database** | Runs read-only SQL queries to answer data questions |
-| **Calculate** | Performs mathematical calculations |
-| **Get Current Time** | Returns the current date and time |
+| **Query Database** | Runs read-only SQL against a connected database |
+| **MCP tools** | Tools from MCP servers this project is allowed to use (see §20.7) |
+| **Code search** | Searches the project's code graph and symbols, when your administrator has turned on `CHAT_CODE_SEARCH_TOOLS` |
 
-When the AI uses a tool, you may see a brief notification. This is normal — it's the AI reaching out to get more information to give you a better answer.
+A chat that is not scoped to a project is offered no tools. Administrators can
+turn the METIS and MCP tools off with `CHAT_TOOLS=false`.
+
+**Tool activity.** Each tool call appears under the conversation as it
+happens: running, waiting for your approval, done, or an error. Open a call to
+see the arguments the AI sent and a preview of the result. After the answer
+arrives, **Tools used** under it lists every call and how each was decided —
+approved by you, allowed by policy, denied, or not answered in time.
+
+**Approving tool calls.** Every tool has a risk level, and the session's
+approval policy decides what happens for each level:
+
+| Policy | What happens |
+|---|---|
+| `auto` | The tool runs without asking. |
+| `prompt-once` | You are asked the first time the tool is used in this chat; after you approve it, it runs without asking for the rest of the chat. |
+| `always-prompt` | You are asked every time. |
+| `deny` | The tool never runs in this chat. |
+
+The defaults are `auto` for low risk, `prompt-once` for medium and
+`always-prompt` for high. When a call needs your approval, the chat shows the
+tool, its risk and its arguments with **Approve** and **Deny**. Check the
+arguments before approving; if they contain invisible characters the chat warns
+you. A request nobody answers is denied after two minutes (administrators can
+change this with `AI_TOOL_APPROVAL_TIMEOUT_MS`). Nothing the AI writes, and
+nothing a tool returns, can approve a call — only your click can, and only in
+your own chat.
+
+If the chat uses an agent, the agent's tool list also applies: a tool the agent
+does not list is refused, even when the policy would allow it. An MCP server
+set to **require approval** asks you on every call, whatever the policy says.
 
 ### 14.4 Token Budget
 

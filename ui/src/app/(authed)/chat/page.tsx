@@ -4,9 +4,10 @@
  * Phase 4 chat workspace.
  *
  * Minimal but functional: list/create sessions, send messages, stream the
- * assistant's reply via SSE, and surface tool-call events with a confirm
- * dialog for high-risk calls. The real provider/approval policy work
- * happens server-side; this page is the user-facing seam.
+ * assistant's reply via SSE, and show each tool call as it happens (#143) —
+ * a call the session's policy says needs approval waits for Approve / Deny
+ * here (#142). The approval gate itself is server-side; this page only sends
+ * the owner's answer.
  */
 import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -19,6 +20,7 @@ import {
   type SessionScope,
   type StreamEvent,
   createSessionWithScope,
+  decideToolApproval,
   forkChatSession,
   getTranscript,
   loadActiveSessionId,
@@ -33,6 +35,9 @@ import { ScopeDegradationNotice } from "@/components/chat/scope-degradation-noti
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
 import { sanitizeAssistantText } from "@/lib/sanitize-assistant-text";
 import { recentTracker } from "@/lib/recent-tracker";
+import { applyToolEvent, type ToolActivity } from "@/lib/tool-activity";
+import { ToolActivityList, TranscriptToolCalls } from "@/components/chat/tool-activity";
+import { useSessionToolEvents } from "@/hooks/use-session-tool-events";
 
 /**
  * #136 — a transcript row as rendered. Rows that came from the server carry
@@ -90,6 +95,14 @@ export default function ChatPage() {
   // #138 — shown when older turns were summarised to fit the model's context.
   const [compactionNote, setCompactionNote] = useState<string | null>(null);
   const [forking, setForking] = useState(false);
+  // #143 — the tool calls of the turn in flight (cleared when the next starts).
+  const [toolActivity, setToolActivity] = useState<ToolActivity[]>([]);
+  const [deciding, setDeciding] = useState<ReadonlySet<string>>(new Set());
+  // #142 — the session room also carries the approval prompt, so a turn sent
+  // through the non-streaming route (or a page that reconnected) still sees it.
+  useSessionToolEvents(session?.id ?? null, (ev) =>
+    setToolActivity((prev) => applyToolEvent(prev, ev)),
+  );
   // The session on screen now — a transcript read that lands after the user
   // switched sessions must not overwrite the new one.
   const sessionIdRef = useRef<string | null>(null);
@@ -132,6 +145,7 @@ export default function ChatPage() {
     setMessages([]);
     // A compaction note belongs to the session it happened in.
     setCompactionNote(null);
+    setToolActivity([]);
     const firstRun = !mountedOnceRef.current;
     mountedOnceRef.current = true;
     void (async () => {
@@ -242,6 +256,7 @@ export default function ChatPage() {
       content: "",
     };
     setMessages([...messages, userMsg, assistantMsg]);
+    setToolActivity([]);
     setInput("");
     setStreaming(true);
     setError(null);
@@ -301,6 +316,25 @@ export default function ChatPage() {
     }
   }
 
+  // #142 — send the owner's answer; the server applies it only to a pending
+  // approval of this session. A 404 means it lapsed or was already answered.
+  async function handleDecide(item: ToolActivity, decision: "approve" | "deny") {
+    if (!session || !item.approvalId) return;
+    const approvalId = item.approvalId;
+    setDeciding((prev) => new Set(prev).add(approvalId));
+    try {
+      await decideToolApproval(session.id, approvalId, decision);
+    } catch {
+      setError("That approval is no longer pending — it was answered or it expired.");
+    } finally {
+      setDeciding((prev) => {
+        const next = new Set(prev);
+        next.delete(approvalId);
+        return next;
+      });
+    }
+  }
+
   function handleStop() {
     abortRef.current?.abort();
   }
@@ -319,15 +353,13 @@ export default function ChatPage() {
           ),
         );
         break;
-      case "tool_call": {
-        if (ev.risk === "high") {
-          const ok = window.confirm(
-            `Allow ${ev.risk}-risk tool "${ev.name}"?\n\nArgs: ${JSON.stringify(ev.arguments)}`,
-          );
-          if (!ok) abortRef.current?.abort();
-        }
+      case "tool_event":
+        setToolActivity((prev) => applyToolEvent(prev, ev));
         break;
-      }
+      case "tool_call":
+        // #713's summary frame; `tool_event` carries the full lifecycle. The
+        // old confirm() here decided nothing server-side — approval is #142's.
+        break;
       case "error":
         setMessages((prev) => {
           const lastAssistant = [...prev].reverse().find((m) => m.role === "assistant");
@@ -492,6 +524,9 @@ export default function ChatPage() {
                         {m.content || (streaming ? "…" : "")}
                       </span>
                     )}
+                    {m.role === "assistant" && m.toolCalls ? (
+                      <TranscriptToolCalls calls={m.toolCalls} />
+                    ) : null}
                     {m.incomplete ? (
                       <p
                         role="status"
@@ -518,6 +553,11 @@ export default function ChatPage() {
             </ul>
           )}
         </PausableLiveRegion>
+        <ToolActivityList
+          items={toolActivity}
+          deciding={deciding}
+          onDecide={(item, decision) => void handleDecide(item, decision)}
+        />
         <form
           className="flex gap-2"
           onSubmit={(e) => {

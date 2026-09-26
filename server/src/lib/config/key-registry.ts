@@ -635,6 +635,23 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Master enable for agentic code-search TOOLS in chat + stream (#713). OFF by default. When on, project-scoped sessions may call search_code_graph (exact graph traversal) and search_code_symbols (hybrid BM25+vector symbol search) — offered and EXECUTED on every provider path (Copilot SDK, native-Anthropic, bedrock-direct) via the shared textual agent loop, even without loaded skills. Tool schemas render deterministically into the byte-stable prompt lead, so the flag flips the cached prefix ONCE per deploy (expected); the per-turn latency cost is one extra bounded model round-trip per executed tool call (loop capped at a few turns). When off, no tools are offered, no loop runs, and the prompt is byte-identical to today. Distinct from CHAT_FUSED_CODE_RETRIEVAL (#714), which is PASSIVE per-request retrieval into the volatile tail.",
     sensitive: false,
   },
+  // ── Epic #128 — one tool runtime + enforced approval gate ─────────────
+  CHAT_TOOLS: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Offer METIS and MCP tools to the model in chat and stream (#140). ON by default. Applies only to project-scoped sessions on a model the catalog marks tool-capable: the tools go as NATIVE tool definitions, only MCP servers the project may use are offered, and EVERY call passes the session's approval gate (#142) before it runs — its low/medium/high policy, its agent's tool allowlist, and a prompt to the session's owner when the policy asks for one. Off: no METIS/MCP tools are offered (the code-search tools still follow CHAT_CODE_SEARCH_TOOLS).",
+    sensitive: false,
+  },
+  AI_TOOL_APPROVAL_TIMEOUT_MS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().positive(),
+    description:
+      "How long a chat tool call waits for its owner to approve or deny it (#142), in ms. An unanswered approval EXPIRES and counts as a denial; the tool does not run. Default 120000.",
+    sensitive: false,
+  },
   LOCAL_GEMMA_BASE_URL: {
     tier: "tunable",
     valueType: "string",

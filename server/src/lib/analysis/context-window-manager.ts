@@ -157,7 +157,8 @@ function contentOf(message: ChatMessage): string | null {
 
 /** Is this one of the loop's own tool-result turns, not yet elided? */
 function isCompactibleToolResult(message: ChatMessage): boolean {
-  if (message.role !== "user") return false;
+  // #141 — native tool results are `tool` messages; text-protocol ones `user`.
+  if (message.role !== "user" && message.role !== "tool") return false;
   const content = contentOf(message);
   if (content === null) return false;
   return content.startsWith(TOOL_RESULT_PREFIX) && !content.includes(TRANSCRIPT_ELISION_MARKER);

@@ -21,6 +21,8 @@ import { SandboxClient, SandboxClientError } from "../../sandbox/sandbox-client.
 import { ToolRegistry } from "../tool-registry.js";
 
 const ctx = { sessionId: "s1", userId: "u1" } as const;
+/** #142 — `invoke` requires a gate; these tests exercise the tool, not the gate. */
+const allowGate = { decide: async () => true };
 
 beforeEach(() => {
   process.env.COPILOT_NATIVE_TOKEN = "test-token";
@@ -168,6 +170,7 @@ describe("code_exec tool", () => {
       CODE_EXEC_TOOL_NAME,
       { language: "python", code: "print(1)" },
       ctx,
+      allowGate,
     );
     expect(result.isError).toBe(false);
     expect(result.text).toContain("exit 0");

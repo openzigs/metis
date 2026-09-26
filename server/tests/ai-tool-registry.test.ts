@@ -14,6 +14,8 @@ import {
 import { AIError } from "../src/lib/ai/errors.js";
 
 const ctx = { sessionId: "s1", userId: "u1" } as const;
+/** #142 — the gate is required; these tests exercise everything but the gate. */
+const allowGate: ApprovalGate = { decide: async () => true };
 
 const makeTool = (overrides: Partial<ToolDefinition> = {}): ToolDefinition => ({
   name: "echo",
@@ -44,18 +46,28 @@ describe("ToolRegistry", () => {
     expect(() => r.register(makeTool())).toThrow(/already registered/);
   });
 
-  it("invokes a low-risk tool with the default allow gate", async () => {
+  it("invokes a low-risk tool through an allowing gate", async () => {
     const r = new ToolRegistry();
     r.register(makeTool());
-    const result = await r.invoke("echo", { msg: "hi" }, ctx);
+    const result = await r.invoke("echo", { msg: "hi" }, ctx, allowGate);
     expect(result.text).toBe("you said hi");
+  });
+
+  it("#142 — fails closed when no gate is supplied (the old default allowed everything)", async () => {
+    const exec = vi.fn(async () => ({ text: "ran" }));
+    const r = new ToolRegistry();
+    r.register(makeTool({ exec, risk: "high" }));
+    await expect(
+      (r.invoke as (...a: unknown[]) => Promise<unknown>)("echo", { msg: "x" }, ctx),
+    ).rejects.toBeInstanceOf(AIToolDeniedError);
+    expect(exec).not.toHaveBeenCalled();
   });
 
   it("rejects malformed args before exec runs", async () => {
     const exec = vi.fn();
     const r = new ToolRegistry();
     r.register(makeTool({ exec }));
-    await expect(r.invoke("echo", { wrong: 1 }, ctx)).rejects.toBeInstanceOf(
+    await expect(r.invoke("echo", { wrong: 1 }, ctx, allowGate)).rejects.toBeInstanceOf(
       AIToolInvalidArgsError,
     );
     expect(exec).not.toHaveBeenCalled();
@@ -63,7 +75,7 @@ describe("ToolRegistry", () => {
 
   it("AI_TOOL_NOT_FOUND when missing", async () => {
     const r = new ToolRegistry();
-    await expect(r.invoke("missing", {}, ctx)).rejects.toMatchObject({
+    await expect(r.invoke("missing", {}, ctx, allowGate)).rejects.toMatchObject({
       code: "AI_TOOL_NOT_FOUND",
     });
   });
@@ -87,7 +99,7 @@ describe("ToolRegistry", () => {
         },
       }),
     );
-    const out = await r.invoke("explode", { msg: "x" }, ctx);
+    const out = await r.invoke("explode", { msg: "x" }, ctx, allowGate);
     expect(out.isError).toBe(true);
     expect(out.text).toContain("kaboom");
   });
@@ -102,7 +114,7 @@ describe("ToolRegistry", () => {
         },
       }),
     );
-    await expect(r.invoke("boom", { msg: "x" }, ctx)).rejects.toMatchObject({
+    await expect(r.invoke("boom", { msg: "x" }, ctx, allowGate)).rejects.toMatchObject({
       code: "AI_RATE_LIMITED",
     });
   });
@@ -154,7 +166,7 @@ describe("ToolRegistry", () => {
     const r = new ToolRegistry();
     r.register(makeTool());
     expect(r.get("echo")).toBeDefined();
-    const result = await r.invoke("echo", { msg: "ping" }, ctx);
+    const result = await r.invoke("echo", { msg: "ping" }, ctx, allowGate);
     expect(result.text).toBe("you said ping");
   });
 });

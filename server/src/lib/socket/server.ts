@@ -29,6 +29,7 @@ import {
 } from "@metis/shared";
 import { verifyAccessToken } from "../auth/jwt.js";
 import { actorCanAccessProject } from "../scheduler/project-access.js";
+import { loadAuthorizedSession } from "../ai/conversation/session-access.js";
 import { getLastJobLifecycle } from "./job-events.js";
 import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import { wireDiscussionPresenceHandlers } from "./discussion-presence.js";
@@ -180,8 +181,20 @@ function attachHandlers(
   socket.on("unsubscribe:analysis", ({ analysisId }) => {
     void socket.leave(`analysis:${analysisId}`);
   });
+  // #142 — the session room now carries tool-approval prompts (with the tool's
+  // arguments), so only the session's owner, who can still reach its project,
+  // may join it — the same rule as every other read of the session. It used to
+  // join any id a client named.
   socket.on("subscribe:session", ({ sessionId }) => {
-    void socket.join(`session:${sessionId}`);
+    if (!sessionId || typeof sessionId !== "string") return;
+    void (async () => {
+      try {
+        await loadAuthorizedSession(user, sessionId);
+        await socket.join(`session:${sessionId}`);
+      } catch {
+        socket.emit("auth:error", { message: "FORBIDDEN: no access to session" });
+      }
+    })();
   });
   socket.on("unsubscribe:session", ({ sessionId }) => {
     void socket.leave(`session:${sessionId}`);
