@@ -45,6 +45,7 @@ import {
   type SectionGroup,
 } from "./holistic-synthesizer.js";
 import type { PersistedMinedRule } from "./fact-slices.js";
+import { RunUsage, withRunUsage } from "./run-cost.js";
 
 // ── Fixture ───────────────────────────────────────────────────────────────
 
@@ -122,15 +123,63 @@ interface FakeOptions {
   fail?: (call: Call) => boolean;
   /** Return an empty reply (a zero-token stream that still ends "stop"). */
   empty?: (call: Call) => boolean;
+  /** #178 — milliseconds a call takes, so calls can finish out of order. */
+  delayMs?: (call: Call) => number;
+  /** #178 — report token usage for every call. */
+  usage?: { promptTokens: number; completionTokens: number; cacheReadTokens?: number };
 }
 
-function fakeModel(options: FakeOptions = {}): AIProvider & { calls: Call[] } {
+/** #178 — what a fake model observed about concurrency. */
+interface Concurrency {
+  /** Calls in the order they FINISHED. */
+  finished: Call[];
+  /** Most calls in flight at once. */
+  peak: number;
+}
+
+function fakeModel(
+  options: FakeOptions = {},
+  key = "anthropic",
+): AIProvider & { calls: Call[] } & Concurrency {
   const calls: Call[] = [];
+  let inFlight = 0;
+  async function* reply(call: Call): AsyncGenerator<ChatChunk> {
+    const { group, modules, maxTokens } = call;
+    const factsText = call.user.slice(
+      call.user.indexOf("=== EXTRACTED MODULE FACTS ==="),
+      call.user.indexOf("=== END MODULE FACTS ==="),
+    );
+    if (options.fail?.(call)) throw new Error("upstream exploded with a secret stack trace");
+    if (options.empty?.(call)) {
+      yield { type: "done", finishReason: "stop" };
+      return;
+    }
+    // One rule per module under a shared topic, padded to a reply proportional
+    // to the facts read — the shape and scale of a real catalog reply.
+    const perModule = modules.length
+      ? Math.floor((factsText.length * OUTPUT_PER_INPUT_CHAR) / modules.length)
+      : 0;
+    const body = modules
+      .map(
+        (m, i) =>
+          `### Topic ${i % 3}\n\n1. **Rule from ${m}**${options.marker ?? ""}\n   - **Condition**: ${pad(Math.max(perModule - 60, 10), m)}`,
+      )
+      .join("\n\n");
+    let text = `## ${group}\n\n${body || "Nothing documented."}`;
+    const capChars = Math.floor(maxTokens * CHARS_PER_TOKEN);
+    const cut = text.length > capChars || options.cutOff?.(call) === true;
+    if (cut) text = text.slice(0, Math.min(text.length, capChars, 400));
+    yield { type: "delta", content: text };
+    if (options.usage) yield { type: "usage", usage: options.usage };
+    yield { type: "done", finishReason: cut ? "length" : "stop" };
+  }
   const p = {
-    key: "anthropic",
+    key,
     model: "fake-section-model",
     offline: false,
     calls,
+    finished: [] as Call[],
+    peak: 0,
     async *stream(messages: ChatMessage[], opts?: ChatOptions): AsyncGenerator<ChatChunk> {
       const user = String(messages[messages.length - 1].content);
       const group = /Section group: \*\*(.+?)\*\*/.exec(user)?.[1] ?? "?";
@@ -142,28 +191,16 @@ function fakeModel(options: FakeOptions = {}): AIProvider & { calls: Call[] } {
       const maxTokens = (opts as { maxTokens?: number } | undefined)?.maxTokens ?? 0;
       const call: Call = { group, modules, user, maxTokens };
       calls.push(call);
-      if (options.fail?.(call)) throw new Error("upstream exploded with a secret stack trace");
-      if (options.empty?.(call)) {
-        yield { type: "done", finishReason: "stop" };
-        return;
+      inFlight += 1;
+      p.peak = Math.max(p.peak, inFlight);
+      try {
+        const ms = options.delayMs?.(call) ?? 0;
+        if (ms > 0) await new Promise((r) => setTimeout(r, ms));
+        yield* reply(call);
+      } finally {
+        inFlight -= 1;
+        p.finished.push(call);
       }
-      // One rule per module under a shared topic, padded to a reply proportional
-      // to the facts read — the shape and scale of a real catalog reply.
-      const perModule = modules.length
-        ? Math.floor((factsText.length * OUTPUT_PER_INPUT_CHAR) / modules.length)
-        : 0;
-      const body = modules
-        .map(
-          (m, i) =>
-            `### Topic ${i % 3}\n\n1. **Rule from ${m}**${options.marker ?? ""}\n   - **Condition**: ${pad(Math.max(perModule - 60, 10), m)}`,
-        )
-        .join("\n\n");
-      let text = `## ${group}\n\n${body || "Nothing documented."}`;
-      const capChars = Math.floor(maxTokens * CHARS_PER_TOKEN);
-      const cut = text.length > capChars || options.cutOff?.(call) === true;
-      if (cut) text = text.slice(0, Math.min(text.length, capChars, 400));
-      yield { type: "delta", content: text };
-      yield { type: "done", finishReason: cut ? "length" : "stop" };
     },
     async chat(): Promise<never> {
       throw new Error("chat not used");
@@ -178,7 +215,7 @@ function fakeModel(options: FakeOptions = {}): AIProvider & { calls: Call[] } {
       return true;
     },
   };
-  return p as unknown as AIProvider & { calls: Call[] };
+  return p as unknown as AIProvider & { calls: Call[] } & Concurrency;
 }
 
 function routerFor(provider: AIProvider): Phase2Router {
@@ -578,6 +615,8 @@ describe("a batch cut off at the cap is split and regenerated (bounded, #165)", 
   beforeEach(() => vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "4096"));
 
   it("splits a cut-off batch and regenerates each half, down to one module", async () => {
+    // One batch at a time, so the call order below is the sequential one.
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "1");
     const facts = pairs(6);
     const plan = planSectionBatches(facts, RULES, 150_000, 4_096);
     expect(plan.batches.map((b) => b.length)).toEqual([2, 2, 2]);
@@ -1056,5 +1095,184 @@ describe("per-batch progress", () => {
     for (let i = 1; i < rules.length; i++) {
       expect(rules[i].batch!.total).toBeGreaterThanOrEqual(rules[i - 1].batch!.total);
     }
+  });
+});
+
+// ── #178 — batches run concurrently ───────────────────────────────────────
+
+describe("#178 — a batched section's batches run through a bounded pool", () => {
+  const rulesCalls = (p: { calls: Call[] }) => callsFor(p, RULES);
+  /** Rules calls finish in REVERSE of the order they started. */
+  const slowestFirst = () => {
+    let started = 0;
+    return (c: Call) => (c.group === RULES.label ? Math.max(1, 60 - 4 * started++) : 0);
+  };
+
+  it("keeps DOCS_GEN_PHASE2_CONCURRENCY batch calls in flight", async () => {
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "3");
+    const provider = fakeModel({ delayMs: () => 2 });
+    await run(onyourleftSized(), provider);
+    expect(rulesCalls(provider).length).toBeGreaterThan(3);
+    expect(provider.peak).toBe(3);
+  });
+
+  it("defaults to 4 in flight on a cloud provider and 1 on local-gemma", async () => {
+    const cloud = fakeModel({ delayMs: () => 2 });
+    await run(onyourleftSized(), cloud);
+    expect(cloud.peak).toBe(4);
+    const local = fakeModel({ delayMs: () => 2 }, "local-gemma");
+    await run(onyourleftSized(), local);
+    expect(local.peak).toBe(1);
+  });
+
+  it("merges replies in PLAN order: batches finishing out of order give the sequential document", async () => {
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "1");
+    const sequential = await run(onyourleftSized(), fakeModel());
+
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "8");
+    const provider = fakeModel({ delayMs: slowestFirst() });
+    const concurrent = await run(onyourleftSized(), provider);
+
+    // The calls really did finish out of order...
+    const started = rulesCalls(provider).map((c) => c.modules[0]);
+    const finished = provider.finished
+      .filter((c) => c.group === RULES.label)
+      .map((c) => c.modules[0]);
+    expect(finished).not.toEqual(started);
+    expect([...finished].sort()).toEqual([...started].sort());
+    // ...and the document is byte-identical to the one-at-a-time run.
+    expect(sectionOf(concurrent.markdown, "Business Rules & Policies")).toBe(
+      sectionOf(sequential.markdown, "Business Rules & Policies"),
+    );
+    expect(concurrent.markdown).toBe(sequential.markdown);
+  });
+
+  it("keeps split halves in plan order when a cut-off batch is re-split under concurrency", async () => {
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "4096");
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "1");
+    const cutOff = (c: Call) => c.group === RULES.label && c.modules.length > 1;
+    const sequential = await run(pairs(6), fakeModel({ cutOff }));
+
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "3");
+    // The planned batches' own calls take 60/40/20ms and every half 1ms, so the
+    // planned batches COMPLETE (halves included) in reverse plan order: a merge
+    // in completion order would put p4/p5 first.
+    let planned = 0;
+    const delayMs = (c: Call) =>
+      c.group !== RULES.label ? 0 : c.modules.length > 1 ? 60 - 20 * planned++ : 1;
+    const provider = fakeModel({ cutOff, delayMs });
+    const concurrent = await run(pairs(6), provider);
+    expect(rulesCalls(provider).map((c) => c.modules.length)).toEqual([2, 2, 2, 1, 1, 1, 1, 1, 1]);
+    expect(concurrent.markdown).toBe(sequential.markdown);
+    const rules = sectionOf(concurrent.markdown, "Business Rules & Policies");
+    const order = [...rules.matchAll(/Rule from (p\d+)\*\*/g)].map((m) => m[1]);
+    expect(order).toEqual(["p0", "p1", "p2", "p3", "p4", "p5"]);
+  });
+
+  it("lets only one of two racing cut-off halves spend the section's LAST re-split", async () => {
+    // PR #181 review: the budget must run short while two checks compete for
+    // it. Three planned batches of five, all in flight; batch 0 is complete,
+    // batches 1 and 2 are cut off and split (budget 3 -> 1). Their first
+    // halves are then in flight together, both cut off, both checking at a
+    // budget of 1: exactly one may split. A budget checked, then awaited, then
+    // spent lets both split (4 re-splits, budget -1).
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "8192");
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "3");
+    const facts = pairs(15);
+    expect(planSectionBatches(facts, RULES, 150_000, 8_192).batches.map((b) => b.length)).toEqual([
+      5, 5, 5,
+    ]);
+    const firstBatch = new Set(["p0", "p1", "p2", "p3", "p4"]);
+    const provider = fakeModel({
+      cutOff: (c) =>
+        c.group === RULES.label && c.modules.length > 1 && !firstBatch.has(c.modules[0]),
+      delayMs: () => 2,
+    });
+    const result = await run(facts, provider);
+    const sizes = rulesCalls(provider).map((c) => c.modules.length);
+    // Every re-split adds two calls to the three planned ones.
+    const resplits = (sizes.length - 3) / 2;
+    expect(resplits).toBe(3);
+    // Exactly one first half was split, into two single-module calls.
+    expect(sizes.filter((n) => n === 1)).toHaveLength(2);
+    const warning = result.warnings.find((w) => w.section === RULES.label)!;
+    expect(warning.message).toContain("re-split allowance");
+  });
+
+  it("spends the section's re-split budget exactly once per re-split when cut-off batches race", async () => {
+    // Three planned batches of five, every call cut off, all three in flight at
+    // once: the budget (3) is spent by the three planned batches, so each half
+    // is kept whole — 3 + 6 calls.
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "8192");
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "3");
+    const facts = pairs(15);
+    expect(planSectionBatches(facts, RULES, 150_000, 8_192).batches.map((b) => b.length)).toEqual([
+      5, 5, 5,
+    ]);
+    const provider = fakeModel({ cutOff: (c) => c.group === RULES.label, delayMs: () => 2 });
+    const result = await run(facts, provider);
+    const sizes = rulesCalls(provider).map((c) => c.modules.length);
+    expect(sizes.slice(0, 3)).toEqual([5, 5, 5]);
+    expect(sizes.slice(3).sort()).toEqual([2, 2, 2, 3, 3, 3]);
+    const warning = result.warnings.find((w) => w.section === RULES.label)!;
+    expect(warning.message).toContain("re-split allowance");
+    expect(warning.message).toContain('"p0"');
+  });
+
+  it("reports per-batch progress monotonically while batches finish out of order and split", async () => {
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "6");
+    const updates: Array<{ section: string; batch?: { done: number; total: number } }> = [];
+    const provider = fakeModel({
+      cutOff: (c) => c.group === RULES.label && c.modules.length > 5,
+      delayMs: slowestFirst(),
+    });
+    await synthesizeFinalDocument(
+      onyourleftSized(),
+      META,
+      "business-requirements",
+      "BRD",
+      routerFor(provider),
+      "p1",
+      undefined,
+      (u) => updates.push(u),
+    );
+    const rules = updates.filter((u) => u.section === RULES.label && u.batch).map((u) => u.batch!);
+    expect(rules.length).toBeGreaterThan(1);
+    expect(rules.map((b) => b.done)).toEqual(rules.map((_, i) => i + 1));
+    for (let i = 1; i < rules.length; i++) {
+      expect(rules[i].total).toBeGreaterThanOrEqual(rules[i - 1].total);
+    }
+    for (const b of rules) expect(b.done).toBeLessThanOrEqual(b.total);
+    expect(rules[rules.length - 1].done).toBe(rules[rules.length - 1].total);
+  });
+});
+
+describe("#178 — every Phase-2 call's recorded usage counts toward the run's cost", () => {
+  it("adds each section and batch call, concurrent ones included, to the run", async () => {
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "4");
+    const provider = fakeModel({
+      delayMs: () => 1,
+      usage: {
+        promptTokens: 1_000,
+        completionTokens: 200,
+        cacheReadTokens: 300,
+        cacheWriteTokens: 50,
+      },
+    });
+    const usage = new RunUsage();
+    await withRunUsage(usage, () => run(onyourleftSized(), provider));
+    const n = provider.calls.length;
+    expect(n).toBeGreaterThan(10);
+    expect(usage.lines()).toEqual([
+      {
+        provider: "anthropic",
+        model: "fake-section-model",
+        calls: n,
+        inputTokens: 1_000 * n,
+        outputTokens: 200 * n,
+        cacheReadTokens: 300 * n,
+        cacheWriteTokens: 50 * n,
+      },
+    ]);
   });
 });

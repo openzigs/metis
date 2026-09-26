@@ -49,6 +49,7 @@ import {
 import { generatedDocSyntheticDocumentId } from "../lib/docs-gen/generated-doc-publication.js";
 import {
   documentProgressPercent,
+  monotonicPercent,
   phase1ProgressMessage,
   phase1ProgressPercent,
   sectionProgressMessage,
@@ -1177,8 +1178,9 @@ export async function generateDocumentAsync(
         ...(pathPrefixes ? { pathPrefixes } : {}),
       });
 
-      // The bar never goes backwards, whatever order updates arrive in.
-      let lastProgress = 0;
+      // #178 — the bar never moves backwards: a batched section's total grows
+      // when a cut-off batch is split, which can lower done/total for a moment.
+      const docPercent = monotonicPercent();
       const result = await synthesizeHolisticDocument(
         projectId,
         docType,
@@ -1222,7 +1224,7 @@ export async function generateDocumentAsync(
               "doc-generation",
               docId,
               projectId,
-              (lastProgress = Math.max(lastProgress, documentProgressPercent(u))),
+              docPercent(documentProgressPercent(u)),
               sectionProgressMessage(u),
             );
           },
@@ -1232,7 +1234,7 @@ export async function generateDocumentAsync(
               "doc-generation",
               docId,
               projectId,
-              (lastProgress = Math.max(lastProgress, phase1ProgressPercent(done, total))),
+              docPercent(phase1ProgressPercent(done, total)),
               phase1ProgressMessage(done, total),
             );
           },

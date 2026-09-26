@@ -649,13 +649,14 @@ describe("generated-docs routes", () => {
             total: 2,
             batch: { done: 13, total: 52 },
           });
-          // A later update that computes LOWER (a re-split grew the total).
+          // #178 — many batches split before the next finished: 14/80 is a
+          // lower fraction than 13/52, and the bar must not move back.
           options.onSectionProgress?.({
             section: "Rules",
             status: "generating",
             index: 1,
             total: 2,
-            batch: { done: 13, total: 60 },
+            batch: { done: 14, total: 80 },
           });
           options.onSectionProgress?.({
             section: "Overview",
@@ -728,18 +729,19 @@ describe("generated-docs routes", () => {
         65,
         "Section 1/2: Rules (batch 13/52)",
       );
-      // The bar never goes backwards: the lower update is reported at the high-water mark.
-      const pcts = (jobEvents.progress as ReturnType<typeof vi.fn>).mock.calls.map(
-        (c) => c[3] as number,
-      );
-      for (let i = 1; i < pcts.length; i++) expect(pcts[i]).toBeGreaterThanOrEqual(pcts[i - 1]);
       expect(jobEvents.progress).toHaveBeenCalledWith(
         "doc-generation",
         "doc-1",
         "proj-1",
         65,
-        "Section 1/2: Rules (batch 13/60)",
+        "Section 1/2: Rules (batch 14/80)",
       );
+      const percents = (jobEvents.progress as ReturnType<typeof vi.fn>).mock.calls
+        .filter(([kind, id]) => kind === "doc-generation" && id === "doc-1")
+        .map(([, , , percent]) => percent as number);
+      for (let i = 1; i < percents.length; i++) {
+        expect(percents[i]).toBeGreaterThanOrEqual(percents[i - 1]);
+      }
     });
 
     it("uses database-scope fallbacks when the stored filter is unusable", async () => {

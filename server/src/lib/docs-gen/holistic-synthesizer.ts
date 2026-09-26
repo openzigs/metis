@@ -110,6 +110,8 @@ import {
 } from "./phase1-chunking.js";
 import { mapSettledWithConcurrency, resolvePhase1Concurrency } from "./phase1-concurrency.js";
 import { isInPathScope, restrictToPathScope, withPathScopeBanner } from "./path-scope.js";
+import { resolvePhase2Concurrency } from "./phase2-concurrency.js";
+import { noteRunUsage, withDocsGenRunCost } from "./run-cost.js";
 import {
   loadRepositorySources,
   repositoryPathIdentity,
@@ -1140,7 +1142,22 @@ function synthesisConfigHash(
     .digest("hex");
 }
 
+/**
+ * Generate one document. #178 — the run's model calls are tallied as it goes
+ * and its estimated cost is logged when it ends (see run-cost.ts).
+ */
 export async function synthesizeHolisticDocument(
+  projectId: string,
+  docType: DocType,
+  title: string,
+  options?: Parameters<typeof runHolisticSynthesis>[3],
+): Promise<HolisticSynthesisResult> {
+  return withDocsGenRunCost({ projectId, docType }, () =>
+    runHolisticSynthesis(projectId, docType, title, options),
+  );
+}
+
+async function runHolisticSynthesis(
   projectId: string,
   docType: DocType,
   title: string,
@@ -2621,7 +2638,12 @@ type Phase1Reply =
       ok: true;
       text: string;
       truncation: TruncationDetection;
-      usage: { promptTokens: number; completionTokens: number; cacheReadTokens: number };
+      usage: {
+        promptTokens: number;
+        completionTokens: number;
+        cacheReadTokens: number;
+        cacheWriteTokens: number;
+      };
     }
   | { ok: false; error: unknown };
 
@@ -2650,7 +2672,12 @@ async function streamPhase1Facts(
     try {
       const sessionId = `docs-facts-${opts.projectId}-${opts.modulePath.replace(/[^a-z0-9]/gi, "_")}-${Date.now()}-${randomBytes(3).toString("hex")}`;
       const chunks: string[] = [];
-      const usage = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0 };
+      const usage = {
+        promptTokens: 0,
+        completionTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      };
       let finishReason: string | undefined;
       for await (const chunk of provider.stream(messages, {
         sessionId,
@@ -2672,6 +2699,7 @@ async function streamPhase1Facts(
           usage.promptTokens = chunk.usage.promptTokens;
           usage.completionTokens = chunk.usage.completionTokens;
           usage.cacheReadTokens = chunk.usage.cacheReadTokens ?? 0;
+          usage.cacheWriteTokens = chunk.usage.cacheWriteTokens ?? 0;
         } else if (chunk.type === "done") {
           finishReason = chunk.finishReason;
         }
@@ -2686,6 +2714,15 @@ async function streamPhase1Facts(
           inputTokens: usage.promptTokens,
           outputTokens: usage.completionTokens,
           cacheReadTokens: usage.cacheReadTokens,
+          cacheWriteTokens: usage.cacheWriteTokens,
+        });
+        noteRunUsage({
+          provider: provider.key,
+          model: provider.model,
+          inputTokens: usage.promptTokens,
+          outputTokens: usage.completionTokens,
+          cacheReadTokens: usage.cacheReadTokens,
+          cacheWriteTokens: usage.cacheWriteTokens,
         });
       }
       // Both signals: the provider's stop reason and the gateway's placeholder
@@ -3062,7 +3099,8 @@ interface BatchedSectionResult {
 }
 
 /**
- * #157 — write one BATCHED section: one call per batch of `plan`, in order; a
+ * #157 — write one BATCHED section: one call per batch of `plan`, up to
+ * DOCS_GEN_PHASE2_CONCURRENCY at once (#178) and merged in plan order; a
  * batch whose reply is cut off at the output cap is split in two and each half
  * regenerated, bounded by {@link shouldResplit} (at most one re-split per
  * planned batch across the section, and never a batch too small for its size
@@ -3106,18 +3144,26 @@ async function synthesizeBatchedSection(input: {
   const sources = batchFactsSources(plan);
   const sourceOf = new Map(plan.modules.map((m, i) => [m, sources[i]]));
   const lead = plan.modules[0];
+  // #178 — batches run through a bounded worker pool. Every counter below is
+  // read and written only in synchronous code between awaits, so concurrent
+  // batches cannot race on it: in particular the re-split budget is checked
+  // (shouldResplit) and spent in the same synchronous step, never across an
+  // await, so two cut-off batches can never both spend the last re-split.
   let resplitsLeft = plan.batches.length;
   let calls = 0;
-  const done: Array<{
+  type BatchDone = {
     batch: SectionBatchModule[];
     result: SectionGroupResult;
     grounding: GroundingContext | undefined;
     /** Why a cut-off multi-module batch was kept whole (PR #169 review). */
     keptWhole?: "allowance" | "runaway";
-  }> = [];
-  const failed: Array<{ batch: SectionBatchModule[]; err: unknown }> = [];
+  };
+  type BatchFailed = { batch: SectionBatchModule[]; err: unknown };
+  type BatchOutcome = { done: BatchDone } | { failed: BatchFailed };
 
-  const runBatch = async (batch: SectionBatchModule[]): Promise<void> => {
+  // Returns the batch's outcomes in PLAN order: a split batch returns its first
+  // half's outcomes before its second's, whatever order the calls finish in.
+  const runBatch = async (batch: SectionBatchModule[]): Promise<BatchOutcome[]> => {
     const batchSources = batch.map((m) => sourceOf.get(m)!);
     const grounding = claimExtractor
       ? mergeFactsIntoContext(input.baseGrounding, batchSources, bundle.factsCharCap)
@@ -3152,10 +3198,9 @@ async function synthesizeBatchedSection(input: {
         modules: batch.length,
         err: String(err),
       });
-      failed.push({ batch, err });
       batchesDone += 1;
       progress();
-      return;
+      return [{ failed: { batch, err } }];
     }
     if (shouldResplit(batch, result.truncation.truncated, resplitsLeft, plan.outputBudget)) {
       resplitsLeft -= 1;
@@ -3169,9 +3214,10 @@ async function synthesizeBatchedSection(input: {
         replyChars: result.markdown.length,
         resplitsLeft,
       });
-      await runBatch(first);
-      await runBatch(second);
-      return;
+      // The halves share this batch's worker slot, so the pool's bound holds.
+      const firstOutcomes = await runBatch(first);
+      const secondOutcomes = await runBatch(second);
+      return [...firstOutcomes, ...secondOutcomes];
     }
     const keptWhole =
       result.truncation.truncated && batch.length > 1
@@ -3179,12 +3225,24 @@ async function synthesizeBatchedSection(input: {
           ? ("allowance" as const)
           : ("runaway" as const)
         : undefined;
-    done.push({ batch, result, grounding, ...(keptWhole ? { keptWhole } : {}) });
     batchesDone += 1;
     progress();
+    return [{ done: { batch, result, grounding, ...(keptWhole ? { keptWhole } : {}) } }];
   };
 
-  for (const batch of plan.batches) await runBatch(batch);
+  const concurrency = resolvePhase2Concurrency(bundle.provider.key);
+  const settled = await mapSettledWithConcurrency(plan.batches, concurrency, (batch) =>
+    runBatch(batch),
+  );
+  const outcomes: BatchOutcome[] = [];
+  for (const s of settled) {
+    // runBatch reports a failed CALL as an outcome; only a defect in this code
+    // rejects, and that fails the section exactly as the sequential loop did.
+    if (s.status === "rejected") throw s.reason;
+    outcomes.push(...s.value);
+  }
+  const done = outcomes.flatMap((o) => ("done" in o ? [o.done] : []));
+  const failed = outcomes.flatMap((o) => ("failed" in o ? [o.failed] : []));
   if (done.length === 0) throw failed[0].err;
 
   const replies = done.filter((d) => d.result.markdown.trim().length > 0);
@@ -3240,6 +3298,9 @@ async function synthesizeBatchedSection(input: {
   // Per-batch grounding: each reply is decomposed and judged against its own
   // batch's facts, so every claim list stays small; the pooled result is then
   // graded exactly like a single-call section.
+  // #178 — this runs after the batch pool, over the replies in plan order, so
+  // the grounding calls (and, under DOCS_GEN_GROUNDING=sample, the draw) are
+  // the same whatever order the batch calls finished in.
   const results: FaithfulnessResult[] = [];
   // Replies the pooled score does not cover: unverified, or scoring threw.
   const unchecked: typeof replies = [];
@@ -3306,6 +3367,7 @@ async function synthesizeBatchedSection(input: {
     modules: plan.modules.length,
     skippedModules: plan.skipped.length,
     plannedBatches: plan.batches.length,
+    concurrency,
     calls,
     resplits: plan.batches.length - resplitsLeft,
     parts: done.length,
@@ -5320,6 +5382,7 @@ async function streamSectionContent(
   let promptTokens = 0;
   let completionTokens = 0;
   let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
   // #1226 — the provider's stop signal, forwarded on the terminal `done` chunk.
   let finishReason: string | undefined;
   // #1226 — configurable OUTPUT cap (was hardcoded 8192), clamped to the
@@ -5346,6 +5409,7 @@ async function streamSectionContent(
       promptTokens = chunk.usage.promptTokens;
       completionTokens = chunk.usage.completionTokens;
       cacheReadTokens = chunk.usage.cacheReadTokens ?? 0;
+      cacheWriteTokens = chunk.usage.cacheWriteTokens ?? 0;
     } else if (chunk.type === "done") {
       finishReason = chunk.finishReason;
     }
@@ -5360,6 +5424,15 @@ async function streamSectionContent(
       inputTokens: promptTokens,
       outputTokens: completionTokens,
       cacheReadTokens,
+      cacheWriteTokens,
+    });
+    noteRunUsage({
+      provider: provider.key,
+      model: provider.model,
+      inputTokens: promptTokens,
+      outputTokens: completionTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
     });
   }
   // #1226 — strip the gateway's max-tokens placeholder BEFORE the text can

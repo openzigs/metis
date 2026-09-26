@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   PHASE1_PROGRESS_SHARE,
   documentProgressPercent,
+  monotonicPercent,
   phase1ProgressMessage,
   phase1ProgressPercent,
   sectionProgressMessage,
@@ -103,5 +104,37 @@ describe("Phase 1 progress and the whole-document bar", () => {
     for (let i = 1; i < all.length; i++) expect(all[i]).toBeGreaterThanOrEqual(all[i - 1]);
     expect(phase2[0]).toBe(PHASE1_PROGRESS_SHARE);
     expect(phase2[phase2.length - 1]).toBe(100);
+  });
+});
+
+describe("monotonicPercent (#178)", () => {
+  it("never reports less than it already has when a split grows a section's total", () => {
+    const pct = monotonicPercent();
+    const seen = [
+      { done: 3, total: 4 },
+      { done: 4, total: 6 }, // two cut-off batches split between finishes
+      { done: 5, total: 6 },
+      { done: 6, total: 6 },
+    ].map((batch) =>
+      pct(documentProgressPercent({ status: "generating", index: 1, total: 1, batch })),
+    );
+    // Unguarded, the second update would drop from 90% to 87%.
+    expect(
+      documentProgressPercent({
+        status: "generating",
+        index: 1,
+        total: 1,
+        batch: { done: 4, total: 6 },
+      }),
+    ).toBe(87);
+    expect(seen).toEqual([90, 90, 93, 100]);
+  });
+
+  it("keeps separate high-water marks per tracker", () => {
+    const a = monotonicPercent();
+    const b = monotonicPercent();
+    expect(a(40)).toBe(40);
+    expect(b(10)).toBe(10);
+    expect(a(20)).toBe(40);
   });
 });
