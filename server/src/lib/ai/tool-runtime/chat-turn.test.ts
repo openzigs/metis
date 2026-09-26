@@ -32,7 +32,7 @@ import {
 } from "../providers/local-concurrency-limiter.js";
 import type { ApprovalPolicy } from "../types.js";
 import { ToolApprovalBroker } from "./approval-broker.js";
-import { runChatToolTurn, type ChatToolRecord } from "./chat-turn.js";
+import { composeReplyText, runChatToolTurn, type ChatToolRecord } from "./chat-turn.js";
 import { brokerPrompter } from "./prompter.js";
 import { collectGuardedStream } from "./stream-collect.js";
 import { makeToolset } from "./toolset.js";
@@ -382,5 +382,39 @@ describe("local provider: no concurrency slot held while approving or executing"
     expect(inFlightWhenPrompted).toEqual([0]);
     expect(inFlightWhenExecuting).toEqual([0]);
     expect(limiter.inFlight).toBe(0);
+  });
+});
+
+describe("replyText keeps every native turn's text (#128 review)", () => {
+  it("composeReplyText joins turns like the stream and appends an unseen answer", () => {
+    expect(composeReplyText(["Let me look.", "", "Found it."], "Found it.")).toBe(
+      "Let me look.\n\nFound it.",
+    );
+    expect(composeReplyText(["line\n", "next"], "next")).toBe("line\nnext");
+    expect(composeReplyText(["Checking."], "Budget used up.")).toBe("Checking.\n\nBudget used up.");
+    expect(composeReplyText([], "only")).toBe("only");
+    expect(composeReplyText([], "")).toBe("");
+  });
+
+  it("native: the text written before a tool call survives in replyText", async () => {
+    const lookup = tool("lookup", () => "found");
+    const auto: ApprovalPolicy = { low: "auto", medium: "auto", high: "auto" };
+    const script = () =>
+      new OfflineStubProvider({
+        script: [
+          { content: "Let me look.", toolCalls: [{ id: "c1", name: "lookup", args: {} }] },
+          { content: "It is 42." },
+        ],
+      });
+    const native = setup(auto, [lookup]);
+    const out = await runChatToolTurn(script(), {
+      messages: [{ role: "user", content: "x" }],
+      toolset: native.toolset,
+      native: true,
+      ctx: CTX,
+      gate: native.gate,
+    });
+    expect(out.finalResponse).toBe("It is 42.");
+    expect(out.replyText).toBe("Let me look.\n\nIt is 42.");
   });
 });

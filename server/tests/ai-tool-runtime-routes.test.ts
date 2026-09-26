@@ -616,6 +616,27 @@ describe("#142 the approval gate through the routes", () => {
     ]);
   });
 
+  it("/chat returns and records each native turn's text too, not only the last", async () => {
+    stubModel([
+      {
+        content: "Let me count.",
+        toolCalls: [{ id: "c1", name: "count_rows", args: { table: "t" } }],
+      },
+      { content: "There are 7." },
+    ]);
+    const app = makeApp();
+    const sid = await newSession(app, { policy: { high: "auto" } });
+    const res = await as(
+      alice,
+      request(app).post("/api/ai/chat").send({ sessionId: sid, message: "go" }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.data.response.content).toBe("Let me count.\n\nThere are 7.");
+    const reply = aiMessageRows.filter((r) => r.role === "assistant").at(-1)!;
+    expect(reply.content).toContain("Let me count.");
+    expect(reply.content).toContain("There are 7.");
+  });
+
   it("a turn that ends mid-investigation streams the substitute answer too", async () => {
     const calls = Array.from({ length: 8 }, (_, i) => ({
       toolCalls: [{ id: `c${i}`, name: "count_rows", args: { table: `t${i}` } }],

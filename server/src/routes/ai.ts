@@ -1263,7 +1263,8 @@ export function aiRouter(): Router {
           },
         );
         response = {
-          content: loop.finalResponse,
+          // Every native turn's text, as /stream delivers it — not only the last.
+          content: loop.replyText,
           usage: loop.usage,
           model,
           provider: loadAIConfig().provider,

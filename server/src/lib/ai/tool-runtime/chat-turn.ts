@@ -40,6 +40,14 @@ export interface ChatToolRecord {
 
 export interface ChatToolTurnResult {
   finalResponse: string;
+  /**
+   * The reply as the user should see it. Native mode: every model turn's text
+   * in order (the "Let me look…" before a tool call included), then the
+   * loop's answer if it is not already the tail — the same text the /stream
+   * route delivers. Text protocol: `finalResponse` (its earlier turns are
+   * tool-call JSON, not prose).
+   */
+  replyText: string;
   usage: TokenUsage;
   finishReason?: string;
   toolResults: ChatToolRecord[];
@@ -78,6 +86,25 @@ function capForModel(text: string, maxChars: number | undefined): string {
   );
 }
 
+/**
+ * Join native turns' texts the way the /stream route streams them: a blank
+ * line between turns unless the previous one already ended a line, then the
+ * loop's answer if it is not already the tail (a substitute answer the model
+ * never produced).
+ */
+export function composeReplyText(turnTexts: readonly string[], finalResponse: string): string {
+  let out = "";
+  for (const text of turnTexts) {
+    if (!text) continue;
+    if (out && !out.endsWith("\n")) out += "\n\n";
+    out += text;
+  }
+  if (finalResponse && !out.endsWith(finalResponse)) {
+    out += `${out ? "\n\n" : ""}${finalResponse}`;
+  }
+  return out;
+}
+
 export async function runChatToolTurn(
   provider: AIProvider,
   input: ChatToolTurnInput,
@@ -85,6 +112,7 @@ export async function runChatToolTurn(
 ): Promise<ChatToolTurnResult> {
   const records: ChatToolRecord[] = [];
   let finishReason: string | undefined;
+  const turnTexts: string[] = [];
   const callModel =
     options.callModel ?? ((m: ChatMessage[], o: ChatOptions) => provider.chat(m, o));
 
@@ -118,6 +146,7 @@ export async function runChatToolTurn(
         callModel: async (m, o) => {
           const r = await callModel(m, o);
           finishReason = r.finishReason;
+          turnTexts.push(r.content);
           return r;
         },
         executeTool: async (call) => {
@@ -164,6 +193,9 @@ export async function runChatToolTurn(
 
   return {
     finalResponse: result.finalResponse,
+    replyText: input.native
+      ? composeReplyText(turnTexts, result.finalResponse)
+      : result.finalResponse,
     usage: result.usage,
     ...(finishReason ? { finishReason } : {}),
     toolResults: records,
