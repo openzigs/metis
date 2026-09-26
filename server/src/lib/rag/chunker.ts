@@ -56,6 +56,8 @@
  */
 import crypto from "node:crypto";
 
+import { EMBED_INPUT_MAX_BYTES, utf8ByteLength } from "./embed-input-budget.js";
+
 export interface Chunk {
   /** 0-based position within the source document. */
   position: number;
@@ -325,8 +327,15 @@ export function resolveChunkParams(opts: ChunkOptions = {}): ResolvedChunkParams
  *        #1182 carries a NULL `chunkerIdentity` and is v1 by definition.
  *   v2 — #1178 (resume at the cut) + #1178's line-end boundary tier +
  *        #1185's `maxOverlapFor` cap. The first generation that tiles.
+ *   v3 — #201: a window holding non-ASCII text is also bounded by a token
+ *        budget in which each non-ASCII character costs its UTF-8 bytes
+ *        (`windowEnd`), so a CJK or emoji chunk no longer exceeds the model's
+ *        2,048-token input and loses its tail; no window ends or resumes inside
+ *        a surrogate pair. Pure-ASCII windows are cut exactly as in v2 —
+ *        re-ingesting an all-ASCII document reproduces its chunks; only
+ *        documents with non-ASCII text are cut differently.
  */
-export const CHUNKER_ALGORITHM_VERSION = 2;
+export const CHUNKER_ALGORITHM_VERSION = 3;
 
 /**
  * Producer segment of {@link chunkerIdentity} — the chunker that cut the row.
@@ -502,17 +511,22 @@ function sliceSection(
   const chunks: Chunk[] = [];
   const body = section.body;
   if (body.length === 0) return chunks;
-  if (body.length <= chunkSize) {
+  if (body.length <= chunkSize && windowEnd(body, 0, body.length, chunkSize) === body.length) {
     chunks.push(makeChunk(body, startPosition, section, section.startOffset));
     return chunks;
   }
   let cursor = 0;
   let local = 0;
   while (cursor < body.length) {
-    const end = Math.min(body.length, cursor + chunkSize);
+    // #201 — a window holding non-ASCII text is also bounded by UTF-8 bytes, so no
+    // chunk exceeds the model's token input. The overlap shrinks with such a
+    // window (never past a quarter of it), which keeps the advance guarantee.
+    const charEnd = Math.min(body.length, cursor + chunkSize);
+    const end = windowEnd(body, cursor, charEnd, chunkSize);
+    const windowOverlap = end < charEnd ? Math.min(overlap, maxOverlapFor(end - cursor)) : overlap;
     let sliceEnd = end;
     if (end < body.length) {
-      sliceEnd = findBoundary(body, cursor, end, overlap);
+      sliceEnd = findBoundary(body, cursor, end, windowOverlap);
     }
     const slice = body.slice(cursor, sliceEnd).trim();
     if (slice.length > 0) {
@@ -526,9 +540,60 @@ function sliceSection(
     // before it is the whole tiling guarantee. `findBoundary`'s floor already keeps
     // `sliceEnd - overlap` above `cursor`; the clamp holds the loop's termination as a
     // property of THIS function rather than of a constant in another one.
-    cursor = Math.max(sliceEnd - overlap, cursor + 1);
+    // #201 — never resume between the two halves of a surrogate pair.
+    cursor = pairSafe(body, Math.max(sliceEnd - windowOverlap, cursor + 1), cursor);
   }
   return chunks;
+}
+
+/**
+ * Issue #201 — where the window `[from, charEnd)` must end so it fits the model's
+ * token input, and never inside a surrogate pair.
+ *
+ * The cost of a window, in {@link EMBED_INPUT_MAX_BYTES} units:
+ *
+ *  - a non-ASCII code point costs its UTF-8 bytes — a byte-level BPE token covers
+ *    at least one byte, so this part of the bound is sound;
+ *  - an ASCII character costs `EMBED_INPUT_MAX_BYTES / max(chunkSize,
+ *    EMBED_INPUT_MAX_BYTES)` — the character window's own assumption, scaled so
+ *    that a full pure-ASCII window exactly fits. At `chunkSize` ≤ 2,046 that is 1,
+ *    i.e. the whole window is bounded by bytes.
+ *
+ * So a pure-ASCII window always keeps `charEnd` (every ASCII cut is exactly v2's),
+ * a CJK or emoji window shrinks to its byte budget, and a mostly-English window
+ * with a few typographic characters moves by only a few characters even at a
+ * `chunkSize` above the budget. Integer arithmetic: costs are scaled by
+ * `max(chunkSize, EMBED_INPUT_MAX_BYTES)`.
+ */
+function windowEnd(body: string, from: number, charEnd: number, chunkSize: number): number {
+  const window = body.slice(from, charEnd);
+  // Pure ASCII: one byte per UTF-16 unit, and nothing else is.
+  if (utf8ByteLength(window) === window.length) return charEnd;
+  const scale = Math.max(chunkSize, EMBED_INPUT_MAX_BYTES);
+  const limit = EMBED_INPUT_MAX_BYTES * scale;
+  let end = from;
+  let cost = 0;
+  for (const codePoint of window) {
+    const size =
+      codePoint.charCodeAt(0) < 0x80 ? EMBED_INPUT_MAX_BYTES : utf8ByteLength(codePoint) * scale;
+    if (cost + size > limit) return end;
+    cost += size;
+    end += codePoint.length;
+  }
+  return pairSafe(body, end, from);
+}
+
+/**
+ * `at`, or one earlier when `at` falls between the halves of a surrogate pair —
+ * and never at or below `floor + 1`, so the loop still advances. Only non-ASCII
+ * text holds surrogates, so an ASCII offset is always returned unchanged.
+ */
+function pairSafe(body: string, at: number, floor: number): number {
+  if (at <= floor + 1 || at >= body.length) return at;
+  const before = body.charCodeAt(at - 1);
+  const after = body.charCodeAt(at);
+  const splitsPair = before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
+  return splitsPair ? at - 1 : at;
 }
 
 /**
@@ -605,9 +670,10 @@ export function findBoundary(
   tiers: readonly BoundaryTier[] = BOUNDARY_TIERS,
 ): number {
   const window = body.slice(from, to);
-  // `to - from` is always `chunkSize` here — the caller only searches when a full
-  // window remains — so the floor never exceeds the window and a hard cut at `to`
-  // always satisfies it.
+  // `to - from` is the full window here — `chunkSize`, or (#201) the shorter
+  // byte-bounded window of non-ASCII text — because the caller only searches when a
+  // full window remains, so the floor never exceeds the window and a hard cut at
+  // `to` always satisfies it.
   //
   // The `overlap + 1` term is the LOCAL termination proof: whatever `overlap` is, the
   // cut lands past `from + overlap`, so `sliceEnd - overlap > from`. Since #1185 capped

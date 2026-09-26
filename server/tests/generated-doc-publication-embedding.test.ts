@@ -62,6 +62,11 @@ import {
 } from "../src/lib/docs-gen/evidence-policy.js";
 import { filterPrimaryEvidence } from "../src/lib/docs-gen/evidence-filter.js";
 import { generatedDocRevisionId } from "../src/lib/docs-gen/generated-doc-provenance.js";
+import { TaskAbortError, type TaskAbortSource } from "../src/lib/scheduler/task-abort.js";
+import {
+  EMBED_INPUT_MAX_BYTES,
+  MAX_EMBED_SEQUENCE_TOKENS,
+} from "../src/lib/rag/embed-input-budget.js";
 
 const FIXTURE_URL = new URL("./fixtures/busy-transformers.mjs", import.meta.url).href;
 
@@ -114,7 +119,7 @@ describe("chunkGeneratedMarkdown (#189)", () => {
       "## Two\n\npara\n\npara\n\npara",
     ]);
     expect(chunkGeneratedMarkdown("   ")).toEqual([]);
-    expect(DOCSGEN_CHUNKER_IDENTITY).toBe("docsgen:v2:1500");
+    expect(DOCSGEN_CHUNKER_IDENTITY).toBe("docsgen:v3:1500");
   });
 
   it("splits a single over-long line without cutting a surrogate pair", () => {
@@ -459,6 +464,195 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         );
       });
 
+      /** An embedder whose first batch triggers `abort(reason)` on `controller`. */
+      function abortingAfterFirstBatch(controller: AbortController, reason: unknown) {
+        const inner = recordingEmbedder();
+        return {
+          calls: inner.calls,
+          embedder: {
+            embed: async (texts: string[]) => {
+              const out = await (inner.embedder as { embed(t: string[]): Promise<unknown> }).embed(
+                texts,
+              );
+              controller.abort(reason);
+              return out;
+            },
+          } as never,
+        };
+      }
+
+      async function publishAborted(
+        source: TaskAbortSource,
+        message: string,
+        finalAttempt: boolean,
+      ) {
+        const controller = new AbortController();
+        const { calls, embedder } = abortingAfterFirstBatch(
+          controller,
+          new TaskAbortError(source, message),
+        );
+        await expect(
+          publishGeneratedDocRevision(payload(), {
+            storage,
+            embedder,
+            signal: controller.signal,
+            finalAttempt,
+          }),
+        ).rejects.toThrow(message);
+        expect(calls).toHaveLength(1);
+        return db.document.findUniqueOrThrow({ where: { id: syntheticId() } });
+      }
+
+      it("#201 — a user's cancellation is terminal and says so, even before the last attempt", async () => {
+        await version(1, largeDocument(60_000));
+        expect(await publishAborted("user", "cancelled by user", false)).toMatchObject({
+          status: "failed",
+          errorMessage: "generated-doc publication cancelled: cancelled by user",
+        });
+      });
+
+      it("#201 — a timeout on the final attempt marks the document failed with the timeout", async () => {
+        await version(1, largeDocument(60_000));
+        const row = await publishAborted("timeout", "task timeout after 600000ms", true);
+        expect(row).toMatchObject({
+          status: "failed",
+          errorMessage: "generated-doc publication failed: task timeout after 600000ms",
+        });
+        expect(row.processedAt).not.toBeNull();
+      });
+
+      it("#201 — a timeout before the final attempt records the reason and stays processing", async () => {
+        await version(1, largeDocument(60_000));
+        expect(await publishAborted("timeout", "task timeout after 600000ms", false)).toMatchObject(
+          {
+            status: "processing",
+            errorMessage: "generated-doc publication failed: task timeout after 600000ms",
+          },
+        );
+      });
+
+      it("#201 — a scheduler shutdown records nothing: the outbox replays it", async () => {
+        await version(1, largeDocument(60_000));
+        expect(await publishAborted("shutdown", "scheduler shutdown", true)).toMatchObject({
+          status: "processing",
+          errorMessage: null,
+        });
+      });
+
+      it("#201 — a cancellation that lands before the first write settles the queued placeholder", async () => {
+        await version(1, largeDocument(5_000));
+        await db.document.create({
+          data: {
+            id: syntheticId(),
+            projectId: "project",
+            filename: "generated-doc-doc.md",
+            mimeType: "text/markdown",
+            sizeBytes: 5,
+            storagePath: "doc.md",
+            checksum: "hash",
+            status: "pending",
+            uploadedById: "initiator",
+          },
+        });
+        const controller = new AbortController();
+        controller.abort(new TaskAbortError("user", "cancelled by user"));
+        const { calls, embedder } = recordingEmbedder();
+        await expect(
+          publishGeneratedDocRevision(payload(), { storage, embedder, signal: controller.signal }),
+        ).rejects.toThrow("cancelled by user");
+        expect(calls).toHaveLength(0);
+        expect(await db.document.findUniqueOrThrow({ where: { id: syntheticId() } })).toMatchObject(
+          {
+            status: "failed",
+            errorMessage: "generated-doc publication cancelled: cancelled by user",
+          },
+        );
+      });
+
+      it("#201 — a failure outside the embed step is recorded too, even when not an Error", async () => {
+        await version(1, largeDocument(5_000));
+        await db.document.create({
+          data: {
+            id: syntheticId(),
+            projectId: "project",
+            filename: "generated-doc-doc.md",
+            mimeType: "text/markdown",
+            sizeBytes: 5,
+            storagePath: "doc.md",
+            checksum: "hash",
+            status: "pending",
+            uploadedById: "initiator",
+          },
+        });
+        const failingStorage = {
+          write: async () => {
+            throw "storage offline";
+          },
+        } as never;
+        const { calls, embedder } = recordingEmbedder();
+        await expect(
+          publishGeneratedDocRevision(payload(), {
+            storage: failingStorage,
+            embedder,
+            finalAttempt: true,
+          }),
+        ).rejects.toBe("storage offline");
+        expect(calls).toHaveLength(0);
+        expect(await db.document.findUniqueOrThrow({ where: { id: syntheticId() } })).toMatchObject(
+          {
+            status: "failed",
+            errorMessage: "generated-doc publication failed: storage offline",
+          },
+        );
+      });
+
+      it("#201 — a row that already has an outcome keeps it when a later step fails", async () => {
+        await version(1, largeDocument(5_000));
+        await db.document.create({
+          data: {
+            id: syntheticId(),
+            projectId: "project",
+            filename: "generated-doc-doc.md",
+            mimeType: "text/markdown",
+            sizeBytes: 5,
+            storagePath: "doc.md",
+            checksum: "hash",
+            status: "ready",
+            indexState: "quarantined",
+            uploadedById: "initiator",
+          },
+        });
+        await expect(
+          publishGeneratedDocRevision(payload(), {
+            storage,
+            finalAttempt: true,
+            ...recordingEmbedder(new Error("model unavailable")),
+          }),
+        ).rejects.toThrow("model unavailable");
+        expect(await db.document.findUniqueOrThrow({ where: { id: syntheticId() } })).toMatchObject(
+          { status: "ready", errorMessage: null },
+        );
+      });
+
+      it("#201 — CJK and emoji sections are embedded whole: every chunk fits the token budget", async () => {
+        const cjk = "検索拡張生成は文書の内容を理解するための仕組みです。".repeat(120);
+        const emoji = "😀🚀🎉🧪".repeat(500);
+        const markdown = `## 日本語\n\n${cjk}\n\n## Emoji\n\n${emoji}\n\n## English\n\nplain text`;
+        await version(1, markdown);
+        await autoApprove(false);
+        const { calls, embedder } = recordingEmbedder();
+        await publishGeneratedDocRevision(payload(), { storage, embedder });
+        const texts = calls.flat();
+        for (const text of texts) {
+          expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(EMBED_INPUT_MAX_BYTES);
+        }
+        expect(EMBED_INPUT_MAX_BYTES).toBeLessThan(MAX_EMBED_SEQUENCE_TOKENS);
+        // Nothing dropped, in order.
+        expect(texts.join("").replace(/\s+/g, "")).toBe(markdown.replace(/\s+/g, ""));
+        // An emoji is never split across two chunks.
+        expect(texts.some((t) => /[\ud800-\udbff]$/.test(t))).toBe(false);
+      });
+
       it("/healthz answers within 1 s while a 600k-character document is published", async () => {
         await version(1, largeDocument(600_000, { longRowMarker: true }));
         await autoApprove(false);
@@ -596,6 +790,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         expect(report).toEqual({
           finalized: [syntheticId(parked)],
           failed: [syntheticId(exhausted)],
+          cancelled: [],
           removed: [syntheticId(deleted)],
           rearmed: [syntheticId(orphan)],
           skipped: expect.arrayContaining([syntheticId(live), "gendoc-legacy"]),
@@ -638,19 +833,36 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         const cancelled = payload(1, "project", "doc2");
         await version(1, "cancelled", "doc2");
         await seedSynthetic(cancelled);
-        await seedTask(cancelled, "cancelled");
+        await seedTask(cancelled, "cancelled", "cancelled by user");
 
+        const dispatched: string[] = [];
         const report = await reconcileStrandedGeneratedDocPublications({
-          dispatchTask: async () => {},
+          dispatchTask: async (id) => {
+            dispatched.push(id);
+          },
         });
         expect(report.rearmed).toEqual([syntheticId(completed)]);
-        expect(report.skipped).toEqual([syntheticId(cancelled)]);
+        // #201 — settled as cancelled, never re-run.
+        expect(report.cancelled).toEqual([syntheticId(cancelled)]);
+        expect(report.skipped).toEqual([]);
+        expect(dispatched).toEqual([generatedDocOutboxId(completed)]);
         expect(
           await db.task.findUniqueOrThrow({ where: { id: generatedDocOutboxId(completed) } }),
         ).toMatchObject({ status: "pending", attempts: 0 });
         expect(
           await db.task.findUniqueOrThrow({ where: { id: generatedDocOutboxId(cancelled) } }),
         ).toMatchObject({ status: "cancelled" });
+        const row = await db.document.findUniqueOrThrow({ where: { id: syntheticId(cancelled) } });
+        expect(row).toMatchObject({
+          status: "failed",
+          errorMessage: "generated-doc publication cancelled: cancelled by user",
+        });
+        expect(row.processedAt).not.toBeNull();
+        // Idempotent: the settled row is not picked up again.
+        const again = await reconcileStrandedGeneratedDocPublications({
+          dispatchTask: async () => {},
+        });
+        expect(again.cancelled).toEqual([]);
       });
 
       it("removes a synthetic row whose revision names no version", async () => {

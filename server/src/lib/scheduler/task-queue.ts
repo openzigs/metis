@@ -23,6 +23,7 @@
  */
 import { createChildLogger } from "../logger.js";
 import { isDurableTask } from "./durable-task-types.js";
+import { TaskAbortError } from "./task-abort.js";
 import {
   type EnqueueTaskInput,
   type SchedulerConfig,
@@ -144,7 +145,7 @@ export class TaskQueue {
     const running = this.running.get(taskId);
     if (running) {
       running.abortSource = "user";
-      running.controller.abort(new Error(reason));
+      running.controller.abort(new TaskAbortError("user", reason));
       // Persist intent before acknowledging cancellation: a crash must not turn
       // explicitly cancelled durable work into a recoverable running row.
       if (isDurableTask(running.task.type)) {
@@ -199,7 +200,7 @@ export class TaskQueue {
     this.pending = [];
     for (const [, running] of this.running) {
       if (!running.controller.signal.aborted) running.abortSource = "shutdown";
-      running.controller.abort(new Error(reason));
+      running.controller.abort(new TaskAbortError("shutdown", reason));
     }
   }
 
@@ -320,7 +321,7 @@ export class TaskQueue {
     const timeoutMs = reg.defaultTimeoutMs ?? this.config.defaultTimeoutMs;
     const timeoutHandle = setTimeout(() => {
       if (!controller.signal.aborted) entry.abortSource = "timeout";
-      controller.abort(new Error(`task timeout after ${timeoutMs}ms`));
+      controller.abort(new TaskAbortError("timeout", `task timeout after ${timeoutMs}ms`));
     }, timeoutMs);
     timeoutHandle.unref?.();
 

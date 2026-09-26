@@ -35,7 +35,7 @@ import { DOCSGEN_CHUNKER_IDENTITY } from "../docs-gen/rag-ingest.js";
 const MODEL = "Alibaba-NLP/gte-modernbert-base";
 const OTHER_MODEL = "Xenova/bge-small-en-v1.5";
 /** What the shipped 2048/256 configuration produces today. */
-const CURRENT_CHUNKER = "doc:v2:2048/256";
+const CURRENT_CHUNKER = "doc:v3:2048/256";
 
 interface Row {
   id: string;

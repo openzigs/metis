@@ -33,7 +33,7 @@ import type { VectorStore } from "./vector-store.js";
 const NEW_MODEL = "Alibaba-NLP/gte-modernbert-base";
 const OLD_MODEL = "Xenova/bge-small-en-v1.5";
 /** #1182 — the chunker generation the active configuration produces. */
-const CURRENT_CHUNKER = "doc:v2:2048/256";
+const CURRENT_CHUNKER = "doc:v3:2048/256";
 /** #1182 — a superseded generation: same parameters, older algorithm. */
 const OLD_CHUNKER = "doc:v1:2048/256";
 
@@ -542,7 +542,7 @@ describe("issue #1182 — chunker drift is reported apart from model drift", () 
     const status = await migrationStatus(makeDeps({ coverage: CHUNKER_DRIFT }));
     const text = formatStatus(status, planMigration(status));
 
-    expect(text).toContain("Chunker       doc:v2:2048/256");
+    expect(text).toContain("Chunker       doc:v3:2048/256");
     // Untagged reads as "provenance unrecorded", not as "pre-#1178 with gaps":
     // since the panel found a second writer, an untagged row could be either.
     expect(text).toContain("(untagged — written before #1182, provenance unrecorded)");

@@ -7,6 +7,7 @@ vi.mock("../src/lib/prisma.js", () => ({ prisma: {} }));
 
 import { TaskQueue, type TaskStore } from "../src/lib/scheduler/task-queue.js";
 import { InMemoryTaskHandlerRegistry } from "../src/lib/scheduler/task-handlers.js";
+import { taskAbortSource } from "../src/lib/scheduler/task-abort.js";
 import {
   SchedulerError,
   type EnqueueTaskInput,
@@ -901,5 +902,55 @@ describe("TaskQueue progress + shutdown", () => {
     const snap = queue.snapshot();
     expect(snap.running).toBe(1);
     expect(snap.queueDepth).toBe(1);
+  });
+});
+
+/**
+ * Issue #201 — a handler can tell WHY its signal was aborted. Generated-doc
+ * publication records a cancellation as terminal, a timeout as a failed attempt,
+ * and a shutdown as nothing (the outbox replays it); it can only do that if the
+ * queue says which one happened.
+ */
+describe("TaskQueue abort provenance (#201)", () => {
+  it.each([
+    ["user", "cancel"],
+    ["timeout", "timeout"],
+    ["shutdown", "shutdown"],
+  ] as const)("reports %s as the abort source on the handler's signal", async (source, via) => {
+    vi.useFakeTimers();
+    const { store } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const seen: Array<string | undefined> = [];
+    registry.register({
+      type: "long",
+      description: "",
+      handler: async ({ signal }) => {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        seen.push(taskAbortSource(signal));
+        signal.throwIfAborted();
+      },
+    });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, {
+      ...baseConfig,
+      defaultTimeoutMs: 10,
+    });
+    const task = await queue.enqueue({ type: "long", maxAttempts: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    if (via === "cancel") await queue.cancel(task.id);
+    if (via === "timeout") await vi.advanceTimersByTimeAsync(10);
+    if (via === "shutdown") await queue.shutdown();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([source]);
+    await queue.shutdown();
+  });
+
+  it("reports no source for a signal the queue did not abort", () => {
+    const controller = new AbortController();
+    expect(taskAbortSource(controller.signal)).toBeUndefined();
+    expect(taskAbortSource(undefined)).toBeUndefined();
+    controller.abort(new Error("caller's own abort"));
+    expect(taskAbortSource(controller.signal)).toBeUndefined();
   });
 });
