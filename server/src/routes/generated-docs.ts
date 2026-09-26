@@ -1244,10 +1244,15 @@ export async function generateDocumentAsync(
       // #182 — sections were grounded against the repository index; when that
       // index is partial (capped, failed, interrupted, never recorded), say so,
       // so the document is `degraded` rather than looking fully grounded.
+      // #217 — likewise when a file skipped as oversize lies in this document's
+      // scope (the repository, or its pathPrefixes).
       const { repositoryIndexWarnings } = await import("../lib/connectors/source-ingest-state.js");
       docWarnings = [
         ...result.warnings,
-        ...(await repositoryIndexWarnings(projectId, repoConnectorId)),
+        ...(await repositoryIndexWarnings(projectId, {
+          ...(repoConnectorId ? { repoConnectorId } : {}),
+          ...(pathPrefixes ? { pathPrefixes } : {}),
+        })),
       ];
       synthesizedProvenanceManifest = result.provenanceManifest ?? null;
       manifestSections = result.provenanceManifest

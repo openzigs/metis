@@ -10,8 +10,17 @@
  *
  * Real files on disk; storage, knowledge service and prisma are in-memory fakes.
  */
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  promises as fs,
+  openSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -128,11 +137,17 @@ vi.mock("../src/lib/rag/knowledge-service.js", () => ({
 
 import {
   DEFAULT_REPO_SOURCE_MAX_FILES,
+  isGeneratedSourcePath,
   ingestSourceAsKnowledge,
   resolveSourceIngestLimits,
   selectSourceFiles,
   sourceTier,
 } from "../src/lib/connectors/connector-ingest.js";
+import {
+  INGEST_IN_PROGRESS,
+  acquireConnectorIngest,
+  isConnectorIngestActive,
+} from "../src/lib/connectors/ingest-guard.js";
 
 let root: string;
 
@@ -258,7 +273,13 @@ describe("selection order (#182 AC 2)", () => {
     await ingestSourceAsKnowledge("p1", "c1", "u1", root, { limits: { includeTests: false } });
 
     expect(ingestedPaths()).toEqual(["src/a.ts"]);
-    expect(lastState().skipped).toEqual({ cap: 0, tooLarge: 0, unreadable: 0, excludedTests: 2 });
+    expect(lastState().skipped).toEqual({
+      cap: 0,
+      tooLarge: 0,
+      unreadable: 0,
+      excludedTests: 2,
+      excludedGenerated: 0,
+    });
     // A policy exclusion is not a gap in the index.
     expect(lastState().status).toBe("completed");
   });
@@ -324,14 +345,16 @@ describe("oversize files (#182 AC 3)", () => {
     expect(lastState()).toMatchObject({ status: "completed" });
   });
 
-  it("skips a file over the hard ceiling, logs it by path and records the run as partial", async () => {
+  it("skips a file over the hard ceiling, logs it and reports it on the connector — without making the run partial (#217)", async () => {
     await writeFiles({ "src/ok.ts": "ok", "vendor/bundle.js": "x".repeat(5000) });
 
     await ingestSourceAsKnowledge("p1", "c1", "u1", root, { limits: { maxFileBytes: 4096 } });
 
     expect(ingestedPaths()).toEqual(["src/ok.ts"]);
     expect(lastState().skipped.tooLarge).toBe(1);
-    expect(lastState().status).toBe("partial");
+    // #217 decision: an oversize file is reported, not a gap that degrades every document.
+    expect(lastState().status).toBe("completed");
+    expect(lastState().skippedPaths).toEqual({ tooLarge: ["vendor/bundle.js"] });
     const warn = h.warns.find((w) => w.msg.includes("REPO_SOURCE_MAX_FILE_BYTES"));
     expect(warn?.meta).toMatchObject({ path: "vendor/bundle.js", sizeBytes: 5000 });
   });
@@ -505,10 +528,11 @@ describe("local-source realpath boundary through candidate collection (#288, #18
     await fs.rm(outside, { recursive: true, force: true });
   });
 
-  /** Every path `fs.readFile` was asked for during the run. */
+  /** Every path `fs.readFile` or `fs.open` was asked for during the run (#217 reads through a handle). */
   function spyReads(): () => string[] {
-    const spy = vi.spyOn(fs, "readFile");
-    return () => spy.mock.calls.map((c) => String(c[0]));
+    const readSpy = vi.spyOn(fs, "readFile");
+    const openSpy = vi.spyOn(fs, "open");
+    return () => [...readSpy.mock.calls, ...openSpy.mock.calls].map((c) => String(c[0]));
   }
 
   function expectOutsideUntouched(reads: string[]): void {
@@ -530,7 +554,13 @@ describe("local-source realpath boundary through candidate collection (#288, #18
     expect(reads()).toContain(path.join(root, "src", "a.ts"));
     // Dropped by the walk itself: never eligible, so never counted as a skip.
     expect(lastState()).toMatchObject({ status: "completed", eligible: 1, selected: 1 });
-    expect(lastState().skipped).toEqual({ cap: 0, tooLarge: 0, unreadable: 0, excludedTests: 0 });
+    expect(lastState().skipped).toEqual({
+      cap: 0,
+      tooLarge: 0,
+      unreadable: 0,
+      excludedTests: 0,
+      excludedGenerated: 0,
+    });
     expectOutsideUntouched(reads());
   });
 
@@ -553,5 +583,254 @@ describe("local-source realpath boundary through candidate collection (#288, #18
     expect(summary.documentsCreated).toBe(0);
     expect(lastState()).toMatchObject({ eligible: 0, selected: 0 });
     expectOutsideUntouched(reads());
+  });
+});
+
+/**
+ * Issue #217 — the TOCTOU window between the walk's lstat/realpath check and
+ * the read. The swap happens while the FIRST file is being embedded, i.e.
+ * strictly after candidate collection and before the second file is read —
+ * the exact window #209's review named.
+ */
+describe("symlink swapped in between walk and read (#217)", () => {
+  const SECRET = "export const secret = 'LEAKED-OUTSIDE-BOUNDARY';\n";
+  const posixOnly = it.skipIf(process.platform === "win32");
+  let outside: string;
+
+  beforeEach(async () => {
+    outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "metis-217-out-")));
+    await fs.mkdir(path.join(outside, "pkg"), { recursive: true });
+    await fs.writeFile(path.join(outside, "secret.ts"), SECRET);
+    await fs.writeFile(path.join(outside, "pkg", "b.ts"), SECRET);
+  });
+
+  afterEach(async () => {
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  /** Run `swap` once, while the first selected file is being embedded. */
+  function swapDuringFirstEmbed(swap: () => void): void {
+    let done = false;
+    h.onIngest = () => {
+      if (!done) {
+        done = true;
+        swap();
+      }
+      return undefined;
+    };
+  }
+
+  function expectSecretNeverRead(): void {
+    expect([...h.bodies.values()].some((b) => b.includes("LEAKED-OUTSIDE-BOUNDARY"))).toBe(false);
+  }
+
+  for (const [label, withBoundary] of [
+    ["local provider (boundary)", true],
+    ["git clone (no boundary)", false],
+  ] as const) {
+    posixOnly(`${label}: a file swapped for an outside symlink is never read`, async () => {
+      await writeFiles({ "a.ts": "export const a = 1;\n", "b.ts": "export const b = 2;\n" });
+      swapDuringFirstEmbed(() => {
+        rmSync(path.join(root, "b.ts"));
+        symlinkSync(path.join(outside, "secret.ts"), path.join(root, "b.ts"));
+      });
+
+      await ingestSourceAsKnowledge("p1", "c1", "u1", root, {
+        ...(withBoundary ? { boundary: root } : {}),
+        limits: { concurrency: 1 },
+      });
+
+      expect(ingestedPaths()).toEqual(["a.ts"]);
+      expectSecretNeverRead();
+      expect(lastState()).toMatchObject({ status: "partial", processed: 2, created: 1 });
+      expect(lastState().skipped.unreadable).toBe(1);
+      expect(
+        h.warns.some((w) => w.msg.includes("not a regular file") && w.meta.path === "b.ts"),
+      ).toBe(true);
+    });
+  }
+
+  posixOnly(
+    "a parent directory swapped for an outside symlink is refused by the realpath re-check",
+    async () => {
+      await writeFiles({ "a.ts": "export const a = 1;\n", "pkg/b.ts": "export const b = 2;\n" });
+      swapDuringFirstEmbed(() => {
+        rmSync(path.join(root, "pkg"), { recursive: true, force: true });
+        symlinkSync(path.join(outside, "pkg"), path.join(root, "pkg"));
+      });
+
+      await ingestSourceAsKnowledge("p1", "c1", "u1", root, {
+        boundary: root,
+        limits: { concurrency: 1 },
+      });
+
+      expect(ingestedPaths()).toEqual(["a.ts"]);
+      expectSecretNeverRead();
+      expect(lastState().skipped.unreadable).toBe(1);
+      expect(
+        h.warns.some((w) => w.msg.includes("outside the repository") && w.meta.path === "pkg/b.ts"),
+      ).toBe(true);
+    },
+  );
+
+  posixOnly(
+    "a file swapped for a FIFO is skipped without blocking the run, and the guard is released",
+    { timeout: 5000 },
+    async () => {
+      // Without O_NONBLOCK the read's open waits forever for a FIFO writer:
+      // the run never settles and the connector's lease is never released.
+      await writeFiles({ "a.ts": "export const a = 1;\n", "b.ts": "export const b = 2;\n" });
+      const fifo = path.join(root, "b.ts");
+      swapDuringFirstEmbed(() => {
+        rmSync(fifo);
+        execFileSync("mkfifo", [fifo]);
+      });
+
+      const run = ingestSourceAsKnowledge("p1", "c1", "u1", root, {
+        boundary: root,
+        limits: { concurrency: 1 },
+      });
+      const outcome = await Promise.race([
+        run.then(() => "settled" as const),
+        new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 2000).unref()),
+      ]);
+      // Unblock a hung open (a non-blocking writer open succeeds only while a
+      // reader waits) so a regression does not leak a threadpool thread.
+      try {
+        closeSync(openSync(fifo, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK));
+      } catch {
+        // ENXIO — no reader was waiting.
+      }
+      await run.catch(() => undefined);
+
+      expect(outcome).toBe("settled");
+      expect(isConnectorIngestActive("c1")).toBe(false);
+      expect(ingestedPaths()).toEqual(["a.ts"]);
+      expect(lastState()).toMatchObject({ status: "partial", processed: 2, created: 1 });
+      expect(lastState().skipped.unreadable).toBe(1);
+      expect(
+        h.warns.some((w) => w.msg.includes("not a regular file") && w.meta.path === "b.ts"),
+      ).toBe(true);
+    },
+  );
+
+  it("a file that grew past the ceiling since the walk is counted too large, not read", async () => {
+    await writeFiles({ "a.ts": "a", "b.ts": "b" });
+    // Grow b.ts past the ceiling after the walk sized it.
+    swapDuringFirstEmbed(() => writeFileSync(path.join(root, "b.ts"), "x".repeat(5000)));
+
+    await ingestSourceAsKnowledge("p1", "c1", "u1", root, {
+      limits: { concurrency: 1, maxFileBytes: 4096 },
+    });
+
+    expect(ingestedPaths()).toEqual(["a.ts"]);
+    expect(lastState().skipped.tooLarge).toBe(1);
+    expect(lastState().skippedPaths).toEqual({ tooLarge: ["b.ts"] });
+    expect(lastState().status).toBe("completed");
+  });
+});
+
+describe("lockfiles and generated files excluded by policy (#217)", () => {
+  it("excludes lockfiles and minified bundles, counted as excluded — not a gap", async () => {
+    await writeFiles({
+      "src/a.ts": "a",
+      "pnpm-lock.yaml": "lockfileVersion: 9",
+      "package-lock.json": "{}",
+      "apps/web/npm-shrinkwrap.json": "{}",
+      "src/Proj/packages.lock.json": "{}",
+      "public/vendor.min.js": "!function(){}",
+    });
+
+    await ingestSourceAsKnowledge("p1", "c1", "u1", root);
+
+    expect(ingestedPaths()).toEqual(["src/a.ts"]);
+    expect(lastState()).toMatchObject({ status: "completed", eligible: 6, selected: 1 });
+    expect(lastState().skipped.excludedGenerated).toBe(5);
+  });
+
+  it("matches on the basename, not on a substring of the path", () => {
+    expect(isGeneratedSourcePath("pnpm-lock.yaml")).toBe(true);
+    expect(isGeneratedSourcePath("deep/dir/package-lock.json")).toBe(true);
+    expect(isGeneratedSourcePath("dist-ish/app.min.js")).toBe(true);
+    expect(isGeneratedSourcePath("src/PNPM-LOCK.YAML")).toBe(true);
+    expect(isGeneratedSourcePath("src/package-lock.json.ts")).toBe(false);
+    expect(isGeneratedSourcePath("src/admin.js")).toBe(false);
+    expect(isGeneratedSourcePath("src/lock.yaml")).toBe(false);
+    expect(isGeneratedSourcePath("package.json")).toBe(false);
+  });
+});
+
+describe("per-connector ingest guard (#217)", () => {
+  afterEach(() => {
+    h.onIngest = null;
+  });
+
+  it("a second ingest of the same connector is refused while one runs, and writes no state", async () => {
+    await writeFiles({ "a.ts": "a", "b.ts": "b" });
+    let second: Promise<unknown> | null = null;
+    h.onIngest = () => {
+      second ??= ingestSourceAsKnowledge("p1", "c1", "u1", root).catch((err: unknown) => err);
+      return undefined;
+    };
+
+    await ingestSourceAsKnowledge("p1", "c1", "u1", root);
+
+    expect(await second).toMatchObject({ status: 409, code: INGEST_IN_PROGRESS });
+    // Every state write belongs to the one run that held the connector.
+    expect(new Set(h.states.map((s) => s.runId)).size).toBe(1);
+    expect(lastState()).toMatchObject({ status: "completed", created: 2 });
+    expect(isConnectorIngestActive("c1")).toBe(false);
+  });
+
+  it("different connectors ingest concurrently", async () => {
+    await writeFiles({ "a.ts": "a" });
+    const results = await Promise.all([
+      ingestSourceAsKnowledge("p1", "c1", "u1", root),
+      ingestSourceAsKnowledge("p1", "c2", "u1", root),
+    ]);
+    expect(results.map((r) => r.documentsCreated)).toEqual([1, 1]);
+    expect(new Set(h.states.map((s) => s.runId)).size).toBe(2);
+  });
+
+  it("is released when a run fails, so the next one can start", async () => {
+    await expect(
+      ingestSourceAsKnowledge("p1", "c1", "u1", path.join(root, "does-not-exist")),
+    ).rejects.toThrow();
+    expect(isConnectorIngestActive("c1")).toBe(false);
+    await writeFiles({ "a.ts": "a" });
+    await expect(ingestSourceAsKnowledge("p1", "c1", "u1", root)).resolves.toMatchObject({
+      documentsCreated: 1,
+    });
+  });
+
+  it("runs under a lease the entry point already holds, and leaves releasing it to that caller", async () => {
+    await writeFiles({ "a.ts": "a" });
+    const lease = acquireConnectorIngest("c1", "sync-route");
+    try {
+      // Without the lease the connector is busy…
+      await expect(ingestSourceAsKnowledge("p1", "c1", "u1", root)).rejects.toMatchObject({
+        code: INGEST_IN_PROGRESS,
+      });
+      // …with it, the run proceeds.
+      await expect(
+        ingestSourceAsKnowledge("p1", "c1", "u1", root, { lease }),
+      ).resolves.toMatchObject({ documentsCreated: 1 });
+      expect(lease.held).toBe(true);
+      expect(isConnectorIngestActive("c1")).toBe(true);
+    } finally {
+      lease.release();
+    }
+  });
+
+  it("refuses a lease for another connector", async () => {
+    const lease = acquireConnectorIngest("c2", "sync-route");
+    try {
+      await expect(
+        ingestSourceAsKnowledge("p1", "c1", "u1", root, { lease }),
+      ).rejects.toMatchObject({ status: 500 });
+      expect(h.states).toEqual([]);
+    } finally {
+      lease.release();
+    }
   });
 });

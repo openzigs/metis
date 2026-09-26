@@ -111,11 +111,59 @@ vi.mock("../src/lib/docs-gen/incremental.js", () => ({
 }));
 
 import { buildSchedulerHandlerOverrides } from "../src/lib/scheduler/handler-overrides.js";
+import {
+  INGEST_IN_PROGRESS,
+  acquireConnectorIngest,
+  isConnectorIngestActive,
+} from "../src/lib/connectors/ingest-guard.js";
 
 afterEach(() => {
   repoConnections.clear();
   dbConnections.clear();
   vi.clearAllMocks();
+});
+
+describe("scheduled repo refresh takes the per-connector ingest guard (#217)", () => {
+  it("refuses while another entry point holds the connector, without pulling or ingesting", async () => {
+    repoConnections.set("rc1", { id: "rc1", projectId: "p-alpha" });
+    const lease = acquireConnectorIngest("rc1", "sync-route");
+    try {
+      await expect(
+        buildSchedulerHandlerOverrides().refreshRepoConnector!("rc1", new AbortController().signal),
+      ).rejects.toMatchObject({ status: 409, code: INGEST_IN_PROGRESS });
+      expect(mocks.ingestCodeGraph).not.toHaveBeenCalled();
+      expect(mocks.ingestSourceAsKnowledge).not.toHaveBeenCalled();
+      expect(isConnectorIngestActive("rc1")).toBe(true);
+    } finally {
+      lease.release();
+    }
+  });
+
+  it("holds the guard for the whole refresh, hands its lease to the source ingest, and releases it", async () => {
+    repoConnections.set("rc1", { id: "rc1", projectId: "p-alpha" });
+    let heldDuringSource = false;
+    mocks.ingestSourceAsKnowledge.mockImplementationOnce(async (...args: unknown[]) => {
+      heldDuringSource = isConnectorIngestActive("rc1");
+      const opts = args[4] as { lease?: { connectorId: string; held: boolean } } | undefined;
+      expect(opts?.lease).toMatchObject({ connectorId: "rc1", held: true });
+      return { chunkCount: 5, failures: 0 };
+    });
+    await buildSchedulerHandlerOverrides().refreshRepoConnector!(
+      "rc1",
+      new AbortController().signal,
+    );
+    expect(heldDuringSource).toBe(true);
+    expect(isConnectorIngestActive("rc1")).toBe(false);
+  });
+
+  it("releases the guard when the refresh fails", async () => {
+    repoConnections.set("rc1", { id: "rc1", projectId: "p-alpha" });
+    mocks.ingestCodeGraph.mockRejectedValueOnce(new Error("graph failed"));
+    await expect(
+      buildSchedulerHandlerOverrides().refreshRepoConnector!("rc1", new AbortController().signal),
+    ).rejects.toThrow("graph failed");
+    expect(isConnectorIngestActive("rc1")).toBe(false);
+  });
 });
 
 describe("buildSchedulerHandlerOverrides", () => {

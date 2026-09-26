@@ -32,7 +32,14 @@ import { NOOP_EMITTER, ConnectorError } from "./types.js";
 import { isJunkSourcePath } from "@metis/shared";
 import type { DbSchemaSnapshot, DbTableInfo } from "@metis/shared";
 import type { RepoMetadata } from "./repo/repo-service.js";
+import { readConfinedSourceFile } from "./confined-source-read.js";
 import {
+  acquireConnectorIngest,
+  assertConnectorIngestLease,
+  type ConnectorIngestLease,
+} from "./ingest-guard.js";
+import {
+  SKIPPED_PATHS_RECORDED,
   indexedCount,
   settledStatus,
   writeSourceIngestState,
@@ -458,6 +465,13 @@ export interface IngestSourceOptions {
   boundary?: string;
   /** Issue #182 — override the registry-resolved limits (tests, callers with their own budget). */
   limits?: Partial<SourceIngestLimits>;
+  /**
+   * Issue #217 — the connector's ingest lease, when the entry point took it
+   * before its own clone / pull / code-graph work. Without one the ingest
+   * claims the connector itself and refuses (409 `INGEST_IN_PROGRESS`) when
+   * another run holds it.
+   */
+  lease?: ConnectorIngestLease;
 }
 
 /** Issue #182 — the limits one repository-source ingest runs under. */
@@ -546,6 +560,30 @@ export function sourceTier(relPath: string): SourceTier {
     : "production";
 }
 
+/**
+ * Issue #217 — lockfiles and minified bundles: machine-written, large, and
+ * noise to retrieval (a `pnpm-lock.yaml` chunk matches every dependency name).
+ * Only names that pass {@link SOURCE_EXTENSIONS} are listed; `yarn.lock`,
+ * `Cargo.lock`, `go.sum`, `*.snap` snapshots and source maps never reach
+ * selection because their extensions are not ingested at all.
+ */
+const GENERATED_SOURCE_BASENAMES = new Set([
+  "pnpm-lock.yaml",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "packages.lock.json", // NuGet
+]);
+const GENERATED_SOURCE_SUFFIXES = [".min.js"];
+
+/** A lockfile or minified bundle, by basename (case-insensitive) — excluded by policy. */
+export function isGeneratedSourcePath(relPath: string): boolean {
+  const base = path.posix.basename(relPath).toLowerCase();
+  return (
+    GENERATED_SOURCE_BASENAMES.has(base) ||
+    GENERATED_SOURCE_SUFFIXES.some((suffix) => base.endsWith(suffix))
+  );
+}
+
 export interface SourceSelection {
   /** In ingest order: production code, configuration, tests; path order within each. */
   selected: SourceCandidate[];
@@ -553,6 +591,8 @@ export interface SourceSelection {
   overCap: SourceCandidate[];
   tooLarge: SourceCandidate[];
   excludedTests: SourceCandidate[];
+  /** #217 — lockfiles and minified bundles, excluded by policy. */
+  excludedGenerated: SourceCandidate[];
 }
 
 /** Order the eligible files and apply the size limit, the test policy and the file budget. */
@@ -562,10 +602,13 @@ export function selectSourceFiles(
 ): SourceSelection {
   const tooLarge: SourceCandidate[] = [];
   const excludedTests: SourceCandidate[] = [];
+  const excludedGenerated: SourceCandidate[] = [];
   const ranked: Array<{ file: SourceCandidate; rank: number }> = [];
   for (const file of candidates) {
     const tier = sourceTier(file.relPath);
-    if (tier === "test" && !limits.includeTests) {
+    if (isGeneratedSourcePath(file.relPath)) {
+      excludedGenerated.push(file);
+    } else if (tier === "test" && !limits.includeTests) {
       excludedTests.push(file);
     } else if (file.sizeBytes > limits.maxFileBytes) {
       tooLarge.push(file);
@@ -588,6 +631,7 @@ export function selectSourceFiles(
     overCap: ordered.slice(limits.maxFiles),
     tooLarge,
     excludedTests,
+    excludedGenerated,
   };
 }
 
@@ -602,7 +646,7 @@ async function collectSourceCandidates(
     const relPath = path.relative(root, absPath).split(path.sep).join("/");
     try {
       // lstat: the walk only yields regular files; reject one swapped for a link since.
-      // This does not cover a swap between here and the later readFile.
+      // A swap between here and the read is caught by readConfinedSourceFile (#217).
       const stat = await fs.lstat(absPath);
       if (!stat.isFile()) {
         unreadable.push(relPath);
@@ -625,6 +669,13 @@ function listPaths(files: readonly { relPath: string }[]): string[] {
   return paths;
 }
 
+/** Log wording for a file the confined read refused. */
+const UNREAD_REASONS = {
+  "not-regular": "not a regular file (replaced since the walk — a symlink is never followed)",
+  escaped: "resolves outside the repository",
+  unreadable: "unreadable",
+} as const;
+
 /** Heartbeat interval: at most one state write per this many ms while files complete. */
 const HEARTBEAT_MS = 2000;
 
@@ -644,6 +695,9 @@ function stateWriter(connectorId: string, state: SourceIngestState) {
       const snapshot: SourceIngestState = {
         ...state,
         skipped: { ...state.skipped },
+        ...(state.skippedPaths
+          ? { skippedPaths: { tooLarge: [...state.skippedPaths.tooLarge] } }
+          : {}),
       };
       chain = chain.then(() => writeSourceIngestState(connectorId, snapshot));
       return chain;
@@ -681,6 +735,24 @@ export async function ingestSourceAsKnowledge(
   if (!projectId) {
     throw new ConnectorError(400, "PROJECT_REQUIRED", "projectId is required for ingestion");
   }
+  // #217 — one ingest per connector across every entry point, claimed before
+  // the first state write so a refused run never overwrites the live run's state.
+  if (options.lease) assertConnectorIngestLease(options.lease, connectorId);
+  const ownLease = options.lease ? null : acquireConnectorIngest(connectorId, "source-ingest");
+  try {
+    return await runSourceIngest(projectId, connectorId, actorId, clonePath, options);
+  } finally {
+    ownLease?.release();
+  }
+}
+
+async function runSourceIngest(
+  projectId: string,
+  connectorId: string,
+  actorId: string,
+  clonePath: string,
+  options: IngestSourceOptions,
+): Promise<IngestSummary> {
   const limits: SourceIngestLimits = resolveSourceIngestLimits();
   for (const [key, value] of Object.entries(options.limits ?? {})) {
     if (value !== undefined) Object.assign(limits, { [key]: value });
@@ -701,12 +773,17 @@ export async function ingestSourceAsKnowledge(
     unchanged: 0,
     failed: 0,
     chunkCount: 0,
-    skipped: { cap: 0, tooLarge: 0, unreadable: 0, excludedTests: 0 },
+    skipped: { cap: 0, tooLarge: 0, unreadable: 0, excludedTests: 0, excludedGenerated: 0 },
+    skippedPaths: { tooLarge: [] },
     limits: {
       maxFiles: limits.maxFiles,
       maxFileBytes: limits.maxFileBytes,
       includeTests: limits.includeTests,
     },
+  };
+  const recordTooLarge = (relPath: string): void => {
+    const paths = state.skippedPaths?.tooLarge;
+    if (paths && paths.length < SKIPPED_PATHS_RECORDED) paths.push(relPath);
   };
   const writer = stateWriter(connectorId, state);
   // #182 — recorded BEFORE any work, so a run that dies part-way is visible.
@@ -729,6 +806,7 @@ export async function ingestSourceAsKnowledge(
       tooLarge: selection.tooLarge.length,
       unreadable: unreadable.length,
       excludedTests: selection.excludedTests.length,
+      excludedGenerated: selection.excludedGenerated.length,
     };
     log.info("ingestSourceAsKnowledge: selected source files", {
       projectId,
@@ -747,6 +825,7 @@ export async function ingestSourceAsKnowledge(
       });
     }
     for (const file of selection.tooLarge) {
+      recordTooLarge(file.relPath);
       log.warn("repository source file skipped: larger than REPO_SOURCE_MAX_FILE_BYTES", {
         connectorId,
         path: file.relPath,
@@ -764,18 +843,32 @@ export async function ingestSourceAsKnowledge(
 
     const ctx = unitContext(projectId, connectorId, "repo", actorId);
     await forEachBounded(selection.selected, limits.concurrency, async (file) => {
-      let content: string;
-      try {
-        content = await fs.readFile(file.absPath, "utf-8");
-      } catch {
-        state.skipped.unreadable += 1;
+      // #217 — through a handle: no symlink swapped in since the walk is followed.
+      const read = await readConfinedSourceFile(file.absPath, {
+        boundary: options.boundary,
+        maxFileBytes: limits.maxFileBytes,
+      });
+      if (!read.ok) {
         state.processed += 1;
-        log.warn("repository source file skipped: unreadable", {
-          connectorId,
-          path: file.relPath,
-        });
+        if (read.reason === "too-large") {
+          state.skipped.tooLarge += 1;
+          recordTooLarge(file.relPath);
+          log.warn("repository source file skipped: larger than REPO_SOURCE_MAX_FILE_BYTES", {
+            connectorId,
+            path: file.relPath,
+            sizeBytes: read.sizeBytes,
+            maxFileBytes: limits.maxFileBytes,
+          });
+        } else {
+          state.skipped.unreadable += 1;
+          log.warn(`repository source file skipped: ${UNREAD_REASONS[read.reason]}`, {
+            connectorId,
+            path: file.relPath,
+          });
+        }
         return;
       }
+      const content = read.content;
       const ext = path.extname(file.relPath).toLowerCase();
       const outcome = await ingestUnit(ctx, {
         filename: `${REPO_FILENAME_PREFIX}:${connectorId}:src/${file.relPath}`,

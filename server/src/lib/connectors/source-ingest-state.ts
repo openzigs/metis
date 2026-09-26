@@ -16,6 +16,7 @@
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import type { DocWarning } from "../docs-gen/grounding/degraded-warnings.js";
+import { isInPathScope } from "../docs-gen/path-scope.js";
 
 const log = createChildLogger("connector-source-ingest-state");
 
@@ -26,12 +27,20 @@ export type EffectiveSourceIngestStatus = SourceIngestStatus | "interrupted";
 export interface SourceIngestSkipped {
   /** Selected by order but past `REPO_SOURCE_MAX_FILES`. */
   cap: number;
-  /** Larger than `REPO_SOURCE_MAX_FILE_BYTES`. */
+  /**
+   * Larger than `REPO_SOURCE_MAX_FILE_BYTES`. #217: reported on the connector
+   * (with the paths in `skippedPaths.tooLarge`), not a gap — see `settledStatus`.
+   */
   tooLarge: number;
   /** Could not be stat'ed or read. */
   unreadable: number;
   /** Test/spec/fixture files left out by `REPO_SOURCE_INCLUDE_TESTS=false` (policy, not a gap). */
   excludedTests: number;
+  /**
+   * #217 — lockfiles and minified bundles left out by policy (not a gap). Absent
+   * from states recorded before #217.
+   */
+  excludedGenerated?: number;
 }
 
 export interface SourceIngestState {
@@ -55,6 +64,8 @@ export interface SourceIngestState {
   failed: number;
   chunkCount: number;
   skipped: SourceIngestSkipped;
+  /** #217 — which files were skipped as oversize (first {@link SKIPPED_PATHS_RECORDED}). */
+  skippedPaths?: { tooLarge: string[] };
   limits: { maxFiles: number; maxFileBytes: number; includeTests: boolean };
   /** Reduced error message for a `failed` run. */
   error?: string;
@@ -67,6 +78,9 @@ export interface SourceIngestState {
  * on the in-process model, so ten minutes of silence means the process is gone.
  */
 export const SOURCE_INGEST_STALE_MS = 10 * 60 * 1000;
+
+/** How many oversize paths the state records for the connector view. */
+export const SKIPPED_PATHS_RECORDED = 20;
 
 /** Indexed so far: new, re-embedded, and unchanged files. */
 export function indexedCount(state: SourceIngestState): number {
@@ -88,15 +102,33 @@ export function effectiveSourceIngestStatus(
   state: SourceIngestState,
   now: number = Date.now(),
 ): EffectiveSourceIngestStatus {
+  // #217 — a state recorded `partial` under the #209 policy only for oversize
+  // files outlives the policy change; re-derive rather than trust the stored
+  // status, so the connector view and document warnings agree.
+  if (state.status === "partial") return settledStatus(state);
   if (state.status !== "running") return state.status;
   const beat = Date.parse(state.heartbeatAt);
   return Number.isFinite(beat) && now - beat <= SOURCE_INGEST_STALE_MS ? "running" : "interrupted";
 }
 
-/** Settled status of a finished run: `partial` whenever any selected or eligible file is missing. */
+/**
+ * Settled status of a finished run: `partial` whenever a file the run should
+ * have indexed is missing — past the budget, unreadable, or failed to embed.
+ *
+ * #217 decision: a file over `REPO_SOURCE_MAX_FILE_BYTES` is NOT a gap. It is
+ * almost always generated (a bundle, a data dump, a vendored build), it is
+ * skipped by an explicit operator setting, and under #209 one such file made
+ * every document generated against the repository `degraded` — a warning on
+ * every document that says nothing about the document. It is reported instead:
+ * counted in `skipped.tooLarge`, listed in `skippedPaths.tooLarge` on the
+ * connector's `sourceIngest`, and logged by path — and it degrades exactly the
+ * documents whose scope contains it, via {@link describeOversizeInScope}, so a
+ * hand-written file over the ceiling never silently drops out of grounding.
+ * Policy exclusions (tests, lockfiles, minified bundles) are not gaps either.
+ */
 export function settledStatus(state: SourceIngestState): "completed" | "partial" {
-  const { cap, tooLarge, unreadable } = state.skipped;
-  return cap + tooLarge + unreadable + state.failed > 0 ? "partial" : "completed";
+  const { cap, unreadable } = state.skipped;
+  return cap + unreadable + state.failed > 0 ? "partial" : "completed";
 }
 
 /**
@@ -121,7 +153,13 @@ export async function writeSourceIngestState(
   }
 }
 
-/** Why a connector's index is partial, in one sentence, or null when it is complete. */
+/**
+ * Why a connector's index is partial, in one sentence, or null when it is complete.
+ *
+ * Scope-independent: it describes the run as a whole. Oversize files are not a
+ * run-level gap (see {@link settledStatus}); whether one matters to a given
+ * document is {@link describeOversizeInScope}'s question.
+ */
 export function describeIndexGap(
   state: SourceIngestState | null,
   now: number = Date.now(),
@@ -145,12 +183,59 @@ export function describeIndexGap(
   if (state.skipped.cap > 0) {
     reasons.push(`${state.skipped.cap} past the REPO_SOURCE_MAX_FILES limit`);
   }
-  if (state.skipped.tooLarge > 0) {
-    reasons.push(`${state.skipped.tooLarge} over REPO_SOURCE_MAX_FILE_BYTES`);
-  }
   if (state.skipped.unreadable > 0) reasons.push(`${state.skipped.unreadable} unreadable`);
   if (state.failed > 0) reasons.push(`${state.failed} failed to embed`);
   return `${counts} (${reasons.join(", ")})`;
+}
+
+/** How many in-scope oversize paths a document warning names before summarising. */
+export const OVERSIZE_PATHS_NAMED = 5;
+
+/**
+ * #217 — the oversize files (skipped as larger than `REPO_SOURCE_MAX_FILE_BYTES`)
+ * that fall inside a document's scope, in one sentence, or null when none do.
+ *
+ * The rule: with no `pathPrefixes` the scope is the whole repository, so every
+ * oversize file counts; with #185 `pathPrefixes`, only files under a prefix
+ * count (segment-aware, {@link isInPathScope}). The state records only the first
+ * {@link SKIPPED_PATHS_RECORDED} paths (and none before #217), so oversize files
+ * whose path was not recorded cannot be proven out of scope and are counted as
+ * possibly in scope — a document must never look grounded against source it
+ * could not retrieve. The named list is bounded to {@link OVERSIZE_PATHS_NAMED}.
+ */
+export function describeOversizeInScope(
+  state: SourceIngestState | null,
+  pathPrefixes?: readonly string[],
+): string | null {
+  if (!state) return null;
+  const total = state.skipped.tooLarge;
+  if (total <= 0) return null;
+  const recorded = state.skippedPaths?.tooLarge ?? [];
+  const unrecorded = Math.max(0, total - recorded.length);
+  const inScope =
+    pathPrefixes && pathPrefixes.length > 0
+      ? recorded.filter((p) => isInPathScope(p, pathPrefixes))
+      : recorded;
+  if (inScope.length === 0 && unrecorded === 0) return null;
+  const parts: string[] = [];
+  if (inScope.length > 0) {
+    const named = inScope.slice(0, OVERSIZE_PATHS_NAMED).join(", ");
+    const more = inScope.length - OVERSIZE_PATHS_NAMED;
+    parts.push(
+      `${inScope.length} file(s) in scope were not indexed: ${named}` +
+        (more > 0 ? ` and ${more} more` : ""),
+    );
+  }
+  if (unrecorded > 0) {
+    parts.push(
+      `${unrecorded} further oversize file(s) were not indexed and their paths were not ` +
+        `recorded, so they may be in scope`,
+    );
+  }
+  return (
+    `files larger than REPO_SOURCE_MAX_FILE_BYTES (${state.limits.maxFileBytes} bytes) were ` +
+    `skipped: ${parts.join("; ")}`
+  );
 }
 
 interface RepoStateRow {
@@ -168,12 +253,17 @@ interface RepoStateRow {
  * `repoConnectorId` narrows to the repository the document is generated for;
  * otherwise every repository connector of the project is checked, because
  * grounding retrieval searches the whole project index.
+ *
+ * #217 — a file skipped as oversize degrades the document only when it lies in
+ * the document's scope (`pathPrefixes`, or the whole repository without them):
+ * see {@link describeOversizeInScope}. One vendored bundle elsewhere in the
+ * repository does not degrade a document scoped away from it.
  */
 export async function repositoryIndexWarnings(
   projectId: string,
-  repoConnectorId?: string,
-  now: number = Date.now(),
+  scope: { repoConnectorId?: string; pathPrefixes?: readonly string[]; now?: number } = {},
 ): Promise<DocWarning[]> {
+  const { repoConnectorId, pathPrefixes, now = Date.now() } = scope;
   let rows: RepoStateRow[];
   try {
     rows = await prisma.repoConnection.findMany({
@@ -193,7 +283,20 @@ export async function repositoryIndexWarnings(
   }
   const warnings: DocWarning[] = [];
   for (const row of rows) {
-    const gap = describeIndexGap(parseSourceIngestState(row.sourceIngestState), now);
+    const state = parseSourceIngestState(row.sourceIngestState);
+    const oversize = describeOversizeInScope(state, pathPrefixes);
+    if (oversize) {
+      warnings.push({
+        kind: "source-unavailable",
+        section: "Document",
+        message:
+          `Part of this document's scope in repository "${row.label}" is missing from the ` +
+          `search index: ${oversize}. Statements about those files could not be checked. ` +
+          `Raise REPO_SOURCE_MAX_FILE_BYTES or narrow the scope, re-sync, then regenerate.`,
+        severity: "warning",
+      });
+    }
+    const gap = describeIndexGap(state, now);
     if (!gap) continue;
     warnings.push({
       kind: "source-unavailable",
@@ -208,7 +311,11 @@ export async function repositoryIndexWarnings(
   return warnings;
 }
 
-/** The API view of a connector's latest source ingest: the state plus its effective status. */
+/**
+ * The API view of a connector's latest source ingest: the state plus its effective status.
+ * Consumers must read `effectiveStatus`, not the raw stored `status` (#217: a legacy
+ * `partial` row can be `completed` in effect, and a stale `running` one `interrupted`).
+ */
 export function sourceIngestSummary(
   raw: string | null | undefined,
   now: number = Date.now(),

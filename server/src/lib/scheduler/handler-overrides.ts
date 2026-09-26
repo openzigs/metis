@@ -31,6 +31,7 @@ import {
   ingestSourceAsKnowledge,
 } from "../connectors/connector-ingest.js";
 import { ingestCodeGraph } from "../code-graph/ingest.js";
+import { acquireConnectorIngest } from "../connectors/ingest-guard.js";
 import { runBatch } from "../publishing/publisher.js";
 import { AnalysisOrchestrator, getOrchestrator } from "../analysis/orchestrator.js";
 import { buildProvider, loadAIConfig } from "../ai/index.js";
@@ -93,54 +94,63 @@ export function buildSchedulerHandlerOverrides(
       (async (connectorId, signal) => {
         abortGuard(signal);
         const projectId = await fetchRepoConnectorProjectId(connectorId);
-        // Step 1 — pull latest commits (or re-clone if clone is missing/corrupt)
-        const clone = await pullOrCloneRepo(projectId, connectorId, "system");
-        abortGuard(signal);
-        // Step 2 — incremental code-graph re-ingest (only changed files).
-        // Best-effort SQL-lineage wiring from the project's DB connector
-        // (#316/#317); never blocks the scheduled refresh if unavailable.
-        const schemaWiring = await buildCodeGraphSchemaWiring(projectId, "system");
-        const graphStats = await ingestCodeGraph(prisma, {
-          projectId,
-          rootDir: clone.path,
-          repoConnectionId: connectorId,
-          introspectedSchema: schemaWiring.introspectedSchema,
-          routines: schemaWiring.routines,
-          fetchRoutineBody: schemaWiring.fetchRoutineBody,
-          routineDialect: schemaWiring.routineDialect,
-          packages: schemaWiring.packages,
-          fetchPackageBody: schemaWiring.fetchPackageBody,
-          dependencies: schemaWiring.dependencies,
-          sqlLineageOverride: schemaWiring.sqlLineageOverride,
-          embedSymbols: true, // #797 — the scheduled refresh re-embeds changed symbols
-        });
-        abortGuard(signal);
-        // Step 3 — incremental RAG knowledge ingest
-        const srcSummary = await ingestSourceAsKnowledge(
-          projectId,
-          connectorId,
-          "system",
-          clone.path,
-        );
-        abortGuard(signal);
-        // Step 4 — refresh metadata (README, head SHA, connectivity check)
-        const meta = await fetchRepoMetadata(projectId, connectorId, "system");
-        const metadataSummary = await ingestRepoMetadata(projectId, connectorId, "system", meta);
-        abortGuard(signal);
-        const test = await testRepoConnector(projectId, connectorId, "system");
-        if (srcSummary.failures === 0 && metadataSummary.failures === 0) {
-          await checkIncrementalRegeneration(projectId, connectorId);
+        // #217 — the per-connector ingest guard shared with the sync routes and the
+        // eval runner; a refresh that finds a sync running is refused (409) before
+        // it pulls, rather than racing the clone and the recorded ingest state.
+        const lease = acquireConnectorIngest(connectorId, "scheduled-refresh");
+        try {
+          // Step 1 — pull latest commits (or re-clone if clone is missing/corrupt)
+          const clone = await pullOrCloneRepo(projectId, connectorId, "system");
+          abortGuard(signal);
+          // Step 2 — incremental code-graph re-ingest (only changed files).
+          // Best-effort SQL-lineage wiring from the project's DB connector
+          // (#316/#317); never blocks the scheduled refresh if unavailable.
+          const schemaWiring = await buildCodeGraphSchemaWiring(projectId, "system");
+          const graphStats = await ingestCodeGraph(prisma, {
+            projectId,
+            rootDir: clone.path,
+            repoConnectionId: connectorId,
+            introspectedSchema: schemaWiring.introspectedSchema,
+            routines: schemaWiring.routines,
+            fetchRoutineBody: schemaWiring.fetchRoutineBody,
+            routineDialect: schemaWiring.routineDialect,
+            packages: schemaWiring.packages,
+            fetchPackageBody: schemaWiring.fetchPackageBody,
+            dependencies: schemaWiring.dependencies,
+            sqlLineageOverride: schemaWiring.sqlLineageOverride,
+            embedSymbols: true, // #797 — the scheduled refresh re-embeds changed symbols
+          });
+          abortGuard(signal);
+          // Step 3 — incremental RAG knowledge ingest
+          const srcSummary = await ingestSourceAsKnowledge(
+            projectId,
+            connectorId,
+            "system",
+            clone.path,
+            { lease },
+          );
+          abortGuard(signal);
+          // Step 4 — refresh metadata (README, head SHA, connectivity check)
+          const meta = await fetchRepoMetadata(projectId, connectorId, "system");
+          const metadataSummary = await ingestRepoMetadata(projectId, connectorId, "system", meta);
+          abortGuard(signal);
+          const test = await testRepoConnector(projectId, connectorId, "system");
+          if (srcSummary.failures === 0 && metadataSummary.failures === 0) {
+            await checkIncrementalRegeneration(projectId, connectorId);
+          }
+          return {
+            repo: meta.repo.full_name,
+            headSha: meta.headSha,
+            latencyMs: test.latencyMs,
+            pulled: clone.pulled,
+            filesChanged: clone.filesChanged,
+            filesParsed: graphStats.filesParsed,
+            symbolsUpserted: graphStats.symbolsUpserted,
+            chunksIngested: srcSummary.chunkCount,
+          };
+        } finally {
+          lease.release();
         }
-        return {
-          repo: meta.repo.full_name,
-          headSha: meta.headSha,
-          latencyMs: test.latencyMs,
-          pulled: clone.pulled,
-          filesChanged: clone.filesChanged,
-          filesParsed: graphStats.filesParsed,
-          symbolsUpserted: graphStats.symbolsUpserted,
-          chunksIngested: srcSummary.chunkCount,
-        };
       }),
     refreshDbConnectorSchema:
       opts.refreshDbConnectorSchema ??
