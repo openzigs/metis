@@ -25,6 +25,7 @@ import {
 } from "../lib/ai/conversation/conversation-service.js";
 import { CompactionError } from "../lib/async/compaction.js";
 import { AIError } from "../lib/ai/errors.js";
+import { BudgetExceededError } from "../lib/finops/budget-enforcer.js";
 import { chatProviderForSession } from "./ai.js";
 
 function ok<T>(data: T): { success: true; data: T } {
@@ -94,6 +95,12 @@ export function aiConversationRouter(): Router {
         res.json(ok(result));
       } catch (err) {
         if (err instanceof AppError) throw err;
+        if (err instanceof BudgetExceededError) {
+          throw new AppError(err.status, err.code, err.message, {
+            usedTokens: err.usedTokens,
+            budget: err.budget,
+          });
+        }
         if (err instanceof CompactionError) throw new AppError(502, "COMPACT_FAILED", err.message);
         if (err instanceof AIError) throw new AppError(err.status, err.code, err.message);
         throw new AppError(500, "COMPACT_FAILED", (err as Error).message);

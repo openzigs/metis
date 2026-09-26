@@ -67,6 +67,7 @@ import {
 import { effectiveModel } from "../lib/ai/model-switch.js";
 import { loadAuthorizedSession } from "../lib/ai/conversation/session-access.js";
 import {
+  calibrationPromptChars,
   ContextOverflowError,
   loadChatTurnConfig,
   prepareTurn,
@@ -276,6 +277,25 @@ export function newUserMessage(body: ChatBody): string {
 /** A session's stored reasoning effort, when it is one the providers accept. */
 function sessionReasoningEffort(value: string | null): ChatOptions["reasoningEffort"] | undefined {
   return value === "low" || value === "medium" || value === "high" ? value : undefined;
+}
+
+/**
+ * Refresh the derived session snapshot after a reply is on record. Never
+ * throws: the reply is already stored, so a failure here must not turn into a
+ * second, error-marked reply or a 5xx for an answer the user was given (PR #205
+ * review). The snapshot is derived data and is rewritten on the next turn.
+ */
+async function refreshSnapshotAfterReply(
+  session: Parameters<typeof writeDerivedSnapshot>[0],
+): Promise<void> {
+  try {
+    await writeDerivedSnapshot(session);
+  } catch (err) {
+    log.error("Failed to refresh the derived session snapshot", {
+      sessionId: session.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /** #138 — a project's compaction threshold (tokens), when it sets one. */
@@ -1018,6 +1038,9 @@ export function aiRouter(): Router {
     });
 
     let prepared: PreparedTurn | null = null;
+    // Set once the reply is on record: a later failure must not add a second,
+    // error-marked reply to the same question.
+    let replyRecorded = false;
     let providerKey: string = loadAIConfig().provider;
     try {
       const apiKeyOverride = await resolveProviderKey(session.providerSecretRef);
@@ -1071,6 +1094,7 @@ export function aiRouter(): Router {
           model,
           signal: ac.signal,
           maxTokens: turnConfig.summaryMaxTokens,
+          meter: { sessionId: session.id, userId, projectId: session.projectId },
         }),
         config: turnConfig,
       });
@@ -1110,7 +1134,7 @@ export function aiRouter(): Router {
               ratio: turn.ratio,
               meta: { cached: true },
             });
-            await writeDerivedSnapshot(session);
+            await refreshSnapshotAfterReply(session);
             // Issue #1321 — deliberately NOT observed. A cached answer was
             // generated against a different request's retrieval, so scoring it
             // against *this* request's contexts would measure the semantic
@@ -1210,12 +1234,18 @@ export function aiRouter(): Router {
         toolCalls,
         usage: response.usage,
         provider: providerInstance.key,
-        model: response.model || model,
+        // The REQUESTED model, as /stream stores it: calibration (#137) matches
+        // later turns on it. The served model, when different, is kept in meta.
+        model,
         finishReason: response.finishReason ?? null,
-        promptChars: turn.promptChars,
+        promptChars: calibrationPromptChars(turn, toolCalls),
         ratio: turn.ratio,
+        ...(response.model && response.model !== model
+          ? { meta: { servedModel: response.model } }
+          : {}),
       });
-      await writeDerivedSnapshot(session);
+      replyRecorded = true;
+      await refreshSnapshotAfterReply(session);
 
       // Epic #647 / Issue #653 — per-request token breakdown
       const historyMsgs = promptMessages.filter((m) => m.role !== "system");
@@ -1300,7 +1330,7 @@ export function aiRouter(): Router {
     } catch (err) {
       // #136 — the question is already in the transcript; record that its turn
       // failed, so the history never shows an unanswered question with no reason.
-      if (prepared) {
+      if (prepared && !replyRecorded) {
         await recordFailedTurn(session.id, err, "", prepared, providerKey, model);
       }
       if (err instanceof SafetyDeniedError) {
@@ -1498,6 +1528,7 @@ export function aiRouter(): Router {
           model,
           signal: ac.signal,
           maxTokens: turnConfig.summaryMaxTokens,
+          meter: { sessionId: session.id, userId, projectId: session.projectId },
         }),
         config: turnConfig,
       });
@@ -1583,7 +1614,7 @@ export function aiRouter(): Router {
           provider: streamProvider.key,
           model,
           finishReason,
-          promptChars: turn.promptChars,
+          promptChars: calibrationPromptChars(turn, toolCalls),
           ratio: turn.ratio,
         });
         await writeDerivedSnapshot(session);

@@ -2,7 +2,12 @@
  * #136/#138 — the history a provider is sent, built from transcript rows.
  */
 import { describe, expect, it } from "vitest";
-import { buildHistory, capToolResult, rowMessages } from "./context-builder.js";
+import {
+  buildHistory,
+  capToolResult,
+  joinAdjacentUserMessages,
+  rowMessages,
+} from "./context-builder.js";
 import type { StoredMessage } from "./transcript-store.js";
 
 let n = 0;
@@ -113,5 +118,37 @@ describe("buildHistory", () => {
     expect(rowMessages(row({ role: "system", kind: "message", parts: text("x") }))).toEqual([]);
     const s = rowMessages(row({ role: "system", kind: "summary", parts: text("S") }));
     expect(s[0]!.content).toContain("[Summary of the earlier conversation. ");
+  });
+});
+
+describe("joinAdjacentUserMessages", () => {
+  it("joins back-to-back user messages, keeping every word, and leaves alternation alone", () => {
+    expect(
+      joinAdjacentUserMessages([
+        { role: "system", content: "sys" },
+        { role: "user", content: "summary" },
+        { role: "user", content: "q1" },
+        { role: "assistant", content: "a1" },
+        { role: "user", content: "q2" },
+        { role: "user", content: "q3" },
+        { role: "user", content: "q4" },
+      ]),
+    ).toEqual([
+      { role: "system", content: "sys" },
+      { role: "user", content: "summary\n\nq1" },
+      { role: "assistant", content: "a1" },
+      { role: "user", content: "q2\n\nq3\n\nq4" },
+    ]);
+  });
+
+  it("does not join across a system message, nor multimodal content", () => {
+    const parts = [{ type: "text" as const, text: "img" }];
+    const input = [
+      { role: "user" as const, content: "a" },
+      { role: "system" as const, content: "rag" },
+      { role: "user" as const, content: "b" },
+      { role: "user" as const, content: parts },
+    ];
+    expect(joinAdjacentUserMessages(input)).toEqual(input);
   });
 });

@@ -16,6 +16,10 @@ vi.mock("../prisma.js", async () => {
   };
   return { prisma };
 });
+const aiRecord = vi.hoisted(() => vi.fn());
+const projectRecord = vi.hoisted(() => vi.fn());
+vi.mock("../ai/token-tracker.js", () => ({ getTokenTracker: () => ({ record: aiRecord }) }));
+vi.mock("../finops/token-tracker.js", () => ({ recordUsage: projectRecord }));
 
 const {
   batchForSummary,
@@ -53,7 +57,11 @@ async function seed(sessionId: string, turns: number, size = 100) {
 beforeEach(() => {
   rows.length = 0;
   sessionUpdates.length = 0;
+  aiRecord.mockReset();
+  projectRecord.mockReset();
 });
+
+const meter = { sessionId: "s1", userId: "u1", projectId: "p1" };
 
 describe("groupTurns / planCompaction", () => {
   it("groups a user row with the replies after it", async () => {
@@ -256,7 +264,7 @@ describe("providerSummarizer", () => {
         };
       },
     } as unknown as AIProvider;
-    const res = await providerSummarizer(provider, { model: "m", maxTokens: 77 })({
+    const res = await providerSummarizer(provider, { model: "m", maxTokens: 77, meter })({
       priorSummary: null,
       transcript: "T",
     });
@@ -265,5 +273,96 @@ describe("providerSummarizer", () => {
     expect(seen[0]!.messages[1]!.content).toContain("Existing summary:\n(none)");
     expect(seen[0]!.opts).toMatchObject({ model: "m", maxTokens: 77, disableThinking: true });
     expect(seen[0]!.opts?.sessionId).toBeUndefined();
+  });
+
+  // PR #205 review — a summary is a model call: it must reach BOTH usage stores
+  // (per-user AITokenUsage and the per-project TokenUsage budgets read), or every
+  // compaction is invisible to cost tracking and budget enforcement.
+  const usageProvider = (usage: unknown) =>
+    ({
+      chat: async () => ({
+        content: "S",
+        usage,
+        model: "served-model",
+        provider: "openai",
+        finishReason: "stop",
+      }),
+    }) as unknown as AIProvider;
+
+  it("records every summary call's usage in the per-user and per-project stores", async () => {
+    const usage = { promptTokens: 120, completionTokens: 30, totalTokens: 150, cacheReadTokens: 5 };
+    await providerSummarizer(usageProvider(usage), { model: "m", meter })({
+      priorSummary: null,
+      transcript: "T",
+    });
+    expect(aiRecord).toHaveBeenCalledTimes(1);
+    expect(aiRecord.mock.calls[0]![0]).toMatchObject({
+      sessionId: "s1",
+      userId: "u1",
+      projectId: "p1",
+      provider: "openai",
+      model: "served-model",
+      usage,
+      agentStep: "compaction",
+    });
+    expect(projectRecord).toHaveBeenCalledTimes(1);
+    expect(projectRecord.mock.calls[0]![0]).toMatchObject({
+      projectId: "p1",
+      sessionId: "s1",
+      provider: "openai",
+      model: "served-model",
+      inputTokens: 120,
+      outputTokens: 30,
+      cacheReadTokens: 5,
+    });
+  });
+
+  it("records per-user usage but no project usage for a session outside a project", async () => {
+    const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
+    await providerSummarizer(usageProvider(usage), {
+      model: "m",
+      meter: { ...meter, projectId: null },
+    })({ priorSummary: null, transcript: "T" });
+    expect(aiRecord).toHaveBeenCalledTimes(1);
+    expect(aiRecord.mock.calls[0]![0].projectId).toBeUndefined();
+    expect(projectRecord).not.toHaveBeenCalled();
+  });
+
+  it("records each call of a multi-batch compaction, before the outcome is known", async () => {
+    const provider = {
+      chat: vi
+        .fn()
+        .mockResolvedValueOnce({
+          content: "partial",
+          usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+          model: "m",
+          provider: "openai",
+        })
+        .mockResolvedValue({
+          content: "  ",
+          usage: { promptTokens: 11, completionTokens: 0, totalTokens: 11 },
+          model: "m",
+          provider: "openai",
+        }),
+    } as unknown as AIProvider;
+    const active = await seed("sb", 3, 3_000);
+    await expect(
+      compactTranscript({
+        sessionId: "sb",
+        activeRows: active,
+        ratio,
+        build,
+        contextWindow: { tokens: 2_000, source: "catalog" },
+        fixedTokens: 0,
+        estimatedTokensBefore: 0,
+        force: true,
+        summarizer: providerSummarizer(provider, { model: "m", meter }),
+      }),
+    ).rejects.toBeInstanceOf(CompactionError);
+    // The compaction failed, but both calls were paid for and both are recorded.
+    const calls = (provider.chat as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(aiRecord).toHaveBeenCalledTimes(calls);
+    expect(projectRecord).toHaveBeenCalledTimes(calls);
   });
 });

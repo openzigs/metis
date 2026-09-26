@@ -37,6 +37,7 @@ import { buildHistory } from "./context-builder.js";
 import { estimateMessagesTokens, resolveTokenRatio } from "./token-estimator.js";
 import { resolveContextWindow } from "../../analysis/context-watermark.js";
 import { compactTranscript, providerSummarizer } from "../../async/compaction.js";
+import { assertWithinBudget } from "../../finops/budget-enforcer.js";
 
 /** Hours after its last activity that a session can still be resumed. */
 function resumeTtlHours(): number {
@@ -88,11 +89,14 @@ export async function resumeSession(
   user: AuthPayload | undefined,
   sessionId: string,
 ): Promise<ResumeSessionResponse> {
-  const { session, messages } = await readTranscript(user, sessionId);
-  const last = session.snapshotUpdatedAt ?? session.updatedAt;
+  // Expiry first: an expired session is refused before any legacy import
+  // writes rows for it (PR #205 review).
+  const authorized = await loadAuthorizedSession(user, sessionId);
+  const last = authorized.snapshotUpdatedAt ?? authorized.updatedAt;
   if (last.getTime() < Date.now() - resumeTtlHours() * 3600 * 1000) {
     throw new AppError(404, "SESSION_RESUME", "Session has expired and cannot be resumed");
   }
+  const { session, messages } = await readTranscript(user, sessionId);
   return { session: sessionStateDto(session), messages };
 }
 
@@ -168,6 +172,9 @@ export async function compactSessionOnDemand(
   signal?: AbortSignal,
 ): Promise<ManualCompactionResult> {
   const session = await loadAuthorizedSession(user, sessionId);
+  // A summary is a paid model call: gate it on the project budget like a chat
+  // turn (PR #205 review). Throws BudgetExceededError (402) before any spend.
+  if (session.projectId) await assertWithinBudget(session.projectId);
   const provider = await resolveProvider(session);
   const model = effectiveModel(session);
   const config = loadChatTurnConfig();
@@ -191,7 +198,12 @@ export async function compactSessionOnDemand(
     }),
     fixedTokens: 0,
     estimatedTokensBefore: before,
-    summarizer: providerSummarizer(provider, { model, signal, maxTokens: config.summaryMaxTokens }),
+    summarizer: providerSummarizer(provider, {
+      model,
+      signal,
+      maxTokens: config.summaryMaxTokens,
+      meter: { sessionId: session.id, userId: session.userId, projectId: session.projectId },
+    }),
     force: true,
     provider: provider.key,
     model,

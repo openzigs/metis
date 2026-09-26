@@ -28,7 +28,13 @@ import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.
 import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../src/lib/ai/types.js";
 
 const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const state = vi.hoisted(() => ({ db: null as unknown }));
+const state = vi.hoisted(() => {
+  // The AI route limiter reads its cap once, at module load — so it must be set
+  // before the routes are imported (setting it in `beforeAll` is too late, and
+  // this file sends well over the default 60 turns per user).
+  process.env.AI_RATE_LIMIT_MAX = "10000";
+  return { db: null as unknown };
+});
 
 vi.mock("../src/lib/prisma.js", async () => {
   const { Prisma } = await import("@prisma/client");
@@ -51,6 +57,15 @@ const { aiSdkRouter } = await import("../src/routes/ai-sdk.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { COMPACTION_SYSTEM_PROMPT } = await import("../src/lib/async/compaction.js");
+const { getTokenTracker } = await import("../src/lib/ai/token-tracker.js");
+const { getPendingUsageWrites } = await import("../src/lib/finops/token-tracker.js");
+
+/** Both usage recorders persist on a microtask; wait until they have landed. */
+async function usageSettled(): Promise<void> {
+  for (let i = 0; i < 200 && (getTokenTracker().inFlight > 0 || getPendingUsageWrites() > 0); i++) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
 
 /** A scripted model that records every prompt it receives. */
 class ScriptedProvider implements AIProvider {
@@ -321,6 +336,144 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(rows[1].finishReason).toBe("error");
     });
 
+    // PR #205 review — strict-alternation chat templates reject two user
+    // messages in a row; they are joined, never dropped.
+    const noAdjacentUsers = (msgs: ChatMessage[]) =>
+      msgs.every((m, i) => i === 0 || !(m.role === "user" && msgs[i - 1]!.role === "user"));
+
+    it("a turn after a reply that failed empty sends no two user messages in a row", async () => {
+      const sid = await newSession(alice);
+      const realStream = model.stream.bind(model);
+      model.stream = async function* () {
+        yield* [];
+        throw new Error("died before a token");
+      };
+      await send(alice, sid, "first try");
+      model.stream = realStream;
+      await send(alice, sid, "second try");
+      const last = model.streamCalls().at(-1)!.messages;
+      expect(noAdjacentUsers(last)).toBe(true);
+      const user = last.filter((m) => m.role === "user").map((m) => m.content);
+      expect(user).toEqual(["first try\n\nsecond try"]);
+    });
+
+    // PR #205 review — the per-session calibration must find /chat's samples.
+    it("/chat stores the requested model on the reply, so calibration can match it", async () => {
+      const sid = await newSession(alice);
+      model.chat = async () => ({
+        content: "ok",
+        usage: { promptTokens: 50, completionTokens: 5, totalTokens: 55 },
+        model: "served-variant",
+        provider: "offline-stub",
+      });
+      const res = await as(alice).post("/api/ai/chat", { sessionId: sid, message: "hi" });
+      expect(res.status).toBe(200);
+      const session = await db.aISession.findUnique({ where: { id: sid } });
+      const reply = await db.aIMessage.findFirst({ where: { sessionId: sid, ordinal: 2 } });
+      expect(reply!.model).toBe(session!.model);
+      expect(JSON.parse(reply!.meta as unknown as string)).toMatchObject({
+        servedModel: "served-variant",
+      });
+    });
+
+    // PR #205 review — a failure AFTER the reply is stored must not add a second,
+    // error-marked reply or turn a stored answer into a 5xx.
+    function failSnapshotWrites(): () => void {
+      const real = db;
+      const bind = (t: object, p: PropertyKey) => {
+        const v = Reflect.get(t, p) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+      };
+      state.db = new Proxy(real, {
+        get(t, p) {
+          if (p !== "aISession") return bind(t, p);
+          return new Proxy(t.aISession, {
+            get(ts, q) {
+              if (q !== "update") return bind(ts, q);
+              return async (a: { data?: Record<string, unknown> }) => {
+                if (a.data && "snapshot" in a.data) throw new Error("snapshot write failed");
+                return ts.update(a as never);
+              };
+            },
+          });
+        },
+      });
+      return () => {
+        state.db = real;
+      };
+    }
+
+    it("/chat: a snapshot failure after the reply is stored keeps ONE reply and answers 200", async () => {
+      const sid = await newSession(alice);
+      const restore = failSnapshotWrites();
+      try {
+        const res = await as(alice).post("/api/ai/chat", { sessionId: sid, message: "q" });
+        expect(res.status).toBe(200);
+      } finally {
+        restore();
+      }
+      const rows = (await transcript(alice, sid)).body.data.messages;
+      expect(rows.map((r: { role: string }) => r.role)).toEqual(["user", "assistant"]);
+      expect(rows[1].incomplete ?? null).toBeNull();
+    });
+
+    it("/chat: any failure after the reply is stored never adds a second, error-marked reply", async () => {
+      const sid = await newSession(alice);
+      const spy = vi.spyOn(getTokenTracker(), "record").mockImplementation(() => {
+        throw new Error("tracker exploded");
+      });
+      try {
+        await as(alice).post("/api/ai/chat", { sessionId: sid, message: "q" });
+      } finally {
+        spy.mockRestore();
+      }
+      const rows = (await transcript(alice, sid)).body.data.messages;
+      expect(rows.map((r: { role: string }) => r.role)).toEqual(["user", "assistant"]);
+      expect(rows[1].incomplete ?? null).toBeNull();
+    });
+
+    it("/chat semantic-cache hit: a snapshot failure after the cached reply is stored does not call the model again", async () => {
+      process.env.SEMANTIC_CACHE_ENABLED = "1";
+      const { __resetSemanticCacheSingleton } = await import("../src/lib/ai/semantic-cache.js");
+      __resetSemanticCacheSingleton();
+      model.embed = async () => ({ vectors: [[1, 0, 0]], dimension: 3, model: "stub" });
+      try {
+        const sid = await newSession(alice);
+        // The cache stores under the served model and looks up under the
+        // requested one, so the scripted model answers as the session's model.
+        const sessionModel = (await db.aISession.findUnique({ where: { id: sid } }))!.model;
+        const realChat = model.chat.bind(model);
+        model.chat = async (m: ChatMessage[], o?: ChatOptions) => ({
+          ...(await realChat(m, o)),
+          model: sessionModel,
+        });
+        const first = await as(alice).post("/api/ai/chat", { sessionId: sid, message: "same q" });
+        expect(first.status).toBe(200);
+        const chatCalls = () => model.calls.filter((c) => c.kind === "chat").length;
+        const before = chatCalls();
+        const restore = failSnapshotWrites();
+        let second;
+        try {
+          second = await as(alice).post("/api/ai/chat", { sessionId: sid, message: "same q" });
+        } finally {
+          restore();
+        }
+        expect(second.status).toBe(200);
+        expect(second.body.data.response.cached).toBe(true);
+        expect(chatCalls()).toBe(before); // the provider was not called again
+        const rows = (await transcript(alice, sid)).body.data.messages;
+        expect(rows.map((r: { role: string }) => r.role)).toEqual([
+          "user",
+          "assistant",
+          "user",
+          "assistant",
+        ]);
+      } finally {
+        delete process.env.SEMANTIC_CACHE_ENABLED;
+        __resetSemanticCacheSingleton();
+      }
+    });
+
     // ── #138 — automatic compaction ────────────────────────────────────────
 
     it("a conversation below the watermark never compacts", async () => {
@@ -403,6 +556,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(session!.lastCompactedAt).toBeInstanceOf(Date);
     });
 
+    it("a turn aborted while compacting records why its question got no answer", async () => {
+      process.env.CHAT_CONTEXT_WINDOW_FALLBACK = "2000";
+      const sid = await newSession(alice);
+      const big = (i: number) => `turn ${i} ` + "lorem ipsum dolor ".repeat(60);
+      model.chat = async () => {
+        throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      };
+      let rows: Array<{ role: string; incomplete: { code: string } | null }> = [];
+      for (let i = 0; i < 12; i++) {
+        await send(alice, sid, big(i));
+        rows = (await transcript(alice, sid)).body.data.messages;
+        if (rows.at(-1)?.incomplete?.code === "ABORTED") break;
+      }
+      // Every question has a reply row; the last one says the turn was cancelled.
+      expect(rows.at(-1)).toMatchObject({ role: "assistant", incomplete: { code: "ABORTED" } });
+      expect(rows.filter((r) => r.role === "user").length).toBe(
+        rows.filter((r) => r.role === "assistant").length,
+      );
+    });
+
     it("manual /compact folds everything but the newest turn", async () => {
       const sid = await newSession(alice);
       for (let i = 0; i < 3; i++) await send(alice, sid, `m${i}`);
@@ -417,6 +590,93 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ).toHaveLength(2);
       const again = await as(alice).post(`/api/ai/sessions/${sid}/compact`);
       expect(again.body.data.compacted).toBe(false);
+    });
+
+    // PR #205 review — a compaction summary is a model call: it is metered in
+    // both usage stores and gated by the project budget like any chat call.
+    it("manual /compact records the summariser's usage for the user and the project", async () => {
+      const sid = await newSession(alice, ids.project);
+      for (let i = 0; i < 3; i++) await send(alice, sid, `m${i}`);
+      await usageSettled();
+      const res = await as(alice).post(`/api/ai/sessions/${sid}/compact`);
+      expect(res.status).toBe(200);
+      expect(model.summaries).toBe(1);
+      await usageSettled();
+      const userRows = await db.aITokenUsage.findMany({
+        where: { sessionId: sid, agentStep: "compaction" },
+      });
+      expect(userRows).toHaveLength(1);
+      expect(userRows[0]).toMatchObject({
+        userId: ids.alice,
+        projectId: ids.project,
+        promptTokens: 120,
+        completionTokens: 30,
+      });
+      // The project store (what the budget reads) holds the summary call. The
+      // streamed turns before it write nothing there — a gap that predates this
+      // epic and is tracked separately — so the summary is the only row.
+      const projectRows = await db.tokenUsage.findMany({ where: { sessionId: sid } });
+      expect(projectRows).toHaveLength(1);
+      expect(projectRows[0]).toMatchObject({
+        projectId: ids.project,
+        inputTokens: 120,
+        outputTokens: 30,
+      });
+    });
+
+    it("automatic compaction records the summariser's usage too", async () => {
+      process.env.CHAT_CONTEXT_WINDOW_FALLBACK = "2000";
+      const sid = await newSession(alice, ids.project);
+      const big = (i: number) => `turn ${i} ` + "lorem ipsum dolor ".repeat(60);
+      for (let i = 0; i < 12 && model.summaries === 0; i++) await send(alice, sid, big(i));
+      expect(model.summaries).toBe(1);
+      // The summary (a user-role message) is joined to the first kept question.
+      expect(noAdjacentUsers(model.streamCalls().at(-1)!.messages)).toBe(true);
+      await usageSettled();
+      expect(
+        await db.aITokenUsage.count({ where: { sessionId: sid, agentStep: "compaction" } }),
+      ).toBe(1);
+      expect(
+        await db.tokenUsage.count({
+          where: { sessionId: sid, inputTokens: 120, outputTokens: 30 },
+        }),
+      ).toBe(1);
+    });
+
+    it("manual /compact refuses a project over its monthly budget without calling the model", async () => {
+      await db.project.create({
+        data: {
+          id: "p-budget",
+          name: "PB",
+          slug: "p-budget",
+          createdById: ids.alice,
+          workspaceId: ids.ws,
+        },
+      });
+      const sid = await newSession(alice, "p-budget");
+      for (let i = 0; i < 3; i++) await send(alice, sid, `m${i}`);
+      await usageSettled();
+      await db.project.update({ where: { id: "p-budget" }, data: { monthlyTokenBudget: 100 } });
+      await db.tokenUsage.create({
+        data: {
+          projectId: "p-budget",
+          sessionId: sid,
+          provider: "offline-stub",
+          model: "stub-model",
+          inputTokens: 100,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          totalTokens: 100,
+        },
+      });
+      const res = await as(alice).post(`/api/ai/sessions/${sid}/compact`);
+      expect(res.status).toBe(402);
+      expect(res.body.error.code).toBe("BUDGET_EXCEEDED");
+      expect(model.summaries).toBe(0);
+      expect(
+        await db.aIMessage.count({ where: { sessionId: sid, NOT: { compactedAt: null } } }),
+      ).toBe(0);
     });
 
     // ── #139 — resume and fork ─────────────────────────────────────────────
@@ -489,6 +749,41 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         where: { sessionId: sid, meta: { contains: "legacy-snapshot" } },
       });
       expect(imported).toHaveLength(2);
+    });
+
+    // PR #205 review — the one-time import is atomic, and never runs for a
+    // session resume is about to refuse.
+    const legacySnapshot = JSON.stringify({
+      v: 1,
+      messages: [
+        { role: "user", content: "old q" },
+        { role: "assistant", content: "old a" },
+      ],
+    });
+
+    it("two concurrent first reads import a pre-transcript snapshot exactly once", async () => {
+      const sid = await newSession(alice);
+      await db.aISession.update({
+        where: { id: sid },
+        data: { snapshot: legacySnapshot, snapshotUpdatedAt: new Date() },
+      });
+      const [a, b] = await Promise.all([transcript(alice, sid), transcript(alice, sid)]);
+      expect([a.status, b.status]).toEqual([200, 200]);
+      expect(await db.aIMessage.count({ where: { sessionId: sid } })).toBe(2);
+    });
+
+    it("resuming an expired pre-transcript session imports nothing", async () => {
+      const sid = await newSession(alice);
+      await db.aISession.update({
+        where: { id: sid },
+        data: {
+          snapshot: legacySnapshot,
+          snapshotUpdatedAt: new Date(Date.now() - 48 * 3600 * 1000),
+        },
+      });
+      const res = await as(alice).post(`/api/ai/sessions/${sid}/resume`);
+      expect(res.status).toBe(404);
+      expect(await db.aIMessage.count({ where: { sessionId: sid } })).toBe(0);
     });
 
     it("fork copies history up to the chosen reply and keeps model, agent and skills", async () => {

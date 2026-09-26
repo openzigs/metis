@@ -11,7 +11,11 @@ vi.mock("../../prisma.js", async () => {
   const { createFakeAiMessageDelegate } =
     await import("../../../../tests/helpers/fake-ai-message.js");
   delegate.current = createFakeAiMessageDelegate(rows);
-  return { prisma: { aIMessage: delegate.current } };
+  const prisma: Record<string, unknown> = {
+    aIMessage: delegate.current,
+    $transaction: async (fn: (tx: unknown) => unknown) => fn(prisma),
+  };
+  return { prisma };
 });
 
 const store = await import("./transcript-store.js");
@@ -145,6 +149,22 @@ describe("reading rows", () => {
     });
     expect(store.toDto(s).summaryOf).toEqual({ fromOrdinal: 1, toOrdinal: 4, messageCount: 4 });
   });
+
+  it("toDto tells the reader when a summary hit its output cap", async () => {
+    const s = await store.appendMessage("s", {
+      role: "system",
+      kind: "summary",
+      parts: [],
+      estimatedTokens: 0,
+      meta: { fromOrdinal: 1, toOrdinal: 2, messageCount: 2, summaryTruncated: true },
+    });
+    expect(store.toDto(s).summaryOf).toEqual({
+      fromOrdinal: 1,
+      toOrdinal: 2,
+      messageCount: 2,
+      truncated: true,
+    });
+  });
 });
 
 describe("importLegacySnapshot", () => {
@@ -169,6 +189,33 @@ describe("importLegacySnapshot", () => {
       ["assistant", "legacy-snapshot"],
     ]);
     expect(await importLegacySnapshot("s", snap([{ role: "user", content: "again" }]))).toBe(0);
+  });
+
+  it("two concurrent first imports land the turns exactly once", async () => {
+    const s2 = snap([
+      { role: "user", content: "q" },
+      { role: "assistant", content: "a" },
+    ]);
+    const [a, b] = await Promise.all([
+      importLegacySnapshot("r", s2),
+      importLegacySnapshot("r", s2),
+    ]);
+    expect(a + b).toBe(2);
+    expect((await store.listMessages("r")).map((m) => m.ordinal)).toEqual([1, 2]);
+  });
+
+  it("rethrows a failure that is not a lost race", async () => {
+    const create = delegate.current!.create as (...a: unknown[]) => unknown;
+    delegate.current!.create = async () => {
+      throw new Error("disk full");
+    };
+    try {
+      await expect(
+        importLegacySnapshot("x", snap([{ role: "user", content: "q" }])),
+      ).rejects.toThrow("disk full");
+    } finally {
+      delegate.current!.create = create;
+    }
   });
 
   it("ignores derived, malformed and empty snapshots", async () => {

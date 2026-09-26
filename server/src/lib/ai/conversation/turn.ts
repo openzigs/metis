@@ -37,6 +37,7 @@ import {
 import {
   buildHistory,
   DEFAULT_TOOL_RESULT_MAX_TOKENS,
+  joinAdjacentUserMessages,
   type ContextBuildOptions,
 } from "./context-builder.js";
 import {
@@ -147,6 +148,19 @@ export function calibrationSamples(
     .map((r) => ({ promptChars: r.promptChars!, inputTokens: r.inputTokens! }));
 }
 
+/**
+ * #137 — the prompt size to store with a reply as a calibration sample. A
+ * code-tool turn made several model calls whose usage is summed, so one
+ * prompt's characters against that sum would overstate tokens-per-char (early
+ * compaction, a false 413); such a turn is not a sample (PR #205 review).
+ */
+export function calibrationPromptChars(
+  turn: Pick<PreparedTurn, "promptChars">,
+  toolCalls: readonly unknown[],
+): number | null {
+  return toolCalls.length > 0 ? null : turn.promptChars;
+}
+
 export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn> {
   const sessionId = input.session.id;
   let history = await listActiveMessages(sessionId);
@@ -205,7 +219,29 @@ export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn
         model: input.model,
       });
     } catch (err) {
-      if ((err as Error).name === "AbortError") throw err;
+      if ((err as Error).name === "AbortError") {
+        // The caller never gets a PreparedTurn to record a failure against, so
+        // record here why the question got no answer (PR #205 review).
+        await recordReply({
+          sessionId,
+          text: "",
+          usage: null,
+          provider: input.provider,
+          model: input.model,
+          promptChars: null,
+          ratio,
+          error: {
+            code: "ABORTED",
+            message: "The request was cancelled while older turns were being summarised.",
+          },
+        }).catch((persistErr: unknown) =>
+          log.error("Failed to record a turn aborted during compaction", {
+            sessionId,
+            error: persistErr instanceof Error ? persistErr.message : String(persistErr),
+          }),
+        );
+        throw err;
+      }
       compactionError = (err as Error).message;
       log.warn("Compaction failed; the turn continues uncompacted if it still fits", {
         sessionId,
@@ -235,7 +271,12 @@ export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn
     throw overflow;
   }
 
-  const messages = [...input.prefix, ...built, ...input.beforeUser, userMessage];
+  const messages = joinAdjacentUserMessages([
+    ...input.prefix,
+    ...built,
+    ...input.beforeUser,
+    userMessage,
+  ]);
   return {
     userRow,
     messages,

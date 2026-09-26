@@ -51,8 +51,17 @@ export interface TranscriptMessageDto {
    */
   compactedAt: string | null;
   compactedIntoId: string | null;
-  /** Summaries only: the ordinal range they stand in for. */
-  summaryOf: { fromOrdinal: number; toOrdinal: number; messageCount: number } | null;
+  /**
+   * Summaries only: the ordinal range they stand in for. `truncated` is set when
+   * the summariser hit its output cap — the summary is kept but may be missing
+   * detail, and the reader is told so.
+   */
+  summaryOf: {
+    fromOrdinal: number;
+    toOrdinal: number;
+    messageCount: number;
+    truncated?: boolean;
+  } | null;
   /** Set when a reply ended early (stream error, stop, idle timeout). */
   incomplete: { code: string; message: string } | null;
   createdAt: string;

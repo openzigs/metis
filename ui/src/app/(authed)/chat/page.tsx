@@ -130,6 +130,8 @@ export default function ChatPage() {
     setSession(null);
     setSessionScope(null);
     setMessages([]);
+    // A compaction note belongs to the session it happened in.
+    setCompactionNote(null);
     const firstRun = !mountedOnceRef.current;
     mountedOnceRef.current = true;
     void (async () => {
@@ -288,6 +290,8 @@ export default function ChatPage() {
     setError(null);
     try {
       const forked = await forkChatSession(session.id, ordinal);
+      // The note described the source session's compaction, not the fork's.
+      setCompactionNote(null);
       storeActiveSessionId(forked.session.id);
       router.push(`/chat?sessionId=${encodeURIComponent(forked.session.id)}`);
     } catch (err) {
@@ -454,6 +458,12 @@ export default function ChatPage() {
                     {m.summaryOf
                       ? `(#${m.summaryOf.fromOrdinal}–#${m.summaryOf.toOrdinal}, ${m.summaryOf.messageCount} messages)`
                       : null}
+                    {m.summaryOf?.truncated ? (
+                      <span data-testid="chat-summary-truncated" className="ml-1 text-destructive">
+                        — this summary hit its length limit and may be missing detail; the original
+                        messages are kept below.
+                      </span>
+                    ) : null}
                     <span className="mt-1 block whitespace-pre-wrap">{m.content}</span>
                   </li>
                 ) : (

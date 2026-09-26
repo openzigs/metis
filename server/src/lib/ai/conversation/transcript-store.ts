@@ -301,7 +301,12 @@ export function toDto(m: StoredMessage): TranscriptMessageDto {
     compactedIntoId: m.compactedIntoId,
     summaryOf:
       from !== null && to !== null && count !== null
-        ? { fromOrdinal: from, toOrdinal: to, messageCount: count }
+        ? {
+            fromOrdinal: from,
+            toOrdinal: to,
+            messageCount: count,
+            ...(summary?.summaryTruncated === true ? { truncated: true } : {}),
+          }
         : null,
     incomplete:
       error && typeof error.code === "string"

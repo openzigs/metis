@@ -138,7 +138,12 @@ export interface DisplayTurn {
   /** The reply ended early; the partial text is kept and labelled. */
   incomplete?: string;
   /** Summaries only: the range of messages they stand in for. */
-  summaryOf?: { fromOrdinal: number; toOrdinal: number; messageCount: number };
+  summaryOf?: {
+    fromOrdinal: number;
+    toOrdinal: number;
+    messageCount: number;
+    truncated?: boolean;
+  };
   /** Tools the assistant used for this reply. */
   tools?: string[];
 }

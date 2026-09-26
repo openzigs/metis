@@ -13,6 +13,10 @@
  *     user-supplied text, and must not gain the authority of the system prompt.
  *   • An assistant row with no text (a reply that failed before its first
  *     token) contributes nothing — there is nothing in it.
+ *   • Two user messages are never sent back to back (after a summary, or after
+ *     a reply that failed empty): strict-alternation chat templates (Gemma's on
+ *     vLLM / LM Studio) reject that, so {@link joinAdjacentUserMessages} joins
+ *     them into one — every word is kept.
  *   • {@link capToolResult} is the one truncation rule for tool output handed
  *     to a model outside the live loop (the compaction summariser's input): a
  *     marker says how much was cut and which transcript message holds it all.
@@ -80,4 +84,27 @@ export function buildHistory(rows: readonly StoredMessage[]): ChatMessage[] {
     ...active.filter((r) => r.kind === "summary"),
     ...active.filter((r) => r.kind !== "summary"),
   ].flatMap(rowMessages);
+}
+
+/**
+ * Join directly adjacent text-only `user` messages into one, separated by a
+ * blank line. Nothing is dropped; multimodal messages are left as they are.
+ */
+export function joinAdjacentUserMessages(messages: readonly ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (const m of messages) {
+    const prev = out[out.length - 1];
+    if (
+      prev &&
+      prev.role === "user" &&
+      m.role === "user" &&
+      typeof prev.content === "string" &&
+      typeof m.content === "string"
+    ) {
+      out[out.length - 1] = { ...prev, content: `${prev.content}\n\n${m.content}` };
+    } else {
+      out.push(m);
+    }
+  }
+  return out;
 }

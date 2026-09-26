@@ -9,10 +9,14 @@
  * Only `user` and `assistant` text is imported, each row tagged
  * `meta.importedFrom = "legacy-snapshot"` so its provenance stays visible. The
  * import runs only while the session has NO transcript rows, so it happens at
- * most once and never mixes into a live transcript.
+ * most once and never mixes into a live transcript: the rows take ordinals
+ * 1..n inside one transaction, so of two concurrent first reads exactly one
+ * import lands — the other hits the `(sessionId, ordinal)` unique index, rolls
+ * back and writes nothing (PR #205 review).
  */
 import { createChildLogger } from "../../logger.js";
-import { appendMessage, countMessages } from "./transcript-store.js";
+import { prisma } from "../../prisma.js";
+import { countMessages, messageRowData } from "./transcript-store.js";
 import { DEFAULT_CHARS_PER_TOKEN } from "./token-estimator.js";
 
 const log = createChildLogger("legacy-snapshot");
@@ -43,13 +47,24 @@ export async function importLegacySnapshot(
   );
   if (turns.length === 0) return 0;
   if ((await countMessages(sessionId)) > 0) return 0;
-  for (const t of turns) {
-    await appendMessage(sessionId, {
-      role: t.role,
-      parts: [{ type: "text", text: t.content }],
-      estimatedTokens: Math.ceil(t.content.length / DEFAULT_CHARS_PER_TOKEN),
-      meta: { importedFrom: "legacy-snapshot" },
+  try {
+    await prisma.$transaction(async (tx) => {
+      let ordinal = 0;
+      for (const t of turns) {
+        await tx.aIMessage.create({
+          data: messageRowData(sessionId, ++ordinal, {
+            role: t.role,
+            parts: [{ type: "text", text: t.content }],
+            estimatedTokens: Math.ceil(t.content.length / DEFAULT_CHARS_PER_TOKEN),
+            meta: { importedFrom: "legacy-snapshot" },
+          }),
+        });
+      }
     });
+  } catch (err) {
+    // Another request imported (or appended) first; its rows stand.
+    if ((err as { code?: unknown }).code === "P2002") return 0;
+    throw err;
   }
   log.info("Imported a pre-transcript session snapshot", { sessionId, messages: turns.length });
   return turns.length;

@@ -138,4 +138,79 @@ describe("<ChatPage /> on the server transcript (#127)", () => {
     await user.click(await screen.findByTestId("chat-fork-2"));
     expect(await screen.findByRole("alert")).toHaveTextContent("A fork must start");
   });
+
+  // PR #205 review — a summary cut short is labelled, not passed off as whole.
+  it("labels a summary that hit its length limit", async () => {
+    resumeMock.mockResolvedValue({
+      session,
+      messages: [
+        {
+          role: "summary",
+          content: "partial summary",
+          ordinal: 3,
+          compacted: false,
+          summaryOf: { fromOrdinal: 1, toOrdinal: 2, messageCount: 2, truncated: true },
+        },
+      ],
+    });
+    aiClient.storeActiveSessionId("sess-1");
+    render(<ChatPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByTestId("chat-summary-truncated")).toHaveTextContent(
+      "hit its length limit",
+    );
+  });
+
+  it("an untruncated summary carries no such label", async () => {
+    resumeMock.mockResolvedValue({
+      session,
+      messages: [
+        {
+          role: "summary",
+          content: "whole summary",
+          ordinal: 3,
+          compacted: false,
+          summaryOf: { fromOrdinal: 1, toOrdinal: 2, messageCount: 2 },
+        },
+      ],
+    });
+    aiClient.storeActiveSessionId("sess-1");
+    render(<ChatPage />, { wrapper: makeWrapper() });
+    await screen.findByTestId("chat-summary");
+    expect(screen.queryByTestId("chat-summary-truncated")).toBeNull();
+  });
+
+  // PR #205 review — the compaction note describes the source session, so a
+  // fork clears it.
+  it("forking clears the compaction note", async () => {
+    resumeMock.mockResolvedValue({
+      session,
+      messages: [
+        { role: "user", content: "q", ordinal: 1, compacted: false },
+        { role: "assistant", content: "a", ordinal: 2, compacted: false },
+      ],
+    });
+    aiClient.storeActiveSessionId("sess-1");
+    async function* reply(): AsyncGenerator<StreamEvent> {
+      yield { type: "compaction", compaction: { compactedMessages: 2 } as never };
+      yield { type: "delta", content: "live answer" };
+      yield { type: "done" };
+    }
+    streamMock.mockReturnValue(reply());
+    transcriptMock.mockResolvedValue([
+      { role: "user", content: "q", ordinal: 1, compacted: true },
+      { role: "summary", content: "s", ordinal: 3, compacted: false },
+      { role: "user", content: "new q", ordinal: 4, compacted: false },
+      { role: "assistant", content: "server answer", ordinal: 5, compacted: false },
+    ]);
+    forkMock.mockResolvedValue({ session: { id: "sess-fork" }, copiedMessages: 4 } as never);
+    const user = userEvent.setup();
+    render(<ChatPage />, { wrapper: makeWrapper() });
+    await screen.findByTestId("chat-fork-2");
+    await user.type(screen.getByRole("textbox", { name: "Message" }), "new q");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByTestId("chat-compaction-note");
+    await user.click(await screen.findByTestId("chat-fork-5"));
+    await waitFor(() => expect(forkMock).toHaveBeenCalledWith("sess-1", 5));
+    await waitFor(() => expect(screen.queryByTestId("chat-compaction-note")).toBeNull());
+  });
 });

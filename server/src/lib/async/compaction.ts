@@ -19,9 +19,11 @@
  *     marking rows folded into nothing would lose them.
  */
 import { randomUUID } from "node:crypto";
-import type { AIProvider, ChatMessage, TokenUsage } from "../ai/types.js";
+import type { AIProvider, ChatMessage, ProviderKey, TokenUsage } from "../ai/types.js";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import { getTokenTracker } from "../ai/token-tracker.js";
+import { recordUsage as recordProjectUsage } from "../finops/token-tracker.js";
 import {
   messageRowData,
   nextOrdinal,
@@ -70,10 +72,60 @@ export type Summarizer = (input: {
   transcript: string;
 }) => Promise<SummaryResult>;
 
-/** The provider-backed summariser the chat routes use. */
+/**
+ * Who a summary call is billed to. Providers do not record their own usage —
+ * only callers do — so a summariser that skipped this would be invisible to
+ * cost tracking and to the project budget (PR #205 review).
+ */
+export interface SummaryMeter {
+  sessionId: string;
+  userId: string;
+  projectId: string | null;
+}
+
+/**
+ * Record one summary call in both usage stores: the per-user `AITokenUsage`
+ * rollup (tagged `agentStep: "compaction"`) and, for a project session, the
+ * per-project `TokenUsage` table the budget enforcer reads.
+ */
+function meterSummaryCall(
+  meter: SummaryMeter,
+  res: { provider: ProviderKey; model: string; usage: TokenUsage | null | undefined },
+  requestedModel: string,
+): void {
+  if (!res.usage) return;
+  const model = res.model || requestedModel;
+  getTokenTracker().record({
+    sessionId: meter.sessionId,
+    userId: meter.userId,
+    provider: res.provider,
+    model,
+    usage: res.usage,
+    projectId: meter.projectId ?? undefined,
+    agentStep: "compaction",
+  });
+  if (meter.projectId) {
+    recordProjectUsage({
+      projectId: meter.projectId,
+      sessionId: meter.sessionId,
+      provider: res.provider,
+      model,
+      inputTokens: res.usage.promptTokens,
+      outputTokens: res.usage.completionTokens,
+      cacheReadTokens: res.usage.cacheReadTokens,
+      cacheWriteTokens: res.usage.cacheWriteTokens,
+    });
+  }
+}
+
+/**
+ * The provider-backed summariser the chat routes use. Every call is metered as
+ * soon as it returns, so a compaction that later fails (empty summary, lost
+ * race) still has its spend recorded.
+ */
 export function providerSummarizer(
   provider: AIProvider,
-  opts: { model: string; signal?: AbortSignal; maxTokens?: number },
+  opts: { model: string; signal?: AbortSignal; maxTokens?: number; meter: SummaryMeter },
 ): Summarizer {
   return async ({ priorSummary, transcript }) => {
     const messages: ChatMessage[] = [
@@ -94,6 +146,7 @@ export function providerSummarizer(
       disableThinking: true,
       callType: "chat",
     });
+    meterSummaryCall(opts.meter, res, opts.model);
     return { text: res.content, usage: res.usage, finishReason: res.finishReason };
   };
 }
