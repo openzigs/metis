@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "runtime": "ollama",
+  "wire": "openai-chat-completions",
+  "scenario": "text-stream",
+  "key": "34f349a4441e40eb16cd184461f69ead83cd8a369a804f1f816e617fa60dffd8",
+  "model": "laguna-s-2.1",
+  "recordedAt": "2026-09-26T16:02:32.772Z",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "body": {
+          "model": "laguna-s-2.1",
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are producing a contract-test recording. Follow the instruction exactly."
+            },
+            {
+              "role": "user",
+              "content": "Reply with exactly: Streamed answer."
+            }
+          ],
+          "max_tokens": 512,
+          "temperature": 0.2,
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "contentType": "text/event-stream",
+        "sse": [
+          "data: {\"id\":\"chatcmpl-recorded\",\"object\":\"chat.completion.chunk\",\"created\":1790438552,\"model\":\"laguna-s-2.1\",\"system_fingerprint\":\"fp_ollama\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Stream\"},\"finish_reason\":null}]}",
+          "data: {\"id\":\"chatcmpl-recorded\",\"object\":\"chat.completion.chunk\",\"created\":1790438552,\"model\":\"laguna-s-2.1\",\"system_fingerprint\":\"fp_ollama\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ed\"},\"finish_reason\":null}]}",
+          "data: {\"id\":\"chatcmpl-recorded\",\"object\":\"chat.completion.chunk\",\"created\":1790438552,\"model\":\"laguna-s-2.1\",\"system_fingerprint\":\"fp_ollama\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" answer\"},\"finish_reason\":null}]}",
+          "data: {\"id\":\"chatcmpl-recorded\",\"object\":\"chat.completion.chunk\",\"created\":1790438552,\"model\":\"laguna-s-2.1\",\"system_fingerprint\":\"fp_ollama\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\".\"},\"finish_reason\":null}]}",
+          "data: {\"id\":\"chatcmpl-recorded\",\"object\":\"chat.completion.chunk\",\"created\":1790438552,\"model\":\"laguna-s-2.1\",\"system_fingerprint\":\"fp_ollama\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}",
+          "data: {\"id\":\"chatcmpl-recorded\",\"object\":\"chat.completion.chunk\",\"created\":1790438552,\"model\":\"laguna-s-2.1\",\"system_fingerprint\":\"fp_ollama\",\"choices\":[],\"usage\":{\"prompt_tokens\":35,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens\":6,\"total_tokens\":41}}",
+          "data: [DONE]"
+        ]
+      }
+    }
+  ],
+  "result": {
+    "kind": "stream",
+    "chunks": [
+      {
+        "type": "delta",
+        "content": "Stream"
+      },
+      {
+        "type": "delta",
+        "content": "ed"
+      },
+      {
+        "type": "delta",
+        "content": " answer"
+      },
+      {
+        "type": "delta",
+        "content": "."
+      },
+      {
+        "type": "usage",
+        "usage": {
+          "promptTokens": 35,
+          "completionTokens": 6,
+          "totalTokens": 41,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0
+        }
+      },
+      {
+        "type": "done",
+        "finishReason": "stop"
+      }
+    ]
+  }
+}

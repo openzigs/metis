@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "runtime": "deepseek",
+  "wire": "anthropic-messages",
+  "scenario": "text-chat",
+  "key": "60a3cd4f3b6c769f77cb593c87cde2a18b6b99f8622685b4140dacd58008edad",
+  "model": "deepseek-v4-pro",
+  "recordedAt": "2026-09-26T16:01:58.121Z",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/anthropic/v1/messages",
+        "body": {
+          "model": "deepseek-v4-pro",
+          "max_tokens": 512,
+          "messages": [
+            {
+              "role": "user",
+              "content": "Reply with exactly: The answer is 42."
+            }
+          ],
+          "system": "You are producing a contract-test recording. Follow the instruction exactly.",
+          "thinking": {
+            "type": "disabled"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "json": {
+          "id": "msg_recorded",
+          "type": "message",
+          "role": "assistant",
+          "model": "deepseek-v4-pro",
+          "content": [
+            {
+              "type": "text",
+              "text": "The answer is 42."
+            }
+          ],
+          "stop_reason": "end_turn",
+          "stop_sequence": null,
+          "usage": {
+            "input_tokens": 27,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 6,
+            "service_tier": "standard"
+          }
+        }
+      }
+    }
+  ],
+  "result": {
+    "kind": "chat",
+    "response": {
+      "content": "The answer is 42.",
+      "usage": {
+        "promptTokens": 27,
+        "completionTokens": 6,
+        "totalTokens": 33,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0
+      },
+      "model": "deepseek-v4-pro",
+      "provider": "anthropic",
+      "finishReason": "end_turn"
+    }
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "runtime": "deepseek",
+  "wire": "anthropic-messages",
+  "scenario": "tools-stream",
+  "key": "85354fee6410597fb595e883749c2b568a45b31fa54c200526dc2914842b7078",
+  "model": "deepseek-v4-pro",
+  "recordedAt": "2026-09-26T16:02:14.970Z",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/anthropic/v1/messages",
+        "body": {
+          "model": "deepseek-v4-pro",
+          "max_tokens": 512,
+          "messages": [
+            {
+              "role": "user",
+              "content": "Call BOTH tools now, in this order, in one turn: search_code with query \"interest rate\", then read_file with path \"src/Loan.java\". Do not write any text."
+            }
+          ],
+          "tools": [
+            {
+              "name": "search_code",
+              "description": "Search the indexed code base.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": ["query"]
+              }
+            },
+            {
+              "name": "read_file",
+              "description": "Read one file.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": ["path"]
+              }
+            }
+          ],
+          "system": "You are producing a contract-test recording. Follow the instruction exactly.",
+          "thinking": {
+            "type": "disabled"
+          },
+          "stream": true
+        }
+      },
+      "response": {
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "sse": [
+          "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_recorded\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4-pro\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":111,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":256,\"output_tokens\":0,\"service_tier\":\"standard\"}}}",
+          "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_00_d37ZPtkVKVvhudnjq68f0916\",\"name\":\"search_code\",\"input\":{}}}",
+          "event: ping\ndata: {\"type\":\"ping\"}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"query\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\": \"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"interest\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\" rate\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"}\"}}",
+          "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}",
+          "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_01_Gos8EkSuop2Ygvo4pzUg7147\",\"name\":\"read_file\",\"input\":{}}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"path\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\": \"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"src\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"/L\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"oan\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\".java\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"\"}}",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"}\"}}",
+          "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}",
+          "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":111,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":256,\"output_tokens\":77,\"service_tier\":\"standard\"}}",
+          "event: message_stop\ndata: {\"type\":\"message_stop\"}"
+        ]
+      }
+    }
+  ],
+  "result": {
+    "kind": "stream",
+    "chunks": [
+      {
+        "type": "tool_call",
+        "name": "search_code",
+        "arguments": {
+          "query": "interest rate"
+        },
+        "toolCallId": "call_00_d37ZPtkVKVvhudnjq68f0916",
+        "native": true
+      },
+      {
+        "type": "tool_call",
+        "name": "read_file",
+        "arguments": {
+          "path": "src/Loan.java"
+        },
+        "toolCallId": "call_01_Gos8EkSuop2Ygvo4pzUg7147",
+        "native": true
+      },
+      {
+        "type": "usage",
+        "usage": {
+          "promptTokens": 111,
+          "completionTokens": 77,
+          "totalTokens": 188,
+          "cacheReadTokens": 256,
+          "cacheWriteTokens": 0
+        }
+      },
+      {
+        "type": "done",
+        "finishReason": "tool_use"
+      }
+    ]
+  }
+}
