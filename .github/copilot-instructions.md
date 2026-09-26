@@ -2,6 +2,8 @@
 
 METIS is a multi-package TypeScript **application**: `server/` (Express + Prisma + LanceDB RAG), `ui/` (Next.js + Tailwind), shared `packages/`, and `e2e/` (Playwright). The `.github/` directory additionally holds the custom Copilot **agents, skills, and hooks** that drive autonomous development workflows on this repo. The conventions below govern that `.github/` tooling; application code follows the language-scoped rules in `.github/instructions/`.
 
+METIS reaches models through its own provider layer (`server/src/lib/ai/providers/`): `@anthropic-ai/sdk` for Anthropic and Anthropic-compatible endpoints, and an OpenAI-compatible HTTP client for OpenAI, Azure, the Bedrock gateway and local runtimes. The application does **not** use the GitHub Copilot SDK (removed in #130) or the Vercel AI SDK.
+
 Cross-platform AI assistants (Codex, Cursor, Gemini, Aider, etc.) read [AGENTS.md](../AGENTS.md) at the repo root — keep it in sync with this file.
 
 ## graphify

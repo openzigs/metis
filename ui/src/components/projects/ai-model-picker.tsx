@@ -3,7 +3,7 @@
 /**
  * v1.2.0 — per-project AI model id override.
  *
- * Free-form text input for a Bedrock / Copilot / OpenAI model id. Empty
+ * Free-form text input for a Bedrock / Anthropic / OpenAI / local model id. Empty
  * input clears the override, falling back to the global default
  * (loadAIConfig().model). PATCHes the project on save and surfaces server
  * validation errors inline.

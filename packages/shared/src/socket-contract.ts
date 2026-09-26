@@ -97,7 +97,6 @@ export const SOCKET_COMPUTED_EMITTERS: Readonly<Record<string, string>> = {
 export const SOCKET_NON_SOCKET_EMITS: Readonly<Record<string, string>> = {
   "config.changed":
     "ConfigService is a Node EventEmitter; in-process subscribers rebuild on a config write.",
-  error: "remote-copilot-client's internal EventEmitter, not a socket.",
   sessionStart: "Async runner hook bus (getHookBus()), not a socket.",
   sessionEnd: "Async runner hook bus (getHookBus()), not a socket.",
 };

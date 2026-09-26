@@ -10,6 +10,11 @@ LanceDB RAG), `ui/` (Next.js + Tailwind), shared `packages/`, and `e2e/`
 (Playwright). It is **not** a config-only repo — there is real runtime code,
 tests, and a build.
 
+Models are reached through METIS's own provider layer (`server/src/lib/ai/providers/`):
+`@anthropic-ai/sdk` for Anthropic and Anthropic-compatible endpoints, and an
+OpenAI-compatible HTTP client for OpenAI, Azure, the Bedrock gateway and local runtimes.
+METIS does **not** use the GitHub Copilot SDK (removed in #130) or the Vercel AI SDK.
+
 ## Optional: a local knowledge graph
 
 This repo supports an opt-in [graphify](https://github.com/safishamsi/graphify)

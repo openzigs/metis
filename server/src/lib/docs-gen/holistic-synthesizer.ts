@@ -4274,7 +4274,7 @@ export async function synthesizeFinalDocument(
 
   // Each section group already starts with its own H2 heading.
   // Defensive dedupe: strip any duplicate H2 sections (can happen if a
-  // streaming recap event sneaks past delta dedupe in copilot-provider
+  // streaming recap event sneaks past delta dedupe in a provider
   // or if the LLM regenerates content mid-stream). First occurrence of
   // each H2 heading wins.
   const body = dedupeH2Sections(sectionMarkdowns.join("\n\n"));

@@ -13,7 +13,7 @@
 ## What METIS Does
 
 - **Ingest** business documents, code repos, and database schemas via a pluggable connector layer with full DNS-pinned SSRF defence.
-- **Analyse** uploaded material with a multi-agent orchestrator (BA, architect, security reviewer, planner) running on Copilot, Bedrock, OpenAI, Anthropic, or any internal gateway via BYOK.
+- **Analyse** uploaded material with a multi-agent orchestrator (BA, architect, security reviewer, planner) running on Anthropic (or an Anthropic-compatible endpoint such as DeepSeek), OpenAI, Azure OpenAI, Bedrock, a local model (Ollama / vLLM / LM Studio), or any internal OpenAI-compatible gateway.
 - **Synthesise** structured requirements + Given/When/Then acceptance criteria with a confidence score and full traceability back to source documents.
 - **Publish** the resulting issue drafts to GitHub (cloud or Enterprise) via an idempotent, rate-limited batch publisher with native sub-issue support and dry-run preview.
 - **Audit test coverage** by importing your existing test suite (CSV / Excel / DOCX / Markdown / Gherkin or via Jira, Xray, Zephyr Scale, TestRail) and getting a virtualised requirement × test-case coverage matrix, AI-generated gap suggestions, and Excel / Gherkin exports.
@@ -67,7 +67,7 @@ stack assumes, with one-line remediation hints.
 pnpm lint && pnpm typecheck && pnpm test && pnpm build
 ```
 
-### Docker (full local stack: postgres + server + ui + embeddings + opt-in copilot)
+### Docker (full local stack: postgres + server + ui + embeddings + sql-lineage)
 
 ```bash
 docker compose up
@@ -120,13 +120,15 @@ See [`.env.example`](.env.example) for the full catalogue. Production-critical v
 | `VAULT_MASTER_KEY` | Master key for envelope-encrypted secret vault           |
 | `METRICS_TOKEN`    | Bearer token gating `/metrics` (fail-closed if unset)    |
 | `CORS_ORIGIN`      | Allow-listed UI origin(s)                                |
-| `AI_PROVIDER`      | `bedrock-gateway` \| `local-gemma` \| `openai` \| `azure` \| `anthropic` \| `copilot-native` \| `offline-stub` |
+| `AI_PROVIDER`      | `bedrock-gateway` \| `local-gemma` \| `openai` \| `azure` \| `anthropic` \| `offline-stub` (`copilot-native` was removed — see [docs/MIGRATING_FROM_COPILOT.md](docs/MIGRATING_FROM_COPILOT.md)) |
 | `GITHUB_TOKEN`     | PAT used for issue/PR automation in dev                  |
 
 ### AI providers
 
-METIS speaks the OpenAI-compatible `/v1/chat/completions` shape, so the
-generative backend is swappable with a single `AI_PROVIDER` change:
+METIS speaks two wire formats — the OpenAI-compatible `/v1/chat/completions`
+shape and Anthropic's Messages API — so the generative backend is swappable
+with a single `AI_PROVIDER` change (full matrix:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#ai-provider-matrix)):
 
 | Provider          | Where it runs           | Notes                                                              |
 | ----------------- | ----------------------- | ----------------------------------------------------------------- |

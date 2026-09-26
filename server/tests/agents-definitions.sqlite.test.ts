@@ -13,7 +13,7 @@
  *          skill whose files `load_skill` can serve; malformed frontmatter and
  *          unsafe supporting files are rejected with a clear reason.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
@@ -45,7 +45,6 @@ const { LibraryImporter, InlineLoader, FilesystemLoader } =
   await import("../src/lib/library/import.js");
 const { loadAgentDefinition } = await import("../src/lib/agent-runtime/definition.js");
 const { loadSkillTool, resolveSkillCatalog } = await import("../src/lib/agent-runtime/skills.js");
-const { SessionRuntime } = await import("../src/lib/library/session-runtime.js");
 const { getToolRegistry, __resetToolRegistrySingleton } =
   await import("../src/lib/ai/tool-registry.js");
 
@@ -327,38 +326,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(
           await db.skill.count({ where: { key: { in: ["broken", "unknown-key", "leaky"] } } }),
         ).toBe(0);
-      });
-
-      it("materialised on disk (the Copilot SDK's skillDirectories), a skill keeps its supporting files — and a bad stored path is never written", async () => {
-        const skill = await db.skill.findUniqueOrThrow({ where: { key: "pdf-processing" } });
-        await db.skillFile.create({
-          data: {
-            skillId: skill.id,
-            path: "../escape.md",
-            content: "EVIL",
-            sizeBytes: 4,
-            sha256: "0".repeat(64),
-          },
-        });
-        const home = mkdtempSync(path.join(os.tmpdir(), "metis-129-home-"));
-        try {
-          const rt = new SessionRuntime({ db });
-          const out = await rt.materializeSkillsForSession({
-            sessionId: "s",
-            copilotHome: home,
-            loadedSkillIds: [skill.id],
-          });
-          expect(out.written).toEqual(["pdf-processing"]);
-          const dir = path.join(home, "skills", "pdf-processing");
-          expect(readFileSync(path.join(dir, "references", "FORMS.md"), "utf8")).toBe(
-            "FORMS-GUIDE",
-          );
-          expect(existsSync(path.join(dir, "scripts", "extract.py"))).toBe(true);
-          expect(existsSync(path.join(home, "skills", "escape.md"))).toBe(false);
-          expect(existsSync(path.join(dir, "..", "escape.md"))).toBe(false);
-        } finally {
-          rmSync(home, { recursive: true, force: true });
-        }
       });
 
       it("from the filesystem: supporting files are read only under a SKILL.md; an oversize one is left out and reported, the skill still imports", async () => {

@@ -76,8 +76,6 @@ server:
     # degradation). SQL_LINEAGE_TOKEN is injected from the secret (keyMap).
     SQL_LINEAGE_MODE: sidecar
     SQL_LINEAGE_URL: http://{{ .Release.Name }}-sql-lineage:5070
-    COPILOT_NATIVE_MODE: in-process
-    COPILOT_NATIVE_BASE_URL: http://{{ .Release.Name }}-copilot:5060
   probes:
     liveness:
       path: /healthz
@@ -445,40 +443,6 @@ embeddings:
                 values: [linux]
 
 # -----------------------------------------------------------------------------
-# Copilot SDK sidecar. Disabled by default — enable for `copilot-native` mode.
-# -----------------------------------------------------------------------------
-copilot:
-  enabled: false
-  replicaCount: 1
-  image:
-    repository: metis-copilot-svc
-    tag: ""
-  service:
-    type: ClusterIP
-    port: 5060
-  resources:
-    limits:
-      memory: 768Mi
-      cpu: "1000m"
-    requests:
-      memory: 192Mi
-      cpu: "100m"
-  env:
-    NODE_ENV: production
-    COPILOT_NATIVE_PORT: "5060"
-    COPILOT_NATIVE_HOST: 0.0.0.0
-    COPILOT_NATIVE_SESSION_TTL_MS: "1800000"
-  probes:
-    liveness:
-      path: /healthz
-      periodSeconds: 15
-      initialDelaySeconds: 20
-    readiness:
-      path: /readyz
-      periodSeconds: 10
-      initialDelaySeconds: 5
-
-# -----------------------------------------------------------------------------
 # SQL lineage sidecar (metis-sql-lineage) — Epic #294. Pure-Python sqlglot
 # parser; small footprint, fast startup, NO model weights. Probes hit /healthz
 # (no /readyz — the service has no warmup). SQL_LINEAGE_TOKEN comes from the
@@ -624,7 +588,7 @@ backup:
 #   3. secrets.create=false         → BYO Secret (chart references `existingSecret`)
 #
 # Required keys: JWT_SECRET, VAULT_MASTER_KEY, EMBEDDINGS_TOKEN,
-# SQL_LINEAGE_TOKEN, COPILOT_NATIVE_TOKEN, DATABASE_URL, OPENAI_API_KEY (or
+# SQL_LINEAGE_TOKEN, DATABASE_URL, OPENAI_API_KEY (or
 # equivalent AI provider), GITHUB_TOKEN, METRICS_TOKEN.
 # -----------------------------------------------------------------------------
 secrets:
@@ -637,7 +601,6 @@ secrets:
     VAULT_MASTER_KEY: VAULT_MASTER_KEY
     EMBEDDINGS_TOKEN: EMBEDDINGS_TOKEN
     SQL_LINEAGE_TOKEN: SQL_LINEAGE_TOKEN
-    COPILOT_NATIVE_TOKEN: COPILOT_NATIVE_TOKEN
     DATABASE_URL: DATABASE_URL
     OPENAI_API_KEY: OPENAI_API_KEY
     GITHUB_TOKEN: GITHUB_TOKEN

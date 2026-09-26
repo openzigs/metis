@@ -145,8 +145,8 @@ describe("streamAIReply", () => {
     expect(capturedOpts?.promptCaching).toEqual({ system: true });
     // `messages` caching is intentionally NOT requested (unique final turn).
     expect((capturedOpts?.promptCaching as { messages?: boolean }).messages).toBeUndefined();
-    // #142 — a discussion reply offers no tools, and withholds the Copilot
-    // SDK's built-ins (they would run with no approval gate behind them).
+    // #142 — a discussion reply offers no tools: `disableTools` means "send no
+    // tools" on every provider.
     expect(capturedOpts?.disableTools).toBe(true);
     expect(capturedOpts?.tools).toBeUndefined();
   });

@@ -16,10 +16,11 @@
    - 5.3 [API Route Modules](#53-api-route-modules)
    - 5.4 [Library Modules (Business Logic)](#54-library-modules-business-logic)
 6. [AI Engine](#6-ai-engine)
-   - 6.1 [Copilot Wrapper](#61-copilot-wrapper)
-   - 6.2 [Token Tracker](#62-token-tracker)
-   - 6.3 [Tool Registry (MCP Tools)](#63-tool-registry-mcp-tools)
-   - 6.4 [Mock AI Provider](#64-mock-ai-provider)
+   - 6.1 [Provider abstraction](#61-provider-abstraction)
+   - 6.2 [AI provider matrix](#ai-provider-matrix)
+   - 6.3 [Token tracker](#63-token-tracker--auditlog)
+   - 6.4 [Tool runtime + enforced approval gate](#64-tool-runtime--enforced-approval-gate-epic-128)
+   - 6.4.1 [Agents, progressive skills and sub-agents](#641-agents-progressive-skills-and-sub-agents-epic-129)
 7. [Multi-Agent Analysis System](#7-multi-agent-analysis-system)
    - 7.1 [Analysis Orchestrator](#71-analysis-orchestrator)
    - 7.2 [Specialist Agents](#72-specialist-agents)
@@ -132,17 +133,17 @@ METIS is built as four main pieces that talk to each other:
            │  HTTP (token auth)            │  HTTP (token auth)
            ▼                               ▼
 ┌───────────────────────┐   ┌────────────────────────────┐
-│ METIS EMBEDDINGS      │   │ METIS COPILOT SIDECAR      │
-│ SIDECAR               │   │ (opt-in, #180)             │
+│ METIS EMBEDDINGS      │   │ METIS SQL-LINEAGE          │
+│ SIDECAR               │   │ SIDECAR (#294)             │
 │                       │   │                            │
-│ POST /embed → vectors │   │ POST /chat → SSE stream    │
-│ POST /rerank → scores │   │ POST /sandbox/exec → E2B   │
-│ GET  /healthz         │   │ POST /apply → morph diff   │
-│                       │   │ GET  /healthz              │
-│ transformers.js v3    │   │                            │
-│ + onnxruntime-node    │   │ @github/copilot-sdk ^0.3   │
-│ bookworm-slim base    │   │ Bearer-token auth          │
-│ ~423 MB image         │   │ ~150 MB image              │
+│ POST /embed → vectors │   │ POST /parse → lineage      │
+│ POST /rerank → scores │   │ GET  /healthz              │
+│ GET  /healthz         │   │                            │
+│                       │   │ Python + sqlglot           │
+│ transformers.js v3    │   │ parses SQL, never runs it  │
+│ + onnxruntime-node    │   │ Bearer-token auth          │
+│ bookworm-slim base    │   │                            │
+│ ~423 MB image         │   │                            │
 └───────────────────────┘   └────────────────────────────┘
            │                               │
            └───────────┬───────────────────┘
@@ -168,7 +169,7 @@ METIS is built as four main pieces that talk to each other:
 - The **UI** is what users see in their web browser. It lets them log in, create projects, upload documents, start analyses, chat with the AI, review requirements, manage the spec kit, run evaluations, and publish issues.
 - The **Server** is the brain of the application. It receives requests from the UI, runs the AI analysis, manages the database, and communicates with external services like GitHub.
 - The **Embeddings sidecar** owns the heavy ML runtime (`@huggingface/transformers` + `onnxruntime-node`). The server talks to it over token-authenticated HTTP for vector embeddings and cross-encoder reranking. This split exists so the main `metis-server` image can stay slim — see [Operations §7 "Container Image Sizes"](./OPERATIONS.md#7-container-image-sizes) for the full accounting.
-- The **Copilot sidecar** (opt-in via `docker compose --profile copilot-native up`) wraps `@github/copilot-sdk` and exposes chat streaming, E2B sandbox execution, and morph diff application. The server talks to it via `RemoteCopilotClient` when `COPILOT_NATIVE_MODE=sidecar`. See [COPILOT_SIDECAR.md](./COPILOT_SIDECAR.md) for setup.
+- The server calls every model **directly** through its own provider layer (§6) — the GitHub Copilot sidecar and SDK were removed in epic #130 ([MIGRATING_FROM_COPILOT.md](./MIGRATING_FROM_COPILOT.md)).
 - The **SQL-lineage sidecar** (`metis-sql-lineage`, Python + `sqlglot`) parses embedded SQL, procedure bodies, and SAS PROC SQL into table/column/lineage usage for schema-impact analysis. The server talks to it over token-authenticated HTTP via `SqlLineageClient` when `SQL_LINEAGE_MODE=sidecar`, degrading gracefully when it is absent. See [§12 "Database Intelligence" → SQL-lineage sidecar](#sql-lineage-sidecar-epic-294). It only parses SQL — never executes it — and makes no outbound calls.
 - The **Data Layer** stores everything — user accounts, projects, documents, analysis results, requirements, secrets, spec kit artifacts, benchmark runs, and the vector embeddings used by the AI for searching through documents.
 
@@ -196,7 +197,7 @@ Here is every major technology used in METIS and why it was chosen:
 | **Winston** | Server | A logging library that records what the server is doing, essential for debugging and monitoring. |
 | **Docker** | Deployment | A containerization tool that packages the entire application and its dependencies into portable containers that run the same way everywhere. |
 | **Vite 8** | Build tooling | Fast build tool used by Vitest for test transformation and by `@vitejs/plugin-react` for JSX/TSX compilation. |
-| **Vitest 4** | All Testing | A fast Vite-native testing framework used across all workspaces (2,866 automated tests: 2,182 server + 490 UI + 108 shared + 75 copilot-svc + 9 embeddings-svc + 2 ui-kit). |
+| **Vitest 4** | All Testing | A fast Vite-native testing framework used across all workspaces (2,866 automated tests: 2,182 server + 490 UI + 108 shared + 9 embeddings-svc + 2 ui-kit, at the time of counting). |
 
 ---
 
@@ -232,13 +233,6 @@ metis/                          ← Root of the entire project
 │   │   │   ├── index.ts        ← HTTP server bootstrap
 │   │   │   ├── app.ts          ← Express app + token auth
 │   │   │   └── pipelines.ts    ← Lazy-loaded Xenova pipelines
-│   │   └── tests/
-│   ├── copilot-svc/            ← Copilot-native sidecar (@metis/copilot-svc)
-│   │   ├── package.json
-│   │   ├── src/
-│   │   │   ├── index.ts        ← SSE + Bearer-auth Express server
-│   │   │   ├── sandbox.ts      ← E2B Firecracker sandbox endpoint
-│   │   │   └── morph.ts        ← Morph apply diff endpoint
 │   │   └── tests/
 │   └── src/
 │       ├── index.ts            ← Entry point: starts HTTP server + Socket.IO
@@ -278,7 +272,7 @@ metis/                          ← Root of the entire project
     ├── ARCHITECTURE.md         ← This file
     ├── USER_GUIDE.md           ← User guide
     ├── OPERATIONS.md           ← Deployment + operations guide
-    └── COPILOT_SIDECAR.md      ← Copilot sidecar setup
+    └── MIGRATING_FROM_COPILOT.md ← Upgrade note for former copilot-native users
 ```
 
 **Why a monorepo?**
@@ -396,7 +390,7 @@ All providers implement the same contract (`server/src/lib/ai/types.ts`):
 
 ```ts
 interface AIProvider {
-  key: ProviderKey;       // 'copilot-native' | 'bedrock-gateway' | 'local-gemma' | 'openai' | 'azure' | 'anthropic' | 'offline-stub'
+  key: ProviderKey;       // 'bedrock-gateway' | 'local-gemma' | 'openai' | 'azure' | 'anthropic' | 'offline-stub'
   model: string;
   offline: boolean;
   capabilities?: ProviderCapabilities;                    // #1115 — see below
@@ -432,7 +426,6 @@ if (supportsResponseFormat(provider)) opts.responseFormat = SCHEMA;
 | `OpenAICompatibleProvider` = `BedrockDirectProvider` | ✅ (#336, with degrade-retry) | ✅ (#132) |
 | `AnthropicProvider` (native endpoint) | ✅ `json_schema` as `output_config.format` (#133, with degrade-retry) | ✅ (#133) |
 | `AnthropicProvider` (DeepSeek Anthropic-compatible endpoint) | ❌ (DeepSeek accepts only `effort` in `output_config`) | ✅ |
-| `CopilotProvider` | ❌ (absent in copilot-sdk 0.3.0 **and** 1.0.8) | ✅ |
 | `OfflineStubProvider` | ❌ | ✅ only when constructed with a `script` (#131) |
 | `ReplayProvider` | ❌ | ❌ (replays recorded tool calls, #131) |
 | `RecordingProvider` | forwards the wrapped adapter's declaration | forwards |
@@ -506,14 +499,14 @@ The factory (`buildProvider`) reads `loadAIConfig(env)` and returns (#134):
 | `offline-stub` / `AI_OFFLINE=1` | `OfflineStubProvider` |
 | `anthropic` | `AnthropicProvider` (native, or DeepSeek via `ANTHROPIC_BASE_URL`) |
 | `local-gemma` / `bedrock-gateway` / `openai` / `azure` | `OpenAICompatibleProvider` (direct HTTP) |
-| `copilot-native` | `CopilotProvider` — the ONLY key that still reaches the Copilot SDK wrapper (removed in P4, #130) |
+| `copilot-native` | **Removed (#149).** `loadAIConfig`, the boot check and the factory all refuse it by name with a message naming the supported providers and [MIGRATING_FROM_COPILOT.md](./MIGRATING_FROM_COPILOT.md); an unknown key is an `AIConfigError` too — never a fall-through to another provider. |
 
 `loadAIConfig` validates env via zod and refuses public LLM hosts (`api.openai.com`, `api.anthropic.com`, etc.) so a stray env var cannot exfiltrate prompts.
 
 #### Direct OpenAI-compatible provider seam (`bedrock-gateway`, `local-gemma`)
 
 For structured-output workloads (analysis, doc generation) and the local Gemma
-path, METIS bypasses the agentic Copilot SDK and talks to the backend's
+path, METIS talks to the backend's
 OpenAI-compatible `/v1/chat/completions` endpoint directly via
 `OpenAICompatibleProvider` (exported with a `BedrockDirectProvider` alias for
 back-compat). These keys are also **intercepted before the factory** in both
@@ -522,12 +515,11 @@ the identical client, so the two paths cannot diverge):
 
 ```text
 loadAIConfig() ─▶ provider === 'bedrock-gateway' || 'local-gemma'  ──▶ new OpenAICompatibleProvider({ providerKey, baseUrl, apiKey, model })
-                  (otherwise)                                       ──▶ buildProvider() → CopilotProvider / OfflineStub
+                  (otherwise)                                       ──▶ buildProvider() → AnthropicProvider / OpenAICompatibleProvider / OfflineStub
 ```
 
 `buildProvider` builds the same direct client for `local-gemma`,
-`bedrock-gateway`, `openai` and `azure` (#134), so none of them falls into the
-SDK wrapper. Provider selection is a
+`bedrock-gateway`, `openai` and `azure` (#134). Provider selection is a
 pure `AI_PROVIDER` config switch (env or runtime tunable) — no code change is
 needed to move between Bedrock and local Gemma, and each provider keeps its own
 default model (`us.anthropic.claude-sonnet-4-6` vs `gemma4:12b`).
@@ -596,17 +588,44 @@ mode. (The older vLLM `guided_json` extra-body param is deprecated and not used.
   drift.
 
 
-### 6.2 Copilot wrapper + session isolation
+<a id="ai-provider-matrix"></a>
 
-`CopilotWrapper` (lifted from talos and re-pointed at METIS paths) wraps `@github/copilot-sdk` with:
+### 6.2 AI provider matrix
 
-- Lazy SDK loading (`loadCopilotClientCtor`) so unit tests inject `CopilotClientLike` stubs without resolving the real package.
-- Token resolution order: `GITHUB_TOKEN` from the environment, then a cached auth file at `~/.metis/auth.json` (`METIS_AUTH_DIR` override), then `~/.config/github-copilot/apps.json` for EMU users who already have a host token.
-- **There is no device-flow login.** It was removed in #1348: `CopilotClient` has never exposed `startDeviceAuth` or `waitForAuth` — measured on SDK 0.2.2 and 0.3.0 alike — so the code that called them could only ever throw. Nothing inside METIS writes `~/.metis/auth.json` any more; it is read if an operator or a mounted volume supplies it, and token refresh is not implemented.
-- **Per-session `COPILOT_HOME` at `~/.metis-sessions/<sessionId>` (R-SDK-9)** so concurrent sessions never share auth state, MCP server caches, or telemetry buckets. The directory is shredded on `destroySession`.
-- Concurrent `ensureStarted` calls coalesce on a single in-flight start promise to avoid double-initialisation.
+METIS owns both wire formats it speaks (epic #125: hand-rolled on the existing
+clients, no agent framework). Every provider below runs the same #131 contract
+suite through the real factory (`server/tests/lib/ai/provider-contract-matrix.test.ts`);
+DeepSeek and Ollama are also replayed from recorded live traffic
+(`provider-contract-recorded.test.ts`, #197).
 
-`CopilotProvider` translates SDK session events (`assistant.message_delta`, `toolCall`, `usage`, `error`, `session.idle`) into the `ChatChunk` async iterable used by the rest of the engine, propagates `AbortSignal`, and wraps SDK errors in `AIProviderError`.
+| `AI_PROVIDER` | Client | Wire format | Native tools | Structured output | Required env | Notes |
+|---|---|---|---|---|---|---|
+| `anthropic` | `AnthropicProvider` (`@anthropic-ai/sdk`) | Anthropic Messages | ✅ | ✅ `output_config.format` | `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) | Optional `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`. Prompt caching via `cache_control`; thinking toggle. |
+| `anthropic` + `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic` | same | Anthropic Messages (DeepSeek) | ✅ | ❌ (DeepSeek accepts only `effort`) — parse-and-repair path | as above | Billed at DeepSeek's own prices, not Anthropic's (`ANTHROPIC_BASE_URL_BILLS_AS`). |
+| `openai` | `OpenAICompatibleProvider` | OpenAI `/chat/completions` | ✅ | ✅ `response_format` (+ 400/422 degrade-retry) | `OPENAI_BASE_URL`, `OPENAI_API_KEY` | Also any self-hosted OpenAI-compatible server; Phase-2 concurrency drops to 1 on a loopback/private base URL. |
+| `azure` | `OpenAICompatibleProvider` | OpenAI, Azure deployments URL + `api-key` header | ✅ | ✅ | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`; optional `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_VERSION` | Model names are deployment names (open vocabulary for saved agent models). |
+| `bedrock-gateway` | `OpenAICompatibleProvider` (`BedrockDirectProvider`) | OpenAI, via an internal Bedrock Access Gateway | ✅ | ✅ | `BEDROCK_GATEWAY_URL`, `BEDROCK_GATEWAY_API_KEY` (or `GATEWAY_*`) | Public LLM hosts refused; https in production; `BEDROCK_ALLOWED_HOSTS`; `extra_body.prompt_caching`; inference-profile ARNs (`BEDROCK_MODEL_PROFILES`). |
+| `local-gemma` | `OpenAICompatibleProvider` | OpenAI (Ollama / vLLM / LM Studio) | ✅ per model (catalog + discovery) | ✅ per mode (`DOCS_GEN_LOCAL_STRUCTURED_OUTPUT`) | `LOCAL_GEMMA_BASE_URL` (loopback / private only); optional `LOCAL_GEMMA_MODEL`, `LOCAL_GEMMA_API_KEY` | Thinking off by default (`reasoning_effort: "none"` + `think: false`), per-base-URL FIFO limiter (`LOCAL_GEMMA_MAX_CONCURRENCY`, default 1), configurable timeouts that start after slot acquisition, per-family sampling defaults. |
+| `offline-stub` (or `AI_OFFLINE=1`) | `OfflineStubProvider` | none (in-process) | only when scripted | ❌ | none | Deterministic; used by tests and air-gapped installs. |
+| ~~`copilot-native`~~ | — | — | — | — | — | **Removed (#149).** Refused by name at boot, at runtime-config read, on a project override and on a stored session (read-only). See [MIGRATING_FROM_COPILOT.md](./MIGRATING_FROM_COPILOT.md). |
+
+**What replaced the Copilot SDK's session machinery.** Each piece now runs on
+METIS's own code, identically for every provider above:
+
+| Concern | Where it lives |
+|---|---|
+| Server-owned sessions, resume, fork | [Server-owned chat conversation (Epic #127)](#server-owned-chat-conversation-epic-127) — the transcript is `ai_messages`; the browser never sends history. |
+| Token accounting + automatic compaction | Same section — watermark from the model catalog, oldest whole turns folded into one pinned summary row. |
+| Tool runtime + approval gate | [§6.4](#64-tool-runtime--enforced-approval-gate-epic-128) — native tool calls, one executor, every call through `ApprovalGateService` at every agent depth. |
+| Agents, progressive skills, sub-agents | [§6.4.1](#641-agents-progressive-skills-and-sub-agents-epic-129) — skills reach the model through the `load_skill` tool (or inline bodies for a model without tools); nothing is materialised on disk for a provider any more. |
+| Per-session isolation | Session tenancy (`loadAuthorizedSession`: owner **and** project access) replaces the SDK's per-session `COPILOT_HOME`; the `ai_sessions.copilotHome` column was dropped (#149). |
+
+**Sessions on the removed provider.** A session row whose `provider` is
+`copilot-native` stays readable (transcript, resume, list) and is read-only:
+`/chat`, `/stream`, `/sessions/:id/compact`, `/sessions/:id/fork` and
+`/sessions/:id/messages` answer `409 AI_SESSION_PROVIDER_RETIRED`
+(`assertSessionAcceptsTurns`, `lib/ai/conversation/session-access.ts`), and the
+resume DTO carries `readOnlyReason` for the chat page's notice.
 
 ### 6.3 Token tracker → AuditLog
 
@@ -684,7 +703,7 @@ Each policy supports `auto | prompt-once | always-prompt | deny`. Decisions are 
 
 **Events (#143).** Each step is a `tool_event` SSE frame and an `ai:tool:event` in the session's socket room (joined only by the session's owner — `subscribe:session` now authorises like every session read). Errors use a fixed vocabulary (`TOOL_DENIED`, `TOOL_APPROVAL_EXPIRED`, `TOOL_NOT_ALLOWED`, `TOOL_UNKNOWN`, `TOOL_INVALID_ARGS`, `TOOL_FAILED`); a tool's exception text stays in the server log and never reaches the stream or the transcript. The stream's hard ceiling is paused while a person decides. **Every page that sends a turn on a session answers its prompts**: the `/chat` page and the Workbench share `useToolApprovals` (`ui/src/hooks/use-tool-approvals.ts` — the turn's `tool_event` frames plus the session room, and `decideToolApproval`) and render `ToolActivityList` (`ui/src/components/chat/tool-activity.tsx`) with Approve / Deny. No other surface drives a tool-bearing turn: discussion replies, custom-agent playground runs and the async `chat` run kind offer no tools.
 
-**Copilot SDK built-ins.** The Copilot SDK carries its own tools (shell, file write, URL fetch, …) that would run under the provider's `onPermissionRequest`, never this gate. Every chat call asks for them withheld with `withholdSdkBuiltinTools` (set by `buildSdkSkillRuntime`), a flag only the Copilot provider reads: it maps to `availableTools: []`, and its permission handler refuses every request (`rejectSdkPermission`). It is deliberately **not** `disableTools`, which means "send no tools" on every provider — the Anthropic and OpenAI-compatible clients drop `tools` from the request when it is set, so using it here would strip METIS's own tools from every chat. `disableTools` stays on the pure-text callers that offer no tools (discussion replies, custom-agent playground runs, analysis/docs-gen synthesis), and on Copilot it withholds the built-ins too. The SDK hands the handler the full request (a shell request's `fullCommandText`, a write's `fileName` and `diff`), so routing it through the gate would be possible; refusing everything is the least-risk interim because the Copilot provider is removed in P4 (#130). Non-chat text-synthesis callers that set neither flag keep the earlier behaviour until then. The Copilot provider declares `nativeToolCalls: false` — it never reads `ChatOptions.tools` — so a Copilot chat gets the code tools on the text protocol (with `CHAT_CODE_SEARCH_TOOLS`) rather than native tools it would silently drop.
+**No provider-side tools.** #149 removed the Copilot SDK and, with it, the only provider that carried tools of its own (shell, file write, URL fetch) outside this gate, and the `withholdSdkBuiltinTools` flag that withheld them. `disableTools` still means "send no tools" on every provider. (History: the Copilot SDK carried its own tools (shell, file write, URL fetch, …) that would run under the provider's `onPermissionRequest`, never this gate. Every chat call asks for them withheld with `withholdSdkBuiltinTools` (set by `buildSdkSkillRuntime`), a flag only the Copilot provider reads: it maps to `availableTools: []`, and its permission handler refuses every request (`rejectSdkPermission`). It is deliberately **not** `disableTools`, which means "send no tools" on every provider — the Anthropic and OpenAI-compatible clients drop `tools` from the request when it is set, so using it here would strip METIS's own tools from every chat. `disableTools` stays on the pure-text callers that offer no tools (discussion replies, custom-agent playground runs, analysis/docs-gen synthesis), and on Copilot it withholds the built-ins too. The SDK hands the handler the full request (a shell request's `fullCommandText`, a write's `fileName` and `diff`), so routing it through the gate would be possible; refusing everything is the least-risk interim because the Copilot provider is removed in P4 (#130). Non-chat text-synthesis callers that set neither flag keep the earlier behaviour until then. The Copilot provider declares `nativeToolCalls: false` — it never reads `ChatOptions.tools` — so a Copilot chat got the code tools on the text protocol.)
 
 **Local provider.** The loop asks for approval and runs tools only between provider calls, so the per-base-URL concurrency slot (#127) is never held across a human decision or a tool run. That depends on every reader that stops at `done` returning the provider stream: `withIdleTimeout` (`stream-idle.ts`) passes an early stop (`break`, `collectStream`, a throw in the consumer) on to the source, whose `finally` releases the slot — without it the next local call on that base URL waited forever.
 
@@ -696,12 +715,12 @@ Each policy supports `auto | prompt-once | always-prompt | deny`. Decisions are 
 
 | Piece | File | Role |
 | --- | --- | --- |
-| Definition | `agent-runtime/definition.ts` | Loaders for both kinds; `listCallableAgents(projectId)` — custom agents the project owns or has enabled, plus library agents with an **explicit** enabled `ProjectAgentAllowlist` row (the picker's "no rows ⇒ all" default is not used: exposing every library agent as a tool is an opt-in); `resolveAgentModel` sends a preferred model when the model catalog knows it for the provider (#135) or — for the open-vocabulary providers `local-gemma`, `copilot-native` and `azure`, whose names the catalog cannot enumerate without a discovery probe a restarted process has never made — whenever the name is well-formed; a saved model it does not send yields a `warning` that every caller surfaces (session-create `warnings`, the sub-agent's tool result, the invoke/phase result), never a silent swap. |
+| Definition | `agent-runtime/definition.ts` | Loaders for both kinds; `listCallableAgents(projectId)` — custom agents the project owns or has enabled, plus library agents with an **explicit** enabled `ProjectAgentAllowlist` row (the picker's "no rows ⇒ all" default is not used: exposing every library agent as a tool is an opt-in); `resolveAgentModel` sends a preferred model when the model catalog knows it for the provider (#135) or — for the open-vocabulary providers `local-gemma` and `azure`, whose names the catalog cannot enumerate without a discovery probe a restarted process has never made — whenever the name is well-formed; a saved model it does not send yields a `warning` that every caller surfaces (session-create `warnings`, the sub-agent's tool result, the invoke/phase result), never a silent swap. |
 | Policy | `agent-runtime/policy.ts` | The override is **tighten-only**: per risk, the stricter of the session's action and the agent's (`auto < prompt-once < always-prompt < deny`). An unreadable stored override fails closed to "prompt on everything". Applied to the session gate (the session's agent) and to every sub-agent's gate. |
 | One runtime | `agent-runtime/run-agent.ts` | Builds an agent's prompt (persona, untrusted-input frame, skill catalog or inline bodies, tools note) and runs it: with tools, the chat tool loop and the gate it is given; without, one provider call. Chat sub-agents, the analysis custom-agent phase and the playground (`custom-agents/invoke.ts`) all run through it; for a text-only agent with no skills its prompt is byte-identical to the pre-#129 playground prompt. |
 | Secrets | `agent-runtime/secret-scan.ts` | Personas, descriptions, skill bodies and supporting files are refused on save when they carry a vendor-prefixed credential (AWS, GitHub, Anthropic, OpenAI, Slack, Google, private-key blocks); the error names the kind, never the value. |
 
-**Progressive skills (#146).** With `CHAT_PROGRESSIVE_SKILLS` (default on) and a tool-capable model, the byte-stable prompt lead carries each available skill's **name and description** only (`renderSkillCatalog`), and the model calls `load_skill` (`agent-runtime/skills.ts`) to read a body — or a supporting file — when the task needs it; the body enters the context as a fenced tool result in that turn. `load_skill` is an ordinary gated tool (risk `low`; the session agent's allowlist admits it implicitly, since loading the agent's own skills is part of the agent) and re-checks **at call time** that the skill is still enabled and still allowed for the project — on its `ProjectSkillAllowlist` and not in its `disabledSkills` (the skill-directories page's per-project switch-off list; `projectSkillAllowlist()` combines the two). The catalog itself is filtered the same way. Without tools (Copilot's text protocol, a model the catalog marks not tool-capable, or the flag off) the session falls back to the pre-#146 inline bodies — also allow-list filtered — and Copilot still receives `skillDirectories`. Skills follow the open Agent Skills `SKILL.md` format: `license`, `compatibility`, `metadata` and `allowed-tools` are accepted (`allowed-tools` is metadata only — it never pre-approves a tool), and an imported skill **directory** keeps its supporting files in `skill_files` (`agent-runtime/skill-bundle.ts`: relative paths only, ≤4 levels, text only, 64 KB each, 32 files / 512 KB per skill, no credentials). On **import**, `triageSkillFiles` leaves out — and reports in the result's `skippedFiles` — each supporting file that fails a check (binary, OS metadata such as `.DS_Store`/`__MACOSX`/`._*`, an invalid name, past a limit), so one stray file never fails the whole skill; a credential still fails the skill, and authoring through the API stays strict. Files are served by exact `(skillId, path)` lookup — nothing is read from, or executed on, the server's filesystem at chat time.
+**Progressive skills (#146).** With `CHAT_PROGRESSIVE_SKILLS` (default on) and a tool-capable model, the byte-stable prompt lead carries each available skill's **name and description** only (`renderSkillCatalog`), and the model calls `load_skill` (`agent-runtime/skills.ts`) to read a body — or a supporting file — when the task needs it; the body enters the context as a fenced tool result in that turn. `load_skill` is an ordinary gated tool (risk `low`; the session agent's allowlist admits it implicitly, since loading the agent's own skills is part of the agent) and re-checks **at call time** that the skill is still enabled and still allowed for the project — on its `ProjectSkillAllowlist` and not in its `disabledSkills` (the skill-directories page's per-project switch-off list; `projectSkillAllowlist()` combines the two). The catalog itself is filtered the same way. Without tools (a model the catalog marks not tool-capable, or the flag off) the session falls back to the pre-#146 inline bodies — also allow-list filtered. (Until #149 skills were also copied to disk for the Copilot SDK's `skillDirectories`; nothing is written to disk for a provider now.) Skills follow the open Agent Skills `SKILL.md` format: `license`, `compatibility`, `metadata` and `allowed-tools` are accepted (`allowed-tools` is metadata only — it never pre-approves a tool), and an imported skill **directory** keeps its supporting files in `skill_files` (`agent-runtime/skill-bundle.ts`: relative paths only, ≤4 levels, text only, 64 KB each, 32 files / 512 KB per skill, no credentials). On **import**, `triageSkillFiles` leaves out — and reports in the result's `skippedFiles` — each supporting file that fails a check (binary, OS metadata such as `.DS_Store`/`__MACOSX`/`._*`, an invalid name, past a limit), so one stray file never fails the whole skill; a credential still fails the skill, and authoring through the API stays strict. Files are served by exact `(skillId, path)` lookup — nothing is read from, or executed on, the server's filesystem at chat time.
 
 **Sub-agents (#147).** With `CHAT_SUBAGENTS` (default on), every callable agent the session agent's allowlist admits (`agent:*`, `agent:custom:*`, `agent:<kind>:<id>`) is offered as a tool named `agent_<key>` taking one `task` (≤20,000 chars). A call is a normal tool call (risk `medium`, gated and audited); running it (`agent-runtime/subagents.ts`):
 
@@ -766,7 +785,7 @@ Each specialist gets its own `AbortController` and runs through `runOneAgent`:
 
 1. **Retrieve** — `KnowledgeService.search(projectId, RETRIEVAL_QUERIES[agent], {k, documentIds})` returns the top vector chunks. The query text is focus-tuned per agent (the document analyst asks for scope/policy text; the code analyst asks for source/API surface; etc.). Per-project vector tables guarantee no cross-project leakage.
 2. **Prompt** — `buildSpecialistPrompt` produces a system message that names the persona and a user message that wraps the project + retrieved context inside `===METIS-DATA-BOUNDARY===` fences. `escapeContext` strips any line that tries to forge its own boundary so a hostile document cannot break out of the data region. The model is told explicitly to treat anything inside the fences as data, never as instructions.
-3. **Chat** — the orchestrator's injected `AIProvider` (offline stub by default; OpenAI / Copilot / Bedrock when configured) runs the request with the per-agent abort signal.
+3. **Chat** — the orchestrator's injected `AIProvider` (offline stub by default; Anthropic / OpenAI / Azure / Bedrock / local when configured) runs the request with the per-agent abort signal.
 4. **Validate** — `agentOutputSchema.parse` enforces the JSON shape; `enrichCitations` backfills filename + snippet from the retrieved chunks so the UI can render evidence inline.
 5. **Persist** — `persistAgentResult` writes the `AgentResult` row plus one `Finding` row per item, replacing any prior row for the same `(analysisId, agentKey)` pair so single-agent regenerate (#57) leaves no orphans.
 
@@ -808,7 +827,7 @@ The orchestrator collects results with `Promise.allSettled` so a failure in one 
 
 **Verifying absence claims — closing the #773 hole (#1111, epic #1107).** A finding asserting an ABSENCE (*"X is not implemented"*, *"No evidence found for X"*) **cites nothing**, so the #740 citation gate dropped nothing, retained nothing and classified `null` — it sailed through unflagged and was rendered downstream as a confirmed gap. That is structural: a citation-counter cannot grade a claim with no citations, and neither can #1109's three lenses, every one of which asks *"does the evidence back this claim?"* — a question with no good answer for a claim about what is **not** there. `lib/analysis/absence-verification.ts` asks the one that can be answered, **against the evidence the agent retrieved and nothing else**: `supported` (the excerpts cover where it would live; it is not there), `contradicted` (it *is* there — with the `file:line`), `unexamined` (nothing retrieved bears on it; nobody looked). **`unexamined` may never present as `supported`, and structurally cannot** — every downgrade runs *toward* `unexamined`: an ungrounded confident verdict (a verifier that says it looked but cannot say where) becomes `unexamined` with the downgrade recorded in `downgradedFrom`, and the locator is validated against the excerpts the verifier was actually shown, the #734 principle applied to the verifier's own output. #1114's degraded branch is a **fourth** state, carried as a `null` verdict with a reason and never folded in, because it is a fact about the verifier rather than about the evidence. The verdict reaches the label through `applyAbsenceVerdictToConfidence`, pure and **monotone downward**: `contradicted` forces `low`, `unexamined` caps at `medium` — the *neutral* rank, so it withholds a promotion without applying a demotion, since thin retrieval is not evidence against a requirement — and `supported`/`null` change nothing; the vote counts are left untouched, so label and evidence stay independently auditable. **The verifier is given no tools, no search and no file access**: if the deciding evidence was never retrieved, `unexamined` is the answer, because a panel that retrieves is no longer grading the claim the agent made. Detection reuses #773's `assertsAbsence` at a new `grader` tier — a strict **superset** of the `gate` tier that fires the destructive `could-not-verify` downgrade, so a read-only check costing one call may act on a subordinate clause that a title-rewriting downgrade may not, and no finding can be downgraded by one and skipped by the other. Presentation rides the #1110 seam (`describeAbsenceCheck` → `SupportPanelSummary.absence`, `RequirementSupportConfidence.absenceCautions`), so synthesis (`[ABSENCE-UNEXAMINED]` + `absence=` tail), the API, the `AbsenceVerdictBadge` and the published `## Confidence` note all read one rule. Published issues are the one place #1110's "only `low` and `no-signal` publish" is widened: an absence caution publishes at **any** confidence, because a requirement synthesised from *"X is not implemented"* is an instruction to build X. **Detection is measured** (`lib/eval/verification/absence-detection.ts`, 28 labelled cases): the pre-#1111 patterns scored **recall 0.3333**, missing the epic's own headline example; the shipped `grader` tier scores **0.8000 recall / 0.9231 precision**, the `gate` tier **0.7333 / 0.9167**, and the three residual misses assert an absence with **no negation vocabulary at all** — a stated bound of lexical detection, listed in the report rather than hidden. Measured end-to-end on `pnpm eval:verification --arm both` (2026-07-28, 12-case corpus, live `anthropic`/`claude-sonnet-5`, 3 runs): recall **1.0000**, precision **0.6667**, over-flag **0.5000** — identical to #1109 — at **3,658.9 tokens/finding** (up from 3,270.5, the cost of one extra call on the 4 of 12 findings that assert an absence), 0.0% malformation over 111 calls. It correctly returned `contradicted` on both of #773's real dogfooded cases (VC-01 `change-analysis-engine.ts:128-146`, VC-06 `prisma-adapter.ts:244-264`) — in a run where all three lens votes were discarded for missing citations, the absence check alone produced the `low` label and the contradicting locator.
 
-**Structured verdicts across providers — retry, then degrade (#1114, epic #1107).** The adversarial verifier panel (#1109) puts ~3 extra LLM calls on every finding — ~135 on a 45-finding run — and each must come back as a parseable verdict. The existing analysis path obtains JSON with `extractJsonObject` and a **hard throw** on failure, which is survivable for five agents per run and is not survivable at 135 calls. `requestStructuredVerdict` (`lib/analysis/structured-verdict.ts`) is the verifier path's replacement: parse → validate against the caller's Zod schema → on malformation **re-prompt exactly once**, replaying the model's own bad output plus the parse error and the expected shape → on a second failure **degrade**. The return type is a discriminated union, `{ status: "verdict", verdict } | { status: "no-signal", reason }`, and the degraded branch carries **no `verdict` field at all** — so "the verifier could not judge this" is physically not readable as a vote against the finding. That distinction is load-bearing (recall-first applies to the verifier's own failures) and survives into A2's presentation. `responseFormat` is used **opportunistically only**, probed through `supportsResponseFormat` (#1115): the `anthropic` and `copilot` adapters both drop it, so it is omitted there rather than sent and hoped for, and parse-and-retry is the portable path on every provider — verification quality is not a function of which provider is configured. Parity on `anthropic` and `copilot` is asserted against the **real adapter classes** with their SDK seams stubbed, not against a hand-rolled double. Cancellation is the one failure that still throws (an aborted run must stop, not manufacture 135 "no signal" results); a provider/transport error degrades without a retry, since it is not malformation. Every call is accumulated into `StructuredVerdictMetrics` — in-process, dependency-free, bucketed per lens label — so the malformation/retry/no-signal rates are **measured** rather than assumed; `formatStructuredVerdictReport` renders them for the A5 harness (#1108).
+**Structured verdicts across providers — retry, then degrade (#1114, epic #1107).** The adversarial verifier panel (#1109) puts ~3 extra LLM calls on every finding — ~135 on a 45-finding run — and each must come back as a parseable verdict. The existing analysis path obtains JSON with `extractJsonObject` and a **hard throw** on failure, which is survivable for five agents per run and is not survivable at 135 calls. `requestStructuredVerdict` (`lib/analysis/structured-verdict.ts`) is the verifier path's replacement: parse → validate against the caller's Zod schema → on malformation **re-prompt exactly once**, replaying the model's own bad output plus the parse error and the expected shape → on a second failure **degrade**. The return type is a discriminated union, `{ status: "verdict", verdict } | { status: "no-signal", reason }`, and the degraded branch carries **no `verdict` field at all** — so "the verifier could not judge this" is physically not readable as a vote against the finding. That distinction is load-bearing (recall-first applies to the verifier's own failures) and survives into A2's presentation. `responseFormat` is used **opportunistically only**, probed through `supportsResponseFormat` (#1115): adapters that drop it (DeepSeek's Anthropic-compatible endpoint, the offline stub) have it omitted rather than sent and hoped for, and parse-and-retry is the portable path on every provider — verification quality is not a function of which provider is configured. Parity (since #149: the native Anthropic endpoint vs DeepSeek's, the Copilot adapter having been removed) is asserted against the **real adapter class** with its SDK seam stubbed, not against a hand-rolled double. Cancellation is the one failure that still throws (an aborted run must stop, not manufacture 135 "no signal" results); a provider/transport error degrades without a retry, since it is not malformation. Every call is accumulated into `StructuredVerdictMetrics` — in-process, dependency-free, bucketed per lens label — so the malformation/retry/no-signal rates are **measured** rather than assumed; `formatStructuredVerdictReport` renders them for the A5 harness (#1108).
 
 ### 7.2 Persona Registry
 
@@ -1712,7 +1731,7 @@ User clicks "Run Analysis"
          ▼
 ┌─────────────────┐
 │  AI Session     │  The AI works through the problem, potentially
-│  (CopilotWrapper)│  using tools, spawning sub-agents, etc.
+│  (AIProvider)   │  using tools, spawning sub-agents, etc.
 └────────┬────────┘
          │
          ▼
@@ -4073,7 +4092,7 @@ Design points:
 | `DOCS_GEN_PHASE1_MODEL` | `global.anthropic.claude-haiku-4-5-20251001-v1:0` | Model for Phase 1 fact extraction. Changing this invalidates all cached facts for that project (new model key). |
 | `DOCS_GEN_PHASE2_MODEL` | `us.anthropic.claude-sonnet-4-6` | Model for Phase 2 synthesis. |
 | `DOCS_GEN_PHASE1_CONCURRENCY` | `3` | How many Phase-1 module extractions are kept in flight at once (1–64). A worker pool since #25 — the next module starts as soon as any finishes, where fixed batches used to wait for their slowest module — and a registry tunable (admin settings, db → env), so it changes without a restart. Higher values reduce wall-clock time at the cost of burst request rate. (This row said `6`; the code default has been `3`.) |
-| `DOCS_GEN_PHASE2_CONCURRENCY` | `1` local-gemma / `4` cloud | How many Phase-2 batch calls of one batched section (Rules, Workflows, Calculations, Data Model) run at once (1–64, #178). Unset, the default follows the provider: 1 for local-gemma, whose `LOCAL_GEMMA_MAX_CONCURRENCY` limiter already holds requests to the server's real parallelism, 4 for Bedrock/Anthropic/OpenAI/Azure, and 1 for any other provider key (copilot-native, offline-stub, a new provider). A set value applies to every provider. Replies merge in plan order, so the section does not depend on which call finishes first — unless the section's re-split budget runs out, when which cut-off batch gets the last re-split depends on which reply arrives first. Each run also logs `Docs-gen estimated run cost` (or `Docs-gen run cost not estimated` with a note when no price is known, e.g. local) from the recorded token counts, cache reads and cache writes included. |
+| `DOCS_GEN_PHASE2_CONCURRENCY` | `1` local-gemma / `4` cloud | How many Phase-2 batch calls of one batched section (Rules, Workflows, Calculations, Data Model) run at once (1–64, #178). Unset, the default follows the provider: 1 for local-gemma, whose `LOCAL_GEMMA_MAX_CONCURRENCY` limiter already holds requests to the server's real parallelism, 4 for Bedrock/Anthropic/OpenAI/Azure, and 1 for any other provider key (offline-stub, a new provider). A set value applies to every provider. Replies merge in plan order, so the section does not depend on which call finishes first — unless the section's re-split budget runs out, when which cut-off batch gets the last re-split depends on which reply arrives first. Each run also logs `Docs-gen estimated run cost` (or `Docs-gen run cost not estimated` with a note when no price is known, e.g. local) from the recorded token counts, cache reads and cache writes included. |
 | `DOCS_GEN_HYBRID_ROUTING` | `0` (off) | Route each Phase-2 section to a provider by faithfulness tier (local for literal/reconstruction, Sonnet for narrative). No-op unless BOTH a local and an escalation provider are configured (#333). |
 | `DOCS_GEN_JUDGE_ESCALATION` | `0` (off) | Re-run a below-threshold LOCAL section once on the escalation (Sonnet) provider and keep the better result — the quality floor (#334). Independent of hybrid routing but inert without it. |
 | `DOCS_GEN_MAX_ESCALATIONS` | `3` | Per-document cap on escalation re-runs (bounds cost). The per-section cap is always exactly one. `0` disables escalation via budget while leaving the flag on. |
@@ -4618,7 +4637,6 @@ graph TB
     UI --> Server[metis-server<br/>Express + Socket.IO · :4000]
     Server --> PG[(metis-postgres<br/>Postgres 16 · :5432)]
     Server --> Emb[metis-embeddings<br/>ONNX BGE + reranker · :5050*]
-    Server -. profile copilot-native .-> Cop[metis-copilot<br/>Copilot SDK · :5060*]
     Server -. spawns docker-stdio .-> Wrappers[wrapper containers<br/>npx-runner / uvx-runner /<br/>jbang-runner / node-runner /<br/>code-graph-runner-sse / *-sse]
     Wrappers -. attached to .-> McpNet[(metis-mcp<br/>bridge network)]
 
@@ -4627,7 +4645,6 @@ graph TB
       Server
       PG
       Emb
-      Cop
     end
 
     subgraph metisMcp [metis-mcp bridge network]
@@ -4636,10 +4653,9 @@ graph TB
     end
 ```
 
-\* `metis-embeddings` and `metis-copilot` are internal-only on the `metis`
-bridge network and are not exposed to the host by default. The copilot
-sidecar is only started when the `copilot-native` profile is active
-(`docker compose --profile copilot-native up`).
+\* `metis-embeddings` is internal-only on the `metis` bridge network and is
+not exposed to the host by default. (The opt-in `metis-copilot` sidecar was
+removed in #150.)
 
 **Services:**
 - **metis-ui** (port 3000): Next.js 15 / React 19 frontend.
@@ -4647,8 +4663,6 @@ sidecar is only started when the `copilot-native` profile is active
 - **metis-postgres** (port 5432): PostgreSQL 16 (volume `postgres_data`).
 - **metis-embeddings** (internal :5050): RAG embeddings + reranker
   sidecar (`Xenova/bge-small-en-v1.5`, `Xenova/ms-marco-MiniLM-L-6-v2`).
-- **metis-copilot** (internal :5060, opt-in): GitHub Copilot SDK sidecar
-  with per-session isolation. (No device auth — removed in #1348.)
 
 **MCP wrapper fan-out**: every registered `runtime: docker-stdio` MCP
 server is hosted in its own ephemeral wrapper container under
@@ -4688,7 +4702,6 @@ graph TB
         UIPod[ui Deployment<br/>HPA: 2-10]
         SrvPod[server Deployment<br/>replicaCount=1]
         EmbPod[embeddings Deployment]
-        CopPod[copilot Deployment<br/>opt-in]
         PVC1[(PVC: data/uploads<br/>EBS gp3 RWO)]
         PVC2[(PVC: data/lancedb<br/>EBS gp3 RWO)]
         ESO[ExternalSecret] --> Secret[(metis-secrets)]
@@ -4760,7 +4773,7 @@ This allows:
 
 | Component | Mock (Development) | Production Target |
 |---|---|---|
-| AI Provider | Mock responses based on keywords | GitHub Copilot SDK |
+| AI Provider | Mock responses based on keywords | Anthropic / OpenAI / Azure / Bedrock / local provider (§6.2) |
 | Embedder | Deterministic SHA-256 hashing | `all-MiniLM-L6-v2` model |
 | Vector Store | In-memory JavaScript arrays | LanceDB |
 | GitHub Client | In-memory issue store | Octokit REST API |
@@ -4987,8 +5000,8 @@ All configuration is managed through environment variables. Copy `.env.example` 
 | Variable | Default | Description |
 |---|---|---|
 | `AI_TOKEN_BUDGET` | `100000` | Maximum tokens per AI session |
-| `COPILOT_API_KEY` | — | GitHub Copilot SDK API key (production) |
-| `COPILOT_MODEL` | `gpt-4o` | AI model to use |
+| `AI_PROVIDER` | `offline-stub` | Provider key — see [§6.2 AI provider matrix](#ai-provider-matrix) for each provider's env |
+| `AI_MODEL` | per provider | Default model for new sessions |
 
 ### GitHub Integration
 | Variable | Description |
@@ -5038,7 +5051,7 @@ UI code imports types from `@metis/shared` — never from `@prisma/client` — s
 
 ## v1.1.0 SDK alignment (#165)
 
-The slim runtime image (#145) drops `@github/copilot` + `@github/copilot-sdk`. v1.1.0 keeps the surface area of those abstractions in-house so every provider (`bedrock-gateway`, `openai`, `azure`, `anthropic`, `offline-stub`) gets the same behaviour:
+The slim runtime image (#145) dropped `@github/copilot` + `@github/copilot-sdk` (and #130 removed them from METIS entirely). v1.1.0 keeps the surface area of those abstractions in-house so every provider (`bedrock-gateway`, `openai`, `azure`, `anthropic`, `offline-stub`) gets the same behaviour:
 
 - **Custom subagents** (#112) — `server/src/lib/custom-agents/` seeds four built-in specialists (BA / Architect / PO / QA) once at boot via `ensureBuiltInAgents()`. Built-ins are immutable and globally scoped (`projectId = null`); user-defined agents are project-scoped and mutable.
 - **Skill directories + disabled skills** (#113) — `server/src/lib/library/skill-directories.ts` walks operator-configured filesystem directories for `SKILL.md` files (max depth 4, max 500 entries, max 256 KB per file). Git URLs and `..` traversal are rejected. Since #1075 a directory must also resolve inside one of the roots in `SKILL_DIRECTORIES_ALLOWED_ROOTS` (default `<server>/data/skills`), checked at write time *and* re-checked by `scan()` at read time; the routes are RBAC-gated (`project.read` to read, `project.update` for `disabled-skills`, `skill.manage` for the directory list itself). The scanner's walk never descends into symlinked directories.
@@ -5048,7 +5061,7 @@ The slim runtime image (#145) drops `@github/copilot` + `@github/copilot-sdk`. v
 - **Session resume** (#122) — `server/src/lib/ai/session-snapshot.ts` writes a snapshot every N (default 5) messages; sessions older than the TTL (env `RESUMABLE_TTL_HOURS`, default 24 h) are dropped from the resumable list and `rehydrate` throws.
 - **`/model` slash command** (#120) — `server/src/lib/ai/model-switch.ts` parses `/model <id> [reasoning=]<low|medium|high>?` and persists `currentModel` + `currentReasoningEffort` on the session, with an allowedModels guard.
 
-The shape of these abstractions matches the public copilot-sdk surface, so when the copilot sidecar lands (#180) we can swap implementations without touching the orchestrator.
+The shapes were modelled on the Copilot SDK's public surface; they are METIS's own and are unaffected by the SDK's removal (#130).
 
 ---
 
@@ -5068,7 +5081,7 @@ Socket.IO surfaces emit `bg-run:status` to the `project:{id}` room and `bg-run:s
 
 The closed-loop epic ties code execution, requirement implementation, and PR review together so a merged PR closes the loop on the spec it was meant to satisfy.
 
-- **E2B sandbox (A.1, #197)** — `server/copilot-svc/src/sandbox.ts` is the optional Firecracker microVM executor. The sidecar exposes `POST /sandbox/exec` (token-gated), takes `{language: python|node|bash, code: ≤64 KB, timeoutMs ≤ 120 000}`, caps stdout/stderr at 64 KB and fails closed (HTTP 503) when `E2B_API_KEY` is unset. The `@e2b/sdk` import is lazy so the slim sidecar image stays thin when sandbox mode is off. `server/src/lib/sandbox/sandbox-client.ts` is the in-process `undici` bridge — gated by `SANDBOX_MODE=sidecar`, it maps upstream `503` → `SANDBOX_UNAVAILABLE`, `504` → `SANDBOX_TIMEOUT`, network failures → `SANDBOX_NETWORK`, and `AbortError` → `SANDBOX_TIMEOUT`. `server/src/lib/ai/tools/code-exec.ts` registers the `code_exec` tool (HIGH risk, requires approval gate); every successful or failed execution records cost via `getTokenTracker().record({ provider:"openai", model:"e2b:${language}", totalTokens:1 })` so sandbox spend rolls into the existing FinOps cap pipeline.
+- **E2B sandbox (A.1, #197)** — *removed with the copilot-svc sidecar in #150; the in-process sandbox providers below replace it.* `server/copilot-svc/src/sandbox.ts` was the optional Firecracker microVM executor. The sidecar exposes `POST /sandbox/exec` (token-gated), takes `{language: python|node|bash, code: ≤64 KB, timeoutMs ≤ 120 000}`, caps stdout/stderr at 64 KB and fails closed (HTTP 503) when `E2B_API_KEY` is unset. The `@e2b/sdk` import is lazy so the slim sidecar image stays thin when sandbox mode is off. `server/src/lib/sandbox/sandbox-client.ts` is the in-process `undici` bridge — gated by `SANDBOX_MODE=sidecar`, it maps upstream `503` → `SANDBOX_UNAVAILABLE`, `504` → `SANDBOX_TIMEOUT`, network failures → `SANDBOX_NETWORK`, and `AbortError` → `SANDBOX_TIMEOUT`. `server/src/lib/ai/tools/code-exec.ts` registers the `code_exec` tool (HIGH risk, requires approval gate); every successful or failed execution records cost via `getTokenTracker().record({ provider:"openai", model:"e2b:${language}", totalTokens:1 })` so sandbox spend rolls into the existing FinOps cap pipeline.
 - **Sandbox v1.2 P2 (Epic #395)** — three-provider port (`server/src/lib/sandbox/factory.ts`): `e2b` (live `@e2b/code-interpreter`), `daytona` (live `@daytona/sdk`, both lazy-imported and gated on their respective `*_API_KEY`), `local_dev` (Linux `bwrap` / macOS `sandbox-exec` for offline dev — throws on unsupported platforms; never enabled in production). All three implement the same `Sandbox` port surface (`runCode`, `commands.run`, `files.read/write`, `pause`, `resume`, `destroy`) and are clamped through the shared `clampSandboxOptions` (vCpu / mem / template / egress allowlist / runId). Per-session cost is calculated on `destroy()` from the versioned `SANDBOX_RATES` table (`server/src/lib/sandbox/pricing/rates.ts`) and persisted as integer `costMicroUsd` (`Int?`) so the sqlite/postgres twin stays portable; divide by `1e6` for USD. Sessions are linked to the parent `AgentRun.id` via the new `SandboxSession.runId` column (soft FK, `@@index([runId, createdAt])`); `GET /api/runs/:id/sandbox-sessions` (auth + `analysis.read`) returns up to 50 sessions for the Run-detail page badge + table.
 - **Living-spec sync (A.2/A.5, #199 #201)** — `Requirement.implementedAt` + `implementedByPr` + `implementedBySha` plus the new `RequirementImplementation` table form the durable trace from a spec line to the merge commit that satisfies it. `server/src/lib/living-spec/webhook.ts` verifies `X-Hub-Signature-256` (sha256 HMAC + optional 5-min `X-Webhook-Timestamp` skew) and dispatches `pull_request.closed+merged` to the sync path. `server/src/lib/living-spec/requirement-sync.ts` parses `Closes #N`/`Fixes #N`/`Resolves #N` keywords (and `Refs #N`/`References #N` for traceability), walks `PublishedIssue → IssueDraft.requirementId → Requirement`, marks `implementedAt` first-wins (subsequent merges leave the original timestamp intact), and creates `RequirementImplementation` rows per diff hunk under `src/|ui/|server/|e2e/|docs/|packages/|scripts/` (deduped by `requirementId × prNumber × filePath × startLine`). Files outside the allowed prefixes are flagged as drift.
 - **AC-aware PR-reviewer agent (A.3, #200)** — `server/src/lib/agents/pr-reviewer/agent.ts` orchestrates a single-shot judge LLM that reads the PR title/body/diff and the resolved acceptance criteria, returning per-AC `satisfied | not_satisfied | uncertain` verdicts plus inline-comment suggestions with `info | warning | risk` severity. The prompt enforces strict-JSON output (`prompts.ts:parseJudgeResponse` extracts the first balanced `{…}` block and normalises bad enums). Optional sandbox tests (`testCommands` keyed by AC id) run through `code_exec` after the judge; **any non-zero exit downgrades `approve` to `request_changes`** and adds a "⚠ Sandbox tests failed" line to the summary. `github-review-poster.ts` posts the result via Octokit (`createReview`), mapping verdicts to `APPROVE | REQUEST_CHANGES | COMMENT`, filtering line>0, capping at GitHub's 50 comments per review.
@@ -5376,24 +5389,11 @@ Two new tables (canonical sqlite + Postgres twin):
 Both tables use cascade FKs so deleting a project removes its sandbox
 trail.
 
-### 24.4 QA-agent sandbox runner
+### 24.4 QA-agent sandbox runner (removed)
 
-`server/copilot-svc/src/agents/qa-agent.sandbox-runner.ts` exposes two
-functions:
-
-```
-runTestsInSandbox(sandbox, { files, testCommand })
-  → { passed, exitCode, stdout, stderr, durationMs, timedOut }
-
-runTestsWithProvider(provider, createOpts, input)
-  → same, but provisions + destroys the sandbox in a try/finally
-```
-
-Sandbox timeouts surface as `exitCode: TIMEOUT_EXIT_CODE (-1)` +
-`timedOut: true` so the caller can differentiate a normal test failure
-(exit 1) from a watchdog kill. `runTestsWithProvider` **always** calls
-`destroy()` — even if the test command throws and even if `destroy()`
-itself throws.
+`qa-agent.sandbox-runner.ts` lived in the `copilot-svc` sidecar and was never
+wired into the server; it was removed with the sidecar in #150. The sandbox
+providers in §24.1–24.2 are unchanged.
 
 ### 24.5 Environment variables
 

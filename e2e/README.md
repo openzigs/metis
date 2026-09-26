@@ -85,7 +85,7 @@ deterministic, hash-derived responses so:
 - analysis runs complete in O(ms) per agent
 - the embedder (`server/src/lib/rag/embedder.ts`) uses `HashEmbedder`
   instead of downloading a Xenova model
-- no outbound network call to OpenAI / Copilot / Bedrock can possibly fire
+- no outbound network call to OpenAI / Anthropic / Bedrock can possibly fire
 
 There is no Playwright `route()` interception for AI traffic — we don't need
 it because the stub lives in-process. The only `route()` interception in the
@@ -130,7 +130,7 @@ E2E_SKIP_WEBSERVER=1 \
 pnpm --filter @metis/e2e test --grep @quarantine
 
 # Run the specs that need a live model too (they self-skip by default)
-AI_PROVIDER=copilot pnpm --filter @metis/e2e test
+AI_PROVIDER=anthropic pnpm --filter @metis/e2e test   # any real provider
 ```
 
 ## Canonical API + UI base URLs (#183)

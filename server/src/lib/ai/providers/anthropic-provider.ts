@@ -4,8 +4,8 @@
  * Issue #285. This is a FIRST-CLASS, native provider distinct from:
  *   • the Bedrock path (`bedrock-gateway` / `bedrock-direct`), which uses the
  *     `us.anthropic.*` Bedrock model ids and an OpenAI-compatible gateway, and
- *   • the Copilot wrapper / OpenAI-compatible shim, which is NOT wire-compatible
- *     with Anthropic's Messages API.
+ *   • the OpenAI-compatible client, which is NOT wire-compatible with
+ *     Anthropic's Messages API.
  *
  * It talks directly to `api.anthropic.com` (or a configured `baseURL`) using
  * BARE model ids (`claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`).
@@ -65,7 +65,7 @@ const log = createChildLogger("ai-anthropic");
  *
  * METIS's `model-router` emits canonical Bedrock ids (e.g.
  * `us.anthropic.claude-sonnet-4-6`, `us.anthropic.claude-haiku-4-5-20251001-v1:0`)
- * so the Bedrock / Copilot paths work unchanged. The direct Anthropic API,
+ * so the Bedrock paths work unchanged. The direct Anthropic API,
  * however, 404s on the `us.anthropic.` cross-region prefix and the `-v1:0`
  * Bedrock version suffix — it only accepts bare ids like `claude-sonnet-4-6`.
  * This helper strips those Bedrock-isms so the direct provider can consume the

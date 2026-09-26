@@ -70,12 +70,6 @@ services:
       SQL_LINEAGE_MODE: ${SQL_LINEAGE_MODE:-sidecar}
       SQL_LINEAGE_URL: http://sql-lineage:5070
       SQL_LINEAGE_TOKEN: ${SQL_LINEAGE_TOKEN:?SQL_LINEAGE_TOKEN must be set}
-      # Issue #180 — opt-in copilot-native sidecar. COPILOT_NATIVE_TOKEN is
-      # required only when COPILOT_NATIVE_MODE=sidecar; default leaves the
-      # SDK in-process so existing deployments are unaffected.
-      COPILOT_NATIVE_MODE: ${COPILOT_NATIVE_MODE:-in-process}
-      COPILOT_NATIVE_BASE_URL: http://copilot:5060
-      COPILOT_NATIVE_TOKEN: ${COPILOT_NATIVE_TOKEN:-}
     # No source mounts in production. #60 — the server's data directory (LanceDB
     # vectors, uploaded documents, repository archive extracts) on a named volume,
     # so it survives the container being recreated. A fresh named volume takes the
@@ -136,23 +130,6 @@ services:
           memory: 512M
         reservations:
           memory: 128M
-
-  # Issue #180 — production overrides for the optional copilot sidecar.
-  # Only scheduled when the `copilot-native` profile is active.
-  copilot:
-    restart: unless-stopped
-    environment:
-      NODE_ENV: production
-      COPILOT_NATIVE_PORT: 5060
-      COPILOT_NATIVE_HOST: 0.0.0.0
-      COPILOT_NATIVE_TOKEN: ${COPILOT_NATIVE_TOKEN:?COPILOT_NATIVE_TOKEN must be set when running with --profile copilot-native}
-      COPILOT_NATIVE_SESSION_TTL_MS: ${COPILOT_NATIVE_SESSION_TTL_MS:-1800000}
-    deploy:
-      resources:
-        limits:
-          memory: 768M
-        reservations:
-          memory: 192M
 
   ui:
     restart: unless-stopped

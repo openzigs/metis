@@ -92,13 +92,6 @@ const DEFAULT_CAPABILITIES: Readonly<Record<ProviderKey, ModelCatalogCapabilitie
     vision: false,
     thinking: false,
   },
-  "copilot-native": {
-    tools: true,
-    jsonSchema: false,
-    jsonObject: false,
-    vision: false,
-    thinking: false,
-  },
   "offline-stub": {
     tools: false,
     jsonSchema: false,

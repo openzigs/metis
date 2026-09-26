@@ -28,7 +28,6 @@ import { buildSystemBlock as buildChronicleBlock } from "../lib/memory/chronicle
 import { prisma } from "../lib/prisma.js";
 import { getVaultService } from "../lib/vault/vault-service.js";
 import { getSessionRuntime, SessionRuntimeError } from "../lib/library/index.js";
-import { getProjectLibraryAllowlist } from "../lib/library/index.js";
 import { createChildLogger } from "../lib/logger.js";
 import { applySafety, SafetyDeniedError } from "../lib/safety/index.js";
 import {
@@ -45,7 +44,6 @@ import {
   hashPrompt,
   getTokenTracker,
   getToolRegistry,
-  resolveCopilotHomeForSession,
   assembleChatSystem,
   CITATION_INSTRUCTION,
 } from "../lib/ai/index.js";
@@ -74,7 +72,11 @@ import {
   STREAM_IDLE_TIMEOUT_CODE,
 } from "../lib/ai/stream-idle.js";
 import { effectiveModel } from "../lib/ai/model-switch.js";
-import { loadAuthorizedSession } from "../lib/ai/conversation/session-access.js";
+import {
+  assertSessionAcceptsTurns,
+  loadAuthorizedSession,
+} from "../lib/ai/conversation/session-access.js";
+import { isRetiredProviderKey, retiredProviderMessage } from "../lib/ai/retired-providers.js";
 import {
   calibrationPromptChars,
   ContextOverflowError,
@@ -181,8 +183,8 @@ export async function chatProviderForSession(session: {
  * {@link buildLibrarySystemMessages}). `messages` is deliberately omitted: each
  * chat turn's final user block is unique, so caching it would only pay the write
  * premium with no reuse (#389). These flags are honoured on the
- * BedrockDirect/native-Anthropic paths and are an inert no-op on the Copilot
- * SDK/gateway path, where transparent gateway caching applies instead.
+ * BedrockDirect/native-Anthropic paths and are an inert no-op on the plain
+ * OpenAI-compatible path, where transparent gateway caching applies instead.
  */
 export const CHAT_CACHE_OPTS = {
   callType: "chat",
@@ -615,95 +617,6 @@ export async function buildLibrarySystemMessages(
 }
 
 /**
- * The Copilot-SDK options `buildSdkSkillRuntime` returns, spread into every chat
- * provider call. It deliberately carries `withholdSdkBuiltinTools`, NEVER
- * `disableTools`: the latter means "send no tools" on every provider, and would
- * strip METIS's own native tools from the request (#142 round 3).
- */
-export interface SdkSkillRuntime {
-  skillDirectories?: string[];
-  disabledSkills?: string[];
-  withholdSdkBuiltinTools?: boolean;
-}
-
-/**
- * Issue #113 — materialise the session's loaded skills into the per-session
- * COPILOT_HOME so the GitHub Copilot SDK picks them up natively. Returns the
- * `skillDirectories` + `disabledSkills` arrays that should be forwarded to
- * `provider.chat` / `provider.stream`, always with `withholdSdkBuiltinTools`.
- * Falls back to that flag alone when the session
- * has no loaded skills, when materialisation fails (best-effort — the
- * system-message injection path keeps working), or when the session is
- * bound to a project whose allow-list rejects every loaded skill.
- *
- * The disabled-skills array is sourced from `ProjectSkillAllowlist` rows
- * with `enabled = false` so users can mute a default-skill on a per-project
- * basis without having to delete the agent binding.
- */
-export async function buildSdkSkillRuntime(session: {
-  id: string;
-  loadedSkillIds: string;
-  projectId: string | null;
-}): Promise<SdkSkillRuntime> {
-  let skillIds: string[] = [];
-  try {
-    const v = JSON.parse(session.loadedSkillIds) as unknown;
-    if (Array.isArray(v)) skillIds = v.filter((x): x is string => typeof x === "string");
-  } catch {
-    skillIds = [];
-  }
-  let disabledSkillKeys: string[] = [];
-  if (session.projectId) {
-    try {
-      const rows = await getProjectLibraryAllowlist().listSkills(session.projectId);
-      disabledSkillKeys = rows.filter((r) => !r.enabled).map((r) => r.skillKey);
-    } catch {
-      // Fall through — the global allow path below stays authoritative.
-    }
-  }
-  if (skillIds.length === 0 && disabledSkillKeys.length === 0) {
-    return { withholdSdkBuiltinTools: true };
-  }
-  // #1368 — an UNSCOPED session must not get the SDK's built-in filesystem and
-  // shell tools. METIS's own curated code tools were already gated on
-  // `projectId` (see `buildChatCodeToolRuntime`), but the SDK's built-ins were
-  // not: they were withheld only when the flag (then `disableTools`) was set,
-  // so any session that had loaded a skill kept `bash` regardless of scope.
-  // With no project corpus to search, the only tree those tools can reach is
-  // METIS's own — which is exactly the observed failure, where a user asking
-  // about their codebase got an answer grepped out of `server/src`. Skills still
-  // load; only the tools are withheld.
-  //
-  // Epic #128 (#142) — and a SCOPED session must not get them either. Every
-  // tool a chat runs now passes the session's ApprovalGateService (policy,
-  // agent allowlist, the owner's own click); the SDK's built-ins would run
-  // under the provider's own permission handler instead, with no gate, no
-  // prompt and no audit row. A project-scoped chat is offered METIS's gated
-  // tools through the tool runtime; the SDK's shell/write tools are withheld
-  // from every chat session. (The Copilot provider goes in P4, #130.)
-  try {
-    const copilotHome = resolveCopilotHomeForSession(session.id);
-    const result = await getSessionRuntime().materializeSkillsForSession({
-      sessionId: session.id,
-      copilotHome,
-      loadedSkillIds: skillIds,
-      disabledSkillKeys,
-    });
-    const out: SdkSkillRuntime = {};
-    if (result.written.length > 0) out.skillDirectories = [result.skillsDir];
-    if (result.disabledSkills.length > 0) out.disabledSkills = result.disabledSkills;
-    out.withholdSdkBuiltinTools = true;
-    return out;
-  } catch (err) {
-    log.warn("Failed to materialise SDK skills, falling back to system-message only", {
-      sessionId: session.id,
-      error: (err as Error).message,
-    });
-    return { withholdSdkBuiltinTools: true };
-  }
-}
-
-/**
  * #140 — the stable system note that rides with NATIVE tools: tool results are
  * fenced data that can never grant permissions or approve a call. It sits in
  * the tool slot of the byte-stable lead, so a session's cached prefix is stable.
@@ -877,6 +790,17 @@ export function aiRouter(): Router {
         effectiveProjectId = null;
         scopeDegradationReason = "stale-project";
       } else {
+        if (project.aiProviderId && isRetiredProviderKey(project.aiProviderId)) {
+          // #149 — a project still overriding to a removed provider. Refused by
+          // name: binding the session to it would create a chat that can never
+          // answer, and ignoring the override would run a provider the project
+          // owner did not choose.
+          throw new AppError(
+            409,
+            "AI_PROVIDER_RETIRED",
+            retiredProviderMessage(project.aiProviderId, "project"),
+          );
+        }
         if (project.aiProviderId) {
           // Validated at write time in project-service against
           // SUPPORTED_PROVIDER_KEYS, so the cast is safe at session-bind.
@@ -1020,29 +944,6 @@ export function aiRouter(): Router {
           policy,
         },
       });
-
-      // M3 — when a session transitions to a terminal state, tear down its
-      // per-session COPILOT_HOME directory and any in-memory SDK session. We
-      // best-effort the call (logged on failure) so a cleanup hiccup never
-      // blocks the user from archiving a session.
-      const becameTerminal =
-        parsed.data.status === "archived" || parsed.data.status === "terminated";
-      const wasActive = existing.status !== parsed.data.status;
-      if (becameTerminal && wasActive) {
-        try {
-          const p = provider();
-          const maybeDestroy = (p as { destroySession?: (id: string) => Promise<void> })
-            .destroySession;
-          if (typeof maybeDestroy === "function") {
-            await maybeDestroy.call(p, existing.id);
-          }
-        } catch (err) {
-          log.warn("AI session cleanup failed", {
-            sessionId: existing.id,
-            error: (err as Error).message,
-          });
-        }
-      }
 
       res.json(ok({ session: { ...updated, policy: parsePolicyJson(updated.policy) } }));
     },
@@ -1188,6 +1089,8 @@ export function aiRouter(): Router {
     const userInput = newUserMessage(parsed.data);
     // #136 — ownership AND project access, the same rule every transcript read uses.
     const session = await loadAuthorizedSession(req.user, parsed.data.sessionId);
+    // #149 — a session on a retired provider is read-only.
+    assertSessionAcceptsTurns(session);
     // #127 — the session's `/model` switch (#165) is honoured: `currentModel`
     // was written by the switch and never read by chat before.
     const model = parsed.data.model ?? effectiveModel(session);
@@ -1208,7 +1111,6 @@ export function aiRouter(): Router {
     let providerKey: string = loadAIConfig().provider;
     try {
       const apiKeyOverride = await resolveProviderKey(session.providerSecretRef);
-      const sdkOpts = await buildSdkSkillRuntime(session);
 
       // Epic #164 — budget gate (fail fast, before paying for tokens).
       if (session.projectId) {
@@ -1357,7 +1259,6 @@ export function aiRouter(): Router {
         // telemetry and cache the byte-stable system prefix only.
         ...CHAT_CACHE_OPTS,
         ...(reasoningEffort ? { reasoningEffort } : {}),
-        ...sdkOpts,
       };
 
       // #140/#142 — when tools are offered, run the bounded tool loop (shared
@@ -1570,6 +1471,8 @@ export function aiRouter(): Router {
     }
     const userText = newUserMessage(parsed.data);
     const session = await loadAuthorizedSession(req.user, parsed.data.sessionId);
+    // #149 — refused before the SSE stream opens, so it is a plain 409.
+    assertSessionAcceptsTurns(session);
     const model = parsed.data.model ?? effectiveModel(session);
     const reasoningEffort =
       parsed.data.reasoningEffort ?? sessionReasoningEffort(session.currentReasoningEffort);
@@ -1717,7 +1620,6 @@ export function aiRouter(): Router {
 
     try {
       const apiKeyOverride = await resolveProviderKey(session.providerSecretRef);
-      const sdkOpts = await buildSdkSkillRuntime(session);
 
       const streamProvider = provider({ apiKeyOverride });
       providerKey = streamProvider.key;
@@ -1775,7 +1677,6 @@ export function aiRouter(): Router {
         // #700 — same cache posture as the non-stream /chat route.
         ...CHAT_CACHE_OPTS,
         ...(reasoningEffort ? { reasoningEffort } : {}),
-        ...sdkOpts,
         ...(slot ? { onSlotAcquired: slot.resolve } : {}),
       };
 

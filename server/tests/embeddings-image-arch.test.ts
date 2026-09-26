@@ -83,7 +83,10 @@ describe("build-images.yml — the sidecar is really published multi-arch (#786)
 
 describe("chart — the sidecar cannot be scheduled onto an unsupported arch (#786)", () => {
   it("pins the embeddings pod to linux, and to arches onnxruntime-node ships", () => {
-    const embeddings = values.slice(values.indexOf("\nembeddings:"), values.indexOf("\ncopilot:"));
+    const embeddings = values.slice(
+      values.indexOf("\nembeddings:"),
+      values.indexOf("\nsqlLineage:"),
+    );
     expect(embeddings).toContain("kubernetes.io/arch");
     expect(embeddings).toContain("amd64");
     expect(embeddings).toContain("arm64");

@@ -17,6 +17,7 @@ import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../../prisma.js";
 import { AppError } from "../../../middleware/error-handler.js";
 import { assertProjectAccess } from "../../custom-agents/authz.js";
+import { isRetiredProviderKey, retiredProviderMessage } from "../retired-providers.js";
 
 export const SESSION_NOT_FOUND = "AI_SESSION_NOT_FOUND";
 
@@ -42,4 +43,32 @@ export async function loadAuthorizedSession(
     }
   }
   return session;
+}
+
+/** #149 — the error code a read-only (retired-provider) session answers with. */
+export const SESSION_PROVIDER_RETIRED = "AI_SESSION_PROVIDER_RETIRED";
+
+/**
+ * #149 — why a session can no longer take a turn, or `null` when it can.
+ *
+ * A session created on a provider METIS no longer ships (`copilot-native`)
+ * stays readable — transcript, resume and the session list all work — but it
+ * is READ-ONLY: its stored provider cannot run, and quietly answering the next
+ * turn on whatever provider is configured now would move a conversation to a
+ * backend the user never chose for it.
+ */
+export function sessionReadOnlyReason(session: Pick<AISession, "provider">): string | null {
+  return isRetiredProviderKey(session.provider)
+    ? retiredProviderMessage(session.provider, "session")
+    : null;
+}
+
+/**
+ * Refuse any operation that would run a model on a read-only session (a chat
+ * or stream turn, an async message, an on-demand compaction) with a 409 whose
+ * message says why and what to do.
+ */
+export function assertSessionAcceptsTurns(session: Pick<AISession, "provider">): void {
+  const reason = sessionReadOnlyReason(session);
+  if (reason) throw new AppError(409, SESSION_PROVIDER_RETIRED, reason);
 }

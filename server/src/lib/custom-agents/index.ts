@@ -5,10 +5,8 @@
  * built-ins (BA, Architect, PO, QA) are seeded in {@link ensureBuiltInAgents}
  * with `isBuiltIn=true, projectId=null` and may not be deleted.
  *
- * The shape mirrors the Copilot SDK's `CustomAgentDefinition`. Because
- * `@github/copilot` was dropped in #179, the shape is implemented natively
- * here and works for every provider. The future Copilot sidecar (#180) will
- * adopt this shape verbatim.
+ * The shape was modelled on the GitHub Copilot SDK's `CustomAgentDefinition`;
+ * it is implemented natively here and works for every provider.
  */
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";

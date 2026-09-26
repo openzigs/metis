@@ -8,8 +8,11 @@ Structural detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 delegation.** It holds only what is true in *every* session; conditional detail belongs in
 a skill, which loads on match (#1144).
 
-**Metis uses the GitHub Copilot SDK** (`@github/copilot-sdk` in `server/`,
-`@github/copilot` at the root) — **not** the Vercel AI SDK. Verify every SDK, framework or
+**Metis talks to models through its own provider layer** (`server/src/lib/ai/providers/`):
+the official `@anthropic-ai/sdk` (`server/package.json`) for Anthropic and
+Anthropic-compatible endpoints, and a hand-rolled OpenAI-compatible HTTP client (`fetch`)
+for OpenAI, Azure, the Bedrock gateway and local runtimes — **no** GitHub Copilot SDK
+(removed in #130) and **not** the Vercel AI SDK. Verify every SDK, framework or
 dependency claim against `package.json`, lockfiles and imports, citing the path, before
 writing it into an issue, epic or doc; confirm the target repo (`owner/name`) before
 creating anything on GitHub. A wrong claim propagated into an epic costs a correction sweep

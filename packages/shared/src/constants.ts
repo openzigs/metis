@@ -79,7 +79,6 @@ export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
  * `project-service.ts` re-checks this list via `SUPPORTED_PROVIDER_KEYS`.
  */
 export const AI_PROVIDER_KEYS = [
-  "copilot-native",
   "bedrock-gateway",
   "local-gemma",
   "openai",

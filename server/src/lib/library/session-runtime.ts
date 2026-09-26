@@ -21,14 +21,11 @@
  *      result onto the AISession row.
  */
 import type { PrismaClient } from "@prisma/client";
-import path from "node:path";
-import fs from "node:fs/promises";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { AgentService, getAgentService, type AgentActorRef as ActorRef } from "./agent-service.js";
 import { SkillService, getSkillService } from "./skill-service.js";
 import { ProjectLibraryAllowlistService, getProjectLibraryAllowlist } from "./project-allowlist.js";
-import { normalizeSkillFilePath } from "../agent-runtime/skills.js";
 
 export class SessionRuntimeError extends Error {
   constructor(
@@ -249,124 +246,6 @@ export class SessionRuntime {
       autoLoadedSkillBlocks: skillBlocks,
     };
   }
-
-  /**
-   * Issue #113 — materialize the session's loaded skills into the provider's
-   * `$COPILOT_HOME/skills/<key>/SKILL.md` layout so the GitHub Copilot SDK
-   * picks them up natively via `SessionConfig.skillDirectories`.
-   *
-   * Behaviour:
-   *   • Returns the absolute path to the `skills/` directory so the caller
-   *     can pass it as `skillDirectories: [<path>]` to the SDK.
-   *   • Always rewrites the directory tree to match the current loaded set
-   *     (stale skill folders from prior loads are removed first).
-   *   • Honours `disabledSkillKeys` — those folders are NOT written even if
-   *     they appear in `loadedSkillIds` (the SDK then refuses to inject them).
-   *   • Reconstructs the original frontmatter+body verbatim from the
-   *     persisted `source` so the SDK sees the exact content the admin
-   *     authored. Falls back to a synthesised SKILL.md when `source` is
-   *     missing (e.g. older rows pre-Phase-10.1).
-   *
-   * Returns `{ skillsDir, written, disabledSkills }`.
-   */
-  async materializeSkillsForSession(input: {
-    sessionId: string;
-    copilotHome: string;
-    loadedSkillIds: readonly string[];
-    disabledSkillKeys?: readonly string[];
-  }): Promise<{ skillsDir: string; written: string[]; disabledSkills: string[] }> {
-    const skillsDir = path.join(input.copilotHome, "skills");
-    // Always start from a clean slate so removing a skill from the session
-    // really removes it from the SDK's view.
-    await fs.rm(skillsDir, { recursive: true, force: true });
-    if (input.loadedSkillIds.length === 0) {
-      await fs.mkdir(skillsDir, { recursive: true });
-      return { skillsDir, written: [], disabledSkills: [...(input.disabledSkillKeys ?? [])] };
-    }
-    const disabled = new Set(input.disabledSkillKeys ?? []);
-    const rows = await this.db.skill.findMany({
-      where: { id: { in: [...input.loadedSkillIds] }, deletedAt: null, enabled: true },
-    });
-    const byId = new Map(rows.map((r) => [r.id, r]));
-    await fs.mkdir(skillsDir, { recursive: true });
-    const written: string[] = [];
-    const skipped: string[] = [];
-    for (const id of input.loadedSkillIds) {
-      const row = byId.get(id);
-      if (!row) continue;
-      if (disabled.has(row.key)) {
-        skipped.push(row.key);
-        continue;
-      }
-      const dir = path.join(skillsDir, row.key);
-      await fs.mkdir(dir, { recursive: true });
-      // Reconstruct SKILL.md from the persisted manifest + body. The Skill
-      // row's `source` column tracks the origin (e.g. "inline", repo URL),
-      // not the original file contents, so we re-emit a canonical YAML
-      // frontmatter doc the SDK can parse with its own loader.
-      const file = path.join(dir, "SKILL.md");
-      const content = synthesizeSkillFile(row);
-      await fs.writeFile(file, content, "utf-8");
-      // Epic #129 (#146) — an Agent Skills directory keeps its supporting files
-      // (`references/…`). Each path was validated on import and is re-checked
-      // here, so nothing can be written outside the skill's own directory.
-      const files =
-        (await this.db.skillFile?.findMany({
-          where: { skillId: row.id },
-          select: { path: true, content: true },
-        })) ?? [];
-      for (const f of files) {
-        const rel = normalizeSkillFilePath(f.path);
-        if (!rel) continue;
-        const target = path.join(dir, ...rel.split("/"));
-        await fs.mkdir(path.dirname(target), { recursive: true });
-        await fs.writeFile(target, f.content, "utf-8");
-      }
-      written.push(row.key);
-    }
-    return { skillsDir, written, disabledSkills: [...disabled, ...skipped] };
-  }
-}
-
-function synthesizeSkillFile(row: {
-  name: string;
-  description: string;
-  version: string;
-  instructions: string;
-  manifest?: string;
-}): string {
-  // Best effort: replay the original frontmatter when available so tools/tags
-  // declared by the admin survive the round trip; fall back to the minimum
-  // viable shape otherwise.
-  let extra = "";
-  if (row.manifest) {
-    try {
-      const m = JSON.parse(row.manifest) as Record<string, unknown>;
-      if (Array.isArray(m.tools) && m.tools.length > 0) {
-        extra += `tools: ${JSON.stringify(m.tools)}\n`;
-      }
-      if (Array.isArray(m.tags) && m.tags.length > 0) {
-        extra += `tags: ${JSON.stringify(m.tags)}\n`;
-      }
-      if (Array.isArray(m.resources) && m.resources.length > 0) {
-        extra += `resources: ${JSON.stringify(m.resources)}\n`;
-      }
-    } catch {
-      // ignore — the synthetic minimum below is still valid YAML.
-    }
-  }
-  const fm = [
-    "---",
-    `name: ${JSON.stringify(row.name)}`,
-    `description: ${JSON.stringify(row.description)}`,
-    `version: ${JSON.stringify(row.version)}`,
-    extra.trim(),
-    "---",
-    "",
-  ]
-    .filter((line) => line.length > 0 || true)
-    .join("\n");
-  return fm + row.instructions + (row.instructions.endsWith("\n") ? "" : "\n");
 }
 
 export function renderSkillSystemBlock(skill: {
