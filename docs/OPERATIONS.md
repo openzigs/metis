@@ -323,7 +323,7 @@ The release pipeline ships three images:
 | Image | Built from | Current size | Budget |
 |---|---|---|---|
 | `metis-ui` | `Dockerfile.ui` (Next.js 16 standalone, alpine) | **~207 MB** (amd64, `api` run 35740221946) | ≤ 350 MB ✅ |
-| `metis-server` | `Dockerfile.server` (`node:22-trixie-slim`, glibc, prod-only deps, slimmed) | **~1,045 MB** (amd64, measured #45) | ≤ 1,170 MB — its own budget, see below |
+| `metis-server` | `Dockerfile.server` (`node:22-trixie-slim`, glibc, prod-only deps, slimmed) | **~1,052 MB** (amd64, measured #150, run 36261636218) | ≤ 1,160 MB — its own budget, see below |
 | `metis-embeddings` | `Dockerfile.embeddings` (bookworm-slim, glibc) | **~589 MB** (amd64, `api` run 35740221946, built with `BAKE_MODELS=0`) | exempt (sidecar) |
 
 > **Multi-arch (Epic #360 / sub-issue #373)**: All three core images
@@ -456,7 +456,14 @@ way. The Postgres client adds ~6 MiB; deleting the query compilers in
 `@prisma/client/runtime` that neither client loads saves ~29 MiB, so the image got
 smaller: the `api` job measured **1,045.4 MB** (run 35722462860), down from
 1,067.7 MB at #39 (local arm64 build, `du -sm /app`: 744 → 723 MiB). The budget
-stays 1,170 MB.
+stayed 1,170 MB.
+
+**#150 (GitHub Copilot removed).** Re-measured at **1,051.7 MB** (`api` run
+36261636218; the sqlite, postgres and helm-default boot-smoke arms all pass). The
+removal itself saved essentially nothing: #34 had already excluded `@github/copilot`
+and `@github/copilot-sdk` from the runtime image (the ~160 MB row in the table
+above), so the "~160 MB still carried" premise was stale. The budget is re-based on
+the new measurement with the same ~10% headroom: **1,160 MB**.
 
 **Working directory.** The server resolves its default data paths against its
 working directory: LanceDB `data/lancedb`, uploads `data/uploads`, archive extracts,

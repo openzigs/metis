@@ -34,12 +34,16 @@ export const DEFAULT_MAX_IMAGE_MB = 350;
  * the image and polls /healthz (scripts/lib/smoke-server-image.mjs), so this
  * budget describes an image that runs. #45 added a Postgres Prisma client (~6 MiB)
  * and dropped the unused runtime query compilers (~29 MiB): 1,045.4 MB (run
- * 35722462860), on SQLite and Postgres both. The breakdown and the reducible contributors are in
+ * 35722462860), on SQLite and Postgres both. #150 re-measured after removing GitHub
+ * Copilot: 1,051.7 MB (run 36261636218, all three smoke arms pass). The removal saved
+ * ~nothing because #34 had already excluded `@github/copilot*` from the image; the
+ * budget is re-based on that measurement with the same ~10% headroom: 1,160. The
+ * breakdown and the reducible contributors are in
  * docs/OPERATIONS.md > "Container Image Sizes". This is a REGRESSION gate:
  * measured size plus modest headroom, never a number raised until CI goes green.
  * `MAX_SERVER_IMAGE_MB` overrides it.
  */
-export const DEFAULT_MAX_SERVER_IMAGE_MB = 1170;
+export const DEFAULT_MAX_SERVER_IMAGE_MB = 1160;
 
 /** @typedef {{ tag: string, mb: number | null, exempt: boolean, budgetMb?: number }} ImageSize */
 
