@@ -233,9 +233,10 @@ test.describe("Auto Documentation Generator (Epic #486)", () => {
       // If the stub generated any mermaid content, SVGs appear.
       // If not, verify that code blocks render (non-mermaid content).
       const codeBlocks = docPage.markdownContent.locator("pre");
-      const hasMermaid = await mermaidBlocks.count();
-      const hasCode = await codeBlocks.count();
-      expect(hasMermaid + hasCode).toBeGreaterThan(0);
+      // #234 — poll: the container can be visible before its children render.
+      await expect
+        .poll(async () => (await mermaidBlocks.count()) + (await codeBlocks.count()))
+        .toBeGreaterThan(0);
     });
 
     // AC (#492): Given markdown contains $...$ or $$...$$ blocks, When rendered,
@@ -316,9 +317,12 @@ test.describe("Auto Documentation Generator (Epic #486)", () => {
       // Verify pre/code elements exist in the rendered content
       const codeBlocks = docPage.markdownContent.locator("pre");
       // The offline-stub should produce some code; verify rendered HTML isn't empty
-      const html = await docPage.markdownContent.innerHTML();
-      expect(html.length).toBeGreaterThan(100);
+      // #234 — poll: the container can be visible before its content renders.
+      await expect
+        .poll(async () => (await docPage.markdownContent.innerHTML()).length)
+        .toBeGreaterThan(100);
       // Verify at least some structured content rendered
+      const html = await docPage.markdownContent.innerHTML();
       expect((await codeBlocks.count()) + html.length).toBeGreaterThan(100);
     });
   });
@@ -433,7 +437,7 @@ test.describe("Auto Documentation Generator (Epic #486)", () => {
       // Multiple docs were created by the beforeAll seeding
       const docCards = docPage.docsList.locator("[data-testid^='doc-card-']");
       await expect(docCards.first()).toBeVisible({ timeout: 15_000 });
-      expect(await docCards.count()).toBeGreaterThanOrEqual(2);
+      await expect(docCards.nth(1)).toBeVisible();
     });
   });
 

@@ -1034,7 +1034,10 @@ describe("generated-docs routes", () => {
   describe("GET /projects/:projectId/docs", () => {
     it("retains legacy shared-ID indexing health until the first revision-owned publication", async () => {
       vi.mocked(prisma.generatedDocument.findMany).mockResolvedValue([
-        { id: "doc-1", versions: [{ revisionId: "revision-2" }] },
+        {
+          id: "doc-1",
+          versions: [{ id: "v2", version: 2, revisionId: "revision-2", createdAt: new Date(0) }],
+        },
       ] as never);
       vi.mocked(prisma.document.findMany).mockResolvedValue([
         { id: "gendoc-doc-1", indexState: "indexed", status: "ready", chunkCount: 2 },
@@ -1045,7 +1048,12 @@ describe("generated-docs routes", () => {
     });
     it("returns list of documents with separate indexing health", async () => {
       (prisma.generatedDocument.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-        { id: "doc-1", title: "Doc 1", status: "ready", versions: [{ revisionId: "revision-2" }] },
+        {
+          id: "doc-1",
+          title: "Doc 1",
+          status: "ready",
+          versions: [{ id: "v2", version: 2, revisionId: "revision-2", createdAt: new Date(0) }],
+        },
       ]);
       (prisma.document.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
         {
@@ -1083,7 +1091,12 @@ describe("generated-docs routes", () => {
 
     it("#98 — never returns the raw indexing error text a Document row holds", async () => {
       vi.mocked(prisma.generatedDocument.findMany).mockResolvedValue([
-        { id: "doc-1", title: "Doc 1", status: "ready", versions: [{ revisionId: "revision-2" }] },
+        {
+          id: "doc-1",
+          title: "Doc 1",
+          status: "ready",
+          versions: [{ id: "v2", version: 2, revisionId: "revision-2", createdAt: new Date(0) }],
+        },
       ] as never);
       vi.mocked(prisma.document.findMany).mockResolvedValue([
         {
@@ -1112,7 +1125,14 @@ describe("generated-docs routes", () => {
         content: "",
         status: "ready",
         versions: [
-          { id: "v1", documentId: "doc-1", version: 1, revisionId: null, provenanceManifest: null },
+          {
+            id: "v1",
+            documentId: "doc-1",
+            version: 1,
+            revisionId: null,
+            provenanceManifest: null,
+            createdAt: new Date(0),
+          },
         ],
       } as never);
       vi.mocked(prisma.document.findFirst).mockResolvedValue({
@@ -1143,6 +1163,7 @@ describe("generated-docs routes", () => {
             version: 1,
             revisionId: "revision-1",
             provenanceManifest: null,
+            createdAt: new Date(0),
           },
         ],
       } as never);
@@ -1165,7 +1186,14 @@ describe("generated-docs routes", () => {
         id: "doc-1",
         content: "",
         versions: [
-          { id: "v1", documentId: "doc-1", version: 1, revisionId: null, provenanceManifest: null },
+          {
+            id: "v1",
+            documentId: "doc-1",
+            version: 1,
+            revisionId: null,
+            provenanceManifest: null,
+            createdAt: new Date(0),
+          },
         ],
       } as never);
       vi.mocked(prisma.document.findFirst).mockResolvedValue({
@@ -1192,6 +1220,7 @@ describe("generated-docs routes", () => {
             version: 1,
             revisionId: "revision-1",
             provenanceManifest: null,
+            createdAt: new Date(0),
           },
         ],
       } as never);
@@ -1256,7 +1285,14 @@ describe("generated-docs routes", () => {
           },
         ],
         versions: [
-          { id: "v1", documentId: "doc-1", version: 1, revisionId: null, provenanceManifest: null },
+          {
+            id: "v1",
+            documentId: "doc-1",
+            version: 1,
+            revisionId: null,
+            provenanceManifest: null,
+            createdAt: new Date(0),
+          },
         ],
       });
       (prisma.document.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(null);
@@ -1293,7 +1329,14 @@ describe("generated-docs routes", () => {
         title: "Doc",
         content: "# Hello",
         versions: [
-          { id: "v1", documentId: "doc-1", version: 1, revisionId: null, provenanceManifest: null },
+          {
+            id: "v1",
+            documentId: "doc-1",
+            version: 1,
+            revisionId: null,
+            provenanceManifest: null,
+            createdAt: new Date(0),
+          },
         ],
       });
       (prisma.document.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({

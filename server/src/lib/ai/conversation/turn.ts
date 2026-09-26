@@ -290,12 +290,20 @@ export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn
   };
 }
 
-/** One executed tool call, as the chat code-tool loop reports it. */
+/** One tool call the chat tool loop made (executed or refused), as it reports it. */
 export interface ReplyToolCall {
+  /** #142 — the call id; `call_<n>` is synthesised when absent. */
+  callId?: string;
   tool: string;
   args: unknown;
   result: string;
   isError?: boolean;
+  /** #142 — the approval gate's decision for this call. */
+  decision?: string;
+  /** #143 — fixed-vocabulary code when the call was refused or failed. */
+  errorCode?: string;
+  /** #142 — `false` when the call never ran (denied, expired, unknown, invalid). */
+  executed?: boolean;
 }
 
 export interface RecordReplyInput {
@@ -316,7 +324,7 @@ export interface RecordReplyInput {
 export async function recordReply(input: RecordReplyInput): Promise<StoredMessage> {
   const parts: TranscriptPart[] = [];
   (input.toolCalls ?? []).forEach((c, i) => {
-    const id = `call_${i + 1}`;
+    const id = c.callId ?? `call_${i + 1}`;
     parts.push({ type: "tool_call", id, name: c.tool, args: c.args });
     parts.push({
       type: "tool_result",
@@ -324,6 +332,11 @@ export async function recordReply(input: RecordReplyInput): Promise<StoredMessag
       name: c.tool,
       text: c.result,
       ...(c.isError ? { isError: true } : {}),
+      // #142 — the approval decision and whether the tool actually ran, so the
+      // record shows a refused call as refused, never as a silent gap.
+      ...(c.decision ? { decision: c.decision } : {}),
+      ...(c.errorCode ? { errorCode: c.errorCode } : {}),
+      ...(c.executed === false ? { executed: false } : {}),
     });
   });
   if (input.text) parts.push({ type: "text", text: input.text });

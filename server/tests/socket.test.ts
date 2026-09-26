@@ -18,6 +18,15 @@ vi.mock("../src/lib/prisma.js", () => ({
     user: { upsert: vi.fn() },
     userRole: { findFirst: vi.fn(async () => null) },
     auditLog: { create: vi.fn(async () => ({})) },
+    // #142 — `subscribe:session` authorises like every session read: `u1`
+    // owns the unscoped session `s1`; nobody else owns anything.
+    aISession: {
+      findFirst: vi.fn(async (args?: { where?: { id?: string; userId?: string } }) =>
+        args?.where?.id === "s1" && args.where.userId === "u1"
+          ? { id: "s1", userId: "u1", projectId: null, deletedAt: null }
+          : null,
+      ),
+    },
     project: {
       // Non-admin path: returns the projects whose `createdById` matches the
       // actor. Honour the `where.createdById` filter so each user only "owns"
@@ -124,6 +133,30 @@ describe("Socket.IO server", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(io.sockets.adapter.rooms.get("project:p1")).toBeUndefined();
 
+    socket.close();
+  });
+
+  it("#142 — refuses to join a session room the user does not own", async () => {
+    const { accessToken } = issueTokens({
+      userId: "u2",
+      username: "mallory",
+      role: "developer",
+      permissions: ["analysis.read"],
+    });
+    const socket = ioClient(`http://127.0.0.1:${port}`, {
+      auth: { token: accessToken },
+      transports: ["websocket"],
+      reconnection: false,
+      timeout: 1500,
+    });
+    await new Promise((resolve, reject) => {
+      socket.on("auth:ok", resolve);
+      socket.on("connect_error", (err) => reject(err));
+    });
+    const denied = new Promise<{ message: string }>((resolve) => socket.on("auth:error", resolve));
+    socket.emit("subscribe:session", { sessionId: "s1" });
+    expect((await denied).message).toMatch(/FORBIDDEN/);
+    expect(io.sockets.adapter.rooms.get("session:s1")?.size ?? 0).toBe(0);
     socket.close();
   });
 

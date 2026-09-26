@@ -14,8 +14,9 @@
  *
  * Each synthetic row that is `pending`/`processing` and NOT owned by a live task is
  * settled exactly once here: finalized as awaiting review, marked failed with the
- * task's error, removed if its revision is no longer publishable, or re-armed so the
- * normal task path finishes it. A live (pending/running) task always wins — this
+ * task's error (or, #201, as cancelled when a user cancelled its task), removed if
+ * its revision is no longer publishable, or re-armed so the normal task path
+ * finishes it. A live (pending/running) task always wins — this
  * never runs a publication itself.
  */
 import { prisma } from "../prisma.js";
@@ -26,6 +27,7 @@ import {
   persistGeneratedDocTask,
 } from "./generated-doc-outbox.js";
 import {
+  GENERATED_DOC_PUBLICATION_CANCELLED,
   markAwaitingReview,
   readPublicationSnapshot,
   reconcileSyntheticDocumentRemoval,
@@ -40,11 +42,13 @@ export interface StrandedPublicationReport {
   finalized: string[];
   /** Task exhausted its attempts — now `failed`, with the task's error. */
   failed: string[];
+  /** #201 — task cancelled by a user — now `failed`, "cancelled"; never re-run. */
+  cancelled: string[];
   /** Revision deleted/superseded/missing — synthetic document removed. */
   removed: string[];
   /** No live task and no outcome — publication task re-armed and dispatched. */
   rearmed: string[];
-  /** Owned by a live task, cancelled by a user, or a legacy unversioned id. */
+  /** Owned by a live task, or a legacy unversioned id. */
   skipped: string[];
 }
 
@@ -71,6 +75,7 @@ export async function reconcileStrandedGeneratedDocPublications(
   const report: StrandedPublicationReport = {
     finalized: [],
     failed: [],
+    cancelled: [],
     removed: [],
     rearmed: [],
     skipped: [],
@@ -98,7 +103,11 @@ export async function reconcileStrandedGeneratedDocPublications(
     }
   }
   const settled =
-    report.finalized.length + report.failed.length + report.removed.length + report.rearmed.length;
+    report.finalized.length +
+    report.failed.length +
+    report.cancelled.length +
+    report.removed.length +
+    report.rearmed.length;
   if (settled > 0) log.info("Reconciled stranded generated-doc publications", { ...report });
   return report;
 }
@@ -148,15 +157,26 @@ async function reconcileOne(
     return;
   }
 
-  const parked = await prisma.quarantineChunk.count({
-    where: { documentId: row.id, ord: { gte: 0 } },
-  });
-  if (row.indexState === "quarantined" && parked > 0) {
-    await markAwaitingReview(row.id, row.projectId);
-    report.finalized.push(row.id);
+  if (task?.status === "cancelled") {
+    // #201 — a user's cancellation is never overridden (the task is not re-run),
+    // but the row is settled: a cancelled publication is not `processing`. It is
+    // checked before parked chunks: a cancellation that landed after the chunks
+    // were written must not be turned into a `ready` row awaiting review.
+    await prisma.document.updateMany({
+      where: { id: row.id, projectId: row.projectId, deletedAt: null },
+      data: {
+        status: "failed",
+        errorMessage: `${GENERATED_DOC_PUBLICATION_CANCELLED}: ${task.errorMessage ?? "cancelled"}`,
+        processedAt: new Date(),
+      },
+    });
+    report.cancelled.push(row.id);
     return;
   }
+
   if (task?.status === "failed") {
+    // #230 — like a cancellation, an exhausted task outranks parked chunks: a
+    // failed publication is never turned into a `ready` row awaiting review.
     await prisma.document.updateMany({
       where: { id: row.id, projectId: row.projectId, deletedAt: null },
       data: {
@@ -168,9 +188,12 @@ async function reconcileOne(
     report.failed.push(row.id);
     return;
   }
-  if (task?.status === "cancelled") {
-    // A user's cancellation is never overridden by recovery.
-    report.skipped.push(row.id);
+  const parked = await prisma.quarantineChunk.count({
+    where: { documentId: row.id, ord: { gte: 0 } },
+  });
+  if (row.indexState === "quarantined" && parked > 0) {
+    await markAwaitingReview(row.id, row.projectId);
+    report.finalized.push(row.id);
     return;
   }
 

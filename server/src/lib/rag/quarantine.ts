@@ -356,6 +356,9 @@ export async function approveDocument(
             id: documentId,
             deletedAt: null,
             indexState: { in: ["pending", "quarantined"] },
+            // #230 — re-read under the row lock: a cancellation can land while
+            // this approval was writing to the external stores.
+            ...approvableStatus(documentId),
           },
           data: {
             indexState: "reconciling",
@@ -496,6 +499,8 @@ async function fenceGeneratedApproval(
 
 function isStillApprovable(
   doc: {
+    id: string;
+    status: string;
     indexState: string;
     deletedAt?: Date | null;
   } | null,
@@ -503,8 +508,26 @@ function isStillApprovable(
   return Boolean(
     doc &&
     doc.deletedAt == null &&
-    (doc.indexState === "quarantined" || doc.indexState === "pending"),
+    (doc.indexState === "quarantined" || doc.indexState === "pending") &&
+    !(isGeneratedDocSynthetic(doc.id) && doc.status === "failed"),
   );
+}
+
+function isGeneratedDocSynthetic(documentId: string): boolean {
+  return documentId.startsWith("gendoc-");
+}
+
+/**
+ * #230 — a generated-doc publication whose run ended `failed` — a user cancelled
+ * it, or its last attempt failed — is not approvable. Its parked chunks are that
+ * run's leftovers, and approving them would publish what the user cancelled. A
+ * new run of the publication (a task retry) reopens the row before it parks new
+ * chunks (`generated-doc-publication.ts`). Uploaded documents are unchanged.
+ * The winner-selection CAS re-checks it under the row lock, so a cancellation
+ * committed while an approval is in its external writes still stops it.
+ */
+function approvableStatus(documentId: string): Prisma.DocumentWhereInput {
+  return isGeneratedDocSynthetic(documentId) ? { status: { not: "failed" } } : {};
 }
 
 async function cleanupAbortedApproval(
@@ -675,7 +698,11 @@ export async function listQuarantine(projectId: string) {
       projectId,
       deletedAt: null,
       OR: [
-        { indexState: "quarantined" },
+        {
+          indexState: "quarantined",
+          // #230 — a failed or cancelled generated-doc publication is not reviewable.
+          NOT: { id: { startsWith: "gendoc-" }, status: "failed" },
+        },
         {
           indexState: "reconciling",
           quarantineChunks: { some: { ord: -3 } },

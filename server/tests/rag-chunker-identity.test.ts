@@ -144,6 +144,17 @@ function fixture(): string {
   const noSentenceMarks = Array.from({ length: 700 }, (_, i) => `token${i}`).join(" ");
   // No spaces either, so every tier fails its floor and the hard cut is taken.
   const unbrokenToken = "x".repeat(9000);
+  // #201 — non-ASCII text, bounded by UTF-8 bytes as well as characters. Short
+  // Japanese lines (3 bytes a character) and one unbroken emoji run (4 bytes a
+  // code point, 2 UTF-16 units): at every arm a character window of this holds
+  // more than EMBED_INPUT_MAX_BYTES, so v2 and v3 cut it differently.
+  const nonAscii = [
+    ...Array.from(
+      { length: 40 },
+      (_, i) => `第${i}行：検索拡張生成は文書の内容を理解するための仕組みです。`,
+    ),
+    "😀🚀🎉🧪".repeat(400),
+  ].join("\n");
   return [
     "# Heading one",
     "",
@@ -181,6 +192,10 @@ function fixture(): string {
     "## One long token",
     "",
     unbrokenToken,
+    "",
+    "## Non-ASCII",
+    "",
+    nonAscii,
     "",
     "### Short section",
     "",
@@ -220,7 +235,12 @@ function boundarySignature(): string {
  * from the diff alone.
  */
 const BOUNDARY_SIGNATURES: Record<number, string> = {
-  2: "d31ec7182076b756925bcb26296f154145fe57af0f6f7fe33214d26c7ac0d7aa",
+  // Re-recorded in #201 for the fixture's new non-ASCII shape, measured with the
+  // v2 chunker. Over the pre-#201 fixture, v2 AND v3 both give d31ec718…c7ac0d7aa:
+  // v3 moved no ASCII boundary.
+  2: "000e23a8232e3655b4035d4fdc68d609d7897efabf31e5875949119b7a3fce08",
+  // #201 — non-ASCII chunks are also bounded by UTF-8 bytes.
+  3: "36f10113e68ab0737c9ecca58c17e850f2902b6b0ed79bcb0a5278982343436f",
 };
 
 describe("issue #1182 — chunker identity", () => {

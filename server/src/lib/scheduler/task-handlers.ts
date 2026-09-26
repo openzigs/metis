@@ -83,6 +83,16 @@ export interface BuiltInHandlerDeps {
     signal: AbortSignal,
     options?: GeneratedDocPublishOptions,
   ): Promise<Record<string, unknown> | void>;
+  /** #201 — settle a generated-doc publication cancelled before its task ran. */
+  settleCancelledGeneratedDocPublication?(
+    payload: {
+      generatedDocumentId: string;
+      projectId: string;
+      version: number;
+      revisionId: string;
+    },
+    reason: string,
+  ): Promise<void>;
   /** Run an AI Bug Scanner scan by id (Epic #708). */
   runScannerScan?(scanId: string, signal: AbortSignal): Promise<Record<string, unknown> | void>;
 }
@@ -178,6 +188,17 @@ export function registerBuiltInHandlers(
   registry.register({
     type: "publish-generated-document",
     description: "Publish a generated-document revision through the shared indexing lifecycle.",
+    onCancelledBeforeRun: async (task, reason) => {
+      const generatedDocumentId = String(task.payload.generatedDocumentId ?? "");
+      const projectId = String(task.payload.projectId ?? task.projectId ?? "");
+      const version = Number(task.payload.version ?? Number.NaN);
+      const revisionId = String(task.payload.revisionId ?? "");
+      if (!generatedDocumentId || !projectId || !revisionId || !Number.isInteger(version)) return;
+      await deps.settleCancelledGeneratedDocPublication?.(
+        { generatedDocumentId, projectId, version, revisionId },
+        reason,
+      );
+    },
     handler: async (ctx) => {
       const generatedDocumentId = String(ctx.task.payload.generatedDocumentId ?? "");
       const projectId = String(ctx.task.payload.projectId ?? ctx.task.projectId ?? "");

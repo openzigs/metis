@@ -7,6 +7,7 @@
  * a dedicated EventSource polyfill.
  */
 import type {
+  AiToolEvent,
   CompactionEventDto,
   ForkSessionResponse,
   ResumeSessionResponse,
@@ -54,6 +55,8 @@ export type StreamEvent =
   /** #138 — older turns were summarised before this answer (kept in the transcript). */
   | { type: "compaction"; compaction: CompactionEventDto }
   | { type: "tool_call"; name: string; arguments: unknown; risk: RiskLevel }
+  /** #143 — one step of one tool call (started, awaiting approval, result, error). */
+  | AiToolEvent
   | { type: "usage"; usage: TokenUsage }
   | { type: "done" }
   | { type: "error"; message: string; code?: string };
@@ -146,6 +149,42 @@ export interface DisplayTurn {
   };
   /** Tools the assistant used for this reply. */
   tools?: string[];
+  /** #142/#143 — each tool call of this reply, with its approval outcome. */
+  toolCalls?: TranscriptToolCall[];
+}
+
+/** One recorded tool call as the chat page renders it (collapsed by default). */
+export interface TranscriptToolCall {
+  id: string;
+  name: string;
+  isError: boolean;
+  /** The approval gate's decision, when recorded. */
+  decision?: string;
+  /** Fixed-vocabulary code for a refused or failed call. */
+  errorCode?: string;
+  /** `false` when the call never ran. */
+  executed: boolean;
+  resultPreview: string;
+}
+
+const TOOL_PREVIEW_CHARS = 400;
+
+function transcriptToolCalls(parts: TranscriptMessageDto["parts"]): TranscriptToolCall[] {
+  const out: TranscriptToolCall[] = [];
+  for (const p of parts) {
+    if (p.type !== "tool_result") continue;
+    out.push({
+      id: p.toolCallId,
+      name: p.name,
+      isError: p.isError === true,
+      ...(p.decision ? { decision: p.decision } : {}),
+      ...(p.errorCode ? { errorCode: p.errorCode } : {}),
+      executed: p.executed !== false,
+      resultPreview:
+        p.text.length > TOOL_PREVIEW_CHARS ? `${p.text.slice(0, TOOL_PREVIEW_CHARS)}…` : p.text,
+    });
+  }
+  return out;
 }
 
 export function transcriptToDisplay(rows: readonly TranscriptMessageDto[]): DisplayTurn[] {
@@ -169,6 +208,7 @@ export function transcriptToDisplay(rows: readonly TranscriptMessageDto[]): Disp
     const tools = r.parts
       .filter((p) => p.type === "tool_call")
       .map((p) => (p as { name: string }).name);
+    const toolCalls = transcriptToolCalls(r.parts);
     out.push({
       role: r.role,
       content: text,
@@ -176,6 +216,7 @@ export function transcriptToDisplay(rows: readonly TranscriptMessageDto[]): Disp
       compacted: r.compactedAt !== null,
       ...(r.incomplete ? { incomplete: r.incomplete.message || r.incomplete.code } : {}),
       ...(tools.length > 0 ? { tools } : {}),
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
     });
   }
   return out;
@@ -201,6 +242,21 @@ export async function resumeChatSession(id: string): Promise<ResumedChat | null>
   } catch {
     return null;
   }
+}
+
+/**
+ * #142 — answer a pending tool approval. Only the session's owner can; an
+ * approval that expired, was already answered or belongs elsewhere is a 404.
+ */
+export async function decideToolApproval(
+  sessionId: string,
+  approvalId: string,
+  decision: "approve" | "deny",
+): Promise<{ approvalId: string; decision: "approve" | "deny" }> {
+  return apiFetch(
+    `/ai/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}`,
+    { method: "POST", body: { decision } },
+  );
 }
 
 /** #139 — start a new session from an earlier assistant reply. */
@@ -367,6 +423,13 @@ export async function* streamChat(
       // deadline — the whole point is to notice a live socket with no tokens.
       if (ev) {
         deadline = Date.now() + idleTimeoutMs;
+        // #142 — while a tool call waits on the user's approval the server
+        // deliberately sends nothing; the stall guard must not end the turn
+        // before the approval itself has lapsed.
+        if (ev.type === "tool_event" && ev.phase === "awaiting_approval" && ev.expiresAt) {
+          const lapses = Date.parse(ev.expiresAt);
+          if (Number.isFinite(lapses)) deadline = Math.max(deadline, lapses + idleTimeoutMs);
+        }
         yield ev;
       }
     }
@@ -407,6 +470,8 @@ export function parseSseFrame(frame: string): StreamEvent | null {
       return { type: "usage", usage: payload as TokenUsage };
     case "compaction":
       return { type: "compaction", compaction: payload as CompactionEventDto };
+    case "tool_event":
+      return parseToolEvent(payload);
     case "done":
       return { type: "done" };
     case "error": {
@@ -416,4 +481,27 @@ export function parseSseFrame(frame: string): StreamEvent | null {
     default:
       return null;
   }
+}
+
+const TOOL_EVENT_PHASES = new Set(["started", "awaiting_approval", "result", "error"]);
+
+/**
+ * #143 — accept a `tool_event` payload (SSE frame or `ai:tool:event` socket
+ * message) only when it has the shape the UI renders; anything else is dropped
+ * rather than rendered half-formed.
+ */
+export function parseToolEvent(payload: unknown): AiToolEvent | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as Partial<AiToolEvent>;
+  if (
+    p.type !== "tool_event" ||
+    typeof p.phase !== "string" ||
+    !TOOL_EVENT_PHASES.has(p.phase) ||
+    typeof p.callId !== "string" ||
+    typeof p.name !== "string" ||
+    typeof p.sessionId !== "string"
+  ) {
+    return null;
+  }
+  return p as AiToolEvent;
 }

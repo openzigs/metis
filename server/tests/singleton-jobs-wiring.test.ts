@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   startChargebackScheduler: vi.fn(),
   startRevocationPruner: vi.fn(),
   reconcileStrandedGeneratedDocPublications: vi.fn(),
+  bootLog: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
 type Mod = Record<string, unknown>;
@@ -69,6 +70,16 @@ vi.mock(
   ),
 );
 
+// #201 — the bootstrap logger, so a test can read which failure was reported.
+vi.mock("../src/lib/logger.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../src/lib/logger.js")>();
+  return {
+    ...original,
+    createChildLogger: (module: string) =>
+      module === "server-bootstrap" ? (mocks.bootLog as never) : original.createChildLogger(module),
+  };
+});
+
 import { SingletonJobs } from "../src/server.js";
 
 function fakeSchedulerBootstrap() {
@@ -84,8 +95,9 @@ describe("SingletonJobs registration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     for (const [name, fn] of Object.entries(mocks)) {
-      fn.mockReturnValue(handleOf(name));
+      if (typeof fn === "function") fn.mockReturnValue(handleOf(name));
     }
+    mocks.reconcileStrandedGeneratedDocPublications.mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -148,6 +160,36 @@ describe("SingletonJobs registration", () => {
     jobs.start();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(mocks.reconcileStrandedGeneratedDocPublications).not.toHaveBeenCalled();
+    jobs.stop();
+  });
+
+  it("#201 — reports a startup-repair failure as that, not as a scheduler start failure", async () => {
+    mocks.reconcileStrandedGeneratedDocPublications.mockRejectedValue(new Error("db locked"));
+    const jobs = new SingletonJobs(fakeSchedulerBootstrap() as never);
+    jobs.start();
+    await vi.waitFor(() =>
+      expect(mocks.bootLog.warn).toHaveBeenCalledWith(
+        "Generated-doc publication startup repair failed",
+        { error: "db locked" },
+      ),
+    );
+    expect(mocks.bootLog.warn).not.toHaveBeenCalledWith(
+      "Scheduler start failed",
+      expect.anything(),
+    );
+    jobs.stop();
+  });
+
+  it("#201 — still reports a scheduler that failed to start", async () => {
+    const sched = fakeSchedulerBootstrap();
+    sched.scheduler.start.mockRejectedValue(new Error("boom"));
+    const jobs = new SingletonJobs(sched as never);
+    jobs.start();
+    await vi.waitFor(() =>
+      expect(mocks.bootLog.warn).toHaveBeenCalledWith("Scheduler start failed", {
+        error: "boom",
+      }),
+    );
     jobs.stop();
   });
 

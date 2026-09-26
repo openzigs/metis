@@ -654,17 +654,36 @@ Token counts per category use a character-based estimator (1 token ≈ 4 chars).
                                     └─────────────┘  └──────────┘
 ```
 
-### 6.4 Tool registry + approval gate
+### 6.4 Tool runtime + enforced approval gate (epic #128)
 
-`ToolRegistry` registers tools with explicit `risk: 'low' | 'medium' | 'high'`, a zod argument schema, and an `exec` function. `invoke` validates args (throws `AIToolInvalidArgsError`) and consults the per-session `ApprovalGate` before running:
+`ToolRegistry` registers tools with explicit `risk: 'low' | 'medium' | 'high'`, a zod argument schema, and an `exec` function. `invoke` validates args (throws `AIToolInvalidArgsError`) and consults an `ApprovalGate`; since #142 the gate argument is **required** (it used to default to allow-all, so a caller that forgot it ran any tool unprompted).
+
+**One runtime (`server/src/lib/ai/tool-runtime/`).** Until #128 the approval gate was never instantiated and the registry was only *listed*. Chat (`/api/ai/chat`, `/api/ai/stream`) now offers a project-scoped session its tools and runs them server-side:
+
+| Piece | File | Role |
+| --- | --- | --- |
+| Toolset | `toolset.ts` | METIS registry tools (JSON Schema derived from zod by `json-schema.ts`, or an MCP server's own `inputSchema`), MCP tools **only from servers the project may use** (`MCPRegistryService.listForProject`) and admitted by each server's governance allowlist, and — with `CHAT_CODE_SEARCH_TOOLS` — the code-search tools. `search-knowledge-global` is never offered (it crosses projects). Canonical names such as `mcp:github:list_issues` are mapped to provider-safe wire names (`^[a-zA-Z0-9_-]{1,64}$`) and back. |
+| Session tools | `session-tools.ts` | Mode per turn: **native** when the model catalog marks the model tool-capable, **text** (the #713 code tools on the textual protocol, byte-identical prompt) otherwise, **off** for an unscoped session (#1368) or `CHAT_TOOLS=false`. Loads the agent's `tools:` allowlist (an agent that can no longer be read gets **no** tools). |
+| Loop | `chat-turn.ts` → `analysis/agent-loop.ts` | The shared agent loop, in native mode: tool definitions on `ChatOptions.tools`, calls from `ChatResponse.toolCalls`, results as `tool` messages answering each call id (calls over the per-reply cap are answered with an error, never left open). Results are capped in the model's copy (#138), fenced as untrusted data (`fence.ts`), and recorded in full. `/stream` streams each native turn's text as it arrives through `collectGuardedStream` (`stream-collect.ts`), one idle guard and one local slot per model call; `/chat` returns the same joined text (`replyText`), not only the last turn's. |
+| Executor | `executor.ts` | Per call: `started` → validate args (before anyone is asked) → **gate** → execute → `result` / `error`. A refused call never reaches `execute`. Every call is audited (`ai.tool.call`: actor, session, tool, args hash, outcome, decision). |
+| Gate | `lib/ai/approval-policy.ts` | `ApprovalGateService.evaluate`: bound to ONE session and user (any other identity is refused); agent allowlist first (refuses even under `auto`); then the risk policy; `forcePrompt` (MCP `requireApproval`, re-read at call time so a mid-turn change applies to the next call; unreadable governance forces the prompt) always asks; `prompt-once` is remembered per **session** from `AIToolApproval` rows a person approved in answer to a `prompt-once` prompt (`reason = prompt-once` — an `always-prompt` or forced approval admits one call only). One `AIToolApproval` row per decision, and an allow whose row cannot be written is refused (`error`, `audit_write_failed`). |
+| Broker + prompter | `approval-broker.ts`, `prompter.ts` | A prompt registers a pending approval under an unguessable `apr_<uuid>` bound to session, owner, project and args hash, emits `awaiting_approval`, and waits. Only `POST /api/ai/sessions/:id/approvals/:approvalId` (owner + project access via `loadAuthorizedSession`) can answer it; the entry is removed as it resolves, so a replay, another user/session/project, a forged id and a late answer all get the same 404. Unanswered after `AI_TOOL_APPROVAL_TIMEOUT_MS` (default 120 s) ⇒ `expired` = denied; an aborted turn denies. In-process, like the MCP approvals — multi-replica chat needs sticky sessions. |
 
 | Risk | Default policy | Behaviour |
 | --- | --- | --- |
 | `low` | `auto` | runs without prompting, audit row written |
-| `medium` | `prompt-once` | prompts on first call per (sessionId, toolName), then auto-approves identical args |
-| `high` | `always-prompt` | prompts on every invocation regardless of arg fingerprint |
+| `medium` | `prompt-once` | prompts on the first call per (session, tool, risk), then auto-approves |
+| `high` | `always-prompt` | prompts on every invocation |
 
-Each policy supports `auto | prompt-once | always-prompt | deny`. Decisions are persisted to `AIToolApproval` with `approve | deny | auto-approve | expired | error` and a sorted-key SHA-256 arg hash, giving full traceability without leaking inputs. The policy is a JSON column on `AISession` (`PATCH /api/ai/sessions/:id` to update).
+Each policy supports `auto | prompt-once | always-prompt | deny`. Decisions are persisted to `AIToolApproval` with `approve | deny | auto-approve | expired | error` and a sorted-key SHA-256 arg hash. The transcript's `tool_result` part carries the call's `decision`, `errorCode` and `executed: false` for a refused call, so a denial is on record, never a silent gap.
+
+**Events (#143).** Each step is a `tool_event` SSE frame and an `ai:tool:event` in the session's socket room (joined only by the session's owner — `subscribe:session` now authorises like every session read). Errors use a fixed vocabulary (`TOOL_DENIED`, `TOOL_APPROVAL_EXPIRED`, `TOOL_NOT_ALLOWED`, `TOOL_UNKNOWN`, `TOOL_INVALID_ARGS`, `TOOL_FAILED`); a tool's exception text stays in the server log and never reaches the stream or the transcript. The stream's hard ceiling is paused while a person decides. **Every page that sends a turn on a session answers its prompts**: the `/chat` page and the Workbench share `useToolApprovals` (`ui/src/hooks/use-tool-approvals.ts` — the turn's `tool_event` frames plus the session room, and `decideToolApproval`) and render `ToolActivityList` (`ui/src/components/chat/tool-activity.tsx`) with Approve / Deny. No other surface drives a tool-bearing turn: discussion replies, custom-agent playground runs and the async `chat` run kind offer no tools.
+
+**Copilot SDK built-ins.** The Copilot SDK carries its own tools (shell, file write, URL fetch, …) that would run under the provider's `onPermissionRequest`, never this gate. Every chat call asks for them withheld with `withholdSdkBuiltinTools` (set by `buildSdkSkillRuntime`), a flag only the Copilot provider reads: it maps to `availableTools: []`, and its permission handler refuses every request (`rejectSdkPermission`). It is deliberately **not** `disableTools`, which means "send no tools" on every provider — the Anthropic and OpenAI-compatible clients drop `tools` from the request when it is set, so using it here would strip METIS's own tools from every chat. `disableTools` stays on the pure-text callers that offer no tools (discussion replies, custom-agent playground runs, analysis/docs-gen synthesis), and on Copilot it withholds the built-ins too. The SDK hands the handler the full request (a shell request's `fullCommandText`, a write's `fileName` and `diff`), so routing it through the gate would be possible; refusing everything is the least-risk interim because the Copilot provider is removed in P4 (#130). Non-chat text-synthesis callers that set neither flag keep the earlier behaviour until then. The Copilot provider declares `nativeToolCalls: false` — it never reads `ChatOptions.tools` — so a Copilot chat gets the code tools on the text protocol (with `CHAT_CODE_SEARCH_TOOLS`) rather than native tools it would silently drop.
+
+**Local provider.** The loop asks for approval and runs tools only between provider calls, so the per-base-URL concurrency slot (#127) is never held across a human decision or a tool run. That depends on every reader that stops at `done` returning the provider stream: `withIdleTimeout` (`stream-idle.ts`) passes an early stop (`break`, `collectStream`, a throw in the consumer) on to the source, whose `finally` releases the slot — without it the next local call on that base URL waited forever.
+
+**Spans (#144).** Every direct-provider `chat`/`stream` (OpenAI-compatible and Anthropic clients) is one `chat {model}` CLIENT span with `gen_ai.provider.name`, request/response model, input/output and cache read/write tokens, finish reason, latency, and — on streams — `gen_ai.response.time_to_first_chunk` measured from the local slot's acquisition, with the queue wait recorded separately. A chat tool turn is an `invoke_agent chat` span; its model and `execute_tool` spans nest under it. Prompt and completion text are recorded only with `OTEL_GENAI_CAPTURE_CONTENT=true`.
 
 ### 6.5 Embeddings (R-Embed-1)
 
@@ -687,10 +706,12 @@ Each policy supports `auto | prompt-once | always-prompt | deny`. Decisions are 
 | `PATCH` | `/sessions/:id` | Update title / policy |
 | `GET` | `/sessions/:id/usage` | In-memory + today's persisted token totals |
 | `GET` | `/sessions/:id/approvals` | Recent approval audit rows |
+| `GET` | `/sessions/:id/approvals/pending` | The owner's pending tool approvals (#142) |
+| `POST` | `/sessions/:id/approvals/:approvalId` | Approve or deny a pending tool call — owner only, single use (#142) |
 | `GET` | `/usage/today` | Per-user daily rollup |
 | `GET` | `/tools` | List registered tools with risk |
 | `POST` | `/chat` | Non-stream completion (rate-limited) |
-| `POST` | `/stream` | SSE stream: `delta` / `tool_call` / `usage` / `done` / `error` (rate-limited) |
+| `POST` | `/stream` | SSE stream: `delta` / `tool_call` / `tool_event` (#143) / `usage` / `done` / `error` (rate-limited) |
 
 The SSE endpoint sets `Content-Type: text/event-stream`, `Cache-Control: no-cache, no-transform`, `Connection: keep-alive`, `X-Accel-Buffering: no`, and binds an `AbortController` to `req.aborted` + `res.close` so a client disconnect cancels the upstream provider call within one chunk.
 
@@ -777,6 +798,8 @@ Every field is overrideable via `ANALYSIS_PERSONA_<AGENT>_NAME|ROLE|AVATAR|DESCR
 ### 7.3 Agentic Tool-Calling Loop (Epic #473)
 
 When a project has a **code graph** (from deep-ingest) and the document agent extracts **structured requirements**, the code agent automatically upgrades from single-shot to **agentic mode** — a multi-turn loop where the LLM can call tools to investigate the codebase.
+
+**Native tool calls (#141).** With `ANALYSIS_NATIVE_TOOL_CALLS=true` and a model the catalog marks tool-capable, the loop offers its tools as native definitions and reads calls from the provider's tool channel (several per reply, run in order); the text-protocol manifest is not rendered and `parseToolCall` is not used. The default stays the text protocol until the analysis quality harness has been re-run against a live model. Chat always uses native calls on a tool-capable model (§6.4).
 
 **Architecture:**
 
@@ -1045,6 +1068,7 @@ The `ServerToClientEvents` contract (`packages/shared/src/socket.ts`) is the sin
 | `document:status` | `lib/rag/socket-emitter.ts` (room `project:{id}`) | `…/documents/page.tsx` | live |
 | `auth:ok` / `heartbeat` | `lib/socket/server.ts` | socket-client plumbing | allow-listed (protocol/handshake) |
 | `mcp:status` / `mcp:approval:requested` / `mcp:approval:decided` | `lib/mcp/index.ts` | — | allow-listed (admin/protocol, no UI by design) |
+| `ai:tool:event` | `routes/ai.ts` (room `session:{id}`, joined only by the session's owner — #142; payload `AiToolEvent`: phase `started` / `awaiting_approval` / `result` / `error`, bounded previews, fixed-vocabulary error codes) | `hooks/use-session-tool-events.ts` via `hooks/use-tool-approvals.ts` (chat and Workbench pages: live tool activity + Approve / Deny) | live (#143) |
 | `usage:tick` / `bg-run:status` / `bg-run:step` | `server.ts` | — | allow-listed, **deferred to Epic #406** (progress UI) |
 | `connector:status` | `lib/connectors/socket-emitter.ts` | — | allow-listed, **deferred to Epic #406** |
 | `presence:error` | `lib/collaboration/presence.ts` | — | allow-listed, **deferred to Epic #406** |
@@ -1214,6 +1238,56 @@ This hybrid approach catches both semantically related content (even when differ
 | **Reranker** | Cross-encoder reranking with `Xenova/ms-marco-MiniLM-L-6-v2` (23.9 MB on disk at `q8`, measured — an earlier "≈150 MB" note was the *embedder*'s footprint). Same sidecar/in-process selection as the embedder; defined in `server/src/lib/rag/reranker.ts`. Disabled by default; enable with `RAG_RERANK=1`. **Document path only** — the code-graph path deliberately has no rerank stage; see #1158 below. |
 | **Vector Store** | In-memory storage in development; production uses LanceDB for persistence. Supports cosine similarity search (vector) and BM25 search (keywords). |
 | **Converter Registry** | Pluggable system for converting different file formats to plain text. Supports: Markdown, plain text, 18+ code file types. PDF/DOCX/XLSX use mock converters in development. |
+
+#### 8.4.1 The in-process embed worker (#189, #201)
+
+When the embedder is in-process (`xenova`, `embeddinggemma`), the ONNX model runs in a
+**`worker_thread`**, not on the server's main thread (`server/src/lib/rag/embed-worker-pipeline.ts`).
+`onnxruntime-node` runs inference synchronously on the calling thread, so before #189 one large
+generated document held `/healthz` and every API request for minutes.
+
+- **What runs where.** The worker loads `@huggingface/transformers` and holds the tokenizer, the
+  weights and the forward pass. `XenovaEmbedder` keeps everything else on the main thread: the #807
+  forward-batch policy, pooling, Matryoshka truncation and the embedding identity. It posts one
+  forward batch at a time (at most `EMBED_WORKER_MAX_TEXTS_PER_CALL` = 16 texts). The worker serves
+  calls in arrival order, so a chat query waits for at most one forward pass behind an ingest.
+- **Lifecycle.** One worker per pipeline, started on first use and `unref`'d while idle. If the
+  worker dies, in-flight calls reject and the next call starts a fresh worker.
+  `EMBED_INPROCESS_RUNTIME=inline` restores the old main-thread behaviour. Only tests use it,
+  because a module mock does not cross a thread boundary.
+- **Bounded inputs.** Document ingest (uploads and repository sources) and generated-document
+  publication embed through `embedInBoundedBatches` (`rag/embed-batched.ts`): 32 texts per call,
+  with an abort check and a progress callback between batches. The tokenizer is capped at
+  `MAX_EMBED_SEQUENCE_TOKENS` = 2,048. The chunkers keep each input under that cap: ASCII text by
+  its character window, and (#201) text with non-ASCII characters by a 2,046-token budget
+  (`EMBED_INPUT_MAX_BYTES`) in which each such character costs its UTF-8 bytes. A byte-level BPE
+  token covers at least one byte, so that part is a hard bound, and it is what keeps CJK and emoji
+  whole. The ASCII part is the character window's assumption, not a proof: in `rag/chunker.ts` at
+  the default `chunkSize` of 2,048, a mostly-ASCII window can reach 2,047 bytes, one over the
+  budget, which English BPE (several characters per token) never comes near
+  (`rag/embed-input-budget.ts`, `rag/chunker.ts`; chunker identities `doc:v3`, `docsgen:v3`).
+- **Publication outcome.** Generated-document publication (`docs-gen/generated-doc-publication.ts`)
+  records an outcome on the synthetic `gendoc-*` document for every way an attempt can end. A
+  user's cancellation is `failed` with "cancelled". A failure or timeout records its reason, and is
+  `failed` on the last attempt. A shutdown records nothing, because the durable outbox replays the
+  task. The queue passes the abort's cause to the handler as a typed signal reason
+  (`scheduler/task-abort.ts`). A task cancelled before its handler runs (still queued, or
+  cancelled while the queue was claiming it) never reaches that code, so the queue calls the
+  registration's `onCancelledBeforeRun` hook instead, and the publication settles its placeholder
+  row as cancelled there. At startup, `reconcileStrandedGeneratedDocPublications` settles any
+  synthetic row that no live task owns; a cancelled or exhausted task outranks parked review
+  chunks, so such a publication is never marked ready. A `failed` synthetic row is not approvable
+  even with chunks still parked (#230): `rag/quarantine.ts` refuses it up front, re-checks it in
+  the winner-selection compare-and-set (so a cancel that lands mid-approval still stops it), and
+  leaves it out of `listQuarantine`. A user's retry of the task reopens the row to `processing`
+  before parking fresh chunks. Uploaded documents are unaffected.
+- **One ONNX thread per process.** `onnxruntime-node` aborts the process when sessions are live on
+  two threads at once. For example, `RAG_RERANK=1` runs the in-process reranker on the main thread
+  while the embedder runs in the worker. See #222. The sidecar backend avoids this, because every
+  model runs out of process.
+- **Real-model check.** PR suites use a stub model. `server/tests/embed-worker-real-model.test.ts`
+  (opt-in, `EMBED_REAL_MODEL_TEST=1`) loads the real `gte-modernbert-base` in the worker from the
+  built `dist` under plain `node`. `.github/workflows/embed-real-model-nightly.yml` runs it nightly.
 
 ### 8.5 Cross-Project Federated Search (Epic #526)
 
@@ -3549,7 +3623,8 @@ Recovery is at-least-once.
 | `GET` | `/` | List generated documents for a project, including separate indexing state from the synthetic `Document` row | — |
 | `GET` | `/:docId` | Get a single document: its content once, plus summary metadata, the five latest version summaries (`id`, `version`, `revisionId`, `diffSummary`, `createdAt`) and separate indexing state | — |
 | `GET` | `/:docId/versions/:versionId` | One version's markdown body (#190) | — |
-| `GET` | `/:docId/versions/:versionId/provenance` | One version's provenance manifest (#190) | — |
+| `GET` | `/:docId/versions/:versionId/provenance` | One version's full provenance manifest (#190); the UI fetches it only for **Download full manifest** (#196) | — |
+| `GET` | `/:docId/versions/:versionId/provenance/summary` | The Provenance panel's summary of it: `revisionId`, `version`, `generatedAt`, `pipeline`, `models`, `sectionCount`, `selectedEvidenceCount`, `sourceCount`, `historicalCitations`, `legacy` (#196) | — |
 | `GET` | `/:docId/versions/:versionId/changed-symbols?offset=&limit=` | A page (default 500, max 5,000) of one version's changed symbols, with `total` (#190) | — |
 | `GET` | `/:docId/export?format=pdf\|docx` | Download in specified format | — |
 | `PATCH` | `/:docId` | Update document metadata (title, autoUpdate flag) | — |
@@ -3564,11 +3639,23 @@ per-version endpoints sit behind the same `requireProjectAccess` gate and
 `project.read` permission as the detail route, and look a version up through its
 document's project, so a foreign version id is a 404.
 
+#196 — a version row is written once and never updated, so its heavy columns are
+parsed at most once per server process: `server/src/lib/docs-gen/generated-doc-version-reads.ts`
+keeps each version's provenance **summary** (≈400 bytes, from a 17 MB manifest) and its
+parsed changed-symbol array in bounded LRUs keyed by project, document, version id and
+`createdAt`. The list and detail routes' legacy-index check reads the summary lazily (only
+when no publication outbox exists and the revision-owned index row is missing), instead of
+selecting every latest version's manifest. Responses are compressed by `compression`
+1.8, which already negotiates Brotli (quality 4) for clients that send `br` and gzip
+otherwise; on the 611,592-character document the detail body is 151 KB gzip and 144 KB
+Brotli, so no stronger Brotli setting is used (quality 11 saves another 29 KB for ~0.5 s
+of CPU per response).
+
 ### UI Components
 
 | Component | Path | Purpose |
 |-----------|------|---------|
-| `MarkdownPreviewer` | `ui/src/components/markdown-previewer.tsx` | Rich renderer: Mermaid diagrams (rendered as SVG via `mermaid.render()`), KaTeX math formulas, syntax-highlighted code blocks, GFM tables. Includes URL sanitization to block `javascript:`/`data:` protocols. #190 — renders progressively: `ui/src/lib/markdown-sections.ts` splits the content at H2/H3 (fence-aware) and each section gets its own react-markdown pass when it nears the viewport, is picked from the TOC, or is the URL-hash target; until then it shows as plain text (find-in-page still works). Heading ids continue one document-wide slug counter across sections, so repeated headings keep distinct ids |
+| `MarkdownPreviewer` | `ui/src/components/markdown-previewer.tsx` | Rich renderer: Mermaid diagrams (rendered as SVG via `mermaid.render()`), KaTeX math formulas, syntax-highlighted code blocks, GFM tables. Includes URL sanitization to block `javascript:`/`data:` protocols. #190 — renders progressively: `ui/src/lib/markdown-sections.ts` splits the content at H2/H3 (fence-aware) and each section gets its own react-markdown pass when it nears the viewport, is picked from the TOC, or is the URL-hash target; until then it shows as plain text (find-in-page still works). Heading ids continue one document-wide slug counter across sections, so repeated headings keep distinct ids. #196 — the splitter (TOC links, pending anchors, deep-link lookup) and the renderer (`remarkSectionSlugs`) derive every id from one function, `headingSlugText`, over the same parsed heading, so `_emphasis_`, entities and inline HTML cannot make them drift. #227 — both sides get the heading text from `headingText`, which re-parses a heading beside the document-wide definitions of the labels it names, so a reference link (`[text][ref]`) resolves and a footnote reference (`[^1]`) drops out whichever section the definition sits in. Both sides slug the heading as parsed from its own source line, never the renderer's section-wide parse, so a definition the line-based collector misses (inside a blockquote or list item, or directly after a thematic break or indented code) leaves the reference unresolved on both sides rather than making them disagree. `ui/tests/markdown-previewer.bench.test.tsx` (skipped unless `VIEWER_BENCH=1`) reproduces the viewer benchmark |
 | Documentation Page | `ui/src/app/(authed)/projects/[id]/documentation/page.tsx` | Generation controls with scope selector, document card grid, detail view with TOC sidebar, export buttons, version history, and separate generation-vs-indexing status badges/summaries |
 
 ### Key Libraries

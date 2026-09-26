@@ -128,3 +128,79 @@ describe("withIdleTimeout — #127 start after the local slot is acquired", () =
     );
   });
 });
+
+describe("withIdleTimeout passes an early stop on to the source (#128 review)", () => {
+  /** A source that records whether its `finally` (the provider's slot release) ran. */
+  function tracked(items: string[]): { source: AsyncGenerator<string>; closed: () => boolean } {
+    let closed = false;
+    async function* gen(): AsyncGenerator<string> {
+      try {
+        for (const item of items) yield item;
+        await new Promise(() => {}); // would stall if read past the items
+      } finally {
+        closed = true;
+      }
+    }
+    return { source: gen(), closed: () => closed };
+  }
+
+  it("a consumer that breaks early closes the source", async () => {
+    const t = tracked(["a", "b", "c"]);
+    for await (const item of withIdleTimeout(t.source, 1000)) {
+      if (item === "b") break;
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    expect(t.closed()).toBe(true);
+  });
+
+  it("a consumer that throws mid-loop closes the source", async () => {
+    const t = tracked(["a", "b"]);
+    await expect(
+      (async () => {
+        for await (const item of withIdleTimeout(t.source, 1000)) {
+          if (item === "a") throw new Error("consumer failed");
+        }
+      })(),
+    ).rejects.toThrow("consumer failed");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(t.closed()).toBe(true);
+  });
+
+  it("a completed source is not asked to return again", async () => {
+    const returned = vi.fn();
+    const source: AsyncIterable<number> = {
+      [Symbol.asyncIterator]() {
+        let i = 0;
+        return {
+          next: async () =>
+            i < 2 ? { value: i++, done: false } : { value: undefined, done: true },
+          return: async () => {
+            returned();
+            return { value: undefined, done: true };
+          },
+        };
+      },
+    };
+    expect(await collect(withIdleTimeout(source, 1000))).toEqual([0, 1]);
+    expect(returned).not.toHaveBeenCalled();
+  });
+
+  it("a source that throws is not asked to return", async () => {
+    const returned = vi.fn();
+    const source: AsyncIterable<number> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => {
+            throw new Error("boom");
+          },
+          return: async () => {
+            returned();
+            return { value: undefined, done: true };
+          },
+        };
+      },
+    };
+    await expect(collect(withIdleTimeout(source, 1000))).rejects.toThrow("boom");
+    expect(returned).not.toHaveBeenCalled();
+  });
+});

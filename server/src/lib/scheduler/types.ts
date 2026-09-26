@@ -72,6 +72,13 @@ export interface TaskHandlerRegistration {
   /** Default timeout in ms — handler MUST honour the AbortSignal regardless. */
   defaultTimeoutMs?: number;
   handler: TaskHandlerFn;
+  /**
+   * #201 — called after a task of this type is cancelled while still queued, so
+   * the handler never ran. A handler that records an outcome elsewhere (a
+   * generated-doc publication's synthetic document) settles it here. Errors are
+   * logged, never propagated: the cancellation itself has already been persisted.
+   */
+  onCancelledBeforeRun?(task: TaskRecord, reason: string): Promise<void>;
 }
 
 /** Registry interface — supports registration + lookup. */

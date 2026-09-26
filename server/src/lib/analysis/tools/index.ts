@@ -19,6 +19,8 @@ import type { AgentTool } from "./types.js";
 import { searchCodeGraphTool } from "./search-code-graph.js";
 import { createSearchSymbolsTool, type SearchSymbolsDeps } from "./search-symbols.js";
 
+export { CHAT_CODE_TOOL_NAMES } from "./chat-code-tool-names.js";
+
 /** Deps for the chat-facing code tool set (test seams for the hybrid searcher). */
 export type ChatCodeToolDeps = Partial<SearchSymbolsDeps>;
 

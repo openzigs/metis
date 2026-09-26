@@ -733,16 +733,27 @@ nothing — which is why chunker drift is reported separately and never appears 
 To repair a project, **re-ingest its documents** (re-upload, or re-run ingest per
 document) so the chunker runs again.
 
+**`doc:v2` → `doc:v3` (#201).** v3 also bounds a chunk with non-ASCII text by the
+model's token input, charging each such character its UTF-8 bytes. A CJK or emoji
+chunk is no longer truncated at the model's 2,048-token input.
+
+After upgrading, `status` reports chunker drift for **every** project ingested under
+v2, all-ASCII ones included: drift is judged by the recorded chunker identity, not by
+the text. Re-ingest them all to clear it. Order the work by content: a project with
+non-ASCII text has truncated chunks that the re-ingest actually repairs, so do those
+first. An all-ASCII project is cut exactly as v2 cut it, so its re-ingest reproduces
+the same chunks byte-for-byte and changes only the recorded identity; it can wait.
+
 ### Reading the report
 
 ```
-Chunker       doc:v2:2048/256  <- active
+Chunker       doc:v3:2048/256  <- active
                50%       50  (untagged — written before #1182, provenance unrecorded)
-               40%       40  doc:v2:2048/256  <- active
+               40%       40  doc:v3:2048/256  <- active
                10%       10  docsgen:v1:1500  (a different chunker — not compared)
 
 Projects needing re-ingest: 1/2 (chunker drift — a reindex does NOT fix this)
-  p-gappy  40/100 on the active chunker  (doc:v2:2048/256, untagged)
+  p-gappy  40/100 on the active chunker  (doc:v3:2048/256, untagged)
 ```
 
 - The identity is **composite** — `<producer>:v<algorithm>:<chunkSize>/<overlap>`.

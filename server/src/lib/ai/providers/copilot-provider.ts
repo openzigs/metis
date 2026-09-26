@@ -39,6 +39,32 @@ interface UsageEvent {
   cacheWriteTokens?: number;
 }
 
+/**
+ * #142 — the SDK permission handler for a session whose built-in tools were
+ * withheld: refuse whatever it asks (`shell`, `write`, `url`, …). The only tools
+ * a chat may run are METIS's own, through the session's approval gate.
+ *
+ * The SDK hands this handler the full `permission.requested` payload (a shell
+ * request carries `fullCommandText`, a write carries `fileName` and `diff` —
+ * `@github/copilot-sdk@0.3.0` `dist/session.js`, `generated/session-events.d.ts`),
+ * so routing it through the approval gate would be possible. It is not done
+ * because the Copilot provider is removed in P4 (#130): refusing every request
+ * is the least-risk interim. Only the kind is logged — the command text or diff
+ * may carry secrets.
+ */
+export async function rejectSdkPermission(request: {
+  kind?: string;
+  toolCallId?: string;
+}): Promise<{ kind: "reject"; feedback: string }> {
+  log.warn("Refused a Copilot SDK built-in tool permission request", {
+    kind: request?.kind ?? "unknown",
+  });
+  return {
+    kind: "reject",
+    feedback: "Built-in tools are disabled here; tools run only through METIS's approval gate.",
+  };
+}
+
 const sentinelSessionId = (opts?: ChatOptions): string => opts?.sessionId ?? `chat-${Date.now()}`;
 
 function flattenMessages(messages: ChatMessage[]): {
@@ -84,14 +110,17 @@ export class CopilotProvider implements AIProvider {
    * `outputSchema` anywhere. Upstream issues #41/#857/#1185 remain open. A
    * schema supplied here is dropped — upgrading the SDK would not change that.
    *
-   * `nativeToolCalls: true` — the SDK emits structured `toolCall` session
-   * events and `stream()` forwards them as `{ type: "tool_call" }` chunks. Note
-   * this describes the CHANNEL: METIS registers no tools of its own on the
-   * session, so today those events come from the SDK's built-in tools.
+   * `nativeToolCalls: false` — this adapter never reads `ChatOptions.tools`:
+   * METIS registers no tools of its own on the SDK session, so tools offered
+   * natively would silently never reach the model. Declaring `false` makes
+   * callers fall back to the text tool protocol (the schema rides in the
+   * prompt), as they did before the native tool runtime (#128). The SDK's own
+   * `toolCall` events are still forwarded as `{ type: "tool_call" }` chunks,
+   * but chat withholds the SDK built-ins that would produce them (#142).
    */
   readonly capabilities: ProviderCapabilities = {
     responseFormat: false,
-    nativeToolCalls: true,
+    nativeToolCalls: false,
   };
   /** Emits a ONE-TIME warning when a caller supplies a schema we must drop. */
   private readonly unsupportedResponseFormat: (responseFormat: unknown) => void;
@@ -155,6 +184,11 @@ export class CopilotProvider implements AIProvider {
     const sessionId = sentinelSessionId(opts);
     const { prompt, systemMessage } = flattenMessages(messages);
 
+    // #142 — the SDK's built-ins are withheld when the caller asks for no tools
+    // at all (`disableTools`) or, as every chat session does, for none of the
+    // SDK's own (`withholdSdkBuiltinTools`: its tools go through METIS's gate).
+    const withholdBuiltins = opts.disableTools === true || opts.withholdSdkBuiltinTools === true;
+
     let session = this.sessions.get(sessionId);
     if (!session) {
       try {
@@ -163,18 +197,22 @@ export class CopilotProvider implements AIProvider {
           streaming: true,
           model: opts.model ?? this.defaultModel,
           ...(systemMessage ? { systemMessage } : {}),
-          // The SDK requires an onPermissionRequest handler for every
-          // session.  Auto-approve because the Bedrock gateway / Copilot
-          // native endpoints are trusted internal backends — real policy
-          // enforcement happens at the HTTP session layer in routes/ai.ts.
-          onPermissionRequest: async () => ({ approved: true }),
+          // The SDK requires an onPermissionRequest handler for every session.
+          // #142 — when the SDK's built-in tools are withheld, any permission
+          // request that still arrives is REFUSED — a shell or write call must
+          // never be approved behind the gate's back. Callers that withhold
+          // nothing (non-chat text synthesis paths) keep the previous
+          // auto-approve until the provider is removed (P4, #130).
+          onPermissionRequest: withholdBuiltins
+            ? rejectSdkPermission
+            : async () => ({ approved: true }),
           ...(opts.skillDirectories && opts.skillDirectories.length > 0
             ? { skillDirectories: opts.skillDirectories }
             : {}),
           ...(opts.disabledSkills && opts.disabledSkills.length > 0
             ? { disabledSkills: opts.disabledSkills }
             : {}),
-          ...(opts.disableTools ? { availableTools: [] } : {}),
+          ...(withholdBuiltins ? { availableTools: [] } : {}),
         });
       } catch (err) {
         throw new AIProviderError(`failed to create session: ${(err as Error).message}`);

@@ -4,9 +4,10 @@
  * Phase 4 chat workspace.
  *
  * Minimal but functional: list/create sessions, send messages, stream the
- * assistant's reply via SSE, and surface tool-call events with a confirm
- * dialog for high-risk calls. The real provider/approval policy work
- * happens server-side; this page is the user-facing seam.
+ * assistant's reply via SSE, and show each tool call as it happens (#143) —
+ * a call the session's policy says needs approval waits for Approve / Deny
+ * here (#142). The approval gate itself is server-side; this page only sends
+ * the owner's answer.
  */
 import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -33,6 +34,8 @@ import { ScopeDegradationNotice } from "@/components/chat/scope-degradation-noti
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
 import { sanitizeAssistantText } from "@/lib/sanitize-assistant-text";
 import { recentTracker } from "@/lib/recent-tracker";
+import { ToolActivityList, TranscriptToolCalls } from "@/components/chat/tool-activity";
+import { useToolApprovals } from "@/hooks/use-tool-approvals";
 
 /**
  * #136 — a transcript row as rendered. Rows that came from the server carry
@@ -90,6 +93,10 @@ export default function ChatPage() {
   // #138 — shown when older turns were summarised to fit the model's context.
   const [compactionNote, setCompactionNote] = useState<string | null>(null);
   const [forking, setForking] = useState(false);
+  // #142/#143 — the tool calls of the turn in flight (cleared when the next
+  // starts) and the owner's Approve / Deny; shared with the Workbench.
+  const toolApprovals = useToolApprovals(session?.id ?? null, setError);
+  const resetToolActivity = toolApprovals.reset;
   // The session on screen now — a transcript read that lands after the user
   // switched sessions must not overwrite the new one.
   const sessionIdRef = useRef<string | null>(null);
@@ -132,6 +139,7 @@ export default function ChatPage() {
     setMessages([]);
     // A compaction note belongs to the session it happened in.
     setCompactionNote(null);
+    resetToolActivity();
     const firstRun = !mountedOnceRef.current;
     mountedOnceRef.current = true;
     void (async () => {
@@ -188,6 +196,7 @@ export default function ChatPage() {
     resumeSessionId,
     agentHydrated,
     scopeHydrated,
+    resetToolActivity,
   ]);
 
   function handleNewChat() {
@@ -242,6 +251,7 @@ export default function ChatPage() {
       content: "",
     };
     setMessages([...messages, userMsg, assistantMsg]);
+    resetToolActivity();
     setInput("");
     setStreaming(true);
     setError(null);
@@ -319,15 +329,13 @@ export default function ChatPage() {
           ),
         );
         break;
-      case "tool_call": {
-        if (ev.risk === "high") {
-          const ok = window.confirm(
-            `Allow ${ev.risk}-risk tool "${ev.name}"?\n\nArgs: ${JSON.stringify(ev.arguments)}`,
-          );
-          if (!ok) abortRef.current?.abort();
-        }
+      case "tool_event":
+        toolApprovals.apply(ev);
         break;
-      }
+      case "tool_call":
+        // #713's summary frame; `tool_event` carries the full lifecycle. The
+        // old confirm() here decided nothing server-side — approval is #142's.
+        break;
       case "error":
         setMessages((prev) => {
           const lastAssistant = [...prev].reverse().find((m) => m.role === "assistant");
@@ -492,6 +500,9 @@ export default function ChatPage() {
                         {m.content || (streaming ? "…" : "")}
                       </span>
                     )}
+                    {m.role === "assistant" && m.toolCalls ? (
+                      <TranscriptToolCalls calls={m.toolCalls} />
+                    ) : null}
                     {m.incomplete ? (
                       <p
                         role="status"
@@ -518,6 +529,11 @@ export default function ChatPage() {
             </ul>
           )}
         </PausableLiveRegion>
+        <ToolActivityList
+          items={toolApprovals.items}
+          deciding={toolApprovals.deciding}
+          onDecide={(item, decision) => void toolApprovals.decide(item, decision)}
+        />
         <form
           className="flex gap-2"
           onSubmit={(e) => {

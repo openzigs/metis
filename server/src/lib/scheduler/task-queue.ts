@@ -23,6 +23,7 @@
  */
 import { createChildLogger } from "../logger.js";
 import { isDurableTask } from "./durable-task-types.js";
+import { TaskAbortError } from "./task-abort.js";
 import {
   type EnqueueTaskInput,
   type SchedulerConfig,
@@ -138,13 +139,15 @@ export class TaskQueue {
       if (entry.timer) clearTimeout(entry.timer);
       const updated = await this.store.markCancelled(taskId, reason, new Date());
       this.emitStatus(updated);
-      return updated.status === "cancelled";
+      if (updated.status !== "cancelled") return false;
+      await this.settleCancelledBeforeRun(entry.task, reason);
+      return true;
     }
     // Running — abort + cleanup happens when the handler returns.
     const running = this.running.get(taskId);
     if (running) {
       running.abortSource = "user";
-      running.controller.abort(new Error(reason));
+      running.controller.abort(new TaskAbortError("user", reason));
       // Persist intent before acknowledging cancellation: a crash must not turn
       // explicitly cancelled durable work into a recoverable running row.
       if (isDurableTask(running.task.type)) {
@@ -199,11 +202,26 @@ export class TaskQueue {
     this.pending = [];
     for (const [, running] of this.running) {
       if (!running.controller.signal.aborted) running.abortSource = "shutdown";
-      running.controller.abort(new Error(reason));
+      running.controller.abort(new TaskAbortError("shutdown", reason));
     }
   }
 
   // ---------- internals ----------
+
+  /** #201 — let the handler settle state it owns for a task that never ran. */
+  private async settleCancelledBeforeRun(task: TaskRecord, reason: string): Promise<void> {
+    const settle = this.registry.get(task.type)?.onCancelledBeforeRun;
+    if (!settle) return;
+    try {
+      await settle(task, reason);
+    } catch (err) {
+      log.warn("Could not settle a task cancelled before it ran", {
+        taskId: task.id,
+        type: task.type,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
 
   private insertPending(entry: PendingEntry): void {
     // Stable insertion-sort by priority then enqueue order.
@@ -285,6 +303,14 @@ export class TaskQueue {
     if (controller.signal.aborted || this.stopped) {
       try {
         await this.persistInterruption(entry, "aborted before dispatch");
+        // A user's cancel that won the claim race: the handler never runs either.
+        if (entry.abortSource === "user") {
+          const reason: unknown = controller.signal.reason;
+          await this.settleCancelledBeforeRun(
+            running,
+            reason instanceof Error ? reason.message : String(reason),
+          );
+        }
       } finally {
         this.running.delete(task.id);
         void this.dispatch();
@@ -320,7 +346,7 @@ export class TaskQueue {
     const timeoutMs = reg.defaultTimeoutMs ?? this.config.defaultTimeoutMs;
     const timeoutHandle = setTimeout(() => {
       if (!controller.signal.aborted) entry.abortSource = "timeout";
-      controller.abort(new Error(`task timeout after ${timeoutMs}ms`));
+      controller.abort(new TaskAbortError("timeout", `task timeout after ${timeoutMs}ms`));
     }, timeoutMs);
     timeoutHandle.unref?.();
 

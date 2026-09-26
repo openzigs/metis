@@ -9,7 +9,8 @@
  */
 import { z } from "zod";
 import { AIToolDeniedError, AIToolInvalidArgsError, AIError } from "./errors.js";
-import type { RiskLevel, ToolContext, ToolDefinition, ToolResult } from "./types.js";
+import type { RiskLevel, ToolContext, ToolDefinition, ToolOrigin, ToolResult } from "./types.js";
+import { toolParametersSchema } from "./tool-runtime/json-schema.js";
 
 /** Public, exec-free view of a registered tool. */
 export interface ToolDescriptor {
@@ -38,11 +39,14 @@ export interface ApprovalGate {
   }): Promise<boolean>;
 }
 
-const allowAll: ApprovalGate = {
-  async decide() {
-    return true;
-  },
-};
+/**
+ * #142 — what the tool runtime needs to OFFER a tool: its metadata and the JSON
+ * Schema of its arguments. Like {@link ToolDescriptor} it never exposes `exec`.
+ */
+export interface ToolRuntimeView extends ToolDescriptor {
+  parameters: Record<string, unknown>;
+  origin?: ToolOrigin;
+}
 
 export class ToolRegistry {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -91,6 +95,34 @@ export class ToolRegistry {
     return { name: t.name, description: t.description, risk: t.risk };
   }
 
+  /** #142 — the runtime view of one tool (no `exec`), or `undefined`. */
+  describe(name: string): ToolRuntimeView | undefined {
+    const t = this.tools.get(name);
+    if (!t) return undefined;
+    return {
+      name: t.name,
+      description: t.description,
+      risk: t.risk,
+      parameters: t.parameters ?? toolParametersSchema(t.schema as z.ZodTypeAny),
+      ...(t.origin ? { origin: t.origin } : {}),
+    };
+  }
+
+  /** #142 — every tool's runtime view, in registration order. */
+  describeAll(): ToolRuntimeView[] {
+    return [...this.tools.keys()].map((n) => this.describe(n)!);
+  }
+
+  /**
+   * #142 — do these raw arguments satisfy the tool's schema? Lets the runtime
+   * reject a malformed call BEFORE a person is asked to approve it.
+   */
+  validate(name: string, rawArgs: unknown): boolean {
+    const tool = this.tools.get(name);
+    if (!tool) return false;
+    return (tool.schema as z.ZodTypeAny).safeParse(rawArgs).success;
+  }
+
   list(): ToolDescriptor[] {
     return [...this.tools.values()].map((t) => ({
       name: t.name,
@@ -104,13 +136,22 @@ export class ToolRegistry {
    *
    * Errors raised by the gate or the handler are wrapped in `AIError`
    * subclasses so route handlers can pattern-match on `code`.
+   *
+   * #142 — the gate is REQUIRED. It used to default to allow-all, so any caller
+   * that forgot it ran a high-risk tool with no approval at all; a missing gate
+   * now fails closed.
    */
   async invoke(
     name: string,
     rawArgs: unknown,
     ctx: ToolContext,
-    gate: ApprovalGate = allowAll,
+    gate: ApprovalGate,
   ): Promise<ToolResult> {
+    if (!gate || typeof gate.decide !== "function") {
+      throw new AIToolDeniedError(`tool ${name} was invoked without an approval gate`, {
+        tool: name,
+      });
+    }
     const tool = this.tools.get(name);
     if (!tool) {
       throw new AIError("AI_TOOL_NOT_FOUND", `tool ${name} is not registered`, 404);

@@ -7,7 +7,7 @@
  *     model reads the story in order.
  *   • Past tool activity is NOT replayed: tool results are untrusted data, and
  *     the chat code-tool loop feeds them to the model only within the turn that
- *     ran them (capped there — see `chat-code-tool-runtime.ts`). Later turns
+ *     ran them (capped there — see `tool-runtime/chat-turn.ts`). Later turns
  *     see the assistant's answer; the full results stay in the transcript.
  *   • A summary is sent in the USER role, never `system`: it is derived from
  *     user-supplied text, and must not gain the authority of the system prompt.

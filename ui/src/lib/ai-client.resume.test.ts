@@ -121,6 +121,10 @@ describe("transcriptToDisplay (#136)", () => {
         ordinal: 2,
         compacted: false,
         tools: ["search"],
+        // #142 — each call with how it was decided (none recorded ⇒ it ran).
+        toolCalls: [
+          { id: "c1", name: "search", isError: false, executed: true, resultPreview: "r" },
+        ],
       },
       {
         role: "summary",

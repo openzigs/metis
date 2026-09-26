@@ -209,11 +209,11 @@ test.describe("Epic #596 — Agent & Skill Token Optimization", () => {
       });
 
       await test.step("Verify chart or empty state is displayed", async () => {
-        // Wait for loading to settle
+        // #234 — the card renders while its query is still loading, with
+        // neither child yet, so a one-shot isVisible() pair raced it. Retry
+        // until one of the two settled states appears.
         await expect(usagePage.agentStepBreakdown).toBeVisible();
-        const chartVisible = await usagePage.agentStepChart.isVisible().catch(() => false);
-        const emptyVisible = await usagePage.agentStepEmpty.isVisible().catch(() => false);
-        expect(chartVisible || emptyVisible).toBe(true);
+        await expect(usagePage.agentStepChart.or(usagePage.agentStepEmpty)).toBeVisible();
       });
     });
 

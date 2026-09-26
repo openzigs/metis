@@ -48,20 +48,35 @@ import {
   GENERATED_DOC_EVIDENCE_CLASS,
   PUBLICATION_EMBED_BATCH_SIZE,
   chunkGeneratedMarkdown,
+  enqueueGeneratedDocPublication,
   publishGeneratedDocRevision,
+  settleCancelledGeneratedDocPublication,
   splitOversized,
 } from "../src/lib/docs-gen/generated-doc-publication.js";
+import { TaskQueue } from "../src/lib/scheduler/task-queue.js";
+import { createPrismaTaskStore } from "../src/lib/scheduler/task-store.js";
+import {
+  InMemoryTaskHandlerRegistry,
+  registerBuiltInHandlers,
+} from "../src/lib/scheduler/task-handlers.js";
+import type { TaskRecord } from "../src/lib/scheduler/types.js";
 import {
   parseSyntheticDocumentId,
   reconcileStrandedGeneratedDocPublications,
 } from "../src/lib/docs-gen/generated-doc-publication-recovery.js";
 import { generatedDocOutboxId } from "../src/lib/docs-gen/generated-doc-outbox.js";
+import { approveDocument, listQuarantine } from "../src/lib/rag/quarantine.js";
 import {
   createEvidencePolicy,
   resolveEvidencePolicy,
 } from "../src/lib/docs-gen/evidence-policy.js";
 import { filterPrimaryEvidence } from "../src/lib/docs-gen/evidence-filter.js";
 import { generatedDocRevisionId } from "../src/lib/docs-gen/generated-doc-provenance.js";
+import { TaskAbortError, type TaskAbortSource } from "../src/lib/scheduler/task-abort.js";
+import {
+  EMBED_INPUT_MAX_BYTES,
+  MAX_EMBED_SEQUENCE_TOKENS,
+} from "../src/lib/rag/embed-input-budget.js";
 
 const FIXTURE_URL = new URL("./fixtures/busy-transformers.mjs", import.meta.url).href;
 
@@ -114,7 +129,7 @@ describe("chunkGeneratedMarkdown (#189)", () => {
       "## Two\n\npara\n\npara\n\npara",
     ]);
     expect(chunkGeneratedMarkdown("   ")).toEqual([]);
-    expect(DOCSGEN_CHUNKER_IDENTITY).toBe("docsgen:v2:1500");
+    expect(DOCSGEN_CHUNKER_IDENTITY).toBe("docsgen:v3:1500");
   });
 
   it("splits a single over-long line without cutting a surrogate pair", () => {
@@ -459,6 +474,195 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         );
       });
 
+      /** An embedder whose first batch triggers `abort(reason)` on `controller`. */
+      function abortingAfterFirstBatch(controller: AbortController, reason: unknown) {
+        const inner = recordingEmbedder();
+        return {
+          calls: inner.calls,
+          embedder: {
+            embed: async (texts: string[]) => {
+              const out = await (inner.embedder as { embed(t: string[]): Promise<unknown> }).embed(
+                texts,
+              );
+              controller.abort(reason);
+              return out;
+            },
+          } as never,
+        };
+      }
+
+      async function publishAborted(
+        source: TaskAbortSource,
+        message: string,
+        finalAttempt: boolean,
+      ) {
+        const controller = new AbortController();
+        const { calls, embedder } = abortingAfterFirstBatch(
+          controller,
+          new TaskAbortError(source, message),
+        );
+        await expect(
+          publishGeneratedDocRevision(payload(), {
+            storage,
+            embedder,
+            signal: controller.signal,
+            finalAttempt,
+          }),
+        ).rejects.toThrow(message);
+        expect(calls).toHaveLength(1);
+        return db.document.findUniqueOrThrow({ where: { id: syntheticId() } });
+      }
+
+      it("#201 — a user's cancellation is terminal and says so, even before the last attempt", async () => {
+        await version(1, largeDocument(60_000));
+        expect(await publishAborted("user", "cancelled by user", false)).toMatchObject({
+          status: "failed",
+          errorMessage: "generated-doc publication cancelled: cancelled by user",
+        });
+      });
+
+      it("#201 — a timeout on the final attempt marks the document failed with the timeout", async () => {
+        await version(1, largeDocument(60_000));
+        const row = await publishAborted("timeout", "task timeout after 600000ms", true);
+        expect(row).toMatchObject({
+          status: "failed",
+          errorMessage: "generated-doc publication failed: task timeout after 600000ms",
+        });
+        expect(row.processedAt).not.toBeNull();
+      });
+
+      it("#201 — a timeout before the final attempt records the reason and stays processing", async () => {
+        await version(1, largeDocument(60_000));
+        expect(await publishAborted("timeout", "task timeout after 600000ms", false)).toMatchObject(
+          {
+            status: "processing",
+            errorMessage: "generated-doc publication failed: task timeout after 600000ms",
+          },
+        );
+      });
+
+      it("#201 — a scheduler shutdown records nothing: the outbox replays it", async () => {
+        await version(1, largeDocument(60_000));
+        expect(await publishAborted("shutdown", "scheduler shutdown", true)).toMatchObject({
+          status: "processing",
+          errorMessage: null,
+        });
+      });
+
+      it("#201 — a cancellation that lands before the first write settles the queued placeholder", async () => {
+        await version(1, largeDocument(5_000));
+        await db.document.create({
+          data: {
+            id: syntheticId(),
+            projectId: "project",
+            filename: "generated-doc-doc.md",
+            mimeType: "text/markdown",
+            sizeBytes: 5,
+            storagePath: "doc.md",
+            checksum: "hash",
+            status: "pending",
+            uploadedById: "initiator",
+          },
+        });
+        const controller = new AbortController();
+        controller.abort(new TaskAbortError("user", "cancelled by user"));
+        const { calls, embedder } = recordingEmbedder();
+        await expect(
+          publishGeneratedDocRevision(payload(), { storage, embedder, signal: controller.signal }),
+        ).rejects.toThrow("cancelled by user");
+        expect(calls).toHaveLength(0);
+        expect(await db.document.findUniqueOrThrow({ where: { id: syntheticId() } })).toMatchObject(
+          {
+            status: "failed",
+            errorMessage: "generated-doc publication cancelled: cancelled by user",
+          },
+        );
+      });
+
+      it("#201 — a failure outside the embed step is recorded too, even when not an Error", async () => {
+        await version(1, largeDocument(5_000));
+        await db.document.create({
+          data: {
+            id: syntheticId(),
+            projectId: "project",
+            filename: "generated-doc-doc.md",
+            mimeType: "text/markdown",
+            sizeBytes: 5,
+            storagePath: "doc.md",
+            checksum: "hash",
+            status: "pending",
+            uploadedById: "initiator",
+          },
+        });
+        const failingStorage = {
+          write: async () => {
+            throw "storage offline";
+          },
+        } as never;
+        const { calls, embedder } = recordingEmbedder();
+        await expect(
+          publishGeneratedDocRevision(payload(), {
+            storage: failingStorage,
+            embedder,
+            finalAttempt: true,
+          }),
+        ).rejects.toBe("storage offline");
+        expect(calls).toHaveLength(0);
+        expect(await db.document.findUniqueOrThrow({ where: { id: syntheticId() } })).toMatchObject(
+          {
+            status: "failed",
+            errorMessage: "generated-doc publication failed: storage offline",
+          },
+        );
+      });
+
+      it("#201 — a row that already has an outcome keeps it when a later step fails", async () => {
+        await version(1, largeDocument(5_000));
+        await db.document.create({
+          data: {
+            id: syntheticId(),
+            projectId: "project",
+            filename: "generated-doc-doc.md",
+            mimeType: "text/markdown",
+            sizeBytes: 5,
+            storagePath: "doc.md",
+            checksum: "hash",
+            status: "ready",
+            indexState: "quarantined",
+            uploadedById: "initiator",
+          },
+        });
+        await expect(
+          publishGeneratedDocRevision(payload(), {
+            storage,
+            finalAttempt: true,
+            ...recordingEmbedder(new Error("model unavailable")),
+          }),
+        ).rejects.toThrow("model unavailable");
+        expect(await db.document.findUniqueOrThrow({ where: { id: syntheticId() } })).toMatchObject(
+          { status: "ready", errorMessage: null },
+        );
+      });
+
+      it("#201 — CJK and emoji sections are embedded whole: every chunk fits the token budget", async () => {
+        const cjk = "検索拡張生成は文書の内容を理解するための仕組みです。".repeat(120);
+        const emoji = "😀🚀🎉🧪".repeat(500);
+        const markdown = `## 日本語\n\n${cjk}\n\n## Emoji\n\n${emoji}\n\n## English\n\nplain text`;
+        await version(1, markdown);
+        await autoApprove(false);
+        const { calls, embedder } = recordingEmbedder();
+        await publishGeneratedDocRevision(payload(), { storage, embedder });
+        const texts = calls.flat();
+        for (const text of texts) {
+          expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(EMBED_INPUT_MAX_BYTES);
+        }
+        expect(EMBED_INPUT_MAX_BYTES).toBeLessThan(MAX_EMBED_SEQUENCE_TOKENS);
+        // Nothing dropped, in order.
+        expect(texts.join("").replace(/\s+/g, "")).toBe(markdown.replace(/\s+/g, ""));
+        // An emoji is never split across two chunks.
+        expect(texts.some((t) => /[\ud800-\udbff]$/.test(t))).toBe(false);
+      });
+
       it("/healthz answers within 1 s while a 600k-character document is published", async () => {
         await version(1, largeDocument(600_000, { longRowMarker: true }));
         await autoApprove(false);
@@ -488,6 +692,133 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         expect(report.failures).toBe(0);
         expect(report.probes).toBeGreaterThan(5);
         expect(report.worst).toBeLessThan(1000);
+      });
+    });
+
+    /**
+     * #201 — the cancellation contract travels on the queue's `signal.reason`, so
+     * a handler test that builds its own abort signal cannot see a queue that
+     * stops providing it. These run the publication through the real TaskQueue,
+     * its Prisma store and the built-in handler registration.
+     */
+    describe("through the real TaskQueue", () => {
+      const queues: TaskQueue[] = [];
+      afterEach(async () => {
+        await Promise.all(queues.splice(0).map((queue) => queue.shutdown()));
+      });
+
+      function realQueue(embedder: unknown) {
+        const runs: Promise<unknown>[] = [];
+        const registry = new InMemoryTaskHandlerRegistry();
+        registerBuiltInHandlers(registry, {
+          httpWebhookHandler: async () => ({}),
+          publishGeneratedDocument: (generatedDocumentId, projectId, v, revisionId, signal, o) => {
+            const run = publishGeneratedDocRevision(
+              { generatedDocumentId, projectId, version: v, revisionId },
+              { signal, storage, embedder: embedder as never, ...o },
+            );
+            runs.push(run.catch(() => undefined));
+            return run;
+          },
+          settleCancelledGeneratedDocPublication,
+        });
+        const noop = () => {};
+        const queue = new TaskQueue(
+          createPrismaTaskStore(),
+          registry,
+          { schedulerStatus: noop, taskStatus: noop, taskProgress: noop },
+          {
+            concurrency: 1,
+            tickMs: 1000,
+            defaultTimeoutMs: 3_600_000,
+            retryBackoffMs: 3_600_000,
+            retryBackoffMaxMs: 3_600_000,
+            minCronIntervalSec: 60,
+            enabled: true,
+          },
+        );
+        queues.push(queue);
+        return { queue, runs };
+      }
+
+      async function enqueueThrough(
+        queue: TaskQueue,
+        extra: { scheduledFor?: Date } = {},
+      ): Promise<TaskRecord> {
+        let task: TaskRecord | undefined;
+        await enqueueGeneratedDocPublication(
+          { ...payload(), markdown: "queued" },
+          {
+            storage,
+            enqueueTask: async (input) => {
+              task = await queue.enqueue({ ...input, ...extra });
+            },
+          },
+        );
+        return task as TaskRecord;
+      }
+
+      it("settles the placeholder of a publication cancelled while still queued", async () => {
+        await version(1, largeDocument(5_000));
+        const { calls, embedder } = recordingEmbedder();
+        const { queue } = realQueue(embedder);
+        // Not due for an hour: it is queued, whatever the machine's load.
+        const task = await enqueueThrough(queue, {
+          scheduledFor: new Date(Date.now() + 3_600_000),
+        });
+        expect(await db.document.findUniqueOrThrow({ where: { id: syntheticId() } })).toMatchObject(
+          { status: "pending", errorMessage: null },
+        );
+
+        expect(await queue.cancel(task.id, "cancelled by initiator")).toBe(true);
+
+        expect(calls).toHaveLength(0);
+        expect(await db.task.findUniqueOrThrow({ where: { id: task.id } })).toMatchObject({
+          status: "cancelled",
+        });
+        const row = await db.document.findUniqueOrThrow({ where: { id: syntheticId() } });
+        expect(row).toMatchObject({
+          status: "failed",
+          errorMessage: "generated-doc publication cancelled: cancelled by initiator",
+        });
+        expect(row.processedAt).not.toBeNull();
+      });
+
+      it("records a user's cancellation of a running publication as cancelled", async () => {
+        await version(1, largeDocument(60_000));
+        let cancelling: Promise<boolean> | undefined;
+        let taskId!: (id: string) => void;
+        const enqueued = new Promise<string>((resolve) => {
+          taskId = resolve;
+        });
+        const inner = recordingEmbedder();
+        const embedder = {
+          embed: async (texts: string[]) => {
+            const out = await (inner.embedder as { embed(t: string[]): Promise<unknown> }).embed(
+              texts,
+            );
+            // `real` is initialised long before the first batch is embedded.
+            cancelling ??= real.queue.cancel(await enqueued, "cancelled by initiator");
+            return out;
+          },
+        };
+        const real = realQueue(embedder);
+        const task = await enqueueThrough(real.queue);
+        taskId(task.id);
+        while (real.runs.length === 0 || !cancelling) await new Promise((r) => setImmediate(r));
+        await Promise.all(real.runs);
+        expect(await cancelling).toBe(true);
+
+        expect(inner.calls).toHaveLength(1);
+        expect(await db.task.findUniqueOrThrow({ where: { id: task.id } })).toMatchObject({
+          status: "cancelled",
+        });
+        expect(await db.document.findUniqueOrThrow({ where: { id: syntheticId() } })).toMatchObject(
+          {
+            status: "failed",
+            errorMessage: "generated-doc publication cancelled: cancelled by initiator",
+          },
+        );
       });
     });
 
@@ -596,6 +927,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         expect(report).toEqual({
           finalized: [syntheticId(parked)],
           failed: [syntheticId(exhausted)],
+          cancelled: [],
           removed: [syntheticId(deleted)],
           rearmed: [syntheticId(orphan)],
           skipped: expect.arrayContaining([syntheticId(live), "gendoc-legacy"]),
@@ -638,19 +970,55 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         const cancelled = payload(1, "project", "doc2");
         await version(1, "cancelled", "doc2");
         await seedSynthetic(cancelled);
-        await seedTask(cancelled, "cancelled");
+        await seedTask(cancelled, "cancelled", "cancelled by user");
 
+        const dispatched: string[] = [];
         const report = await reconcileStrandedGeneratedDocPublications({
-          dispatchTask: async () => {},
+          dispatchTask: async (id) => {
+            dispatched.push(id);
+          },
         });
         expect(report.rearmed).toEqual([syntheticId(completed)]);
-        expect(report.skipped).toEqual([syntheticId(cancelled)]);
+        // #201 — settled as cancelled, never re-run.
+        expect(report.cancelled).toEqual([syntheticId(cancelled)]);
+        expect(report.skipped).toEqual([]);
+        expect(dispatched).toEqual([generatedDocOutboxId(completed)]);
         expect(
           await db.task.findUniqueOrThrow({ where: { id: generatedDocOutboxId(completed) } }),
         ).toMatchObject({ status: "pending", attempts: 0 });
         expect(
           await db.task.findUniqueOrThrow({ where: { id: generatedDocOutboxId(cancelled) } }),
         ).toMatchObject({ status: "cancelled" });
+        const row = await db.document.findUniqueOrThrow({ where: { id: syntheticId(cancelled) } });
+        expect(row).toMatchObject({
+          status: "failed",
+          errorMessage: "generated-doc publication cancelled: cancelled by user",
+        });
+        expect(row.processedAt).not.toBeNull();
+        // Idempotent: the settled row is not picked up again.
+        const again = await reconcileStrandedGeneratedDocPublications({
+          dispatchTask: async () => {},
+        });
+        expect(again.cancelled).toEqual([]);
+      });
+
+      it("#201 — a cancellation outranks parked chunks: the row is never marked ready", async () => {
+        const cancelled = payload(1);
+        await version(1, "cancelled after parking");
+        await seedSynthetic(cancelled, { indexState: "quarantined", chunks: 2 });
+        await seedTask(cancelled, "cancelled", "cancelled by user");
+
+        const report = await reconcileStrandedGeneratedDocPublications({
+          dispatchTask: async () => {},
+        });
+        expect(report.cancelled).toEqual([syntheticId(cancelled)]);
+        expect(report.finalized).toEqual([]);
+        expect(
+          await db.document.findUniqueOrThrow({ where: { id: syntheticId(cancelled) } }),
+        ).toMatchObject({
+          status: "failed",
+          errorMessage: "generated-doc publication cancelled: cancelled by user",
+        });
       });
 
       it("removes a synthetic row whose revision names no version", async () => {
@@ -682,6 +1050,230 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         expect(parseSyntheticDocumentId("gendoc-doc:")).toBeNull();
         expect(parseSyntheticDocumentId("gendoc-:x")).toBeNull();
         expect(parseSyntheticDocumentId("upload-1")).toBeNull();
+      });
+    });
+
+    /**
+     * #230 — a publication whose run ended `failed` (a user cancelled it, or its
+     * last attempt failed) can still hold parked chunks in `quarantine_chunks`
+     * with `indexState: quarantined`. Approval gated on `indexState` alone, so a
+     * reviewer could publish what the user cancelled. Every read below goes
+     * through the same path a consumer uses: `listQuarantine` (the review list),
+     * `approveDocument` (the approve route) and the `documents`/`knowledge_chunks`
+     * rows.
+     */
+    describe("#230 — a cancelled or failed publication is never approvable", () => {
+      const reviewer = { id: "initiator" };
+      const parkedCount = () =>
+        db.quarantineChunk.count({ where: { documentId: syntheticId(), ord: { gte: 0 } } });
+      const liveCount = () => db.knowledgeChunk.count({ where: { documentId: syntheticId() } });
+      const row = () => db.document.findUniqueOrThrow({ where: { id: syntheticId() } });
+      const listed = async () => (await listQuarantine("project")).map((d) => d.documentId);
+
+      /** Run the vector upsert, then do `after` — the step a concurrent actor takes. */
+      function afterNextVectorUpsert(after: () => unknown) {
+        const vector = state.vector as LocalStore;
+        const upsert = vector.upsert.bind(vector);
+        vi.spyOn(vector, "upsert").mockImplementationOnce(async (projectId, rows) => {
+          await upsert(projectId, rows);
+          await after();
+        });
+      }
+
+      /** The issue's shape: cancelled after the chunks were parked, before approval. */
+      async function cancelAfterParking() {
+        await version(1, largeDocument(5_000));
+        const controller = new AbortController();
+        afterNextVectorUpsert(() =>
+          controller.abort(new TaskAbortError("user", "cancelled by user")),
+        );
+        await expect(
+          publishGeneratedDocRevision(payload(), {
+            storage,
+            signal: controller.signal,
+            ...recordingEmbedder(),
+          }),
+        ).rejects.toThrow("cancelled by user");
+      }
+
+      /** An attempt that parked its chunks, then failed. */
+      async function failAfterParking(finalAttempt: boolean) {
+        await version(1, largeDocument(5_000));
+        vi.spyOn(state.vector as LocalStore, "upsert").mockRejectedValueOnce(
+          new Error("vector store offline"),
+        );
+        await expect(
+          publishGeneratedDocRevision(payload(), { storage, finalAttempt, ...recordingEmbedder() }),
+        ).rejects.toThrow("vector store offline");
+      }
+
+      async function expectCancelledAndUnapprovable(message: string) {
+        // The bug's precondition: the chunks are still parked and the row is
+        // still `quarantined` — only the guard stands between them and the index.
+        expect(await parkedCount()).toBeGreaterThan(0);
+        expect(await row()).toMatchObject({
+          status: "failed",
+          indexState: "quarantined",
+          errorMessage: message,
+        });
+        expect(await listed()).not.toContain(syntheticId());
+        await expect(approveDocument(syntheticId(), reviewer)).rejects.toThrow(
+          /not in approvable state/,
+        );
+        expect(await liveCount()).toBe(0);
+        // The #201 outcome is kept: a refused approval writes nothing.
+        expect(await row()).toMatchObject({
+          status: "failed",
+          indexState: "quarantined",
+          errorMessage: message,
+        });
+      }
+
+      it("a cancellation that lands after the chunks were parked is not approvable", async () => {
+        await cancelAfterParking();
+        await expectCancelledAndUnapprovable(
+          "generated-doc publication cancelled: cancelled by user",
+        );
+      });
+
+      it("a queued retry cancelled after an earlier attempt parked chunks is not approvable", async () => {
+        await failAfterParking(false);
+        // The earlier attempt left the row open for its retry, and reviewable.
+        expect(await row()).toMatchObject({ status: "processing", indexState: "quarantined" });
+        expect(await listed()).toContain(syntheticId());
+
+        await settleCancelledGeneratedDocPublication(payload(), "cancelled by initiator");
+
+        await expectCancelledAndUnapprovable(
+          "generated-doc publication cancelled: cancelled by initiator",
+        );
+      });
+
+      it("a publication whose last attempt failed after parking is not approvable", async () => {
+        await failAfterParking(true);
+        await expectCancelledAndUnapprovable(
+          "generated-doc publication failed: vector store offline",
+        );
+      });
+
+      it("a cancellation that lands during a reviewer's approval stops it before it commits", async () => {
+        await failAfterParking(false);
+        // The reviewer passed every up-front check; the user cancels while the
+        // approval is writing to the vector store.
+        afterNextVectorUpsert(() =>
+          settleCancelledGeneratedDocPublication(payload(), "cancelled by initiator"),
+        );
+        await expect(approveDocument(syntheticId(), reviewer)).rejects.toThrow(
+          /no longer approvable/,
+        );
+
+        expect(await liveCount()).toBe(0);
+        expect(await (state.vector as LocalStore).count("project")).toBe(0);
+        expect(await row()).toMatchObject({
+          status: "failed",
+          indexState: "quarantined",
+          errorMessage: "generated-doc publication cancelled: cancelled by initiator",
+        });
+        await expect(approveDocument(syntheticId(), reviewer)).rejects.toThrow(
+          /not in approvable state/,
+        );
+      });
+
+      it("a user's retry of the cancelled task reopens the row and publishes it", async () => {
+        await cancelAfterParking();
+        const result = await publishGeneratedDocRevision(payload(), {
+          storage,
+          ...recordingEmbedder(),
+        });
+        expect(result).toMatchObject({ status: "published" });
+        expect(await row()).toMatchObject({
+          status: "ready",
+          indexState: "indexed",
+          errorMessage: null,
+        });
+        expect(await liveCount()).toBeGreaterThan(0);
+      });
+
+      it("startup repair leaves a cancelled row cancelled and unapprovable", async () => {
+        await cancelAfterParking();
+        await db.task.create({
+          data: {
+            id: generatedDocOutboxId(payload()),
+            type: "publish-generated-document",
+            projectId: "project",
+            payload: JSON.stringify(payload()),
+            status: "cancelled",
+            errorMessage: "cancelled by user",
+          },
+        });
+        const before = await row();
+
+        const report = await reconcileStrandedGeneratedDocPublications({
+          dispatchTask: async () => {},
+        });
+
+        expect(Object.values(report).flat()).toEqual([]);
+        expect(await row()).toEqual(before);
+        await expectCancelledAndUnapprovable(
+          "generated-doc publication cancelled: cancelled by user",
+        );
+      });
+
+      it("startup repair settles an exhausted task with parked chunks as failed, never awaiting review", async () => {
+        // An attempt parked the chunks; the process died before the task's last
+        // attempt could record the outcome on the row.
+        await failAfterParking(false);
+        await db.task.create({
+          data: {
+            id: generatedDocOutboxId(payload()),
+            type: "publish-generated-document",
+            projectId: "project",
+            payload: JSON.stringify(payload()),
+            status: "failed",
+            errorMessage: "vector store offline",
+            attempts: 3,
+          },
+        });
+
+        const report = await reconcileStrandedGeneratedDocPublications({
+          dispatchTask: async () => {},
+        });
+
+        expect(report.failed).toEqual([syntheticId()]);
+        expect(report.finalized).toEqual([]);
+        await expectCancelledAndUnapprovable(
+          "generated-doc publication failed: vector store offline",
+        );
+      });
+
+      it("an uploaded document's approval is unchanged: the guard is generated-doc only", async () => {
+        await db.document.create({
+          data: {
+            id: "upload-1",
+            projectId: "project",
+            filename: "notes.md",
+            mimeType: "text/markdown",
+            sizeBytes: 5,
+            storagePath: "notes.md",
+            checksum: "hash",
+            status: "failed",
+            indexState: "quarantined",
+            uploadedById: "initiator",
+          },
+        });
+        await db.quarantineChunk.create({
+          data: {
+            id: "upload-1#0",
+            documentId: "upload-1",
+            projectId: "project",
+            ord: 0,
+            text: "uploaded text",
+            embedding: "[1,0]",
+            metadata: JSON.stringify({ md5: "hash", embeddingModel: "test" }),
+          },
+        });
+        expect(await listed()).toContain("upload-1");
+        await expect(approveDocument("upload-1", reviewer)).resolves.toEqual({ chunkCount: 1 });
       });
     });
   },

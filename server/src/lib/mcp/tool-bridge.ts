@@ -97,6 +97,7 @@ export class MCPToolBridge {
         tool.name,
         fqName,
         risk,
+        { description: tool.description, inputSchema: tool.inputSchema },
       );
       try {
         reg.register(def);
@@ -140,14 +141,20 @@ export class MCPToolBridge {
     toolName: string,
     fqName: string,
     risk: MCPToolRisk,
+    advertised: { description?: string; inputSchema?: unknown } = {},
   ): ToolDefinition<z.ZodRecord<z.ZodString, z.ZodUnknown>> {
     const lifecycle = this.lifecycle;
     const registry = this.registry;
     const coldStartWakeup = this.opts.coldStartWakeup;
     return {
       name: fqName,
-      description: `MCP tool ${toolName} from server ${label}`,
+      description: mcpToolDescription(toolName, label, advertised.description),
       risk,
+      // #140 — the server's own argument schema is what a model needs to call
+      // the tool natively; `z.record` below still validates the call's shape.
+      ...(isObjectSchema(advertised.inputSchema) ? { parameters: advertised.inputSchema } : {}),
+      // #140 — lets the tool runtime offer only servers the project may use.
+      origin: { kind: "mcp", serverId, serverLabel: label },
       schema: z.record(z.unknown()),
       async exec(args, ctx): Promise<ToolResult> {
         const snapshot = lifecycle.get(serverId);
@@ -249,7 +256,11 @@ export class MCPToolBridge {
               );
             }
           }
-          if (governance?.requireApproval) {
+          // #142 — the tool runtime reads `requireApproval` too and forces a
+          // person to approve every call through the session's gate, whose
+          // prompt reaches the chat UI. A call it already decided is not asked
+          // about a second time here (this prompt has no UI consumer).
+          if (governance?.requireApproval && !ctx.gateDecided) {
             await requestApproval({
               sessionId: ctx.sessionId,
               serverId,
@@ -324,6 +335,29 @@ export class MCPToolBridge {
       },
     };
   }
+}
+
+/** Bound on an MCP server's tool description, which is server-authored text. */
+const MCP_DESCRIPTION_MAX = 1024;
+
+/**
+ * #140 — what a model is told about an MCP tool: which server it comes from,
+ * and the server's own (bounded) description.
+ */
+export function mcpToolDescription(tool: string, label: string, described?: string): string {
+  const base = `MCP tool ${tool} from server ${label}`;
+  const text = (described ?? "").trim();
+  if (!text) return base;
+  return `${base}: ${text.length > MCP_DESCRIPTION_MAX ? `${text.slice(0, MCP_DESCRIPTION_MAX)}…` : text}`;
+}
+
+function isObjectSchema(value: unknown): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as { type?: unknown }).type === "object"
+  );
 }
 
 /**
