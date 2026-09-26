@@ -26,6 +26,9 @@ const sessions: Row[] = [];
 const agents = new Map<string, { tools: string }>();
 const approvalRows = vi.hoisted(() => [] as Row[]);
 const aiMessageRows = vi.hoisted(() => [] as FakeAiMessageRow[]);
+// The project's workspace. `null` = a legacy open project every signed-in user
+// reaches; a workspace id the caller's token does not carry = access LOST.
+const projectState = vi.hoisted(() => ({ workspaceId: null as string | null }));
 
 vi.mock("../src/lib/prisma.js", async () => {
   const { createFakeAiMessageDelegate } = await import("./helpers/fake-ai-message.js");
@@ -70,7 +73,10 @@ vi.mock("../src/lib/prisma.js", async () => {
     }),
   };
   const project = {
-    findUnique: vi.fn(async () => ({ workspaceId: null, contextCompactionThreshold: null })),
+    findUnique: vi.fn(async () => ({
+      workspaceId: projectState.workspaceId,
+      contextCompactionThreshold: null,
+    })),
     findFirst: vi.fn(async () => ({ aiProviderId: null, aiModel: null })),
   };
   const aIToolApproval = {
@@ -238,6 +244,7 @@ beforeEach(async () => {
   approvalRows.length = 0;
   mcpCalls.length = 0;
   agents.clear();
+  projectState.workspaceId = null;
   dangerExec.mockClear();
   boomExec.mockClear();
   __resetAIRateLimiter();
@@ -735,6 +742,78 @@ describe("#142 the approval gate through the routes", () => {
     expect(res.status).toBeGreaterThanOrEqual(500);
     expect(dangerExec).toHaveBeenCalledTimes(1);
     expect(recordedToolParts()[1]).toMatchObject({ text: "rows in t: 7" });
+  });
+
+  it("an owner who has LOST project access cannot answer; a non-owner cannot either", async () => {
+    stubModel([highCall, { content: "Not run." }]);
+    const app = makeApp();
+    const sid = await newSession(app);
+    const pending = stream(app, sid).then((r) => r);
+    const approvalId = await waitForPending(sid);
+
+    // Alice is removed from the project's workspace while the prompt is open.
+    projectState.workspaceId = "ws-private";
+    expect((await decide(app, alice, sid, approvalId)).status).toBe(404);
+    expect((await decide(app, alice, sid, approvalId, "deny")).status).toBe(404);
+    expect(
+      (await as(alice, request(app).get(`/api/ai/sessions/${sid}/approvals/pending`))).status,
+    ).toBe(404);
+    expect((await decide(app, mallory, sid, approvalId)).status).toBe(404);
+    expect(dangerExec).not.toHaveBeenCalled();
+    // Nothing was applied: the approval is still pending, untouched.
+    expect(getToolApprovalBroker().listPending(sid, "alice")).toHaveLength(1);
+
+    // Access restored: the same owner can answer it (so the 404 above was the
+    // project check, not a stale id). Deny, so the tool still never runs.
+    projectState.workspaceId = null;
+    expect((await decide(app, alice, sid, approvalId, "deny")).status).toBe(200);
+    await pending;
+    expect(dangerExec).not.toHaveBeenCalled();
+  });
+
+  it("a client that disconnects while a prompt is open: the approval is withdrawn, nothing runs", async () => {
+    stubModel([highCall, { content: "never reached" }]);
+    const app = makeApp();
+    const sid = await newSession(app);
+    const req = stream(app, sid);
+    const settled = req.then(
+      () => "completed",
+      () => "aborted",
+    );
+    const approvalId = await waitForPending(sid);
+    req.abort();
+    await settled;
+    // The turn's abort denies the pending approval at once — not at its timeout.
+    for (let i = 0; i < 100 && getToolApprovalBroker().size > 0; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(getToolApprovalBroker().size).toBe(0);
+    // A late "approve" finds nothing, and the tool never runs.
+    expect((await decide(app, alice, sid, approvalId)).status).toBe(404);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(dangerExec).not.toHaveBeenCalled();
+  });
+
+  it("every chat turn — scoped, both routes, each model call — withholds the SDK's built-in tools", async () => {
+    // #142 — on the Copilot provider those would run under its own permission
+    // handler, never this gate; every chat call must ask for them withheld.
+    const model = stubModel([highCall, { content: "done" }, { content: "plain" }]);
+    const app = makeApp();
+    const sid = await newSession(app, { policy: { high: "auto" } });
+    await stream(app, sid);
+    await as(alice, request(app).post("/api/ai/chat").send({ sessionId: sid, message: "again" }));
+    expect(model.requests.length).toBeGreaterThanOrEqual(3);
+    for (const r of model.requests) expect(r.opts.disableTools).toBe(true);
+  });
+
+  it("an agent whose tool list is corrupt gets no tools at all (fails closed)", async () => {
+    agents.set("agent-corrupt", { tools: "{not json" });
+    const model = stubModel([highCall, { content: "done" }]);
+    const app = makeApp();
+    const sid = await newSession(app, { policy: { high: "auto" }, agentId: "agent-corrupt" });
+    await stream(app, sid);
+    expect(model.requests[0]!.opts.tools).toBeUndefined();
+    expect(dangerExec).not.toHaveBeenCalled();
   });
 
   it("rejects a malformed decision body", async () => {
