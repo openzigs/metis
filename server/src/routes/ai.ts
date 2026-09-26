@@ -639,7 +639,14 @@ export async function buildSdkSkillRuntime(session: {
   // METIS's own — which is exactly the observed failure, where a user asking
   // about their codebase got an answer grepped out of `server/src`. Skills still
   // load; only the tools are withheld.
-  const unscoped = !session.projectId;
+  //
+  // Epic #128 (#142) — and a SCOPED session must not get them either. Every
+  // tool a chat runs now passes the session's ApprovalGateService (policy,
+  // agent allowlist, the owner's own click); the SDK's built-ins would run
+  // under the provider's own permission handler instead, with no gate, no
+  // prompt and no audit row. A project-scoped chat is offered METIS's gated
+  // tools through the tool runtime; the SDK's shell/write tools are withheld
+  // from every chat session. (The Copilot provider goes in P4, #130.)
   try {
     const copilotHome = resolveCopilotHomeForSession(session.id);
     const result = await getSessionRuntime().materializeSkillsForSession({
@@ -652,7 +659,7 @@ export async function buildSdkSkillRuntime(session: {
       {};
     if (result.written.length > 0) out.skillDirectories = [result.skillsDir];
     if (result.disabledSkills.length > 0) out.disabledSkills = result.disabledSkills;
-    if (unscoped) out.disableTools = true;
+    out.disableTools = true;
     return out;
   } catch (err) {
     log.warn("Failed to materialise SDK skills, falling back to system-message only", {

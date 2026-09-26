@@ -47,13 +47,16 @@ describe("buildSdkSkillRuntime tool gating (#1368)", () => {
     expect(runtime.skillDirectories).toEqual(["/tmp/skills"]);
   });
 
-  it("leaves the tools available for a project-scoped session", async () => {
+  it("withholds them from a project-scoped session too — its tools go through the gate (#142)", async () => {
+    // Epic #128: every chat tool call passes ApprovalGateService. The SDK's
+    // built-ins would run under the provider's own permission handler with no
+    // gate, so no chat session gets them — scoped or not.
     const runtime = await buildSdkSkillRuntime({
       id: "sess_2",
       loadedSkillIds: JSON.stringify(["skill-a"]),
       projectId: "proj_1",
     });
-    expect(runtime.disableTools).toBeUndefined();
+    expect(runtime.disableTools).toBe(true);
     expect(runtime.skillDirectories).toEqual(["/tmp/skills"]);
   });
 

@@ -2254,8 +2254,8 @@ can use tools to look things up or act for you:
 A chat that is not scoped to a project is offered no tools. Administrators can
 turn the METIS and MCP tools off with `CHAT_TOOLS=false`.
 
-**Tool activity.** Each tool call appears under the conversation as it
-happens: running, waiting for your approval, done, or an error. Open a call to
+**Tool activity.** In Chat and in the Workbench, each tool call appears under
+the conversation as it happens: running, waiting for your approval, done, or an error. Open a call to
 see the arguments the AI sent and a preview of the result. After the answer
 arrives, **Tools used** under it lists every call and how each was decided —
 approved by you, allowed by policy, denied, or not answered in time.
@@ -2271,13 +2271,17 @@ approval policy decides what happens for each level:
 | `deny` | The tool never runs in this chat. |
 
 The defaults are `auto` for low risk, `prompt-once` for medium and
-`always-prompt` for high. When a call needs your approval, the chat shows the
-tool, its risk and its arguments with **Approve** and **Deny**. Check the
+`always-prompt` for high. When a call needs your approval, the chat (or the
+Workbench chat panel) shows the tool, its risk and its arguments with
+**Approve** and **Deny**. Check the
 arguments before approving; if they contain invisible characters the chat warns
 you. A request nobody answers is denied after two minutes (administrators can
 change this with `AI_TOOL_APPROVAL_TIMEOUT_MS`). Nothing the AI writes, and
 nothing a tool returns, can approve a call — only your click can, and only in
-your own chat.
+your own chat. On the GitHub Copilot provider, the Copilot SDK's own built-in
+tools (shell commands, file writes and the like) are switched off in every
+chat, so the only tools a chat can run are the ones above, through this
+approval step.
 
 If the chat uses an agent, the agent's tool list also applies: a tool the agent
 does not list is refused, even when the policy would allow it. An MCP server

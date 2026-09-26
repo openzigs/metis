@@ -39,6 +39,24 @@ interface UsageEvent {
   cacheWriteTokens?: number;
 }
 
+/**
+ * #142 — the SDK permission handler for a session whose built-in tools were
+ * withheld: refuse whatever it asks (`shell`, `write`, `url`, …). The only tools
+ * a chat may run are METIS's own, through the session's approval gate.
+ */
+export async function rejectSdkPermission(request: {
+  kind?: string;
+  toolCallId?: string;
+}): Promise<{ kind: "reject"; feedback: string }> {
+  log.warn("Refused a Copilot SDK built-in tool permission request", {
+    kind: request?.kind ?? "unknown",
+  });
+  return {
+    kind: "reject",
+    feedback: "Built-in tools are disabled here; tools run only through METIS's approval gate.",
+  };
+}
+
 const sentinelSessionId = (opts?: ChatOptions): string => opts?.sessionId ?? `chat-${Date.now()}`;
 
 function flattenMessages(messages: ChatMessage[]): {
@@ -163,11 +181,16 @@ export class CopilotProvider implements AIProvider {
           streaming: true,
           model: opts.model ?? this.defaultModel,
           ...(systemMessage ? { systemMessage } : {}),
-          // The SDK requires an onPermissionRequest handler for every
-          // session.  Auto-approve because the Bedrock gateway / Copilot
-          // native endpoints are trusted internal backends — real policy
-          // enforcement happens at the HTTP session layer in routes/ai.ts.
-          onPermissionRequest: async () => ({ approved: true }),
+          // The SDK requires an onPermissionRequest handler for every session.
+          // #142 — when the caller withholds the SDK's built-in tools (every
+          // chat session does: its tools go through METIS's ApprovalGateService),
+          // any permission request that still arrives is REFUSED — a shell or
+          // write call must never be approved behind the gate's back. Callers
+          // that do not withhold them (non-chat, pure text synthesis paths)
+          // keep the previous auto-approve.
+          onPermissionRequest: opts.disableTools
+            ? rejectSdkPermission
+            : async () => ({ approved: true }),
           ...(opts.skillDirectories && opts.skillDirectories.length > 0
             ? { skillDirectories: opts.skillDirectories }
             : {}),

@@ -109,6 +109,41 @@ describe("CopilotProvider.stream — onPermissionRequest (#235)", () => {
   });
 });
 
+// ── #142 — the SDK's built-in tools never run behind the approval gate ─────
+
+describe("CopilotProvider.stream — SDK built-ins withheld under the gate (#142)", () => {
+  async function capture(opts: Record<string, unknown>): Promise<Record<string, unknown>> {
+    let capturedConfig: Record<string, unknown> | undefined;
+    const client = makeClientStub(async (cfg) => {
+      capturedConfig = cfg;
+      return makeSessionStub();
+    });
+    const provider = new CopilotProvider({
+      wrapper: new CopilotWrapper({ model: "test-model", client }),
+      key: "copilot-native",
+    });
+    for await (const c of provider.stream([{ role: "user", content: "hi" }], opts)) {
+      if (c.type === "done") break;
+    }
+    return capturedConfig!;
+  }
+
+  it("a chat session (disableTools) offers no built-ins and REFUSES every SDK permission request", async () => {
+    const cfg = await capture({ sessionId: "chat-1", disableTools: true });
+    expect(cfg.availableTools).toEqual([]);
+    const ask = cfg.onPermissionRequest as (
+      req: { kind: string; toolCallId?: string },
+      inv: { sessionId: string },
+    ) => Promise<{ kind: string }>;
+    // A mocked SDK permission request of each kind that could act on the host.
+    for (const kind of ["shell", "write", "url", "mcp", "read", "custom-tool", "memory"]) {
+      const result = await ask({ kind, toolCallId: "t1" }, { sessionId: "chat-1" });
+      expect(result.kind).toBe("reject");
+      expect(result).not.toHaveProperty("approved");
+    }
+  });
+});
+
 // ── session.error propagation (#234 Fix 1) ────────────────────────────────
 
 describe("CopilotProvider.stream — session.error surfaces as AIProviderError", () => {
