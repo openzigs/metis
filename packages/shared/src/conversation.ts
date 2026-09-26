@@ -26,6 +26,8 @@ export type TranscriptPart =
       errorCode?: string;
       /** #142 — `false` when the call never ran; absent means it ran. */
       executed?: boolean;
+      /** #147 — the sub-agent run this call started (its stored transcript). */
+      subAgentRunId?: string;
     };
 
 export type TranscriptRole = "user" | "assistant" | "system";
@@ -153,7 +155,7 @@ export interface AiToolEvent {
   callId: string;
   name: string;
   risk: "low" | "medium" | "high" | null;
-  source: "metis" | "mcp" | "code" | null;
+  source: "metis" | "mcp" | "code" | "agent" | null;
   argsPreview?: string;
   argsHiddenChars?: boolean;
   approvalId?: string;
@@ -169,6 +171,13 @@ export interface AiToolEvent {
     | "TOOL_FAILED"
     | "TOOL_CALL_LIMIT";
   message?: string;
+  /** #147 — set on `result` when the call ran a sub-agent: its stored run. */
+  subAgentRunId?: string;
+  /**
+   * #147 — set when a SUB-AGENT made this call: the sub-agent's name and the
+   * caller's tool-call id it is answering, so a client can nest the activity.
+   */
+  viaAgent?: { name: string; parentCallId: string; depth: number };
   ts: number;
 }
 

@@ -36,6 +36,8 @@ export interface ChatToolRecord {
   /** Fixed-vocabulary code for a refused or failed call. */
   errorCode?: ExecutedToolCall["errorCode"];
   executed: boolean;
+  /** #147 — the sub-agent run this call started (its stored transcript). */
+  subAgentRunId?: string;
 }
 
 export interface ChatToolTurnResult {
@@ -168,6 +170,7 @@ export async function runChatToolTurn(
             ...(executed.isError ? { isError: true } : {}),
             ...(executed.decision ? { decision: executed.decision } : {}),
             ...(executed.errorCode ? { errorCode: executed.errorCode } : {}),
+            ...(executed.subAgentRunId ? { subAgentRunId: executed.subAgentRunId } : {}),
           };
           const modelCopy = capForModel(executed.text, options.toolResultMaxChars);
           if (modelCopy !== executed.text) record.truncated = true;

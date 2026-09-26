@@ -432,6 +432,7 @@ export default function WorkbenchPage() {
           {toolApprovals.items.length > 0 ? (
             <div className="mt-2 max-h-48 overflow-y-auto">
               <ToolActivityList
+                sessionId={session?.id ?? null}
                 items={toolApprovals.items}
                 deciding={toolApprovals.deciding}
                 onDecide={(item, decision) => void toolApprovals.decide(item, decision)}

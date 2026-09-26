@@ -17,6 +17,7 @@ import type { ChatToolSpec } from "../types.js";
 import type { ToolRegistry, ToolRuntimeView } from "../tool-registry.js";
 import type { AgentTool } from "../../analysis/tools/types.js";
 import { matchesToolRef } from "../approval-policy.js";
+import type { RiskLevel } from "../types.js";
 import type { RuntimeTool, RuntimeToolContext } from "./types.js";
 
 /**
@@ -60,19 +61,46 @@ export interface BuildToolsetInput {
   exclude?: ReadonlySet<string>;
 }
 
+/** #147 — a tool the session has but the agent's allowlist withheld. */
+export interface WithheldTool {
+  name: string;
+  risk: RiskLevel;
+}
+
 export interface RuntimeToolset {
   tools: RuntimeTool[];
   /** Resolve the name a model used — its wire name, or the canonical name. */
   resolve(name: string): RuntimeTool | undefined;
   /** Native tool definitions, ordered by wire name (byte-stable for a tool set). */
   specs(): ChatToolSpec[];
+  /**
+   * #147 — a tool the agent's allowlist WITHHELD from this toolset (by wire or
+   * canonical name). The executor refuses a call to one as `TOOL_NOT_ALLOWED`
+   * through the gate — recorded as an agent-allowlist denial, never mistaken
+   * for a tool that does not exist.
+   */
+  withheld(name: string): WithheldTool | undefined;
+  /** #147 — every withheld tool (a sub-agent's toolset inherits the list). */
+  withheldTools: readonly WithheldTool[];
 }
 
-export function makeToolset(tools: RuntimeTool[]): RuntimeToolset {
+export function makeToolset(
+  tools: RuntimeTool[],
+  withheld: readonly WithheldTool[] = [],
+): RuntimeToolset {
   const byWire = new Map(tools.map((t) => [t.wireName, t]));
   const byName = new Map(tools.map((t) => [t.name, t]));
+  const withheldByName = new Map<string, WithheldTool>();
+  for (const w of withheld) {
+    if (byName.has(w.name)) continue;
+    withheldByName.set(w.name, w);
+    withheldByName.set(toWireName(w.name, new Set()), w);
+  }
   return {
     tools,
+    withheldTools: withheld,
+    withheld: (name) =>
+      byWire.has(name) || byName.has(name) ? undefined : withheldByName.get(name),
     resolve: (name) => byWire.get(name) ?? byName.get(name),
     specs: () =>
       [...tools]
@@ -172,6 +200,7 @@ export async function buildSessionToolset(input: BuildToolsetInput): Promise<Run
   const exclude = input.exclude ?? CHAT_EXCLUDED_TOOLS;
   const taken = new Set<string>();
   const tools: RuntimeTool[] = [];
+  const withheld: WithheldTool[] = [];
   const add = (make: (wire: string) => RuntimeTool, canonical: string): void => {
     const wire = toWireName(canonical, taken);
     taken.add(wire);
@@ -179,7 +208,10 @@ export async function buildSessionToolset(input: BuildToolsetInput): Promise<Run
   };
 
   for (const tool of input.codeTools ?? []) {
-    if (!allowedByAgent(tool.name, input.agentAllowlist)) continue;
+    if (!allowedByAgent(tool.name, input.agentAllowlist)) {
+      withheld.push({ name: tool.name, risk: "low" });
+      continue;
+    }
     add((wire) => codeRuntimeTool(tool, wire), tool.name);
   }
 
@@ -200,7 +232,12 @@ export async function buildSessionToolset(input: BuildToolsetInput): Promise<Run
   for (const view of input.registry.describeAll()) {
     if (exclude.has(view.name)) continue;
     if (tools.some((t) => t.name === view.name)) continue;
-    if (!allowedByAgent(view.name, input.agentAllowlist)) continue;
+    if (!allowedByAgent(view.name, input.agentAllowlist)) {
+      // An MCP tool is reported only as unknown: whether its server is even
+      // allowed for this project is not the agent allowlist's to reveal.
+      if (view.origin?.kind !== "mcp") withheld.push({ name: view.name, risk: view.risk });
+      continue;
+    }
     let forcePrompt = false;
     let forcePromptNow: (() => Promise<boolean>) | undefined;
     if (view.origin?.kind === "mcp") {
@@ -230,5 +267,5 @@ export async function buildSessionToolset(input: BuildToolsetInput): Promise<Run
       view.name,
     );
   }
-  return makeToolset(tools);
+  return makeToolset(tools, withheld);
 }

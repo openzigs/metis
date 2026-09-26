@@ -38,6 +38,11 @@ import {
   type SkillService,
   SkillServiceError,
 } from "./skill-service.js";
+import {
+  groupSkillImport,
+  MAX_SKILL_FILE_BYTES,
+  OVERSIZE_FILE_SENTINEL,
+} from "../agent-runtime/skill-bundle.js";
 
 export class LibraryImportError extends Error {
   constructor(
@@ -92,6 +97,12 @@ export class FilesystemLoader implements ImportSourceLoader {
     private readonly root: string,
     private readonly kind: "skills" | "agents",
     private readonly fsImpl: typeof fs = fs,
+    /**
+     * Epic #129 (#146) — also read the supporting files of every Agent Skills
+     * directory (a directory holding a `SKILL.md`): text files only, each at
+     * most `MAX_SKILL_FILE_BYTES`, never through a symlink, never outside root.
+     */
+    private readonly opts: { supportingFiles?: boolean } = {},
   ) {
     if (!path.isAbsolute(root)) {
       throw new LibraryImportError(
@@ -109,6 +120,9 @@ export class FilesystemLoader implements ImportSourceLoader {
   async load(): Promise<ImportFile[]> {
     const root = path.resolve(this.root);
     const out: ImportFile[] = [];
+    // #146 — candidate supporting files, read only if a SKILL.md claims them.
+    const others: string[] = [];
+    const skillDirs = new Set<string>();
     const stack: string[] = [root];
     const maxDepth = 4;
     const seen = new Set<string>();
@@ -135,10 +149,28 @@ export class FilesystemLoader implements ImportSourceLoader {
           continue;
         }
         if (!entry.isFile()) continue;
-        if (!this.matches(entry.name)) continue;
+        if (!this.matches(entry.name)) {
+          if (this.opts.supportingFiles && this.kind === "skills") others.push(candidate);
+          continue;
+        }
+        if (entry.name.toLowerCase() === "skill.md") skillDirs.add(dir);
         const contents = await this.fsImpl.readFile(candidate, "utf8");
         out.push({ path: path.relative(root, candidate), contents });
       }
+    }
+    for (const candidate of others) {
+      const claimed = [...skillDirs].some((d) => candidate.startsWith(`${d}${path.sep}`));
+      if (!claimed) continue;
+      const stat = await this.fsImpl.stat(candidate).catch(() => null);
+      if (!stat) continue;
+      // An oversize file is passed on as a sentinel so the import REPORTS it
+      // (the skill fails with a clear reason) instead of silently dropping it.
+      if (stat.size > MAX_SKILL_FILE_BYTES) {
+        out.push({ path: path.relative(root, candidate), contents: OVERSIZE_FILE_SENTINEL });
+        continue;
+      }
+      const contents = await this.fsImpl.readFile(candidate, "utf8");
+      out.push({ path: path.relative(root, candidate), contents });
     }
     return out;
   }
@@ -222,16 +254,25 @@ export class LibraryImporter {
     const imported: SkillDetail[] = [];
     const skipped: ImportResult<SkillDetail>["skipped"] = [];
     const failed: ImportResult<SkillDetail>["failed"] = [];
-    for (const file of files) {
+    // #146 — an Agent Skills directory (SKILL.md + supporting files) is ONE
+    // skill; any other file is a single-file skill, as before.
+    for (const entry of groupSkillImport(files)) {
       try {
-        const created = await this.skills.create({ source: file.contents, origin }, actor);
+        const created = await this.skills.create(
+          {
+            source: entry.source,
+            origin,
+            ...(entry.files.length > 0 ? { files: entry.files } : {}),
+          },
+          actor,
+        );
         imported.push(created);
       } catch (err) {
         if (err instanceof SkillServiceError && err.code === "SKILL_KEY_EXISTS") {
-          skipped.push({ path: file.path, reason: err.message });
+          skipped.push({ path: entry.path, reason: err.message });
           continue;
         }
-        failed.push({ path: file.path, error: (err as Error).message });
+        failed.push({ path: entry.path, error: (err as Error).message });
       }
     }
     audit({
@@ -303,7 +344,7 @@ export async function autoDiscoverFromWorkspace(
   let agents: ImportResult<AgentDetail> = empty;
   try {
     const skillsRoot = path.join(workspaceRoot, ".github", "skills");
-    const skillsLoader = new FilesystemLoader(skillsRoot, "skills");
+    const skillsLoader = new FilesystemLoader(skillsRoot, "skills", fs, { supportingFiles: true });
     skills = await importer.importSkills(skillsLoader, actor);
   } catch (err) {
     audit({

@@ -28,6 +28,7 @@ import { audit } from "../audit/audit-service.js";
 import { AgentService, getAgentService, type AgentActorRef as ActorRef } from "./agent-service.js";
 import { SkillService, getSkillService } from "./skill-service.js";
 import { ProjectLibraryAllowlistService, getProjectLibraryAllowlist } from "./project-allowlist.js";
+import { normalizeSkillFilePath } from "../agent-runtime/skills.js";
 
 export class SessionRuntimeError extends Error {
   constructor(
@@ -306,6 +307,21 @@ export class SessionRuntime {
       const file = path.join(dir, "SKILL.md");
       const content = synthesizeSkillFile(row);
       await fs.writeFile(file, content, "utf-8");
+      // Epic #129 (#146) — an Agent Skills directory keeps its supporting files
+      // (`references/…`). Each path was validated on import and is re-checked
+      // here, so nothing can be written outside the skill's own directory.
+      const files =
+        (await this.db.skillFile?.findMany({
+          where: { skillId: row.id },
+          select: { path: true, content: true },
+        })) ?? [];
+      for (const f of files) {
+        const rel = normalizeSkillFilePath(f.path);
+        if (!rel) continue;
+        const target = path.join(dir, ...rel.split("/"));
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.writeFile(target, f.content, "utf-8");
+      }
       written.push(row.key);
     }
     return { skillsDir, written, disabledSkills: [...disabled, ...skipped] };

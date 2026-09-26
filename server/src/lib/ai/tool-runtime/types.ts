@@ -11,7 +11,8 @@
 import type { AiToolEvent, AiToolEventPhase } from "@metis/shared";
 import type { RiskLevel } from "../types.js";
 
-export type ToolSource = "metis" | "mcp" | "code";
+/** #147 — `agent`: a sub-agent call (the tool runs another agent). */
+export type ToolSource = "metis" | "mcp" | "code" | "agent";
 
 /** What one execution produced. `text` is the FULL result (the transcript keeps it). */
 export interface RuntimeToolResult {
@@ -20,6 +21,8 @@ export interface RuntimeToolResult {
   /** Code tools: how many results came back (`0` = a well-formed empty result). */
   resultCount?: number;
   truncated?: boolean;
+  /** #147 — the sub-agent run this call started, when the tool ran an agent. */
+  subAgentRunId?: string;
 }
 
 /** The identity a tool executes under — always server-derived, never model-supplied. */
@@ -27,6 +30,11 @@ export interface RuntimeToolContext {
   sessionId: string;
   userId: string;
   projectId: string | null;
+  /**
+   * #147 — the model's id for THIS call, set by the executor when it runs the
+   * tool, so a sub-agent run can be linked to the call that started it.
+   */
+  callId?: string;
 }
 
 export interface RuntimeTool {

@@ -143,6 +143,24 @@ test.describe("Epic #260 — Custom Analyst Agents", () => {
         }),
       );
 
+      // #129 — the tool step lists the server's REAL tool registry (it used to
+      // offer hard-coded names no tool carried). Serve a deterministic one.
+      await page.route("**/api/ai/tools", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            success: true,
+            data: {
+              tools: [
+                { name: "search-knowledge", description: "Search", risk: "low" },
+                { name: "inspect_schema", description: "Inspect", risk: "medium" },
+              ],
+            },
+          }),
+        }),
+      );
+
       // #135 — the model step renders from the server's model catalog. Serve a
       // deterministic one (the e2e server runs the offline stub, whose catalog
       // lists only `offline-stub`).
@@ -204,8 +222,8 @@ test.describe("Epic #260 — Custom Analyst Agents", () => {
 
       await test.step("Step 3 — tool picker", async () => {
         await expect(wizard.stepPanel("tools")).toBeVisible();
-        const knowledge = wizard.toolCheckbox("knowledge_search");
-        const readDoc = wizard.toolCheckbox("read_document");
+        const knowledge = wizard.toolCheckbox("search-knowledge");
+        const readDoc = wizard.toolCheckbox("inspect_schema");
         await knowledge.check();
         await readDoc.check();
         await expect(knowledge).toBeChecked();

@@ -57,3 +57,21 @@ describe("fixed text", () => {
     expect(decisionLabel(undefined, true)).toBe("ran");
   });
 });
+
+describe("applyToolEvent — sub-agents (#147)", () => {
+  it("keeps the sub-agent run link and who made the call", () => {
+    let list = applyToolEvent(
+      [],
+      ev({ callId: "c9", viaAgent: { name: "Helper", parentCallId: "c1", depth: 1 } }),
+    );
+    list = applyToolEvent(
+      list,
+      ev({ callId: "c9", phase: "result", resultPreview: "ok", subAgentRunId: "run-1" }),
+    );
+    expect(list[0]).toMatchObject({
+      phase: "result",
+      subAgentRunId: "run-1",
+      viaAgent: { name: "Helper", parentCallId: "c1", depth: 1 },
+    });
+  });
+});

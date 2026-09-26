@@ -2519,6 +2519,8 @@ model Skill {
   agents     AgentSkill[]
   versions   SkillVersion[]
   allowlists ProjectSkillAllowlist[]
+  /// Epic #129 (#146) — Agent Skills supporting files (references/, assets/, …).
+  files      SkillFile[]
 
   @@index([enabled, deletedAt])
   @@map("skills")
@@ -2540,6 +2542,26 @@ model SkillVersion {
   @@unique([skillId, version])
   @@index([skillId, createdAt])
   @@map("skill_versions")
+}
+
+/// Epic #129 (#146) — a supporting file of an Agent Skills `SKILL.md`
+/// directory (`references/REFERENCE.md`, `assets/template.md`, …). Stored as
+/// TEXT and served only by exact path through the `load_skill` tool — nothing
+/// is ever read from, or executed on, the server's filesystem at chat time.
+model SkillFile {
+  id        String   @id @default(cuid())
+  skillId   String
+  /// Relative POSIX path inside the skill directory; validated, never absolute.
+  path      String
+  content   String
+  sizeBytes Int
+  sha256    String
+  createdAt DateTime @default(now())
+
+  skill Skill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([skillId, path])
+  @@map("skill_files")
 }
 
 model Agent {
@@ -2564,6 +2586,11 @@ model Agent {
   source        String    @default("inline")
   enabled       Boolean   @default(true)
   version       String    @default("0.1.0")
+  /// Epic #129 (#145) — reasoning-effort hint (low|medium|high), from frontmatter.
+  reasoningEffort String?
+  /// Epic #129 (#145) — JSON approval-policy override { low?, medium?, high? };
+  /// it can only TIGHTEN the session's policy. NULL = none.
+  approvalPolicy  String?
   createdById   String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -2763,6 +2790,8 @@ model AISession {
   messages           AIMessage[]
   tokenUsages        AITokenUsage[]
   toolApprovals      AIToolApproval[]
+  /// Epic #129 (#147) — sub-agent runs started from this session's turns.
+  subAgentRuns       AISubAgentRun[]
   plans              SessionPlan[]
   /// Epic #475 — AI discussion replies backed by this session (for token accounting).
   discussionMessages DiscussionMessage[]
@@ -2954,6 +2983,45 @@ model DiscussionMessage {
   @@map("discussion_messages")
 }
 
+/// Epic #129 (#147) — one sub-agent run: the main agent (or another sub-agent)
+/// called an agent as a tool. The run gets a FRESH context and its own persona,
+/// skills and tool allowlist; its whole transcript is stored here and linked
+/// from the caller's tool call (`parentCallId`, and `subAgentRunId` on the
+/// caller's transcript tool_result part).
+model AISubAgentRun {
+  id           String    @id @default(cuid())
+  sessionId    String
+  /// The run that called this one; NULL when the session's main agent did.
+  parentRunId  String?
+  /// The caller's tool-call id this run answers.
+  parentCallId String
+  /// `library:<id>` | `custom:<id>`.
+  agentRef     String
+  agentName    String
+  agentVersion String    @default("")
+  depth        Int       @default(1)
+  task         String
+  /// running | completed | failed | budget_exhausted | aborted
+  status       String    @default("running")
+  result       String    @default("")
+  model        String?
+  /// JSON array of every model turn's text, in order.
+  turns        String    @default("[]")
+  /// JSON array of the tool calls the run made (full results).
+  toolCalls    String    @default("[]")
+  inputTokens  Int       @default(0)
+  outputTokens Int       @default(0)
+  totalTokens  Int       @default(0)
+  createdAt    DateTime  @default(now())
+  completedAt  DateTime?
+
+  session AISession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([parentRunId])
+  @@map("ai_subagent_runs")
+}
+
 model AIToolApproval {
   id        String   @id @default(cuid())
   sessionId String
@@ -3057,6 +3125,13 @@ model CustomAgent {
   model           String?
   /// Reasoning-effort hint for extended-thinking models (low|medium|high).
   reasoningEffort String?
+  /// Epic #129 (#145) — JSON array of library skill keys the agent carries.
+  skillKeys       String   @default("[]")
+  /// Epic #129 (#145) — JSON approval-policy override { low?, medium?, high? };
+  /// it can only TIGHTEN the session's policy. NULL = none.
+  approvalPolicy  String?
+  /// Epic #129 (#145) — bumped on every change (library agents already version).
+  version         String   @default("1.0.0")
   isBuiltIn       Boolean  @default(false)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt

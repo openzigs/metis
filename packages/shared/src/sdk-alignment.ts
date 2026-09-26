@@ -35,12 +35,25 @@ export interface CustomAgentDefinition {
   tools: string[];
   model?: string | null;
   reasoningEffort?: SdkReasoningEffort | null;
+  /** Epic #129 (#145) — library skill keys the agent carries (loaded on demand). */
+  skillKeys?: string[];
+  /** Epic #129 (#145) — approval-policy override; can only tighten the session's. */
+  approvalPolicy?: CustomAgentApprovalPolicy | null;
+}
+
+/** Per-risk approval override (`auto` < `prompt-once` < `always-prompt` < `deny`). */
+export interface CustomAgentApprovalPolicy {
+  low?: "auto" | "prompt-once" | "always-prompt" | "deny";
+  medium?: "auto" | "prompt-once" | "always-prompt" | "deny";
+  high?: "auto" | "prompt-once" | "always-prompt" | "deny";
 }
 
 export interface CustomAgentDto extends CustomAgentDefinition {
   id: string;
   projectId: string | null;
   isBuiltIn: boolean;
+  /** Epic #129 (#145) — bumped on every change (always sent by the server). */
+  version?: string;
   createdAt: string;
   updatedAt: string;
 }

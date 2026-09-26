@@ -21,6 +21,10 @@ export interface ToolActivity {
   resultPreview?: string;
   isError?: boolean;
   code?: AiToolEvent["code"];
+  /** #147 — the sub-agent run this call started. */
+  subAgentRunId?: string;
+  /** #147 — set when a sub-agent made this call. */
+  viaAgent?: AiToolEvent["viaAgent"];
 }
 
 const RANK: Record<AiToolEvent["phase"], number> = {
@@ -48,6 +52,8 @@ export function applyToolEvent(list: readonly ToolActivity[], ev: AiToolEvent): 
     ...(ev.resultPreview !== undefined ? { resultPreview: ev.resultPreview } : {}),
     ...(ev.isError !== undefined ? { isError: ev.isError } : {}),
     ...(ev.code ? { code: ev.code } : {}),
+    ...(ev.subAgentRunId ? { subAgentRunId: ev.subAgentRunId } : {}),
+    ...(ev.viaAgent ? { viaAgent: ev.viaAgent } : {}),
   };
   if (i < 0) return [...list, next];
   const out = [...list];

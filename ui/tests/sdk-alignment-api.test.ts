@@ -33,6 +33,7 @@ const invocations: Record<keyof typeof sdkApi, () => unknown> = {
   // Agents
   listAgents: () => sdkApi.listAgents("p1", true),
   getAgent: () => sdkApi.getAgent("a1"),
+  listTools: () => sdkApi.listTools(),
   createAgent: () => sdkApi.createAgent({ projectId: "p1", name: "n", systemPrompt: "s" }),
   updateAgent: () => sdkApi.updateAgent("a1", { name: "n2" }),
   deleteAgent: () => sdkApi.deleteAgent("a1"),

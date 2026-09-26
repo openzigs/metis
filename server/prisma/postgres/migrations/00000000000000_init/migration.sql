@@ -934,6 +934,8 @@ CREATE TABLE "agents" (
     "source" TEXT NOT NULL DEFAULT 'inline',
     "enabled" BOOLEAN NOT NULL DEFAULT true,
     "version" TEXT NOT NULL DEFAULT '0.1.0',
+    "reasoningEffort" TEXT,
+    "approvalPolicy" TEXT,
     "createdById" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -941,6 +943,18 @@ CREATE TABLE "agents" (
     "deletedAt" TIMESTAMP(3),
 
     CONSTRAINT "agents_pkey" PRIMARY KEY ("id")
+);
+
+CREATE TABLE "skill_files" (
+    "id" TEXT NOT NULL,
+    "skillId" TEXT NOT NULL,
+    "path" TEXT NOT NULL,
+    "content" TEXT NOT NULL,
+    "sizeBytes" INTEGER NOT NULL,
+    "sha256" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "skill_files_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -1128,6 +1142,30 @@ CREATE TABLE "ai_tool_approvals" (
     CONSTRAINT "ai_tool_approvals_pkey" PRIMARY KEY ("id")
 );
 
+CREATE TABLE "ai_subagent_runs" (
+    "id" TEXT NOT NULL,
+    "sessionId" TEXT NOT NULL,
+    "parentRunId" TEXT,
+    "parentCallId" TEXT NOT NULL,
+    "agentRef" TEXT NOT NULL,
+    "agentName" TEXT NOT NULL,
+    "agentVersion" TEXT NOT NULL DEFAULT '',
+    "depth" INTEGER NOT NULL DEFAULT 1,
+    "task" TEXT NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'running',
+    "result" TEXT NOT NULL DEFAULT '',
+    "model" TEXT,
+    "turns" TEXT NOT NULL DEFAULT '[]',
+    "toolCalls" TEXT NOT NULL DEFAULT '[]',
+    "inputTokens" INTEGER NOT NULL DEFAULT 0,
+    "outputTokens" INTEGER NOT NULL DEFAULT 0,
+    "totalTokens" INTEGER NOT NULL DEFAULT 0,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "completedAt" TIMESTAMP(3),
+
+    CONSTRAINT "ai_subagent_runs_pkey" PRIMARY KEY ("id")
+);
+
 -- CreateTable
 CREATE TABLE "agent_runs" (
     "id" TEXT NOT NULL,
@@ -1185,6 +1223,9 @@ CREATE TABLE "custom_agents" (
     "tools" TEXT NOT NULL DEFAULT '[]',
     "model" TEXT,
     "reasoningEffort" TEXT,
+    "skillKeys" TEXT NOT NULL DEFAULT '[]',
+    "approvalPolicy" TEXT,
+    "version" TEXT NOT NULL DEFAULT '1.0.0',
     "isBuiltIn" BOOLEAN NOT NULL DEFAULT false,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -2268,6 +2309,8 @@ CREATE INDEX "agent_versions_agentId_createdAt_idx" ON "agent_versions"("agentId
 -- CreateIndex
 CREATE UNIQUE INDEX "agent_versions_agentId_version_key" ON "agent_versions"("agentId", "version");
 
+CREATE UNIQUE INDEX "skill_files_skillId_path_key" ON "skill_files"("skillId", "path");
+
 -- CreateIndex
 CREATE INDEX "agent_skills_skillId_idx" ON "agent_skills"("skillId");
 
@@ -2315,6 +2358,10 @@ CREATE INDEX "ai_messages_sessionId_compactedAt_idx" ON "ai_messages"("sessionId
 
 -- CreateIndex
 CREATE UNIQUE INDEX "ai_messages_sessionId_ordinal_key" ON "ai_messages"("sessionId", "ordinal");
+
+CREATE INDEX "ai_subagent_runs_sessionId_createdAt_idx" ON "ai_subagent_runs"("sessionId", "createdAt");
+
+CREATE INDEX "ai_subagent_runs_parentRunId_idx" ON "ai_subagent_runs"("parentRunId");
 
 -- CreateIndex
 CREATE INDEX "ai_token_usages_sessionId_ts_idx" ON "ai_token_usages"("sessionId", "ts");
@@ -2930,6 +2977,10 @@ ALTER TABLE "ai_sessions" ADD CONSTRAINT "ai_sessions_agentId_fkey" FOREIGN KEY 
 
 -- AddForeignKey
 ALTER TABLE "ai_messages" ADD CONSTRAINT "ai_messages_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ai_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+ALTER TABLE "skill_files" ADD CONSTRAINT "skill_files_skillId_fkey" FOREIGN KEY ("skillId") REFERENCES "skills"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+ALTER TABLE "ai_subagent_runs" ADD CONSTRAINT "ai_subagent_runs_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ai_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "ai_token_usages" ADD CONSTRAINT "ai_token_usages_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ai_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;

@@ -53,6 +53,8 @@ export interface ExecutedToolCall {
   executed: boolean;
   decision?: ApprovalDecision;
   errorCode?: ToolErrorCode;
+  /** #147 — the sub-agent run the call started, when the tool ran an agent. */
+  subAgentRunId?: string;
 }
 
 export interface ExecutorDeps {
@@ -133,6 +135,25 @@ export async function executeToolCall(
   });
 
   if (!tool) {
+    // #147 — a tool the session has but this agent's allowlist withheld: it is
+    // refused as an allowlist denial and the refusal is RECORDED (never
+    // prompted for — nobody may approve a tool the agent may not use), rather
+    // than reporting a real tool as non-existent.
+    const withheld = deps.toolset.withheld(call.name);
+    if (withheld) {
+      const decision = await deps.gate.recordRefusal(
+        {
+          sessionId: deps.ctx.sessionId,
+          userId: deps.ctx.userId,
+          toolName: withheld.name,
+          risk: withheld.risk,
+          args: call.args,
+          callId: call.id,
+        },
+        "not_in_agent_allowlist",
+      );
+      return refuse("TOOL_NOT_ALLOWED", { decision: decision.decision, reason: decision.reason });
+    }
     const available = deps.toolset.tools.map((t) => t.wireName).join(", ");
     return refuse("TOOL_UNKNOWN", {
       modelText: `Error: Unknown tool "${call.name}". Available tools: ${available}`,
@@ -178,7 +199,7 @@ export async function executeToolCall(
       span.setAttribute("gen_ai.tool.call.id", call.id);
       span.setAttribute("metis.tool.risk", tool.risk);
       span.setAttribute("metis.tool.decision", decision.decision);
-      const r = await tool.execute(valid.args, deps.ctx);
+      const r = await tool.execute(valid.args, { ...deps.ctx, callId: call.id });
       span.setAttribute("metis.tool.is_error", r.isError === true);
       return r;
     });
@@ -186,6 +207,7 @@ export async function executeToolCall(
       phase: "result",
       resultPreview: preview(result.text),
       isError: result.isError === true,
+      ...(result.subAgentRunId ? { subAgentRunId: result.subAgentRunId } : {}),
     });
     recordAudit(deps, call, tool.name, result.isError ? "error" : "ok", decision.decision, true);
     return {
@@ -198,6 +220,7 @@ export async function executeToolCall(
       decision: decision.decision,
       ...(typeof result.resultCount === "number" ? { resultCount: result.resultCount } : {}),
       ...(result.truncated ? { truncated: true } : {}),
+      ...(result.subAgentRunId ? { subAgentRunId: result.subAgentRunId } : {}),
     };
   } catch (err) {
     log.warn("Tool execution failed", {

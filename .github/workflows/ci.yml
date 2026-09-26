@@ -1092,6 +1092,20 @@ jobs:
           echo "generative-e2e stack: API=${E2E_API_PORT} UI=${E2E_UI_PORT}"
           pnpm --filter @metis/e2e exec playwright test clarify-loop.spec.ts --project=chromium --reporter=list
 
+      # Epic #129 (#148) — agents and skills end to end: an agent with a skill
+      # and a tool allowlist, driven by the offline stub's committed SCRIPT BOOK
+      # (real native tool calls, no LLM): the skill loads on demand, an allowed
+      # tool runs after approval, a disallowed one is refused. A second
+      # Playwright run so the stack boots with the script book and WITHOUT
+      # replay (the clarify loop above needs replay on).
+      - name: Run agents & skills e2e (scripted offline stub, no live keys)
+        env:
+          AI_REPLAY: "0"
+          AI_OFFLINE_SCRIPT_FILE: e2e/fixtures/agents/script-book.json
+        run: |
+          echo "agents-e2e stack: API=${E2E_API_PORT} UI=${E2E_UI_PORT}"
+          pnpm --filter @metis/e2e exec playwright test agents-skills.spec.ts --project=chromium --reporter=list
+
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

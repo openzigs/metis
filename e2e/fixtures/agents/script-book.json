@@ -1,0 +1,47 @@
+{
+  "scenarios": [
+    {
+      "match": "E2E-AGENTS-SKILLS-148",
+      "turns": [
+        {
+          "content": "Let me read the release-notes skill first.",
+          "toolCalls": [
+            {
+              "id": "call_skill",
+              "name": "load_skill",
+              "args": {
+                "name": "e2e-release-notes"
+              }
+            }
+          ],
+          "expectInSystem": ["- e2e-release-notes: e2e-release-notes \u2014 Draft release notes"],
+          "expectNotInSystem": ["SKILL-BODY-7f3a"]
+        },
+        {
+          "toolCalls": [
+            {
+              "id": "call_allowed",
+              "name": "score_grounding",
+              "args": {
+                "output": "Release 2.0 ships today.",
+                "sources": ["Release 2.0 ships today with the new importer."]
+              }
+            }
+          ]
+        },
+        {
+          "toolCalls": [
+            {
+              "id": "call_disallowed",
+              "name": "inspect_schema",
+              "args": {}
+            }
+          ]
+        },
+        {
+          "content": "E2E-DONE: release notes drafted from the skill."
+        }
+      ]
+    }
+  ]
+}

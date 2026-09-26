@@ -78,6 +78,29 @@ describe("invokeCustomAgent (#80)", () => {
   });
 
   it("forwards the agent model override when set", async () => {
+    // #129 / #135 — an override is sent only when the model catalog knows it
+    // for the provider; register it the way an operator would.
+    process.env.AI_MODEL_CATALOG_OVERRIDES = JSON.stringify({
+      "offline-stub:claude-x": { displayName: "Claude X" },
+    });
+    try {
+      let opts: any = null;
+      const provider = makeProvider((_m, o) => {
+        opts = o;
+        return stub("x");
+      });
+      await invokeCustomAgent({
+        provider,
+        agent: { ...agent, model: "claude-x" },
+        input: "hi",
+      });
+      expect(opts.model).toBe("claude-x");
+    } finally {
+      delete process.env.AI_MODEL_CATALOG_OVERRIDES;
+    }
+  });
+
+  it("#129 — does NOT send a model override the catalog does not know (provider default instead)", async () => {
     let opts: any = null;
     const provider = makeProvider((_m, o) => {
       opts = o;
@@ -85,10 +108,10 @@ describe("invokeCustomAgent (#80)", () => {
     });
     await invokeCustomAgent({
       provider,
-      agent: { ...agent, model: "claude-x" },
+      agent: { ...agent, model: "not-a-real-model" },
       input: "hi",
     });
-    expect(opts.model).toBe("claude-x");
+    expect(opts.model).toBeUndefined();
   });
 
   it("rejects an oversized payload before calling the provider", async () => {

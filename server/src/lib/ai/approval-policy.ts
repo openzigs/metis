@@ -243,6 +243,17 @@ export class ApprovalGateService implements ApprovalGate {
     return result;
   }
 
+  /**
+   * #147 — record a refusal the caller has ALREADY decided (a tool the agent's
+   * allowlist withheld from its toolset). Never prompts, never allows: it only
+   * writes the `deny` row so the refusal is on record like every decision.
+   */
+  async recordRefusal(input: GateInput, reason: string): Promise<GateResult> {
+    const bound = { ...input, sessionId: this.opts.sessionId, userId: this.opts.userId };
+    await this.audit(bound, hashArgs(input.args), "deny", reason);
+    return { allowed: false, decision: "deny", reason };
+  }
+
   private async isRemembered(toolName: string, risk: RiskLevel): Promise<boolean> {
     if (this.remembered.has(`${risk}:${toolName}`)) return true;
     if (!this.opts.rememberedApproval) return false;
