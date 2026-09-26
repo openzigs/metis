@@ -3549,7 +3549,8 @@ Recovery is at-least-once.
 | `GET` | `/` | List generated documents for a project, including separate indexing state from the synthetic `Document` row | — |
 | `GET` | `/:docId` | Get a single document: its content once, plus summary metadata, the five latest version summaries (`id`, `version`, `revisionId`, `diffSummary`, `createdAt`) and separate indexing state | — |
 | `GET` | `/:docId/versions/:versionId` | One version's markdown body (#190) | — |
-| `GET` | `/:docId/versions/:versionId/provenance` | One version's provenance manifest (#190) | — |
+| `GET` | `/:docId/versions/:versionId/provenance` | One version's full provenance manifest (#190); the UI fetches it only for **Download full manifest** (#196) | — |
+| `GET` | `/:docId/versions/:versionId/provenance/summary` | The Provenance panel's summary of it: `revisionId`, `version`, `generatedAt`, `pipeline`, `models`, `sectionCount`, `selectedEvidenceCount`, `sourceCount`, `historicalCitations`, `legacy` (#196) | — |
 | `GET` | `/:docId/versions/:versionId/changed-symbols?offset=&limit=` | A page (default 500, max 5,000) of one version's changed symbols, with `total` (#190) | — |
 | `GET` | `/:docId/export?format=pdf\|docx` | Download in specified format | — |
 | `PATCH` | `/:docId` | Update document metadata (title, autoUpdate flag) | — |
@@ -3564,11 +3565,23 @@ per-version endpoints sit behind the same `requireProjectAccess` gate and
 `project.read` permission as the detail route, and look a version up through its
 document's project, so a foreign version id is a 404.
 
+#196 — a version row is written once and never updated, so its heavy columns are
+parsed at most once per server process: `server/src/lib/docs-gen/generated-doc-version-reads.ts`
+keeps each version's provenance **summary** (≈400 bytes, from a 17 MB manifest) and its
+parsed changed-symbol array in bounded LRUs keyed by project, document, version id and
+`createdAt`. The list and detail routes' legacy-index check reads the summary lazily (only
+when no publication outbox exists and the revision-owned index row is missing), instead of
+selecting every latest version's manifest. Responses are compressed by `compression`
+1.8, which already negotiates Brotli (quality 4) for clients that send `br` and gzip
+otherwise; on the 611,592-character document the detail body is 151 KB gzip and 144 KB
+Brotli, so no stronger Brotli setting is used (quality 11 saves another 29 KB for ~0.5 s
+of CPU per response).
+
 ### UI Components
 
 | Component | Path | Purpose |
 |-----------|------|---------|
-| `MarkdownPreviewer` | `ui/src/components/markdown-previewer.tsx` | Rich renderer: Mermaid diagrams (rendered as SVG via `mermaid.render()`), KaTeX math formulas, syntax-highlighted code blocks, GFM tables. Includes URL sanitization to block `javascript:`/`data:` protocols. #190 — renders progressively: `ui/src/lib/markdown-sections.ts` splits the content at H2/H3 (fence-aware) and each section gets its own react-markdown pass when it nears the viewport, is picked from the TOC, or is the URL-hash target; until then it shows as plain text (find-in-page still works). Heading ids continue one document-wide slug counter across sections, so repeated headings keep distinct ids |
+| `MarkdownPreviewer` | `ui/src/components/markdown-previewer.tsx` | Rich renderer: Mermaid diagrams (rendered as SVG via `mermaid.render()`), KaTeX math formulas, syntax-highlighted code blocks, GFM tables. Includes URL sanitization to block `javascript:`/`data:` protocols. #190 — renders progressively: `ui/src/lib/markdown-sections.ts` splits the content at H2/H3 (fence-aware) and each section gets its own react-markdown pass when it nears the viewport, is picked from the TOC, or is the URL-hash target; until then it shows as plain text (find-in-page still works). Heading ids continue one document-wide slug counter across sections, so repeated headings keep distinct ids. #196 — the splitter (TOC links, pending anchors, deep-link lookup) and the renderer (`remarkSectionSlugs`) derive every id from one function, `headingSlugText`, over the same parsed heading, so `_emphasis_`, entities and inline HTML cannot make them drift. `ui/tests/markdown-previewer.bench.test.tsx` (skipped unless `VIEWER_BENCH=1`) reproduces the viewer benchmark |
 | Documentation Page | `ui/src/app/(authed)/projects/[id]/documentation/page.tsx` | Generation controls with scope selector, document card grid, detail view with TOC sidebar, export buttons, version history, and separate generation-vs-indexing status badges/summaries |
 
 ### Key Libraries

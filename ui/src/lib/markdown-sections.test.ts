@@ -7,7 +7,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
 import rehypeSlug from "rehype-slug";
-import { headingText, rehypeSectionSlugs, splitMarkdownSections } from "@/lib/markdown-sections";
+import remarkGfm from "remark-gfm";
+import { remarkSectionSlugs, splitMarkdownSections } from "@/lib/markdown-sections";
 
 function headingIds(html: string): string[] {
   return [...html.matchAll(/<h[1-6] id="([^"]*)"/g)].map((m) => m[1]);
@@ -16,18 +17,29 @@ function headingIds(html: string): string[] {
 /** Heading ids from ONE whole-document rehype-slug pass — the reference. */
 function wholeDocumentIds(markdown: string): string[] {
   return headingIds(
-    renderToStaticMarkup(createElement(ReactMarkdown, { rehypePlugins: [rehypeSlug] }, markdown)),
+    renderToStaticMarkup(
+      createElement(
+        ReactMarkdown,
+        { remarkPlugins: [remarkGfm], rehypePlugins: [rehypeSlug] },
+        markdown,
+      ),
+    ),
   );
 }
 
-/** Heading ids when each section is rendered on its own with rehypeSectionSlugs. */
+/** Heading ids when each section is rendered on its own with remarkSectionSlugs. */
 function sectionedIds(markdown: string): string[] {
   return splitMarkdownSections(markdown).sections.flatMap((section) =>
     headingIds(
       renderToStaticMarkup(
         createElement(
           ReactMarkdown,
-          { rehypePlugins: [[rehypeSectionSlugs, { occurrences: section.slugOccurrences }]] },
+          {
+            remarkPlugins: [
+              remarkGfm,
+              [remarkSectionSlugs, { occurrences: section.slugOccurrences }],
+            ],
+          },
           section.markdown,
         ),
       ),
@@ -116,10 +128,54 @@ describe("splitMarkdownSections", () => {
   });
 });
 
-describe("headingText", () => {
-  it("reduces inline markdown to the text rehype-slug sees", () => {
-    expect(headingText("**Bold** `code` ![img](x.png) [link](http://x)")).toBe(
-      "Bold code img link",
+/** #196 — headings whose inline markup or entities used to drift. */
+const TRICKY = [
+  "# Doc",
+  "## _Emphasis_ heading",
+  "## __Strong__ and *em* and ~~gone~~",
+  "## Fish &amp; Chips",
+  "## Caf&eacute; menu &copy; &#36;5",
+  "### Escaped \\_underscore\\_ and \\*star\\*",
+  "## `code_with_underscores` and <kbd>",
+  "## ![logo](x.png) Brand [site](https://example.com)",
+  "## _Emphasis_ heading",
+  "Setext heading",
+  "--------------",
+].join("\n");
+
+describe("heading ids with inline markup and entities (#196)", () => {
+  it("the table of contents names the ids a whole-document rehype-slug render gives", () => {
+    const { toc } = splitMarkdownSections(TRICKY);
+    // The setext heading is not a split point; every ATX heading is listed.
+    expect(toc.map((e) => e.id)).toEqual(wholeDocumentIds(TRICKY).slice(0, toc.length));
+    expect(toc.map((e) => e.id)).toEqual([
+      "doc",
+      "emphasis-heading",
+      "strong-and-em-and-gone",
+      "fish--chips",
+      "café-menu--5",
+      "escaped-_underscore_-and-star",
+      "code_with_underscores-and-",
+      "-brand-site",
+      "emphasis-heading-1",
+    ]);
+  });
+
+  it("sectioned rendering gives the same ids as the whole-document render", () => {
+    expect(sectionedIds(TRICKY)).toEqual(wholeDocumentIds(TRICKY));
+  });
+
+  it("the TOC shows the text a reader sees, not its markup", () => {
+    expect(splitMarkdownSections(TRICKY).toc.map((e) => e.text)).toContain("Fish & Chips");
+    expect(splitMarkdownSections(TRICKY).toc.map((e) => e.text)).toContain("Emphasis heading");
+  });
+});
+
+describe("heading text", () => {
+  it("is the text rehype-slug sees: no markers, no image alt, entities decoded", () => {
+    const { toc } = splitMarkdownSections(
+      "## **Bold** `code` ![img](x.png) [link](http://x)\n## _a_ &amp; b",
     );
+    expect(toc.map((e) => e.text)).toEqual(["Bold code  link", "a & b"]);
   });
 });
