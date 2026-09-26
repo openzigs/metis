@@ -48,6 +48,7 @@ import {
 } from "./holistic-synthesizer.js";
 import type { PersistedMinedRule } from "./fact-slices.js";
 import { MAX_PHASE1_SPLIT_DEPTH } from "./phase1-chunking.js";
+import { RunUsage, withRunUsage } from "./run-cost.js";
 
 const DOC_TYPES: DocType[] = ["business-requirements", "architecture", "user-guide"];
 
@@ -262,7 +263,12 @@ function scriptedProvider(
       yield { type: "delta", content: reply.text };
       yield {
         type: "usage",
-        usage: { promptTokens: 100, completionTokens: 8192, cacheReadTokens: 0 },
+        usage: {
+          promptTokens: 100,
+          completionTokens: 8192,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 40,
+        },
       };
       yield { type: "done", ...(reply.finishReason ? { finishReason: reply.finishReason } : {}) };
     },
@@ -887,5 +893,34 @@ describe("#156 extractModuleFacts on a truncated reply", () => {
     expect(provider.calls).toHaveLength(1);
     expect(f!.factsTruncated).toBeUndefined();
     expect(upsertMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("#178 a Phase-1 call's recorded usage counts toward the run's cost", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    findUniqueMock.mockResolvedValue(null);
+    upsertMock.mockResolvedValue({});
+    readFileMock.mockResolvedValue(TS_SOURCE);
+  });
+
+  it("adds the call's token counts to the run it ran in", async () => {
+    const provider = scriptedProvider([{ text: "PURPOSE\nCharges a card.", finishReason: "stop" }]);
+    const usage = new RunUsage();
+    await withRunUsage(usage, () =>
+      extractModuleFacts(tsModule(), provider, false, "p1", "/clone"),
+    );
+    expect(provider.calls).toHaveLength(1);
+    expect(usage.lines()).toEqual([
+      {
+        provider: "scripted",
+        model: "mock-local-model",
+        calls: 1,
+        inputTokens: 100,
+        outputTokens: 8192,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 40,
+      },
+    ]);
   });
 });

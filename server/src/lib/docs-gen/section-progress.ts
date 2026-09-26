@@ -77,3 +77,18 @@ export function documentProgressPercent(u: SectionProgressLike): number {
     Math.round((sectionProgressPercent(u) * (100 - PHASE1_PROGRESS_SHARE)) / 100)
   );
 }
+
+/**
+ * #178 — a document's progress, held monotonic. A batched section's planned
+ * total grows by one each time a cut-off batch is split, so `done / total` can
+ * dip (3/4 done, then two splits: 4/6); with batches running concurrently
+ * several splits can land between two finished batches. The returned function
+ * reports the highest percentage seen so far, so the bar never moves back.
+ */
+export function monotonicPercent(): (percent: number) => number {
+  let high = 0;
+  return (percent) => {
+    high = Math.max(high, percent);
+    return high;
+  };
+}

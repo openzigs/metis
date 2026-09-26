@@ -1,0 +1,67 @@
+/**
+ * #178 — Phase-2 batch concurrency: a registry tunable whose default depends on
+ * the provider kind, clamped like the Phase-1 setting.
+ */
+import { describe, expect, it } from "vitest";
+import type { ConfigService } from "../config/config-service.js";
+import { ConfigService as RealConfigService } from "../config/config-service.js";
+import {
+  DEFAULT_PHASE2_CONCURRENCY_CLOUD,
+  DEFAULT_PHASE2_CONCURRENCY_LOCAL,
+  MAX_PHASE2_CONCURRENCY,
+  PHASE2_CONCURRENCY_KEY,
+  defaultPhase2Concurrency,
+  resolvePhase2Concurrency,
+} from "./phase2-concurrency.js";
+
+function stubConfig(values: Record<string, number> = {}): ConfigService {
+  return {
+    getNumber: (key: string, d?: number) => values[key] ?? d,
+  } as unknown as ConfigService;
+}
+
+describe("resolvePhase2Concurrency (#178)", () => {
+  it("defaults to 1 for local-gemma and to a higher value for every cloud provider", () => {
+    expect(DEFAULT_PHASE2_CONCURRENCY_LOCAL).toBe(1);
+    expect(DEFAULT_PHASE2_CONCURRENCY_CLOUD).toBe(4);
+    expect(resolvePhase2Concurrency("local-gemma", stubConfig())).toBe(1);
+    for (const key of ["bedrock-gateway", "anthropic", "openai", "azure"]) {
+      expect(resolvePhase2Concurrency(key, stubConfig()), key).toBe(4);
+      expect(defaultPhase2Concurrency(key), key).toBe(4);
+    }
+  });
+
+  it("defaults to 1 for every provider not named as cloud (copilot-native, offline-stub, a new key)", () => {
+    for (const key of ["copilot-native", "offline-stub", "some-future-provider"]) {
+      expect(defaultPhase2Concurrency(key), key).toBe(1);
+      expect(resolvePhase2Concurrency(key, stubConfig()), key).toBe(1);
+    }
+  });
+
+  it("applies a configured value to every provider kind, clamped to 1..64", () => {
+    const k = PHASE2_CONCURRENCY_KEY;
+    expect(resolvePhase2Concurrency("local-gemma", stubConfig({ [k]: 3 }))).toBe(3);
+    expect(resolvePhase2Concurrency("anthropic", stubConfig({ [k]: 12 }))).toBe(12);
+    expect(resolvePhase2Concurrency("anthropic", stubConfig({ [k]: 1000 }))).toBe(
+      MAX_PHASE2_CONCURRENCY,
+    );
+    expect(resolvePhase2Concurrency("anthropic", stubConfig({ [k]: 2.7 }))).toBe(2);
+  });
+
+  it("falls back to the provider's default for a non-positive or non-numeric value", () => {
+    const k = PHASE2_CONCURRENCY_KEY;
+    expect(resolvePhase2Concurrency("anthropic", stubConfig({ [k]: 0 }))).toBe(4);
+    expect(resolvePhase2Concurrency("local-gemma", stubConfig({ [k]: -4 }))).toBe(1);
+    expect(resolvePhase2Concurrency("anthropic", stubConfig({ [k]: Number.NaN }))).toBe(4);
+  });
+
+  it("is a registered key readable from the environment (db → env)", () => {
+    const config = new RealConfigService({
+      env: { DOCS_GEN_PHASE2_CONCURRENCY: "8" },
+      vault: {} as never,
+    });
+    expect(resolvePhase2Concurrency("local-gemma", config)).toBe(8);
+    const unset = new RealConfigService({ env: {}, vault: {} as never });
+    expect(resolvePhase2Concurrency("bedrock-gateway", unset)).toBe(4);
+  });
+});

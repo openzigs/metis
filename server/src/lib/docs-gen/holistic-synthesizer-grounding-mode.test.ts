@@ -75,6 +75,11 @@ const BATCHED_LABELS = new Set(GROUPS.filter((g) => g.batched).map((g) => g.labe
 const PASSAGES_PER_REPLY = 16;
 /** When true the judge supports every claim, so no section falls below its bar. */
 let judgeSupportsAll = false;
+/**
+ * #178 — when true, the Rules batch that holds the first module replies last,
+ * so under DOCS_GEN_PHASE2_CONCURRENCY > 1 its batches finish out of plan order.
+ */
+let delayFirstRulesBatch = false;
 
 function ragGrounding(): GroundingContext {
   return {
@@ -95,11 +100,23 @@ interface Log {
   decomposed: string[];
   /** Claims sent to the judge, per judge call. */
   judged: string[][];
+  /** #178 — Rules batch tags in the order their replies FINISHED. */
+  rulesFinished: string[];
+  /** #178 — the most Rules batch calls in flight at once. */
+  rulesMaxInFlight: number;
 }
 
 function fakeModel(passagesPerReply: number): AIProvider & { log: Log } {
-  const log: Log = { streams: [], chats: [], decomposed: [], judged: [] };
+  const log: Log = {
+    streams: [],
+    chats: [],
+    decomposed: [],
+    judged: [],
+    rulesFinished: [],
+    rulesMaxInFlight: 0,
+  };
   let replyNo = 0;
+  let rulesInFlight = 0;
   const p = {
     key: "anthropic",
     model: "fake-section-model",
@@ -119,6 +136,14 @@ function fakeModel(passagesPerReply: number): AIProvider & { log: Log } {
           `Statement ${i}b of ${tag} also holds for every request that is validated.`
         );
       });
+      if (label === RULES.label) {
+        rulesInFlight += 1;
+        log.rulesMaxInFlight = Math.max(log.rulesMaxInFlight, rulesInFlight);
+        const first = modules.split("+").includes("p0");
+        await new Promise((r) => setTimeout(r, delayFirstRulesBatch && first ? 40 : 0));
+        rulesInFlight -= 1;
+        log.rulesFinished.push(tag);
+      }
       yield { type: "delta", content: `## ${label}\n\n${passages.join("\n\n")}` };
       yield { type: "done", finishReason: "stop" };
     },
@@ -212,6 +237,7 @@ const allClaims = (log: Log) => log.decomposed.flatMap((p) => p.match(/^Statemen
 
 beforeEach(() => {
   judgeSupportsAll = false;
+  delayFirstRulesBatch = false;
   vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "4096");
   vi.stubEnv("DOCS_GEN_JUDGE_ESCALATION", "0");
   vi.stubEnv("DOCS_GEN_GROUNDING", "");
@@ -459,4 +485,36 @@ describe("DOCS_GEN_GROUNDING=sample", () => {
     expect(half.log.judged.flat().length).toBeGreaterThan(quarter.log.judged.flat().length);
     expect(half.result.grounding).toEqual({ mode: "sample", sampleRate: 0.5, minClaims: 10 });
   });
+});
+
+// ── #178: Phase-2 batch concurrency ────────────────────────────────────────
+
+describe("DOCS_GEN_GROUNDING under DOCS_GEN_PHASE2_CONCURRENCY (#178)", () => {
+  async function at(concurrency: string, mode: string) {
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", concurrency);
+    return run(mode);
+  }
+
+  it("fixture sanity: at 4 the Rules batches overlap and finish out of plan order", async () => {
+    delayFirstRulesBatch = true;
+    const { log } = await at("4", "sample");
+    expect(log.rulesMaxInFlight).toBe(2);
+    expect(log.rulesFinished).toHaveLength(2);
+    expect(log.rulesFinished[0]).not.toContain("p0");
+  });
+
+  for (const mode of ["on", "sample", "off"]) {
+    it(`${mode}: batches finishing out of order send byte-identical grounding calls and write the same document as one at a time`, async () => {
+      delayFirstRulesBatch = true;
+      const one = await at("1", mode);
+      const four = await at("4", mode);
+      expect(one.log.rulesMaxInFlight).toBe(1);
+      expect(four.log.streams).toEqual(one.log.streams);
+      expect(four.log.chats).toEqual(one.log.chats);
+      expect(four.result.markdown).toBe(one.result.markdown);
+      expect(four.result.sections).toEqual(one.result.sections);
+      expect(four.result.warnings).toEqual(one.result.warnings);
+      expect(four.result.grounding).toEqual(one.result.grounding);
+    });
+  }
 });
