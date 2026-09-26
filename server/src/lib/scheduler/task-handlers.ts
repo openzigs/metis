@@ -50,6 +50,12 @@ export const BUILT_IN_TASK_TYPES = [
 
 export type BuiltInTaskType = (typeof BUILT_IN_TASK_TYPES)[number];
 
+/** #189 — per-run options for generated-document publication. */
+export interface GeneratedDocPublishOptions {
+  onProgress?: (progress: { step: string; current: number; total: number }) => void;
+  finalAttempt?: boolean;
+}
+
 export interface BuiltInHandlerDeps {
   regenerateGeneratedDocument?(payload: RegenerationTask, signal: AbortSignal): Promise<void>;
   /** Webhook handler — injected separately because it needs network policy. */
@@ -75,6 +81,7 @@ export interface BuiltInHandlerDeps {
     version: number,
     revisionId: string,
     signal: AbortSignal,
+    options?: GeneratedDocPublishOptions,
   ): Promise<Record<string, unknown> | void>;
   /** Run an AI Bug Scanner scan by id (Epic #708). */
   runScannerScan?(scanId: string, signal: AbortSignal): Promise<Record<string, unknown> | void>;
@@ -193,6 +200,16 @@ export function registerBuiltInHandlers(
           version,
           revisionId,
           ctx.signal,
+          {
+            // #189 — persisted progress, and the last attempt marks the document failed.
+            onProgress: (progress) =>
+              ctx.reportProgress({
+                step: `publish-generated-document:${progress.step}`,
+                current: progress.current,
+                total: progress.total,
+              }),
+            finalAttempt: ctx.task.attempts >= ctx.task.maxAttempts,
+          },
         )) ?? {};
       ctx.reportProgress({ step: "publish-generated-document:complete", pct: 100 });
       return { generatedDocumentId, projectId, version, revisionId, ...result };

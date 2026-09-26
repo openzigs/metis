@@ -195,7 +195,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
       role TEXT DEFAULT 'member', joinedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
       updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE generated_documents (id TEXT PRIMARY KEY, projectId TEXT, title TEXT, scope TEXT,
-      scopeFilter TEXT, evidencePolicy TEXT, deletedAt DATETIME,
+      scopeFilter TEXT, evidencePolicy TEXT, status TEXT DEFAULT 'ready', deletedAt DATETIME,
       updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       `CREATE TABLE generated_document_versions (id TEXT PRIMARY KEY, documentId TEXT, version INTEGER,
       revisionId TEXT, provenanceManifest TEXT, content TEXT, diffSummary TEXT,

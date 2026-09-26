@@ -36,6 +36,46 @@ The `xenova` **registry key is retained** (`EMBED_BACKEND=xenova`) for config
 compatibility — it names a backend and its persisted
 `KnowledgeChunk.embeddingModel` rows, not the npm package.
 
+## Where the in-process model runs — `EMBED_INPROCESS_RUNTIME` (issue #189)
+
+`onnxruntime-node` runs inference **synchronously on the thread that calls it**. Its
+binding defers `InferenceSession.run` with `setImmediate`, which only moves the block
+to the next loop turn. Until #189, the `xenova` and `embeddinggemma` backends called it
+from the server's main thread. Embedding a 611,592-character generated document
+therefore stopped `/healthz` from answering, made `/api/auth/me` take 5.2 minutes to
+fail, and never finished.
+
+| `EMBED_INPROCESS_RUNTIME` | Behaviour |
+| --- | --- |
+| `worker` (default) | The model loads and runs in a `worker_thread`. The main thread only posts a message and awaits the vectors. |
+| `inline` | Runs on the calling thread, as before #189. Only tests use it: a module mock of `@huggingface/transformers` does not cross a thread boundary. |
+
+- **One worker per backend, one forward call at a time.** `XenovaEmbedder` still
+  applies the #807 forward-batch policy (one text per call at `q8`). In the worker, an
+  `fp32` batch is also split into calls of at most 16 texts. `fp32` is batch-invariant,
+  so the split is exact. A chat query that arrives during a large ingest waits for at
+  most one forward pass.
+- **Every input is capped at 2,048 tokens** (`MAX_EMBED_SEQUENCE_TOKENS`). gte-modernbert
+  accepts 8,192 tokens, and attention cost grows with the square of the length. A
+  51,081-character chunk measured **15.1 s and 7.8 GB RSS at 8,192 tokens**, and
+  **0.9 s and 1.4 GB at 2,048**. Every METIS chunker emits less than 2,048 tokens per
+  chunk, so no stored vector changes. The chunkers are the primary bound: the
+  generated-document chunker is now hard-capped at 1,500 characters. The token cap is
+  the backstop.
+- **Measured on the real 611,592-character document** (576 chunks, real model, `q8`):
+  in the worker, the embed took 33.1 s and the worst `/healthz` answer during it was
+  17 ms, over 1,481 probes. Inline, with the same chunks, the worst `/healthz` answer
+  was 1,563 ms. Chunking alone does not meet the 1 s responsiveness bar.
+- **Why not the sidecar?** The `sidecar` backend moves inference out of the process
+  entirely, and it remains the recommended production topology. It is a separate
+  deployment that an operator opts into. The worker fixes the default, in-process
+  backend without adding a deployment.
+- **Why the worker body is a string** (`EMBED_WORKER_SOURCE`): on Node 22, tsx's loader
+  hooks do not take effect in worker threads, so a `.ts` worker entry cannot import its
+  siblings under `pnpm dev` or vitest. `tsc` also does not copy a `.mjs` into `dist`.
+  The body is therefore a small JavaScript constant that imports transformers.js by an
+  absolute URL.
+
 ## Pooling — this MUST match the model
 
 A feature-extraction pipeline collapses a `[tokens × hidden]` matrix into one

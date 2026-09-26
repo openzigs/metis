@@ -22,6 +22,11 @@ process.env.CONNECTOR_QUERY_LIMIT_MAX = "100000";
 process.env.CONNECTOR_TEST_LIMIT_MAX = "100000";
 process.env.CONNECTOR_METADATA_LIMIT_MAX = "100000";
 process.env.AI_OFFLINE = process.env.AI_OFFLINE ?? "1";
+// Issue #189 — the in-process ONNX embedders run in a worker_thread by default.
+// Suites that `vi.mock("@huggingface/transformers")` need them in THIS thread (a
+// module mock does not cross a thread boundary); the worker path is exercised by
+// its own tests, which pass `inProcessRuntime` explicitly.
+process.env.EMBED_INPROCESS_RUNTIME = process.env.EMBED_INPROCESS_RUNTIME ?? "inline";
 // Epic #158 — never auto-start OTel during tests so individual specs can
 // install their own SpanProcessor.
 process.env.OTEL_SDK_DISABLED = process.env.OTEL_SDK_DISABLED ?? "true";

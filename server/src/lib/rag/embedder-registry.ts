@@ -22,6 +22,7 @@
 import { DEFAULT_EMBED_MODEL } from "@metis/shared";
 import type { EmbedDtype, EmbedPooling } from "./embed-model-config.js";
 import type { EmbeddingsClient } from "./embeddings-client.js";
+import type { InProcessEmbedRuntime } from "./embed-worker-pipeline.js";
 import { resolveEmbeddingsMode } from "./embeddings-client.js";
 
 export interface EmbeddingResult {
@@ -88,6 +89,12 @@ export interface EmbedderConfig {
   pooling?: EmbedPooling;
   /** Issue #782 — override the ONNX weight dtype. Omitted → `EMBED_DTYPE` / `q8`. */
   dtype?: EmbedDtype;
+  /**
+   * Issue #189 — where the in-process ONNX backends (`xenova`, `embeddinggemma`)
+   * run the model: `worker` (a worker_thread, so inference never blocks the event
+   * loop) or `inline`. Omitted → `EMBED_INPROCESS_RUNTIME`, default `worker`.
+   */
+  inProcessRuntime?: InProcessEmbedRuntime;
 }
 
 /** Live capabilities of a constructed backend instance. */
