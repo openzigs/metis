@@ -10,8 +10,17 @@
  *
  * Real files on disk; storage, knowledge service and prisma are in-memory fakes.
  */
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { promises as fs, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  promises as fs,
+  openSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -660,6 +669,47 @@ describe("symlink swapped in between walk and read (#217)", () => {
       expect(lastState().skipped.unreadable).toBe(1);
       expect(
         h.warns.some((w) => w.msg.includes("outside the repository") && w.meta.path === "pkg/b.ts"),
+      ).toBe(true);
+    },
+  );
+
+  posixOnly(
+    "a file swapped for a FIFO is skipped without blocking the run, and the guard is released",
+    { timeout: 5000 },
+    async () => {
+      // Without O_NONBLOCK the read's open waits forever for a FIFO writer:
+      // the run never settles and the connector's lease is never released.
+      await writeFiles({ "a.ts": "export const a = 1;\n", "b.ts": "export const b = 2;\n" });
+      const fifo = path.join(root, "b.ts");
+      swapDuringFirstEmbed(() => {
+        rmSync(fifo);
+        execFileSync("mkfifo", [fifo]);
+      });
+
+      const run = ingestSourceAsKnowledge("p1", "c1", "u1", root, {
+        boundary: root,
+        limits: { concurrency: 1 },
+      });
+      const outcome = await Promise.race([
+        run.then(() => "settled" as const),
+        new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 2000).unref()),
+      ]);
+      // Unblock a hung open (a non-blocking writer open succeeds only while a
+      // reader waits) so a regression does not leak a threadpool thread.
+      try {
+        closeSync(openSync(fifo, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK));
+      } catch {
+        // ENXIO — no reader was waiting.
+      }
+      await run.catch(() => undefined);
+
+      expect(outcome).toBe("settled");
+      expect(isConnectorIngestActive("c1")).toBe(false);
+      expect(ingestedPaths()).toEqual(["a.ts"]);
+      expect(lastState()).toMatchObject({ status: "partial", processed: 2, created: 1 });
+      expect(lastState().skipped.unreadable).toBe(1);
+      expect(
+        h.warns.some((w) => w.msg.includes("not a regular file") && w.meta.path === "b.ts"),
       ).toBe(true);
     },
   );

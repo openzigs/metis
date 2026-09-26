@@ -194,8 +194,10 @@ async function resolveIngestSource(
   projectId: string,
   connectorId: string,
   userId: string,
+  /** The connector, when the caller already looked it up in this project. */
+  known?: Awaited<ReturnType<typeof getRepoConnector>>,
 ): Promise<{ path: string; sizeBytes: number; boundary?: string; isGit: boolean }> {
-  const conn = await getRepoConnector(projectId, connectorId);
+  const conn = known ?? (await getRepoConnector(projectId, connectorId));
   if (conn.provider === REPO_PROVIDER_LOCAL || conn.provider === REPO_PROVIDER_UPLOAD) {
     const root = await resolveNonGitIngestRoot(projectId, connectorId);
     return { path: root.path, sizeBytes: 0, boundary: root.boundary, isGit: false };
@@ -585,13 +587,16 @@ export function connectorsRouter(): Router {
             current,
             total: 5,
           });
+        // Project-scoped lookup first (#217 review): another project's caller
+        // gets 404, never a 409 that reveals the id exists and is ingesting.
+        const conn = await getRepoConnector(projectId, id);
         // Concurrency guard — claimed immediately before the try that releases it.
         const lease = tryAcquireConnectorIngest(id, "deep-ingest");
         if (!lease) throw ingestInProgress();
         try {
           // Step 1: resolve source (github clones; local/upload skip the clone)
           emitProgress("Resolving source", 1);
-          const source = await resolveIngestSource(projectId, id, a);
+          const source = await resolveIngestSource(projectId, id, a, conn);
           // Step 2: code graph ingest (symbols, edges, rationale). Best-effort
           // SQL-lineage wiring from the project's DB connector (#316/#317): feeds
           // the live schema (SELECT* expansion) + routine bodies (`calls` edges).

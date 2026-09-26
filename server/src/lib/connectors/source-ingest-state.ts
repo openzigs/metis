@@ -234,7 +234,11 @@ export async function repositoryIndexWarnings(
   return warnings;
 }
 
-/** The API view of a connector's latest source ingest: the state plus its effective status. */
+/**
+ * The API view of a connector's latest source ingest: the state plus its effective status.
+ * Consumers must read `effectiveStatus`, not the raw stored `status` (#217: a legacy
+ * `partial` row can be `completed` in effect, and a stale `running` one `interrupted`).
+ */
 export function sourceIngestSummary(
   raw: string | null | undefined,
   now: number = Date.now(),

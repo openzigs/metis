@@ -216,6 +216,7 @@ import {
   isConnectorIngestActive,
 } from "../src/lib/connectors/ingest-guard.js";
 import { discoverAndUpsertConnections } from "../src/lib/connectors/repo/connection-discovery.js";
+import { ConnectorError } from "../src/lib/connectors/types.js";
 import {
   bootstrapScheduler,
   type SchedulerBootstrap,
@@ -406,6 +407,28 @@ describe("per-connector ingest guard on the sync routes (#217)", () => {
         expect(isConnectorIngestActive("repo_github_x")).toBe(true);
       } finally {
         lease.release();
+      }
+    });
+
+    it(`${route} answers 404 — not 409 — for another project's connector while it ingests`, async () => {
+      // The project-scoped lookup runs before the lease is tried, so a caller
+      // outside the project learns neither that the id exists nor that it is busy.
+      const token = await login("admin");
+      const inProject = h.getRepoConnector.getMockImplementation()!;
+      h.getRepoConnector.mockRejectedValue(
+        new ConnectorError(404, "REPO_CONNECTOR_NOT_FOUND", "repo connector not found"),
+      );
+      const lease = acquireConnectorIngest("repo_github_x", "scheduled-refresh");
+      try {
+        const res = await request(app)
+          .post(`/api/projects/proj_1/connectors/repos/repo_github_x/${route}`)
+          .set("Authorization", `Bearer ${token}`);
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe("REPO_CONNECTOR_NOT_FOUND");
+        expect(isConnectorIngestActive("repo_github_x")).toBe(true);
+      } finally {
+        lease.release();
+        h.getRepoConnector.mockImplementation(inProject);
       }
     });
 

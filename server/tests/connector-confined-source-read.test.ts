@@ -6,19 +6,35 @@
  * O_NOFOLLOW) is exercised on POSIX by forcing `noFollow: false`, which is
  * exactly the code path a platform without the flag takes.
  */
-import { constants as fsConstants, promises as fs } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { constants as fsConstants, closeSync, openSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   O_NOFOLLOW_SUPPORTED,
+  O_NONBLOCK_SUPPORTED,
   isWithinBoundary,
   readConfinedSourceFile,
   sourceOpenFlags,
 } from "../src/lib/connectors/confined-source-read.js";
 
 const SECRET = "export const secret = 'LEAKED-OUTSIDE-BOUNDARY';\n";
+/** Symlinks, FIFOs and directory `open` behave differently on Windows (no FIFOs, EISDIR). */
 const posixOnly = it.skipIf(process.platform === "win32");
+
+/**
+ * Unblock anything stuck opening `fifo` for read: a non-blocking writer open
+ * succeeds only while a reader is waiting, and completes that reader's open.
+ * Without this, a regression that blocks leaves a libuv thread hung forever.
+ */
+function releaseFifoReaders(fifo: string): void {
+  try {
+    closeSync(openSync(fifo, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK));
+  } catch {
+    // ENXIO: no reader waiting — nothing to release. ENOENT: already gone.
+  }
+}
 
 let root: string;
 let outside: string;
@@ -52,7 +68,16 @@ describe("sourceOpenFlags", () => {
     expect(O_NOFOLLOW_SUPPORTED).toBe(typeof fsConstants.O_NOFOLLOW === "number");
   });
 
-  it("falls back to O_RDONLY alone where it does not (Windows)", () => {
+  it("adds O_NONBLOCK where the platform defines it, with or without O_NOFOLLOW", () => {
+    expect(sourceOpenFlags({ O_RDONLY: 0, O_NOFOLLOW: 0x100, O_NONBLOCK: 0x4 })).toBe(0x104);
+    expect(sourceOpenFlags({ O_RDONLY: 0, O_NOFOLLOW: 0x100, O_NONBLOCK: 0x4 }, false)).toBe(0x4);
+    expect(O_NONBLOCK_SUPPORTED).toBe(typeof fsConstants.O_NONBLOCK === "number");
+    if (process.platform !== "win32") {
+      expect(sourceOpenFlags() & fsConstants.O_NONBLOCK).toBe(fsConstants.O_NONBLOCK);
+    }
+  });
+
+  it("falls back to O_RDONLY alone where neither exists (Windows)", () => {
     expect(sourceOpenFlags({ O_RDONLY: 0 })).toBe(0);
     expect(sourceOpenFlags({ O_RDONLY: 0, O_NOFOLLOW: 0x100 }, false)).toBe(0);
   });
@@ -161,15 +186,92 @@ describe("readConfinedSourceFile", () => {
     expect(res).toEqual({ ok: false, reason: "too-large", sizeBytes: 2048 });
   });
 
-  it("reports a directory where a file was as not-regular", async () => {
+  it("reads a file that grows after the size check only up to the ceiling, and reports it too-large", async () => {
+    // The fstat size check passes (20 bytes); the file then grows past the
+    // ceiling before the content read. The read must stop at the ceiling
+    // rather than follow the file to EOF. `realpath` runs between the two.
+    const file = path.join(root, "src", "a.ts");
+    const realRealpath = fs.realpath.bind(fs);
+    vi.spyOn(fs, "realpath").mockImplementation((async (p: string) => {
+      await fs.appendFile(file, "x".repeat(4096));
+      return realRealpath(p);
+    }) as never);
+    const res = await readConfinedSourceFile(file, { boundary: root, maxFileBytes: 1024 });
+    expect(res).toEqual({ ok: false, reason: "too-large", sizeBytes: 20 + 4096 });
+  });
+
+  it("reads a file of exactly the ceiling whole", async () => {
+    const body = "y".repeat(1024);
+    await fs.writeFile(path.join(root, "src", "a.ts"), body);
+    const res = await readConfinedSourceFile(path.join(root, "src", "a.ts"), {
+      maxFileBytes: 1024,
+    });
+    expect(res).toEqual({ ok: true, content: body, sizeBytes: 1024 });
+  });
+
+  it("reads a multi-byte UTF-8 file larger than one read chunk intact", async () => {
+    const body = "é€😀".repeat(40_000); // ~360 KB, characters straddle chunk edges
+    await fs.writeFile(path.join(root, "src", "a.ts"), body);
+    const res = await readConfinedSourceFile(path.join(root, "src", "a.ts"), {
+      maxFileBytes: 1024 * 1024,
+    });
+    expect(res).toEqual({ ok: true, content: body, sizeBytes: Buffer.byteLength(body) });
+  });
+
+  posixOnly("reports a directory where a file was as not-regular", async () => {
+    // POSIX opens a directory O_RDONLY; only fstat can refuse it. (Windows
+    // fails the open with EISDIR, which lands on `unreadable`.)
     await fs.rm(path.join(root, "src", "a.ts"));
     await fs.mkdir(path.join(root, "src", "a.ts"));
     const res = await readConfinedSourceFile(path.join(root, "src", "a.ts"), {
       maxFileBytes: 1024,
     });
-    expect(res.ok).toBe(false);
-    expect(["not-regular", "unreadable"]).toContain((res as { reason: string }).reason);
+    expect(res).toEqual({ ok: false, reason: "not-regular" });
   });
+
+  posixOnly(
+    "refuses a FIFO where a file was, without blocking on the open (O_NONBLOCK)",
+    { timeout: 5000 },
+    async () => {
+      // Without O_NONBLOCK, open(O_RDONLY) on a FIFO waits for a writer that
+      // never comes: the call never resolves and the timeout fails the test.
+      const fifo = path.join(root, "src", "a.ts");
+      await fs.rm(fifo);
+      execFileSync("mkfifo", [fifo]);
+      const pending = readConfinedSourceFile(fifo, { boundary: root, maxFileBytes: 1024 });
+      // A blocked open never settles; bound the wait so a regression fails with
+      // "hung" (then unblock the stuck thread) instead of leaking it.
+      const outcome = await Promise.race([
+        pending,
+        new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 2000).unref()),
+      ]);
+      releaseFifoReaders(fifo);
+      expect(outcome).toEqual({ ok: false, reason: "not-regular" });
+    },
+  );
+
+  posixOnly(
+    "the fstat check alone refuses a FIFO, even when the path-level lstat is fooled",
+    { timeout: 5000 },
+    async () => {
+      // The lstat identity check would also see the FIFO; simulate it racing
+      // (reporting a regular file with the handle's identity) so this pins the
+      // handle-level fstat check on its own: the FIFO must never be read.
+      const fifo = path.join(root, "src", "a.ts");
+      await fs.rm(fifo);
+      execFileSync("mkfifo", [fifo]);
+      const { dev, ino } = await fs.stat(fifo, { bigint: true });
+      vi.spyOn(fs, "lstat").mockResolvedValue({ dev, ino, isFile: () => true } as never);
+      const probe = await fs.open(path.join(outside, "secret.ts"));
+      const handleProto = Object.getPrototypeOf(probe) as { read: () => unknown };
+      await probe.close();
+      const read = vi.spyOn(handleProto, "read");
+      const res = await readConfinedSourceFile(fifo, { maxFileBytes: 1024 });
+      releaseFifoReaders(fifo);
+      expect(res).toEqual({ ok: false, reason: "not-regular" });
+      expect(read).not.toHaveBeenCalled();
+    },
+  );
 
   it("reports a vanished file as unreadable", async () => {
     const res = await readConfinedSourceFile(path.join(root, "src", "gone.ts"), {

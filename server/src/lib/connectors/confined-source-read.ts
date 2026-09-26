@@ -9,9 +9,17 @@
  *
  * The read now goes through a handle:
  *   1. `open` with `O_NOFOLLOW` where the platform has it, so a symlink in the
- *      final path component fails to open (`ELOOP`) instead of being followed.
- *   2. `fstat` the handle: it must be a regular file, and no larger than the
- *      ceiling (a file can grow after the walk sized it).
+ *      final path component fails to open (`ELOOP`) instead of being followed;
+ *      and with `O_NONBLOCK` where the platform has it, so a FIFO swapped in
+ *      returns at once instead of waiting forever for a writer (that wait held
+ *      the connector's ingest lease and a libuv threadpool thread for the life
+ *      of the process). `O_NONBLOCK` does not change reads of a regular file.
+ *      Windows defines neither flag and needs neither: it has no filesystem
+ *      FIFOs (named pipes live in the `\\.\pipe\` namespace, and opening
+ *      one connects or fails at once rather than waiting for a writer).
+ *   2. `fstat` the handle: it must be a regular file (a FIFO, socket or device
+ *      is refused here, unread), and no larger than the ceiling (a file can
+ *      grow after the walk sized it).
  *   3. `lstat` the path: it must still be a regular file with the handle's
  *      device and inode. This is the final-component check on platforms
  *      without `O_NOFOLLOW` (Windows), where the open follows a link.
@@ -21,7 +29,9 @@
  *      for a symlink still resolves outside — and this is what catches that.
  *
  * Content is read from the handle only after all of that, so what is embedded
- * is the file that was checked. Node has no `openat`, so a parent swapped and
+ * is the file that was checked. The read stops one byte past the ceiling, so a
+ * file still growing after step 2 is reported `too-large`, never buffered
+ * whole. Node has no `openat`, so a parent swapped and
  * swapped back between steps 1 and 4 is not closed completely; step 4's inode
  * comparison narrows it to an attacker who can toggle a directory repeatedly
  * inside that window on the server itself.
@@ -32,14 +42,40 @@ import path from "node:path";
 /** True where `open` can refuse a symlink (Linux, macOS, BSD); false on Windows. */
 export const O_NOFOLLOW_SUPPORTED = typeof fsConstants.O_NOFOLLOW === "number";
 
-/** Flags for opening a source file: read-only, plus `O_NOFOLLOW` where available and wanted. */
+/** True where `open` can be made non-blocking (Linux, macOS, BSD); false on Windows. */
+export const O_NONBLOCK_SUPPORTED = typeof fsConstants.O_NONBLOCK === "number";
+
+/**
+ * Flags for opening a source file: read-only, plus `O_NONBLOCK` where the
+ * platform has it and `O_NOFOLLOW` where available and wanted.
+ */
 export function sourceOpenFlags(
-  constants: { O_RDONLY: number; O_NOFOLLOW?: number } = fsConstants,
+  constants: { O_RDONLY: number; O_NOFOLLOW?: number; O_NONBLOCK?: number } = fsConstants,
   noFollow = true,
 ): number {
-  return noFollow && typeof constants.O_NOFOLLOW === "number"
-    ? constants.O_RDONLY | constants.O_NOFOLLOW
-    : constants.O_RDONLY;
+  let flags = constants.O_RDONLY;
+  if (typeof constants.O_NONBLOCK === "number") flags |= constants.O_NONBLOCK;
+  if (noFollow && typeof constants.O_NOFOLLOW === "number") flags |= constants.O_NOFOLLOW;
+  return flags;
+}
+
+const READ_CHUNK_BYTES = 64 * 1024;
+
+/**
+ * Read from the start of `handle` until EOF or until more than `limit` bytes
+ * have arrived. `null` means the file holds more than `limit` bytes.
+ */
+async function readAtMost(handle: fs.FileHandle, limit: number): Promise<Buffer | null> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const chunk = Buffer.allocUnsafe(Math.min(READ_CHUNK_BYTES, limit + 1 - total));
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
+    if (bytesRead === 0) return Buffer.concat(chunks, total);
+    chunks.push(chunk.subarray(0, bytesRead));
+    total += bytesRead;
+    if (total > limit) return null;
+  }
 }
 
 /** `child` is `boundary` or strictly beneath it (separator boundary, not a string prefix). */
@@ -102,7 +138,12 @@ export async function readConfinedSourceFile(
 
     const sizeBytes = Number(opened.size);
     if (sizeBytes > opts.maxFileBytes) return { ok: false, reason: "too-large", sizeBytes };
-    return { ok: true, content: await handle.readFile("utf-8"), sizeBytes };
+    const content = await readAtMost(handle, opts.maxFileBytes);
+    if (!content) {
+      // Grew past the ceiling after the fstat above; report its size now.
+      return { ok: false, reason: "too-large", sizeBytes: Number((await handle.stat()).size) };
+    }
+    return { ok: true, content: content.toString("utf-8"), sizeBytes: content.length };
   } catch {
     return { ok: false, reason: "unreadable" };
   } finally {
