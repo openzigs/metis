@@ -284,6 +284,43 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Whether Phase-1 docs-gen fact extraction reads and mines test, spec and fixture files (default true — full coverage). When false, files matching the test-path rules (*.test.* / *.spec.*, test_*.py, *_test.go, *Test.java/kt, test/tests/__tests__/testing/spec/e2e/fixtures directories, *testing.* and *fixture* files, *-harness.* pages, test-runner configs) are neither sent to the model nor mined, and the coverage log reports them as excluded by policy. On onyourleft test files are about half the source, so turning this off roughly halves Phase-1 time.",
     sensitive: false,
   },
+  // ── Issue #182 — repository-source RAG ingest coverage ────────────────
+  REPO_SOURCE_MAX_FILES: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(1).max(1_000_000),
+    description:
+      "Most repository source files one connector sync embeds into the RAG index that grounds document generation and chat (#182; default 5000, was a hard-coded 200). Files are taken production code first, then configuration and data files (json, yaml, xml, gradle, properties), then test/spec/fixture files, each group in path order, so the budget is never spent on tests or config while business code waits. Every file left out is counted and logged, the connector records the ingest as partial, and document generation warns that the index is incomplete.",
+    sensitive: false,
+  },
+  REPO_SOURCE_MAX_FILE_BYTES: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce
+      .number()
+      .int()
+      .min(1024)
+      .max(16 * 1024 * 1024),
+    description:
+      "Largest repository source file (bytes) the RAG ingest embeds (#182; default 1048576 = 1 MiB). A file up to this size is split into chunks and indexed whole — the old 64 KB limit silently skipped every larger file. A file above it is skipped, logged by path and counted, and the connector records the ingest as partial. The ceiling exists for generated or vendored blobs (bundles, lockfile-sized JSON), whose embedding time grows with their size.",
+    sensitive: false,
+  },
+  REPO_SOURCE_INCLUDE_TESTS: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Whether the repository RAG ingest embeds test, spec and fixture files (#182; default true). They are always taken LAST, after production code and configuration, so they only use budget REPO_SOURCE_MAX_FILES has left. When false they are not embedded at all and are reported as excluded by policy, not as skipped. Uses the same test-path rules as DOCS_GEN_PHASE1_INCLUDE_TESTS.",
+    sensitive: false,
+  },
+  REPO_SOURCE_INGEST_CONCURRENCY: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(1).max(8),
+    description:
+      "Repository source files ingested at once during a connector sync (#182; default 1, max 8). Embedding itself is serialised — the in-process model runs one forward call at a time in its worker thread, one text per call at a quantized dtype (#807) — so a second lane only overlaps each file's database and vector-store writes with the next file's embedding. Keep 1 on the default SQLite database: concurrent ingest transactions were measured colliding there and failing files. On Postgres with a remote embeddings backend (sidecar or cloud), 2-4 can shorten a large sync.",
+    sensitive: false,
+  },
   DOCS_GEN_REASONING_ALLOWANCE_TOKENS: {
     tier: "tunable",
     valueType: "int",

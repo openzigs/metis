@@ -392,6 +392,32 @@ describe("KnowledgeService.ingestDocument", () => {
     expect(await store.count("pn")).toBe(result.chunkCount);
   });
 
+  /**
+   * Issue #182 — a repository file is now indexed up to REPO_SOURCE_MAX_FILE_BYTES
+   * (1 MiB, hundreds of chunks) instead of being skipped over 64 KB. Its chunks go
+   * through the #189 bounded-batch path, never one embed call for the whole file.
+   */
+  it("embeds a many-chunk document in bounded batches of at most 32 texts", async () => {
+    const embedder = new Embedder();
+    const embedSpy = vi.spyOn(embedder, "embed");
+    svc = new KnowledgeService({
+      storage,
+      vectorStore: store,
+      embedder,
+      chunkOptions: { chunkSize: 80, overlap: 0 },
+    });
+    const text = Array.from({ length: 200 }, (_, i) => `sentence number ${i} here.`).join(" ");
+    await seedDocument("db", "pb", text);
+    const result = await svc.ingestDocument("db");
+
+    expect(result.chunkCount).toBeGreaterThan(32);
+    const sizes = embedSpy.mock.calls.map(([texts]) => texts.length);
+    expect(sizes.length).toBeGreaterThan(1);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(32);
+    expect(sizes.reduce((a, b) => a + b, 0)).toBe(result.chunkCount);
+    expect(await store.count("pb")).toBe(result.chunkCount);
+  });
+
   it("emits document:status events for the lifecycle", async () => {
     const events: Array<{ status: string; chunkCount?: number }> = [];
     svc = new KnowledgeService({

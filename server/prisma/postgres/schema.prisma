@@ -983,6 +983,10 @@ model RepoConnection {
   lastTestedAt  DateTime?
   lastIngestAt  DateTime?
   lastCommitSha String?
+  /// Issue #182 — JSON outcome of the latest repository-source RAG ingest
+  /// (running | completed | partial | failed, with eligible / indexed / skipped
+  /// counts and a heartbeat). NULL = never recorded (ingested before #182).
+  sourceIngestState String?
   createdById   String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt

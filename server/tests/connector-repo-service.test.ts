@@ -270,6 +270,31 @@ describe("Repo connector service — CRUD", () => {
     expect(await listRepoConnectors("proj_1")).toHaveLength(0);
   });
 
+  it("#182 — exposes the latest source ingest, reporting a dead run as interrupted", async () => {
+    const created = await createRepoConnector(
+      "proj_1",
+      { label: "ingested", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    expect(created.sourceIngest).toBeNull();
+    const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    (rows.get(created.id) as unknown as Record<string, unknown>).sourceIngestState = JSON.stringify(
+      {
+        version: 1,
+        status: "running",
+        heartbeatAt: stale,
+        created: 170,
+        updated: 0,
+        unchanged: 4,
+      },
+    );
+    expect((await getRepoConnector("proj_1", created.id)).sourceIngest).toMatchObject({
+      status: "running",
+      effectiveStatus: "interrupted",
+      indexed: 174,
+    });
+  });
+
   it("rejects duplicate label per project", async () => {
     await createRepoConnector("proj_1", { label: "dup", ownerOrOrg: "o", repoName: "r" }, "user_1");
     await expect(
