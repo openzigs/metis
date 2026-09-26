@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   startAlertEngine: vi.fn(),
   startChargebackScheduler: vi.fn(),
   startRevocationPruner: vi.fn(),
+  reconcileStrandedGeneratedDocPublications: vi.fn(),
 }));
 
 type Mod = Record<string, unknown>;
@@ -58,6 +59,14 @@ vi.mock(
 vi.mock(
   "../src/lib/auth/revocation-store.js",
   partial("startRevocationPruner", mocks.startRevocationPruner),
+);
+
+vi.mock(
+  "../src/lib/docs-gen/generated-doc-publication-recovery.js",
+  partial(
+    "reconcileStrandedGeneratedDocPublications",
+    mocks.reconcileStrandedGeneratedDocPublications,
+  ),
 );
 
 import { SingletonJobs } from "../src/server.js";
@@ -110,6 +119,36 @@ describe("SingletonJobs registration", () => {
     expect(handle.stop).not.toHaveBeenCalled();
     jobs.stop();
     expect(handle.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("#189 — settles stranded generated-doc publications once the scheduler has started", async () => {
+    const sched = fakeSchedulerBootstrap();
+    let finishStart!: () => void;
+    sched.scheduler.start.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishStart = resolve;
+      }),
+    );
+    const jobs = new SingletonJobs(sched as never);
+    jobs.start();
+    await Promise.resolve();
+    // Not before durable task recovery has re-queued the live tasks.
+    expect(mocks.reconcileStrandedGeneratedDocPublications).not.toHaveBeenCalled();
+    finishStart();
+    await vi.waitFor(() =>
+      expect(mocks.reconcileStrandedGeneratedDocPublications).toHaveBeenCalledTimes(1),
+    );
+    jobs.stop();
+  });
+
+  it("#189 — does not reconcile when the scheduler failed to start", async () => {
+    const sched = fakeSchedulerBootstrap();
+    sched.scheduler.start.mockRejectedValue(new Error("boom"));
+    const jobs = new SingletonJobs(sched as never);
+    jobs.start();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(mocks.reconcileStrandedGeneratedDocPublications).not.toHaveBeenCalled();
+    jobs.stop();
   });
 
   it("does not double-register the rollup when start() is called twice", () => {

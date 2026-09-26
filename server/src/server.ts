@@ -66,6 +66,7 @@ import { createDispatcher } from "./lib/finops/channels/dispatcher.js";
 import { startChargebackScheduler } from "./lib/finops/chargeback-scheduler.js";
 import { startWorkspaceUsageRollup } from "./lib/workspaces/usage-rollup.js";
 import { startInterruptedGenerationSweeper } from "./lib/docs-gen/interrupted-generations.js";
+import { reconcileStrandedGeneratedDocPublications } from "./lib/docs-gen/generated-doc-publication-recovery.js";
 
 const log = createChildLogger("server-bootstrap");
 
@@ -108,9 +109,14 @@ export class SingletonJobs {
     this.running = true;
     log.info("starting cluster-singleton scheduler + background jobs (leader)");
     // Central scheduler cron registration (DB-backed ScheduledJobs).
-    this.sched.scheduler.start().catch((err) => {
-      log.warn("Scheduler start failed", { error: (err as Error).message });
-    });
+    this.sched.scheduler
+      .start()
+      // #189 — AFTER durable task recovery has re-queued live publication tasks,
+      // settle any generated-doc synthetic row that no task will ever finish.
+      .then(() => reconcileStrandedGeneratedDocPublications())
+      .catch((err) => {
+        log.warn("Scheduler start failed", { error: (err as Error).message });
+      });
     // Scattered interval jobs — each fires once cluster-wide now they run only
     // on the leader. Epic refs: #736 (SLA), #48/#49/#52 (FinOps), #413 (revocation).
     this.handles = [

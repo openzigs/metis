@@ -274,9 +274,27 @@ describe("buildSchedulerHandlerOverrides", () => {
         version: 5,
         revisionId: "rev-5",
       },
-      { signal: expect.any(AbortSignal) },
+      { signal: expect.any(AbortSignal), onProgress: undefined, finalAttempt: undefined },
     );
     expect(out).toEqual({ status: "published", chunkCount: 2 });
+  });
+
+  it("#189 — publish-generated-document forwards progress and the final-attempt flag", async () => {
+    const overrides = buildSchedulerHandlerOverrides();
+    const onProgress = vi.fn();
+    await overrides.publishGeneratedDocument!(
+      "doc-1",
+      "proj-1",
+      5,
+      "rev-5",
+      new AbortController().signal,
+      { onProgress, finalAttempt: true },
+    );
+    expect(mocks.publishGeneratedDocRevision).toHaveBeenLastCalledWith(expect.anything(), {
+      signal: expect.any(AbortSignal),
+      onProgress,
+      finalAttempt: true,
+    });
   });
 
   it("rerun-analysis uses autopilot rails when the project enables them", async () => {

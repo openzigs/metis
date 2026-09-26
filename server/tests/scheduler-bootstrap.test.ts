@@ -247,6 +247,7 @@ describe("bootstrapScheduler()", () => {
       2,
       "r2",
       expect.any(AbortSignal),
+      { onProgress: expect.any(Function), finalAttempt: false },
     );
     expect(await readTaskRecord(task.id)).toMatchObject({
       status: "completed",

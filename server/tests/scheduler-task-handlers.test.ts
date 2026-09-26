@@ -211,6 +211,7 @@ describe("registerBuiltInHandlers", () => {
       4,
       "rev-4",
       expect.any(AbortSignal),
+      { onProgress: expect.any(Function), finalAttempt: true },
     );
     expect(result).toMatchObject({
       generatedDocumentId: "doc-1",
@@ -219,6 +220,50 @@ describe("registerBuiltInHandlers", () => {
       revisionId: "rev-4",
       status: "published",
       chunkCount: 3,
+    });
+  });
+
+  it("#189 — publish-generated-document persists embed progress and flags the final attempt", async () => {
+    const reg = new InMemoryTaskHandlerRegistry();
+    const publishGeneratedDocument = vi.fn(
+      async (
+        _doc: string,
+        _project: string,
+        _version: number,
+        _revision: string,
+        _signal: AbortSignal,
+        options?: {
+          onProgress?: (p: { step: string; current: number; total: number }) => void;
+          finalAttempt?: boolean;
+        },
+      ) => {
+        options?.onProgress?.({ step: "embed", current: 32, total: 64 });
+        return { status: "published", finalAttempt: options?.finalAttempt };
+      },
+    );
+    registerBuiltInHandlers(reg, { httpWebhookHandler: vi.fn(), publishGeneratedDocument });
+    const payload = {
+      generatedDocumentId: "doc-1",
+      projectId: "proj-1",
+      version: 4,
+      revisionId: "rev-4",
+    };
+    const first = makeCtx(payload);
+    first.task.attempts = 1;
+    first.task.maxAttempts = 3;
+    await expect(reg.get("publish-generated-document")!.handler(first)).resolves.toMatchObject({
+      finalAttempt: false,
+    });
+    expect(first.reportProgress).toHaveBeenCalledWith({
+      step: "publish-generated-document:embed",
+      current: 32,
+      total: 64,
+    });
+    const last = makeCtx(payload);
+    last.task.attempts = 3;
+    last.task.maxAttempts = 3;
+    await expect(reg.get("publish-generated-document")!.handler(last)).resolves.toMatchObject({
+      finalAttempt: true,
     });
   });
 

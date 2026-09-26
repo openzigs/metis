@@ -78,6 +78,12 @@ import {
   type EmbeddingResult,
 } from "./embedder-registry.js";
 import { registerCloudBackends } from "./backends/index.js";
+import {
+  createWorkerPipeline,
+  resolveInProcessRuntime,
+  type InProcessEmbedRuntime,
+  type WorkerTransformersEnv,
+} from "./embed-worker-pipeline.js";
 
 const log = createChildLogger("rag-embedder");
 
@@ -156,6 +162,49 @@ interface XenovaPipeline {
     opts: { pooling: EmbedPooling; normalize: boolean },
   ): Promise<XenovaTensor>;
   model?: { config?: unknown };
+  /** transformers.js truncates every row to `model_max_length` tokens. */
+  tokenizer?: { model_max_length?: number };
+}
+
+/**
+ * Issue #189 — the longest token sequence the in-process model is ever given.
+ *
+ * gte-modernbert-base ACCEPTS 8,192 tokens, and transformers.js truncates at the
+ * tokenizer's `model_max_length` — so before this cap an over-long chunk ran at the
+ * full 8,192. Attention cost is quadratic in that length: one such row materialises
+ * a 12-head × 8,192 × 8,192 fp32 score tensor (~3.2 GB) for its softmax — the
+ * `onnxruntime::Softmax` → `MlasComputeSoftmaxThreaded` frame and the 4–5 GB RSS
+ * seen in the hung server, fed by a 51,081-character generated-doc chunk.
+ *
+ * 2,048 covers every chunk METIS produces (the document chunker's default window is
+ * 2,048 CHARACTERS, the generated-doc chunker's 1,500, and a BPE token covers at
+ * least one character), so no stored vector changes, while the worst-case row costs
+ * 1/16 of the full-context softmax. The chunkers are the primary bound; this is the
+ * backstop for a caller that forgets.
+ */
+export const MAX_EMBED_SEQUENCE_TOKENS = 2048;
+
+/**
+ * Issue #189 — texts per model call in the WORKER runtime. The #807 policy already
+ * gives a quantized dtype one text per call; this additionally bounds an `fp32`
+ * call (uncapped by that policy, and batch-invariant, so splitting it is exact),
+ * so an interleaved query never waits behind one enormous forward pass.
+ */
+export const EMBED_WORKER_MAX_TEXTS_PER_CALL = 16;
+
+/** Lower (never raise) a pipeline tokenizer's truncation length. */
+export function capTokenizerSequenceLength(
+  pipeline: Pick<XenovaPipeline, "tokenizer">,
+  maxTokens: number = MAX_EMBED_SEQUENCE_TOKENS,
+): number | null {
+  const tokenizer = pipeline.tokenizer;
+  if (!tokenizer) return null;
+  const current = tokenizer.model_max_length;
+  tokenizer.model_max_length =
+    typeof current === "number" && Number.isFinite(current)
+      ? Math.min(current, maxTokens)
+      : maxTokens;
+  return tokenizer.model_max_length;
 }
 
 interface XenovaTensor {
@@ -190,6 +239,12 @@ export interface XenovaBackendOptions {
   pooling?: EmbedPooling;
   /** Issue #782 — explicit dtype override. Omitted → `EMBED_DTYPE` / `q8`. */
   dtype?: EmbedDtype;
+  /** Issue #189 — `worker` or `inline`. Omitted → `EMBED_INPROCESS_RUNTIME` / `worker`. */
+  runtime?: InProcessEmbedRuntime;
+  /** Issue #189 — tokenizer truncation length. Omitted → {@link MAX_EMBED_SEQUENCE_TOKENS}. */
+  maxTokens?: number;
+  /** Issue #189 — test seam: the module the WORKER loads in place of transformers.js. */
+  workerModuleUrl?: string;
 }
 
 export class XenovaEmbedder implements EmbedBackend {
@@ -208,6 +263,10 @@ export class XenovaEmbedder implements EmbedBackend {
    * `model|pooling|dtype`.
    */
   readonly identity: string;
+  /** Issue #189 — where the model runs. */
+  readonly runtime: InProcessEmbedRuntime;
+  private readonly maxTokens: number;
+  private readonly workerModuleUrl: string | undefined;
   private readonly poolingSource: PoolingSource;
   private readonly nativeDimension: number;
   private readonly matryoshka: boolean;
@@ -225,6 +284,9 @@ export class XenovaEmbedder implements EmbedBackend {
     this.poolingSource = resolved.source;
     this.dtype = opts.dtype ?? resolveDtype();
     this.identity = formatEmbeddingIdentity(this.model, this.pooling, this.dtype);
+    this.runtime = opts.runtime ?? resolveInProcessRuntime();
+    this.maxTokens = opts.maxTokens ?? MAX_EMBED_SEQUENCE_TOKENS;
+    this.workerModuleUrl = opts.workerModuleUrl;
     // When an offline bundle is configured the model is read from disk, so no
     // egress is required; otherwise the first load reaches the HF hub.
     this.requiresEgress = !isXenovaOffline();
@@ -256,7 +318,7 @@ export class XenovaEmbedder implements EmbedBackend {
     // forward pass is what makes `(model, text) → vector` an actual function —
     // which #787/#792's model-tagged reuse guard already assumes it is.
     let vectors: number[][] = [];
-    for (const batch of forwardBatches(texts, this.dtype)) {
+    for (const batch of this.modelCalls(texts)) {
       const tensor = await this.pipeline(batch, { pooling: this.pooling, normalize: true });
       vectors.push(...tensorToVectors(tensor, batch.length, this.nativeDimension));
     }
@@ -275,7 +337,32 @@ export class XenovaEmbedder implements EmbedBackend {
     }
   }
 
+  /** Stop the worker (no-op inline). The next embed loads the model again. */
+  async close(): Promise<void> {
+    const pipeline = this.pipeline as (XenovaPipeline & { close?: () => Promise<void> }) | null;
+    this.pipeline = null;
+    this.loader = null;
+    await pipeline?.close?.();
+  }
+
+  /** #807's forward batches; in the worker, further bounded (exact for fp32). */
+  private modelCalls(texts: string[]): string[][] {
+    const batches = forwardBatches(texts, this.dtype);
+    if (this.runtime === "inline") return batches;
+    return batches.flatMap((batch) => {
+      const out: string[][] = [];
+      for (let i = 0; i < batch.length; i += EMBED_WORKER_MAX_TEXTS_PER_CALL) {
+        out.push(batch.slice(i, i + EMBED_WORKER_MAX_TEXTS_PER_CALL));
+      }
+      return out;
+    });
+  }
+
   private async load(): Promise<void> {
+    if (this.runtime === "worker") {
+      await this.loadInWorker();
+      return;
+    }
     // Dynamic import keeps the heavy WASM/ONNX runtime out of the test path.
     const moduleName = "@huggingface/transformers";
     let transformers: { pipeline: XenovaPipelineFactory; env?: XenovaEnv };
@@ -306,16 +393,52 @@ export class XenovaEmbedder implements EmbedBackend {
         dtype: this.dtype,
       });
     } catch (err) {
-      if (isXenovaOffline()) {
-        throw new Error(
-          `Offline embeddings model "${this.model}" was not found in the local cache ` +
-            `(TRANSFORMERS_CACHE=${process.env.TRANSFORMERS_CACHE ?? "<unset>"}). ` +
-            "Pre-bake the model into the image, or unset HF_HUB_OFFLINE to allow a one-time download. " +
-            `Underlying error: ${(err as Error).message}`,
-        );
-      }
-      throw err;
+      throw this.loadError(err);
     }
+    const maxTokens = capTokenizerSequenceLength(this.pipeline, this.maxTokens);
+    this.afterLoad(maxTokens);
+  }
+
+  /** Issue #189 — load the model inside a worker_thread (the default runtime). */
+  private async loadInWorker(): Promise<void> {
+    log.info("loading xenova model", {
+      model: this.model,
+      pooling: this.pooling,
+      poolingSource: this.poolingSource,
+      dtype: this.dtype,
+      runtime: this.runtime,
+      offline: isXenovaOffline(),
+      cacheDir: process.env.TRANSFORMERS_CACHE ?? null,
+    });
+    try {
+      const pipeline = await createWorkerPipeline({
+        model: this.model,
+        dtype: this.dtype,
+        maxTokens: this.maxTokens,
+        transformersEnv: resolveXenovaEnvSettings(),
+        moduleUrl: this.workerModuleUrl,
+      });
+      this.pipeline = pipeline as unknown as XenovaPipeline;
+      this.afterLoad(pipeline.maxTokens);
+    } catch (err) {
+      throw this.loadError(err);
+    }
+  }
+
+  private loadError(err: unknown): Error {
+    if (isXenovaOffline()) {
+      return new Error(
+        `Offline embeddings model "${this.model}" was not found in the local cache ` +
+          `(TRANSFORMERS_CACHE=${process.env.TRANSFORMERS_CACHE ?? "<unset>"}). ` +
+          "Pre-bake the model into the image, or unset HF_HUB_OFFLINE to allow a one-time download. " +
+          `Underlying error: ${(err as Error).message}`,
+      );
+    }
+    return err as Error;
+  }
+
+  private afterLoad(maxTokens: number | null): void {
+    if (!this.pipeline) return;
     const declared = declaredPoolingFromConfig(this.pipeline.model?.config);
     if (declared && declared !== this.pooling) {
       log.warn(
@@ -329,6 +452,8 @@ export class XenovaEmbedder implements EmbedBackend {
       model: this.model,
       pooling: this.pooling,
       dtype: this.dtype,
+      runtime: this.runtime,
+      maxTokens,
     });
   }
 }
@@ -359,18 +484,29 @@ function isXenovaOffline(): boolean {
  */
 function applyXenovaOfflineEnv(env: XenovaEnv | undefined): void {
   if (!env) return;
+  Object.assign(env, resolveXenovaEnvSettings());
+}
+
+/**
+ * The transformers.js `env` fields to set — computed once here so the inline
+ * runtime and the worker (#189, which has its own transformers.js instance) apply
+ * the same values. Only resolved fields are present.
+ */
+export function resolveXenovaEnvSettings(): WorkerTransformersEnv {
+  const settings: WorkerTransformersEnv = {};
   if (process.env.TRANSFORMERS_CACHE) {
-    env.cacheDir = process.env.TRANSFORMERS_CACHE;
+    settings.cacheDir = process.env.TRANSFORMERS_CACHE;
   }
   if (isXenovaOffline()) {
-    env.allowRemoteModels = false;
-    env.allowLocalModels = true;
-    return;
+    settings.allowRemoteModels = false;
+    settings.allowLocalModels = true;
+    return settings;
   }
   const remoteHost = resolveRemoteHost(process.env);
   if (remoteHost) {
-    env.remoteHost = remoteHost;
+    settings.remoteHost = remoteHost;
   }
+  return settings;
 }
 
 function truncateAndNormalize(vec: number[], dim: number): number[] {
@@ -529,7 +665,7 @@ registerBackend(
     new XenovaEmbedder(
       cfg.model ?? process.env.EMBED_MODEL ?? DEFAULT_XENOVA_EMBED_MODEL,
       cfg.dimension ?? DEFAULT_EMBED_DIMENSION,
-      { pooling: cfg.pooling, dtype: cfg.dtype },
+      { pooling: cfg.pooling, dtype: cfg.dtype, runtime: cfg.inProcessRuntime },
     ),
   {
     label: "Xenova (in-process)",
@@ -555,6 +691,7 @@ registerBackend(
         matryoshka: true,
         pooling: cfg.pooling,
         dtype: cfg.dtype,
+        runtime: cfg.inProcessRuntime,
       },
     );
   },
