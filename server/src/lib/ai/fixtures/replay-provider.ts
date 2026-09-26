@@ -99,8 +99,21 @@ export class ReplayProvider implements AIProvider {
       }
       yield { type: "delta", content: `${token} ` };
     }
+    // #131 — a recorded response's native tool calls replay as tool_call chunks.
+    for (const call of record.response.toolCalls ?? []) {
+      yield {
+        type: "tool_call",
+        name: call.name,
+        arguments: call.args,
+        toolCallId: call.id,
+        native: true,
+      };
+    }
     yield { type: "usage", usage };
-    yield { type: "done" };
+    yield {
+      type: "done",
+      ...(record.response.finishReason ? { finishReason: record.response.finishReason } : {}),
+    };
   }
 
   async embed(texts: string[]): Promise<EmbedResult> {

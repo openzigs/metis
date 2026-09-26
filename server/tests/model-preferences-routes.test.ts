@@ -124,6 +124,22 @@ describe("GET /api/projects/:projectId/model-preferences", () => {
     expect(res.body.data.availableModels.length).toBeGreaterThan(0);
   });
 
+  it("describes the available models from the model catalog (#135)", async () => {
+    const res = await request(app)
+      .get("/api/projects/proj_1/model-preferences")
+      .set("Authorization", `Bearer ${token}`);
+    const sonnet = res.body.data.availableModels.find(
+      (m: { id: string }) => m.id === "us.anthropic.claude-sonnet-5",
+    );
+    expect(sonnet).toMatchObject({
+      name: "Claude Sonnet 5",
+      tier: "balanced",
+      contextWindow: 1_000_000,
+      price: { inputPerMTok: 2.2, outputPerMTok: 11 },
+      capabilities: { tools: true },
+    });
+  });
+
   it("returns the stored preference", async () => {
     prefs.set("proj_1", {
       projectId: "proj_1",

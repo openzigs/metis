@@ -396,11 +396,12 @@ All providers implement the same contract (`server/src/lib/ai/types.ts`):
 
 ```ts
 interface AIProvider {
-  key: ProviderKey;       // 'copilot-native' | 'bedrock-gateway' | 'local-gemma' | 'offline-stub'
+  key: ProviderKey;       // 'copilot-native' | 'bedrock-gateway' | 'local-gemma' | 'openai' | 'azure' | 'anthropic' | 'offline-stub'
   model: string;
   offline: boolean;
   capabilities?: ProviderCapabilities;                    // #1115 — see below
-  chat(messages, opts?):   Promise<ChatResponse>;
+  capabilitiesFor?(model): ProviderCapabilities;          // #131 — per model, from the model catalog
+  chat(messages, opts?):   Promise<ChatResponse>;         // ChatResponse.toolCalls?: {id, name, args}[]
   stream(messages, opts?): AsyncIterable<ChatChunk>;     // delta | tool_call | usage | done
   embed(texts, opts?):     Promise<EmbedResult>;          // 384-dim L2-normalised
   models():                Promise<string[]>;
@@ -428,11 +429,22 @@ if (supportsResponseFormat(provider)) opts.responseFormat = SCHEMA;
 
 | Adapter | `responseFormat` | `nativeToolCalls` |
 | --- | --- | --- |
-| `OpenAICompatibleProvider` = `BedrockDirectProvider` | ✅ (#336, with degrade-retry) | ❌ |
-| `AnthropicProvider` | ❌ | ❌ |
+| `OpenAICompatibleProvider` = `BedrockDirectProvider` | ✅ (#336, with degrade-retry) | ✅ (#132) |
+| `AnthropicProvider` (native endpoint) | ✅ `json_schema` as `output_config.format` (#133, with degrade-retry) | ✅ (#133) |
+| `AnthropicProvider` (DeepSeek Anthropic-compatible endpoint) | ❌ (DeepSeek accepts only `effort` in `output_config`) | ✅ |
 | `CopilotProvider` | ❌ (absent in copilot-sdk 0.3.0 **and** 1.0.8) | ✅ |
-| `OfflineStubProvider` / `ReplayProvider` | ❌ | ❌ |
+| `OfflineStubProvider` | ❌ | ✅ only when constructed with a `script` (#131) |
+| `ReplayProvider` | ❌ | ❌ (replays recorded tool calls, #131) |
 | `RecordingProvider` | forwards the wrapped adapter's declaration | forwards |
+
+These are the adapter-wide answers. Since #131 an adapter that serves many
+models also answers **per model** through `capabilitiesFor(model)`, fed by the
+model catalog (#135): `resolveCapabilities(provider, model)`,
+`providerSupports(provider, cap, model)` and
+`supportsResponseFormat(provider, model, "json_schema" | "json_object")` read it.
+A model the catalog marks not tool-capable is never sent `tools` (dropped with a
+one-time warning); a local runtime that 400s `does not support tools` is retried
+once without them and remembered per model, like the #336/#1229/#176 probes.
 
 Two rules make the seam safe to build on:
 
@@ -445,17 +457,51 @@ Two rules make the seam safe to build on:
   probe.
 
 `nativeToolCalls` distinguishes `tool_call` chunks emitted by the backend's own
-tool channel from ones `providers/tool-tag-parser.ts` scraped out of prose —
-which is the measurement that would justify eventually retiring that parser.
+tool channel (they carry `native: true` and a `toolCallId`) from ones
+`providers/tool-tag-parser.ts` scraped out of prose — which is the measurement
+that would justify eventually retiring that parser.
 
-The factory (`buildProvider`) reads `loadAIConfig(env)` and returns:
+#### Native tool calls and structured output (#131–#133)
 
-| `AI_OFFLINE` | `COPILOT_PROVIDER_TYPE` | Selected provider |
+`ChatOptions.tools` (`{ name, description, parameters: JSONSchema }[]`) and
+`toolChoice` (`auto` | `none` | `required` | `{ name }`) are hand-rolled onto the
+two wire formats METIS already has clients for — no new framework:
+
+| | OpenAI-compatible (`OpenAICompatibleProvider`) | Anthropic Messages (`AnthropicProvider`, official `@anthropic-ai/sdk`) |
 | --- | --- | --- |
-| `1` (or no Copilot SDK reachable) | — | `OfflineStubProvider` |
-| `0` | unset | `CopilotProvider` (real Copilot accounts) |
-| `0` | `bedrock-gateway` | `CopilotProvider` configured for the internal Bedrock gateway |
-| `0` | `openai` / `azure` / `anthropic` | `CopilotProvider` with BYOK base-URL + API key (R-SDK-14) |
+| tools | `tools[].function` + `tool_choice` | `tools[].input_schema` + `tool_choice` (`required` → `any`) |
+| calls out | `message.tool_calls`; streamed `delta.tool_calls` assembled by `index` (`ToolCallDeltaAssembler`) | `tool_use` blocks (streamed calls read from the SDK's final message) |
+| results in | assistant `tool_calls` + `role: "tool"` / `tool_call_id` | assistant `tool_use` + one user turn of `tool_result` blocks |
+| structured output | `response_format` `json_schema` \| `json_object` | `output_config.format` (schema fitted by the SDK's `transformJSONSchema`) |
+| Azure | `{endpoint}/openai/deployments/{deployment}/chat/completions?api-version=…`, `api-key` header | — |
+
+Tool definitions sit inside Anthropic's cacheable prefix (the API renders
+`tools` before `system`): a system breakpoint covers them, and with no system
+prompt the last tool carries the breakpoint. `OfflineStubProvider({ script })`
+replays scripted turns, tool calls included, so a tool loop runs with no network.
+`server/tests/lib/ai/provider-contract/` holds the shared contract suite; the
+matrix test runs it for every provider key through the real factory.
+
+#### Model catalog (#135)
+
+`server/src/lib/ai/model-catalog.ts` is the one list of models: context window,
+output ceiling, capabilities and price, served at `GET /api/ai/models`
+(`?scope=router` for the analysis ModelRouter's models) and rendered by every UI
+model picker. Prices are never written there — each entry reads
+`resolveRate()` from `finops/provider-rates.ts`, the function usage is billed
+with. Sources, later wins: builtin rows → local discovery (`GET {base}/models`,
+Ollama `POST /api/show` for context length and capabilities; bounded, cached
+60 s, only from the route) → `AI_MODEL_CATALOG_OVERRIDES` (operator JSON keyed
+`"<provider>:<model>"`).
+
+The factory (`buildProvider`) reads `loadAIConfig(env)` and returns (#134):
+
+| `AI_PROVIDER` | Selected provider |
+| --- | --- |
+| `offline-stub` / `AI_OFFLINE=1` | `OfflineStubProvider` |
+| `anthropic` | `AnthropicProvider` (native, or DeepSeek via `ANTHROPIC_BASE_URL`) |
+| `local-gemma` / `bedrock-gateway` / `openai` / `azure` | `OpenAICompatibleProvider` (direct HTTP) |
+| `copilot-native` | `CopilotProvider` — the ONLY key that still reaches the Copilot SDK wrapper (removed in P4, #130) |
 
 `loadAIConfig` validates env via zod and refuses public LLM hosts (`api.openai.com`, `api.anthropic.com`, etc.) so a stray env var cannot exfiltrate prompts.
 
@@ -465,17 +511,18 @@ For structured-output workloads (analysis, doc generation) and the local Gemma
 path, METIS bypasses the agentic Copilot SDK and talks to the backend's
 OpenAI-compatible `/v1/chat/completions` endpoint directly via
 `OpenAICompatibleProvider` (exported with a `BedrockDirectProvider` alias for
-back-compat). Because `factory.ts`'s `isCopilotKey()` returns `true` for every
-non-offline key, these providers are **intercepted before the factory** in both
-`server.ts` and `routes/analysis.ts`:
+back-compat). These keys are also **intercepted before the factory** in both
+`server.ts` and `routes/analysis.ts` (historical; since #134 the factory builds
+the identical client, so the two paths cannot diverge):
 
 ```text
 loadAIConfig() ─▶ provider === 'bedrock-gateway' || 'local-gemma'  ──▶ new OpenAICompatibleProvider({ providerKey, baseUrl, apiKey, model })
                   (otherwise)                                       ──▶ buildProvider() → CopilotProvider / OfflineStub
 ```
 
-`buildProvider` also carries a defensive guard so `local-gemma` never falls
-into the SDK wrapper even if it reaches the factory. Provider selection is a
+`buildProvider` builds the same direct client for `local-gemma`,
+`bedrock-gateway`, `openai` and `azure` (#134), so none of them falls into the
+SDK wrapper. Provider selection is a
 pure `AI_PROVIDER` config switch (env or runtime tunable) — no code change is
 needed to move between Bedrock and local Gemma, and each provider keeps its own
 default model (`us.anthropic.claude-sonnet-4-6` vs `gemma4:12b`).

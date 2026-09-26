@@ -50,6 +50,8 @@ export * from "./net/index.js";
 // #1296 — the AGPL-3.0 §13 network source offer, shared by the `/source` route and
 // the UI footer so the two can never disagree about the running commit.
 export * from "./source-offer.js";
+// #135 — the model catalog wire shape (`GET /api/ai/models`, every model picker).
+export * from "./model-catalog.js";
 
 export const SHARED_PACKAGE_NAME = "@metis/shared";
 

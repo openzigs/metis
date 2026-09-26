@@ -73,6 +73,15 @@ const makeCopilot = () =>
   });
 
 const makeAnthropic = () => new AnthropicProvider({ apiKey: "k", model: "claude-sonnet-4-6" });
+// #133 — DeepSeek's Anthropic-compatible endpoint accepts only `effort` inside
+// `output_config`, so this is the Anthropic-client configuration that still
+// DROPS a response format (and must say so).
+const makeDeepSeek = () =>
+  new AnthropicProvider({
+    apiKey: "k",
+    model: "deepseek-v4-pro",
+    baseUrl: "https://api.deepseek.com/anthropic",
+  });
 
 /**
  * The declaration table. Every adapter METIS can hand to calling code appears
@@ -86,12 +95,12 @@ const ADAPTERS: Array<{
   nativeToolCalls: boolean;
 }> = [
   {
-    // Same class as BedrockDirectProvider — the ONLY adapter that forwards
-    // `response_format` (with a one-shot degrade retry). See #336.
+    // Same class as BedrockDirectProvider — forwards `response_format` (with a
+    // one-shot degrade retry, #336) and, since #132, native `tools`.
     name: "OpenAICompatibleProvider",
     build: makeOpenAICompatible,
     responseFormat: true,
-    nativeToolCalls: false,
+    nativeToolCalls: true,
   },
   {
     name: "BedrockDirectProvider",
@@ -105,16 +114,21 @@ const ADAPTERS: Array<{
         sleepFn: async () => undefined,
       }),
     responseFormat: true,
-    nativeToolCalls: false,
+    nativeToolCalls: true,
   },
   {
-    // The native Anthropic Messages API has no `response_format` field, and
-    // this adapter sends no `tools` — tool calls only ever arrive as prose that
-    // `tool-tag-parser.ts` scrapes.
+    // #133 — `json_schema` rides `output_config.format`; `tools` are sent and
+    // `tool_use` blocks come back as typed calls.
     name: "AnthropicProvider",
     build: makeAnthropic,
+    responseFormat: true,
+    nativeToolCalls: true,
+  },
+  {
+    name: "AnthropicProvider (DeepSeek endpoint)",
+    build: makeDeepSeek,
     responseFormat: false,
-    nativeToolCalls: false,
+    nativeToolCalls: true,
   },
   {
     // copilot-sdk exposes no structured output in 0.3.0 OR 1.0.8, but it does
@@ -198,14 +212,14 @@ describe("declaration matches observable behaviour", () => {
     }
   });
 
-  it("AnthropicProvider declares false AND sends no response_format to the SDK", async () => {
+  it("AnthropicProvider (DeepSeek) declares false AND sends no response_format to the SDK", async () => {
     createSpy.mockResolvedValue({
       content: [{ type: "text", text: "hi" }],
-      model: "claude-sonnet-4-6",
+      model: "deepseek-v4-pro",
       usage: { input_tokens: 1, output_tokens: 1 },
     });
 
-    const provider = makeAnthropic();
+    const provider = makeDeepSeek();
     expect(supportsResponseFormat(provider)).toBe(false);
 
     await provider.chat([{ role: "user", content: "hi" }], { responseFormat: SCHEMA });
@@ -214,6 +228,25 @@ describe("declaration matches observable behaviour", () => {
     expect(params).not.toHaveProperty("response_format");
     expect(params).not.toHaveProperty("responseFormat");
     expect(JSON.stringify(params)).not.toContain("json_schema");
+  });
+
+  it("AnthropicProvider (native) declares true AND sends the schema as output_config.format", async () => {
+    createSpy.mockResolvedValue({
+      content: [{ type: "text", text: "{}" }],
+      model: "claude-sonnet-4-6",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+    const provider = makeAnthropic();
+    expect(supportsResponseFormat(provider)).toBe(true);
+    await provider.chat([{ role: "user", content: "hi" }], { responseFormat: SCHEMA });
+    const params = createSpy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(params.output_config).toEqual({
+      // Fitted to the Messages API subset by the SDK's transformJSONSchema.
+      format: {
+        type: "json_schema",
+        schema: { type: "object", properties: {}, additionalProperties: false },
+      },
+    });
   });
 });
 
@@ -231,7 +264,8 @@ describe("a dropped responseFormat is audible, not silent", () => {
   });
 
   it("AnthropicProvider warns once — not per call — when it drops a schema", async () => {
-    const provider = makeAnthropic();
+    // The DeepSeek endpoint is where the Anthropic client still drops a schema.
+    const provider = makeDeepSeek();
 
     await provider.chat([{ role: "user", content: "hi" }], { responseFormat: SCHEMA });
     await provider.chat([{ role: "user", content: "hi" }], { responseFormat: SCHEMA });
@@ -244,7 +278,7 @@ describe("a dropped responseFormat is audible, not silent", () => {
   });
 
   it("AnthropicProvider stays silent when no schema is supplied", async () => {
-    await makeAnthropic().chat([{ role: "user", content: "hi" }]);
+    await makeDeepSeek().chat([{ role: "user", content: "hi" }]);
 
     expect(dropWarnings()).toHaveLength(0);
   });

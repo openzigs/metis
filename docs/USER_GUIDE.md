@@ -2271,6 +2271,9 @@ Both fields persist on the `Project` row and are read at session-create time. Th
 
 > **Docker / Kubernetes:** the validator accepts only `localhost` and IP literals, so internal DNS **service names** such as `http://ollama:11434/v1` are intentionally rejected (this keeps the SSRF surface tight). In containers, point `LOCAL_GEMMA_BASE_URL` at a loopback or IP address instead — e.g. host networking with `127.0.0.1`, or the Ollama container/pod IP like `http://10.0.0.12:11434/v1`.
 
+> **OpenAI and Azure OpenAI** talk to the API directly (no Copilot SDK, #134). OpenAI: `AI_PROVIDER=openai`, `OPENAI_BASE_URL=https://api.openai.com/v1`, `OPENAI_API_KEY`. Azure: `AI_PROVIDER=azure`, `AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com`, `AZURE_OPENAI_API_KEY`, optional `AZURE_OPENAI_DEPLOYMENT` (defaults to the model id) and `AZURE_OPENAI_API_VERSION` (default `2024-10-21`). The older `COPILOT_PROVIDER_BASE_URL` / `COPILOT_PROVIDER_API_KEY` still work as fallbacks.
+
+> **Which models can I pick?** Every model picker (project **Model Preferences** and the custom-agent wizard) lists the server's model catalog (`GET /api/ai/models`): name, context window, price per million tokens and capabilities (tools, JSON schema, JSON object, vision, thinking). For a local runtime the catalog asks the runtime which models it serves and their context length. Correct anything it cannot know with `AI_MODEL_CATALOG_OVERRIDES`, a JSON object keyed `"<provider>:<model>"`, e.g. `{"local-gemma:laguna-s-2.1":{"contextWindow":262144,"capabilities":{"jsonSchema":false}}}`. A model marked `"tools": false` is never sent tools.
 
 ### 14.6 Cross-Project Search
 

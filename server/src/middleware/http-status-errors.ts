@@ -115,6 +115,7 @@ export const HTTP_STATUS_ERROR_CLASSES: Readonly<Record<string, StatusProvenance
   SqlLineageClientError: "upstream", // SQL-lineage sidecar
   StructuredOutputRejectedError: "upstream", // Bedrock structured-output probe
   TemperatureUnsupportedError: "upstream", // Bedrock `temperature` deprecation probe
+  ToolsRejectedError: "upstream", // local runtime `tools` probe (#132)
 };
 
 /** A code is echoed only if it is a bare machine identifier. */

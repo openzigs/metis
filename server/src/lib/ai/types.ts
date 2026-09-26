@@ -1,10 +1,13 @@
 /**
  * Core types for the METIS AI engine.
  *
- * Two provider implementations live behind the {@link AIProvider} interface
- * (`copilot-native`, `bedrock-gateway`) plus an offline deterministic stub
- * used when `AI_OFFLINE=1` or no SDK is reachable. Keeping the surface tiny
- * lets routes/middleware speak one shape regardless of backend.
+ * Every model backend implements the {@link AIProvider} contract (#131): the
+ * OpenAI-compatible client (`local-gemma`, `bedrock-gateway`, `openai`,
+ * `azure`), the Anthropic Messages client (`anthropic`), the Copilot SDK
+ * adapter (`copilot-native`, removed in P4) and the offline deterministic stub.
+ * The contract covers chat/stream, native tool calls, structured output,
+ * cache-aware usage and per-model capabilities, so routes and middleware speak
+ * one shape regardless of backend.
  */
 import type { z } from "zod";
 import type { ProviderCapabilities } from "./capabilities.js";
@@ -17,6 +20,7 @@ export type {
 export {
   NO_PROVIDER_CAPABILITIES,
   providerSupports,
+  resolveCapabilities,
   supportsResponseFormat,
 } from "./capabilities.js";
 
@@ -73,7 +77,49 @@ export function messageText(msg: Pick<ChatMessage, "content">): string {
     .join("\n");
 }
 
+// ── Native tool calls (#131) ───────────────────────────────────────────
+
+/**
+ * #131 — one tool the model may call, in the provider-neutral shape both wire
+ * formats derive from: OpenAI-compatible `tools[].function` and Anthropic
+ * `tools[]` (`input_schema`). `parameters` is a JSON Schema object describing
+ * the arguments; it is forwarded verbatim, never interpreted here.
+ */
+export interface ChatToolSpec {
+  name: string;
+  description: string;
+  /** JSON Schema (`{ type: "object", properties, required }`) for the arguments. */
+  parameters: Record<string, unknown>;
+}
+
+/**
+ * #131 — how the model may use {@link ChatOptions.tools}:
+ *   • `"auto"`     — the model decides (the default when tools are supplied);
+ *   • `"none"`     — tools are described but must not be called;
+ *   • `"required"` — the model must call at least one tool;
+ *   • `{ name }`   — the model must call exactly that tool.
+ */
+export type ChatToolChoice = "auto" | "none" | "required" | { name: string };
+
+/**
+ * #131 — a tool call the model made, parsed from the provider's NATIVE channel
+ * (OpenAI `tool_calls`, Anthropic `tool_use`) — never scraped from prose.
+ * `args` is the parsed JSON arguments object; when a runtime returns arguments
+ * that are not valid JSON the raw string is kept so nothing is silently lost.
+ */
+export interface ChatToolCall {
+  /** Provider-assigned id; echo it back as the tool result's `toolCallId`. */
+  id: string;
+  name: string;
+  args: unknown;
+}
+
 export interface ChatMessage {
+  /**
+   * `"tool"` is the tool-RESULT role (#131): a message carrying the output of a
+   * tool call, correlated by {@link toolCallId}. Providers serialise it as an
+   * OpenAI `role: "tool"` message or an Anthropic `tool_result` block.
+   */
   role: ChatRole;
   /** String for text-only messages, or an array of content blocks for multimodal. */
   content: string | ChatContentPart[];
@@ -81,6 +127,14 @@ export interface ChatMessage {
   name?: string;
   /** Tool-call id correlating the response to the request. */
   toolCallId?: string;
+  /**
+   * #131 — on an `assistant` message: the tool calls that turn made. Replayed
+   * to the provider so the following `tool` results have a call to answer —
+   * both wire formats reject an orphaned tool result.
+   */
+  toolCalls?: ChatToolCall[];
+  /** #131 — on a `tool` message: the tool failed (Anthropic `is_error`). */
+  isError?: boolean;
 }
 
 export interface TokenUsage {
@@ -116,11 +170,28 @@ export interface ChatResponse {
    * Optional: most adapters do not surface it, so treat absence as unknown.
    */
   finishReason?: string;
+  /**
+   * #131 — tool calls the model made on the provider's native channel, in the
+   * order the model emitted them. Absent when the model called no tool.
+   */
+  toolCalls?: ChatToolCall[];
 }
 
 export type ChatChunk =
   | { type: "delta"; content: string }
-  | { type: "tool_call"; name: string; arguments: unknown; toolCallId?: string }
+  /**
+   * A tool call. #131 — a call from a provider's NATIVE channel always carries
+   * `toolCallId` (the {@link ChatToolCall.id}) and `arguments` holds the parsed
+   * {@link ChatToolCall.args}; `native: true` marks it. A chunk without
+   * `native` was recovered from `<tool_call>` text by `tool-tag-parser.ts`.
+   */
+  | {
+      type: "tool_call";
+      name: string;
+      arguments: unknown;
+      toolCallId?: string;
+      native?: boolean;
+    }
   | { type: "usage"; usage: TokenUsage }
   /**
    * Terminal chunk. `finishReason` (#1226) is the streaming counterpart of
@@ -274,22 +345,25 @@ export interface ChatOptions {
   presencePenalty?: number;
   seed?: number;
   /**
-   * #336 — request schema-constrained ("structured") output. Honoured ONLY by
-   * the OpenAICompatibleProvider (a.k.a. BedrockDirectProvider — one class,
-   * two exported names), which sends it as the OpenAI-compatible
-   * `response_format` request field so a vLLM (xgrammar) / OpenAI runtime
-   * decodes JSON that validates against the schema.
+   * #336 — request schema-constrained ("structured") output. Honoured by:
+   *   • the OpenAICompatibleProvider (a.k.a. BedrockDirectProvider — one class,
+   *     two exported names), which sends it as the OpenAI-compatible
+   *     `response_format` field (`json_schema` or `json_object`) so a vLLM
+   *     (xgrammar) / OpenAI runtime decodes JSON that validates against it;
+   *   • #133 — the AnthropicProvider on the native endpoint, which sends a
+   *     `json_schema` as `output_config.format` (`json_object` has no Messages
+   *     API equivalent and is dropped).
    *
-   * That provider degrades gracefully: if the runtime rejects the field with a
-   * client error (e.g. an Ollama build that does not support it), the call is
-   * retried ONCE without `response_format` and logged once, so the caller's
-   * existing free-form JSON parse/repair path still runs. Undefined = unchanged
-   * request (the default), so no existing behaviour is affected.
+   * Both degrade gracefully: if the runtime rejects the field with a client
+   * error (e.g. an Ollama build that does not support it), the call is retried
+   * ONCE without it and logged, so the caller's existing free-form JSON
+   * parse/repair path still runs. Undefined = unchanged request (the default).
    *
-   * **#1115 — every OTHER adapter DROPS this option.** The Anthropic Messages
-   * API, the Copilot SDK (neither 0.2.2 nor 1.0.8) and the offline stub have no
-   * equivalent field, so supplying a schema there yields unconstrained text.
-   * Do not guess which provider you are on — probe first:
+   * **#1115 — every other adapter DROPS this option**: the Copilot SDK (neither
+   * 0.2.2 nor 1.0.8), DeepSeek's Anthropic-compatible endpoint (only `effort`
+   * is accepted in `output_config`) and the offline stub yield unconstrained
+   * text. Do not guess which provider you are on — probe first (per model, and
+   * per mode when it matters: `supportsResponseFormat(provider, model, mode)`):
    *
    * ```ts
    * if (supportsResponseFormat(provider)) opts.responseFormat = SCHEMA;
@@ -301,6 +375,16 @@ export interface ChatOptions {
    * {@link ProviderCapabilities}.
    */
   responseFormat?: ResponseFormat;
+  /**
+   * #131 — tools the model may call natively. Honoured by adapters whose
+   * capabilities for the requested model report `nativeToolCalls` (see
+   * {@link AIProvider.capabilitiesFor}); an adapter or model that cannot take
+   * tools drops them with a one-time warning rather than failing the call.
+   * Calls come back on {@link ChatResponse.toolCalls} / `tool_call` chunks.
+   */
+  tools?: ChatToolSpec[];
+  /** #131 — see {@link ChatToolChoice}. Ignored when `tools` is empty. */
+  toolChoice?: ChatToolChoice;
 }
 
 export interface EmbedResult {
@@ -402,6 +486,15 @@ export interface AIProvider {
    * {@link providerSupports} / {@link supportsResponseFormat}, never inline.
    */
   readonly capabilities?: ProviderCapabilities;
+  /**
+   * #131 — capabilities for ONE model on this adapter. Local runtimes differ
+   * per model (`laguna-s-2.1` ignores `json_schema` but honours
+   * `json_object`), so an adapter that serves many models resolves them from
+   * the model catalog (#135). Optional: read it through
+   * `resolveCapabilities(provider, model)`, which falls back to
+   * {@link capabilities} and then to "supports nothing".
+   */
+  capabilitiesFor?(model: string): ProviderCapabilities;
 
   chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResponse>;
   stream(messages: ChatMessage[], opts?: ChatOptions): AsyncGenerator<ChatChunk>;

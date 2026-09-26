@@ -75,11 +75,22 @@ export interface ProviderCapabilities {
    * model improvised into its visible output. That parser is a symptom of this
    * capability being absent, not a substitute for it.
    *
-   * NOTE: this describes the *channel*, not caller-supplied tools. METIS does
-   * not currently register tools with any provider SDK; `ChatOptions` has no
-   * field for them.
+   * #131 — on the direct adapters this also means caller-supplied
+   * `ChatOptions.tools` are SENT to the backend; when it is `false` for the
+   * requested model they are dropped (with a one-time warning), never sent.
    */
   nativeToolCalls: boolean;
+  /**
+   * #131 — `response_format: { type: "json_schema" }` is honoured. When absent,
+   * {@link responseFormat} answers for both modes (the pre-#131 reading).
+   */
+  jsonSchema?: boolean;
+  /** #131 — `response_format: { type: "json_object" }` is honoured. */
+  jsonObject?: boolean;
+  /** #135 — the model accepts image input. Informational (catalog-fed). */
+  vision?: boolean;
+  /** #135 — the model has a thinking/reasoning mode. Informational (catalog-fed). */
+  thinking?: boolean;
 }
 
 /** Every capability name, for callers that want to enumerate or key on them. */
@@ -102,6 +113,29 @@ export const NO_PROVIDER_CAPABILITIES: Readonly<ProviderCapabilities> = Object.f
  */
 export interface CapabilityProbeTarget {
   readonly capabilities?: ProviderCapabilities;
+  /** #131 — per-model resolution; see `AIProvider.capabilitiesFor`. */
+  capabilitiesFor?(model: string): ProviderCapabilities;
+}
+
+/**
+ * #131 — the capabilities in force for `model` on `provider`: the adapter's
+ * per-model answer when it has one and a model is named, else its static
+ * record, else {@link NO_PROVIDER_CAPABILITIES}. Never throws — a failing
+ * per-model lookup degrades to the static record.
+ */
+export function resolveCapabilities(
+  provider: CapabilityProbeTarget | null | undefined,
+  model?: string,
+): Readonly<ProviderCapabilities> {
+  if (!provider) return NO_PROVIDER_CAPABILITIES;
+  if (model && typeof provider.capabilitiesFor === "function") {
+    try {
+      return provider.capabilitiesFor(model);
+    } catch {
+      /* fall through to the static record */
+    }
+  }
+  return provider.capabilities ?? NO_PROVIDER_CAPABILITIES;
 }
 
 /**
@@ -119,8 +153,9 @@ export interface CapabilityProbeTarget {
 export function providerSupports(
   provider: CapabilityProbeTarget | null | undefined,
   capability: CapabilityName,
+  model?: string,
 ): boolean {
-  return provider?.capabilities?.[capability] === true;
+  return resolveCapabilities(provider, model)[capability] === true;
 }
 
 /**
@@ -131,8 +166,14 @@ export function providerSupports(
  */
 export function supportsResponseFormat(
   provider: CapabilityProbeTarget | null | undefined,
+  model?: string,
+  mode?: "json_schema" | "json_object",
 ): boolean {
-  return providerSupports(provider, "responseFormat");
+  const caps = resolveCapabilities(provider, model);
+  if (caps.responseFormat !== true) return false;
+  if (mode === "json_schema") return caps.jsonSchema ?? true;
+  if (mode === "json_object") return caps.jsonObject ?? true;
+  return true;
 }
 
 /** The subset of a logger this module needs. */
@@ -164,6 +205,28 @@ export function createUnsupportedResponseFormatWarner(
       "Ignoring ChatOptions.responseFormat — this provider does not support schema-constrained output; " +
         "the response will be free-form text. Probe with providerSupports(provider, 'responseFormat') to branch.",
       { provider: providerKey, capability: "responseFormat" },
+    );
+  };
+}
+
+/**
+ * #131 — the tools counterpart of {@link createUnsupportedResponseFormatWarner}:
+ * an adapter (or a model the catalog marks as not tool-capable) that receives
+ * `ChatOptions.tools` drops them and calls this, which logs ONCE per model.
+ * Tool names and schemas are never logged — only the count.
+ */
+export function createUnsupportedToolsWarner(
+  log: CapabilityWarnLogger,
+  providerKey: string,
+): (model: string, tools: readonly unknown[] | undefined) => void {
+  const warned = new Set<string>();
+  return (model: string, tools: readonly unknown[] | undefined): void => {
+    if (!tools || tools.length === 0 || warned.has(model)) return;
+    warned.add(model);
+    log.warn(
+      "Dropping ChatOptions.tools — this model is not tool-capable on this provider; " +
+        "the request is sent without tools. Probe with providerSupports(provider, 'nativeToolCalls', model).",
+      { provider: providerKey, model, toolCount: tools.length, capability: "nativeToolCalls" },
     );
   };
 }

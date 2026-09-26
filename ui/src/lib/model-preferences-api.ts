@@ -2,6 +2,7 @@
  * Typed wrappers around the model preference + recommendation endpoints
  * (Epic #593 / Issues #600, #602).
  */
+import type { ModelCatalogEntry } from "@metis/shared";
 import { apiFetch } from "@/lib/api-client";
 
 export type ModelOverride = "auto" | "force-haiku" | "force-sonnet" | "force-fable" | "force-opus";
@@ -11,7 +12,18 @@ export interface ModelPreferencesData {
   defaultModel: string | null;
   taskTypeOverrides: Record<string, string>;
   budgetDowngradeThreshold: number | null;
-  availableModels: Array<{ id: string; name: string; tier: string }>;
+  /**
+   * #135 — the router's selectable models, described by the server's model
+   * catalog. The settings picker renders from this list only.
+   */
+  availableModels: Array<{
+    id: string;
+    name: string;
+    tier: string;
+    contextWindow?: number | null;
+    price?: ModelCatalogEntry["price"];
+    capabilities?: ModelCatalogEntry["capabilities"];
+  }>;
 }
 
 export interface ModelPreferencesInput {

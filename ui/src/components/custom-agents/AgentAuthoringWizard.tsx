@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { sdkApi, type CreateCustomAgentInput } from "@/lib/sdk-alignment-api";
 import { projectsApi } from "@/lib/projects-api";
+import { modelCatalogApi, formatModelPrice } from "@/lib/model-catalog-api";
 import type { SdkReasoningEffort } from "@metis/shared";
 
 /**
@@ -67,14 +68,8 @@ const AVAILABLE_TOOLS: readonly string[] = [
   "create_issue",
 ] as const;
 
-/** Model choices in step 4. `""` ⇒ inherit the workspace/project default. */
-const MODEL_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: "", label: "Default (project/workspace)" },
-  { value: "us.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Claude Haiku 4.5" },
-  { value: "us.anthropic.claude-sonnet-5", label: "Claude Sonnet 5" },
-  { value: "us.anthropic.claude-fable-5", label: "Claude Fable 5" },
-  { value: "us.anthropic.claude-opus-4-8", label: "Claude Opus 4.8" },
-] as const;
+/** The "inherit" choice in step 4; the rest come from the model catalog (#135). */
+const DEFAULT_MODEL_OPTION = { value: "", label: "Default (project/workspace)" } as const;
 
 const REASONING_OPTIONS: ReadonlyArray<{ value: "" | SdkReasoningEffort; label: string }> = [
   { value: "", label: "Default" },
@@ -112,6 +107,18 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
     enabled: Boolean(workspaceId),
   });
   const projects = projectsQuery.data?.items ?? [];
+  // #135 — the configured provider's models, from the server-side catalog.
+  const modelsQuery = useQuery({
+    queryKey: ["ai-model-catalog", "provider"],
+    queryFn: () => modelCatalogApi.list(),
+  });
+  const modelOptions = [
+    DEFAULT_MODEL_OPTION,
+    ...(modelsQuery.data?.models ?? []).map((m) => {
+      const price = formatModelPrice(m);
+      return { value: m.id, label: price ? `${m.displayName} — ${price}` : m.displayName };
+    }),
+  ];
 
   function buildInput(): CreateCustomAgentInput {
     return {
@@ -304,7 +311,7 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
               >
-                {MODEL_OPTIONS.map((m) => (
+                {modelOptions.map((m) => (
                   <option key={m.value} value={m.value}>
                     {m.label}
                   </option>

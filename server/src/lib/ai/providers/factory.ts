@@ -1,6 +1,11 @@
 /**
  * Provider factory.
  *
+ * #134 — routing: `anthropic` → {@link AnthropicProvider}; `local-gemma`,
+ * `bedrock-gateway`, `openai`, `azure` → {@link OpenAICompatibleProvider};
+ * `offline-stub` → {@link OfflineStubProvider}; only `copilot-native` builds a
+ * {@link CopilotWrapper}-backed {@link CopilotProvider}.
+ *
  * Reads the loaded {@link AIConfig} and returns the right `AIProvider`
  * implementation. Two seams exist for tests:
  *   • `wrapperFactory`  — inject a custom CopilotWrapper (lets us pass a stub
@@ -16,7 +21,10 @@ import { CopilotWrapper, type CopilotWrapperOptions } from "../copilot-wrapper.j
 import type { AIConfig } from "../config.js";
 import type { AIProvider, ProviderKey } from "../types.js";
 import { CopilotProvider } from "./copilot-provider.js";
-import { OpenAICompatibleProvider } from "./openai-compatible-provider.js";
+import {
+  DEFAULT_AZURE_API_VERSION,
+  OpenAICompatibleProvider,
+} from "./openai-compatible-provider.js";
 import { OfflineStubProvider } from "./offline-stub-provider.js";
 import { AnthropicProvider } from "./anthropic-provider.js";
 import { RemoteCopilotClient, resolveCopilotNativeMode } from "../remote-copilot-client.js";
@@ -41,20 +49,18 @@ export interface BuildProviderOptions {
 const isCopilotKey = (key: ProviderKey): boolean => key !== "offline-stub";
 
 /**
- * Provider keys that MUST be served by the direct OpenAI-compatible HTTP
- * client and never by the Copilot SDK wrapper. `local-gemma` is intercepted
- * before the factory in `server.ts`/`analysis.ts`, but `isCopilotKey` would
- * otherwise return `true` for it — so this guard is the defensive backstop
- * that keeps it out of the SDK if construction ever reaches the factory
- * directly (#113).
- *
- * NOTE: `bedrock-gateway` is intentionally NOT listed. Its documented factory
- * behavior is to build a `CopilotProvider` configured for the gateway (the
- * BYOK path); the route layer separately intercepts it for the direct
- * structured-output client. Adding it here would change long-standing factory
- * semantics, so it is left untouched.
+ * Provider keys served by the direct OpenAI-compatible HTTP client (#134).
+ * Every key except `copilot-native`, `anthropic` (its own Messages client) and
+ * `offline-stub` is here, so NO key but `copilot-native` ever reaches the
+ * Copilot SDK wrapper. Before #134 `openai`, `azure` and `bedrock-gateway`
+ * fell through to the wrapper as bring-your-own-key sessions.
  */
-const DIRECT_OPENAI_COMPATIBLE_KEYS: ReadonlySet<ProviderKey> = new Set(["local-gemma"]);
+const DIRECT_OPENAI_COMPATIBLE_KEYS: ReadonlySet<ProviderKey> = new Set([
+  "local-gemma",
+  "bedrock-gateway",
+  "openai",
+  "azure",
+]);
 
 /**
  * Build the base provider from config. The public {@link buildProvider}
@@ -91,10 +97,12 @@ function buildBaseProvider(opts: BuildProviderOptions): AIProvider {
     });
   }
 
-  // Factory guard (#113): `local-gemma` must never route through the Copilot
-  // SDK. It is normally intercepted upstream; if it reaches the factory we
-  // build the direct client here from the resolved sdkProvider config instead
-  // of falling into the wrapper below.
+  // #113 / #134 — the direct OpenAI-compatible client. `local-gemma` and
+  // `bedrock-gateway` get exactly the construction `server.ts` / `analysis.ts`
+  // already used for them, so the local provider keeps every behaviour it has
+  // (thinking-off, the per-base-URL limiter, LOCAL_GEMMA_* timeouts, the
+  // structured-output / temperature / reasoning-effort fallbacks) — none of it
+  // is re-implemented here. `azure` adds its deployment URL + api-version.
   if (DIRECT_OPENAI_COMPATIBLE_KEYS.has(cfg.provider)) {
     if (!cfg.sdkProvider) {
       throw new AIProviderError(
@@ -107,6 +115,14 @@ function buildBaseProvider(opts: BuildProviderOptions): AIProvider {
       model: cfg.model,
       providerKey: cfg.provider,
       modelProfileMap: cfg.modelProfileMap,
+      ...(cfg.provider === "azure"
+        ? {
+            azure: {
+              apiVersion: cfg.sdkProvider.apiVersion ?? DEFAULT_AZURE_API_VERSION,
+              ...(cfg.sdkProvider.deployment ? { deployment: cfg.sdkProvider.deployment } : {}),
+            },
+          }
+        : {}),
     });
   }
 
