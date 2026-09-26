@@ -1275,8 +1275,12 @@ generated document held `/healthz` and every API request for minutes.
   cancelled while the queue was claiming it) never reaches that code, so the queue calls the
   registration's `onCancelledBeforeRun` hook instead, and the publication settles its placeholder
   row as cancelled there. At startup, `reconcileStrandedGeneratedDocPublications` settles any
-  synthetic row that no live task owns; a cancelled task outranks parked review chunks, so a
-  cancelled publication is never marked ready.
+  synthetic row that no live task owns; a cancelled or exhausted task outranks parked review
+  chunks, so such a publication is never marked ready. A `failed` synthetic row is not approvable
+  even with chunks still parked (#230): `rag/quarantine.ts` refuses it up front, re-checks it in
+  the winner-selection compare-and-set (so a cancel that lands mid-approval still stops it), and
+  leaves it out of `listQuarantine`. A user's retry of the task reopens the row to `processing`
+  before parking fresh chunks. Uploaded documents are unaffected.
 - **One ONNX thread per process.** `onnxruntime-node` aborts the process when sessions are live on
   two threads at once. For example, `RAG_RERANK=1` runs the in-process reranker on the main thread
   while the embedder runs in the worker. See #222. The sidecar backend avoids this, because every

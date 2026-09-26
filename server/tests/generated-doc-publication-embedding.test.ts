@@ -65,6 +65,7 @@ import {
   reconcileStrandedGeneratedDocPublications,
 } from "../src/lib/docs-gen/generated-doc-publication-recovery.js";
 import { generatedDocOutboxId } from "../src/lib/docs-gen/generated-doc-outbox.js";
+import { approveDocument, listQuarantine } from "../src/lib/rag/quarantine.js";
 import {
   createEvidencePolicy,
   resolveEvidencePolicy,
@@ -1049,6 +1050,230 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         expect(parseSyntheticDocumentId("gendoc-doc:")).toBeNull();
         expect(parseSyntheticDocumentId("gendoc-:x")).toBeNull();
         expect(parseSyntheticDocumentId("upload-1")).toBeNull();
+      });
+    });
+
+    /**
+     * #230 — a publication whose run ended `failed` (a user cancelled it, or its
+     * last attempt failed) can still hold parked chunks in `quarantine_chunks`
+     * with `indexState: quarantined`. Approval gated on `indexState` alone, so a
+     * reviewer could publish what the user cancelled. Every read below goes
+     * through the same path a consumer uses: `listQuarantine` (the review list),
+     * `approveDocument` (the approve route) and the `documents`/`knowledge_chunks`
+     * rows.
+     */
+    describe("#230 — a cancelled or failed publication is never approvable", () => {
+      const reviewer = { id: "initiator" };
+      const parkedCount = () =>
+        db.quarantineChunk.count({ where: { documentId: syntheticId(), ord: { gte: 0 } } });
+      const liveCount = () => db.knowledgeChunk.count({ where: { documentId: syntheticId() } });
+      const row = () => db.document.findUniqueOrThrow({ where: { id: syntheticId() } });
+      const listed = async () => (await listQuarantine("project")).map((d) => d.documentId);
+
+      /** Run the vector upsert, then do `after` — the step a concurrent actor takes. */
+      function afterNextVectorUpsert(after: () => unknown) {
+        const vector = state.vector as LocalStore;
+        const upsert = vector.upsert.bind(vector);
+        vi.spyOn(vector, "upsert").mockImplementationOnce(async (projectId, rows) => {
+          await upsert(projectId, rows);
+          await after();
+        });
+      }
+
+      /** The issue's shape: cancelled after the chunks were parked, before approval. */
+      async function cancelAfterParking() {
+        await version(1, largeDocument(5_000));
+        const controller = new AbortController();
+        afterNextVectorUpsert(() =>
+          controller.abort(new TaskAbortError("user", "cancelled by user")),
+        );
+        await expect(
+          publishGeneratedDocRevision(payload(), {
+            storage,
+            signal: controller.signal,
+            ...recordingEmbedder(),
+          }),
+        ).rejects.toThrow("cancelled by user");
+      }
+
+      /** An attempt that parked its chunks, then failed. */
+      async function failAfterParking(finalAttempt: boolean) {
+        await version(1, largeDocument(5_000));
+        vi.spyOn(state.vector as LocalStore, "upsert").mockRejectedValueOnce(
+          new Error("vector store offline"),
+        );
+        await expect(
+          publishGeneratedDocRevision(payload(), { storage, finalAttempt, ...recordingEmbedder() }),
+        ).rejects.toThrow("vector store offline");
+      }
+
+      async function expectCancelledAndUnapprovable(message: string) {
+        // The bug's precondition: the chunks are still parked and the row is
+        // still `quarantined` — only the guard stands between them and the index.
+        expect(await parkedCount()).toBeGreaterThan(0);
+        expect(await row()).toMatchObject({
+          status: "failed",
+          indexState: "quarantined",
+          errorMessage: message,
+        });
+        expect(await listed()).not.toContain(syntheticId());
+        await expect(approveDocument(syntheticId(), reviewer)).rejects.toThrow(
+          /not in approvable state/,
+        );
+        expect(await liveCount()).toBe(0);
+        // The #201 outcome is kept: a refused approval writes nothing.
+        expect(await row()).toMatchObject({
+          status: "failed",
+          indexState: "quarantined",
+          errorMessage: message,
+        });
+      }
+
+      it("a cancellation that lands after the chunks were parked is not approvable", async () => {
+        await cancelAfterParking();
+        await expectCancelledAndUnapprovable(
+          "generated-doc publication cancelled: cancelled by user",
+        );
+      });
+
+      it("a queued retry cancelled after an earlier attempt parked chunks is not approvable", async () => {
+        await failAfterParking(false);
+        // The earlier attempt left the row open for its retry, and reviewable.
+        expect(await row()).toMatchObject({ status: "processing", indexState: "quarantined" });
+        expect(await listed()).toContain(syntheticId());
+
+        await settleCancelledGeneratedDocPublication(payload(), "cancelled by initiator");
+
+        await expectCancelledAndUnapprovable(
+          "generated-doc publication cancelled: cancelled by initiator",
+        );
+      });
+
+      it("a publication whose last attempt failed after parking is not approvable", async () => {
+        await failAfterParking(true);
+        await expectCancelledAndUnapprovable(
+          "generated-doc publication failed: vector store offline",
+        );
+      });
+
+      it("a cancellation that lands during a reviewer's approval stops it before it commits", async () => {
+        await failAfterParking(false);
+        // The reviewer passed every up-front check; the user cancels while the
+        // approval is writing to the vector store.
+        afterNextVectorUpsert(() =>
+          settleCancelledGeneratedDocPublication(payload(), "cancelled by initiator"),
+        );
+        await expect(approveDocument(syntheticId(), reviewer)).rejects.toThrow(
+          /no longer approvable/,
+        );
+
+        expect(await liveCount()).toBe(0);
+        expect(await (state.vector as LocalStore).count("project")).toBe(0);
+        expect(await row()).toMatchObject({
+          status: "failed",
+          indexState: "quarantined",
+          errorMessage: "generated-doc publication cancelled: cancelled by initiator",
+        });
+        await expect(approveDocument(syntheticId(), reviewer)).rejects.toThrow(
+          /not in approvable state/,
+        );
+      });
+
+      it("a user's retry of the cancelled task reopens the row and publishes it", async () => {
+        await cancelAfterParking();
+        const result = await publishGeneratedDocRevision(payload(), {
+          storage,
+          ...recordingEmbedder(),
+        });
+        expect(result).toMatchObject({ status: "published" });
+        expect(await row()).toMatchObject({
+          status: "ready",
+          indexState: "indexed",
+          errorMessage: null,
+        });
+        expect(await liveCount()).toBeGreaterThan(0);
+      });
+
+      it("startup repair leaves a cancelled row cancelled and unapprovable", async () => {
+        await cancelAfterParking();
+        await db.task.create({
+          data: {
+            id: generatedDocOutboxId(payload()),
+            type: "publish-generated-document",
+            projectId: "project",
+            payload: JSON.stringify(payload()),
+            status: "cancelled",
+            errorMessage: "cancelled by user",
+          },
+        });
+        const before = await row();
+
+        const report = await reconcileStrandedGeneratedDocPublications({
+          dispatchTask: async () => {},
+        });
+
+        expect(Object.values(report).flat()).toEqual([]);
+        expect(await row()).toEqual(before);
+        await expectCancelledAndUnapprovable(
+          "generated-doc publication cancelled: cancelled by user",
+        );
+      });
+
+      it("startup repair settles an exhausted task with parked chunks as failed, never awaiting review", async () => {
+        // An attempt parked the chunks; the process died before the task's last
+        // attempt could record the outcome on the row.
+        await failAfterParking(false);
+        await db.task.create({
+          data: {
+            id: generatedDocOutboxId(payload()),
+            type: "publish-generated-document",
+            projectId: "project",
+            payload: JSON.stringify(payload()),
+            status: "failed",
+            errorMessage: "vector store offline",
+            attempts: 3,
+          },
+        });
+
+        const report = await reconcileStrandedGeneratedDocPublications({
+          dispatchTask: async () => {},
+        });
+
+        expect(report.failed).toEqual([syntheticId()]);
+        expect(report.finalized).toEqual([]);
+        await expectCancelledAndUnapprovable(
+          "generated-doc publication failed: vector store offline",
+        );
+      });
+
+      it("an uploaded document's approval is unchanged: the guard is generated-doc only", async () => {
+        await db.document.create({
+          data: {
+            id: "upload-1",
+            projectId: "project",
+            filename: "notes.md",
+            mimeType: "text/markdown",
+            sizeBytes: 5,
+            storagePath: "notes.md",
+            checksum: "hash",
+            status: "failed",
+            indexState: "quarantined",
+            uploadedById: "initiator",
+          },
+        });
+        await db.quarantineChunk.create({
+          data: {
+            id: "upload-1#0",
+            documentId: "upload-1",
+            projectId: "project",
+            ord: 0,
+            text: "uploaded text",
+            embedding: "[1,0]",
+            metadata: JSON.stringify({ md5: "hash", embeddingModel: "test" }),
+          },
+        });
+        expect(await listed()).toContain("upload-1");
+        await expect(approveDocument("upload-1", reviewer)).resolves.toEqual({ chunkCount: 1 });
       });
     });
   },

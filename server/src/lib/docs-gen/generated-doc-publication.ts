@@ -255,6 +255,7 @@ async function publishRevision(
       uploadedById: policy.actor.userId,
     },
   });
+  await reopenFailedPublication(syntheticDocumentId, payload.projectId);
 
   const fencedBeforeChunkWrite = await readPublicationSnapshot(payload);
   if (fencedBeforeChunkWrite.status !== "publishable") {
@@ -385,6 +386,29 @@ export async function markAwaitingReview(
   await prisma.document.updateMany({
     where: { id: syntheticDocumentId, projectId, deletedAt: null, indexState: "quarantined" },
     data: { status: "ready", errorMessage: null, processedAt: new Date() },
+  });
+}
+
+/**
+ * #230 — a failed or cancelled publication is not approvable (`quarantine.ts`).
+ * A new run of it — a user's retry of the task — is a publication in flight
+ * again, so it reopens the row before parking fresh chunks; without this the
+ * retry's own approval, and its review, would be refused. A row that has since
+ * been published or deleted is left alone.
+ */
+async function reopenFailedPublication(
+  syntheticDocumentId: string,
+  projectId: string,
+): Promise<void> {
+  await prisma.document.updateMany({
+    where: {
+      id: syntheticDocumentId,
+      projectId,
+      deletedAt: null,
+      status: "failed",
+      indexState: { in: ["pending", "quarantined"] },
+    },
+    data: { status: "processing", errorMessage: null },
   });
 }
 

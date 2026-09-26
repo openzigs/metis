@@ -174,15 +174,9 @@ async function reconcileOne(
     return;
   }
 
-  const parked = await prisma.quarantineChunk.count({
-    where: { documentId: row.id, ord: { gte: 0 } },
-  });
-  if (row.indexState === "quarantined" && parked > 0) {
-    await markAwaitingReview(row.id, row.projectId);
-    report.finalized.push(row.id);
-    return;
-  }
   if (task?.status === "failed") {
+    // #230 — like a cancellation, an exhausted task outranks parked chunks: a
+    // failed publication is never turned into a `ready` row awaiting review.
     await prisma.document.updateMany({
       where: { id: row.id, projectId: row.projectId, deletedAt: null },
       data: {
@@ -192,6 +186,14 @@ async function reconcileOne(
       },
     });
     report.failed.push(row.id);
+    return;
+  }
+  const parked = await prisma.quarantineChunk.count({
+    where: { documentId: row.id, ord: { gte: 0 } },
+  });
+  if (row.indexState === "quarantined" && parked > 0) {
+    await markAwaitingReview(row.id, row.projectId);
+    report.finalized.push(row.id);
     return;
   }
 
