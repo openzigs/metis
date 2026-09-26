@@ -8,7 +8,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
 import rehypeSlug from "rehype-slug";
 import remarkGfm from "remark-gfm";
-import { remarkSectionSlugs, splitMarkdownSections } from "@/lib/markdown-sections";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
+import { remarkSectionSlugs, splitMarkdownSections, type MdastNode } from "@/lib/markdown-sections";
 
 function headingIds(html: string): string[] {
   return [...html.matchAll(/<h[1-6] id="([^"]*)"/g)].map((m) => m[1]);
@@ -29,7 +31,8 @@ function wholeDocumentIds(markdown: string): string[] {
 
 /** Heading ids when each section is rendered on its own with remarkSectionSlugs. */
 function sectionedIds(markdown: string): string[] {
-  return splitMarkdownSections(markdown).sections.flatMap((section) =>
+  const { sections, definitions } = splitMarkdownSections(markdown);
+  return sections.flatMap((section) =>
     headingIds(
       renderToStaticMarkup(
         createElement(
@@ -37,7 +40,7 @@ function sectionedIds(markdown: string): string[] {
           {
             remarkPlugins: [
               remarkGfm,
-              [remarkSectionSlugs, { occurrences: section.slugOccurrences }],
+              [remarkSectionSlugs, { occurrences: section.slugOccurrences, definitions }],
             ],
           },
           section.markdown,
@@ -177,5 +180,166 @@ describe("heading text", () => {
       "## **Bold** `code` ![img](x.png) [link](http://x)\n## _a_ &amp; b",
     );
     expect(toc.map((e) => e.text)).toEqual(["Bold code  link", "a & b"]);
+  });
+});
+
+/**
+ * #227 — a reference link or a footnote reference in a heading. The renderer
+ * parses one section at a time, so whether `[x][ref]` or `[^1]` resolved used
+ * to depend on whether its definition sat in the same section, while the
+ * splitter parsed the heading line alone and resolved neither.
+ */
+const REFERENCES = [
+  "# Doc",
+  "## See [the spec][spec]",
+  "#### Detail [the spec][spec]",
+  "Body.",
+  "",
+  "[spec]: https://example.com/spec",
+  "## Rules[^1]",
+  "Body with a note.[^1]",
+  "",
+  "[^1]: A footnote.",
+  "## Both [the spec][spec] and a note[^2]",
+  "Body.",
+  "## Later [the Spec][SPEC]",
+  "Body.",
+  "## Notes[^2]",
+  "Body.",
+  "## Earlier [text][late]",
+  "## Swallowed [s][swallowed]",
+  "## Spaced [x][the   Spec]",
+  "## Order[^1] [y][spec]",
+  "## Unknown [label][nowhere] and [^9]",
+  "Body.",
+  "```md",
+  "",
+  "[fenced]: https://example.com/not-a-definition",
+  "```",
+  "## Fenced [ref][fenced]",
+  "## Lazy [x][lazy]",
+  "Body.",
+  "[lazy]: https://example.com/continues-the-paragraph",
+  "## Definitions",
+  "[^2]: Second note.",
+  "",
+  "[late]: https://example.com/late",
+  "[the spec]: https://example.com/the-spec",
+  "[^3]: Third note.",
+  "[swallowed]: https://example.com/continues-the-footnote",
+].join("\n");
+/** Every heading id, all levels, in document order. */
+const REFERENCE_IDS = [
+  "doc",
+  "see-the-spec",
+  "detail-the-spec",
+  "rules",
+  "both-the-spec-and-a-note",
+  "later-the-spec",
+  "notes",
+  "earlier-text",
+  "swallowed-sswallowed",
+  "spaced-x",
+  "order-y",
+  "unknown-labelnowhere-and-9",
+  "fenced-reffenced",
+  "lazy-xlazy",
+  "definitions",
+];
+/** The H4 is not a TOC entry. */
+const REFERENCE_TOC_IDS = REFERENCE_IDS.filter((id) => id !== "detail-the-spec");
+
+describe("heading ids with reference links and footnote references (#227)", () => {
+  it("the TOC ids resolve reference links and drop footnote references", () => {
+    expect(splitMarkdownSections(REFERENCES).toc.map((e) => e.id)).toEqual(REFERENCE_TOC_IDS);
+  });
+
+  it("sectioned rendering gives every heading the id the splitter gave it", () => {
+    expect(sectionedIds(REFERENCES)).toEqual(REFERENCE_IDS);
+  });
+
+  it("a reference link resolves exactly where a whole-document render resolves it", () => {
+    const whole = wholeDocumentIds(REFERENCES);
+    for (const id of [
+      "see-the-spec",
+      "detail-the-spec",
+      "later-the-spec",
+      "earlier-text",
+      "spaced-x",
+      // Definition-shaped lines that define nothing: inside a fence, continuing
+      // a paragraph, or continuing a footnote definition's text.
+      "fenced-reffenced",
+      "lazy-xlazy",
+      "swallowed-sswallowed",
+    ]) {
+      expect(whole).toContain(id);
+    }
+  });
+
+  it("the TOC shows the reference link's text, not its brackets", () => {
+    const texts = splitMarkdownSections(REFERENCES).toc.map((e) => e.text);
+    expect(texts).toContain("See the spec");
+    expect(texts).toContain("Rules");
+    expect(texts).toContain("Both the spec and a note");
+  });
+
+  it("every heading id maps to the section that holds it", () => {
+    const { sectionOfId, sections } = splitMarkdownSections(REFERENCES);
+    for (const id of REFERENCE_IDS) {
+      expect(sections[sectionOfId.get(id)!].headingIds).toContain(id);
+    }
+  });
+
+  it("a heading with no source span keeps the text of its own node", () => {
+    const heading = { type: "heading", depth: 2, children: [{ type: "text", value: "A [b][c]" }] };
+    remarkSectionSlugs({ occurrences: {}, definitions: new Map([["C", "[c]: x"]]) })(
+      { type: "root", children: [heading] },
+      {},
+    );
+    expect((heading as MdastNode).data?.hProperties?.id).toBe("a-bc");
+  });
+
+  it("a document with no definitions keeps bracketed heading text literal", () => {
+    const { toc, definitions } = splitMarkdownSections("## A [b][c]\n## D[^1]");
+    expect(definitions.size).toBe(0);
+    expect(toc.map((e) => e.id)).toEqual(["a-bc", "d1"]);
+  });
+});
+
+/**
+ * #227 review — a definition in the heading's OWN section that the definition
+ * collector does not see (after a thematic break or indented code, inside a
+ * blockquote or a list item). The renderer's parse of the section sees it; the
+ * splitter's parse of the heading line alone does not. Both sides must still
+ * slug the same input, so the TOC id and the rendered id agree.
+ */
+describe("heading ids when a same-section definition is not collected (#227)", () => {
+  it.each([
+    [
+      "after a thematic break",
+      "## See [the spec][spec]\nBody.\n\n---\n[spec]: https://example.com",
+    ],
+    ["inside a blockquote", "## See [the spec][spec]\nBody.\n\n> [spec]: https://example.com"],
+    ["inside a list item", "## See [the spec][spec]\nBody.\n\n- [spec]: https://example.com"],
+    [
+      "after an indented code block",
+      "## See [the spec][spec]\nBody.\n\n    code\n[spec]: https://example.com",
+    ],
+    ["footnote inside a blockquote", "## Rules[^1]\nBody.[^1]\n\n> [^1]: A footnote."],
+  ])("%s: the TOC id is the rendered id", (_, markdown) => {
+    const tocIds = splitMarkdownSections(markdown).toc.map((e) => e.id);
+    expect(tocIds).toHaveLength(1);
+    expect(sectionedIds(markdown)).toEqual(tocIds);
+  });
+});
+
+describe("remarkSectionSlugs source text", () => {
+  it("decodes a byte-buffer file so heading offsets index the same text", () => {
+    const markdown = "Überblick.\n\n## See [the spec][spec]";
+    const tree = unified().use(remarkParse).parse(markdown) as MdastNode;
+    remarkSectionSlugs({ occurrences: {}, definitions: new Map([["SPEC", "[spec]: x"]]) })(tree, {
+      value: new TextEncoder().encode(markdown),
+    });
+    expect(tree.children?.[1].data?.hProperties?.id).toBe("see-the-spec");
   });
 });
