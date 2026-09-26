@@ -320,8 +320,21 @@ export interface ChatOptions {
    * would otherwise be tempted to call file/search tools instead of
    * producing prose from the supplied context. Maps to the Copilot SDK
    * `availableTools: []` setting.
+   *
+   * Every provider reads this as "send NO tools" — the native-Anthropic and
+   * OpenAI-compatible providers drop `tools` from the request when it is set.
+   * Never set it on a call that carries METIS's own `tools`; to withhold only
+   * the Copilot SDK's built-ins, use {@link withholdSdkBuiltinTools}.
    */
   disableTools?: boolean;
+  /**
+   * #142 — withhold the GitHub Copilot SDK's OWN built-in tools (shell, file
+   * write, URL fetch, …) from the session and refuse every SDK permission
+   * request, WITHOUT touching the caller's `tools`. Read only by the Copilot
+   * provider; every other provider ignores it. Chat sessions set it on every
+   * call: the only tools a chat may run are METIS's, through its approval gate.
+   */
+  withholdSdkBuiltinTools?: boolean;
   /**
    * Hint to the provider to enable prompt caching for parts of the request.
    * Cache hits are reported via `usage.cacheReadTokens` (writes via

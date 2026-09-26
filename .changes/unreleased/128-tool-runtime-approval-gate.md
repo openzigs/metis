@@ -7,6 +7,7 @@ section: Security
 - Every tool call now passes the session's approval policy and agent tool list; calls needing approval wait for Approve or Deny in the chat and are denied after `AI_TOOL_APPROVAL_TIMEOUT_MS`.
 - Tool activity and each call's decision show in the chat and in the Workbench, and both can answer approval prompts; errors use fixed messages.
 - On the GitHub Copilot provider, the SDK's built-in tools (shell, file write and the like) are switched off in every chat and in discussion replies, so no tool runs without passing the approval gate.
+- On the GitHub Copilot provider, a project chat gets the code-search tools through its prompt (with `CHAT_CODE_SEARCH_TOOLS`), since that provider cannot take tools natively.
 - A tool never runs if its approval could not be recorded; a `prompt-once` approval is remembered only when it was given for `prompt-once`, and an MCP server's `requireApproval` applies from the next call when switched on mid-turn.
 - Streamed chats on the local provider release the model's concurrency slot when the answer ends, so later local calls no longer hang behind it; non-streaming chats keep the text written before each tool call.
 - Only a session's owner can answer its approvals (chat and MCP) or join its live-event room.

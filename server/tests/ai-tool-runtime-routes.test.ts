@@ -14,6 +14,11 @@
  *          allowlist refuses a tool even under `auto`.
  *   #143 — `tool_event` frames carry the lifecycle; no raw exception text
  *          reaches the stream or the transcript.
+ *
+ * The "real providers" block swaps the stub for the production Anthropic and
+ * OpenAI-compatible adapters behind a loopback HTTP server, and the production
+ * Copilot adapter behind a stubbed SDK client: a request flag the stub would
+ * ignore is proven against what actually goes on the wire.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
@@ -134,6 +139,21 @@ import { MCPToolBridge } from "../src/lib/mcp/tool-bridge.js";
 import { setMCPRegistry, type MCPRegistryService } from "../src/lib/mcp/mcp-service.js";
 import type { MCPServerConfig, MCPTransportClient } from "../src/lib/mcp/types.js";
 import type { ToolDefinition } from "../src/lib/ai/types.js";
+import type { AIProvider } from "../src/lib/ai/types.js";
+import { createServer, type Server, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import { AnthropicProvider } from "../src/lib/ai/providers/anthropic-provider.js";
+import {
+  BedrockDirectProvider,
+  OpenAICompatibleProvider,
+} from "../src/lib/ai/providers/bedrock-direct-provider.js";
+import { CopilotProvider } from "../src/lib/ai/providers/copilot-provider.js";
+import {
+  CopilotWrapper,
+  type CopilotClientLike,
+  type CopilotSessionLike,
+} from "../src/lib/ai/copilot-wrapper.js";
+import { __setSessionRuntime, type SessionRuntime } from "../src/lib/library/session-runtime.js";
 
 // ── Tools ─────────────────────────────────────────────────────────────────
 const dangerExec = vi.fn(async (args: { table: string }) => ({ text: `rows in ${args.table}: 7` }));
@@ -794,16 +814,46 @@ describe("#142 the approval gate through the routes", () => {
     expect(dangerExec).not.toHaveBeenCalled();
   });
 
-  it("every chat turn — scoped, both routes, each model call — withholds the SDK's built-in tools", async () => {
-    // #142 — on the Copilot provider those would run under its own permission
-    // handler, never this gate; every chat call must ask for them withheld.
+  it("/chat: a client that disconnects while a prompt is open: the approval is withdrawn, nothing runs", async () => {
+    stubModel([highCall, { content: "never reached" }]);
+    const app = makeApp();
+    const sid = await newSession(app);
+    const req = as(
+      alice,
+      request(app).post("/api/ai/chat").send({ sessionId: sid, message: "go" }),
+    );
+    const settled = req.then(
+      () => "completed",
+      () => "aborted",
+    );
+    const approvalId = await waitForPending(sid);
+    req.abort();
+    await settled;
+    // The /chat turn's abort denies the pending approval at once — not at its timeout.
+    for (let i = 0; i < 100 && getToolApprovalBroker().size > 0; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(getToolApprovalBroker().size).toBe(0);
+    // A late "approve" finds nothing, and the tool never runs.
+    expect((await decide(app, alice, sid, approvalId)).status).toBe(404);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(dangerExec).not.toHaveBeenCalled();
+  });
+
+  it("every chat call asks the provider to withhold the SDK built-ins — never with disableTools", async () => {
+    // The flag is read only by the Copilot provider; `disableTools` would strip
+    // METIS's own tools on every other provider (the real-provider wire tests
+    // below prove the tools reach the request body).
     const model = stubModel([highCall, { content: "done" }, { content: "plain" }]);
     const app = makeApp();
     const sid = await newSession(app, { policy: { high: "auto" } });
     await stream(app, sid);
     await as(alice, request(app).post("/api/ai/chat").send({ sessionId: sid, message: "again" }));
     expect(model.requests.length).toBeGreaterThanOrEqual(3);
-    for (const r of model.requests) expect(r.opts.disableTools).toBe(true);
+    for (const r of model.requests) {
+      expect(r.opts.withholdSdkBuiltinTools).toBe(true);
+      expect(r.opts.disableTools).toBeUndefined();
+    }
   });
 
   it("an agent whose tool list is corrupt gets no tools at all (fails closed)", async () => {
@@ -826,6 +876,292 @@ describe("#142 the approval gate through the routes", () => {
     );
     expect(res.status).toBe(400);
   });
+});
+
+// ── #142 round 3 — METIS's tools reach the wire on REAL provider classes ─────
+//
+// The provider classes below are the production adapters; only the network is
+// replaced, by a loopback HTTP server that records every request body. A flag
+// that strips `tools` (as `disableTools` does on these adapters) turns these red
+// even though a stub model would have ignored it.
+describe("#142 real providers carry the session's tools on the wire", () => {
+  const bodies: Array<{ url: string; body: Record<string, unknown> }> = [];
+  let server: Server;
+  let base = "";
+
+  function anthropicReply(res: ServerResponse, streaming: boolean): void {
+    if (!streaming) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          content: [{ type: "text", text: "done" }],
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 2 },
+        }),
+      );
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const ev = (type: string, data: Record<string, unknown>) =>
+      `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+    res.end(
+      ev("message_start", {
+        message: {
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 1 },
+        },
+      }) +
+        ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } }) +
+        ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "done" } }) +
+        ev("content_block_stop", { index: 0 }) +
+        ev("message_delta", {
+          delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 2 },
+        }) +
+        ev("message_stop", {}),
+    );
+  }
+
+  function openAiReply(res: ServerResponse, streaming: boolean): void {
+    const usage = { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 };
+    if (!streaming) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          id: "c1",
+          object: "chat.completion",
+          model: "m",
+          choices: [
+            { index: 0, message: { role: "assistant", content: "done" }, finish_reason: "stop" },
+          ],
+          usage,
+        }),
+      );
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const chunk = (d: Record<string, unknown>) => `data: ${JSON.stringify(d)}\n\n`;
+    res.end(
+      chunk({
+        id: "c1",
+        choices: [{ index: 0, delta: { content: "done" }, finish_reason: null }],
+      }) +
+        chunk({ id: "c1", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage }) +
+        "data: [DONE]\n\n",
+    );
+  }
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c: Buffer) => (raw += c.toString("utf8")));
+      req.on("end", () => {
+        const body = (raw ? JSON.parse(raw) : {}) as Record<string, unknown>;
+        bodies.push({ url: req.url ?? "", body });
+        const streaming = body.stream === true;
+        if ((req.url ?? "").includes("/messages")) anthropicReply(res, streaming);
+        else openAiReply(res, streaming);
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  beforeEach(() => {
+    bodies.length = 0;
+  });
+
+  afterEach(() => {
+    __setSessionRuntime(null);
+  });
+
+  const PROVIDERS: Array<{ name: string; make: () => AIProvider }> = [
+    {
+      name: "AnthropicProvider",
+      make: () => new AnthropicProvider({ apiKey: "k", baseUrl: base, model: "claude-sonnet-4-6" }),
+    },
+    {
+      name: "OpenAICompatibleProvider (openai)",
+      make: () =>
+        new OpenAICompatibleProvider({
+          baseUrl: `${base}/v1`,
+          apiKey: "k",
+          model: "gpt-4.1",
+          providerKey: "openai",
+          maxAttempts: 1,
+        }),
+    },
+    {
+      name: "BedrockDirectProvider (bedrock-gateway)",
+      make: () =>
+        new BedrockDirectProvider({
+          baseUrl: `${base}/v1`,
+          apiKey: "k",
+          model: "us.anthropic.claude-sonnet-4-6",
+          providerKey: "bedrock-gateway",
+          maxAttempts: 1,
+        }),
+    },
+  ];
+
+  /** The tool names on every model request body this turn sent. */
+  function wireToolNames(): string[][] {
+    const modelCalls = bodies.filter((b) => /\/(messages|chat\/completions)$/.test(b.url));
+    expect(modelCalls.length).toBeGreaterThan(0);
+    return modelCalls.map((b) =>
+      ((b.body.tools as Array<Record<string, unknown>> | undefined) ?? []).map((t) =>
+        // Anthropic: { name }; OpenAI-compatible: { type: "function", function: { name } }.
+        String(t.name ?? (t.function as { name?: string } | undefined)?.name),
+      ),
+    );
+  }
+
+  async function session(app: express.Express, withSkills: boolean): Promise<string> {
+    const sid = await newSession(app);
+    if (withSkills) {
+      (sessions.find((s) => s.id === sid) as Row).loadedSkillIds = JSON.stringify(["skill-a"]);
+      __setSessionRuntime({
+        materializeSkillsForSession: async () => ({
+          skillsDir: "/nonexistent/skills",
+          written: ["skill-a"],
+          disabledSkills: [],
+        }),
+      } as unknown as SessionRuntime);
+    }
+    return sid;
+  }
+
+  for (const p of PROVIDERS) {
+    for (const withSkills of [false, true]) {
+      const label = `${p.name}, scoped session ${withSkills ? "WITH" : "without"} skills`;
+
+      it(`/stream — ${label}: the METIS tools are in the outgoing request`, async () => {
+        setAIProviderForTests(p.make());
+        const app = makeApp();
+        const sid = await session(app, withSkills);
+        const res = await stream(app, sid);
+        expect(res.status).toBe(200);
+        for (const names of wireToolNames()) {
+          expect(names).toContain("count_rows");
+          expect(names.some((n) => n.startsWith("mcp_github_list_issues"))).toBe(true);
+        }
+      });
+
+      it(`/chat — ${label}: the METIS tools are in the outgoing request`, async () => {
+        setAIProviderForTests(p.make());
+        const app = makeApp();
+        const sid = await session(app, withSkills);
+        const res = await as(
+          alice,
+          request(app).post("/api/ai/chat").send({ sessionId: sid, message: "go" }),
+        );
+        expect(res.status).toBe(200);
+        for (const names of wireToolNames()) {
+          expect(names).toContain("count_rows");
+          expect(names.some((n) => n.startsWith("mcp_github_list_issues"))).toBe(true);
+        }
+      });
+    }
+  }
+});
+
+// ── #142 round 3 — the Copilot provider: built-ins withheld, text protocol ──
+describe("#142 Copilot chat: SDK built-ins withheld, METIS tools on the text protocol", () => {
+  const configs: Array<Record<string, unknown>> = [];
+  const prompts: unknown[] = [];
+
+  function copilotSession(): CopilotSessionLike {
+    type Handler = (data: unknown) => void;
+    const handlers = new Map<string, Handler[]>();
+    const fire = (event: string, data: unknown) => {
+      for (const h of handlers.get(event) ?? []) h(data);
+    };
+    return {
+      sessionId: "copilot-sess",
+      on: (event: string, handler: Handler) => {
+        handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+        return () =>
+          handlers.set(
+            event,
+            (handlers.get(event) ?? []).filter((h) => h !== handler),
+          );
+      },
+      send: async (msg: unknown) => {
+        prompts.push(msg);
+        queueMicrotask(() => {
+          fire("assistant.message_delta", { data: { deltaContent: "done" } });
+          fire("session.idle", undefined);
+        });
+      },
+      sendAndWait: async () => undefined,
+      destroy: async () => undefined,
+    } as unknown as CopilotSessionLike;
+  }
+
+  function copilotProvider(): CopilotProvider {
+    const client = {
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      getAuthStatus: vi.fn(async () => ({ isAuthenticated: true, authType: "stub" })),
+      listModels: vi.fn(async () => [{ id: "stub-model" }]),
+      createSession: vi.fn(async (cfg: Record<string, unknown>) => {
+        configs.push(cfg);
+        return copilotSession();
+      }),
+    } as unknown as CopilotClientLike;
+    return new CopilotProvider({
+      wrapper: new CopilotWrapper({ model: "stub-model", client }),
+      key: "copilot-native",
+    });
+  }
+
+  beforeEach(() => {
+    configs.length = 0;
+    prompts.length = 0;
+  });
+
+  afterEach(() => {
+    delete process.env.CHAT_CODE_SEARCH_TOOLS;
+  });
+
+  for (const route of ["/api/ai/stream", "/api/ai/chat"] as const) {
+    it(`${route}: with CHAT_CODE_SEARCH_TOOLS=true the code tools ride the text protocol; the SDK built-ins are withheld`, async () => {
+      process.env.CHAT_CODE_SEARCH_TOOLS = "true";
+      setAIProviderForTests(copilotProvider());
+      const app = makeApp();
+      const sid = await newSession(app);
+      const res = await as(alice, request(app).post(route).send({ sessionId: sid, message: "go" }));
+      expect(res.status).toBe(200);
+      expect(configs.length).toBeGreaterThan(0);
+      for (const cfg of configs) {
+        // The SDK's shell/write/url tools are withheld and every permission refused.
+        expect(cfg.availableTools).toEqual([]);
+        const ask = cfg.onPermissionRequest as (r: { kind: string }) => Promise<{ kind: string }>;
+        expect((await ask({ kind: "shell" })).kind).toBe("reject");
+      }
+      const wire = JSON.stringify({ configs, prompts });
+      // The text-protocol schema for the curated code tools is in the prompt…
+      expect(wire).toContain("search_code_graph");
+      expect(wire).toContain("search_code_symbols");
+      // …and the prompt does not claim a native tool channel it cannot use.
+      expect(wire).not.toContain("native tool-calling interface");
+    });
+  }
 });
 
 // ── #143 ────────────────────────────────────────────────────────────────

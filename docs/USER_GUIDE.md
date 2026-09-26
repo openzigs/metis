@@ -2281,7 +2281,9 @@ nothing a tool returns, can approve a call — only your click can, and only in
 your own chat. On the GitHub Copilot provider, the Copilot SDK's own built-in
 tools (shell commands, file writes and the like) are switched off in every
 chat, so the only tools a chat can run are the ones above, through this
-approval step.
+approval step. That provider cannot offer tools to the model natively, so a
+Copilot chat is offered only the code-search tools (when
+`CHAT_CODE_SEARCH_TOOLS` is on), described to the model in its prompt.
 
 If the chat uses an agent, the agent's tool list also applies: a tool the agent
 does not list is refused, even when the policy would allow it. An MCP server

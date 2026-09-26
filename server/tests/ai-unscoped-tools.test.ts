@@ -6,7 +6,8 @@
  * the *route* into that state, but it is not the mechanism: METIS's curated code
  * tools were already gated on `projectId`, while the Copilot SDK's BUILT-IN
  * tools (including `bash`) were withheld only when `disableTools` happened to be
- * set — which it was not for any session that had loaded a skill. So a skill-
+ * set — which it was not for any session that had loaded a skill. (The flag is
+ * now `withholdSdkBuiltinTools`, read only by the Copilot provider: #142.) So a skill-
  * bearing unscoped session kept `bash` regardless of scope.
  *
  * Falsifiable: against `main`, `buildSdkSkillRuntime` is not exported at all,
@@ -42,7 +43,9 @@ describe("buildSdkSkillRuntime tool gating (#1368)", () => {
       loadedSkillIds: JSON.stringify(["skill-a"]),
       projectId: null,
     });
-    expect(runtime.disableTools).toBe(true);
+    expect(runtime.withholdSdkBuiltinTools).toBe(true);
+    // Never `disableTools`: that strips METIS's own tools on every provider.
+    expect(runtime).not.toHaveProperty("disableTools");
     // Skills still load — only the tools are withheld.
     expect(runtime.skillDirectories).toEqual(["/tmp/skills"]);
   });
@@ -56,7 +59,9 @@ describe("buildSdkSkillRuntime tool gating (#1368)", () => {
       loadedSkillIds: JSON.stringify(["skill-a"]),
       projectId: "proj_1",
     });
-    expect(runtime.disableTools).toBe(true);
+    expect(runtime.withholdSdkBuiltinTools).toBe(true);
+    // Never `disableTools`: that strips METIS's own tools on every provider.
+    expect(runtime).not.toHaveProperty("disableTools");
     expect(runtime.skillDirectories).toEqual(["/tmp/skills"]);
   });
 
@@ -66,7 +71,9 @@ describe("buildSdkSkillRuntime tool gating (#1368)", () => {
       loadedSkillIds: "[]",
       projectId: "proj_1",
     });
-    expect(runtime.disableTools).toBe(true);
+    expect(runtime.withholdSdkBuiltinTools).toBe(true);
+    // Never `disableTools`: that strips METIS's own tools on every provider.
+    expect(runtime).not.toHaveProperty("disableTools");
   });
 
   it("withholds tools when skill materialisation fails, rather than failing open", async () => {
@@ -76,7 +83,9 @@ describe("buildSdkSkillRuntime tool gating (#1368)", () => {
       loadedSkillIds: JSON.stringify(["skill-a"]),
       projectId: "proj_1",
     });
-    expect(runtime.disableTools).toBe(true);
+    expect(runtime.withholdSdkBuiltinTools).toBe(true);
+    // Never `disableTools`: that strips METIS's own tools on every provider.
+    expect(runtime).not.toHaveProperty("disableTools");
   });
 
   it("treats a corrupt loadedSkillIds column as no skills", async () => {
@@ -85,6 +94,8 @@ describe("buildSdkSkillRuntime tool gating (#1368)", () => {
       loadedSkillIds: "not json",
       projectId: null,
     });
-    expect(runtime.disableTools).toBe(true);
+    expect(runtime.withholdSdkBuiltinTools).toBe(true);
+    // Never `disableTools`: that strips METIS's own tools on every provider.
+    expect(runtime).not.toHaveProperty("disableTools");
   });
 });

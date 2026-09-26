@@ -131,12 +131,12 @@ const ADAPTERS: Array<{
     nativeToolCalls: true,
   },
   {
-    // copilot-sdk exposes no structured output in 0.3.0 OR 1.0.8, but it does
-    // emit native `toolCall` session events which this adapter forwards.
+    // copilot-sdk exposes no structured output in 0.3.0 OR 1.0.8, and this
+    // adapter never reads `ChatOptions.tools` — callers use the text protocol.
     name: "CopilotProvider",
     build: makeCopilot,
     responseFormat: false,
-    nativeToolCalls: true,
+    nativeToolCalls: false,
   },
   {
     name: "OfflineStubProvider",

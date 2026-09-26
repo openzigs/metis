@@ -596,10 +596,23 @@ export async function buildLibrarySystemMessages(
 }
 
 /**
+ * The Copilot-SDK options `buildSdkSkillRuntime` returns, spread into every chat
+ * provider call. It deliberately carries `withholdSdkBuiltinTools`, NEVER
+ * `disableTools`: the latter means "send no tools" on every provider, and would
+ * strip METIS's own native tools from the request (#142 round 3).
+ */
+export interface SdkSkillRuntime {
+  skillDirectories?: string[];
+  disabledSkills?: string[];
+  withholdSdkBuiltinTools?: boolean;
+}
+
+/**
  * Issue #113 — materialise the session's loaded skills into the per-session
  * COPILOT_HOME so the GitHub Copilot SDK picks them up natively. Returns the
  * `skillDirectories` + `disabledSkills` arrays that should be forwarded to
- * `provider.chat` / `provider.stream`. Falls back to `{}` when the session
+ * `provider.chat` / `provider.stream`, always with `withholdSdkBuiltinTools`.
+ * Falls back to that flag alone when the session
  * has no loaded skills, when materialisation fails (best-effort — the
  * system-message injection path keeps working), or when the session is
  * bound to a project whose allow-list rejects every loaded skill.
@@ -612,7 +625,7 @@ export async function buildSdkSkillRuntime(session: {
   id: string;
   loadedSkillIds: string;
   projectId: string | null;
-}): Promise<{ skillDirectories?: string[]; disabledSkills?: string[]; disableTools?: boolean }> {
+}): Promise<SdkSkillRuntime> {
   let skillIds: string[] = [];
   try {
     const v = JSON.parse(session.loadedSkillIds) as unknown;
@@ -629,11 +642,13 @@ export async function buildSdkSkillRuntime(session: {
       // Fall through — the global allow path below stays authoritative.
     }
   }
-  if (skillIds.length === 0 && disabledSkillKeys.length === 0) return { disableTools: true };
+  if (skillIds.length === 0 && disabledSkillKeys.length === 0) {
+    return { withholdSdkBuiltinTools: true };
+  }
   // #1368 — an UNSCOPED session must not get the SDK's built-in filesystem and
   // shell tools. METIS's own curated code tools were already gated on
   // `projectId` (see `buildChatCodeToolRuntime`), but the SDK's built-ins were
-  // not: they were withheld only when `disableTools` happened to be set above,
+  // not: they were withheld only when the flag (then `disableTools`) was set,
   // so any session that had loaded a skill kept `bash` regardless of scope.
   // With no project corpus to search, the only tree those tools can reach is
   // METIS's own — which is exactly the observed failure, where a user asking
@@ -655,18 +670,17 @@ export async function buildSdkSkillRuntime(session: {
       loadedSkillIds: skillIds,
       disabledSkillKeys,
     });
-    const out: { skillDirectories?: string[]; disabledSkills?: string[]; disableTools?: boolean } =
-      {};
+    const out: SdkSkillRuntime = {};
     if (result.written.length > 0) out.skillDirectories = [result.skillsDir];
     if (result.disabledSkills.length > 0) out.disabledSkills = result.disabledSkills;
-    out.disableTools = true;
+    out.withholdSdkBuiltinTools = true;
     return out;
   } catch (err) {
     log.warn("Failed to materialise SDK skills, falling back to system-message only", {
       sessionId: session.id,
       error: (err as Error).message,
     });
-    return { disableTools: true };
+    return { withholdSdkBuiltinTools: true };
   }
 }
 
