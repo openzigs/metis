@@ -6,14 +6,12 @@
  * `InferenceSession.run` does. The worker loads it by URL; the inline control loads
  * it through the module mock below — the same code on both sides of the boundary.
  */
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@huggingface/transformers", () => import("./fixtures/busy-transformers.mjs"));
 
-import { BUSY_MS_PER_TEXT, LONG_ROW_MS } from "./fixtures/busy-transformers.mjs";
-import { probeHealthzDuring } from "./helpers/healthz-prober.js";
+import { LONG_ROW_MS } from "./fixtures/busy-transformers.mjs";
+import { measureLoopStallDuring } from "./helpers/event-loop-stall.js";
 import {
   createWorkerPipeline,
   resolveInProcessRuntime,
@@ -32,7 +30,6 @@ const FIXTURE_URL = new URL("./fixtures/busy-transformers.mjs", import.meta.url)
 const ENV_KEYS = ["HF_HUB_OFFLINE", "TRANSFORMERS_CACHE", "HF_ENDPOINT"] as const;
 const savedEnv: Record<string, string | undefined> = {};
 const embedders: XenovaEmbedder[] = [];
-const servers: Server[] = [];
 
 beforeEach(() => {
   for (const key of ENV_KEYS) {
@@ -47,11 +44,6 @@ afterEach(async () => {
     else process.env[key] = savedEnv[key];
   }
   await Promise.all(embedders.splice(0).map((embedder) => embedder.close()));
-  await Promise.all(
-    servers
-      .splice(0)
-      .map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
-  );
 });
 
 function busyEmbedder(
@@ -68,47 +60,44 @@ function busyEmbedder(
   return embedder;
 }
 
-async function healthServer(): Promise<string> {
-  const server = createServer((req, res) => {
-    res.writeHead(req.url === "/healthz" ? 200 : 404).end("ok");
-  });
-  servers.push(server);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-  return `http://127.0.0.1:${(server.address() as AddressInfo).port}/healthz`;
-}
-
-async function worstHealthzLatency(url: string, work: () => Promise<unknown>): Promise<number> {
-  const report = await probeHealthzDuring(url, work);
-  expect(report.failures).toBe(0);
-  expect(report.probes).toBeGreaterThan(1);
-  return report.worst;
-}
-
 const texts = Array.from({ length: 40 }, (_, i) => `chunk number ${i}`);
 /** A document with one over-long row: one blocking model call of LONG_ROW_MS. */
 const documentTexts = [...texts.slice(0, 10), "__long__ row", ...texts.slice(10, 20)];
 
+/**
+ * Issue #216 — the verdict is read off this thread's event loop, not off HTTP
+ * probes. Everything `/healthz` needs to answer runs on this loop, so "the loop was
+ * never held for as long as the model's longest call" IS "/healthz stayed
+ * responsive". One bound splits the two runtimes, with the fixture's known
+ * `LONG_ROW_MS` block on either side of it: inline, that block runs on this thread
+ * and the loop stalls for at least its full length — contention can only make the
+ * stall longer; in the worker, the loop keeps turning while the block runs.
+ */
+const STALL_BOUND_MS = LONG_ROW_MS / 2;
+/** `blockThread` spins on `Date.now()`, whose whole-millisecond grain can end it up to 1 ms short. */
+const CLOCK_GRAIN_MS = 1;
+
 describe("#189 — /healthz stays responsive while a document is embedded", () => {
-  it("the worker runtime answers /healthz within 1 s while the model blocks its thread", async () => {
-    expect(LONG_ROW_MS + 20 * BUSY_MS_PER_TEXT).toBeGreaterThan(1000);
-    const url = await healthServer();
+  it("the worker runtime keeps the event loop turning while the model blocks its thread", async () => {
     const embedder = busyEmbedder("worker");
     await embedder.warm();
     let vectors: number[][] = [];
-    const worst = await worstHealthzLatency(url, async () => {
+    const report = await measureLoopStallDuring(async () => {
       vectors = (await embedder.embed(documentTexts)).vectors;
     });
     expect(vectors).toHaveLength(documentTexts.length);
-    expect(worst).toBeLessThan(1000);
+    // The known workload ran inside the measured window — the verdict is not vacuous.
+    expect(report.elapsedMs).toBeGreaterThanOrEqual(LONG_ROW_MS - CLOCK_GRAIN_MS);
+    expect(report.longestStallMs).toBeLessThan(STALL_BOUND_MS);
   });
 
-  it("CONTROL: the same pipeline run inline blocks /healthz for the whole embed", async () => {
-    const url = await healthServer();
+  it("CONTROL: the same pipeline run inline blocks the event loop for the whole long row", async () => {
     const embedder = busyEmbedder("inline");
     await embedder.warm();
-    const worst = await worstHealthzLatency(url, () => embedder.embed(documentTexts));
+    const report = await measureLoopStallDuring(() => embedder.embed(documentTexts));
     // If this ever passes quickly, the responsiveness test above proves nothing.
-    expect(worst).toBeGreaterThan(1000);
+    expect(report.longestStallMs).toBeGreaterThanOrEqual(LONG_ROW_MS - CLOCK_GRAIN_MS);
+    expect(report.longestStallMs).toBeGreaterThan(STALL_BOUND_MS);
   });
 });
 
