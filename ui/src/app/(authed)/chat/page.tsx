@@ -20,7 +20,6 @@ import {
   type SessionScope,
   type StreamEvent,
   createSessionWithScope,
-  decideToolApproval,
   forkChatSession,
   getTranscript,
   loadActiveSessionId,
@@ -35,9 +34,8 @@ import { ScopeDegradationNotice } from "@/components/chat/scope-degradation-noti
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
 import { sanitizeAssistantText } from "@/lib/sanitize-assistant-text";
 import { recentTracker } from "@/lib/recent-tracker";
-import { applyToolEvent, type ToolActivity } from "@/lib/tool-activity";
 import { ToolActivityList, TranscriptToolCalls } from "@/components/chat/tool-activity";
-import { useSessionToolEvents } from "@/hooks/use-session-tool-events";
+import { useToolApprovals } from "@/hooks/use-tool-approvals";
 
 /**
  * #136 — a transcript row as rendered. Rows that came from the server carry
@@ -95,14 +93,10 @@ export default function ChatPage() {
   // #138 — shown when older turns were summarised to fit the model's context.
   const [compactionNote, setCompactionNote] = useState<string | null>(null);
   const [forking, setForking] = useState(false);
-  // #143 — the tool calls of the turn in flight (cleared when the next starts).
-  const [toolActivity, setToolActivity] = useState<ToolActivity[]>([]);
-  const [deciding, setDeciding] = useState<ReadonlySet<string>>(new Set());
-  // #142 — the session room also carries the approval prompt, so a turn sent
-  // through the non-streaming route (or a page that reconnected) still sees it.
-  useSessionToolEvents(session?.id ?? null, (ev) =>
-    setToolActivity((prev) => applyToolEvent(prev, ev)),
-  );
+  // #142/#143 — the tool calls of the turn in flight (cleared when the next
+  // starts) and the owner's Approve / Deny; shared with the Workbench.
+  const toolApprovals = useToolApprovals(session?.id ?? null, setError);
+  const resetToolActivity = toolApprovals.reset;
   // The session on screen now — a transcript read that lands after the user
   // switched sessions must not overwrite the new one.
   const sessionIdRef = useRef<string | null>(null);
@@ -145,7 +139,7 @@ export default function ChatPage() {
     setMessages([]);
     // A compaction note belongs to the session it happened in.
     setCompactionNote(null);
-    setToolActivity([]);
+    resetToolActivity();
     const firstRun = !mountedOnceRef.current;
     mountedOnceRef.current = true;
     void (async () => {
@@ -202,6 +196,7 @@ export default function ChatPage() {
     resumeSessionId,
     agentHydrated,
     scopeHydrated,
+    resetToolActivity,
   ]);
 
   function handleNewChat() {
@@ -256,7 +251,7 @@ export default function ChatPage() {
       content: "",
     };
     setMessages([...messages, userMsg, assistantMsg]);
-    setToolActivity([]);
+    resetToolActivity();
     setInput("");
     setStreaming(true);
     setError(null);
@@ -316,25 +311,6 @@ export default function ChatPage() {
     }
   }
 
-  // #142 — send the owner's answer; the server applies it only to a pending
-  // approval of this session. A 404 means it lapsed or was already answered.
-  async function handleDecide(item: ToolActivity, decision: "approve" | "deny") {
-    if (!session || !item.approvalId) return;
-    const approvalId = item.approvalId;
-    setDeciding((prev) => new Set(prev).add(approvalId));
-    try {
-      await decideToolApproval(session.id, approvalId, decision);
-    } catch {
-      setError("That approval is no longer pending — it was answered or it expired.");
-    } finally {
-      setDeciding((prev) => {
-        const next = new Set(prev);
-        next.delete(approvalId);
-        return next;
-      });
-    }
-  }
-
   function handleStop() {
     abortRef.current?.abort();
   }
@@ -354,7 +330,7 @@ export default function ChatPage() {
         );
         break;
       case "tool_event":
-        setToolActivity((prev) => applyToolEvent(prev, ev));
+        toolApprovals.apply(ev);
         break;
       case "tool_call":
         // #713's summary frame; `tool_event` carries the full lifecycle. The
@@ -554,9 +530,9 @@ export default function ChatPage() {
           )}
         </PausableLiveRegion>
         <ToolActivityList
-          items={toolActivity}
-          deciding={deciding}
-          onDecide={(item, decision) => void handleDecide(item, decision)}
+          items={toolApprovals.items}
+          deciding={toolApprovals.deciding}
+          onDecide={(item, decision) => void toolApprovals.decide(item, decision)}
         />
         <form
           className="flex gap-2"

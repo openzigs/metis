@@ -385,6 +385,112 @@ describe("local provider: no concurrency slot held while approving or executing"
   });
 });
 
+describe("a client that never answers (#128 review — the Workbench shape)", () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    resetLocalConcurrencyLimitersForTests();
+  });
+
+  it("the prompt lapses, the tool never runs, and no local slot is held while it waits", async () => {
+    resetLocalConcurrencyLimitersForTests();
+    const limiter = localConcurrencyLimiter(BASE);
+    const lookup = tool("inspect_schema", () => "3 tables");
+    const broker = new ToolApprovalBroker();
+    const toolset = makeToolset([lookup]);
+    const events: ToolEvent[] = [];
+    // While the prompt is open, another user's generation must get the slot
+    // straight away — nobody is holding it across a human decision.
+    let otherGeneration: Promise<string> | null = null;
+    const onEvent = (e: ToolEvent): void => {
+      events.push(e);
+      if (e.phase !== "awaiting_approval") return;
+      otherGeneration = Promise.race([
+        limiter.acquire().then((release) => {
+          const inFlight = limiter.inFlight;
+          release();
+          return `acquired (inFlight ${inFlight})`;
+        }),
+        new Promise<string>((r) => setTimeout(() => r("blocked"), 30)),
+      ]);
+    };
+    const gate = new ApprovalGateService({
+      sessionId: CTX.sessionId,
+      userId: CTX.userId,
+      policy: ALWAYS,
+      // Nobody ever calls broker.decide(): the page cannot answer.
+      prompter: brokerPrompter({
+        broker,
+        toolset,
+        projectId: CTX.projectId,
+        timeoutMs: 80,
+        onEvent,
+      }),
+    });
+
+    let call = 0;
+    globalThis.fetch = vi.fn(async () => {
+      call++;
+      return call === 1
+        ? sse([
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      { index: 0, id: "c1", function: { name: "inspect_schema", arguments: "{}" } },
+                    ],
+                  },
+                },
+              ],
+            },
+            { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+          ])
+        : sse([
+            { choices: [{ delta: { content: "I could not check." } }] },
+            { choices: [{ delta: {}, finish_reason: "stop" }] },
+          ]);
+    }) as unknown as typeof fetch;
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: BASE,
+      apiKey: "ollama",
+      model: "gemma3:12b",
+      providerKey: "local-gemma",
+      maxAttempts: 1,
+      sleepFn: async () => undefined,
+    });
+
+    const records: ChatToolRecord[] = [];
+    const started = Date.now();
+    const out = await runChatToolTurn(
+      provider,
+      { messages: [{ role: "user", content: "x" }], toolset, native: true, ctx: CTX, gate },
+      {
+        onToolEvent: onEvent,
+        onToolRecord: (r) => records.push(r),
+        callModel: (m, o) =>
+          collectGuardedStream(provider.stream(m, o), {
+            provider: provider.key,
+            model: "gemma3:12b",
+            idleMs: 60_000,
+          }),
+      },
+    );
+
+    expect(await otherGeneration).toBe("acquired (inFlight 1)");
+    expect(lookup.execute).not.toHaveBeenCalled();
+    expect(records).toEqual([
+      expect.objectContaining({ tool: "inspect_schema", decision: "expired", executed: false }),
+    ]);
+    expect(events.at(-1)).toMatchObject({ phase: "error", code: "TOOL_APPROVAL_EXPIRED" });
+    expect(approvalRows.map((r) => r.decision)).toEqual(["expired"]);
+    // It ended at the approval timeout, cleanly: the model was told and answered.
+    expect(out.finalResponse).toBe("I could not check.");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(broker.size).toBe(0);
+    expect(limiter.inFlight).toBe(0);
+  });
+});
+
 describe("replyText keeps every native turn's text (#128 review)", () => {
   it("composeReplyText joins turns like the stream and appends an unseen answer", () => {
     expect(composeReplyText(["Let me look.", "", "Found it."], "Found it.")).toBe(

@@ -2,15 +2,17 @@
  * Tests for Workbench feature parity (Epic #525):
  * - #528: Agent Picker integration
  * - #529: Slash command wiring
- * - #530: Tool-call confirmation
+ * - #142/#143: tool approvals — the Workbench answers the server gate's prompts
+ *   exactly as Chat does (#530's local confirm() decided nothing and is gone)
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "./test-utils";
 import WorkbenchPage from "@/app/(authed)/workbench/page";
 import * as aiClient from "@/lib/ai-client";
 import type { StreamEvent } from "@/lib/ai-client";
+import type { AiToolEvent } from "@metis/shared";
 
 vi.mock("@/lib/ai-client", async () => {
   const actual = await vi.importActual<typeof import("@/lib/ai-client")>("@/lib/ai-client");
@@ -18,8 +20,20 @@ vi.mock("@/lib/ai-client", async () => {
     ...actual,
     createSession: vi.fn(),
     streamChat: vi.fn(),
+    decideToolApproval: vi.fn(),
   };
 });
+
+// The session room (#142): the hook joins it and listens for `ai:tool:event`.
+const socketHandlers = vi.hoisted(() => new Map<string, (payload: unknown) => void>());
+const socketEmit = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/socket-client", () => ({
+  useSocket: () => ({
+    emit: socketEmit,
+    on: (name: string, fn: (p: unknown) => void) => socketHandlers.set(name, fn),
+    off: (name: string) => socketHandlers.delete(name),
+  }),
+}));
 
 // Mock AgentPicker to a controlled select that calls onChange
 vi.mock("@/components/chat/agent-picker", () => ({
@@ -72,6 +86,7 @@ vi.mock("@/components/chat/loaded-skills-panel", () => ({
 
 const createSessionMock = vi.mocked(aiClient.createSession);
 const streamChatMock = vi.mocked(aiClient.streamChat);
+const decideMock = vi.mocked(aiClient.decideToolApproval);
 
 const fakeSession: aiClient.AISession = {
   id: "sess-wb-1",
@@ -198,94 +213,123 @@ describe("Workbench — Slash Commands (#529)", () => {
   });
 });
 
-describe("Workbench — Tool-Call Confirmation (#530)", () => {
-  it("shows confirm dialog for high-risk tool calls", async () => {
-    const user = userEvent.setup();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+describe("Workbench — tool approvals (#142)", () => {
+  const PROMPT: AiToolEvent = {
+    type: "tool_event",
+    phase: "awaiting_approval",
+    sessionId: "sess-wb-1",
+    callId: "c1",
+    name: "inspect_schema",
+    risk: "medium",
+    source: "metis",
+    argsPreview: '{"connectionId":"db-1"}',
+    approvalId: "apr_1",
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    ts: 1,
+  };
 
-    async function* fakeStream(): AsyncGenerator<StreamEvent> {
-      yield { type: "tool_call", name: "delete_database", arguments: { id: "db-1" }, risk: "high" };
-      yield { type: "delta", content: "Done" };
+  /**
+   * A turn that stops at the approval prompt, as the server's does, and
+   * resumes with whatever the test feeds it once the owner has answered.
+   */
+  function promptingStream(after: () => StreamEvent[]) {
+    let release: () => void = () => undefined;
+    const answered = new Promise<void>((r) => (release = r));
+    async function* gen(): AsyncGenerator<StreamEvent> {
+      yield { ...PROMPT, phase: "started", approvalId: undefined, expiresAt: undefined };
+      yield PROMPT;
+      await answered;
+      for (const ev of after()) yield ev;
       yield { type: "done" };
     }
-    streamChatMock.mockReturnValue(fakeStream());
+    return { stream: gen(), release: () => release() };
+  }
 
-    const Wrapper = makeWrapper({ withAuth: false });
-    render(<WorkbenchPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("workbench-input")).not.toBeDisabled();
-    });
-
-    const input = screen.getByTestId("workbench-input");
-    await user.type(input, "do something dangerous");
-    await user.click(screen.getByTestId("workbench-send"));
-
-    await waitFor(() => {
-      expect(confirmSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Allow high-risk tool "delete_database"'),
-      );
-    });
-
-    confirmSpy.mockRestore();
-  });
-
-  it("aborts stream when user denies high-risk tool call", async () => {
+  async function sendMessage(text: string) {
     const user = userEvent.setup();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-
-    async function* fakeStream(): AsyncGenerator<StreamEvent> {
-      yield { type: "tool_call", name: "delete_database", arguments: {}, risk: "high" };
-      yield { type: "delta", content: "Should not appear" };
-      yield { type: "done" };
-    }
-    streamChatMock.mockReturnValue(fakeStream());
-
-    const Wrapper = makeWrapper({ withAuth: false });
-    render(<WorkbenchPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("workbench-input")).not.toBeDisabled();
-    });
-
-    const input = screen.getByTestId("workbench-input");
-    await user.type(input, "risky");
+    await waitFor(() => expect(screen.getByTestId("workbench-input")).not.toBeDisabled());
+    await user.type(screen.getByTestId("workbench-input"), text);
     await user.click(screen.getByTestId("workbench-send"));
+  }
 
-    await waitFor(() => {
-      expect(confirmSpy).toHaveBeenCalled();
+  it("shows the prompt; Approve sends the owner's answer and the tool's result appears", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm");
+    const turn = promptingStream(() => [
+      { ...PROMPT, phase: "result", approvalId: undefined, resultPreview: "3 tables" },
+      // #713's post-decision summary frame must not raise a local prompt.
+      { type: "tool_call", name: "inspect_schema", arguments: {}, risk: "medium" },
+      { type: "delta", content: "There are 3 tables." },
+    ]);
+    streamChatMock.mockReturnValue(turn.stream);
+    decideMock.mockImplementation(async () => {
+      turn.release();
+      return { approvalId: "apr_1", decision: "approve" };
     });
+    render(<WorkbenchPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    await sendMessage("what tables are there?");
 
-    confirmSpy.mockRestore();
-  });
+    const approve = await screen.findByRole("button", { name: "Approve inspect_schema" });
+    expect(screen.getByText("waiting for your approval")).toBeInTheDocument();
+    expect(screen.getByText('{"connectionId":"db-1"}')).toBeInTheDocument();
+    fireEvent.click(approve);
 
-  it("does not show confirm for low-risk tool calls", async () => {
-    const user = userEvent.setup();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-
-    async function* fakeStream(): AsyncGenerator<StreamEvent> {
-      yield { type: "tool_call", name: "read_file", arguments: { path: "/tmp" }, risk: "low" };
-      yield { type: "delta", content: "Result" };
-      yield { type: "done" };
-    }
-    streamChatMock.mockReturnValue(fakeStream());
-
-    const Wrapper = makeWrapper({ withAuth: false });
-    render(<WorkbenchPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("workbench-input")).not.toBeDisabled();
-    });
-
-    const input = screen.getByTestId("workbench-input");
-    await user.type(input, "safe");
-    await user.click(screen.getByTestId("workbench-send"));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Result/)).toBeInTheDocument();
-    });
-
+    await waitFor(() => expect(decideMock).toHaveBeenCalledWith("sess-wb-1", "apr_1", "approve"));
+    expect(await screen.findByText("3 tables")).toBeInTheDocument();
+    expect(await screen.findByText(/There are 3 tables\./)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve inspect_schema" })).toBeNull();
     expect(confirmSpy).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
+  });
+
+  it("Deny sends a denial and the call shows as refused", async () => {
+    const turn = promptingStream(() => [
+      {
+        ...PROMPT,
+        phase: "error",
+        approvalId: undefined,
+        isError: true,
+        code: "TOOL_DENIED",
+      },
+      { type: "delta", content: "Understood, I did not inspect it." },
+    ]);
+    streamChatMock.mockReturnValue(turn.stream);
+    decideMock.mockImplementation(async () => {
+      turn.release();
+      return { approvalId: "apr_1", decision: "deny" };
+    });
+    render(<WorkbenchPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    await sendMessage("inspect it");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Deny inspect_schema" }));
+    await waitFor(() => expect(decideMock).toHaveBeenCalledWith("sess-wb-1", "apr_1", "deny"));
+    expect(await screen.findByText("Denied — the tool did not run.")).toBeInTheDocument();
+  });
+
+  it("says so when the approval is no longer pending", async () => {
+    const turn = promptingStream(() => []);
+    streamChatMock.mockReturnValue(turn.stream);
+    decideMock.mockRejectedValue(new Error("404"));
+    render(<WorkbenchPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    await sendMessage("inspect it");
+    fireEvent.click(await screen.findByRole("button", { name: "Approve inspect_schema" }));
+    expect(await screen.findByText(/no longer pending/)).toBeInTheDocument();
+    turn.release();
+  });
+
+  it("joins the session room: a prompt that arrives only there can be answered too", async () => {
+    decideMock.mockResolvedValue({ approvalId: "apr_1", decision: "approve" });
+    render(<WorkbenchPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    await waitFor(() =>
+      expect(socketEmit).toHaveBeenCalledWith("subscribe:session", { sessionId: "sess-wb-1" }),
+    );
+    await waitFor(() => expect(socketHandlers.has("ai:tool:event")).toBe(true));
+    act(() => socketHandlers.get("ai:tool:event")!(PROMPT));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve inspect_schema" }));
+    await waitFor(() => expect(decideMock).toHaveBeenCalledWith("sess-wb-1", "apr_1", "approve"));
+    // Another session's event never lands here.
+    act(() =>
+      socketHandlers.get("ai:tool:event")!({ ...PROMPT, sessionId: "sess-other", name: "other" }),
+    );
+    expect(screen.queryByText("other")).toBeNull();
   });
 });
