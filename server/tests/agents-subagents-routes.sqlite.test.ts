@@ -57,6 +57,7 @@ type Turn = NonNullable<ConstructorParameters<typeof OfflineStubProvider>[0]>["s
   : never;
 
 const countExec = vi.fn(async (a: { table: string }) => ({ text: `rows in ${a.table}: 7` }));
+const hiddenExec = vi.fn(async () => ({ text: "hidden ran" }));
 const dangerExec = vi.fn(async (a: { table: string }) => ({ text: `wrote ${a.table}` }));
 
 function registerTools(): void {
@@ -73,6 +74,14 @@ function registerTools(): void {
     schema: z.object({ table: z.string() }),
     risk: "high",
     exec: dangerExec,
+  } as ToolDefinition);
+  // Registered for the session, but OUTSIDE the lead agent's allowlist.
+  getToolRegistry().register({
+    name: "hidden_tool",
+    description: "Not for the lead",
+    schema: z.object({ table: z.string() }),
+    risk: "low",
+    exec: hiddenExec,
   } as ToolDefinition);
 }
 
@@ -181,6 +190,10 @@ const BOOK: Array<{ match: string; turns: Turn[] }> = [
         usage: { promptTokens: 400, completionTokens: 100, totalTokens: 500 },
       },
     ],
+  },
+  {
+    match: "SCN-WITHHELD",
+    turns: [{ toolCalls: [call("c1", "hidden_tool", { table: "t" })] }, { content: "parent done" }],
   },
   {
     match: "SCN-OUTSIDER",
@@ -312,6 +325,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       registerTools();
       countExec.mockClear();
       dangerExec.mockClear();
+      hiddenExec.mockClear();
       model = new OfflineStubProvider({ book: { scenarios: BOOK } });
       setAIProviderForTests(model);
     });
@@ -476,6 +490,50 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           expect(part).toMatchObject({ name: "load_skill", executed: false, decision: "deny" });
         } finally {
           await db.agent.update({ where: { id: IDS.lead }, data: { approvalPolicy: null } });
+        }
+      });
+    });
+
+    // ── PR #239 panel — a saved model is never swapped silently ─────────────
+    describe("#145 an agent's saved model that cannot be used is SURFACED", () => {
+      it("session agent: the session is created on the default model and the reply carries the warning", async () => {
+        await db.agent.update({ where: { id: IDS.lead }, data: { model: "made-up-model" } });
+        try {
+          const res = await as(alice).post("/api/ai/sessions", {
+            projectId: IDS.project,
+            agentId: IDS.lead,
+          });
+          expect(res.status).toBe(201);
+          expect(res.body.data.session.model).not.toBe("made-up-model");
+          expect(res.body.data.warnings).toEqual([
+            expect.stringContaining('saved model "made-up-model"'),
+          ]);
+        } finally {
+          await db.agent.update({ where: { id: IDS.lead }, data: { model: "" } });
+        }
+      });
+
+      it("sub-agent: it runs on the session's model and its tool result carries the warning", async () => {
+        await db.customAgent.update({
+          where: { id: IDS.helper },
+          data: { model: "made-up-model" },
+        });
+        try {
+          const sid = await newSession({
+            projectId: IDS.project,
+            agentId: IDS.lead,
+            policy: { medium: "auto" },
+          });
+          await send(sid, "SCN-DELEGATE go");
+          const [agentPart] = await toolParts(sid);
+          expect(String(agentPart!.text)).toContain("helper done: 7 rows");
+          expect(String(agentPart!.text)).toContain(
+            '[METIS] The agent\'s saved model "made-up-model"',
+          );
+          const [run] = await db.aISubAgentRun.findMany({ where: { sessionId: sid } });
+          expect(run!.model).not.toBe("made-up-model");
+        } finally {
+          await db.customAgent.update({ where: { id: IDS.helper }, data: { model: null } });
         }
       });
     });
@@ -711,6 +769,93 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(runs.map((r) => r.status)).toEqual(["completed", "budget_exhausted"]);
         const parts = await toolParts(sid);
         expect(String(parts[1]!.text)).toContain("token budget");
+      });
+
+      it("the SESSION agent naming a tool outside its allowlist is refused and recorded as `not_in_agent_allowlist` (#142/#147)", async () => {
+        const sid = await newSession({ projectId: IDS.project, agentId: IDS.lead });
+        const res = await send(sid, "SCN-WITHHELD go");
+        expect(res.status).toBe(200);
+        // Never offered to the lead…
+        const [first] = parentRequests("SCN-WITHHELD");
+        expect(toolNames(first!)).not.toContain("hidden_tool");
+        // …and naming it anyway is refused, never run — and on record.
+        expect(hiddenExec).not.toHaveBeenCalled();
+        const row = await db.aIToolApproval.findFirst({
+          where: { sessionId: sid, toolName: "hidden_tool" },
+        });
+        expect(row).toMatchObject({
+          decision: "deny",
+          reason: "not_in_agent_allowlist",
+          userId: IDS.alice,
+        });
+        const [part] = await toolParts(sid);
+        expect(part).toMatchObject({ name: "hidden_tool", executed: false, decision: "deny" });
+      });
+
+      it("an agent the caller's allowlist names is offered even when the project has more than 16 callable agents and it sorts past them", async () => {
+        const fillers = Array.from(
+          { length: 17 },
+          (_, i) => `c-filler-${String(i).padStart(2, "0")}`,
+        );
+        for (const [i, id] of fillers.entries()) {
+          await db.customAgent.create({
+            data: {
+              id,
+              projectId: IDS.project,
+              // "Aa…" sorts before "Helper": the helper is the 18th callable agent.
+              name: `Aa ${String(i).padStart(2, "0")}`,
+              description: "",
+              systemPrompt: "Filler.",
+              tools: "[]",
+            },
+          });
+        }
+        await db.agent.update({
+          where: { id: IDS.lead },
+          data: { tools: JSON.stringify(["count_rows", HELPER]) },
+        });
+        try {
+          const sid = await newSession({
+            projectId: IDS.project,
+            agentId: IDS.lead,
+            policy: { medium: "auto" },
+          });
+          const res = await send(sid, "SCN-DELEGATE go");
+          expect(res.status).toBe(200);
+          const [first] = parentRequests("SCN-DELEGATE");
+          // Wire names: the helper is the ONLY agent tool the lead is offered.
+          expect(toolNames(first!).filter((n) => n.startsWith("agent_"))).toEqual(["agent_helper"]);
+          const [agentPart] = await toolParts(sid);
+          expect(agentPart).toMatchObject({ name: HELPER, decision: "auto-approve" });
+          expect(String(agentPart!.text)).toContain("helper done: 7 rows");
+        } finally {
+          await db.agent.update({
+            where: { id: IDS.lead },
+            data: { tools: JSON.stringify(["count_rows", "danger_write", "agent:*"]) },
+          });
+          await db.customAgent.deleteMany({ where: { id: { in: fillers } } });
+        }
+      });
+
+      it("sub-agent token usage is accounted to the session AND the project", async () => {
+        const sid = await newSession({ projectId: IDS.project, policy: { medium: "auto" } });
+        await send(sid, "SCN-BUDGET go");
+        // Recording is queued (non-blocking): wait for the rows to land.
+        let session: Array<{ totalTokens: number }> = [];
+        let project: Array<{ inputTokens: number; outputTokens: number }> = [];
+        for (let i = 0; i < 200; i++) {
+          session = await db.aITokenUsage.findMany({
+            where: { sessionId: sid, agentStep: "subagent" },
+          });
+          project = await db.tokenUsage.findMany({
+            where: { projectId: IDS.project, sessionId: sid, inputTokens: 400, outputTokens: 100 },
+          });
+          if (session.length >= 2 && project.length >= 2) break;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        // Two delegations of 500 tokens each (400 in / 100 out).
+        expect(session.reduce((n, r) => n + r.totalTokens, 0)).toBe(1000);
+        expect(project).toHaveLength(2);
       });
 
       it("an agent of ANOTHER project is never offered, and naming it runs nothing", async () => {

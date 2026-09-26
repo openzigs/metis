@@ -17,15 +17,15 @@
  *
  * Epic #129 (#145) — this is now a thin wrapper over the ONE agent runtime
  * (`agent-runtime/run-agent.ts`) that chat sub-agents also use: the agent is
- * read as the unified definition, its preferred model is sent only when the
- * model catalog knows it (#135), and its skills ride inline (no person is
+ * read as the unified definition, its saved model is resolved by
+ * `resolveAgentModel` (never swapped silently — a rejected model is returned
+ * as a `warnings` entry), and its skills ride inline (no person is
  * present to approve a `load_skill` call, so the run stays text-only).
  */
 import type { CustomAgentDto } from "@metis/shared";
 import type { AIProvider, TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
-import { customDtoDefinition } from "../agent-runtime/definition.js";
-import { lookupCatalogEntry } from "../ai/model-catalog.js";
+import { customDtoDefinition, resolveAgentModel } from "../agent-runtime/definition.js";
 import { resolveSkillCatalog } from "../agent-runtime/skills.js";
 import { loadInlineSkillBlocks, runAgent } from "../agent-runtime/run-agent.js";
 
@@ -51,19 +51,22 @@ export interface InvokeCustomAgentResult {
   usage: TokenUsage;
   model: string;
   provider: string;
+  /** Set when the agent's saved model could not be used (see `resolveAgentModel`). */
+  warnings?: string[];
 }
 
 const DEFAULT_USAGE: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
 /**
- * #135 — the agent's model override, sent only when the model catalog knows it
- * for this provider; otherwise the provider's default (`undefined`).
+ * The agent's saved model for this provider, or `undefined` for the provider's
+ * default — with a `warning` whenever a saved model is NOT sent.
  */
 export function catalogModelOverride(
   providerKey: string,
   model: string | null | undefined,
-): string | undefined {
-  return model && lookupCatalogEntry(providerKey, model) ? model : undefined;
+): { model: string | undefined; warning?: string } {
+  const r = resolveAgentModel(providerKey, model, undefined);
+  return r.warning ? { model: r.model, warning: r.warning } : { model: r.model };
 }
 
 export async function invokeCustomAgent(
@@ -98,12 +101,13 @@ export async function invokeCustomAgent(
   });
   // Pure text synthesis — no tools are offered (the runtime sends none), and
   // the untrusted input rides in the delimited <USER_INPUT> block.
+  const chosen = catalogModelOverride(provider.key, agent.model);
   const response = await runAgent({
     provider,
     definition,
     input: payload,
     frame: "user-input",
-    model: catalogModelOverride(provider.key, agent.model),
+    model: chosen.model,
     ...(input.signal ? { signal: input.signal } : {}),
     inlineSkillBlocks: await loadInlineSkillBlocks(catalog),
   });
@@ -113,5 +117,6 @@ export async function invokeCustomAgent(
     usage: response.usage ?? DEFAULT_USAGE,
     model: response.model,
     provider: response.provider,
+    ...(chosen.warning ? { warnings: [chosen.warning] } : {}),
   };
 }

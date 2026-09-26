@@ -298,21 +298,45 @@ function wireNameFor(def: AgentDefinitionDto, taken: Set<string>): string {
   return wire;
 }
 
-/** The sub-agent tools an owner may be offered (none past the depth limit). */
+/** Most agents offered as tools to one caller, beyond those it names exactly. */
+export const MAX_OFFERED_SUBAGENTS = 16;
+
+/**
+ * The sub-agent tools an owner may be offered (none past the depth limit).
+ * The owner's allowlist narrows the project's callable agents FIRST; only then
+ * is the {@link MAX_OFFERED_SUBAGENTS} cap applied, and an agent the allowlist
+ * names EXACTLY is never dropped by it (only wildcard/implicit admissions are).
+ * Whatever the cap drops is logged by ref — never silent.
+ */
 export function subAgentTools(
   ctx: AgentToolsContext,
   owner: AgentToolOwner,
   taken: Set<string>,
+  cap: number = MAX_OFFERED_SUBAGENTS,
 ): RuntimeTool[] {
   if (owner.depth >= ctx.limits.maxDepth) return [];
-  const tools: RuntimeTool[] = [];
-  for (const def of ctx.callable) {
-    if (def.ref === owner.selfRef) continue;
-    const name = subAgentToolName(def);
-    if (!admits(owner.allowlist, name)) continue;
-    tools.push(makeSubAgentTool(ctx, owner, def, wireNameFor(def, taken)));
+  const admitted = ctx.callable.filter(
+    (def) => def.ref !== owner.selfRef && admits(owner.allowlist, subAgentToolName(def)),
+  );
+  const named = (def: AgentDefinitionDto): boolean =>
+    owner.allowlist?.includes(subAgentToolName(def)) ?? false;
+  const explicit = admitted.filter(named);
+  const room = Math.max(0, cap - explicit.length);
+  const implicit = admitted.filter((d) => !named(d));
+  const keep = new Set([...explicit, ...implicit.slice(0, room)]);
+  const dropped = implicit.slice(room);
+  if (dropped.length > 0) {
+    log.warn("More callable agents than can be offered as tools; the rest are not offered", {
+      projectId: ctx.session.projectId,
+      callable: admitted.length,
+      offered: keep.size,
+      notOffered: dropped.map((d) => d.ref),
+    });
   }
-  return tools;
+  // Keep the project's order (library first, then custom by name).
+  return admitted
+    .filter((def) => keep.has(def))
+    .map((def) => makeSubAgentTool(ctx, owner, def, wireNameFor(def, taken)));
 }
 
 function makeSubAgentTool(
@@ -402,7 +426,12 @@ async function runSubAgent(
     };
   }
 
-  const { model } = resolveAgentModel(ctx.provider.key, def.model, ctx.model);
+  // A saved model that cannot be used is never swapped silently: the warning
+  // rides on the tool result the caller (and the transcript) sees.
+  const chosen = resolveAgentModel(ctx.provider.key, def.model, ctx.model);
+  const model = chosen.model ?? ctx.model;
+  const noted = (text: string): string =>
+    chosen.warning ? `${text}\n\n[METIS] ${chosen.warning}` : text;
   const native = resolveCapabilities(ctx.provider, model).nativeToolCalls;
   const catalog = await resolveSkillCatalog({
     skillKeys: def.skillKeys,
@@ -524,7 +553,7 @@ async function runSubAgent(
       usage,
     });
     return {
-      text: content.length > 0 ? content : "(The agent returned no text.)",
+      text: noted(content.length > 0 ? content : "(The agent returned no text.)"),
       subAgentRunId: run.id,
     };
   } catch (err) {
@@ -559,10 +588,11 @@ async function runSubAgent(
     }
     if ((err as Error).name === "AbortError") throw err;
     return {
-      text:
+      text: noted(
         status === "budget_exhausted"
           ? "Error: the sub-agent token budget for this reply ran out before the agent finished."
           : "Error: the agent failed before it finished.",
+      ),
       isError: true,
       subAgentRunId: run.id,
     };

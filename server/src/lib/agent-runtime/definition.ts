@@ -26,7 +26,7 @@ import type {
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
-import { lookupCatalogEntry } from "../ai/model-catalog.js";
+import { lookupCatalogEntry, MODEL_CATALOG_OVERRIDES_ENV } from "../ai/model-catalog.js";
 import { readStoredOverride } from "./policy.js";
 
 const log = createChildLogger("agent-definition");
@@ -196,15 +196,16 @@ export async function loadAgentDefinition(
  *     The library's "no rows ⇒ everything" picker default is deliberately NOT
  *     used here: exposing every library agent as a tool is an opt-in, not a
  *     side effect of installing an agent.
- * At most `limit` (default 16) are returned — library agents first, then custom
- * agents by name; past the cap the rest are dropped with a warning.
+ * Library agents first, then custom agents by name. The list is NOT capped
+ * here: how many are offered as tools is decided per calling agent, AFTER its
+ * allowlist has narrowed the list (`subAgentTools`), so an agent an allowlist
+ * names is never lost to a cap applied to the whole project.
  */
 export async function listCallableAgents(
   projectId: string,
-  opts: { db?: PrismaClient; limit?: number } = {},
+  opts: { db?: PrismaClient } = {},
 ): Promise<AgentDefinitionDto[]> {
   const db = opts.db ?? defaultPrisma;
-  const limit = opts.limit ?? 16;
   const enabledCustom = await db.customAgentEnablement.findMany({
     where: { projectId, enabled: true },
     select: { customAgentId: true },
@@ -232,32 +233,73 @@ export async function listCallableAgents(
           include: LIBRARY_INCLUDE,
           orderBy: { key: "asc" },
         });
-  const all = [...library.map(libraryDefinition), ...custom.map(customDefinition)];
-  if (all.length > limit) {
-    // Never silent: the agents past the cap are simply not offered as tools.
-    log.warn("More callable agents than can be offered as tools; the rest are not offered", {
-      projectId,
-      callable: all.length,
-      offered: limit,
-    });
-  }
-  return all.slice(0, limit);
+  return [...library.map(libraryDefinition), ...custom.map(customDefinition)];
 }
 
 /**
- * The model an agent runs on: its preferred model when the model catalog knows
- * it for this provider (#135 — a name the catalog cannot vouch for is never
- * sent), otherwise the caller's model.
+ * Providers whose model names are the OPERATOR's vocabulary, not a fixed list:
+ * a local runtime serves whatever it has pulled, Copilot owns its own model list
+ * (until P4 removes it), and an Azure "model" is a deployment name. The catalog
+ * cannot enumerate these without a network probe it may never have made (the
+ * discovery cache is filled only by `GET /api/ai/models`), so a well-formed
+ * name is sent as saved — the runtime answers a truly missing one with its own
+ * clear error, which is visible, where silently swapping it would not be.
+ */
+const OPEN_VOCABULARY_PROVIDERS: ReadonlySet<string> = new Set([
+  "local-gemma",
+  "copilot-native",
+  "azure",
+]);
+
+/** A syntactically sane model id (Ollama tags, HF paths and ARNs included). */
+const PLAUSIBLE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/;
+
+export interface AgentModelResolution {
+  /** The model to send; `undefined` = the provider's default. */
+  model: string | undefined;
+  /** The agent's saved model is the one being sent. */
+  usedPreferred: boolean;
+  /**
+   * Set when the agent HAS a saved model that is NOT being sent. A saved model
+   * is never swapped silently: every caller surfaces this on its result and
+   * it is logged here.
+   */
+  warning?: string;
+}
+
+/**
+ * The model an agent runs on (#135 / #145). Its saved model is sent when:
+ *   • the catalog knows it for this provider (builtin, operator override, or a
+ *     discovered local model), or
+ *   • the provider's model names are open-vocabulary
+ *     ({@link OPEN_VOCABULARY_PROVIDERS}) and the name is well-formed.
+ * Otherwise the caller's model runs — and the result carries a `warning` naming
+ * the rejected model, so the swap is never silent. The decision never depends
+ * on whether a discovery cache happens to be warm.
  */
 export function resolveAgentModel(
   providerKey: string,
   preferred: string | null | undefined,
-  fallback: string,
-): { model: string; usedPreferred: boolean } {
-  if (preferred && preferred !== fallback && lookupCatalogEntry(providerKey, preferred)) {
+  fallback: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): AgentModelResolution {
+  if (!preferred) return { model: fallback, usedPreferred: false };
+  if (preferred === fallback) return { model: preferred, usedPreferred: true };
+  const plausible = PLAUSIBLE_MODEL.test(preferred);
+  if (
+    plausible &&
+    (OPEN_VOCABULARY_PROVIDERS.has(providerKey) || lookupCatalogEntry(providerKey, preferred, env))
+  ) {
     return { model: preferred, usedPreferred: true };
   }
-  return { model: fallback, usedPreferred: preferred === fallback && Boolean(preferred) };
+  const ranOn = fallback ? `"${fallback}"` : "the provider's default model";
+  const why = plausible
+    ? `is not in the model catalog for the "${providerKey}" provider ` +
+      `(add it to ${MODEL_CATALOG_OVERRIDES_ENV} to allow it)`
+    : "is not a valid model name";
+  const warning = `The agent's saved model "${preferred.slice(0, 200)}" ${why}; it ran on ${ranOn} instead.`;
+  log.warn("Agent's saved model not used", { providerKey, preferred, fallback: fallback ?? null });
+  return { model: fallback, usedPreferred: false, warning };
 }
 
 /** The persona system block (the #700 byte-stable lead's first element). */

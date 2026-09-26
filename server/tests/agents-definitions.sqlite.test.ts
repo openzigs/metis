@@ -361,7 +361,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
 
-      it("from the filesystem: supporting files are read only under a SKILL.md, oversize ones are reported", async () => {
+      it("from the filesystem: supporting files are read only under a SKILL.md; an oversize one is left out and reported, the skill still imports", async () => {
         const root = mkdtempSync(path.join(os.tmpdir(), "metis-129-skills-"));
         try {
           mkdirSync(path.join(root, "notes-skill", "references"), { recursive: true });
@@ -381,17 +381,80 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             new FilesystemLoader(root, "skills", undefined, { supportingFiles: true }),
             actor,
           );
-          expect(res.imported.map((s) => s.key)).toEqual(["notes-skill"]);
-          expect(res.failed).toEqual([
+          expect(res.imported.map((s) => s.key).sort()).toEqual(["huge-skill", "notes-skill"]);
+          expect(res.failed).toEqual([]);
+          expect(res.skippedFiles).toEqual([
             {
-              path: "huge-skill/SKILL.md",
-              error: expect.stringMatching(/larger than 65536 bytes/),
+              skill: "huge-skill/SKILL.md",
+              path: "blob.md",
+              reason: expect.stringMatching(/larger than 65536 bytes/),
             },
           ]);
           const files = await db.skillFile.findMany({ where: { skill: { key: "notes-skill" } } });
           expect(files.map((f) => [f.path, f.content])).toEqual([
             ["references/NOTES.md", "NOTES-BODY"],
           ]);
+          expect(await db.skillFile.count({ where: { skill: { key: "huge-skill" } } })).toBe(0);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      });
+
+      it("a real skill folder with a binary asset, OS junk, an odd file name and too many files still imports — each left-out file is reported with its reason", async () => {
+        const root = mkdtempSync(path.join(os.tmpdir(), "metis-129-messy-"));
+        try {
+          const dir = path.join(root, "messy-skill");
+          mkdirSync(path.join(dir, "assets"), { recursive: true });
+          mkdirSync(path.join(dir, "references"), { recursive: true });
+          mkdirSync(path.join(dir, "__MACOSX"), { recursive: true });
+          writeFileSync(
+            path.join(dir, "SKILL.md"),
+            "---\nname: messy-skill\ndescription: Messy.\n---\nSee references/GUIDE.md",
+          );
+          writeFileSync(path.join(dir, "references", "GUIDE.md"), "GUIDE-BODY");
+          // A PNG: signature + IHDR length bytes (NULs) — binary.
+          writeFileSync(
+            path.join(dir, "assets", "logo.png"),
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]),
+          );
+          writeFileSync(path.join(dir, ".DS_Store"), "Bud1");
+          writeFileSync(path.join(dir, "__MACOSX", "junk"), "x");
+          writeFileSync(path.join(dir, "._GUIDE.md"), "x");
+          writeFileSync(path.join(dir, "notes(1).md"), "odd name");
+          // 32 more text files: with GUIDE.md that is one past the limit.
+          for (let i = 0; i < 32; i++) {
+            writeFileSync(
+              path.join(dir, "references", `r${String(i).padStart(2, "0")}.md`),
+              `R${i}`,
+            );
+          }
+          const res = await importer().importSkills(
+            new FilesystemLoader(root, "skills", undefined, { supportingFiles: true }),
+            actor,
+          );
+          expect(res.failed).toEqual([]);
+          expect(res.imported.map((s) => s.key)).toEqual(["messy-skill"]);
+          const reasons = Object.fromEntries(
+            (res.skippedFiles ?? []).map((f) => [f.path, f.reason]),
+          );
+          expect(reasons["assets/logo.png"]).toBe("not a text file");
+          expect(reasons[".DS_Store"]).toBe("operating-system metadata file");
+          expect(reasons["__MACOSX/junk"]).toBe("operating-system metadata file");
+          expect(reasons["._GUIDE.md"]).toBe("operating-system metadata file");
+          expect(reasons["notes(1).md"]).toMatch(/^invalid path/);
+          const overLimit = Object.entries(reasons).filter(([, r]) => /32-file limit/.test(r));
+          expect(overLimit).toHaveLength(1);
+          expect((res.skippedFiles ?? []).every((f) => f.skill === "messy-skill/SKILL.md")).toBe(
+            true,
+          );
+          const stored = await db.skillFile.findMany({
+            where: { skill: { key: "messy-skill" } },
+            select: { path: true },
+          });
+          expect(stored).toHaveLength(32);
+          expect(stored.map((f) => f.path)).not.toContain("assets/logo.png");
+          expect(stored.map((f) => f.path)).not.toContain(".DS_Store");
+          expect(stored.map((f) => f.path)).not.toContain("notes(1).md");
         } finally {
           rmSync(root, { recursive: true, force: true });
         }

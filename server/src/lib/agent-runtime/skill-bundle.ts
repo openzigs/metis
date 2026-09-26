@@ -13,6 +13,8 @@
  *   • text only (no NUL bytes), at most {@link MAX_SKILL_FILE_BYTES} each,
  *     {@link MAX_SKILL_FILES} files and {@link MAX_SKILL_BUNDLE_BYTES} in total;
  *   • no credential shapes (`secret-scan.ts`).
+ * On IMPORT, a file failing any check but the credential scan is left out and
+ * reported instead of failing the skill ({@link triageSkillFiles}).
  * Nothing is ever executed: a `scripts/` file is stored and served as text.
  */
 import crypto from "node:crypto";
@@ -96,6 +98,102 @@ export function validateSkillFiles(files: readonly SkillFileInput[]): ValidatedS
     });
   }
   return out;
+}
+
+/** One supporting file an IMPORT left out, and why (reported in the import result). */
+export interface SkippedSkillFile {
+  path: string;
+  reason: string;
+}
+
+/** Operating-system metadata that rides along in copied/zipped folders. */
+function isOsJunk(path: string): boolean {
+  return path
+    .split("/")
+    .some(
+      (seg) =>
+        seg === ".DS_Store" ||
+        seg === "__MACOSX" ||
+        seg === "Thumbs.db" ||
+        seg === "desktop.ini" ||
+        seg.startsWith("._"),
+    );
+}
+
+/**
+ * Import-time triage of a skill directory's supporting files. An imported
+ * folder routinely carries files METIS does not store — an `assets/logo.png`,
+ * a `.DS_Store`, an oddly named file, more files than the limit — and none of
+ * them makes the skill's `SKILL.md` unusable. So instead of failing the whole
+ * skill, each such file is LEFT OUT and reported with its reason, and the rest
+ * go through {@link validateSkillFiles} unchanged. Every guard still holds for
+ * what is stored: a file that fails the path, text, size, total-size or count
+ * check is simply never stored — and a file carrying a CREDENTIAL still fails
+ * the whole skill, as before. (Authoring a skill directly through the API stays
+ * strict: there, a bad file is the author's error to fix.)
+ */
+export function triageSkillFiles(files: readonly SkillFileInput[]): {
+  accepted: SkillFileInput[];
+  skipped: SkippedSkillFile[];
+} {
+  const accepted: SkillFileInput[] = [];
+  const skipped: SkippedSkillFile[] = [];
+  const seen = new Set<string>();
+  let total = 0;
+  for (const f of files) {
+    const label = typeof f.path === "string" ? f.path.slice(0, 200) : "(missing path)";
+    const skip = (reason: string): void => {
+      skipped.push({ path: label, reason });
+    };
+    if (typeof f.path === "string" && isOsJunk(f.path.replace(/\\/g, "/"))) {
+      skip("operating-system metadata file");
+      continue;
+    }
+    const path = normalizeSkillFilePath(f.path);
+    if (!path) {
+      skip(
+        "invalid path: it must be relative, at most four levels deep, and use only letters, digits, '.', '_', '-' and spaces",
+      );
+      continue;
+    }
+    if (seen.has(path)) {
+      skip("duplicate path");
+      continue;
+    }
+    if (f.content === OVERSIZE_FILE_SENTINEL) {
+      skip(`larger than ${MAX_SKILL_FILE_BYTES} bytes`);
+      continue;
+    }
+    if (typeof f.content !== "string" || f.content.includes("\0")) {
+      skip("not a text file");
+      continue;
+    }
+    const sizeBytes = Buffer.byteLength(f.content, "utf8");
+    if (sizeBytes > MAX_SKILL_FILE_BYTES) {
+      skip(`larger than ${MAX_SKILL_FILE_BYTES} bytes`);
+      continue;
+    }
+    if (findSecretKinds(f.content).length > 0) {
+      // A credential is NOT triaged away: it is passed on so the strict
+      // validation refuses the whole skill, loudly — a leaked secret in a
+      // skill folder must be noticed and removed, not quietly left behind.
+      seen.add(path);
+      accepted.push({ path, content: f.content });
+      continue;
+    }
+    if (accepted.length >= MAX_SKILL_FILES) {
+      skip(`past the ${MAX_SKILL_FILES}-file limit`);
+      continue;
+    }
+    if (total + sizeBytes > MAX_SKILL_BUNDLE_BYTES) {
+      skip(`past the ${MAX_SKILL_BUNDLE_BYTES}-byte total limit`);
+      continue;
+    }
+    seen.add(path);
+    total += sizeBytes;
+    accepted.push({ path, content: f.content });
+  }
+  return { accepted, skipped };
 }
 
 export interface SkillImportEntry {

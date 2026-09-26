@@ -42,6 +42,7 @@ import {
   groupSkillImport,
   MAX_SKILL_FILE_BYTES,
   OVERSIZE_FILE_SENTINEL,
+  triageSkillFiles,
 } from "../agent-runtime/skill-bundle.js";
 
 export class LibraryImportError extends Error {
@@ -72,6 +73,12 @@ export interface ImportResult<T> {
   imported: T[];
   skipped: Array<{ path: string; reason: string }>;
   failed: Array<{ path: string; error: string }>;
+  /**
+   * #146 — supporting files of an IMPORTED skill that were left out (binary,
+   * OS metadata, an invalid name, past a limit, a credential): the skill still
+   * imports with its SKILL.md and every valid file. Skills only.
+   */
+  skippedFiles?: Array<{ skill: string; path: string; reason: string }>;
 }
 
 // ── Loaders ────────────────────────────────────────────────────────────────
@@ -164,7 +171,7 @@ export class FilesystemLoader implements ImportSourceLoader {
       const stat = await this.fsImpl.stat(candidate).catch(() => null);
       if (!stat) continue;
       // An oversize file is passed on as a sentinel so the import REPORTS it
-      // (the skill fails with a clear reason) instead of silently dropping it.
+      // (left out of the skill, with its reason) instead of silently dropping it.
       if (stat.size > MAX_SKILL_FILE_BYTES) {
         out.push({ path: path.relative(root, candidate), contents: OVERSIZE_FILE_SENTINEL });
         continue;
@@ -254,18 +261,23 @@ export class LibraryImporter {
     const imported: SkillDetail[] = [];
     const skipped: ImportResult<SkillDetail>["skipped"] = [];
     const failed: ImportResult<SkillDetail>["failed"] = [];
+    const skippedFiles: NonNullable<ImportResult<SkillDetail>["skippedFiles"]> = [];
     // #146 — an Agent Skills directory (SKILL.md + supporting files) is ONE
-    // skill; any other file is a single-file skill, as before.
+    // skill; any other file is a single-file skill, as before. A supporting
+    // file METIS cannot store is left out and reported — only an invalid
+    // SKILL.md fails the skill.
     for (const entry of groupSkillImport(files)) {
+      const { accepted, skipped: leftOut } = triageSkillFiles(entry.files);
       try {
         const created = await this.skills.create(
           {
             source: entry.source,
             origin,
-            ...(entry.files.length > 0 ? { files: entry.files } : {}),
+            ...(accepted.length > 0 ? { files: accepted } : {}),
           },
           actor,
         );
+        for (const f of leftOut) skippedFiles.push({ skill: entry.path, ...f });
         imported.push(created);
       } catch (err) {
         if (err instanceof SkillServiceError && err.code === "SKILL_KEY_EXISTS") {
@@ -284,9 +296,10 @@ export class LibraryImporter {
         importedCount: imported.length,
         skippedCount: skipped.length,
         failedCount: failed.length,
+        skippedFileCount: skippedFiles.length,
       },
     });
-    return { imported, skipped, failed };
+    return { imported, skipped, failed, skippedFiles };
   }
 
   async importAgents(

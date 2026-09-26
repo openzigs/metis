@@ -36,6 +36,8 @@ export interface CustomAgentResult {
   content: string;
   usage: TokenUsage;
   error?: string;
+  /** e.g. the agent's saved model could not be used — never silent (#145). */
+  warnings?: string[];
 }
 
 export interface CustomAgentPhaseResult {
@@ -85,6 +87,7 @@ export async function runEnabledCustomAgents(
           agentName: agent.name,
           content: res.content,
           usage: res.usage,
+          ...(res.warnings ? { warnings: res.warnings } : {}),
         };
       } catch (err) {
         log.warn("Custom agent failed during analysis", {

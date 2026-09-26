@@ -2297,8 +2297,13 @@ approval override) — never less.
 custom agents (Settings → Custom agents) now carry the same things: a persona,
 the skills they use, the tools they may call, a preferred model, how much they
 ask for approval, and a version that goes up on every change. Existing agents
-of both kinds keep everything they had. A preferred model is used only when the
-model list knows it for your provider; otherwise the chat's model is used.
+of both kinds keep everything they had. An agent's preferred model is always used
+on a local model, Copilot and Azure (whose model names are yours to choose); on
+Anthropic, OpenAI and the Bedrock gateway it is used when the model list knows it
+for that provider (an operator can add one with `AI_MODEL_CATALOG_OVERRIDES`).
+When a preferred model cannot be used, the chat's model runs instead and you are
+told so — on the new chat, on the hand-off's result, or on the agent run — never
+silently.
 
 **Skills load when they are needed.** The skills a chat has (the agent's own
 plus any you add) are listed to the AI by name and description only. When one
@@ -2315,7 +2320,11 @@ tools (including the GitHub Copilot provider) always get the full text.
 Import a skill's whole folder and its supporting files (`references/`,
 `assets/`, `scripts/` …) come with it: the AI can open one by name with
 `load_skill`, and nothing in them is ever run. A file must be text, at most
-64 KB (32 files, 512 KB per skill), inside the skill's folder. A `SKILL.md`
+64 KB (32 files, 512 KB per skill), inside the skill's folder, with a plain name
+(letters, digits, `.`, `_`, `-`, spaces). A file that does not qualify — an
+image, a `.DS_Store` or `__MACOSX` entry, an oddly named file, one past the
+limits — is left out and listed with its reason in the import result
+(`skippedFiles`); the skill itself still imports. A `SKILL.md`
 with broken frontmatter is refused with the reason (for example
 "Frontmatter key 'execute' is not allowed", or "File must begin with a `---`
 YAML frontmatter block"). Agent and skill text that contains a credential
@@ -2335,10 +2344,11 @@ to see the task, what it did and its answer. Limits stop runaway hand-offs:
 `SUBAGENT_MAX_DEPTH` (default 2 levels), `SUBAGENT_TOKEN_BUDGET` (default
 200,000 tokens across all hand-offs in one reply) and `SUBAGENT_MAX_TURNS`
 (default 6 model turns each). The token budget is checked before each model
-call, so the call that crosses it can overshoot it by one response. At most 16
-agents are offered to a chat as hand-off targets (library agents first, then
-custom agents by name); past that the rest are not offered and the server logs
-a warning. An approval rule on the chat's agent (for example "always ask for
+call, so the call that crosses it can overshoot it by one response. An agent
+whose tool list names another agent exactly is always offered it. Otherwise at
+most 16 agents are offered to one agent as hand-off targets (library agents
+first, then custom agents by name) — counted after its tool list has narrowed
+them; past that the rest are not offered and the server logs which. An approval rule on the chat's agent (for example "always ask for
 low-risk tools") also applies to every agent it hands off to, at every level.
 Turn hand-offs off with `CHAT_SUBAGENTS=false`.
 

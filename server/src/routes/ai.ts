@@ -102,7 +102,8 @@ import {
   createDefaultSymbolLineLookup,
 } from "../lib/code-graph/project-code-searcher.js";
 import { getConfigService } from "../lib/config/config-service.js";
-import { getModelCatalog, lookupCatalogEntry } from "../lib/ai/model-catalog.js";
+import { getModelCatalog } from "../lib/ai/model-catalog.js";
+import { resolveAgentModel } from "../lib/agent-runtime/definition.js";
 import { renderSkillCatalog, type SkillCatalogEntry } from "../lib/agent-runtime/skills.js";
 import { getSubAgentRun } from "../lib/agent-runtime/subagents.js";
 import type { ChatOptions as SubAgentChatOptions } from "../lib/ai/types.js";
@@ -894,6 +895,7 @@ export function aiRouter(): Router {
     // SessionRuntimeError; the session is never created in that case.
     let agentSnapshot: string | null = null;
     let resolvedAgentId: string | null = null;
+    const sessionWarnings: string[] = [];
     let initialSkillIds: string[] = [];
     if (parsed.data.agentId || parsed.data.agentKey) {
       try {
@@ -909,16 +911,13 @@ export function aiRouter(): Router {
           model: resolved.agent.model,
         });
         initialSkillIds = [...resolved.autoLoadedSkillIds];
-        // #145 — the agent's preferred model, when neither the request nor the
-        // project chose one AND the model catalog knows it for this provider
-        // (#135: a name the catalog cannot vouch for is never sent).
-        if (
-          resolved.agent.model &&
-          parsed.data.model === undefined &&
-          !projectPinnedModel &&
-          lookupCatalogEntry(resolvedProvider, resolved.agent.model)
-        ) {
-          resolvedModel = resolved.agent.model;
+        // #145 — the agent's saved model, when neither the request nor the
+        // project chose one. A saved model that cannot be used on this
+        // provider is never swapped silently: the reply carries the warning.
+        if (resolved.agent.model && parsed.data.model === undefined && !projectPinnedModel) {
+          const chosen = resolveAgentModel(resolvedProvider, resolved.agent.model, resolvedModel);
+          resolvedModel = chosen.model ?? resolvedModel;
+          if (chosen.warning) sessionWarnings.push(chosen.warning);
         }
       } catch (err) {
         if (err instanceof SessionRuntimeError) {
@@ -981,6 +980,7 @@ export function aiRouter(): Router {
           degraded: scopeDegradationReason !== null,
           ...(scopeDegradationReason ? { reason: scopeDegradationReason } : {}),
         },
+        ...(sessionWarnings.length > 0 ? { warnings: sessionWarnings } : {}),
       }),
     );
   });
