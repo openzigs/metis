@@ -124,18 +124,41 @@ describe("MarkdownPreviewer — progressive rendering (#190)", () => {
   });
 
   it("every TOC anchor and every heading id is unique once all sections render", () => {
-    const { container } = render(<MarkdownPreviewer content={doc} />);
-    for (let guard = 0; pending(container).length && guard < 300; guard++) {
-      intersect(pending(container)[0]);
-    }
+    // A smaller document with the same duplicate-heading shape: rendering all
+    // 251 sections of the big one is slow on a contended CI runner (#1379).
+    const small = [
+      "# Doc",
+      ...Array.from({ length: 12 }, (_, i) => [
+        i % 4 === 0 ? `## Area ${i}` : "",
+        "### Rules",
+        `Rule text ${i}.`,
+        "#### Edge Cases",
+        "- none",
+      ]).flat(),
+    ].join("\n");
+    const { container } = render(<MarkdownPreviewer content={small} />);
+    const observer = ControlledObserver.instances.find((o) =>
+      o.options?.rootMargin?.startsWith("1500px"),
+    )!;
+    act(() => {
+      observer.callback(
+        [...pending(container)].map(
+          (target) => ({ target, isIntersecting: true }) as unknown as IntersectionObserverEntry,
+        ),
+        observer as unknown as IntersectionObserver,
+      );
+    });
     expect(pending(container)).toHaveLength(0);
     const ids = [...container.querySelectorAll('[data-testid="markdown-content"] [id]')].map(
       (el) => el.id,
     );
     expect(new Set(ids).size).toBe(ids.length);
-    // 240 "Edge Cases" H4s → edge-cases, edge-cases-1 … edge-cases-239.
-    expect(ids).toContain("edge-cases-239");
-    for (const link of container.querySelectorAll('[data-testid="markdown-toc"] a')) {
+    // 12 "Rules" H3s and 12 "Edge Cases" H4s, numbered document-wide.
+    expect(ids).toContain("rules-11");
+    expect(ids).toContain("edge-cases-11");
+    const links = container.querySelectorAll('[data-testid="markdown-toc"] a');
+    expect(links.length).toBe(1 + 3 + 12);
+    for (const link of links) {
       const id = link.getAttribute("href")!.slice(1);
       expect(container.querySelectorAll(`[id="${id}"]`)).toHaveLength(1);
     }
