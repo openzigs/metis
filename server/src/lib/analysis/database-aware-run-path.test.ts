@@ -6,7 +6,7 @@
  * REACHABILITY GUARD (this epic was bitten 3x by green tests over unreachable
  * paths: #750/#797/#847): this suite does NOT call `resolveDatabaseAwareAnalysis`
  * or `computeAffectedSchema` directly. It drives the real orchestrator wiring —
- * the fake MODEL is scripted at the Copilot-SDK provider boundary and the
+ * the fake MODEL is scripted at the AI provider boundary and the
  * schema-crossing fixture rides the documented `affectedSchemaMapping`
  * dependency seam (#823/#824), exactly like `verdict-schema-pipeline.test.ts`
  * and `dogfood-schema-impact-pipeline.test.ts`. The assertions are on what

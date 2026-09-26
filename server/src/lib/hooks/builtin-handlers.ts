@@ -70,9 +70,8 @@ export function installBuiltinHandlers(bus: HookBus = getHookBus()): void {
     "builtin:session-end-audit",
   );
 
-  // userPromptSubmit — audit-log the prompt arrival. The inline safety chain
-  // in CopilotWrapper still runs and is the authoritative deny gate; this
-  // handler exists so user-defined webhooks can observe every prompt.
+  // userPromptSubmit — audit-log the prompt arrival. This handler exists so
+  // user-defined webhooks can observe every prompt; it is not a deny gate.
   bus.on(
     "userPromptSubmit",
     (p: UserPromptSubmitPayload) => {

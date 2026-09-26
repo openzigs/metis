@@ -102,15 +102,13 @@ export const HTTP_STATUS_ERROR_CLASSES: Readonly<Record<string, StatusProvenance
   // ── upstream status: a dependency's response code, not ours ──────────────
   // Surfacing these would mis-attribute a dependency failure to the caller, so
   // they keep falling through to the 500 branch.
-  DiffApplyClientError: "upstream", // diff-apply sidecar
+  DiffApplyClientError: "upstream", // Morph apply API
   EmbedBackendHttpError: "upstream", // embeddings HTTP backend
   EmbeddingsClientError: "upstream", // embeddings service
   ImporterHttpError: "upstream", // arbitrary imported URL
   PagerDutyApiError: "upstream", // PagerDuty Events API
   ReasoningEffortRejectedError: "upstream", // local runtime `reasoning_effort` probe
-  RemoteCopilotClientError: "upstream", // remote Copilot service
   RetryableHttpError: "upstream", // Bedrock invoke retry loop
-  SandboxClientError: "upstream", // sandbox service
   SmitheryError: "upstream", // Smithery MCP registry
   SpecKitMcpHttpError: "upstream", // remote Spec Kit MCP server
   SqlLineageClientError: "upstream", // SQL-lineage sidecar

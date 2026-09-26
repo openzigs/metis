@@ -31,7 +31,7 @@ describe("resolvePhase2Concurrency (#178)", () => {
     }
   });
 
-  it("defaults to 1 for every provider not named as cloud (copilot-native, offline-stub, a new key)", () => {
+  it("defaults to 1 for every provider not named as cloud (the retired copilot-native, offline-stub, a new key)", () => {
     for (const key of ["copilot-native", "offline-stub", "some-future-provider"]) {
       expect(defaultPhase2Concurrency(key), key).toBe(1);
       expect(resolvePhase2Concurrency(key, stubConfig()), key).toBe(1);
@@ -81,10 +81,11 @@ describe("an openai provider pointed at a self-hosted server (#208)", () => {
         1,
       );
     }
-    // COPILOT_PROVIDER_BASE_URL is the provider's fallback base URL.
+    // #149 — COPILOT_PROVIDER_BASE_URL is no longer the provider's fallback
+    // (the config loader refuses it by name), so it is not read here either.
     expect(
       defaultPhase2Concurrency("openai", { COPILOT_PROVIDER_BASE_URL: "http://localhost:1234/v1" }),
-    ).toBe(1);
+    ).toBe(4);
   });
 
   it("keeps the cloud default for a public host, an unset or unparsable URL", () => {

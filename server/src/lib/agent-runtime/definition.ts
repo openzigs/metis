@@ -238,18 +238,14 @@ export async function listCallableAgents(
 
 /**
  * Providers whose model names are the OPERATOR's vocabulary, not a fixed list:
- * a local runtime serves whatever it has pulled, Copilot owns its own model list
- * (until P4 removes it), and an Azure "model" is a deployment name. The catalog
+ * a local runtime serves whatever it has pulled, and an Azure "model" is a
+ * deployment name. The catalog
  * cannot enumerate these without a network probe it may never have made (the
  * discovery cache is filled only by `GET /api/ai/models`), so a well-formed
  * name is sent as saved — the runtime answers a truly missing one with its own
  * clear error, which is visible, where silently swapping it would not be.
  */
-const OPEN_VOCABULARY_PROVIDERS: ReadonlySet<string> = new Set([
-  "local-gemma",
-  "copilot-native",
-  "azure",
-]);
+const OPEN_VOCABULARY_PROVIDERS: ReadonlySet<string> = new Set(["local-gemma", "azure"]);
 
 /** A syntactically sane model id (Ollama tags, HF paths and ARNs included). */
 const PLAUSIBLE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/;

@@ -13,7 +13,7 @@
  * as unpriced and left out of the total, and a provider priced at zero is
  * reported as having no per-token price rather than as a run that cost $0 —
  * `self-hosted` for local-gemma, `zero-priced` for anything else priced at zero
- * (copilot-native, offline-stub, an admin price entry of 0), which is not
+ * (offline-stub, an admin price entry of 0), which is not
  * necessarily self-hosted.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -82,8 +82,8 @@ export interface RunCostLine extends RunUsageLine {
    * `priced` — METIS has a per-token price; `unpriced` — it has none;
    * `self-hosted` — local-gemma, priced at zero per token, so there is no
    * per-token cost to report; `zero-priced` — any other provider whose
-   * configured price is zero per token (copilot-native, offline-stub, an admin
-   * price entry of 0).
+   * configured price is zero per token (offline-stub, an admin price entry
+   * of 0).
    */
   pricing: "priced" | "unpriced" | "self-hosted" | "zero-priced";
   /** USD, for a priced line only. */

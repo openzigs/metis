@@ -17,7 +17,7 @@
 
 - [ ] Every container has both `resources.requests` and `resources.limits`.  
   `kubectl get pods -n metis -o jsonpath='{range .items[*].spec.containers[*]}{.name}{":"}{.resources}{"\n"}{end}'`
-- [ ] Memory `limits` mirror or exceed `docker-compose.prod.yml`: server 1024Mi, embeddings 1536Mi, copilot 768Mi, ui 512Mi.
+- [ ] Memory `limits` mirror or exceed `docker-compose.prod.yml`: server 1024Mi, embeddings 1536Mi, ui 512Mi.
 
 ## 3. PodDisruptionBudgets
 
@@ -58,7 +58,7 @@
 
 - [ ] Secret `metis-secrets` exists and contains all required keys.  
   `kubectl get secret metis-secrets -n metis -o jsonpath='{.data}' | jq 'keys'`  
-  Expected: `JWT_SECRET, VAULT_MASTER_KEY, EMBEDDINGS_TOKEN, COPILOT_NATIVE_TOKEN, DATABASE_URL, OPENAI_API_KEY, GITHUB_TOKEN, METRICS_TOKEN`.
+  Expected: `JWT_SECRET, VAULT_MASTER_KEY, EMBEDDINGS_TOKEN, SQL_LINEAGE_TOKEN, DATABASE_URL, OPENAI_API_KEY, GITHUB_TOKEN, METRICS_TOKEN`.
 - [ ] When using ESO, the `ExternalSecret` reports `SecretSyncedError: false`.  
   `kubectl get externalsecret metis-secrets -n metis -o jsonpath='{.status.conditions}'`
 - [ ] No plaintext secret values committed to Git.

@@ -4,8 +4,8 @@
  * the #131 contract suite, so "openai / azure / bedrock-gateway go through the
  * direct clients" is proven by behaviour, not by an instanceof check.
  *
- * `copilot-native` is deliberately absent: it is the one key still served by
- * the Copilot SDK and is removed entirely in P4 (#130).
+ * `copilot-native` is absent: it was removed in P4 (#149); the factory refuses
+ * it by name (tests/lib/ai/factory-routing.test.ts).
  *
  * No network: the OpenAI-compatible keys answer from a mocked `fetch` in each
  * runtime's documented wire shape; the Anthropic keys from a mocked SDK.
@@ -117,7 +117,7 @@ for (const c of OPENAI_COMPATIBLE) {
   });
 
   describe(`${c.key} routing (#134)`, () => {
-    it("is built as the direct OpenAI-compatible client, never the Copilot wrapper", () => {
+    it("is built as the direct OpenAI-compatible client", () => {
       const p = build(c.env);
       expect(p).toBeInstanceOf(OpenAICompatibleProvider);
       expect(p.key).toBe(c.key);

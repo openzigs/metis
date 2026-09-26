@@ -14,9 +14,8 @@
  * more batches behind the limiter. The cloud providers named in
  * {@link CLOUD_PROVIDER_KEYS} (Bedrock gateway, native Anthropic, OpenAI,
  * Azure) serve concurrent requests, so their default is
- * {@link DEFAULT_PHASE2_CONCURRENCY_CLOUD}. Every other key — `copilot-native`
- * (no documented concurrency limit in the repo), `offline-stub`, and any
- * provider added later — defaults to 1 until someone decides otherwise, so a
+ * {@link DEFAULT_PHASE2_CONCURRENCY_CLOUD}. Every other key — `offline-stub`
+ * and any provider added later — defaults to 1 until someone decides otherwise, so a
  * new provider never inherits parallelism by accident (PR #181 review). An
  * explicit registry value wins for every provider kind.
  *
@@ -55,11 +54,12 @@ export const CLOUD_PROVIDER_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The base URL the `openai` provider sends to: `OPENAI_BASE_URL`, falling back
- * to `COPILOT_PROVIDER_BASE_URL`, exactly as the provider config resolves it.
+ * The base URL the `openai` provider sends to: `OPENAI_BASE_URL`, exactly as
+ * the provider config resolves it (#149 — the Copilot-era
+ * `COPILOT_PROVIDER_BASE_URL` fallback is gone).
  */
 function openaiBaseUrl(env: NodeJS.ProcessEnv): string | undefined {
-  return env.OPENAI_BASE_URL?.trim() || env.COPILOT_PROVIDER_BASE_URL?.trim() || undefined;
+  return env.OPENAI_BASE_URL?.trim() || undefined;
 }
 
 /** True when `url`'s host is loopback or a private IP literal. */

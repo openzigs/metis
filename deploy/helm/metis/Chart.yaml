@@ -2,7 +2,7 @@ apiVersion: v2
 name: metis
 description: |
   METIS — Master Enterprise Tool for Issue Synthesis. Production Helm chart
-  covering the four core services (server, ui, embeddings, copilot) plus
+  covering the core services (server, ui, embeddings, sql-lineage) plus
   PVCs, Secrets, Ingress, RBAC/IRSA, HPA, PDB, and NetworkPolicy.
 type: application
 # Chart version is independent of app version. Bump on any chart-template

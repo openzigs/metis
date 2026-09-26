@@ -38,11 +38,9 @@ vi.mock("@anthropic-ai/sdk", () => {
 });
 
 const { AnthropicProvider } = await import("./anthropic-provider.js");
-const { CopilotProvider } = await import("./copilot-provider.js");
 const { OfflineStubProvider } = await import("./offline-stub-provider.js");
 const { OpenAICompatibleProvider, BedrockDirectProvider } =
   await import("./openai-compatible-provider.js");
-const { CopilotWrapper } = await import("../copilot-wrapper.js");
 const { ReplayProvider } = await import("../fixtures/replay-provider.js");
 const { RecordingProvider } = await import("../fixtures/recording-provider.js");
 const { FixtureStore } = await import("../fixtures/fixture-store.js");
@@ -64,12 +62,6 @@ const makeOpenAICompatible = () =>
     providerKey: "local-gemma",
     retryBaseDelayMs: 1,
     sleepFn: async () => undefined,
-  });
-
-const makeCopilot = () =>
-  new CopilotProvider({
-    wrapper: new CopilotWrapper({ client: {} as never }),
-    key: "copilot-native",
   });
 
 const makeAnthropic = () => new AnthropicProvider({ apiKey: "k", model: "claude-sonnet-4-6" });
@@ -129,14 +121,6 @@ const ADAPTERS: Array<{
     build: makeDeepSeek,
     responseFormat: false,
     nativeToolCalls: true,
-  },
-  {
-    // copilot-sdk exposes no structured output in 0.3.0 OR 1.0.8, and this
-    // adapter never reads `ChatOptions.tools` — callers use the text protocol.
-    name: "CopilotProvider",
-    build: makeCopilot,
-    responseFormat: false,
-    nativeToolCalls: false,
   },
   {
     name: "OfflineStubProvider",
@@ -281,19 +265,5 @@ describe("a dropped responseFormat is audible, not silent", () => {
     await makeDeepSeek().chat([{ role: "user", content: "hi" }]);
 
     expect(dropWarnings()).toHaveLength(0);
-  });
-
-  it("CopilotProvider warns once when it drops a schema", () => {
-    const provider = makeCopilot();
-    const drop = (
-      provider as unknown as { unsupportedResponseFormat: (rf: unknown) => void }
-    ).unsupportedResponseFormat.bind(provider);
-
-    drop(SCHEMA);
-    drop(SCHEMA);
-    drop(undefined);
-
-    expect(dropWarnings()).toHaveLength(1);
-    expect(dropWarnings()[0][1]).toMatchObject({ provider: "copilot-native" });
   });
 });

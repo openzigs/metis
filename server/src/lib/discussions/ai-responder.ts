@@ -153,12 +153,10 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
       // the array; the growing thread history follows it). `messages` is left
       // off: the final human turn is unique per reply, so caching it would only
       // pay the write premium. Honoured on BedrockDirect/native-Anthropic;
-      // inert on the Copilot SDK/gateway path (transparent gateway caching).
+      // inert on the plain OpenAI-compatible path (transparent gateway caching).
       callType: "discussion",
       promptCaching: { system: true },
-      // #142 — a discussion reply is pure text: no tool is offered, and on the
-      // Copilot SDK its built-in shell/write tools are withheld (they would
-      // run with no approval gate behind them).
+      // #142 — a discussion reply is pure text: no tool is offered.
       disableTools: true,
       ...(signal ? { signal } : {}),
     })) {

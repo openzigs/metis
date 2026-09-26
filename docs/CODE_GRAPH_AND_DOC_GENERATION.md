@@ -935,7 +935,8 @@ additional operational complexity.
 
 Verified against manifests: Prisma, `web-tree-sitter` + grammar packages,
 `vectordb` (LanceDB), Transformers.js (`@huggingface/transformers`), the
-Anthropic SDK, and the GitHub Copilot SDK — **not** the Vercel AI SDK
+and the Anthropic SDK — **not** the Vercel AI SDK, and (since #130) not the
+GitHub Copilot SDK either
 ([server/package.json](../server/package.json#L51-L71)).
 
 ## See also

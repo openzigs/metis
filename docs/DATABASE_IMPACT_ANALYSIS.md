@@ -32,8 +32,9 @@ Two things make this safe and honest, and both are non-negotiable:
   code but absent from the live schema is separated, down-weighted, and — where it
   drives a finding — forces that finding to the honest `could-not-verify` verdict.
 
-> **On the LLM stack.** METIS's analysis agents run on the **GitHub Copilot SDK**
-> (`@github/copilot-sdk`), not the Vercel AI SDK. But the schema crossing that
+> **On the LLM stack.** METIS's analysis agents run on METIS's own provider layer
+> (`server/src/lib/ai/providers/` — `@anthropic-ai/sdk` plus an OpenAI-compatible
+> HTTP client), not the Vercel AI SDK. But the schema crossing that
 > produces the AFFECTED SCHEMA block is entirely **deterministic and LLM-free** —
 > the same inputs always yield the same block. The model is asked to _reconcile
 > and explain_ that block, never to invent the schema.

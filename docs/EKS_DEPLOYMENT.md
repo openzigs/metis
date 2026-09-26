@@ -220,7 +220,7 @@ helm install external-dns external-dns/external-dns -n kube-system \
 Create one secret per required env var, prefixed `metis/`:
 
 ```bash
-for k in JWT_SECRET VAULT_MASTER_KEY EMBEDDINGS_TOKEN COPILOT_NATIVE_TOKEN \
+for k in JWT_SECRET VAULT_MASTER_KEY EMBEDDINGS_TOKEN SQL_LINEAGE_TOKEN \
          DATABASE_URL OPENAI_API_KEY GITHUB_TOKEN METRICS_TOKEN; do
   aws secretsmanager create-secret --name "metis/${k}" \
     --secret-string "REPLACE_ME"

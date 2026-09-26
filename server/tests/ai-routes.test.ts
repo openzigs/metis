@@ -26,7 +26,6 @@ type Session = {
   policy: string;
   status: string;
   providerSecretRef: string | null;
-  copilotHome: string | null;
   createdAt: Date;
   updatedAt: Date;
   deletedAt: Date | null;
@@ -56,7 +55,6 @@ vi.mock("../src/lib/prisma.js", async () => {
           policy: data.policy ?? '{"low":"auto","medium":"prompt-once","high":"always-prompt"}',
           status: "active",
           providerSecretRef: data.providerSecretRef ?? null,
-          copilotHome: null,
           createdAt: new Date(),
           updatedAt: new Date(),
           deletedAt: null,
@@ -198,7 +196,6 @@ describe("session ownership", () => {
       policy: '{"low":"auto","medium":"auto","high":"auto"}',
       status: "active",
       providerSecretRef: null,
-      copilotHome: null,
       createdAt: new Date(),
       updatedAt: new Date(),
       deletedAt: null,
@@ -629,86 +626,6 @@ describe("BYOK provider key resolution via vault", () => {
   });
 });
 
-// ── M3 — session lifecycle cleanup on PATCH ───────────────────────────────
-describe("PATCH /api/ai/sessions/:id cleanup", () => {
-  it("invokes destroySession when status transitions to archived", async () => {
-    const destroy = vi.fn(async () => undefined);
-    const provider: AIProviderForTest = {
-      key: "offline-stub",
-      model: "stub",
-      offline: true,
-      async chat() {
-        return {
-          content: "",
-          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          model: "stub",
-          provider: "offline-stub",
-        };
-      },
-      async *stream() {
-        yield { type: "done" } as ChatChunk;
-      },
-      async embed() {
-        return { vectors: [], dimension: 0, model: "stub" };
-      },
-      async models() {
-        return ["stub"];
-      },
-      async ping() {
-        return true;
-      },
-      destroySession: destroy,
-    };
-    setAIProviderForTests(provider);
-
-    const app = makeApp();
-    const sessionId = (await auth(request(app).post("/api/ai/sessions").send({}))).body.data.session
-      .id;
-    const res = await auth(
-      request(app).patch(`/api/ai/sessions/${sessionId}`).send({ status: "archived" }),
-    );
-    expect(res.status).toBe(200);
-    expect(destroy).toHaveBeenCalledWith(sessionId);
-  });
-
-  it("does not call destroySession when status is unchanged", async () => {
-    const destroy = vi.fn(async () => undefined);
-    const provider: AIProviderForTest = {
-      key: "offline-stub",
-      model: "stub",
-      offline: true,
-      async chat() {
-        return {
-          content: "",
-          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          model: "stub",
-          provider: "offline-stub",
-        };
-      },
-      async *stream() {
-        yield { type: "done" } as ChatChunk;
-      },
-      async embed() {
-        return { vectors: [], dimension: 0, model: "stub" };
-      },
-      async models() {
-        return ["stub"];
-      },
-      async ping() {
-        return true;
-      },
-      destroySession: destroy,
-    };
-    setAIProviderForTests(provider);
-
-    const app = makeApp();
-    const sessionId = (await auth(request(app).post("/api/ai/sessions").send({}))).body.data.session
-      .id;
-    await auth(request(app).patch(`/api/ai/sessions/${sessionId}`).send({ title: "rename" }));
-    expect(destroy).not.toHaveBeenCalled();
-  });
-});
-
 // ── Epic #127 — server-owned transcript on the chat routes ───────────────
 describe("#127 chat routes on the server transcript", () => {
   function stubProvider(over: Partial<AIProviderForTest>): AIProviderForTest {
@@ -849,5 +766,51 @@ describe("#127 chat routes on the server transcript", () => {
     const reply = aiMessageRows.find((r) => r.sessionId === sessionId && r.role === "assistant")!;
     expect(JSON.parse(reply.content)).toEqual([{ type: "text", text: "part" }]);
     expect(JSON.parse(reply.meta!).error.code).toBe("ABORTED");
+  });
+});
+
+// ── #149 — a session created on the removed copilot-native provider ────────
+describe("#149 a copilot-native session is read-only", () => {
+  async function retiredSession(app: express.Express): Promise<string> {
+    const sessionId = (await auth(request(app).post("/api/ai/sessions").send({}))).body.data.session
+      .id as string;
+    // A row written before the upgrade: the provider key is the removed one.
+    sessions.find((s) => s.id === sessionId)!.provider = "copilot-native";
+    return sessionId;
+  }
+
+  it("refuses a /chat turn with a 409 naming the removal — the provider is never called", async () => {
+    const chat = vi.fn();
+    setAIProviderForTests({ ...new OfflineStubProvider(), key: "anthropic", chat } as never);
+    const app = makeApp();
+    const sessionId = await retiredSession(app);
+    const res = await auth(request(app).post("/api/ai/chat").send({ sessionId, message: "hi" }));
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("AI_SESSION_PROVIDER_RETIRED");
+    expect(res.body.error.message).toMatch(/GitHub Copilot support was removed/);
+    expect(res.body.error.message).toContain("docs/MIGRATING_FROM_COPILOT.md");
+    expect(chat).not.toHaveBeenCalled();
+    // Nothing was written to the transcript either.
+    expect(aiMessageRows.filter((r) => r.sessionId === sessionId)).toHaveLength(0);
+  });
+
+  it("refuses a /stream turn before the SSE stream opens", async () => {
+    const stream = vi.fn();
+    setAIProviderForTests({ ...new OfflineStubProvider(), key: "anthropic", stream } as never);
+    const app = makeApp();
+    const sessionId = await retiredSession(app);
+    const res = await auth(request(app).post("/api/ai/stream").send({ sessionId, message: "hi" }));
+    expect(res.status).toBe(409);
+    expect(res.headers["content-type"]).toMatch(/application\/json/);
+    expect(res.body.error.code).toBe("AI_SESSION_PROVIDER_RETIRED");
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it("a session on a supported provider still takes a turn", async () => {
+    const app = makeApp();
+    const sessionId = (await auth(request(app).post("/api/ai/sessions").send({}))).body.data.session
+      .id;
+    const res = await auth(request(app).post("/api/ai/chat").send({ sessionId, message: "hi" }));
+    expect(res.status).toBe(200);
   });
 });

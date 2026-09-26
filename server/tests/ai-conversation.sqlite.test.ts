@@ -58,6 +58,7 @@ const { errorHandler, notFoundHandler } = await import("../src/middleware/error-
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { COMPACTION_SYSTEM_PROMPT } = await import("../src/lib/async/compaction.js");
 const { getTokenTracker } = await import("../src/lib/ai/token-tracker.js");
+const { getConfigService } = await import("../src/lib/config/config-service.js");
 const { getPendingUsageWrites } = await import("../src/lib/finops/token-tracker.js");
 
 /** Both usage recorders persist on a microtask; wait until they have landed. */
@@ -970,6 +971,95 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await transcript(alice, fork)).status).toBe(200);
       expect((await transcript(bob, fork)).status).toBe(404);
       expect((await transcript(aliceLeft, fork)).status).toBe(404);
+    });
+
+    // ── #149 — a session on the removed copilot-native provider ───────────
+
+    it("a copilot-native session stays readable but refuses every model call — 409, nothing sent", async () => {
+      const sid = await newSession(alice, ids.project);
+      await send(alice, sid, "written before the upgrade");
+      // The row as an upgraded deployment finds it: created on the removed provider.
+      await db.aISession.update({ where: { id: sid }, data: { provider: "copilot-native" } });
+      const callsBefore = model.calls.length;
+      const rowsBefore = await db.aIMessage.count({ where: { sessionId: sid } });
+
+      // Readable: the transcript and resume both answer, and resume says why it is read-only.
+      const t = await transcript(alice, sid);
+      expect(t.status).toBe(200);
+      expect(JSON.stringify(t.body)).toContain("written before the upgrade");
+      const resumed = await as(alice).post(`/api/ai/sessions/${sid}/resume`);
+      expect(resumed.status).toBe(200);
+      expect(resumed.body.data.session.readOnlyReason).toMatch(
+        /GitHub Copilot support was removed/,
+      );
+      expect(resumed.body.data.session.readOnlyReason).toContain("docs/MIGRATING_FROM_COPILOT.md");
+
+      // Read-only: every path that would run a model is refused by name.
+      for (const res of [
+        await send(alice, sid, "one more?"),
+        await as(alice).post("/api/ai/chat", { sessionId: sid, message: "one more?" }),
+        await as(alice).post(`/api/ai/sessions/${sid}/compact`),
+        await as(alice).post(`/api/ai/sessions/${sid}/fork`, { fromOrdinal: 2 }),
+        await as(alice).post(`/api/ai/sessions/${sid}/messages`, { content: "async?" }),
+      ]) {
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe("AI_SESSION_PROVIDER_RETIRED");
+      }
+      expect(model.calls.length).toBe(callsBefore);
+      expect(await db.aIMessage.count({ where: { sessionId: sid } })).toBe(rowsBefore);
+      expect(await db.aISession.count({ where: { forkedFromSessionId: sid } })).toBe(0);
+      // Tenancy is checked first: another user still gets the same 404, not a 409.
+      expect((await send(bob, sid, "probe")).status).toBe(404);
+    });
+
+    it("a session on a supported provider resumes with readOnlyReason null", async () => {
+      const sid = await newSession(alice);
+      await send(alice, sid, "q");
+      const resumed = await as(alice).post(`/api/ai/sessions/${sid}/resume`);
+      expect(resumed.body.data.session.readOnlyReason).toBeNull();
+    });
+
+    it("a project still overriding to copilot-native refuses new sessions by name — never another provider", async () => {
+      await db.project.update({
+        where: { id: ids.project },
+        data: { aiProviderId: "copilot-native" },
+      });
+      try {
+        const before = await db.aISession.count();
+        const res = await as(alice).post("/api/ai/sessions", { projectId: ids.project });
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe("AI_PROVIDER_RETIRED");
+        expect(res.body.error.message).toContain("This project's AI provider override");
+        expect(res.body.error.message).toContain("anthropic");
+        expect(await db.aISession.count()).toBe(before);
+      } finally {
+        await db.project.update({ where: { id: ids.project }, data: { aiProviderId: null } });
+      }
+    });
+
+    it("a runtime-config AI_PROVIDER naming copilot-native is the same 409 AI_PROVIDER_RETIRED — not a 500", async () => {
+      // Admin → Settings wins over env (#258); prime the cache as loadTunables() would.
+      const svc = getConfigService() as unknown as {
+        tunableCache: { set(k: string, v: string): void };
+        tunableDbBacked: Set<string>;
+      };
+      svc.tunableCache.set("AI_PROVIDER", "copilot-native");
+      svc.tunableDbBacked.add("AI_PROVIDER");
+      try {
+        const before = await db.aISession.count();
+        const res = await as(alice).post("/api/ai/sessions", { projectId: ids.project });
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe("AI_PROVIDER_RETIRED");
+        expect(res.body.error.message).toContain(
+          'The runtime configuration (Admin → Settings) selects AI provider "copilot-native"',
+        );
+        expect(res.body.error.message).toContain("anthropic");
+        expect(res.body.error.message).toContain("docs/MIGRATING_FROM_COPILOT.md");
+        expect(await db.aISession.count()).toBe(before);
+      } finally {
+        // Without the db-backed mark the overlay ignores the cached value.
+        svc.tunableDbBacked.delete("AI_PROVIDER");
+      }
     });
   },
 );

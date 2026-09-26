@@ -1,13 +1,16 @@
 /**
  * Epic #195 — diff-apply client.
  *
- * Speaks to the `morph_apply` provider exposed by `metis-copilot-svc`
- * (`POST /apply`) over HTTP. The sidecar wraps the Morph API so the main
- * METIS image stays slim and never sees `MORPH_API_KEY`.
+ * Calls the Morph apply API (`MORPH_API_URL`, default
+ * `https://api.morphllm.com/v1/apply`) directly. #150 — this used to go through
+ * the `copilot-svc` sidecar's `POST /apply`; the sidecar existed for the GitHub
+ * Copilot SDK and was removed with it, so the Morph call moved in-process with
+ * the same request shape, auth header and response mapping.
  *
  * Activated when `MORPH_APPLY_ENABLED=true`. Reads:
- *   • `COPILOT_NATIVE_BASE_URL` (default `http://copilot:5060`)
- *   • `COPILOT_NATIVE_TOKEN` — required shared secret
+ *   • `MORPH_API_KEY` — required; the client refuses to construct without it
+ *   • `MORPH_API_URL` — default `https://api.morphllm.com/v1/apply`
+ *   • `MORPH_MODEL` — default `morph-v3`
  *   • `MORPH_APPLY_TIMEOUT_MS` — default 30s
  *
  * Network/timeout errors are mapped to {@link DiffApplyClientError} with the
@@ -44,11 +47,26 @@ export interface DiffApplyResponse {
   durationMs: number;
 }
 
+export const DEFAULT_MORPH_API_URL = "https://api.morphllm.com/v1/apply";
+export const DEFAULT_MORPH_MODEL = "morph-v3";
+
 export interface DiffApplyClientOptions {
-  baseUrl?: string;
-  token?: string;
+  /** Full Morph apply endpoint URL (default `MORPH_API_URL` / the public API). */
+  apiUrl?: string;
+  /** Morph API key (default `MORPH_API_KEY`). */
+  apiKey?: string;
+  /** Default model when the request names none (default `MORPH_MODEL`). */
+  model?: string;
   timeoutMs?: number;
   fetchImpl?: typeof undiciRequest;
+}
+
+/** The Morph apply API's response body (either content field name is accepted). */
+interface MorphApiResponse {
+  content?: string;
+  result?: string;
+  model?: string;
+  usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
 }
 
 export class DiffApplyClientError extends Error {
@@ -61,21 +79,22 @@ export class DiffApplyClientError extends Error {
 }
 
 export class DiffApplyClient {
-  private readonly baseUrl: string;
-  private readonly token: string;
+  private readonly apiUrl: string;
+  private readonly apiKey: string;
+  private readonly model: string;
   private readonly timeoutMs: number;
   private readonly request: typeof undiciRequest;
 
   constructor(opts: DiffApplyClientOptions = {}) {
-    const baseUrl = opts.baseUrl ?? process.env.COPILOT_NATIVE_BASE_URL ?? "http://copilot:5060";
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
-    const token = opts.token ?? process.env.COPILOT_NATIVE_TOKEN ?? "";
-    if (!token) {
+    this.apiUrl = opts.apiUrl ?? (process.env.MORPH_API_URL?.trim() || DEFAULT_MORPH_API_URL);
+    const apiKey = (opts.apiKey ?? process.env.MORPH_API_KEY ?? "").trim();
+    if (!apiKey) {
       throw new Error(
-        "COPILOT_NATIVE_TOKEN is required for the diff-apply client — refusing to start without a shared secret.",
+        "MORPH_API_KEY is required for the diff-apply client — refusing to start without it.",
       );
     }
-    this.token = token;
+    this.apiKey = apiKey;
+    this.model = opts.model ?? (process.env.MORPH_MODEL?.trim() || DEFAULT_MORPH_MODEL);
     this.timeoutMs = Math.max(
       1_000,
       opts.timeoutMs ?? (Number(process.env.MORPH_APPLY_TIMEOUT_MS) || 30_000),
@@ -92,21 +111,41 @@ export class DiffApplyClient {
     }
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), this.timeoutMs);
+    const start = Date.now();
+    const model = input.model ?? this.model;
     try {
-      const res = await this.request(`${this.baseUrl}/apply`, {
+      const res = await this.request(this.apiUrl, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${this.token}`,
+          authorization: `Bearer ${this.apiKey}`,
           "content-type": "application/json",
           accept: "application/json",
         },
-        body: JSON.stringify(input),
+        body: JSON.stringify({
+          model,
+          original: input.original,
+          patch: input.patch,
+          path: input.path,
+        }),
         signal: ac.signal,
       });
       const status = res.statusCode;
       if (status >= 200 && status < 300) {
-        const data = (await res.body.json()) as DiffApplyResponse;
-        return data;
+        const body = (await res.body.json()) as MorphApiResponse;
+        const usage = body.usage ?? {};
+        const promptTokens = usage.promptTokens ?? 0;
+        const completionTokens = usage.completionTokens ?? 0;
+        return {
+          content: body.content ?? body.result ?? "",
+          provider: "morph",
+          model: body.model ?? model,
+          usage: {
+            promptTokens,
+            completionTokens,
+            totalTokens: usage.totalTokens ?? promptTokens + completionTokens,
+          },
+          durationMs: Date.now() - start,
+        };
       }
       const text = await res.body.text();
       throw new DiffApplyClientError(`morph apply ${status}: ${text.slice(0, 200)}`, status);

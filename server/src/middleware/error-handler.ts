@@ -10,6 +10,7 @@ import type { ErrorRequestHandler, RequestHandler } from "express";
 import { ZodError, type ZodIssue } from "zod";
 import type { ApiResponse } from "@metis/shared";
 import { createChildLogger } from "../lib/logger.js";
+import { AIProviderRetiredError } from "../lib/ai/errors.js";
 import { mapStatusCarryingError } from "./http-status-errors.js";
 
 const log = createChildLogger("error-handler");
@@ -259,6 +260,22 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
       correlationId,
     };
     res.status(err.statusCode).json(body);
+    return;
+  }
+
+  // #149 — a removed AI provider selected in env, the runtime configuration or
+  // a project override: the same 409 AI_PROVIDER_RETIRED the chat routes give,
+  // WITH its message. The one exception to #1065's "never forward err.message":
+  // this message is built only by `retiredProviderMessage` (fixed text plus the
+  // matched retired key), and it is the part that tells the caller what to fix.
+  if (err instanceof AIProviderRetiredError) {
+    log.warn("AI provider retired", { correlationId, code: err.code, statusCode: err.status });
+    const body: ApiResponse = {
+      success: false,
+      error: { code: err.code, message: err.message },
+      correlationId,
+    };
+    res.status(err.status).json(body);
     return;
   }
 

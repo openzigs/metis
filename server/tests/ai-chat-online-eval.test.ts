@@ -31,7 +31,6 @@ type Session = {
   policy: string;
   status: string;
   providerSecretRef: string | null;
-  copilotHome: string | null;
   createdAt: Date;
   updatedAt: Date;
   deletedAt: Date | null;
@@ -59,7 +58,6 @@ vi.mock("../src/lib/prisma.js", async () => {
           policy: data.policy ?? '{"low":"auto","medium":"prompt-once","high":"always-prompt"}',
           status: "active",
           providerSecretRef: null,
-          copilotHome: null,
           createdAt: new Date(),
           updatedAt: new Date(),
           deletedAt: null,

@@ -22,7 +22,7 @@
  *     physical column is capped by the #826 schema gate.
  *
  * Testing discipline (from P0 #750 / #773 / #826): the pipeline half is driven
- * end-to-end — the fake MODEL is scripted at the Copilot-SDK provider boundary
+ * end-to-end — the fake MODEL is scripted at the AI provider boundary
  * and the run's AFFECTED SCHEMA is supplied through the documented
  * `affectedSchemaMapping` dependency seam (a REAL `LiveSchemaIndex` + in-memory
  * schema graph). NOTHING private is stubbed; the assertions are on what crossed

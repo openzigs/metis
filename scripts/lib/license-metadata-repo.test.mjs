@@ -61,8 +61,9 @@ describe("this repository's licence metadata (#1296)", () => {
   // The count is asserted because #1296 and #1322 B3 each got it wrong (four, then
   // five). If an eleventh manifest appears, this arm and the `unreviewed` arm both
   // fire, and the fix is to review the new package — not to bump the number.
-  it("covers all ten tracked manifests", () => {
-    expect(result.reviewed).toHaveLength(10);
+  // Nine since #150 removed the `server/copilot-svc` sidecar and its manifest.
+  it("covers all nine tracked manifests", () => {
+    expect(result.reviewed).toHaveLength(9);
     expect(result.reviewed).toContain("images/mcp-wrappers/code-graph-runner-sse/package.json");
   });
 
@@ -79,7 +80,7 @@ describe("this repository's licence metadata (#1296)", () => {
   // deliberate edit to this file and its reason, never a silent manifest tweak.
   it("records every package as never-publishing, each with its own reason", () => {
     expect(PUBLICATION_POLICY.every((entry) => entry.publishes === false)).toBe(true);
-    expect(PUBLICATION_POLICY).toHaveLength(10);
+    expect(PUBLICATION_POLICY).toHaveLength(9);
   });
 
   // Two sources of truth for one licence — the ten manifests and the §13 offer the

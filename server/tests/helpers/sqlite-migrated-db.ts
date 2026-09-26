@@ -27,6 +27,17 @@ import Database from "better-sqlite3";
 const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const SQLITE_MIGRATIONS_DIR = path.join(SERVER_ROOT, "prisma", "migrations");
 
+/**
+ * Hook budget for a `beforeAll` that calls {@link createMigratedSqlite}. The hook
+ * does real work — it spawns the Prisma CLI and replays the WHOLE migration chain
+ * — so its duration grows with every migration and with CI's monorepo fan-out.
+ * Under the default 10 s `hookTimeout` it passed locally (~3 s) and timed out on
+ * CI once #149 added one more migration (PR #242, `agents-real-providers`). The
+ * other suites that run `migrate deploy` in a hook already declare 120 s
+ * (`ai-conversation.sqlite.test.ts`); this is that budget, in one place.
+ */
+export const MIGRATED_SQLITE_HOOK_TIMEOUT_MS = 120_000;
+
 export interface MigratedSqlite {
   dir: string;
   dbFile: string;

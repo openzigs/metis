@@ -21,7 +21,11 @@ import type {
 import { prisma } from "../../prisma.js";
 import { AppError } from "../../../middleware/error-handler.js";
 import { audit } from "../../audit/audit-service.js";
-import { loadAuthorizedSession } from "./session-access.js";
+import {
+  assertSessionAcceptsTurns,
+  loadAuthorizedSession,
+  sessionReadOnlyReason,
+} from "./session-access.js";
 import {
   copyTranscriptPrefix,
   getMessageByOrdinal,
@@ -70,6 +74,8 @@ export function sessionStateDto(s: AISession): ResumeSessionResponse["session"] 
     forkedFromSessionId: s.forkedFromSessionId,
     forkedFromOrdinal: s.forkedFromOrdinal,
     updatedAt: s.updatedAt.toISOString(),
+    // #149 — set when the session can be read but no longer take a turn.
+    readOnlyReason: sessionReadOnlyReason(s),
   };
 }
 
@@ -108,6 +114,9 @@ export async function forkSession(
   fromOrdinal: number,
 ): Promise<ForkSessionResponse> {
   const source = await loadAuthorizedSession(user, sessionId);
+  // #149 — a fork inherits its source's provider, so a read-only source would
+  // only produce another read-only session.
+  assertSessionAcceptsTurns(source);
   const at = await getMessageByOrdinal(source.id, fromOrdinal);
   if (!at || at.kind !== "message" || at.role !== "assistant") {
     throw new AppError(
@@ -172,6 +181,8 @@ export async function compactSessionOnDemand(
   signal?: AbortSignal,
 ): Promise<ManualCompactionResult> {
   const session = await loadAuthorizedSession(user, sessionId);
+  // #149 — a summary is a model call; a read-only session makes none.
+  assertSessionAcceptsTurns(session);
   // A summary is a paid model call: gate it on the project budget like a chat
   // turn (PR #205 review). Throws BudgetExceededError (402) before any spend.
   if (session.projectId) await assertWithinBudget(session.projectId);

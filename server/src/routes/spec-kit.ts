@@ -69,6 +69,7 @@ import { BudgetExceededError } from "../lib/finops/budget-enforcer.js";
 import { SafetyDeniedError } from "../lib/safety/safety-hook.js";
 import { resolveProjectProvider } from "../lib/ai/project-provider.js";
 import { AIProviderError } from "../lib/ai/errors.js";
+import { isRetiredProviderError } from "../lib/ai/retired-providers.js";
 import type { AIProvider } from "../lib/ai/types.js";
 import { jobEvents, genericFailureMessage } from "../lib/socket/job-events.js";
 import { createChildLogger } from "../lib/logger.js";
@@ -206,6 +207,11 @@ function rethrow(err: unknown): never {
   }
   if (err instanceof SafetyDeniedError) {
     throw new AppError(err.status, err.code, err.message, { findings: err.findings });
+  }
+  // #149 — a project override naming a removed provider: the same 409 the chat
+  // route returns for it, not a credentials 502.
+  if (isRetiredProviderError(err)) {
+    throw new AppError(409, "AI_PROVIDER_RETIRED", err.message);
   }
   // #381 — provider construction/credential failures from resolveProjectProvider
   // surface as 502 AI_PROVIDER_KEY_UNAVAILABLE, mirroring the chat route's

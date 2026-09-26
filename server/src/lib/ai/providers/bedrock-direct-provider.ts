@@ -3,9 +3,8 @@
  *
  * Originally written for the internal Bedrock Access Gateway, this client is
  * now shared by any OpenAI-compatible backend (currently `bedrock-gateway`
- * and the local Gemma runtime `local-gemma` served by Ollama). It bypasses
- * the Copilot SDK session abstraction and calls the backend's
- * OpenAI-compatible `/chat/completions` endpoint directly. This is used for
+ * and the local Gemma runtime `local-gemma` served by Ollama). It calls the
+ * backend's OpenAI-compatible `/chat/completions` endpoint directly. This is used for
  * structured-output workloads (analysis pipeline, doc generation) where we
  * need:
  *   1. Raw JSON / structured text back from the model. The SDK's agentic

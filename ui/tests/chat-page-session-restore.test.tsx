@@ -12,7 +12,7 @@
  * before deciding, and must resume exactly once.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useSearchParams } from "next/navigation";
 import { makeWrapper } from "./test-utils";
 import ChatPage from "@/app/(authed)/chat/page";
@@ -101,5 +101,83 @@ describe("<ChatPage /> — restore on bare /chat (#1367)", () => {
 
     await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
     expect(resumeMock).toHaveBeenCalledWith("sess-gone");
+  });
+});
+
+describe("<ChatPage /> — a read-only session (#149)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    useSearchParamsMock.mockReturnValue(new URLSearchParams() as never);
+    createMock.mockResolvedValue({ session: { ...storedSession, id: "sess-new" } } as never);
+  });
+
+  it("shows the server's notice, keeps the transcript and disables the composer", async () => {
+    aiClient.storeActiveSessionId("sess-stored");
+    const reason =
+      'This chat session was created with AI provider "copilot-native", but GitHub Copilot support was removed from METIS.';
+    resumeMock.mockResolvedValue({
+      session: storedSession,
+      messages: [
+        { role: "user", content: "earlier question", ordinal: 1 },
+        { role: "assistant", content: "earlier answer", ordinal: 2 },
+      ],
+      readOnlyReason: reason,
+    } as never);
+
+    render(<ChatPage />, { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(screen.getByTestId("chat-read-only-notice")).toBeInTheDocument());
+    expect(screen.getByTestId("chat-read-only-notice").textContent).toContain("copilot-native");
+    expect(screen.getByText(/earlier question/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Message")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByText(/earlier answer/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-fork-2")).toBeNull();
+    // Read-only is not "no session": nothing new is minted.
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it('"New chat" clears the notice and re-enables the composer', async () => {
+    // The notice tells the user to start a new chat. The imperative handler
+    // resets per-session state separately from the load effect, so it must
+    // clear the read-only reason too, or the fresh writable session stays
+    // locked behind the old session's notice until a reload.
+    aiClient.storeActiveSessionId("sess-stored");
+    resumeMock.mockResolvedValue({
+      session: storedSession,
+      messages: [{ role: "user", content: "earlier question", ordinal: 1 }],
+      readOnlyReason:
+        'This chat session was created with AI provider "copilot-native", but GitHub Copilot support was removed from METIS.',
+    } as never);
+
+    render(<ChatPage />, { wrapper: makeWrapper() });
+    await waitFor(() => expect(screen.getByTestId("chat-read-only-notice")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /new chat/i }));
+
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(aiClient.loadActiveSessionId()).toBe("sess-new"));
+    expect(screen.queryByTestId("chat-read-only-notice")).toBeNull();
+    expect(screen.getByLabelText("Message")).not.toBeDisabled();
+  });
+
+  it("a resumed session with no reason keeps the composer enabled", async () => {
+    aiClient.storeActiveSessionId("sess-stored");
+    resumeMock.mockResolvedValue({
+      session: storedSession,
+      messages: [
+        { role: "user", content: "earlier question", ordinal: 1 },
+        { role: "assistant", content: "earlier answer", ordinal: 2 },
+      ],
+      readOnlyReason: null,
+    } as never);
+
+    render(<ChatPage />, { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(screen.getByText(/earlier question/i)).toBeInTheDocument());
+    expect(screen.queryByTestId("chat-read-only-notice")).toBeNull();
+    expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    expect(screen.getByTestId("chat-fork-2")).toBeInTheDocument();
   });
 });

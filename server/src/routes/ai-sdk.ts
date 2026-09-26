@@ -28,6 +28,7 @@ import { listResumable } from "../lib/ai/session-snapshot.js";
 import { SDK_REASONING_EFFORTS } from "@metis/shared";
 import { prisma } from "../lib/prisma.js";
 import { getAsyncRunner } from "../lib/async/runner.js";
+import { assertSessionAcceptsTurns } from "../lib/ai/conversation/session-access.js";
 
 function ok<T>(data: T): { success: true; data: T } {
   return { success: true, data };
@@ -154,9 +155,11 @@ export function aiSdkRouter(): Router {
     const wantsSync = req.query.async === "false" || req.query.async === "0";
     const session = await prisma.aISession.findUnique({
       where: { id: sessionId },
-      select: { projectId: true },
+      select: { projectId: true, provider: true },
     });
     if (!session) throw new AppError(404, "NOT_FOUND", "Session not found");
+    // #149 — a session on a retired provider is read-only.
+    assertSessionAcceptsTurns(session);
     if (!session.projectId) throw new AppError(400, "NO_PROJECT", "Session has no project");
 
     if (wantsSync) {

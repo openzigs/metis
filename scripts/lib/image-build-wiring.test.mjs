@@ -53,14 +53,13 @@ describe("Dockerfile.server runs the reachability prune (#34)", () => {
     expect(run).toMatch(/--importer \/app\/server/);
   });
 
-  it.each(["typescript", "@github/copilot", "@github/copilot-sdk"])(
-    "never follows an edge to %s",
-    (name) => {
-      const run = dockerfile.slice(dockerfile.indexOf("RUN node /tmp/prune-pnpm-store.mjs"));
-      const cmd = run.slice(0, run.indexOf("\n\n"));
-      expect(cmd.split(/\s+/).join(" ")).toContain(`--exclude ${name} `);
-    },
-  );
+  // #150 — `@github/copilot` / `@github/copilot-sdk` were excluded here too until
+  // they stopped being dependencies at all (no-copilot-dependency-repo.test.mjs).
+  it.each(["typescript"])("never follows an edge to %s", (name) => {
+    const run = dockerfile.slice(dockerfile.indexOf("RUN node /tmp/prune-pnpm-store.mjs"));
+    const cmd = run.slice(0, run.indexOf("\n\n"));
+    expect(cmd.split(/\s+/).join(" ")).toContain(`--exclude ${name} `);
+  });
 
   it("runs the pruner in the prod-deps stage, before the runtime copies node_modules", () => {
     const prodDeps = dockerfile.indexOf("AS prod-deps");

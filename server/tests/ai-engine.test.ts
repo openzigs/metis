@@ -1,17 +1,14 @@
 /**
  * Tests for AI engine: config + factory + provider/offline-stub + types.
  *
- * The Copilot/Bedrock providers are exercised via a stubbed
- * `CopilotClientLike` so the @github/copilot-sdk runtime is never invoked.
+ * No test here dials a real model endpoint.
  */
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   AIError,
   AIOfflineError,
   buildSdkProvider,
   buildProvider,
-  CopilotProvider,
-  CopilotWrapper,
   embedTexts,
   hashEmbed,
   loadAIConfig,
@@ -19,7 +16,6 @@ import {
   __resetProviderSingleton,
 } from "../src/lib/ai/index.js";
 import { OpenAICompatibleProvider } from "../src/lib/ai/providers/openai-compatible-provider.js";
-import type { CopilotClientLike, CopilotSessionLike } from "../src/lib/ai/copilot-wrapper.js";
 import type { ChatChunk } from "../src/lib/ai/types.js";
 
 // ── config ────────────────────────────────────────────────────────────────
@@ -75,39 +71,29 @@ describe("loadAIConfig", () => {
     ).toThrow(/public LLM provider/);
   });
 
-  it("supports azure/anthropic/openai BYOK env (R-SDK-14)", () => {
+  it("supports the azure provider from its AZURE_OPENAI_* env + AI_MODEL", () => {
     const cfg = loadAIConfig({
       AI_PROVIDER: "azure",
-      COPILOT_PROVIDER_TYPE: "azure",
-      COPILOT_PROVIDER_BASE_URL: "https://my.openai.azure.com",
-      COPILOT_PROVIDER_API_KEY: "k",
-      COPILOT_MODEL: "gpt-5",
+      AZURE_OPENAI_ENDPOINT: "https://my.openai.azure.com",
+      AZURE_OPENAI_API_KEY: "k",
+      AI_MODEL: "gpt-5",
     });
     expect(cfg.provider).toBe("azure");
     expect(cfg.sdkProvider?.type).toBe("azure");
     expect(cfg.model).toBe("gpt-5");
   });
 
-  it("rejects an OpenAI-compatible BYOK provider without base URL", () => {
-    // openai/azure still route through the OpenAI-compatible BYOK matrix and
-    // require COPILOT_PROVIDER_BASE_URL.
-    expect(() => loadAIConfig({ AI_PROVIDER: "openai" })).toThrow(/COPILOT_PROVIDER_BASE_URL/);
+  it("rejects an OpenAI-compatible provider without base URL", () => {
+    expect(() => loadAIConfig({ AI_PROVIDER: "openai" })).toThrow(/requires OPENAI_BASE_URL/);
   });
 
   it("rejects the native anthropic provider without an API key/token (#285)", () => {
-    // The native Anthropic provider does NOT use COPILOT_PROVIDER_BASE_URL; it
-    // requires ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN) instead.
+    // The native Anthropic provider requires ANTHROPIC_API_KEY (or
+    // ANTHROPIC_AUTH_TOKEN); it needs no base URL.
     expect(() => loadAIConfig({ AI_PROVIDER: "anthropic" })).toThrow(/ANTHROPIC_API_KEY/);
   });
 
-  it("fails when COPILOT_OFFLINE=true with copilot-native (R-SDK-14)", () => {
-    expect(() => loadAIConfig({ AI_PROVIDER: "copilot-native", COPILOT_OFFLINE: "true" })).toThrow(
-      /COPILOT_OFFLINE/,
-    );
-  });
-
-  it("buildSdkProvider returns undefined for native/offline", () => {
-    expect(buildSdkProvider({ AI_PROVIDER: "copilot-native" } as never)).toBeUndefined();
+  it("buildSdkProvider returns undefined for the offline stub", () => {
     expect(buildSdkProvider({ AI_PROVIDER: "offline-stub" } as never)).toBeUndefined();
   });
 
@@ -203,14 +189,6 @@ describe("loadAIConfig", () => {
         COPILOT_MODEL: "gpt-4.1",
       });
       expect(cfg.model).toBe("us.anthropic.claude-sonnet-5");
-    });
-
-    it("copilot-native uses COPILOT_MODEL", () => {
-      const cfg = loadAIConfig({
-        AI_PROVIDER: "copilot-native",
-        COPILOT_MODEL: "gpt-4.1",
-      });
-      expect(cfg.model).toBe("gpt-4.1");
     });
 
     it("AI_MODEL overrides everything", () => {
@@ -359,39 +337,16 @@ describe("buildProvider", () => {
     expect(p).toBeInstanceOf(OfflineStubProvider);
   });
 
-  // #134 — only `copilot-native` still reaches the Copilot wrapper. Before
-  // #134 this test built a CopilotProvider for `bedrock-gateway` (BYOK); the
-  // wrapper-construction path it pinned is now exercised through the one key
-  // that still takes it, and bedrock-gateway's new routing is pinned below.
-  it("constructs a CopilotProvider through the wrapper factory for copilot-native", () => {
-    const seen: Array<unknown> = [];
-    const p = buildProvider({
-      config: loadAIConfig({ AI_PROVIDER: "copilot-native", COPILOT_MODEL: "gpt-4.1" }),
-      wrapperFactory: (opts) => {
-        seen.push(opts);
-        return new CopilotWrapper({
-          ...opts,
-          client: makeClientStub(),
-        });
-      },
-    });
-    expect(p).toBeInstanceOf(CopilotProvider);
-    expect((seen[0] as { model?: string }).model).toBe("gpt-4.1");
-  });
-
-  it("builds bedrock-gateway as the direct client and never calls the wrapper factory (#134)", () => {
-    const wrapperFactory = vi.fn();
+  it("builds bedrock-gateway as the direct OpenAI-compatible client (#134)", () => {
     const p = buildProvider({
       config: loadAIConfig({
         AI_PROVIDER: "bedrock-gateway",
         BEDROCK_GATEWAY_URL: "http://x:1",
         BEDROCK_GATEWAY_API_KEY: "y",
       }),
-      wrapperFactory,
     });
     expect(p).toBeInstanceOf(OpenAICompatibleProvider);
     expect(p.key).toBe("bedrock-gateway");
-    expect(wrapperFactory).not.toHaveBeenCalled();
   });
 
   it("getProvider memoizes after reset", () => {
@@ -399,87 +354,4 @@ describe("buildProvider", () => {
     const a = buildProvider({ config: loadAIConfig({}) });
     expect(a.key).toBe("offline-stub");
   });
-
-  it("does NOT inject a remote sidecar client under the test environment", () => {
-    // resolveCopilotNativeMode short-circuits to in-process when VITEST is set,
-    // so even with COPILOT_NATIVE_MODE=sidecar the wrapperFactory should
-    // receive opts WITHOUT a `client` injection.
-    const original = process.env.COPILOT_NATIVE_MODE;
-    process.env.COPILOT_NATIVE_MODE = "sidecar";
-    try {
-      let receivedClient: unknown;
-      buildProvider({
-        // #134 — the sidecar applies to the wrapper path, which only
-        // copilot-native takes now (was bedrock-gateway).
-        config: loadAIConfig({ AI_PROVIDER: "copilot-native" }),
-        wrapperFactory: (opts) => {
-          receivedClient = (opts as { client?: unknown }).client;
-          return new CopilotWrapper({ ...opts, client: makeClientStub() });
-        },
-      });
-      expect(receivedClient).toBeUndefined();
-    } finally {
-      if (original === undefined) delete process.env.COPILOT_NATIVE_MODE;
-      else process.env.COPILOT_NATIVE_MODE = original;
-    }
-  });
-
-  it("surfaces a configured AIProviderError when the sidecar token is missing", async () => {
-    // Force the sidecar branch by clearing the test guards inside this test
-    // only. Restore everything in finally so the rest of the suite stays
-    // unaffected.
-    const original = {
-      mode: process.env.COPILOT_NATIVE_MODE,
-      vitest: process.env.VITEST,
-      nodeEnv: process.env.NODE_ENV,
-      offline: process.env.AI_OFFLINE,
-      token: process.env.COPILOT_NATIVE_TOKEN,
-    };
-    process.env.COPILOT_NATIVE_MODE = "sidecar";
-    delete process.env.VITEST;
-    delete process.env.NODE_ENV;
-    delete process.env.AI_OFFLINE;
-    delete process.env.COPILOT_NATIVE_TOKEN;
-    try {
-      expect(() =>
-        buildProvider({
-          // #134 — see above: copilot-native is the wrapper path now.
-          config: loadAIConfig({ AI_PROVIDER: "copilot-native" }),
-        }),
-      ).toThrow(/copilot sidecar client/);
-    } finally {
-      const restore = (envKey: string, val: string | undefined): void => {
-        if (val === undefined) delete process.env[envKey];
-        else process.env[envKey] = val;
-      };
-      restore("COPILOT_NATIVE_MODE", original.mode);
-      restore("VITEST", original.vitest);
-      restore("NODE_ENV", original.nodeEnv);
-      restore("AI_OFFLINE", original.offline);
-      restore("COPILOT_NATIVE_TOKEN", original.token);
-    }
-  });
 });
-
-// ── helpers ────────────────────────────────────────────────────────────────
-
-function makeClientStub(overrides: Partial<CopilotClientLike> = {}): CopilotClientLike {
-  return {
-    start: vi.fn(async () => undefined),
-    stop: vi.fn(async () => undefined),
-    getAuthStatus: vi.fn(async () => ({ isAuthenticated: true, authType: "stub" })),
-    listModels: vi.fn(async () => [{ id: "stub-model" }]),
-    createSession: vi.fn(async () => makeSessionStub()),
-    ...overrides,
-  };
-}
-
-function makeSessionStub(): CopilotSessionLike {
-  return {
-    sessionId: "stub-session",
-    on: () => () => undefined,
-    send: async () => undefined,
-    sendAndWait: async () => undefined,
-    destroy: async () => undefined,
-  };
-}

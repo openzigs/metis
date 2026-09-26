@@ -22,7 +22,7 @@
  * `AnalysisOrchestrator.runPipeline` (run path) and the REAL
  * `resolveGapReportDeps` + `getGapReport` (gap-report path) end-to-end.
  * Nothing private is stubbed on `AnalysisOrchestrator` — only the documented
- * I/O seams (Prisma, the Copilot-SDK provider boundary, the
+ * I/O seams (Prisma, the AI provider boundary, the
  * `affectedSchemaMapping`/`SchemaImpactProducerDeps` dependency seams).
  *
  * Dogfood table-name discipline (epic #820): this suite makes up its own

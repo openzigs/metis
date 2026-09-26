@@ -393,7 +393,7 @@ design** — Windows developers should use `SANDBOX_PROVIDER=noop` for local wor
 or wire up E2B/Daytona. This is documented as an explicit non-goal of Epic #183.
 
 ### 7.6.4 Local Gemma inference on a Windows GPU box
-If you want to run a local LLM (instead of Copilot/Bedrock) on a Windows machine
+If you want to run a local LLM (instead of a cloud provider) on a Windows machine
 with an NVIDIA GPU, see [§4 of the User Guide → "Run Gemma locally on a Windows
 GPU box"](./USER_GUIDE.md#run-gemma-locally-on-a-windows-gpu-box). It covers
 running Ollama as a managed service, GPU-aware model selection, and the

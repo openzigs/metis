@@ -93,7 +93,7 @@ export interface ProviderPrefs {
 const STORAGE_KEY = "metis.settings.providerPrefs";
 
 const DEFAULT_PREFS: ProviderPrefs = {
-  defaultProvider: "copilot",
+  defaultProvider: "anthropic",
   defaultModel: "claude-sonnet-4.5",
   reasoningEffort: "medium",
 };

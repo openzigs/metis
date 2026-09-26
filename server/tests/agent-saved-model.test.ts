@@ -8,14 +8,12 @@
  * local runtime (`OpenAICompatibleProvider`, `local-gemma`) and Anthropic
  * (`AnthropicProvider`). The model catalog's discovery cache is reset before
  * every test — the state of a process that has never served `GET /api/ai/models`
- * (every restart). Copilot has no loopback-able wire (its SDK owns the
- * transport), so its case asserts the model handed to `provider.chat`.
+ * (every restart).
  */
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { CustomAgentDto } from "@metis/shared";
-import type { AIProvider, ChatResponse } from "../src/lib/ai/types.js";
 import { invokeCustomAgent } from "../src/lib/custom-agents/invoke.js";
 import { resolveAgentModel } from "../src/lib/agent-runtime/definition.js";
 import { __resetModelCatalogForTests } from "../src/lib/ai/model-catalog.js";
@@ -143,32 +141,24 @@ describe("an agent's saved model (#145) — real providers, cold catalog", () =>
     expect(res.warnings).toEqual([expect.stringContaining('"made-up-model"')]);
     expect(res.warnings![0]).toContain("the provider's default model");
   });
-
-  it("copilot-native: the saved model reaches provider.chat (Copilot owns its model list until P4)", async () => {
-    const chat = vi.fn(
-      async (): Promise<ChatResponse> => ({
-        content: "ok",
-        model: "gpt-5",
-        provider: "copilot-native",
-      }),
-    );
-    const copilot = { key: "copilot-native", model: "gpt-4.1", chat } as unknown as AIProvider;
-    const res = await invokeCustomAgent({ provider: copilot, agent: agent("gpt-5"), input: "hi" });
-    expect((chat.mock.calls[0] as unknown[])[1]).toMatchObject({ model: "gpt-5" });
-    expect(res.warnings).toBeUndefined();
-  });
 });
 
 describe("resolveAgentModel — the decision itself (cold catalog)", () => {
   beforeEach(() => __resetModelCatalogForTests());
 
   it("open-vocabulary providers keep a well-formed saved model without any catalog entry", () => {
-    for (const p of ["local-gemma", "copilot-native", "azure"]) {
+    for (const p of ["local-gemma", "azure"]) {
       expect(resolveAgentModel(p, "my-deployment:1b", "fallback", {})).toEqual({
         model: "my-deployment:1b",
         usedPreferred: true,
       });
     }
+  });
+
+  it("#149 — the removed copilot-native key is no longer treated as open-vocabulary", () => {
+    const r = resolveAgentModel("copilot-native", "my-deployment:1b", "fallback", {});
+    expect(r).toMatchObject({ model: "fallback", usedPreferred: false });
+    expect(r.warning).toContain('"my-deployment:1b"');
   });
 
   it("a malformed name is refused on every provider — with a warning", () => {

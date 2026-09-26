@@ -73,3 +73,27 @@ describe("AiProviderPicker — local-gemma (#114)", () => {
     );
   });
 });
+
+describe("AiProviderPicker — a removed provider (#149)", () => {
+  it("no longer offers copilot-native", () => {
+    expect(AI_PROVIDER_KEYS as readonly string[]).not.toContain("copilot-native");
+    renderPicker();
+    const select = screen.getByTestId("ai-provider-select") as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).not.toContain("copilot-native");
+  });
+
+  it("shows a stored copilot-native override as unsupported instead of as 'Global default'", () => {
+    renderPicker("copilot-native");
+    const select = screen.getByTestId("ai-provider-select") as HTMLSelectElement;
+    expect(select.value).toBe("copilot-native");
+    const stale = Array.from(select.options).find((o) => o.value === "copilot-native")!;
+    expect(stale.disabled).toBe(true);
+    expect(stale.textContent).toContain("no longer supported");
+    expect(screen.getByTestId("ai-provider-unsupported").textContent).toContain("copilot-native");
+  });
+
+  it("a supported override shows no notice", () => {
+    renderPicker("anthropic");
+    expect(screen.queryByTestId("ai-provider-unsupported")).toBeNull();
+  });
+});

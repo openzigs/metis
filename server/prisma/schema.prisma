@@ -2736,7 +2736,9 @@ model AISession {
   userId                 String
   projectId              String?
   title                  String    @default("New Chat")
-  /// Provider key — copilot|bedrock-gateway|offline-stub|openai|azure|anthropic
+  /// Provider key — bedrock-gateway|local-gemma|openai|azure|anthropic|offline-stub.
+  /// A session created on the removed `copilot-native` provider keeps that key
+  /// and is read-only (#149).
   provider               String
   model                  String
   /// JSON-encoded ApprovalPolicy: { low, medium, high } each one of auto|prompt-once|always-prompt|deny
@@ -2744,8 +2746,6 @@ model AISession {
   status                 String    @default("active") // active|archived|terminated
   /// Optional ${vault:id} reference for BYOK credentials override
   providerSecretRef      String?
-  /// Per-session COPILOT_HOME directory (R-SDK-9 isolation) — populated lazily
-  copilotHome            String?
   /// Phase 10 — optional Agent persona attached to this session.
   agentId                String?
   /// Phase 10 — frozen agent name + version recorded for audit.

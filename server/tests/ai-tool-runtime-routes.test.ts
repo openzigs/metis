@@ -16,9 +16,8 @@
  *          reaches the stream or the transcript.
  *
  * The "real providers" block swaps the stub for the production Anthropic and
- * OpenAI-compatible adapters behind a loopback HTTP server, and the production
- * Copilot adapter behind a stubbed SDK client: a request flag the stub would
- * ignore is proven against what actually goes on the wire.
+ * OpenAI-compatible adapters behind a loopback HTTP server: a request flag the
+ * stub would ignore is proven against what actually goes on the wire.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
@@ -31,6 +30,9 @@ const sessions: Row[] = [];
 const agents = new Map<string, { tools: string }>();
 const approvalRows = vi.hoisted(() => [] as Row[]);
 const aiMessageRows = vi.hoisted(() => [] as FakeAiMessageRow[]);
+// Library skills every `skill.findMany` returns (empty = none). The #142 wire
+// tests fill it so a session's `loadedSkillIds` resolves to a real catalog.
+const skillRows = vi.hoisted(() => [] as Row[]);
 // The project's workspace. `null` = a legacy open project every signed-in user
 // reaches; a workspace id the caller's token does not carry = access LOST.
 const projectState = vi.hoisted(() => ({ workspaceId: null as string | null }));
@@ -104,7 +106,9 @@ vi.mock("../src/lib/prisma.js", async () => {
   const agent = {
     findFirst: vi.fn(async ({ where }: { where: Row }) => agents.get(String(where.id)) ?? null),
   };
+  const skill = { findMany: vi.fn(async () => skillRows) };
   const models: Record<string, unknown> = {
+    skill,
     aISession,
     project,
     aIToolApproval,
@@ -147,13 +151,7 @@ import {
   BedrockDirectProvider,
   OpenAICompatibleProvider,
 } from "../src/lib/ai/providers/bedrock-direct-provider.js";
-import { CopilotProvider } from "../src/lib/ai/providers/copilot-provider.js";
-import {
-  CopilotWrapper,
-  type CopilotClientLike,
-  type CopilotSessionLike,
-} from "../src/lib/ai/copilot-wrapper.js";
-import { __setSessionRuntime, type SessionRuntime } from "../src/lib/library/session-runtime.js";
+import { __setSessionRuntime } from "../src/lib/library/session-runtime.js";
 
 // ── Tools ─────────────────────────────────────────────────────────────────
 const dangerExec = vi.fn(async (args: { table: string }) => ({ text: `rows in ${args.table}: 7` }));
@@ -840,10 +838,10 @@ describe("#142 the approval gate through the routes", () => {
     expect(dangerExec).not.toHaveBeenCalled();
   });
 
-  it("every chat call asks the provider to withhold the SDK built-ins — never with disableTools", async () => {
-    // The flag is read only by the Copilot provider; `disableTools` would strip
-    // METIS's own tools on every other provider (the real-provider wire tests
-    // below prove the tools reach the request body).
+  it("no chat call is ever made with disableTools — it would strip METIS's own tools", async () => {
+    // `disableTools` means "send no tools" on every provider (the real-provider
+    // wire tests below prove the tools reach the request body). #149 — the
+    // Copilot-only `withholdSdkBuiltinTools` flag is gone with its provider.
     const model = stubModel([highCall, { content: "done" }, { content: "plain" }]);
     const app = makeApp();
     const sid = await newSession(app, { policy: { high: "auto" } });
@@ -851,8 +849,9 @@ describe("#142 the approval gate through the routes", () => {
     await as(alice, request(app).post("/api/ai/chat").send({ sessionId: sid, message: "again" }));
     expect(model.requests.length).toBeGreaterThanOrEqual(3);
     for (const r of model.requests) {
-      expect(r.opts.withholdSdkBuiltinTools).toBe(true);
       expect(r.opts.disableTools).toBeUndefined();
+      expect(r.opts).not.toHaveProperty("withholdSdkBuiltinTools");
+      expect(r.opts).not.toHaveProperty("skillDirectories");
     }
     // The follow-up call that carries the tool result still offers the tools.
     expect(model.requests[1]!.messages.some((m) => m.role === "tool")).toBe(true);
@@ -1044,6 +1043,7 @@ describe("#142 real providers carry the session's tools on the wire", () => {
 
   afterEach(() => {
     __setSessionRuntime(null);
+    skillRows.length = 0;
   });
 
   const PROVIDERS: Array<{ name: string; make: () => AIProvider }> = [
@@ -1097,14 +1097,19 @@ describe("#142 real providers carry the session's tools on the wire", () => {
     // `count_rows` is high risk: auto-approve it so the call runs unattended.
     const sid = await newSession(app, { policy: { high: "auto" } });
     if (withSkills) {
+      // A real, enabled library skill: with no project allow-list rows every
+      // enabled skill is allowed, so the catalog resolves and `load_skill` is
+      // offered. Without the row the id resolves to nothing and the "WITH
+      // skills" case would silently be a second "without skills" case.
+      skillRows.push({
+        id: "skill-a",
+        key: "skill-a",
+        name: "Skill A",
+        description: "A test skill.",
+        version: "1.0.0",
+        instructions: "Do the thing.",
+      });
       (sessions.find((s) => s.id === sid) as Row).loadedSkillIds = JSON.stringify(["skill-a"]);
-      __setSessionRuntime({
-        materializeSkillsForSession: async () => ({
-          skillsDir: "/nonexistent/skills",
-          written: ["skill-a"],
-          disabledSkills: [],
-        }),
-      } as unknown as SessionRuntime);
     }
     return sid;
   }
@@ -1122,6 +1127,10 @@ describe("#142 real providers carry the session's tools on the wire", () => {
         for (const names of wireToolNames()) {
           expect(names).toContain("count_rows");
           expect(names.some((n) => n.startsWith("mcp_github_list_issues"))).toBe(true);
+          // #146 — the skills arrive through `load_skill`, offered on every
+          // request of a session that has skills and on none of one without.
+          if (withSkills) expect(names).toContain("load_skill");
+          else expect(names).not.toContain("load_skill");
         }
       });
 
@@ -1137,93 +1146,13 @@ describe("#142 real providers carry the session's tools on the wire", () => {
         for (const names of wireToolNames()) {
           expect(names).toContain("count_rows");
           expect(names.some((n) => n.startsWith("mcp_github_list_issues"))).toBe(true);
+          // #146 — the skills arrive through `load_skill`, offered on every
+          // request of a session that has skills and on none of one without.
+          if (withSkills) expect(names).toContain("load_skill");
+          else expect(names).not.toContain("load_skill");
         }
       });
     }
-  }
-});
-
-// ── #142 round 3 — the Copilot provider: built-ins withheld, text protocol ──
-describe("#142 Copilot chat: SDK built-ins withheld, METIS tools on the text protocol", () => {
-  const configs: Array<Record<string, unknown>> = [];
-  const prompts: unknown[] = [];
-
-  function copilotSession(): CopilotSessionLike {
-    type Handler = (data: unknown) => void;
-    const handlers = new Map<string, Handler[]>();
-    const fire = (event: string, data: unknown) => {
-      for (const h of handlers.get(event) ?? []) h(data);
-    };
-    return {
-      sessionId: "copilot-sess",
-      on: (event: string, handler: Handler) => {
-        handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-        return () =>
-          handlers.set(
-            event,
-            (handlers.get(event) ?? []).filter((h) => h !== handler),
-          );
-      },
-      send: async (msg: unknown) => {
-        prompts.push(msg);
-        queueMicrotask(() => {
-          fire("assistant.message_delta", { data: { deltaContent: "done" } });
-          fire("session.idle", undefined);
-        });
-      },
-      sendAndWait: async () => undefined,
-      destroy: async () => undefined,
-    } as unknown as CopilotSessionLike;
-  }
-
-  function copilotProvider(): CopilotProvider {
-    const client = {
-      start: vi.fn(async () => undefined),
-      stop: vi.fn(async () => undefined),
-      getAuthStatus: vi.fn(async () => ({ isAuthenticated: true, authType: "stub" })),
-      listModels: vi.fn(async () => [{ id: "stub-model" }]),
-      createSession: vi.fn(async (cfg: Record<string, unknown>) => {
-        configs.push(cfg);
-        return copilotSession();
-      }),
-    } as unknown as CopilotClientLike;
-    return new CopilotProvider({
-      wrapper: new CopilotWrapper({ model: "stub-model", client }),
-      key: "copilot-native",
-    });
-  }
-
-  beforeEach(() => {
-    configs.length = 0;
-    prompts.length = 0;
-  });
-
-  afterEach(() => {
-    delete process.env.CHAT_CODE_SEARCH_TOOLS;
-  });
-
-  for (const route of ["/api/ai/stream", "/api/ai/chat"] as const) {
-    it(`${route}: with CHAT_CODE_SEARCH_TOOLS=true the code tools ride the text protocol; the SDK built-ins are withheld`, async () => {
-      process.env.CHAT_CODE_SEARCH_TOOLS = "true";
-      setAIProviderForTests(copilotProvider());
-      const app = makeApp();
-      const sid = await newSession(app);
-      const res = await as(alice, request(app).post(route).send({ sessionId: sid, message: "go" }));
-      expect(res.status).toBe(200);
-      expect(configs.length).toBeGreaterThan(0);
-      for (const cfg of configs) {
-        // The SDK's shell/write/url tools are withheld and every permission refused.
-        expect(cfg.availableTools).toEqual([]);
-        const ask = cfg.onPermissionRequest as (r: { kind: string }) => Promise<{ kind: string }>;
-        expect((await ask({ kind: "shell" })).kind).toBe("reject");
-      }
-      const wire = JSON.stringify({ configs, prompts });
-      // The text-protocol schema for the curated code tools is in the prompt…
-      expect(wire).toContain("search_code_graph");
-      expect(wire).toContain("search_code_symbols");
-      // …and the prompt does not claim a native tool channel it cannot use.
-      expect(wire).not.toContain("native tool-calling interface");
-    });
   }
 });
 

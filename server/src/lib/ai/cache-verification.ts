@@ -170,7 +170,7 @@ export function normalizeTokenUsage(
 /**
  * Map a METIS {@link UsageProvider} to its cache-usage convention. Only the native
  * `anthropic` provider excludes cache tokens from the prompt count; every other
- * key (bedrock gateway, openai, azure, local, copilot) is OpenAI-compatible.
+ * key (bedrock gateway, openai, azure, local) is OpenAI-compatible.
  */
 export function conventionForProvider(provider: UsageProvider): CacheUsageConvention {
   return provider === "anthropic" ? "anthropic-native" : "openai-compatible";

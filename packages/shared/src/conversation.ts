@@ -122,6 +122,12 @@ export interface ResumeSessionResponse {
     forkedFromSessionId: string | null;
     forkedFromOrdinal: number | null;
     updatedAt: string;
+    /**
+     * #149 — non-null when the session can be read but can no longer take a
+     * turn (it was created on a provider METIS no longer ships). The message is
+     * shown to the user as-is.
+     */
+    readOnlyReason: string | null;
   };
   messages: TranscriptMessageDto[];
 }

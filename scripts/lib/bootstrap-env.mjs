@@ -13,17 +13,13 @@
 import { randomBytes } from "node:crypto";
 
 /**
- * The four secret slots populated on first `.env` creation, identical to the
- * awk replacement set in `bootstrap.sh`.
+ * The three secret slots populated on first `.env` creation, identical to the
+ * awk replacement set in `bootstrap.sh`. (#150 — `COPILOT_NATIVE_TOKEN`, the
+ * shared secret of the removed Copilot sidecar, is no longer generated.)
  *
  * @type {readonly string[]}
  */
-export const SECRET_KEYS = Object.freeze([
-  "JWT_SECRET",
-  "VAULT_MASTER_KEY",
-  "EMBEDDINGS_TOKEN",
-  "COPILOT_NATIVE_TOKEN",
-]);
+export const SECRET_KEYS = Object.freeze(["JWT_SECRET", "VAULT_MASTER_KEY", "EMBEDDINGS_TOKEN"]);
 
 /**
  * Generate a hex-encoded random secret.

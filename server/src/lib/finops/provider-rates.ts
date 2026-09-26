@@ -18,7 +18,8 @@
  *      `ANTHROPIC_BASE_URL_BILLS_AS=anthropic`;
  *   3. a Claude-family match on the model id, then a `provider:default` row —
  *      which exists only for providers that genuinely cost nothing per token
- *      (offline-stub, copilot-native, self-hosted local-gemma, and the
+ *      (offline-stub, self-hosted local-gemma, the retired copilot-native's
+ *      historical rows, and the
  *      in-process / in-cluster embedders under `embed:<key>`, #58);
  *   4. otherwise `null` — UNPRICED. Never `0`, and never another model's price.
  *
@@ -209,7 +210,9 @@ const RATES: ReadonlyMap<string, TokenRate> = new Map([
   // Azure OpenAI — same effective rates as OpenAI direct
   ["azure:gpt-4o", { inputPer1k: 0.25, outputPer1k: 1.0 }],
   ["azure:gpt-4o-mini", { inputPer1k: 0.015, outputPer1k: 0.06 }],
-  // METIS-internal stubs — no rate.
+  // METIS-internal stubs — no rate. `copilot-native` was removed (#149); its
+  // rows stay so usage recorded before the removal keeps its zero price
+  // instead of turning UNPRICED in historical reports.
   ["copilot-native:default", DEFAULT_RATE],
   // Self-hosted Ollama / vLLM (PR #41 review): no per-token charge exists, so
   // this is a genuine zero, not an unpriced model.
@@ -369,7 +372,7 @@ export function resolveRate(
   const family = claudeFamilyRate(model);
   if (family) return family;
   // A provider-wide row exists only for METIS-internal providers whose calls
-  // genuinely cost nothing per token (offline-stub, copilot-native). There is
+  // genuinely cost nothing per token (offline-stub; copilot-native's historical rows). There is
   // deliberately no such row for a paid provider (#22).
   return (provider && RATES.get(`${provider}:default`)) || null;
 }

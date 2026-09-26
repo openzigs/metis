@@ -18,7 +18,11 @@ import { PrismaClient } from "@prisma/client";
 import Database from "better-sqlite3";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
-import { createMigratedSqlite, type MigratedSqlite } from "./helpers/sqlite-migrated-db.js";
+import {
+  createMigratedSqlite,
+  type MigratedSqlite,
+  MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
+} from "./helpers/sqlite-migrated-db.js";
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
 vi.mock("../src/lib/prisma.js", async () => {
@@ -114,7 +118,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite.apply(MIGRATION);
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
-    });
+    }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
       await db?.$disconnect();

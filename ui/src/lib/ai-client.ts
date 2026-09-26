@@ -127,6 +127,12 @@ export async function getSession(id: string): Promise<AISession> {
 export interface ResumedChat {
   session: AISession;
   messages: DisplayTurn[];
+  /**
+   * #149 — non-null when the session can be read but can no longer take a
+   * turn (created on a provider METIS no longer ships). Shown as-is. Absent is
+   * read as `null` (writable).
+   */
+  readOnlyReason?: string | null;
 }
 
 /**
@@ -250,7 +256,11 @@ export async function resumeChatSession(id: string): Promise<ResumedChat | null>
       method: "POST",
     });
     const session = await getSession(id);
-    return { session, messages: transcriptToDisplay(res.messages ?? []) };
+    return {
+      session,
+      messages: transcriptToDisplay(res.messages ?? []),
+      readOnlyReason: res.session?.readOnlyReason ?? null,
+    };
   } catch {
     return null;
   }

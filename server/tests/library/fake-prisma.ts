@@ -100,7 +100,6 @@ interface AISessionRow {
   policy: string;
   status: string;
   providerSecretRef: string | null;
-  copilotHome: string | null;
   agentId: string | null;
   agentSnapshot: string | null;
   loadedSkillIds: string;
@@ -673,7 +672,6 @@ const fake = {
         policy: String(data.policy ?? "{}"),
         status: "active",
         providerSecretRef: (data.providerSecretRef as string | null) ?? null,
-        copilotHome: null,
         agentId: (data.agentId as string | null) ?? null,
         agentSnapshot: (data.agentSnapshot as string | null) ?? null,
         loadedSkillIds: String(data.loadedSkillIds ?? "[]"),

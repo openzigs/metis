@@ -1,12 +1,11 @@
 /**
  * Epic #165 (#114) — SDK lifecycle hook bus.
  *
- * Provides a typed, async event bus matching the Copilot SDK's hook surface
+ * Provides a typed, async event bus for the agent lifecycle hooks
  * (`preToolUse`, `postToolUse`, `sessionStart`, `sessionEnd`, `userPromptSubmit`,
- * `notification`). The Copilot SDK was dropped from `metis-server` in #179, so
- * this bus is implemented natively in METIS and works for every provider
- * (`bedrock-gateway`, `openai`, `azure`, `anthropic`, `offline-stub`, plus the
- * future `copilot-native` once #180 lands).
+ * `notification`). It is implemented natively in METIS and works for every
+ * provider (`bedrock-gateway`, `local-gemma`, `openai`, `azure`, `anthropic`,
+ * `offline-stub`).
  *
  * Handlers are registered globally (from server bootstrap) or per-session (via
  * `HookSubscription` rows). Built-in handlers wire the existing cross-cutting

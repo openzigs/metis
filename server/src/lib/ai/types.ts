@@ -3,8 +3,9 @@
  *
  * Every model backend implements the {@link AIProvider} contract (#131): the
  * OpenAI-compatible client (`local-gemma`, `bedrock-gateway`, `openai`,
- * `azure`), the Anthropic Messages client (`anthropic`), the Copilot SDK
- * adapter (`copilot-native`, removed in P4) and the offline deterministic stub.
+ * `azure`), the Anthropic Messages client (`anthropic`) and the offline
+ * deterministic stub. (`copilot-native` was removed in P4, #149 — see
+ * `retired-providers.ts`.)
  * The contract covers chat/stream, native tool calls, structured output,
  * cache-aware usage and per-model capabilities, so routes and middleware speak
  * one shape regardless of backend.
@@ -302,39 +303,16 @@ export interface ChatOptions {
    */
   disableThinking?: boolean;
   /**
-   * Issue #113 — extra directories the provider should scan for `SKILL.md`
-   * files (Copilot SDK `skillDirectories`). Phase 10 materialises loaded
-   * library skills under `<copilotHome>/skills/` and forwards that path.
-   * Other providers may ignore this option.
-   */
-  skillDirectories?: string[];
-  /**
-   * Issue #113 — skill keys the provider should NOT load even if present
-   * on disk (Copilot SDK `disabledSkills`). Mirrors per-project
-   * `ProjectSkillAllowlist` rows where `enabled = false`.
-   */
-  disabledSkills?: string[];
-  /**
    * When true, no tools are exposed to the model for this session. Useful
    * for pure text-synthesis calls (e.g. doc generation) where the model
    * would otherwise be tempted to call file/search tools instead of
-   * producing prose from the supplied context. Maps to the Copilot SDK
-   * `availableTools: []` setting.
+   * producing prose from the supplied context.
    *
    * Every provider reads this as "send NO tools" — the native-Anthropic and
    * OpenAI-compatible providers drop `tools` from the request when it is set.
-   * Never set it on a call that carries METIS's own `tools`; to withhold only
-   * the Copilot SDK's built-ins, use {@link withholdSdkBuiltinTools}.
+   * Never set it on a call that carries METIS's own `tools`.
    */
   disableTools?: boolean;
-  /**
-   * #142 — withhold the GitHub Copilot SDK's OWN built-in tools (shell, file
-   * write, URL fetch, …) from the session and refuse every SDK permission
-   * request, WITHOUT touching the caller's `tools`. Read only by the Copilot
-   * provider; every other provider ignores it. Chat sessions set it on every
-   * call: the only tools a chat may run are METIS's, through its approval gate.
-   */
-  withholdSdkBuiltinTools?: boolean;
   /**
    * Hint to the provider to enable prompt caching for parts of the request.
    * Cache hits are reported via `usage.cacheReadTokens` (writes via
@@ -355,8 +333,8 @@ export interface ChatOptions {
    * (~1,024 tokens for Sonnet); smaller blocks silently bypass caching — a
    * harmless no-op. Cache TTL is 5 minutes and resets on every hit.
    *
-   * The CopilotProvider / OpenAI-compatible SDK path ignores it (no hook to
-   * forward the directive). For chat/stream routes on Bedrock, caching is
+   * The OpenAI-compatible path ignores it (no hook to forward the directive).
+   * For chat/stream routes on Bedrock, caching is
    * handled at the gateway level via `ENABLE_PROMPT_CACHING=true` on the
    * bedrock-access-gateway container (#656).
    */
@@ -403,8 +381,7 @@ export interface ChatOptions {
    * ONCE without it and logged, so the caller's existing free-form JSON
    * parse/repair path still runs. Undefined = unchanged request (the default).
    *
-   * **#1115 — every other adapter DROPS this option**: the Copilot SDK (neither
-   * 0.2.2 nor 1.0.8), DeepSeek's Anthropic-compatible endpoint (only `effort`
+   * **#1115 — every other adapter DROPS this option**: DeepSeek's Anthropic-compatible endpoint (only `effort`
    * is accepted in `output_config`) and the offline stub yield unconstrained
    * text. Do not guess which provider you are on — probe first (per model, and
    * per mode when it matters: `supportsResponseFormat(provider, model, mode)`):
@@ -528,7 +505,6 @@ export interface ToolResult {
 
 /** Provider implementations live in `providers/`. */
 export type ProviderKey =
-  | "copilot-native"
   | "bedrock-gateway"
   | "local-gemma"
   | "openai"

@@ -1,7 +1,7 @@
 /**
  * #134 — factory routing edges: every direct key refuses a config with no
  * resolved endpoint, a per-session key override reaches the direct clients,
- * a wrapper that fails to construct surfaces as a provider error, and the
+ * a removed or unknown provider key is refused by name (#149), and the
  * singleton memoises.
  */
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,7 +11,7 @@ import {
   getProvider,
 } from "../../../src/lib/ai/providers/factory.js";
 import { loadAIConfig, type AIConfig } from "../../../src/lib/ai/config.js";
-import { AIProviderError } from "../../../src/lib/ai/errors.js";
+import { AIConfigError, AIProviderError } from "../../../src/lib/ai/errors.js";
 
 const bare = (provider: AIConfig["provider"]): AIConfig => ({
   provider,
@@ -25,7 +25,7 @@ afterEach(() => __resetProviderSingleton());
 
 describe("buildProvider routing edges", () => {
   it.each(["anthropic", "local-gemma", "bedrock-gateway", "openai", "azure"] as const)(
-    "%s without a resolved sdkProvider is a provider error, never a Copilot fallback",
+    "%s without a resolved sdkProvider is a provider error, never a fallback",
     (key) => {
       expect(() => buildProvider({ config: bare(key) })).toThrow(AIProviderError);
       expect(() => buildProvider({ config: bare(key) })).toThrow(/without a resolved sdkProvider/);
@@ -55,15 +55,20 @@ describe("buildProvider routing edges", () => {
     expect(auth).toBe("Bearer session-key");
   });
 
-  it("a Copilot wrapper that throws is reported as a provider error", () => {
-    expect(() =>
-      buildProvider({
-        config: loadAIConfig({ AI_PROVIDER: "copilot-native" }),
-        wrapperFactory: () => {
-          throw new Error("no sdk");
-        },
-      }),
-    ).toThrow(/failed to construct Copilot wrapper: no sdk/);
+  // #149 — a config that still carries the removed key (a project override or
+  // stored session reaches the factory without passing loadAIConfig's check)
+  // is refused by name. Before #149 it built the Copilot provider; it must
+  // never be routed to another (possibly paid) provider instead.
+  it("the removed copilot-native key is refused by name, never routed elsewhere", () => {
+    const config = { ...bare("anthropic"), provider: "copilot-native" } as unknown as AIConfig;
+    expect(() => buildProvider({ config })).toThrow(AIConfigError);
+    expect(() => buildProvider({ config })).toThrow(/GitHub Copilot support was removed/);
+    expect(() => buildProvider({ config })).toThrow(/MIGRATING_FROM_COPILOT/);
+  });
+
+  it("an unknown provider key is a config error, not a silent fallback", () => {
+    const config = { ...bare("anthropic"), provider: "made-up" } as unknown as AIConfig;
+    expect(() => buildProvider({ config })).toThrow(/Unknown AI provider "made-up"/);
   });
 
   it("getProvider memoises until reset", () => {

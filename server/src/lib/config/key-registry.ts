@@ -178,7 +178,6 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     tier: "tunable",
     valueType: "string",
     schema: z.enum([
-      "copilot-native",
       "bedrock-gateway",
       "local-gemma",
       "openai",
@@ -187,7 +186,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "offline-stub",
     ]),
     description:
-      "Active AI provider (copilot-native | bedrock-gateway | local-gemma | openai | azure | anthropic | offline-stub).",
+      "Active AI provider (bedrock-gateway | local-gemma | openai | azure | anthropic | offline-stub).",
     sensitive: false,
   },
   AI_DEFAULT_MODEL: {
@@ -265,7 +264,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "int",
     schema: z.coerce.number().int().min(1).max(64),
     description:
-      "#178 — how many Phase-2 batch calls of one batched docs-gen section (Business Rules, Key Workflows, Calculations, Data Model) run at once (1-64). Unset, the default depends on the provider: 1 for local-gemma (the local provider's LOCAL_GEMMA_MAX_CONCURRENCY limiter already holds requests to the server's real parallelism) 4 for the cloud providers bedrock-gateway, anthropic, openai and azure, and 1 for every other provider (copilot-native, offline-stub, any new key). The openai provider pointed at a self-hosted server — OPENAI_BASE_URL (or COPILOT_PROVIDER_BASE_URL) on a loopback host or a private IP address — also defaults to 1, because the local request limiter covers only local-gemma; a self-hosted server behind a hostname, or an anthropic / azure / gateway endpoint on the local network, is not detected, so set this value to the server's real parallelism there. A set value applies to every provider. Batch replies are always merged in plan order, so the section is the same whatever order the calls finish in — unless the section's re-split budget runs out, in which case which cut-off batch gets the last re-split depends on which reply arrives first. Raise it where the account's request and token quotas allow; lower it behind a gateway with request-rate limits.",
+      "#178 — how many Phase-2 batch calls of one batched docs-gen section (Business Rules, Key Workflows, Calculations, Data Model) run at once (1-64). Unset, the default depends on the provider: 1 for local-gemma (the local provider's LOCAL_GEMMA_MAX_CONCURRENCY limiter already holds requests to the server's real parallelism) 4 for the cloud providers bedrock-gateway, anthropic, openai and azure, and 1 for every other provider (offline-stub, any new key). The openai provider pointed at a self-hosted server — OPENAI_BASE_URL on a loopback host or a private IP address — also defaults to 1, because the local request limiter covers only local-gemma; a self-hosted server behind a hostname, or an anthropic / azure / gateway endpoint on the local network, is not detected, so set this value to the server's real parallelism there. A set value applies to every provider. Batch replies are always merged in plan order, so the section is the same whatever order the calls finish in — unless the section's re-split budget runs out, in which case which cut-off batch gets the last re-split depends on which reply arrives first. Raise it where the account's request and token quotas allow; lower it behind a gateway with request-rate limits.",
     sensitive: false,
   },
   DOCS_GEN_PHASE1_CHUNK_INPUT_TOKENS: {

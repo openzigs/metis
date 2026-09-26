@@ -87,10 +87,10 @@ DEFAULT=$(template)
 assert "1× ConfigMap" 1 "$(count_kind ConfigMap "${DEFAULT}")"
 # Epic #294 — the metis-sql-lineage sidecar is enabled by default, so the
 # default render now has 4 deployments/services (server+ui+embeddings+sql-lineage).
-assert "4× Deployment (server+ui+embeddings+sql-lineage, no copilot)" 4 "$(count_kind Deployment "${DEFAULT}")"
+assert "4× Deployment (server+ui+embeddings+sql-lineage)" 4 "$(count_kind Deployment "${DEFAULT}")"
 assert "4× Service" 4 "$(count_kind Service "${DEFAULT}")"
 assert "1× ServiceAccount" 1 "$(count_kind ServiceAccount "${DEFAULT}")"
-assert "0× copilot resources by default" 0 "$(echo "${DEFAULT}" | grep -cE 'name: metis-copilot$' || true)"
+assert "0× copilot resources (removed, #150)" 0 "$(echo "${DEFAULT}" | grep -ciE 'copilot' || true)"
 assert_contains "sql-lineage deployment present by default" "name: metis-sql-lineage" "${DEFAULT}"
 assert_contains "runAsNonRoot enforced" "runAsNonRoot: true" "${DEFAULT}"
 assert_contains "readOnlyRootFilesystem enforced" "readOnlyRootFilesystem: true" "${DEFAULT}"
@@ -105,13 +105,11 @@ assert_contains "embeddings memory limit 3Gi (#786)" "memory: 3Gi" "${DEFAULT}"
 assert_contains "image registry default ghcr.io" "image: ghcr.io/openzigs/metis-server" "${DEFAULT}"
 
 # ---------------------------------------------------------------------------
-echo "Test 3: copilot toggle — sub-issue #366 acceptance"
+echo "Test 3: the removed copilot toggle renders nothing (#150)"
 # ---------------------------------------------------------------------------
 COPILOT=$(template --set copilot.enabled=true)
-# 5 = server+ui+embeddings+sql-lineage+copilot (sql-lineage on by default, #294).
-assert "5× Deployment with copilot enabled" 5 "$(count_kind Deployment "${COPILOT}")"
-assert "5× Service with copilot enabled" 5 "$(count_kind Service "${COPILOT}")"
-assert_contains "copilot deployment named" "name: metis-copilot" "${COPILOT}"
+assert "4× Deployment even with copilot.enabled=true" 4 "$(count_kind Deployment "${COPILOT}")"
+assert "0× copilot resources even with copilot.enabled=true" 0 "$(echo "${COPILOT}" | grep -ciE 'copilot' || true)"
 
 # ---------------------------------------------------------------------------
 echo "Test 4: PVC story — sub-issue #367 (CRITICAL)"

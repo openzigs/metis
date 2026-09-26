@@ -6,6 +6,12 @@
  * Renders a select with the supported provider keys + a "global default"
  * option. PATCHes the project on save and surfaces server validation errors
  * inline. Disabled while the mutation is in-flight.
+ *
+ * #149 — a project whose stored override is no longer a supported provider
+ * (e.g. the removed `copilot-native`) shows that value as a disabled option
+ * with a notice, rather than silently displaying "Global default" for a row
+ * that still says otherwise. The server refuses new chat sessions for it until
+ * another provider (or the global default) is saved.
  */
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -29,6 +35,8 @@ export function AiProviderPicker({ projectId, current }: Props) {
   const [value, setValue] = useState<string>(current ?? GLOBAL_DEFAULT);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const unsupported =
+    current && !(AI_PROVIDER_KEYS as readonly string[]).includes(current) ? current : null;
 
   const save = useMutation({
     mutationFn: () =>
@@ -67,6 +75,11 @@ export function AiProviderPicker({ projectId, current }: Props) {
           data-testid="ai-provider-select"
         >
           <option value={GLOBAL_DEFAULT}>Global default</option>
+          {unsupported ? (
+            <option value={unsupported} disabled>
+              {unsupported} (no longer supported)
+            </option>
+          ) : null}
           {AI_PROVIDER_KEYS.map((key) => (
             <option key={key} value={key}>
               {key}
@@ -80,6 +93,13 @@ export function AiProviderPicker({ projectId, current }: Props) {
       <p className="text-xs text-muted-foreground">
         Overrides the global default for AI sessions started inside this project.
       </p>
+      {unsupported ? (
+        <p className="text-sm text-destructive" role="status" data-testid="ai-provider-unsupported">
+          This project is set to “{unsupported}”, which METIS no longer supports. New chat sessions
+          in this project are refused until you choose another provider or the global default and
+          save.
+        </p>
+      ) : null}
       {error ? (
         <p className="text-sm text-destructive" role="alert">
           {error}

@@ -51,7 +51,9 @@ METIS depends on third-party packages resolved by pnpm. They are not redistribut
 this repository — `pnpm-lock.yaml` names them exactly and each carries its own licence
 in its own package. `pnpm licenses list --prod` reproduces the full list.
 
-Four entries need a recorded decision rather than a line in a list.
+Three entries need a recorded decision rather than a line in a list. (A fourth,
+the proprietary `@github/copilot` CLI, left the tree when GitHub Copilot support was
+removed — #150.)
 
 1. jszip — dual-licensed `(MIT OR GPL-3.0-or-later)`
    ---------------------------------------------------------------------------
@@ -69,29 +71,7 @@ Four entries need a recorded decision rather than a line in a list.
    The dynamic-linking question that a permissive outbound licence would have raised
    does not arise under a copyleft core.
 
-3. @github/copilot — proprietary, "GitHub Copilot CLI License"
-   ---------------------------------------------------------------------------
-   Not declared in any METIS manifest. It arrives as a transitive dependency of
-   `@github/copilot-sdk` (MIT), which is declared in `server/` and
-   `server/copilot-svc/`, and it is present in the *production* dependency tree.
-   `pnpm licenses list --prod` reports it as `Unknown` because its manifest says
-   `SEE LICENSE IN LICENSE.md`; the actual terms are proprietary.
-
-   It does not conflict with releasing METIS under AGPL-3.0. Its section 2 says in
-   terms that "nothing in this License restricts your choice of license for your
-   application or service, including distribution under an open source license", and
-   its redistribution conditions are met by how METIS uses it: it is installed
-   unmodified from npm as a dependency of an application with material functionality
-   of its own, never repackaged or shipped standalone, and its own licence file
-   travels with it inside its package.
-
-   Two obligations follow for anyone redistributing a METIS *bundle* that includes
-   resolved `node_modules` (a container image, for example) rather than source alone:
-   the package must stay unmodified, and its `LICENSE.md` and copyright notices must
-   be retained. Distributing METIS as source does not trigger either, because the
-   package is not in this repository.
-
-4. buffers@0.1.1 — no declared licence
+3. buffers@0.1.1 — no declared licence
    ---------------------------------------------------------------------------
    A transitive dependency five levels down (`exceljs` -> `unzipper` -> `binary` ->
    `buffers`) whose manifest declares no licence and which ships no licence file. It

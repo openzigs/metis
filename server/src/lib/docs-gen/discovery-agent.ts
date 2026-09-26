@@ -388,9 +388,9 @@ Write the business requirements documentation for this module following the form
     summary = `**Module:** \`${moduleName}\`\n\nContains ${classes.length} class(es)/interface(s) and ${methods.length} significant method(s).\n\n${classList ? "**Key components:**\n" + classList : ""}`;
   } else {
     try {
-      // Unique sessionId per module: the underlying Copilot SDK caches sessions
-      // by id and bakes the systemMessage in at session creation. Sharing a
-      // session across modules would silently reuse the FIRST module's prompt.
+      // Unique sessionId per module, so per-session telemetry and fixture keys
+      // (and any provider that caches by session id) never mix two modules'
+      // prompts.
       const sessionId = `docs-gen-${projectId}-${modulePath.replace(/[^a-z0-9]/gi, "_")}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       // #1228 sweep — an EXPLICIT output cap. With none, the call silently
       // inherited the provider's 4096 `defaultMaxTokens`, and a module writeup

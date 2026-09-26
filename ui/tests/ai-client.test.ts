@@ -6,6 +6,7 @@ import {
   createSessionWithScope,
   getSession,
   parseSseFrame,
+  resumeChatSession,
   streamChat,
   updateSession,
 } from "@/lib/ai-client";
@@ -132,6 +133,36 @@ describe("ai-client REST", () => {
       sessionId: "s1",
       message: "hello",
     });
+  });
+});
+
+describe("resumeChatSession — read-only sessions (#149)", () => {
+  function resumeBody(readOnlyReason: string | null) {
+    return {
+      success: true,
+      data: {
+        session: { id: "s1", provider: "copilot-native", readOnlyReason },
+        messages: [],
+      },
+    };
+  }
+
+  it("carries the server's readOnlyReason through to the page", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(resumeBody("GitHub Copilot support was removed")))
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: { session: { id: "s1" } } }));
+    const r = await resumeChatSession("s1");
+    expect(r?.readOnlyReason).toBe("GitHub Copilot support was removed");
+  });
+
+  it("reads a missing reason as writable (null), never as undefined", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ success: true, data: { session: { id: "s1" }, messages: [] } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: { session: { id: "s1" } } }));
+    const r = await resumeChatSession("s1");
+    expect(r?.readOnlyReason).toBeNull();
   });
 });
 

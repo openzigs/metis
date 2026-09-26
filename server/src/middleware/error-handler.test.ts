@@ -13,6 +13,8 @@ import { z } from "zod";
 // Real classes, deliberately only the dependency-light ones: this stays a unit
 // test of the middleware. The full classification table is exercised against
 // the source tree by http-status-errors.test.ts.
+import { AIConfigError, AIProviderRetiredError } from "../lib/ai/errors.js";
+import { retiredProviderMessage } from "../lib/ai/retired-providers.js";
 import { SqlLineageClientError } from "../lib/code-graph/sql-lineage-client.js";
 import { JiraApiError } from "../lib/connectors/jira/jira-errors.js";
 import { ConnectorError } from "../lib/connectors/types.js";
@@ -164,6 +166,29 @@ describe("errorHandler — AppError + fallback", () => {
 
   it("falls back to a 500 INTERNAL_ERROR for an unknown error", async () => {
     const res = await request(appThatThrows(new Error("kaboom"))).get("/boom");
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe("INTERNAL_ERROR");
+  });
+});
+
+describe("errorHandler — a retired AI provider (#149)", () => {
+  it("answers 409 AI_PROVIDER_RETIRED with the actionable message, whatever selected it", async () => {
+    const message = retiredProviderMessage("copilot-native", "runtime-config");
+    const res = await request(
+      appThatThrows(new AIProviderRetiredError(message, { retiredProvider: "copilot-native" })),
+    ).get("/boom");
+    expect(res.status).toBe(409);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe("AI_PROVIDER_RETIRED");
+    expect(res.body.error.message).toBe(message);
+    // Details (the source, the doc path) stay server-side.
+    expect(res.body.error.details).toBeUndefined();
+  });
+
+  it("any other AI config error still falls through to the 500 branch", async () => {
+    const res = await request(
+      appThatThrows(new AIConfigError("openai provider requires OPENAI_BASE_URL")),
+    ).get("/boom");
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe("INTERNAL_ERROR");
   });

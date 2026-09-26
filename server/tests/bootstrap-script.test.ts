@@ -78,12 +78,7 @@ describe("scripts/bootstrap.sh — Issue #362", () => {
     expect(result.status, result.stderr).toBe(0);
 
     const envContents = fs.readFileSync(path.join(scratch, ".env"), "utf8");
-    for (const key of [
-      "JWT_SECRET",
-      "VAULT_MASTER_KEY",
-      "EMBEDDINGS_TOKEN",
-      "COPILOT_NATIVE_TOKEN",
-    ]) {
+    for (const key of ["JWT_SECRET", "VAULT_MASTER_KEY", "EMBEDDINGS_TOKEN"]) {
       const match = envContents.match(new RegExp(`^${key}=([0-9a-f]+)$`, "m"));
       expect(match, `${key} should be set to hex string`).not.toBeNull();
       expect(match![1]).toHaveLength(64); // 32 bytes hex-encoded

@@ -5,7 +5,6 @@ Components enabled:
   • ui          : {{ .Values.ui.enabled }} (replicas={{ .Values.ui.replicaCount }})
   • embeddings  : {{ .Values.embeddings.enabled }}
   • sql-lineage : {{ .Values.sqlLineage.enabled }}
-  • copilot     : {{ .Values.copilot.enabled }}
 
 Persistence:
   • enabled     : {{ .Values.persistence.enabled }}

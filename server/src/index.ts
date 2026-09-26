@@ -21,9 +21,15 @@ import { assertJwtSecretConfigured } from "./lib/auth/jwt.js";
 import { assertFinalAnswerMaxOutputTokensValid } from "./lib/analysis/agent-runner.js";
 import { assertSynthesisMaxOutputTokensValid } from "./lib/analysis/synthesis.js";
 import { getEmbedder } from "./lib/rag/embedder.js";
-import os from "node:os";
-import path from "node:path";
-import fs from "node:fs/promises";
+import { assertNoRetiredEffectiveProviderConfig } from "./lib/ai/config.js";
+import { AIProviderRetiredError } from "./lib/ai/errors.js";
+import {
+  COPILOT_MIGRATION_DOC,
+  isRetiredProviderError,
+  isRetiredProviderKey,
+  retiredProviderMessage,
+} from "./lib/ai/retired-providers.js";
+import { getConfigService } from "./lib/config/config-service.js";
 
 export const SERVER_NAME = "metis-server";
 export function getServerBanner(): string {
@@ -66,6 +72,87 @@ export function assertStartupSecretsConfig(): void {
   assertJwtSecretConfigured();
 }
 
+/**
+ * #149 — refuse to start when the deployment's own `AI_PROVIDER` env var names
+ * a removed provider (`copilot-native`). A pure env check that runs before any
+ * startup I/O, so the process exits loudly instead of coming up "healthy" (the
+ * analysis bootstrap swallows a config error at boot).
+ *
+ * Deliberately narrower than the request path: the Copilot-era rename check
+ * (`COPILOT_PROVIDER_*`, `COPILOT_MODEL`) depends on Admin → Settings values
+ * (vault-backed keys, `runtime_config`) that are not readable yet, so it runs in
+ * {@link assertStartupEffectiveAIProviderConfig} once they are.
+ */
+export function assertStartupAIProviderConfig(env: NodeJS.ProcessEnv = process.env): void {
+  const selected = env.AI_PROVIDER;
+  if (isRetiredProviderKey(selected)) {
+    throw new AIProviderRetiredError(retiredProviderMessage(selected, "AI_PROVIDER"), {
+      retiredProvider: selected.trim(),
+      source: "AI_PROVIDER",
+      migration: COPILOT_MIGRATION_DOC,
+    });
+  }
+}
+
+/** Preload the ConfigService caches `loadAIConfig` overlays onto env. */
+async function preloadAIConfigOverlay(): Promise<void> {
+  let cfg: ReturnType<typeof getConfigService>;
+  try {
+    cfg = getConfigService();
+  } catch (err) {
+    // `loadAIConfig` falls back to env in exactly this case, so the boot check
+    // must too — it would otherwise judge a view no request ever sees.
+    log.warn("ConfigService unavailable at boot; AI provider check uses env only", {
+      error: (err as Error).message,
+    });
+    return;
+  }
+  // Same calls `createServer()` makes (idempotent, memoised): a failure leaves
+  // the cache empty here AND for requests, so both see the same view.
+  await Promise.all([
+    cfg.loadSecrets().catch((err: Error) =>
+      log.warn("ConfigService.loadSecrets failed before the AI provider check", {
+        error: err.message,
+      }),
+    ),
+    cfg.loadTunables().catch((err: Error) =>
+      log.warn("ConfigService.loadTunables failed before the AI provider check", {
+        error: err.message,
+      }),
+    ),
+  ]);
+}
+
+/**
+ * #149 — the request path's retired-provider rule, applied at boot over the
+ * SAME view: env plus the Admin → Settings overlay (vault-backed keys such as
+ * `OPENAI_API_KEY`, `runtime_config` tunables such as `AI_DEFAULT_MODEL` →
+ * `AI_MODEL`, and a runtime `AI_PROVIDER`). Needs the database, so it runs
+ * after the migration guard. Throws exactly what `loadAIConfig` would throw on
+ * the first request; the boot block decides whether that is fatal.
+ */
+export async function assertStartupEffectiveAIProviderConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  preload: () => Promise<void> = preloadAIConfigOverlay,
+): Promise<void> {
+  await preload();
+  assertNoRetiredEffectiveProviderConfig(env);
+}
+
+/**
+ * Only a removed provider selected in the RUNTIME configuration may boot: its
+ * fix is made in Admin → Settings, which needs a running server, and every AI
+ * call refuses with the same 409 until it is changed. Anything else the
+ * effective check refuses (an un-renamed Copilot-era variable) is fixed in the
+ * deployment's env, so the process must not come up.
+ */
+export function isBootTolerableAIConfigError(err: unknown): boolean {
+  return (
+    isRetiredProviderError(err) &&
+    (err.details as { source?: unknown } | undefined)?.source === "runtime-config"
+  );
+}
+
 function isMainModule(): boolean {
   // Detect direct execution (`node dist/index.js`) vs test/library import.
   try {
@@ -97,6 +184,21 @@ if (isMainModule() && process.env.METIS_NO_LISTEN !== "1") {
     log.error("JWT signing secret invalid — refusing to start", {
       error: (err as Error).message,
     });
+    process.exit(1);
+  }
+  // #149 — a removed AI provider named in the deployment's env is a pure env
+  // check: refuse before any startup I/O. (The un-renamed Copilot-era variable
+  // check needs the Admin → Settings overlay, so it runs after the migration
+  // guard — see assertStartupEffectiveAIProviderConfig.)
+  try {
+    assertStartupAIProviderConfig();
+  } catch (err) {
+    log.error(
+      "AI provider configuration refers to removed GitHub Copilot support — refusing to start",
+      {
+        error: (err as Error).message,
+      },
+    );
     process.exit(1);
   }
   // Issue #1221 — reject a non-positive / non-numeric
@@ -144,6 +246,29 @@ if (isMainModule() && process.env.METIS_NO_LISTEN !== "1") {
       error: (err as Error).message,
     });
     process.exit(1);
+  }
+  // #149 — the request path's retired-provider rule over the request path's
+  // view (env + Admin → Settings overlay), so boot and requests never disagree.
+  // A removed provider chosen in the runtime configuration is logged, NOT fatal:
+  // its fix is made in Admin → Settings, which needs a running server, and
+  // every AI call refuses with the same 409 until it is changed — nothing falls
+  // back to another provider in the meantime. Anything else is an env fix.
+  try {
+    await assertStartupEffectiveAIProviderConfig();
+  } catch (err) {
+    if (isBootTolerableAIConfigError(err)) {
+      log.error(
+        "Runtime AI provider refers to removed GitHub Copilot support — every AI call will be " +
+          "refused until AI_PROVIDER is changed in Admin → Settings",
+        { error: (err as Error).message },
+      );
+    } else {
+      log.error(
+        "AI provider configuration refers to removed GitHub Copilot support — refusing to start",
+        { error: (err as Error).message },
+      );
+      process.exit(1);
+    }
   }
   // Issue #783 — WARM THE EMBEDDER AT BOOT, and let it fail here.
   //
@@ -212,25 +337,6 @@ if (isMainModule() && process.env.METIS_NO_LISTEN !== "1") {
         await io.close();
       } catch (e) {
         log.error("Socket.IO close error", { error: (e as Error).message });
-      }
-      // M3 — sweep per-session COPILOT_HOME dirs for any session still
-      // marked active. Best-effort: a failed cleanup must not block exit.
-      try {
-        const active = await prisma.aISession.findMany({
-          where: { status: "active", deletedAt: null },
-          select: { id: true },
-        });
-        const root = process.env.METIS_SESSIONS_HOME ?? path.join(os.homedir(), ".metis-sessions");
-        await Promise.all(
-          active.map((s) =>
-            fs.rm(path.join(root, s.id), { recursive: true, force: true }).catch(() => undefined),
-          ),
-        );
-        if (active.length > 0) {
-          log.info("Cleaned per-session AI homes", { count: active.length });
-        }
-      } catch (e) {
-        log.error("AI session cleanup error", { error: (e as Error).message });
       }
       try {
         await prisma.$disconnect();

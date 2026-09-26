@@ -6,7 +6,7 @@
  *     `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL` into the sdkProvider config, with
  *     `claude-sonnet-4-6` as the bare default model.
  *   • The public-LLM-host guard does NOT block api.anthropic.com here.
- *   • The factory builds an `AnthropicProvider` (NOT the Copilot wrapper) and
+ *   • The factory builds an `AnthropicProvider` and
  *     short-circuits to the offline stub when offline.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -33,7 +33,6 @@ vi.mock("@anthropic-ai/sdk", () => {
 import { loadAIConfig } from "../../../src/lib/ai/config.js";
 import { buildProvider, __resetProviderSingleton } from "../../../src/lib/ai/providers/factory.js";
 import { AnthropicProvider } from "../../../src/lib/ai/providers/anthropic-provider.js";
-import { CopilotProvider } from "../../../src/lib/ai/providers/copilot-provider.js";
 
 const ENV_KEYS = [
   "AI_PROVIDER",
@@ -140,13 +139,12 @@ describe("loadAIConfig — native anthropic (#285)", () => {
 });
 
 describe("factory routing — anthropic → AnthropicProvider (#285)", () => {
-  it("builds the native AnthropicProvider, NOT the Copilot wrapper", () => {
+  it("builds the native AnthropicProvider", () => {
     process.env.AI_PROVIDER = "anthropic";
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
     const cfg = loadAIConfig(process.env);
     const provider = buildProvider({ config: cfg });
     expect(provider).toBeInstanceOf(AnthropicProvider);
-    expect(provider).not.toBeInstanceOf(CopilotProvider);
     expect(provider.key).toBe("anthropic");
   });
 

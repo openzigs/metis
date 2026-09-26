@@ -47,7 +47,6 @@ vi.mock("../src/lib/prisma.js", async () => {
         policy: '{"low":"auto","medium":"prompt-once","high":"always-prompt"}',
         status: "active",
         providerSecretRef: null,
-        copilotHome: null,
         createdAt: new Date(),
         updatedAt: new Date(),
         deletedAt: null,

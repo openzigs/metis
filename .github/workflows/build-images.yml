@@ -1,13 +1,13 @@
 name: Build core images — multi-arch
 
 # Sub-issue #373 (Epic #360) — multi-arch (linux/amd64,linux/arm64) buildx
-# of the four core METIS images:
+# of the three core METIS images (#150 removed the fourth, copilot-svc, with
+# GitHub Copilot support):
 #   - server         → Dockerfile.server
 #   - ui             → Dockerfile.ui
 #   - embeddings-svc → Dockerfile.embeddings
-#   - copilot-svc    → Dockerfile.copilot-svc
 #
-# On a release tag (`v*`) all four images are built for both architectures
+# On a release tag (`v*`) all three images are built for both architectures
 # and pushed to GHCR with both `<tag>` and `latest` references. On a PR
 # touching the Dockerfiles, the chart, or the source tree, we build for
 # the runner's NATIVE arch only (no push) to validate compilation.
@@ -61,7 +61,6 @@ jobs:
           - { name: server, dockerfile: Dockerfile.server }
           - { name: ui, dockerfile: Dockerfile.ui }
           - { name: embeddings-svc, dockerfile: Dockerfile.embeddings }
-          - { name: copilot-svc, dockerfile: Dockerfile.copilot-svc }
 
     steps:
       - name: Checkout
@@ -72,7 +71,7 @@ jobs:
         # by setup-buildx-action's post-step. Prune ONLY this image's own stale
         # builders from previous runs — never a blanket `builder-*` removal.
         #
-        # Why: the 4 matrix jobs (server/ui/embeddings-svc/copilot-svc) run on
+        # Why: the matrix jobs (server/ui/embeddings-svc) run on
         # runner instances that used to SHARE ONE Docker daemon on
         # the same Mac. A blanket `docker buildx rm` of every `builder-*` would
         # delete the builder a *sibling* job is actively using, killing its

@@ -111,7 +111,7 @@ assert_exists() {
   fi
 }
 
-# Dev profile: server+ui+embeddings+sql-lineage (copilot off), a plain Secret,
+# Dev profile: server+ui+embeddings+sql-lineage, a plain Secret,
 # 2 PVCs (uploads + lancedb), the ServiceAccount, and the ConfigMap.
 assert_exists deployment "${RELEASE}-server"
 assert_exists deployment "${RELEASE}-ui"

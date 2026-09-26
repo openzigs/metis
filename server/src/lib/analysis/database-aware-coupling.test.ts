@@ -22,7 +22,7 @@
  * Reachability discipline (#750/#797/#847): drives the REAL
  * `AnalysisOrchestrator.runPipeline` (run path) and the REAL
  * `resolveGapReportDeps` (gap-report path) — nothing private is stubbed, only
- * the documented I/O seams (Prisma, the Copilot-SDK provider boundary).
+ * the documented I/O seams (Prisma, the AI provider boundary).
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { __resetConfigSingleton } from "../config/config-service.js";
