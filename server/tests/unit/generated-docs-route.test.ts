@@ -47,6 +47,8 @@ vi.mock("../../src/lib/prisma.js", () => ({
       findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn(),
     },
+    // #182 — repository index coverage, read after synthesis.
+    repoConnection: { findMany: vi.fn().mockResolvedValue([]) },
   },
 }));
 
@@ -420,6 +422,94 @@ describe("generated-docs routes", () => {
         "proj-1",
         "Generated with warnings",
       );
+    });
+
+    describe("#182 — repository index coverage", () => {
+      const fullDoc = {
+        id: "doc-1",
+        projectId: "proj-1",
+        title: "BR",
+        scope: "full",
+        scopeFilter: JSON.stringify({ docType: "business-requirements" }),
+        evidencePolicy: "{}",
+      };
+      const state = (overrides: Record<string, unknown>) =>
+        JSON.stringify({
+          version: 1,
+          runId: "r",
+          status: "completed",
+          startedAt: new Date().toISOString(),
+          heartbeatAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+          eligible: 860,
+          selected: 860,
+          processed: 860,
+          created: 860,
+          updated: 0,
+          unchanged: 0,
+          failed: 0,
+          chunkCount: 5000,
+          skipped: { cap: 0, tooLarge: 0, unreadable: 0, excludedTests: 0 },
+          limits: { maxFiles: 5000, maxFileBytes: 1048576, includeTests: true },
+          ...overrides,
+        });
+
+      beforeEach(() => {
+        (prisma.generatedDocument.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(fullDoc);
+        (prisma.generatedDocumentVersion.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(
+          null,
+        );
+        (prisma.generatedDocument.update as ReturnType<typeof vi.fn>).mockResolvedValue({});
+        (prisma.codeSymbol.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+      });
+
+      it("marks the document degraded when the repository index is partial", async () => {
+        (prisma.repoConnection.findMany as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+          {
+            id: "repo-a",
+            label: "onyourleft",
+            sourceIngestState: state({
+              status: "partial",
+              selected: 200,
+              processed: 200,
+              created: 200,
+              skipped: { cap: 660, tooLarge: 0, unreadable: 0, excludedTests: 0 },
+            }),
+          },
+        ]);
+
+        await generateDocumentAsync("doc-1", "proj-1");
+
+        const data = (prisma.generatedDocument.update as ReturnType<typeof vi.fn>).mock.calls.at(
+          -1,
+        )?.[0].data;
+        expect(data.status).toBe("degraded");
+        expect(data.warnings).toEqual([
+          expect.objectContaining({
+            kind: "source-unavailable",
+            section: "Document",
+            message: expect.stringContaining(
+              'The search index for repository "onyourleft" is incomplete: 200 of 860',
+            ),
+          }),
+        ]);
+        expect(prisma.repoConnection.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({ where: expect.objectContaining({ projectId: "proj-1" }) }),
+        );
+      });
+
+      it("stays ready when every repository index is complete", async () => {
+        (prisma.repoConnection.findMany as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+          { id: "repo-a", label: "onyourleft", sourceIngestState: state({}) },
+        ]);
+
+        await generateDocumentAsync("doc-1", "proj-1");
+
+        const data = (prisma.generatedDocument.update as ReturnType<typeof vi.fn>).mock.calls.at(
+          -1,
+        )?.[0].data;
+        expect(data.status).toBe("ready");
+      });
     });
 
     it("does not mutate a missing or deleted document", async () => {
