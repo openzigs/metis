@@ -14,7 +14,7 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import express from "express";
 import request from "supertest";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import { isolateSupertestLoopback } from "./helpers/supertest-loopback.js";
 import { getPermissionsForRole, type RoleKey } from "@metis/shared";
@@ -28,6 +28,19 @@ vi.mock("../src/lib/prisma.js", async () => ({
   },
 }));
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+// #196 — count manifest parses without changing what they return.
+const parses = vi.hoisted(() => ({ count: 0 }));
+vi.mock("../src/lib/docs-gen/generated-doc-provenance.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/lib/docs-gen/generated-doc-provenance.js")>();
+  return {
+    ...actual,
+    parseGeneratedDocVersionManifest: (raw: unknown) => {
+      parses.count += 1;
+      return actual.parseGeneratedDocVersionManifest(raw);
+    },
+  };
+});
 
 import { generatedDocsRouter } from "../src/routes/generated-docs.js";
 import { errorHandler } from "../src/middleware/error-handler.js";
@@ -36,6 +49,35 @@ import {
   legacyGeneratedDocVersionManifest,
 } from "../src/lib/docs-gen/generated-doc-provenance.js";
 import { createApp } from "../src/app.js";
+import { clearGeneratedDocVersionReadCaches } from "../src/lib/docs-gen/generated-doc-version-reads.js";
+import { generatedDocSyntheticDocumentId } from "../src/lib/docs-gen/generated-doc-publication.js";
+import { generatedDocOutboxId } from "../src/lib/docs-gen/generated-doc-outbox.js";
+
+/**
+ * #196 — the `select` of every `generatedDocumentVersion.findFirst` the routes
+ * issue, so a test can see which heavy columns a request actually read.
+ */
+function recordingVersionReads(client: PrismaClient, reads: Array<Record<string, unknown>>) {
+  return new Proxy(client, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target) as unknown;
+      if (prop !== "generatedDocumentVersion") {
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      const delegate = value as PrismaClient["generatedDocumentVersion"];
+      return new Proxy(delegate, {
+        get(model, method) {
+          const fn = Reflect.get(model, method, model) as unknown;
+          if (method !== "findFirst" || typeof fn !== "function") return fn;
+          return (args: { select?: Record<string, unknown> }) => {
+            reads.push(args?.select ?? {});
+            return (fn as (a: unknown) => unknown).call(model, args);
+          };
+        },
+      });
+    },
+  });
+}
 
 /** A ~600k-character body shaped like a full-coverage document (#184). */
 function largeMarkdown(targetChars: number): string {
@@ -73,6 +115,9 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       factsSourceIds: Array.from({ length: 8 }, (_, j) => `facts:module-${i}-${j}`),
       groundingSourceIds: Array.from({ length: 8 }, (_, j) => `chunk:module-${i}-${j}`),
     }));
+    const versionReads: Array<Record<string, unknown>> = [];
+    const heavyReads = (column: "provenanceManifest" | "changedSymbols") =>
+      versionReads.filter((select) => select[column]).length;
     const SYMBOLS = Array.from({ length: 40_000 }, (_, i) => `pkg.module.Symbol${i}.method`);
 
     function authorization(userId = "member", role: RoleKey = "reader", workspaces = ["ws"]) {
@@ -101,7 +146,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       db = new PrismaClient({
         adapter: new PrismaBetterSqlite3({ url: `file:${join(directory, "test.db")}` }),
       });
-      state.db = db;
+      state.db = recordingVersionReads(db, versionReads);
       for (const sql of [
         `CREATE TABLE projects (id TEXT PRIMARY KEY, workspaceId TEXT NOT NULL)`,
         `CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL, status TEXT DEFAULT 'active', deletedAt DATETIME, authRolesInitializedAt DATETIME DEFAULT CURRENT_TIMESTAMP, authRoleAuthority TEXT DEFAULT 'explicit')`,
@@ -129,6 +174,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
     beforeEach(async () => {
       vi.restoreAllMocks();
       isolateSupertestLoopback();
+      clearGeneratedDocVersionReadCaches();
       for (const table of ["generated_document_versions", "generated_documents"])
         await db.$executeRawUnsafe(`DELETE FROM ${table}`);
       await db.generatedDocument.create({
@@ -353,6 +399,191 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         expect(res.status).toBe(200);
         expect(res.headers["content-encoding"]).toBe("gzip");
       }
+    });
+
+    describe("#196 follow-ups", () => {
+      beforeEach(() => {
+        versionReads.length = 0;
+        parses.count = 0;
+      });
+      afterEach(async () => {
+        for (const table of ["documents", "tasks"])
+          await db.$executeRawUnsafe(`DELETE FROM ${table}`);
+      });
+
+      it("serves a provenance summary without the manifest body", async () => {
+        const res = await get("/projects/project/docs/doc/versions/v3/provenance/summary");
+        expect(res.status).toBe(200);
+        expect(res.body.data).toEqual({
+          revisionId: "gendoc:project:doc:v3",
+          version: 3,
+          generatedAt: new Date(0).toISOString(),
+          pipeline: "holistic",
+          models: { phase1: "unknown", phase2: "unknown" },
+          sectionCount: SECTIONS.length,
+          selectedEvidenceCount: 0,
+          sourceCount: 0,
+          historicalCitations: { status: "unknown", mode: "legacy-unknown" },
+          legacy: { historicalCitations: "legacy-unknown" },
+        });
+        // The full manifest for this version is ~2 MB; the summary is tiny.
+        expect(Buffer.byteLength(res.text)).toBeLessThan(1_000);
+        expect(res.text).not.toContain("facts:module-");
+      });
+
+      it("parses a version's manifest once, however often its summary is read", async () => {
+        for (let i = 0; i < 3; i += 1) {
+          const res = await get("/projects/project/docs/doc/versions/v2/provenance/summary");
+          expect(res.body.data.sectionCount).toBe(SECTIONS.length);
+        }
+        expect(parses.count).toBe(1);
+        expect(heavyReads("provenanceManifest")).toBe(1);
+      });
+
+      it("summarises the legacy manifest for a version that never stored one", async () => {
+        const res = await get(
+          "/projects/project/docs/sibling/versions/sibling-v1/provenance/summary",
+        );
+        expect(res.status).toBe(200);
+        expect(res.body.data).toMatchObject({
+          revisionId: "gendoc:project:sibling:v1",
+          sectionCount: 0,
+          legacy: { historicalCitations: "legacy-unknown" },
+        });
+      });
+
+      it("says a summary it cannot read is unreadable, without echoing it", async () => {
+        await db.generatedDocumentVersion.update({
+          where: { id: "v2" },
+          data: { provenanceManifest: JSON.stringify({ secret: "unexpected-key-value" }) },
+        });
+        const res = await get("/projects/project/docs/doc/versions/v2/provenance/summary");
+        expect(res.status).toBe(500);
+        expect(res.body.error.code).toBe("PROVENANCE_CORRUPT");
+        expect(res.text).not.toContain("unexpected-key-value");
+      });
+
+      it.each([
+        ["a non-member", "/projects/project/docs/doc/versions/v3/provenance/summary", "outsider"],
+        [
+          "another project's version",
+          "/projects/project/docs/doc/versions/alien-v1/provenance/summary",
+          undefined,
+        ],
+        [
+          "a sibling document's version",
+          "/projects/project/docs/doc/versions/sibling-v1/provenance/summary",
+          undefined,
+        ],
+      ])("the provenance summary 404s for %s", async (_, path, user) => {
+        const res = await get(path, user);
+        expect(res.status).toBe(404);
+        expect(res.text).not.toContain("gendoc:");
+      });
+
+      it("404s the provenance summary once the document is deleted", async () => {
+        await db.generatedDocument.update({
+          where: { id: "doc" },
+          data: { deletedAt: new Date() },
+        });
+        const res = await get("/projects/project/docs/doc/versions/v3/provenance/summary");
+        expect(res.status).toBe(404);
+      });
+
+      it("the detail's legacy-index path reads each manifest once, not on every request", async () => {
+        // No publication outbox and no synthetic index document: the detail
+        // must consult v3's manifest for the legacy-index fallback, and v1's
+        // for its null revision id.
+        for (let i = 0; i < 3; i += 1) {
+          const res = await get("/projects/project/docs/doc");
+          expect(res.status).toBe(200);
+          expect(res.body.data.versions.map((v: { revisionId: string }) => v.revisionId)).toEqual([
+            "gendoc:project:doc:v3",
+            "gendoc:project:doc:v2",
+            "gendoc:project:doc:v1",
+          ]);
+        }
+        expect(heavyReads("provenanceManifest")).toBe(2);
+        expect(parses.count).toBe(2);
+      });
+
+      it("the list's legacy-index check does not load every document's manifest", async () => {
+        for (let i = 0; i < 3; i += 1) {
+          const res = await get("/projects/project/docs");
+          expect(res.status).toBe(200);
+          expect(res.body.data).toHaveLength(2);
+        }
+        // doc's latest version (v3) is read once; sibling-v1 stores none.
+        expect(parses.count).toBe(1);
+      });
+
+      /** A healthy index row under the pre-revision (legacy) shared id. */
+      async function legacyIndexRow() {
+        await db.$executeRaw`INSERT INTO documents (id, projectId, indexState, status, chunkCount) VALUES (${generatedDocSyntheticDocumentId("doc")}, 'project', 'indexed', 'ready', 9)`;
+      }
+
+      it("uses the legacy index only for a version whose manifest says legacy", async () => {
+        await legacyIndexRow();
+        const detail = await get("/projects/project/docs/doc");
+        expect(detail.body.data.indexing).toMatchObject({ state: "indexed", chunkCount: 9 });
+        const list = await get("/projects/project/docs");
+        const doc = list.body.data.find((d: { id: string }) => d.id === "doc");
+        expect(doc.indexing).toMatchObject({ state: "indexed", chunkCount: 9 });
+      });
+
+      it("never treats an unreadable manifest as evidence of a legacy publication", async () => {
+        await legacyIndexRow();
+        await db.generatedDocumentVersion.update({
+          where: { id: "v3" },
+          data: { provenanceManifest: JSON.stringify({ secret: "unexpected-key-value" }) },
+        });
+        const detail = await get("/projects/project/docs/doc");
+        expect(detail.status).toBe(200);
+        expect(detail.body.data.indexing).toMatchObject({ state: "pending", chunkCount: 0 });
+        const list = await get("/projects/project/docs");
+        const doc = list.body.data.find((d: { id: string }) => d.id === "doc");
+        expect(doc.indexing).toMatchObject({ state: "pending", chunkCount: 0 });
+      });
+
+      it("does not read the manifest at all once a publication outbox exists", async () => {
+        await legacyIndexRow();
+        const outboxId = generatedDocOutboxId({
+          projectId: "project",
+          generatedDocumentId: "doc",
+          version: 3,
+          revisionId: "gendoc:project:doc:v3",
+        });
+        await db.$executeRaw`INSERT INTO tasks (id, projectId, type, status, updatedAt) VALUES (${outboxId}, 'project', 'generated-doc-publication', 'running', CURRENT_TIMESTAMP)`;
+        const detail = await get("/projects/project/docs/doc");
+        expect(detail.body.data.indexing).toMatchObject({ state: "pending", status: "processing" });
+        // Only v1's manifest (for its null revision id); never v3's.
+        expect(parses.count).toBe(1);
+      });
+
+      it("parses stored changed symbols once per version while paging", async () => {
+        const pages = [];
+        for (const offset of [0, 500, 1_000, 39_990]) {
+          const res = await get(
+            `/projects/project/docs/doc/versions/v2/changed-symbols?offset=${offset}&limit=500`,
+          );
+          expect(res.status).toBe(200);
+          expect(res.body.data.total).toBe(SYMBOLS.length);
+          pages.push(...res.body.data.items);
+        }
+        expect(pages).toEqual([...SYMBOLS.slice(0, 1_500), ...SYMBOLS.slice(39_990)]);
+        expect(heavyReads("changedSymbols")).toBe(1);
+      });
+
+      it("the real app serves Brotli to a client that accepts it", async () => {
+        const app = createApp({ disableRateLimit: true });
+        const res = await request(app)
+          .get("/api/projects/project/docs/doc")
+          .set("Authorization", authorization())
+          .set("Accept-Encoding", "br, gzip");
+        expect(res.status).toBe(200);
+        expect(res.headers["content-encoding"]).toBe("br");
+        expect(res.body.data.content).toBe(CONTENT);
+      });
     });
   },
 );

@@ -28,7 +28,7 @@ import mermaid from "mermaid";
 import { DiagramViewer } from "./diagram-viewer";
 import {
   splitMarkdownSections,
-  rehypeSectionSlugs,
+  remarkSectionSlugs,
   type MarkdownSection,
 } from "@/lib/markdown-sections";
 
@@ -340,8 +340,12 @@ const MemoizedSection = memo(function Section({
 }: SectionProps) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex, [rehypeSectionSlugs, { occurrences: slugOccurrences }]]}
+      remarkPlugins={[
+        remarkGfm,
+        remarkMath,
+        [remarkSectionSlugs, { occurrences: slugOccurrences }],
+      ]}
+      rehypePlugins={[rehypeKatex]}
       components={{
         code: ({ node: _nc, className, children, ...props }) => {
           if (!className) {

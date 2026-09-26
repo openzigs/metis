@@ -201,4 +201,92 @@ describe("MarkdownPreviewer — progressive rendering (#190)", () => {
     rerender(<MarkdownPreviewer content={doc.replace("Preamble.", "Revised preamble.")} />);
     expect(rendered(container)).toHaveLength(INITIAL_RENDERED_SECTIONS);
   });
+
+  describe("headings with inline markup or entities (#196)", () => {
+    const tricky = [
+      "# Doc",
+      "## _Emphasis_ heading",
+      "Body.",
+      "## Fish &amp; Chips",
+      "Body.",
+      "## Caf&eacute; menu",
+      "Body.",
+      "### __Strong__ and *em* and ~~gone~~",
+      "Body.",
+      "## Price &#36;5 &copy;",
+      "Body.",
+      "## Escaped \\_underscore\\_",
+      "Body.",
+      "## [Linked](https://example.com) _Emphasis_ heading",
+      "Body.",
+      "## _Emphasis_ heading",
+      "Body.",
+    ].join("\n");
+    const EXPECTED = [
+      "doc",
+      "emphasis-heading",
+      "fish--chips",
+      "café-menu",
+      "strong-and-em-and-gone",
+      "price-5-",
+      "escaped-_underscore_",
+      "linked-emphasis-heading",
+      "emphasis-heading-1",
+    ];
+
+    function renderAll(container: HTMLElement) {
+      const observer = ControlledObserver.instances.find((o) =>
+        o.options?.rootMargin?.startsWith("1500px"),
+      )!;
+      act(() => {
+        observer.callback(
+          [...pending(container)].map(
+            (target) => ({ target, isIntersecting: true }) as unknown as IntersectionObserverEntry,
+          ),
+          observer as unknown as IntersectionObserver,
+        );
+      });
+    }
+
+    it("every TOC link names the id the rendered heading carries", () => {
+      const { container } = render(<MarkdownPreviewer content={tricky} />);
+      const hrefs = [...container.querySelectorAll('[data-testid="markdown-toc"] a')].map((a) =>
+        a.getAttribute("href")!.slice(1),
+      );
+      expect(hrefs).toEqual(EXPECTED);
+      renderAll(container);
+      expect(pending(container)).toHaveLength(0);
+      const headingIds = [
+        ...container.querySelectorAll('[data-testid="markdown-content"] :is(h1,h2,h3)'),
+      ].map((h) => h.id);
+      expect(headingIds).toEqual(EXPECTED);
+    });
+
+    it("shows the heading's text, not its markup, in the TOC and the pending heading", () => {
+      const { container } = render(<MarkdownPreviewer content={tricky} />);
+      const labels = [...container.querySelectorAll('[data-testid="markdown-toc"] a')].map(
+        (a) => a.textContent,
+      );
+      expect(labels).toContain("Emphasis heading");
+      expect(labels).toContain("Fish & Chips");
+      expect(labels).toContain("Café menu");
+      const pendingHeading = container.querySelector(
+        "[data-section-pending] h2, [data-section-pending] h3",
+      );
+      expect(pendingHeading?.textContent).not.toMatch(/[_*]|&[a-z]+;/);
+    });
+
+    it.each(EXPECTED.slice(1))(
+      "a deep link to #%s renders and scrolls to that heading",
+      async (id) => {
+        window.location.hash = `#${encodeURIComponent(id)}`;
+        const { container } = render(<MarkdownPreviewer content={tricky} />);
+        await act(async () => {});
+        const target = container.querySelector(`[id="${id}"]`)!;
+        expect(target).not.toBeNull();
+        expect(target.closest("[data-section-rendered]")).not.toBeNull();
+        expect(scrollIntoView.mock.contexts).toContain(target);
+      },
+    );
+  });
 });
