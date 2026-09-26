@@ -1,7 +1,7 @@
 # METIS Helm chart
 
 > Production Helm chart for [METIS](https://github.com/openzigs/metis) on
-> Kubernetes — server, ui, embeddings, and (toggle) copilot, with PVCs,
+> Kubernetes — server, ui, embeddings and sql-lineage, with PVCs,
 > Secrets, Ingress, RBAC/IRSA, HPA, PDB, and NetworkPolicy.
 
 **Chart version**: 0.1.0 · **App version**: 0.1.0 · **Kubernetes**: ≥1.27
@@ -134,7 +134,7 @@ The chart references the named Secret but renders nothing.
 
 ### Required keys
 
-`JWT_SECRET`, `VAULT_MASTER_KEY`, `EMBEDDINGS_TOKEN`, `COPILOT_NATIVE_TOKEN`,
+`JWT_SECRET`, `VAULT_MASTER_KEY`, `EMBEDDINGS_TOKEN`, `SQL_LINEAGE_TOKEN`,
 `DATABASE_URL`, `OPENAI_API_KEY` (or equivalent AI provider), `GITHUB_TOKEN`,
 `METRICS_TOKEN`. Override the env-var → secret-key mapping under
 `secrets.keyMap` if your AWS Secrets Manager naming is different.
@@ -303,12 +303,11 @@ e.g.:
 ghcr.io/openzigs/metis-server:0.1.0
 ghcr.io/openzigs/metis-ui:0.1.0
 ghcr.io/openzigs/metis-embeddings-svc:0.1.0
-ghcr.io/openzigs/metis-copilot-svc:0.1.0
 ```
 
-The METIS server image is Alpine/musl; the copilot sidecar is Debian
-(DataDog APM compatibility). The chart treats both equivalently — no special
-tolerations or affinity needed.
+The images are glibc (Debian) based; the chart needs no special tolerations
+or affinity for them. (The GitHub Copilot sidecar image, `metis-copilot-svc`,
+was removed with Copilot support in #150.)
 
 The four core images publish multi-arch (`linux/amd64,linux/arm64`)
 manifests on tag — see `.github/workflows/build-images.yml` (sub-issue

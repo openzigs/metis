@@ -48,7 +48,7 @@ What this does (from `scripts/bootstrap.sh` — Issue [#362](https://github.com/
 
 - Verifies `docker`, `openssl`, `pnpm` are present and the Docker daemon is reachable.
 - Copies `.env.example` → `.env` (only if `.env` does not already exist).
-- Generates the four required secrets (`JWT_SECRET`, `VAULT_MASTER_KEY`, `EMBEDDINGS_TOKEN`, `COPILOT_NATIVE_TOKEN`) via `openssl rand -hex 32`.
+- Generates the three required secrets (`JWT_SECRET`, `VAULT_MASTER_KEY`, `EMBEDDINGS_TOKEN`) via `openssl rand -hex 32`.
 - Creates the `metis-mcp` Docker bridge network if absent.
 - Pulls the 9 wrapper images from `ghcr.io/metis-mcps/*` (or, on pull failure, falls back to a local `images/mcp-wrappers/build.sh`).
 
@@ -56,7 +56,7 @@ You should see:
 
 ```
 [bootstrap] preflight OK (docker, openssl, pnpm present; daemon reachable)
-[bootstrap] wrote .env with freshly generated JWT_SECRET, VAULT_MASTER_KEY, EMBEDDINGS_TOKEN, COPILOT_NATIVE_TOKEN
+[bootstrap] wrote .env with freshly generated JWT_SECRET, VAULT_MASTER_KEY, EMBEDDINGS_TOKEN
 [bootstrap] creating docker network metis-mcp
 [bootstrap] pulling ghcr.io/metis-mcps/uvx-runner:1.0.0
 …

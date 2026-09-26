@@ -342,7 +342,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
 
 The `-d` flag runs containers in the background (detached mode). The `--build` flag rebuilds the images if the code has changed.
 
-This starts **five containers** (refreshed for v1.3 — Issue [#364](https://github.com/openzigs/metis-private/issues/364)):
+This starts the core containers (refreshed for v1.3 — Issue [#364](https://github.com/openzigs/metis-private/issues/364)):
 
 | Container          | Port  | Purpose                                                         |
 | ------------------ | ----- | --------------------------------------------------------------- |
@@ -350,7 +350,6 @@ This starts **five containers** (refreshed for v1.3 — Issue [#364](https://git
 | `metis-server`     | 4000  | Express + Socket.IO API server                                  |
 | `metis-postgres`   | 5432  | PostgreSQL 16 database (data persisted in `postgres_data` volume) |
 | `metis-embeddings` | 5050* | RAG embeddings + cross-encoder reranker (Xenova/bge-small)      |
-| `metis-copilot`    | 5060* | Optional GitHub Copilot SDK sidecar — only when the `copilot-native` profile is active |
 
 \* internal-only; reachable from `metis-server` on the `metis` bridge network, not exposed to the host by default.
 
@@ -586,11 +585,18 @@ AI_TOKEN_BUDGET=100000
 
 This controls the maximum number of AI tokens per session. The default (100,000) is enough for several hours of complex analysis. One token ≈ 4 characters of text.
 
-For production with the Copilot SDK:
+Pick the AI provider with `AI_PROVIDER` and give it its keys, for example:
 ```dotenv
-COPILOT_API_KEY=your-copilot-api-key
-COPILOT_MODEL=gpt-4o
+AI_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+# optional default model for new sessions
+AI_MODEL=claude-sonnet-4-6
 ```
+
+Every provider and the variables it needs are listed in
+[ARCHITECTURE.md → AI provider matrix](ARCHITECTURE.md#ai-provider-matrix).
+GitHub Copilot (`copilot-native`) is no longer supported — if you used it, see
+[MIGRATING_FROM_COPILOT.md](MIGRATING_FROM_COPILOT.md).
 
 #### Choosing an Embedding Backend
 
@@ -692,7 +698,7 @@ another box, use that box's **private LAN IP** or an **SSH tunnel to loopback**.
 #### Run Gemma locally on a Windows GPU box
 
 You can run a local Gemma model (chat/stream) on a Windows machine with an
-NVIDIA GPU instead of using Copilot or AWS Bedrock — keeping prompt and document
+NVIDIA GPU instead of a cloud provider — keeping prompt and document
 content on-box. This uses the **existing** `local-gemma` provider (Epic #183,
 Initiative B): no new provider code, just Ollama + per-machine env overrides.
 
@@ -745,8 +751,8 @@ LOCAL_GEMMA_MODEL=gemma4:12b                      # choose per your GPU (see bel
 LOCAL_GEMMA_API_KEY=ollama                        # dummy bearer; header required, value ignored
 ```
 
-Switching back is a one-line `AI_PROVIDER=bedrock-gateway` (or `copilot-native`)
-change.
+Switching back is a one-line `AI_PROVIDER=bedrock-gateway` (or any other
+provider) change.
 
 **GPU-aware variant selection (B2).** METIS ships a helper
 (`server/src/lib/ai/gemma-variant.ts`) that maps detected VRAM to a recommended
@@ -2278,12 +2284,8 @@ arguments before approving; if they contain invisible characters the chat warns
 you. A request nobody answers is denied after two minutes (administrators can
 change this with `AI_TOOL_APPROVAL_TIMEOUT_MS`). Nothing the AI writes, and
 nothing a tool returns, can approve a call — only your click can, and only in
-your own chat. On the GitHub Copilot provider, the Copilot SDK's own built-in
-tools (shell commands, file writes and the like) are switched off in every
-chat, so the only tools a chat can run are the ones above, through this
-approval step. That provider cannot offer tools to the model natively, so a
-Copilot chat is offered only the code-search tools (when
-`CHAT_CODE_SEARCH_TOOLS` is on), described to the model in its prompt.
+your own chat. No provider brings tools of its own: the only tools a chat can
+run are the ones above, through this approval step.
 
 If the chat uses an agent, the agent's tool list also applies: a tool the agent
 does not list is refused, even when the policy would allow it. An MCP server
@@ -2298,7 +2300,7 @@ custom agents (Settings → Custom agents) now carry the same things: a persona,
 the skills they use, the tools they may call, a preferred model, how much they
 ask for approval, and a version that goes up on every change. Existing agents
 of both kinds keep everything they had. An agent's preferred model is always used
-on a local model, Copilot and Azure (whose model names are yours to choose); on
+on a local model and on Azure (whose model names are yours to choose); on
 Anthropic, OpenAI and the Bedrock gateway it is used when the model list knows it
 for that provider (an operator can add one with `AI_MODEL_CATALOG_OVERRIDES`).
 When a preferred model cannot be used, the chat's model runs instead and you are
@@ -2312,7 +2314,7 @@ activity — and it applies for that reply. A skill your project has switched of
 (in its skills allow-list or its disabled skills) is not listed and cannot be
 opened. Administrators can go back to pasting every
 skill in full with `CHAT_PROGRESSIVE_SKILLS=false`; models that cannot use
-tools (including the GitHub Copilot provider) always get the full text.
+tools always get the full text.
 
 **Importing skills from other tools.** METIS reads the open Agent Skills
 `SKILL.md` format, including `license`, `compatibility`, `metadata` and
@@ -2379,10 +2381,10 @@ You can check your token usage for a session via the session's usage endpoint. I
 
 ### 14.5 Per-project AI provider and model overrides
 
-By default, every AI session inherits the global provider and model from the server's environment (`AI_PROVIDER`, `AI_MODEL` / `BEDROCK_MODEL` / `COPILOT_MODEL`). Two project-scoped overrides let you steer individual projects to a different backend or model without touching env or restarting the server. Open a project (`/projects/[id]`) and look at the **Settings** card:
+By default, every AI session inherits the global provider and model from the server's environment (`AI_PROVIDER`, `AI_MODEL` / `BEDROCK_MODEL` / `LOCAL_GEMMA_MODEL` / `ANTHROPIC_MODEL`). Two project-scoped overrides let you steer individual projects to a different backend or model without touching env or restarting the server. Open a project (`/projects/[id]`) and look at the **Settings** card:
 
-- **AI provider** — pick `bedrock-gateway`, `local-gemma`, `copilot-native`, `openai`, `azure`, `anthropic`, or `offline-stub`. Choose **Global default** to clear the override.
-- **AI model** — free-form text. Paste any provider-specific model id, e.g. `us.anthropic.claude-sonnet-4-6` for Bedrock, `gemma4:12b` for local Gemma, `gpt-5` for OpenAI, or `claude-sonnet-4-6` for Copilot. Leave blank to use the global default.
+- **AI provider** — pick `bedrock-gateway`, `local-gemma`, `openai`, `azure`, `anthropic`, or `offline-stub`. Choose **Global default** to clear the override. A project still set to the removed `copilot-native` shows it as "no longer supported", and new chats in it are refused until you pick another provider or the global default.
+- **AI model** — free-form text. Paste any provider-specific model id, e.g. `us.anthropic.claude-sonnet-4-6` for Bedrock, `gemma4:12b` for local Gemma, `gpt-5` for OpenAI, or `claude-sonnet-4-6` for Anthropic. Leave blank to use the global default.
 
 Both fields persist on the `Project` row and are read at session-create time. The per-session `model` field on `POST /api/ai/sessions` (e.g. when an agent definition pins its own model) still wins over the project override; the project override only fires when the request body omits `model`. Bedrock model ids are not validated against an allow-list — METIS only enforces ≤ 200 characters and trims whitespace — so any model id your gateway accepts will work. Sessions started before you change a project's overrides keep the provider/model they were created with; new sessions pick up the new values immediately.
 
@@ -2390,7 +2392,7 @@ Both fields persist on the `Project` row and are read at session-create time. Th
 
 > **Docker / Kubernetes:** the validator accepts only `localhost` and IP literals, so internal DNS **service names** such as `http://ollama:11434/v1` are intentionally rejected (this keeps the SSRF surface tight). In containers, point `LOCAL_GEMMA_BASE_URL` at a loopback or IP address instead — e.g. host networking with `127.0.0.1`, or the Ollama container/pod IP like `http://10.0.0.12:11434/v1`.
 
-> **OpenAI and Azure OpenAI** talk to the API directly (no Copilot SDK, #134). OpenAI: `AI_PROVIDER=openai`, `OPENAI_BASE_URL=https://api.openai.com/v1`, `OPENAI_API_KEY`. Azure: `AI_PROVIDER=azure`, `AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com`, `AZURE_OPENAI_API_KEY`, optional `AZURE_OPENAI_DEPLOYMENT` (defaults to the model id) and `AZURE_OPENAI_API_VERSION` (default `2024-10-21`). The older `COPILOT_PROVIDER_BASE_URL` / `COPILOT_PROVIDER_API_KEY` still work as fallbacks.
+> **OpenAI and Azure OpenAI** talk to the API directly (#134). Only the `OPENAI_*` / `AZURE_OPENAI_*` names are read — the old `COPILOT_PROVIDER_*` fallback was removed (#149), and a set, un-renamed one is refused at startup with the rename it needs. OpenAI: `AI_PROVIDER=openai`, `OPENAI_BASE_URL=https://api.openai.com/v1`, `OPENAI_API_KEY`. Azure: `AI_PROVIDER=azure`, `AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com`, `AZURE_OPENAI_API_KEY`, optional `AZURE_OPENAI_DEPLOYMENT` (defaults to the model id) and `AZURE_OPENAI_API_VERSION` (default `2024-10-21`).
 
 > **Which models can I pick?** Every model picker (project **Model Preferences** and the custom-agent wizard) lists the server's model catalog (`GET /api/ai/models`): name, context window, price per million tokens and capabilities (tools, JSON schema, JSON object, vision, thinking). For a local runtime the catalog asks the runtime which models it serves and their context length. Correct anything it cannot know with `AI_MODEL_CATALOG_OVERRIDES`, a JSON object keyed `"<provider>:<model>"`, e.g. `{"local-gemma:laguna-s-2.1":{"contextWindow":262144,"capabilities":{"jsonSchema":false}}}`. A model marked `"tools": false` is never sent tools.
 
@@ -3215,7 +3217,7 @@ For the complete API reference with all 56 endpoints, see [ARCHITECTURE.md](ARCH
 ### General
 
 **Q: Is METIS free?**  
-A: METIS ???. Not known yet. However, if you use production AI services (like GitHub Copilot), those may have their own costs.
+A: METIS ???. Not known yet. However, the AI provider you connect (Anthropic, OpenAI, Azure, Bedrock, …) bills its own usage; a local model does not.
 
 **Q: Can I use METIS offline?**  
 A: In development mode with mock providers, yes — everything runs locally without internet access. In production mode, you need internet access for AI services, GitHub publishing, web research, and LDAP authentication.
@@ -3268,7 +3270,7 @@ When the **Closed Loop** is enabled, METIS treats your GitHub pull requests as t
 
 1. On a project, set `autoReviewPrs = true` (Project Settings → Closed Loop).
 2. Configure the GitHub webhook on your repository to `POST` `pull_request` events to `https://<your-metis-host>/api/webhooks/github/pr`. Use a secret matching `GITHUB_WEBHOOK_SECRET`.
-3. (Optional) Set `SANDBOX_MODE=sidecar`, run the `copilot-svc` sidecar with `E2B_API_KEY`, and the agent will re-run AC-mapped tests inside an E2B Firecracker microVM before approving.
+3. (Sandbox test re-runs through the `copilot-svc` sidecar were removed with that sidecar in #150; they were never wired into the reviewer.)
 
 ### What you'll see
 

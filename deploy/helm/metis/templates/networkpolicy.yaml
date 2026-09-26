@@ -24,7 +24,7 @@ spec:
         - namespaceSelector:
             matchLabels:
               {{- toYaml .Values.networkPolicy.ingressNamespaceSelector | nindent 14 }}
-    # Allow intra-namespace traffic (server↔embeddings↔copilot↔ui).
+    # Allow intra-namespace traffic (server↔embeddings↔sql-lineage↔ui).
     - from:
         - podSelector:
             matchLabels:

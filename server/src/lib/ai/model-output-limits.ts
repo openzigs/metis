@@ -102,7 +102,7 @@ export const MODEL_MAX_OUTPUT_TOKENS: ReadonlyMap<string, ModelOutputLimit> = ne
     "claude-haiku-4-5",
     { maxOutputTokens: 64000, source: "Anthropic Models API max_tokens (64K)" },
   ],
-  // ── OpenAI (Copilot-native default, see ai/config.ts) ────────────────────
+  // ── OpenAI (the openai/azure default, see ai/config.ts) ────────────────────
   [
     "gpt-4.1",
     {

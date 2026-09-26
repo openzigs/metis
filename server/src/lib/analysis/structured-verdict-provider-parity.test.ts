@@ -1,14 +1,15 @@
 /**
  * #1114 acceptance criterion: "Works identically on `anthropic` and `copilot`
- * adapters — asserted by test, not assumed."
+ * adapters — asserted by test, not assumed." #149 removed the Copilot adapter;
+ * the parity is now pinned between the two Anthropic-client configurations —
+ * the native endpoint (which honours `responseFormat`, #133) and DeepSeek's
+ * Anthropic-compatible endpoint (which does not, so it takes the portable
+ * parse-and-retry path).
  *
  * The point of this file is that the parity claim is made against the REAL
- * adapter classes, not a hand-rolled double. Each adapter is constructed with
- * its SDK seam stubbed (the Anthropic SDK is `vi.mock`ed; the Copilot provider
- * takes an injected `CopilotClientLike`), scripted with the same malformed /
- * valid bodies, and driven through the same table of cases. Neither declares
- * `responseFormat` support (#1115), so both must take the portable
- * parse-and-retry path and reach the same outcome.
+ * adapter class, not a hand-rolled double: the Anthropic SDK is `vi.mock`ed,
+ * scripted with the same malformed / valid bodies, and driven through the same
+ * table of cases.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -28,8 +29,6 @@ vi.mock("@anthropic-ai/sdk", () => {
 });
 
 import { AnthropicProvider } from "../ai/providers/anthropic-provider.js";
-import { CopilotProvider } from "../ai/providers/copilot-provider.js";
-import { CopilotWrapper, type CopilotSessionLike } from "../ai/copilot-wrapper.js";
 import { supportsResponseFormat } from "../ai/capabilities.js";
 import type { AIProvider, JsonSchemaResponseFormat } from "../ai/types.js";
 import {
@@ -62,59 +61,6 @@ const makeRequest = (
   messages: [{ role: "user", content: "Is this finding reachable?" }],
   ...over,
 });
-
-// ── Copilot SDK seam ───────────────────────────────────────────────────────
-
-/** A Copilot session that replays one scripted body per `send()`. */
-class StubCopilotSession implements CopilotSessionLike {
-  readonly sessionId: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private readonly handlers = new Map<string, Set<(event: any) => void>>();
-  constructor(
-    sessionId: string,
-    private readonly script: string[],
-  ) {
-    this.sessionId = sessionId;
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  on(event: string, handler: (event: any) => void): () => void {
-    let set = this.handlers.get(event);
-    if (!set) {
-      set = new Set();
-      this.handlers.set(event, set);
-    }
-    set.add(handler);
-    return () => set!.delete(handler);
-  }
-
-  private emit(event: string, payload: unknown): void {
-    for (const handler of this.handlers.get(event) ?? []) handler(payload);
-  }
-
-  async send(_input: { prompt: string }): Promise<unknown> {
-    const text = this.script.shift() ?? "";
-    this.emit("assistant.message_delta", { data: { deltaContent: text } });
-    this.emit("usage", { promptTokens: 10, completionTokens: 4, totalTokens: 14 });
-    this.emit("session.idle", {});
-    return undefined;
-  }
-
-  async getMessages(): Promise<unknown[]> {
-    return [];
-  }
-}
-
-const makeCopilot = (script: string[]): AIProvider =>
-  new CopilotProvider({
-    wrapper: new CopilotWrapper({
-      client: {
-        createSession: async (cfg: { sessionId: string }) =>
-          new StubCopilotSession(cfg.sessionId, script),
-      } as never,
-    }),
-    key: "copilot-native",
-  });
 
 // ── Anthropic SDK seam ─────────────────────────────────────────────────────
 
@@ -152,7 +98,6 @@ const makeAnthropicPortable = (script: string[]): AIProvider => {
 
 const ADAPTERS: Array<{ name: string; build: (script: string[]) => AIProvider }> = [
   { name: "anthropic (DeepSeek endpoint)", build: makeAnthropicPortable },
-  { name: "copilot", build: makeCopilot },
 ];
 
 beforeEach(() => {
@@ -308,26 +253,29 @@ describe("cross-adapter equivalence", () => {
     { name: "bad shape twice", script: [BAD_SHAPE, BAD_SHAPE], status: "no-signal", attempts: 2 },
   ];
 
-  it.each(CASES)("$name yields the same outcome on anthropic and copilot", async (testCase) => {
-    const anthropic = await requestStructuredVerdict(
-      makeAnthropic([...testCase.script]),
-      makeRequest({ metrics: new StructuredVerdictMetrics() }),
-    );
-    const copilot = await requestStructuredVerdict(
-      makeCopilot([...testCase.script]),
-      makeRequest({ metrics: new StructuredVerdictMetrics() }),
-    );
+  it.each(CASES)(
+    "$name yields the same outcome on the native and the DeepSeek endpoint",
+    async (testCase) => {
+      const anthropic = await requestStructuredVerdict(
+        makeAnthropic([...testCase.script]),
+        makeRequest({ metrics: new StructuredVerdictMetrics() }),
+      );
+      const portable = await requestStructuredVerdict(
+        makeAnthropicPortable([...testCase.script]),
+        makeRequest({ metrics: new StructuredVerdictMetrics() }),
+      );
 
-    expect(anthropic.status).toBe(testCase.status);
-    expect(copilot.status).toBe(anthropic.status);
-    expect(anthropic.attempts).toBe(testCase.attempts);
-    expect(copilot.attempts).toBe(anthropic.attempts);
-    expect(copilot.retried).toBe(anthropic.retried);
-    if (isNoSignal(anthropic) && isNoSignal(copilot)) {
-      expect(copilot.reason).toBe(anthropic.reason);
-    }
-    if (hasVerdict(anthropic) && hasVerdict(copilot)) {
-      expect(copilot.verdict).toEqual(anthropic.verdict);
-    }
-  });
+      expect(anthropic.status).toBe(testCase.status);
+      expect(portable.status).toBe(anthropic.status);
+      expect(anthropic.attempts).toBe(testCase.attempts);
+      expect(portable.attempts).toBe(anthropic.attempts);
+      expect(portable.retried).toBe(anthropic.retried);
+      if (isNoSignal(anthropic) && isNoSignal(portable)) {
+        expect(portable.reason).toBe(anthropic.reason);
+      }
+      if (hasVerdict(anthropic) && hasVerdict(portable)) {
+        expect(portable.verdict).toEqual(anthropic.verdict);
+      }
+    },
+  );
 });

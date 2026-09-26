@@ -17,8 +17,8 @@
  * Because verification quality must not be a function of which provider is
  * configured. #1115 pinned the truth: only `OpenAICompatibleProvider` /
  * `BedrockDirectProvider` forward `response_format`; the `anthropic` adapter
- * (the currently configured one), the Copilot SDK — in NEITHER 0.2.2 nor 1.0.8
- * — and the offline/replay stubs all drop it. So `responseFormat` is used here
+ * on DeepSeek's Anthropic-compatible endpoint and the offline/replay stubs
+ * drop it (the Copilot SDK, removed in #149, did too). So `responseFormat` is used here
  * strictly as an OPTIMISATION, probed through {@link supportsResponseFormat},
  * and the portable path is parse-and-retry.
  *

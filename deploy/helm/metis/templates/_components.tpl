@@ -1,8 +1,8 @@
 {{/*
 Reusable component-deployment template. Pass dict:
   root      = $        (top-level scope)
-  component = .Values.<server|ui|embeddings|copilot>
-  name      = "server" | "ui" | "embeddings" | "copilot"
+  component = .Values.<server|ui|embeddings|sqlLineage>
+  name      = "server" | "ui" | "embeddings" | "sql-lineage"
 */}}
 {{- define "metis.componentDeployment" -}}
 {{- $root := .root -}}

@@ -5,8 +5,8 @@ end-to-end in CI **without live LLM credentials**, while a maintainer can refres
 the fixtures against a real model on demand.
 
 It sits on the existing `AIProvider.chat()` seam — there is **no new AI
-dependency** and no Vercel AI SDK. All calls still flow through the
-`@github/copilot-sdk`-backed provider abstraction.
+dependency** and no Vercel AI SDK. All calls still flow through METIS's own
+provider abstraction (`server/src/lib/ai/providers/`).
 
 ## How it works
 

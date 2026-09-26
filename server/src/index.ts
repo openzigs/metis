@@ -21,9 +21,8 @@ import { assertJwtSecretConfigured } from "./lib/auth/jwt.js";
 import { assertFinalAnswerMaxOutputTokensValid } from "./lib/analysis/agent-runner.js";
 import { assertSynthesisMaxOutputTokensValid } from "./lib/analysis/synthesis.js";
 import { getEmbedder } from "./lib/rag/embedder.js";
-import os from "node:os";
-import path from "node:path";
-import fs from "node:fs/promises";
+import { assertNoRetiredProviderConfig } from "./lib/ai/config.js";
+import { isRetiredProviderKey, retiredProviderMessage } from "./lib/ai/retired-providers.js";
 
 export const SERVER_NAME = "metis-server";
 export function getServerBanner(): string {
@@ -66,6 +65,35 @@ export function assertStartupSecretsConfig(): void {
   assertJwtSecretConfigured();
 }
 
+/**
+ * #149 — refuse to start on a removed AI provider (`AI_PROVIDER=copilot-native`)
+ * or on a Copilot-era env name the chosen provider used to fall back to
+ * (`COPILOT_PROVIDER_*`, `COPILOT_MODEL`). A pure env check. Without it the
+ * failure would surface per request, and the analysis bootstrap swallows a
+ * config error at boot — so the process would come up "healthy".
+ */
+export function assertStartupAIProviderConfig(env: NodeJS.ProcessEnv = process.env): void {
+  assertNoRetiredProviderConfig(env);
+}
+
+/**
+ * #149 — the same check for an `AI_PROVIDER` chosen in the runtime
+ * configuration (Admin → Settings, the `runtime_config` table), which wins
+ * over env. Needs the database, so it runs after the migration guard. A row
+ * naming a removed provider must never be quietly skipped: the env provider
+ * it would fall back to may be a different, paid backend. The boot block logs
+ * it (it cannot exit — the fix is made in the running app's settings page).
+ */
+export async function assertStartupRuntimeAIProvider(
+  readRuntimeProvider: () => Promise<string | null | undefined> = async () =>
+    (await prisma.runtimeConfig.findUnique({ where: { key: "AI_PROVIDER" } }))?.value,
+): Promise<void> {
+  const value = await readRuntimeProvider();
+  if (isRetiredProviderKey(value)) {
+    throw new Error(retiredProviderMessage(value, "runtime-config"));
+  }
+}
+
 function isMainModule(): boolean {
   // Detect direct execution (`node dist/index.js`) vs test/library import.
   try {
@@ -97,6 +125,19 @@ if (isMainModule() && process.env.METIS_NO_LISTEN !== "1") {
     log.error("JWT signing secret invalid — refusing to start", {
       error: (err as Error).message,
     });
+    process.exit(1);
+  }
+  // #149 — a removed AI provider (or an un-renamed Copilot-era variable) is a
+  // pure env check: refuse before any startup I/O.
+  try {
+    assertStartupAIProviderConfig();
+  } catch (err) {
+    log.error(
+      "AI provider configuration refers to removed GitHub Copilot support — refusing to start",
+      {
+        error: (err as Error).message,
+      },
+    );
     process.exit(1);
   }
   // Issue #1221 — reject a non-positive / non-numeric
@@ -144,6 +185,20 @@ if (isMainModule() && process.env.METIS_NO_LISTEN !== "1") {
       error: (err as Error).message,
     });
     process.exit(1);
+  }
+  // #149 — the runtime-configuration half of the provider check above.
+  // Deliberately NOT `process.exit(1)`: the fix for a runtime-config value is
+  // made in Admin → Settings, which needs a running server. Every AI call
+  // refuses with the same message until it is changed (`loadAIConfig`), so
+  // nothing falls back to another provider in the meantime.
+  try {
+    await assertStartupRuntimeAIProvider();
+  } catch (err) {
+    log.error(
+      "Runtime AI provider refers to removed GitHub Copilot support — every AI call will be " +
+        "refused until AI_PROVIDER is changed in Admin → Settings",
+      { error: (err as Error).message },
+    );
   }
   // Issue #783 — WARM THE EMBEDDER AT BOOT, and let it fail here.
   //
@@ -212,25 +267,6 @@ if (isMainModule() && process.env.METIS_NO_LISTEN !== "1") {
         await io.close();
       } catch (e) {
         log.error("Socket.IO close error", { error: (e as Error).message });
-      }
-      // M3 — sweep per-session COPILOT_HOME dirs for any session still
-      // marked active. Best-effort: a failed cleanup must not block exit.
-      try {
-        const active = await prisma.aISession.findMany({
-          where: { status: "active", deletedAt: null },
-          select: { id: true },
-        });
-        const root = process.env.METIS_SESSIONS_HOME ?? path.join(os.homedir(), ".metis-sessions");
-        await Promise.all(
-          active.map((s) =>
-            fs.rm(path.join(root, s.id), { recursive: true, force: true }).catch(() => undefined),
-          ),
-        );
-        if (active.length > 0) {
-          log.info("Cleaned per-session AI homes", { count: active.length });
-        }
-      } catch (e) {
-        log.error("AI session cleanup error", { error: (e as Error).message });
       }
       try {
         await prisma.$disconnect();

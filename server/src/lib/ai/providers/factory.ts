@@ -3,59 +3,49 @@
  *
  * #134 — routing: `anthropic` → {@link AnthropicProvider}; `local-gemma`,
  * `bedrock-gateway`, `openai`, `azure` → {@link OpenAICompatibleProvider};
- * `offline-stub` → {@link OfflineStubProvider}; only `copilot-native` builds a
- * {@link CopilotWrapper}-backed {@link CopilotProvider}.
+ * `offline-stub` → {@link OfflineStubProvider}.
+ *
+ * #149 — `copilot-native` was removed. A config that still names it (the
+ * env/runtime-config path is refused earlier, in `loadAIConfig`; a project
+ * override or a stored session can still carry it) is an `AIConfigError`
+ * naming the supported providers — never a fall-through to another provider.
+ * So is any other key this factory does not know.
  *
  * Reads the loaded {@link AIConfig} and returns the right `AIProvider`
- * implementation. Two seams exist for tests:
- *   • `wrapperFactory`  — inject a custom CopilotWrapper (lets us pass a stub
- *                         CopilotClientLike without touching the real SDK).
- *   • `offlineProvider` — inject a custom offline-stub instance.
- *
- * Anything that fails to construct in non-offline mode is surfaced as an
- * `AIProviderError` so the route layer can decide whether to fall back to
- * the offline stub.
+ * implementation. `offlineProvider` is the test seam for the offline stub.
  */
-import { AIProviderError } from "../errors.js";
-import { CopilotWrapper, type CopilotWrapperOptions } from "../copilot-wrapper.js";
+import { AIConfigError, AIProviderError } from "../errors.js";
 import type { AIConfig } from "../config.js";
-import type { AIProvider, ProviderKey } from "../types.js";
-import { CopilotProvider } from "./copilot-provider.js";
+import type { AIProvider } from "../types.js";
 import {
   DEFAULT_AZURE_API_VERSION,
   OpenAICompatibleProvider,
 } from "./openai-compatible-provider.js";
 import { OfflineStubProvider } from "./offline-stub-provider.js";
 import { AnthropicProvider } from "./anthropic-provider.js";
-import { RemoteCopilotClient, resolveCopilotNativeMode } from "../remote-copilot-client.js";
 import { maybeWrapProviderForFixtures } from "../fixtures/install.js";
+import { isRetiredProviderKey, retiredProviderMessage } from "../retired-providers.js";
 
 export interface BuildProviderOptions {
   config: AIConfig;
-  /** Construct the wrapper used by Copilot/BYOK providers (tests inject stubs). */
-  wrapperFactory?: (opts: CopilotWrapperOptions) => CopilotWrapper;
   /** Force the offline-stub even when config wouldn't otherwise enable it. */
   forceOffline?: boolean;
   offlineProvider?: AIProvider;
   /**
    * Per-call BYOK key override — used when the caller has resolved the
    * session's `providerSecretRef` via the vault. When provided, the value
-   * replaces the env-derived `sdkProvider.apiKey` so the SDK talks to the
-   * gateway with the per-session key.
+   * replaces the env-derived `sdkProvider.apiKey` so the provider talks to its
+   * endpoint with the per-session key.
    */
   apiKeyOverride?: string;
 }
 
-const isCopilotKey = (key: ProviderKey): boolean => key !== "offline-stub";
-
 /**
  * Provider keys served by the direct OpenAI-compatible HTTP client (#134).
- * Every key except `copilot-native`, `anthropic` (its own Messages client) and
- * `offline-stub` is here, so NO key but `copilot-native` ever reaches the
- * Copilot SDK wrapper. Before #134 `openai`, `azure` and `bedrock-gateway`
- * fell through to the wrapper as bring-your-own-key sessions.
+ * Every supported key except `anthropic` (its own Messages client) and
+ * `offline-stub` is here.
  */
-const DIRECT_OPENAI_COMPATIBLE_KEYS: ReadonlySet<ProviderKey> = new Set([
+const DIRECT_OPENAI_COMPATIBLE_KEYS: ReadonlySet<string> = new Set([
   "local-gemma",
   "bedrock-gateway",
   "openai",
@@ -72,14 +62,18 @@ function buildBaseProvider(opts: BuildProviderOptions): AIProvider {
   if (opts.forceOffline || cfg.offline || cfg.provider === "offline-stub") {
     return opts.offlineProvider ?? OfflineStubProvider.fromEnv();
   }
-  if (!isCopilotKey(cfg.provider)) {
-    return opts.offlineProvider ?? OfflineStubProvider.fromEnv();
+  // #149 — a retired key (e.g. a project override or stored session still
+  // naming `copilot-native`) is refused by name, never routed elsewhere.
+  if (isRetiredProviderKey(cfg.provider)) {
+    throw new AIConfigError(retiredProviderMessage(cfg.provider, "project"), {
+      retiredProvider: cfg.provider,
+    });
   }
 
   // Native Anthropic provider (#285). Anthropic's Messages API is NOT
   // OpenAI-compatible, so `anthropic` must build the dedicated
   // `AnthropicProvider` (official SDK) here rather than falling through to the
-  // Copilot wrapper / OpenAI-compatible path below. The Bedrock path
+  // OpenAI-compatible path below. The Bedrock path
   // (`us.anthropic.*` model ids via the gateway) is unaffected.
   if (cfg.provider === "anthropic") {
     if (!cfg.sdkProvider) {
@@ -126,44 +120,8 @@ function buildBaseProvider(opts: BuildProviderOptions): AIProvider {
     });
   }
 
-  const factory = opts.wrapperFactory ?? ((wrapperOpts) => new CopilotWrapper(wrapperOpts));
-  const sdkProvider =
-    opts.apiKeyOverride && cfg.sdkProvider
-      ? { ...cfg.sdkProvider, apiKey: opts.apiKeyOverride }
-      : cfg.sdkProvider;
-
-  // When `COPILOT_NATIVE_MODE=sidecar`, replace the in-process SDK with the
-  // remote shim that talks to the optional copilot-svc container (#180).
-  // The remote client is constructed eagerly so config drift (missing
-  // `COPILOT_NATIVE_TOKEN`) fails the provider build instead of the first
-  // user request.
-  let injectedClient: CopilotWrapperOptions["client"] | undefined;
-  if (resolveCopilotNativeMode() === "sidecar") {
-    try {
-      injectedClient = new RemoteCopilotClient();
-    } catch (err) {
-      throw new AIProviderError(
-        `failed to construct copilot sidecar client: ${(err as Error).message}`,
-      );
-    }
-  }
-
-  let wrapper: CopilotWrapper;
-  try {
-    wrapper = factory({
-      ...(cfg.authDir ? { authPath: `${cfg.authDir}/auth.json` } : {}),
-      model: cfg.model,
-      provider: sdkProvider,
-      ...(injectedClient ? { client: injectedClient } : {}),
-    });
-  } catch (err) {
-    throw new AIProviderError(`failed to construct Copilot wrapper: ${(err as Error).message}`);
-  }
-  return new CopilotProvider({
-    wrapper,
-    key: cfg.provider,
-    model: cfg.model,
-    pingTimeoutMs: cfg.pingTimeoutMs,
+  throw new AIConfigError(`Unknown AI provider "${String(cfg.provider)}"`, {
+    provider: cfg.provider,
   });
 }
 

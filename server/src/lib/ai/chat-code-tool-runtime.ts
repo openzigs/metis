@@ -1,9 +1,8 @@
 /**
  * Epic #712 / Issue #713 — chat-facing agentic code-search runtime.
  *
- * The chat/stream routes historically had NO tool-execution loop, and only the
- * Copilot SDK provider honours `disableTools`; the native-Anthropic and
- * bedrock-direct providers have no tool support at all. So registering a tool is
+ * The chat/stream routes historically had NO tool-execution loop, and not every
+ * model is native-tool-capable. So registering a tool is
  * insufficient — this module wires the provider-agnostic textual tool protocol
  * onto the chat surface by REUSING the analysis agent loop
  * ({@link runAgentLoop}) as the single execution mechanism, rather than forking a

@@ -2,16 +2,15 @@
  * Provider configuration loader.
  *
  * Reads env vars, validates them with zod, and returns a fully-typed
- * `AIConfig`. Two top-level providers are supported:
+ * `AIConfig` for one of the supported providers: `anthropic` (incl.
+ * Anthropic-compatible endpoints such as DeepSeek), `openai`, `azure`,
+ * `bedrock-gateway`, `local-gemma` (Ollama / vLLM / LM Studio) and
+ * `offline-stub`.
  *
- *   - `copilot-native`  — uses the `@github/copilot-sdk` device-auth flow
- *   - `bedrock-gateway` — talks to the internal Bedrock Access Gateway over
- *                         the OpenAI-compatible BYOK provider config
- *
- * Per R-SDK-14 the BYOK env-var matrix (`COPILOT_PROVIDER_*`) is honoured
- * verbatim so an admin can drop in `azure`/`anthropic`/`openai` without code
- * changes. Per R-SDK-9 a per-session `COPILOT_HOME` directory is computed at
- * session start time (not here).
+ * #149 — `copilot-native` was removed. Naming it (in env or in the runtime
+ * configuration) is an `AIConfigError` that names the supported providers and
+ * the migration note; so is relying on a retired `COPILOT_PROVIDER_*` /
+ * `COPILOT_MODEL` fallback. See `retired-providers.ts`.
  *
  * Anything missing/invalid is reported as an `AIConfigError` so the caller
  * can short-circuit to offline mode or refuse to start.
@@ -22,6 +21,12 @@ import { AIConfigError } from "./errors.js";
 import type { ProviderKey } from "./types.js";
 import { getConfigService } from "../config/config-service.js";
 import { HAIKU_MODEL_ID, SONNET_MODEL_ID } from "./model-router.js";
+import {
+  COPILOT_MIGRATION_DOC,
+  findRetiredEnvRenames,
+  isRetiredProviderKey,
+  retiredProviderMessage,
+} from "./retired-providers.js";
 
 /**
  * Keys whose values may be overridden at runtime via the ConfigService
@@ -54,7 +59,6 @@ const TUNABLE_AI_KEYS: ReadonlyArray<readonly [tunable: string, envKey: string]>
 ];
 
 const PROVIDER_KEYS = [
-  "copilot-native",
   "bedrock-gateway",
   "local-gemma",
   "openai",
@@ -69,7 +73,8 @@ const PROVIDER_KEYS = [
  */
 export const SUPPORTED_PROVIDER_KEYS = PROVIDER_KEYS;
 
-const BYOK_TYPE_KEYS = ["openai", "azure", "anthropic"] as const;
+/** The wire family a resolved provider config speaks. */
+type BYOKType = "openai" | "azure" | "anthropic";
 
 const truthy = (raw: string | undefined): boolean =>
   raw != null && /^(1|true|yes|on)$/i.test(raw.trim());
@@ -116,9 +121,9 @@ const aiEnvSchema = z
     LOCAL_GEMMA_API_KEY: z.string().min(1).optional(),
 
     // #134 — openai / azure are served by the direct OpenAI-compatible client.
-    // These are the native names; the COPILOT_PROVIDER_* matrix below is still
-    // read as a fallback so existing deployments keep working unchanged.
-    // A blank value is treated as UNSET: the schema validates every key
+    // #149 — these are the ONLY names read; the Copilot-era COPILOT_PROVIDER_*
+    // fallback is gone (a set-but-unrenamed one is refused by name, see
+    // `findRetiredEnvRenames`). A blank value is treated as UNSET: the schema validates every key
     // whatever AI_PROVIDER is, and OPENAI_API_KEY was already read elsewhere
     // (holistic-synthesizer) before #134, so an empty placeholder in `.env`
     // must never break config for an unrelated provider such as local-gemma.
@@ -133,27 +138,19 @@ const aiEnvSchema = z
     ),
     AZURE_OPENAI_DEPLOYMENT: blankAsUnset(z.string().min(1).max(200)),
 
-    COPILOT_PROVIDER_TYPE: z.enum(BYOK_TYPE_KEYS).optional(),
-    COPILOT_PROVIDER_BASE_URL: z.string().url().optional(),
-    COPILOT_PROVIDER_API_KEY: z.string().optional(),
-    COPILOT_MODEL: z.string().optional(),
-    COPILOT_OFFLINE: z.string().optional(),
-
     // Native Anthropic provider (#285) — talks to api.anthropic.com via the
     // official SDK. Additive; never overlaps the Bedrock matrix.
     ANTHROPIC_API_KEY: z.string().min(1).optional(),
     ANTHROPIC_AUTH_TOKEN: z.string().min(1).optional(),
     ANTHROPIC_BASE_URL: z.string().url().optional(),
     ANTHROPIC_MODEL: z.string().min(1).max(200).optional(),
-
-    METIS_AUTH_DIR: z.string().optional(),
   })
   .passthrough();
 
 export type AIEnv = z.infer<typeof aiEnvSchema>;
 
 export interface BYOKProviderConfig {
-  type: (typeof BYOK_TYPE_KEYS)[number];
+  type: BYOKType;
   baseUrl: string;
   apiKey?: string;
   /**
@@ -173,7 +170,7 @@ export interface AIConfig {
   offline: boolean;
   rateLimit: { windowMs: number; max: number };
   pingTimeoutMs: number;
-  /** Resolved BYOK config for the SDK `provider` field — `undefined` for native. */
+  /** Resolved endpoint + credentials for the chosen provider — `undefined` offline. */
   sdkProvider?: BYOKProviderConfig;
   /** Internal Bedrock gateway URL (mirrored into `sdkProvider` when chosen). */
   gatewayBaseUrl?: string;
@@ -183,8 +180,6 @@ export interface AIConfig {
   localBaseUrl?: string;
   /** Local Gemma bearer token (dummy for Ollama; required header). */
   localApiKey?: string;
-  /** Override the default `~/.metis/auth.json` location for the Copilot wrapper. */
-  authDir?: string;
   /** Model ID → application inference profile ARN mapping for per-app cost tracking. */
   modelProfileMap?: Record<string, string>;
 }
@@ -192,7 +187,8 @@ export interface AIConfig {
 const DEFAULT_RATE_WINDOW_MS = 15 * 60 * 1000;
 const DEFAULT_RATE_MAX = 60;
 const DEFAULT_PING_TIMEOUT_MS = 1500;
-const DEFAULT_COPILOT_MODEL = "gpt-4.1";
+/** Default model for the `openai` / `azure` providers when AI_MODEL is unset. */
+const DEFAULT_OPENAI_MODEL = "gpt-4.1";
 /** #134 — Azure OpenAI GA data-plane version (mirrors the provider default). */
 const DEFAULT_AZURE_API_VERSION = "2024-10-21";
 const DEFAULT_BEDROCK_MODEL = SONNET_MODEL_ID;
@@ -207,13 +203,13 @@ const intOr = (raw: string | undefined, fallback: number, min = 1): number => {
 };
 
 /**
- * Build a {@link BYOKProviderConfig} for the SDK's `provider` field. Returns
- * `undefined` when the chosen provider is native Copilot. Throws
- * `AIConfigError` if the chosen mode is missing required env vars.
+ * Build the {@link BYOKProviderConfig} (endpoint + credentials) for the chosen
+ * provider. Returns `undefined` for the offline stub. Throws `AIConfigError`
+ * if the chosen mode is missing required env vars.
  */
 export function buildSdkProvider(env: AIEnv): BYOKProviderConfig | undefined {
   const provider = env.AI_PROVIDER;
-  if (provider === "copilot-native" || provider === "offline-stub") return undefined;
+  if (provider === "offline-stub") return undefined;
 
   if (provider === "bedrock-gateway") {
     const baseUrl = trimmed(env.BEDROCK_GATEWAY_URL) ?? trimmed(env.GATEWAY_BASE_URL);
@@ -254,16 +250,13 @@ export function buildSdkProvider(env: AIEnv): BYOKProviderConfig | undefined {
   }
 
   // Native Anthropic provider (#285) — uses the official SDK against
-  // api.anthropic.com (or ANTHROPIC_BASE_URL). It does NOT use the
-  // OpenAI-compatible COPILOT_PROVIDER_* matrix and therefore does NOT require
+  // api.anthropic.com (or ANTHROPIC_BASE_URL). It does NOT require
   // a base URL: the SDK supplies its own default. The public-LLM-host guard
   // (validateBedrockGatewayUrl) is intentionally NOT applied here — reaching
   // api.anthropic.com with an Anthropic key is the intended behaviour.
   if (provider === "anthropic") {
     // Native anthropic auth is scoped to ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
-    // only (#285). We deliberately do NOT fall back to COPILOT_PROVIDER_API_KEY:
-    // forwarding an unrelated Copilot credential to api.anthropic.com would be
-    // surprising cross-provider credential reuse.
+    // only (#285) — never another provider's credential.
     const apiKey = trimmed(env.ANTHROPIC_API_KEY);
     const authToken = trimmed(env.ANTHROPIC_AUTH_TOKEN);
     if (!apiKey && !authToken) {
@@ -283,16 +276,14 @@ export function buildSdkProvider(env: AIEnv): BYOKProviderConfig | undefined {
     };
   }
 
-  // openai/azure (#134) — the native OPENAI_* / AZURE_OPENAI_* names first,
-  // then the legacy BYOK env-var matrix (R-SDK-14).
+  // openai/azure (#134) — the OPENAI_* / AZURE_OPENAI_* names only (#149).
   if (provider === "azure") {
-    const baseUrl = trimmed(env.AZURE_OPENAI_ENDPOINT) ?? trimmed(env.COPILOT_PROVIDER_BASE_URL);
-    const apiKey = trimmed(env.AZURE_OPENAI_API_KEY) ?? trimmed(env.COPILOT_PROVIDER_API_KEY);
+    const baseUrl = trimmed(env.AZURE_OPENAI_ENDPOINT);
+    const apiKey = trimmed(env.AZURE_OPENAI_API_KEY);
     if (!baseUrl) {
-      throw new AIConfigError(
-        "azure provider requires AZURE_OPENAI_ENDPOINT (or COPILOT_PROVIDER_BASE_URL)",
-        { missing: ["AZURE_OPENAI_ENDPOINT"] },
-      );
+      throw new AIConfigError("azure provider requires AZURE_OPENAI_ENDPOINT", {
+        missing: ["AZURE_OPENAI_ENDPOINT"],
+      });
     }
     const deployment = trimmed(env.AZURE_OPENAI_DEPLOYMENT);
     return {
@@ -303,13 +294,12 @@ export function buildSdkProvider(env: AIEnv): BYOKProviderConfig | undefined {
       ...(deployment ? { deployment } : {}),
     };
   }
-  const baseUrl = trimmed(env.OPENAI_BASE_URL) ?? trimmed(env.COPILOT_PROVIDER_BASE_URL);
-  const apiKey = trimmed(env.OPENAI_API_KEY) ?? trimmed(env.COPILOT_PROVIDER_API_KEY);
+  const baseUrl = trimmed(env.OPENAI_BASE_URL);
+  const apiKey = trimmed(env.OPENAI_API_KEY);
   if (!baseUrl) {
-    throw new AIConfigError(
-      `${provider} provider requires OPENAI_BASE_URL (or COPILOT_PROVIDER_BASE_URL)`,
-      { missing: ["OPENAI_BASE_URL"] },
-    );
+    throw new AIConfigError(`${provider} provider requires OPENAI_BASE_URL`, {
+      missing: ["OPENAI_BASE_URL"],
+    });
   }
   return { type: provider, baseUrl, apiKey };
 }
@@ -417,8 +407,7 @@ function defaultModel(provider: ProviderKey, env: AIEnv): string {
     return trimmed(env.LOCAL_GEMMA_MODEL) ?? DEFAULT_LOCAL_GEMMA_MODEL;
   if (provider === "anthropic") return trimmed(env.ANTHROPIC_MODEL) ?? DEFAULT_ANTHROPIC_MODEL;
   if (provider === "offline-stub") return "offline-stub";
-  if (env.COPILOT_MODEL) return env.COPILOT_MODEL;
-  return DEFAULT_COPILOT_MODEL;
+  return DEFAULT_OPENAI_MODEL;
 }
 
 /**
@@ -477,6 +466,7 @@ function applyConfigServiceOverlay(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  */
 export function loadAIConfig(env: NodeJS.ProcessEnv = process.env): AIConfig {
   const merged = applyConfigServiceOverlay(env);
+  assertNoRetiredProviderConfig(env, merged);
   const parsed = aiEnvSchema.safeParse(merged);
   if (!parsed.success) {
     throw new AIConfigError("Invalid AI configuration", {
@@ -484,13 +474,6 @@ export function loadAIConfig(env: NodeJS.ProcessEnv = process.env): AIConfig {
     });
   }
   const e = parsed.data;
-  // R-SDK-14: COPILOT_OFFLINE without provider → fail fast.
-  if (truthy(e.COPILOT_OFFLINE) && e.AI_PROVIDER === "copilot-native") {
-    throw new AIConfigError(
-      "COPILOT_OFFLINE=true requires a BYOK provider; set AI_PROVIDER to bedrock-gateway/openai/azure/anthropic",
-    );
-  }
-
   const offline = truthy(e.AI_OFFLINE) || e.AI_PROVIDER === "offline-stub";
   const sdkProvider = offline ? undefined : buildSdkProvider(e);
   const provider = offline ? ("offline-stub" as ProviderKey) : e.AI_PROVIDER;
@@ -509,9 +492,48 @@ export function loadAIConfig(env: NodeJS.ProcessEnv = process.env): AIConfig {
     localBaseUrl: trimmed(e.LOCAL_GEMMA_BASE_URL),
     localApiKey:
       trimmed(e.LOCAL_GEMMA_API_KEY) ?? (provider === "local-gemma" ? "ollama" : undefined),
-    authDir: trimmed(e.METIS_AUTH_DIR),
     modelProfileMap: buildModelProfileMap(e),
   };
+}
+
+/**
+ * #149 — refuse a retired provider, and a retired Copilot-era env name the
+ * chosen provider used to fall back to, BEFORE schema validation (whose
+ * generic "Invalid enum value" would not say what to do). Runs over the merged
+ * view, so a `runtime_config` row selecting `copilot-native` is refused exactly
+ * like the env var — never silently replaced by another provider.
+ *
+ * `raw` is the caller's env WITHOUT the runtime-config overlay: it decides only
+ * which source to name in the message.
+ */
+export function assertNoRetiredProviderConfig(
+  raw: NodeJS.ProcessEnv,
+  merged: NodeJS.ProcessEnv = raw,
+): void {
+  const selected = merged.AI_PROVIDER;
+  if (isRetiredProviderKey(selected)) {
+    const fromRuntimeConfig = raw.AI_PROVIDER !== selected;
+    throw new AIConfigError(
+      retiredProviderMessage(selected, fromRuntimeConfig ? "runtime-config" : "AI_PROVIDER"),
+      { retiredProvider: selected.trim(), migration: COPILOT_MIGRATION_DOC },
+    );
+  }
+  if (truthy(merged.AI_OFFLINE)) return;
+  // A leftover `COPILOT_MODEL` equal to the openai/azure default (the value
+  // .env.example shipped) changes nothing when dropped, so it is not refused.
+  const renames = findRetiredEnvRenames((selected ?? "").trim(), merged).filter(
+    (r) =>
+      !(r.retired === "COPILOT_MODEL" && merged.COPILOT_MODEL?.trim() === DEFAULT_OPENAI_MODEL),
+  );
+  if (renames.length > 0) {
+    const list = renames.map((r) => `${r.retired} → ${r.replacement}`).join(", ");
+    throw new AIConfigError(
+      `The ${selected!.trim()} provider no longer reads the Copilot-era variable(s) ${renames
+        .map((r) => r.retired)
+        .join(", ")}. Rename: ${list}. See ${COPILOT_MIGRATION_DOC}.`,
+      { renames, migration: COPILOT_MIGRATION_DOC },
+    );
+  }
 }
 
 /**

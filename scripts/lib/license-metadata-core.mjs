@@ -116,16 +116,11 @@ export const PUBLICATION_POLICY = [
       "Every script assumes this tree's layout.",
   },
   {
-    path: "server/copilot-svc/package.json",
+    path: "server/embeddings-svc/package.json",
     publishes: false,
     reason:
       "a sidecar service deployed beside `server/`, shipped as a container image. It is " +
       "a process, not a package.",
-  },
-  {
-    path: "server/embeddings-svc/package.json",
-    publishes: false,
-    reason: "a sidecar service, on the same reasoning as `server/copilot-svc`.",
   },
   {
     path: "images/mcp-wrappers/code-graph-runner-sse/package.json",

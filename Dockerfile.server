@@ -9,8 +9,9 @@
 #      mode only.
 #   3. Multi-stage build: deps → build → prod-deps → runtime. The runtime
 #      image only carries production deps + compiled JS, never the dev tree.
-#   4. Surgical post-install prune of `@github/copilot` CLI fat (tree-sitter
-#      wasm grammars for languages we don't inspect, README/CHANGELOG).
+#   4. Surgical post-install prune of unused fat (other platforms' prebuilds,
+#      native-addon sources, README/CHANGELOG). #150 — the GitHub Copilot SDK
+#      and CLI are no longer dependencies at all, so nothing is pruned for them.
 #
 # Base image: `node:22-trixie-slim` (glibc), NOT alpine (#39). LanceDB — the
 # default RAG vector store — publishes its native binding for glibc only
@@ -187,16 +188,14 @@ RUN set -eux; \
 # whole tree (@prisma/studio-core, @prisma/dev, @electric-sql/pglite, react-dom,
 # its own better-sqlite3 and mysql2 ...). #39: the migration guard runs that CLI
 # at boot, so it is kept — and its `build/index.js` requires studio-core and
-# @prisma/dev statically, so neither can be excluded either (measured). The
-# Copilot SDK/CLI is excluded for the reason given further down (the copilot-native
-# provider is unsupported in this image). An edge named here is never followed, at
+# @prisma/dev statically, so neither can be excluded either (measured). An edge
+# named here is never followed, at
 # any depth, and every store entry left unreached is deleted — so a new transitive
 # dependency of an excluded package cannot sneak back in behind a stale glob.
 COPY scripts/lib/prune-pnpm-store.mjs /tmp/prune-pnpm-store.mjs
 RUN node /tmp/prune-pnpm-store.mjs --store node_modules/.pnpm \
       --importer /app --importer /app/server --importer /app/packages/shared \
       --exclude typescript \
-      --exclude @github/copilot --exclude @github/copilot-sdk \
  && rm /tmp/prune-pnpm-store.mjs
 
 # #34 — native-addon build leftovers and other platforms' prebuilt binaries.
@@ -226,29 +225,6 @@ RUN set -eux; \
     for P in $(find node_modules/.pnpm -type d -name prebuilds 2>/dev/null); do \
       find "$P" -mindepth 1 -maxdepth 1 ! -name "linux-${ARCH}*" \
         -exec rm -rf {} + 2>/dev/null || true; \
-    done
-
-# Surgical prune of unused fat from the @github/copilot CLI bundle.
-# - tree-sitter grammars for languages METIS does not inspect via the SDK
-# - README, CHANGELOG, docs, examples, test fixtures
-#
-# This block follows symlinks into the .pnpm store so it works whether the
-# package is hoisted or symlinked. We are intentionally tolerant of missing
-# files — `|| true` keeps the build green if the upstream layout shifts.
-RUN set -eux; \
-    for COPILOT_DIR in $(find node_modules -path '*/@github/copilot' -type d 2>/dev/null); do \
-      cd "$COPILOT_DIR"; \
-      rm -rf README.md CHANGELOG.md changelog.json LICENSE.md docs examples test __tests__ 2>/dev/null || true; \
-      find . -maxdepth 1 -name 'tree-sitter-*.wasm' \
-        ! -name 'tree-sitter-typescript.wasm' \
-        ! -name 'tree-sitter-tsx.wasm' \
-        ! -name 'tree-sitter-javascript.wasm' \
-        ! -name 'tree-sitter-json.wasm' \
-        ! -name 'tree-sitter-python.wasm' \
-        ! -name 'tree-sitter-go.wasm' \
-        ! -name 'tree-sitter-java.wasm' \
-        -delete 2>/dev/null || true; \
-      cd /app; \
     done
 
 # Surgical prune of unused fat from the rest of the prod tree.
@@ -295,16 +271,6 @@ RUN set -eux; \
         -o -name '__tests__' -o -name 'test' -o -name 'tests' \
         -o -name 'doc' \
       \) -exec rm -rf {} + 2>/dev/null || true; \
-    # Drop @github/copilot CLI from the runtime tree. The Copilot-native AI
-    # provider is **NOT supported** in this slim image — see docs/OPERATIONS.md.
-    # Other AI providers (bedrock-gateway, openai, azure, anthropic,
-    # offline-stub) work normally because the SDK is dynamically imported.
-    rm -rf node_modules/.pnpm/@github+copilot@* \
-           node_modules/.pnpm/@github+copilot-* \
-           node_modules/.pnpm/@github+copilot-sdk@* \
-           node_modules/@github/copilot* \
-           server/node_modules/@github/copilot* \
-           2>/dev/null || true; \
     # Drop transitive test/dev fat: @types/* (compile-time only), apache-arrow
     # TypeScript sources. NOT mysql2 (#39): Prisma does not use it, but the MySQL
     # connector (server/src/lib/connectors/db/drivers/mysql.ts) imports it. NOT

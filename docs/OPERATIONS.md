@@ -326,8 +326,9 @@ The release pipeline ships three images:
 | `metis-server` | `Dockerfile.server` (`node:22-trixie-slim`, glibc, prod-only deps, slimmed) | **~1,045 MB** (amd64, measured #45) | ≤ 1,170 MB — its own budget, see below |
 | `metis-embeddings` | `Dockerfile.embeddings` (bookworm-slim, glibc) | **~589 MB** (amd64, `api` run 35740221946, built with `BAKE_MODELS=0`) | exempt (sidecar) |
 
-> **Multi-arch (Epic #360 / sub-issue #373)**: All four core images
-> (`metis-server`, `metis-ui`, `metis-embeddings-svc`, `metis-copilot-svc`)
+> **Multi-arch (Epic #360 / sub-issue #373)**: All three core images
+> (`metis-server`, `metis-ui`, `metis-embeddings-svc`; the fourth,
+> `metis-copilot-svc`, was removed with GitHub Copilot support in #150)
 > are published as `linux/amd64,linux/arm64` manifests on every release tag
 > via `.github/workflows/build-images.yml`. EKS Graviton nodes pull native
 > arm64 binaries — no `qemu` emulation overhead. Verify with
@@ -344,13 +345,11 @@ by combining three changes:
    [`docs/ARCHITECTURE.md`](./ARCHITECTURE.md) for the wiring. The sidecar is
    intentionally exempt from the per-image budget — it owns ~340 MB of native
    ONNX runtime + bundled models.
-2. **Copilot CLI dropped from the runtime image** — the slim build no longer
-   ships `@github/copilot` or `@github/copilot-sdk`. **The `copilot-native`
-   AI provider is therefore unsupported in this image.** All other providers
-   (`bedrock-gateway`, `openai`, `azure`, `anthropic`, `offline-stub`) work
-   normally because the SDK is loaded via dynamic import. To use Copilot,
-   either build a bespoke image with `@github/copilot` re-added or switch to
-   a HTTP-based provider.
+2. **Copilot CLI dropped from the runtime image** — the slim build stopped
+   shipping `@github/copilot` / `@github/copilot-sdk`. Since #150 they are no
+   longer dependencies at all and the `copilot-native` provider is gone (see
+   [MIGRATING_FROM_COPILOT.md](./MIGRATING_FROM_COPILOT.md)), so there is
+   nothing left to prune for them.
 3. **Aggressive `node_modules` prune** — `Dockerfile.server` now does a clean
    `pnpm install --prod --frozen-lockfile` in a dedicated `prod-deps` stage,
    then surgically removes:
@@ -627,27 +626,24 @@ runner from 83 GB to 110 GB free.
 
 The slim `metis-server` image ships only the providers and runtimes the
 default deployment needs. Anything heavyweight — the embeddings + reranker
-ONNX runtime, the GitHub Copilot SDK — runs in a dedicated, optional
-sidecar container so the main image stays under the 350 MB budget.
+ONNX runtime — runs in a dedicated, optional sidecar container. (The GitHub
+Copilot sidecar, `metis-copilot-svc`, was removed with Copilot support in #150;
+its only non-Copilot job, the Morph `apply_diff` call, now runs in-process —
+set `MORPH_APPLY_ENABLED` / `MORPH_API_KEY` on the server.)
 
 | Sidecar | Image | Purpose | Activate via | Reference |
 |---|---|---|---|---|
 | `metis-embeddings` | `Dockerfile.embeddings` | RAG embeddings + cross-encoder reranker (`Xenova/bge-small-en-v1.5`, `Xenova/ms-marco-MiniLM-L-6-v2`) | `EMBEDDINGS_MODE=sidecar`, `EMBEDDINGS_URL`, `EMBEDDINGS_TOKEN` | See §7 above + [`docs/ARCHITECTURE.md`](./ARCHITECTURE.md) |
-| `metis-copilot-svc` | `Dockerfile.copilot-svc` | `@github/copilot-sdk` device auth + sessions, exposed over HTTP/SSE | `COPILOT_NATIVE_MODE=sidecar`, `COPILOT_NATIVE_BASE_URL`, `COPILOT_NATIVE_TOKEN` | [`docs/COPILOT_SIDECAR.md`](./COPILOT_SIDECAR.md) |
 
-Both sidecars are **fail-closed**: missing tokens, unreachable endpoints,
+The sidecar is **fail-closed**: missing tokens, unreachable endpoints,
 or mismatched bearer credentials are surfaced as 5xx in the AI session
 flow rather than silently downgraded. Operators should treat them as
 first-class dependencies in their orchestration (Kubernetes
 `livenessProbe`/`readinessProbe`, ECS health checks, etc.).
 
-When neither sidecar is required (e.g. a Bedrock-only deployment with a
-pre-cached embedding store), both can be omitted from the compose file —
-the server detects `EMBEDDINGS_MODE` defaults and falls back to
-`bedrock-gateway` / `openai` / `anthropic` providers cleanly. The
-`copilot-native` provider is simply unavailable in that configuration; see
-[`docs/COPILOT_SIDECAR.md`](./COPILOT_SIDECAR.md) for the bring-up
-checklist when you do want it.
+When the sidecar is not required (e.g. a Bedrock-only deployment with a
+pre-cached embedding store), it can be omitted from the compose file —
+the server detects `EMBEDDINGS_MODE` defaults and falls back cleanly.
 
 ### 7.2 Dockerised MCP Runtime (Epic #271)
 
@@ -829,7 +825,7 @@ prompts and context. METIS uses two complementary mechanisms:
 
 | Path | Mechanism | Configuration |
 |------|-----------|---------------|
-| **Chat/stream, discussions, spec-kit** (interactive flows) | The server sets `promptCaching.system` + a `callType` tag on these flows (#700). The flags are **honoured only** on the BedrockDirect (`extra_body.prompt_caching`) and native-Anthropic (`cache_control`) providers; on the Copilot-SDK / bedrock-access-gateway path they are an **inert no-op** and caching is done by the gateway itself. | Server flags are automatic; the gateway path additionally needs `ENABLE_PROMPT_CACHING=true` on the bedrock-access-gateway container (#656) |
+| **Chat/stream, discussions, spec-kit** (interactive flows) | The server sets `promptCaching.system` + a `callType` tag on these flows (#700). The flags are **honoured only** on the BedrockDirect (`extra_body.prompt_caching`) and native-Anthropic (`cache_control`) providers; on the plain OpenAI-compatible / bedrock-access-gateway path they are an **inert no-op** and caching is done by the gateway itself. | Server flags are automatic; the gateway path additionally needs `ENABLE_PROMPT_CACHING=true` on the bedrock-access-gateway container (#656) |
 | **Analysis/docs-gen** (BedrockDirectProvider) | Per-request `extra_body.prompt_caching` sent by the server | Automatic when `BEDROCK_GATEWAY_URL` + `BEDROCK_GATEWAY_API_KEY` are set |
 | **Native Anthropic** (AnthropicProvider) | Per-block `cache_control` on the system + last-user breakpoints; TTL via `ANTHROPIC_PROMPT_CACHE_TTL` (#702) | Automatic when `AI_PROVIDER=anthropic` |
 
@@ -1033,7 +1029,7 @@ asserted in `server/src/lib/analysis/agent-loop-caching.test.ts`):
 > this section; the live gateway legs are tracked in **#704**.
 
 > **Note (updated by #700)**: The chat/stream, discussions, and spec-kit flows
-> now **do** set `promptCaching.system` + a `callType` tag, but the Copilot SDK /
+> now **do** set `promptCaching.system` + a `callType` tag, but the plain
 > bedrock-access-gateway path has no hook for provider-specific `extra_body`
 > fields, so on that path the flags are an **inert no-op** — caching for the
 > gateway path is still handled transparently by the gateway itself (#656, #657).

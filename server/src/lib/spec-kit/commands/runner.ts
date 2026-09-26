@@ -167,8 +167,8 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
     // RAG → base) and is stable per project, so the leading bytes are reusable
     // across commands within the cache TTL; the trust-ordered layout is left
     // unchanged. `messages` is omitted (single-shot user turn is unique).
-    // Honoured on BedrockDirect/native-Anthropic; inert on the Copilot
-    // SDK/gateway path, where transparent gateway caching applies instead.
+    // Honoured on BedrockDirect/native-Anthropic; inert on the plain
+    // OpenAI-compatible path, where transparent gateway caching applies instead.
     callType: "spec-kit",
     promptCaching: { system: true },
   });

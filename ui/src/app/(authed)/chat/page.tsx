@@ -93,6 +93,8 @@ export default function ChatPage() {
   // #138 — shown when older turns were summarised to fit the model's context.
   const [compactionNote, setCompactionNote] = useState<string | null>(null);
   const [forking, setForking] = useState(false);
+  // #149 — set when the resumed session is read-only (its provider was removed).
+  const [readOnlyReason, setReadOnlyReason] = useState<string | null>(null);
   // #142/#143 — the tool calls of the turn in flight (cleared when the next
   // starts) and the owner's Approve / Deny; shared with the Workbench.
   const toolApprovals = useToolApprovals(session?.id ?? null, setError);
@@ -139,6 +141,7 @@ export default function ChatPage() {
     setMessages([]);
     // A compaction note belongs to the session it happened in.
     setCompactionNote(null);
+    setReadOnlyReason(null);
     resetToolActivity();
     const firstRun = !mountedOnceRef.current;
     mountedOnceRef.current = true;
@@ -152,6 +155,7 @@ export default function ChatPage() {
           if (restored && !cancelled) {
             setSession(restored.session);
             setMessages(fromServer(restored.messages));
+            setReadOnlyReason(restored.readOnlyReason ?? null);
             storeActiveSessionId(restored.session.id);
             return;
           }
@@ -237,9 +241,11 @@ export default function ChatPage() {
   // send is now refused while the notice is on screen, so the user is told
   // BEFORE the turn, not after it.
   const scopeBlocked = Boolean(sessionScope?.degraded);
+  // #149 — a read-only session keeps its transcript but refuses new turns.
+  const sendBlocked = scopeBlocked || readOnlyReason !== null;
 
   async function handleSend() {
-    if (!session || !input.trim() || streaming || scopeBlocked) return;
+    if (!session || !input.trim() || streaming || sendBlocked) return;
     const userMsg: DisplayMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -399,6 +405,15 @@ export default function ChatPage() {
           </div>
         </div>
         <ScopeDegradationNotice scope={sessionScope} />
+        {readOnlyReason ? (
+          <div
+            role="status"
+            data-testid="chat-read-only-notice"
+            className="rounded border border-amber-500 p-2 text-sm"
+          >
+            {readOnlyReason}
+          </div>
+        ) : null}
         {compactionNote ? (
           <p
             role="status"
@@ -512,7 +527,10 @@ export default function ChatPage() {
                         Incomplete answer — {m.incomplete}
                       </p>
                     ) : null}
-                    {m.role === "assistant" && m.ordinal !== undefined && !streaming ? (
+                    {m.role === "assistant" &&
+                    m.ordinal !== undefined &&
+                    !streaming &&
+                    readOnlyReason === null ? (
                       <button
                         type="button"
                         onClick={() => void handleFork(m.ordinal!)}
@@ -545,17 +563,23 @@ export default function ChatPage() {
           <Input
             ref={inputRef}
             aria-label="Message"
-            placeholder={scopeBlocked ? "Pick one project to continue…" : "Ask anything…"}
+            placeholder={
+              readOnlyReason
+                ? "This session is read-only"
+                : scopeBlocked
+                  ? "Pick one project to continue…"
+                  : "Ask anything…"
+            }
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            disabled={!session || streaming || scopeBlocked}
+            disabled={!session || streaming || sendBlocked}
           />
           {streaming ? (
             <Button type="button" variant="destructive" onClick={handleStop}>
               Stop
             </Button>
           ) : (
-            <Button type="submit" disabled={!session || !input.trim() || scopeBlocked}>
+            <Button type="submit" disabled={!session || !input.trim() || sendBlocked}>
               Send
             </Button>
           )}

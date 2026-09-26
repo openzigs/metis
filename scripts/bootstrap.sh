@@ -111,30 +111,27 @@ ensure_env() {
 
   # Generate hex-encoded random secrets — base64 has '=' / '+' / '/' which
   # interact poorly with shell quoting in some downstream tools.
-  local jwt_secret vault_master_key embeddings_token copilot_native_token
+  local jwt_secret vault_master_key embeddings_token
   jwt_secret="$(openssl rand -hex 32)"
   vault_master_key="$(openssl rand -hex 32)"
   embeddings_token="$(openssl rand -hex 32)"
-  copilot_native_token="$(openssl rand -hex 32)"
 
-  # Replace the four secret slots. Use awk so we don't depend on GNU sed.
+  # Replace the three secret slots. Use awk so we don't depend on GNU sed.
   local tmp
   tmp="$(mktemp)"
   awk \
     -v jwt="${jwt_secret}" \
     -v vault="${vault_master_key}" \
     -v emb="${embeddings_token}" \
-    -v cop="${copilot_native_token}" \
     'BEGIN {FS=OFS="="}
      /^JWT_SECRET=/           {print "JWT_SECRET=" jwt; next}
      /^VAULT_MASTER_KEY=/     {print "VAULT_MASTER_KEY=" vault; next}
      /^EMBEDDINGS_TOKEN=/     {print "EMBEDDINGS_TOKEN=" emb; next}
-     /^COPILOT_NATIVE_TOKEN=/ {print "COPILOT_NATIVE_TOKEN=" cop; next}
      {print}' \
     "${env_file}" > "${tmp}"
   mv "${tmp}" "${env_file}"
   chmod 600 "${env_file}"
-  log "wrote .env with freshly generated JWT_SECRET, VAULT_MASTER_KEY, EMBEDDINGS_TOKEN, COPILOT_NATIVE_TOKEN"
+  log "wrote .env with freshly generated JWT_SECRET, VAULT_MASTER_KEY, EMBEDDINGS_TOKEN"
 }
 
 # -----------------------------------------------------------------------------

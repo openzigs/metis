@@ -1,11 +1,8 @@
 /**
- * Epic #165 — Copilot SDK alignment shared types.
- *
- * These shapes mirror the Copilot SDK's `customAgents`, `HooksConfig`,
- * `SessionPlan`, and resume primitives. They are implemented natively in the
- * METIS server today (`@github/copilot` was dropped in #179) and form the
- * target interface that the future Copilot sidecar (#180) will plug into
- * without changing METIS code.
+ * Epic #165 — agent session shared types (custom agents, hooks, session plan,
+ * resume). Originally modelled on the GitHub Copilot SDK's primitives; they
+ * are implemented natively in the METIS server and work for every provider.
+ * (The Copilot provider itself was removed in #149.)
  */
 
 export const SDK_HOOK_EVENTS = [

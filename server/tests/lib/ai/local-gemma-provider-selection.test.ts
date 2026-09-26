@@ -7,9 +7,9 @@
  *   • Selecting `local-gemma` builds the direct provider with `gemma4:12b`.
  *   • Toggling `AI_PROVIDER` via env switches the built provider + default
  *     model each way.
- *   • The factory guard never routes `local-gemma`/`bedrock-gateway` into the
- *     Copilot SDK wrapper — even if it reaches `buildProvider` directly — and
- *     fails fast when the resolved sdkProvider config is missing.
+ *   • The factory builds the direct provider for `local-gemma` even when it
+ *     reaches `buildProvider` directly, and fails fast when the resolved
+ *     sdkProvider config is missing.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -103,15 +103,9 @@ describe("provider selection via route interception (#113)", () => {
 });
 
 describe("factory guard (#113)", () => {
-  it("never routes local-gemma into the Copilot SDK — uses the direct provider", () => {
+  it("builds local-gemma as the direct provider", () => {
     const cfg = loadAIConfig({ ...GEMMA_ENV });
-    // A wrapperFactory that throws if invoked proves the SDK path is skipped.
-    const provider = buildProvider({
-      config: cfg,
-      wrapperFactory: () => {
-        throw new Error("SDK wrapper must NOT be constructed for local-gemma");
-      },
-    });
+    const provider = buildProvider({ config: cfg });
     expect(provider).toBeInstanceOf(OpenAICompatibleProvider);
     expect(provider.key).toBe("local-gemma");
   });

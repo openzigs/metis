@@ -95,7 +95,6 @@ function compliantTree() {
     "packages/ui-kit/package.json",
     "e2e/package.json",
     "scripts/package.json",
-    "server/copilot-svc/package.json",
     "server/embeddings-svc/package.json",
     "images/mcp-wrappers/code-graph-runner-sse/package.json",
   ];
@@ -111,7 +110,7 @@ describe("verify-license-metadata runner", () => {
   it("exits 0 and says what it checked on a compliant tree", () => {
     const { status, stdout } = runGate(makeRepo(compliantTree()));
     expect(status).toBe(0);
-    expect(stdout).toContain("10 manifests");
+    expect(stdout).toContain("9 manifests");
     expect(stdout).toContain("AGPL-3.0-only");
   });
 
@@ -176,7 +175,7 @@ describe("verify-license-metadata runner", () => {
     files["node_modules/left-pad/package.json"] = '{"name":"left-pad","license":"WTFPL"}\n';
     const { status, stdout } = runGate(makeRepo(files));
     expect(status).toBe(0);
-    expect(stdout).toContain("10 manifests");
+    expect(stdout).toContain("9 manifests");
   });
 
   // `git ls-files` enumerates the CURRENT DIRECTORY's subtree, not the repository.
