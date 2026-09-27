@@ -79,24 +79,24 @@ const RISK_COPY: Record<GapReportRiskClass, RiskCopy> = {
   breaking: {
     label: "Breaking",
     tone: "breaking",
-    className: "border-red-700/60 bg-red-950/50 text-red-300",
+    className: "border-red-700/60 bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300",
   },
   expanding: {
     label: "Expanding",
     tone: "additive",
-    className: "border-sky-700/50 bg-sky-950/40 text-sky-300",
+    className: "border-sky-700/50 bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300",
   },
   neutral: {
     label: "Neutral",
     tone: "neutral",
-    className: "border-zinc-700/60 bg-zinc-900/60 text-zinc-300",
+    className: "border-border/60 bg-muted/60 text-foreground",
   },
 };
 
 const UNCLASSIFIED_RISK: RiskCopy = {
   label: "Unclassified",
   tone: "unclassified",
-  className: "border-zinc-700/60 bg-zinc-900/60 text-zinc-400",
+  className: "border-border/60 bg-muted/60 text-muted-foreground",
 };
 
 function riskCopy(riskClass: GapReportRiskClass | undefined): RiskCopy {
@@ -138,21 +138,24 @@ interface ReconCopy {
 const RECON_COPY: Record<NonNullable<GapReportDatabaseChange["reconciliation"]>, ReconCopy> = {
   matched: {
     label: "Matched live schema",
-    className: "border-emerald-700/50 bg-emerald-950/40 text-emerald-300",
+    className:
+      "border-emerald-700/50 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300",
   },
   "table-not-found": {
     label: "Table not found",
-    className: "border-violet-700/50 bg-violet-950/40 text-violet-300",
+    className:
+      "border-violet-700/50 bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300",
   },
   "column-not-found": {
     label: "Column not found",
-    className: "border-violet-700/50 bg-violet-950/40 text-violet-300",
+    className:
+      "border-violet-700/50 bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300",
   },
 };
 
 const RECON_UNCHECKED: ReconCopy = {
   label: "Not checked",
-  className: "border-zinc-700/60 bg-zinc-900/60 text-zinc-400",
+  className: "border-border/60 bg-muted/60 text-muted-foreground",
 };
 
 function ReconciliationBadge({
@@ -182,7 +185,7 @@ function ReconciliationBadge({
 function SuggestedDdl({ ddl }: { ddl: string | null }): React.ReactElement {
   if (ddl == null) {
     return (
-      <p data-testid="db-ddl-none" className="text-[11px] italic text-zinc-500">
+      <p data-testid="db-ddl-none" className="text-[11px] italic text-muted-foreground">
         No suggested DDL for this change.
       </p>
     );
@@ -191,11 +194,11 @@ function SuggestedDdl({ ddl }: { ddl: string | null }): React.ReactElement {
     <figure data-testid="db-suggested-ddl" className="space-y-1">
       <figcaption
         data-testid="db-ddl-review-label"
-        className="text-[11px] font-semibold uppercase tracking-wide text-amber-300"
+        className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300"
       >
         Suggested DDL — for review only, never executed
       </figcaption>
-      <pre className="overflow-x-auto rounded border border-zinc-800 bg-zinc-950/70 p-2 text-[11px] leading-relaxed text-zinc-200">
+      <pre className="overflow-x-auto rounded border border-border bg-muted/70 p-2 text-[11px] leading-relaxed text-foreground">
         <code>{ddl}</code>
       </pre>
     </figure>
@@ -217,12 +220,15 @@ function ConsumerSummary({
 }): React.ReactElement {
   if (!change.identityResolved) {
     return (
-      <p data-testid="db-consumers-unknown" className="text-[11px] text-amber-300">
+      <p
+        data-testid="db-consumers-unknown"
+        className="text-[11px] text-amber-700 dark:text-amber-300"
+      >
         Cross-project impact unknown — database identity not linked.{" "}
         <Link
           href={`/projects/${projectId}/connections`}
           data-testid="db-identity-manager-link"
-          className="underline decoration-dotted underline-offset-2 hover:text-amber-200"
+          className="underline decoration-dotted underline-offset-2 hover:text-amber-700 dark:hover:text-amber-200"
         >
           Link a database identity
         </Link>{" "}
@@ -233,19 +239,19 @@ function ConsumerSummary({
   const consumers = change.consumers ?? [];
   if (consumers.length === 0) {
     return (
-      <p data-testid="db-consumers-none" className="text-[11px] text-zinc-500">
+      <p data-testid="db-consumers-none" className="text-[11px] text-muted-foreground">
         No other project reads or writes this object.
       </p>
     );
   }
   return (
-    <div data-testid="db-consumers-list" className="text-[11px] text-zinc-400">
-      <span className="font-medium text-zinc-300">Shared with:</span>
+    <div data-testid="db-consumers-list" className="text-[11px] text-muted-foreground">
+      <span className="font-medium text-foreground">Shared with:</span>
       <ul className="mt-0.5 space-y-0.5">
         {consumers.map((c: GapReportSchemaConsumer, i) => (
           <li key={`${c.projectId}-${c.usage}-${c.objectQualifiedName}-${i}`}>
-            <span className="text-zinc-200">{c.projectName}</span> {usageVerb(c.usage)}{" "}
-            <span className="font-mono text-zinc-500">{c.objectQualifiedName}</span>
+            <span className="text-foreground">{c.projectName}</span> {usageVerb(c.usage)}{" "}
+            <span className="font-mono text-muted-foreground">{c.objectQualifiedName}</span>
           </li>
         ))}
       </ul>
@@ -305,9 +311,9 @@ function CrossProjectBanner({
         <div
           data-testid="db-cross-project-banner"
           role="note"
-          className="space-y-1 rounded border border-amber-700/50 bg-amber-950/30 p-2"
+          className="space-y-1 rounded border border-amber-700/50 bg-amber-50 dark:bg-amber-950/30 p-2"
         >
-          <p className="text-xs font-semibold text-amber-200">
+          <p className="text-xs font-semibold text-amber-700 dark:text-amber-200">
             Cross-project impact — this change affects {projectNames.length} other{" "}
             {projectNames.length === 1 ? "project" : "projects"}: {projectNames.join(", ")}
           </p>
@@ -316,7 +322,7 @@ function CrossProjectBanner({
               <li
                 key={`${im.projectId}-${im.object}-${im.usage}-${i}`}
                 data-testid="db-cross-project-impact"
-                className="text-[11px] text-amber-100/90"
+                className="text-[11px] text-amber-700 dark:text-amber-100/90"
               >
                 <span className="font-medium">{im.projectName}</span> {usageVerb(im.usage)}{" "}
                 <span className="font-mono">{im.object}</span> —{" "}
@@ -333,18 +339,18 @@ function CrossProjectBanner({
         <div
           data-testid="db-cross-project-unknown"
           role="note"
-          className="rounded border border-zinc-700/60 bg-zinc-900/50 p-2"
+          className="rounded border border-border/60 bg-muted/50 p-2"
         >
-          <p className="text-[11px] text-zinc-400">
+          <p className="text-[11px] text-muted-foreground">
             Cross-project impact unknown — database identity not linked for{" "}
-            <span className="font-mono text-zinc-300">
+            <span className="font-mono text-foreground">
               {unresolved.map((c) => objectLabel(c)).join(", ")}
             </span>
             .{" "}
             <Link
               href={`/projects/${projectId}/connections`}
               data-testid="db-cross-project-unknown-link"
-              className="underline decoration-dotted underline-offset-2 hover:text-zinc-200"
+              className="underline decoration-dotted underline-offset-2 hover:text-foreground"
             >
               Link a database identity
             </Link>{" "}
@@ -372,7 +378,7 @@ function ChangesTable({
     <table data-testid={testId} className="w-full border-collapse text-left text-xs">
       <caption className="sr-only">{caption}</caption>
       <thead>
-        <tr className="border-b border-zinc-800 text-[10px] uppercase tracking-wide text-zinc-500">
+        <tr className="border-b border-border text-[10px] uppercase tracking-wide text-muted-foreground">
           <th scope="col" className="py-1 pr-2 font-semibold">
             Object
           </th>
@@ -394,19 +400,19 @@ function ChangesTable({
         {changes.map((c, i) => (
           <Fragment key={`${objectLabel(c)}-${c.changeKind}-${i}`}>
             <tr data-testid="db-change-row" data-object={objectLabel(c)} className="align-top">
-              <th scope="row" className="py-1.5 pr-2 font-mono font-normal text-zinc-200">
+              <th scope="row" className="py-1.5 pr-2 font-mono font-normal text-foreground">
                 {objectLabel(c)}
               </th>
-              <td className="py-1.5 pr-2 text-zinc-300">{CHANGE_KIND_LABEL[c.changeKind]}</td>
+              <td className="py-1.5 pr-2 text-foreground">{CHANGE_KIND_LABEL[c.changeKind]}</td>
               <td className="py-1.5 pr-2">
                 <ReconciliationBadge reconciliation={c.reconciliation} />
               </td>
-              <td className="py-1.5 pr-2 text-zinc-400">{c.confidence.toFixed(2)}</td>
+              <td className="py-1.5 pr-2 text-muted-foreground">{c.confidence.toFixed(2)}</td>
               <td className="py-1.5">
                 <RiskBadge riskClass={c.riskClass} />
               </td>
             </tr>
-            <tr className="border-b border-zinc-800/70">
+            <tr className="border-b border-border/70">
               <td colSpan={5} className="space-y-1.5 pb-2">
                 <SuggestedDdl ddl={c.suggestedDdl} />
                 <ConsumerSummary change={c} projectId={projectId} />
@@ -431,10 +437,10 @@ export function GapReportSchemaSection({ projectId, changes }: Props): React.Rea
 
   return (
     <section data-testid="gap-database-changes" className="space-y-2">
-      <h6 className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+      <h6 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
         Database changes
       </h6>
-      <p className="text-[11px] text-zinc-500">
+      <p className="text-[11px] text-muted-foreground">
         The database objects this requirement affects. Suggested DDL is shown for review only and is
         never executed by METIS.
       </p>
@@ -453,12 +459,12 @@ export function GapReportSchemaSection({ projectId, changes }: Props): React.Rea
       {unverified.length > 0 ? (
         <div
           data-testid="db-unverified-changes"
-          className="space-y-1.5 rounded border border-violet-800/50 bg-violet-950/20 p-2"
+          className="space-y-1.5 rounded border border-violet-300 dark:border-violet-800/50 bg-violet-50 dark:bg-violet-950/20 p-2"
         >
-          <h6 className="text-[11px] font-semibold uppercase tracking-wide text-violet-300">
+          <h6 className="text-[11px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
             Unverified against live schema — could not confirm
           </h6>
-          <p className="text-[11px] text-violet-200/80">
+          <p className="text-[11px] text-violet-700 dark:text-violet-200/80">
             These objects were referenced in code but could not be found in the live schema, so the
             change could not be confirmed. Treat them as leads to check, not confirmed changes.
           </p>

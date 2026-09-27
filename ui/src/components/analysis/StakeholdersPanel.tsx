@@ -17,15 +17,15 @@ import type {
 } from "@metis/shared";
 
 const LEVEL_CLASS: Record<string, string> = {
-  high: "bg-red-900/40 text-red-200",
-  medium: "bg-amber-900/40 text-amber-200",
-  low: "bg-zinc-800 text-zinc-300",
+  high: "bg-red-50 dark:bg-red-900/40 text-red-700 dark:text-red-200",
+  medium: "bg-amber-50 dark:bg-amber-900/40 text-amber-700 dark:text-amber-200",
+  low: "bg-muted text-foreground",
 };
 
 function LevelBadge({ label, value }: { label: string; value: string }) {
   return (
     <span
-      className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${LEVEL_CLASS[value] ?? "bg-zinc-800 text-zinc-300"}`}
+      className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${LEVEL_CLASS[value] ?? "bg-muted text-foreground"}`}
       title={`${label}: ${value}`}
     >
       {label}: {value}
@@ -35,22 +35,22 @@ function LevelBadge({ label, value }: { label: string; value: string }) {
 
 function StakeholderList({ stakeholders }: { stakeholders: Stakeholder[] }) {
   if (stakeholders.length === 0) {
-    return <p className="text-xs text-zinc-500">No stakeholders captured yet.</p>;
+    return <p className="text-xs text-muted-foreground">No stakeholders captured yet.</p>;
   }
   return (
     <ul className="space-y-2" data-testid="stakeholder-list">
       {stakeholders.map((s) => (
-        <li key={s.id} className="rounded border border-zinc-800 bg-zinc-900/40 p-2">
+        <li key={s.id} className="rounded border border-border bg-muted/40 p-2">
           <div className="flex items-center justify-between gap-2">
-            <span className="font-medium text-zinc-100">{s.name}</span>
+            <span className="font-medium text-foreground">{s.name}</span>
             <div className="flex gap-1">
               <LevelBadge label="influence" value={s.influence} />
               <LevelBadge label="interest" value={s.interest} />
             </div>
           </div>
-          {s.role ? <p className="text-xs text-zinc-400">{s.role}</p> : null}
+          {s.role ? <p className="text-xs text-muted-foreground">{s.role}</p> : null}
           {s.viewpoint ? (
-            <p className="text-[11px] text-zinc-500">viewpoint: {s.viewpoint}</p>
+            <p className="text-[11px] text-muted-foreground">viewpoint: {s.viewpoint}</p>
           ) : null}
         </li>
       ))}
@@ -67,13 +67,13 @@ function ContextSummary({ context }: { context: ProjectContext | null }) {
     context.constraints.length > 0 ||
     context.glossary.length > 0;
   if (!hasAny) {
-    return <p className="text-xs text-zinc-500">No project context captured yet.</p>;
+    return <p className="text-xs text-muted-foreground">No project context captured yet.</p>;
   }
   return (
     <div className="space-y-2 text-sm" data-testid="project-context">
       {context.businessGoals ? (
         <p>
-          <span className="text-zinc-400">Business goals: </span>
+          <span className="text-muted-foreground">Business goals: </span>
           {context.businessGoals}
         </p>
       ) : null}
@@ -86,7 +86,7 @@ function ContextSummary({ context }: { context: ProjectContext | null }) {
       ) : null}
       {context.glossary.length > 0 ? (
         <div>
-          <span className="text-zinc-400">Glossary:</span>
+          <span className="text-muted-foreground">Glossary:</span>
           <ul className="ml-4 list-disc">
             {context.glossary.map((g) => (
               <li key={g.term}>
@@ -103,7 +103,7 @@ function ContextSummary({ context }: { context: ProjectContext | null }) {
 function ScopeList({ label, items }: { label: string; items: string[] }) {
   return (
     <div>
-      <span className="text-zinc-400">{label}:</span>
+      <span className="text-muted-foreground">{label}:</span>
       <ul className="ml-4 list-disc">
         {items.map((item) => (
           <li key={item}>{item}</li>
@@ -129,21 +129,23 @@ function ArtifactsSection({ artifacts }: { artifacts: ElicitedArtifacts | null }
     artifacts.risks.length === 0;
   if (empty) {
     return (
-      <p className="text-xs text-zinc-500">No elicited NFRs, criteria, assumptions, or risks.</p>
+      <p className="text-xs text-muted-foreground">
+        No elicited NFRs, criteria, assumptions, or risks.
+      </p>
     );
   }
   return (
     <div className="space-y-3 text-sm" data-testid="elicited-artifacts">
       {artifacts.nfrs.length > 0 ? (
         <div>
-          <h4 className="text-xs font-semibold uppercase text-zinc-400">
+          <h4 className="text-xs font-semibold uppercase text-muted-foreground">
             Non-functional requirements
           </h4>
           <ul className="ml-4 list-disc">
             {artifacts.nfrs.map((n) => (
               <li key={n.id}>
                 <span className="font-medium">{n.title}</span> ({n.category}/{n.priority})
-                {n.metric ? <span className="text-zinc-400"> — {n.metric}</span> : null}
+                {n.metric ? <span className="text-muted-foreground"> — {n.metric}</span> : null}
               </li>
             ))}
           </ul>
@@ -151,7 +153,9 @@ function ArtifactsSection({ artifacts }: { artifacts: ElicitedArtifacts | null }
       ) : null}
       {artifacts.acceptanceCriteria.length > 0 ? (
         <div>
-          <h4 className="text-xs font-semibold uppercase text-zinc-400">Acceptance criteria</h4>
+          <h4 className="text-xs font-semibold uppercase text-muted-foreground">
+            Acceptance criteria
+          </h4>
           <ul className="ml-4 list-disc">
             {artifacts.acceptanceCriteria.map((a) => (
               <li key={a.id}>{a.statement}</li>
@@ -161,12 +165,12 @@ function ArtifactsSection({ artifacts }: { artifacts: ElicitedArtifacts | null }
       ) : null}
       {artifacts.assumptions.length > 0 ? (
         <div>
-          <h4 className="text-xs font-semibold uppercase text-zinc-400">Assumptions</h4>
+          <h4 className="text-xs font-semibold uppercase text-muted-foreground">Assumptions</h4>
           <ul className="ml-4 list-disc">
             {artifacts.assumptions.map((a) => (
               <li key={a.id}>
                 {a.statement}{" "}
-                <span className="text-zinc-500">(impact if false: {a.impactIfFalse})</span>
+                <span className="text-muted-foreground">(impact if false: {a.impactIfFalse})</span>
               </li>
             ))}
           </ul>
@@ -174,12 +178,12 @@ function ArtifactsSection({ artifacts }: { artifacts: ElicitedArtifacts | null }
       ) : null}
       {artifacts.risks.length > 0 ? (
         <div>
-          <h4 className="text-xs font-semibold uppercase text-zinc-400">Risks</h4>
+          <h4 className="text-xs font-semibold uppercase text-muted-foreground">Risks</h4>
           <ul className="ml-4 list-disc">
             {artifacts.risks.map((r) => (
               <li key={r.id}>
                 <span className="font-medium">{r.title}</span>{" "}
-                <span className="text-zinc-500">
+                <span className="text-muted-foreground">
                   (likelihood: {r.likelihood}, impact: {r.impact})
                 </span>
               </li>
@@ -204,32 +208,36 @@ export function StakeholdersPanel({
 }: StakeholdersPanelProps) {
   return (
     <section
-      className="space-y-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4"
+      className="space-y-4 rounded-lg border border-border bg-muted/40 p-4"
       data-testid="stakeholders-panel"
     >
       <header>
-        <h3 className="text-sm font-semibold text-zinc-100">Stakeholders &amp; context</h3>
-        <p className="text-xs text-zinc-500">
+        <h3 className="text-sm font-semibold text-foreground">Stakeholders &amp; context</h3>
+        <p className="text-xs text-muted-foreground">
           Who the requirements serve, the project framing, and the elicited NFRs, acceptance
           criteria, assumptions, and risks.
         </p>
       </header>
 
       <div>
-        <h4 className="mb-1 text-xs font-semibold uppercase text-zinc-400">Stakeholders</h4>
+        <h4 className="mb-1 text-xs font-semibold uppercase text-muted-foreground">Stakeholders</h4>
         <StakeholderList stakeholders={stakeholders} />
       </div>
 
       {context ? (
         <div>
-          <h4 className="mb-1 text-xs font-semibold uppercase text-zinc-400">Project context</h4>
+          <h4 className="mb-1 text-xs font-semibold uppercase text-muted-foreground">
+            Project context
+          </h4>
           <ContextSummary context={context} />
         </div>
       ) : null}
 
       {artifacts ? (
         <div>
-          <h4 className="mb-1 text-xs font-semibold uppercase text-zinc-400">Elicited artifacts</h4>
+          <h4 className="mb-1 text-xs font-semibold uppercase text-muted-foreground">
+            Elicited artifacts
+          </h4>
           <ArtifactsSection artifacts={artifacts} />
         </div>
       ) : null}

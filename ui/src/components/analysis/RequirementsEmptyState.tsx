@@ -19,7 +19,7 @@ export function RequirementsEmptyState({
   const blocked = readEnhancementMetadata(metadata).promotionBlocked;
 
   if (!blocked?.blocked) {
-    return <p className="text-sm text-zinc-500">No requirements yet.</p>;
+    return <p className="text-sm text-muted-foreground">No requirements yet.</p>;
   }
 
   const awaiting = blocked.awaitingRequirementCount ?? 0;
@@ -31,7 +31,7 @@ export function RequirementsEmptyState({
     <div
       role="alert"
       data-testid="requirements-gated"
-      className="space-y-1 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300"
+      className="space-y-1 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300"
     >
       <p>
         <span aria-hidden>⚠</span>{" "}
@@ -39,7 +39,7 @@ export function RequirementsEmptyState({
           ? `${awaiting} requirement(s) awaiting approval — they were generated but are not saved yet.`
           : "Requirements are awaiting approval before they are saved."}
       </p>
-      <p className="text-xs text-amber-200/80">
+      <p className="text-xs text-amber-700 dark:text-amber-200/80">
         {outstanding.length > 0
           ? `${outstanding.join(", ")} approval(s) must be resolved.`
           : "Resolve the outstanding approvals to release them."}{" "}

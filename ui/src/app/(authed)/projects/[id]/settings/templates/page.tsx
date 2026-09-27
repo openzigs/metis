@@ -43,18 +43,18 @@ function TemplatePreview({
   previewMode: "github" | "jira";
 }) {
   return (
-    <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4 text-sm">
-      <div className="mb-2 text-xs font-medium text-zinc-400 uppercase">
+    <div className="rounded-lg border border-border bg-muted p-4 text-sm">
+      <div className="mb-2 text-xs font-medium text-muted-foreground uppercase">
         {previewMode === "github" ? "GitHub Markdown" : "Jira"} Preview
       </div>
       {schema.sections.map((s) => (
         <div key={s.key} className="mb-3">
           {s.key !== "title" && (
-            <h3 className="text-sm font-semibold text-zinc-200 mb-1">
+            <h3 className="text-sm font-semibold text-foreground mb-1">
               {previewMode === "github" ? `## ${s.label}` : `h3. ${s.label}`}
             </h3>
           )}
-          <div className="text-zinc-400 italic text-xs">
+          <div className="text-muted-foreground italic text-xs">
             {s.placeholder || `[${s.type}${s.required ? ", required" : ""}]`}
           </div>
         </div>
@@ -75,12 +75,12 @@ function SectionEditor({
   onRemove: () => void;
 }) {
   return (
-    <div className="rounded border border-zinc-700 bg-zinc-800/50 p-3 space-y-2">
+    <div className="rounded border border-border bg-muted/50 p-3 space-y-2">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-zinc-200">{section.label || section.key}</span>
+        <span className="text-sm font-medium text-foreground">{section.label || section.key}</span>
         <button
           onClick={onRemove}
-          className="text-xs text-red-400 hover:text-red-300"
+          className="text-xs text-red-700 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
           aria-label={`Remove section ${section.key}`}
         >
           Remove
@@ -88,33 +88,33 @@ function SectionEditor({
       </div>
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <Label className="text-xs text-zinc-400">Key</Label>
+          <Label className="text-xs text-muted-foreground">Key</Label>
           <input
             type="text"
             value={section.key}
             onChange={(e) => onUpdate({ ...section, key: e.target.value })}
-            className="w-full rounded bg-zinc-900 border border-zinc-600 px-2 py-1 text-sm text-zinc-200"
+            className="w-full rounded bg-muted border border-border px-2 py-1 text-sm text-foreground"
             aria-label="Section key"
           />
         </div>
         <div>
-          <Label className="text-xs text-zinc-400">Label</Label>
+          <Label className="text-xs text-muted-foreground">Label</Label>
           <input
             type="text"
             value={section.label}
             onChange={(e) => onUpdate({ ...section, label: e.target.value })}
-            className="w-full rounded bg-zinc-900 border border-zinc-600 px-2 py-1 text-sm text-zinc-200"
+            className="w-full rounded bg-muted border border-border px-2 py-1 text-sm text-foreground"
             aria-label="Section label"
           />
         </div>
         <div>
-          <Label className="text-xs text-zinc-400">Type</Label>
+          <Label className="text-xs text-muted-foreground">Type</Label>
           <select
             value={section.type}
             onChange={(e) =>
               onUpdate({ ...section, type: e.target.value as TemplateSectionData["type"] })
             }
-            className="w-full rounded bg-zinc-900 border border-zinc-600 px-2 py-1 text-sm text-zinc-200"
+            className="w-full rounded bg-muted border border-border px-2 py-1 text-sm text-foreground"
             aria-label="Section type"
           >
             {SECTION_TYPES.map((t) => (
@@ -133,18 +133,18 @@ function SectionEditor({
             id={`required-${section.key}`}
             aria-label="Required"
           />
-          <Label htmlFor={`required-${section.key}`} className="text-xs text-zinc-400">
+          <Label htmlFor={`required-${section.key}`} className="text-xs text-muted-foreground">
             Required
           </Label>
         </div>
       </div>
       <div>
-        <Label className="text-xs text-zinc-400">Placeholder</Label>
+        <Label className="text-xs text-muted-foreground">Placeholder</Label>
         <input
           type="text"
           value={section.placeholder || ""}
           onChange={(e) => onUpdate({ ...section, placeholder: e.target.value || undefined })}
-          className="w-full rounded bg-zinc-900 border border-zinc-600 px-2 py-1 text-sm text-zinc-200"
+          className="w-full rounded bg-muted border border-border px-2 py-1 text-sm text-foreground"
           aria-label="Section placeholder"
         />
       </div>
@@ -203,22 +203,22 @@ function TemplateForm({
       {/* Meta fields */}
       <div className="grid grid-cols-3 gap-4">
         <div>
-          <Label className="text-sm text-zinc-300">Template Name</Label>
+          <Label className="text-sm text-foreground">Template Name</Label>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full rounded bg-zinc-900 border border-zinc-600 px-3 py-2 text-sm text-zinc-200"
+            className="w-full rounded bg-muted border border-border px-3 py-2 text-sm text-foreground"
             placeholder="My Template"
             aria-label="Template name"
           />
         </div>
         <div>
-          <Label className="text-sm text-zinc-300">Platform</Label>
+          <Label className="text-sm text-foreground">Platform</Label>
           <select
             value={platform}
             onChange={(e) => setPlatform(e.target.value as TemplateSchemaData["platform"])}
-            className="w-full rounded bg-zinc-900 border border-zinc-600 px-3 py-2 text-sm text-zinc-200"
+            className="w-full rounded bg-muted border border-border px-3 py-2 text-sm text-foreground"
             aria-label="Platform"
           >
             {PLATFORMS.map((p) => (
@@ -229,11 +229,11 @@ function TemplateForm({
           </select>
         </div>
         <div>
-          <Label className="text-sm text-zinc-300">Template Type</Label>
+          <Label className="text-sm text-foreground">Template Type</Label>
           <select
             value={templateType}
             onChange={(e) => setTemplateType(e.target.value as TemplateSchemaData["templateType"])}
-            className="w-full rounded bg-zinc-900 border border-zinc-600 px-3 py-2 text-sm text-zinc-200"
+            className="w-full rounded bg-muted border border-border px-3 py-2 text-sm text-foreground"
             aria-label="Template type"
           >
             {TEMPLATE_TYPES.map((t) => (
@@ -250,7 +250,7 @@ function TemplateForm({
         {/* Section editor */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-zinc-300">Sections</h3>
+            <h3 className="text-sm font-semibold text-foreground">Sections</h3>
             <Button onClick={addSection} variant="outline" size="sm">
               + Add Section
             </Button>
@@ -268,14 +268,14 @@ function TemplateForm({
         {/* Live preview */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-zinc-300">Preview</h3>
+            <h3 className="text-sm font-semibold text-foreground">Preview</h3>
             <div className="flex gap-1">
               <button
                 onClick={() => setPreviewMode("github")}
                 className={`px-2 py-1 text-xs rounded ${
                   previewMode === "github"
-                    ? "bg-zinc-600 text-zinc-200"
-                    : "text-zinc-400 hover:text-zinc-300"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
                 }`}
               >
                 GitHub
@@ -284,8 +284,8 @@ function TemplateForm({
                 onClick={() => setPreviewMode("jira")}
                 className={`px-2 py-1 text-xs rounded ${
                   previewMode === "jira"
-                    ? "bg-zinc-600 text-zinc-200"
-                    : "text-zinc-400 hover:text-zinc-300"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
                 }`}
               >
                 Jira
@@ -297,7 +297,7 @@ function TemplateForm({
       </div>
 
       {/* Actions */}
-      <div className="flex gap-3 pt-4 border-t border-zinc-700">
+      <div className="flex gap-3 pt-4 border-t border-border">
         <Button onClick={() => onSave(schema, name)} disabled={saving || !name.trim()}>
           {saving ? "Saving…" : "Save Template"}
         </Button>
@@ -389,11 +389,11 @@ export default function TemplateSettingsPage() {
   // Edit mode
   if (editingId) {
     const template = templates.find((t: TemplateData) => t.id === editingId);
-    if (!template) return <div className="p-6 text-zinc-400">Template not found</div>;
+    if (!template) return <div className="p-6 text-muted-foreground">Template not found</div>;
     const schema = parseSchema(template.schema);
     return (
       <div className="max-w-5xl mx-auto p-6 space-y-4">
-        <h1 className="text-xl font-bold text-zinc-100">Edit Template: {template.name}</h1>
+        <h1 className="text-xl font-bold text-foreground">Edit Template: {template.name}</h1>
         <TemplateForm
           initial={schema || undefined}
           onSave={(s, n) => handleUpdate(editingId, s, n)}
@@ -408,7 +408,7 @@ export default function TemplateSettingsPage() {
   if (creating) {
     return (
       <div className="max-w-5xl mx-auto p-6 space-y-4">
-        <h1 className="text-xl font-bold text-zinc-100">Create Template</h1>
+        <h1 className="text-xl font-bold text-foreground">Create Template</h1>
         <TemplateForm
           onSave={handleCreate}
           onCancel={() => setCreating(false)}
@@ -423,18 +423,18 @@ export default function TemplateSettingsPage() {
     <div className="max-w-4xl mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-zinc-100">Issue Templates</h1>
-          <p className="text-sm text-zinc-400 mt-1">
+          <h1 className="text-xl font-bold text-foreground">Issue Templates</h1>
+          <p className="text-sm text-muted-foreground mt-1">
             Configure issue body templates for AI-generated drafts
           </p>
         </div>
         <Button onClick={() => setCreating(true)}>+ New Template</Button>
       </div>
 
-      {isLoading && <div className="text-zinc-400">Loading templates…</div>}
+      {isLoading && <div className="text-muted-foreground">Loading templates…</div>}
 
       {!isLoading && templates.length === 0 && (
-        <Card className="p-8 text-center text-zinc-400">
+        <Card className="p-8 text-center text-muted-foreground">
           No templates yet. Create your first template or seed defaults.
         </Card>
       )}
@@ -445,14 +445,14 @@ export default function TemplateSettingsPage() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-zinc-200">{template.name}</span>
+                  <span className="text-sm font-semibold text-foreground">{template.name}</span>
                   {template.isDefault && (
-                    <span className="text-xs bg-blue-900/50 text-blue-300 px-2 py-0.5 rounded">
+                    <span className="text-xs bg-blue-50 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded">
                       Default
                     </span>
                   )}
                 </div>
-                <div className="text-xs text-zinc-400 mt-1 flex gap-3">
+                <div className="text-xs text-muted-foreground mt-1 flex gap-3">
                   <span>Platform: {template.platform}</span>
                   <span>Type: {template.templateType}</span>
                   <span>
@@ -483,7 +483,7 @@ export default function TemplateSettingsPage() {
                         <Button
                           variant="outline"
                           size="sm"
-                          className="text-red-400 border-red-400/50"
+                          className="text-red-700 dark:text-red-400 border-red-400/50"
                           onClick={() => deleteMutation.mutate(template.id)}
                         >
                           Confirm
@@ -496,7 +496,7 @@ export default function TemplateSettingsPage() {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="text-red-400"
+                        className="text-red-700 dark:text-red-400"
                         onClick={() => setConfirmDelete(template.id)}
                       >
                         Delete

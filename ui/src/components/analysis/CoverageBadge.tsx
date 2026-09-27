@@ -29,19 +29,21 @@ export const COVERAGE_COPY: Record<RequirementCoverage, CoverageCopy> = {
     label: "Grounded in code",
     tooltip:
       "This requirement is backed by at least one finding that cites a specific place in the source code (file and line range). NOTE: this means code was CITED, not that the requirement is implemented — see the Verdict badge for that.",
-    className: "border-emerald-700/50 bg-emerald-950/40 text-emerald-300",
+    className:
+      "border-emerald-700/50 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300",
   },
   grounded_in_docs_only: {
     label: "Docs only",
     tooltip:
       "This requirement is backed only by document citations — no finding traces it to actual source code. It may still be valid, but its link to the implementation is unverified.",
-    className: "border-amber-700/50 bg-amber-950/40 text-amber-300",
+    className:
+      "border-amber-700/50 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300",
   },
   no_evidence: {
     label: "No evidence",
     tooltip:
       "No grounded evidence was linked to this requirement. This is NOT the same as a confirmed gap — the analysis may simply have failed to retrieve the relevant code. See the Verdict badge before assuming anything is missing.",
-    className: "border-red-700/50 bg-red-950/40 text-red-300",
+    className: "border-red-700/50 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300",
   },
 };
 

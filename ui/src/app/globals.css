@@ -1,6 +1,23 @@
 @import "tailwindcss";
+/*
+ * #269 — the ui-kit overlays (dialog, sheet, tooltip, dropdown-menu, select)
+ * use `animate-in` / `fade-in-0` / `zoom-in-95`. shadcn's Tailwind v4 guide
+ * replaces the deprecated `tailwindcss-animate` plugin with this import;
+ * without it those classes generate no CSS and the animations never run.
+ */
+@import "tw-animate-css";
 @plugin "@tailwindcss/typography";
 @import "katex/dist/katex.min.css";
+
+/*
+ * #265 — Tailwind 4's `dark:` variant defaults to
+ * `@media (prefers-color-scheme: dark)`, i.e. the OS setting. next-themes
+ * (`components/providers.tsx`, `attribute="class"`) toggles a `.dark` class on
+ * <html> instead, and its "System" choice already mirrors the OS by setting
+ * that class. Bind `dark:` to the class so every `dark:` utility follows the
+ * Light / Dark / System toggle, like the `.dark` token block below does.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
 
 /*
  * The shared @metis/ui-kit package lives outside this app's auto-scanned

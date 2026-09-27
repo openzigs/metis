@@ -55,11 +55,11 @@ function uniq(ids: string[]): string[] {
 function statusBadgeClass(status: DocumentRow["status"]): string {
   switch (status) {
     case "ready":
-      return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
+      return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30";
     case "failed":
-      return "bg-red-500/15 text-red-300 border-red-500/30";
+      return "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30";
     default:
-      return "bg-blue-500/15 text-blue-300 border-blue-500/30";
+      return "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30";
   }
 }
 
@@ -135,10 +135,10 @@ export function AddDocumentsPanel({
 
       {/* Document selection list (ready docs selectable; in-flight docs shown
           with their ingest status so users see them arrive). */}
-      <div className="max-h-40 space-y-1 overflow-y-auto rounded border border-zinc-800 p-2">
-        {loading ? <p className="text-xs text-zinc-500">Loading documents…</p> : null}
+      <div className="max-h-40 space-y-1 overflow-y-auto rounded border border-border p-2">
+        {loading ? <p className="text-xs text-muted-foreground">Loading documents…</p> : null}
         {!loading && docs.length === 0 ? (
-          <p className="text-xs text-zinc-500">No documents yet — add one below.</p>
+          <p className="text-xs text-muted-foreground">No documents yet — add one below.</p>
         ) : null}
         {docs.map((d) => {
           const ready = d.status === "ready";
@@ -184,7 +184,7 @@ export function AddDocumentsPanel({
 
       {selectedNotReady.length > 0 ? (
         <p
-          className="mt-2 text-xs text-amber-400"
+          className="mt-2 text-xs text-amber-700 dark:text-amber-400"
           role="status"
           data-testid="add-documents-warning"
         >
@@ -221,7 +221,7 @@ export function AddDocumentsPanel({
             </div>
             {urlError ? (
               <p
-                className="text-xs text-red-400"
+                className="text-xs text-red-700 dark:text-red-400"
                 role="alert"
                 data-testid="add-documents-url-error"
               >

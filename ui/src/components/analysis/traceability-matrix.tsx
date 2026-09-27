@@ -60,10 +60,10 @@ export function TraceabilityMatrix({
     <section data-testid="traceability-matrix" className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <div>
-          <h4 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
+          <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             Traceability matrix
           </h4>
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-muted-foreground">
             Requirement → findings → code → tests. Tests are detected from the code graph
             (best-effort).
           </p>
@@ -91,26 +91,26 @@ export function TraceabilityMatrix({
       </div>
 
       {exportMutation.isError ? (
-        <p className="text-xs text-red-400" role="alert">
+        <p className="text-xs text-red-700 dark:text-red-400" role="alert">
           Export failed. Please try again.
         </p>
       ) : null}
 
       {query.isLoading ? (
-        <p className="text-sm text-zinc-500">Loading traceability…</p>
+        <p className="text-sm text-muted-foreground">Loading traceability…</p>
       ) : query.isError ? (
-        <p className="text-sm text-red-400" role="alert">
+        <p className="text-sm text-red-700 dark:text-red-400" role="alert">
           Could not load the traceability matrix.
         </p>
       ) : rows.length === 0 ? (
-        <p className="text-sm text-zinc-500">
+        <p className="text-sm text-muted-foreground">
           No requirements to trace yet. Complete an analysis to populate the matrix.
         </p>
       ) : (
         <Card className="overflow-x-auto p-0">
           <table className="w-full min-w-[720px] border-collapse text-left text-xs">
             <thead>
-              <tr className="border-b border-zinc-800 text-zinc-400">
+              <tr className="border-b border-border text-muted-foreground">
                 <th className="p-2 font-medium">Requirement</th>
                 <th className="p-2 font-medium">Verdict</th>
                 <th className="p-2 font-medium">Findings</th>
@@ -123,11 +123,11 @@ export function TraceabilityMatrix({
                 <tr
                   key={row.requirementId}
                   data-testid={`traceability-row-${row.requirementId}`}
-                  className="border-b border-zinc-900 align-top"
+                  className="border-b border-border align-top"
                 >
                   <td className="p-2">
                     <div className="flex flex-col gap-1">
-                      <span className="font-medium text-zinc-200">{row.title}</span>
+                      <span className="font-medium text-foreground">{row.title}</span>
                       <CoverageBadge coverage={row.coverage} />
                     </div>
                   </td>
@@ -138,17 +138,17 @@ export function TraceabilityMatrix({
                     {row.verdict ? (
                       <VerdictBadge verdict={row.verdict} />
                     ) : (
-                      <span className="text-zinc-600">—</span>
+                      <span className="text-muted-foreground">—</span>
                     )}
                   </td>
                   <td className="p-2">
                     {row.findings.length === 0 ? (
-                      <span className="text-zinc-600">none</span>
+                      <span className="text-muted-foreground">none</span>
                     ) : (
                       <ul className="space-y-1">
                         {row.findings.map((f) => (
-                          <li key={f.id} className="text-zinc-300">
-                            {f.title} <span className="text-zinc-500">({f.severity})</span>
+                          <li key={f.id} className="text-foreground">
+                            {f.title} <span className="text-muted-foreground">({f.severity})</span>
                           </li>
                         ))}
                       </ul>
@@ -156,13 +156,13 @@ export function TraceabilityMatrix({
                   </td>
                   <td className="p-2">
                     {row.codeLocations.length === 0 ? (
-                      <span className="text-zinc-600">none</span>
+                      <span className="text-muted-foreground">none</span>
                     ) : (
                       <ul className="space-y-1">
                         {row.codeLocations.map((loc) => (
                           <li
                             key={`${loc.source}:${loc.filePath}:${loc.startLine}`}
-                            className="font-mono text-zinc-300"
+                            className="font-mono text-foreground"
                             title={loc.source}
                           >
                             {codeLocationLabel(loc)}
@@ -173,11 +173,14 @@ export function TraceabilityMatrix({
                   </td>
                   <td className="p-2">
                     {row.tests.length === 0 ? (
-                      <span className="text-zinc-600">none detected</span>
+                      <span className="text-muted-foreground">none detected</span>
                     ) : (
                       <ul className="space-y-1">
                         {row.tests.map((t) => (
-                          <li key={`${t.filePath}:${t.symbol}`} className="font-mono text-zinc-300">
+                          <li
+                            key={`${t.filePath}:${t.symbol}`}
+                            className="font-mono text-foreground"
+                          >
                             {t.filePath}
                           </li>
                         ))}

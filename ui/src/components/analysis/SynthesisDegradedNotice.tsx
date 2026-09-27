@@ -43,13 +43,16 @@ export function SynthesisDegradedNotice({
     <div
       role="alert"
       data-testid="synthesis-degraded"
-      className="space-y-1 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300"
+      className="space-y-1 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300"
     >
       <p>
         <span aria-hidden>⚠</span> {describeSynthesisDegradation(degraded)}
       </p>
       {degraded.detail && (
-        <p className="font-mono text-xs text-amber-200/70" data-testid="synthesis-degraded-detail">
+        <p
+          className="font-mono text-xs text-amber-700 dark:text-amber-200/70"
+          data-testid="synthesis-degraded-detail"
+        >
           {degraded.detail}
         </p>
       )}

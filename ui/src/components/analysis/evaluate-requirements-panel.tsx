@@ -58,11 +58,11 @@ export function EvaluateRequirementsPanel({
   const [truncatedBy, setTruncatedBy] = useState(0);
 
   return (
-    <div className="rounded border border-zinc-800 p-3" data-testid="evaluate-requirements-panel">
+    <div className="rounded border border-border p-3" data-testid="evaluate-requirements-panel">
       <div className="flex items-center justify-between gap-2">
         <div>
           <Label className="text-sm font-medium">Evaluate new requirements (optional)</Label>
-          <p className="mt-0.5 text-xs text-zinc-400">{HELPER_TEXT}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{HELPER_TEXT}</p>
         </div>
         <Button
           size="sm"
@@ -93,7 +93,7 @@ export function EvaluateRequirementsPanel({
           />
           {truncatedBy > 0 ? (
             <p
-              className="text-xs text-amber-300"
+              className="text-xs text-amber-700 dark:text-amber-300"
               data-testid="evaluate-requirements-truncated"
               role="status"
             >
@@ -103,7 +103,7 @@ export function EvaluateRequirementsPanel({
             </p>
           ) : null}
           <div
-            className={`text-right text-xs ${overLimit ? "text-red-400" : "text-zinc-500"}`}
+            className={`text-right text-xs ${overLimit ? "text-red-700 dark:text-red-400" : "text-muted-foreground"}`}
             data-testid="evaluate-requirements-counter"
             aria-live="polite"
           >

@@ -30,8 +30,8 @@ function symbolLocator(s: AffectedCodeSymbol): string {
 /** A blast-radius relation gets a muted badge; a direct mapper hit an accent one. */
 function relationClass(relation: AffectedCodeSymbol["relation"]): string {
   return relation === "direct"
-    ? "bg-emerald-900/40 text-emerald-300 border-emerald-700/50"
-    : "bg-zinc-800 text-zinc-300 border-zinc-700";
+    ? "bg-emerald-50 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 border-emerald-700/50"
+    : "bg-muted text-foreground border-border";
 }
 
 export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement | null {
@@ -41,10 +41,10 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
 
   return (
     <div data-testid="affected-code-panel" className="space-y-2">
-      <h4 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
+      <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
         Affected code (deterministic mapping)
       </h4>
-      <p className="text-xs text-zinc-500">
+      <p className="text-xs text-muted-foreground">
         Each new requirement mapped to existing code via Impact Analysis (mapper + blast radius).
         {affectedCode?.truncated
           ? " Some entries were omitted from the analysis prompt for length."
@@ -57,7 +57,7 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
             <li
               key={candidate.id}
               data-testid={`affected-code-candidate-${candidate.id}`}
-              className="rounded border border-zinc-800 bg-zinc-900/30"
+              className="rounded border border-border bg-muted/30"
             >
               <button
                 type="button"
@@ -66,19 +66,19 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
                 className="flex w-full items-center justify-between gap-2 p-3 text-left"
               >
                 <span className="text-sm">
-                  <span className="font-mono text-xs text-zinc-500">{candidate.id}</span>{" "}
-                  <span className="font-medium text-zinc-200">{candidate.title}</span>
+                  <span className="font-mono text-xs text-muted-foreground">{candidate.id}</span>{" "}
+                  <span className="font-medium text-foreground">{candidate.title}</span>
                 </span>
-                <span className="shrink-0 text-xs text-zinc-500">
+                <span className="shrink-0 text-xs text-muted-foreground">
                   {candidate.symbols.length} symbol{candidate.symbols.length === 1 ? "" : "s"}
                 </span>
               </button>
               {isOpen ? (
-                <div className="border-t border-zinc-800 p-3">
+                <div className="border-t border-border p-3">
                   {candidate.symbols.length === 0 ? (
                     <p
                       data-testid={`affected-code-empty-${candidate.id}`}
-                      className="text-xs text-zinc-500"
+                      className="text-xs text-muted-foreground"
                     >
                       No code matched — see the coverage indicator.
                     </p>
@@ -94,9 +94,13 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
                           >
                             {symbol.relation}
                           </span>
-                          <span className="font-mono text-zinc-200">{symbol.qualifiedName}</span>
-                          <span className="font-mono text-zinc-500">{symbolLocator(symbol)}</span>
-                          <span className="text-zinc-500">conf {symbol.confidence.toFixed(2)}</span>
+                          <span className="font-mono text-foreground">{symbol.qualifiedName}</span>
+                          <span className="font-mono text-muted-foreground">
+                            {symbolLocator(symbol)}
+                          </span>
+                          <span className="text-muted-foreground">
+                            conf {symbol.confidence.toFixed(2)}
+                          </span>
                         </li>
                       ))}
                     </ul>

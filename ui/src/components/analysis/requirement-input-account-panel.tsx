@@ -40,11 +40,11 @@ export function RequirementInputAccountPanel({ capability }: Props): React.React
 
   return (
     <div data-testid="requirement-input-account-panel" className="space-y-2">
-      <h4 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
+      <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
         Requirements you supplied
       </h4>
       <p
-        className={`text-xs ${discarded ? "text-amber-300" : "text-zinc-500"}`}
+        className={`text-xs ${discarded ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground"}`}
         data-testid="requirement-input-account-summary"
       >
         {analyzedCount} of {account.parsedCount} requirement
@@ -53,7 +53,10 @@ export function RequirementInputAccountPanel({ capability }: Props): React.React
       </p>
 
       {account.inputTruncated ? (
-        <p className="text-xs text-amber-300" data-testid="requirement-input-truncated">
+        <p
+          className="text-xs text-amber-700 dark:text-amber-300"
+          data-testid="requirement-input-truncated"
+        >
           Your text reached the input limit, so anything after it was cut before this run started —
           the end of your paste may be missing.
         </p>
@@ -65,11 +68,11 @@ export function RequirementInputAccountPanel({ capability }: Props): React.React
             <li
               key={m.id}
               data-testid={`requirement-input-merged-${m.id}`}
-              className="text-xs text-zinc-400"
+              className="text-xs text-muted-foreground"
             >
-              <span className="font-mono text-zinc-500">{m.id}</span>{" "}
-              <span className="text-zinc-300">“{m.excerpt}”</span> — merged into{" "}
-              <span className="font-mono text-zinc-300">{m.mergedIntoId}</span> as a duplicate (
+              <span className="font-mono text-muted-foreground">{m.id}</span>{" "}
+              <span className="text-foreground">“{m.excerpt}”</span> — merged into{" "}
+              <span className="font-mono text-foreground">{m.mergedIntoId}</span> as a duplicate (
               {m.mergedIntoExcerpt}). It was analyzed under that requirement.
             </li>
           ))}
@@ -82,10 +85,10 @@ export function RequirementInputAccountPanel({ capability }: Props): React.React
             <li
               key={d.id}
               data-testid={`requirement-input-dropped-${d.id}`}
-              className="text-xs text-amber-200"
+              className="text-xs text-amber-700 dark:text-amber-200"
             >
-              <span className="font-mono text-amber-400">{d.id}</span> <span>“{d.excerpt}”</span> —
-              not analyzed: {DROP_REASON_TEXT[d.reason]}.
+              <span className="font-mono text-amber-700 dark:text-amber-400">{d.id}</span>{" "}
+              <span>“{d.excerpt}”</span> — not analyzed: {DROP_REASON_TEXT[d.reason]}.
             </li>
           ))}
         </ul>

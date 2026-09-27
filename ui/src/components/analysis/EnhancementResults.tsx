@@ -38,9 +38,9 @@ const TRUST_LABEL: Record<DomainTrust, string> = {
 };
 
 const TRUST_STYLE: Record<DomainTrust, string> = {
-  high: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
-  medium: "border-amber-500/30 bg-amber-500/10 text-amber-300",
-  low: "border-red-500/30 bg-red-500/10 text-red-300",
+  high: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  medium: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  low: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
 };
 
 interface EnhancementResultsProps {
@@ -66,7 +66,7 @@ export function EnhancementResults({
   return (
     <div className="space-y-4">
       {clarificationEnabled && structured && (
-        <p data-testid="collaboration-hint" className="text-xs text-zinc-400">
+        <p data-testid="collaboration-hint" className="text-xs text-muted-foreground">
           Collaborate: answer the clarifying questions below, Approve/Reject and comment on each
           requirement, or export questions / import answers for offline review.
         </p>
@@ -109,23 +109,23 @@ export function ClarificationImpactNote({
   return (
     <div
       data-testid="clarification-impact"
-      className="space-y-1 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-xs text-zinc-400"
+      className="space-y-1 rounded border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
     >
       {requirementsAvailable ? (
-        <p className="text-zinc-300">
+        <p className="text-foreground">
           {appliedCount} of {answeredCount} answer{answeredCount === 1 ? "" : "s"} {""}
           {appliedCount === 1 ? "was" : "were"} written into the saved requirements and will appear
           in published issues under “Clarifications”.
         </p>
       ) : (
-        <p className="text-zinc-300">
+        <p className="text-foreground">
           {answeredCount} answer{answeredCount === 1 ? "" : "s"} recorded. The requirements are not
           saved yet — they are awaiting approval, and your answers are written into them when they
           are promoted.
         </p>
       )}
       {unattributedCount > 0 && (
-        <p className="text-amber-300" data-testid="clarification-unattributed">
+        <p className="text-amber-700 dark:text-amber-300" data-testid="clarification-unattributed">
           {unattributedCount} answer{unattributedCount === 1 ? "" : "s"} could not be matched to a
           saved requirement, so {unattributedCount === 1 ? "it refines" : "they refine"} the
           requirement text shown here but will not appear in a published issue.
@@ -158,7 +158,7 @@ function GapsSummaryBanner({
       <div
         data-testid="gaps-summary"
         role="status"
-        className="rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300"
+        className="rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300"
       >
         <span aria-hidden>✓</span> No open questions — requirements look complete
         {requirementCount > 0 && ` across ${requirementCount} requirements`}.
@@ -170,7 +170,7 @@ function GapsSummaryBanner({
     <div
       data-testid="gaps-summary"
       role="alert"
-      className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300"
+      className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300"
     >
       <span>
         <span aria-hidden>⚠</span> {totalAmbiguities} open questions / ambiguities detected across{" "}
@@ -193,20 +193,20 @@ function EvidenceReview({ digests }: { digests: EvidenceDigest[] }): React.React
     <Card className="space-y-3 p-4">
       <h3 className="text-lg font-semibold">Evidence Review</h3>
       {digests.length === 0 ? (
-        <p className="text-sm text-zinc-400">No web research evidence to review.</p>
+        <p className="text-sm text-muted-foreground">No web research evidence to review.</p>
       ) : (
         <ul className="space-y-3">
           {digests.map((digest) => (
-            <li key={digest.id} className="rounded border border-zinc-800 p-3">
+            <li key={digest.id} className="rounded border border-border p-3">
               <div className="mb-1 flex items-center justify-between gap-2">
-                <span className="text-sm font-medium text-zinc-200">{digest.query}</span>
+                <span className="text-sm font-medium text-foreground">{digest.query}</span>
                 {digest.needsHumanReview && (
-                  <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300">
+                  <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">
                     Needs Review
                   </span>
                 )}
               </div>
-              <p className="mb-2 text-sm text-zinc-400">{digest.digest}</p>
+              <p className="mb-2 text-sm text-muted-foreground">{digest.digest}</p>
               {digest.sources.length > 0 && (
                 <ul className="space-y-1">
                   {digest.sources.map((source) => (
@@ -220,7 +220,7 @@ function EvidenceReview({ digests }: { digests: EvidenceDigest[] }): React.React
                         href={source.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-blue-400 hover:underline"
+                        className="text-blue-700 dark:text-blue-400 hover:underline"
                       >
                         {source.title}
                       </a>
@@ -354,7 +354,7 @@ function ClarificationSection({
   if (preparing) {
     return (
       <Card id={QUESTIONS_ANCHOR} className="p-4">
-        <p className="text-sm text-zinc-400">Preparing clarifying questions…</p>
+        <p className="text-sm text-muted-foreground">Preparing clarifying questions…</p>
       </Card>
     );
   }
@@ -388,15 +388,23 @@ function GapsPreviewPanel({
     <Card id={QUESTIONS_ANCHOR} className="space-y-4 p-4" data-testid="gaps-preview">
       <div>
         <h3 className="text-lg font-semibold">Clarifying Questions</h3>
-        <p className="text-sm text-zinc-400">
+        <p className="text-sm text-muted-foreground">
           {loading
             ? "Preparing an interactive clarification session for these doc-grounded gaps…"
             : "These doc-grounded gaps will be turned into an interactive clarification session."}
         </p>
         {startFailed && !loading && (
-          <p role="alert" data-testid="clarify-start-error" className="mt-1 text-sm text-red-400">
+          <p
+            role="alert"
+            data-testid="clarify-start-error"
+            className="mt-1 text-sm text-red-700 dark:text-red-400"
+          >
             Could not start the interactive session, so these gaps cannot be answered yet.{" "}
-            <button type="button" onClick={onRetryStart} className="underline hover:text-red-300">
+            <button
+              type="button"
+              onClick={onRetryStart}
+              className="underline hover:text-red-700 dark:hover:text-red-300"
+            >
               Try again
             </button>
           </p>
@@ -405,21 +413,23 @@ function GapsPreviewPanel({
 
       <div className="space-y-4">
         {requirementsWithGaps.map((req) => (
-          <div key={req.id} className="rounded border border-zinc-800 p-3">
-            <p className="mb-1 text-sm font-medium text-zinc-200">{req.title}</p>
-            {req.description && <p className="mb-2 text-xs text-zinc-500">{req.description}</p>}
+          <div key={req.id} className="rounded border border-border p-3">
+            <p className="mb-1 text-sm font-medium text-foreground">{req.title}</p>
+            {req.description && (
+              <p className="mb-2 text-xs text-muted-foreground">{req.description}</p>
+            )}
             <ul className="space-y-2">
               {req.ambiguities.map((amb) => (
                 <li
                   key={`${req.id}:${amb.field}`}
-                  className="rounded border border-zinc-800/70 bg-zinc-900/40 p-2"
+                  className="rounded border border-border/70 bg-muted/40 p-2"
                 >
-                  <p className="text-sm font-medium text-zinc-200">
+                  <p className="text-sm font-medium text-foreground">
                     {amb.suggestedQuestion || amb.description}
                   </p>
                   {amb.description && amb.suggestedQuestion && (
-                    <p className="mt-1 text-xs text-zinc-500">
-                      <span className="font-mono text-zinc-600">{amb.field}</span> —{" "}
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      <span className="font-mono text-muted-foreground">{amb.field}</span> —{" "}
                       {amb.description}
                     </p>
                   )}
