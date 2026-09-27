@@ -17,7 +17,7 @@
  *   7. Early returns guarded by a condition.
  *
  * This miner runs deterministic line-local passes over the raw source (no LLM
- * call) and produces a structured inventory that gets injected into the Phase 1
+ * call; an `if`/`raise`/`assert` spanning lines is joined first, #170) and produces a structured inventory that gets injected into the Phase 1
  * user prompt as a "MUST INCLUDE THESE RULES" checklist, exactly like
  * {@link mineJavaRules} / {@link mineSasRules}. It deliberately mirrors their
  * public shape so the holistic synthesizer can treat them interchangeably.
@@ -27,6 +27,8 @@
  * stay Semgrep-safe NO non-literal `RegExp` is constructed — all patterns are
  * literal regex.
  */
+
+import { joinLogicalLine } from "./rule-miner-continuation.js";
 
 export interface MinedPyRule {
   kind: "guard" | "raise" | "assert" | "field-constraint" | "validator" | "early-return";
@@ -69,6 +71,10 @@ const ASSERT_KW_RE = /^\s*assert\b/;
 // A comparison against a numeric or quoted literal — a business threshold even
 // when the guard body is a plain assignment (the constant IS the rule).
 const THRESHOLD_RE = /(?:[<>]=?|==|!=)\s*(?:-?\d+(?:\.\d+)?|["'][^"']*["'])/;
+// #170 — heads of statements whose expression may continue onto later lines
+// (an open bracket or a trailing `\`): `if (` / `elif a and \` / `raise X(` / `assert (`.
+const CONTINUABLE_HEAD_RE = /^\s*(?:(?:el)?if|raise|assert)\b/;
+const LEADING_WS_RE = /^\s*/;
 
 function truncate(s: string, n: number): string {
   const t = s.replace(/\s+/g, " ").trim();
@@ -135,10 +141,20 @@ export function minePyRules(
   const lines = source.split("\n");
 
   for (let i = 0; i < lines.length && rules.length < maxRules; i++) {
-    const raw = lines[i];
-    const line = raw.trim();
+    const physical = lines[i];
     const lineNum = baseLine + i;
-    if (line.length === 0 || line.startsWith("#")) continue;
+    if (physical.trim().length === 0 || physical.trim().startsWith("#")) continue;
+    // #170 — an `if`/`elif`/`raise`/`assert` whose expression spans lines
+    // (implicit continuation inside brackets, or an explicit `\`) is read as one
+    // logical line anchored here. Bounded look-ahead; `null` keeps the physical line.
+    const logical = CONTINUABLE_HEAD_RE.test(physical)
+      ? joinLogicalLine(lines, i, { comment: "#", backslash: true })
+      : null;
+    // The joined text keeps the header's indentation so indentation-based body
+    // detection still measures the statement's own column.
+    const raw = logical ? `${LEADING_WS_RE.exec(physical)![0]}${logical.text}` : physical;
+    const line = raw.trim();
+    const bodyFrom = logical ? logical.end : i;
 
     // ---- 1. Validator decorators ----
     const vMatch = VALIDATOR_RE.exec(raw);
@@ -205,7 +221,7 @@ export function minePyRules(
     const ifMatch = IF_RE.exec(raw);
     if (ifMatch) {
       const cond = ifMatch[1];
-      const bodyKind = classifyGuardBody(lines, i, indentOf(raw));
+      const bodyKind = classifyGuardBody(lines, bodyFrom, indentOf(raw));
       // Capture when the body rejects/exits OR the condition encodes a
       // numeric/string threshold (the constant itself is a business rule).
       const hasThreshold = THRESHOLD_RE.test(cond);

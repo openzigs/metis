@@ -361,3 +361,116 @@ describe("mineKtRules — linear time on long lines (ReDoS)", () => {
     expect(performance.now() - start).toBeLessThan(1000);
   });
 });
+
+describe("mineKtRules — conditions that span lines (#170)", () => {
+  it("mines a require whose condition is on the following lines", () => {
+    const src = ["require(", "    qty in 1..MAX_QTY", ') { "qty out of range" }'].join("\n");
+    expect(mineKtRules(src, FILE, 5)).toEqual([
+      expect.objectContaining({
+        kind: "precondition",
+        line: 5,
+        summary: "require(qty in 1..MAX_QTY): qty out of range",
+      }),
+    ]);
+  });
+
+  it("mines a check whose boolean condition spans lines", () => {
+    const src = ["check(", "    tier != Tier.RETIRED &&", "        total < 1_000_000", ")"].join(
+      "\n",
+    );
+    expect(mineKtRules(src, FILE, 1)[0]).toMatchObject({
+      kind: "precondition",
+      summary: "check(tier != Tier.RETIRED && total < 1_000_000)",
+    });
+  });
+
+  it("mines a braced guard and an inline guard whose conditions span lines", () => {
+    const src = [
+      "if (tier == Tier.GOLD &&",
+      "    total > 1000) {",
+      "    return total * 8 / 10",
+      "}",
+      "if (",
+      "    total == 0",
+      ") return 0",
+    ].join("\n");
+    const guards = mineKtRules(src, FILE, 1).filter((r) => r.kind === "guard");
+    expect(guards.map((r) => [r.line, r.summary])).toEqual([
+      [1, "Rejects/exits when tier == Tier.GOLD && total > 1000"],
+      [5, "Rejects when total == 0"],
+    ]);
+  });
+
+  it("mines an if expression whose condition is on the next line", () => {
+    const src = ["val shipping = if (", "    total > 250", ") 0 else 12"].join("\n");
+    expect(mineKtRules(src, FILE, 1)[0]).toMatchObject({
+      kind: "guard",
+      line: 1,
+      summary: "Branches on threshold total > 250",
+    });
+  });
+
+  it("mines an elvis guard whose `?: throw` is on the next line", () => {
+    const src = [
+      "val order = repo.find(id)",
+      '    ?: throw NotFoundException("order not found")',
+    ].join("\n");
+    const rules = mineKtRules(src, FILE, 1);
+    expect(rules.find((r) => r.kind === "guard")).toMatchObject({
+      line: 1,
+      summary: "Rejects when `repo.find(id)` is null",
+    });
+    expect(rules.find((r) => r.kind === "throw")?.line).toBe(2);
+  });
+
+  it("reads when-arm conditions and labels that span lines", () => {
+    const src = [
+      "when (tier) {",
+      "    Tier.GOLD -> 1",
+      "    Tier.SILVER,",
+      "    Tier.BRONZE -> 2",
+      "    else -> 3",
+      "}",
+      "return when {",
+      "    total > 10_000 &&",
+      "        qty > 10 -> 7",
+      "    total > 5000",
+      "        || vip -> 8",
+      "    else -> 9",
+      "}",
+    ].join("\n");
+    const rules = mineKtRules(src, FILE, 1);
+    expect(rules.find((r) => r.kind === "when-branch")?.summary).toBe(
+      "State dispatch on `tier` with 3 branches: Tier.GOLD, Tier.SILVER, Tier.BRONZE",
+    );
+    expect(rules.filter((r) => r.kind === "guard").map((r) => [r.line, r.summary])).toEqual([
+      [8, "Branches on threshold total > 10_000 && qty > 10"],
+      [10, "Branches on threshold total > 5000 || vip"],
+    ]);
+  });
+
+  it("reads a thrown exception's message from the next line", () => {
+    const src = [
+      "fun fail(): Nothing = throw IllegalStateException(",
+      '    "pricing failed"',
+      ")",
+    ].join("\n");
+    expect(mineKtRules(src, FILE, 1)[0]).toMatchObject({
+      kind: "throw",
+      summary: "Throws IllegalStateException: pricing failed",
+    });
+  });
+
+  it("stays linear on adversarial multi-line input (ReDoS)", () => {
+    const inputs = [
+      Array.from({ length: 20_000 }, () => "if (a &&").join("\n"),
+      Array.from({ length: 20_000 }, () => "require(").join("\n"),
+      `when {\n${Array.from({ length: 20_000 }, () => "a &&").join("\n")}\n}`,
+      `val x = a\n${Array.from({ length: 20_000 }, () => "?: b").join("\n")}`,
+      `if (\n${" ".repeat(4000)}\n) return`,
+    ];
+    const start = performance.now();
+    for (const src of inputs) mineKtRules(src, FILE, 1);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+});

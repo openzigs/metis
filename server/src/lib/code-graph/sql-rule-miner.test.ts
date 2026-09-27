@@ -263,3 +263,66 @@ describe("renderMinedSqlRules", () => {
     expect(out).toMatch(/truncated for prompt budget/);
   });
 });
+
+describe("mineSqlRules — clauses that span lines (#170)", () => {
+  it("mines a CHECK whose condition spans lines", () => {
+    const src = [
+      "CREATE TABLE orders (",
+      "  total NUMERIC CHECK (",
+      "    total >= 0",
+      "    AND total < 1000000",
+      "  )",
+      ");",
+    ].join("\n");
+    expect(mineSqlRules(src, FILE, 1).find((r) => r.kind === "check")).toMatchObject({
+      line: 2,
+      summary: "Value rule (CHECK): total >= 0 AND total < 1000000",
+    });
+  });
+
+  it("mines a view WHERE filter continued with AND on the next line", () => {
+    const src = [
+      "CREATE VIEW open_orders AS",
+      "  SELECT * FROM orders",
+      "  WHERE status = 'OPEN'",
+      "    AND qty > 0;",
+    ].join("\n");
+    expect(mineSqlRules(src, FILE, 1)).toEqual([
+      expect.objectContaining({
+        kind: "view-filter",
+        line: 3,
+        summary: "View `open_orders` includes rows where status = 'OPEN' AND qty > 0",
+      }),
+    ]);
+  });
+
+  it("mines an IF whose THEN is on a later line", () => {
+    const src = [
+      "IF total > 1000",
+      "   AND total < 5000 THEN",
+      "  RETURN total * 0.9;",
+      "END IF;",
+    ].join("\n");
+    expect(mineSqlRules(src, FILE, 1)).toEqual([
+      expect.objectContaining({
+        kind: "proc-conditional",
+        line: 1,
+        summary: "Branch when total > 1000 AND total < 5000",
+      }),
+    ]);
+  });
+
+  it("stays linear on adversarial input (ReDoS)", () => {
+    const n = 5000;
+    const inputs = [
+      // `\bWHERE\s+(.+?)\s*;?\s*$` was cubic on a long whitespace run.
+      `CREATE VIEW v AS SELECT 1 WHERE a${" ".repeat(n)}x`,
+      Array.from({ length: 20_000 }, () => "CHECK (").join("\n"),
+      Array.from({ length: 20_000 }, () => "IF a > 1").join("\n"),
+      `CREATE VIEW v AS\nWHERE a AND\n${Array.from({ length: 20 }, () => `${" ".repeat(150)}b AND`).join("\n")}`,
+    ];
+    const start = performance.now();
+    for (const src of inputs) mineSqlRules(src, FILE, 1);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+});

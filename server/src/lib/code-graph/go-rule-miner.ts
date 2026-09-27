@@ -14,9 +14,12 @@
  *   4. `const NAME = <literal>` — thresholds, limits, magic numbers.
  *
  * Deterministic line-local passes (no LLM call), mirroring {@link mineJavaRules}
- * / {@link mineSasRules}. Semgrep-safe: all regex are literal (no `RegExp`
+ * / {@link mineSasRules}. An `if` condition or error constructor that spans
+ * lines is joined first (#170, bounded look-ahead, linear time). Semgrep-safe: all regex are literal (no `RegExp`
  * constructor on non-literal input).
  */
+
+import { joinLogicalLine, opensBracket, operatorContinues } from "./rule-miner-continuation.js";
 
 export interface MinedGoRule {
   kind: "guard" | "error" | "switch-case" | "const";
@@ -42,6 +45,9 @@ const INLINE_IF_RE = /^\s*if\s+(.+?)\s*\{\s*(return\b.*?|panic\(.*?\))\s*\}\s*$/
 // `errors.New("...")` / `fmt.Errorf("...")`.
 const ERRORS_NEW_RE = /errors\.New\s*\(\s*("(?:[^"\\]|\\.)*")\s*\)/;
 const ERRORF_RE = /fmt\.Errorf\s*\(\s*("(?:[^"\\]|\\.)*")/;
+// #170 — on a joined call the message may be followed by a trailing comma
+// (gofmt's multi-line argument style), so only the opening is matched.
+const ERRORS_NEW_OPEN_RE = /errors\.New\s*\(\s*("(?:[^"\\]|\\.)*")/;
 // `switch <subject> {` (subject optional for type switches / bare switch).
 const SWITCH_RE = /^\s*switch\s+(.+?)\s*\{\s*$/;
 const CASE_RE = /^\s*case\s+(.+?)\s*:/;
@@ -56,6 +62,15 @@ const CONST_GROUP_MEMBER_RE = /^\s*([A-Za-z_]\w*)\s*(?:[\w.[\]*]+\s*)?=\s*(.+?)\
 // A comparison against a numeric / quoted literal — a threshold rule.
 const THRESHOLD_RE = /(?:[<>]=?|==|!=)\s*(?:-?\d+(?:\.\d+)?|"[^"]*")/;
 const RETURN_OR_PANIC_RE = /^\s*(?:return\b|panic\()/;
+// #170 — an `if` header that does not open its block on the same line: the
+// condition continues (`if a &&` ⏎ `b {`, or an open bracket).
+const IF_HEAD_RE = /^\s*(?:\}\s*else\s+)?if\s/;
+const ERROR_CALL_HEAD_RE = /\b(?:errors\.New|fmt\.Errorf)\s*\(/;
+
+/** An `if` header continues until a line ends by opening the block. */
+function headerContinues(last: string, next: string): boolean {
+  return !last.endsWith("{") && operatorContinues(last, next);
+}
 
 function truncate(s: string, n: number): string {
   const t = s.replace(/\s+/g, " ").trim();
@@ -188,11 +203,17 @@ export function mineGoRules(
     }
 
     // ---- 3. errors.New / fmt.Errorf (failure modes) ----
-    const enMatch = ERRORS_NEW_RE.exec(raw);
+    // #170 — `errors.New(` ⏎ `"msg")`: the message is read off the next line.
+    const errCall =
+      ERROR_CALL_HEAD_RE.test(raw) && opensBracket(raw)
+        ? joinLogicalLine(lines, i, { comment: "//" })
+        : null;
+    const errText = errCall ? errCall.text : raw;
+    const enMatch = errCall ? ERRORS_NEW_OPEN_RE.exec(errText) : ERRORS_NEW_RE.exec(raw);
     if (enMatch) {
       rules.push({
         kind: "error",
-        expression: truncate(line, MAX_EXPR),
+        expression: truncate(errText, MAX_EXPR),
         summary: `Error: ${truncate(stripQuotes(enMatch[1]), 140)}`,
         filePath,
         line: lineNum,
@@ -200,11 +221,11 @@ export function mineGoRules(
       });
       continue;
     }
-    const efMatch = ERRORF_RE.exec(raw);
+    const efMatch = ERRORF_RE.exec(errText);
     if (efMatch) {
       rules.push({
         kind: "error",
-        expression: truncate(line, MAX_EXPR),
+        expression: truncate(errText, MAX_EXPR),
         summary: `Error: ${truncate(stripQuotes(efMatch[1]), 140)}`,
         filePath,
         line: lineNum,
@@ -214,11 +235,20 @@ export function mineGoRules(
     }
 
     // ---- 4. guard clauses ----
-    const inline = INLINE_IF_RE.exec(raw);
+    // #170 — a condition split across lines is read up to the `{` that opens
+    // the block; the rule is anchored at the `if` line.
+    const header =
+      IF_HEAD_RE.test(raw) && !line.endsWith("{")
+        ? joinLogicalLine(lines, i, { comment: "//", continues: headerContinues })
+        : null;
+    const joinedHeader = header && header.text.includes("{") ? header : null;
+    const guardText = joinedHeader ? joinedHeader.text : raw;
+    const guardLine = joinedHeader ? joinedHeader.text : line;
+    const inline = INLINE_IF_RE.exec(guardText);
     if (inline) {
       rules.push({
         kind: "guard",
-        expression: truncate(line, MAX_EXPR),
+        expression: truncate(guardLine, MAX_EXPR),
         summary: `Rejects when ${truncate(inline[1], 140)}`,
         filePath,
         line: lineNum,
@@ -226,15 +256,15 @@ export function mineGoRules(
       });
       continue;
     }
-    const ifMatch = IF_RE.exec(raw);
-    if (ifMatch && raw.includes("{")) {
+    const ifMatch = IF_RE.exec(guardText);
+    if (ifMatch && guardText.includes("{")) {
       const cond = ifMatch[1];
-      const exits = bodyExits(lines, i);
+      const exits = joinedHeader ? bodyExits(lines, joinedHeader.end) : bodyExits(lines, i);
       const hasThreshold = THRESHOLD_RE.test(cond);
       if (exits || hasThreshold) {
         rules.push({
           kind: "guard",
-          expression: truncate(line, MAX_EXPR),
+          expression: truncate(guardLine, MAX_EXPR),
           summary: exits
             ? `Rejects/exits when ${truncate(cond, 140)}`
             : `Branches on threshold ${truncate(cond, 140)}`,

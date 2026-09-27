@@ -490,3 +490,98 @@ describe("mineCsRules — linear time on long lines (ReDoS)", () => {
     expect(performance.now() - start).toBeLessThan(1000);
   });
 });
+
+describe("mineCsRules — conditions that span lines (#170)", () => {
+  it("mines an Allman guard whose condition spans three lines", () => {
+    const src = [
+      "if (",
+      '    tier == "gold" &&',
+      "    total > 1000m)",
+      "{",
+      "    return total * 0.8m;",
+      "}",
+    ].join("\n");
+    const [guard] = mineCsRules(src, FILE, 1).filter((r) => r.kind === "guard");
+    expect(guard).toMatchObject({
+      line: 1,
+      summary: 'Rejects/exits when tier == "gold" && total > 1000m',
+    });
+  });
+
+  it("mines an unbraced guard whose throw follows a two-line condition", () => {
+    const src = [
+      "if (qty > MaxQty ||",
+      "    qty <= 0)",
+      "    throw new ArgumentOutOfRangeException(",
+      '        nameof(qty), "qty out of range");',
+    ].join("\n");
+    const rules = mineCsRules(src, FILE, 1);
+    expect(rules.find((r) => r.kind === "guard")).toMatchObject({
+      line: 1,
+      summary: "Rejects/exits when qty > MaxQty || qty <= 0",
+    });
+    expect(rules.find((r) => r.kind === "throw")).toMatchObject({
+      line: 3,
+      summary: "Throws ArgumentOutOfRangeException",
+    });
+  });
+
+  it("mines guard helpers whose arguments are on the next line", () => {
+    const src = [
+      "ArgumentOutOfRangeException.ThrowIfNegative(",
+      "    qty);",
+      "Guard.Against.NegativeOrZero(",
+      "    total,",
+      "    nameof(total));",
+    ].join("\n");
+    expect(mineCsRules(src, FILE, 1).map((r) => [r.kind, r.line, r.summary])).toEqual([
+      ["precondition", 1, "ThrowIfNegative guard on qty (ArgumentOutOfRangeException)"],
+      ["precondition", 3, "Guard against NegativeOrZero: total, nameof(total)"],
+    ]);
+  });
+
+  it("reads a thrown exception's message from the next line", () => {
+    const src = ["throw new InvalidOperationException(", '    "order is closed");'].join("\n");
+    expect(mineCsRules(src, FILE, 1)[0]).toMatchObject({
+      kind: "throw",
+      summary: "Throws InvalidOperationException: order is closed",
+    });
+  });
+
+  it("mines a threshold ternary whose branches are on later lines", () => {
+    const src = ["var shipping = total > FreeShippingMin", "    ? 0m", "    : 12m;"].join("\n");
+    expect(mineCsRules(src, FILE, 1)).toEqual([
+      expect.objectContaining({
+        kind: "guard",
+        line: 1,
+        summary: "Branches on threshold total > FreeShippingMin",
+      }),
+    ]);
+  });
+
+  it("still skips a multi-line logging-only if", () => {
+    const src = [
+      "if (count > 10 &&",
+      "    verbose)",
+      "{",
+      '    _logger.LogDebug("many");',
+      "}",
+    ].join("\n");
+    expect(mineCsRules(src, FILE, 1)).toEqual([]);
+  });
+
+  it("stays linear on adversarial multi-line input (ReDoS)", () => {
+    const n = 4000;
+    const inputs = [
+      Array.from({ length: 20_000 }, () => "if (a &&").join("\n"),
+      Array.from({ length: 20_000 }, () => "Guard.Against.Null(").join("\n"),
+      // `=x` pairs then whitespace after the line's only `?`: the old ternary
+      // regex `/=\s*([^=?][^?]*?)\s*\?(?!\?)/` was cubic here.
+      `x ? y : 1 > 2 ${"=a".repeat(n / 4)}${" ".repeat(n / 2)}z`,
+      `var x = a > 1\n${" ".repeat(n)}? 1\n: 2;`,
+    ];
+    const start = performance.now();
+    for (const src of inputs) mineCsRules(src, FILE, 1);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+});

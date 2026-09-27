@@ -495,7 +495,9 @@ runs in stages:
 2. **Extract per-module facts from real source bodies** (not just names or
    embedding previews), supplemented by deterministic formula/rule miners
    (Java, TypeScript/JavaScript, Python, Go, C#, Kotlin, SAS, SQL —
-   `server/src/lib/code-graph/*-rule-miner.ts`) and rationale findings
+   `server/src/lib/code-graph/*-rule-miner.ts`; a condition, precondition or
+   filter written across several lines is joined and read whole by
+   `rule-miner-continuation.ts`, #170) and rationale findings
    ([holistic-synthesizer.ts](../server/src/lib/docs-gen/holistic-synthesizer.ts#L1473-L1585)).
    Module extraction defaults to **3 concurrent modules**
    (`DOCS_GEN_PHASE1_CONCURRENCY`), bounded to stay within gateway idle

@@ -335,6 +335,33 @@ describe("ingestCodeGraph (#308)", () => {
     );
   });
 
+  it("records a capitalised Kotlin call as a constructor only when a class of that name exists (#170)", async () => {
+    // Compose UIs call capitalised functions (`Column { }`, `Text("...")`) that
+    // look exactly like constructor calls; only symbol evidence tells them apart.
+    const root = await makeFixture({
+      "src/main/kotlin/com/acme/Order.kt": `package com.acme\nclass Order(val total: Int)\n`,
+      "src/main/java/com/acme/Invoice.java": `package com.acme;\npublic class Invoice {}\n`,
+      "src/main/kotlin/com/acme/Screen.kt": `package com.acme\nfun Screen() {\n  Column {\n    Text("Checkout")\n  }\n  val o = Order(1)\n  val i = Invoice()\n}\n@Composable\nfun Column(content: () -> Unit) {}\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "proj1", rootDir: root });
+
+    const screen = "src/main/kotlin/com/acme/Screen.kt";
+    const refs = store.codeEdges.filter(
+      (e: any) => e.kind === "references" && e.filePath === screen,
+    );
+    // Constructors of a Kotlin class and of a Java class stay constructor references...
+    expect(refs.map((e: any) => e.toQualifiedName).sort()).toEqual(["Invoice", "Order"]);
+    expect(refs.find((e: any) => e.toQualifiedName === "Order").toSymbolId).toBe(
+      symbolId(store, "src/main/kotlin/com/acme/Order.kt", "Order"),
+    );
+    // ...a project composable and an external one are calls, and the project one resolves.
+    const [column] = callsTo(store, "Column", screen);
+    expect(column.toSymbolId).toBe(symbolId(store, screen, "Column"));
+    expect(column.metadata).toBeNull();
+    expect(callsTo(store, "Text", screen)).toHaveLength(1);
+  });
+
   it("reuses existing CodeGraph row instead of creating a duplicate", async () => {
     const root = await makeFixture({ "a.ts": "function f(){}\n" });
     const { prisma, store } = makePrismaMock();

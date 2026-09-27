@@ -187,3 +187,57 @@ describe("renderMinedGoRules", () => {
     expect(out).toMatch(/truncated for prompt budget/);
   });
 });
+
+describe("mineGoRules — conditions that span lines (#170)", () => {
+  it("mines a guard whose condition continues after a trailing operator", () => {
+    const src = [
+      "func Price(total int, qty int) (int, error) {",
+      "\tif qty <= 0 ||",
+      "\t\tqty > MaxQty {",
+      '\t\treturn 0, fmt.Errorf("qty %d out of range", qty)',
+      "\t}",
+      "\treturn total, nil",
+      "}",
+    ].join("\n");
+    const [guard] = mineGoRules(src, FILE, 1).filter((r) => r.kind === "guard");
+    expect(guard).toMatchObject({
+      line: 2,
+      summary: "Rejects/exits when qty <= 0 || qty > MaxQty",
+    });
+  });
+
+  it("mines a threshold guard spanning three lines and a leading-operator continuation", () => {
+    const src = [
+      "if tier == Gold &&",
+      "\ttotal > 1000 &&",
+      "\tqty > 1 {",
+      "\tdiscount = 20",
+      "}",
+    ].join("\n");
+    const [guard] = mineGoRules(src, FILE, 1).filter((r) => r.kind === "guard");
+    expect(guard).toMatchObject({
+      line: 1,
+      summary: "Branches on threshold tier == Gold && total > 1000 && qty > 1",
+    });
+  });
+
+  it("reads an error message passed on the next line", () => {
+    const src = ["return 0, errors.New(", '\t"unsupported tier",', ")"].join("\n");
+    expect(mineGoRules(src, FILE, 1)).toEqual([
+      expect.objectContaining({ kind: "error", line: 1, summary: "Error: unsupported tier" }),
+    ]);
+    const f = ["return fmt.Errorf(", '\t"zero total with qty %d", b)'].join("\n");
+    expect(mineGoRules(f, FILE, 1)[0]).toMatchObject({ summary: "Error: zero total with qty %d" });
+  });
+
+  it("stays linear on adversarial multi-line input (ReDoS)", () => {
+    const inputs = [
+      Array.from({ length: 20_000 }, () => "if a &&").join("\n"),
+      Array.from({ length: 20_000 }, () => "errors.New(").join("\n"),
+      `if a ||\n${" ".repeat(4000)}b {\nreturn\n}`,
+    ];
+    const start = performance.now();
+    for (const src of inputs) mineGoRules(src, FILE, 1);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+});

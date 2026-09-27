@@ -10,6 +10,7 @@ import {
   indexSymbol,
   isRuntimeOrTestModule,
   isTestFilePath,
+  reclassifyKotlinConstructorCall,
   resolveEdgeTarget,
   type ResolvableSymbol,
   type ResolutionSite,
@@ -430,5 +431,53 @@ describe("resolveEdgeTarget — global names and receivers are scoped by languag
         idx,
       ),
     ).toBeNull();
+  });
+});
+
+describe("reclassifyKotlinConstructorCall — a capitalised Kotlin call needs a class (#170)", () => {
+  const ctor = (name: string) => ({
+    kind: "references",
+    toQualifiedName: name,
+    metadata: { via: "new" },
+  });
+  const index = build([
+    sym("o", "src/Order.kt", "Order", "class", "kt"),
+    sym("inv", "src/Invoice.java", "Invoice", "class", "java"),
+    sym("st", "src/Status.kt", "Status", "type", "kt"),
+    sym("pay", "src/Payable.kt", "Payable", "interface", "kt"),
+    sym("col", "src/Ui.kt", "Column", "function", "kt"),
+    sym("w", "src/widget.ts", "Widget", "class", "ts"),
+  ]);
+
+  it("keeps a constructor reference to a Kotlin or Java class", () => {
+    expect(reclassifyKotlinConstructorCall(ctor("Order"), "kt", index)).toEqual({
+      kind: "references",
+      metadata: { via: "new" },
+    });
+    expect(reclassifyKotlinConstructorCall(ctor("Invoice"), "kt", index).kind).toBe("references");
+  });
+
+  it("turns a Compose function, an unknown name, an interface or an enum into a call", () => {
+    for (const name of ["Column", "Text", "Payable", "Status"]) {
+      expect(reclassifyKotlinConstructorCall(ctor(name), "kt", index)).toEqual({
+        kind: "calls",
+        metadata: undefined,
+      });
+    }
+  });
+
+  it("does not accept a class from an unrelated language family", () => {
+    expect(reclassifyKotlinConstructorCall(ctor("Widget"), "kt", index).kind).toBe("calls");
+  });
+
+  it("passes other languages, other edge kinds and non-`new` references through", () => {
+    expect(reclassifyKotlinConstructorCall(ctor("Column"), "java", index).kind).toBe("references");
+    const call = { kind: "calls", toQualifiedName: "Column" };
+    expect(reclassifyKotlinConstructorCall(call, "kt", index).kind).toBe("calls");
+    const plainRef = { kind: "references", toQualifiedName: "Column", metadata: { via: "type" } };
+    expect(reclassifyKotlinConstructorCall(plainRef, "kt", index)).toEqual({
+      kind: "references",
+      metadata: { via: "type" },
+    });
   });
 });

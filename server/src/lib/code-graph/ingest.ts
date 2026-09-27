@@ -19,6 +19,7 @@ import {
   createResolutionIndex,
   indexSymbol,
   isRuntimeOrTestModule,
+  reclassifyKotlinConstructorCall,
   resolveEdgeTarget,
   type ResolvableSymbol,
 } from "./call-resolution.js";
@@ -786,17 +787,19 @@ async function persistParsed(
       if (!toId) {
         toId = resolveEdgeTarget(edge.toQualifiedName, edge.receiver, site, index);
       }
+      // #170 — a capitalised Kotlin call is a constructor only if a class exists.
+      const { kind, metadata } = reclassifyKotlinConstructorCall(edge, file.language, index);
 
       batch.push({
         codeGraphId,
         projectId,
-        kind: edge.kind,
+        kind,
         fromSymbolId: fromId,
         toSymbolId: toId,
         toQualifiedName: edge.toQualifiedName,
         filePath: file.filePath,
         line: edge.line,
-        metadata: edge.metadata ? JSON.stringify(edge.metadata) : null,
+        metadata: metadata ? JSON.stringify(metadata) : null,
       });
       if (batch.length >= EDGE_INSERT_BATCH) {
         await prisma.codeEdge.createMany({ data: batch });

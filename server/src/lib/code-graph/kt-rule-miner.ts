@@ -24,9 +24,17 @@
  * `log.debug(...)`, `println(...)`) is NOT a rule, whatever it compares.
  *
  * Deterministic line-local passes (no LLM call), mirroring {@link mineJavaRules}
- * / {@link mineTsRules}. Semgrep-safe: every regex is a literal and none nests
+ * / {@link mineTsRules}. A precondition, `if`, throw, elvis guard or `when` arm
+ * that spans lines is read as one logical line (#170, {@link joinLogicalLine}:
+ * bounded look-ahead, no regex, linear time). Semgrep-safe: every regex is a literal and none nests
  * unbounded quantifiers.
  */
+
+import {
+  joinLogicalLine,
+  MAX_CONTINUATION_LINES,
+  opensBracket,
+} from "./rule-miner-continuation.js";
 
 export interface MinedKtRule {
   kind: "precondition" | "guard" | "throw" | "when-branch" | "annotation-validation" | "const";
@@ -116,6 +124,10 @@ const RANGE_OR_IS_RE = /!?in\s+(?:-?\d|[A-Z])|\bis\s+[A-Z]/;
 const LOG_CALL_RE =
   /^\s*(?:(?:_?logger|_?log|LOG|LOGGER|Log|Timber)\s*\.\s*(?:trace|debug|info|warn|warning|error|v|d|i|w|e|atInfo|atDebug|atWarn)\b|println\s*\(|print\s*\()/;
 const EXIT_RE = /^\s*(?:throw\b|return\b)/;
+// #170 — a `when` arm condition continued on the next line: it ends in `&&`,
+// `||` or `,`, or the next line starts with `&&` / `||`. Anchored, single token.
+const ARM_TRAILING_OP_RE = /(?:&&|\|\||,)$/;
+const ARM_LEADING_OP_RE = /^(?:&&|\|\|)/;
 
 function truncate(s: string, n: number): string {
   const t = s.replace(/\s+/g, " ").trim();
@@ -126,12 +138,24 @@ function stripQuotes(s: string): string {
   return s.replace(/^"|"$/g, "").trim();
 }
 
+interface SplitHead {
+  cond: string;
+  rest: string;
+}
+
+/** An elvis operator carried onto the next line: `repo.find(id)` ⏎ `?: throw ...`. */
+function elvisContinues(_last: string, next: string): boolean {
+  return next.startsWith("?:");
+}
+
 /**
  * Split a parenthesised head (`if (`, `require(`) whose `(` ends at `afterOpen`
- * into the text inside the parentheses and the text after the matching `)`. Returns null when the parentheses do not close on the
- * line (a multi-line condition).
+ * into the text inside the parentheses and the text after the matching `)`.
+ * Returns null when the parentheses do not close in `text` — for a physical
+ * line, a multi-line condition, which the caller retries on the joined logical
+ * line (#170).
  */
-function splitIf(text: string, afterOpen: number): { cond: string; rest: string } | null {
+function splitIf(text: string, afterOpen: number): SplitHead | null {
   let depth = 1;
   for (let k = afterOpen; k < text.length; k++) {
     const ch = text[k];
@@ -270,6 +294,21 @@ export function mineKtRules(
     const raw = lines[i];
     const line = raw.trim();
     if (line.length === 0 || line.startsWith("//") || line.startsWith("*")) continue;
+    // #170 — a statement whose parentheses stay open at the end of this line
+    // (`require(` ⏎ `total > 0` ⏎ `) { "msg" }`, an `if (` split across lines,
+    // a multi-line `throw X(`) is read as one logical line anchored here.
+    // `stmt` begins with the trimmed physical line, so an offset into `raw`
+    // maps into it by subtracting the indentation.
+    const logical = opensBracket(raw) ? joinLogicalLine(lines, i, { comment: "//" }) : null;
+    const indent = raw.length - raw.trimStart().length;
+    /** Split a head whose `(` ends at `afterOpen` in `raw`, reading on into `stmt`. */
+    const splitHead = (afterOpen: number): (SplitHead & { joined: boolean }) | null => {
+      const own = splitIf(raw, afterOpen);
+      if (own) return { ...own, joined: false };
+      const joined = logical ? splitIf(logical.text, afterOpen - indent) : null;
+      return joined ? { ...joined, joined: true } : null;
+    };
+    const stmtLine = logical ? logical.text : line;
 
     // ---- 1. validation annotations (may share a line with the parameter) ----
     ANNOTATION_RE.lastIndex = 0;
@@ -293,13 +332,13 @@ export function mineKtRules(
 
     // ---- 3. preconditions ----
     const pHead = PRECONDITION_HEAD_RE.exec(raw);
-    const pCall = pHead ? splitIf(raw, pHead.index + pHead[0].length) : null;
+    const pCall = pHead ? splitHead(pHead.index + pHead[0].length) : null;
     if (pHead && pCall) {
       const lazy = LAZY_MESSAGE_RE.exec(pCall.rest);
       const msg = lazy ? stripQuotes(lazy[1]) : "";
       push(
         "precondition",
-        line,
+        pCall.joined ? stmtLine : line,
         `${pHead[1]}(${truncate(pCall.cond, 120)})${msg ? `: ${truncate(msg, 120)}` : ""}`,
         i,
       );
@@ -319,7 +358,10 @@ export function mineKtRules(
     // ---- 4. throws ----
     const tMatch = THROW_RE.exec(raw);
     if (tMatch) {
-      const msg = tMatch[2] ? stripQuotes(tMatch[2]) : "";
+      // #170 — `throw X(` ⏎ `"message")`: read the message off the next line.
+      const tFull = !tMatch[2] && logical ? THROW_RE.exec(logical.text) : null;
+      const msgLit = tMatch[2] ?? (tFull && tFull.index < line.length ? tFull[2] : undefined);
+      const msg = msgLit ? stripQuotes(msgLit) : "";
       push("throw", line, `Throws ${tMatch[1]}${msg ? `: ${truncate(msg, 140)}` : ""}`, i);
     }
 
@@ -329,6 +371,12 @@ export function mineKtRules(
       const subject = wMatch[1]?.trim().replace(WHEN_VAL_BINDING_RE, "").trim();
       const labels: string[] = [];
       let depth = 0;
+      // #170 — an arm whose condition spans lines (`a > 10 &&` ⏎ `b < 5 -> ...`,
+      // `Status.A,` ⏎ `Status.B -> ...`) is accumulated here and anchored at its
+      // first line. Bounded to MAX_CONTINUATION_LINES lines.
+      let pending = "";
+      let pendingFrom = -1;
+      let pendingLines = 0;
       for (let j = i; j < Math.min(i + LOOKAHEAD, lines.length); j++) {
         let text = lines[j];
         if (j === i) text = text.slice(wMatch.index + wMatch[0].length - 1);
@@ -336,18 +384,36 @@ export function mineKtRules(
           // A when-arm is `<conditions> -> ...`. Found with indexOf, not a regex:
           // `^\s*(.+?)\s*->` was cubic on a long whitespace run (ReDoS).
           const arrow = text.indexOf("->");
-          const armCond = arrow > 0 ? text.slice(0, arrow).trim() : "";
-          const arm = armCond ? [text, armCond] : null;
-          if (arm && arm[1] !== "else") {
-            if (subject) {
-              labels.push(
-                ...arm[1]
-                  .split(",")
-                  .map((s) => s.trim())
-                  .filter(Boolean),
-              );
-            } else if (comparesToConstant(arm[1])) {
-              push("guard", text.trim(), `Branches on threshold ${truncate(arm[1], 140)}`, j);
+          const trimmed = text.trim();
+          const next = j + 1 < lines.length ? lines[j + 1].trim() : "";
+          if (
+            arrow === -1 &&
+            trimmed.length > 0 &&
+            pendingLines < MAX_CONTINUATION_LINES - 1 &&
+            (ARM_TRAILING_OP_RE.test(trimmed) || ARM_LEADING_OP_RE.test(next))
+          ) {
+            if (pendingFrom === -1) pendingFrom = j;
+            pending = pending ? `${pending} ${trimmed}` : trimmed;
+            pendingLines++;
+          } else {
+            const head = arrow > 0 ? text.slice(0, arrow).trim() : "";
+            const armCond = arrow >= 0 && pending ? `${pending} ${head}`.trim() : head;
+            const armLine = arrow >= 0 && pending ? pendingFrom : j;
+            const armText = arrow >= 0 && pending ? `${pending} ${trimmed}` : trimmed;
+            pending = "";
+            pendingFrom = -1;
+            pendingLines = 0;
+            if (armCond && armCond !== "else") {
+              if (subject) {
+                labels.push(
+                  ...armCond
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                );
+              } else if (comparesToConstant(armCond)) {
+                push("guard", armText, `Branches on threshold ${truncate(armCond, 140)}`, armLine);
+              }
             }
           }
         }
@@ -369,18 +435,29 @@ export function mineKtRules(
     }
 
     // ---- 6. elvis guards ----
-    const elvis = ELVIS_RE.exec(line);
+    // #170 — `val c = repo.find(id)` ⏎ `?: throw NotFound(...)` is read whole.
+    const elvisJoin =
+      !line.includes("?:") && i + 1 < lines.length && lines[i + 1].trim().startsWith("?:")
+        ? joinLogicalLine(lines, i, { comment: "//", continues: elvisContinues })
+        : null;
+    const elvisText = elvisJoin ? elvisJoin.text : line;
+    const elvis = ELVIS_RE.exec(elvisText);
     if (elvis) {
-      push("guard", line, `Rejects when \`${truncate(elvis[1], 100)}\` is null`, i);
+      push("guard", elvisText, `Rejects when \`${truncate(elvis[1], 100)}\` is null`, i);
       continue;
     }
 
     // ---- 7. if expressions: `val fee = if (total > 50) 0 else 5` ----
     const exprHead = IF_EXPR_HEAD_RE.exec(raw);
     if (exprHead) {
-      const split = splitIf(raw, exprHead.index + exprHead[0].length);
+      const split = splitHead(exprHead.index + exprHead[0].length);
       if (split && comparesToConstant(split.cond)) {
-        push("guard", line, `Branches on threshold ${truncate(split.cond, 140)}`, i);
+        push(
+          "guard",
+          split.joined ? stmtLine : line,
+          `Branches on threshold ${truncate(split.cond, 140)}`,
+          i,
+        );
       }
       continue;
     }
@@ -388,26 +465,28 @@ export function mineKtRules(
     // ---- 8. guard clauses / threshold branches ----
     const head = IF_HEAD_RE.exec(raw);
     if (!head) continue;
-    const split = splitIf(raw, head[0].length);
+    const split = splitHead(head[0].length);
     if (!split) continue;
+    const guardLine = split.joined ? stmtLine : line;
+    const bodyFrom = split.joined && logical ? logical.end : i;
     const { cond } = split;
     let rest = split.rest.replace(/^\{\s*/, "");
     if (rest.endsWith("}")) rest = rest.slice(0, -1).trimEnd();
     if (rest.length > 0) {
       // Inline body on the header line.
       if (EXIT_RE.test(rest)) {
-        push("guard", line, `Rejects when ${truncate(cond, 140)}`, i);
+        push("guard", guardLine, `Rejects when ${truncate(cond, 140)}`, i);
       } else if (!LOG_CALL_RE.test(rest) && comparesToConstant(cond)) {
-        push("guard", line, `Branches on threshold ${truncate(cond, 140)}`, i);
+        push("guard", guardLine, `Branches on threshold ${truncate(cond, 140)}`, i);
       }
       continue;
     }
-    const body = ifBody(lines, i);
+    const body = ifBody(lines, bodyFrom);
     if (isLoggingOnly(body)) continue;
     if (exitsAfterLogging(body)) {
-      push("guard", line, `Rejects/exits when ${truncate(cond, 140)}`, i);
+      push("guard", guardLine, `Rejects/exits when ${truncate(cond, 140)}`, i);
     } else if (comparesToConstant(cond)) {
-      push("guard", line, `Branches on threshold ${truncate(cond, 140)}`, i);
+      push("guard", guardLine, `Branches on threshold ${truncate(cond, 140)}`, i);
     }
   }
 

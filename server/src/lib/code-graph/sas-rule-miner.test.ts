@@ -373,3 +373,48 @@ describe("renderSasWorkflow / renderSasDataLineage", () => {
     expect(out).toMatch(/truncated for prompt budget/);
   });
 });
+
+describe("mineSasRules — statements that span lines (#170)", () => {
+  it("mines an IF/THEN whose condition continues on the next line", () => {
+    const src = ["if tier = 'GOLD'", "   and total > 1000 then discount = 0.2;"].join("\n");
+    expect(mineSasRules(src, FILE, 1)).toEqual([
+      expect.objectContaining({
+        kind: "conditional",
+        line: 1,
+        summary: "When tier = 'GOLD' and total > 1000 then discount = 0.2",
+      }),
+    ]);
+  });
+
+  it("mines a subsetting IF and a WHERE that span lines", () => {
+    const src = [
+      "if qty > 0",
+      "   and qty <= 500;",
+      "where region = 'EU'",
+      "  and status ne 'CLOSED';",
+    ].join("\n");
+    expect(mineSasRules(src, FILE, 1).map((r) => [r.kind, r.line, r.summary])).toEqual([
+      ["subsetting-if", 1, "Keep observation only when qty > 0 and qty <= 500"],
+      ["where-filter", 3, "Select rows where region = 'EU' and status ne 'CLOSED'"],
+    ]);
+  });
+
+  it("reads the consequence of a THEN that ends its line", () => {
+    const src = ["if total < 0 then", "   delete;"].join("\n");
+    expect(mineSasRules(src, FILE, 1)[0]).toMatchObject({
+      line: 1,
+      summary: "When total < 0 then delete",
+    });
+  });
+
+  it("stays linear on adversarial multi-line input (ReDoS)", () => {
+    const inputs = [
+      Array.from({ length: 20_000 }, () => "if a > 1").join("\n"),
+      Array.from({ length: 20_000 }, () => "where a").join("\n"),
+      `if a${" ".repeat(3900)}\nthen b;`,
+    ];
+    const start = performance.now();
+    for (const src of inputs) mineSasRules(src, FILE, 1);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+});

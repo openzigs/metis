@@ -27,9 +27,15 @@
  *   - The patterns we care about are line-local and unambiguous.
  *   - Tree-sitter loading adds 200ms+ of WASM init we don't need here.
  *
+ * A statement whose parentheses stay open across lines (a multi-line
+ * precondition, throw, or `if (` condition) is joined into one logical line
+ * first (#170, {@link joinLogicalLine}: bounded look-ahead, linear time).
+ *
  * If false positives become a problem we can swap to tree-sitter queries
  * later without changing the public API.
  */
+
+import { joinLogicalLine, opensBracket } from "./rule-miner-continuation.js";
 
 export interface MinedRule {
   kind: "annotation-validation" | "precondition" | "throw" | "switch-case" | "null-guard";
@@ -136,16 +142,27 @@ export function mineJavaRules(
   const lines = source.split("\n");
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    const physical = lines[i];
     const lineNum = baseLine + i;
+    // #170 — a statement whose parentheses stay open at the end of this line
+    // (`Preconditions.checkArgument(` ⏎ `amount > 0,` ⏎ `"msg");`, a multi-line
+    // `throw new X(`, an `if (` split across lines) is read as one logical line
+    // anchored here. Annotations keep reading the physical line so a parameter
+    // list's annotations are not attributed to its first line.
+    const logical = opensBracket(physical) ? joinLogicalLine(lines, i, { comment: "//" }) : null;
+    const line = logical ? logical.text : physical;
+    const bodyFrom = logical ? logical.end : i;
+    // On a joined line, only a construct that STARTS on this physical line is
+    // this line's rule; one starting on a continuation line is mined there.
+    const headLen = logical ? physical.trim().length : Infinity;
 
     // ---- 1. Validation annotations ----
     let aMatch: RegExpExecArray | null;
     ANNOTATION_RE.lastIndex = 0;
-    while ((aMatch = ANNOTATION_RE.exec(line)) !== null) {
+    while ((aMatch = ANNOTATION_RE.exec(physical)) !== null) {
       const name = aMatch[1];
       if (!VALIDATION_ANNOTATIONS.has(name)) continue;
-      const args = aMatch[2] ?? "";
+      const args = aMatch[2] ?? annotationArgsFromLogical(logical?.text, physical, aMatch);
       rules.push({
         kind: "annotation-validation",
         expression: `@${name}${args}`,
@@ -161,6 +178,7 @@ export function mineJavaRules(
       re.lastIndex = 0;
       let pMatch: RegExpExecArray | null;
       while ((pMatch = re.exec(line)) !== null) {
+        if (pMatch.index >= headLen) break;
         const args = pMatch[1].trim();
         rules.push({
           kind: "precondition",
@@ -177,6 +195,7 @@ export function mineJavaRules(
     THROW_RE.lastIndex = 0;
     let tMatch: RegExpExecArray | null;
     while ((tMatch = THROW_RE.exec(line)) !== null) {
+      if (tMatch.index >= headLen) break;
       const exType = tMatch[1];
       const message = tMatch[2].trim();
       rules.push({
@@ -190,7 +209,7 @@ export function mineJavaRules(
     }
 
     // ---- 4. Switch/case state transitions ----
-    const sMatch = line.match(SWITCH_RE);
+    const sMatch = physical.match(SWITCH_RE);
     if (sMatch) {
       const subject = sMatch[1];
       // Look ahead for case labels until matching close brace or 100 lines.
@@ -225,10 +244,10 @@ export function mineJavaRules(
 
     // ---- 5. Null guards (only when paired with throw/return on next non-blank line) ----
     const nMatch = line.match(NULL_GUARD_RE);
-    if (nMatch) {
+    if (nMatch && (nMatch.index ?? 0) < headLen) {
       // Peek ahead up to 3 lines for an early return or throw to confirm it's a guard.
       let isGuard = false;
-      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+      for (let j = bodyFrom + 1; j < Math.min(bodyFrom + 4, lines.length); j++) {
         const next = lines[j].trim();
         if (next.length === 0 || next === "{") continue;
         if (next.startsWith("throw") || next.startsWith("return")) {
@@ -250,6 +269,38 @@ export function mineJavaRules(
   }
 
   return rules;
+}
+
+/**
+ * #170 — the argument list of an annotation whose `(` does not close on its
+ * own line (`@Pattern(` ⏎ `regexp = "...",` ⏎ `message = "...")`), read from
+ * the joined logical line. The annotation is located by its offset within the
+ * physical line, so a second annotation of the same name is not confused with it.
+ */
+function annotationArgsFromLogical(
+  logical: string | undefined,
+  physical: string,
+  match: RegExpExecArray,
+): string {
+  if (!logical) return "";
+  const after = match.index + match[0].length;
+  // Had the `(` closed on this line, ANNOTATION_RE would have captured it.
+  if (!/^\s*\(/.test(physical.slice(after))) return "";
+  // The logical line starts with the trimmed physical line.
+  const offset = physical.length - physical.trimStart().length;
+  const open = logical.indexOf("(", after - offset);
+  if (open === -1) return "";
+  let depth = 0;
+  for (let k = open; k < logical.length; k++) {
+    const ch = logical[k];
+    if (ch === '"') {
+      const close = logical.indexOf('"', k + 1);
+      if (close === -1) return "";
+      k = close;
+    } else if (ch === "(") depth++;
+    else if (ch === ")" && --depth === 0) return logical.slice(open, k + 1);
+  }
+  return "";
 }
 
 /**
