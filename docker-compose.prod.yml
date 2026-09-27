@@ -57,6 +57,8 @@ services:
       # below. `pgvector` needs a Postgres with the extension; the `postgres`
       # service's postgres:16-alpine image does not ship it (pgvector/pgvector:pg16
       # does), so point DATABASE_URL at one before setting VECTOR_STORE=pgvector.
+      # #75 — get that wrong and `/readyz` reports `vectorStore: error` (503); the
+      # healthcheck below probes `/healthz`, which stays 200, so read `/readyz`.
       VECTOR_STORE: ${VECTOR_STORE:-lancedb}
       # METRICS_TOKEN must be set in .env.prod to enable /metrics scraping.
       METRICS_TOKEN: ${METRICS_TOKEN:-}

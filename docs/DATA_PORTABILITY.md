@@ -480,7 +480,7 @@ These items are out of scope for v1. Tracked for future implementation:
 | Auto-remap of connector rows on import | `node scripts/import.mjs … --logical --remap <file.json>` — Zod-validated A→B overrides for `RepoConnection`/`DatabaseConnection`/`MCPServer`/env-specific `RuntimeConfig`, applied in one transaction. See [§5.1](#51---remap-filejson--connector--env-config-rewrite-on-import). |
 | `--include-vault-key` | Encrypted vault-key sidecar (`<tarball>.vaultkey.enc`) — AES-256-GCM, scrypt-derived key, passphrase via `METIS_EXPORT_PASSPHRASE`/prompt (never argv). See [§3](#encrypted-vault-key-sidecar---include-vault-key). |
 | `backup.sh` / `restore.sh` honoring `UPLOAD_DIR` / `LANCEDB_PATH` | Both scripts (and their `.ps1` siblings) read app data from the env-configured dirs; the tarball's internal layout (`data/uploads`, `data/lancedb`) is unchanged so existing archives still restore. |
-| Helm backup CronJob | Opt-in `backup-cronjob.yaml` in `deploy/helm/metis/` (gated on `backup.enabled`, default `false`); mounts the server uploads + LanceDB PVCs and writes timestamped tarballs. The vault master key is NOT in the backup. |
+| Helm backup CronJob | Opt-in `backup-cronjob.yaml` in `deploy/helm/metis/` (gated on `backup.enabled`, default `false`); mounts the server's data-directory PVC (the SQLite database, #75) and the uploads + LanceDB PVCs, each only when that PVC exists, and writes timestamped tarballs of the data directory (a crash-consistent copy of a live SQLite database — see `backup.command` in `values.yaml`). The vault master key is NOT in the backup. |
 
 ---
 

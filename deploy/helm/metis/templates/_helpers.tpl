@@ -95,7 +95,9 @@ For N>1 it requires:
   - a Postgres DATABASE_URL  (scaling.database.url postgres://… OR the DATABASE_URL
     secret key present via secrets/externalSecrets), AND
   - scaling.vectorStore=pgvector            (LanceDB is not N>1 safe), AND
-  - uploads.backend=s3                        (RWO PVC is single-node).
+  - uploads.backend=s3                        (RWO PVC is single-node), AND
+  - no ReadWriteOnce server PVC (#75): persistence.{uploads,lancedb,data}
+    disabled, or persistence.efs.enabled=true.
 It strongly recommends (and the rendered NOTES warns on):
   - scaling.rateLimitBackend=postgres, scaling.ssoStateBackend=postgres,
     scaling.leaderElection=postgres.
@@ -124,6 +126,20 @@ DATABASE_URL out-of-band and accept ownership). See docs/EKS_DEPLOYMENT.md §9.
 {{- end -}}
 {{- if ne .Values.uploads.backend "s3" -}}
 {{- fail "metis: server.replicaCount > 1 requires uploads.backend=s3 (#546) — an RWO PVC is single-node so replicas can't share uploads. See docs/EKS_DEPLOYMENT.md §9f. Set scaling.enforce=false to override." -}}
+{{- end -}}
+{{- /*
+#75 — the shared backends above are not enough on their own: every server pod
+mounts the server's PVCs, and a ReadWriteOnce claim attaches to ONE node, so a
+second replica scheduled elsewhere never starts (Multi-Attach). With the backends
+set nothing durable is written to them, so turn them off (values-prod.yaml), or
+make them RWX with persistence.efs.enabled=true.
+*/ -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.efs.enabled) -}}
+{{- range $volume := list "uploads" "lancedb" "data" -}}
+{{- if (index $.Values.persistence $volume).enabled -}}
+{{- fail (printf "metis: server.replicaCount > 1 cannot mount the ReadWriteOnce PVC persistence.%s (#75) — a second replica on another node cannot attach it (Multi-Attach). Set persistence.%s.enabled=false (it becomes an emptyDir; nothing durable is written there once the shared backends are set — see values-prod.yaml), or persistence.efs.enabled=true for ReadWriteMany. Set scaling.enforce=false to override." $volume $volume) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

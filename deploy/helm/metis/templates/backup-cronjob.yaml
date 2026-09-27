@@ -2,8 +2,10 @@
 Backup CronJob — portability follow-up.
 
 OPT-IN: rendered only when `.Values.backup.enabled=true` (default false).
-Mounts the SAME uploads + LanceDB PVCs the server uses (see _components.tpl /
-pvc.yaml) plus a dedicated backup-artifact volume, and runs `backup.command` on
+Mounts, read-only, the SAME PVCs the server uses (see _components.tpl / pvc.yaml)
+— its data directory (#75: the SQLite database `metis.db` lives there, #60) and
+the uploads + LanceDB volumes nested in it, each only when its PVC exists — plus
+a dedicated backup-artifact volume, and runs `backup.command` on
 `backup.schedule`.
 
 MASTER-KEY CAVEAT: the vault master key is NOT in the backup (see values.yaml).
@@ -12,6 +14,17 @@ MASTER-KEY CAVEAT: the vault master key is NOT in the backup (see values.yaml).
 {{- $fullname := include "metis.fullname" . -}}
 {{- $persist := .Values.persistence.enabled -}}
 {{- $backupPVC := .Values.backup.persistence.enabled -}}
+{{- /*
+#75 — the server volumes to back up, data directory first. With persistence on,
+only those whose PVC exists (a disabled one is a per-pod emptyDir: nothing here
+could read it). With persistence off, all three, as emptyDirs, as before.
+*/ -}}
+{{- $volumes := list -}}
+{{- range $volume := list "data" "uploads" "lancedb" -}}
+{{- if or (not $persist) (index $.Values.persistence $volume).enabled -}}
+{{- $volumes = append $volumes $volume -}}
+{{- end -}}
+{{- end -}}
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -73,29 +86,26 @@ spec:
               resources:
                 {{- toYaml .Values.backup.resources | nindent 16 }}
               volumeMounts:
-                - name: uploads
-                  mountPath: {{ .Values.persistence.uploads.mountPath }}
+                {{- /* The data directory first: the other two are nested in it. */}}
+                {{- range $volume := $volumes }}
+                - name: {{ $volume }}
+                  mountPath: {{ (index $.Values.persistence $volume).mountPath }}
                   readOnly: true
-                - name: lancedb
-                  mountPath: {{ .Values.persistence.lancedb.mountPath }}
-                  readOnly: true
+                {{- end }}
                 - name: backup-artifacts
                   mountPath: {{ .Values.backup.persistence.mountPath }}
           volumes:
+            {{- range $volume := $volumes }}
             {{- if $persist }}
-            - name: uploads
+            - name: {{ $volume }}
               persistentVolumeClaim:
-                claimName: {{ printf "%s-server-uploads" $fullname }}
-            - name: lancedb
-              persistentVolumeClaim:
-                claimName: {{ printf "%s-server-lancedb" $fullname }}
+                claimName: {{ printf "%s-server-%s" $fullname $volume }}
             {{- else }}
             # WARNING: persistence disabled — server data is on emptyDir and is
             # NOT shared with this CronJob's pod. A backup here will be empty.
-            - name: uploads
+            - name: {{ $volume }}
               emptyDir: {}
-            - name: lancedb
-              emptyDir: {}
+            {{- end }}
             {{- end }}
             {{- if $backupPVC }}
             - name: backup-artifacts

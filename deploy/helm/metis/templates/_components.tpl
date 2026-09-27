@@ -182,20 +182,22 @@ spec:
         - name: data
           emptyDir: {}
         {{- end }}
-        {{- if $root.Values.persistence.enabled }}
-        - name: uploads
+        {{- /*
+          #75 — each volume follows its own `persistence.<volume>.enabled`, like
+          `data` above. Disabled, it is an emptyDir: right when that store lives
+          elsewhere (uploads on S3, vectors in pgvector — values-prod.yaml), and
+          wiped on every pod restart otherwise. NEVER disable one in production
+          while the server still writes to it.
+        */}}
+        {{- range $volume := list "uploads" "lancedb" }}
+        {{- if and $root.Values.persistence.enabled (index $root.Values.persistence $volume).enabled }}
+        - name: {{ $volume }}
           persistentVolumeClaim:
-            claimName: {{ printf "%s-server-uploads" (include "metis.fullname" $root) }}
-        - name: lancedb
-          persistentVolumeClaim:
-            claimName: {{ printf "%s-server-lancedb" (include "metis.fullname" $root) }}
+            claimName: {{ printf "%s-server-%s" (include "metis.fullname" $root) $volume }}
         {{- else }}
-        # WARNING: persistence disabled. uploads + LanceDB live on emptyDir
-        # and will be wiped on every pod restart. NEVER use in production.
-        - name: uploads
+        - name: {{ $volume }}
           emptyDir: {}
-        - name: lancedb
-          emptyDir: {}
+        {{- end }}
         {{- end }}
         {{- end }}
 {{- end -}}

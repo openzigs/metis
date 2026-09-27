@@ -168,7 +168,9 @@ SCALED=$(template --set scaling.enforce=true \
   --set scaling.rateLimitBackend=postgres \
   --set scaling.ssoStateBackend=postgres \
   --set scaling.leaderElection=postgres \
-  --set uploads.backend=s3 --set uploads.s3.bucket=b --set uploads.s3.region=us-east-1)
+  --set uploads.backend=s3 --set uploads.s3.bucket=b --set uploads.s3.region=us-east-1 \
+  --set persistence.uploads.enabled=false --set persistence.lancedb.enabled=false \
+  --set persistence.data.enabled=false)
 if [[ -n "${SCALED}" ]] && ! echo "${SCALED}" | grep -qi "execution error"; then
   echo "  ✓ replicas=2 with all shared backends renders cleanly"
   PASS=$((PASS + 1))
@@ -192,6 +194,36 @@ assert_not_contains "ui deployment has no VECTOR_STORE" "name: VECTOR_STORE" "${
 # EFS still works as an orthogonal RWX toggle.
 EFS_RENDER2=$(template --set persistence.efs.enabled=true)
 assert_contains "EFS toggle still switches to RWX" "ReadWriteMany" "${EFS_RENDER2}"
+
+# #75 — shared backends alone are not enough: every server pod mounts the server
+# PVCs, and a ReadWriteOnce claim attaches to one node (Multi-Attach). Each RWO
+# server PVC left enabled must fail-closed under enforce, and EFS (RWX) must not.
+SCALED_ARGS=(--set scaling.enforce=true
+  --set scaling.database.url=postgres://u:p@db:5432/metis --set scaling.vectorStore=pgvector
+  --set uploads.backend=s3 --set uploads.s3.bucket=b --set uploads.s3.region=us-east-1
+  --set persistence.uploads.enabled=false --set persistence.lancedb.enabled=false
+  --set persistence.data.enabled=false)
+for vol in uploads lancedb data; do
+  RWO_OUT=$(template "${SCALED_ARGS[@]}" --set "persistence.${vol}.enabled=true" || true)
+  assert_contains "enforce + replicas=2 refuses an RWO ${vol} PVC (#75)" \
+    "cannot mount the ReadWriteOnce PVC persistence.${vol}" "${RWO_OUT}"
+done
+RWX_OUT=$(template "${SCALED_ARGS[@]}" --set persistence.uploads.enabled=true --set persistence.efs.enabled=true || true)
+assert_not_contains "enforce + replicas=2 accepts the same PVC as RWX (EFS)" "execution error" "${RWX_OUT}"
+assert "enforce + replicas=1 still renders RWO PVCs" 3 \
+  "$(count_kind PersistentVolumeClaim "$(template --set scaling.enforce=true --set server.replicaCount=1)")"
+
+# Each server PVC has its own toggle; a disabled one is an emptyDir, never a
+# claim the pod cannot find.
+for vol in uploads lancedb; do
+  ONE_OFF=$(template --set "persistence.${vol}.enabled=false")
+  ONE_OFF_SERVER=$(echo "${ONE_OFF}" | awk '/^kind: Deployment$/{d=1} /^---$/{d=0; s=0} d && /^  name: metis-server$/{s=1} s')
+  assert "persistence.${vol}.enabled=false: 2× PVC" 2 "$(count_kind PersistentVolumeClaim "${ONE_OFF}")"
+  assert_not_contains "persistence.${vol}.enabled=false: no ${vol} PVC rendered" "name: metis-server-${vol}" "${ONE_OFF}"
+  assert_not_contains "persistence.${vol}.enabled=false: pod claims no ${vol} PVC" "claimName: metis-server-${vol}" "${ONE_OFF_SERVER}"
+  assert_contains "persistence.${vol}.enabled=false: ${vol} still mounted (emptyDir)" \
+    "mountPath: /app/server/data/${vol}" "${ONE_OFF_SERVER}"
+done
 
 # ---------------------------------------------------------------------------
 echo "Test 5: Secrets — sub-issue #368 (three modes)"
@@ -616,6 +648,42 @@ assert_not_contains "prod: data PVC not rendered" "name: metis-server-data" "${P
 
 EFS_DATA=$(template --set persistence.efs.enabled=true | awk '/^  name: metis-server-data$/,/^---$/')
 assert_contains "EFS toggle moves the data PVC to efs-sc too" 'storageClassName: "efs-sc"' "${EFS_DATA}"
+
+# #75 — prod mounts no ReadWriteOnce PVC at all into its 2+ server replicas:
+# uploads are on S3 and vectors in pgvector, so both directories are emptyDirs.
+for vol in uploads lancedb; do
+  assert_not_contains "prod: no RWO ${vol} PVC in the server pod (#75)" "claimName: metis-server-${vol}" "${PROD_SERVER}"
+  assert_not_contains "prod: ${vol} PVC not rendered (#75)" "name: metis-server-${vol}" "${PROD_RENDER}"
+  assert_contains "prod: ${vol} dir still writable (#75)" "mountPath: /app/server/data/${vol}"$'\n' "${PROD_SERVER}"$'\n'
+done
+assert "prod: 0× PVC (#75)" 0 "$(count_kind PersistentVolumeClaim "${PROD_RENDER}")"
+
+# ---------------------------------------------------------------------------
+echo "Test 13: backup CronJob captures the data directory — #75"
+# ---------------------------------------------------------------------------
+# On SQLite the database is /app/server/data/metis.db on the server-data PVC (#60).
+# The CronJob used to mount only uploads + lancedb and tar only those two, so
+# `backup.enabled=true` backed up everything except the database.
+backup_cronjob() {
+  echo "$1" | awk '/^kind: CronJob$/{c=1} /^---$/{c=0} c'
+}
+BK=$(backup_cronjob "$(template --set backup.enabled=true)")
+assert_contains "backup: mounts the server-data PVC" "claimName: metis-server-data" "${BK}"
+assert_contains "backup: data dir mounted read-only" "mountPath: /app/server/data"$'\n'"                  readOnly: true" "${BK}"
+assert_contains "backup: still mounts uploads" "claimName: metis-server-uploads" "${BK}"
+assert_contains "backup: still mounts lancedb" "claimName: metis-server-lancedb" "${BK}"
+assert_contains "backup: default command archives the WHOLE data dir" "-C /app/server/data ." "${BK}"
+assert_not_contains "backup: default command no longer names only uploads + lancedb" "/app/server/data uploads lancedb" "${BK}"
+BK_LINE_DATA=$(echo "${BK}" | grep -n "mountPath: /app/server/data$" | cut -d: -f1)
+BK_LINE_UP=$(echo "${BK}" | grep -n "mountPath: /app/server/data/uploads$" | cut -d: -f1)
+assert "backup: data mounted before the volumes nested in it" "yes" \
+  "$([[ -n "${BK_LINE_DATA}" && -n "${BK_LINE_UP}" && ${BK_LINE_DATA} -lt ${BK_LINE_UP} ]] && echo yes || echo no)"
+# Only PVCs that exist are mounted — a disabled one is a per-pod emptyDir.
+BK_PROD=$(backup_cronjob "$(template -f "${CHART_DIR}/values-prod.yaml" --set backup.enabled=true)")
+assert_not_contains "backup (prod): no server PVC claimed" "claimName: metis-server-" "${BK_PROD}"
+BK_NODATA=$(backup_cronjob "$(template --set backup.enabled=true --set persistence.data.enabled=false)")
+assert_not_contains "backup: data PVC off -> not claimed" "claimName: metis-server-data" "${BK_NODATA}"
+assert_contains "backup: data PVC off -> uploads still claimed" "claimName: metis-server-uploads" "${BK_NODATA}"
 
 # ---------------------------------------------------------------------------
 echo

@@ -104,7 +104,26 @@ function resultsWorktreeRoot() {
   });
   if (result.status !== 0) return null;
   const top = (result.stdout ?? "").trim();
-  return top && path.resolve(top) === path.resolve(resultsAbs) ? top : null;
+  return top && sameDirectory(top, resultsAbs) ? top : null;
+}
+
+/**
+ * #2 — whether two paths name the same directory. Compared by REAL path, not by
+ * string: on Windows git prints the long, forward-slash form
+ * (`C:/Users/runneradmin/...`) while the process may hold the 8.3 short form of
+ * the same directory (`C:\Users\RUNNER~1\...`, which is what `os.tmpdir()`
+ * returns on the hosted runner), and `path.resolve` normalises neither the case
+ * nor the short name. `realpathSync.native` resolves both.
+ *
+ * @param {string} a
+ * @param {string} b
+ */
+function sameDirectory(a, b) {
+  try {
+    return fs.realpathSync.native(a) === fs.realpathSync.native(b);
+  } catch {
+    return path.resolve(a) === path.resolve(b);
+  }
 }
 
 /**

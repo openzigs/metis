@@ -40,6 +40,15 @@
  *     ({@link HELM_DEFAULT_WRITABLE_PATHS}). Under those values the SQLite default
  *     could not be created, so the server never started.
  *
+ * #75 — the `postgres` arm is production's topology in full: uploads go to S3
+ * (`UPLOAD_STORAGE_BACKEND=s3`) against a throwaway S3-compatible container
+ * ({@link DEFAULT_S3_IMAGE}) on the same private network, and the `uploads` probe
+ * writes, reads back — and confirms through a SEPARATE S3 client that the object
+ * is really in the bucket — through the server's own `S3DocumentStorage`. And the
+ * `readyz-vector-store` probe fails an arm whose `/readyz` reports the vector store
+ * unusable: before #75 a Postgres WITHOUT the `vector` extension booted, served
+ * `/healthz` and failed only on the first vector write.
+ *
  * Fails (exit 1) when a container exits, when `/healthz` does not answer 200 within
  * the deadline, or when any probe exits non-zero; the server's log is printed in
  * every failure case. Every container and network it creates is removed.
@@ -53,6 +62,7 @@
  *
  * Usage: node scripts/lib/smoke-server-image.mjs --image metis-server:ci-123
  *        [--arm all|sqlite|postgres|helm-default] [--postgres-image pgvector/pgvector:pg16]
+ *        [--s3-image adobe/s3mock:<tag>@sha256:<digest>]
  *        [--timeout 120] [--port 14000]
  *
  * Exit codes: 0 healthy; 1 the image failed the smoke; 2 invalid invocation / no docker.
@@ -89,8 +99,8 @@ export const HELM_DEFAULT_WRITABLE_PATHS = Object.freeze([
 /**
  * #60 — the shared, Postgres-backed backends production selects
  * (deploy/helm/metis/values-prod.yaml `scaling.*`), set on the Postgres arm so it
- * boots the image as production does. S3 uploads are not among them: they need a
- * bucket.
+ * boots the image as production does. S3 uploads (#75) are wired separately
+ * ({@link buildRunArgs} `s3`): they need a bucket, which the arm starts.
  */
 export const POSTGRES_ARM_BACKENDS = Object.freeze({
   VECTOR_STORE: "pgvector",
@@ -102,6 +112,21 @@ export const POSTGRES_ARM_BACKENDS = Object.freeze({
 export const HELM_RUN_AS = "1001:1001";
 /** Same image as the `postgres-adapter` and `postgres-migrate-deploy` CI jobs. */
 export const DEFAULT_POSTGRES_IMAGE = "pgvector/pgvector:pg16";
+/**
+ * #75 — the S3-compatible store the Postgres arm puts uploads in: Adobe's S3Mock
+ * (Apache-2.0), pinned by its multi-arch index digest. Not MinIO: its container
+ * images are no longer published (`minio/minio` and `quay.io/minio/minio` both
+ * refuse anonymous pulls, 2026-09). It accepts any credentials, creates the bucket
+ * named in its environment at start, and listens on 9090 (HTTP).
+ */
+export const DEFAULT_S3_IMAGE =
+  "adobe/s3mock:5.2.2@sha256:e7c36014dcf4c7f0f6bec9de888477d1d9b8f55eceb7d9c1186f70d7aadf81ca";
+/** The bucket the S3 container creates at start and the server is pointed at. */
+export const S3_ARM_BUCKET = "metis-smoke";
+/** S3Mock's HTTP port inside its container. */
+const S3_PORT = 9090;
+/** The line S3Mock logs once it serves requests. */
+const S3_READY_LINE = "Started S3MockApplication";
 /** Where the image keeps the compiled server (`Dockerfile.server`). */
 const SERVER_DIST = "/app/server/dist";
 
@@ -198,11 +223,41 @@ export const MODULE_PROBES = Object.freeze([
     name: "uploads",
     code: [
       `const { resolveDocumentStorage } = await import("${SERVER_DIST}/lib/documents/storage.js");`,
+      // #75 — under UPLOAD_STORAGE_BACKEND=s3 (the Postgres arm) register the S3
+      // factory as server.ts does at startup; resolve through the same function.
+      'const s3 = process.env.UPLOAD_STORAGE_BACKEND === "s3";',
+      `if (s3) { const { registerS3Storage } = await import("${SERVER_DIST}/lib/documents/storage-backend-s3.js"); registerS3Storage(); }`,
       "const s = resolveDocumentStorage();",
+      'const want = s3 ? "S3DocumentStorage" : "DocumentStorage";',
+      'if (s.constructor.name !== want) throw new Error("uploads backend is " + s.constructor.name + ", expected " + want);',
       'const b = await s.write({ projectId: "metis-smoke", buffer: Buffer.from("smoke") });',
       "const back = await s.read(b.storagePath);",
+      // #75 — a write the backend reports is not proof it reached the bucket: ask a
+      // separate S3 client, at the object key the backend says it wrote.
+      'if (s3) { const { S3Client, HeadObjectCommand } = await import("@aws-sdk/client-s3");',
+      "const m = /^s3:\\/\\/([^/]+)\\/(.+)$/.exec(b.absolutePath);",
+      'if (!m || m[1] !== process.env.UPLOAD_S3_BUCKET) throw new Error("S3 write reported " + b.absolutePath);',
+      "const c = new S3Client({ region: process.env.UPLOAD_S3_REGION, endpoint: process.env.UPLOAD_S3_ENDPOINT, forcePathStyle: true });",
+      "const h = await c.send(new HeadObjectCommand({ Bucket: m[1], Key: m[2] }));",
+      'if (h.ContentLength !== 5) throw new Error("S3 object length " + h.ContentLength); }',
       'await s.removeProject("metis-smoke");',
       'if (back.toString() !== "smoke") throw new Error("upload read back " + JSON.stringify(back.toString()));',
+    ].join(" "),
+  },
+  {
+    // #75 — `/readyz`'s vector-store component, from inside the container. It is an
+    // error when VECTOR_STORE=pgvector points at a Postgres without the `vector`
+    // extension (the arm's image was measured booting cleanly with `postgres:16`
+    // before this existed). The whole `/readyz` is 503 here regardless — no
+    // embeddings sidecar runs in the smoke — so the probe reads the one component.
+    name: "readyz-vector-store",
+    code: [
+      'const r = await fetch("http://127.0.0.1:" + (process.env.PORT || 4000) + "/readyz");',
+      "const body = await r.json();",
+      "const c = body.checks?.vectorStore;",
+      'if (c?.status !== "ok") throw new Error("/readyz vectorStore: " + JSON.stringify(c));',
+      'const want = process.env.VECTOR_STORE === "pgvector" ? "pgvector" : "lancedb";',
+      'if (!String(c.message).startsWith(want)) throw new Error("/readyz vectorStore is " + c.message + ", expected " + want);',
     ].join(" "),
   },
   {
@@ -234,7 +289,7 @@ export const MODULE_PROBES = Object.freeze([
  * Parse CLI flags. Unknown flags and missing values are invocation errors.
  *
  * @param {string[]} argv
- * @returns {{ image: string, timeoutS: number, port: number, arms: string[], postgresImage: string } | { error: string }}
+ * @returns {{ image: string, timeoutS: number, port: number, arms: string[], postgresImage: string, s3Image: string } | { error: string }}
  */
 export function parseSmokeArgs(argv) {
   const out = {
@@ -243,8 +298,9 @@ export function parseSmokeArgs(argv) {
     port: DEFAULT_HOST_PORT,
     arms: [...ARMS],
     postgresImage: DEFAULT_POSTGRES_IMAGE,
+    s3Image: DEFAULT_S3_IMAGE,
   };
-  const known = ["--image", "--timeout", "--port", "--arm", "--postgres-image"];
+  const known = ["--image", "--timeout", "--port", "--arm", "--postgres-image", "--s3-image"];
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const value = argv[i + 1];
@@ -257,6 +313,10 @@ export function parseSmokeArgs(argv) {
     }
     if (flag === "--postgres-image") {
       out.postgresImage = value;
+      continue;
+    }
+    if (flag === "--s3-image") {
+      out.s3Image = value;
       continue;
     }
     if (flag === "--arm") {
@@ -286,9 +346,10 @@ export function parseSmokeArgs(argv) {
  * `databaseUrl` is omitted on the SQLite arms on purpose (#54): an explicit
  * `file:/tmp/...` URL is a scratch path that passes whether or not the image's own
  * default is writable. `helmDefault` (#60) applies the Helm chart's default
- * container constraints.
+ * container constraints. `s3` (#75) points uploads at an S3-compatible endpoint; its
+ * credentials are secrets like the rest, named on argv and valued in `env`.
  *
- * @param {{ image: string, name: string, port: number, jwtSecret: string, vaultKey: string, embeddingsToken: string, network?: string, databaseUrl?: string, backends?: Readonly<Record<string, string>>, helmDefault?: boolean }} o
+ * @param {{ image: string, name: string, port: number, jwtSecret: string, vaultKey: string, embeddingsToken: string, network?: string, databaseUrl?: string, backends?: Readonly<Record<string, string>>, helmDefault?: boolean, s3?: { endpoint: string, bucket: string, accessKeyId: string, secretAccessKey: string } }} o
  * @returns {{ args: string[], env: Record<string, string> }}
  */
 export function buildRunArgs({
@@ -302,6 +363,7 @@ export function buildRunArgs({
   databaseUrl,
   backends,
   helmDefault,
+  s3,
 }) {
   /** @type {Record<string, string>} */
   const env = {
@@ -314,7 +376,18 @@ export function buildRunArgs({
     EMBEDDINGS_TOKEN: embeddingsToken,
     // Carries the Postgres password.
     ...(databaseUrl ? { DATABASE_URL: databaseUrl } : {}),
+    // #75 — the AWS SDK's default credential chain reads these.
+    ...(s3 ? { AWS_ACCESS_KEY_ID: s3.accessKeyId, AWS_SECRET_ACCESS_KEY: s3.secretAccessKey } : {}),
   };
+  /** @type {Record<string, string>} */
+  const uploads = s3
+    ? {
+        UPLOAD_STORAGE_BACKEND: "s3",
+        UPLOAD_S3_BUCKET: s3.bucket,
+        UPLOAD_S3_REGION: "us-east-1",
+        UPLOAD_S3_ENDPOINT: s3.endpoint,
+      }
+    : {};
   const args = [
     "run",
     "--detach",
@@ -338,7 +411,7 @@ export function buildRunArgs({
     "--publish",
     `127.0.0.1:${port}:${CONTAINER_PORT}`,
     ...Object.keys(env).flatMap((k) => ["--env", k]),
-    ...Object.entries(backends ?? {}).flatMap(([k, v]) => ["--env", `${k}=${v}`]),
+    ...Object.entries({ ...backends, ...uploads }).flatMap(([k, v]) => ["--env", `${k}=${v}`]),
     // Production refuses the mock provider (#682). LDAP is the one real provider
     // that needs no reachable IdP to boot: it only connects on a login.
     "--env",
@@ -457,10 +530,48 @@ async function startPostgres(io, o) {
 }
 
 /**
+ * #75 — start the throwaway S3-compatible store on the arm's private network and
+ * wait until it logs that it serves requests. It creates {@link S3_ARM_BUCKET} at
+ * start; it has no published port — only the server container reaches it.
+ *
+ * @param {{ docker: Docker, sleep: (ms: number) => Promise<void>, now: () => number, err: (m: string) => void }} io
+ * @param {{ s3Name: string, network: string, s3Image: string, timeoutS: number, pollMs: number }} o
+ * @returns {Promise<boolean>}
+ */
+async function startS3(io, o) {
+  const { docker, sleep, now, err } = io;
+  const up = docker([
+    "run",
+    "--detach",
+    "--name",
+    o.s3Name,
+    "--network",
+    o.network,
+    "--env",
+    `COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS=${S3_ARM_BUCKET}`,
+    o.s3Image,
+  ]);
+  if (up.status !== 0) {
+    err(`FAIL: could not start ${o.s3Image}: ${up.stderr.trim()}`);
+    return false;
+  }
+  const deadline = now() + o.timeoutS * 1000;
+  while (now() < deadline) {
+    const l = docker(["logs", o.s3Name]);
+    if (`${l.stdout}${l.stderr}`.includes(S3_READY_LINE)) return true;
+    await sleep(o.pollMs);
+  }
+  err(`FAIL: ${o.s3Image} did not start serving within ${o.timeoutS}s`);
+  const l = docker(["logs", "--tail", "50", o.s3Name]);
+  err(`${l.stdout}${l.stderr}`.trimEnd());
+  return false;
+}
+
+/**
  * Boot the image once, in one arm, and run every probe that applies to it.
  *
  * @param {{ docker: Docker, fetchStatus: (url: string) => Promise<number | null>, sleep: (ms: number) => Promise<void>, now: () => number, log: (m: string) => void, err: (m: string) => void, secret: (bytes: number, encoding: "hex" | "base64") => string, probes: ReadonlyArray<{ name: string, code: string, arms?: ReadonlyArray<string> }> }} io
- * @param {{ image: string, database: string, timeoutS: number, port: number, pollMs: number, postgresImage: string }} o
+ * @param {{ image: string, database: string, timeoutS: number, port: number, pollMs: number, postgresImage: string, s3Image: string }} o
  * @returns {Promise<number>} exit code
  */
 async function runArm(io, o) {
@@ -470,6 +581,7 @@ async function runArm(io, o) {
   const cleanup = /** @type {string[][]} */ ([["rm", "--force", name]]);
   let network;
   let databaseUrl;
+  let s3;
   try {
     if (o.database === "postgres") {
       network = `metis-smoke-net-${stamp}`;
@@ -488,6 +600,26 @@ async function runArm(io, o) {
       });
       if (!up) return 1;
       databaseUrl = `postgresql://metis:${password}@${pgName}:5432/metis`;
+
+      // #75 — production keeps uploads on S3; so does this arm.
+      const s3Name = `metis-smoke-s3-${stamp}`;
+      // Before the network: `network rm` fails while a container is still on it.
+      cleanup.splice(cleanup.length - 1, 0, ["rm", "--force", s3Name]);
+      log(`==> [postgres] Starting ${o.s3Image} as ${s3Name} on ${network}`);
+      const s3Up = await startS3(io, {
+        s3Name,
+        network,
+        s3Image: o.s3Image,
+        timeoutS: o.timeoutS,
+        pollMs: o.pollMs,
+      });
+      if (!s3Up) return 1;
+      s3 = {
+        endpoint: `http://${s3Name}:${S3_PORT}`,
+        bucket: S3_ARM_BUCKET,
+        accessKeyId: secret(8, "hex"),
+        secretAccessKey: secret(16, "hex"),
+      };
     }
 
     const dumpLogs = () => {
@@ -512,6 +644,7 @@ async function runArm(io, o) {
       // #60 — Postgres runs production's shared backends, pgvector among them.
       backends: o.database === "postgres" ? POSTGRES_ARM_BACKENDS : undefined,
       helmDefault: o.database === "helm-default",
+      s3,
     });
     const started = docker(run.args, run.env);
     if (started.status !== 0) {
@@ -583,7 +716,7 @@ async function runArm(io, o) {
  * Run every requested arm; each runs even when an earlier one failed, so one CI run
  * reports all of them.
  *
- * @param {{ image: string, timeoutS?: number, port?: number, pollMs?: number, arms?: string[], postgresImage?: string }} opts
+ * @param {{ image: string, timeoutS?: number, port?: number, pollMs?: number, arms?: string[], postgresImage?: string, s3Image?: string }} opts
  * @param {SmokeDeps} [deps]
  * @returns {Promise<number>} exit code
  */
@@ -620,6 +753,7 @@ export async function runSmoke(opts, deps = {}) {
       port: opts.port ?? DEFAULT_HOST_PORT,
       pollMs: opts.pollMs ?? 1000,
       postgresImage: opts.postgresImage ?? DEFAULT_POSTGRES_IMAGE,
+      s3Image: opts.s3Image ?? DEFAULT_S3_IMAGE,
     });
     if (code !== 0) failedArms.push(database);
   }
@@ -637,7 +771,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   if ("error" in parsed) {
     console.error(`ERR: ${parsed.error}`);
     console.error(
-      `usage: smoke-server-image.mjs --image <tag> [--arm all|${ARMS.join("|")}] [--postgres-image <tag>] [--timeout <s>] [--port <n>]`,
+      `usage: smoke-server-image.mjs --image <tag> [--arm all|${ARMS.join("|")}] [--postgres-image <tag>] [--s3-image <ref>] [--timeout <s>] [--port <n>]`,
     );
     process.exit(2);
   }

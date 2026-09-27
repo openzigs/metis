@@ -5,11 +5,13 @@ import {
   CONTAINER_PORT,
   DEFAULT_HOST_PORT,
   DEFAULT_POSTGRES_IMAGE,
+  DEFAULT_S3_IMAGE,
   DEFAULT_TIMEOUT_S,
   HELM_DEFAULT_WRITABLE_PATHS,
   HELM_RUN_AS,
   MODULE_PROBES,
   POSTGRES_ARM_BACKENDS,
+  S3_ARM_BUCKET,
   buildRunArgs,
   parseSmokeArgs,
   runSmoke,
@@ -34,6 +36,8 @@ import {
  *   version?: number,
  *   run?: { status: number, stderr?: string },
  *   pgRun?: { status: number, stderr?: string },
+ *   s3Run?: { status: number, stderr?: string },
+ *   s3Logs?: string[],
  *   network?: number,
  *   pgReady?: number[],
  *   inspect?: string[],
@@ -45,6 +49,7 @@ import {
 function fakeDocker(spec = {}) {
   const polls = /** @type {Record<string, number>} */ ({});
   let pgPolls = 0;
+  let s3Polls = 0;
   const calls = /** @type {string[][]} */ ([]);
   const envs = /** @type {Array<Record<string, string> | undefined>} */ ([]);
   /** @param {string} name */
@@ -59,7 +64,8 @@ function fakeDocker(spec = {}) {
         return { status: spec.network ?? 0, stdout: "", stderr: spec.network ? "no network" : "" };
       if (sub === "run") {
         const isPg = args.at(-1) === DEFAULT_POSTGRES_IMAGE;
-        const r = isPg ? spec.pgRun : spec.run;
+        const isS3 = args.at(-1) === DEFAULT_S3_IMAGE;
+        const r = isPg ? spec.pgRun : isS3 ? spec.s3Run : spec.run;
         return { status: r?.status ?? 0, stdout: "cid", stderr: r?.stderr ?? "" };
       }
       if (sub === "inspect") {
@@ -86,6 +92,12 @@ function fakeDocker(spec = {}) {
         const table = spec.byArm?.[arm]?.exec ?? spec.exec ?? {};
         const status = table[probe?.name ?? ""] ?? 0;
         return { status, stdout: "", stderr: status === 0 ? "" : `probe ${probe?.name} blew up` };
+      }
+      if (sub === "logs" && (args.at(-1) ?? "").startsWith("metis-smoke-s3-")) {
+        const seq = spec.s3Logs ?? ["... Started S3MockApplication.Companion in 3.1 seconds"];
+        const stdout = seq[Math.min(s3Polls, seq.length - 1)];
+        s3Polls += 1;
+        return { status: 0, stdout, stderr: "" };
       }
       if (sub === "logs") return { status: 0, stdout: "server log line", stderr: "" };
       return { status: 0, stdout: "", stderr: "" };
@@ -132,7 +144,9 @@ function deps(overrides = {}) {
 
 /** @param {string[][]} calls */
 const serverRuns = (calls) =>
-  calls.filter((c) => c[0] === "run" && c.at(-1) !== DEFAULT_POSTGRES_IMAGE);
+  calls.filter(
+    (c) => c[0] === "run" && c.at(-1) !== DEFAULT_POSTGRES_IMAGE && c.at(-1) !== DEFAULT_S3_IMAGE,
+  );
 
 /** @param {string[]} args @param {string} key — `--env KEY=value` values in argv */
 const envOf = (args, key) =>
@@ -159,6 +173,7 @@ describe("parseSmokeArgs", () => {
       port: DEFAULT_HOST_PORT,
       arms: ["sqlite", "postgres", "helm-default"],
       postgresImage: DEFAULT_POSTGRES_IMAGE,
+      s3Image: DEFAULT_S3_IMAGE,
     });
   });
 
@@ -169,6 +184,7 @@ describe("parseSmokeArgs", () => {
       port: 15000,
       arms: ["sqlite", "postgres", "helm-default"],
       postgresImage: DEFAULT_POSTGRES_IMAGE,
+      s3Image: DEFAULT_S3_IMAGE,
     });
   });
 
@@ -176,6 +192,11 @@ describe("parseSmokeArgs", () => {
     expect(ARMS).toEqual(["sqlite", "postgres", "helm-default"]);
     const one = parseSmokeArgs(["--image", "x", "--arm", "postgres", "--postgres-image", "pg:1"]);
     expect(one).toMatchObject({ arms: ["postgres"], postgresImage: "pg:1" });
+    expect(parseSmokeArgs(["--image", "x", "--s3-image", "s3:1"])).toMatchObject({
+      s3Image: "s3:1",
+    });
+    // The default is pinned by digest: a moving tag is a supply-chain input (#75).
+    expect(DEFAULT_S3_IMAGE).toMatch(/@sha256:[0-9a-f]{64}$/);
     expect(parseSmokeArgs(["--image", "x", "--arm", "helm-default"])).toMatchObject({
       arms: ["helm-default"],
     });
@@ -340,6 +361,27 @@ describe("MODULE_PROBES", () => {
     expect(code("pgvector")).toMatch(/vs\.count\(p\)/);
   });
 
+  it("checks the uploads backend it resolved, and on S3 confirms the object through a separate client (#75)", () => {
+    expect(code("uploads")).toContain("/app/server/dist/lib/documents/storage-backend-s3.js");
+    expect(code("uploads")).toContain("registerS3Storage()");
+    expect(code("uploads")).toContain('"S3DocumentStorage"');
+    expect(code("uploads")).toContain('"DocumentStorage"');
+    expect(code("uploads")).toMatch(/new HeadObjectCommand\(/);
+    // The write is checked BEFORE the project is removed.
+    expect(code("uploads").indexOf("HeadObjectCommand({")).toBeLessThan(
+      code("uploads").indexOf("removeProject"),
+    );
+  });
+
+  it("reads /readyz's vector-store component in every arm, and expects the arm's store (#75)", () => {
+    expect(code("readyz-vector-store")).toMatch(/\/readyz"/);
+    expect(code("readyz-vector-store")).toContain("checks?.vectorStore");
+    expect(code("readyz-vector-store")).toContain('"pgvector"');
+    for (const arm of ARMS) {
+      expect(probesFor(arm).map((p) => p.name)).toContain("readyz-vector-store");
+    }
+  });
+
   it("runs LanceDB where LanceDB is the store, and every other probe in every arm", () => {
     expect(probesFor("postgres").map((p) => p.name)).not.toContain("lancedb");
     expect(probesFor("sqlite").map((p) => p.name)).toContain("lancedb");
@@ -397,14 +439,70 @@ describe("runSmoke", () => {
     expect(calls.findIndex((c) => c.includes("pg_isready"))).toBeLessThan(calls.indexOf(postgres));
   });
 
-  it("removes the server, then Postgres, then the network, on the Postgres arm", async () => {
+  it("removes the server, then Postgres, then S3, then the network, on the Postgres arm", async () => {
     const { docker, calls } = fakeDocker();
     const { deps: d } = deps({ docker, fetchStatus: fakeFetch([200]) });
     await runSmoke({ image: "img", pollMs: 1, arms: ["postgres"] }, d);
-    const tail = calls.slice(-3).map((c) => `${c[0]} ${c[1]} ${c[2] ?? ""}`);
+    const tail = calls.slice(-4).map((c) => `${c[0]} ${c[1]} ${c[2] ?? ""}`);
     expect(tail[0]).toMatch(/^rm --force metis-smoke-postgres-/);
     expect(tail[1]).toMatch(/^rm --force metis-smoke-pg-/);
-    expect(tail[2]).toMatch(/^network rm metis-smoke-net-/);
+    expect(tail[2]).toMatch(/^rm --force metis-smoke-s3-/);
+    expect(tail[3]).toMatch(/^network rm metis-smoke-net-/);
+  });
+
+  it("puts the Postgres arm's uploads on a live S3 store on the same private network (#75)", async () => {
+    const { docker, calls, envs } = fakeDocker({
+      s3Logs: ["booting", "booting", "Started S3MockApplication"],
+    });
+    const { deps: d } = deps({ docker, fetchStatus: fakeFetch([200]) });
+    expect(await runSmoke({ image: "img", pollMs: 1 }, d)).toBe(0);
+    const s3Run = calls.find((c) => c[0] === "run" && c.at(-1) === DEFAULT_S3_IMAGE) ?? [];
+    const s3Name = s3Run[s3Run.indexOf("--name") + 1];
+    const net = calls.find((c) => c[0] === "network" && c[1] === "create")?.[2];
+    expect(s3Run[s3Run.indexOf("--network") + 1]).toBe(net);
+    // No published port: only the server container reaches it.
+    expect(s3Run).not.toContain("--publish");
+    expect(envOf(s3Run, "COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS")).toEqual([S3_ARM_BUCKET]);
+    const postgres = serverRunOf(calls, "postgres");
+    expect(envOf(postgres, "UPLOAD_STORAGE_BACKEND")).toEqual(["s3"]);
+    expect(envOf(postgres, "UPLOAD_S3_BUCKET")).toEqual([S3_ARM_BUCKET]);
+    expect(envOf(postgres, "UPLOAD_S3_ENDPOINT")).toEqual([`http://${s3Name}:9090`]);
+    expect(envOf(postgres, "UPLOAD_S3_REGION")).toEqual(["us-east-1"]);
+    for (const k of ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]) {
+      expect(namesEnv(postgres, k)).toBe(true);
+      expect(envs[calls.indexOf(postgres)]?.[k]).toBe("s3cr3t");
+    }
+    // The other arms keep the local-disk default.
+    for (const arm of ["sqlite", "helm-default"]) {
+      expect(envOf(serverRunOf(calls, arm), "UPLOAD_STORAGE_BACKEND")).toEqual([]);
+      expect(namesEnv(serverRunOf(calls, arm), "AWS_ACCESS_KEY_ID")).toBe(false);
+    }
+    // S3 was serving before the server started — it polled through the boot lines.
+    const s3Polls = calls.filter((c) => c[0] === "logs" && c.at(-1) === s3Name);
+    expect(s3Polls).toHaveLength(3);
+    expect(calls.lastIndexOf(s3Polls[2])).toBeLessThan(calls.indexOf(postgres));
+  });
+
+  it("fails the Postgres arm, without starting the server, when S3 cannot start or never serves (#75)", async () => {
+    for (const spec of [
+      { s3Run: { status: 125, stderr: "pull denied" } },
+      { s3Logs: ["booting"] },
+    ]) {
+      const { docker, calls } = fakeDocker(spec);
+      const { deps: d, errs } = deps({ docker, fetchStatus: fakeFetch([200]) });
+      expect(await runSmoke({ image: "img", timeoutS: 3, pollMs: 1, arms: ["postgres"] }, d)).toBe(
+        1,
+      );
+      expect(errs.join("\n")).toMatch(
+        /FAIL: (could not start adobe\/s3mock|adobe\/s3mock\S+ did not start serving within 3s)/,
+      );
+      expect(serverRuns(calls)).toHaveLength(0);
+      // Everything it created is still removed, the network last.
+      expect(calls.some((c) => c[0] === "rm" && (c[2] ?? "").startsWith("metis-smoke-s3-"))).toBe(
+        true,
+      );
+      expect(calls.at(-1)?.slice(0, 2)).toEqual(["network", "rm"]);
+    }
   });
 
   it("fails the Postgres arm when the server exits at import — the #45 shape — and still runs SQLite", async () => {
