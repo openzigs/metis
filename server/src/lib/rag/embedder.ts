@@ -676,6 +676,7 @@ registerBackend(
     defaultModel: DEFAULT_XENOVA_EMBED_MODEL,
     defaultDimension: DEFAULT_EMBED_DIMENSION,
     offlineCapable: true,
+    inProcessOnnx: true,
   },
 );
 
@@ -704,6 +705,7 @@ registerBackend(
     defaultModel: EMBEDDING_GEMMA_MODEL,
     defaultDimension: EMBEDDING_GEMMA_NATIVE_DIM,
     offlineCapable: true,
+    inProcessOnnx: true,
   },
 );
 

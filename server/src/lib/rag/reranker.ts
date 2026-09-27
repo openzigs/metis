@@ -48,6 +48,12 @@
  */
 import { createChildLogger } from "../logger.js";
 import { resolveDtype } from "./embed-model-config.js";
+import { type InProcessEmbedRuntime, resolveInProcessRuntime } from "./embed-worker-pipeline.js";
+// Side effect: registers the built-in embed backends, whose descriptors say which of
+// them run ONNX in-process. Without it the check below would find no descriptor and
+// pass every backend.
+import "./embedder.js";
+import { getBackendDescriptor, resolveBackendKey } from "./embedder-registry.js";
 import {
   EmbeddingsClient,
   getEmbeddingsClient,
@@ -68,6 +74,21 @@ export interface RerankerOptions {
   model?: string;
   /** Skip the rerank for queries shorter than this many characters. */
   minQueryLength?: number;
+  /**
+   * #222 / PR #255 review — the embed configuration the caller ACTUALLY runs beside
+   * this reranker, when it is not the process environment's. The eval harness builds
+   * its embedder from a per-arm backend, so judging the environment's backend
+   * refused safe arms and passed unsafe ones. Omitted fields fall back to the env.
+   */
+  embed?: RerankEmbedConfig;
+}
+
+/** The parts of an embedder's configuration that decide the #222 thread conflict. */
+export interface RerankEmbedConfig {
+  /** Embed backend registry key (the `Embedder` `backend` option). */
+  backend?: string;
+  /** The `Embedder` `inProcessRuntime` option. */
+  inProcessRuntime?: InProcessEmbedRuntime;
 }
 
 export interface Reranker {
@@ -276,6 +297,48 @@ class RemoteReranker implements Reranker {
   }
 }
 
+/**
+ * Issue #222 — why the in-process cross-encoder cannot load here, or `null` when it can.
+ *
+ * `onnxruntime-node` (1.21, via `@huggingface/transformers` 3.8.1) aborts the whole
+ * process — a V8 `FATAL ERROR`, exit 134, which no JavaScript handler can catch — once
+ * ONNX sessions are live on two threads. The in-process embedder runs its session in a
+ * worker thread by default (#189) and this cross-encoder loads on the main thread, so
+ * the pair is fatal on the next embed. Measured in #222: embed → rerank → embed dies.
+ *
+ * Only that exact combination conflicts. The sidecar mode reranks out of process; an
+ * HTTP embed backend holds no ONNX session; the `inline` runtime puts both sessions on
+ * the main thread, which is the pre-#189 arrangement the reranker was measured on.
+ */
+function inProcessRerankThreadConflict(embed: RerankEmbedConfig = {}): string | null {
+  if (resolveEmbeddingsMode() === "sidecar") return null;
+  const backend = resolveBackendKey({ backend: embed.backend });
+  // Which backends hold an in-process ONNX session is the registry's to say (its
+  // `inProcessOnnx` descriptor flag), so a new one cannot slip past this check.
+  if (!getBackendDescriptor(backend)?.inProcessOnnx) return null;
+  if ((embed.inProcessRuntime ?? resolveInProcessRuntime()) !== "worker") return null;
+  return (
+    `The in-process cross-encoder reranker cannot run beside the "${backend}" embedder ` +
+    `on its worker thread (EMBED_INPROCESS_RUNTIME=worker): onnxruntime-node aborts the ` +
+    `process when ONNX sessions are live on two threads (#222). Choose one: ` +
+    `EMBEDDINGS_MODE=sidecar (embed and rerank in the sidecar), ` +
+    `EMBED_INPROCESS_RUNTIME=inline (both models on the main thread), ` +
+    `or unset RAG_RERANK.`
+  );
+}
+
+/**
+ * Issue #222 — refuse, at boot, a configuration that would put ONNX sessions on two
+ * threads. Called from `createApp()` so the server crashloops with a clear message
+ * instead of booting, passing `/readyz`, and dying on the first reranked search.
+ * A no-op unless `RAG_RERANK` is on.
+ */
+export function assertRerankOnnxSingleThread(): void {
+  if (!isRerankEnabled()) return;
+  const conflict = inProcessRerankThreadConflict();
+  if (conflict) throw new Error(`RAG_RERANK=1 is not supported in this configuration. ${conflict}`);
+}
+
 let singleton: Reranker | null = null;
 
 /**
@@ -293,9 +356,14 @@ let singleton: Reranker | null = null;
  * {@link getReranker}, which still gates on `RAG_RERANK`.
  */
 export function createCrossEncoderReranker(opts: RerankerOptions = {}): Reranker {
-  return resolveEmbeddingsMode() === "sidecar"
-    ? new RemoteReranker(opts, getEmbeddingsClient())
-    : new XenovaCrossEncoderReranker(opts);
+  if (resolveEmbeddingsMode() === "sidecar") {
+    return new RemoteReranker(opts, getEmbeddingsClient());
+  }
+  // #222 — a clear error here beats a V8 abort on the next embed. Scripts (the eval
+  // harness) reach this without going through `createApp()`'s boot check.
+  const conflict = inProcessRerankThreadConflict(opts.embed);
+  if (conflict) throw new Error(conflict);
+  return new XenovaCrossEncoderReranker(opts);
 }
 
 /**

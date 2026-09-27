@@ -520,7 +520,8 @@ async function runRerank(corpusId: string, argv: readonly string[]): Promise<voi
 
       // The cold model load, timed on its own so the per-query warm numbers below are
       // steady state rather than "steady state plus one ONNX session construction".
-      const reranker = createCrossEncoderReranker();
+      // #222 — judge the thread conflict against THIS arm's embedder, not the env's.
+      const reranker = createCrossEncoderReranker({ embed: { backend: spec.backend } });
       const coldStart = performance.now();
       await reranker.rerank("cold cross-encoder load probe", [
         { chunkId: "probe", text: "function probe in probe.ts" },
