@@ -13,6 +13,14 @@ import type { DriftEventRow, DriftResolutionAction, FieldDiff } from "@metis/sha
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export default function SyncDashboardPage() {
   const params = useParams();
@@ -117,14 +125,17 @@ export default function SyncDashboardPage() {
       )}
 
       {/* Side-by-side diff modal */}
-      {selectedDrift && (
-        <DiffModal
-          drift={selectedDrift}
-          onClose={() => setSelectedDrift(null)}
-          onResolve={handleResolve}
-          resolving={resolving}
-        />
-      )}
+      {/* #268 — Radix Dialog: focus trap, Escape, focus return. */}
+      <Dialog
+        open={selectedDrift !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedDrift(null);
+        }}
+      >
+        {selectedDrift && (
+          <DiffModal drift={selectedDrift} onResolve={handleResolve} resolving={resolving} />
+        )}
+      </Dialog>
     </div>
   );
 }
@@ -146,91 +157,91 @@ function EmptyState() {
 
 function DriftRow({ drift, onSelect }: { drift: DriftEventRow; onSelect: () => void }) {
   return (
-    <Card className="p-4 cursor-pointer hover:bg-muted/50 transition-colors" onClick={onSelect}>
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Badge variant={drift.source === "github" ? "default" : "secondary"}>
-            {drift.source}
-          </Badge>
-          <div>
-            <p className="font-medium text-sm">
-              {drift.fieldDiffs.map((d: FieldDiff) => d.field).join(", ")} changed
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {drift.action} · {new Date(drift.createdAt).toLocaleString()}
-            </p>
+    // #268 — a real button, so the drift (and its dialog) is keyboard-reachable;
+    // the clickable Card used to be mouse-only (WCAG 2.1.1).
+    <button type="button" className="block w-full rounded-lg text-left" onClick={onSelect}>
+      <Card className="p-4 cursor-pointer hover:bg-muted/50 transition-colors">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Badge variant={drift.source === "github" ? "default" : "secondary"}>
+              {drift.source}
+            </Badge>
+            <div>
+              <p className="font-medium text-sm">
+                {drift.fieldDiffs.map((d: FieldDiff) => d.field).join(", ")} changed
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {drift.action} · {new Date(drift.createdAt).toLocaleString()}
+              </p>
+            </div>
           </div>
+          <Badge variant="outline">{drift.fieldDiffs.length} field(s)</Badge>
         </div>
-        <Badge variant="outline">{drift.fieldDiffs.length} field(s)</Badge>
-      </div>
-    </Card>
+      </Card>
+    </button>
   );
 }
 
 function DiffModal({
   drift,
-  onClose,
   onResolve,
   resolving,
 }: {
   drift: DriftEventRow;
-  onClose: () => void;
   onResolve: (id: string, action: DriftResolutionAction) => void;
   resolving: boolean;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="bg-background rounded-lg shadow-xl w-full max-w-4xl max-h-[80vh] overflow-y-auto p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Drift Details</h2>
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            ✕
-          </Button>
-        </div>
+    <DialogContent className="max-h-[80vh] max-w-4xl">
+      <DialogHeader>
+        <DialogTitle>Drift Details</DialogTitle>
+        <DialogDescription>
+          Compare the METIS copy with the external issue, then choose how to resolve the drift.
+        </DialogDescription>
+      </DialogHeader>
 
-        <div className="space-y-4">
-          {drift.fieldDiffs.map((diff: FieldDiff, i: number) => (
-            <div key={i} className="border rounded-lg overflow-hidden">
-              <div className="bg-muted px-4 py-2 font-medium text-sm capitalize">{diff.field}</div>
-              <div className="grid grid-cols-2 divide-x">
-                <div className="p-4">
-                  <p className="text-xs text-muted-foreground mb-1">Local (METIS)</p>
-                  <pre className="text-sm whitespace-pre-wrap break-words bg-red-50 dark:bg-red-950/20 p-2 rounded">
-                    {formatFieldValue(diff.local)}
-                  </pre>
-                </div>
-                <div className="p-4">
-                  <p className="text-xs text-muted-foreground mb-1">External</p>
-                  <pre className="text-sm whitespace-pre-wrap break-words bg-green-50 dark:bg-green-950/20 p-2 rounded">
-                    {formatFieldValue(diff.external)}
-                  </pre>
-                </div>
+      <div className="space-y-4">
+        {drift.fieldDiffs.map((diff: FieldDiff, i: number) => (
+          <div key={i} className="border rounded-lg overflow-hidden">
+            <div className="bg-muted px-4 py-2 font-medium text-sm capitalize">{diff.field}</div>
+            <div className="grid grid-cols-2 divide-x">
+              <div className="p-4">
+                <p className="text-xs text-muted-foreground mb-1">Local (METIS)</p>
+                <pre className="text-sm whitespace-pre-wrap break-words bg-destructive/10 p-2 rounded">
+                  {formatFieldValue(diff.local)}
+                </pre>
+              </div>
+              <div className="p-4">
+                <p className="text-xs text-muted-foreground mb-1">External</p>
+                <pre className="text-sm whitespace-pre-wrap break-words bg-success-muted p-2 rounded">
+                  {formatFieldValue(diff.external)}
+                </pre>
               </div>
             </div>
-          ))}
-        </div>
-
-        <div className="flex items-center justify-end gap-3 mt-6 pt-4 border-t">
-          <Button
-            variant="outline"
-            onClick={() => onResolve(drift.id, "divergent")}
-            disabled={resolving}
-          >
-            Mark Divergent
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={() => onResolve(drift.id, "push")}
-            disabled={resolving}
-          >
-            Push METIS →
-          </Button>
-          <Button onClick={() => onResolve(drift.id, "adopt")} disabled={resolving}>
-            ← Adopt External
-          </Button>
-        </div>
+          </div>
+        ))}
       </div>
-    </div>
+
+      <DialogFooter className="gap-3 border-t pt-4">
+        <Button
+          variant="outline"
+          onClick={() => onResolve(drift.id, "divergent")}
+          disabled={resolving}
+        >
+          Mark Divergent
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() => onResolve(drift.id, "push")}
+          disabled={resolving}
+        >
+          Push METIS →
+        </Button>
+        <Button onClick={() => onResolve(drift.id, "adopt")} disabled={resolving}>
+          ← Adopt External
+        </Button>
+      </DialogFooter>
+    </DialogContent>
   );
 }
 

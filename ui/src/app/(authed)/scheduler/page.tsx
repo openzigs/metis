@@ -23,6 +23,7 @@ import { queryKeys } from "@/lib/query-keys";
 import { computeSchedulerStats } from "@/lib/scheduler-stats";
 import { useSocket } from "@/lib/socket-client";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -212,18 +213,16 @@ export default function SchedulerPage() {
                       >
                         Edit
                       </Button>
-                      <Button
-                        size="sm"
-                        variant="destructive"
-                        onClick={() => {
-                          if (window.confirm(`Delete scheduled job ${job.key}?`)) {
-                            remove.mutate(job.id);
-                          }
-                        }}
-                        data-testid={`delete-${job.id}`}
-                      >
-                        Delete
-                      </Button>
+                      <ConfirmDialog
+                        title={`Delete scheduled job ${job.key}?`}
+                        confirmLabel="Delete"
+                        onConfirm={() => remove.mutate(job.id)}
+                        trigger={
+                          <Button size="sm" variant="destructive" data-testid={`delete-${job.id}`}>
+                            Delete
+                          </Button>
+                        }
+                      />
                     </div>
                   </td>
                 </tr>

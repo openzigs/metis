@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DerivationBadge } from "@/components/findings/derivation-badge";
+import { expectAccessibleModal } from "./a11y/modal-dialog";
 
 describe("<DerivationBadge />", () => {
   describe("extracted variant", () => {
@@ -20,7 +21,7 @@ describe("<DerivationBadge />", () => {
     it("uses the green Tailwind variant", () => {
       render(<DerivationBadge derivation="extracted" confidence={1.0} agentResultId="ar_1" />);
       const badge = screen.getByTestId("derivation-badge-extracted");
-      expect(badge.className).toMatch(/green/);
+      expect(badge.className).toMatch(/text-success/);
     });
 
     it("exposes an aria-label so screen readers identify the variant", () => {
@@ -58,7 +59,7 @@ describe("<DerivationBadge />", () => {
 
     it("uses the yellow Tailwind variant", () => {
       render(<DerivationBadge derivation="inferred" confidence={0.72} agentResultId="ar_2" />);
-      expect(screen.getByTestId("derivation-badge-inferred").className).toMatch(/yellow/);
+      expect(screen.getByTestId("derivation-badge-inferred").className).toMatch(/text-info/);
     });
   });
 
@@ -121,9 +122,24 @@ describe("<DerivationBadge />", () => {
       expect(onReview).not.toHaveBeenCalled();
     });
 
-    it("uses the orange Tailwind variant", () => {
+    it("uses the warning token (#267)", () => {
       render(<DerivationBadge derivation="ambiguous" confidence={0.4} agentResultId="ar_3" />);
-      expect(screen.getByTestId("derivation-badge-ambiguous").className).toMatch(/orange/);
+      expect(screen.getByTestId("derivation-badge-ambiguous").className).toMatch(/text-warning/);
+    });
+
+    it("the review dialog is an accessible modal (#268)", async () => {
+      const user = userEvent.setup();
+      render(
+        <DerivationBadge
+          derivation="ambiguous"
+          confidence={0.4}
+          agentResultId="ar_3"
+          onReview={vi.fn()}
+        />,
+      );
+      const opener = screen.getByTestId("derivation-badge-review-button");
+      await user.click(opener);
+      await expectAccessibleModal(user, "Review ambiguous finding", opener);
     });
   });
 

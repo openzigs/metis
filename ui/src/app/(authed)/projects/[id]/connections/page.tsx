@@ -776,6 +776,7 @@ export default function ConnectionsPage() {
                               Save
                             </Button>
                             <Button
+                              aria-label="Cancel branch edit"
                               size="sm"
                               variant="ghost"
                               className="h-5 px-1 text-xs"
@@ -830,6 +831,7 @@ export default function ConnectionsPage() {
                             Save
                           </Button>
                           <Button
+                            aria-label="Cancel secret edit"
                             size="sm"
                             variant="ghost"
                             className="h-5 px-1 text-xs"
@@ -889,6 +891,7 @@ export default function ConnectionsPage() {
                               Save
                             </Button>
                             <Button
+                              aria-label="Cancel API base URL edit"
                               size="sm"
                               variant="ghost"
                               className="h-5 px-1 text-xs"

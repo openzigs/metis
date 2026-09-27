@@ -181,14 +181,12 @@ export default function ChangeAnalysisPage() {
                     </span>
                     {ca.totalChanges > 0 && (
                       <span className="ml-2">
-                        {ca.additions > 0 && (
-                          <span className="text-green-600">+{ca.additions}</span>
-                        )}
+                        {ca.additions > 0 && <span className="text-success">+{ca.additions}</span>}
                         {ca.removals > 0 && (
-                          <span className="text-red-600 ml-1">-{ca.removals}</span>
+                          <span className="text-destructive ml-1">-{ca.removals}</span>
                         )}
                         {ca.modifications > 0 && (
-                          <span className="text-yellow-600 ml-1">~{ca.modifications}</span>
+                          <span className="text-warning ml-1">~{ca.modifications}</span>
                         )}
                       </span>
                     )}
@@ -225,15 +223,15 @@ export default function ChangeAnalysisPage() {
 
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
-    pending: "bg-yellow-100 text-yellow-800",
-    running: "bg-blue-100 text-blue-800",
-    completed: "bg-green-100 text-green-800",
-    failed: "bg-red-100 text-red-800",
+    pending: "bg-warning-muted text-warning",
+    running: "bg-info-muted text-info",
+    completed: "bg-success-muted text-success",
+    failed: "bg-destructive/10 text-destructive",
   };
   return (
     <span
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-        colors[status] ?? "bg-gray-100 text-gray-800"
+        colors[status] ?? "bg-muted text-foreground"
       }`}
     >
       {status}
@@ -260,9 +258,9 @@ function ChangeAnalysisDetailPanel({
       {detail.summary && <p className="text-sm text-muted-foreground mb-4">{detail.summary}</p>}
 
       <div className="grid grid-cols-3 gap-4 mb-6">
-        <StatCard label="Additions" value={detail.additions} color="text-green-600" />
-        <StatCard label="Removals" value={detail.removals} color="text-red-600" />
-        <StatCard label="Modifications" value={detail.modifications} color="text-yellow-600" />
+        <StatCard label="Additions" value={detail.additions} color="text-success" />
+        <StatCard label="Removals" value={detail.removals} color="text-destructive" />
+        <StatCard label="Modifications" value={detail.modifications} color="text-warning" />
       </div>
 
       <h3 className="text-md font-semibold mb-3">Changes</h3>
@@ -307,10 +305,10 @@ function ChangeCard({
     modified: "border-l-yellow-500",
   };
   const severityColors: Record<string, string> = {
-    critical: "bg-red-100 text-red-800",
-    high: "bg-orange-100 text-orange-800",
-    medium: "bg-yellow-100 text-yellow-800",
-    low: "bg-blue-100 text-blue-800",
+    critical: "bg-destructive/10 text-destructive",
+    high: "bg-warning-muted text-warning",
+    medium: "bg-warning-muted text-warning",
+    low: "bg-info-muted text-info",
   };
 
   return (
@@ -350,7 +348,7 @@ function ChangeCard({
         {change.reviewStatus === "pending" && (
           <div className="flex gap-2">
             <button
-              className="rounded-md bg-green-600 px-3 py-1 text-xs text-white hover:bg-green-700 disabled:opacity-50"
+              className="rounded-md bg-success px-3 py-1 text-xs text-success-foreground hover:bg-success/90 disabled:opacity-50"
               onClick={() => onReview(change.id, "approved")}
               disabled={isReviewing}
               data-testid={`approve-${change.id}`}
@@ -358,7 +356,7 @@ function ChangeCard({
               Approve
             </button>
             <button
-              className="rounded-md bg-red-600 px-3 py-1 text-xs text-white hover:bg-red-700 disabled:opacity-50"
+              className="rounded-md bg-destructive px-3 py-1 text-xs text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
               onClick={() => onReview(change.id, "rejected")}
               disabled={isReviewing}
               data-testid={`reject-${change.id}`}
@@ -374,14 +372,14 @@ function ChangeCard({
 
 function ReviewStatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
-    pending: "bg-gray-100 text-gray-700",
-    approved: "bg-green-100 text-green-700",
-    rejected: "bg-red-100 text-red-700",
+    pending: "bg-muted text-foreground",
+    approved: "bg-success-muted text-success",
+    rejected: "bg-destructive/10 text-destructive",
   };
   return (
     <span
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-        colors[status] ?? "bg-gray-100 text-gray-700"
+        colors[status] ?? "bg-muted text-foreground"
       }`}
     >
       {status}

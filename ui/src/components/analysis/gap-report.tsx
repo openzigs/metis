@@ -53,7 +53,7 @@ function EffortBadge({ storyPoints }: { storyPoints: number | null }): React.Rea
   return (
     <span
       data-testid="gap-effort-estimate"
-      className="inline-flex items-center rounded-full border border-sky-700/50 bg-sky-50 dark:bg-sky-950/40 px-2 py-0.5 text-[11px] font-semibold text-sky-700 dark:text-sky-300"
+      className="inline-flex items-center rounded-full border border-info/50 bg-info-muted px-2 py-0.5 text-[11px] font-semibold text-info"
       title="Effort estimate in story points (existing requirement estimate)."
     >
       {storyPoints} {storyPoints === 1 ? "point" : "points"}
@@ -134,7 +134,7 @@ function GapReportCard({
             </ul>
           </>
         ) : (
-          <p data-testid="gap-no-evidence" className="text-xs text-amber-700 dark:text-amber-300">
+          <p data-testid="gap-no-evidence" className="text-xs text-warning">
             Nothing found in code for this requirement. Review it manually — no source evidence was
             linked.
           </p>
@@ -168,12 +168,12 @@ function GapReportCard({
       {req.unverifiedFindings.length > 0 ? (
         <section
           data-testid="gap-could-not-verify"
-          className="space-y-1.5 rounded border border-violet-300 dark:border-violet-800/50 bg-violet-50 dark:bg-violet-950/20 p-2"
+          className="space-y-1.5 rounded border border-dashed border-muted-foreground/60 bg-muted p-2"
         >
-          <h6 className="text-[11px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
+          <h6 className="text-[11px] font-semibold uppercase tracking-wide text-foreground">
             Could not verify — not a confirmed gap
           </h6>
-          <p className="text-xs text-violet-700 dark:text-violet-200/80">
+          <p className="text-xs text-foreground">
             Code search did not return usable evidence for the claims below, so the analysis could
             not tell whether this requirement is already implemented. Do not plan work from these
             without re-running the analysis or checking the code yourself.
@@ -215,7 +215,7 @@ function RetrievalPanel({ retrieval }: { retrieval: AnalysisRetrievalHealth }): 
       data-degraded={retrieval.degraded ? "true" : "false"}
       className={`rounded border p-2 text-xs ${
         retrieval.degraded
-          ? "border-violet-300 dark:border-violet-800/50 bg-violet-50 dark:bg-violet-950/20 text-violet-700 dark:text-violet-200"
+          ? "border-dashed border-muted-foreground/60 bg-muted text-foreground"
           : "border-border bg-muted/30 text-muted-foreground"
       }`}
     >
@@ -245,11 +245,7 @@ function RetrievalPanel({ retrieval }: { retrieval: AnalysisRetrievalHealth }): 
                   of. The panel must not render them both as a flat "miss". */}
               <span
                 className={
-                  s.errored
-                    ? "text-amber-700 dark:text-amber-400"
-                    : s.hit
-                      ? "text-emerald-700 dark:text-emerald-400"
-                      : "text-muted-foreground"
+                  s.errored ? "text-warning" : s.hit ? "text-success" : "text-muted-foreground"
                 }
               >
                 {s.errored ? "error" : s.hit ? "hit" : "no results"}
@@ -297,7 +293,7 @@ function SqlLineageCoveragePanel({
       data-unresolved={anyUnresolved ? "true" : "false"}
       className={`rounded border p-2 text-xs ${
         anyUnresolved
-          ? "border-amber-300 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-200"
+          ? "border-warning/40 bg-warning-muted text-warning"
           : "border-border bg-muted/30 text-muted-foreground"
       }`}
     >
@@ -320,8 +316,8 @@ function SqlLineageCoveragePanel({
               .filter(([, v]) => v.unresolved > 0)
               .map(([source, v]) => (
                 <li key={source} className="font-mono">
-                  <span className="text-amber-700 dark:text-amber-400">{source}</span>:{" "}
-                  {v.unresolved} of {v.total} unresolved
+                  <span className="text-warning">{source}</span>: {v.unresolved} of {v.total}{" "}
+                  unresolved
                 </li>
               ))}
           </ul>
@@ -329,10 +325,7 @@ function SqlLineageCoveragePanel({
             <ul className="space-y-0.5">
               {coverage.unresolvedRefs.map((ref) => (
                 <li key={ref.edgeId} data-testid="sql-lineage-unresolved-ref" className="font-mono">
-                  <span className="text-amber-700 dark:text-amber-400">
-                    {reasonLabel(ref.reason)}
-                  </span>{" "}
-                  {ref.filePath}
+                  <span className="text-warning">{reasonLabel(ref.reason)}</span> {ref.filePath}
                   {ref.toQualifiedName ? ` → ${ref.toQualifiedName}` : ""}
                   {ref.placeholder ? ` (${ref.placeholder})` : ""}
                 </li>
@@ -399,7 +392,7 @@ export function GapReport({
       </div>
 
       {exportMutation.isError ? (
-        <p className="text-xs text-red-700 dark:text-red-400" role="alert">
+        <p className="text-xs text-destructive" role="alert">
           Export failed. Please try again.
         </p>
       ) : null}
@@ -411,7 +404,7 @@ export function GapReport({
       {query.isLoading ? (
         <p className="text-sm text-muted-foreground">Loading gap report…</p>
       ) : query.isError ? (
-        <p className="text-sm text-red-700 dark:text-red-400" role="alert">
+        <p className="text-sm text-destructive" role="alert">
           Could not load the gap report.
         </p>
       ) : requirements.length === 0 ? (

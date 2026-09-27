@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { expectApgTabKeyboard } from "./a11y/tab-keyboard";
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { makeWrapper } from "./test-utils";
@@ -159,7 +161,7 @@ describe("McpSettingsPage — Connected tab", () => {
 describe("McpSettingsPage — Registry tab", () => {
   it("lists registry entries and opens the install dialog", async () => {
     render(<McpSettingsPage />, { wrapper: makeWrapper() });
-    fireEvent.click(screen.getByTestId("tab-registry"));
+    fireEvent.mouseDown(screen.getByTestId("tab-registry"));
     expect(await screen.findByTestId("registry-list")).toBeInTheDocument();
     expect(screen.getByText("Filesystem MCP")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("registry-install-fs"));
@@ -169,7 +171,7 @@ describe("McpSettingsPage — Registry tab", () => {
   it("calls install with the chosen scope", async () => {
     installMock.mockResolvedValue(makeServer({ id: "new" }));
     render(<McpSettingsPage />, { wrapper: makeWrapper() });
-    fireEvent.click(screen.getByTestId("tab-registry"));
+    fireEvent.mouseDown(screen.getByTestId("tab-registry"));
     await screen.findByText("Filesystem MCP");
     fireEvent.click(screen.getByTestId("registry-install-fs"));
     fireEvent.click(await screen.findByTestId("install-confirm"));
@@ -192,7 +194,7 @@ describe("McpSettingsPage — Registry tab", () => {
       ],
     });
     render(<McpSettingsPage />, { wrapper: makeWrapper() });
-    fireEvent.click(screen.getByTestId("tab-registry"));
+    fireEvent.mouseDown(screen.getByTestId("tab-registry"));
     expect(await screen.findByTestId("registry-stale-banner")).toBeInTheDocument();
   });
 
@@ -207,7 +209,7 @@ describe("McpSettingsPage — Registry tab", () => {
       servers: [],
     });
     render(<McpSettingsPage />, { wrapper: makeWrapper() });
-    fireEvent.click(screen.getByTestId("tab-registry"));
+    fireEvent.mouseDown(screen.getByTestId("tab-registry"));
     expect(await screen.findByTestId("registry-offline-banner")).toBeInTheDocument();
     expect(screen.getByTestId("registry-empty")).toHaveTextContent(
       "Registry entries will appear after connectivity returns.",
@@ -249,7 +251,7 @@ describe("McpSettingsPage — Import / Export tab", () => {
         </QueryClientProvider>
       </Wrapper>,
     );
-    fireEvent.click(screen.getByTestId("tab-import-export"));
+    fireEvent.mouseDown(screen.getByTestId("tab-import-export"));
     const file = new File([JSON.stringify(mcpJson)], "mcp.json", { type: "application/json" });
     Object.defineProperty(file, "text", { value: () => Promise.resolve(JSON.stringify(mcpJson)) });
     fireEvent.change(screen.getByTestId("import-file"), { target: { files: [file] } });
@@ -273,7 +275,7 @@ describe("McpSettingsPage — Import / Export tab", () => {
       warnings: [],
     } as unknown as Awaited<ReturnType<typeof mcpPlatformApi.importCopilot>>);
     render(<McpSettingsPage />, { wrapper: makeWrapper() });
-    fireEvent.click(screen.getByTestId("tab-import-export"));
+    fireEvent.mouseDown(screen.getByTestId("tab-import-export"));
     const input = screen.getByTestId("import-file") as HTMLInputElement;
     const file = new File(
       [JSON.stringify({ servers: { fs: { command: "npx", args: ["-y", "x"], type: "stdio" } } })],
@@ -294,7 +296,7 @@ describe("McpSettingsPage — Import / Export tab", () => {
 
   it("surfaces a parse error for invalid JSON", async () => {
     render(<McpSettingsPage />, { wrapper: makeWrapper() });
-    fireEvent.click(screen.getByTestId("tab-import-export"));
+    fireEvent.mouseDown(screen.getByTestId("tab-import-export"));
     const input = screen.getByTestId("import-file") as HTMLInputElement;
     const file = new File(["{not json"], "mcp.json", { type: "application/json" });
     if (typeof (file as unknown as { text?: unknown }).text !== "function") {
@@ -361,16 +363,23 @@ describe("McpSettingsPage — tablist screen-reader affordances (#58)", () => {
 
     const connected = screen.getByRole("tab", { name: "Connected" });
     expect(connected).toHaveAttribute("aria-selected", "true");
-    expect(connected).toHaveAttribute("aria-controls", "tabpanel-connected");
-
-    // The active panel is a tabpanel labelled by its tab.
-    const panel = document.getElementById("tabpanel-connected");
+    // The active panel is a tabpanel labelled by its tab (ids are Radix's).
+    const panel = document.getElementById(connected.getAttribute("aria-controls") ?? "");
     expect(panel).not.toBeNull();
     expect(panel).toHaveAttribute("role", "tabpanel");
-    expect(panel).toHaveAttribute("aria-labelledby", "tab-connected");
+    expect(panel).toHaveAttribute("aria-labelledby", connected.id);
 
     // Switching tabs moves the selection for SR users.
-    fireEvent.click(screen.getByRole("tab", { name: "Registry" }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Registry" }));
     expect(screen.getByRole("tab", { name: "Registry" })).toHaveAttribute("aria-selected", "true");
+  });
+});
+
+describe("McpSettingsPage — keyboard (#268)", () => {
+  it("arrow keys move between the section tabs (APG Tabs)", async () => {
+    const user = userEvent.setup();
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    await screen.findByText(/Filesystem/);
+    await expectApgTabKeyboard(user, "MCP platform sections");
   });
 });

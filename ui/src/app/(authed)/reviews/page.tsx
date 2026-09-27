@@ -11,6 +11,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { reviewsApi, type ReviewRequest } from "@/lib/reviews-api";
 import { queryKeys } from "@/lib/query-keys";
 import { DueDateBadge, ReviewStatusBadge } from "@/components/reviews/review-badges";
@@ -53,52 +54,57 @@ export default function ReviewsPage() {
         </p>
       </header>
 
-      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Review queues">
-        {TABS.map((t) => (
-          <Button
-            key={t}
-            variant={t === tab ? "default" : "outline"}
-            size="sm"
-            onClick={() => setTab(t)}
-            data-testid={`reviews-tab-${t}`}
-            role="tab"
-            aria-selected={t === tab}
-          >
-            {TAB_LABELS[t]}
-          </Button>
-        ))}
-      </div>
-
-      {list.isLoading ? (
-        <p className="text-sm text-muted-foreground">Loading reviews…</p>
-      ) : list.isError ? (
-        <p className="text-sm text-destructive" role="alert">
-          Failed to load reviews. Please try again.
-        </p>
-      ) : reviews.length === 0 ? (
-        <Card className="p-6 text-sm text-muted-foreground">{EMPTY_MESSAGES[tab]}</Card>
-      ) : (
-        <ul className="space-y-2" aria-label={TAB_LABELS[tab]}>
-          {reviews.map((review) => (
-            <li key={review.id}>
-              <Link
-                href={`/reviews/${review.id}`}
-                data-testid={`review-row-${review.id}`}
-                className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      {/* #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, aria-controls. */}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
+        <TabsList
+          aria-label="Review queues"
+          className="flex h-auto flex-wrap justify-start gap-2 bg-transparent p-0"
+        >
+          {TABS.map((t) => (
+            <TabsTrigger key={t} value={t} asChild>
+              <Button
+                variant={t === tab ? "default" : "outline"}
+                size="sm"
+                data-testid={`reviews-tab-${t}`}
               >
-                <Card className="space-y-1 p-4 transition hover:border-primary/60">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-semibold">{review.title}</span>
-                    <ReviewStatusBadge status={review.status} />
-                    <DueDateBadge dueAt={review.dueAt} status={review.status} />
-                  </div>
-                  <p className="text-xs text-muted-foreground">{summarize(review)}</p>
-                </Card>
-              </Link>
-            </li>
+                {TAB_LABELS[t]}
+              </Button>
+            </TabsTrigger>
           ))}
-        </ul>
-      )}
+        </TabsList>
+        <TabsContent value={tab} className="mt-6">
+          {list.isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading reviews…</p>
+          ) : list.isError ? (
+            <p className="text-sm text-destructive" role="alert">
+              Failed to load reviews. Please try again.
+            </p>
+          ) : reviews.length === 0 ? (
+            <Card className="p-6 text-sm text-muted-foreground">{EMPTY_MESSAGES[tab]}</Card>
+          ) : (
+            <ul className="space-y-2" aria-label={TAB_LABELS[tab]}>
+              {reviews.map((review) => (
+                <li key={review.id}>
+                  <Link
+                    href={`/reviews/${review.id}`}
+                    data-testid={`review-row-${review.id}`}
+                    className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <Card className="space-y-1 p-4 transition hover:border-primary/60">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold">{review.title}</span>
+                        <ReviewStatusBadge status={review.status} />
+                        <DueDateBadge dueAt={review.dueAt} status={review.status} />
+                      </div>
+                      <p className="text-xs text-muted-foreground">{summarize(review)}</p>
+                    </Card>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

@@ -24,7 +24,7 @@
  */
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   libraryApi,
@@ -33,6 +33,7 @@ import {
 } from "@/lib/library-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/alert-dialog";
 
 /** Effective allow-state of a single skill for a project. */
 export type SkillAllowState =
@@ -129,18 +130,13 @@ export function ProjectSkillAllowlistToggle({ projectId, skillId, canManage }: P
   // before it so a user doesn't silently disallow everything else.
   const writesFirstExplicitRow = resolution.projectHasNoExplicitRows;
 
+  // #268 — an AlertDialog instead of `window.confirm`. `pending` holds the
+  // write awaiting confirmation; null means no dialog is open.
+  const [pending, setPending] = useState<boolean | null>(null);
   const write = (enabled: boolean) => {
-    if (
-      writesFirstExplicitRow &&
-      typeof window !== "undefined" &&
-      typeof window.confirm === "function"
-    ) {
-      const ok = window.confirm(
-        "This project currently allows every enabled skill by default. " +
-          "Creating an explicit rule restricts it to ONLY the skills you allow — " +
-          "every other skill becomes disallowed until you add it. Continue?",
-      );
-      if (!ok) return;
+    if (writesFirstExplicitRow) {
+      setPending(enabled);
+      return;
     }
     setEnabled.mutate(enabled);
   };
@@ -188,6 +184,23 @@ export function ProjectSkillAllowlistToggle({ projectId, skillId, canManage }: P
           )
         ) : null}
       </div>
+      <ConfirmDialog
+        open={pending !== null}
+        onOpenChange={(open) => {
+          if (!open) setPending(null);
+        }}
+        title="Restrict this project to the skills you allow?"
+        description={
+          "This project currently allows every enabled skill by default. " +
+          "Creating an explicit rule restricts it to ONLY the skills you allow — " +
+          "every other skill becomes disallowed until you add it."
+        }
+        confirmLabel="Continue"
+        confirmVariant="default"
+        onConfirm={() => {
+          if (pending !== null) setEnabled.mutate(pending);
+        }}
+      />
       <p className="max-w-[14rem] text-right text-xs text-muted-foreground">
         {STATE_HINT[resolution.state]}
         {canManage && writesFirstExplicitRow ? (

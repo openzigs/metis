@@ -85,9 +85,9 @@ describe("SupportPanelBadge (#1110)", () => {
   it("gives every state its own hue, and keeps low and no-signal at opposite ends", () => {
     const classes = new Set(Object.values(SUPPORT_PANEL_COPY).map((c) => c.className));
     expect(classes.size).toBe(4);
-    expect(SUPPORT_PANEL_COPY.low.className).toMatch(/rose/);
-    expect(SUPPORT_PANEL_COPY["no-signal"].className).toMatch(/slate/);
-    expect(SUPPORT_PANEL_COPY.high.className).toMatch(/emerald/);
+    expect(SUPPORT_PANEL_COPY.low.className).toMatch(/text-destructive/);
+    expect(SUPPORT_PANEL_COPY["no-signal"].className).toMatch(/bg-muted/);
+    expect(SUPPORT_PANEL_COPY.high.className).toMatch(/text-success/);
   });
 
   it("never presents a confident label as a truth claim", () => {
@@ -136,7 +136,7 @@ describe("SupportPanelDetails (#1110)", () => {
 describe("second-class treatment (#1110)", () => {
   it("dims and marks ONLY the low-confidence card", () => {
     expect(findingConfidenceClasses(panel("low"))).toMatch(/opacity-75/);
-    expect(findingConfidenceClasses(panel("low"))).toMatch(/rose/);
+    expect(findingConfidenceClasses(panel("low"))).toMatch(/destructive/);
   });
 
   it("leaves a no-signal card styled exactly like an unpanelled one", () => {

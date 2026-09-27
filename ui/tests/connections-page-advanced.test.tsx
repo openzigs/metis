@@ -171,10 +171,12 @@ describe("ConnectionsPage — inline branch editing", () => {
     renderPage();
     await waitFor(() => expect(screen.getByText("Main Repo")).toBeInTheDocument());
     fireEvent.click(screen.getByTitle("Click to change branch"));
+    // #268 — the ✕ glyph is no longer the button's name ("multiplication x"
+    // to a screen reader); it is labelled for what it does.
     await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "\u2715" })).toBeInTheDocument(),
+      expect(screen.queryByRole("button", { name: "Cancel branch edit" })).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole("button", { name: "\u2715" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel branch edit" }));
     // After cancel, the original branch text button should be visible again
     await waitFor(() => expect(screen.getByTitle("Click to change branch")).toBeInTheDocument());
   });

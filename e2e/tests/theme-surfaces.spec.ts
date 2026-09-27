@@ -43,14 +43,17 @@ async function chooseTheme(page: Page, theme: Theme): Promise<void> {
 }
 
 /**
- * Relative luminance of the background a `bg-white dark:bg-zinc-900` probe
- * paints — the class pair `components/findings/derivation-badge.tsx` uses, so
- * the compiled stylesheet already carries both utilities.
+ * Relative luminance of the background a `bg-green-50 dark:bg-green-950` probe
+ * paints. Tailwind only compiles classes that appear in source, so the probe
+ * must use a pair the app still ships (3 call sites at #267). #267 moved
+ * `derivation-badge.tsx` — the previous probe's source, `bg-white
+ * dark:bg-zinc-900` — onto semantic tokens; when the raw-palette follow-up
+ * removes the last `dark:bg-green-950`, move this probe again.
  */
 async function probeLuminance(page: Page): Promise<number> {
   return page.evaluate(() => {
     const probe = document.createElement("div");
-    probe.className = "bg-white dark:bg-zinc-900";
+    probe.className = "bg-green-50 dark:bg-green-950";
     probe.style.cssText = "position:fixed;left:0;top:0;width:4px;height:4px";
     document.body.appendChild(probe);
     const color = getComputedStyle(probe).backgroundColor;
@@ -167,8 +170,8 @@ for (const { os, theme } of SCENARIOS) {
 
       const luminance = await probeLuminance(page);
       if (theme === "light")
-        expect(luminance, "bg-white dark:bg-zinc-900 probe").toBeGreaterThan(0.8);
-      else expect(luminance, "bg-white dark:bg-zinc-900 probe").toBeLessThan(0.05);
+        expect(luminance, "bg-green-50 dark:bg-green-950 probe").toBeGreaterThan(0.8);
+      else expect(luminance, "bg-green-50 dark:bg-green-950 probe").toBeLessThan(0.05);
     });
 
     test("Templates screen text clears 4.5:1 (#266)", async ({ page }, testInfo) => {

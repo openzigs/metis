@@ -44,43 +44,37 @@ const VARIANTS: Record<
   { className: string; label: string; glyph: string; testid: string }
 > = {
   pending: {
-    className:
-      "bg-slate-100 text-slate-800 border-slate-300 dark:bg-slate-800/40 dark:text-slate-100 dark:border-slate-600",
+    className: "bg-muted text-foreground border-border",
     label: "PENDING",
     glyph: "•",
     testid: "sandbox-badge-pending",
   },
   running: {
-    className:
-      "bg-blue-100 text-blue-900 border-blue-300 dark:bg-blue-900/30 dark:text-blue-100 dark:border-blue-700",
+    className: "bg-info-muted text-info border-info/40",
     label: "RUNNING",
     glyph: "▶",
     testid: "sandbox-badge-running",
   },
   passed: {
-    className:
-      "bg-green-100 text-green-900 border-green-300 dark:bg-green-900/30 dark:text-green-100 dark:border-green-700",
+    className: "bg-success-muted text-success border-success/40",
     label: "PASSED",
     glyph: "✓",
     testid: "sandbox-badge-passed",
   },
   "failed-timeout": {
-    className:
-      "bg-amber-100 text-amber-900 border-amber-300 dark:bg-amber-900/30 dark:text-amber-100 dark:border-amber-700",
+    className: "bg-warning-muted text-warning border-warning/40",
     label: "FAILED:TIMEOUT",
     glyph: "⏱",
     testid: "sandbox-badge-failed-timeout",
   },
   "failed-exit": {
-    className:
-      "bg-red-100 text-red-900 border-red-300 dark:bg-red-900/30 dark:text-red-100 dark:border-red-700",
+    className: "bg-destructive/10 text-destructive border-destructive/40",
     label: "FAILED",
     glyph: "✗",
     testid: "sandbox-badge-failed-exit",
   },
   error: {
-    className:
-      "bg-red-100 text-red-900 border-red-300 dark:bg-red-900/30 dark:text-red-100 dark:border-red-700",
+    className: "bg-destructive/10 text-destructive border-destructive/40",
     label: "ERROR",
     glyph: "!",
     testid: "sandbox-badge-error",

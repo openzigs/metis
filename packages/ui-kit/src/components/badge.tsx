@@ -1,12 +1,26 @@
 import * as React from "react";
 
-type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
+type BadgeVariant =
+  | "default"
+  | "secondary"
+  | "destructive"
+  | "outline"
+  | "success"
+  | "warning"
+  | "info";
 
 const variantClasses: Record<BadgeVariant, string> = {
   default: "bg-primary text-primary-foreground hover:bg-primary/80",
   secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
   destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/80",
   outline: "text-foreground border border-input",
+  // #267 — semantic status variants on the success/warning/info tokens
+  // (`ui/src/app/globals.css`). Text-on-tint contrast is asserted ≥4.5:1 in
+  // both themes by `ui/tests/contrast-tokens.test.ts`, which is what the raw
+  // `bg-amber-100 text-amber-*` badges these replace could not guarantee.
+  success: "border-success/40 bg-success-muted text-success",
+  warning: "border-warning/40 bg-warning-muted text-warning",
+  info: "border-info/40 bg-info-muted text-info",
 };
 
 /**

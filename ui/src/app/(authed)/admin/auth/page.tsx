@@ -674,7 +674,12 @@ export default function AdminAuthPage() {
                       <option value="coordinator">Coordinator</option>
                       <option value="admin">Admin</option>
                     </select>
-                    <Button variant="ghost" size="sm" onClick={() => removeMapping(index)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => removeMapping(index)}
+                      aria-label={`Remove mapping ${index + 1}`}
+                    >
                       ✕
                     </Button>
                   </div>

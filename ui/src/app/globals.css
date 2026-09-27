@@ -53,8 +53,38 @@
   --muted-foreground: 240 5% 40%;
   --accent: 240 4.8% 95.9%;
   --accent-foreground: 240 5.9% 10%;
-  --destructive: 0 84.2% 60.2%;
+  /*
+   * #267 — re-tuned from `0 84.2% 60.2%` (3.76:1 as text on white; 3.6:1 for
+   * the foreground on it) to red-700, which clears SC 1.4.3 both as
+   * `text-destructive` (~6.5:1) and under `--destructive-foreground` (~6.2:1).
+   */
+  --destructive: 0 72% 42%;
   --destructive-foreground: 0 0% 98%;
+  /*
+   * #267 — semantic status tokens. `--X` is text on the page AND on its own
+   * `--X-muted` tint (soft Badge / Alert); `--X-foreground` is text on a solid
+   * `--X` fill. All pairs ≥4.5:1 (ui/tests/contrast-tokens.test.ts). The light
+   * warning is a deep amber on purpose: the amber-600-ish badges #285 flagged
+   * sat just under 4.5:1.
+   */
+  --success: 142 72% 24%;
+  --success-foreground: 0 0% 98%;
+  --success-muted: 141 70% 94%;
+  --warning: 26 90% 30%;
+  --warning-foreground: 0 0% 98%;
+  --warning-muted: 48 96% 91%;
+  --info: 221 83% 40%;
+  --info-foreground: 0 0% 98%;
+  --info-muted: 214 95% 94%;
+  /*
+   * #267 — chart series. Distinct hues, each ≥3:1 against the page (SC 1.4.11
+   * for meaningful graphics). Consumed as `hsl(var(--chart-N))` by the charts.
+   */
+  --chart-1: 221 83% 53%;
+  --chart-2: 175 77% 26%;
+  --chart-3: 26 90% 37%;
+  --chart-4: 262 83% 58%;
+  --chart-5: 347 77% 50%;
   /*
    * #660 (SC 1.4.11 Non-text Contrast) — darkened from `240 5.9% 90%`
    * (~1.27:1 vs the white background, well below the 3:1 floor) to
@@ -87,8 +117,27 @@
   --muted-foreground: 240 5% 64.9%;
   --accent: 240 3.7% 15.9%;
   --accent-foreground: 0 0% 98%;
-  --destructive: 0 62.8% 30.6%;
-  --destructive-foreground: 0 0% 98%;
+  /*
+   * #267 — was `0 62.8% 30.6%`: 1.99:1 as text on the near-black background.
+   * A light red reads as text (~7.2:1); a solid destructive fill then carries
+   * DARK text (the background colour) at the same ratio.
+   */
+  --destructive: 0 91% 71%;
+  --destructive-foreground: 240 10% 3.9%;
+  --success: 142 69% 58%;
+  --success-foreground: 240 10% 3.9%;
+  --success-muted: 144 50% 12%;
+  --warning: 43 96% 56%;
+  --warning-foreground: 240 10% 3.9%;
+  --warning-muted: 35 60% 13%;
+  --info: 213 94% 68%;
+  --info-foreground: 240 10% 3.9%;
+  --info-muted: 220 55% 16%;
+  --chart-1: 217 91% 60%;
+  --chart-2: 172 66% 50%;
+  --chart-3: 38 92% 50%;
+  --chart-4: 255 92% 76%;
+  --chart-5: 351 95% 71%;
   /*
    * #660 (SC 1.4.11 Non-text Contrast) — lightened from `240 3.7% 15.9%`
    * (~1.34:1 vs the near-black background, well below the 3:1 floor) to
@@ -117,6 +166,20 @@
   --color-accent-foreground: hsl(var(--accent-foreground));
   --color-destructive: hsl(var(--destructive));
   --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-success: hsl(var(--success));
+  --color-success-foreground: hsl(var(--success-foreground));
+  --color-success-muted: hsl(var(--success-muted));
+  --color-warning: hsl(var(--warning));
+  --color-warning-foreground: hsl(var(--warning-foreground));
+  --color-warning-muted: hsl(var(--warning-muted));
+  --color-info: hsl(var(--info));
+  --color-info-foreground: hsl(var(--info-foreground));
+  --color-info-muted: hsl(var(--info-muted));
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));

@@ -53,4 +53,22 @@ describe("ForecastChart", () => {
     render(<ForecastChart forecast={forecast({ backtestMape: 0.123 })} budgetCents={null} />);
     expect(screen.getByText(/MAPE.*12\.3%/i)).toBeTruthy();
   });
+
+  // #267 — series colours come from the theme tokens, so they switch with the
+  // Light/Dark toggle; raw hex (#2563eb / #ef4444) stayed the same in both.
+  it("draws the series in --chart-1 and over-budget in --destructive", () => {
+    const { container, rerender } = render(
+      <ForecastChart forecast={forecast()} budgetCents={20000} />,
+    );
+    const svg = container.querySelector("svg[role='img']")!;
+    expect(svg.querySelector("polyline")!.getAttribute("stroke")).toBe("hsl(var(--chart-1))");
+    expect(svg.querySelector("circle")!.getAttribute("fill")).toBe("hsl(var(--chart-1))");
+    expect(svg.querySelector("line")!.getAttribute("stroke")).toBe("hsl(var(--destructive))");
+
+    rerender(
+      <ForecastChart forecast={forecast({ projectedMonthEndCents: 30000 })} budgetCents={10000} />,
+    );
+    expect(svg.querySelector("polyline")!.getAttribute("stroke")).toBe("hsl(var(--destructive))");
+    expect(svg.innerHTML).not.toMatch(/#[0-9a-f]{6}/i);
+  });
 });

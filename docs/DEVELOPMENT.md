@@ -331,6 +331,13 @@ This recompiles the native SQLite3 bindings for your current Node.js version. Th
 ### 7.3 React / Next.js
 - Functional components only; hooks for state.
 - Tailwind + shadcn primitives (`packages/ui-kit`); avoid raw CSS modules.
+- Colour through the theme tokens in `ui/src/app/globals.css`, not the raw palette: status is
+  `success` / `warning` / `info` / `destructive` (`text-warning`, `bg-warning-muted`, or the
+  `Badge` / `Alert` variants of the same names), chart series are `hsl(var(--chart-1..5))`.
+  Every token pair is contrast-tested in both themes (`ui/tests/contrast-tokens.test.ts`).
+- Tabs, modals and confirmations use the ui-kit `Tabs`, `Dialog` and `AlertDialog` /
+  `ConfirmDialog` — never a hand-rolled `role="tablist"`, a `fixed inset-0` backdrop or
+  `window.confirm`. Icon-only buttons need an `aria-label`. `ui/tests/a11y/` enforces all four.
 - Server-rendered routes (`app/`) are thin — fetch via TanStack Query in client components.
 
 ### 7.4 Logging

@@ -15,6 +15,7 @@ import { ApiError } from "@/lib/api-client";
 import { jiraApi } from "@/lib/jira-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -411,15 +412,16 @@ export default function JiraPage() {
                   <Button size="sm" variant="outline" onClick={() => startEdit(conn)}>
                     Edit
                   </Button>
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    onClick={() => {
-                      if (confirm("Delete this Jira connection?")) deleteConn.mutate(conn.id);
-                    }}
-                  >
-                    Delete
-                  </Button>
+                  <ConfirmDialog
+                    title="Delete this Jira connection?"
+                    confirmLabel="Delete"
+                    onConfirm={() => deleteConn.mutate(conn.id)}
+                    trigger={
+                      <Button size="sm" variant="destructive">
+                        Delete
+                      </Button>
+                    }
+                  />
                 </div>
               </Card>
             </li>
@@ -953,7 +955,13 @@ function IssueDetailPanel({
               </p>
             )}
           </div>
-          <Button size="sm" variant="ghost" className="shrink-0 h-7 w-7 p-0" onClick={onClose}>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="shrink-0 h-7 w-7 p-0"
+            onClick={onClose}
+            aria-label="Close issue details"
+          >
             ✕
           </Button>
         </div>

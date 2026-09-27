@@ -14,15 +14,12 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type {
-  CreateTestManagementConnectionInput,
-  TestManagementConnectionDetail,
-  TestManagementKind,
-} from "@metis/shared";
+import type { CreateTestManagementConnectionInput, TestManagementKind } from "@metis/shared";
 
 import { testManagementApi } from "@/lib/test-management-api";
 import { isLikelyEmail, suggestEmail } from "@/lib/error-suggestion";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -146,16 +143,6 @@ export default function TestManagementConnectionsPage() {
       return;
     }
     createMutation.mutate();
-  };
-
-  const onDelete = (row: TestManagementConnectionDetail) => {
-    if (
-      window.confirm(
-        `Delete saved test-management connection "${row.label}"? Pulls that use this connection will need to be re-configured.`,
-      )
-    ) {
-      deleteMutation.mutate(row.id);
-    }
   };
 
   return (
@@ -382,15 +369,22 @@ export default function TestManagementConnectionsPage() {
                       ? "Testing…"
                       : "Test"}
                   </Button>
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    onClick={() => onDelete(row)}
-                    disabled={deleteMutation.isPending}
-                    data-testid={`tmc-delete-${row.id}`}
-                  >
-                    Delete
-                  </Button>
+                  <ConfirmDialog
+                    title={`Delete saved test-management connection "${row.label}"?`}
+                    description="Pulls that use this connection will need to be re-configured."
+                    confirmLabel="Delete"
+                    onConfirm={() => deleteMutation.mutate(row.id)}
+                    trigger={
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={deleteMutation.isPending}
+                        data-testid={`tmc-delete-${row.id}`}
+                      >
+                        Delete
+                      </Button>
+                    }
+                  />
                 </div>
               </div>
 

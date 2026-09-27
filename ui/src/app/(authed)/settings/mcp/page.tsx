@@ -31,6 +31,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 type TabId = "connected" | "registry" | "federated" | "import-export";
 
@@ -57,32 +58,36 @@ export default function McpSettingsPage() {
           <Link href="/admin/mcp">Add MCP server</Link>
         </Button>
       </header>
-      <div role="tablist" aria-label="MCP platform sections" className="flex gap-2 border-b">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            id={`tab-${t.id}`}
-            role="tab"
-            aria-selected={tab === t.id}
-            aria-controls={`tabpanel-${t.id}`}
-            data-testid={`tab-${t.id}`}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
-              tab === t.id
-                ? "border-foreground text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-      <div role="tabpanel" id={`tabpanel-${tab}`} aria-labelledby={`tab-${tab}`}>
-        {tab === "connected" ? <ConnectedTab /> : null}
-        {tab === "registry" ? <RegistryTab /> : null}
-        {tab === "federated" ? <FederatedTab /> : null}
-        {tab === "import-export" ? <ImportExportTab /> : null}
-      </div>
+      {/* #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, aria-controls. */}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as TabId)}>
+        <TabsList
+          aria-label="MCP platform sections"
+          className="flex h-auto w-full justify-start gap-2 rounded-none border-b bg-transparent p-0"
+        >
+          {TABS.map((t) => (
+            <TabsTrigger
+              key={t.id}
+              value={t.id}
+              data-testid={`tab-${t.id}`}
+              className="-mb-px rounded-none border-b-2 border-transparent px-4 py-2 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+            >
+              {t.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        <TabsContent value="connected">
+          <ConnectedTab />
+        </TabsContent>
+        <TabsContent value="registry">
+          <RegistryTab />
+        </TabsContent>
+        <TabsContent value="federated">
+          <FederatedTab />
+        </TabsContent>
+        <TabsContent value="import-export">
+          <ImportExportTab />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -126,9 +131,9 @@ function ConnectedServerCard({ server }: { server: MCPServerView }) {
         <span
           className={`rounded px-2 py-1 text-xs font-medium ${
             server.status === "ready"
-              ? "bg-green-100 text-green-900"
+              ? "bg-success-muted text-success"
               : server.status === "error"
-                ? "bg-red-100 text-red-900"
+                ? "bg-destructive/10 text-destructive"
                 : "bg-muted text-muted-foreground"
           }`}
         >
@@ -221,7 +226,9 @@ function ToolTesterPanel({ server }: { server: MCPServerView }) {
           <div
             data-testid={`tool-result-${server.id}`}
             className={`rounded border p-2 text-xs ${
-              result.isError ? "border-red-300 bg-red-50" : "border-green-300 bg-green-50"
+              result.isError
+                ? "border-destructive/40 bg-destructive/10"
+                : "border-success/40 bg-success-muted"
             }`}
           >
             <div className="font-medium">
@@ -353,20 +360,20 @@ function SchemaDiffView({ diff }: { diff: MCPSchemaDiff }) {
     return <p data-testid="diff-clean">Live tool surface matches the approved snapshot.</p>;
   return (
     <div data-testid="diff-changes" className="space-y-1">
-      <p className="font-medium text-amber-800">Schema drift detected:</p>
+      <p className="font-medium text-warning">Schema drift detected:</p>
       {diff.added.length ? (
         <p>
-          <span className="text-green-800">added:</span> {diff.added.join(", ")}
+          <span className="text-success">added:</span> {diff.added.join(", ")}
         </p>
       ) : null}
       {diff.removed.length ? (
         <p>
-          <span className="text-red-800">removed:</span> {diff.removed.join(", ")}
+          <span className="text-destructive">removed:</span> {diff.removed.join(", ")}
         </p>
       ) : null}
       {diff.changed.length ? (
         <p>
-          <span className="text-amber-800">changed:</span> {diff.changed.join(", ")}
+          <span className="text-warning">changed:</span> {diff.changed.join(", ")}
         </p>
       ) : null}
     </div>
@@ -398,7 +405,7 @@ function RegistryTab() {
       </div>
       {reg.isLoading ? <p>Loading registry…</p> : null}
       {reg.error ? (
-        <p className="text-sm text-red-700" data-testid="registry-error">
+        <p className="text-sm text-destructive" data-testid="registry-error">
           Registry unavailable: {errorMessage(reg.error)}
         </p>
       ) : null}
@@ -406,7 +413,7 @@ function RegistryTab() {
         <>
           {reg.data.stale ? (
             <p
-              className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900"
+              className="rounded border border-warning/40 bg-warning-muted p-2 text-xs text-warning"
               data-testid="registry-stale-banner"
             >
               Showing stale cache from {new Date(reg.data.fetchedAt).toLocaleString()} — upstream
@@ -415,7 +422,7 @@ function RegistryTab() {
           ) : null}
           {reg.data.offline ? (
             <p
-              className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900"
+              className="rounded border border-warning/40 bg-warning-muted p-2 text-xs text-warning"
               data-testid="registry-offline-banner"
             >
               Public registry is unreachable. No cached entries are available yet.
@@ -543,7 +550,7 @@ function InstallDialog({
               require approval until you mark the server trusted.
             </p>
             {install.error ? (
-              <p className="text-sm text-red-700" data-testid="install-error">
+              <p className="text-sm text-destructive" data-testid="install-error">
                 {errorMessage(install.error)}
               </p>
             ) : null}
@@ -646,7 +653,7 @@ function ImportExportTab() {
         {preview ? (
           <div className="rounded border bg-muted p-2 text-xs">
             {preview.error ? (
-              <div className="text-red-700" data-testid="import-error">
+              <div className="text-destructive" data-testid="import-error">
                 {preview.error}
               </div>
             ) : preview.parsed ? (
@@ -680,7 +687,7 @@ function ImportExportTab() {
           ) : null}
         </div>
         {importMutation.error ? (
-          <p className="text-sm text-red-700" data-testid="import-server-error">
+          <p className="text-sm text-destructive" data-testid="import-server-error">
             {errorMessage(importMutation.error)}
           </p>
         ) : null}
@@ -717,7 +724,7 @@ export function McpApprovalPrompt({
     <div
       role="dialog"
       aria-label="MCP tool approval required"
-      className="rounded border border-amber-300 bg-amber-50 p-3 text-sm space-y-2"
+      className="rounded border border-warning/40 bg-warning-muted p-3 text-sm space-y-2"
       data-testid="mcp-approval-prompt"
     >
       <div className="font-medium">
@@ -729,14 +736,14 @@ export function McpApprovalPrompt({
             <span
               key={label}
               data-testid={`hidden-char-badge-${label}`}
-              className="rounded bg-red-200 px-2 py-0.5 text-xs text-red-900"
+              className="rounded bg-destructive/10 px-2 py-0.5 text-xs text-destructive"
             >
               {label} ×{count}
             </span>
           ))}
         </div>
       ) : null}
-      <pre className="overflow-x-auto rounded bg-white p-2 text-xs">{argsText}</pre>
+      <pre className="overflow-x-auto rounded bg-muted p-2 text-xs">{argsText}</pre>
       <div className="flex gap-2">
         <Button size="sm" data-testid="approval-approve" onClick={() => onDecide("approved")}>
           Approve
@@ -827,7 +834,7 @@ function FederatedTab() {
             type="button"
             onClick={() => refresh.mutate(undefined)}
             disabled={refresh.isPending}
-            className="rounded bg-slate-100 px-3 py-2 text-sm hover:bg-slate-200 disabled:opacity-50"
+            className="rounded bg-muted px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
           >
             {refresh.isPending ? "Refreshing…" : "Refresh both"}
           </button>
@@ -835,7 +842,7 @@ function FederatedTab() {
       </header>
 
       {!isAdmin ? (
-        <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+        <p className="rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning">
           Install requires admin approval. You can browse but not install federated servers.
         </p>
       ) : null}
@@ -843,15 +850,15 @@ function FederatedTab() {
       {installError ? (
         <p
           role="alert"
-          className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          className="rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
         >
           {installError}
         </p>
       ) : null}
 
-      {search.isLoading ? <p className="text-sm text-slate-600">Loading…</p> : null}
+      {search.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
       {search.error ? (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-sm text-destructive">
           {errorMessage(search.error)}
         </p>
       ) : null}
@@ -860,32 +867,32 @@ function FederatedTab() {
         {entries.map((entry: McpFederationEntry) => (
           <li
             key={entry.id}
-            className="rounded border border-slate-200 bg-white p-4 shadow-sm"
+            className="rounded border border-border bg-card p-4 shadow-sm"
             data-testid="federation-entry"
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <h3 className="font-semibold text-slate-900">{entry.name}</h3>
+                  <h3 className="font-semibold text-foreground">{entry.name}</h3>
                   <span
-                    className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium uppercase text-slate-700"
+                    className="rounded bg-muted px-2 py-0.5 text-xs font-medium uppercase text-foreground"
                     data-testid="source-badge"
                   >
                     {entry.source}
                   </span>
                   {entry.version ? (
-                    <span className="text-xs text-slate-500">v{entry.version}</span>
+                    <span className="text-xs text-muted-foreground">v{entry.version}</span>
                   ) : null}
                 </div>
                 {entry.publisher ? (
-                  <p className="text-xs text-slate-500">by {entry.publisher}</p>
+                  <p className="text-xs text-muted-foreground">by {entry.publisher}</p>
                 ) : null}
-                <p className="mt-1 text-sm text-slate-700">{entry.description}</p>
-                <dl className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+                <p className="mt-1 text-sm text-foreground">{entry.description}</p>
+                <dl className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                   {entry.downloads != null ? (
                     <div>
                       <dt className="inline">Downloads:</dt>{" "}
-                      <dd className="inline font-medium text-slate-700">
+                      <dd className="inline font-medium text-foreground">
                         {entry.downloads.toLocaleString()}
                       </dd>
                     </div>
@@ -893,7 +900,7 @@ function FederatedTab() {
                   {entry.stars != null ? (
                     <div>
                       <dt className="inline">Stars:</dt>{" "}
-                      <dd className="inline font-medium text-slate-700">
+                      <dd className="inline font-medium text-foreground">
                         {entry.stars.toLocaleString()}
                       </dd>
                     </div>
@@ -901,7 +908,7 @@ function FederatedTab() {
                   {entry.lastUpdated ? (
                     <div>
                       <dt className="inline">Updated:</dt>{" "}
-                      <dd className="inline font-medium text-slate-700">
+                      <dd className="inline font-medium text-foreground">
                         {new Date(entry.lastUpdated).toLocaleDateString()}
                       </dd>
                     </div>
@@ -909,7 +916,7 @@ function FederatedTab() {
                   {entry.sha256 ? (
                     <div title={entry.sha256}>
                       <dt className="inline">sha256:</dt>{" "}
-                      <dd className="inline font-mono text-slate-700">
+                      <dd className="inline font-mono text-foreground">
                         {entry.sha256.slice(0, 12)}…
                       </dd>
                     </div>
@@ -920,7 +927,7 @@ function FederatedTab() {
                 type="button"
                 onClick={() => install.mutate(entry.id)}
                 disabled={!isAdmin || install.isPending || entry.source === "local"}
-                className="rounded bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                 data-testid="install-button"
                 aria-label={`Install ${entry.name}`}
               >
@@ -934,7 +941,7 @@ function FederatedTab() {
           </li>
         ))}
         {!search.isLoading && entries.length === 0 ? (
-          <li className="text-sm text-slate-500">No matching servers.</li>
+          <li className="text-sm text-muted-foreground">No matching servers.</li>
         ) : null}
       </ul>
     </section>

@@ -161,8 +161,11 @@ export class JiraPage {
   }
 
   /** Click the Delete button on a connection card. */
+  /** Delete a connection: the card's Delete opens an AlertDialog (#268); confirm it. */
   async clickDelete(card: Locator): Promise<void> {
     await card.getByRole("button", { name: "Delete" }).click();
+    const dialog = this.page.getByRole("alertdialog", { name: "Delete this Jira connection?" });
+    await dialog.getByRole("button", { name: "Delete" }).click();
   }
 
   // ── Issue browser helpers ──────────────────────────────────────────

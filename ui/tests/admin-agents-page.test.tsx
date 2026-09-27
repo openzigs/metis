@@ -321,24 +321,29 @@ describe("<AdminAgentsPage />", () => {
     await waitFor(() => expect(screen.getByText("disabled")).toBeInTheDocument());
   });
 
-  it("deletes an agent after confirmation", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-    renderPage();
-    await waitFor(() => expect(screen.getByText("Researcher")).toBeInTheDocument());
-    const row = screen.getByText("Researcher").closest("tr")!;
-    fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(removeMock).toHaveBeenCalledWith("ag1"));
-    confirmSpy.mockRestore();
-  });
-
-  it("does not delete when confirm is cancelled", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+  // #268 — an AlertDialog replaced window.confirm: the row's Delete only
+  // opens the dialog; the dialog's Delete action performs the removal.
+  it("deletes an agent after confirming in the AlertDialog", async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText("Researcher")).toBeInTheDocument());
     const row = screen.getByText("Researcher").closest("tr")!;
     fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
     expect(removeMock).not.toHaveBeenCalled();
-    confirmSpy.mockRestore();
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveAccessibleName(expect.stringContaining("Delete agent "));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(removeMock).toHaveBeenCalledWith("ag1"));
+  });
+
+  it("does not delete when the AlertDialog is cancelled", async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Researcher")).toBeInTheDocument());
+    const row = screen.getByText("Researcher").closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(removeMock).not.toHaveBeenCalled();
   });
 
   it("edits the source textarea inside the create form", async () => {

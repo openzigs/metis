@@ -156,6 +156,7 @@ export class AdminAuthPage {
 
   /** Get a mapping row's remove button by index (0-based). */
   getMappingRemoveButton(index: number): Locator {
-    return this.page.getByRole("button", { name: "✕" }).nth(index);
+    // #268 — labelled "Remove mapping N" (1-based) instead of a bare ✕.
+    return this.page.getByRole("button", { name: `Remove mapping ${index + 1}`, exact: true });
   }
 }

@@ -1,6 +1,8 @@
 /**
  * Issue #253 — Audit log tab on Settings/API Keys.
  */
+import userEvent from "@testing-library/user-event";
+import { expectApgTabKeyboard } from "../a11y/tab-keyboard";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { makeWrapper } from "../test-utils";
@@ -68,7 +70,7 @@ describe("Audit log tab", () => {
     await waitFor(() => expect(screen.getByTestId("settings-tab-audit")).toBeInTheDocument());
     expect(screen.getByTestId("settings-tab-secrets").getAttribute("aria-selected")).toBe("true");
 
-    fireEvent.click(screen.getByTestId("settings-tab-audit"));
+    fireEvent.mouseDown(screen.getByTestId("settings-tab-audit"));
     expect(screen.getByTestId("settings-tab-audit").getAttribute("aria-selected")).toBe("true");
     await waitFor(() => expect(screen.getByTestId("config-audit-empty")).toBeInTheDocument());
   });
@@ -98,7 +100,7 @@ describe("Audit log tab", () => {
       nextCursor: null,
     });
     renderPage();
-    fireEvent.click(screen.getByTestId("settings-tab-audit"));
+    fireEvent.mouseDown(screen.getByTestId("settings-tab-audit"));
     await waitFor(() => expect(screen.getByTestId("config-audit-table")).toBeInTheDocument());
     expect(screen.getByTestId("config-audit-row-aud_1").textContent).toContain("[REDACTED]");
     expect(screen.getByTestId("config-audit-row-aud_2").textContent).toContain("gpt-4o");
@@ -107,7 +109,17 @@ describe("Audit log tab", () => {
   it("surfaces a 403 error", async () => {
     auditMock.mockRejectedValueOnce(new ApiError(403, "forbidden"));
     renderPage();
-    fireEvent.click(screen.getByTestId("settings-tab-audit"));
+    fireEvent.mouseDown(screen.getByTestId("settings-tab-audit"));
     await waitFor(() => expect(screen.getByTestId("config-audit-error")).toBeInTheDocument());
+  });
+});
+
+describe("Configuration tabs — keyboard (#268)", () => {
+  it("arrow keys move between Runtime configuration and Audit log (APG Tabs)", async () => {
+    auditMock.mockResolvedValue({ items: [], nextCursor: null });
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByTestId("settings-tab-audit");
+    await expectApgTabKeyboard(user, "Runtime configuration sections");
   });
 });

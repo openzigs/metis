@@ -369,8 +369,8 @@ test.describe("METIS — full workbench journey (#144)", () => {
         await scheduler.expectJobVisible(jobId);
 
         // Cancel via API and verify the state transition. We use the API
-        // path because the UI delete button issues a `window.confirm()`
-        // dialog; either path exercises the same `DELETE /api/scheduler/:id`
+        // path because the UI delete button opens a confirmation dialog
+        // (an AlertDialog since #268); either path exercises the same `DELETE /api/scheduler/:id`
         // route, and the API path is simpler to assert deterministically.
         const del = await api.delete(`/api/scheduler/${jobId}`);
         expect(del.status(), `delete job: ${await del.text()}`).toBe(204);
