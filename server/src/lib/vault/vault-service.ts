@@ -106,6 +106,19 @@ export class SecretNotFoundError extends Error {
   }
 }
 
+/**
+ * #258 — `create` was asked for a name that is already taken. `Secret.name` is
+ * `@unique` and deletes are soft, so a SOFT-DELETED row still holds its name.
+ * Typed so a caller that lets a user pick the label can answer 409, not 500.
+ */
+export class SecretNameTakenError extends Error {
+  readonly code = "SECRET_NAME_TAKEN";
+  constructor(name: string) {
+    super(`A secret named '${name}' already exists (it may be deleted)`);
+    this.name = "SecretNameTakenError";
+  }
+}
+
 export class VaultDecryptionError extends Error {
   constructor(message: string) {
     super(message);
@@ -262,6 +275,8 @@ export class VaultService {
 
   /**
    * Persist a new secret. Returns the stored row metadata (no plaintext).
+   * Throws {@link SecretNameTakenError} when the name is held by any row, live
+   * or soft-deleted (#258).
    */
   async create(
     label: string,
@@ -273,21 +288,27 @@ export class VaultService {
       throw new Error("label is required");
     }
     const envelope = await this.encrypt(plaintext);
-    const row = await prisma.secret.create({
-      data: {
-        name: this.scopedName(scope, label),
-        description: opts.description ?? "",
-        // Persist whole versioned envelope under `ciphertext`. The other
-        // columns remain populated for forward-compat with rotation tooling.
-        ciphertext: envelope.ciphertext,
-        iv: "",
-        tag: "",
-        salt: "",
-        keyVersion: envelope.keyVersion,
-        algorithm: envelope.algorithm,
-        createdById: opts.createdById ?? null,
-      },
-    });
+    const name = this.scopedName(scope, label);
+    const row = await prisma.secret
+      .create({
+        data: {
+          name,
+          description: opts.description ?? "",
+          // Persist whole versioned envelope under `ciphertext`. The other
+          // columns remain populated for forward-compat with rotation tooling.
+          ciphertext: envelope.ciphertext,
+          iv: "",
+          tag: "",
+          salt: "",
+          keyVersion: envelope.keyVersion,
+          algorithm: envelope.algorithm,
+          createdById: opts.createdById ?? null,
+        },
+      })
+      .catch((err: unknown) => {
+        if (isUniqueConstraintError(err)) throw new SecretNameTakenError(name);
+        throw err;
+      });
     log.info("Secret created", { id: row.id, scope, label });
     return this.toSummary(row, scope);
   }

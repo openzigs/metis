@@ -61,7 +61,8 @@ const vaultRead = vi.fn();
 const vaultCreate = vi.fn();
 const vaultRotate = vi.fn();
 const vaultDelete = vi.fn();
-vi.mock("../src/lib/vault/vault-service.js", () => ({
+vi.mock("../src/lib/vault/vault-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/vault/vault-service.js")>()),
   getVaultService: () => ({
     read: vaultRead,
     create: vaultCreate,
@@ -94,6 +95,7 @@ vi.mock("../src/lib/logger.js", () => ({
 
 import request from "supertest";
 import { createApp } from "../src/app.js";
+import { SecretNotFoundError } from "../src/lib/vault/vault-service.js";
 
 let app: ReturnType<typeof createApp>;
 let token: string;
@@ -428,6 +430,79 @@ describe("suggested-connectors routes — credentials (#704)", () => {
         .set("Authorization", `Bearer ${token}`)
         .send(validBody);
       expect(vaultDelete).not.toHaveBeenCalled();
+    });
+
+    it("replaces a secret deleted from the vault instead of 500ing on rotate (#258)", async () => {
+      const sc = addSuggestion({ passwordVaultRef: "vault_gone" });
+      vaultRead.mockRejectedValue(new Error("Secret vault_gone not found"));
+      vaultRotate.mockImplementation(async (id: string) => {
+        throw new SecretNotFoundError(id);
+      });
+      vaultCreate.mockResolvedValue({ id: "vault_replacement" });
+      createDbConnectorMock.mockResolvedValue({ id: "db_conn_r" });
+
+      const res = await request(app)
+        .post(`/api/projects/proj-1/suggested-connectors/${sc.id}/provision`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({ ...validBody, password: "new-pw" });
+
+      expect(res.status).toBe(200);
+      expect(vaultCreate.mock.calls[0]![1]).toBe("new-pw");
+      expect(createDbConnectorMock).toHaveBeenCalledWith(
+        "proj-1",
+        expect.objectContaining({ secretRef: "${vault:vault_replacement}" }),
+        expect.any(String),
+      );
+      // The suggestion now holds the replacement, not the dead reference.
+      const stored = mockSuggestedConnectors.get(sc.id) as Record<string, unknown>;
+      expect(stored.passwordVaultRef).toBe("vault_replacement");
+    });
+
+    it("a retry after a rolled-back provision is not blocked by the rolled-back secret (#258)", async () => {
+      // Like the real vault: `Secret.name` is UNIQUE and a soft-deleted
+      // (rolled-back) row keeps its name.
+      const names: string[] = [];
+      vaultCreate.mockImplementation(async (label: string) => {
+        if (names.includes(label)) {
+          throw Object.assign(new Error("Unique constraint failed on the fields: (`name`)"), {
+            code: "P2002",
+          });
+        }
+        names.push(label);
+        return { id: `vault_${names.length}` };
+      });
+      vaultDelete.mockResolvedValue(undefined);
+      const sc = addSuggestion();
+      createDbConnectorMock.mockRejectedValueOnce(new Error("DB unreachable"));
+      const first = await request(app)
+        .post(`/api/projects/proj-1/suggested-connectors/${sc.id}/provision`)
+        .set("Authorization", `Bearer ${token}`)
+        .send(validBody);
+      expect(first.status).toBe(500);
+      expect(vaultDelete).toHaveBeenCalledWith("vault_1");
+
+      createDbConnectorMock.mockResolvedValueOnce({ id: "db_conn_retry" });
+      const retry = await request(app)
+        .post(`/api/projects/proj-1/suggested-connectors/${sc.id}/provision`)
+        .set("Authorization", `Bearer ${token}`)
+        .send(validBody);
+
+      expect(retry.status).toBe(200);
+      expect(createDbConnectorMock).toHaveBeenLastCalledWith(
+        "proj-1",
+        expect.objectContaining({ secretRef: "${vault:vault_2}" }),
+        expect.any(String),
+      );
+    });
+
+    it("rejects an unauthenticated provision before touching the vault", async () => {
+      const sc = addSuggestion();
+      const res = await request(app)
+        .post(`/api/projects/proj-1/suggested-connectors/${sc.id}/provision`)
+        .send(validBody);
+      expect(res.status).toBe(401);
+      expect(vaultCreate).not.toHaveBeenCalled();
+      expect(vaultRotate).not.toHaveBeenCalled();
     });
 
     it("rolls back BOTH vault and connector if suggestion update fails after create", async () => {

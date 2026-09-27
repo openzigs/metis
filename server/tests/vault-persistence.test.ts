@@ -87,7 +87,11 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
-import { SecretNotFoundError, VaultService } from "../src/lib/vault/vault-service.js";
+import {
+  SecretNameTakenError,
+  SecretNotFoundError,
+  VaultService,
+} from "../src/lib/vault/vault-service.js";
 import { prisma } from "../src/lib/prisma.js";
 
 const MASTER = Buffer.alloc(32, 7).toString("base64");
@@ -169,6 +173,28 @@ describe("VaultService persistence", () => {
     const boom = new Error("database is locked");
     vi.mocked(prisma.secret.update).mockRejectedValueOnce(boom);
     await expect(v.rotate(created.id, "new")).rejects.toBe(boom);
+  });
+
+  // #258 — a taken name (a soft-deleted row keeps it) is a typed error a
+  // caller can answer 409 to; any other store failure is left as it is.
+  it("create on a taken name throws SecretNameTakenError", async () => {
+    const v = new VaultService({ masterKey: MASTER, isProduction: false });
+    vi.mocked(prisma.secret.create).mockRejectedValueOnce(
+      Object.assign(new Error("Unique constraint failed on the fields: (`name`)"), {
+        code: "P2002",
+      }),
+    );
+    const err = await v.create("jira-token", "x", "project").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SecretNameTakenError);
+    expect((err as SecretNameTakenError).code).toBe("SECRET_NAME_TAKEN");
+    expect((err as Error).message).toContain("project:jira-token");
+  });
+
+  it("any other store failure from create propagates unchanged", async () => {
+    const v = new VaultService({ masterKey: MASTER, isProduction: false });
+    const boom = new Error("database is locked");
+    vi.mocked(prisma.secret.create).mockRejectedValueOnce(boom);
+    await expect(v.create("jira-token", "x", "project")).rejects.toBe(boom);
   });
 
   it("throws when reading a non-existent secret", async () => {

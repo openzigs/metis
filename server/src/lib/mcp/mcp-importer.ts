@@ -19,6 +19,7 @@ import { type MCPJsonImport, mcpJsonImportSchema } from "@metis/shared";
 import { audit } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
 import { getVaultService } from "../vault/vault-service.js";
+import { freshSecretLabel } from "../vault/secret-rotation.js";
 import type { MCPRegistryService } from "./mcp-service.js";
 
 const log = createChildLogger("mcp-importer");
@@ -172,60 +173,54 @@ export async function executeImport(
   if (opts.dryRun) return result;
 
   const vault = getVaultService();
+  const vaultScope = opts.scope === "project" ? "project" : "global";
   for (const entry of plan.entries) {
+    // #258 — every secret this import writes gets a label no earlier secret
+    // holds, and the entry's refs are pointed at it. The planned label is fixed
+    // by server label + key, so a re-import (or the same server label in another
+    // project) hit `Secret.name @unique`; that failure was caught and logged as
+    // success, and the server kept resolving the OLD secret. A vault failure
+    // now fails the entry, and the secrets it already wrote are withdrawn.
+    const written: string[] = [];
     try {
       // 1. Create vault secrets for any auto-routed env keys.
-      for (const [envKey, secretLabel] of Object.entries(entry.vaultedKeys)) {
+      for (const [envKey, planned] of Object.entries(entry.vaultedKeys)) {
         // The plaintext we want to store is in the ORIGINAL env value;
         // because we've already rewritten entry.env above we recover it from
         // the raw input. Plaintext is never persisted on the plan object.
         const plaintext = getOriginalSecret(raw, entry.label, "env", envKey, opts.labelPrefix);
         if (plaintext == null) continue;
-        try {
-          const summary = await vault.create(
-            secretLabel,
-            plaintext,
-            opts.scope === "project" ? "project" : "global",
-            { description: `Auto-vaulted from mcp.json import for ${entry.label}` },
-          );
-          audit({
-            actor: { id: actor.id },
-            action: "vault.write",
-            target: { type: "secret", id: summary.id },
-            metadata: { label: secretLabel, source: "mcp_import", field: "env", envKey },
-          });
-        } catch (err) {
-          // If the secret label already exists, treat it as success (idempotent
-          // re-import).
-          log.warn("Vault write during MCP import failed", {
-            label: secretLabel,
-            error: (err as Error).message,
-          });
-        }
+        const secretLabel = freshSecretLabel(planned);
+        const summary = await vault.create(secretLabel, plaintext, vaultScope, {
+          description: `Auto-vaulted from mcp.json import for ${entry.label}`,
+        });
+        written.push(summary.id);
+        entry.vaultedKeys[envKey] = secretLabel;
+        entry.env[envKey] = `\${vault:${secretLabel}}`;
+        audit({
+          actor: { id: actor.id },
+          action: "vault.write",
+          target: { type: "secret", id: summary.id },
+          metadata: { label: secretLabel, source: "mcp_import", field: "env", envKey },
+        });
       }
       // 1b. Same for headers.
-      for (const [hName, secretLabel] of Object.entries(entry.vaultedHeaders)) {
+      for (const [hName, planned] of Object.entries(entry.vaultedHeaders)) {
         const plaintext = getOriginalSecret(raw, entry.label, "headers", hName, opts.labelPrefix);
         if (plaintext == null) continue;
-        try {
-          const summary = await vault.create(
-            secretLabel,
-            plaintext,
-            opts.scope === "project" ? "project" : "global",
-            { description: `Auto-vaulted header from mcp.json import for ${entry.label}` },
-          );
-          audit({
-            actor: { id: actor.id },
-            action: "vault.write",
-            target: { type: "secret", id: summary.id },
-            metadata: { label: secretLabel, source: "mcp_import", field: "header", header: hName },
-          });
-        } catch (err) {
-          log.warn("Vault write for header during MCP import failed", {
-            label: secretLabel,
-            error: (err as Error).message,
-          });
-        }
+        const secretLabel = freshSecretLabel(planned);
+        const summary = await vault.create(secretLabel, plaintext, vaultScope, {
+          description: `Auto-vaulted header from mcp.json import for ${entry.label}`,
+        });
+        written.push(summary.id);
+        entry.vaultedHeaders[hName] = secretLabel;
+        if (entry.headers) entry.headers[hName] = `\${vault:${secretLabel}}`;
+        audit({
+          actor: { id: actor.id },
+          action: "vault.write",
+          target: { type: "secret", id: summary.id },
+          metadata: { label: secretLabel, source: "mcp_import", field: "header", header: hName },
+        });
       }
       // 2. Persist the MCPServer row with vault refs in env.
       const created = await registry.create(
@@ -250,6 +245,14 @@ export async function executeImport(
       );
       result.created.push({ id: created.id, label: created.label });
     } catch (err) {
+      for (const id of written) {
+        await vault.delete(id).catch((cleanupErr: unknown) =>
+          log.warn("Vault cleanup after failed MCP import entry failed", {
+            id,
+            error: (cleanupErr as Error).message,
+          }),
+        );
+      }
       result.errors.push({ label: entry.label, message: (err as Error).message });
     }
   }

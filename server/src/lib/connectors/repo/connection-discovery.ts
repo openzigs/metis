@@ -16,6 +16,7 @@ import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { prisma } from "../../prisma.js";
 import { getVaultService } from "../../vault/vault-service.js";
+import { rotateOrCreate } from "../../vault/secret-rotation.js";
 import { scanFileForConnections, type DiscoveredConnection } from "./connection-scanner.js";
 
 const log = createChildLogger("suggested-connector-discovery");
@@ -182,19 +183,24 @@ export async function discoverAndUpsertConnections(
           }
           if (existingPlaintext === conn.password) {
             vaultMutated = "reused";
-          } else {
-            await vault.rotate(existing.passwordVaultRef, conn.password);
-            vaultMutated = "rotated";
           }
-        } else {
+        }
+        if (vaultMutated !== "reused") {
+          // #258 — rotate the row's own secret in place; when it is gone (never
+          // written, or deleted from the vault) create a new one under a label
+          // no earlier secret holds. A label fixed by host/port/database was
+          // still taken by the secret of a suggestion row that no longer exists,
+          // and `rotate` now refuses a deleted secret — either way the row was
+          // skipped and kept its stale reference.
           const safeHost = sanitizeLabelFragment(conn.host ?? "");
           const safeDb = sanitizeLabelFragment(conn.database ?? "");
-          const label = `discovered-cred:project:${projectId}:${conn.driverType}:${safeHost}:${conn.port ?? 0}:${safeDb}`;
-          const summaryRow = await vault.create(label, conn.password, "project", {
+          const written = await rotateOrCreate(vault, existing?.passwordVaultRef, conn.password, {
+            label: `discovered-cred:project:${projectId}:${conn.driverType}:${safeHost}:${conn.port ?? 0}:${safeDb}`,
+            scope: "project",
             description: `Auto-discovered dev DB password from ${conn.credentialSourceFile ?? conn.sourceFile}`,
           });
-          passwordVaultRef = summaryRow.id;
-          vaultMutated = "created";
+          passwordVaultRef = written.id;
+          vaultMutated = written.created ? "created" : "rotated";
         }
       }
 

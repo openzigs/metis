@@ -229,6 +229,35 @@ describe("ImportService.createSource", () => {
     expect(run.taskId).toBe("task_1");
   });
 
+  it("a second source with the same label (the first deleted) stores its OWN token (#258)", async () => {
+    // Like the real vault: `Secret.name` is UNIQUE, soft-deleted rows included.
+    const names: string[] = [];
+    const ctx = makeDeps();
+    ctx.vault.create.mockImplementation(async (label: string, _t: string, scope: string) => {
+      const name = `${scope}:${label}`;
+      if (names.includes(name)) {
+        throw Object.assign(new Error("Unique constraint failed on the fields: (`name`)"), {
+          code: "P2002",
+        });
+      }
+      names.push(name);
+      return { id: `secret_${names.length}` };
+    });
+    const svc = new ImportService(ctx.deps);
+    const first = await svc.createSource("p1", { ...ghFilter, token: "ghp_one" }, "user_1");
+    await svc.deleteSource("p1", first.source.id, "user_1");
+
+    const second = await svc.createSource("p1", { ...ghFilter, token: "ghp_two" }, "user_1");
+
+    const stored = [...ctx.prisma.stores.importSource.values()] as Array<{
+      id: string;
+      secretId: string | null;
+    }>;
+    expect(stored.find((r) => r.id === second.source.id)?.secretId).toBe("secret_2");
+    expect(ctx.vault.create.mock.calls[1][1]).toBe("ghp_two");
+    expect(names[0]).toMatch(/^project:import-github-p1-GH-[0-9A-Z]{26}$/);
+  });
+
   it("rejects a token-based source with no token", async () => {
     const svc = new ImportService(makeDeps().deps);
     await expect(svc.createSource("p1", ghFilter, "user_1")).rejects.toThrow(/token/i);

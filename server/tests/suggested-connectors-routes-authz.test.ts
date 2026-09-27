@@ -48,8 +48,10 @@ vi.mock("../src/lib/prisma.js", () => ({
 }));
 
 const vaultRead = vi.fn();
+const vaultCreate = vi.fn();
+const vaultRotate = vi.fn();
 vi.mock("../src/lib/vault/vault-service.js", () => ({
-  getVaultService: () => ({ read: vaultRead }),
+  getVaultService: () => ({ read: vaultRead, create: vaultCreate, rotate: vaultRotate }),
 }));
 
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
@@ -175,6 +177,17 @@ describe("suggested-connectors — same-workspace caller is still served (no ove
     const res = await request(app).get("/api/projects/proj-any/suggested-connectors");
     expect(res.status).toBe(200);
     expect(projectFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("#258 — a reader cannot provision: 403 before any vault write", async () => {
+    currentUser = { userId: "reader-1", role: "reader", workspaces: ["ws-1"] };
+    const res = await request(app)
+      .post("/api/projects/proj-1/suggested-connectors/sug-1/provision")
+      .send({ label: "x", driver: "postgres", password: "pw" });
+    expect(res.status).toBe(403);
+    expect(suggestionFindFirst).not.toHaveBeenCalled();
+    expect(vaultCreate).not.toHaveBeenCalled();
+    expect(vaultRotate).not.toHaveBeenCalled();
   });
 
   it("still applies the role layer on top — a reader cannot read credentials", async () => {

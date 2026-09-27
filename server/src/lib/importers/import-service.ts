@@ -24,6 +24,7 @@ import type { ImportFilter } from "@metis/shared";
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { getVaultService, type VaultService } from "../vault/vault-service.js";
+import { freshSecretLabel } from "../vault/secret-rotation.js";
 import { getSchedulerBootstrap } from "../scheduler/index.js";
 import type { TaskTrigger } from "../scheduler/types.js";
 import { buildJiraClientForConnection } from "../connectors/jira/jira-service.js";
@@ -294,9 +295,11 @@ export class ImportService {
     // Store the API token in the vault (token-based sources only).
     let secretId: string | null = null;
     if (req.token) {
-      const secretLabel = `import-${req.source}-${projectId}-${req.label}`.replace(
-        /[^a-zA-Z0-9_.-]/g,
-        "-",
+      // #258 — each source owns its own secret (by id), so the label only has
+      // to be unique: a name fixed by source + project + label was taken by the
+      // first import with that label (live or deleted) and every later one 500'd.
+      const secretLabel = freshSecretLabel(
+        `import-${req.source}-${projectId}-${req.label}`.replace(/[^a-zA-Z0-9_.-]/g, "-"),
       );
       const secret = await this.deps.vault.create(secretLabel, req.token, "project", {
         description: `${req.source} importer token for ${req.label}`,

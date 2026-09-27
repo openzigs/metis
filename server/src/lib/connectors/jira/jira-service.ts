@@ -130,6 +130,35 @@ async function rotateOrReplace(
   return created.id;
 }
 
+/** Prisma's unique-index violation (`P2002`), matched on its code alone. */
+function isUniqueConstraintError(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2002";
+}
+
+/**
+ * #258 — `@@unique([projectId, label])` also covers SOFT-DELETED connections,
+ * so a deleted connection kept its label and creating (or renaming to) that
+ * label again 500'd on the index. A deleted connection is never read by label,
+ * so its label is moved to a tombstone that embeds its own id, freeing the
+ * name. Done at write time rather than at delete time, so connections deleted
+ * before this fix are released too.
+ */
+async function releaseDeletedLabel(projectId: string, label: string): Promise<void> {
+  const holder = await prisma.jiraConnection.findFirst({
+    where: { projectId, label, deletedAt: { not: null } },
+    select: { id: true },
+  });
+  if (!holder) return;
+  await prisma.jiraConnection.update({
+    where: { id: holder.id },
+    data: { label: `${label}~deleted-${holder.id}` },
+  });
+}
+
+function labelTaken(label: string): ConnectorError {
+  return new ConnectorError(409, "JIRA_LABEL_TAKEN", `label '${label}' already exists`);
+}
+
 export async function listJiraConnections(projectId: string): Promise<JiraConnectionDetail[]> {
   const rows = await prisma.jiraConnection.findMany({
     where: { projectId, deletedAt: null },
@@ -156,9 +185,8 @@ export async function createJiraConnection(
   const existing = await prisma.jiraConnection.findFirst({
     where: { projectId, label: input.label, deletedAt: null },
   });
-  if (existing) {
-    throw new ConnectorError(409, "JIRA_LABEL_TAKEN", `label '${input.label}' already exists`);
-  }
+  if (existing) throw labelTaken(input.label);
+  await releaseDeletedLabel(projectId, input.label);
 
   // Store the API token in vault
   const vault = getVaultService();
@@ -177,21 +205,32 @@ export async function createJiraConnection(
     tlsCaSecretId = caSecret.id;
   }
 
-  const row = await prisma.jiraConnection.create({
-    data: {
-      projectId,
-      label: input.label,
-      edition: input.edition,
-      baseUrl: input.baseUrl,
-      username: input.username,
-      secretId: secret.id,
-      proxyUrl: input.proxyUrl ?? null,
-      tlsRejectUnauthorized: input.tlsRejectUnauthorized ?? true,
-      tlsCaSecretId,
-      status: "untested",
-      createdById: actorId,
-    },
-  });
+  let row;
+  try {
+    row = await prisma.jiraConnection.create({
+      data: {
+        projectId,
+        label: input.label,
+        edition: input.edition,
+        baseUrl: input.baseUrl,
+        username: input.username,
+        secretId: secret.id,
+        proxyUrl: input.proxyUrl ?? null,
+        tlsRejectUnauthorized: input.tlsRejectUnauthorized ?? true,
+        tlsCaSecretId,
+        status: "untested",
+        createdById: actorId,
+      },
+    });
+  } catch (err) {
+    // A concurrent create took the label after the check above: 409, and the
+    // secrets just written belong to no connection, so they are withdrawn.
+    if (!isUniqueConstraintError(err)) throw err;
+    for (const id of [secret.id, tlsCaSecretId]) {
+      if (id) await vault.delete(id).catch(() => undefined);
+    }
+    throw labelTaken(input.label);
+  }
 
   audit({
     actor: { id: actorId },
@@ -212,7 +251,22 @@ export async function updateJiraConnection(
   const existing = await findOrThrow(id, projectId);
   const data: Record<string, unknown> = {};
 
-  if (input.label !== undefined) data.label = input.label;
+  if (input.label !== undefined) {
+    data.label = input.label;
+    if (input.label !== existing.label) {
+      const dup = await prisma.jiraConnection.findFirst({
+        where: {
+          projectId: existing.projectId,
+          label: input.label,
+          deletedAt: null,
+          NOT: { id: existing.id },
+        },
+        select: { id: true },
+      });
+      if (dup) throw labelTaken(input.label);
+      await releaseDeletedLabel(existing.projectId, input.label);
+    }
+  }
   if (input.edition !== undefined) data.edition = input.edition;
   if (input.baseUrl !== undefined) data.baseUrl = input.baseUrl;
   if (input.username !== undefined) data.username = input.username;
@@ -267,7 +321,15 @@ export async function updateJiraConnection(
     data.errorMessage = null;
   }
 
-  const row = await prisma.jiraConnection.update({ where: { id }, data });
+  let row;
+  try {
+    row = await prisma.jiraConnection.update({ where: { id }, data });
+  } catch (err) {
+    if (isUniqueConstraintError(err) && typeof data.label === "string") {
+      throw labelTaken(data.label);
+    }
+    throw err;
+  }
 
   audit({
     actor: { id: actorId },

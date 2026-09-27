@@ -22,6 +22,7 @@ import {
   updateTestManagementConnection,
 } from "../../../../src/lib/connectors/testmgmt/connection-service.js";
 import { ConnectorError } from "../../../../src/lib/connectors/types.js";
+import { SecretNotFoundError } from "../../../../src/lib/vault/vault-service.js";
 
 // ---- Mock audit (top-level module mock) ------------------------------------
 
@@ -53,6 +54,17 @@ interface Row {
 function makeDb() {
   const rows = new Map<string, Row>();
   let counter = 0;
+  // Like the real table: `@@unique([projectId, label])` holds for soft-deleted
+  // rows too (#258).
+  const assertLabelFree = (projectId: string, label: string) => {
+    for (const r of rows.values()) {
+      if (r.projectId === projectId && r.label === label) {
+        throw Object.assign(new Error("Unique constraint failed on (projectId, label)"), {
+          code: "P2002",
+        });
+      }
+    }
+  };
   return {
     rows,
     db: {
@@ -60,6 +72,9 @@ function makeDb() {
         findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
           for (const r of rows.values()) {
             if (where.deletedAt === null && r.deletedAt !== null) continue;
+            // `deletedAt: { not: null }` — soft-deleted rows only.
+            if (where.deletedAt && typeof where.deletedAt === "object" && r.deletedAt === null)
+              continue;
             let match = true;
             for (const [k, v] of Object.entries(where)) {
               if (k === "deletedAt" || k === "NOT") continue;
@@ -81,6 +96,7 @@ function makeDb() {
           );
         }),
         create: vi.fn(async ({ data }: { data: Partial<Row> }) => {
+          assertLabelFree(data.projectId!, data.label!);
           counter += 1;
           const row: Row = {
             id: `tmc_${counter}`,
@@ -106,6 +122,9 @@ function makeDb() {
         update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<Row> }) => {
           const r = rows.get(where.id);
           if (!r) throw new Error("not found");
+          if (data.label !== undefined && data.label !== r.label) {
+            assertLabelFree(r.projectId, data.label);
+          }
           const next = { ...r, ...data, updatedAt: new Date() } as Row;
           rows.set(where.id, next);
           return next;
@@ -118,21 +137,45 @@ function makeDb() {
 // ---- Vault stub ------------------------------------------------------------
 
 function makeVault() {
-  const secrets = new Map<string, { id: string; label: string; plaintext: string }>();
+  const secrets = new Map<
+    string,
+    { id: string; label: string; plaintext: string; deletedAt: Date | null }
+  >();
   let counter = 0;
+  // Behaves like the real vault (#258): `Secret.name` is UNIQUE and a
+  // soft-deleted row keeps it; `rotate` and `read` see live rows only.
   const vault = {
     create: vi.fn(async (label: string, value: string) => {
+      if ([...secrets.values()].some((s) => s.label === label)) {
+        throw Object.assign(new Error("Unique constraint failed on the fields: (`name`)"), {
+          code: "P2002",
+        });
+      }
       counter += 1;
-      const rec = { id: `secret_${counter}`, label, plaintext: value };
+      const rec = { id: `secret_${counter}`, label, plaintext: value, deletedAt: null };
       secrets.set(rec.id, rec);
       return { id: rec.id, label };
     }),
+    rotate: vi.fn(async (id: string, value: string) => {
+      const rec = secrets.get(id);
+      if (!rec || rec.deletedAt) throw new SecretNotFoundError(id);
+      rec.plaintext = value;
+      return { id, label: rec.label };
+    }),
     read: vi.fn(async (id: string) => {
       const rec = secrets.get(id);
-      if (!rec) throw new Error(`unknown secret ${id}`);
+      if (!rec || rec.deletedAt) throw new Error(`unknown secret ${id}`);
       return { plaintext: rec.plaintext };
     }),
-    list: vi.fn(async () => [...secrets.values()].map((s) => ({ id: s.id, label: s.label }))),
+    delete: vi.fn(async (id: string) => {
+      const rec = secrets.get(id);
+      if (rec) rec.deletedAt = new Date();
+    }),
+    list: vi.fn(async () =>
+      [...secrets.values()]
+        .filter((s) => !s.deletedAt)
+        .map((s) => ({ id: s.id, label: s.label, scope: "project" })),
+    ),
   };
   // Cast through unknown — we only need the four methods the service touches.
   return {
@@ -442,8 +485,8 @@ describe("updateTestManagementConnection", () => {
     expect(updated.status).toBe("untested");
   });
 
-  it("rotates auth credentials by writing new vault entries", async () => {
-    const { deps, vault, rows } = depsFor();
+  it("rotates auth credentials IN PLACE — same secret, new value (#258)", async () => {
+    const { deps, vault, rows, secrets } = depsFor();
     const created = await createTestManagementConnection(
       PROJECT,
       {
@@ -455,7 +498,7 @@ describe("updateTestManagementConnection", () => {
       ACTOR,
       deps,
     );
-    const beforeWrites = vault.create.mock.calls.length;
+    const refBefore = rows.get(created.id)!.authConfigJson;
     await updateTestManagementConnection(
       created.id,
       { auth: { kind: "zephyr", bearerToken: "rotated" } },
@@ -463,10 +506,92 @@ describe("updateTestManagementConnection", () => {
       undefined,
       deps,
     );
-    expect(vault.create.mock.calls.length).toBeGreaterThan(beforeWrites);
     const row = rows.get(created.id)!;
+    expect(row.authConfigJson).toBe(refBefore);
     expect(row.authConfigJson).not.toContain("rotated");
     expect(row.status).toBe("untested");
+    expect(vault.create).toHaveBeenCalledTimes(1);
+    expect(secrets.size).toBe(1);
+    const loaded = await loadResolvedTestManagementConnection(created.id, undefined, deps);
+    expect(loaded.auth).toEqual({ kind: "zephyr", bearerToken: "rotated" });
+  });
+
+  it("rotating xray + testrail + CA credentials twice succeeds and reads back the newest (#258)", async () => {
+    const { deps, secrets } = depsFor();
+    const xray = await createTestManagementConnection(
+      PROJECT,
+      {
+        label: "x",
+        kind: "xray",
+        baseUrl: XRAY_BASE,
+        auth: { kind: "xray", clientId: "id-0", clientSecret: "sec-0" },
+        tlsConfig: { rejectUnauthorized: true, caCert: "CA-0" },
+      },
+      ACTOR,
+      deps,
+    );
+    const tr = await createTestManagementConnection(
+      PROJECT,
+      {
+        label: "t",
+        kind: "testrail",
+        baseUrl: TR_BASE,
+        auth: { kind: "testrail", email: "a@b.test", apiKey: "key-0" },
+      },
+      ACTOR,
+      deps,
+    );
+    for (const n of [1, 2]) {
+      await updateTestManagementConnection(
+        xray.id,
+        {
+          auth: { kind: "xray", clientId: `id-${n}`, clientSecret: `sec-${n}` },
+          tlsConfig: { rejectUnauthorized: true, caCert: `CA-${n}` },
+        },
+        ACTOR,
+        undefined,
+        deps,
+      );
+      await updateTestManagementConnection(
+        tr.id,
+        { auth: { kind: "testrail", email: "a@b.test", apiKey: `key-${n}` } },
+        ACTOR,
+        undefined,
+        deps,
+      );
+    }
+    const x = await loadResolvedTestManagementConnection(xray.id, undefined, deps);
+    expect(x.auth).toEqual({ kind: "xray", clientId: "id-2", clientSecret: "sec-2" });
+    expect(x.tls?.caCert).toBe("CA-2");
+    const t = await loadResolvedTestManagementConnection(tr.id, undefined, deps);
+    expect(t.auth).toEqual({ kind: "testrail", email: "a@b.test", apiKey: "key-2" });
+    expect(secrets.size).toBe(4);
+  });
+
+  it("replaces a credential whose secret was deleted from the vault (#258)", async () => {
+    const { deps, vault, rows } = depsFor();
+    const created = await createTestManagementConnection(
+      PROJECT,
+      {
+        label: "gone",
+        kind: "zephyr",
+        baseUrl: ZEPHYR_BASE,
+        auth: { kind: "zephyr", bearerToken: "old" },
+      },
+      ACTOR,
+      deps,
+    );
+    await vault.delete("secret_1");
+    await updateTestManagementConnection(
+      created.id,
+      { auth: { kind: "zephyr", bearerToken: "fresh" } },
+      ACTOR,
+      undefined,
+      deps,
+    );
+    expect(rows.get(created.id)!.authConfigJson).not.toContain("secret_1");
+    const loaded = await loadResolvedTestManagementConnection(created.id, undefined, deps);
+    expect(loaded.auth).toEqual({ kind: "zephyr", bearerToken: "fresh" });
   });
 
   it("rejects auth-kind changes (immutable kind)", async () => {
@@ -565,6 +690,83 @@ describe("deleteTestManagementConnection", () => {
     });
     const list = await listTestManagementConnections(PROJECT, deps);
     expect(list).toHaveLength(0);
+  });
+});
+
+describe("re-using a deleted connection's label (#258)", () => {
+  const zephyr = (label: string, bearerToken: string) => ({
+    label,
+    kind: "zephyr" as const,
+    baseUrl: ZEPHYR_BASE,
+    auth: { kind: "zephyr" as const, bearerToken },
+  });
+
+  it("creating a connection with a deleted connection's label succeeds and reads the NEW token", async () => {
+    const { deps } = depsFor();
+    const first = await createTestManagementConnection(PROJECT, zephyr("prod", "old"), ACTOR, deps);
+    await deleteTestManagementConnection(first.id, ACTOR, undefined, deps);
+
+    const second = await createTestManagementConnection(
+      PROJECT,
+      zephyr("prod", "new"),
+      ACTOR,
+      deps,
+    );
+
+    expect(second.label).toBe("prod");
+    const loaded = await loadResolvedTestManagementConnection(second.id, undefined, deps);
+    expect(loaded.auth).toEqual({ kind: "zephyr", bearerToken: "new" });
+    expect((await listTestManagementConnections(PROJECT, deps)).map((c) => c.id)).toEqual([
+      second.id,
+    ]);
+  });
+
+  it("renaming onto a deleted connection's label succeeds", async () => {
+    const { deps } = depsFor();
+    const gone = await createTestManagementConnection(PROJECT, zephyr("prod", "a"), ACTOR, deps);
+    await deleteTestManagementConnection(gone.id, ACTOR, undefined, deps);
+    const other = await createTestManagementConnection(PROJECT, zephyr("stage", "b"), ACTOR, deps);
+
+    const renamed = await updateTestManagementConnection(
+      other.id,
+      { label: "prod" },
+      ACTOR,
+      undefined,
+      deps,
+    );
+    expect(renamed.label).toBe("prod");
+  });
+
+  it("a create that loses the label race answers 409 and withdraws its secrets", async () => {
+    const { deps, db, secrets } = depsFor();
+    // The live-label check misses a concurrent winner: the row insert hits the index.
+    db.testManagementConnection.create.mockRejectedValueOnce(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" }),
+    );
+    await expect(
+      createTestManagementConnection(PROJECT, zephyr("race", "t"), ACTOR, deps),
+    ).rejects.toMatchObject({ status: 409, code: "TESTMGMT_LABEL_TAKEN" });
+    expect([...secrets.values()].every((s) => s.deletedAt !== null)).toBe(true);
+  });
+
+  it("an update that loses a rename race answers 409, not 500", async () => {
+    const { deps, db } = depsFor();
+    const c = await createTestManagementConnection(PROJECT, zephyr("a", "t"), ACTOR, deps);
+    db.testManagementConnection.update.mockRejectedValueOnce(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" }),
+    );
+    await expect(
+      updateTestManagementConnection(c.id, { label: "b" }, ACTOR, undefined, deps),
+    ).rejects.toMatchObject({ status: 409, code: "TESTMGMT_LABEL_TAKEN" });
+  });
+
+  it("a non-unique update failure still propagates", async () => {
+    const { deps, db } = depsFor();
+    const c = await createTestManagementConnection(PROJECT, zephyr("a", "t"), ACTOR, deps);
+    db.testManagementConnection.update.mockRejectedValueOnce(new Error("db down"));
+    await expect(
+      updateTestManagementConnection(c.id, { label: "b" }, ACTOR, undefined, deps),
+    ).rejects.toThrow("db down");
   });
 });
 

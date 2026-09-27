@@ -30,6 +30,17 @@ interface JiraRow {
 const rows = new Map<string, JiraRow>();
 let counter = 0;
 
+/** Like the real table: `@@unique([projectId, label])` holds for soft-deleted rows too (#258). */
+function assertLabelFree(projectId: string, label: string): void {
+  for (const r of rows.values()) {
+    if (r.projectId === projectId && r.label === label) {
+      throw Object.assign(new Error("Unique constraint failed on (projectId, label)"), {
+        code: "P2002",
+      });
+    }
+  }
+}
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     $queryRawUnsafe: vi.fn(async () => 1),
@@ -53,10 +64,16 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         for (const r of rows.values()) {
-          if (r.deletedAt) continue;
+          // `deletedAt: null` = live rows; `{ not: null }` = soft-deleted rows (#258).
+          if (where.deletedAt === null && r.deletedAt) continue;
+          if (where.deletedAt && typeof where.deletedAt === "object" && !r.deletedAt) continue;
           let match = true;
           for (const [k, v] of Object.entries(where)) {
             if (k === "deletedAt") continue;
+            if (k === "NOT") {
+              if (r.id === (v as { id: string }).id) match = false;
+              continue;
+            }
             if ((r as unknown as Record<string, unknown>)[k] !== v) match = false;
           }
           if (match) return r;
@@ -64,6 +81,7 @@ vi.mock("../src/lib/prisma.js", () => ({
         return null;
       }),
       create: vi.fn(async ({ data }: { data: Partial<JiraRow> }) => {
+        assertLabelFree(data.projectId!, data.label!);
         counter++;
         const row: JiraRow = {
           id: `jira_${counter}`,
@@ -91,6 +109,8 @@ vi.mock("../src/lib/prisma.js", () => ({
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<JiraRow> }) => {
         const r = rows.get(where.id);
         if (!r) throw new Error("not found");
+        if (data.label !== undefined && data.label !== r.label)
+          assertLabelFree(r.projectId, data.label);
         const next = { ...r, ...data, updatedAt: new Date() } as JiraRow;
         rows.set(where.id, next);
         return next;
@@ -530,6 +550,90 @@ describe("Jira service — secret rotation against a unique-name vault (#106)", 
     await updateJiraConnection(b.id, { apiToken: "token-b2" }, "user_1");
     expect((await credentialsOf(a.id)).apiToken).toBe("token-a");
     expect((await credentialsOf(b.id)).apiToken).toBe("token-b2");
+  });
+
+  it("creating a connection with a deleted connection's label succeeds and reads the NEW token (#258)", async () => {
+    const first = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "old-token" },
+      "user_1",
+    );
+    await deleteJiraConnection(first.id, "user_1");
+
+    const second = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "new-token" },
+      "user_1",
+    );
+
+    expect(second.label).toBe("prod");
+    expect((await credentialsOf(second.id)).apiToken).toBe("new-token");
+    expect((await listJiraConnections("proj_1")).map((c) => c.id)).toEqual([second.id]);
+  });
+
+  it("renaming onto a deleted connection's label succeeds (#258)", async () => {
+    const gone = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "a" },
+      "user_1",
+    );
+    await deleteJiraConnection(gone.id, "user_1");
+    const other = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "stage", apiToken: "b" },
+      "user_1",
+    );
+    const renamed = await updateJiraConnection(other.id, { label: "prod" }, "user_1");
+    expect(renamed.label).toBe("prod");
+  });
+
+  it("renaming onto a LIVE connection's label is 409 and writes nothing (#258)", async () => {
+    await createJiraConnection("proj_1", { ...base, label: "prod", apiToken: "a" }, "user_1");
+    const other = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "stage", apiToken: "b" },
+      "user_1",
+    );
+    const before = secrets.size;
+    await expect(
+      updateJiraConnection(other.id, { label: "prod", apiToken: "c" }, "user_1"),
+    ).rejects.toMatchObject({ status: 409, code: "JIRA_LABEL_TAKEN" });
+    expect(secrets.size).toBe(before);
+    expect((await credentialsOf(other.id)).apiToken).toBe("b");
+  });
+
+  it("a create that loses the label race answers 409 and withdraws its secrets (#258)", async () => {
+    const { prisma } = await import("../src/lib/prisma.js");
+    vi.mocked(prisma.jiraConnection.create).mockRejectedValueOnce(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" }),
+    );
+    await expect(
+      createJiraConnection(
+        "proj_1",
+        { ...base, label: "race", apiToken: "t", tlsCaCert: CA_OLD },
+        "user_1",
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "JIRA_LABEL_TAKEN" });
+    expect(secrets.size).toBe(2);
+    expect([...secrets.values()].every((r) => r.deletedAt !== null)).toBe(true);
+  });
+
+  it("an update that loses a rename race answers 409; other failures propagate (#258)", async () => {
+    const { prisma } = await import("../src/lib/prisma.js");
+    const c = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "a", apiToken: "t" },
+      "user_1",
+    );
+    vi.mocked(prisma.jiraConnection.update).mockRejectedValueOnce(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" }),
+    );
+    await expect(updateJiraConnection(c.id, { label: "b" }, "user_1")).rejects.toMatchObject({
+      status: 409,
+      code: "JIRA_LABEL_TAKEN",
+    });
+    vi.mocked(prisma.jiraConnection.update).mockRejectedValueOnce(new Error("db down"));
+    await expect(updateJiraConnection(c.id, { label: "b" }, "user_1")).rejects.toThrow("db down");
   });
 
   it("the audit record names the rotated secrets even though the row keeps its ids", async () => {

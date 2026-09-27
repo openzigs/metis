@@ -22,7 +22,11 @@ import type { ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
-import { getVaultService, type SecretSummary } from "../lib/vault/vault-service.js";
+import {
+  getVaultService,
+  SecretNameTakenError,
+  type SecretSummary,
+} from "../lib/vault/vault-service.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
 import { pagerDutyVaultRotationFailure } from "../lib/pagerduty/alerting-hooks.js";
@@ -98,12 +102,26 @@ export function vaultRouter(): Router {
       throw new AppError(400, "INVALID_BODY", "Invalid vault entry", parsed.error.flatten());
     }
     const aId = actorId(req);
-    const summary = await getVaultService().create(
-      parsed.data.label,
-      parsed.data.value,
-      parsed.data.scope,
-      { description: parsed.data.description, createdById: aId },
-    );
+    let summary: SecretSummary;
+    try {
+      summary = await getVaultService().create(
+        parsed.data.label,
+        parsed.data.value,
+        parsed.data.scope,
+        { description: parsed.data.description, createdById: aId },
+      );
+    } catch (err) {
+      // #258 — the label is the admin's own choice, so a taken one (live, or
+      // held by a deleted secret) is theirs to change: 409, never a 500.
+      if (err instanceof SecretNameTakenError) {
+        throw new AppError(
+          409,
+          "SECRET_LABEL_TAKEN",
+          `A secret labelled '${parsed.data.label}' already exists in the ${parsed.data.scope} scope (it may be deleted); choose another label`,
+        );
+      }
+      throw err;
+    }
     audit({
       actor: { id: aId },
       action: "vault.write",

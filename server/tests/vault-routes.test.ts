@@ -64,7 +64,8 @@ const fakeService = {
   }),
 };
 
-vi.mock("../src/lib/vault/vault-service.js", () => ({
+vi.mock("../src/lib/vault/vault-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/vault/vault-service.js")>()),
   getVaultService: () => fakeService,
 }));
 
@@ -106,6 +107,7 @@ vi.mock("../src/lib/prisma.js", async () => {
 
 import request from "supertest";
 import { createApp } from "../src/app.js";
+import { SecretNameTakenError } from "../src/lib/vault/vault-service.js";
 
 let app: ReturnType<typeof createApp>;
 
@@ -186,6 +188,48 @@ describe("/api/vault", () => {
       .send({ label: "bad label!", value: "v", scope: "global" });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("INVALID_BODY");
+  });
+
+  describe("POST / on a taken label (#258)", () => {
+    const body = { label: "github-pat", value: "ghp_abc1234567890", scope: "global" };
+
+    it("answers 409 SECRET_LABEL_TAKEN, not 500, when the name is held (e.g. by a deleted secret)", async () => {
+      const token = await login("admin");
+      fakeService.create.mockRejectedValueOnce(new SecretNameTakenError("global:github-pat"));
+      const res = await request(app)
+        .post("/api/vault")
+        .set("Authorization", `Bearer ${token}`)
+        .send(body);
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("SECRET_LABEL_TAKEN");
+      expect(JSON.stringify(res.body)).not.toContain("ghp_abc1234567890");
+    });
+
+    it("still answers 500 for any other vault failure", async () => {
+      const token = await login("admin");
+      fakeService.create.mockRejectedValueOnce(new Error("db down"));
+      const res = await request(app)
+        .post("/api/vault")
+        .set("Authorization", `Bearer ${token}`)
+        .send(body);
+      expect(res.status).toBe(500);
+    });
+
+    it("rejects an unauthenticated create before touching the vault", async () => {
+      const res = await request(app).post("/api/vault").send(body);
+      expect(res.status).toBe(401);
+      expect(fakeService.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects a create from a role without vault.write", async () => {
+      const token = await login("reader");
+      const res = await request(app)
+        .post("/api/vault")
+        .set("Authorization", `Bearer ${token}`)
+        .send(body);
+      expect(res.status).toBe(403);
+      expect(fakeService.create).not.toHaveBeenCalled();
+    });
   });
 
   it("returns 404 when rotating an unknown id", async () => {
