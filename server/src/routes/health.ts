@@ -51,7 +51,7 @@ export const HEALTH_CHECK_MESSAGES = {
 export const PGVECTOR_READINESS_SQL =
   "SELECT (SELECT count(*) FROM pg_extension WHERE extname = 'vector') AS installed, " +
   "(SELECT count(*) FROM pg_available_extensions WHERE name = 'vector') AS available, " +
-  "current_setting('is_superuser') = 'on' AS superuser";
+  "current_setting('is_superuser') AS superuser";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -273,7 +273,8 @@ export const deepHandler: RequestHandler = async (_req, res) => {
         >(PGVECTOR_READINESS_SQL);
       const installed = Number(rows[0]?.installed ?? 0) > 0;
       const available = Number(rows[0]?.available ?? 0) > 0;
-      const superuser = rows[0]?.superuser === true;
+      // A text GUC ('on' / 'off'), so no driver's boolean mapping is involved.
+      const superuser = rows[0]?.superuser === "on";
       if (installed) {
         checks.vectorStore = { status: "ok", message: "pgvector (extension installed)" };
       } else if (available && !superuser) {

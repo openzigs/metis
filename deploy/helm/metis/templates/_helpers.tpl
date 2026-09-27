@@ -120,6 +120,10 @@ Every "is this N>1?" decision below reads this, never replicaCount alone.
 {{- if $hpa.enabled -}}
 {{- $n = max $n (int $hpa.minReplicas) (int $hpa.maxReplicas) -}}
 {{- end -}}
+{{- /* server.enabled=false: no Deployment, so the HPA has nothing to scale. */ -}}
+{{- if not .Values.server.enabled -}}
+{{- $n = 0 -}}
+{{- end -}}
 {{- $n -}}
 {{- end -}}
 

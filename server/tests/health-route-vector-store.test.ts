@@ -42,7 +42,7 @@ import { HEALTH_CHECK_MESSAGES, PGVECTOR_READINESS_SQL } from "../src/routes/hea
 
 /** Answer the database's `SELECT 1` and the pgvector catalog query separately. */
 function database(
-  pg: { installed: number | bigint; available: number | bigint; superuser?: boolean } | Error,
+  pg: { installed: number | bigint; available: number | bigint; superuser?: "on" | "off" } | Error,
 ) {
   queryRawUnsafe.mockImplementation(async (sql: string) => {
     if (sql !== PGVECTOR_READINESS_SQL) return 1;
@@ -100,7 +100,7 @@ describe("/readyz — vector store check (#75)", () => {
 
   it("is ok when the extension is available but not yet created (the first write creates it)", async () => {
     process.env.VECTOR_STORE = " PgVector ";
-    database({ installed: 0, available: 1, superuser: true });
+    database({ installed: 0, available: 1, superuser: "on" });
     const { check } = await checks();
     expect(check.status).toBe("ok");
     expect(check.message).toMatch(/available.*created on first write/);
@@ -112,7 +112,7 @@ describe("/readyz — vector store check (#75)", () => {
     // the first ingest. Degraded (not error): managed Postgres grants the right
     // through its own role (RDS `rds_superuser`), which the catalog cannot see.
     process.env.VECTOR_STORE = "pgvector";
-    database({ installed: 0, available: 1, superuser: false });
+    database({ installed: 0, available: 1, superuser: "off" });
     const { res, check } = await checks();
     expect(check.status).toBe("degraded");
     expect(check.message).toMatch(/not a superuser.*CREATE EXTENSION vector/);
@@ -121,7 +121,7 @@ describe("/readyz — vector store check (#75)", () => {
 
   it("is ok when the extension is installed, whoever the role is", async () => {
     process.env.VECTOR_STORE = "pgvector";
-    database({ installed: 1, available: 1, superuser: false });
+    database({ installed: 1, available: 1, superuser: "off" });
     const { check } = await checks();
     expect(check).toEqual({ status: "ok", message: "pgvector (extension installed)" });
   });

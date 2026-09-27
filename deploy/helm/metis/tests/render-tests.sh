@@ -242,6 +242,10 @@ HPA_ONE=$(template --set scaling.enforce=true --set server.replicaCount=1 \
   --set autoscaling.server.enabled=true --set autoscaling.server.minReplicas=1 \
   --set autoscaling.server.maxReplicas=1 || true)
 assert "enforce + replicas=1 + HPA 1..1 renders RWO PVCs" 3 "$(count_kind PersistentVolumeClaim "${HPA_ONE}")"
+# No server at all is zero server pods, whatever the (default-on) server HPA says —
+# hpa.yaml renders it, but it has no Deployment to scale.
+NO_SERVER=$(template --set scaling.enforce=true --set server.enabled=false --set server.replicaCount=1 || true)
+assert_not_contains "enforce + server.enabled=false ignores the server HPA" "execution error" "${NO_SERVER}"
 # Without enforce the same topology renders, and NOTES must still warn: it read
 # replicaCount alone and stayed silent about the HPA's second pod. NOTES is not
 # part of `helm template`, so render it with a client-side dry-run install.
@@ -731,14 +735,19 @@ assert_contains "backup: data PVC off -> uploads still claimed" "claimName: meti
 AFF_FILE=$(mktemp)
 awk '/^backup:/{b=1} b && /^  #   affinity:$/{e=1} e && !/^  #/{exit} e' "${CHART_DIR}/values.yaml" \
   | sed -e 's/^  #   /    /' -e 's/<release>/metis/' | { echo "backup:"; cat; } >"${AFF_FILE}"
-BK_AFF=$(backup_cronjob "$(template --set backup.enabled=true -f "${AFF_FILE}")")
+# Only the affinity block: the CronJob's own labels carry the same instance label.
+BK_AFF=$(backup_cronjob "$(template --set backup.enabled=true -f "${AFF_FILE}")" \
+  | awk '/^          affinity:$/{a=1; next} a && /^          [a-z]/{exit} a')
 rm -f "${AFF_FILE}"
 assert_contains "backup: documented podAffinity renders into the CronJob" "topologyKey: kubernetes.io/hostname" "${BK_AFF}"
 SERVER_POD_LABELS=$(template | awk '/^kind: Deployment$/{d=1} /^---$/{d=0; s=0} d && /^  name: metis-server$/{s=1} s' \
   | awk '/^  template:$/{t=1} t && /^      labels:$/{l=1; next} l && /^        /{print; next} l{exit}')
 for label in "app.kubernetes.io/instance: metis" "app.kubernetes.io/component: server"; do
-  assert_contains "backup: documented podAffinity selects ${label}" "${label}" "${BK_AFF}"
-  assert_contains "server pod carries ${label}" "${label}" "${SERVER_POD_LABELS}"
+  # Whole-line matches: `component: serverX` must not pass as `component: server`.
+  assert "backup: documented podAffinity selects ${label}" yes \
+    "$(grep -qxE " +${label}" <<<"${BK_AFF}" && echo yes || echo no)"
+  assert "server pod carries ${label}" yes \
+    "$(grep -qxE " +${label}" <<<"${SERVER_POD_LABELS}" && echo yes || echo no)"
 done
 
 # ---------------------------------------------------------------------------
