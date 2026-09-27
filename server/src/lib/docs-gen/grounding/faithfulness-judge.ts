@@ -689,6 +689,19 @@ export class FaithfulnessJudge {
       bodies[i] = body;
       remaining -= blocks[i].header.length + body.length;
     });
+    const omitted = bodies.filter((b) => !b).length;
+    if (omitted > 0) {
+      // A claim whose only evidence was omitted reads as unsupported; say so.
+      log.warn("Judge evidence budget exhausted; some selected sources were not shown", {
+        selected: blocks.length,
+        omitted,
+        omittedSources: selected
+          .filter((_, i) => !bodies[i])
+          .slice(0, 10)
+          .map((s) => s.sourceId),
+        charBudget: this.charBudget,
+      });
+    }
     return blocks
       .map((b, i) => (bodies[i] ? b.header + bodies[i] : ""))
       .filter((b) => b.length > 0)

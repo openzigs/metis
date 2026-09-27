@@ -5,6 +5,20 @@
  * source too large for its share of the budget.
  */
 import { describe, expect, it, vi } from "vitest";
+
+const warnSpy = vi.hoisted(() => vi.fn());
+vi.mock("../../logger.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../logger.js")>();
+  return {
+    ...real,
+    createChildLogger: (name: string) => {
+      const child = real.createChildLogger(name);
+      return name === "docs-gen:faithfulness-judge"
+        ? Object.assign(Object.create(child), { warn: warnSpy })
+        : child;
+    },
+  };
+});
 import type { AIProvider, ChatMessage } from "../../ai/types.js";
 import {
   DEFAULT_JUDGE_CHAR_BUDGET,
@@ -88,6 +102,46 @@ describe("FaithfulnessJudge — evidence per batch (#171)", () => {
     const shown = [...evidence.matchAll(/\[id=([^\s\]]+)/g)].map((m) => m[1]);
     expect(shown.length).toBeLessThanOrEqual(JUDGE_UNCITED_TOP_K);
     expect(shown).toContain(factsSourceId("src/mod7", 7));
+  });
+
+  // PR #281 review — a source whose budget share ran out vanished silently.
+  it("logs the sources a batch selected but its budget could not show", () => {
+    warnSpy.mockClear();
+    const facts = Array.from({ length: 40 }, (_, i) => ({
+      moduleDir: `src/mod${i}`,
+      idx: i,
+      label: `mod${i}`,
+      text: `- Module ${i} posts ledger entries nightly.`.repeat(5),
+    }));
+    const ctx = buildGroundingContext({ factsSources: facts, charBudget: 1_000_000 });
+    const judge = new FaithfulnessJudge({
+      provider: recordingProvider().provider,
+      charBudget: 1_500,
+    });
+    const cites = facts.map((f) => factsSourceId(f.moduleDir, f.idx));
+    const evidence = judge.renderEvidenceForClaims(
+      [{ claim: "Modules post ledger entries.", cites }],
+      ctx,
+    );
+    const shown = cites.filter((id) => evidence.includes(id)).length;
+    expect(shown).toBeLessThan(40);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("some selected sources were not shown"),
+      expect.objectContaining({ selected: 40, omitted: 40 - shown }),
+    );
+  });
+
+  it("logs nothing when every selected source fits", () => {
+    warnSpy.mockClear();
+    const ctx = buildGroundingContext({
+      factsSources: [{ moduleDir: "src/a", idx: 0, label: "a", text: "- A posts entries." }],
+      charBudget: 1_000_000,
+    });
+    new FaithfulnessJudge({ provider: recordingProvider().provider }).renderEvidenceForClaims(
+      [{ claim: "A posts entries.", cites: [factsSourceId("src/a", 0)] }],
+      ctx,
+    );
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it("cuts an over-budget source to the lines its claims need, deep lines included", () => {

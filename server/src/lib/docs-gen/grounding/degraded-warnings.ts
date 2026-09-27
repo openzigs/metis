@@ -451,7 +451,9 @@ export function groundingUnparseableWarning(
 ): DocWarning {
   // #165 — the claims of the passages that did parse were still checked.
   const unchecked = partial
-    ? "so the statements in those passages were not checked (the rest were)"
+    ? // After repeated failures in a row the remaining passages are not sent at
+      // all (MAX_CONSECUTIVE_FAILED_PASSAGES), so "the rest were" would overclaim.
+      "so the statements in those passages, and in any passage not sent after repeated failures, were not checked (the other passages' were)"
     : "so none of its statements were checked";
   let what: string;
   let remedy: string;

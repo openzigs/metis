@@ -44,6 +44,7 @@ vi.mock("node:fs/promises", () => ({
 import {
   extractModuleFacts,
   PHASE1_LOOP_MARKER,
+  PHASE1_LOOP_MARKER_PREFIX,
   PHASE1_SPLIT_MARKER,
   type ModuleGroup,
 } from "./holistic-synthesizer.js";
@@ -70,10 +71,30 @@ describe("detectRepetitionLoop (#166)", () => {
     expect(found?.usablePrefix).toBe(`${body}\n- None.`);
   });
 
-  it("reads lines that differ only in their numbers as one", () => {
-    const loop = Array.from({ length: 60 }, (_, i) => `- Step ${i} retries the call.`).join("\n");
-    const found = detectRepetitionLoop(`${head}\n${loop}`);
-    expect(found?.usablePrefix).toBe(`${head}\n- Step 0 retries the call.`);
+  it("ignores case and spacing, not the text, when comparing lines", () => {
+    const loop = Array.from({ length: 30 }, (_, i) =>
+      i % 2 ? "- The cache is  warmed on start." : "- the cache is warmed on start.",
+    ).join("\n");
+    expect(detectRepetitionLoop(`${head}\n${loop}`)?.usablePrefix).toBe(
+      `${head}\n- the cache is warmed on start.`,
+    );
+  });
+
+  // PR #281 review — digits used to be normalised away, so a legitimate
+  // numbered listing cut off at the cap read as one line repeated, and the
+  // files the model never reached were dropped for good.
+  it("does not call a numbered listing cut off at the cap a loop", () => {
+    const fields = Array.from(
+      { length: 40 },
+      (_, i) => `- CUST-FIELD-${i + 1}: PIC X(10), customer attribute ${i + 1}`,
+    ).join("\n");
+    expect(detectRepetitionLoop(`${head}\n${fields}\n- CUST-FIELD-41: PIC`)).toBeNull();
+    const table = [
+      "| Column | Type |",
+      "|---|---|",
+      ...Array.from({ length: 40 }, (_, i) => `| COL${i + 1} | VARCHAR(${i + 1}) |`),
+    ].join("\n");
+    expect(detectRepetitionLoop(`${head}\n${table}\n| COL41 | VARCH`)).toBeNull();
   });
 
   it("finds a loop inside one long line and drops that line", () => {
@@ -131,7 +152,7 @@ function bigTsModule(n: number, lines: number): ModuleGroup {
 }
 
 /** Every Phase-1 reply is the same repetition loop, cut off at the cap. */
-function loopingProvider(): AIProvider & { calls: number } {
+function loopingProvider(reply = LOOP_REPLY): AIProvider & { calls: number } {
   const p = {
     key: "scripted",
     model: "mock-local-model",
@@ -143,8 +164,41 @@ function loopingProvider(): AIProvider & { calls: number } {
     ping: vi.fn().mockResolvedValue(true),
     async *stream(): AsyncGenerator<ChatChunk> {
       p.calls += 1;
-      yield { type: "delta", content: LOOP_REPLY };
+      yield { type: "delta", content: reply };
       yield { type: "done", finishReason: "length" };
+    },
+  };
+  return p as unknown as AIProvider & { calls: number };
+}
+
+/**
+ * A planned chunk's reply is `topReply`, cut off at the cap; a split half
+ * (part label "N.M") is answered in full, naming each function it was given.
+ */
+function halvesAnswerProvider(topReply: string): AIProvider & { calls: number } {
+  const p = {
+    key: "scripted",
+    model: "mock-local-model",
+    offline: false,
+    calls: 0,
+    chat: vi.fn(),
+    embed: vi.fn(),
+    models: vi.fn().mockResolvedValue(["mock"]),
+    ping: vi.fn().mockResolvedValue(true),
+    async *stream(messages: ChatMessage[]): AsyncGenerator<ChatChunk> {
+      p.calls += 1;
+      const user = String(messages.at(-1)?.content ?? "");
+      if (!/THIS is part \d+\.\d+:/.test(user)) {
+        yield { type: "delta", content: topReply };
+        yield { type: "done", finishReason: "length" };
+        return;
+      }
+      const fns = [...new Set([...user.matchAll(/export function (rule\d+)/g)].map((m) => m[1]))];
+      yield {
+        type: "delta",
+        content: `PURPOSE\nLimits.\n\nRULES\n${fns.map((f) => `- ${f} is read`).join("\n")}`,
+      };
+      yield { type: "done", finishReason: "stop" };
     },
   };
   return p as unknown as AIProvider & { calls: number };
@@ -158,27 +212,95 @@ describe("Phase 1 — a reply cut off in a repetition loop (#166)", () => {
     readFileMock.mockResolvedValue(bigTsSource(24, 40));
   });
 
-  it("is not split and re-asked: one call per planned chunk, the loop cut off", async () => {
+  it("is split once, not all the way down: each half that loops again keeps its prefix", async () => {
     const provider = loopingProvider();
     const f = await extractModuleFacts(bigTsModule(24, 40), provider, false, "p1", "/clone");
     const planned = f!.phase1Coverage!.chunks;
-    // Before #166 each looping chunk was split and every half asked again.
-    expect(provider.calls).toBe(planned);
+    // Each planned chunk once, then its two halves once each. Before #166 every
+    // looping half was split again, down to the smallest chunk.
+    expect(provider.calls).toBe(planned * 3);
     expect(f!.factsTruncated).toBe(true);
-    expect(f!.phase1Coverage!.truncatedChunks).toBe(planned);
+    expect(f!.phase1Coverage!.truncatedChunks).toBe(planned * 2);
     expect(f!.facts).toContain("- rule0 enforces its limit");
-    // One copy of the looping line kept (merged chunks dedupe it further).
     const copies = f!.facts.split("The limit cache is refreshed hourly.").length - 1;
     expect(copies).toBeGreaterThanOrEqual(1);
-    expect(copies).toBeLessThanOrEqual(planned);
-    expect(f!.facts).not.toContain(PHASE1_LOOP_MARKER);
-    // The usable prefix is cached behind the loop marker, never a split marker.
+    expect(copies).toBeLessThanOrEqual(planned * 2);
+    expect(f!.facts).not.toContain(PHASE1_LOOP_MARKER_PREFIX);
+    // The planned chunks are remembered as split; each half's prefix is cached
+    // behind the current loop marker.
     const rows = upsertMock.mock.calls.map((c) => c[0].create.facts as string);
-    expect(rows).toHaveLength(planned);
-    for (const r of rows) {
-      expect(r.startsWith(`${PHASE1_LOOP_MARKER}\n`)).toBe(true);
-      expect(r).not.toBe(PHASE1_SPLIT_MARKER);
-    }
+    expect(rows.filter((r) => r === PHASE1_SPLIT_MARKER)).toHaveLength(planned);
+    const loopRows = rows.filter((r) => r.startsWith(`${PHASE1_LOOP_MARKER}\n`));
+    expect(loopRows).toHaveLength(planned * 2);
+  });
+
+  // PR #281 review — keeping a looping chunk's prefix without splitting it
+  // dropped every function the model had not reached before it looped.
+  it("drops no function: a chunk that loops is split, and halves that answer are fully read", async () => {
+    const provider = halvesAnswerProvider(LOOP_REPLY);
+    const f = await extractModuleFacts(bigTsModule(24, 40), provider, false, "p1", "/clone");
+    expect(f!.phase1Coverage!.functionsExtracted).toBe(24);
+    expect(f!.factsTruncated).toBeFalsy();
+    for (let i = 0; i < 24; i++) expect(f!.facts).toContain(`rule${i} is read`);
+  });
+
+  it("splits a numbered listing cut off at the cap, never keeping it as a loop", async () => {
+    const listing = [
+      "PURPOSE\nCustomer record.\n\nENTITIES",
+      ...Array.from(
+        { length: 40 },
+        (_, i) => `- CUST-FIELD-${i + 1}: PIC X(10), customer attribute ${i + 1}`,
+      ),
+    ].join("\n");
+    const provider = halvesAnswerProvider(listing);
+    const f = await extractModuleFacts(bigTsModule(24, 40), provider, false, "p1", "/clone");
+    expect(f!.phase1Coverage!.functionsExtracted).toBe(24);
+    const rows = upsertMock.mock.calls.map((c) => c[0].create.facts as string);
+    expect(rows.some((r) => r.startsWith(PHASE1_LOOP_MARKER_PREFIX))).toBe(false);
+  });
+
+  it("does not reuse a loop row written by another detector version", async () => {
+    findUniqueMock.mockResolvedValue({
+      id: "r",
+      createdAt: new Date(),
+      model: "m",
+      facts: `${PHASE1_LOOP_MARKER_PREFIX} — detector v1, prefix kept]]\nPURPOSE\nstale`,
+    });
+    const provider = halvesAnswerProvider(LOOP_REPLY);
+    const f = await extractModuleFacts(bigTsModule(24, 40), provider, false, "p1", "/clone");
+    expect(provider.calls).toBeGreaterThan(0);
+    expect(f!.facts).not.toContain("stale");
+    expect(f!.facts).not.toContain(PHASE1_LOOP_MARKER_PREFIX);
+  });
+
+  it("caches an empty prefix too, so a loop from the first line is not paid for again", async () => {
+    readFileMock.mockResolvedValue(bigTsSource(1, 40));
+    const store = new Map<string, Record<string, unknown>>();
+    upsertMock.mockImplementation(
+      async (args: {
+        where: { projectId_cacheKey: { cacheKey: string } };
+        create: Record<string, unknown>;
+      }) => {
+        store.set(args.where.projectId_cacheKey.cacheKey, args.create);
+        return {};
+      },
+    );
+    findUniqueMock.mockImplementation(
+      async (args: { where: { projectId_cacheKey: { cacheKey: string } } }) => {
+        const row = store.get(args.where.projectId_cacheKey.cacheKey);
+        return row ? { id: "r", createdAt: new Date(), model: "m", ...row } : null;
+      },
+    );
+    // A loop inside the very first line: nothing before it is worth keeping.
+    const reply = `- ${"the handler logs the request and then ".repeat(120)}`;
+    const first = loopingProvider(reply);
+    await extractModuleFacts(bigTsModule(1, 40), first, false, "p1", "/clone");
+    expect([...store.values()].map((r) => r.facts)).toContain(`${PHASE1_LOOP_MARKER}\n`);
+    const second = loopingProvider(reply);
+    const b = await extractModuleFacts(bigTsModule(1, 40), second, false, "p1", "/clone");
+    expect(first.calls).toBeGreaterThan(0);
+    expect(second.calls).toBe(0);
+    expect(b!.factsTruncated).toBe(true);
   });
 
   it("costs no model call on the next run, and is still reported as cut off", async () => {

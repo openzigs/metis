@@ -2407,15 +2407,20 @@ export async function extractModuleFacts(
     chunk: Phase1Unit[],
     part: string | null,
     depth: number,
+    /** #166 — an enclosing chunk was already split because its reply looped. */
+    loopSplit = false,
   ): Promise<Array<{ text: string; truncated: boolean }>> => {
     const messages = buildMessages(chunk, part);
     const cacheKey = chunkCacheKey(messages);
-    const splitAndExtract = async (): Promise<Array<{ text: string; truncated: boolean }>> => {
+    const splitAndExtract = async (
+      forLoop = false,
+    ): Promise<Array<{ text: string; truncated: boolean }>> => {
       const [first, second] = splitPhase1Chunk(chunk)!;
       const base = part ?? "1";
+      const childLoopSplit = loopSplit || forLoop;
       return [
-        ...(await extractChunk(first, `${base}.1`, depth + 1)),
-        ...(await extractChunk(second, `${base}.2`, depth + 1)),
+        ...(await extractChunk(first, `${base}.1`, depth + 1, childLoopSplit)),
+        ...(await extractChunk(second, `${base}.2`, depth + 1, childLoopSplit)),
       ];
     };
     if (cacheable) {
@@ -2424,10 +2429,15 @@ export async function extractModuleFacts(
           where: { projectId_cacheKey: { projectId, cacheKey } },
         });
         const isMarker = cached?.facts === PHASE1_SPLIT_MARKER;
+        // #166 — a loop row from another detector version: fall through.
+        const loopPrefix = cached ? phase1LoopPrefix(cached.facts) : null;
         // A remembered split is used only when this chunk can still be split;
         // otherwise (split rules changed) the marker is stale: never return it
         // as facts — fall through to the model.
-        const usable = cached && (!isMarker || shouldSplitPhase1Chunk(chunk, depth, limits));
+        const usable =
+          cached &&
+          loopPrefix !== "stale" &&
+          (!isMarker || shouldSplitPhase1Chunk(chunk, depth, limits));
         if (cached && usable) {
           counters.cacheHits += 1;
           prisma.docsGenFactCache
@@ -2441,7 +2451,6 @@ export async function extractModuleFacts(
           if (isMarker) return splitAndExtract();
           // #166 — a remembered repetition loop: its usable prefix, still
           // reported as cut off, never the model again for the same input.
-          const loopPrefix = phase1LoopPrefix(cached.facts);
           if (loopPrefix !== null) {
             counters.truncated += 1;
             for (const k of leafSymbols(chunk)) truncatedFns.add(k);
@@ -2476,13 +2485,17 @@ export async function extractModuleFacts(
       return [];
     }
     if (reply.truncation.truncated) {
+      const split = shouldSplitPhase1Chunk(chunk, depth, limits);
       // #166 — a reply cut off because the model was repeating itself is not
-      // short of room: splitting (or a bigger cap) only buys the same loop
-      // again, on every run. Keep the part before the loop and remember it
-      // under this chunk's cache key (prompt, model, cap and config), so the
-      // next run reuses it until any of those change.
+      // short of room, but the files it never reached are still unread, so a
+      // looping chunk that can be split is split ONCE (below): each half is
+      // asked on its own, and the split marker means the loop is paid for
+      // once. A half that loops again — or a chunk that cannot be split —
+      // keeps the part before the loop, remembered under its cache key
+      // (prompt, model, cap, config and detector version) so the next run
+      // reuses it, even when empty, until any of those change.
       const loop = detectRepetitionLoop(reply.text);
-      if (loop) {
+      if (loop && (!split || loopSplit)) {
         log.warn(
           "Phase 1 chunk cut off in a repetition loop; keeping the text before the loop, not re-extracting",
           {
@@ -2498,7 +2511,7 @@ export async function extractModuleFacts(
         );
         counters.truncated += 1;
         for (const k of leafSymbols(chunk)) truncatedFns.add(k);
-        if (cacheable && loop.usablePrefix) {
+        if (cacheable) {
           await writeChunkRow(
             cacheKey,
             chunk,
@@ -2508,7 +2521,6 @@ export async function extractModuleFacts(
         }
         return [{ text: loop.usablePrefix, truncated: true }];
       }
-      const split = shouldSplitPhase1Chunk(chunk, depth, limits);
       log.warn(
         split
           ? "Phase 1 chunk cut off by the output cap; splitting it and re-extracting each half"
@@ -2525,11 +2537,12 @@ export async function extractModuleFacts(
           maxTokens,
           finishReason: reply.truncation.reason,
           signals: reply.truncation.signals,
+          repetitionLoop: loop !== null,
         },
       );
       if (split) {
         if (cacheable) await writeChunkRow(cacheKey, chunk, PHASE1_SPLIT_MARKER, reply.usage);
-        return splitAndExtract();
+        return splitAndExtract(loop !== null);
       }
       counters.truncated += 1;
       for (const k of leafSymbols(chunk)) truncatedFns.add(k);
@@ -2693,12 +2706,25 @@ export const PHASE1_SPLIT_MARKER = "[[phase1: chunk split — reply exceeded the
  * covers the prompt, model, output cap and effective config, so changing any
  * of them extracts afresh.
  */
-export const PHASE1_LOOP_MARKER = "[[phase1: reply cut off in a repetition loop — prefix kept]]";
+export const PHASE1_LOOP_MARKER_PREFIX = "[[phase1: reply cut off in a repetition loop";
+/**
+ * The detector's version is part of the marker: a row written under an older
+ * {@link detectRepetitionLoop} is stale (its "loop" may not be one) and is
+ * never reused — the chunk is extracted afresh. Bump it whenever the detector's
+ * verdict can change.
+ */
+export const PHASE1_LOOP_DETECTOR_VERSION = 2;
+export const PHASE1_LOOP_MARKER = `${PHASE1_LOOP_MARKER_PREFIX} — detector v${PHASE1_LOOP_DETECTOR_VERSION}, prefix kept]]`;
 
-/** The facts of a {@link PHASE1_LOOP_MARKER} row, or `null` for any other row. */
-function phase1LoopPrefix(facts: string): string | null {
-  if (!facts.startsWith(`${PHASE1_LOOP_MARKER}\n`)) return null;
-  return facts.slice(PHASE1_LOOP_MARKER.length + 1);
+/**
+ * The facts of a current {@link PHASE1_LOOP_MARKER} row (possibly empty),
+ * `"stale"` for a loop row from another detector version, or `null` for any
+ * other row.
+ */
+function phase1LoopPrefix(facts: string): string | "stale" | null {
+  if (facts.startsWith(`${PHASE1_LOOP_MARKER}\n`))
+    return facts.slice(PHASE1_LOOP_MARKER.length + 1);
+  return facts.startsWith(PHASE1_LOOP_MARKER_PREFIX) ? "stale" : null;
 }
 
 const PHASE1_SYSTEM_MESSAGE = `You are a senior software analyst. You will be given source code from one module of a larger system. Extract a COMPREHENSIVE, STRUCTURED set of facts about this module. Your output will be combined with facts from many other modules to produce a holistic document.
@@ -3259,7 +3285,12 @@ function gradeFaithfulness(
   //     source" — the gap is mandated structural inference, not fabrication.
   //   - literal (Business Rules, Integrations): "may be unreliable" — an
   //     unsupported claim genuinely signals fabrication.
-  const tierWarning = buildFaithfulnessWarning(sectionLabel, result, threshold, section);
+  const scored = buildFaithfulnessWarning(sectionLabel, result, threshold, section);
+  // #165 — a section only partly checked keeps saying so below the bar too:
+  // the score covers the checked passages, not the ones that went unchecked.
+  const tierWarning = unparseableWarning
+    ? { ...scored, message: `${scored.message} ${unparseableWarning.message}` }
+    : scored;
   const warning = sample ? markWarningSampled(tierWarning, sample) : tierWarning;
   return { markdown: sectionMarkdown, warning, score };
 }

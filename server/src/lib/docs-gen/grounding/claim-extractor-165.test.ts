@@ -205,10 +205,13 @@ describe("ClaimExtractor — partial claims (#165 item 4)", () => {
     expect(result.sampled?.passagesChecked).toBeLessThan(20);
   });
 
-  it("the partial warning says the rest was checked", () => {
+  it("the partial warning says the other passages were checked, and unsent ones were not", () => {
     const w = groundingUnparseableWarning("Rules", "claims", "truncated", true);
     expect(w.message).toContain("for part of the section");
-    expect(w.message).toContain("the rest were");
+    expect(w.message).toContain("the other passages' were");
+    // PR #281 review — after two failures in a row the rest is never sent.
+    expect(w.message).toContain("not sent after repeated failures");
+    expect(w.message).not.toContain("the rest were");
     expect(w.message).not.toContain("none of its statements");
     const whole = groundingUnparseableWarning("Rules", "claims");
     expect(whole.message).toContain("none of its statements");

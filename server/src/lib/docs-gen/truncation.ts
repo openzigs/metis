@@ -168,7 +168,7 @@ export function describeTruncation(detection: TruncationDetection): string {
 export interface RepetitionLoop {
   /** The reply up to the loop's second copy of its repeated unit, whole lines only. */
   usablePrefix: string;
-  /** The repeated unit (digits normalised to `#`). */
+  /** The repeated unit (case and whitespace normalised). */
   unit: string;
   /** How many times the unit occurs in the inspected tail. */
   repeats: number;
@@ -187,17 +187,22 @@ const LOOP_NGRAM = 6;
 /** An n-gram repeated at least this often, covering at least half the tail's words. */
 const LOOP_MIN_REPEATS = 6;
 
-const normaliseLoopText = (s: string): string =>
-  s.trim().toLowerCase().replace(/\d+/g, "#").replace(/\s+/g, " ");
+// Digits are NOT normalised: a numbered listing — copybook fields, a column
+// table, "- FIELD-1 … FIELD-40" — is legitimate output a cap can cut off, and
+// read as a loop it would lose every file the model had not reached yet (PR
+// #281 review). A loop repeats its text; a listing does not.
+const normaliseLoopText = (s: string): string => s.trim().toLowerCase().replace(/\s+/g, " ");
 
 /**
  * #166 — detect a reply cut off at the output cap because the model was
  * repeating itself (the Phase-1 NOTES runaways: up to 28K characters of the
- * same aside). A bigger cap or a smaller chunk does not fix that, so the caller
- * keeps {@link RepetitionLoop.usablePrefix} instead of asking again.
+ * same aside). A bigger cap does not fix that, so a caller that cannot split
+ * the input further keeps {@link RepetitionLoop.usablePrefix} instead of asking
+ * again.
  *
- * Two linear checks on the last {@link LOOP_TAIL_CHARS} characters, digits
- * normalised so "step 11"/"step 12" count as one: the last
+ * Two linear checks on the last {@link LOOP_TAIL_CHARS} characters, compared
+ * as written (case and whitespace aside — never digits, so a numbered listing
+ * cut off at the cap is not a loop): the last
  * {@link LOOP_TAIL_LINES} non-empty lines hold at most
  * {@link LOOP_MAX_DISTINCT_LINES} distinct lines, or — in a last line of
  * {@link LOOP_LONG_LINE_CHARS}+ characters — one word {@link LOOP_NGRAM}-gram

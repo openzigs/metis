@@ -354,6 +354,21 @@ describe("prompt hygiene on the real OpenAI-compatible provider (#168, #171)", (
     });
   });
 
+  // PR #281 review — below the threshold the tier warning used to REPLACE the
+  // "part went unchecked" one, so a partly checked section read as fully checked.
+  it("#165 — a partly checked section below the threshold still says part went unchecked", async () => {
+    proseOnceFor = "## Data & Domain Model";
+    claimText = "Orders over 987654 need a manager's approval.";
+    const result = await synth(200_000);
+    const w = result.warnings.find(
+      (x) => x.section === "Data & Domain Model" && x.ratio !== undefined,
+    );
+    expect(w).toBeDefined();
+    expect(w!.ratio).toBe(0);
+    expect(w!.message).toContain("for part of the section");
+    expect(w!.message).toContain("not fully verified");
+  });
+
   it("#165 — a batched section whose one batch's claim list failed says only part went unchecked", async () => {
     proseOnceFor = "## Data & Domain Model";
     const result = await synth(200_000);
@@ -362,7 +377,7 @@ describe("prompt hygiene on the real OpenAI-compatible provider (#168, #171)", (
     );
     expect(w).toBeDefined();
     expect(w!.message).toContain("for part of the section");
-    expect(w!.message).toContain("the rest were");
+    expect(w!.message).toContain("the other passages' were");
     expect(w!.message).not.toContain("none of its statements were checked");
   });
 });
