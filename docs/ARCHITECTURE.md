@@ -5523,7 +5523,7 @@ budget → constitution → RAG → safety(in) → provider → safety(out) → 
 2. **constitution** — `loadAsPreamble(projectId)` (or the v1.2 `readProjectConstitution` fallback) LEADS the system prompt, so no agent runs ungoverned.
 3. **RAG** — the optional `ragContext` block is prepended **after** the constitution and **before** the base command prompt (`constitution → RAG → base`). The constitution always wins precedence; the RAG block is explicitly framed as untrusted reference data.
 4. **safety (inbound)** — `applySafety` on the user prompt (HTTP 422 on denial).
-5. **provider** — `provider.chat(...)` using the project's REAL provider resolved by `resolveProjectProvider` (#381) — an override is built from that provider's own endpoint, credential and default model, as chat builds a session's stored provider (#254); the offline stub is reachable only via the `deps.provider` test seam.
+5. **provider** — `provider.chat(...)` using the project's REAL provider resolved by `resolveProjectProvider` (#381) — an override is built from that provider's own endpoint, credential and default model (never the deployment's `AI_MODEL`, which the loader drops for any other provider), as chat builds a session's stored provider (#254, #283); the offline stub is reachable only via the `deps.provider` test seam.
 6. **safety (outbound)** — `applySafety` on the completion.
 7. **FinOps** — `recordUsage` accrues cost to the project ledger.
 8. **audit** — `spec_kit.command.<cmd>` records `ragAttempted` + `ragChunksUsed`; denials audit `spec_kit.command.<cmd>.denied` with the reason/direction.

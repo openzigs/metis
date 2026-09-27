@@ -461,6 +461,50 @@ function applyConfigServiceOverlay(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /**
+ * Apply a provider override to an already-overlaid env map. `AI_PROVIDER` is
+ * replaced AFTER the runtime-config overlay, which would otherwise put the
+ * global provider back. When the override names a provider other than the
+ * deployment's, the deployment-wide `AI_MODEL` is removed: it is a model of the
+ * deployment's provider and would otherwise be sent to a provider that does not
+ * serve it (#254 Spec Kit, #283 chat sessions). The provider's own
+ * `*_MODEL` settings are untouched.
+ */
+function withProviderOverride(
+  merged: NodeJS.ProcessEnv,
+  provider: string | undefined,
+): NodeJS.ProcessEnv {
+  if (!provider) return merged;
+  const deploymentProvider = merged.AI_PROVIDER || "offline-stub";
+  const out: NodeJS.ProcessEnv = { ...merged, AI_PROVIDER: provider };
+  if (provider !== deploymentProvider) delete out.AI_MODEL;
+  return out;
+}
+
+/**
+ * The model a caller running on `provider` gets when nothing names one: the
+ * same value as `loadAIConfig(env, { provider }).model`, without building or
+ * validating that provider's endpoint and credentials. Chat session creation
+ * uses it (#283) so a session bound to a provider-only project override stores
+ * the override provider's default model rather than the deployment's; whether
+ * the provider is actually usable is decided per turn, as before.
+ */
+export function providerDefaultModel(
+  provider: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const merged = withProviderOverride(applyConfigServiceOverlay(env), provider);
+  const parsed = aiEnvSchema.safeParse(merged);
+  if (!parsed.success) {
+    throw new AIConfigError("Invalid AI configuration", {
+      issues: parsed.error.flatten(),
+    });
+  }
+  const e = parsed.data;
+  const offline = truthy(e.AI_OFFLINE) || e.AI_PROVIDER === "offline-stub";
+  return defaultModel(offline ? "offline-stub" : e.AI_PROVIDER, e);
+}
+
+/**
  * Load + validate the AI configuration from a process-env-like object. Passing
  * a custom env makes the function trivially testable without mutating
  * `process.env`.
@@ -472,14 +516,20 @@ function applyConfigServiceOverlay(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * would otherwise put the global `AI_PROVIDER` back. A provider whose
  * endpoint or credentials are not configured throws `AIConfigError` — never a
  * fall-back to the global provider.
+ *
+ * #254/#283 — the deployment-wide model (`AI_MODEL`, or Admin → Configuration's
+ * `AI_DEFAULT_MODEL` mapped onto it) names a model of the DEPLOYMENT's
+ * provider, so it is dropped when `opts.provider` is a different provider: the
+ * override then gets its own default (`ANTHROPIC_MODEL`, `LOCAL_GEMMA_MODEL`,
+ * `BEDROCK_MODEL` or the built-in one). See {@link withProviderOverride}.
  */
 export function loadAIConfig(
   env: NodeJS.ProcessEnv = process.env,
   opts: { provider?: string } = {},
 ): AIConfig {
-  const merged = applyConfigServiceOverlay(env);
-  assertNoRetiredProviderConfig(env, merged);
-  if (opts.provider) merged.AI_PROVIDER = opts.provider;
+  const overlaid = applyConfigServiceOverlay(env);
+  assertNoRetiredProviderConfig(env, overlaid);
+  const merged = withProviderOverride(overlaid, opts.provider);
   const parsed = aiEnvSchema.safeParse(merged);
   if (!parsed.success) {
     throw new AIConfigError("Invalid AI configuration", {

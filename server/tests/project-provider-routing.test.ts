@@ -56,6 +56,7 @@ import { errorHandler } from "../src/middleware/error-handler.js";
 import { resolveProjectProvider } from "../src/lib/ai/project-provider.js";
 import { AIProviderError } from "../src/lib/ai/errors.js";
 import { resetLocalConcurrencyLimitersForTests } from "../src/lib/ai/providers/local-concurrency-limiter.js";
+import { __resetConfigSingleton, getConfigService } from "../src/lib/config/index.js";
 
 type Body = Record<string, unknown>;
 interface Seen {
@@ -122,6 +123,8 @@ const ENV_KEYS = [
   "AI_MAX_RETRIES",
 ] as const;
 const savedEnv: Record<string, string | undefined> = {};
+/** The deployment-wide model (`AI_MODEL`), a model of the global `openai`. */
+const GLOBAL_MODEL = "gpt-deployment-pinned";
 
 let openaiServer: Server;
 let anthropicServer: Server;
@@ -162,7 +165,10 @@ beforeEach(() => {
   // configured too (loopback B), with its own credential.
   delete process.env.AI_OFFLINE;
   process.env.AI_PROVIDER = "openai";
-  delete process.env.AI_MODEL;
+  // The deployment pins a model for ITS provider — the value that leaked into a
+  // provider-only override before (review of #284). Never delete it here, or
+  // the only "global model" a test can rule out is the built-in OpenAI default.
+  process.env.AI_MODEL = GLOBAL_MODEL;
   process.env.OPENAI_BASE_URL = `${openaiBase}/v1`;
   process.env.OPENAI_API_KEY = "k-openai-global";
   process.env.ANTHROPIC_API_KEY = "k-anthropic-project";
@@ -183,6 +189,7 @@ afterEach(() => {
     else process.env[k] = savedEnv[k];
   }
   resetLocalConcurrencyLimitersForTests();
+  __resetConfigSingleton();
 });
 
 async function ask(projectId: string): Promise<string> {
@@ -211,7 +218,7 @@ describe("resolveProjectProvider — override routing (#254)", () => {
   });
 
   it("the override's model defaults to the override provider's own default, not the global model", async () => {
-    // Global model is the OpenAI default; the project names only a provider.
+    // The deployment pins AI_MODEL for openai; the project names only a provider.
     projectFindFirst.mockResolvedValue({ aiProviderId: "anthropic", aiModel: null });
     process.env.ANTHROPIC_MODEL = "claude-project-default";
 
@@ -219,6 +226,51 @@ describe("resolveProjectProvider — override routing (#254)", () => {
 
     expect(anthropicSeen).toHaveLength(1);
     expect(anthropicSeen[0]!.body.model).toBe("claude-project-default");
+  });
+
+  it("with no ANTHROPIC_MODEL, a provider-only override gets anthropic's built-in default, never the deployment's AI_MODEL", async () => {
+    projectFindFirst.mockResolvedValue({ aiProviderId: "anthropic", aiModel: null });
+
+    await ask("p-anth");
+
+    expect(anthropicSeen).toHaveLength(1);
+    expect(anthropicSeen[0]!.body.model).toBe("claude-sonnet-4-6");
+    expect(JSON.stringify(anthropicSeen[0]!.body)).not.toContain(GLOBAL_MODEL);
+  });
+
+  it("an Admin runtime AI_DEFAULT_MODEL does not leak into a provider-only override either", async () => {
+    delete process.env.AI_MODEL;
+    const svc = getConfigService();
+    // @ts-expect-error — test seam: an admin-set runtime_config value.
+    svc["tunableCache"].set("AI_DEFAULT_MODEL", "gpt-admin-runtime");
+    // @ts-expect-error — see above.
+    svc["tunableDbBacked"].add("AI_DEFAULT_MODEL");
+    projectFindFirst.mockResolvedValue({ aiProviderId: "anthropic", aiModel: null });
+
+    await ask("p-anth");
+    projectFindFirst.mockResolvedValue({ aiProviderId: null, aiModel: null });
+    await ask("p-plain");
+
+    expect(anthropicSeen[0]!.body.model).toBe("claude-sonnet-4-6");
+    // The runtime value is live — it still reaches the deployment's own provider.
+    expect(openaiSeen[0]!.body.model).toBe("gpt-admin-runtime");
+  });
+
+  it("an override naming the deployment's own provider keeps the deployment's AI_MODEL", async () => {
+    projectFindFirst.mockResolvedValue({ aiProviderId: "openai", aiModel: null });
+
+    await ask("p-same");
+
+    expect(openaiSeen).toHaveLength(1);
+    expect(openaiSeen[0]!.body.model).toBe(GLOBAL_MODEL);
+  });
+
+  it("a non-empty project aiModel still wins over every default", async () => {
+    projectFindFirst.mockResolvedValue({ aiProviderId: "openai", aiModel: "gpt-project-pin" });
+
+    await ask("p-same");
+
+    expect(openaiSeen[0]!.body.model).toBe("gpt-project-pin");
   });
 
   it("a project with no override still runs on the global provider", async () => {
@@ -230,6 +282,7 @@ describe("resolveProjectProvider — override routing (#254)", () => {
     expect(openaiSeen).toHaveLength(1);
     expect(openaiSeen[0]!.path).toBe("/v1/chat/completions");
     expect(openaiSeen[0]!.headers.authorization).toBe("Bearer k-openai-global");
+    expect(openaiSeen[0]!.body.model).toBe(GLOBAL_MODEL);
   });
 
   it("the reverse override (global anthropic, project openai) routes to openai with its own key", async () => {
@@ -338,6 +391,7 @@ describe("Spec Kit route — the command reaches the project's provider (#254)",
     expect(openaiSeen).toHaveLength(0);
     expect(anthropicSeen).toHaveLength(1);
     expect(anthropicSeen[0]!.headers["x-api-key"]).toBe("k-anthropic-project");
+    expect(anthropicSeen[0]!.body.model).toBe("claude-sonnet-4-6");
     expect(JSON.stringify(anthropicSeen[0]!.headers)).not.toContain("k-openai-global");
   });
 

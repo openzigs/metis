@@ -33,6 +33,23 @@ export interface StrictMsOptions {
   max?: number;
   /** Log line used when a value is ignored. */
   warning?: string;
+  /**
+   * Warn once per (setting, raw value) for the life of the process. For
+   * settings read on every request (the `AI_STREAM_*` limits), where one bad
+   * value would otherwise log on every chat turn. A different bad value warns
+   * again.
+   */
+  warnOnce?: boolean;
+}
+
+/** (setting, raw value) pairs already warned about under `warnOnce`. */
+const warnedOnce = new Set<string>();
+/** Bound on {@link warnedOnce}; past it the set is cleared, never grown. */
+const WARNED_ONCE_MAX = 256;
+
+/** Test seam — forget which `warnOnce` values were already reported. */
+export function resetEnvMsWarningsForTests(): void {
+  warnedOnce.clear();
 }
 
 /**
@@ -53,6 +70,12 @@ export function parseStrictMs(
   if (/^\d+$/.test(value)) {
     const n = Number(value);
     if (n >= min && n <= max) return n;
+  }
+  if (opts.warnOnce) {
+    const key = `${name}=${raw}`;
+    if (warnedOnce.has(key)) return fallback;
+    if (warnedOnce.size >= WARNED_ONCE_MAX) warnedOnce.clear();
+    warnedOnce.add(key);
   }
   log.warn(opts.warning ?? "Ignoring invalid millisecond setting; keeping the default", {
     env: name,

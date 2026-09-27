@@ -25,7 +25,7 @@ vi.mock("../src/lib/logger.js", async (importOriginal) => {
 });
 
 import { streamLimits } from "../src/routes/ai.js";
-import { MAX_TIMEOUT_MS } from "../src/lib/config/env-ms.js";
+import { MAX_TIMEOUT_MS, resetEnvMsWarningsForTests } from "../src/lib/config/env-ms.js";
 
 type Limits = ReturnType<typeof streamLimits>;
 
@@ -64,6 +64,7 @@ beforeEach(() => {
     delete process.env[s.env];
   }
   logWarn.mockReset();
+  resetEnvMsWarningsForTests();
 });
 
 afterEach(() => {
@@ -116,5 +117,27 @@ describe.each(SETTINGS)("$env", (s) => {
     process.env[s.env] = "   ";
     expect(streamLimits()[s.field]).toBe(s.fallback);
     expect(logWarn).not.toHaveBeenCalled();
+  });
+});
+
+describe("a bad value is reported once, not on every streamed turn (review of #284)", () => {
+  it("warns once per (setting, value) across repeated reads", () => {
+    process.env.AI_STREAM_MAX_DURATION_MS = "1.2e6";
+    for (let i = 0; i < 5; i++) expect(streamLimits().hardCeilingMs).toBe(300_000);
+    expect(logWarn).toHaveBeenCalledTimes(1);
+    expectWarned("AI_STREAM_MAX_DURATION_MS", "1.2e6");
+  });
+
+  it("a different bad value, or another setting, warns again", () => {
+    process.env.AI_STREAM_MAX_DURATION_MS = "1.2e6";
+    streamLimits();
+    process.env.AI_STREAM_MAX_DURATION_MS = "abc";
+    streamLimits();
+    process.env.AI_STREAM_HEARTBEAT_MS = "abc";
+    streamLimits();
+    streamLimits();
+    expect(logWarn).toHaveBeenCalledTimes(3);
+    expectWarned("AI_STREAM_MAX_DURATION_MS", "abc");
+    expectWarned("AI_STREAM_HEARTBEAT_MS", "abc");
   });
 });

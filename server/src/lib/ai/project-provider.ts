@@ -9,6 +9,11 @@
  * the same rule, so they get the project's real configured LLM instead of
  * silently falling back to the offline stub or to the global provider.
  *
+ * The status codes differ: an override the server cannot build answers 502
+ * `AI_PROVIDER_KEY_UNAVAILABLE` here (the typed error #254 asks for), while
+ * chat answers 503 for an unbuildable session provider. A client handling both
+ * surfaces should treat either as "this provider is not configured".
+ *
  * Scope note: this is the env/config + per-project override path ONLY. Session
  * BYOK keys (the vault-backed `resolveProviderKey` in `ai.ts`) are
  * session-scoped and intentionally NOT resolved here — project-scoped callers
@@ -49,6 +54,12 @@ export interface ProjectProviderOverride {
  * Copying the global config and swapping only the provider key kept the global
  * provider's `sdkProvider`, so the request went to the global endpoint with the
  * global credential. A non-empty `aiModel` then replaces the model.
+ *
+ * "Its default model" means the override provider's own setting
+ * (`ANTHROPIC_MODEL`, `LOCAL_GEMMA_MODEL`, `BEDROCK_MODEL`) or built-in default.
+ * The deployment-wide `AI_MODEL` / Admin `AI_DEFAULT_MODEL` applies only when
+ * the override names the deployment's own provider: it is a model of that
+ * provider, and the loader drops it for any other (`loadAIConfig`).
  *
  * Throws the loader's error when the override provider is not configured on
  * this server — it never falls back to the global provider. A retired override

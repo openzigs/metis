@@ -81,6 +81,7 @@ type Step = "text" | "tool" | "delegate" | "fail" | "hang";
 const IDS = {
   alice: "u-alice",
   anth: "p-anth",
+  anthOnly: "p-anth-provider-only",
   azure: "p-azure",
   plain: "p-plain",
   retired: "p-retired",
@@ -231,6 +232,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       "OPENAI_API_KEY",
       "ANTHROPIC_API_KEY",
       "ANTHROPIC_BASE_URL",
+      "ANTHROPIC_MODEL",
       "AZURE_OPENAI_ENDPOINT",
       "AZURE_OPENAI_API_KEY",
       "AI_STREAM_MAX_DURATION_MS",
@@ -282,6 +284,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       const projects: Array<[string, string | null, string | null]> = [
         [IDS.anth, "anthropic", "claude-sonnet-4-6"],
+        [IDS.anthOnly, "anthropic", null],
         [IDS.azure, "azure", null],
         [IDS.plain, null, null],
         [IDS.retired, "copilot-native", null],
@@ -360,6 +363,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       process.env.OPENAI_API_KEY = "k-openai";
       process.env.ANTHROPIC_API_KEY = "k-anthropic";
       process.env.ANTHROPIC_BASE_URL = anthropicBase;
+      delete process.env.ANTHROPIC_MODEL;
       delete process.env.AZURE_OPENAI_ENDPOINT;
       delete process.env.AZURE_OPENAI_API_KEY;
       openaiSeen.length = 0;
@@ -431,6 +435,27 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const perUser = await db.aITokenUsage.findMany({ where: { sessionId: session.id } });
       expect(perUser.length).toBeGreaterThan(0);
       expect(perUser.every((r) => r.provider === "anthropic")).toBe(true);
+    });
+
+    it("#283 — a provider-only override stores and sends THAT provider's default model, never the deployment's AI_MODEL", async () => {
+      // The deployment pins AI_MODEL=gpt-4.1 for openai (beforeEach); the project
+      // names only `anthropic`.
+      process.env.ANTHROPIC_MODEL = "claude-anthropic-default";
+      const session = await newSession(IDS.anthOnly);
+      expect(session.provider).toBe("anthropic");
+      expect((session as { model?: string }).model).toBe("claude-anthropic-default");
+
+      expect((await chat(session.id, "hello")).status).toBe(200);
+      expect(openaiSeen).toHaveLength(0);
+      expect(anthropicSeen).toHaveLength(1);
+      expect(anthropicSeen[0]!.body.model).toBe("claude-anthropic-default");
+      const row = await db.aISession.findUniqueOrThrow({ where: { id: session.id } });
+      expect(row.model).toBe("claude-anthropic-default");
+    });
+
+    it("#283 — a request model still wins over a provider-only override's default", async () => {
+      const session = await newSession(IDS.anthOnly, { model: "claude-request-pick" });
+      expect((session as { model?: string }).model).toBe("claude-request-pick");
     });
 
     it("#241 — a session with no override runs on the global provider", async () => {
