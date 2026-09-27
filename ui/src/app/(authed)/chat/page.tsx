@@ -20,6 +20,7 @@ import {
   type SessionScope,
   type StreamEvent,
   createSessionWithScope,
+  sessionAgentInput,
   forkChatSession,
   getTranscriptSince,
   lastHeldOrdinal,
@@ -129,6 +130,13 @@ export default function ChatPage() {
     setAgentHydrated(true);
   }, []);
 
+  // #236 — the one project a new session would be scoped to (a URL project,
+  // or a single project picked in the scope selector): its custom agents can
+  // be the session's agent.
+  const pickerProjectId =
+    effectiveProjectId ??
+    (scope.mode === "selected" && scope.projectIds.length === 1 ? scope.projectIds[0] : null);
+
   // Serialize scope for stable deps comparison (avoids infinite re-renders).
   const scopeKey = scope.mode === "all" ? "all" : `selected:${scope.projectIds.sort().join(",")}`;
 
@@ -166,7 +174,7 @@ export default function ChatPage() {
         }
         const sessionOpts: Parameters<typeof createSessionWithScope>[0] = {
           title: "New Chat",
-          ...(agentKey ? { agentKey } : {}),
+          ...sessionAgentInput(agentKey, pickerProjectId),
         };
         // If a single projectId is in the URL, use it. Otherwise, pass
         // the scope selector's projectIds for cross-project mode.
@@ -198,6 +206,7 @@ export default function ChatPage() {
     // default skills change at session-create.
   }, [
     agentKey,
+    pickerProjectId,
     projectId,
     effectiveProjectId,
     scopeKey,
@@ -221,7 +230,7 @@ export default function ChatPage() {
       try {
         const created = await createSessionWithScope({
           title: "New Chat",
-          ...(agentKey ? { agentKey } : {}),
+          ...sessionAgentInput(agentKey, pickerProjectId),
           ...(effectiveProjectId
             ? { projectId: effectiveProjectId }
             : scope.mode === "selected" && scope.projectIds.length > 0
@@ -407,7 +416,12 @@ export default function ChatPage() {
             {!effectiveProjectId || scopeBlocked ? (
               <ProjectScopeSelector value={scope} onChange={setScope} disabled={streaming} />
             ) : null}
-            <AgentPicker value={agentKey} onChange={handleAgentChange} disabled={streaming} />
+            <AgentPicker
+              value={agentKey}
+              onChange={handleAgentChange}
+              disabled={streaming}
+              projectId={pickerProjectId}
+            />
             <Button
               type="button"
               variant="secondary"

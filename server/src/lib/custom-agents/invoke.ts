@@ -22,7 +22,7 @@
  * as a `warnings` entry), and its skills ride inline (no person is
  * present to approve a `load_skill` call, so the run stays text-only).
  */
-import type { CustomAgentDto } from "@metis/shared";
+import type { AgentDefinitionDto, CustomAgentDto } from "@metis/shared";
 import type { AIProvider, TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { customDtoDefinition, resolveAgentModel } from "../agent-runtime/definition.js";
@@ -94,18 +94,45 @@ export async function invokeCustomAgent(
     inputChars: payload.length,
   });
 
-  const definition = customDtoDefinition(agent);
-  const catalog = await resolveSkillCatalog({
-    skillKeys: definition.skillKeys,
+  return invokeAgentDefinition({
+    provider,
+    definition: customDtoDefinition(agent),
+    input: payload,
+    ...(input.signal ? { signal: input.signal } : {}),
     projectId: input.projectId ?? agent.projectId ?? null,
   });
-  // Pure text synthesis — no tools are offered (the runtime sends none), and
-  // the untrusted input rides in the delimited <USER_INPUT> block.
-  const chosen = catalogModelOverride(provider.key, agent.model);
+}
+
+export interface InvokeAgentDefinitionInput {
+  provider: AIProvider;
+  /** An agent of EITHER kind, read through the one definition (#145). */
+  definition: AgentDefinitionDto;
+  /** UNTRUSTED input; rides in the delimited <USER_INPUT> block. */
+  input: string;
+  signal?: AbortSignal;
+  /** Its skill allow-list filters the agent's skills. */
+  projectId: string | null;
+}
+
+/**
+ * #236 — run ONE agent of either kind, text only, through the one runtime:
+ * no tools are offered (the runtime sends `disableTools`, since no person is
+ * present to approve a call), its skills ride inline, and its saved model is
+ * resolved by `resolveAgentModel` — a rejected model is returned as a warning.
+ */
+export async function invokeAgentDefinition(
+  input: InvokeAgentDefinitionInput,
+): Promise<InvokeCustomAgentResult> {
+  const { provider, definition } = input;
+  const catalog = await resolveSkillCatalog({
+    skillKeys: definition.skillKeys,
+    projectId: input.projectId,
+  });
+  const chosen = catalogModelOverride(provider.key, definition.model);
   const response = await runAgent({
     provider,
     definition,
-    input: payload,
+    input: input.input,
     frame: "user-input",
     model: chosen.model,
     ...(input.signal ? { signal: input.signal } : {}),

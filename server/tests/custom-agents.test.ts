@@ -132,8 +132,20 @@ import {
   listAgents,
   updateAgent,
 } from "../src/lib/custom-agents/index.js";
+import { __resetToolRegistrySingleton } from "../src/lib/ai/tool-registry.js";
+import {
+  __resetSearchKnowledgeRegistration,
+  registerSearchKnowledgeTool,
+} from "../src/lib/rag/search-knowledge-tool.js";
 
-beforeEach(() => reset());
+beforeEach(() => {
+  reset();
+  // #238 — the tools METIS registers at boot: the built-ins (and any agent a
+  // test creates) may only name tools the registry really carries.
+  __resetToolRegistrySingleton();
+  __resetSearchKnowledgeRegistration();
+  registerSearchKnowledgeTool();
+});
 afterEach(() => reset());
 
 describe("CustomAgent service (#112)", () => {
@@ -163,13 +175,13 @@ describe("CustomAgent service (#112)", () => {
         name: "MyAgent",
         description: "test",
         systemPrompt: "do",
-        tools: ["a"],
+        tools: ["search-knowledge"],
       },
       "u1",
     );
     expect(created.projectId).toBe("p1");
     expect(created.isBuiltIn).toBe(false);
-    expect(created.tools).toEqual(["a"]);
+    expect(created.tools).toEqual(["search-knowledge"]);
   });
 
   it("rejects duplicate names within a project", async () => {

@@ -395,18 +395,12 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
     });
   }
 
-  // Epic #165 \u2014 install built-in lifecycle hook handlers and seed the
-  // built-in custom-agent fleet (BA / Architect / PO / QA). Both are
-  // idempotent and best-effort.
+  // Epic #165 \u2014 install built-in lifecycle hook handlers (idempotent). The
+  // built-in custom-agent fleet (BA / Architect / PO / QA) is seeded below,
+  // once the boot tools are registered (#238).
+  // Epic #404 (#413) — the prune of expired refresh-token revocation rows is a
+  // cluster singleton, started only on the leader (see SingletonJobs).
   installBuiltinHandlers();
-  if (process.env.NODE_ENV !== "test") {
-    ensureBuiltInAgents().catch((err) => {
-      log.warn("Built-in custom agent seed failed", { error: (err as Error).message });
-    });
-    // Epic #404 (#413) — prune expired refresh-token revocation rows so the
-    // persistent revocation table stays bounded. Epic #518 (#544): this is a
-    // cluster singleton, now started only on the leader (see SingletonJobs).
-  }
 
   // Epic #156 \u2014 wire the async background runner with a socket emitter so
   // bg-run:status / bg-run:step events broadcast into project rooms.
@@ -436,6 +430,13 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   registerSearchKnowledgeGlobalTool();
   // Issue #43 — project-scoped knowledge search tool.
   registerSearchKnowledgeTool();
+  // #238 — seeded AFTER the boot tools are registered: the seed refuses a
+  // built-in agent that names a tool the registry does not carry.
+  if (process.env.NODE_ENV !== "test") {
+    ensureBuiltInAgents().catch((err) => {
+      log.error("Built-in custom agent seed failed", { error: (err as Error).message });
+    });
+  }
   if (process.env.NODE_ENV !== "test") {
     runner
       .recoverStaleRuns()

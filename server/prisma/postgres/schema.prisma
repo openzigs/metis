@@ -2750,6 +2750,11 @@ model AISession {
   providerSecretRef      String?
   /// Phase 10 — optional Agent persona attached to this session.
   agentId                String?
+  /// #236 — the session's own agent when it is a PROJECT CUSTOM agent
+  /// (`custom:<id>`). Not a foreign key: a deleted or disabled agent is read as
+  /// "gone" and the session fails closed (no persona, no tools). A library
+  /// agent stays on `agentId`; at most one of the two is set.
+  agentRef               String?
   /// Phase 10 — frozen agent name + version recorded for audit.
   agentSnapshot          String?
   /// Phase 10 — JSON array of skill ids whose instructions were loaded into

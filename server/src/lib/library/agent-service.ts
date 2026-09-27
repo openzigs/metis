@@ -15,9 +15,7 @@ import { prisma as defaultPrisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { bumpVersion, parseAgentSource, slugifyKey, type AgentFrontmatter } from "./frontmatter.js";
 import { getToolRegistry, type ToolRegistry } from "../ai/tool-registry.js";
-import { CHAT_CODE_TOOL_NAMES } from "../analysis/tools/chat-code-tool-names.js";
-import { LOAD_SKILL_TOOL_NAME, SUBAGENT_TOOL_PREFIX } from "@metis/shared";
-import { parseAgentRef } from "../agent-runtime/definition.js";
+import { knownToolNames, unknownToolRefs } from "../agent-runtime/tool-refs.js";
 import { assertNoSecrets, DefinitionSecretError } from "../agent-runtime/secret-scan.js";
 
 export class AgentServiceError extends Error {
@@ -132,42 +130,8 @@ export class AgentService {
    */
   private validateToolRefs(tools: readonly string[] | undefined): void {
     if (!tools || tools.length === 0) return;
-    const registry = this.toolRegistry();
-    // #142 — the chat code-search tools are offered by the tool runtime, not
-    // the registry, but an agent's allowlist may still name them.
-    const known = new Set([...registry.list().map((t) => t.name), ...CHAT_CODE_TOOL_NAMES]);
-    const knownPrefixes = new Set<string>();
-    for (const name of known) {
-      if (name.startsWith("mcp:")) {
-        const parts = name.split(":");
-        if (parts.length >= 3) knownPrefixes.add(`mcp:${parts[1]}:*`);
-      }
-    }
-    const unknown: string[] = [];
-    for (const ref of tools) {
-      if (ref === "mcp:*") continue; // entire MCP namespace blanket grant
-      // Epic #129 — the agent tools: `load_skill` (#146) and sub-agents (#147):
-      // `agent:*`, `agent:library:*`, `agent:custom:*`, or one agent's ref.
-      if (ref === LOAD_SKILL_TOOL_NAME) continue;
-      if (ref.startsWith(SUBAGENT_TOOL_PREFIX)) {
-        const rest = ref.slice(SUBAGENT_TOOL_PREFIX.length);
-        if (rest === "*" || rest === "library:*" || rest === "custom:*") continue;
-        if (parseAgentRef(rest)) continue;
-        unknown.push(ref);
-        continue;
-      }
-      if (ref.endsWith(":*")) {
-        // Namespace wildcard — accepted only if at least one tool with
-        // that prefix is currently registered. This means agents can
-        // reference `mcp:github:*` even if exact tool names rotate, but
-        // typo'd prefixes still fail loudly.
-        if (knownPrefixes.has(ref)) continue;
-        unknown.push(ref);
-        continue;
-      }
-      if (known.has(ref)) continue;
-      unknown.push(ref);
-    }
+    // #238 — the one check both kinds of agent share (`agent-runtime/tool-refs.ts`).
+    const unknown = unknownToolRefs(tools, knownToolNames(this.toolRegistry()));
     if (unknown.length > 0) {
       throw new AgentServiceError(
         400,

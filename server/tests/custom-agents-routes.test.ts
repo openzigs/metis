@@ -343,7 +343,8 @@ describe("import / export (#82)", () => {
       projectId: "p1",
       name: "Portable",
       systemPrompt: "do the thing",
-      tools: JSON.stringify(["search_code"]),
+      // #238 — a tool METIS really has (a chat code tool).
+      tools: JSON.stringify(["search_code_graph"]),
       model: "claude-x",
     });
 
@@ -357,7 +358,7 @@ describe("import / export (#82)", () => {
     expect(imp.status).toBe(201);
     expect(imp.body.data.name).toBe("Portable");
     expect(imp.body.data.projectId).toBe("p2");
-    expect(imp.body.data.tools).toEqual(["search_code"]);
+    expect(imp.body.data.tools).toEqual(["search_code_graph"]);
     expect(imp.body.data.model).toBe("claude-x");
   });
 
@@ -377,6 +378,21 @@ describe("import / export (#82)", () => {
       });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("AGENT_IMPORT_INVALID");
+  });
+
+  it("#238 — rejects an import that names a tool METIS does not have (and creates nothing)", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "admin");
+    const before = agents.size;
+    const res = await request(createApp())
+      .post("/custom-agents/import")
+      .send({
+        projectId: "p1",
+        document: { name: "Old", description: "", systemPrompt: "x", tools: ["search_code"] },
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error.message).toContain("Unknown tools: search_code");
+    expect(agents.size).toBe(before);
   });
 
   it("rejects import with a missing projectId (400 BAD_REQUEST)", async () => {

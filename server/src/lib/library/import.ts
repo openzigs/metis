@@ -9,9 +9,12 @@
  *      bulk importers below.
  *
  *   2. **Repo** \u2014 fetch a single file from a configured Phase 8 repo
- *      connector via Octokit. We never recurse arbitrary depth; the importer
- *      lists the root of the configured `path` (default `.github/skills/` or
- *      `.github/agents/`) and pulls each child SKILL.md / .agent.md.
+ *      connector via Octokit. Agents: the importer lists the root of the
+ *      configured `path` (default `.github/agents/`) and pulls each
+ *      `.agent.md`. Skills (#237): it walks at most `REPO_SKILLS_MAX_DEPTH`
+ *      levels and `REPO_MAX_LISTINGS` directories below the root and pulls
+ *      each SKILL.md with its supporting files, bounded exactly like the
+ *      filesystem loader; a path outside the root is never fetched.
  *
  *   3. **Filesystem auto-discovery** \u2014 read `.github/skills` and
  *      `.github/agents` from the configured workspace root at startup. Path
@@ -41,8 +44,10 @@ import {
 import {
   groupSkillImport,
   MAX_SKILL_FILE_BYTES,
+  MAX_SKILL_FILES,
   OVERSIZE_FILE_SENTINEL,
   triageSkillFiles,
+  unreadFileSentinel,
 } from "../agent-runtime/skill-bundle.js";
 
 export class LibraryImportError extends Error {
@@ -67,6 +72,11 @@ export interface ImportSourceLoader {
   load(): Promise<ImportFile[]>;
   /** Stable origin string (e.g. `repo:abcd123` or `filesystem:/abs/path`). */
   origin(): string;
+  /**
+   * #237 — entries the loader refused to read (a path outside its root, past
+   * a walk limit), reported in the import result's `skipped`.
+   */
+  rejectedPaths?(): Array<{ path: string; reason: string }>;
 }
 
 export interface ImportResult<T> {
@@ -196,14 +206,49 @@ export class FilesystemLoader implements ImportSourceLoader {
  * keep the fetch surface dependency-free so the actual Octokit + Phase 8
  * connector wiring can live in the route layer.
  */
+export interface RepoEntry {
+  path: string;
+  /** Only `file` and `dir` are followed; a symlink or submodule is never read. */
+  type: "file" | "dir" | (string & {});
+  /** Size in bytes when the connector reports it (an oversize file is then never fetched). */
+  size?: number;
+}
+
 export interface RepoFetcher {
-  /** List file entries (path + sha) under the root directory of the repo. */
-  list(rootPath: string): Promise<Array<{ path: string; type: "file" | "dir" }>>;
+  /** List the entries of ONE directory of the repo (repo-relative paths). */
+  list(rootPath: string): Promise<RepoEntry[]>;
   /** Fetch a single file's contents (utf-8). */
   read(filePath: string): Promise<string>;
 }
 
+/**
+ * #237 — how far and how wide a skills import walks a repository. A skill
+ * directory sits at most two levels below the root and its supporting files at
+ * most four below that (`normalizeSkillFilePath`), so six levels reach every
+ * file a skill can store; the listing budget bounds the walk of a large or
+ * hostile tree.
+ */
+export const REPO_SKILLS_MAX_DEPTH = 6;
+export const REPO_MAX_LISTINGS = 256;
+
+/** File types a skill never stores as text — reported without being fetched. */
+const BINARY_EXT =
+  /\.(png|jpe?g|gif|webp|bmp|ico|tiff?|pdf|zip|gz|tgz|bz2|xz|7z|rar|tar|jar|war|class|exe|dll|so|dylib|bin|o|a|wasm|pyc|woff2?|ttf|otf|eot|mp3|mp4|m4a|wav|ogg|mov|avi|mkv|sqlite|db)$/i;
+
+/** A clean repo-relative path (posix, no `.`/`..`/empty segments, not absolute). */
+function cleanRepoPath(raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 1024) return null;
+  if (raw.includes("\\") || raw.includes("\0") || raw.startsWith("/") || /^[A-Za-z]:/.test(raw)) {
+    return null;
+  }
+  const segments = raw.split("/");
+  if (segments.some((seg) => seg === "" || seg === "." || seg === "..")) return null;
+  return raw;
+}
+
 export class RepoLoader implements ImportSourceLoader {
+  private readonly rejected: Array<{ path: string; reason: string }> = [];
+
   constructor(
     private readonly fetcher: RepoFetcher,
     private readonly rootPath: string,
@@ -215,14 +260,114 @@ export class RepoLoader implements ImportSourceLoader {
     return `repo:${this.originLabel}`;
   }
 
+  /** #237 — entries the walk refused (outside the root, unsafe paths, budget); reported by the import. */
+  rejectedPaths(): Array<{ path: string; reason: string }> {
+    return [...this.rejected];
+  }
+
   async load(): Promise<ImportFile[]> {
-    const entries = await this.fetcher.list(this.rootPath);
+    this.rejected.length = 0;
+    const root = this.rootPath.replace(/^\.\//, "").replace(/\/+$/, "");
+    if (root !== "" && !cleanRepoPath(root)) {
+      throw new LibraryImportError(
+        400,
+        "INVALID_ROOT",
+        "Repository import path is not a clean relative path",
+      );
+    }
+    const within = (p: string): boolean => root === "" || p.startsWith(`${root}/`);
+    const depthOf = (p: string): number =>
+      (root === "" ? p : p.slice(root.length + 1)).split("/").length;
+    const files: RepoEntry[] = [];
+    // #237 — skills walk the tree (a SKILL.md lives in a directory beneath the
+    // root); agents keep reading the root only, as before.
+    const maxDepth = this.kind === "skills" ? REPO_SKILLS_MAX_DEPTH : 0;
+    const seen = new Set<string>();
+    const queue: string[] = [root];
+    const listed = new Set<string>();
+    while (queue.length > 0) {
+      const dir = queue.shift()!;
+      if (listed.has(dir)) continue;
+      if (listed.size >= REPO_MAX_LISTINGS) {
+        this.rejected.push({
+          path: dir,
+          reason: `not listed: past the ${REPO_MAX_LISTINGS}-directory limit`,
+        });
+        continue;
+      }
+      listed.add(dir);
+      for (const entry of await this.fetcher.list(dir)) {
+        const p = cleanRepoPath(entry.path);
+        if (!p || !within(p)) {
+          this.rejected.push({
+            path: String(entry.path).slice(0, 200),
+            reason: "outside the import root or not a clean relative path",
+          });
+          continue;
+        }
+        if (seen.has(p)) continue;
+        seen.add(p);
+        if (entry.type === "dir") {
+          if (depthOf(p) <= maxDepth) queue.push(p);
+          continue;
+        }
+        if (entry.type === "file") files.push({ ...entry, path: p });
+      }
+    }
+
     const out: ImportFile[] = [];
-    for (const entry of entries) {
-      if (entry.type !== "file") continue;
-      if (!this.matches(entry.path)) continue;
-      const contents = await this.fetcher.read(entry.path);
-      out.push({ path: entry.path, contents });
+    const skillDirs: string[] = [];
+    for (const f of files) {
+      if (!this.matches(f.path)) continue;
+      const base = f.path.slice(f.path.lastIndexOf("/") + 1).toLowerCase();
+      if (this.kind === "skills" && base === "skill.md") {
+        skillDirs.push(f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : "");
+      }
+      out.push({ path: f.path, contents: await this.fetcher.read(f.path) });
+    }
+    if (this.kind === "skills") out.push(...(await this.supportingFiles(files, skillDirs)));
+    return out;
+  }
+
+  /**
+   * #237 — every other file beneath a `SKILL.md` directory (the deepest one
+   * owns it, as `groupSkillImport` decides). Bounded before anything is
+   * fetched: a binary type, a reported size past `MAX_SKILL_FILE_BYTES`, or a
+   * file past the skill's `MAX_SKILL_FILES` read budget is passed on as a
+   * sentinel so the import REPORTS it. The import's triage applies every other
+   * rule (a fetched file past the size limit included).
+   */
+  private async supportingFiles(files: RepoEntry[], skillDirs: string[]): Promise<ImportFile[]> {
+    const dirs = [...skillDirs].sort((a, b) => b.length - a.length);
+    const ownerOf = (p: string): string | undefined =>
+      dirs.find((d) => d === "" || p.startsWith(`${d}/`));
+    const reads = new Map<string, number>();
+    const out: ImportFile[] = [];
+    const candidates = files
+      .filter((f) => !this.matches(f.path))
+      .sort((a, b) => a.path.localeCompare(b.path));
+    for (const f of candidates) {
+      const owner = ownerOf(f.path);
+      if (owner === undefined) continue;
+      if (BINARY_EXT.test(f.path)) {
+        out.push({ path: f.path, contents: unreadFileSentinel("not a text file") });
+        continue;
+      }
+      if (typeof f.size === "number" && f.size > MAX_SKILL_FILE_BYTES) {
+        out.push({ path: f.path, contents: OVERSIZE_FILE_SENTINEL });
+        continue;
+      }
+      const n = reads.get(owner) ?? 0;
+      if (n >= MAX_SKILL_FILES) {
+        out.push({
+          path: f.path,
+          contents: unreadFileSentinel(`not read: past the ${MAX_SKILL_FILES}-file limit`),
+        });
+        continue;
+      }
+      reads.set(owner, n + 1);
+      // A fetched file past the size limit is left out by the import's triage.
+      out.push({ path: f.path, contents: await this.fetcher.read(f.path) });
     }
     return out;
   }
@@ -230,7 +375,7 @@ export class RepoLoader implements ImportSourceLoader {
   private matches(p: string): boolean {
     const lower = p.toLowerCase();
     if (this.kind === "skills") {
-      return lower.endsWith("/skill.md") || lower.endsWith(".skill.md");
+      return lower === "skill.md" || lower.endsWith("/skill.md") || lower.endsWith(".skill.md");
     }
     return lower.endsWith(".agent.md");
   }
@@ -262,6 +407,8 @@ export class LibraryImporter {
     const skipped: ImportResult<SkillDetail>["skipped"] = [];
     const failed: ImportResult<SkillDetail>["failed"] = [];
     const skippedFiles: NonNullable<ImportResult<SkillDetail>["skippedFiles"]> = [];
+    // #237 — what the loader refused to read is reported, never dropped.
+    for (const r of loader.rejectedPaths?.() ?? []) skipped.push(r);
     // #146 — an Agent Skills directory (SKILL.md + supporting files) is ONE
     // skill; any other file is a single-file skill, as before. A supporting
     // file METIS cannot store is left out and reported — only an invalid

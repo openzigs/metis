@@ -95,6 +95,40 @@ export interface CreateSessionInput {
   policy?: Partial<ApprovalPolicy>;
   agentId?: string;
   agentKey?: string;
+  /** #236 — `library:<id>` or `custom:<id>` (a custom agent needs a project). */
+  agentRef?: string;
+}
+
+/** #236 — one agent a new chat session may bind (either kind). */
+export interface BindableAgent {
+  ref: string;
+  kind: "library" | "custom";
+  key: string;
+  name: string;
+  description: string;
+}
+
+/** #236 — the agents a new session may bind; custom ones only with a project. */
+export async function listSessionAgents(projectId?: string | null): Promise<BindableAgent[]> {
+  const qs = projectId ? `?${new URLSearchParams({ projectId }).toString()}` : "";
+  const res = await apiFetch<{ items: BindableAgent[] }>(`/ai/session-agents${qs}`);
+  return res.items;
+}
+
+/**
+ * #236 — the agent picker's value as session-create input. The picker stores a
+ * library agent by KEY (so a choice saved before #236 keeps working) and a
+ * custom agent by REF; a custom agent runs only in a one-project session, so it
+ * is dropped (the default agent runs) when there is no project to run it in.
+ */
+export function sessionAgentInput(
+  selection: string | null | undefined,
+  projectId: string | null | undefined,
+): Pick<CreateSessionInput, "agentKey" | "agentRef"> {
+  if (!selection) return {};
+  if (selection.startsWith("custom:")) return projectId ? { agentRef: selection } : {};
+  if (selection.startsWith("library:")) return { agentRef: selection };
+  return { agentKey: selection };
 }
 
 export interface CreateSessionResult {

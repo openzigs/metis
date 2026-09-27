@@ -2,11 +2,14 @@
  * Epic #260 (#81) — custom-agent analysis phase.
  *
  * Runs every custom agent ENABLED for the project (via the
- * `CustomAgentEnablement` join) alongside the built-in specialists during an
- * analysis run. Each agent is invoked through the shared, injection-resistant
- * {@link invokeCustomAgent} path with the project framing as its input — which
- * is the one agent runtime (`agent-runtime/run-agent.ts`) chat sub-agents use
- * too (#129 / #145).
+ * `CustomAgentEnablement` join) — and, since #236, every LIBRARY agent the
+ * project has explicitly enabled (an enabled `ProjectAgentAllowlist` row) —
+ * alongside the built-in specialists during an analysis run. Each agent is
+ * invoked through the shared, injection-resistant {@link invokeAgentDefinition}
+ * path with the project framing as its input — which is the one agent runtime
+ * (`agent-runtime/run-agent.ts`) chat sub-agents use too (#129 / #145). The
+ * run is text only: no tools are offered, because no person is present to
+ * approve one.
  *
  * Design notes:
  *  - Failures are isolated per-agent: one agent throwing never aborts the
@@ -15,8 +18,10 @@
  *    totals (and budget accounting).
  *  - Pure + provider-agnostic: fully unit-testable with a mock provider.
  */
+import type { AgentDefinitionDto } from "@metis/shared";
 import { listEnabledAgentsForProject } from "../custom-agents/index.js";
-import { invokeCustomAgent } from "../custom-agents/invoke.js";
+import { invokeAgentDefinition } from "../custom-agents/invoke.js";
+import { customDtoDefinition, listProjectLibraryAgents } from "../agent-runtime/definition.js";
 import type { AIProvider, TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 
@@ -32,6 +37,9 @@ export interface CustomAgentPhaseInput {
 
 export interface CustomAgentResult {
   agentId: string;
+  /** #236 — `library:<id>` or `custom:<id>`. */
+  agentRef: string;
+  kind: AgentDefinitionDto["kind"];
   agentName: string;
   content: string;
   usage: TokenUsage;
@@ -63,7 +71,11 @@ export async function runEnabledCustomAgents(
     return { results: [], usage: { ...ZERO_USAGE } };
   }
 
-  const agents = await listEnabledAgentsForProject(input.projectId);
+  // Library agents first (explicit opt-in only), then the enabled custom agents.
+  const agents: AgentDefinitionDto[] = [
+    ...(await listProjectLibraryAgents(input.projectId)),
+    ...(await listEnabledAgentsForProject(input.projectId)).map(customDtoDefinition),
+  ];
   if (agents.length === 0) {
     return { results: [], usage: { ...ZERO_USAGE } };
   }
@@ -73,30 +85,34 @@ export async function runEnabledCustomAgents(
 
   const settled = await Promise.allSettled(
     agents.map(async (agent): Promise<CustomAgentResult> => {
+      const who = {
+        agentId: agent.id,
+        agentRef: agent.ref,
+        kind: agent.kind,
+        agentName: agent.name,
+      };
       try {
-        const res = await invokeCustomAgent({
+        const res = await invokeAgentDefinition({
           provider: input.provider,
-          agent,
+          definition: agent,
           input: framedInput,
-          signal: input.signal,
+          ...(input.signal ? { signal: input.signal } : {}),
           // #129 — the project's skill allow-list filters the agent's skills.
           projectId: input.projectId,
         });
         return {
-          agentId: agent.id,
-          agentName: agent.name,
+          ...who,
           content: res.content,
           usage: res.usage,
           ...(res.warnings ? { warnings: res.warnings } : {}),
         };
       } catch (err) {
-        log.warn("Custom agent failed during analysis", {
-          agentId: agent.id,
+        log.warn("Agent failed during analysis", {
+          agentRef: agent.ref,
           error: (err as Error).message,
         });
         return {
-          agentId: agent.id,
-          agentName: agent.name,
+          ...who,
           content: "",
           usage: { ...ZERO_USAGE },
           error: (err as Error).message,

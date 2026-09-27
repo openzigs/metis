@@ -144,6 +144,8 @@ export interface ResumeSessionResponse {
     currentModel: string | null;
     currentReasoningEffort: SdkReasoningEffort | null;
     agentId: string | null;
+    /** #236 — the session's CUSTOM agent (`custom:<id>`), when it has one. */
+    agentRef: string | null;
     loadedSkillIds: string[];
     planModeActive: boolean;
     status: string;

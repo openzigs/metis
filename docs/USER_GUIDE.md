@@ -2307,6 +2307,22 @@ When a preferred model cannot be used, the chat's model runs instead and you are
 told so — on the new chat, on the hand-off's result, or on the agent run — never
 silently.
 
+**A custom agent can be the chat's agent.** The chat and Workbench agent
+picker lists library agents and — when the chat is scoped to one project — the
+project's own custom agents and those enabled for it. Pick one and the new chat
+runs under it: its persona, its skills, only the tools it lists (a custom agent
+that lists none gets no tools at all), its preferred model and its approval
+override, exactly as for a library agent. If the project later stops using that
+agent, the chat keeps working but without the agent's persona or any tools.
+Analyses also run the library agents a project has explicitly enabled, next to
+its enabled custom agents.
+
+**Agents name real tools.** Saving an agent that lists a tool METIS does not
+have is refused with the unknown names ("Unknown tools: …"). The four built-in
+agents now list tools that exist (the project knowledge search, and the code
+search tools for the Architect); before, they named tools that did not exist
+and so ran with none.
+
 **Skills load when they are needed.** The skills a chat has (the agent's own
 plus any you add) are listed to the AI by name and description only. When one
 fits your request, the AI opens it — you see a `load_skill` call in the tool
@@ -2326,7 +2342,9 @@ Import a skill's whole folder and its supporting files (`references/`,
 (letters, digits, `.`, `_`, `-`, spaces). A file that does not qualify — an
 image, a `.DS_Store` or `__MACOSX` entry, an oddly named file, one past the
 limits — is left out and listed with its reason in the import result
-(`skippedFiles`); the skill itself still imports. A `SKILL.md`
+(`skippedFiles`); the skill itself still imports. A repository import brings
+the supporting files too, with the same limits; an entry that points outside
+the imported folder is never read and is listed in `skipped`. A `SKILL.md`
 with broken frontmatter is refused with the reason (for example
 "Frontmatter key 'execute' is not allowed", or "File must begin with a `---`
 YAML frontmatter block"). Agent and skill text that contains a credential

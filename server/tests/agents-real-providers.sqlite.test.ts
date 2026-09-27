@@ -24,7 +24,7 @@
  */
 import express from "express";
 import request from "supertest";
-import { createServer, type Server, type ServerResponse } from "node:http";
+import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
@@ -38,6 +38,15 @@ import {
 } from "./helpers/sqlite-migrated-db.js";
 import { bodyMarker, IDS, seedAgentsFixture } from "./helpers/agents-fixture.js";
 import type { AIProvider, ToolDefinition } from "../src/lib/ai/types.js";
+import {
+  anthropicReply,
+  openAiReply,
+  systemOf,
+  toolNames,
+  toolResults,
+  type Body,
+  type Move,
+} from "./helpers/provider-wire.js";
 
 const state = vi.hoisted(() => {
   process.env.AI_RATE_LIMIT_MAX = "10000";
@@ -74,7 +83,6 @@ const { __resetModelCatalogForTests } = await import("../src/lib/ai/model-catalo
 const countExec = vi.fn(async (a: { table: string }) => ({ text: `rows in ${a.table}: 7` }));
 const dangerExec = vi.fn(async () => ({ text: "wrote" }));
 
-type Body = Record<string, unknown>;
 interface Seen {
   sub: boolean;
   tools: string[];
@@ -85,40 +93,8 @@ interface Seen {
 
 const DELEGATED = "Another agent delegated a task to you";
 
-function systemOf(body: Body): string {
-  const sys = body.system;
-  const fromTop =
-    typeof sys === "string"
-      ? sys
-      : Array.isArray(sys)
-        ? (sys as Array<{ text?: string }>).map((b) => b.text ?? "").join("\n")
-        : "";
-  const fromMessages = ((body.messages as Body[] | undefined) ?? [])
-    .filter((m) => m.role === "system")
-    .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
-    .join("\n");
-  return `${fromTop}\n${fromMessages}`;
-}
-
-function toolResults(body: Body): number {
-  let n = 0;
-  for (const m of (body.messages as Body[] | undefined) ?? []) {
-    if (m.role === "tool") n++;
-    if (Array.isArray(m.content)) {
-      n += (m.content as Body[]).filter((c) => c.type === "tool_result").length;
-    }
-  }
-  return n;
-}
-
-function toolNames(body: Body): string[] {
-  return ((body.tools as Body[] | undefined) ?? []).map((t) =>
-    String(t.name ?? (t.function as { name?: string } | undefined)?.name),
-  );
-}
-
 /** What the model "decides", from what it can see — the same for every wire format. */
-function nextMove(seen: Seen): { tool: string; args: Body } | { text: string } {
+function nextMove(seen: Seen): Move {
   if (!seen.sub) {
     if (seen.results === 0) return { tool: "load_skill", args: { name: "style-guide" } };
     if (seen.results === 1) {
@@ -129,125 +105,6 @@ function nextMove(seen: Seen): { tool: string; args: Body } | { text: string } {
   }
   if (seen.results === 0) return { tool: "count_rows", args: { table: "t" } };
   return { text: "sub done" };
-}
-
-function anthropicReply(
-  res: ServerResponse,
-  streaming: boolean,
-  move: ReturnType<typeof nextMove>,
-) {
-  const isTool = "tool" in move;
-  const content = isTool
-    ? [
-        {
-          type: "tool_use",
-          id: `toolu_${Math.random().toString(36).slice(2, 8)}`,
-          name: move.tool,
-          input: move.args,
-        },
-      ]
-    : [{ type: "text", text: move.text }];
-  const stop = isTool ? "tool_use" : "end_turn";
-  if (!streaming) {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(
-      JSON.stringify({
-        id: "msg_1",
-        type: "message",
-        role: "assistant",
-        model: "claude-sonnet-4-6",
-        content,
-        stop_reason: stop,
-        stop_sequence: null,
-        usage: { input_tokens: 5, output_tokens: 2 },
-      }),
-    );
-    return;
-  }
-  res.writeHead(200, { "content-type": "text/event-stream" });
-  const ev = (type: string, data: Body) =>
-    `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
-  const block = isTool
-    ? ev("content_block_start", { index: 0, content_block: { ...content[0], input: {} } }) +
-      ev("content_block_delta", {
-        index: 0,
-        delta: { type: "input_json_delta", partial_json: JSON.stringify(move.args) },
-      })
-    : ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } }) +
-      ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: move.text } });
-  res.end(
-    ev("message_start", {
-      message: {
-        id: "msg_1",
-        type: "message",
-        role: "assistant",
-        model: "claude-sonnet-4-6",
-        content: [],
-        stop_reason: null,
-        stop_sequence: null,
-        usage: { input_tokens: 5, output_tokens: 1 },
-      },
-    }) +
-      block +
-      ev("content_block_stop", { index: 0 }) +
-      ev("message_delta", {
-        delta: { stop_reason: stop, stop_sequence: null },
-        usage: { output_tokens: 2 },
-      }) +
-      ev("message_stop", {}),
-  );
-}
-
-function openAiReply(res: ServerResponse, streaming: boolean, move: ReturnType<typeof nextMove>) {
-  const usage = { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 };
-  const isTool = "tool" in move;
-  const toolCall = isTool
-    ? {
-        id: `call_${Math.random().toString(36).slice(2, 8)}`,
-        type: "function",
-        function: { name: move.tool, arguments: JSON.stringify(move.args) },
-      }
-    : null;
-  const finish = isTool ? "tool_calls" : "stop";
-  if (!streaming) {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(
-      JSON.stringify({
-        id: "c1",
-        object: "chat.completion",
-        model: "m",
-        choices: [
-          {
-            index: 0,
-            message: isTool
-              ? { role: "assistant", content: null, tool_calls: [toolCall] }
-              : { role: "assistant", content: move.text },
-            finish_reason: finish,
-          },
-        ],
-        usage,
-      }),
-    );
-    return;
-  }
-  res.writeHead(200, { "content-type": "text/event-stream" });
-  const chunk = (d: Body) => `data: ${JSON.stringify(d)}\n\n`;
-  res.end(
-    chunk({
-      id: "c1",
-      choices: [
-        {
-          index: 0,
-          delta: isTool
-            ? { role: "assistant", tool_calls: [{ index: 0, ...toolCall }] }
-            : { content: move.text },
-          finish_reason: null,
-        },
-      ],
-    }) +
-      chunk({ id: "c1", choices: [{ index: 0, delta: {}, finish_reason: finish }], usage }) +
-      "data: [DONE]\n\n",
-  );
 }
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(

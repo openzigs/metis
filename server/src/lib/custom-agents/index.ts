@@ -22,6 +22,8 @@ import {
   readStoredOverride,
 } from "../agent-runtime/policy.js";
 import { assertNoSecrets, DefinitionSecretError } from "../agent-runtime/secret-scan.js";
+import { knownToolNames, unknownToolRefs } from "../agent-runtime/tool-refs.js";
+import { getToolRegistry, type ToolRegistry } from "../ai/tool-registry.js";
 
 export class CustomAgentError extends Error {}
 
@@ -139,6 +141,23 @@ async function assertSkillsExist(keys: readonly string[] | null | undefined): Pr
   }
 }
 
+/**
+ * #238 — every tool the agent names must be one METIS really has (the one
+ * check library agents use too). An unknown name would never widen what the
+ * agent may call — the allowlist is matched exactly — but it silently takes
+ * away a tool its author meant to give, so the save is refused, loudly.
+ */
+export function assertKnownTools(
+  tools: readonly string[] | null | undefined,
+  registry: Pick<ToolRegistry, "list"> = getToolRegistry(),
+): void {
+  if (!tools || tools.length === 0) return;
+  const unknown = unknownToolRefs(tools, knownToolNames(registry));
+  if (unknown.length > 0) {
+    throw new CustomAgentError(`Unknown tools: ${unknown.join(", ")}`);
+  }
+}
+
 function overrideJson(v: CustomAgentApprovalPolicy | null | undefined): string | null {
   const parsed = parseApprovalOverride(v ?? null);
   return parsed ? JSON.stringify(parsed) : null;
@@ -151,13 +170,21 @@ export function nextAgentVersion(current: string | null | undefined): string {
   return `${m[1]}.${m[2]}.${Number(m[3]) + 1}`;
 }
 
+/**
+ * #238 — each built-in's `tools` names only tools METIS really has: the
+ * project knowledge search (`search-knowledge`) and the chat code tools. They
+ * once named `search_documents`, `search_code` and `record_project_memory`,
+ * which no tool carries, so — the allowlist being enforced exactly — every
+ * built-in ran with no tools at all. `ensureBuiltInAgents` now refuses to seed
+ * a built-in that names an unknown tool.
+ */
 const BUILT_INS: ReadonlyArray<CustomAgentDefinition & { description: string }> = [
   {
     name: "BA",
     description: "Business Analyst — extracts goals, stakeholders, and rules from scope docs.",
     systemPrompt:
       "You are a Business Analyst. Read the supplied scope documents and emit clear, structured business goals, stakeholder lists, and explicit business rules. Be concise and avoid implementation detail.",
-    tools: ["search_documents", "record_project_memory"],
+    tools: ["search-knowledge"],
     model: null,
     reasoningEffort: "medium",
   },
@@ -166,7 +193,7 @@ const BUILT_INS: ReadonlyArray<CustomAgentDefinition & { description: string }> 
     description: "Solution Architect — identifies components, APIs, and architectural impact.",
     systemPrompt:
       "You are a Solution Architect. Inspect the codebase and document the architecture: components, APIs, data flow, and risks. Cite file paths.",
-    tools: ["search_documents", "search_code", "record_project_memory"],
+    tools: ["search-knowledge", "search_code_graph", "search_code_symbols"],
     model: null,
     reasoningEffort: "high",
   },
@@ -176,7 +203,9 @@ const BUILT_INS: ReadonlyArray<CustomAgentDefinition & { description: string }> 
       "Product Owner — turns goals into prioritised user stories with acceptance criteria.",
     systemPrompt:
       "You are a Product Owner. Convert the analysis into concrete user stories using Given/When/Then acceptance criteria, prioritised by business value.",
-    tools: ["record_project_memory"],
+    // Deliberately none: the PO works from the analysis it is given, and METIS
+    // has no project-memory tool for it to write to (#238).
+    tools: [],
     model: null,
     reasoningEffort: "medium",
   },
@@ -185,7 +214,7 @@ const BUILT_INS: ReadonlyArray<CustomAgentDefinition & { description: string }> 
     description: "QA Lead — derives a test plan and edge cases from user stories.",
     systemPrompt:
       "You are a QA Lead. Derive a test plan from the user stories: scenario coverage, edge cases, and explicit non-functional requirements.",
-    tools: ["search_documents"],
+    tools: ["search-knowledge"],
     model: null,
     reasoningEffort: "medium",
   },
@@ -193,7 +222,24 @@ const BUILT_INS: ReadonlyArray<CustomAgentDefinition & { description: string }> 
 
 export const BUILT_IN_AGENT_NAMES = BUILT_INS.map((b) => b.name);
 
-export async function ensureBuiltInAgents(): Promise<void> {
+/** The built-in definitions (read-only), for the #238 registry check. */
+export const BUILT_IN_AGENTS: ReadonlyArray<Readonly<CustomAgentDefinition>> = BUILT_INS;
+
+/**
+ * Seed (or re-sync) the built-ins. #238 — FAILS LOUDLY, before writing any
+ * row, when a built-in names a tool the registry does not carry; call it after
+ * the boot-time tools are registered (`server.ts`).
+ */
+export async function ensureBuiltInAgents(
+  registry: Pick<ToolRegistry, "list"> = getToolRegistry(),
+): Promise<void> {
+  for (const def of BUILT_INS) {
+    try {
+      assertKnownTools(def.tools, registry);
+    } catch (err) {
+      throw new CustomAgentError(`Built-in agent ${def.name}: ${(err as Error).message}`);
+    }
+  }
   // NOTE: We can't use `prisma.customAgent.upsert` with the compound unique
   // `(projectId, name)` because `projectId` is nullable for built-ins and
   // Prisma rejects `null` inside a compound unique `where` clause (and SQL
@@ -266,6 +312,7 @@ export async function createAgent(
   actorId?: string,
 ): Promise<CustomAgentDto> {
   validate(input);
+  assertKnownTools(input.tools);
   await assertSkillsExist(input.skillKeys);
   const existing = await prisma.customAgent.findFirst({
     where: { projectId: input.projectId, name: input.name },
@@ -307,6 +354,7 @@ export async function updateAgent(
     throw new CustomAgentError("Built-in agents cannot be modified");
   }
   validate(patch, { allowEmpty: true });
+  assertKnownTools(patch.tools);
   await assertSkillsExist(patch.skillKeys);
   const row = await prisma.customAgent.update({
     where: { id },

@@ -25,6 +25,7 @@ import {
   type ChatMessage,
   type StreamEvent,
   createSession,
+  sessionAgentInput,
   streamChat,
 } from "@/lib/ai-client";
 import { analysisApi } from "@/lib/analysis-api";
@@ -124,7 +125,7 @@ export default function WorkbenchPage() {
         const s = await createSession({
           title: "Workbench",
           ...(activeProjectId ? { projectId: activeProjectId } : {}),
-          ...(layout.agentKey ? { agentKey: layout.agentKey } : {}),
+          ...sessionAgentInput(layout.agentKey, activeProjectId),
         });
         if (cancelled) return;
         setSession(s);
@@ -354,6 +355,7 @@ export default function WorkbenchPage() {
             <div className="flex items-center gap-2">
               <AgentPicker
                 value={layout.agentKey}
+                projectId={activeProjectId}
                 onChange={(key) => setLayout((prev) => ({ ...prev, agentKey: key }))}
                 disabled={streaming}
               />

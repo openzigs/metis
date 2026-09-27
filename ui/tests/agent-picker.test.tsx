@@ -3,53 +3,19 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
 import { AgentPicker, loadStoredAgentKey, storeAgentKey } from "@/components/chat/agent-picker";
 
-vi.mock("@/lib/library-api", () => ({
-  agentsApi: {
-    list: vi.fn().mockResolvedValue({
-      items: [
-        {
-          id: "a1",
-          key: "researcher",
-          name: "Researcher",
-          displayName: "Researcher",
-          description: "",
-          version: "1.0.0",
-          model: "gpt",
-          tools: [],
-          tags: [],
-          handoffs: [],
-          enabled: true,
-          archived: false,
-          source: "inline",
-          contentSha256: null,
-          defaultSkillKeys: [],
-          createdById: null,
-          createdAt: "",
-          updatedAt: "",
-        },
-        {
-          id: "a2",
-          key: "writer",
-          name: "Writer",
-          displayName: "Writer",
-          description: "",
-          version: "1.0.0",
-          model: "gpt",
-          tools: [],
-          tags: [],
-          handoffs: [],
-          enabled: false, // disabled — should be filtered out
-          archived: false,
-          source: "inline",
-          contentSha256: null,
-          defaultSkillKeys: [],
-          createdById: null,
-          createdAt: "",
-          updatedAt: "",
-        },
-      ],
-    }),
-  },
+// #236 — the picker reads what a session may bind from the server, which
+// already leaves out disabled and archived agents (see the server's
+// chat-custom-agent-real-providers.sqlite.test.ts).
+vi.mock("@/lib/ai-client", () => ({
+  listSessionAgents: vi.fn().mockResolvedValue([
+    {
+      ref: "library:a1",
+      kind: "library",
+      key: "researcher",
+      name: "Researcher",
+      description: "",
+    },
+  ]),
 }));
 
 beforeEach(() => {
@@ -72,7 +38,7 @@ describe("agent-picker storage helpers", () => {
 });
 
 describe("<AgentPicker />", () => {
-  it("renders enabled agents and calls onChange with the picked key", async () => {
+  it("renders the bindable agents and calls onChange with the picked key", async () => {
     const onChange = vi.fn();
     const Wrapper = makeWrapper({ withAuth: false });
     render(
@@ -84,8 +50,6 @@ describe("<AgentPicker />", () => {
     await waitFor(() =>
       expect(screen.getByRole("option", { name: "Researcher" })).toBeInTheDocument(),
     );
-    // Disabled agent must not appear
-    expect(screen.queryByRole("option", { name: "Writer" })).not.toBeInTheDocument();
     fireEvent.change(select, { target: { value: "researcher" } });
     expect(onChange).toHaveBeenCalledWith("researcher");
   });
