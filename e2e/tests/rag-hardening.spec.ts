@@ -118,12 +118,23 @@ test.describe("Epic #157 — RAG hardening", () => {
       expect(["quarantined", "pending"]).toContain(settled.indexState);
 
       // -------- 4. Quarantine list surfaces this document --------
-      const qList = await api.get(`/api/projects/${projectId}/quarantine`);
-      expect(qList.status()).toBe(200);
-      const qBody = (await qList.json()) as ApiEnvelope<{
-        items: Array<{ documentId: string }>;
-      }>;
-      expect(qBody.data.items.some((row) => row.documentId === documentId)).toBe(true);
+      // Step 3 also accepts `pending` (ingest still running), and the document
+      // joins the quarantine list only once ingest writes `quarantined` — so a
+      // single read here raced the ingest and failed intermittently (#141 CI).
+      // Poll the list itself until the document appears.
+      const inQuarantine = await pollUntil(
+        async () => {
+          const qList = await api.get(`/api/projects/${projectId}/quarantine`);
+          expect(qList.status()).toBe(200);
+          const qBody = (await qList.json()) as ApiEnvelope<{
+            items: Array<{ documentId: string }>;
+          }>;
+          return qBody.data.items.some((row) => row.documentId === documentId);
+        },
+        (present) => present,
+        { timeoutMs: 30_000, label: "document in the quarantine list" },
+      );
+      expect(inQuarantine).toBe(true);
 
       // -------- 5. Approve flips indexState to "indexed" --------
       // The approve route is project-scoped (mounted under
