@@ -34,6 +34,7 @@ import {
   joinLogicalLine,
   MAX_CONTINUATION_LINES,
   opensBracket,
+  stripComment,
 } from "./rule-miner-continuation.js";
 
 export interface MinedKtRule {
@@ -383,12 +384,17 @@ export function mineKtRules(
         if (j > i && depth === 1) {
           // A when-arm is `<conditions> -> ...`. Found with indexOf, not a regex:
           // `^\s*(.+?)\s*->` was cubic on a long whitespace run (ReDoS).
-          const arrow = text.indexOf("->");
-          const trimmed = text.trim();
+          // A `//` comment is never part of an arm: a comment line ending in
+          // `&&` or `,` must not be folded into the next arm's condition or
+          // labels (#170 review). Comment-only and blank lines leave `pending` as is.
+          const code = stripComment(text, "//");
+          const arrow = code.indexOf("->");
+          const trimmed = code.trim();
           const next = j + 1 < lines.length ? lines[j + 1].trim() : "";
-          if (
+          if (trimmed.length === 0) {
+            // nothing to read on this line
+          } else if (
             arrow === -1 &&
-            trimmed.length > 0 &&
             pendingLines < MAX_CONTINUATION_LINES - 1 &&
             (ARM_TRAILING_OP_RE.test(trimmed) || ARM_LEADING_OP_RE.test(next))
           ) {
@@ -399,7 +405,8 @@ export function mineKtRules(
             const head = arrow > 0 ? text.slice(0, arrow).trim() : "";
             const armCond = arrow >= 0 && pending ? `${pending} ${head}`.trim() : head;
             const armLine = arrow >= 0 && pending ? pendingFrom : j;
-            const armText = arrow >= 0 && pending ? `${pending} ${trimmed}` : trimmed;
+            // The expression keeps the arm line as written, as before #170.
+            const armText = arrow >= 0 && pending ? `${pending} ${text.trim()}` : text.trim();
             pending = "";
             pendingFrom = -1;
             pendingLines = 0;

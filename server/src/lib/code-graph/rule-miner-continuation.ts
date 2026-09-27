@@ -151,7 +151,7 @@ export function joinLogicalLine(
 }
 
 /** A line with its trailing comment removed (strings respected). */
-function stripComment(line: string, comment: JoinOptions["comment"]): string {
+export function stripComment(line: string, comment: JoinOptions["comment"]): string {
   return scanLine(line, { depth: 0 }, comment);
 }
 

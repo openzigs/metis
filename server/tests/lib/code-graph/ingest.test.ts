@@ -362,6 +362,33 @@ describe("ingestCodeGraph (#308)", () => {
     expect(callsTo(store, "Text", screen)).toHaveLength(1);
   });
 
+  it("keeps a Kotlin constructor call a reference on an incremental ingest that skips the class's file (#170 review)", async () => {
+    // The in-memory resolution index holds only re-parsed files; `Order.kt` is
+    // unchanged on the second run, so the class must be found in the database.
+    const screenSrc = `package com.acme\nfun Screen() {\n  val o = Order(1)\n  Column {}\n}\n`;
+    const root = await makeFixture({
+      "src/main/kotlin/com/acme/Order.kt": `package com.acme\nclass Order(val total: Int)\n`,
+      "src/main/kotlin/com/acme/Screen.kt": screenSrc,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "proj1", rootDir: root });
+    await fs.writeFile(
+      path.join(root, "src/main/kotlin/com/acme/Screen.kt"),
+      `${screenSrc}// edited\n`,
+      "utf8",
+    );
+    const stats = await ingestCodeGraph(prisma, { projectId: "proj1", rootDir: root });
+    expect(stats.filesSkipped).toBe(1);
+
+    const screen = "src/main/kotlin/com/acme/Screen.kt";
+    const edges = store.codeEdges.filter((e: any) => e.filePath === screen);
+    expect(
+      edges.filter((e: any) => e.kind === "references").map((e: any) => e.toQualifiedName),
+    ).toEqual(["Order"]);
+    expect(callsTo(store, "Order", screen)).toHaveLength(0);
+    expect(callsTo(store, "Column", screen)).toHaveLength(1);
+  });
+
   it("reuses existing CodeGraph row instead of creating a duplicate", async () => {
     const root = await makeFixture({ "a.ts": "function f(){}\n" });
     const { prisma, store } = makePrismaMock();

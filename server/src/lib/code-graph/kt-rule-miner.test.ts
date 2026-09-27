@@ -474,3 +474,40 @@ describe("mineKtRules — conditions that span lines (#170)", () => {
     expect(performance.now() - start).toBeLessThan(1000);
   });
 });
+
+describe("mineKtRules — comment lines inside a when block (#170 review)", () => {
+  it("does not fold a `//` line ending in an operator into the next arm", () => {
+    const src = ["when {", "    // big orders &&", "    t > 100 -> 1", "    else -> 0", "}"].join(
+      "\n",
+    );
+    const guards = mineKtRules(src, FILE, 1).filter((r) => r.kind === "guard");
+    expect(guards.map((r) => [r.line, r.summary])).toEqual([[3, "Branches on threshold t > 100"]]);
+  });
+
+  it("does not read a `//` line ending in a comma as a when label", () => {
+    const src = [
+      "when (s) {",
+      "    // terminal states,",
+      "    Status.DONE -> 1",
+      "    else -> 0",
+      "}",
+    ].join("\n");
+    const branch = mineKtRules(src, FILE, 1).find((r) => r.kind === "when-branch");
+    expect(branch?.summary).toBe("State dispatch on `s` with 1 branches: Status.DONE");
+  });
+
+  it("keeps joining an arm across an interleaved comment and strips trailing comments", () => {
+    const src = [
+      "when {",
+      "    total > 10_000 && // big",
+      "    // only for gold",
+      "        tier == Tier.GOLD -> 1",
+      "    else -> 0",
+      "}",
+    ].join("\n");
+    const guards = mineKtRules(src, FILE, 1).filter((r) => r.kind === "guard");
+    expect(guards.map((r) => [r.line, r.summary])).toEqual([
+      [2, "Branches on threshold total > 10_000 && tier == Tier.GOLD"],
+    ]);
+  });
+});

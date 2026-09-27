@@ -18,9 +18,12 @@ import { detectLanguage, initCodeGraphParsers, parseSource, type ParsedFile } fr
 import {
   createResolutionIndex,
   indexSymbol,
+  isKotlinConstructorCandidate,
   isRuntimeOrTestModule,
+  KOTLIN_CONSTRUCTIBLE_LANGUAGES,
   reclassifyKotlinConstructorCall,
   resolveEdgeTarget,
+  type ResolutionIndex,
   type ResolvableSymbol,
 } from "./call-resolution.js";
 import { createEventLoopYielder, type MaybeYield } from "./event-loop-yield.js";
@@ -766,6 +769,12 @@ async function persistParsed(
 
   // ── Pass 2: build import-target index and persist edges. ────────────────
   const { importTargets, runtimeImports } = buildFileImportIndex(parsedFiles, fileToSymbols);
+  const persistedClassNames = await loadPersistedClassNames(
+    prisma,
+    codeGraphId,
+    parsedFiles,
+    index,
+  );
 
   for (const file of parsedFiles) {
     const site = {
@@ -788,7 +797,12 @@ async function persistParsed(
         toId = resolveEdgeTarget(edge.toQualifiedName, edge.receiver, site, index);
       }
       // #170 — a capitalised Kotlin call is a constructor only if a class exists.
-      const { kind, metadata } = reclassifyKotlinConstructorCall(edge, file.language, index);
+      const { kind, metadata } = reclassifyKotlinConstructorCall(
+        edge,
+        file.language,
+        index,
+        persistedClassNames,
+      );
 
       batch.push({
         codeGraphId,
@@ -813,6 +827,50 @@ async function persistParsed(
     }
   }
 }
+
+/**
+ * #170 review — the names of Kotlin/Java classes, among this run's candidate
+ * Kotlin constructor calls, that exist in the graph but not in the in-memory
+ * index. On an incremental ingest the index holds only re-parsed files, so
+ * without this `Order(1)` would become a `calls` edge whenever `Order.kt` is
+ * unchanged, and flip back on the next full ingest. One query per
+ * {@link CLASS_NAME_QUERY_CHUNK} unresolved candidate names, none when there are none.
+ */
+async function loadPersistedClassNames(
+  prisma: PrismaClient,
+  codeGraphId: string,
+  parsedFiles: ParsedFile[],
+  index: ResolutionIndex,
+): Promise<Set<string>> {
+  const unresolved = new Set<string>();
+  for (const file of parsedFiles) {
+    for (const edge of file.edges) {
+      if (!isKotlinConstructorCandidate(edge, file.language)) continue;
+      const known = (index.nameToSymbols.get(edge.toQualifiedName) ?? []).some(
+        (s) => s.kind === "class" && KOTLIN_CONSTRUCTIBLE_LANGUAGES.has(s.language),
+      );
+      if (!known) unresolved.add(edge.toQualifiedName);
+    }
+  }
+  const found = new Set<string>();
+  const names = [...unresolved];
+  for (let k = 0; k < names.length; k += CLASS_NAME_QUERY_CHUNK) {
+    const rows = await prisma.codeSymbol.findMany({
+      where: {
+        codeGraphId,
+        kind: "class",
+        name: { in: names.slice(k, k + CLASS_NAME_QUERY_CHUNK) },
+        language: { in: [...KOTLIN_CONSTRUCTIBLE_LANGUAGES] },
+      },
+      select: { name: true },
+    });
+    for (const r of rows) found.add(r.name);
+  }
+  return found;
+}
+
+/** Names per `IN (...)` list in {@link loadPersistedClassNames} — under SQLite's bound-variable limit. */
+const CLASS_NAME_QUERY_CHUNK = 500;
 
 /** Rows per `codeEdge.createMany` in {@link persistParsed} (#16). */
 const EDGE_INSERT_BATCH = 500;
