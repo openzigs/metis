@@ -448,7 +448,7 @@ jobs:
   # runs in parallel with `api`'s image builds instead of ahead of them.
   #
   # It is NOT a duplicate of `postgres-adapter`, which runs the same files against
-  # the POSTGRES-generated client: there 14 files (288 tests) skip themselves —
+  # the POSTGRES-generated client: there 15 files (321 tests, PR #287) skip themselves —
   # every `*.sqlite.test.ts` among them. Measured on #4 by comparing the per-file
   # results of both jobs, not their totals. `ci-test-ownership-repo.test.mjs`
   # keeps the ownership honest.

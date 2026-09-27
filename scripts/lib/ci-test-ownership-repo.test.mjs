@@ -25,8 +25,9 @@ const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), "utf8");
  * They never count as that package's owner — a variant run is not a substitute.
  */
 const VARIANT_JOBS = Object.freeze({
-  // The server suite against the POSTGRES-generated Prisma client (#876). 14 files
-  // (288 tests, every `*.sqlite.test.ts` among them) skip themselves there, so it
+  // The server suite against the POSTGRES-generated Prisma client (#876). 15 files
+  // (321 tests on PR #287's final run, every `*.sqlite.test.ts` among them; the count
+  // grows with the suite) skip themselves there, so it
   // cannot replace the SQLite run — measured on #4.
   "postgres-adapter": ["@metis/server"],
   // win32. Its gating steps run the scripts suite; the full suite is non-gating.
