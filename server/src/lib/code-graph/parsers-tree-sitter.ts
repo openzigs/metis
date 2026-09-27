@@ -24,10 +24,14 @@
  * Vitest's Node 20+ runtime supports `WebAssembly.instantiate` natively,
  * no special vite/vitest config is needed.
  *
- * NOTE on web-tree-sitter version: pinned to 0.24.4 to match the wrapper
- * image (`images/mcp-wrappers/code-graph-runner-sse/package.json`). The
- * 0.25.x line introduced a different Module loader API that requires
- * adapter shims in Node — we explicitly stay on 0.24.x.
+ * NOTE on web-tree-sitter version: 0.25+ (pinned exactly in
+ * `server/package.json`) replaced the 0.24 default-export `Parser` class —
+ * which carried `Parser.init()` and `Parser.Language` as statics — with
+ * NAMED exports `{ Parser, Language }`, and `parser.parse()` may now return
+ * `null`. Calling the 0.24 shape against 0.25+ fails at boot with
+ * "Parser.init is not a function", which disabled every grammar. The
+ * standalone wrapper image (`images/mcp-wrappers/code-graph-runner-sse`)
+ * pins its own copy and is versioned separately.
  */
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -43,9 +47,9 @@ import type {
   SymbolKind,
 } from "./parsers.js";
 
-// `web-tree-sitter` 0.24 ships a CJS-only entry point. We use createRequire
-// rather than top-level import so vitest's ESM transform doesn't try to
-// re-process the emscripten loader.
+// `web-tree-sitter` ships a CJS entry point alongside its ESM one. We use
+// createRequire rather than top-level import so vitest's ESM transform
+// doesn't try to re-process the emscripten loader.
 const require = createRequire(import.meta.url);
 type Tree = { rootNode: SyntaxNode };
 type SyntaxNode = {
@@ -61,19 +65,15 @@ type SyntaxNode = {
   childForFieldName: (name: string) => SyntaxNode | null;
   parent: SyntaxNode | null;
 };
-interface ParserCtor {
-  new (): {
-    setLanguage: (lang: unknown) => void;
-    parse: (source: string) => Tree;
-  };
-  init: () => Promise<void>;
-  Language: { load: (path: string) => Promise<unknown> };
-}
+// Typed from the package's own declarations (#310): a hand-written interface
+// over this untyped `require()` let web-tree-sitter 0.25's API change
+// (`Parser` became a named export) typecheck cleanly and fail at startup.
+type WebTreeSitterModule = typeof import("web-tree-sitter");
 
 const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
 
 interface LoadedParser {
-  parser: { parse: (source: string) => Tree };
+  parser: { parse: (source: string) => Tree | null };
 }
 
 let parsers: Map<Language, LoadedParser> | null = null;
@@ -84,7 +84,7 @@ export async function initCodeGraphParsers(): Promise<void> {
   if (parsers) return;
   if (initPromise) return initPromise;
   initPromise = (async () => {
-    const Parser: ParserCtor = require("web-tree-sitter");
+    const { Parser, Language: TsLanguage }: WebTreeSitterModule = require("web-tree-sitter");
     await Parser.init();
     // SAS has no tree-sitter grammar — it is handled by the regex `parseSas`
     // path in parsers.ts before tree-sitter is consulted, so it is absent here.
@@ -103,10 +103,10 @@ export async function initCodeGraphParsers(): Promise<void> {
     };
     const next = new Map<Language, LoadedParser>();
     for (const [lang, path] of Object.entries(grammarPaths) as Array<[Language, string]>) {
-      const grammar = await Parser.Language.load(path);
+      const grammar = await TsLanguage.load(path);
       const p = new Parser();
       p.setLanguage(grammar);
-      next.set(lang, { parser: p as { parse: (source: string) => Tree } });
+      next.set(lang, { parser: p });
     }
     parsers = next;
   })();
@@ -140,12 +140,15 @@ export function parseWithTreeSitter(
   if (!loaded) {
     throw new Error(`No tree-sitter grammar loaded for language=${language}`);
   }
-  let tree: Tree;
+  let tree: Tree | null;
   try {
     tree = loaded.parser.parse(source);
   } catch {
     return unparseable(filePath, language, source);
   }
+  // web-tree-sitter 0.25+ returns null instead of throwing when no tree
+  // could be produced.
+  if (!tree) return unparseable(filePath, language, source);
   const symbols: ParsedSymbol[] = [];
   const edges: ParsedEdge[] = [];
   const moduleQname = moduleQualifiedName(filePath);
@@ -277,12 +280,13 @@ export function findStringLiterals(source: string, language: Language): StringLi
   if (!parsers || !types) return [];
   const loaded = parsers.get(language);
   if (!loaded) return [];
-  let tree: Tree;
+  let tree: Tree | null;
   try {
     tree = loaded.parser.parse(source);
   } catch {
     return [];
   }
+  if (!tree) return [];
   const out: StringLiteral[] = [];
   walk(tree.rootNode, (n) => {
     if (!types.has(n.type)) return;
@@ -414,12 +418,13 @@ export function findJavaConcatSqlCandidates(source: string): StringLiteral[] {
   if (!parsers) return [];
   const loaded = parsers.get("java");
   if (!loaded) return [];
-  let tree: Tree;
+  let tree: Tree | null;
   try {
     tree = loaded.parser.parse(source);
   } catch {
     return [];
   }
+  if (!tree) return [];
 
   const out: StringLiteral[] = [];
   // startIndex of nodes already folded into a StringBuilder/`+` assembly, so the

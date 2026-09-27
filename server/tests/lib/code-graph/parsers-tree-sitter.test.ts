@@ -5,12 +5,16 @@
  * `await initCodeGraphParsers()` in beforeAll so the dispatcher delegates
  * to tree-sitter. Each test targets a documented v1 limitation.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createRequire } from "node:module";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { parseSource } from "../../../src/lib/code-graph/parsers.js";
 import {
   __resetCodeGraphParsersForTests,
+  findJavaConcatSqlCandidates,
+  findStringLiterals,
   initCodeGraphParsers,
   isTreeSitterReady,
+  parseWithTreeSitter,
 } from "../../../src/lib/code-graph/parsers-tree-sitter.js";
 
 beforeAll(async () => {
@@ -543,5 +547,46 @@ class A extends B {
       Save: "base",
       Local: undefined,
     });
+  });
+});
+
+// #310 — web-tree-sitter 0.25+ returns `null` from `parse()` (instead of
+// throwing) when no tree could be produced. Every caller must degrade rather
+// than dereference `tree.rootNode`. Stub the real Parser's `parse` — the same
+// CJS module instance the implementation `require()`s — to return null.
+describe("web-tree-sitter parse() returning null (#310)", () => {
+  const { Parser } = createRequire(import.meta.url)("web-tree-sitter") as {
+    Parser: { prototype: { parse: (...args: unknown[]) => unknown } };
+  };
+  const JAVA_SQL = `class Repo {
+  String q(String id) { return "SELECT * FROM users WHERE id = " + id; }
+}`;
+  const TS_SQL = "const q = `SELECT * FROM orders WHERE id = ${id}`;";
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("finds literals when parse() yields a tree (control)", () => {
+    expect(parseWithTreeSitter("a.ts", TS_SQL, "ts").unparseable).toBeFalsy();
+    expect(findStringLiterals(TS_SQL, "ts").length).toBeGreaterThan(0);
+    expect(findJavaConcatSqlCandidates(JAVA_SQL).length).toBeGreaterThan(0);
+  });
+
+  it("parseWithTreeSitter marks the file unparseable instead of throwing", () => {
+    vi.spyOn(Parser.prototype, "parse").mockReturnValue(null);
+    const r = parseWithTreeSitter("a.ts", TS_SQL, "ts");
+    expect(r.unparseable).toBe(true);
+    expect(r.symbols).toEqual([]);
+  });
+
+  it("findStringLiterals returns [] instead of throwing", () => {
+    vi.spyOn(Parser.prototype, "parse").mockReturnValue(null);
+    expect(findStringLiterals(TS_SQL, "ts")).toEqual([]);
+  });
+
+  it("findJavaConcatSqlCandidates returns [] instead of throwing", () => {
+    vi.spyOn(Parser.prototype, "parse").mockReturnValue(null);
+    expect(findJavaConcatSqlCandidates(JAVA_SQL)).toEqual([]);
   });
 });

@@ -29,9 +29,12 @@ is non-streaming and builds its client with no `timeout`, so the guard is live.
 adversarial panel found it: `Messages.create` also passes
 `MODEL_NONSTREAMING_TOKENS[body.model]` into the same function, and it throws
 when `max_tokens` exceeds that per-model entry — **8,192** for eight
-`claude-opus-4*` ids. `ANTHROPIC_MODEL` is an unconstrained string, so those ids
-are reachable, and a guard that clamped only to 21,333 would have reported a
-clean 21,000 on a request that still threw. The effective bound is the minimum
+`claude-opus-4*` ids on 0.104.2, three on 0.127.0 (which dropped the
+first-party and Bedrock spellings and kept only `claude-opus-4@20250514`,
+`claude-opus-4-1@20250805` and `anthropic.claude-opus-4-1-20250805-v1:0`).
+`ANTHROPIC_MODEL` is an unconstrained string, so those ids are reachable, and a
+guard that clamped only to 21,333 would have reported a clean 21,000 on a request
+that still threw. The effective bound is the minimum
 of the two. That table is not in the package's `exports` map, so it is mirrored
 in `nonstreaming-output-bound.ts` and pinned twice: byte-for-byte against the
 SDK's own file read off disk, and behaviourally per id with **both** arguments —
@@ -114,7 +117,10 @@ clamping it would be an over-block on a cap deliberately raised for it (#1226).
   its own measurement, not a guess.
 - If a future model's ceiling drops below 21,333, the model clamp still wins:
   the effective value is the lowest of the three.
-- Deployments setting `ANTHROPIC_MODEL` to `claude-opus-4-0`, `claude-opus-4-1-20250805`
-  or one of their six aliases are now clamped to 8,192 on `chat()` rather than
-  failing. That is a real reduction in output budget for those ids, and it is the
-  SDK's number, not ours — the alternative is a hard client-side throw.
+- Deployments setting `ANTHROPIC_MODEL` to an id the SDK's table lists are
+  clamped to 8,192 on `chat()` rather than failing. On SDK 0.104.2 that was
+  `claude-opus-4-0`, `claude-opus-4-1-20250805` and six aliases; since 0.127.0
+  only the two Vertex-style `@` ids reach it, because the provider normalises the
+  one remaining Bedrock spelling to `claude-opus-4-1-20250805` before sending.
+  That is a real reduction in output budget for those ids, and it is the SDK's
+  number, not ours — the alternative is a hard client-side throw.

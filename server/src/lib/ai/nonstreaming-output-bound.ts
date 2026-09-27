@@ -16,7 +16,7 @@
  * `Messages.create` calls `Client#calculateNonstreamingTimeout` whenever the
  * client carries no explicit `timeout` — which `AnthropicProvider` does not set
  * — passing the request's `max_tokens` AND a per-model override looked up in the
- * SDK's own table (`@anthropic-ai/sdk` 0.104.2,
+ * SDK's own table (`@anthropic-ai/sdk` 0.127.0,
  * `resources/messages/messages.js`):
  *
  * ```js
@@ -42,7 +42,7 @@
  * **There are therefore TWO throw conditions, not one**, and #1257 as filed named
  * only the first. The general bound is the largest integer satisfying
  * `60min × maxTokens / 128_000 ≤ 10min`, i.e. `⌊128_000 × 10 / 60⌋ = 21_333`. But
- * for the eight ids in {@link SDK_MODEL_NONSTREAMING_TOKENS} the SDK throws far
+ * for the three ids in {@link SDK_MODEL_NONSTREAMING_TOKENS} the SDK throws far
  * below that — at 8,192 — and clamping to 21,333 would not have saved a
  * deployment running one of them. `ANTHROPIC_MODEL` is an unconstrained string
  * (`ai/config.ts`), so those ids are reachable. The effective bound is the
@@ -115,7 +115,7 @@ export const ANTHROPIC_NONSTREAMING_MAX_OUTPUT_TOKENS = Math.floor(
 const ANTHROPIC_SDK_PROVIDERS: ReadonlySet<string> = new Set<ProviderKey>(["anthropic"]);
 
 /**
- * A MIRROR of `MODEL_NONSTREAMING_TOKENS` in `@anthropic-ai/sdk` 0.104.2
+ * A MIRROR of `MODEL_NONSTREAMING_TOKENS` in `@anthropic-ai/sdk` 0.127.0
  * (`internal/constants.js`) — the SDK's per-model non-streaming ceiling, which
  * is a SECOND throw condition below the general 21,333 bound.
  *
@@ -133,12 +133,10 @@ const ANTHROPIC_SDK_PROVIDERS: ReadonlySet<string> = new Set<ProviderKey>(["anth
  * best-effort.
  */
 export const SDK_MODEL_NONSTREAMING_TOKENS: Readonly<Record<string, number>> = {
-  "claude-opus-4-20250514": 8192,
-  "claude-opus-4-0": 8192,
-  "claude-4-opus-20250514": 8192,
-  "anthropic.claude-opus-4-20250514-v1:0": 8192,
+  // 0.127.0 dropped the five first-party and Bedrock `claude-opus-4` /
+  // `claude-opus-4-0` / `claude-opus-4-1-20250805` entries 0.104.2 carried; the
+  // SDK no longer applies a per-model ceiling to those ids, so neither do we.
   "claude-opus-4@20250514": 8192,
-  "claude-opus-4-1-20250805": 8192,
   "anthropic.claude-opus-4-1-20250805-v1:0": 8192,
   "claude-opus-4-1@20250805": 8192,
 };
@@ -192,7 +190,7 @@ export interface NonStreamingBoundOptions {
   /** The setting an operator would change, named in the warning. */
   knob?: string;
   /**
-   * The model id **as it will be sent on the wire**. When it is one of the eight
+   * The model id **as it will be sent on the wire**. When it is one of the three
    * the SDK caps at 8,192 the bound drops accordingly. Omitting it is safe but
    * weaker: the general 21,333 applies and a per-model throw is not prevented,
    * which is why `AnthropicProvider.chat()` — the one place holding the exact
