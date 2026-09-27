@@ -76,6 +76,26 @@ describe("lockedVersions", () => {
     const v = lockedVersions(LOCK, "better-sqlite3").find((x) => x.version === "13.0.2");
     expect(v?.fetchesBinary).toBe(false);
   });
+  it("reads a quoted key, and skips peer-suffixed keys and look-alike names", () => {
+    const lock = [
+      "snapshots:",
+      "  'better-sqlite3@11.0.0':",
+      "    dependencies:",
+      "      prebuild-install: 7.1.3",
+      "  better-sqlite3@9.0.0(foo@1.0.0):",
+      "    dependencies:",
+      "      prebuild-install: 7.1.3",
+      "  better-sqlite3-multiple-ciphers@12.0.0:",
+      "    dependencies:",
+      "      prebuild-install: 7.1.3",
+      "  better-sqlite3@:",
+      "",
+    ].join("\n");
+    expect(lockedVersions(lock, "better-sqlite3")).toEqual([
+      { version: "11.0.0", fetchesBinary: true },
+    ]);
+  });
+
   it("returns nothing without a snapshots section", () => {
     expect(lockedVersions("packages:\n", "better-sqlite3")).toEqual([]);
   });

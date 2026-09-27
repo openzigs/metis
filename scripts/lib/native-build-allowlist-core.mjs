@@ -58,8 +58,6 @@ export function lockedVersions(lockfile, pkg) {
   const lines = lockfile.split(/\r?\n/);
   const at = lines.findIndex((l) => /^snapshots:\s*$/.test(l));
   if (at < 0) return [];
-  const escaped = pkg.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-  const header = new RegExp(`^ {2}'?${escaped}@([^('":]+)'?:\\s*$`);
   /** @type {Array<{ version: string, fetchesBinary: boolean }>} */
   const out = [];
   /** @type {{ version: string, fetchesBinary: boolean } | null} */
@@ -67,14 +65,33 @@ export function lockedVersions(lockfile, pkg) {
   for (const line of lines.slice(at + 1)) {
     if (/^\S/.test(line)) break;
     if (/^ {2}\S/.test(line)) {
-      const m = line.match(header);
-      current = m ? { version: m[1], fetchesBinary: false } : null;
+      const version = snapshotVersion(line, pkg);
+      current = version ? { version, fetchesBinary: false } : null;
       if (current) out.push(current);
       continue;
     }
     if (current && /^ {6}prebuild-install:/.test(line)) current.fetchesBinary = true;
   }
   return out;
+}
+
+/**
+ * The version in a `snapshots:` key line (`  <pkg>@<version>:`, optionally
+ * quoted) when it names `pkg` with no peer suffix, else null. String operations
+ * rather than a RegExp built from `pkg`.
+ *
+ * @param {string} line
+ * @param {string} pkg
+ * @returns {string | null}
+ */
+function snapshotVersion(line, pkg) {
+  let key = line.trim();
+  if (!key.endsWith(":")) return null;
+  key = key.slice(0, -1);
+  if (key.length > 1 && key[0] === "'" && key.endsWith("'")) key = key.slice(1, -1);
+  if (!key.startsWith(`${pkg}@`)) return null;
+  const version = key.slice(pkg.length + 1);
+  return version && !/[('":\s]/.test(version) ? version : null;
 }
 
 /**

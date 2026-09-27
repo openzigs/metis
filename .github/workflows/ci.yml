@@ -1031,8 +1031,13 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # #2 — one test FILE at a time here. The runner suites (`*-runner.test.mjs`)
+      # spawn node and git per case, and process creation on this Windows image is
+      # slow enough that four files doing it at once pushed a 10 s `beforeAll` and a
+      # 5 s case over their bounds on one run of #2 and not the next. Serial costs
+      # ~1-2 min; a bigger timeout would only hide the contention (#1379).
       - name: Test cross-platform tooling (scripts)
-        run: pnpm --filter @metis/scripts test
+        run: pnpm --filter @metis/scripts test --no-file-parallelism
 
       - name: Test GPU/Gemma variant selection
         working-directory: server
