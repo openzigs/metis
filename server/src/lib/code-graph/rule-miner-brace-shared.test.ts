@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BODY_LOOKAHEAD,
+  blankLiterals,
   blockBody,
   braceDelta,
   comparesToConstant,
@@ -124,5 +125,16 @@ describe("literals, labels and comparisons", () => {
     expect(trailingIdentifier("static const double RATE ")).toBe("RATE");
     expect(trailingIdentifier("x[3]")).toBe("");
     expect(trailingIdentifier("9lives")).toBe("");
+  });
+});
+
+describe("blankLiterals", () => {
+  it("blanks string and char literal contents, keeping quotes, length and lifetimes", () => {
+    const text = `bail!("no match {}", '\\'', 'x', &'a str)`;
+    const out = blankLiterals(text);
+    expect(out).toHaveLength(text.length);
+    expect(out).not.toContain("match");
+    expect(out).toContain("&'a str");
+    expect(out).toBe(`bail!("${" ".repeat("no match {}".length)}", '  ', ' ', &'a str)`);
   });
 });

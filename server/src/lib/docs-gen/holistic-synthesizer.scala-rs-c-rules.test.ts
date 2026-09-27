@@ -14,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatChunk } from "../ai/types.js";
-import { synthesizeHolisticDocument } from "./holistic-synthesizer.js";
+import { projectLanguageLabel, synthesizeHolisticDocument } from "./holistic-synthesizer.js";
 import {
   parsePersistedMinedRules,
   toPersistedMinedRules,
@@ -270,5 +270,23 @@ describe("renderers stay inside the planner's per-inventory budget (#161, no-dro
     const out = (render as (r: typeof rules, max: number) => string)(rules, budget);
     expect(out).not.toContain("truncated");
     expect(out.match(/^- L\d+:/gm)).toHaveLength(rules.length);
+  });
+});
+
+// PR #319 review — a C/C++ project dominated by headers or `.cc` files is still named as one.
+describe("projectLanguageLabel (#161)", () => {
+  it("names every C/C++ source and header extension the ingest reads", () => {
+    expect(projectLanguageLabel("c")).toBe("C");
+    expect(projectLanguageLabel("h")).toBe("C/C++");
+    for (const ext of ["cpp", "cc", "cxx", "hpp", "hh", "hxx"]) {
+      expect(projectLanguageLabel(ext)).toBe("C++");
+    }
+    expect(projectLanguageLabel("scala")).toBe("Scala");
+    expect(projectLanguageLabel("rs")).toBe("Rust");
+  });
+
+  it("falls back to the extension, or unknown", () => {
+    expect(projectLanguageLabel("zig")).toBe("zig");
+    expect(projectLanguageLabel("")).toBe("unknown");
   });
 });

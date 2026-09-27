@@ -237,3 +237,26 @@ describe("renderMinedCRules", () => {
     expect(renderMinedCRules(rules, 40)).toContain("more C/C++ rules truncated");
   });
 });
+
+// PR #319 review — an escaped quote inside a char literal does not end the label scan.
+describe("mineCRules — escaped char-literal labels", () => {
+  it("reads every label of a one-line switch whose first label is '\\''", () => {
+    const src = "switch (c) { case '\\'': return 1; case 'a': return 2; case KIND_X: return 3; }";
+    const rule = byKind(src, "switch-branch")[0];
+    expect(rule?.expression).toContain("KIND_X");
+  });
+
+  it("keeps the labels after an escaped quote on a multi-line switch", () => {
+    const src = [
+      "switch (kind) {",
+      "  case '\\'': case KIND_A:",
+      "    return 1;",
+      "  case KIND_B:",
+      "    return 2;",
+      "}",
+    ].join("\n");
+    const rule = byKind(src, "switch-branch")[0];
+    expect(rule?.expression).toContain("KIND_A");
+    expect(rule?.expression).toContain("KIND_B");
+  });
+});

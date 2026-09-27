@@ -265,3 +265,24 @@ describe("renderMinedScalaRules", () => {
     );
   });
 });
+
+// PR #319 review — guarded arms are pushed with the dispatch, in line order, under the cap.
+describe("mineScalaRules — maxRules with guarded arms", () => {
+  const SRC = [
+    "order.status match {",
+    "  case Open if total > Limit => 1",
+    "  case Paid if total > Floor => 2",
+    "  case _ => 0",
+    "}",
+  ].join("\n");
+
+  it("never returns more rules than maxRules", () => {
+    expect(mineScalaRules(SRC, FILE, 1, null, 1)).toHaveLength(1);
+  });
+
+  it("returns the dispatch and its guarded arms in line order", () => {
+    const lines = mineScalaRules(SRC, FILE, 1).map((r) => r.line);
+    expect(lines).toEqual([...lines].sort((a, b) => a - b));
+    expect(lines).toHaveLength(3);
+  });
+});

@@ -261,3 +261,35 @@ describe("renderMinedRsRules", () => {
     expect(renderMinedRsRules(rules, 50)).toContain("more Rust rules truncated");
   });
 });
+
+// PR #319 review — `match` inside a string literal is not a match header.
+describe("mineRsRules — string literals", () => {
+  it("keeps a line's guard when a string on it contains the word `match`", () => {
+    const withMatch = 'if x > MAX_ITEMS { bail!("no match for {}", x) }';
+    const without = 'if x > MAX_ITEMS { bail!("too many items {}", x) }';
+    const kinds = (src: string) => mineRsRules(src, FILE, 1).map((r) => r.kind);
+    expect(kinds(without)).toContain("guard");
+    expect(kinds(withMatch)).toEqual(kinds(without));
+  });
+});
+
+// PR #319 review — guarded arms are pushed with the dispatch, in line order, under the cap.
+describe("mineRsRules — maxRules with guarded arms", () => {
+  const SRC = [
+    "match order.status {",
+    "    Status::Open if total > LIMIT => 1,",
+    "    Status::Paid if total > FLOOR => 2,",
+    "    _ => 0,",
+    "}",
+  ].join("\n");
+
+  it("never returns more rules than maxRules", () => {
+    expect(mineRsRules(SRC, FILE, 1, null, 1)).toHaveLength(1);
+  });
+
+  it("returns the dispatch and its guarded arms in line order", () => {
+    const lines = mineRsRules(SRC, FILE, 1).map((r) => r.line);
+    expect(lines).toEqual([...lines].sort((a, b) => a - b));
+    expect(lines).toHaveLength(3);
+  });
+});

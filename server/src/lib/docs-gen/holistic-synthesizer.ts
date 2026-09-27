@@ -1715,27 +1715,39 @@ async function loadProjectMeta(
     extCounts.set(ext, (extCounts.get(ext) ?? 0) + 1);
   }
   const topExt = Array.from(extCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
-  const language =
-    {
-      ts: "TypeScript",
-      tsx: "TypeScript",
-      js: "JavaScript",
-      jsx: "JavaScript",
-      py: "Python",
-      java: "Java",
-      go: "Go",
-      scala: "Scala",
-      rs: "Rust",
-      c: "C",
-      cpp: "C++",
-    }[topExt] ??
-    (topExt || "unknown");
+  const language = projectLanguageLabel(topExt);
   return {
     name: project?.name ?? "Unknown Project",
     language,
     totalSymbols,
     totalFiles: fileGroups.length,
   };
+}
+
+const PROJECT_LANGUAGE_BY_EXT: Record<string, string> = {
+  ts: "TypeScript",
+  tsx: "TypeScript",
+  js: "JavaScript",
+  jsx: "JavaScript",
+  py: "Python",
+  java: "Java",
+  go: "Go",
+  scala: "Scala",
+  rs: "Rust",
+  c: "C",
+  // A `.h` header belongs to C or C++ projects alike (PR #319 review).
+  h: "C/C++",
+  cpp: "C++",
+  cc: "C++",
+  cxx: "C++",
+  hpp: "C++",
+  hh: "C++",
+  hxx: "C++",
+};
+
+/** The display language for a project whose most common file extension is `ext`. */
+export function projectLanguageLabel(ext: string): string {
+  return PROJECT_LANGUAGE_BY_EXT[ext] ?? (ext || "unknown");
 }
 
 export interface ModuleGroup {

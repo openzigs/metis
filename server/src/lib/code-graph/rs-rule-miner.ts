@@ -43,6 +43,7 @@ import {
 } from "./rule-miner-continuation.js";
 import {
   BODY_LOOKAHEAD,
+  blankLiterals,
   blockBody,
   braceDelta,
   type BraceMinedRule,
@@ -62,12 +63,7 @@ import {
 } from "./rule-miner-brace-shared.js";
 
 export type MinedRsRuleKind =
-  | "precondition"
-  | "guard"
-  | "throw"
-  | "match-branch"
-  | "annotation-validation"
-  | "const";
+  "precondition" | "guard" | "throw" | "match-branch" | "annotation-validation" | "const";
 export type MinedRsRule = BraceMinedRule<MinedRsRuleKind>;
 
 // `assert!(` / `assert_eq!(` / `ensure!(` … — the head only.
@@ -145,6 +141,8 @@ export function mineRsRules(
   const rules: MinedRsRule[] = [];
   const lines = source.split("\n");
   const push = (kind: MinedRsRuleKind, expression: string, summary: string, i: number) => {
+    // One line or dispatch block can yield several rules; the cap holds per rule.
+    if (rules.length >= maxRules) return;
     rules.push({
       kind,
       expression: truncate(expression, MAX_EXPR),
@@ -263,11 +261,14 @@ export function mineRsRules(
     }
 
     // ---- 6. match on a status / enum value ----
-    const mHead = MATCH_HEAD_RE.exec(code);
+    // Literals blanked: `bail!("no match for {}")` is not a match header.
+    const mHead = MATCH_HEAD_RE.exec(blankLiterals(code));
     const mSplit = mHead ? header(mHead.index + mHead[0].length) : null;
     if (mHead && mSplit) {
       const subject = mSplit.cond;
       const labels: string[] = [];
+      // Arm guards are pushed after the dispatch rule, keeping line order.
+      const armGuards: Array<[string, string, number]> = [];
       // The header may be joined across lines; the block starts on the line
       // holding its `{`.
       const startLine = stmt.includes("{") ? (code.includes("{") ? i : headerEnd) : headerEnd + 1;
@@ -300,7 +301,7 @@ export function mineRsRules(
               const guard = pattern.slice(guardAt + 4).trim();
               pattern = pattern.slice(0, guardAt).trim();
               if (comparesToConstant(guard)) {
-                push("guard", armCode, `Branches on threshold ${truncate(guard, 140)}`, armLine);
+                armGuards.push([armCode, `Branches on threshold ${truncate(guard, 140)}`, armLine]);
               }
             }
             for (const alt of splitTopLevel(pattern, "|")) {
@@ -320,6 +321,7 @@ export function mineRsRules(
           i,
         );
       }
+      for (const [expr, summary, at] of armGuards) push("guard", expr, summary, at);
       continue;
     }
 

@@ -50,6 +50,7 @@ import {
   MAX_EXPR,
   MAX_RULES,
   renderGroupedRules,
+  skipLiteral,
   type SplitHead,
   splitParen,
   splitTopLevel,
@@ -96,8 +97,7 @@ function caseLabels(code: string): string[] {
     while (j < code.length) {
       const ch = code[j];
       if (ch === "'" || ch === '"') {
-        const close = code.indexOf(ch, j + 1);
-        j = close < 0 ? code.length : close + 1;
+        j = skipLiteral(code, j);
         continue;
       }
       if (ch === ":" && code[j + 1] === ":") {
@@ -150,6 +150,8 @@ export function mineCRules(
   const rules: MinedCRule[] = [];
   const lines = source.split("\n");
   const push = (kind: MinedCRuleKind, expression: string, summary: string, i: number) => {
+    // One line or dispatch block can yield several rules; the cap holds per rule.
+    if (rules.length >= maxRules) return;
     rules.push({
       kind,
       expression: truncate(expression, MAX_EXPR),

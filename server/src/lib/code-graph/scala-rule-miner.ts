@@ -125,6 +125,8 @@ export function mineScalaRules(
   const rules: MinedScalaRule[] = [];
   const lines = source.split("\n");
   const push = (kind: MinedScalaRuleKind, expression: string, summary: string, i: number) => {
+    // One line or dispatch block can yield several rules; the cap holds per rule.
+    if (rules.length >= maxRules) return;
     rules.push({
       kind,
       expression: truncate(expression, MAX_EXPR),
@@ -222,6 +224,8 @@ export function mineScalaRules(
     if (mMatch) {
       const subject = matchSubject(raw, mMatch.index);
       const labels: string[] = [];
+      // Arm guards are pushed after the dispatch rule, keeping line order.
+      const armGuards: Array<[string, string, number]> = [];
       let depth = 0;
       const last = Math.min(i + BODY_LOOKAHEAD, lines.length);
       for (let j = i; j < last; j++) {
@@ -236,7 +240,7 @@ export function mineScalaRules(
               const guard = pattern.slice(guardAt + 4).trim();
               pattern = pattern.slice(0, guardAt).trim();
               if (comparesToConstant(guard)) {
-                push("guard", code, `Branches on threshold ${truncate(guard, 140)}`, j);
+                armGuards.push([code, `Branches on threshold ${truncate(guard, 140)}`, j]);
               }
             }
             for (const alt of splitTopLevel(pattern, "|")) {
@@ -256,6 +260,7 @@ export function mineScalaRules(
           i,
         );
       }
+      for (const [expr, summary, at] of armGuards) push("guard", expr, summary, at);
       continue;
     }
 

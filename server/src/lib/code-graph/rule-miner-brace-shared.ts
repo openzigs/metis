@@ -47,7 +47,7 @@ export function stripQuotes(s: string): string {
  * `k + 1` when the quote at `k` does not open one (a Rust lifetime `'a`).
  * An unterminated `"` string runs to the end of the text.
  */
-function skipLiteral(text: string, k: number): number {
+export function skipLiteral(text: string, k: number): number {
   const q = text[k];
   if (q === "'") {
     // A char literal is `'x'` or `'\x'`; anything else is a lifetime / label.
@@ -60,6 +60,28 @@ function skipLiteral(text: string, k: number): number {
     else if (text[j] === q) return j + 1;
   }
   return text.length;
+}
+
+/**
+ * `text` with the contents of every string and char literal replaced by spaces,
+ * quotes kept and length unchanged, so an offset into the result is an offset
+ * into `text`. Lets a keyword regex (`match `) ignore a literal's words.
+ */
+export function blankLiterals(text: string): string {
+  let out = "";
+  let k = 0;
+  while (k < text.length) {
+    const ch = text[k];
+    if (ch === '"' || ch === "'") {
+      const end = skipLiteral(text, k);
+      out += end - k >= 2 ? ch + " ".repeat(end - k - 2) + text[end - 1] : text.slice(k, end);
+      k = end;
+      continue;
+    }
+    out += ch;
+    k++;
+  }
+  return out;
 }
 
 export interface SplitHead {
