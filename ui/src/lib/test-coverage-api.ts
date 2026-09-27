@@ -45,7 +45,6 @@ export interface TestCoverageRun {
   projectId: string;
   status: "queued" | "running" | "succeeded" | "failed" | string;
   triggeredById: string | null;
-  modelTag: string | null;
   createdAt: string;
   updatedAt?: string;
   startedAt?: string | null;

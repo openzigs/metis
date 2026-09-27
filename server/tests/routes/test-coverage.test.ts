@@ -4,7 +4,7 @@
  * Covers: import upload + paste, RBAC, run creation, in-progress conflict,
  * report aggregation, mapping override, suggestion update.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import express, { type Express } from "express";
 import request from "supertest";
 
@@ -71,9 +71,21 @@ vi.mock("../../src/middleware/auth.js", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 
-vi.mock("../../src/middleware/require-permission.js", () => ({
-  requirePermission: () => (_req: unknown, _res: unknown, next: () => void) => next(),
-}));
+// Pass-through by default; the #249 review block below flips `real` to run the
+// actual role check, so its wrong-role and unauthenticated cases are refused
+// by the same middleware production mounts.
+const permissionCheck = vi.hoisted(() => ({ real: false }));
+vi.mock("../../src/middleware/require-permission.js", async () => {
+  const actual = await vi.importActual<typeof import("../../src/middleware/require-permission.js")>(
+    "../../src/middleware/require-permission.js",
+  );
+  return {
+    requirePermission:
+      (...args: Parameters<typeof actual.requirePermission>) =>
+      (...mw: Parameters<ReturnType<typeof actual.requirePermission>>) =>
+        permissionCheck.real ? actual.requirePermission(...args)(...mw) : mw[2](),
+  };
+});
 
 // PR #879 review — connector + export-dispatch mocks
 vi.mock("../../src/lib/testcoverage/index.js", async () => {
@@ -577,12 +589,12 @@ describe("POST /runs — a per-run budgetCents reaches the budget read (#249)", 
 
 describe("POST /runs — a per-run cap cannot exceed the operator's (#249 review)", () => {
   // `mockUser` is a `developer`: the lowest role holding `analysis.run`, the
-  // only permission this route requires.
-  function app(): Express {
+  // only permission this route requires. The real `requirePermission` runs.
+  function app(user: { userId: string; role: string } | null = mockUser): Express {
     const a = express();
     a.use(express.json());
     a.use((req, _res, next) => {
-      (req as unknown as { user: typeof mockUser }).user = mockUser;
+      if (user) (req as unknown as { user: typeof user }).user = user;
       next();
     });
     a.use(
@@ -594,6 +606,7 @@ describe("POST /runs — a per-run cap cannot exceed the operator's (#249 review
   }
 
   beforeEach(() => {
+    permissionCheck.real = true;
     vi.mocked(prisma.testCoverageRun.findFirst).mockResolvedValue(null as never);
     vi.mocked(prisma.testCaseDoc.findMany).mockResolvedValue([] as never);
     vi.mocked(prisma.testCoverageRun.create).mockImplementation((async ({
@@ -601,6 +614,51 @@ describe("POST /runs — a per-run cap cannot exceed the operator's (#249 review
     }: {
       data: Record<string, unknown>;
     }) => ({ id: "run-1", ...data })) as never);
+  });
+  afterEach(() => {
+    permissionCheck.real = false;
+  });
+
+  it("refuses an unauthenticated caller before reading the cap, creating no run", async () => {
+    const res = await request(app(null))
+      .post("/projects/proj-1/test-coverage/runs")
+      .send({ budgetCents: 1 });
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe("AUTH_REQUIRED");
+    expect(prisma.testCoverageRun.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses a reader (no analysis.run) even with a cap below the operator's", async () => {
+    const res = await request(app({ userId: "user-r", role: "reader" }))
+      .post("/projects/proj-1/test-coverage/runs")
+      .send({ budgetCents: 1 });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("FORBIDDEN");
+    expect(prisma.testCoverageRun.create).not.toHaveBeenCalled();
+  });
+
+  // As designed: no role raises the ceiling per run. An operator who wants a
+  // higher cap sets TESTCOVERAGE_BUDGET_CENTS; that is the only way up.
+  it.each(["admin", "coordinator"])(
+    "refuses a cap above the operator's from %s too — no role raises it per run",
+    async (role) => {
+      const res = await request(app({ userId: "user-a", role }))
+        .post("/projects/proj-1/test-coverage/runs")
+        .send({ budgetCents: DEFAULT_BUDGET_CENTS + 1 });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("BUDGET_ABOVE_OPERATOR_CAP");
+      expect(prisma.testCoverageRun.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("lets an admin LOWER the cap for one run", async () => {
+    const res = await request(app({ userId: "user-a", role: "admin" }))
+      .post("/projects/proj-1/test-coverage/runs")
+      .send({ budgetCents: 1 });
+    expect(res.status).toBe(202);
+    expect(prisma.testCoverageRun.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ budgetCents: 1 }) }),
+    );
   });
 
   it.each([
