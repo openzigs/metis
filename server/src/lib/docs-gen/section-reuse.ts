@@ -28,6 +28,7 @@ const warningSchema = z
       "section-missing",
       "grounding-skipped",
       "grounding-sampled",
+      "grounding-failed",
     ]),
     section: z.string(),
     message: z.string(),

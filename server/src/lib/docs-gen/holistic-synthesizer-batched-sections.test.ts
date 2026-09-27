@@ -944,10 +944,16 @@ describe("per-batch grounding", () => {
     expect(warning.message).toContain("covers only 1 of its 2 parts");
   });
 
-  it("treats a batch whose scoring throws as unverified, not as a section failure", async () => {
-    scoreFaithfulnessMock.mockRejectedValue(new Error("judge down"));
+  it("treats a batch whose scoring throws as not fact-checked, not as a section failure (#246)", async () => {
+    scoreFaithfulnessMock.mockRejectedValue(
+      new Error("anthropic chat failed (TypeError): terminated"),
+    );
     const result = await run(pairs(4), fakeModel(), ragGrounding());
-    expect(result.warnings.filter((w) => w.section === RULES.label)).toEqual([]);
+    const rules = result.warnings.filter((w) => w.section === RULES.label);
+    // Before #246 this list was EMPTY: the section read exactly like a verified one.
+    expect(rules.map((w) => w.kind)).toEqual(["grounding-failed"]);
+    expect(rules[0].message).toContain("dropped mid-reply");
+    expect(rules[0].message).not.toContain("TypeError");
     expect(result.markdown).toContain("## Business Rules & Policies");
   });
 });

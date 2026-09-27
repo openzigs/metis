@@ -132,3 +132,20 @@ describe("proven section reuse", () => {
     expect(() => recordSectionSynthesis("overview", incomplete, payload)).toThrow();
   });
 });
+
+describe("#246 — the reuse record accepts every warning kind a section can carry", () => {
+  it("records a section with a grounding-failed warning without throwing", () => {
+    const saved = recordSectionSynthesis("overview", hashSectionInputs(inputs), {
+      ...payload,
+      warnings: [
+        {
+          kind: "grounding-failed" as const,
+          severity: "warning" as const,
+          section: "Overview",
+          message: "not checked",
+        },
+      ],
+    });
+    expect(saved.warnings[0].kind).toBe("grounding-failed");
+  });
+});

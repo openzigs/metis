@@ -172,7 +172,9 @@ export interface DocSectionProgressEvent {
       // DOCS_GEN_GROUNDING=off / sample — the section was not, or only
       // partly, fact-checked.
       | "grounding-skipped"
-      | "grounding-sampled";
+      | "grounding-sampled"
+      // #246 — the section's fact-check failed, so it was not checked at all.
+      | "grounding-failed";
     severity: "warning" | "error";
     message: string;
   };

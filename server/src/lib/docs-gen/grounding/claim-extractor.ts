@@ -29,6 +29,8 @@ import {
   JSON_OBJECT_RESPONSE_FORMAT,
   jsonObjectShapeInstruction,
 } from "./structured-output-schemas.js";
+import { reportGroundingUsage, type GroundingUsageListener } from "./grounding-usage.js";
+import { withTransientRetry, type GroundingRetryOptions } from "./transient-retry.js";
 
 const log = createChildLogger("docs-gen:claim-extractor");
 
@@ -230,6 +232,17 @@ export interface ClaimExtractorDeps {
    * A non-positive value falls back to the default.
    */
   batchChars?: number;
+  /**
+   * #247 — send `disableThinking` on every claim-extraction call. A model that
+   * thinks by default (DeepSeek on its Anthropic-compatible endpoint) otherwise
+   * draws its reasoning from the claim list's output cap. Default false:
+   * unchanged request.
+   */
+  disableThinking?: boolean;
+  /** #180 — told the usage of every claim-extraction call that returned a response. */
+  onUsage?: GroundingUsageListener;
+  /** #246 — retry of transient provider failures (defaults in `transient-retry.ts`). */
+  retry?: GroundingRetryOptions;
 }
 
 /** One claim-extraction call's outcome (#152). */
@@ -245,6 +258,9 @@ export class ClaimExtractor {
   private readonly maxTokens: number | undefined;
   private readonly responseFormat: ResponseFormat | undefined;
   private readonly batchChars: number;
+  private readonly disableThinking: boolean;
+  private readonly onUsage: GroundingUsageListener | undefined;
+  private readonly retry: GroundingRetryOptions | undefined;
 
   constructor(deps: ClaimExtractorDeps) {
     this.provider = deps.provider;
@@ -256,6 +272,9 @@ export class ClaimExtractor {
       deps.batchChars && deps.batchChars > 0
         ? Math.floor(deps.batchChars)
         : DEFAULT_CLAIM_BATCH_CHARS;
+    this.disableThinking = deps.disableThinking ?? false;
+    this.onUsage = deps.onUsage;
+    this.retry = deps.retry;
   }
 
   /**
@@ -375,22 +394,38 @@ export class ClaimExtractor {
       { role: "system", content: system },
       { role: "user", content: userContent },
     ];
-    const response = await this.provider.chat(messages, {
-      model: this.model,
-      signal,
-      disableTools: true,
-      // #1226 — cap sized for THIS extractor's model, never inherited from the
-      // provider's section-model default.
-      ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
-      // #390/#701 — tag prompt-cache hit-ratio telemetry by workload. Claim
-      // extraction has its OWN bucket (split from the faithfulness judge's
-      // "grounding") so its input:output ratio + hit rate surface distinctly in
-      // the #699 admin telemetry endpoint, validating the Sonnet-vs-Haiku call.
-      callType: "claim-extraction",
-      ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
-      // #336 — structured output on the local/vLLM path when enabled.
-      ...(format ? { responseFormat: format } : {}),
-    });
+    // #246 — a dropped stream, 5xx, 429 or timeout is asked again with
+    // backoff; a 4xx or a cancelled run is thrown at once.
+    const response = await withTransientRetry(
+      async () => {
+        const r = await this.provider.chat(messages, {
+          model: this.model,
+          signal,
+          disableTools: true,
+          // #1226 — cap sized for THIS extractor's model, never inherited from the
+          // provider's section-model default.
+          ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
+          // #390/#701 — tag prompt-cache hit-ratio telemetry by workload. Claim
+          // extraction has its OWN bucket (split from the faithfulness judge's
+          // "grounding") so its input:output ratio + hit rate surface distinctly in
+          // the #699 admin telemetry endpoint, validating the Sonnet-vs-Haiku call.
+          callType: "claim-extraction",
+          ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
+          // #336 — structured output on the local/vLLM path when enabled.
+          ...(format ? { responseFormat: format } : {}),
+          // #247 — structured, extractive: no reasoning spend on the output cap.
+          ...(this.disableThinking ? { disableThinking: true } : {}),
+        });
+        // #180 — every call that answered is billed, parsed or not.
+        reportGroundingUsage(this.onUsage, "claims", r, {
+          provider: this.provider.key,
+          model: this.model ?? this.provider.model,
+        });
+        return r;
+      },
+      { stage: "claims", signal },
+      this.retry,
+    );
     // #152 — checked BEFORE parsing: a reply stopped at the cap is an
     // incomplete claim list even when the prefix happens to parse.
     if (isTruncationFinishReason(response.finishReason)) return { kind: "truncated" };

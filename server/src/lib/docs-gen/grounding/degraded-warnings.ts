@@ -24,7 +24,9 @@ export type DocWarningKind =
   /** DOCS_GEN_GROUNDING=off — the section was never fact-checked. */
   | "grounding-skipped"
   /** DOCS_GEN_GROUNDING=sample — only a sample of the section was fact-checked. */
-  | "grounding-sampled";
+  | "grounding-sampled"
+  /** #246 — the section's fact-check threw (after retries), so it was not checked at all. */
+  | "grounding-failed";
 
 export type DocWarningSeverity = "warning" | "error";
 
@@ -573,6 +575,25 @@ export function markWarningSampled(
   };
 }
 
+/**
+ * #246 — the section's fact-check FAILED: claim extraction or the faithfulness
+ * judge threw (a dropped stream, a provider error), even after transient
+ * failures were retried. None of its statements was checked, so it must never
+ * read like a verified section. The message names the error CLASS only —
+ * never the exception's text, which can carry a provider response body (#67).
+ */
+export function groundingFailedWarning(section: string, errorClass: string): DocWarning {
+  return {
+    kind: "grounding-failed",
+    section,
+    message:
+      `Section "${section}" was NOT fact-checked: the grounding check failed (${errorClass}), ` +
+      `so none of its statements were verified against the source. Review it against the code ` +
+      `before relying on it, or regenerate to run the check again.`,
+    severity: "warning",
+  };
+}
+
 /** The section label {@link groundingModeRunWarning} uses: it concerns the whole document. */
 export const GROUNDING_RUN_SECTION = "Document";
 
@@ -752,6 +773,8 @@ export const PHASE1_FACTS_SECTION = "Phase 1 facts";
 
 /** The section label of {@link sqlFilesSkippedWarning}. */
 export const SQL_FILES_SECTION = "SQL files";
+/** #224 — section label of the warning naming a module's unreadable code files. */
+export const SOURCE_FILES_SECTION = "Source files";
 
 /** The section label of {@link formulaLinesSkippedWarning}. */
 export const FORMULA_EXTRACTION_SECTION = "Formula extraction";
@@ -1037,9 +1060,24 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
   // #186 — a below-bar score from a SAMPLE is an estimate; the line says so.
   const ungroundedSampled = ungroundedWarnings.filter((w) => w.sampled === true).length;
   const noModules = warnings.filter((w) => w.kind === "no-modules").length;
+  const isSourceFiles = (w: DocWarning) => w.section === SOURCE_FILES_SECTION;
   const sourceUnavailable = warnings.filter(
-    (w) => w.kind === "source-unavailable" && !isSqlFiles(w) && !isSqlScan(w),
+    (w) => w.kind === "source-unavailable" && !isSqlFiles(w) && !isSqlScan(w) && !isSourceFiles(w),
   ).length;
+  // #224 — a partly read module's unread code files, told apart by the remedy
+  // each cause printed (one shared constant each, as for the SQL scan).
+  const sourceFileWarnings = warnings.filter(
+    (w) => w.kind === "source-unavailable" && isSourceFiles(w),
+  );
+  const sourceFilesMissing = sourceFileWarnings.some((w) =>
+    w.message.includes(SOURCE_FILES_MISSING_REMEDY),
+  );
+  const sourceFilesUnreadable = sourceFileWarnings.some((w) =>
+    w.message.includes(SOURCE_FILES_UNREADABLE_REMEDY),
+  );
+  const sourceFilesRefused = sourceFileWarnings.some((w) =>
+    w.message.includes(SOURCE_FILES_REFUSED_NOTE),
+  );
   const sqlFilesSkipped = warnings.some((w) => w.kind === "source-unavailable" && isSqlFiles(w));
   // PR #225 review — the scan's two causes take different remedies, so each is
   // counted from the advice its own warning printed (one shared constant each).
@@ -1068,6 +1106,8 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
   // Section counts exclude the run-level marker, which speaks for the document.
   const notChecked = warnings.filter((w) => w.kind === "grounding-skipped" && !w.runLevel).length;
   const spotChecked = warnings.filter((w) => w.kind === "grounding-sampled" && !w.runLevel).length;
+  // #246 — a check that FAILED is counted apart from one switched off or sampled.
+  const checkFailed = warnings.filter((w) => w.kind === "grounding-failed").length;
   const runNotChecked = warnings.some((w) => w.kind === "grounding-skipped" && w.runLevel);
   const runSpotChecked = warnings.some((w) => w.kind === "grounding-sampled" && w.runLevel);
   const parts: string[] = [];
@@ -1094,6 +1134,18 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
         "the server log gives each one's reason: grant read access and regenerate for a " +
         "permission error; a file the miner rejects, or a path that resolves outside the " +
         "repository (refused by design), stays skipped",
+    );
+  if (sourceFilesMissing)
+    parts.push(
+      "some modules' code files are missing from the clone, so their code is missing — re-ingest the project and regenerate",
+    );
+  if (sourceFilesUnreadable)
+    parts.push(
+      "some modules' code files could not be read — give the server read access to the files the warning names, then regenerate",
+    );
+  if (sourceFilesRefused)
+    parts.push(
+      "some modules' code files resolve outside the repository and were refused by design",
     );
   const repos = (n: number) => `${n} repositor${n === 1 ? "y" : "ies"}`;
   if (sqlScanUnreadable > 0)
@@ -1129,6 +1181,10 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
   if (missing > 0) parts.push(`${missing} declared section(s) are missing from the document`);
   if (notChecked > 0)
     parts.push(`${notChecked} section(s) were not fact-checked (DOCS_GEN_GROUNDING=off)`);
+  if (checkFailed > 0)
+    parts.push(
+      `${checkFailed} section(s) could not be fact-checked because the grounding check failed — regenerate to retry`,
+    );
   if (spotChecked > 0)
     parts.push(`${spotChecked} section(s) were only spot-checked (DOCS_GEN_GROUNDING=sample)`);
   // The run-level marker adds a line only when no section line already says it.
@@ -1148,6 +1204,7 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
   // a module whose Phase-1 extraction failed (PR #225 review).
   const prefix =
     sourceUnavailable > 0 ||
+    sourceFileWarnings.length > 0 ||
     phase1Failed ||
     sqlFilesSkipped ||
     sqlScanWarnings.length > 0 ||
@@ -1230,6 +1287,63 @@ export function sqlFilesSkippedWarning(
       `${parts.join(". ")}. If the server lacks read access, grant it and regenerate; a file ` +
       "the SQL miner rejects, or a path that resolves outside the repository (refused by " +
       "design), stays skipped.",
+    severity: "warning",
+  };
+}
+
+/** #224 — the remedy a source-files warning prints for files missing from the clone. */
+export const SOURCE_FILES_MISSING_REMEDY =
+  "The clone is behind the code graph: re-ingest (re-clone or re-upload) the project, then regenerate.";
+/** #224 — the remedy for files the server could not read. */
+export const SOURCE_FILES_UNREADABLE_REMEDY =
+  "Give the server read access to those files, then regenerate.";
+/** #224 — what the warning says of paths refused because they resolve outside the repository. */
+export const SOURCE_FILES_REFUSED_NOTE =
+  "Paths that resolve outside the repository are refused by design and stay unread.";
+
+/**
+ * #224 — code files of a module that could not be read while others in the
+ * same module could. Their functions, rules and formulas are missing from
+ * Phase 1, so the document says so (never only a log line). The remedy follows
+ * the cause: a file MISSING from the clone (ENOENT — the clone is behind the
+ * code graph) needs a re-ingest; a permission or I/O error needs read access on
+ * the server, which a re-ingest would not fix. A module with NO readable file
+ * gets the louder {@link sourceUnavailableWarning} instead.
+ */
+export function sourceFilesUnreadWarning(
+  files: ReadonlyArray<{
+    module: string;
+    file: string;
+    cause: "missing" | "unreadable" | "refused";
+  }>,
+): DocWarning {
+  const group = (cause: "missing" | "unreadable" | "refused") =>
+    files.filter((f) => f.cause === cause).map((f) => f.file);
+  const name = (items: readonly string[]) =>
+    items.slice(0, 10).join(", ") + (items.length > 10 ? ` and ${items.length - 10} more` : "");
+  const missing = group("missing");
+  const unreadable = group("unreadable");
+  const refused = group("refused");
+  const parts: string[] = [];
+  if (missing.length > 0)
+    parts.push(
+      `${missing.length} file(s) are missing from the clone: ${name(missing)}. ${SOURCE_FILES_MISSING_REMEDY}`,
+    );
+  if (unreadable.length > 0)
+    parts.push(
+      `${unreadable.length} file(s) could not be read (permissions or I/O): ${name(unreadable)}. ${SOURCE_FILES_UNREADABLE_REMEDY}`,
+    );
+  if (refused.length > 0)
+    parts.push(
+      `${refused.length} file(s) were refused: ${name(refused)}. ${SOURCE_FILES_REFUSED_NOTE}`,
+    );
+  const modules = new Set(files.map((f) => f.module)).size;
+  return {
+    kind: "source-unavailable",
+    section: SOURCE_FILES_SECTION,
+    message:
+      `${files.length} code file(s) in ${modules} module(s) could not be read, so their ` +
+      `functions, rules and formulas are missing from this document. ${parts.join(" ")}`,
     severity: "warning",
   };
 }
