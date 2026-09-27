@@ -28,6 +28,7 @@ import { reconciliationJson } from "./routes/admin/auth-reconciliation.js";
 import { deepHandler, liveHandler } from "./routes/health.js";
 import { sourceHandler } from "./routes/source.js";
 import { assertValidEmbedConfig } from "./lib/rag/embed-model-config.js";
+import { assertRerankOnnxSingleThread } from "./lib/rag/reranker.js";
 import { metricsMiddleware } from "./lib/metrics/middleware.js";
 import { metricsHandler } from "./lib/metrics/route.js";
 import { mountSlackReceiver } from "./lib/slack/slack-receiver.js";
@@ -88,6 +89,9 @@ export function createApp(opts: CreateAppOptions = {}): Application {
   // and unambiguous. This is the process boot path (index.ts → createServer →
   // createApp), not a request path: it can never turn a request into a 500.
   assertValidEmbedConfig();
+  // Issue #222 — same reasoning: RAG_RERANK=1 beside the worker-thread embedder
+  // aborts the process on the first embed after a rerank. Refuse it here instead.
+  assertRerankOnnxSingleThread();
 
   // Ensure the body limit constant is referenced (linter happiness + sanity).
   void MAX_DOCUMENT_BYTES;

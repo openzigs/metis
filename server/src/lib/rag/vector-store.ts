@@ -527,6 +527,13 @@ interface LanceTable {
   createIndex(params: Record<string, unknown>): Promise<unknown>;
   /** apache-arrow schema (newer vectordb). Optional — used to detect dim. */
   schema?: Promise<LanceSchema> | LanceSchema;
+  /** #207 — index introspection. Optional: structural test doubles omit it. */
+  listIndices?(): Promise<Array<{ name: string; columns: string[] }>>;
+  indexStats?(indexName: string): Promise<{ numIndexedRows: number | null }>;
+  /** #207 — drop table versions (and the index builds only they reference). */
+  cleanupOldVersions?(olderThanMinutes?: number): Promise<unknown>;
+  /** #207 — merge the small fragments one-add-per-document leaves behind. */
+  compactFiles?(): Promise<unknown>;
 }
 
 interface LanceSchema {
@@ -556,8 +563,41 @@ interface LanceRow extends Record<string, unknown> {
   created_at: number;
 }
 
+/**
+ * Issue #207 — re-train the ANN index only once the table has grown by this factor
+ * since the last build. Building on every upsert past the threshold (the old code)
+ * made a repository ingest quadratic; doubling makes the total index work linear in
+ * the final table size. Rows added since the last build stay retrievable — Lance
+ * searches unindexed fragments exhaustively and merges them with the ANN results.
+ */
+export const LANCE_INDEX_REBUILD_GROWTH_FACTOR = 2;
+
+/** Issue #207 — reclaim old table versions after this many writes to one table. */
+export const LANCE_CLEANUP_EVERY_WRITES = 100;
+
+/**
+ * Issue #207 — only versions at least this old are reclaimed. A search reads the
+ * version that was current when it started, so a small grace period keeps an
+ * in-flight read from losing its files. Searches take milliseconds, so one minute
+ * is ample.
+ */
+const DEFAULT_CLEANUP_OLDER_THAN_MINUTES = 1;
+
+export interface LanceVectorStoreOptions extends VectorStoreOptions {
+  /** Grace period for {@link LANCE_CLEANUP_EVERY_WRITES} cleanup. Tests pass `0`. */
+  cleanupOlderThanMinutes?: number;
+}
+
 export class LanceVectorStore implements VectorStore {
   private readonly root: string;
+  /**
+   * #207 — per project, the row count at the last ANN build ATTEMPT (0 = never).
+   * Absent = not yet read from the table; see {@link indexedRowCount}.
+   */
+  private readonly indexedRows = new Map<string, number>();
+  /** #207 — per project, writes since the last version cleanup. */
+  private readonly writesSinceCleanup = new Map<string, number>();
+  private readonly cleanupOlderThanMinutes: number;
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly tableCache = new Map<string, LanceTable>();
   /** Per-project vector dimension, discovered from seed rows or table schema. */
@@ -567,10 +607,19 @@ export class LanceVectorStore implements VectorStore {
   private connection: LanceConnection | null = null;
   private connectPromise: Promise<LanceConnection> | null = null;
 
-  constructor(opts: VectorStoreOptions) {
+  constructor(opts: LanceVectorStoreOptions) {
     if (!opts.root) throw new Error("LanceVectorStore: root is required");
     this.root = opts.root;
     this.defaultDimension = opts.dimension ?? DEFAULT_EMBED_DIMENSION;
+    this.cleanupOlderThanMinutes =
+      opts.cleanupOlderThanMinutes ?? DEFAULT_CLEANUP_OLDER_THAN_MINUTES;
+  }
+
+  /** #207 — forget per-table index bookkeeping when the table object is replaced. */
+  private forgetTableState(projectId: string): void {
+    this.tableCache.delete(projectId);
+    this.dimensions.delete(projectId);
+    this.indexedRows.delete(projectId);
   }
 
   withProjectWrite<T>(
@@ -587,8 +636,7 @@ export class LanceVectorStore implements VectorStore {
         swapTable: (id, shadow, guard) => this.swapTable(id, shadow, guard),
       },
       (write) => {
-        this.tableCache.delete(projectId);
-        this.dimensions.delete(projectId);
+        this.forgetTableState(projectId);
         return fn(write);
       },
     );
@@ -695,8 +743,7 @@ export class LanceVectorStore implements VectorStore {
   async dropTable(projectId: string): Promise<void> {
     const conn = await this.getConnection();
     const name = this.tableName(projectId);
-    this.tableCache.delete(projectId);
-    this.dimensions.delete(projectId);
+    this.forgetTableState(projectId);
     const names = await conn.tableNames();
     if (names.includes(name)) {
       await conn.dropTable(name);
@@ -789,6 +836,9 @@ export class LanceVectorStore implements VectorStore {
       // Repoint caches/dimension from the shadow onto the live project.
       this.tableCache.delete(projectId);
       this.tableCache.delete(shadowProjectId);
+      // #207 — the live name now holds a different table; re-read its index coverage.
+      this.indexedRows.delete(projectId);
+      this.indexedRows.delete(shadowProjectId);
       const shadowDim = this.dimensions.get(shadowProjectId);
       this.dimensions.delete(shadowProjectId);
       if (shadowDim) this.dimensions.set(projectId, shadowDim);
@@ -942,8 +992,7 @@ export class LanceVectorStore implements VectorStore {
     });
     const conn = await this.getConnection();
     const name = this.tableName(projectId);
-    this.tableCache.delete(projectId);
-    this.dimensions.delete(projectId);
+    this.forgetTableState(projectId);
     if ((await conn.tableNames()).includes(name)) {
       await conn.dropTable(name);
     }
@@ -974,23 +1023,88 @@ export class LanceVectorStore implements VectorStore {
       const ids = lanceRows.map((r) => sqlString(r.id));
       await table.delete(`id IN (${ids.join(", ")})`);
       await table.add(lanceRows);
-      // Promote to ANN index when the table grows past the threshold. The
-      // call is idempotent — Lance no-ops if the index already covers the
-      // current row count.
-      const total = await table.countRows();
-      if (total > VECTOR_ANN_THRESHOLD) {
+      await this.maintainIndex(projectId, table);
+    });
+  }
+
+  /**
+   * Issue #207 — keep the ANN index and the table's version history in step with the
+   * data, at a cost that does not grow with every write.
+   *
+   * The code this replaces called `createIndex` after EVERY upsert past the threshold,
+   * on the belief that Lance no-ops when the index already covers the table. It does
+   * not: each call trains a whole new IVF_PQ index. Ingest writes one document at a
+   * time, so a repository ingest was quadratic — measured at 0.16 → 0.41 s/chunk across
+   * one run, and 2.4 GB of `_indices/` in 1,522 builds for 21 MB of vectors.
+   *
+   * Now the index is built when the table first crosses {@link VECTOR_ANN_THRESHOLD}
+   * and re-trained only when it has grown by {@link LANCE_INDEX_REBUILD_GROWTH_FACTOR}.
+   * Old versions, and with them superseded index builds, are reclaimed after each build
+   * and every {@link LANCE_CLEANUP_EVERY_WRITES} writes.
+   */
+  private async maintainIndex(projectId: string, table: LanceTable): Promise<void> {
+    const writes = (this.writesSinceCleanup.get(projectId) ?? 0) + 1;
+    let cleanupDue = writes >= LANCE_CLEANUP_EVERY_WRITES;
+
+    const total = await table.countRows();
+    if (total > VECTOR_ANN_THRESHOLD) {
+      const indexed = await this.indexedRowCount(projectId, table);
+      if (indexed === 0 || total >= indexed * LANCE_INDEX_REBUILD_GROWTH_FACTOR) {
+        // Recorded BEFORE the attempt: a build that fails (e.g. too few rows to
+        // train) is retried at the next growth step, not on every following write.
+        this.indexedRows.set(projectId, total);
         try {
           await table.createIndex({
             type: "ivf_pq",
             column: "vector",
             num_partitions: 256,
             num_sub_vectors: 16,
+            replace: true,
           });
+          cleanupDue = true;
         } catch (err) {
           log.warn("createIndex failed", { error: (err as Error).message });
         }
       }
-    });
+    }
+
+    if (!cleanupDue) {
+      this.writesSinceCleanup.set(projectId, writes);
+      return;
+    }
+    this.writesSinceCleanup.set(projectId, 0);
+    try {
+      if (typeof table.compactFiles === "function") await table.compactFiles();
+      if (typeof table.cleanupOldVersions === "function") {
+        await table.cleanupOldVersions(this.cleanupOlderThanMinutes);
+      }
+    } catch (err) {
+      log.warn("table compaction/cleanup failed", { projectId, error: (err as Error).message });
+    }
+  }
+
+  /**
+   * #207 — the row count the table's vector index was built over, or 0 when it has
+   * none. Read from the table once per process (so a restart does not re-train an
+   * index that already covers the table), then tracked in memory.
+   */
+  private async indexedRowCount(projectId: string, table: LanceTable): Promise<number> {
+    const known = this.indexedRows.get(projectId);
+    if (known !== undefined) return known;
+    let indexed = 0;
+    if (typeof table.listIndices === "function" && typeof table.indexStats === "function") {
+      try {
+        const index = (await table.listIndices()).find((i) => i.columns.includes("vector"));
+        if (index) indexed = (await table.indexStats(index.name)).numIndexedRows ?? 0;
+      } catch (err) {
+        log.warn("vector index introspection failed", {
+          projectId,
+          error: (err as Error).message,
+        });
+      }
+    }
+    this.indexedRows.set(projectId, indexed);
+    return indexed;
   }
 
   async deleteByDocument(projectId: string, documentId: string): Promise<number> {
