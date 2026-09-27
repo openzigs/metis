@@ -33,7 +33,7 @@
  * exist.
  */
 import { createHash } from "node:crypto";
-import { COMPLEX_RECEIVER } from "./call-resolution.js";
+import { COMPLEX_RECEIVER, isGlobalReceiver } from "./call-resolution.js";
 import { buildCodeQualifiedName } from "./qualified-name.js";
 import type { ParsedEdge, ParsedSymbol, SymbolKind } from "./parsers.js";
 
@@ -161,6 +161,16 @@ class Builder {
       }
     }
   }
+}
+
+/**
+ * The receiver recorded for a path call `a::b::name()`: the path's root when
+ * that root is a standard-library namespace (`std::mem::swap` → `std`, so the
+ * call is never bound to a project `swap`), otherwise its last segment.
+ */
+function pathReceiver(path: string, language: "rs" | "cpp"): string {
+  const root = path.split("::", 1)[0].trim();
+  return isGlobalReceiver(root, language) ? root : lastSegment(path);
 }
 
 /** Last `.`/`::`-separated segment of a type or path, generics stripped. */
@@ -383,7 +393,7 @@ export function walkRust(
           const name = fn.childForFieldName("name");
           const path = fn.childForFieldName("path");
           if (name) {
-            const scope = path ? lastSegment(path.text) : "";
+            const scope = path ? pathReceiver(path.text, "rs") : "";
             b.call(name.text, line, /^\w+$/.test(scope) ? scope : COMPLEX_RECEIVER);
           }
         }
@@ -515,12 +525,16 @@ export function walkCFamily(
             b.call(lastSegment(field.text), line, receiver);
           }
         } else if (fn.type === "qualified_identifier") {
-          // `Invoice::create(1)` / `std::sort(...)`.
+          // `Invoice::create(1)` / `std::sort(...)`. A longer path
+          // (`billing::Invoice::create`, `std::ranges::sort`) nests one
+          // qualified_identifier per `::`, so descend to the leaf name.
           const scope = fn.childForFieldName("scope");
           let name = fn.childForFieldName("name");
+          while (name?.type === "qualified_identifier") name = name.childForFieldName("name");
           if (name?.type === "template_function") name = name.childForFieldName("name");
           if (name && name.type === "identifier") {
-            b.call(name.text, line, scope ? lastSegment(scope.text) : COMPLEX_RECEIVER);
+            const path = fn.text.slice(0, fn.text.lastIndexOf("::"));
+            b.call(name.text, line, scope ? pathReceiver(path, "cpp") : COMPLEX_RECEIVER);
           }
         }
         return;

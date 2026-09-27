@@ -260,3 +260,12 @@ describe("mineCRules — escaped char-literal labels", () => {
     expect(rule?.expression).toContain("KIND_B");
   });
 });
+
+// Panel advisory on PR #319 — one line yielding two rules still honours the cap.
+describe("mineCRules — maxRules per pushed rule", () => {
+  it("caps a line that yields a throw and a guard", () => {
+    const src = 'if (x > MAX_ITEMS) throw std::runtime_error("too many");';
+    expect(mineCRules(src, "src/a.cpp", 1).length).toBeGreaterThan(1);
+    expect(mineCRules(src, "src/a.cpp", 1, null, 1)).toHaveLength(1);
+  });
+});

@@ -1026,4 +1026,48 @@ describe("ingestCodeGraph — Scala, Rust, C and C++ (#161)", () => {
     const [edge] = callsTo(store, "accumulate", "src/stats.cpp");
     expect(edge.toSymbolId).toBeNull();
   });
+
+  // Panel advisory on PR #319: the receiver was the path's LAST segment, so a
+  // nested standard-library path (`std::mem::swap`) never hit the std entry.
+  it("never binds a nested Rust `std::` path call to a project method of the same name", async () => {
+    const root = await makeFixture({
+      "src/pair.rs": `pub struct Pair {}\nimpl Pair {\n    pub fn swap(&self) {}\n    pub fn flip(&self, a: &mut u32, b: &mut u32) { std::mem::swap(a, b); }\n}\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+    const [edge] = callsTo(store, "swap", "src/pair.rs");
+    expect(edge.toSymbolId).toBeNull();
+  });
+
+  it("never binds a nested C++ `std::` path call to a project method of the same name", async () => {
+    const root = await makeFixture({
+      "src/list.cpp": `class List {\npublic:\n    void sort() {}\n    void order() { std::ranges::sort(items); }\n};\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+    const [edge] = callsTo(store, "sort", "src/list.cpp");
+    expect(edge.toSymbolId).toBeNull();
+  });
+
+  it("resolves a nested C++ path call `billing::Invoice::create()` to the project method", async () => {
+    const root = await makeFixture({
+      "src/invoice.cpp": `namespace billing {\nclass Invoice {\npublic:\n    static Invoice create(int id) { return Invoice(); }\n};\n}\n`,
+      "src/orders.cpp": `void place() { billing::Invoice::create(1); }\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+    const [edge] = callsTo(store, "create", "src/orders.cpp");
+    expect(edge.toSymbolId).toBe(symbolId(store, "src/invoice.cpp", "create"));
+  });
+
+  it("still binds a project module path call whose root is not a std namespace", async () => {
+    const root = await makeFixture({
+      "src/invoice.rs": `pub struct Invoice {}\nimpl Invoice {\n    pub fn create(id: u32) -> Invoice { Invoice {} }\n}\n`,
+      "src/orders.rs": `fn place() { crate::invoice::Invoice::create(1); }\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+    const [edge] = callsTo(store, "create", "src/orders.rs");
+    expect(edge.toSymbolId).toBe(symbolId(store, "src/invoice.rs", "create"));
+  });
 });
