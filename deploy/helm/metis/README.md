@@ -82,7 +82,8 @@ helm install metis ./deploy/helm/metis \
 ```
 
 With `scaling.enforce=true` (as `values-prod.yaml` sets) the chart
-**fails-closed** when `server.replicaCount > 1` lacks the shared backends
+**fails-closed** when more than one server pod can run — `server.replicaCount > 1`,
+or `autoscaling.server.enabled` with `maxReplicas > 1` (#75) — and it lacks the shared backends
 (Postgres `DATABASE_URL`, `scaling.vectorStore=pgvector`, `uploads.backend=s3`)
 or still mounts any server PVC as `ReadWriteOnce` (#75) — disable it, or make
 it RWX with `persistence.efs.enabled=true`.
@@ -273,7 +274,8 @@ backends via the `scaling` and `uploads` value blocks:
 
 The chart's scaling guard (`metis.assertScalingBackends`) replaces the old
 single-writer `assertPersistenceTopology` block. When `scaling.enforce: true`
-(set in `values-prod.yaml`) it fails `helm template/install` if `replicaCount > 1`
+(set in `values-prod.yaml`) it fails `helm template/install` if more than one server
+pod can run (`replicaCount > 1`, or an enabled server HPA with `maxReplicas > 1`)
 without a Postgres `DATABASE_URL`, `vectorStore: pgvector`, and `uploads.backend: s3`.
 The chart default is `enforce: false` so a bare `helm install` renders cleanly;
 the rendered `NOTES.txt` still **warns** when N>1 lacks the shared backends.

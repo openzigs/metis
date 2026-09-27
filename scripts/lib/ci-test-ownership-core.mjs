@@ -29,6 +29,15 @@
  * `--filter '!metis'` silently re-runs the whole monorepo. That was measured while
  * writing #4. {@link resolvePnpmTest} expands the root script exactly as pnpm does.
  *
+ * ## What it cannot see
+ *
+ * Only `pnpm … test` / `pnpm … run test` count as running a suite. A job that runs a
+ * package's whole suite another way — `pnpm exec vitest run` with no file arguments,
+ * `pnpm test:coverage` — is invisible. For a LOST suite that fails closed (the owner
+ * vanishes, and the repository test reports "no job runs its unit suite"). For a
+ * DUPLICATED suite it fails open: the second run is simply not counted. So a green
+ * audit proves every package has an owner, not that no suite runs twice.
+ *
  * Pure: no filesystem access. The caller passes the workflow text and the packages.
  */
 

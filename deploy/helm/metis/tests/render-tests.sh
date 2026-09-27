@@ -152,7 +152,10 @@ else
 fi
 
 # Single replica with enforce=true renders fine (no shared backends required).
-if template --set scaling.enforce=true --set server.replicaCount=1 >/dev/null 2>&1; then
+# "Single" means the HPA is off too: the default HPA (minReplicas: 2) would run
+# a second pod whatever replicaCount says, so it is tested separately below.
+if template --set scaling.enforce=true --set server.replicaCount=1 \
+  --set autoscaling.server.enabled=false >/dev/null 2>&1; then
   echo "  ✓ enforce=true + replicas=1 renders cleanly"
   PASS=$((PASS + 1))
 else
@@ -210,8 +213,45 @@ for vol in uploads lancedb data; do
 done
 RWX_OUT=$(template "${SCALED_ARGS[@]}" --set persistence.uploads.enabled=true --set persistence.efs.enabled=true || true)
 assert_not_contains "enforce + replicas=2 accepts the same PVC as RWX (EFS)" "execution error" "${RWX_OUT}"
-assert "enforce + replicas=1 still renders RWO PVCs" 3 \
-  "$(count_kind PersistentVolumeClaim "$(template --set scaling.enforce=true --set server.replicaCount=1)")"
+assert "enforce + replicas=1 + HPA off still renders RWO PVCs" 3 \
+  "$(count_kind PersistentVolumeClaim "$(template --set scaling.enforce=true --set server.replicaCount=1 \
+    --set autoscaling.server.enabled=false)")"
+
+# #75 names the HPA path: replicaCount is only the Deployment's starting size,
+# and an enabled HPA sets the real pod count. The guard must count the most
+# server pods that can exist — replicaCount, or the HPA's maxReplicas when it
+# is on — not replicaCount alone. Each arm keeps replicaCount=1 so only the HPA
+# can push the count past one.
+for vol in uploads lancedb data; do
+  HPA_RWO=$(template "${SCALED_ARGS[@]}" --set server.replicaCount=1 \
+    --set autoscaling.server.enabled=true --set autoscaling.server.minReplicas=2 \
+    --set "persistence.${vol}.enabled=true" || true)
+  assert_contains "enforce + replicas=1 + HPA minReplicas=2 refuses an RWO ${vol} PVC (#75)" \
+    "cannot mount the ReadWriteOnce PVC persistence.${vol}" "${HPA_RWO}"
+done
+HPA_SCALE_UP=$(template "${SCALED_ARGS[@]}" --set server.replicaCount=1 \
+  --set autoscaling.server.enabled=true --set autoscaling.server.minReplicas=1 \
+  --set autoscaling.server.maxReplicas=3 --set persistence.uploads.enabled=true || true)
+assert_contains "enforce + replicas=1 + HPA 1..3 refuses an RWO PVC (it can scale up) (#75)" \
+  "cannot mount the ReadWriteOnce PVC persistence.uploads" "${HPA_SCALE_UP}"
+HPA_NO_BACKENDS=$(template --set scaling.enforce=true --set server.replicaCount=1 \
+  --set autoscaling.server.enabled=true --set autoscaling.server.minReplicas=2 || true)
+assert_contains "enforce + replicas=1 + HPA minReplicas=2 still needs the shared backends" \
+  "requires scaling.vectorStore=pgvector" "${HPA_NO_BACKENDS}"
+HPA_ONE=$(template --set scaling.enforce=true --set server.replicaCount=1 \
+  --set autoscaling.server.enabled=true --set autoscaling.server.minReplicas=1 \
+  --set autoscaling.server.maxReplicas=1 || true)
+assert "enforce + replicas=1 + HPA 1..1 renders RWO PVCs" 3 "$(count_kind PersistentVolumeClaim "${HPA_ONE}")"
+# Without enforce the same topology renders, and NOTES must still warn: it read
+# replicaCount alone and stayed silent about the HPA's second pod. NOTES is not
+# part of `helm template`, so render it with a client-side dry-run install.
+notes() {
+  helm install metis "${CHART_DIR}" --dry-run=client "$@" 2>&1 | awk '/^NOTES:$/{n=1} n'
+}
+assert_contains "NOTES warns: replicas=1 + default HPA is still N>1 (#75)" \
+  "up to 6 server pods (replicaCount=1, HPA 2..6)" "$(notes --set server.replicaCount=1)"
+assert_not_contains "NOTES silent: replicas=1 + HPA off" "server pods" \
+  "$(notes --set server.replicaCount=1 --set autoscaling.server.enabled=false)"
 
 # Each server PVC has its own toggle; a disabled one is an emptyDir, never a
 # claim the pod cannot find.
@@ -684,6 +724,22 @@ assert_not_contains "backup (prod): no server PVC claimed" "claimName: metis-ser
 BK_NODATA=$(backup_cronjob "$(template --set backup.enabled=true --set persistence.data.enabled=false)")
 assert_not_contains "backup: data PVC off -> not claimed" "claimName: metis-server-data" "${BK_NODATA}"
 assert_contains "backup: data PVC off -> uploads still claimed" "claimName: metis-server-uploads" "${BK_NODATA}"
+# The RWO backup pod must land on the server pod's node. values.yaml documents a
+# podAffinity for it; render that exact commented example (uncommented, with this
+# release's name) and check its labels select the server pod — a label drift
+# would leave the backup silently Pending on Multi-Attach again.
+AFF_FILE=$(mktemp)
+awk '/^backup:/{b=1} b && /^  #   affinity:$/{e=1} e && !/^  #/{exit} e' "${CHART_DIR}/values.yaml" \
+  | sed -e 's/^  #   /    /' -e 's/<release>/metis/' | { echo "backup:"; cat; } >"${AFF_FILE}"
+BK_AFF=$(backup_cronjob "$(template --set backup.enabled=true -f "${AFF_FILE}")")
+rm -f "${AFF_FILE}"
+assert_contains "backup: documented podAffinity renders into the CronJob" "topologyKey: kubernetes.io/hostname" "${BK_AFF}"
+SERVER_POD_LABELS=$(template | awk '/^kind: Deployment$/{d=1} /^---$/{d=0; s=0} d && /^  name: metis-server$/{s=1} s' \
+  | awk '/^  template:$/{t=1} t && /^      labels:$/{l=1; next} l && /^        /{print; next} l{exit}')
+for label in "app.kubernetes.io/instance: metis" "app.kubernetes.io/component: server"; do
+  assert_contains "backup: documented podAffinity selects ${label}" "${label}" "${BK_AFF}"
+  assert_contains "server pod carries ${label}" "${label}" "${SERVER_POD_LABELS}"
+done
 
 # ---------------------------------------------------------------------------
 echo

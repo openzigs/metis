@@ -86,7 +86,8 @@ app.kubernetes.io/component: {{ .component }}
 {{/*
 Scaling-readiness guard (epic #518 / issue #540).
 
-Multi-replica (server.replicaCount > 1) is now SUPPORTED, but only when every
+Multi-replica (more than one server pod — server.replicaCount > 1, or an
+enabled server HPA that can scale past 1; see metis.serverReplicaCeiling) is now SUPPORTED, but only when every
 formerly per-pod stateful dependency is pointed at a shared backend. This helper
 replaces the old single-writer `replicaCount > 1` hard-block: it no longer
 forbids N>1, it instead validates that the shared backends are configured.
@@ -106,8 +107,24 @@ It strongly recommends (and the rendered NOTES warns on):
 `helm template/install`. Set scaling.enforce=false to bypass (e.g. you supply
 DATABASE_URL out-of-band and accept ownership). See docs/EKS_DEPLOYMENT.md §9.
 */}}
+{{/*
+The most server pods that can run at once (#75). `server.replicaCount` is only
+the Deployment's starting size: when the server HPA is enabled it owns the
+count and may scale to maxReplicas (and never below minReplicas), so a chart
+with replicaCount: 1 and the default HPA (minReplicas: 2) still runs two pods.
+Every "is this N>1?" decision below reads this, never replicaCount alone.
+*/}}
+{{- define "metis.serverReplicaCeiling" -}}
+{{- $n := int .Values.server.replicaCount -}}
+{{- $hpa := .Values.autoscaling.server -}}
+{{- if $hpa.enabled -}}
+{{- $n = max $n (int $hpa.minReplicas) (int $hpa.maxReplicas) -}}
+{{- end -}}
+{{- $n -}}
+{{- end -}}
+
 {{- define "metis.assertScalingBackends" -}}
-{{- if gt (int .Values.server.replicaCount) 1 -}}
+{{- if gt (int (include "metis.serverReplicaCeiling" .)) 1 -}}
 {{- $enforce := .Values.scaling.enforce -}}
 {{- if $enforce -}}
 {{- $hasPgUrl := false -}}
@@ -119,13 +136,13 @@ DATABASE_URL out-of-band and accept ownership). See docs/EKS_DEPLOYMENT.md §9.
 {{- /* DATABASE_URL may instead be supplied via the Secret (keyMap/externalSecrets). */ -}}
 {{- $secretDbUrl := or .Values.externalSecrets.enabled .Values.secrets.existingSecret (hasKey .Values.secrets.keyMap "DATABASE_URL") -}}
 {{- if not (or $hasPgUrl $secretDbUrl) -}}
-{{- fail "metis: server.replicaCount > 1 requires a Postgres DATABASE_URL (#539). Set scaling.database.url=postgres://… or supply DATABASE_URL via secrets/externalSecrets, then set scaling.vectorStore=pgvector and uploads.backend=s3. See docs/EKS_DEPLOYMENT.md §9. Set scaling.enforce=false to override." -}}
+{{- fail "metis: more than one server pod (server.replicaCount > 1, or autoscaling.server enabled with maxReplicas > 1) requires a Postgres DATABASE_URL (#539). Set scaling.database.url=postgres://… or supply DATABASE_URL via secrets/externalSecrets, then set scaling.vectorStore=pgvector and uploads.backend=s3. See docs/EKS_DEPLOYMENT.md §9. Set scaling.enforce=false to override." -}}
 {{- end -}}
 {{- if ne .Values.scaling.vectorStore "pgvector" -}}
-{{- fail "metis: server.replicaCount > 1 requires scaling.vectorStore=pgvector (#543) — embedded LanceDB is not multi-replica safe. See docs/EKS_DEPLOYMENT.md §9d. Set scaling.enforce=false to override." -}}
+{{- fail "metis: more than one server pod (server.replicaCount > 1, or autoscaling.server enabled with maxReplicas > 1) requires scaling.vectorStore=pgvector (#543) — embedded LanceDB is not multi-replica safe. See docs/EKS_DEPLOYMENT.md §9d. Set scaling.enforce=false to override." -}}
 {{- end -}}
 {{- if ne .Values.uploads.backend "s3" -}}
-{{- fail "metis: server.replicaCount > 1 requires uploads.backend=s3 (#546) — an RWO PVC is single-node so replicas can't share uploads. See docs/EKS_DEPLOYMENT.md §9f. Set scaling.enforce=false to override." -}}
+{{- fail "metis: more than one server pod (server.replicaCount > 1, or autoscaling.server enabled with maxReplicas > 1) requires uploads.backend=s3 (#546) — an RWO PVC is single-node so replicas can't share uploads. See docs/EKS_DEPLOYMENT.md §9f. Set scaling.enforce=false to override." -}}
 {{- end -}}
 {{- /*
 #75 — the shared backends above are not enough on their own: every server pod
@@ -137,7 +154,7 @@ make them RWX with persistence.efs.enabled=true.
 {{- if and .Values.persistence.enabled (not .Values.persistence.efs.enabled) -}}
 {{- range $volume := list "uploads" "lancedb" "data" -}}
 {{- if (index $.Values.persistence $volume).enabled -}}
-{{- fail (printf "metis: server.replicaCount > 1 cannot mount the ReadWriteOnce PVC persistence.%s (#75) — a second replica on another node cannot attach it (Multi-Attach). Set persistence.%s.enabled=false (it becomes an emptyDir; nothing durable is written there once the shared backends are set — see values-prod.yaml), or persistence.efs.enabled=true for ReadWriteMany. Set scaling.enforce=false to override." $volume $volume) -}}
+{{- fail (printf "metis: more than one server pod (server.replicaCount > 1, or autoscaling.server enabled with maxReplicas > 1) cannot mount the ReadWriteOnce PVC persistence.%s (#75) — a second replica on another node cannot attach it (Multi-Attach). Set persistence.%s.enabled=false (it becomes an emptyDir; nothing durable is written there once the shared backends are set — see values-prod.yaml), or persistence.efs.enabled=true for ReadWriteMany. Set scaling.enforce=false to override." $volume $volume) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

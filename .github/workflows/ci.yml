@@ -120,7 +120,7 @@ jobs:
         run: pnpm typecheck
 
       # #4 — ONLY the suites no other job runs: scripts, shared, ui-kit and
-      # embeddings-svc (~30 s). This step used to be the root `pnpm test` — the
+      # embeddings-svc (18 s measured on PR #287's run). This step used to be the root `pnpm test` — the
       # WHOLE monorepo — which was 86% of this job's wall clock and re-ran the ui
       # suite (the `ui` job runs it) and the server suite (now the `server` job).
       #
@@ -454,8 +454,8 @@ jobs:
   # keeps the ownership honest.
   server:
     runs-on: ubuntu-latest
-    # ~5 min on its own runner (the postgres-adapter unit step: same files, same
-    # runner class). 20 bounds a hang without cutting a slow cold run.
+    # 9m04s measured for the whole job on PR #287's run (36336030407). 20 bounds a
+    # hang without cutting a slow cold run.
     timeout-minutes: 20
     env:
       NODE_ENV: development

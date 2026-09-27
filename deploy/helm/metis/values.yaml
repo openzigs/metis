@@ -45,7 +45,9 @@ affinity: {}
 # election) and `uploads` (S3). Configure those for a CORRECT N>1 deployment —
 # see docs/EKS_DEPLOYMENT.md §9b–§9f. With the default in-memory/SQLite/LanceDB
 # backends a single replica is still the only correct topology, so keep
-# replicaCount: 1 if you have not set up the shared backends yet.
+# replicaCount: 1 AND autoscaling.server.enabled: false if you have not set up
+# the shared backends yet — the server HPA below is on by default and would
+# otherwise run minReplicas (2) pods whatever replicaCount says (#75).
 #
 # The chart no longer hard-fails on replicaCount > 1; instead `assertScalingBackends`
 # warns (and can be made to fail) when N>1 is requested without the shared backends.
@@ -599,6 +601,22 @@ backup:
   env: {}
   nodeSelector: {}
   tolerations: []
+  # The backup pod mounts the server's PVCs (uploads, lancedb, data). A
+  # ReadWriteOnce claim attaches to ONE node, so a backup scheduled on any other
+  # node waits in ContainerCreating on Multi-Attach forever — no error, and no
+  # backup. With RWO server PVCs, pin the backup to the server pod's node
+  # (<release> is your Helm release name):
+  #
+  #   affinity:
+  #     podAffinity:
+  #       requiredDuringSchedulingIgnoredDuringExecution:
+  #         - topologyKey: kubernetes.io/hostname
+  #           labelSelector:
+  #             matchLabels:
+  #               app.kubernetes.io/instance: <release>
+  #               app.kubernetes.io/component: server
+  #
+  # Not needed with persistence.efs.enabled=true (ReadWriteMany).
   affinity: {}
 
 # -----------------------------------------------------------------------------
@@ -692,8 +710,9 @@ autoscaling:
   server:
     # Enabled by default now that the shared backends (Postgres/pgvector/S3 +
     # leader election) make N>1 correct — see the `scaling` / `uploads` blocks
-    # and docs/EKS_DEPLOYMENT.md §9. The HPA only takes effect once those shared
-    # backends are configured (otherwise the scaling guard keeps you at 1).
+    # and docs/EKS_DEPLOYMENT.md §9. The HPA does NOT wait for those backends:
+    # an enabled HPA counts as N>1 (maxReplicas > 1), so under scaling.enforce
+    # the chart refuses to render it without them; without enforce, NOTES warns.
     enabled: true
     minReplicas: 2
     maxReplicas: 6

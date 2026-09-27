@@ -164,4 +164,12 @@ describe("this repository (#2)", () => {
       ),
     ).toEqual([]);
   });
+
+  it("points the allowlist's readers at test files that exist", () => {
+    // The comment above `onlyBuiltDependencies` is how a reader finds this guard;
+    // it once named a file that was never written.
+    const cited = read("pnpm-workspace.yaml").match(/scripts\/lib\/[\w.-]+\.test\.mjs/g) ?? [];
+    expect(cited.length).toBeGreaterThan(0);
+    expect(cited.filter((rel) => !fs.existsSync(path.join(root, rel)))).toEqual([]);
+  });
 });

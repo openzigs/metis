@@ -42,13 +42,16 @@ export const HEALTH_CHECK_MESSAGES = {
 } as const;
 
 /**
- * #75 — whether the `vector` extension is installed, and whether it could be.
- * Catalog reads only: cheap enough for every `/readyz` hit, and they need no
- * privilege beyond connecting. Exported so the tests answer exactly this query.
+ * #75 — whether the `vector` extension is installed, whether it could be, and
+ * whether THIS role could create it. pgvector's control file is not `trusted`,
+ * so `CREATE EXTENSION vector` needs a superuser. Catalog and GUC reads only:
+ * cheap enough for every `/readyz` hit, and they need no privilege beyond
+ * connecting. Exported so the tests answer exactly this query.
  */
 export const PGVECTOR_READINESS_SQL =
   "SELECT (SELECT count(*) FROM pg_extension WHERE extname = 'vector') AS installed, " +
-  "(SELECT count(*) FROM pg_available_extensions WHERE name = 'vector') AS available";
+  "(SELECT count(*) FROM pg_available_extensions WHERE name = 'vector') AS available, " +
+  "current_setting('is_superuser') = 'on' AS superuser";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -254,7 +257,10 @@ export const deepHandler: RequestHandler = async (_req, res) => {
   // first vector write (`CREATE EXTENSION IF NOT EXISTS vector` in
   // PgVectorStore.ensureSchema) — mid-ingest, on a pod already taking traffic.
   // Not available ⇒ error ⇒ 503, so that rollout never goes ready. Available but
-  // not yet created is ok: the first write creates it.
+  // not yet created is ok when this role is a superuser (the first write creates
+  // it). Otherwise it is degraded, not error: that write may fail, but managed
+  // Postgres grants CREATE EXTENSION through its own role (RDS `rds_superuser`),
+  // which this catalog read cannot see — so warn, and do not block the rollout.
   try {
     const { activeVectorBackend } = await import("../lib/rag/vector-store.js");
     const backend = activeVectorBackend();
@@ -262,13 +268,21 @@ export const deepHandler: RequestHandler = async (_req, res) => {
       checks.vectorStore = { status: "ok", message: backend };
     } else {
       const rows =
-        await prisma.$queryRawUnsafe<Array<{ installed: unknown; available: unknown }>>(
-          PGVECTOR_READINESS_SQL,
-        );
+        await prisma.$queryRawUnsafe<
+          Array<{ installed: unknown; available: unknown; superuser: unknown }>
+        >(PGVECTOR_READINESS_SQL);
       const installed = Number(rows[0]?.installed ?? 0) > 0;
       const available = Number(rows[0]?.available ?? 0) > 0;
+      const superuser = rows[0]?.superuser === true;
       if (installed) {
         checks.vectorStore = { status: "ok", message: "pgvector (extension installed)" };
+      } else if (available && !superuser) {
+        checks.vectorStore = {
+          status: "degraded",
+          message:
+            "pgvector (extension available but not created, and this role is not a superuser — " +
+            "the first write's CREATE EXTENSION vector may fail; create the extension ahead of time)",
+        };
       } else if (available) {
         checks.vectorStore = {
           status: "ok",

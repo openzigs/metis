@@ -41,7 +41,9 @@ import { createApp } from "../src/app.js";
 import { HEALTH_CHECK_MESSAGES, PGVECTOR_READINESS_SQL } from "../src/routes/health.js";
 
 /** Answer the database's `SELECT 1` and the pgvector catalog query separately. */
-function database(pg: { installed: number | bigint; available: number | bigint } | Error) {
+function database(
+  pg: { installed: number | bigint; available: number | bigint; superuser?: boolean } | Error,
+) {
   queryRawUnsafe.mockImplementation(async (sql: string) => {
     if (sql !== PGVECTOR_READINESS_SQL) return 1;
     if (pg instanceof Error) throw pg;
@@ -98,10 +100,30 @@ describe("/readyz — vector store check (#75)", () => {
 
   it("is ok when the extension is available but not yet created (the first write creates it)", async () => {
     process.env.VECTOR_STORE = " PgVector ";
-    database({ installed: 0, available: 1 });
+    database({ installed: 0, available: 1, superuser: true });
     const { check } = await checks();
     expect(check.status).toBe("ok");
     expect(check.message).toMatch(/available.*created on first write/);
+  });
+
+  it("is DEGRADED, not ok, when the extension is available but this role cannot create it", async () => {
+    // pgvector's control file is not `trusted`, so only a superuser may run
+    // `CREATE EXTENSION vector`. "Available" alone would pass the probe and fail
+    // the first ingest. Degraded (not error): managed Postgres grants the right
+    // through its own role (RDS `rds_superuser`), which the catalog cannot see.
+    process.env.VECTOR_STORE = "pgvector";
+    database({ installed: 0, available: 1, superuser: false });
+    const { res, check } = await checks();
+    expect(check.status).toBe("degraded");
+    expect(check.message).toMatch(/not a superuser.*CREATE EXTENSION vector/);
+    expect(res.status).not.toBe(503);
+  });
+
+  it("is ok when the extension is installed, whoever the role is", async () => {
+    process.env.VECTOR_STORE = "pgvector";
+    database({ installed: 1, available: 1, superuser: false });
+    const { check } = await checks();
+    expect(check).toEqual({ status: "ok", message: "pgvector (extension installed)" });
   });
 
   it("errors, with a fixed message and no driver text, when the catalog query fails", async () => {
