@@ -1,0 +1,208 @@
+{
+  "type": "json_schema",
+  "json_schema": {
+    "name": "analysis_agent_output",
+    "description": "A single analysis specialist's summary, findings and notes.",
+    "strict": true,
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agentKey",
+        "summary",
+        "findings",
+        "notes"
+      ],
+      "properties": {
+        "agentKey": {
+          "type": "string",
+          "enum": [
+            "document",
+            "code",
+            "database",
+            "web",
+            "synthesis"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "findings": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "category",
+              "severity",
+              "title",
+              "body",
+              "citations",
+              "tags",
+              "requirementId",
+              "verdict",
+              "confidence",
+              "derivation"
+            ],
+            "properties": {
+              "category": {
+                "type": "string",
+                "enum": [
+                  "security",
+                  "performance",
+                  "architecture",
+                  "dependency",
+                  "reliability",
+                  "compliance",
+                  "other"
+                ]
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "critical",
+                  "high",
+                  "medium",
+                  "low",
+                  "info"
+                ]
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "body": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "citations": {
+                "type": "array",
+                "maxItems": 20,
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "documentId",
+                        "chunkIndex",
+                        "snippet"
+                      ],
+                      "properties": {
+                        "documentId": {
+                          "type": "string"
+                        },
+                        "chunkIndex": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "snippet": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "filePath",
+                        "startLine",
+                        "endLine",
+                        "symbolId",
+                        "snippet"
+                      ],
+                      "properties": {
+                        "filePath": {
+                          "type": "string"
+                        },
+                        "startLine": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "endLine": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "symbolId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "snippet": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "tags": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {
+                  "type": "string",
+                  "maxLength": 64
+                }
+              },
+              "requirementId": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 128
+              },
+              "verdict": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "implemented",
+                  "gap-confirmed",
+                  "could-not-verify",
+                  null
+                ]
+              },
+              "confidence": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 1
+              },
+              "derivation": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "inferred",
+                  "ambiguous",
+                  null
+                ]
+              }
+            }
+          }
+        },
+        "notes": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      }
+    }
+  }
+}

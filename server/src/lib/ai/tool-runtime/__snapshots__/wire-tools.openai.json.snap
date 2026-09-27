@@ -1,0 +1,178 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "apply_diff",
+      "description": "Apply an LLM-emitted patch to file contents using the morph-apply provider. Falls back to a whole-file rewrite when morph-apply is disabled or upstream fails.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "original": {
+            "type": "string"
+          },
+          "patch": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "original",
+          "patch"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "inspect_schema",
+      "description": "Inspect the schema (tables + columns) of a project database connector. Returns tables with their columns (name, type, nullable, primaryKey). Read-only; project-scoped; credentials resolved via vault.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectorId": {
+            "type": "string",
+            "description": "Id of the project's database connector"
+          },
+          "schema": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "connectorId"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_example_echo_75e8e601",
+      "description": "An MCP tool whose server advertised no object input schema",
+      "parameters": {
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "query_database",
+      "description": "Run a single read-only SELECT query against a project database connector. Returns up to 100 PII-redacted rows. Only SELECT is permitted — INSERT/UPDATE/DELETE/DDL are rejected. Project-scoped; credentials via vault.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "connectorId": {
+            "type": "string",
+            "description": "Id of the project's database connector"
+          },
+          "sql": {
+            "type": "string",
+            "description": "A single read-only SELECT statement. Writes/DDL are rejected."
+          },
+          "maxRows": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "connectorId",
+          "sql"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "score_grounding",
+      "description": "Score how well an LLM output is grounded in supplied source chunks. Returns groundingScore + hallucinationScore in [0,1]. Read-only.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "output": {
+            "type": "string"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ngramSize": {
+            "type": "integer"
+          },
+          "maxClaims": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "output",
+          "sources"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search-knowledge",
+      "description": "Retrieve the top-k most relevant document chunks from a project's knowledge base. Returns ranked snippets with source attribution.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "k": {
+            "type": "integer"
+          },
+          "documentIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "projectId",
+          "query"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search-knowledge-global",
+      "description": "Search across multiple projects' knowledge bases simultaneously. Returns ranked document chunks with project provenance. Use when the user wants information that may span multiple projects.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "projectIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "k": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  }
+]

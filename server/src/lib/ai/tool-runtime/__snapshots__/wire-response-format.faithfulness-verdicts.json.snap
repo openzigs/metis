@@ -1,0 +1,43 @@
+{
+  "type": "json_schema",
+  "json_schema": {
+    "name": "faithfulness_verdicts",
+    "description": "Per-claim entailment verdicts against the grounding evidence.",
+    "strict": true,
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdicts"
+      ],
+      "properties": {
+        "verdicts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "claim",
+              "supported",
+              "sourceIds"
+            ],
+            "properties": {
+              "claim": {
+                "type": "string"
+              },
+              "supported": {
+                "type": "boolean"
+              },
+              "sourceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

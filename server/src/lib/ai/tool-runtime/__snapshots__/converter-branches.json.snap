@@ -1,0 +1,79 @@
+{
+  "type": "object",
+  "properties": {
+    "str": {
+      "type": "string",
+      "description": "a string"
+    },
+    "int": {
+      "type": "integer"
+    },
+    "num": {
+      "type": "number"
+    },
+    "bool": {
+      "type": "boolean"
+    },
+    "list": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "choice": {
+      "type": "string",
+      "enum": [
+        "a",
+        "b"
+      ]
+    },
+    "lit": {
+      "const": "fixed"
+    },
+    "rec": {
+      "type": "object"
+    },
+    "either": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        }
+      ]
+    },
+    "maybe": {
+      "type": "string"
+    },
+    "dflt": {
+      "type": "number"
+    },
+    "refined": {
+      "type": "string"
+    },
+    "transformed": {
+      "type": "string"
+    },
+    "preprocessed": {
+      "type": "string"
+    },
+    "opaque": {}
+  },
+  "required": [
+    "str",
+    "int",
+    "num",
+    "list",
+    "choice",
+    "lit",
+    "rec",
+    "either",
+    "maybe",
+    "refined",
+    "transformed",
+    "preprocessed",
+    "opaque"
+  ],
+  "description": "every branch"
+}
