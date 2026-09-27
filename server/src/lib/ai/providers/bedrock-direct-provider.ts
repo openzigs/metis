@@ -40,7 +40,7 @@ import {
 } from "./local-concurrency-limiter.js";
 import { messageText } from "../types.js";
 import { createUnsupportedToolsWarner, type ProviderCapabilities } from "../capabilities.js";
-import { catalogCapabilities } from "../model-catalog.js";
+import { catalogCapabilities, ensureLocalDiscovery } from "../model-catalog.js";
 import type {
   AIProvider,
   ChatChunk,
@@ -497,6 +497,20 @@ class TemperatureUnsupportedError extends Error {
  */
 export const LOCAL_REASONING_EFFORT_ENV = "LOCAL_GEMMA_SEND_REASONING_EFFORT";
 
+/**
+ * #195 — `local-gemma` asks its runtime what each model can do (Ollama
+ * `/api/show`) before the first call that carries tools. `0` / `false` / `off`
+ * turns that off, leaving only the #132 tools-rejection fallback.
+ */
+export const LOCAL_DISCOVER_CAPABILITIES_ENV = "LOCAL_GEMMA_DISCOVER_CAPABILITIES";
+
+/** Parse {@link LOCAL_DISCOVER_CAPABILITIES_ENV}: on unless explicitly turned off. */
+export function resolveLocalDiscoverCapabilities(
+  raw: string | undefined = process.env[LOCAL_DISCOVER_CAPABILITIES_ENV],
+): boolean {
+  return !/^(0|false|off|no)$/i.test((raw ?? "").trim());
+}
+
 /** Resolved value of {@link LOCAL_REASONING_EFFORT_ENV}. */
 export type LocalReasoningEffortMode = "auto" | "always" | "never";
 
@@ -654,6 +668,15 @@ export interface OpenAICompatibleProviderOptions {
   modelProfileMap?: Record<string, string>;
   /** #132 — set for the `azure` provider key; see {@link AzureOpenAIOptions}. */
   azure?: AzureOpenAIOptions;
+  /**
+   * #195 — before a call that carries tools, make sure the model catalog has
+   * what this runtime reports about its models (Ollama `/api/show`), so a model
+   * the runtime says cannot take tools is never sent them — without anyone
+   * first calling `GET /api/ai/models`. Defaults to
+   * {@link LOCAL_DISCOVER_CAPABILITIES_ENV} (on) for `local-gemma` — the only
+   * provider the catalog discovers — and `false` otherwise.
+   */
+  discoverCapabilities?: boolean;
   /**
    * Inactivity timeout (ms) BETWEEN streamed chunks once the model has begun
    * emitting tokens. The timer resets on every SSE chunk, so a long-but-
@@ -885,6 +908,9 @@ export class OpenAICompatibleProvider implements AIProvider {
   /** #132 — Azure addressing, when this instance serves the `azure` key. */
   private readonly azure: AzureOpenAIOptions | undefined;
 
+  /** #195 — see {@link OpenAICompatibleProviderOptions.discoverCapabilities}. */
+  private readonly discoverCapabilities: boolean;
+
   constructor(opts: OpenAICompatibleProviderOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
     this.apiKey = opts.apiKey;
@@ -932,6 +958,8 @@ export class OpenAICompatibleProvider implements AIProvider {
     this.reasoningEffortMode = isLocal ? resolveLocalReasoningEffortMode() : "never";
     this.limiter = isLocal ? localConcurrencyLimiter(this.baseUrl) : undefined;
     this.azure = opts.azure;
+    this.discoverCapabilities =
+      opts.discoverCapabilities ?? (isLocal && resolveLocalDiscoverCapabilities());
     this.unsupportedTools = createUnsupportedToolsWarner(log, this.key);
   }
 
@@ -964,6 +992,19 @@ export class OpenAICompatibleProvider implements AIProvider {
       return false;
     }
     return !this.toolsRejectedModels.has(resolved);
+  }
+
+  /**
+   * #195 — a call about to decide whether `tools` go on the wire first makes
+   * sure the runtime's own capability facts are in the catalog. Only a call
+   * that carries tools pays for it, at most once per discovery TTL per base
+   * URL, bounded, and never fatal (see `ensureLocalDiscovery`).
+   */
+  private async ensureCapabilityFacts(opts: ChatOptions): Promise<void> {
+    if (!this.discoverCapabilities || opts.disableTools || !opts.tools?.length) return;
+    await ensureLocalDiscovery(this.baseUrl, this.apiKey, {
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    });
   }
 
   /** #132 — the chat-completions URL: Azure's deployment form, or `{base}/chat/completions`. */
@@ -1395,6 +1436,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     const requestedModel = opts.model ?? this.defaultModel;
     const model = this.resolveModel(requestedModel);
     // #132 — tools, decided once per call; a runtime rejection drops them once.
+    await this.ensureCapabilityFacts(opts);
     let includeTools = this.shouldSendTools(opts, requestedModel, model);
 
     // #336 — structured-output graceful degradation, plus the `temperature`
@@ -1675,6 +1717,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     const model = this.resolveModel(requestedModel);
     const url = this.chatUrl(model);
     // #132 — see chat().
+    await this.ensureCapabilityFacts(opts);
     let includeTools = this.shouldSendTools(opts, requestedModel, model);
 
     log.debug("Direct stream request", {

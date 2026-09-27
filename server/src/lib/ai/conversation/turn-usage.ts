@@ -21,11 +21,61 @@ import { createChildLogger } from "../../logger.js";
 import { recordUsage as recordProjectUsage } from "../../finops/token-tracker.js";
 import { getTokenTracker } from "../token-tracker.js";
 import type { ProviderKey, TokenUsage } from "../types.js";
+import { estimateTextTokens, type TokenRatio } from "./token-estimator.js";
 
 const log = createChildLogger("chat-turn-usage");
 
 /** `agentStep` on the per-user row of a turn that failed after spending tokens. */
 export const FAILED_TURN_AGENT_STEP = "chat-failed";
+
+/**
+ * #137 — `agentStep` on the per-user row of a turn whose provider reported NO
+ * usage, so the row holds {@link billableTurnUsage}'s estimate, not a count.
+ */
+export const ESTIMATED_TURN_AGENT_STEP = "chat-estimated";
+
+/** True when a provider reported any usage at all for a call or turn. */
+export function isReportedUsage(u: TokenUsage | null | undefined): u is TokenUsage {
+  return !!u && (u.promptTokens > 0 || u.completionTokens > 0 || u.totalTokens > 0);
+}
+
+/**
+ * #137 — the usage a successful turn is metered on.
+ *
+ * Provider-reported usage, exactly as reported (cache reads/writes included),
+ * whenever there is any. Only when the provider reported NOTHING — an
+ * OpenAI-compatible runtime that ignores `stream_options.include_usage`, a
+ * response without a `usage` block — is the turn metered on an ESTIMATE:
+ *
+ *   • input  = the pre-send prompt estimate `prepareTurn` already made
+ *              (calibrated → catalog → default chars-per-token, #137);
+ *   • output = the reply's characters at the same ratio;
+ *   • no cache tokens (nothing is known about them).
+ *
+ * Without this such a turn metered zero in both usage stores, so the project
+ * budget never saw it. The per-user row is marked
+ * {@link ESTIMATED_TURN_AGENT_STEP} (the usage page groups by it); the
+ * transcript row keeps its usage columns empty — they hold only what a
+ * provider reported, and calibration must never learn from an estimate.
+ */
+export function billableTurnUsage(
+  reported: TokenUsage | null | undefined,
+  basis: { promptTokens: number; answerText: string; ratio: TokenRatio },
+): { usage: TokenUsage; estimated: boolean } {
+  if (isReportedUsage(reported)) return { usage: reported, estimated: false };
+  const promptTokens = Math.max(0, Math.round(basis.promptTokens));
+  const completionTokens = estimateTextTokens(basis.answerText, basis.ratio);
+  return {
+    usage: {
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens + completionTokens,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    },
+    estimated: true,
+  };
+}
 
 export interface TurnUsageScope {
   sessionId: string;

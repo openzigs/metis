@@ -27,6 +27,13 @@ process.env.AI_OFFLINE = process.env.AI_OFFLINE ?? "1";
 // module mock does not cross a thread boundary); the worker path is exercised by
 // its own tests, which pass `inProcessRuntime` explicitly.
 process.env.EMBED_INPROCESS_RUNTIME = process.env.EMBED_INPROCESS_RUNTIME ?? "inline";
+// #195 — a local-gemma provider asks its runtime (`/models`, `/api/show`) what
+// each model can do before its first tool-carrying call. Suites that count or
+// sequence wire requests to a loopback/mocked runtime predate that probe, so it
+// is off by default here; its own tests turn it on explicitly
+// (`local-capability-discovery.test.ts`).
+process.env.LOCAL_GEMMA_DISCOVER_CAPABILITIES =
+  process.env.LOCAL_GEMMA_DISCOVER_CAPABILITIES ?? "0";
 // Epic #158 — never auto-start OTel during tests so individual specs can
 // install their own SpanProcessor.
 process.env.OTEL_SDK_DISABLED = process.env.OTEL_SDK_DISABLED ?? "true";

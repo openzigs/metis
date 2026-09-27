@@ -26,6 +26,39 @@
  *   2. **catalog** — a per-model ratio from the model catalog
  *      (`catalogCharsPerToken`: an operator override or a measured family).
  *   3. **default** — {@link DEFAULT_CHARS_PER_TOKEN}.
+ *
+ * Tools sent NATIVELY (the request's `tools` field) are part of the prompt and
+ * are counted by `prepareTurn` (`nativeToolChars`); text-protocol schemas
+ * already ride in a system message.
+ *
+ * ## Measured against recorded usage (#203)
+ *
+ * `server/tests/lib/ai/token-estimate-recorded-usage.test.ts` checks the
+ * estimate after one calibrated turn against the usage two real runtimes
+ * reported (Ollama `laguna-s-2.1`, DeepSeek's Anthropic Messages endpoint) and
+ * states the tolerance. One residual it documents rather than corrects: on the
+ * Anthropic wire the runtime adds its own tool-use system prompt to a request
+ * that carries tools (≈230 tokens in the DeepSeek recording), a fixed
+ * per-request cost that calibration absorbs once such a turn reports usage.
+ *
+ * ## Decision: no `messages.countTokens` call before a turn (#203)
+ *
+ * `@anthropic-ai/sdk` 0.104.2 (`server/package.json`) exposes
+ * `messages.countTokens`, which would count exactly — tool preamble included.
+ * METIS does not call it:
+ *
+ *   • it is a full extra HTTP round trip before every long turn, on the path
+ *     the user is waiting on, to refine a number that only decides WHEN to
+ *     compact (the watermark already leaves headroom, and #213 reserves room
+ *     for the answer);
+ *   • provider-reported usage arrives with every reply and recalibrates the
+ *     next estimate, so the error does not accumulate;
+ *   • it serves only the Anthropic wire, and the one Anthropic-wire runtime
+ *     recorded here (DeepSeek) does not document the endpoint
+ *     (api-docs.deepseek.com/guides/anthropic_api), so it could not be relied
+ *     on there — OpenAI-compatible runtimes have no equivalent at all.
+ *
+ * Revisit if a real context-overflow rejection is ever traced to the estimate.
  */
 import type { ChatMessage, TokenUsage } from "../types.js";
 import { messageText } from "../types.js";
@@ -118,8 +151,12 @@ export function resolveTokenRatio(opts: {
 }
 
 export function estimateTextTokens(text: string, ratio: TokenRatio): number {
-  if (!text) return 0;
-  return Math.ceil(text.length / ratio.charsPerToken);
+  return estimateCharTokens(text.length, ratio);
+}
+
+/** Tokens for `chars` characters of prompt at `ratio` (0 for none). */
+export function estimateCharTokens(chars: number, ratio: TokenRatio): number {
+  return chars > 0 ? Math.ceil(chars / ratio.charsPerToken) : 0;
 }
 
 /** Characters the model will read from these messages (text parts only). */

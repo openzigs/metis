@@ -10,9 +10,13 @@
  *      speculative entries.
  *   2. **discovered** — local runtimes only (`local-gemma`): `GET {base}/models`
  *      lists what is served, and Ollama's `POST /api/show` supplies the context
- *      length and the model's own capability list. Discovery runs only from
- *      {@link getModelCatalog} (the `/api/ai/models` route), never from a chat
- *      call, and its result is cached for {@link DISCOVERY_TTL_MS}.
+ *      length and the model's own capability list. Discovery runs from
+ *      {@link getModelCatalog} (the `/api/ai/models` route) and, since #195,
+ *      from a local provider's first call that carries tools
+ *      ({@link ensureLocalDiscovery}), so a model the runtime says cannot take
+ *      tools is never sent them just because no picker asked first. Results
+ *      are cached per base URL for {@link DISCOVERY_TTL_MS}; concurrent
+ *      discoveries of one base URL share a single probe.
  *   3. **override** — `AI_MODEL_CATALOG_OVERRIDES`, an operator JSON map keyed
  *      `"<provider>:<model id>"`. A served context (laguna's 262,144 is only
  *      known at runtime) or a capability a model does not really honour
@@ -372,6 +376,8 @@ export interface DiscoveredModel {
 }
 
 const discoveryCache = new Map<string, { at: number; models: DiscoveredModel[] }>();
+/** #195 — the discovery in flight per base URL, so concurrent callers share one probe. */
+const discoveryInFlight = new Map<string, Promise<DiscoveredModel[]>>();
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -392,7 +398,65 @@ export async function discoverLocalModels(
   const base = baseUrl.replace(/\/+$/, "");
   const cached = discoveryCache.get(base);
   if (cached && now() - cached.at < DISCOVERY_TTL_MS) return cached.models;
+  const inFlight = discoveryInFlight.get(base);
+  if (inFlight) return inFlight;
+  const probe = probeLocalRuntime(base, apiKey, fetchImpl, now).finally(() =>
+    discoveryInFlight.delete(base),
+  );
+  discoveryInFlight.set(base, probe);
+  return probe;
+}
 
+/**
+ * #195 — make sure the catalog has what `baseUrl`'s runtime says about its
+ * models before a call that depends on it (a local call carrying tools).
+ *
+ *   • fresh cache — returns at once;
+ *   • stale cache — returns at once and refreshes in the background, so the
+ *     previous facts serve this call and a changed runtime is seen soon after;
+ *   • no cache — waits for the (bounded, single-flight) discovery, or until
+ *     `signal` aborts, whichever is first.
+ *
+ * Never throws: a runtime that cannot be probed yields no facts, and the
+ * provider's tools-rejection fallback (#132) still covers it.
+ */
+export async function ensureLocalDiscovery(
+  baseUrl: string,
+  apiKey: string,
+  opts: { signal?: AbortSignal; fetchImpl?: FetchLike; now?: () => number } = {},
+): Promise<void> {
+  const now = opts.now ?? Date.now;
+  const base = baseUrl.replace(/\/+$/, "");
+  const cached = discoveryCache.get(base);
+  if (cached && now() - cached.at < DISCOVERY_TTL_MS) return;
+  const discovery = discoverLocalModels(base, apiKey, opts.fetchImpl, now).catch((err: unknown) => {
+    log.debug("Local model discovery failed", { error: (err as Error).message });
+    return [];
+  });
+  if (cached) return;
+  if (!opts.signal) {
+    await discovery;
+    return;
+  }
+  const signal = opts.signal;
+  if (signal.aborted) return;
+  let onAbort: (() => void) | undefined;
+  await Promise.race([
+    discovery,
+    new Promise<void>((resolve) => {
+      onAbort = resolve;
+      signal.addEventListener("abort", onAbort, { once: true });
+    }),
+  ]);
+  if (onAbort) signal.removeEventListener("abort", onAbort);
+}
+
+async function probeLocalRuntime(
+  base: string,
+  apiKey: string,
+  fetchImpl: FetchLike,
+  now: () => number,
+): Promise<DiscoveredModel[]> {
   const headers = { Authorization: `Bearer ${apiKey}` };
   let listed: Array<{ id?: unknown; max_model_len?: unknown }> = [];
   try {
@@ -509,8 +573,9 @@ function defaultCapabilities(provider: string): ModelCatalogCapabilities {
 
 /**
  * The catalog entry for `provider:model`, merged builtin → discovered →
- * override. Synchronous and network-free: discovery facts are used only once a
- * `getModelCatalog` call has populated the cache. Returns `undefined` when no
+ * override. Synchronous and network-free: discovery facts are used once a
+ * `getModelCatalog` call or a local provider's first tool-carrying call
+ * ({@link ensureLocalDiscovery}, #195) has populated the cache. Returns `undefined` when no
  * source knows the model.
  */
 export function lookupCatalogEntry(
@@ -691,5 +756,6 @@ function withoutJsonSchema(entry: ModelCatalogEntry): ModelCatalogEntry {
 /** Test helper — forget discovery results and the parsed overrides. */
 export function __resetModelCatalogForTests(): void {
   discoveryCache.clear();
+  discoveryInFlight.clear();
   parsedOverrides = null;
 }
