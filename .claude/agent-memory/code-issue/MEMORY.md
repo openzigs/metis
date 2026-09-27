@@ -16,3 +16,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Row matchers drop scope](project_row-matchers-drop-scope-assertions.md) — the columns the matcher omits stop being asserted (#94)
 - [Filter the capped list](project_capped-list-filter-must-share-the-fits-function.md) — filter and render share one fits() or items vanish (#163)
 - [Splitter fixtures](project_splitter-fixtures-need-real-sections-and-fences.md) — test on a real dev.db section + an unclosed fence (#162)
+- [CodeQL limiter goes BEFORE requireAuth](project_codeql-rate-limit-must-precede-requireauth.md) — a per-user limiter after auth still alerts (291)

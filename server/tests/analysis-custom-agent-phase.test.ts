@@ -13,6 +13,12 @@ const enabledAgents: CustomAgentDto[] = [];
 vi.mock("../src/lib/custom-agents/index.js", () => ({
   listEnabledAgentsForProject: vi.fn(async () => enabledAgents),
 }));
+// #236 — library agents join the phase; none are enabled in these unit tests
+// (the real-database test is analysis-agent-phase-library.sqlite.test.ts).
+vi.mock("../src/lib/agent-runtime/definition.js", async (original) => ({
+  ...(await original<typeof import("../src/lib/agent-runtime/definition.js")>()),
+  listProjectLibraryAgents: vi.fn(async () => []),
+}));
 
 const { runEnabledCustomAgents } = await import("../src/lib/analysis/custom-agent-phase.js");
 

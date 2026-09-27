@@ -24,7 +24,7 @@ import {
 import { prisma } from "../lib/prisma.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { createSubscription } from "../lib/hooks/index.js";
-import { createAgent } from "../lib/custom-agents/index.js";
+import { createAgent, CustomAgentError } from "../lib/custom-agents/index.js";
 import type { CustomAgentDefinition } from "@metis/shared";
 
 function ok<T>(data: T): { success: true; data: T } {
@@ -229,8 +229,10 @@ export function pluginsRouter(): Router {
         }
       }
 
-      // Agents — register as project-scoped custom agents. Skip duplicates by
-      // (projectId, name).
+      // Agents — register as project-scoped custom agents. An agent that is
+      // not created (a duplicate name, a tool the project does not have, …) is
+      // REPORTED in `rejected.agents` with the reason, never silently dropped.
+      const rejected: { agents: Array<{ name: string; reason: string }> } = { agents: [] };
       for (const a of env.agents) {
         try {
           await createAgent(
@@ -246,8 +248,14 @@ export function pluginsRouter(): Router {
             actorId(req),
           );
           installed.agents++;
-        } catch {
-          // duplicate or validation failure — skip.
+        } catch (err) {
+          rejected.agents.push({
+            name: a.name,
+            // A CustomAgentError carries a user-fixable reason ("Unknown
+            // tools: …"); anything else stays in the server log.
+            reason:
+              err instanceof CustomAgentError ? err.message : "The agent could not be created",
+          });
         }
       }
 
@@ -275,10 +283,15 @@ export function pluginsRouter(): Router {
         actor: { id: actorId(req) },
         action: "plugin.imported",
         target: { type: "plugin", id: env.manifest.name },
-        metadata: { projectId, ...installed, version: env.manifest.version },
+        metadata: {
+          projectId,
+          ...installed,
+          rejectedAgents: rejected.agents.length,
+          version: env.manifest.version,
+        },
       });
 
-      res.status(201).json(ok({ manifest: env.manifest, installed }));
+      res.status(201).json(ok({ manifest: env.manifest, installed, rejected }));
     },
   );
 

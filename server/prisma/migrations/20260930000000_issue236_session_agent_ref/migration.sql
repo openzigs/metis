@@ -1,0 +1,16 @@
+-- Issue #236 — a chat session's own agent may be a project CUSTOM agent.
+--
+-- `ai_sessions.agentId` is a foreign key to the library `agents` table only, so
+-- a custom agent (`custom_agents`) could never be a session's agent. The new
+-- `agentRef` column holds `custom:<id>` for such a session. It is deliberately
+-- NOT a foreign key: a custom agent that is deleted, or no longer enabled for
+-- the session's project, is read as gone and the session fails closed (no
+-- persona, no tools) — the same rule a missing library agent already follows.
+--
+-- Additive only: NULLABLE, not backfilled. Every existing session keeps its
+-- `agentId` (library) binding unchanged and reads `agentRef` as NULL.
+--
+-- Rollback (documentation): `ALTER TABLE "ai_sessions" DROP COLUMN "agentRef";`
+-- (SQLite 3.35+). Lossy: sessions bound to a custom agent lose that binding and
+-- run as sessions with no agent.
+ALTER TABLE "ai_sessions" ADD COLUMN "agentRef" TEXT;

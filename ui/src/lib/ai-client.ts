@@ -95,22 +95,86 @@ export interface CreateSessionInput {
   policy?: Partial<ApprovalPolicy>;
   agentId?: string;
   agentKey?: string;
+  /** #236 — `library:<id>` or `custom:<id>` (a custom agent needs a project). */
+  agentRef?: string;
+}
+
+/** #236 — one agent a new chat session may bind (either kind). */
+export interface BindableAgent {
+  ref: string;
+  kind: "library" | "custom";
+  key: string;
+  name: string;
+  description: string;
+}
+
+/** #236 — the agents a new session may bind; custom ones only with a project. */
+export async function listSessionAgents(projectId?: string | null): Promise<BindableAgent[]> {
+  const qs = projectId ? `?${new URLSearchParams({ projectId }).toString()}` : "";
+  const res = await apiFetch<{ items: BindableAgent[] }>(`/ai/session-agents${qs}`);
+  return res.items;
+}
+
+/**
+ * #236 — the agent picker's value as session-create input. The picker stores a
+ * library agent by KEY (so a choice saved before #236 keeps working) and a
+ * custom agent by REF; a custom agent runs only in a one-project session, so it
+ * is dropped (the default agent runs) when there is no project to run it in.
+ */
+export function sessionAgentInput(
+  selection: string | null | undefined,
+  projectId: string | null | undefined,
+): Pick<CreateSessionInput, "agentKey" | "agentRef"> {
+  if (!selection) return {};
+  if (selection.startsWith("custom:")) return projectId ? { agentRef: selection } : {};
+  if (selection.startsWith("library:")) return { agentRef: selection };
+  return { agentKey: selection };
 }
 
 export interface CreateSessionResult {
   session: AISession;
   /** Null when the server predates the #607 scope-metadata contract. */
   scope: SessionScope | null;
+  /**
+   * #236 — set when the requested custom agent could not be bound here (the
+   * project neither owns nor enables it, or the session ended up with no
+   * project) and the session was created with the default agent instead.
+   */
+  droppedAgentRef?: string;
 }
 
-export async function createSessionWithScope(
-  input: CreateSessionInput,
-): Promise<CreateSessionResult> {
+/** #236 — the refusals a custom agent that is unusable HERE produces. */
+const UNBINDABLE_AGENT_CODES = new Set(["AGENT_NOT_FOUND", "AGENT_REQUIRES_PROJECT"]);
+
+async function postSession(input: CreateSessionInput): Promise<CreateSessionResult> {
   const res = await apiFetch<{ session: AISession; scope?: SessionScope }>("/ai/sessions", {
     method: "POST",
     body: input,
   });
   return { session: res.session, scope: res.scope ?? null };
+}
+
+export async function createSessionWithScope(
+  input: CreateSessionInput,
+): Promise<CreateSessionResult> {
+  try {
+    return await postSession(input);
+  } catch (err) {
+    // #236 — a custom agent saved in the browser is scoped to the project it
+    // was picked in. When this session cannot bind it, retry ONCE with the
+    // default agent rather than leaving the user with no session at all.
+    const agentRef = input.agentRef;
+    if (
+      err instanceof ApiError &&
+      err.code !== undefined &&
+      UNBINDABLE_AGENT_CODES.has(err.code) &&
+      agentRef?.startsWith("custom:")
+    ) {
+      const { agentRef: _dropped, ...rest } = input;
+      return { ...(await postSession(rest)), droppedAgentRef: agentRef };
+    }
+    throw err;
+  }
 }
 
 export async function createSession(input: CreateSessionInput): Promise<AISession> {

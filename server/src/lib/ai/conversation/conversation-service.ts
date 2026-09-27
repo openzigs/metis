@@ -71,6 +71,7 @@ export function sessionStateDto(s: AISession): ResumeSessionResponse["session"] 
     currentModel: s.currentModel,
     currentReasoningEffort: (s.currentReasoningEffort as SdkReasoningEffort | null) ?? null,
     agentId: s.agentId,
+    agentRef: s.agentRef ?? null,
     loadedSkillIds: parseSkillIds(s.loadedSkillIds),
     planModeActive: s.planModeActive,
     status: s.status,
@@ -176,6 +177,9 @@ export async function forkSession(
         policy: source.policy,
         providerSecretRef: source.providerSecretRef,
         agentId: source.agentId,
+        // #236 — a fork keeps the source's custom agent (and so its allowlist,
+        // override and persona): dropping it would widen what the fork may call.
+        agentRef: source.agentRef,
         agentSnapshot: source.agentSnapshot,
         loadedSkillIds: source.loadedSkillIds,
         currentModel: source.currentModel,

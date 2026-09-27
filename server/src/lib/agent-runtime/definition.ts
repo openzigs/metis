@@ -172,7 +172,8 @@ const LIBRARY_INCLUDE = { skills: { include: { skill: { select: { key: true } } 
 /**
  * Load one agent by ref. Returns `null` when it does not exist or cannot run
  * (library: deleted, archived or disabled). Scope checks — may THIS project
- * use it — are the caller's job ({@link isAgentUsableInProject}).
+ * use it — are the caller's job ({@link isCustomAgentUsableInProject},
+ * {@link listProjectLibraryAgents}).
  */
 export async function loadAgentDefinition(
   ref: string,
@@ -187,6 +188,54 @@ export async function loadAgentDefinition(
   }
   const row = await db.customAgent.findUnique({ where: { id: parsed.id } });
   return row ? customDefinition(row) : null;
+}
+
+/**
+ * #236 — may `projectId` use this CUSTOM agent? Only when the project OWNS it
+ * or has ENABLED it (the invoke / ACP / sub-agent rule). Always scoped on BOTH
+ * the agent and the project: another project's agent is never usable here.
+ */
+export async function isCustomAgentUsableInProject(
+  def: Pick<AgentDefinitionDto, "kind" | "id" | "projectId">,
+  projectId: string,
+  db: PrismaClient = defaultPrisma,
+): Promise<boolean> {
+  if (def.kind !== "custom") return false;
+  if (def.projectId === projectId) return true;
+  const row = await db.customAgentEnablement.findUnique({
+    where: { customAgentId_projectId: { customAgentId: def.id, projectId } },
+    select: { enabled: true },
+  });
+  return Boolean(row?.enabled);
+}
+
+/**
+ * The library agents a project has EXPLICITLY enabled (an enabled
+ * `ProjectAgentAllowlist` row) that can run. The library's "no rows ⇒
+ * everything" picker default is deliberately NOT used: running a library agent
+ * as a sub-agent (#147) or in the analysis agent phase (#236) is an opt-in,
+ * not a side effect of installing an agent.
+ */
+export async function listProjectLibraryAgents(
+  projectId: string,
+  db: PrismaClient = defaultPrisma,
+): Promise<AgentDefinitionDto[]> {
+  const allowRows = await db.projectAgentAllowlist.findMany({
+    where: { projectId, enabled: true },
+    select: { agentId: true },
+  });
+  if (allowRows.length === 0) return [];
+  const rows = await db.agent.findMany({
+    where: {
+      id: { in: allowRows.map((r) => r.agentId) },
+      deletedAt: null,
+      archivedAt: null,
+      enabled: true,
+    },
+    include: LIBRARY_INCLUDE,
+    orderBy: { key: "asc" },
+  });
+  return rows.map(libraryDefinition);
 }
 
 /**
@@ -216,24 +265,8 @@ export async function listCallableAgents(
     },
     orderBy: { name: "asc" },
   });
-  const allowRows = await db.projectAgentAllowlist.findMany({
-    where: { projectId, enabled: true },
-    select: { agentId: true },
-  });
-  const library =
-    allowRows.length === 0
-      ? []
-      : await db.agent.findMany({
-          where: {
-            id: { in: allowRows.map((r) => r.agentId) },
-            deletedAt: null,
-            archivedAt: null,
-            enabled: true,
-          },
-          include: LIBRARY_INCLUDE,
-          orderBy: { key: "asc" },
-        });
-  return [...library.map(libraryDefinition), ...custom.map(customDefinition)];
+  const library = await listProjectLibraryAgents(projectId, db);
+  return [...library, ...custom.map(customDefinition)];
 }
 
 /**

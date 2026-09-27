@@ -63,6 +63,12 @@ vi.mock("../src/lib/prisma.js", () => ({
         const p = projectsById.get(where.id);
         return p && !p.deletedAt ? p : null;
       }),
+      // #304 — `assertProjectAccess` reads the project's workspace. These rows
+      // carry none (a pre-workspace project), so every caller may reach them.
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const p = projectsById.get(where.id);
+        return p ? { workspaceId: null } : null;
+      }),
     },
     aITokenUsage: { create: vi.fn(async () => ({})) },
     aIToolApproval: { create: vi.fn(async () => ({})) },

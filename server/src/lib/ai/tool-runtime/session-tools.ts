@@ -27,7 +27,8 @@ import { getMCPRegistry } from "../../mcp/mcp-service.js";
 import { formatToolSchemas } from "../../analysis/agent-loop.js";
 import { getChatCodeTools, type ChatCodeToolDeps } from "../../analysis/tools/index.js";
 import { listCallableAgents } from "../../agent-runtime/definition.js";
-import { effectivePolicy, readStoredOverride } from "../../agent-runtime/policy.js";
+import { loadSessionAgent as loadBoundSessionAgent } from "../../agent-runtime/session-agent.js";
+import { effectivePolicy } from "../../agent-runtime/policy.js";
 import {
   loadSkillTool,
   resolveSkillCatalog,
@@ -120,8 +121,11 @@ export function loadSessionToolsFlags(): SessionToolsFlags {
  * the agent declares no `tools`; `[]` (nothing allowed) when the session names
  * an agent that can no longer be read — fail closed.
  */
-export async function loadAgentAllowlist(agentId: string | null): Promise<string[] | null> {
-  return (await loadSessionAgent(agentId)).allowlist;
+export async function loadAgentAllowlist(
+  agentId: string | null,
+  custom: { agentRef?: string | null; projectId?: string | null } = {},
+): Promise<string[] | null> {
+  return (await loadSessionAgent(agentId, custom)).allowlist;
 }
 
 /**
@@ -129,32 +133,28 @@ export async function loadAgentAllowlist(agentId: string | null): Promise<string
  * query. The allowlist keeps the #142 semantics exactly (fail closed to `[]`
  * when the agent cannot be read); an unreadable override fails closed to
  * "prompt on everything" (see `readStoredOverride`).
+ *
+ * #236 — the session's agent may be a project CUSTOM agent (`agentRef`): its
+ * allowlist (an empty one means NO tools) and override apply exactly as a
+ * library agent's do, and a custom agent the project may no longer use fails
+ * closed (see `agent-runtime/session-agent.ts`).
  */
 export async function loadSessionAgent(
   agentId: string | null,
-): Promise<{ allowlist: string[] | null; approvalOverride: ApprovalPolicyOverride | null }> {
-  if (!agentId) return { allowlist: null, approvalOverride: null };
-  try {
-    const row = (await prisma.agent.findFirst({
-      where: { id: agentId },
-      select: { tools: true, approvalPolicy: true },
-    })) as { tools?: string | null; approvalPolicy?: string | null } | null;
-    if (!row) return { allowlist: [], approvalOverride: null };
-    const parsed: unknown = JSON.parse(row.tools ?? "[]");
-    const refs = Array.isArray(parsed)
-      ? parsed.filter((x): x is string => typeof x === "string" && x.length > 0)
-      : [];
-    return {
-      allowlist: refs.length > 0 ? refs : null,
-      approvalOverride: readStoredOverride(row.approvalPolicy ?? null),
-    };
-  } catch (err) {
-    log.warn("Agent tool allowlist unreadable; offering no tools", {
-      agentId,
-      error: (err as Error).message,
-    });
-    return { allowlist: [], approvalOverride: null };
-  }
+  custom: { agentRef?: string | null; projectId?: string | null } = {},
+): Promise<{
+  allowlist: string[] | null;
+  approvalOverride: ApprovalPolicyOverride | null;
+  ref: string | null;
+  customUnusable: boolean;
+}> {
+  const a = await loadBoundSessionAgent({ agentId, ...custom }, prisma);
+  return {
+    allowlist: a.allowlist,
+    approvalOverride: a.approvalOverride,
+    ref: a.ref,
+    customUnusable: a.customUnusable,
+  };
 }
 
 function parseIds(raw: string | null | undefined): string[] {
@@ -190,6 +190,8 @@ export interface ResolveSessionToolsInput {
     userId: string;
     projectId: string | null;
     agentId: string | null;
+    /** #236 — the session's CUSTOM agent (`custom:<id>`), when it has one. */
+    agentRef?: string | null;
     /** #146 — the session's skills (JSON array of ids). */
     loadedSkillIds?: string;
     /**
@@ -245,14 +247,22 @@ export async function resolveSessionTools(
 ): Promise<SessionToolRuntime> {
   const projectId = input.session.projectId;
   const flags = input.flags ?? loadSessionToolsFlags();
-  const agent = await loadSessionAgent(input.session.agentId);
+  const agent = await loadSessionAgent(input.session.agentId, {
+    agentRef: input.session.agentRef ?? null,
+    projectId,
+  });
   const agentAllowlist = agent.allowlist;
   const skillAllowlist = input.agents?.allowlist;
-  const catalog = await resolveSkillCatalog({
-    skillIds: parseIds(input.session.loadedSkillIds),
-    projectId,
-    ...(skillAllowlist ? { allowlist: skillAllowlist } : {}),
-  });
+  // #236 — a custom agent the project stopped using fails closed on skills as
+  // well as tools: the session's skills came from that agent, so neither the
+  // catalog nor `load_skill` is offered (no persona, no tools, no skills).
+  const catalog = agent.customUnusable
+    ? []
+    : await resolveSkillCatalog({
+        skillIds: parseIds(input.session.loadedSkillIds),
+        projectId,
+        ...(skillAllowlist ? { allowlist: skillAllowlist } : {}),
+      });
   const native = resolveCapabilities(input.provider, input.model).nativeToolCalls;
   const progressive =
     native && flags.chatTools && flags.progressiveSkills !== false && catalog.length > 0;
@@ -324,6 +334,8 @@ export async function resolveSessionTools(
             runId: null,
             allowlist: agentAllowlist,
             baseToolset: base,
+            // #236 — the session's own agent is never offered as its own sub-agent.
+            ...(agent.ref ? { selfRef: agent.ref } : {}),
             // Exactly what the session gate enforces (see `sessionGate`): the
             // session agent's override travels down to every sub-agent.
             policy: effectivePolicy(parsePolicyJson(input.session.policy), agent.approvalOverride),

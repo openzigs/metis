@@ -28,6 +28,24 @@ export const MAX_SKILL_BUNDLE_BYTES = 512 * 1024;
 /** A loader's stand-in for a supporting file too large to read (reported, never dropped). */
 export const OVERSIZE_FILE_SENTINEL = "\u0000metis:oversize";
 
+const UNREAD_PREFIX = "\u0000metis:unread:";
+
+/**
+ * #237 — a loader's stand-in for a supporting file it deliberately did NOT read
+ * (a binary type, past the per-skill read budget): the import reports it with
+ * `reason` instead of dropping it silently. It carries a NUL, so a strict
+ * validation refuses it as "not a text file" — it can never be stored.
+ */
+export function unreadFileSentinel(reason: string): string {
+  return `${UNREAD_PREFIX}${reason}`;
+}
+
+function unreadReason(content: unknown): string | null {
+  return typeof content === "string" && content.startsWith(UNREAD_PREFIX)
+    ? content.slice(UNREAD_PREFIX.length)
+    : null;
+}
+
 export class SkillBundleError extends Error {
   readonly code = "SKILL_BUNDLE_INVALID";
 }
@@ -162,6 +180,11 @@ export function triageSkillFiles(files: readonly SkillFileInput[]): {
     }
     if (f.content === OVERSIZE_FILE_SENTINEL) {
       skip(`larger than ${MAX_SKILL_FILE_BYTES} bytes`);
+      continue;
+    }
+    const unread = unreadReason(f.content);
+    if (unread !== null) {
+      skip(unread);
       continue;
     }
     if (typeof f.content !== "string" || f.content.includes("\0")) {

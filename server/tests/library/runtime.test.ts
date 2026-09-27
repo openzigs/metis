@@ -370,7 +370,12 @@ describe("RepoLoader", () => {
     const loader = new RepoLoader(fetcher, "skills", "abc123", "skills");
     expect(loader.origin()).toBe("repo:abc123");
     const files = await loader.load();
-    expect(files.map((f) => f.path)).toEqual(["skills/SKILL.md", "skills/feature.skill.md"]);
+    // #237 — a file beneath a SKILL.md directory is now one of its supporting files.
+    expect(files.map((f) => f.path)).toEqual([
+      "skills/SKILL.md",
+      "skills/feature.skill.md",
+      "skills/notes.txt",
+    ]);
   });
 
   it("agent matcher filters .agent.md only", async () => {

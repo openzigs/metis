@@ -7,10 +7,17 @@
  * Last selection is persisted in `localStorage` per the AC ("Switching
  * agents starts a new session"). Switching is a controlled change — the
  * parent re-creates the session.
+ *
+ * #236 — ONE picker for both kinds of agent: the library agents, and — in a
+ * one-project session — the custom agents that project owns or has enabled
+ * (the server's `GET /api/ai/session-agents` applies the same rule session
+ * creation enforces). A library agent's value is its KEY, so a choice stored
+ * before #236 still selects it; a custom agent's value is its `custom:<id>` ref.
+ * Agents are still MANAGED on their own pages (#31); this only picks one.
  */
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { agentsApi } from "@/lib/library-api";
+import { listSessionAgents } from "@/lib/ai-client";
 import { queryKeys } from "@/lib/query-keys";
 
 const STORAGE_KEY = "metis.chat.agentKey";
@@ -38,19 +45,23 @@ interface Props {
   value: string | null;
   onChange: (key: string | null) => void;
   disabled?: boolean;
+  /** The session's one project, when it has one: its custom agents are listed too. */
+  projectId?: string | null;
 }
 
-export function AgentPicker({ value, onChange, disabled }: Props) {
+export function AgentPicker({ value, onChange, disabled, projectId }: Props) {
   const list = useQuery({
-    queryKey: queryKeys.agents.list({ pickerOnly: true }),
-    queryFn: () => agentsApi.list(),
+    queryKey: queryKeys.agents.list({ pickerOnly: true, projectId: projectId ?? null }),
+    queryFn: () => listSessionAgents(projectId),
   });
 
   useEffect(() => {
     if (value) storeAgentKey(value);
   }, [value]);
 
-  const items = (list.data?.items ?? []).filter((a) => a.enabled && !a.archived);
+  const items = list.data ?? [];
+  const library = items.filter((a) => a.kind === "library");
+  const custom = items.filter((a) => a.kind === "custom");
 
   return (
     <label className="flex items-center gap-2 text-sm">
@@ -64,11 +75,24 @@ export function AgentPicker({ value, onChange, disabled }: Props) {
         disabled={disabled || list.isLoading}
       >
         <option value="">Default</option>
-        {items.map((a) => (
-          <option key={a.id} value={a.key}>
-            {a.displayName || a.name}
-          </option>
-        ))}
+        {library.length > 0 ? (
+          <optgroup label="Library agents">
+            {library.map((a) => (
+              <option key={a.ref} value={a.key}>
+                {a.name}
+              </option>
+            ))}
+          </optgroup>
+        ) : null}
+        {custom.length > 0 ? (
+          <optgroup label="Project agents">
+            {custom.map((a) => (
+              <option key={a.ref} value={a.ref}>
+                {a.name}
+              </option>
+            ))}
+          </optgroup>
+        ) : null}
       </select>
     </label>
   );

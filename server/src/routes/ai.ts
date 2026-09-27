@@ -21,7 +21,10 @@ import { z } from "zod";
 import type { ApiResponse, CompactionEventDto, ModelCatalogResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { aiRateLimiter } from "../middleware/ai-rate-limit.js";
-import { conversationRateLimiter } from "../middleware/conversation-rate-limit.js";
+import {
+  conversationPreAuthRateLimiter,
+  conversationRateLimiter,
+} from "../middleware/conversation-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { buildSystemBlock as buildChronicleBlock } from "../lib/memory/chronicle.js";
@@ -118,8 +121,18 @@ import {
 import { getConfigService } from "../lib/config/config-service.js";
 import { envMs } from "../lib/config/env-ms.js";
 import { getModelCatalog } from "../lib/ai/model-catalog.js";
-import { resolveAgentModel } from "../lib/agent-runtime/definition.js";
-import { renderSkillCatalog, type SkillCatalogEntry } from "../lib/agent-runtime/skills.js";
+import {
+  parseAgentRef,
+  renderPersona,
+  resolveAgentModel,
+} from "../lib/agent-runtime/definition.js";
+import {
+  renderSkillCatalog,
+  resolveSkillCatalog,
+  type SkillCatalogEntry,
+} from "../lib/agent-runtime/skills.js";
+import { listBindableAgents, loadBoundCustomAgent } from "../lib/agent-runtime/session-agent.js";
+import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { getSubAgentRun } from "../lib/agent-runtime/subagents.js";
 import type { ChatOptions as SubAgentChatOptions } from "../lib/ai/types.js";
 import { modelCatalogRateLimiter } from "../middleware/model-catalog-rate-limit.js";
@@ -405,6 +418,9 @@ const createSessionSchema = z.object({
   /// Phase 10 — optional Agent persona to bind to this session.
   agentId: z.string().min(1).max(120).optional(),
   agentKey: z.string().min(1).max(120).optional(),
+  /// #236 — the session's agent as a ref of either kind: `library:<id>` or
+  /// `custom:<id>` (a custom agent needs a project that owns or enabled it).
+  agentRef: z.string().min(1).max(200).optional(),
   /// Phase 10 — explicit skill ids to pre-load (in addition to any the
   /// agent declares as defaults).
   skillIds: z.array(z.string().min(1).max(120)).max(16).optional(),
@@ -570,6 +586,8 @@ export async function buildAutoRagContext(
 export async function buildLibrarySystemMessages(
   session: {
     agentId: string | null;
+    /** #236 — the session's CUSTOM agent (`custom:<id>`), when it has one. */
+    agentRef?: string | null;
     loadedSkillIds: string;
     projectId?: string | null;
   },
@@ -589,7 +607,16 @@ export async function buildLibrarySystemMessages(
 ): Promise<AssembledChatSystem> {
   // Stable — agent persona bound to the session.
   let persona: string | null = null;
-  if (session.agentId) {
+  if (session.agentRef) {
+    // #236 — a custom agent's persona, re-checked against the session's
+    // project every turn: one it may no longer use contributes nothing.
+    try {
+      const def = await loadBoundCustomAgent(session.agentRef, session.projectId);
+      if (def) persona = renderPersona(def);
+    } catch {
+      // As below: the persona is skipped, never the turn.
+    }
+  } else if (session.agentId) {
     try {
       const resolved = await getSessionRuntime().resolveAgentForSession({
         agentId: session.agentId,
@@ -841,6 +868,11 @@ export function aiRouter(): Router {
         effectiveProjectId = null;
         scopeDegradationReason = "stale-project";
       } else {
+        // #304 — the project exists; the caller must also be able to reach it
+        // (the project routes' own check). No access reads as 404 NOT_FOUND
+        // and nothing is created — never a session bound to another
+        // workspace's knowledge base, code graph, skills or provider.
+        await assertProjectAccess(req.user!, effectiveProjectId);
         if (project.aiProviderId && isRetiredProviderKey(project.aiProviderId)) {
           // #149 — a project still overriding to a removed provider. Refused by
           // name: binding the session to it would create a chat that can never
@@ -876,12 +908,70 @@ export function aiRouter(): Router {
     // SessionRuntimeError; the session is never created in that case.
     let agentSnapshot: string | null = null;
     let resolvedAgentId: string | null = null;
+    let resolvedAgentRef: string | null = null;
     const sessionWarnings: string[] = [];
     let initialSkillIds: string[] = [];
-    if (parsed.data.agentId || parsed.data.agentKey) {
+    // #236 — `agentRef` names an agent of either kind; a library ref takes the
+    // library path below unchanged.
+    let libraryAgentId = parsed.data.agentId;
+    if (parsed.data.agentRef !== undefined) {
+      const ref = parseAgentRef(parsed.data.agentRef);
+      if (!ref) {
+        throw new AppError(
+          400,
+          "AGENT_REF_INVALID",
+          "agentRef must be library:<id> or custom:<id>",
+        );
+      }
+      if (parsed.data.agentId || parsed.data.agentKey) {
+        throw new AppError(
+          400,
+          "AGENT_REF_CONFLICT",
+          "Name the session's agent once: agentRef, agentId or agentKey",
+        );
+      }
+      if (ref.kind === "library") {
+        libraryAgentId = ref.id;
+      } else {
+        if (!effectiveProjectId) {
+          throw new AppError(
+            400,
+            "AGENT_REQUIRES_PROJECT",
+            "A custom agent runs only in a session scoped to one project",
+          );
+        }
+        // The caller reached the project above (#304); the project must also
+        // own or have enabled the agent. Either failure reads as "not found"
+        // so another project's agents cannot be probed.
+        const def = await loadBoundCustomAgent(parsed.data.agentRef, effectiveProjectId);
+        if (!def) throw new AppError(404, "AGENT_NOT_FOUND", "Agent not found");
+        resolvedAgentRef = def.ref;
+        agentSnapshot = JSON.stringify({
+          ref: def.ref,
+          key: def.key,
+          name: def.name,
+          version: def.version,
+          model: def.model ?? "",
+        });
+        // Its skills, as a library agent's default skills (project allow-list
+        // filtered — the turn filters again).
+        const catalog = await resolveSkillCatalog({
+          skillKeys: def.skillKeys,
+          projectId: effectiveProjectId,
+        });
+        initialSkillIds = catalog.map((c) => c.id);
+        // #145 — the agent's saved model, exactly as for a library agent.
+        if (def.model && parsed.data.model === undefined && !projectPinnedModel) {
+          const chosen = resolveAgentModel(resolvedProvider, def.model, resolvedModel);
+          resolvedModel = chosen.model ?? resolvedModel;
+          if (chosen.warning) sessionWarnings.push(chosen.warning);
+        }
+      }
+    }
+    if (libraryAgentId || parsed.data.agentKey) {
       try {
         const resolved = await getSessionRuntime().resolveAgentForSession({
-          agentId: parsed.data.agentId,
+          agentId: libraryAgentId,
           agentKey: parsed.data.agentKey,
         });
         resolvedAgentId = resolved.agent.id;
@@ -935,6 +1025,7 @@ export function aiRouter(): Router {
         policy: policyToJson(policy),
         providerSecretRef: parsed.data.providerSecretRef ?? null,
         agentId: resolvedAgentId,
+        agentRef: resolvedAgentRef,
         agentSnapshot,
         loadedSkillIds: JSON.stringify(initialSkillIds),
       },
@@ -947,6 +1038,7 @@ export function aiRouter(): Router {
         provider: session.provider,
         model: session.model,
         agentId: resolvedAgentId,
+        agentRef: resolvedAgentRef,
         skillCount: initialSkillIds.length,
       },
     });
@@ -965,6 +1057,24 @@ export function aiRouter(): Router {
       }),
     );
   });
+
+  // #236 — the agents a new session may bind, both kinds, for ONE picker.
+  // With a project: the caller must reach it (404 otherwise, as everywhere).
+  // A per-IP ceiling runs BEFORE auth (JWT verification is the first cost an
+  // anonymous flood would otherwise impose); the per-user limiter follows it.
+  r.get(
+    "/session-agents",
+    conversationPreAuthRateLimiter,
+    requireAuth,
+    conversationRateLimiter,
+    async (req: Request, res: Response) => {
+      userIdOrThrow(req);
+      const raw = req.query.projectId;
+      const projectId = typeof raw === "string" && raw.length > 0 ? raw.slice(0, 120) : null;
+      if (projectId) await assertProjectAccess(req.user!, projectId);
+      res.json(ok({ items: await listBindableAgents(projectId) }));
+    },
+  );
 
   r.get(
     "/sessions/:id",

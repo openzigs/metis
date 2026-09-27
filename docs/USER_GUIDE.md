@@ -2258,7 +2258,9 @@ can use tools to look things up or act for you:
 | **Code search** | Searches the project's code graph and symbols, when your administrator has turned on `CHAT_CODE_SEARCH_TOOLS` |
 
 A chat that is not scoped to a project is offered no tools. Administrators can
-turn the METIS and MCP tools off with `CHAT_TOOLS=false`.
+turn the METIS and MCP tools off with `CHAT_TOOLS=false`. A chat can be scoped
+only to a project you can open: asking for another workspace's project is
+refused as "not found", and no chat is created.
 
 **Tool activity.** In Chat and in the Workbench, each tool call appears under
 the conversation as it happens: running, waiting for your approval, done, or an error. Open a call to
@@ -2307,6 +2309,27 @@ When a preferred model cannot be used, the chat's model runs instead and you are
 told so — on the new chat, on the hand-off's result, or on the agent run — never
 silently.
 
+**A custom agent can be the chat's agent.** The chat and Workbench agent
+picker lists library agents and — when the chat is scoped to one project — the
+project's own custom agents and those enabled for it. Pick one and the new chat
+runs under it: its persona, its skills, only the tools it lists (a custom agent
+that lists none gets no tools at all), its preferred model and its approval
+override, exactly as for a library agent. If the project later stops using that
+agent, the chat keeps working but without the agent's persona, any tools, or the
+skills it came with (the AI is no longer offered them, nor `load_skill`).
+Analyses also run the library agents a project has explicitly enabled, next to
+its enabled custom agents.
+
+**Agents name real tools.** Saving an agent that lists a tool METIS does not
+have is refused with the unknown names ("Unknown tools: …"). The four built-in
+agents now list tools that exist (the project knowledge search, and the code
+search tools for the Architect); before, they named tools that did not exist
+and so ran with none. A tool of an MCP server configured for the project
+(`mcp:<server>:<tool>` or `mcp:<server>:*`) can be named even while that server
+is stopped; a server the project does not have is still refused. Importing a
+plugin lists every agent it could not create, with the reason, under
+`rejected.agents`.
+
 **Skills load when they are needed.** The skills a chat has (the agent's own
 plus any you add) are listed to the AI by name and description only. When one
 fits your request, the AI opens it — you see a `load_skill` call in the tool
@@ -2326,7 +2349,12 @@ Import a skill's whole folder and its supporting files (`references/`,
 (letters, digits, `.`, `_`, `-`, spaces). A file that does not qualify — an
 image, a `.DS_Store` or `__MACOSX` entry, an oddly named file, one past the
 limits — is left out and listed with its reason in the import result
-(`skippedFiles`); the skill itself still imports. A `SKILL.md`
+(`skippedFiles`); the skill itself still imports. A repository import
+(`POST /api/skills/import/repository` with the project, its git repository
+connector and an optional folder; admins, like the other skill imports) brings
+the supporting files too, with the same limits; an entry that points outside
+the imported folder is never read and is listed in `skipped`, and only files
+inside a skill's own folder are read. A `SKILL.md`
 with broken frontmatter is refused with the reason (for example
 "Frontmatter key 'execute' is not allowed", or "File must begin with a `---`
 YAML frontmatter block"). Agent and skill text that contains a credential

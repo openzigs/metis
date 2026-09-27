@@ -20,6 +20,8 @@ import {
   type SessionScope,
   type StreamEvent,
   createSessionWithScope,
+  listSessionAgents,
+  sessionAgentInput,
   forkChatSession,
   getTranscriptSince,
   lastHeldOrdinal,
@@ -129,6 +131,45 @@ export default function ChatPage() {
     setAgentHydrated(true);
   }, []);
 
+  // #236 — the one project a new session would be scoped to (a URL project,
+  // or a single project picked in the scope selector): its custom agents can
+  // be the session's agent.
+  const pickerProjectId =
+    effectiveProjectId ??
+    (scope.mode === "selected" && scope.projectIds.length === 1 ? scope.projectIds[0] : null);
+
+  // #236 — a saved custom agent belongs to the project it was picked in. When
+  // the session cannot bind it here, the chat falls back to the default agent,
+  // the stored choice is cleared, and the user is told once.
+  const [agentNotice, setAgentNotice] = useState<string | null>(null);
+  // Clearing the choice changes `agentKey`, which would otherwise re-run the
+  // session effect and create a SECOND session for a chat that already has one.
+  const skipAgentRecreateRef = useRef(false);
+
+  async function pickSessionAgent(
+    selection: string | null,
+  ): Promise<{ selection: string | null; dropped: string | null }> {
+    if (!selection?.startsWith("custom:") || !pickerProjectId) {
+      return { selection, dropped: null };
+    }
+    // A listing failure (a stale project reads 404) is not a verdict: send the
+    // choice and let the server's refusal trigger the one retry.
+    const available = await listSessionAgents(pickerProjectId).catch(() => null);
+    if (available && !available.some((a) => a.ref === selection)) {
+      return { selection: null, dropped: selection };
+    }
+    return { selection, dropped: null };
+  }
+
+  function fallBackToDefaultAgent() {
+    storeAgentKey(null);
+    setAgentNotice(
+      "The agent you picked earlier is not available in this project, so this chat uses the default agent.",
+    );
+    skipAgentRecreateRef.current = true;
+    setAgentKey(null);
+  }
+
   // Serialize scope for stable deps comparison (avoids infinite re-renders).
   const scopeKey = scope.mode === "all" ? "all" : `selected:${scope.projectIds.sort().join(",")}`;
 
@@ -138,6 +179,12 @@ export default function ChatPage() {
     // throwaway default-valued pass, so the real pass created a new session and
     // overwrote the stored id: a reload of bare `/chat` lost the conversation.
     if (!agentHydrated || !scopeHydrated) return;
+    // #236 — this run was caused by clearing an unusable agent choice after
+    // the session had already been created with the default agent.
+    if (skipAgentRecreateRef.current) {
+      skipAgentRecreateRef.current = false;
+      return;
+    }
     let cancelled = false;
     abortRef.current?.abort();
     setSession(null);
@@ -164,9 +211,11 @@ export default function ChatPage() {
             return;
           }
         }
+        const agent = await pickSessionAgent(agentKey);
+        if (cancelled) return;
         const sessionOpts: Parameters<typeof createSessionWithScope>[0] = {
           title: "New Chat",
-          ...(agentKey ? { agentKey } : {}),
+          ...sessionAgentInput(agent.selection, pickerProjectId),
         };
         // If a single projectId is in the URL, use it. Otherwise, pass
         // the scope selector's projectIds for cross-project mode.
@@ -183,6 +232,7 @@ export default function ChatPage() {
           if (created.scope?.reason === "stale-project" && effectiveProjectId) {
             setRejectedProjectId(effectiveProjectId);
           }
+          if (agent.dropped ?? created.droppedAgentRef) fallBackToDefaultAgent();
         }
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
@@ -198,6 +248,7 @@ export default function ChatPage() {
     // default skills change at session-create.
   }, [
     agentKey,
+    pickerProjectId,
     projectId,
     effectiveProjectId,
     scopeKey,
@@ -219,9 +270,10 @@ export default function ChatPage() {
     setSession(null);
     void (async () => {
       try {
+        const agent = await pickSessionAgent(agentKey);
         const created = await createSessionWithScope({
           title: "New Chat",
-          ...(agentKey ? { agentKey } : {}),
+          ...sessionAgentInput(agent.selection, pickerProjectId),
           ...(effectiveProjectId
             ? { projectId: effectiveProjectId }
             : scope.mode === "selected" && scope.projectIds.length > 0
@@ -231,6 +283,7 @@ export default function ChatPage() {
         setSession(created.session);
         setSessionScope(created.scope);
         storeActiveSessionId(created.session.id);
+        if (agent.dropped ?? created.droppedAgentRef) fallBackToDefaultAgent();
       } catch (err) {
         setError((err as Error).message);
       }
@@ -238,6 +291,7 @@ export default function ChatPage() {
   }
 
   function handleAgentChange(next: string | null) {
+    setAgentNotice(null);
     storeAgentKey(next);
     setAgentKey(next);
   }
@@ -407,7 +461,12 @@ export default function ChatPage() {
             {!effectiveProjectId || scopeBlocked ? (
               <ProjectScopeSelector value={scope} onChange={setScope} disabled={streaming} />
             ) : null}
-            <AgentPicker value={agentKey} onChange={handleAgentChange} disabled={streaming} />
+            <AgentPicker
+              value={agentKey}
+              onChange={handleAgentChange}
+              disabled={streaming}
+              projectId={pickerProjectId}
+            />
             <Button
               type="button"
               variant="secondary"
@@ -428,6 +487,11 @@ export default function ChatPage() {
           </div>
         </div>
         <ScopeDegradationNotice scope={sessionScope} />
+        {agentNotice ? (
+          <p role="status" data-testid="chat-agent-fallback-notice" className="text-sm">
+            {agentNotice}
+          </p>
+        ) : null}
         {readOnlyReason ? (
           <div
             role="status"
