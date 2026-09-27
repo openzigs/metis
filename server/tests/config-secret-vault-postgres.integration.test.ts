@@ -28,7 +28,8 @@
  * harness — the same two `VaultService` writers, the same number of calls, the
  * same app Prisma client, the real `create`/`rotate` (encryption included) —
  * with only the decision swapped for the pre-#93 read-then-write shape: choose
- * create-vs-rotate from `list()`. That arm must see a P2002 clash. So a harness
+ * create-vs-rotate from `list()`. That arm must see a P2002 clash (which `create`
+ * reports as `SecretNameTakenError`, #258). So a harness
  * that stopped interleaving these writers (a change that serialised them, or a
  * pool of one) fails here instead of letting the race test pass for nothing.
  * It proves the HARNESS races; it does not by itself prove the native upsert
@@ -50,6 +51,7 @@ import { selectPrismaAdapter } from "../src/lib/prisma.js";
 import { ConfigService } from "../src/lib/config/config-service.js";
 import { getKeyDef } from "../src/lib/config/key-registry.js";
 import {
+  SecretNameTakenError,
   SecretNotFoundError,
   VaultService,
   type SecretScope,
@@ -165,8 +167,9 @@ describe.runIf(enabled)("Config secret save → clear → save on real Postgres 
           Array.from({ length: PER_WRITER }, (_, j) => w.upsert(KEY, `gho_${i}_${j}`, "global")),
         ),
       );
+      // #258 — `create` reports the unique-name clash (P2002) as SecretNameTakenError.
       clashes += results.filter(
-        (r) => r.status === "rejected" && (r.reason as { code?: string }).code === "P2002",
+        (r) => r.status === "rejected" && r.reason instanceof SecretNameTakenError,
       ).length;
     }
     expect(clashes).toBeGreaterThan(0);
