@@ -11,9 +11,10 @@
  *     function the orchestrator calls — evaluated with the flag set per mode,
  *     so "native" here means what it means in production (a model the catalog
  *     marks not tool-capable reports `text`, never a fake native number);
- *   • the prompt (fused code context, affected-code and affected-schema blocks)
- *     and the budget carve-out are the orchestrator's own
- *     {@link buildAgenticPassPrompt} / {@link agenticPassEffectiveBudget};
+ *   • the prompt (fused code context, affected-code and affected-schema blocks),
+ *     the budget carve-out and the default turn cap are the orchestrator's own
+ *     {@link buildAgenticPassPrompt} / {@link agenticPassEffectiveBudget} /
+ *     {@link resolveAgenticMaxTurns} (for a single, non-escalated pass);
  *   • the loop options mirror the orchestrator's (`promptCaching`, the #769
  *     final-answer retry gated on the #1314 schema check, the #1221 output cap).
  *
@@ -45,6 +46,7 @@ import {
   agenticPassEffectiveBudget,
   buildAgenticPassPrompt,
   resolveAgentTokenBudget,
+  resolveAgenticMaxTurns,
   type AgenticPassSeeds,
 } from "../../analysis/agentic-pass-context.js";
 import type { AgentTool, ToolContext } from "../../analysis/tools/types.js";
@@ -160,6 +162,7 @@ export interface ProtocolComparisonOptions {
   buildPass: (c: ProtocolCase) => ProtocolPassInput | Promise<ProtocolPassInput>;
   modes?: ProtocolMode[];
   runsPerCase?: number;
+  /** Turn cap; defaults to the orchestrator's {@link resolveAgenticMaxTurns} for the case. */
   maxTurns?: number;
   /**
    * The pass's token budget BEFORE the seed carve-out (defaults to the
@@ -261,6 +264,7 @@ export async function runToolProtocolComparison(
     for (const c of opts.cases) {
       const pass = await opts.buildPass(c);
       const { systemMessage, userMessage } = buildAgenticPassPrompt(pass);
+      const maxTurns = opts.maxTurns ?? resolveAgenticMaxTurns(pass.requirements.length);
       const tokenBudget = agenticPassEffectiveBudget(
         opts.maxTokens ?? resolveAgentTokenBudget(),
         pass.seeds,
@@ -283,7 +287,7 @@ export async function runToolProtocolComparison(
               },
               {
                 ...(native ? { native } : {}),
-                maxTurns: opts.maxTurns ?? 8,
+                maxTurns,
                 maxTokens: tokenBudget,
                 model,
                 promptCaching: { system: true, messages: true },

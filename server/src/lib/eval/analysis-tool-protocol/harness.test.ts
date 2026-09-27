@@ -289,6 +289,26 @@ describe("pass fidelity — the orchestrator's prompt blocks and budget carve-ou
     expect(cmp.records[0]!.tokenBudget).toBe(6_500);
   });
 
+  it("defaults the turn cap to the orchestrator's per-requirement scaling", async () => {
+    const loop = vi.mocked(agentLoop.runAgentLoop);
+    loop.mockClear();
+    const eight = Array.from({ length: 8 }, (_, i) => ({ id: `R${i}`, text: `req ${i}` }));
+    await runToolProtocolComparison({
+      provider: provider({ toolCapable: true }).provider,
+      cases: CASES,
+      buildPass: () => ({ ...passWith(EMPTY_SEEDS), requirements: eight }),
+      modes: ["text"],
+    });
+    await runToolProtocolComparison({
+      provider: provider({ toolCapable: true }).provider,
+      cases: CASES,
+      buildPass: pass,
+      modes: ["text"],
+    });
+    // 8 requirements × 2 turns = 16; one requirement gets the floor of 10.
+    expect(loop.mock.calls.map((c) => c[2].maxTurns)).toEqual([16, 10]);
+  });
+
   it("defaults to the orchestrator's ANALYSIS_AGENT_TOKEN_BUDGET and keeps the half-budget floor", async () => {
     const loop = vi.mocked(agentLoop.runAgentLoop);
     loop.mockClear();
@@ -301,6 +321,20 @@ describe("pass fidelity — the orchestrator's prompt blocks and budget carve-ou
     });
     // Default budget 100,000; the seed would leave 7,500, so the floor (50,000) wins.
     expect(loop.mock.calls[0]![2].maxTokens).toBe(50_000);
+
+    // …and it is the operator's configured budget, not a constant.
+    process.env.ANALYSIS_AGENT_TOKEN_BUDGET = "40000";
+    try {
+      await runToolProtocolComparison({
+        provider: provider({ toolCapable: true }).provider,
+        cases: CASES,
+        buildPass: pass,
+        modes: ["text"],
+      });
+    } finally {
+      delete process.env.ANALYSIS_AGENT_TOKEN_BUDGET;
+    }
+    expect(loop.mock.calls[1]![2].maxTokens).toBe(40_000);
   });
 });
 

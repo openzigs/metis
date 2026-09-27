@@ -102,7 +102,8 @@ async function main(): Promise<void> {
   }
   const cases = parseProtocolCases(JSON.parse(await readFile(path.resolve(values.cases), "utf8")));
   const runsPerCase = positiveInt(values.runs, "runs", 1)!;
-  const maxTurns = positiveInt(values["max-turns"], "max-turns", 8)!;
+  // Unset ⇒ the orchestrator's own per-case turn cap (resolveAgenticMaxTurns).
+  const maxTurns = positiveInt(values["max-turns"], "max-turns");
   const maxTokens = positiveInt(values["max-tokens"], "max-tokens");
 
   const project = await prisma.project.findUnique({
@@ -170,7 +171,7 @@ async function main(): Promise<void> {
     buildPass,
     modes,
     runsPerCase,
-    maxTurns,
+    ...(maxTurns ? { maxTurns } : {}),
     ...(maxTokens ? { maxTokens } : {}),
     onRecord: (r) =>
       // eslint-disable-next-line no-console

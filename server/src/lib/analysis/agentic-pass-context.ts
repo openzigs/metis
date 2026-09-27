@@ -58,6 +58,73 @@ export function resolveAgentTokenBudget(): number {
   return getConfigService().getNumber("ANALYSIS_AGENT_TOKEN_BUDGET", DEFAULT_AGENT_TOKEN_BUDGET);
 }
 
+/** Default max turns for the agentic loop (the FLOOR — see {@link resolveAgenticMaxTurns}). */
+const DEFAULT_AGENTIC_MAX_TURNS = 10;
+/**
+ * Issue #773 — turns granted PER REQUIREMENT in a pass (one search + one read is
+ * the minimum honest investigation of a single requirement).
+ */
+const DEFAULT_AGENTIC_TURNS_PER_REQUIREMENT = 2;
+/**
+ * Issue #773 — hard ceiling on the scaled turn cap, so a huge requirement set cannot
+ * run away. 60 turns funds one search + one read for the ~30-requirement analyses
+ * this product routinely runs (the reported incident had 20). Turns do not raise the
+ * ceiling on SPEND — `ANALYSIS_AGENT_TOKEN_BUDGET` still bounds that — they only
+ * decide how many requirements a pass can afford to actually look for.
+ */
+const DEFAULT_AGENTIC_MAX_TURNS_CAP = 60;
+
+/**
+ * Issue #773 — BUDGET STARVATION. A flat 10-turn cap against ~20 requirements made
+ * "no evidence found" outcomes STRUCTURALLY PREDETERMINED: the agent could not
+ * physically investigate every requirement, and the pipeline then reported the
+ * ones it never reached as confirmed gaps. Two changes close that:
+ *
+ *   1. A requirement the agent never investigated is `could-not-verify`, never a
+ *      gap (`deriveRequirementVerdict`'s final rule + the per-claim evidence
+ *      threshold: a gap needs a working search that BORE ON that requirement).
+ *   2. The turn cap SCALES with the size of the pass, so a working search per
+ *      requirement is FUNDABLE rather than impossible by construction.
+ *
+ * The evidence threshold is now scale-free (per-claim, not a pass-wide quota), so
+ * a pass that cannot afford to search for every requirement degrades GRACEFULLY —
+ * it confirms gaps for the ones it did search and says `could-not-verify` about
+ * the rest — instead of hitting a cliff where nothing is confirmable. The turn cap
+ * therefore governs HOW MANY requirements a pass can settle, never WHETHER it can
+ * settle any.
+ *
+ * The configured `ANALYSIS_AGENTIC_MAX_TURNS` remains the FLOOR (a small pass is
+ * byte-identical to before), and the scaled value is capped by
+ * `ANALYSIS_AGENTIC_MAX_TURNS_CAP`. This cannot raise the ceiling on SPEND: the
+ * loop is still bounded by `ANALYSIS_AGENT_TOKEN_BUDGET`, which turns do not change.
+ */
+export function resolveAgenticMaxTurns(requirementCount = 0): number {
+  const cfg = getConfigService();
+  const floor = cfg.getNumber("ANALYSIS_AGENTIC_MAX_TURNS", DEFAULT_AGENTIC_MAX_TURNS);
+  const perRequirement = cfg.getNumber(
+    "ANALYSIS_AGENTIC_TURNS_PER_REQUIREMENT",
+    DEFAULT_AGENTIC_TURNS_PER_REQUIREMENT,
+  );
+  const cap = cfg.getNumber("ANALYSIS_AGENTIC_MAX_TURNS_CAP", DEFAULT_AGENTIC_MAX_TURNS_CAP);
+  const scaled = Math.ceil(Math.max(0, requirementCount) * perRequirement);
+  const turns = Math.min(Math.max(floor, scaled), Math.max(floor, cap));
+  // One turn must emit the final answer, so the pass can make at most `turns - 1`
+  // tool calls. Below one call per requirement it CANNOT look for every
+  // requirement, and the ones it never searched for will (correctly) come back
+  // `could-not-verify` rather than as gaps. That is a budget decision, so say so
+  // out loud rather than letting an operator who lowered the cap wonder why their
+  // large analyses stopped confirming gaps.
+  if (requirementCount > 0 && turns - 1 < requirementCount) {
+    log.warn("Agentic turn cap cannot fund one search per requirement", {
+      requirementCount,
+      turns,
+      maxToolCalls: turns - 1,
+      hint: "Raise ANALYSIS_AGENTIC_MAX_TURNS_CAP / ANALYSIS_AGENTIC_TURNS_PER_REQUIREMENT; requirements the pass cannot search for are reported could-not-verify, never as confirmed gaps.",
+    });
+  }
+  return turns;
+}
+
 /** The three deterministic blocks seeded into every agentic pass. */
 export interface AgenticPassSeeds {
   fused: Pick<FusedCodeContext, "block" | "tokens">;

@@ -174,7 +174,11 @@ describe("assembleAgenticPassSeeds", () => {
       expect.objectContaining({ projectId: "p1", extraInstructions: "add a surcharge column" }),
     );
     expect(retrievers.affectedSchema).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: "p1", enabled: true }),
+      expect.objectContaining({
+        projectId: "p1",
+        extraInstructions: "add a surcharge column",
+        enabled: true,
+      }),
     );
   });
 
@@ -183,6 +187,10 @@ describe("assembleAgenticPassSeeds", () => {
     retrievers.affectedCode.mockRejectedValue(new Error("graph down"));
     retrievers.affectedSchema.mockRejectedValue(new Error("schema down"));
     const seeds = await assembleAgenticPassSeeds({ ...input, databaseAware: false });
+    // The project's database-aware decision reaches the schema mapping as-is.
+    expect(retrievers.affectedSchema).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: false, extraInstructions: "add a surcharge column" }),
+    );
     expect(seeds.affectedCode).toMatchObject({ block: "", tokens: 0 });
     expect(seeds.affectedSchema).toMatchObject({ block: "", tokens: 0 });
   });
