@@ -28,6 +28,7 @@
  * wires a real project. Nothing here calls a model on its own.
  */
 import { z } from "zod";
+import { ANALYSIS_AGENT_KEYS, agentOutputSchema } from "@metis/shared";
 import type { AIProvider, TokenUsage } from "../../ai/types.js";
 import {
   resolveAnalysisNativeTools,
@@ -123,6 +124,13 @@ export interface ProtocolRunRecord {
   durationMs: number;
   /** The pass threw (provider error). Counted as degraded. */
   error?: string;
+  /**
+   * #214 — present only on a degraded pass that returned: WHY its last answer
+   * (the #769 retry's, when one ran) failed the #1314 findings schema, as
+   * `path: code` pairs ({@link answerSchemaIssues}). `[]` means the answer was
+   * schema-valid and was rejected for another reason.
+   */
+  answerSchemaIssues?: string[];
 }
 
 export interface ProtocolModeSummary {
@@ -187,6 +195,35 @@ function findingsIn(text: string): number {
   }
 }
 
+/** At most this many schema issues are recorded per pass. */
+const MAX_ANSWER_SCHEMA_ISSUES = 10;
+
+/**
+ * #214 — why `text` fails the schema {@link isSchemaValidFinalAnswer} gates on,
+ * as `path: code` pairs (`findings.0.severity: invalid_enum_value`). Issue
+ * MESSAGES are deliberately left out: zod quotes the received value in some of
+ * them, and that value is model-authored commentary on the customer's source.
+ * `[]` = schema-valid; `["not-json"]` = no JSON object to check.
+ */
+export function answerSchemaIssues(text: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = extractJsonObject(text);
+  } catch {
+    return ["not-json"];
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return ["not-json"];
+  // Same agentKey stamp as the gate: the orchestrator sets the real one later.
+  const result = agentOutputSchema.safeParse({
+    ...(parsed as Record<string, unknown>),
+    agentKey: ANALYSIS_AGENT_KEYS[0],
+  });
+  if (result.success) return [];
+  return result.error.issues
+    .slice(0, MAX_ANSWER_SCHEMA_ISSUES)
+    .map((i) => `${i.path.join(".") || "(root)"}: ${i.code}`);
+}
+
 function recordFrom(
   base: Pick<ProtocolRunRecord, "caseId" | "mode" | "run" | "durationMs" | "tokenBudget">,
   requestedNative: boolean,
@@ -208,6 +245,9 @@ function recordFrom(
               ? ("turn-limit" as const)
               : ("no-valid-answer" as const),
         }
+      : {}),
+    ...(degraded
+      ? { answerSchemaIssues: answerSchemaIssues(r.salvageSource ?? r.finalResponse) }
       : {}),
     finalAnswerRetry: r.finalAnswerRetry?.attempted === true,
     turnsUsed: r.turnsUsed,

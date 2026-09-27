@@ -15,6 +15,7 @@ import {
   type AgenticPassSeeds,
 } from "../../analysis/agentic-pass-context.js";
 import {
+  answerSchemaIssues,
   formatProtocolComparison,
   parseProtocolCases,
   runToolProtocolComparison,
@@ -211,6 +212,59 @@ describe("runToolProtocolComparison", () => {
     expect(nativeRun).toMatchObject({ degraded: true, error: "upstream 500", protocol: "native" });
     expect(failing.summaries[1]).toMatchObject({ errors: 1, degradedRate: 1 });
     expect(failing.records.find((r) => r.mode === "text")!.error).toBeUndefined();
+  });
+
+  it("records WHY a degraded answer failed the findings schema — paths and codes, never values (#214)", async () => {
+    const badSeverity = JSON.stringify({
+      summary: "s",
+      findings: [
+        { category: "architecture", severity: "sev-SECRET", title: "t", body: "b", citations: [] },
+      ],
+    });
+    const cmp = await runToolProtocolComparison({
+      provider: provider({ toolCapable: true, answer: badSeverity }).provider,
+      cases: CASES,
+      buildPass: pass,
+      modes: ["native", "text"],
+    });
+    // maxTurns 1: the loop ends on a tool call, so the answer checked is the
+    // #769 retry's (the loop's own final reply is replaced by a fallback).
+    const capped = await runToolProtocolComparison({
+      provider: provider({ toolCapable: true, answer: badSeverity }).provider,
+      cases: CASES,
+      buildPass: pass,
+      modes: ["native", "text"],
+      maxTurns: 1,
+    });
+    for (const r of [...cmp.records, ...capped.records]) {
+      expect(r).toMatchObject({
+        degraded: true,
+        answerSchemaIssues: ["findings.0.severity: invalid_enum_value"],
+      });
+      expect(JSON.stringify(r)).not.toContain("SECRET");
+    }
+    expect(capped.records.every((r) => r.degradedReason === "turn-limit")).toBe(true);
+    // A valid pass carries no diagnostic at all, so a flag-off record is unchanged.
+    const ok = await runToolProtocolComparison({
+      provider: provider({ toolCapable: true }).provider,
+      cases: CASES,
+      buildPass: pass,
+      modes: ["text"],
+    });
+    expect(ok.records[0]!.findingsValid).toBe(true);
+    expect("answerSchemaIssues" in ok.records[0]!).toBe(false);
+  });
+
+  it("answerSchemaIssues: empty for a schema-valid answer, not-json for prose, capped", () => {
+    expect(answerSchemaIssues(VALID)).toEqual([]);
+    expect(answerSchemaIssues("prose")).toEqual(["not-json"]);
+    expect(answerSchemaIssues("[1]")).toEqual(["not-json"]);
+    expect(answerSchemaIssues("{}")).toEqual(["summary: invalid_type", "findings: invalid_type"]);
+    const many = JSON.stringify({
+      summary: "s",
+      findings: Array.from({ length: 30 }, () => ({ severity: "x" })),
+    });
+    expect(answerSchemaIssues(many)).toHaveLength(10);
   });
 
   it("a native run that went tool-less part-way is not counted as native end to end", async () => {
