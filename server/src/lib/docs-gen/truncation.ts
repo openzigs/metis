@@ -216,8 +216,13 @@ export function detectRepetitionLoop(text: string): RepetitionLoop | null {
     const counts = new Map<string, number>();
     for (const l of last) counts.set(l, (counts.get(l) ?? 0) + 1);
     const [unit, repeats] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+    const loopLines = new Set(last);
     return {
-      usablePrefix: prefixBeforeSecond(text, (l) => (normaliseLoopText(l) === unit ? 1 : 0)),
+      usablePrefix: prefixBeforeSecond(
+        text,
+        (l) => (normaliseLoopText(l) === unit ? 1 : 0),
+        (l) => loopLines.has(normaliseLoopText(l)),
+      ),
       unit,
       repeats,
     };
@@ -236,7 +241,11 @@ export function detectRepetitionLoop(text: string): RepetitionLoop | null {
   const [unit, repeats] = [...grams.entries()].sort((a, b) => b[1] - a[1])[0];
   if (repeats < LOOP_MIN_REPEATS || repeats * LOOP_NGRAM < words.length / 2) return null;
   return {
-    usablePrefix: prefixBeforeSecond(text, (l) => countIn(l, unit)),
+    usablePrefix: prefixBeforeSecond(
+      text,
+      (l) => countIn(l, unit),
+      (l) => countIn(l, unit) > 0,
+    ),
     unit,
     repeats,
   };
@@ -246,13 +255,21 @@ export function detectRepetitionLoop(text: string): RepetitionLoop | null {
  * `text` up to (not including) the line where the repeated unit occurs for the
  * second time (`occurrences` counts it per line), so one copy is kept and a
  * line that holds it several times — a loop inside one line — is dropped. Always whole lines, trailing blank
- * lines trimmed.
+ * lines trimmed. Counting starts at the trailing run of loop lines (`inLoop`),
+ * so a copy of the unit earlier in the reply — a "- None." closing an earlier
+ * section — does not cut away the facts between it and the loop.
  */
-function prefixBeforeSecond(text: string, occurrences: (line: string) => number): string {
+function prefixBeforeSecond(
+  text: string,
+  occurrences: (line: string) => number,
+  inLoop: (line: string) => boolean,
+): string {
   const lines = text.split("\n");
+  let start = lines.length;
+  while (start > 0 && (lines[start - 1].trim() === "" || inLoop(lines[start - 1]))) start--;
   let seen = 0;
   let cut = lines.length;
-  for (let i = 0; i < lines.length; i++) {
+  for (let i = start; i < lines.length; i++) {
     seen += occurrences(lines[i]);
     if (seen >= 2) {
       cut = i;

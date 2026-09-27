@@ -60,6 +60,16 @@ describe("detectRepetitionLoop (#166)", () => {
     expect(found!.usablePrefix).toBe(`${head}\n- The cache is warmed on start.`);
   });
 
+  it("keeps earlier copies of the looping line that sit before the loop", () => {
+    // "- None." legitimately closes two sections before the model starts
+    // looping on it; the kept prefix must not be cut at the second of those.
+    const body =
+      "PURPOSE\nTakes payments.\n\nINPUTS\n- None.\n\nOUTPUTS\n- None.\n\nRULES\n- Amount must be positive.\n\nNOTES";
+    const loop = Array.from({ length: 40 }, () => "- None.").join("\n");
+    const found = detectRepetitionLoop(`${body}\n${loop}`);
+    expect(found?.usablePrefix).toBe(`${body}\n- None.`);
+  });
+
   it("reads lines that differ only in their numbers as one", () => {
     const loop = Array.from({ length: 60 }, (_, i) => `- Step ${i} retries the call.`).join("\n");
     const found = detectRepetitionLoop(`${head}\n${loop}`);
