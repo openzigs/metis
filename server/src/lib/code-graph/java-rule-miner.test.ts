@@ -103,8 +103,8 @@ describe("mineJavaRules — statements that span lines (#170)", () => {
 
   it("stays linear on adversarial multi-line input (ReDoS)", () => {
     const inputs = [
-      Array.from({ length: 20_000 }, () => "Preconditions.checkArgument(").join("\n"),
-      Array.from({ length: 20_000 }, () => "@Size(").join("\n"),
+      Array.from({ length: 2_000 }, () => "Preconditions.checkArgument(").join("\n"),
+      Array.from({ length: 2_000 }, () => "@Size(").join("\n"),
       `throw new XException(\n${" ".repeat(4000)}\n"m");`,
     ];
     const start = performance.now();

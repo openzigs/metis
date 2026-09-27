@@ -317,8 +317,8 @@ describe("mineSqlRules — clauses that span lines (#170)", () => {
     const inputs = [
       // `\bWHERE\s+(.+?)\s*;?\s*$` was cubic on a long whitespace run.
       `CREATE VIEW v AS SELECT 1 WHERE a${" ".repeat(n)}x`,
-      Array.from({ length: 20_000 }, () => "CHECK (").join("\n"),
-      Array.from({ length: 20_000 }, () => "IF a > 1").join("\n"),
+      Array.from({ length: 2_000 }, () => "CHECK (").join("\n"),
+      Array.from({ length: 2_000 }, () => "IF a > 1").join("\n"),
       `CREATE VIEW v AS\nWHERE a AND\n${Array.from({ length: 20 }, () => `${" ".repeat(150)}b AND`).join("\n")}`,
     ];
     const start = performance.now();

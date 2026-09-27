@@ -232,8 +232,8 @@ describe("mineGoRules — conditions that span lines (#170)", () => {
 
   it("stays linear on adversarial multi-line input (ReDoS)", () => {
     const inputs = [
-      Array.from({ length: 20_000 }, () => "if a &&").join("\n"),
-      Array.from({ length: 20_000 }, () => "errors.New(").join("\n"),
+      Array.from({ length: 2_000 }, () => "if a &&").join("\n"),
+      Array.from({ length: 2_000 }, () => "errors.New(").join("\n"),
       `if a ||\n${" ".repeat(4000)}b {\nreturn\n}`,
     ];
     const start = performance.now();

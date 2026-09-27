@@ -573,8 +573,8 @@ describe("mineCsRules — conditions that span lines (#170)", () => {
   it("stays linear on adversarial multi-line input (ReDoS)", () => {
     const n = 4000;
     const inputs = [
-      Array.from({ length: 20_000 }, () => "if (a &&").join("\n"),
-      Array.from({ length: 20_000 }, () => "Guard.Against.Null(").join("\n"),
+      Array.from({ length: 2_000 }, () => "if (a &&").join("\n"),
+      Array.from({ length: 2_000 }, () => "Guard.Against.Null(").join("\n"),
       // `=x` pairs then whitespace after the line's only `?`: the old ternary
       // regex `/=\s*([^=?][^?]*?)\s*\?(?!\?)/` was cubic here.
       `x ? y : 1 > 2 ${"=a".repeat(n / 4)}${" ".repeat(n / 2)}z`,

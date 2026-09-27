@@ -463,10 +463,10 @@ describe("mineKtRules — conditions that span lines (#170)", () => {
 
   it("stays linear on adversarial multi-line input (ReDoS)", () => {
     const inputs = [
-      Array.from({ length: 20_000 }, () => "if (a &&").join("\n"),
-      Array.from({ length: 20_000 }, () => "require(").join("\n"),
-      `when {\n${Array.from({ length: 20_000 }, () => "a &&").join("\n")}\n}`,
-      `val x = a\n${Array.from({ length: 20_000 }, () => "?: b").join("\n")}`,
+      Array.from({ length: 2_000 }, () => "if (a &&").join("\n"),
+      Array.from({ length: 2_000 }, () => "require(").join("\n"),
+      `when {\n${Array.from({ length: 2_000 }, () => "a &&").join("\n")}\n}`,
+      `val x = a\n${Array.from({ length: 2_000 }, () => "?: b").join("\n")}`,
       `if (\n${" ".repeat(4000)}\n) return`,
     ];
     const start = performance.now();

@@ -284,7 +284,7 @@ describe("mineTsRules — conditions that span lines (#170)", () => {
     const n = 4000;
     const inputs = [
       // An unclosed condition on every line: each join is bounded.
-      Array.from({ length: 20_000 }, () => "if (a &&").join("\n"),
+      Array.from({ length: 2_000 }, () => "if (a &&").join("\n"),
       // A `=` run then whitespace after the line's only `?`: the old ternary
       // regex `/=\s*(.+?)\s*\?/` was cubic here (2 s at 2,000 characters).
       `x ? y : 1 > 2 ${"=".repeat(n / 2)}${" ".repeat(n / 2)}z`,

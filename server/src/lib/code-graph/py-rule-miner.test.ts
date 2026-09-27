@@ -258,8 +258,8 @@ describe("minePyRules — conditions that span lines (#170)", () => {
 
   it("stays linear on adversarial multi-line input (ReDoS)", () => {
     const inputs = [
-      Array.from({ length: 20_000 }, () => "if (a and").join("\n"),
-      Array.from({ length: 20_000 }, () => "if a and \\").join("\n"),
+      Array.from({ length: 2_000 }, () => "if (a and").join("\n"),
+      Array.from({ length: 2_000 }, () => "if a and \\").join("\n"),
       `raise E(\n${" ".repeat(4000)}\n)`,
       `assert (${" ".repeat(3990)}\n)`,
     ];

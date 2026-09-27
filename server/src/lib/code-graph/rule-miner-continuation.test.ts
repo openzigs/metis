@@ -98,11 +98,26 @@ describe("joinLogicalLine", () => {
     expect(joinLogicalLine(["a"], 3)).toBeNull();
   });
 
-  it("is linear: joining from every line of a pathological file stays fast", () => {
-    const src = Array.from({ length: 50_000 }, (_, k) => (k % 2 ? "((((((((((" : "if (a &&"));
-    const start = performance.now();
-    for (let i = 0; i < src.length; i++) joinLogicalLine(src, i, { comment: "//" });
-    expect(performance.now() - start).toBeLessThan(1000);
+  it("is linear: joining from every line reads each line a bounded number of times", () => {
+    // Counts line reads instead of timing them: a wall-clock budget here went
+    // red under the monorepo test fan-out on a loaded machine with the code
+    // unchanged (#1379 shape), and a read count is exact on any machine.
+    // An unbounded look-ahead reads O(N) lines per start, O(N²) in total.
+    const n = 5_000;
+    const src = Array.from({ length: n }, (_, k) => (k % 2 ? "((((((((((" : "if (a &&"));
+    let reads = 0;
+    const counted = new Proxy(src, {
+      get(target, key, receiver) {
+        if (typeof key === "string" && /^\d+$/.test(key)) reads++;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    for (let i = 0; i < n; i++) joinLogicalLine(counted, i, { comment: "//" });
+    // Each start scans at most MAX_CONTINUATION_LINES lines and peeks the next
+    // one for an operator continuation: two reads per consumed line, plus one.
+    // The bound is only a bound while the constant itself stays small.
+    expect(MAX_CONTINUATION_LINES).toBeLessThanOrEqual(32);
+    expect(reads).toBeLessThanOrEqual(n * (2 * MAX_CONTINUATION_LINES + 1));
   });
 });
 
