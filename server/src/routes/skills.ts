@@ -26,6 +26,10 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { loadAuthorizedSession } from "../lib/ai/conversation/session-access.js";
+import {
+  conversationPreAuthRateLimiter,
+  conversationRateLimiter,
+} from "../middleware/conversation-rate-limit.js";
 
 function ok<T>(data: T): { success: true; data: T } {
   return { success: true, data };
@@ -265,30 +269,38 @@ export function skillsRouter(): Router {
   // allow-list of a project-bound session are rejected with a 403
   // PROJECT_SKILL_NOT_ALLOWED before any prompt mutation. Ad-hoc sessions
   // with no projectId fall back to the global enabled-skill set.
-  r.post("/:id/load", requireAuth, async (req: Request, res: Response) => {
-    const sessionId = z.object({ sessionId: z.string().min(1) }).safeParse(req.body ?? {});
-    if (!sessionId.success) {
-      throw new AppError(400, "VALIDATION_ERROR", "sessionId required");
-    }
-    // #305 — the target session must be the caller's AND its project still
-    // reachable (`loadAuthorizedSession`), before any skill lookup or write.
-    await loadAuthorizedSession(req.user, sessionId.data.sessionId);
-    try {
-      const result = await getSessionRuntime().loadSkillIntoSession(
-        { sessionId: sessionId.data.sessionId, skillId: String(req.params.id) },
-        actorFromReq(req),
-      );
-      audit({
-        actor: { id: req.user!.userId },
-        action: "skill.load.api",
-        target: { type: "ai_session", id: sessionId.data.sessionId },
-        metadata: { skillId: req.params.id, alreadyLoaded: result.alreadyLoaded },
-      });
-      res.json(ok(result));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+  // #305 — a per-IP ceiling before auth and a per-user one after, as on every
+  // other session route (the session lookup is an authorization read).
+  r.post(
+    "/:id/load",
+    conversationPreAuthRateLimiter,
+    requireAuth,
+    conversationRateLimiter,
+    async (req: Request, res: Response) => {
+      const sessionId = z.object({ sessionId: z.string().min(1) }).safeParse(req.body ?? {});
+      if (!sessionId.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "sessionId required");
+      }
+      // #305 — the target session must be the caller's AND its project still
+      // reachable (`loadAuthorizedSession`), before any skill lookup or write.
+      await loadAuthorizedSession(req.user, sessionId.data.sessionId);
+      try {
+        const result = await getSessionRuntime().loadSkillIntoSession(
+          { sessionId: sessionId.data.sessionId, skillId: String(req.params.id) },
+          actorFromReq(req),
+        );
+        audit({
+          actor: { id: req.user!.userId },
+          action: "skill.load.api",
+          target: { type: "ai_session", id: sessionId.data.sessionId },
+          metadata: { skillId: req.params.id, alreadyLoaded: result.alreadyLoaded },
+        });
+        res.json(ok(result));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
 
   return r;
 }

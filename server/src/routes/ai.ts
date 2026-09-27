@@ -1211,47 +1211,59 @@ export function aiRouter(): Router {
   // Phase 10 \u2014 list and load skills for a session.
   // #305 — both skill routes authorize the session the way every other session
   // route does (owner AND still-reachable project) before SessionRuntime runs.
-  r.get("/sessions/:id/skills", requireAuth, async (req: Request, res: Response) => {
-    const userId = userIdOrThrow(req);
-    await loadAuthorizedSession(req.user, String(req.params.id));
-    try {
-      const items = await getSessionRuntime().listLoadedSkills(String(req.params.id), {
-        id: userId,
-      });
-      res.json(ok({ items }));
-    } catch (err) {
-      if (err instanceof SessionRuntimeError) {
-        throw new AppError(err.status, err.code, err.message);
+  r.get(
+    "/sessions/:id/skills",
+    conversationPreAuthRateLimiter,
+    requireAuth,
+    conversationRateLimiter,
+    async (req: Request, res: Response) => {
+      const userId = userIdOrThrow(req);
+      await loadAuthorizedSession(req.user, String(req.params.id));
+      try {
+        const items = await getSessionRuntime().listLoadedSkills(String(req.params.id), {
+          id: userId,
+        });
+        res.json(ok({ items }));
+      } catch (err) {
+        if (err instanceof SessionRuntimeError) {
+          throw new AppError(err.status, err.code, err.message);
+        }
+        throw err;
       }
-      throw err;
-    }
-  });
+    },
+  );
 
-  r.post("/sessions/:id/skills", requireAuth, async (req: Request, res: Response) => {
-    const userId = userIdOrThrow(req);
-    const parsed = z
-      .object({ skillId: z.string().min(1).optional(), skillKey: z.string().min(1).optional() })
-      .refine((v) => Boolean(v.skillId || v.skillKey), {
-        message: "skillId or skillKey required",
-      })
-      .safeParse(req.body ?? {});
-    if (!parsed.success) {
-      throw new AppError(400, "VALIDATION_ERROR", "Invalid load-skill payload");
-    }
-    await loadAuthorizedSession(req.user, String(req.params.id));
-    try {
-      const result = await getSessionRuntime().loadSkillIntoSession(
-        { sessionId: String(req.params.id), ...parsed.data },
-        { id: userId },
-      );
-      res.status(result.alreadyLoaded ? 200 : 201).json(ok(result));
-    } catch (err) {
-      if (err instanceof SessionRuntimeError) {
-        throw new AppError(err.status, err.code, err.message);
+  r.post(
+    "/sessions/:id/skills",
+    conversationPreAuthRateLimiter,
+    requireAuth,
+    conversationRateLimiter,
+    async (req: Request, res: Response) => {
+      const userId = userIdOrThrow(req);
+      const parsed = z
+        .object({ skillId: z.string().min(1).optional(), skillKey: z.string().min(1).optional() })
+        .refine((v) => Boolean(v.skillId || v.skillKey), {
+          message: "skillId or skillKey required",
+        })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid load-skill payload");
       }
-      throw err;
-    }
-  });
+      await loadAuthorizedSession(req.user, String(req.params.id));
+      try {
+        const result = await getSessionRuntime().loadSkillIntoSession(
+          { sessionId: String(req.params.id), ...parsed.data },
+          { id: userId },
+        );
+        res.status(result.alreadyLoaded ? 200 : 201).json(ok(result));
+      } catch (err) {
+        if (err instanceof SessionRuntimeError) {
+          throw new AppError(err.status, err.code, err.message);
+        }
+        throw err;
+      }
+    },
+  );
 
   // ── Tool inspection ─────────────────────────────────────────────────────
   r.get("/tools", requireAuth, (_req: Request, res: Response) => {
