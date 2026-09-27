@@ -16,6 +16,7 @@ import {
   NATIVE_TOOL_PROTOCOL,
   analysisNativeToolCallsEnabled,
   nativeToolSpecsFor,
+  resolveAnalysisNativeTools,
   runAgentLoop,
 } from "./agent-loop.js";
 import {
@@ -23,7 +24,7 @@ import {
   type OfflineScriptTurn,
 } from "../ai/providers/offline-stub-provider.js";
 import type { AgentTool } from "./tools/types.js";
-import type { AIProvider, ChatMessage } from "../ai/types.js";
+import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../ai/types.js";
 
 const order: string[] = [];
 function tool(name: string): AgentTool {
@@ -300,5 +301,138 @@ describe("#141 choosing native mode", () => {
     }
     process.env.ANALYSIS_NATIVE_TOOL_CALLS = "off";
     expect(analysisNativeToolCallsEnabled()).toBe(false);
+  });
+});
+
+/**
+ * #141 — a provider whose replies are scripted as whole `ChatResponse`s, so a
+ * reply can carry `toolsDropped` (the adapter produced it without the tools).
+ */
+function responder(replies: Array<Partial<ChatResponse>>) {
+  const requests: Array<{ messages: ChatMessage[]; opts: ChatOptions }> = [];
+  const provider = {
+    key: "local-gemma",
+    model: "m",
+    offline: false,
+    capabilities: { responseFormat: false, nativeToolCalls: true },
+    async chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResponse> {
+      requests.push({ messages: [...messages], opts });
+      const r = replies.shift() ?? { content: "out of script" };
+      return {
+        content: "",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "m",
+        provider: "local-gemma",
+        ...r,
+      };
+    },
+  };
+  return { provider: provider as unknown as AIProvider, requests };
+}
+
+describe("#141 fallback when the provider drops native tools", () => {
+  it("switches to the text protocol, asks again, and reports text-fallback", async () => {
+    const { provider, requests } = responder([
+      { content: "a tool-less guess", toolsDropped: true },
+      { content: '{"tool": "search_code_graph", "args": {"q": "x"}}' },
+      { content: '{"findings":[]}' },
+    ]);
+    const result = await runAgentLoop(provider, input, { maxTurns: 2, native });
+    expect(result.toolProtocol).toBe("text-fallback");
+    expect(order).toEqual(["search_code_graph:x"]);
+    expect(result.finalResponse).toBe('{"findings":[]}');
+    // The re-asked turn does not use up the turn cap, and the discarded reply
+    // is reported apart from the turns so #214 compares like with like.
+    expect(result.turnsUsed).toBe(2);
+    expect(result.toolsDroppedTurns).toBe(1);
+    expect(requests).toHaveLength(3);
+    expect(requests[0]!.opts.tools).toBeDefined();
+    expect(requests[0]!.opts.systemMessage).toContain(NATIVE_TOOL_PROTOCOL);
+    for (const r of requests.slice(1)) {
+      expect(r.opts.tools).toBeUndefined();
+      expect(r.opts.toolChoice).toBeUndefined();
+      expect(r.opts.systemMessage).not.toContain(NATIVE_TOOL_PROTOCOL);
+      expect(r.opts.systemMessage).toContain('{"tool": "<name>"');
+    }
+    // The discarded reply never reaches the transcript.
+    expect(requests[1]!.messages).toEqual([requests[0]!.messages[0]]);
+  });
+
+  it("the text fallback still routes every call through the caller's executor", async () => {
+    const executeTool = vi.fn(async (c: { tool: string }) => ({ content: `gated ${c.tool}` }));
+    const { provider } = responder([
+      { toolsDropped: true },
+      { content: '{"tool": "search_code_graph", "args": {"q": "x"}}' },
+      { content: "done" },
+    ]);
+    await runAgentLoop(provider, input, { maxTurns: 3, native, executeTool });
+    expect(order).toEqual([]);
+    expect(executeTool).toHaveBeenCalledWith({
+      id: "call_1",
+      tool: "search_code_graph",
+      args: { q: "x" },
+    });
+  });
+
+  it("does not switch when the caller owns the prompt (the chat path)", async () => {
+    const { provider, requests } = responder([{ content: "chat answer", toolsDropped: true }]);
+    const result = await runAgentLoop(provider, input, {
+      maxTurns: 3,
+      native,
+      systemPrompt: "",
+      initialMessages: [{ role: "user", content: "hi" }],
+    });
+    expect(result.toolProtocol).toBe("native");
+    expect(result.finalResponse).toBe("chat answer");
+    expect(requests).toHaveLength(1);
+  });
+
+  it("does not switch once native calls are in the transcript", async () => {
+    const { provider, requests } = responder([
+      { toolCalls: [call("c1", "search_code_graph", "a")] },
+      { content: "answer without tools", toolsDropped: true },
+    ]);
+    const result = await runAgentLoop(provider, input, { maxTurns: 4, native });
+    expect(result.toolProtocol).toBe("native");
+    expect(result.finalResponse).toBe("answer without tools");
+    expect(requests).toHaveLength(2);
+    // Still "native", but the tool-less turn is visible.
+    expect(result.toolsDroppedTurns).toBe(1);
+  });
+
+  it("switches at most once — a text-protocol reply is never re-asked", async () => {
+    const { provider, requests } = responder([
+      { toolsDropped: true },
+      { content: '{"findings":[]}', toolsDropped: true },
+    ]);
+    const result = await runAgentLoop(provider, input, { maxTurns: 3, native });
+    expect(result.finalResponse).toBe('{"findings":[]}');
+    expect(requests).toHaveLength(2);
+  });
+
+  it("a text-protocol run (no native requested) ignores the flag and reports no protocol", async () => {
+    const { provider, requests } = responder([{ content: "answer", toolsDropped: true }]);
+    const result = await runAgentLoop(provider, input, { maxTurns: 3 });
+    expect(result.toolProtocol).toBeUndefined();
+    expect(result.toolsDroppedTurns).toBeUndefined();
+    expect(requests).toHaveLength(1);
+  });
+});
+
+describe("#141 resolveAnalysisNativeTools — the orchestrator's one decision", () => {
+  const capable = new OfflineStubProvider({ script: [] });
+  it("is undefined with the flag off, even on a tool-capable model", () => {
+    expect(resolveAnalysisNativeTools(capable, "m", TOOLS)).toBeUndefined();
+  });
+  it("returns the native specs with the flag on and a tool-capable model", () => {
+    process.env.ANALYSIS_NATIVE_TOOL_CALLS = "true";
+    expect(resolveAnalysisNativeTools(capable, "m", TOOLS)?.tools.map((t) => t.name)).toEqual([
+      "search_code_graph",
+      "search_code_symbols",
+    ]);
+  });
+  it("is undefined with the flag on and a model that is not tool-capable", () => {
+    process.env.ANALYSIS_NATIVE_TOOL_CALLS = "true";
+    expect(resolveAnalysisNativeTools(new OfflineStubProvider(), "m", TOOLS)).toBeUndefined();
   });
 });

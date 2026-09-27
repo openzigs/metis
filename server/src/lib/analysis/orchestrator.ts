@@ -31,11 +31,8 @@ import {
   type AnalysisAgentKey,
   type AnalysisSpecialistAgentKey,
   type AgentOutput,
-  type DatabaseAwareAnalysisSetting,
   ANALYSIS_RETRIEVE_K,
   ANALYSIS_SPECIALIST_AGENT_KEYS,
-  DATABASE_AWARE_ANALYSIS_SETTINGS,
-  DEFAULT_DATABASE_AWARE_ANALYSIS_SETTING,
   deriveCapabilityReasons,
   isCodeCitation,
   MAX_REQUIREMENTS_FOR_RETRIEVAL,
@@ -148,12 +145,7 @@ import {
   isEmptyElicitation,
   runElicitation,
 } from "./elicitation-pipeline.js";
-import {
-  runAgentLoop,
-  buildCachedSystemPrompt,
-  analysisNativeToolCallsEnabled,
-  nativeToolSpecsFor,
-} from "./agent-loop.js";
+import { runAgentLoop, buildCachedSystemPrompt, resolveAnalysisNativeTools } from "./agent-loop.js";
 import { summarizeToolCalls, type ToolCallRecord } from "./tool-telemetry.js";
 import {
   FINAL_ANSWER_INSTRUCTION,
@@ -164,7 +156,6 @@ import {
   selectSalvageSource,
   type AgenticDegradationReason,
 } from "./agentic-degradation.js";
-import { getConfigService } from "../config/config-service.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import { runEnabledCustomAgents } from "./custom-agent-phase.js";
 import { RequirementsExtractor } from "./requirements-extractor.js";
@@ -180,7 +171,7 @@ import {
   type AgentTool,
   type ToolContext,
 } from "./tools/index.js";
-import { buildAgenticCodePrompt, buildRequirementGroundedPrompt } from "./prompts.js";
+import { buildRequirementGroundedPrompt } from "./prompts.js";
 import {
   buildRetrievalQueries,
   CODE_REQUIREMENTS_QUERY,
@@ -213,12 +204,12 @@ import {
   type RunAffectedSchemaDeps,
 } from "./affected-schema-context.js";
 import {
-  resolveDatabaseAwareAnalysis,
-  readDbAwareEnvDefault,
-  hasSchemaData as probeHasSchemaData,
-  type DbAwareEnvDefault,
-  type SchemaDataPrismaClient,
-} from "./database-aware-resolver.js";
+  agenticPassEffectiveBudget,
+  buildAgenticPassPrompt,
+  resolveAgentTokenBudget,
+  resolveAgenticMaxTurns,
+  resolveDatabaseAwareDecision,
+} from "./agentic-pass-context.js";
 import {
   buildRequirementInputAccount,
   extractNewRequirementCandidates,
@@ -352,25 +343,8 @@ interface SynthesisOutcome {
   };
 }
 
-/** Default token budget per agentic agent loop (100k tokens). */
-const DEFAULT_AGENT_TOKEN_BUDGET = 100_000;
 /** Minimum token budget per repo in multi-repo analysis (#663 review). */
 const MIN_PER_REPO_TOKEN_BUDGET = 50_000;
-/** Default max turns for the agentic loop (the FLOOR — see {@link resolveAgenticMaxTurns}). */
-const DEFAULT_AGENTIC_MAX_TURNS = 10;
-/**
- * Issue #773 — turns granted PER REQUIREMENT in a pass (one search + one read is
- * the minimum honest investigation of a single requirement).
- */
-const DEFAULT_AGENTIC_TURNS_PER_REQUIREMENT = 2;
-/**
- * Issue #773 — hard ceiling on the scaled turn cap, so a huge requirement set cannot
- * run away. 60 turns funds one search + one read for the ~30-requirement analyses
- * this product routinely runs (the reported incident had 20). Turns do not raise the
- * ceiling on SPEND — `ANALYSIS_AGENT_TOKEN_BUDGET` still bounds that — they only
- * decide how many requirements a pass can afford to actually look for.
- */
-const DEFAULT_AGENTIC_MAX_TURNS_CAP = 60;
 
 /**
  * #769 — the agentic loop's depth knobs are now operator-tunable, so a run that
@@ -380,59 +354,6 @@ const DEFAULT_AGENTIC_MAX_TURNS_CAP = 60;
  * reported failure was a serialization bug, not a depth shortfall — the loop
  * now salvages its work either way.
  */
-/**
- * Issue #773 — BUDGET STARVATION. A flat 10-turn cap against ~20 requirements made
- * "no evidence found" outcomes STRUCTURALLY PREDETERMINED: the agent could not
- * physically investigate every requirement, and the pipeline then reported the
- * ones it never reached as confirmed gaps. Two changes close that:
- *
- *   1. A requirement the agent never investigated is `could-not-verify`, never a
- *      gap (`deriveRequirementVerdict`'s final rule + the per-claim evidence
- *      threshold: a gap needs a working search that BORE ON that requirement).
- *   2. The turn cap SCALES with the size of the pass, so a working search per
- *      requirement is FUNDABLE rather than impossible by construction.
- *
- * The evidence threshold is now scale-free (per-claim, not a pass-wide quota), so
- * a pass that cannot afford to search for every requirement degrades GRACEFULLY —
- * it confirms gaps for the ones it did search and says `could-not-verify` about
- * the rest — instead of hitting a cliff where nothing is confirmable. The turn cap
- * therefore governs HOW MANY requirements a pass can settle, never WHETHER it can
- * settle any.
- *
- * The configured `ANALYSIS_AGENTIC_MAX_TURNS` remains the FLOOR (a small pass is
- * byte-identical to before), and the scaled value is capped by
- * `ANALYSIS_AGENTIC_MAX_TURNS_CAP`. This cannot raise the ceiling on SPEND: the
- * loop is still bounded by `ANALYSIS_AGENT_TOKEN_BUDGET`, which turns do not change.
- */
-function resolveAgenticMaxTurns(requirementCount = 0): number {
-  const cfg = getConfigService();
-  const floor = cfg.getNumber("ANALYSIS_AGENTIC_MAX_TURNS", DEFAULT_AGENTIC_MAX_TURNS);
-  const perRequirement = cfg.getNumber(
-    "ANALYSIS_AGENTIC_TURNS_PER_REQUIREMENT",
-    DEFAULT_AGENTIC_TURNS_PER_REQUIREMENT,
-  );
-  const cap = cfg.getNumber("ANALYSIS_AGENTIC_MAX_TURNS_CAP", DEFAULT_AGENTIC_MAX_TURNS_CAP);
-  const scaled = Math.ceil(Math.max(0, requirementCount) * perRequirement);
-  const turns = Math.min(Math.max(floor, scaled), Math.max(floor, cap));
-  // One turn must emit the final answer, so the pass can make at most `turns - 1`
-  // tool calls. Below one call per requirement it CANNOT look for every
-  // requirement, and the ones it never searched for will (correctly) come back
-  // `could-not-verify` rather than as gaps. That is a budget decision, so say so
-  // out loud rather than letting an operator who lowered the cap wonder why their
-  // large analyses stopped confirming gaps.
-  if (requirementCount > 0 && turns - 1 < requirementCount) {
-    log.warn("Agentic turn cap cannot fund one search per requirement", {
-      requirementCount,
-      turns,
-      maxToolCalls: turns - 1,
-      hint: "Raise ANALYSIS_AGENTIC_MAX_TURNS_CAP / ANALYSIS_AGENTIC_TURNS_PER_REQUIREMENT; requirements the pass cannot search for are reported could-not-verify, never as confirmed gaps.",
-    });
-  }
-  return turns;
-}
-function resolveAgentTokenBudget(): number {
-  return getConfigService().getNumber("ANALYSIS_AGENT_TOKEN_BUDGET", DEFAULT_AGENT_TOKEN_BUDGET);
-}
 
 /** A connector reference the budget capper accepts (id + display label). */
 export interface BudgetCapConnector {
@@ -2215,22 +2136,17 @@ export class AnalysisOrchestrator {
           maxTurns: number,
           passBudget: number,
         ): Promise<{ output: AgentOutput; usage: TokenUsage }> => {
-          const { systemMessage, userMessage } = buildAgenticCodePrompt({
+          // #141 / #214 — the prompt and the budget carve-out are shared with the
+          // tool-protocol eval harness, so #214 measures THIS pass.
+          const seeds = { fused, affectedCode, affectedSchema };
+          const { systemMessage, userMessage } = buildAgenticPassPrompt({
             projectName: input.projectName,
             projectDescription: input.projectDescription,
             requirements: passRequirements,
-            retrievedContext: fused.block || undefined,
-            affectedCode: affectedCode.block || undefined,
-            // #824 — the deterministic AFFECTED SCHEMA block (schema-change awareness).
-            affectedSchema: affectedSchema.block || undefined,
-            // #777 — tell the agent WHAT IT ACTUALLY HAS. Without this it plans around
-            // reading files it can never open and spends turns discovering that.
+            seeds,
             fileToolsAvailable,
           });
-          const effectiveBudget = Math.max(
-            Math.floor(passBudget / 2),
-            passBudget - fused.tokens - affectedCode.tokens - affectedSchema.tokens,
-          );
+          const effectiveBudget = agenticPassEffectiveBudget(passBudget, seeds);
           // #1221 — resolved against the model this pass will actually run on
           // so the cap is clamped to that model's ceiling. `provider.model` is
           // the fallback because that is what the adapter uses when
@@ -2243,9 +2159,7 @@ export class AnalysisOrchestrator {
           );
           // #141 — native tool calls on a tool-capable model when the operator
           // enabled them; the text protocol otherwise (and by default).
-          const nativeTools = analysisNativeToolCallsEnabled()
-            ? nativeToolSpecsFor(this.deps.provider, input.model, tools)
-            : undefined;
+          const nativeTools = resolveAnalysisNativeTools(this.deps.provider, input.model, tools);
           const loopResult = await runAgentLoop(
             this.deps.provider,
             { systemMessage, userMessage, tools, toolContext },
@@ -3779,36 +3693,7 @@ export class AnalysisOrchestrator {
     projectId: string,
     settingRaw: string | undefined,
   ): Promise<AnalysisDatabaseAware> {
-    const settings: readonly string[] = DATABASE_AWARE_ANALYSIS_SETTINGS;
-    const setting: DatabaseAwareAnalysisSetting = settings.includes(settingRaw ?? "")
-      ? (settingRaw as DatabaseAwareAnalysisSetting)
-      : DEFAULT_DATABASE_AWARE_ANALYSIS_SETTING;
-
-    // #849 — read via the shared helper so the run path and the gap-report
-    // path apply the identical default (ON) and the identical
-    // explicitly-configured probe (`describeSource`).
-    const envDefault: DbAwareEnvDefault = readDbAwareEnvDefault(getConfigService());
-
-    let dataPresent = false;
-    try {
-      dataPresent = await probeHasSchemaData(
-        prisma as unknown as SchemaDataPrismaClient,
-        projectId,
-      );
-    } catch (err) {
-      log.warn("Database-aware schema-data probe failed; degrading to no schema data", {
-        analysisId,
-        projectId,
-        error: (err as Error).message,
-      });
-    }
-
-    const resolved = resolveDatabaseAwareAnalysis({
-      setting,
-      envDefault,
-      hasSchemaData: dataPresent,
-    });
-    const record: AnalysisDatabaseAware = { setting, ...resolved };
+    const record = await resolveDatabaseAwareDecision(projectId, settingRaw, { analysisId });
 
     try {
       await persistAnalysisDatabaseAware(analysisId, record);

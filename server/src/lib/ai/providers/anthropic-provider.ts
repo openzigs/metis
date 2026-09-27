@@ -371,6 +371,10 @@ export class AnthropicProvider implements AIProvider {
       ...(message.stop_reason ? { finishReason: message.stop_reason } : {}),
       ...(toolCalls.length > 0 ? { toolCalls } : {}),
       ...(nativeContent ? { nativeContent } : {}),
+      // #141 — tools were asked for but the catalog kept them off the wire.
+      ...(opts.tools && opts.tools.length > 0 && !opts.disableTools && !params.tools
+        ? { toolsDropped: true }
+        : {}),
     };
   }
 

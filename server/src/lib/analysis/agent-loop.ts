@@ -220,6 +220,21 @@ export function analysisNativeToolCallsEnabled(): boolean {
 }
 
 /**
+ * #141 — the analysis path's whole native-vs-text decision, in one place so the
+ * orchestrator and the #214 comparison harness cannot drift: native
+ * definitions when `ANALYSIS_NATIVE_TOOL_CALLS` is on AND the model is
+ * tool-capable ({@link nativeToolSpecsFor}); `undefined` (the text protocol,
+ * byte-for-byte as before) otherwise.
+ */
+export function resolveAnalysisNativeTools(
+  provider: AIProvider,
+  model: string | undefined,
+  tools: AgentTool[],
+): { tools: ChatToolSpec[] } | undefined {
+  return analysisNativeToolCallsEnabled() ? nativeToolSpecsFor(provider, model, tools) : undefined;
+}
+
+/**
  * #141 — the native-mode tail of the analysis system prompt. The text-protocol
  * manifest (`{"tool": …}` JSON in prose) is NOT rendered in native mode: the
  * tools travel as native definitions, so describing a second calling
@@ -338,6 +353,23 @@ export interface AgentLoopResult {
     estimatedTokens: number;
     usedFallback: boolean;
   };
+  /**
+   * #141 — the tool protocol the run ENDED on, reported only when native mode
+   * was requested (`options.native`): `"native"`, or `"text-fallback"` when the
+   * provider produced a reply without the offered tools (`toolsDropped`) and
+   * the loop switched to the text protocol. Absent on a text-protocol run, so
+   * that result is unchanged.
+   */
+  toolProtocol?: "native" | "text-fallback";
+  /**
+   * #141 — replies the provider produced WITHOUT the offered tools while the
+   * loop was in native mode (`toolsDropped`): the one discarded before a text
+   * fallback, plus any later turn that could not switch because native calls
+   * were already in the transcript. Reported only when native mode was
+   * requested, so a `"native"` run that went tool-less part-way is visible.
+   * The discarded reply is NOT in `turnsUsed` (its tokens stay in `usage`).
+   */
+  toolsDroppedTurns?: number;
 }
 
 const DEFAULT_USAGE: TokenUsage = {
@@ -1340,8 +1372,8 @@ export async function runAgentLoop(
   // #713 — the chat reuse path supplies `systemPrompt` (typically "") so the
   // cached-prefix assembly is skipped: chat's system content already rides as
   // leading system messages inside `initialMessages`.
-  const nativeMode = options.native !== undefined;
-  const systemMessage =
+  let nativeMode = options.native !== undefined;
+  let systemMessage =
     options.systemPrompt !== undefined
       ? options.systemPrompt
       : nativeMode
@@ -1414,6 +1446,7 @@ export async function runAgentLoop(
   // that reply is already in `messages` (a budget stop leaves it out).
   let lastHadNativeCalls = false;
   let lastAppended = false;
+  let toolsDroppedTurns = 0;
 
   for (let turn = 0; turn < maxTurns; turn++) {
     if (options.signal?.aborted) {
@@ -1498,6 +1531,34 @@ export async function runAgentLoop(
     }
 
     lastResponse = response.content;
+
+    // #141 — the provider produced this reply WITHOUT the offered tools (the
+    // runtime rejected them, or the catalog kept them off the wire). In native
+    // mode the text manifest is not rendered either, so the model had no way to
+    // call a tool at all. Where this loop owns the system prompt (the analysis
+    // path) and no native call is in the transcript yet, switch to the text
+    // protocol and ask again — the same investigation the flag-off path runs.
+    // The discarded reply's tokens stay counted; it is reported in
+    // `toolsDroppedTurns`, not `turnsUsed`, so a fallback run's turns compare
+    // like with like against a pure text run.
+    if (nativeMode && response.toolsDropped === true) toolsDroppedTurns++;
+    if (
+      nativeMode &&
+      response.toolsDropped === true &&
+      options.systemPrompt === undefined &&
+      messages.length === transcriptBaseLength
+    ) {
+      nativeMode = false;
+      lastHadNativeCalls = false;
+      systemMessage = buildCachedSystemPrompt(input.systemMessage, input.tools);
+      log.warn("Provider dropped native tools; agent loop falling back to the text protocol", {
+        turn,
+        model: options.model ?? provider.model,
+      });
+      turn--;
+      turnsUsed--;
+      continue;
+    }
 
     // Check if this is a tool call or final response. The REGISTERED tool names
     // are handed to the parser so it can (and only then) absorb flat top-level
@@ -1770,5 +1831,8 @@ export async function runAgentLoop(
     ...(compactionOptions ? { transcriptCompaction: { ...compactionMeta } } : {}),
     toolCalls,
     graphContext: graphContextMeta,
+    ...(options.native
+      ? { toolProtocol: nativeMode ? "native" : "text-fallback", toolsDroppedTurns }
+      : {}),
   };
 }

@@ -323,15 +323,38 @@ describe("the runtime tools-rejection fallback", () => {
     );
     const p = make();
     const opts = { tools: TOOLS, responseFormat: { type: "json_object" as const } };
+    expect(p.capabilitiesFor("gemma3:12b").nativeToolCalls).toBe(true);
     const res = await p.chat([{ role: "user", content: "hi" }], opts);
     expect(res.content).toBe("answer");
+    // #141 — the reply says it was produced without the tools…
+    expect(res.toolsDropped).toBe(true);
+    // …and the model is no longer reported tool-capable, so a caller choosing
+    // native vs text tool calls picks text from now on. Other models are not.
+    expect(p.capabilitiesFor("gemma3:12b").nativeToolCalls).toBe(false);
+    expect(p.capabilitiesFor("qwen3:8b").nativeToolCalls).toBe(true);
     expect(bodies[0].tools).toBeDefined();
     expect(bodies[1]).not.toHaveProperty("tools");
     // The tools 400 must not be misread as a structured-output rejection.
     expect(bodies[1].response_format).toEqual({ type: "json_object" });
-    await p.chat([{ role: "user", content: "hi" }], opts);
+    const again = await p.chat([{ role: "user", content: "hi" }], opts);
+    expect(again.toolsDropped).toBe(true);
     expect(bodies).toHaveLength(3);
     expect(bodies[2]).not.toHaveProperty("tools");
+  });
+
+  it("#141 flags toolsDropped only when tools were asked for and not sent", async () => {
+    stubFetch(() => okText("x"));
+    const p = make("local-gemma", "qwen3:8b");
+    const user = [{ role: "user" as const, content: "hi" }];
+    expect((await p.chat(user, { tools: TOOLS })).toolsDropped).toBeUndefined();
+    expect((await p.chat(user, {})).toolsDropped).toBeUndefined();
+    expect((await p.chat(user, { tools: [] })).toolsDropped).toBeUndefined();
+    expect((await p.chat(user, { tools: TOOLS, disableTools: true })).toolsDropped).toBeUndefined();
+    process.env[MODEL_CATALOG_OVERRIDES_ENV] = JSON.stringify({
+      "local-gemma:qwen3:8b": { capabilities: { tools: false } },
+    });
+    __resetModelCatalogForTests();
+    expect((await p.chat(user, { tools: TOOLS })).toolsDropped).toBe(true);
   });
 
   it("stream retries once without tools before any token", async () => {
