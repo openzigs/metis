@@ -379,6 +379,27 @@ const DEFAULT_USAGE: TokenUsage = {
 };
 
 /**
+ * #137 — add one model call's reported usage to the loop's total, cache reads
+ * and writes included. Summing only the three headline counts dropped the
+ * cache fields, so every chat turn run through this loop (any turn that offers
+ * tools) recorded no cache tokens: on the Anthropic convention the prompt then
+ * read as the uncached remainder only, and on the OpenAI-compatible one cached
+ * input was priced at the full input rate. A cache field is added only once a
+ * call has reported it, so a provider that reports none leaves it absent.
+ */
+function addUsage(total: TokenUsage, u: TokenUsage | undefined): void {
+  total.promptTokens += u?.promptTokens ?? 0;
+  total.completionTokens += u?.completionTokens ?? 0;
+  total.totalTokens += u?.totalTokens ?? 0;
+  if (u?.cacheReadTokens !== undefined) {
+    total.cacheReadTokens = (total.cacheReadTokens ?? 0) + u.cacheReadTokens;
+  }
+  if (u?.cacheWriteTokens !== undefined) {
+    total.cacheWriteTokens = (total.cacheWriteTokens ?? 0) + u.cacheWriteTokens;
+  }
+}
+
+/**
  * Build the tools section of the system prompt.
  *
  * Epic #502 / Issue #503 — Supports two modes:
@@ -1484,9 +1505,7 @@ export async function runAgentLoop(
     const turnTokens = response.usage?.totalTokens ?? 0;
     const turnPromptTokens = response.usage?.promptTokens ?? 0;
     const turnCompletionTokens = response.usage?.completionTokens ?? 0;
-    totalUsage.promptTokens += turnPromptTokens;
-    totalUsage.completionTokens += turnCompletionTokens;
-    totalUsage.totalTokens += turnTokens;
+    addUsage(totalUsage, response.usage);
 
     // #1225 — per-turn accounting, so a quadratic prompt curve is visible in the
     // logs instead of only in the bill. `unaccounted` is the reconciliation
@@ -1761,9 +1780,7 @@ export async function runAgentLoop(
       };
       if (retrySystem) chatOpts.systemMessage = retrySystem;
       const retryResponse = await provider.chat(retryMessages, chatOpts);
-      totalUsage.promptTokens += retryResponse.usage?.promptTokens ?? 0;
-      totalUsage.completionTokens += retryResponse.usage?.completionTokens ?? 0;
-      totalUsage.totalTokens += retryResponse.usage?.totalTokens ?? 0;
+      addUsage(totalUsage, retryResponse.usage);
       // The retry reply is a fresh, tool-free answer: judge its text alone.
       if (isValidAnswerText(retryResponse.content)) {
         finalResponse = retryResponse.content;

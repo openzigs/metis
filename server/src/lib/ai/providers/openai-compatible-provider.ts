@@ -32,6 +32,8 @@ export {
   ToolCallDeltaAssembler,
   DEFAULT_AZURE_API_VERSION,
   LOCAL_REASONING_EFFORT_ENV,
+  LOCAL_DISCOVER_CAPABILITIES_ENV,
+  resolveLocalDiscoverCapabilities,
   resolveLocalReasoningEffortMode,
   resolveUndiciTimeouts,
   type LocalReasoningEffortMode,

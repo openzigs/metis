@@ -11,6 +11,7 @@ import {
   catalogCapabilities,
   catalogPrice,
   discoverLocalModels,
+  ensureLocalDiscovery,
   getModelCatalog,
   lookupCatalogEntry,
   readCatalogOverrides,
@@ -287,6 +288,86 @@ describe("local discovery", () => {
     await expect(discoverLocalModels("http://127.0.0.1:3/v1", "k", f as never)).resolves.toEqual([
       { id: "m", contextWindow: null },
     ]);
+  });
+});
+
+describe("ensureLocalDiscovery (#195)", () => {
+  const BASE = "http://127.0.0.1:11434/v1";
+  const listing = () =>
+    vi.fn(async (url: string) =>
+      url.endsWith("/models")
+        ? new Response(JSON.stringify({ data: [{ id: "m", max_model_len: 4_096 }] }))
+        : new Response("", { status: 404 }),
+    );
+
+  it("an empty cache waits for discovery; a fresh one does not probe again", async () => {
+    let now = 1_000;
+    const f = listing();
+    await ensureLocalDiscovery(BASE, "k", { fetchImpl: f as never, now: () => now });
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(lookupCatalogEntry("local-gemma", "m", {})?.contextWindow).toBe(4_096);
+    now += DISCOVERY_TTL_MS - 1;
+    await ensureLocalDiscovery(`${BASE}/`, "k", { fetchImpl: f as never, now: () => now });
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("a stale cache serves at once and refreshes in the background", async () => {
+    let now = 1_000;
+    await ensureLocalDiscovery(BASE, "k", { fetchImpl: listing() as never, now: () => now });
+    now += DISCOVERY_TTL_MS + 1;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    const slow = vi.fn(async (url: string) => {
+      await gate;
+      return url.endsWith("/models")
+        ? new Response(JSON.stringify({ data: [{ id: "m", max_model_len: 8_192 }] }))
+        : new Response("", { status: 404 });
+    });
+    // Resolves while the refresh is still blocked on `gate`.
+    await ensureLocalDiscovery(BASE, "k", { fetchImpl: slow as never, now: () => now });
+    expect(slow).toHaveBeenCalledTimes(1);
+    expect(lookupCatalogEntry("local-gemma", "m", {})?.contextWindow).toBe(4_096);
+    release();
+    await vi.waitFor(() =>
+      expect(lookupCatalogEntry("local-gemma", "m", {})?.contextWindow).toBe(8_192),
+    );
+  });
+
+  it("a refresh whose listing fails keeps the previous facts (#293 review)", async () => {
+    let now = 1_000;
+    await ensureLocalDiscovery(BASE, "k", { fetchImpl: listing() as never, now: () => now });
+    expect(lookupCatalogEntry("local-gemma", "m", {})?.contextWindow).toBe(4_096);
+    for (const failing of [
+      vi.fn(async () => new Response("down", { status: 503 })),
+      vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      }),
+      vi.fn(async () => new Response(JSON.stringify({ nope: true }))),
+    ]) {
+      now += DISCOVERY_TTL_MS + 1;
+      await expect(discoverLocalModels(BASE, "k", failing as never, () => now)).resolves.toEqual([
+        { id: "m", contextWindow: 4_096 },
+      ]);
+      expect(failing).toHaveBeenCalledTimes(1);
+      expect(lookupCatalogEntry("local-gemma", "m", {})?.contextWindow).toBe(4_096);
+      // The timestamp moved: a runtime that stays down is not re-probed at once.
+      const again = vi.fn();
+      await discoverLocalModels(BASE, "k", again as never, () => now);
+      expect(again).not.toHaveBeenCalled();
+    }
+    // A listing that SUCCEEDS with no models is believed.
+    now += DISCOVERY_TTL_MS + 1;
+    const empty = vi.fn(async () => new Response(JSON.stringify({ data: [] })));
+    await expect(discoverLocalModels(BASE, "k", empty as never, () => now)).resolves.toEqual([]);
+  });
+
+  it("an already-aborted signal returns without waiting", async () => {
+    const f = vi.fn(() => new Promise<Response>(() => undefined));
+    const ac = new AbortController();
+    ac.abort();
+    await expect(
+      ensureLocalDiscovery(BASE, "k", { fetchImpl: f as never, signal: ac.signal }),
+    ).resolves.toBeUndefined();
   });
 });
 

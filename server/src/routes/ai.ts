@@ -64,7 +64,11 @@ import {
   type SessionToolRuntime,
 } from "../lib/ai/tool-runtime/session-tools.js";
 import { runChatToolTurn, type ChatToolRecord } from "../lib/ai/tool-runtime/chat-turn.js";
-import { TurnUsageMeter } from "../lib/ai/conversation/turn-usage.js";
+import {
+  ESTIMATED_TURN_AGENT_STEP,
+  TurnUsageMeter,
+  billableTurnUsage,
+} from "../lib/ai/conversation/turn-usage.js";
 import { collectGuardedStream } from "../lib/ai/tool-runtime/stream-collect.js";
 import type { ToolEvent } from "../lib/ai/tool-runtime/types.js";
 import { toolApprovalsRouter } from "./ai-tool-approvals.js";
@@ -1248,6 +1252,8 @@ export function aiRouter(): Router {
           meter: { sessionId: session.id, userId, projectId: session.projectId },
         }),
         config: turnConfig,
+        // #137 — natively-sent tool specs are prompt the estimate must count.
+        ...(tools.mode === "native" ? { nativeTools: tools.toolset.specs() } : {}),
       });
       const turn = prepared;
       const promptMessages = turn.messages;
@@ -1376,6 +1382,14 @@ export function aiRouter(): Router {
         turnMeter.add(response.usage);
       }
 
+      // #137 — what the turn is metered on: the provider's report, or — only
+      // when it reported nothing — the documented estimate.
+      const billed = billableTurnUsage(response.usage, {
+        promptTokens: turn.watermark.estimatedTokens,
+        answerText: response.content,
+        ratio: turn.ratio,
+      });
+
       // Epic #164 — output safety pass + per-project usage telemetry.
       let outContent = response.content;
       if (session.projectId) {
@@ -1392,10 +1406,10 @@ export function aiRouter(): Router {
           sessionId: session.id,
           provider: response.provider,
           model: response.model,
-          inputTokens: response.usage.promptTokens,
-          outputTokens: response.usage.completionTokens,
-          cacheReadTokens: response.usage.cacheReadTokens,
-          cacheWriteTokens: response.usage.cacheWriteTokens,
+          inputTokens: billed.usage.promptTokens,
+          outputTokens: billed.usage.completionTokens,
+          cacheReadTokens: billed.usage.cacheReadTokens,
+          cacheWriteTokens: billed.usage.cacheWriteTokens,
         });
         turnMeter.markProjectRecorded();
       }
@@ -1439,7 +1453,8 @@ export function aiRouter(): Router {
         userId,
         provider: response.provider,
         model: response.model,
-        usage: response.usage,
+        usage: billed.usage,
+        ...(billed.estimated ? { agentStep: ESTIMATED_TURN_AGENT_STEP } : {}),
         prompt: promptMessages.map((m) => messageText(m)).join("\n"),
         // Issue #428 — stamp the direct projectId so the AITokenUsage row is
         // discoverable by both the direct-column and session-relation filters
@@ -1832,6 +1847,8 @@ export function aiRouter(): Router {
           meter: { sessionId: session.id, userId, projectId: session.projectId },
         }),
         config: turnConfig,
+        // #137 — natively-sent tool specs are prompt the estimate must count.
+        ...(tools.mode === "native" ? { nativeTools: tools.toolset.specs() } : {}),
       });
       const turn = prepared;
       if (turn.compaction) send("compaction", compactionEvent(turn.compaction));
@@ -1998,6 +2015,14 @@ export function aiRouter(): Router {
         }
       }
 
+      // #137 — what the turn is metered on: the provider's report, or — only
+      // when it reported nothing — the documented estimate.
+      const billed = billableTurnUsage(reportedUsage, {
+        promptTokens: turn.watermark.estimatedTokens,
+        answerText: finalAnswer,
+        ratio: turn.ratio,
+      });
+
       // #136/#137 — the reply and its reported usage into the transcript; the
       // session snapshot (#1367) is now derived from it.
       try {
@@ -2022,11 +2047,7 @@ export function aiRouter(): Router {
         });
       }
 
-      const usageForTelemetry = reportedUsage ?? {
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-      };
+      const usageForTelemetry = billed.usage;
       getTokenTracker().record({
         sessionId: session.id,
         userId,
@@ -2037,6 +2058,7 @@ export function aiRouter(): Router {
           cacheReadTokens: usageForTelemetry.cacheReadTokens ?? 0,
           cacheWriteTokens: usageForTelemetry.cacheWriteTokens ?? 0,
         },
+        ...(billed.estimated ? { agentStep: ESTIMATED_TURN_AGENT_STEP } : {}),
         prompt: turn.messages.map((m) => messageText(m)).join("\n"),
         // Issue #428 — stamp the direct projectId (see streaming path above).
         projectId: session.projectId ?? undefined,
@@ -2046,16 +2068,16 @@ export function aiRouter(): Router {
       // `reportedUsage` is the whole turn: every model call of a code-tool loop
       // summed (sub-agent calls meter themselves through `bindSubAgents`, and a
       // compaction summary through its summariser, so neither is counted here).
-      if (session.projectId && reportedUsage) {
+      if (session.projectId) {
         recordProjectUsage({
           projectId: session.projectId,
           sessionId: session.id,
           provider: streamProvider.key,
           model,
-          inputTokens: reportedUsage.promptTokens,
-          outputTokens: reportedUsage.completionTokens,
-          cacheReadTokens: reportedUsage.cacheReadTokens,
-          cacheWriteTokens: reportedUsage.cacheWriteTokens,
+          inputTokens: billed.usage.promptTokens,
+          outputTokens: billed.usage.completionTokens,
+          cacheReadTokens: billed.usage.cacheReadTokens,
+          cacheWriteTokens: billed.usage.cacheWriteTokens,
         });
         meter.markProjectRecorded();
       }

@@ -12,7 +12,7 @@
  *      dropped), then refresh the derived session snapshot.
  */
 import type { SdkReasoningEffort, TranscriptPart } from "@metis/shared";
-import type { ChatMessage, TokenUsage } from "../types.js";
+import type { ChatMessage, ChatToolSpec, TokenUsage } from "../types.js";
 import { prisma } from "../../prisma.js";
 import { createChildLogger } from "../../logger.js";
 import { getConfigService } from "../../config/config-service.js";
@@ -44,6 +44,7 @@ import {
 } from "./context-builder.js";
 import {
   contextInputTokens,
+  estimateCharTokens,
   estimateMessagesTokens,
   estimateTextTokens,
   promptChars,
@@ -126,6 +127,13 @@ export interface PrepareTurnInput {
   model: string;
   summarizer: Summarizer;
   config: ChatTurnConfig;
+  /**
+   * #137 — the tool specs this turn sends NATIVELY (the provider's `tools`
+   * field). They are part of the prompt the model reads but no message carries
+   * them, so without this the estimate under-counts a tool-offering turn by
+   * the whole schema block (text-protocol schemas already ride in `prefix`).
+   */
+  nativeTools?: readonly ChatToolSpec[];
 }
 
 export interface PreparedTurn {
@@ -138,7 +146,10 @@ export interface PreparedTurn {
   ratio: TokenRatio;
   contextWindow: ResolvedContextWindow;
   watermark: WatermarkCheckResult;
-  /** Characters of the prompt, stored with the reply to calibrate later turns. */
+  /**
+   * Characters of the prompt — message text plus any native tool specs — stored
+   * with the reply to calibrate later turns.
+   */
   promptChars: number;
   build: ContextBuildOptions;
 }
@@ -212,7 +223,8 @@ export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn
   });
 
   const fixed = [...input.prefix, ...input.beforeUser, userMessage];
-  const fixedTokens = estimateMessagesTokens(fixed, ratio);
+  const toolChars = nativeToolChars(input.nativeTools);
+  const fixedTokens = estimateMessagesTokens(fixed, ratio) + estimateCharTokens(toolChars, ratio);
   let built = buildHistory(history);
   let estimate = fixedTokens + estimateMessagesTokens(built, ratio);
   let watermark = watermarkGate.check(estimate);
@@ -305,9 +317,14 @@ export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn
     ratio,
     contextWindow,
     watermark,
-    promptChars: promptChars(messages),
+    promptChars: promptChars(messages) + toolChars,
     build,
   };
+}
+
+/** #137 — characters of the native tool specs as they are serialised for the wire. */
+export function nativeToolChars(tools: readonly ChatToolSpec[] | undefined): number {
+  return tools && tools.length > 0 ? JSON.stringify(tools).length : 0;
 }
 
 /** One tool call the chat tool loop made (executed or refused), as it reports it. */

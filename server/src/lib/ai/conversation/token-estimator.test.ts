@@ -8,6 +8,7 @@ import {
   MESSAGE_OVERHEAD_TOKENS,
   calibratedRatio,
   contextInputTokens,
+  estimateCharTokens,
   estimateMessagesTokens,
   estimateTextTokens,
   promptChars,
@@ -108,6 +109,8 @@ describe("estimates", () => {
   it("text and message estimates", () => {
     expect(estimateTextTokens("", ratio)).toBe(0);
     expect(estimateTextTokens("abcdefg", ratio)).toBe(3);
+    expect(estimateCharTokens(0, ratio)).toBe(0);
+    expect(estimateCharTokens(7, ratio)).toBe(3);
     expect(
       estimateMessagesTokens(
         [
@@ -126,51 +129,8 @@ describe("estimates", () => {
   });
 });
 
-/**
- * #137 AC — "a test shows the estimate within a stated tolerance on a fixture
- * transcript". No recorded provider usage for chat exists in this repository and
- * no tokenizer ships with it, so the fixture's ground truth is a SYNTHETIC
- * tokenizer (a fixed 3.8 chars/token, a real measured Markdown-ish figure) —
- * this proves the calibration arithmetic, not any vendor's tokenizer.
- *
- * Stated tolerance: after one reported turn the estimate is within ±10% of the
- * truth; before any report (default ratio) it may over-count but never
- * under-counts by more than 5%, because under-counting is what overflows.
+/*
+ * #203 — the tolerance test against a fixture transcript now uses RECORDED
+ * provider usage through the real adapters, not a synthetic tokenizer:
+ * `server/tests/lib/ai/token-estimate-recorded-usage.test.ts`.
  */
-describe("fixture transcript — estimate within tolerance", () => {
-  const TRUE_CHARS_PER_TOKEN = 3.8;
-  const turns = [
-    "Which batch jobs feed the nightly reconciliation, and in what order do they run?",
-    "Three jobs: ExtractLedger (01:00), NormaliseFx (01:30) and Reconcile (02:00). Reconcile waits on both via the scheduler's dependency table; see scheduler/jobs.yaml lines 40-88.",
-    "What happens if NormaliseFx fails?",
-    "Reconcile is skipped and an alert fires; the ledger extract is kept so a manual rerun only repeats FX normalisation. The retry policy is 3 attempts, 10 minutes apart.",
-  ].map((content, i) => ({
-    role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
-    content,
-  }));
-  const truth = (chars: number) => Math.ceil(chars / TRUE_CHARS_PER_TOKEN);
-
-  it("after one reported turn the estimate is within ±10%", () => {
-    const firstPrompt = turns.slice(0, 1);
-    const sample = {
-      promptChars: promptChars(firstPrompt),
-      inputTokens: truth(promptChars(firstPrompt)),
-    };
-    const ratio = resolveTokenRatio({
-      provider: "openai",
-      model: "gpt-4o",
-      samples: [sample],
-      env: {},
-    });
-    const chars = promptChars(turns);
-    const est = estimateTextTokens("x".repeat(chars), ratio);
-    expect(Math.abs(est - truth(chars)) / truth(chars)).toBeLessThanOrEqual(0.1);
-  });
-
-  it("before any report the default never under-counts by more than 5%", () => {
-    const ratio = resolveTokenRatio({ provider: "openai", model: "gpt-4o", env: {} });
-    const chars = promptChars(turns);
-    const est = estimateTextTokens("x".repeat(chars), ratio);
-    expect(est).toBeGreaterThanOrEqual(truth(chars) * 0.95);
-  });
-});
