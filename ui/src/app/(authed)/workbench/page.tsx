@@ -304,7 +304,9 @@ export default function WorkbenchPage() {
               <EmptyState
                 title="No documents yet"
                 cta="Upload one from the project page."
-                href={`/projects/${activeProjectId}`}
+                // The id comes from the project picker (DOM text): encode it so it
+                // can only ever be a path segment (CodeQL js/xss-through-dom).
+                href={`/projects/${encodeURIComponent(activeProjectId)}`}
                 hrefLabel="Open project"
               />
             ) : (
