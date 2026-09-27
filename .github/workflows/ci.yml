@@ -32,9 +32,10 @@ jobs:
     # layer. The bound has to survive a COLD run (first build after a cache
     # eviction). #4 — measured: the whole job was 27-31 min on `main` while its
     # Test step ran the entire monorepo (816 s); with the scoped step below (18 s)
-    # it ran 13-16 min on #4's branch. A cold build adds ~6 min over warm (13m30s
-    # vs 7m25s for the four images, docs/OPERATIONS.md > "Container Image Sizes"
-    # > "CI build cache"), so ~22 min cold; 40 keeps ~2x headroom, as 60 did.
+    # it ran 13m12s-18m45s over three runs on #4's branch. A cold build adds ~6 min
+    # over warm (13m30s vs 7m25s for the four images, docs/OPERATIONS.md >
+    # "Container Image Sizes" > "CI build cache"), so ~20-25 min cold; 40 keeps
+    # roughly the 2x headroom 60 had over the old 28-minute cold run.
     timeout-minutes: 40
     # #801 follow-up — the `api` job builds FOUR Docker images on the SHARED
     # shared daemon. Run-scoped tags (#801) stopped concurrent runs from
