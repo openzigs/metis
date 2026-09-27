@@ -34,11 +34,15 @@ export class AgentChatPage {
    */
   async pickAgent(agentKey: string): Promise<string> {
     await expect(this.agentPicker.locator(`option[value="${agentKey}"]`)).toHaveCount(1);
+    // Match the create FOR THIS AGENT. The page also creates an agent-less session
+    // on load, and when that response lands after the picker is populated it used
+    // to satisfy this wait, so `agentId` read back as null (seen on PR #255).
     const created = this.page.waitForResponse(
       (r) =>
         r.request().method() === "POST" &&
         /\/api\/ai\/sessions$/.test(new URL(r.url()).pathname) &&
-        r.status() === 201,
+        r.status() === 201 &&
+        (r.request().postDataJSON() as { agentKey?: string } | null)?.agentKey === agentKey,
     );
     await this.agentPicker.selectOption(agentKey);
     const res = await created;
