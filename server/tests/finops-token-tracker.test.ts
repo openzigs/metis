@@ -164,3 +164,53 @@ describe("recordUsage", () => {
     ).resolves.toBeDefined();
   });
 });
+
+describe("recordUsage — cached input is priced once, per provider convention (#179)", () => {
+  // Claude 3.5 Sonnet v2 on the gateway: 0.3c / 1k input, 0.03c / 1k cache read.
+  const GATEWAY_MODEL = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+  it("bills a gateway call whose 1M prompt tokens were all cache reads at the cache-read price only", async () => {
+    // OpenAI-compatible convention: `prompt_tokens` (1M) already INCLUDES the
+    // 1M cached tokens, so the fresh input is zero.
+    const r = await recordUsageAndFlush({
+      projectId: "p",
+      sessionId: "s",
+      provider: "bedrock-gateway",
+      model: GATEWAY_MODEL,
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      cacheReadTokens: 1_000_000,
+    });
+    // 1,000 × 0.03c = 30c. The double-billed figure was 300c + 30c = 330c.
+    expect(r.costCents).toBe(30);
+    expect(persisted[0]?.costCents).toBe(30);
+  });
+
+  it("bills the uncached remainder of a partly cached gateway call at the input rate", async () => {
+    const r = await recordUsageAndFlush({
+      projectId: "p",
+      sessionId: "s",
+      provider: "bedrock-gateway",
+      model: GATEWAY_MODEL,
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      cacheReadTokens: 600_000,
+    });
+    // 400k fresh × 0.3c/1k = 120c, + 600k read × 0.03c/1k = 18c.
+    expect(r.costCents).toBe(138);
+  });
+
+  it("leaves native Anthropic unchanged: input_tokens EXCLUDES the reads, so both are billed", async () => {
+    const r = await recordUsageAndFlush({
+      projectId: "p",
+      sessionId: "s",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      cacheReadTokens: 1_000_000,
+    });
+    // Sonnet: $3 / MTok input (300c) + $0.30 / MTok cache read (30c).
+    expect(r.costCents).toBe(330);
+  });
+});

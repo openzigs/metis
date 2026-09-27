@@ -6165,7 +6165,7 @@ The project Usage page draws from **two** token-accounting tables, written by **
 
 `TokenUsage.projectId` is **non-null** (always stamped). `AITokenUsage.projectId` is **nullable** — chat traffic associates the row to its project via the `session` relation (`session.projectId`). To keep the two views consistent, `UsageService.projectUsage()` matches rows by **either** the direct `projectId` column **or** `session.projectId` (`where.OR`), so session-only rows are not dropped from the detail/agent-step views. Without this, the detail sections showed "No data" while the aggregates showed data for the same window (Issue #428). The write path also stamps the direct `projectId` for forward-correctness so the `[projectId, ts]` index can serve the query.
 
-**One pricing source, and unpriced is not zero (Issue #22).** Both tables price through `resolveRate(provider, model)` in `provider-rates.ts`: an administrator's `MODEL_PRICES` entry (USD per MTok, keyed `model` or `provider:model`) first, then the built-in `provider:model` rows, then a Claude-family match on the model id (`opus`/`sonnet`/`haiku`, any provider spelling). Anything else resolves to `null` and is **recorded as unpriced** — `TokenUsage.costCents` and `AITokenUsage.estimatedCostUsd` are NULL, never `0` and never another model's price. Before #22 the two tables disagreed in opposite directions for such a model: `TokenUsage` billed it at Sonnet 4.6 rates through an `anthropic:default` row, `AITokenUsage` recorded `0`. The built-in Anthropic list prices are skipped for the `anthropic` provider when `ANTHROPIC_BASE_URL` points at a host other than `api.anthropic.com`, because an Anthropic-compatible endpoint (DeepSeek) maps `claude-*` names onto its own models and bills its own prices. `summarizeUsage()` and `UsageService` report the priced cost plus a separate `unpriced` token total, and each group carries `unpricedTokens`; the Usage and admin Usage pages render those instead of `$0`. Rates follow the published per-MTok prices converted to cents-per-1k (`$X / MTok === X / 10`). The dated/bare Anthropic id coverage from #428 still holds through the family match. `bedrock-gateway` rows carry AWS's own Bedrock prices (AWS Price List API, `AmazonBedrockFoundationModels`), not Anthropic's: a geo inference profile (`us.anthropic.…`) or in-region id of a Claude 4.5+ model bills at Bedrock's Regional SKU, 1.1x the Global one, and the family match applies the same premium to such ids (#42). `published-claude-prices.test.ts` pins every built-in Claude row and family price to its published price, and fails when a Claude row is added without one. The usage summary's `projectedMonthlyCostCents` is the same `projectMonthlyCostForCeiling()` projection the autopilot ceiling enforces. Test-coverage runs record judge and suggestion usage under the provider and model that served them, in an `AISession` whose id is `testCoverageRun:<runId>` (the `ai_token_usages.sessionId` foreign key needs it); their per-run budget treats unpriced **judge or suggestion** usage as exceeded (#43), while unpriced **embedding** usage is reported without stopping the run (#77) — it is bounded, input-only and already incurred by the time it is recorded.
+**One pricing source, and unpriced is not zero (Issue #22).** Both tables price through `resolveRate(provider, model)` in `provider-rates.ts`: an administrator's `MODEL_PRICES` entry (USD per MTok, keyed `model` or `provider:model`) first, then the built-in `provider:model` rows, then a Claude-family match on the model id (`opus`/`sonnet`/`haiku`, any provider spelling). Anything else resolves to `null` and is **recorded as unpriced** — `TokenUsage.costCents` and `AITokenUsage.estimatedCostUsd` are NULL, never `0` and never another model's price. Before #22 the two tables disagreed in opposite directions for such a model: `TokenUsage` billed it at Sonnet 4.6 rates through an `anthropic:default` row, `AITokenUsage` recorded `0`. The built-in Anthropic list prices are skipped for the `anthropic` provider when `ANTHROPIC_BASE_URL` points at a host other than `api.anthropic.com`, because an Anthropic-compatible endpoint (DeepSeek) maps `claude-*` names onto its own models and bills its own prices. `summarizeUsage()` and `UsageService` report the priced cost plus a separate `unpriced` token total, and each group carries `unpricedTokens`; the Usage and admin Usage pages render those instead of `$0`. Rates follow the published per-MTok prices converted to cents-per-1k (`$X / MTok === X / 10`). The dated/bare Anthropic id coverage from #428 still holds through the family match. `bedrock-gateway` rows carry AWS's own Bedrock prices (AWS Price List API, `AmazonBedrockFoundationModels`), not Anthropic's: a geo inference profile (`us.anthropic.…`) or in-region id of a Claude 4.5+ model bills at Bedrock's Regional SKU, 1.1x the Global one, and the family match applies the same premium to such ids (#42). `published-claude-prices.test.ts` pins every built-in Claude row and family price to its published price, and fails when a Claude row is added without one. `recordUsage` reconciles the provider's usage convention before pricing, as `estimateUsageCostUsd` does (#179): on every OpenAI-compatible provider (the Bedrock gateway included) `inputTokens` already contains the cache reads, so only the uncached remainder is billed at the input rate. `token_usages` rows written before #179 with `cacheReadTokens > 0` on a provider other than `anthropic` overstate `costCents` by `cacheReadTokens × input rate`; they are not backfilled. The usage summary's `projectedMonthlyCostCents` is the same `projectMonthlyCostForCeiling()` projection the autopilot ceiling enforces. Test-coverage runs record judge and suggestion usage under the provider and model that served them, in an `AISession` whose id is `testCoverageRun:<runId>` (the `ai_token_usages.sessionId` foreign key needs it); their per-run budget treats unpriced **judge or suggestion** usage as exceeded (#43), while unpriced **embedding** usage is reported without stopping the run (#77) — it is bounded, input-only and already incurred by the time it is recorded.
 
 ### 32.6 API Endpoints
 
@@ -6561,12 +6561,18 @@ The tracker is created by the **task-runner**, not by `runCoverageScoring`, so t
 phase's two `embed()` calls — every test-case text, then every step text, the largest embedding
 consumer a run has — are on the same budget as the match phase's and the judge/suggestion
 loops' (#72). `flush()` persists
-`tokenCostCents`, `embeddingTokens`, `judgeTokens`, and `suggestionTokens` onto the
+`tokenCostCents`, `budgetCents`, `embeddingTokens`, `judgeTokens`, and `suggestionTokens` onto the
 `TestCoverageRun`. The default budget is 20¢ and is
-overridable via the `TESTCOVERAGE_BUDGET_CENTS` env var. A new route exposes the live view:
+overridable via the `TESTCOVERAGE_BUDGET_CENTS` env var. The cap a run executes under is written
+to `TestCoverageRun.budgetCents` when the run starts, and the totals are flushed after the index
+phase, after the judge phase, at the end, and on failure (#81), so the budget route reads live
+spend during a run and real spend after a failed one:
 
 - `GET /api/projects/:projectId/test-coverage/runs/:runId/budget` →
-  `{ limitCents, usedCents, remainingCents, byPhase: { embedding, judge, suggestion } }`.
+  `{ limitCents, usedCents, remainingCents, unpricedTokens, unpricedEmbeddingTokens,
+  unpricedLlmTokens, breakdown: { embeddingTokens, judgeTokens, suggestionTokens } }`.
+  `limitCents` is the run's stored cap; only a run recorded before #81 (NULL `budgetCents`)
+  falls back to the current default.
 
 
 ### Phase 4 — UI, Virtualized Matrix, Exports (Epic #856 / Issues #865, #868, #872, #875)
@@ -6640,7 +6646,10 @@ flowchart LR
 #### Cost model recap
 
 Phase 4 does not change the budget; it only surfaces it. The summary tile
-reads `GET …/runs/:runId/budget` and renders `usedCents / limitCents`. The
+reads `GET …/runs/:runId/budget` and renders `usedCents / limitCents`, plus a separate
+note for each unpriced share (#92): unpriced judge/suggestion tokens as an alert that LLM work
+stopped, unpriced embedding tokens as a lower-bound note naming the `embed:<backend>:<model>`
+`MODEL_PRICES` key. The
 export route does not consume budget (no LLM calls), so budget exhaustion
 never blocks an export.
 

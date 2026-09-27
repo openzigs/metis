@@ -447,6 +447,44 @@ describe("readBudget", () => {
     });
   });
 
+  it("returns the cap the run stored, not the caller's fallback (#81)", async () => {
+    const { db } = makeDb({ tokenCostCents: 30 });
+    (db.testCoverageRun.findUnique as ReturnType<typeof vi.fn>).mockResolvedValue({
+      tokenCostCents: 30,
+      budgetCents: 500,
+      embeddingTokens: 0,
+      judgeTokens: 0,
+      suggestionTokens: 0,
+    });
+    const out = await readBudget("r1", { db: db as never, budgetCents: 20 });
+    expect(out).toMatchObject({ limitCents: 500, usedCents: 30, remainingCents: 470 });
+  });
+
+  it("falls back to DEFAULT_BUDGET_CENTS for a row written before the cap was stored (#81)", async () => {
+    const { db } = makeDb({ tokenCostCents: 3 });
+    (db.testCoverageRun.findUnique as ReturnType<typeof vi.fn>).mockResolvedValue({
+      tokenCostCents: 3,
+      budgetCents: null,
+      embeddingTokens: 0,
+      judgeTokens: 0,
+      suggestionTokens: 0,
+    });
+    const out = await readBudget("r1", { db: db as never });
+    expect(out).toMatchObject({ limitCents: DEFAULT_BUDGET_CENTS });
+  });
+
+  it("flush persists the cap the tracker enforces (#81)", async () => {
+    const { db } = makeDb();
+    const tracker = new CoverageCostTracker(
+      { runId: "r1", userId: "u1", projectId: "p1" },
+      { db: db as never, budgetCents: 321 },
+    );
+    await tracker.flush();
+    expect(db.testCoverageRun.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ budgetCents: 321 }) }),
+    );
+  });
+
   /** The session every `readBudget("r1", …)` in this block is scoped to. */
   const R1_SESSION = "testCoverageRun:r1";
 

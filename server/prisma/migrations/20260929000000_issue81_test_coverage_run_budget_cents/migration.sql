@@ -1,0 +1,11 @@
+-- Issue #81 — persist the budget cap a test-coverage run executed under.
+--
+-- The cap lived only in the run's in-memory cost tracker, so the budget
+-- endpoint reported the process's current default instead: wrong for any run
+-- started with a non-default `budgetCents`, or after an operator changed
+-- TESTCOVERAGE_BUDGET_CENTS and restarted.
+--
+-- NULLABLE and not backfilled: the cap a pre-#81 run used was never recorded,
+-- and writing today's default into those rows would state a value nobody
+-- observed. Readers fall back to the current default for NULL.
+ALTER TABLE "test_coverage_runs" ADD COLUMN "budgetCents" INTEGER;

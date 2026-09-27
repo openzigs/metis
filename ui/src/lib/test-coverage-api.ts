@@ -126,6 +126,16 @@ export interface RunBudgetState {
    * `usedCents`, so a non-zero value means the spend shown is a lower bound.
    */
   unpricedTokens?: number;
+  /**
+   * #92 — the embedding share of {@link unpricedTokens}. Reported, but it does
+   * not stop a run: the spend shown is a lower bound.
+   */
+  unpricedEmbeddingTokens?: number;
+  /**
+   * #92 — the judge/suggestion share of {@link unpricedTokens}. Non-zero means
+   * the budget refused further LLM work for the run.
+   */
+  unpricedLlmTokens?: number;
   breakdown?: {
     embeddingTokens: number;
     judgeTokens: number;

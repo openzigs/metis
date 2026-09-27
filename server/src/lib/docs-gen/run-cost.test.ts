@@ -94,17 +94,17 @@ describe("estimateRunCost", () => {
 
   it("labels a zero-priced hosted provider zero-priced, not self-hosted (PR #181 review)", () => {
     const usage = new RunUsage();
-    usage.add({ provider: "copilot-native", model: "default", inputTokens: 10, outputTokens: 1 });
+    usage.add({ provider: "offline-stub", model: "default", inputTokens: 10, outputTokens: 1 });
     const estimate = estimateRunCost(usage);
     expect(estimate.estimatedCostUsd).toBeNull();
     expect(estimate.lines.map((l) => [l.provider, l.pricing, l.costUsd])).toEqual([
-      ["copilot-native", "zero-priced", null],
+      ["offline-stub", "zero-priced", null],
     ]);
     logRunCost({ ...CTX, outcome: "completed" }, usage);
     expect(logInfo).toHaveBeenCalledWith(
       "Docs-gen run cost not estimated",
       expect.objectContaining({
-        note: "configured per-token price is zero for copilot-native/default",
+        note: "configured per-token price is zero for offline-stub/default",
       }),
     );
   });

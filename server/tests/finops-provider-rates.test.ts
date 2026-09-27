@@ -37,8 +37,9 @@ describe("getRate", () => {
     expect(keys).toContain("openai:gpt-4o-mini");
     expect(keys).toContain("anthropic:claude-3-5-sonnet");
     expect(keys).toContain("azure:gpt-4o");
-    expect(keys).toContain("copilot-native:default");
     expect(keys).toContain("offline-stub:default");
+    // copilot-native was removed (#149); its provider-wide row went with it.
+    expect(keys).not.toContain("copilot-native:default");
   });
 });
 

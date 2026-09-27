@@ -103,6 +103,8 @@ export async function runTestCoverageJob(
       status: "running",
       startedAt: new Date(),
       phaseProgress: JSON.stringify(progress),
+      // #81 — record the cap now, so a budget read DURING the run reports it.
+      budgetCents: cost.limitCents,
     },
   });
   emit({ type: "run:started", runId, projectId });
@@ -141,6 +143,9 @@ export async function runTestCoverageJob(
       }));
       await indexer.index(projectId, indexable, { cost });
     }
+    // #81 — the index phase is a run's largest embedding consumer; persist it
+    // now so the budget endpoint does not read zero for the rest of the run.
+    await flushCost();
     await advance("index", "done", { count: cases.length });
 
     // ---- match / judge / suggest ----------------------------------------
@@ -193,9 +198,7 @@ export async function runTestCoverageJob(
     // usage would never be persisted. Flushing here covers both paths; the
     // service's own flush writes the same totals from the same tracker.
     // Accounting must never be the reason a completed run reads as failed.
-    await cost.flush().catch((err: unknown) => {
-      log.error("test-coverage run cost could not be persisted", { runId, error: String(err) });
-    });
+    await flushCost();
 
     // ---- score ----------------------------------------------------------
     await advance("score", "running");
@@ -230,6 +233,9 @@ export async function runTestCoverageJob(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // #81 — spend incurred before the failure was real; persist it rather than
+    // leave the run reading $0.00.
+    await flushCost();
     await db.testCoverageRun.update({
       where: { id: runId },
       data: {
@@ -240,6 +246,13 @@ export async function runTestCoverageJob(
       },
     });
     emit({ type: "run:failed", runId, projectId, error: message });
+  }
+
+  /** Accounting must never be the reason a run reads as failed. */
+  async function flushCost(): Promise<void> {
+    await cost.flush().catch((err: unknown) => {
+      log.error("test-coverage run cost could not be persisted", { runId, error: String(err) });
+    });
   }
 
   async function advance(

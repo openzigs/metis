@@ -20,8 +20,13 @@ vi.mock("../../src/lib/prisma.js", () => ({
     },
     testCoverageRun: {
       findFirst: vi.fn(),
+      findUnique: vi.fn(),
       findMany: vi.fn(),
       create: vi.fn(),
+    },
+    // #81 — `readBudget` sums the run's unpriced `ai_token_usages` rows.
+    aITokenUsage: {
+      aggregate: vi.fn(),
     },
     coverageMapping: {
       findMany: vi.fn(),
@@ -113,6 +118,7 @@ import { audit } from "../../src/lib/audit/audit-service.js";
 import { getProject } from "../../src/lib/projects/project-service.js";
 import { testCoverageRouter } from "../../src/routes/test-coverage.js";
 import { AppError } from "../../src/middleware/error-handler.js";
+import { DEFAULT_BUDGET_CENTS } from "../../src/lib/testcoverage/cost-tracker.js";
 import {
   exportSuggestionsToGithub,
   exportSuggestionsToXray,
@@ -465,6 +471,64 @@ describe("GET /projects/:projectId/test-coverage/runs/:runId", () => {
     const app = createApp(mockUser);
     const res = await request(app).get("/projects/proj-1/test-coverage/runs/run-x");
     expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /projects/:projectId/test-coverage/runs/:runId/budget (#81)", () => {
+  const BUDGET_URL = "/projects/proj-1/test-coverage/runs/run-1/budget";
+
+  function persistedRun(budgetCents: number | null) {
+    vi.mocked(prisma.testCoverageRun.findFirst).mockResolvedValue({ id: "run-1" } as never);
+    vi.mocked(prisma.testCoverageRun.findUnique).mockResolvedValue({
+      tokenCostCents: 60,
+      budgetCents,
+      embeddingTokens: 900,
+      judgeTokens: 300,
+      suggestionTokens: 0,
+    } as never);
+  }
+
+  beforeEach(() => {
+    // 1,500 unpriced tokens on the run, 1,000 of them on the embedding phase.
+    vi.mocked(prisma.aITokenUsage.aggregate).mockImplementation((async (args: {
+      where: { agentStep?: string };
+    }) => ({
+      _sum: { totalTokens: args.where.agentStep === "testcoverage.embedding" ? 1_000 : 1_500 },
+    })) as never);
+  });
+
+  it("reports the cap the run executed under, not the default", async () => {
+    persistedRun(DEFAULT_BUDGET_CENTS + 80);
+    const res = await request(createApp(mockUser)).get(BUDGET_URL);
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({
+      limitCents: DEFAULT_BUDGET_CENTS + 80,
+      usedCents: 60,
+      remainingCents: DEFAULT_BUDGET_CENTS + 20,
+      unpricedTokens: 1_500,
+      unpricedEmbeddingTokens: 1_000,
+      unpricedLlmTokens: 500,
+      breakdown: { embeddingTokens: 900, judgeTokens: 300, suggestionTokens: 0 },
+    });
+  });
+
+  it("falls back to the default cap for a run recorded before the cap was stored", async () => {
+    persistedRun(null);
+    const res = await request(createApp(mockUser)).get(BUDGET_URL);
+    expect(res.status).toBe(200);
+    expect(res.body.data.limitCents).toBe(DEFAULT_BUDGET_CENTS);
+    expect(res.body.data.remainingCents).toBe(Math.max(0, DEFAULT_BUDGET_CENTS - 60));
+  });
+
+  it("404s for a run outside the project, scoping the lookup on projectId", async () => {
+    vi.mocked(prisma.testCoverageRun.findFirst).mockResolvedValue(null as never);
+    const res = await request(createApp(mockUser)).get(BUDGET_URL);
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("RUN_NOT_FOUND");
+    expect(prisma.testCoverageRun.findFirst).toHaveBeenCalledWith({
+      where: { id: "run-1", projectId: "proj-1" },
+    });
+    expect(prisma.testCoverageRun.findUnique).not.toHaveBeenCalled();
   });
 });
 

@@ -8,7 +8,7 @@
  * - `expandMergedCells()` — fills merged-cell ranges in a 2D grid so
  *   downstream table rendering sees the repeated value.
  *
- * Ported from copilot365-int/src/file-parser.ts.
+ * Ported from an earlier file parser.
  */
 
 // ── Merged-cell support ─────────────────────────────────────────────────────

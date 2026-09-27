@@ -79,7 +79,11 @@ test.describe("UI IA — route states & feedback (#133)", () => {
     const loading = page.getByRole("status").filter({ hasText: "Loading documents…" });
     await expect(loading).toBeVisible({ timeout: 10_000 });
 
-    await page.unroute(/\/api\/projects\/[^/]+\/documents(\?.*)?$/);
+    // Wait for any handler still sleeping to finish its `route.continue()`. A
+    // plain `unroute` let Playwright settle an in-flight route first, so the
+    // handler's later `continue()` threw "Route is already handled!" (flaked
+    // in CI on PR #250).
+    await page.unrouteAll({ behavior: "wait" });
 
     // Freshly created project → the list resolves to the empty state.
     await expect(page.getByText("No documents yet.")).toBeVisible({ timeout: 15_000 });
