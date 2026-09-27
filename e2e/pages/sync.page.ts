@@ -46,10 +46,10 @@ export class SyncPage {
     this.nextButton = page.getByRole("button", { name: "Next", exact: true });
     this.pageIndicator = page.getByText(/Page \d+ of \d+/);
 
-    // Diff modal (fixed overlay)
-    this.diffModal = page.locator("[class*='fixed inset-0']");
+    // Diff modal — a Radix Dialog since #268, so address it by role and name.
+    this.diffModal = page.getByRole("dialog", { name: "Drift Details" });
     this.diffModalTitle = page.getByRole("heading", { name: "Drift Details" });
-    this.diffModalClose = page.getByRole("button", { name: "✕" });
+    this.diffModalClose = this.diffModal.getByRole("button", { name: "Close" });
     this.adoptExternalButton = page.getByRole("button", { name: "← Adopt External" });
     this.pushMetisButton = page.getByRole("button", { name: "Push METIS →" });
     this.markDivergentButton = page.getByRole("button", { name: "Mark Divergent" });

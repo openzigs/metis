@@ -26,6 +26,7 @@ import { Card } from "@/components/ui/card";
 import { PausableLiveRegion } from "@/components/a11y/pausable-live-region";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MarkdownPreviewer } from "@/components/markdown-previewer";
 import { SchemaGraphExplorer } from "@/components/schema-graph-explorer";
 import { VersionArtifacts } from "@/components/documentation/version-artifacts";
@@ -352,7 +353,7 @@ export default function DocumentationPage(): React.ReactElement {
                 <IndexingBadge state={doc.indexing?.state} />
                 <span className="capitalize">{doc.scope}</span>
                 {doc.autoUpdate && (
-                  <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
+                  <span className="text-xs bg-info-muted text-info px-1.5 py-0.5 rounded">
                     Auto-update
                   </span>
                 )}
@@ -507,117 +508,123 @@ export default function DocumentationPage(): React.ReactElement {
             />
           )}
 
-          {/* Document vs Schema Graph tabs (Epic #895 — database docs only). */}
-          {canShowSchemaGraphTabs(isDatabaseDoc, docDetail.data.status) && (
-            <div className="flex gap-1 border-b" role="tablist" aria-label="Document view">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={detailTab === "document"}
-                onClick={() => setDetailTab("document")}
-                className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
-                  detailTab === "document"
-                    ? "border-primary text-primary"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
-                }`}
-                data-testid="doc-tab-document"
+          {/* Document vs Schema Graph tabs (Epic #895 — database docs only).
+              #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, and
+              aria-controls linking each tab to its panel. */}
+          <Tabs
+            value={detailTab}
+            onValueChange={(v) => setDetailTab(v as "document" | "graph")}
+            className="space-y-4"
+          >
+            {canShowSchemaGraphTabs(isDatabaseDoc, docDetail.data.status) && (
+              <TabsList
+                aria-label="Document view"
+                className="flex h-auto w-full justify-start gap-1 rounded-none border-b bg-transparent p-0"
               >
-                Document
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={detailTab === "graph"}
-                onClick={() => setDetailTab("graph")}
-                className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
-                  detailTab === "graph"
-                    ? "border-primary text-primary"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
-                }`}
-                data-testid="doc-tab-graph"
-              >
-                Schema Graph
-              </button>
-            </div>
-          )}
+                <TabsTrigger
+                  value="document"
+                  className="-mb-px rounded-none border-b-2 border-transparent px-4 py-2 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none"
+                  data-testid="doc-tab-document"
+                >
+                  Document
+                </TabsTrigger>
+                <TabsTrigger
+                  value="graph"
+                  className="-mb-px rounded-none border-b-2 border-transparent px-4 py-2 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none"
+                  data-testid="doc-tab-graph"
+                >
+                  Schema Graph
+                </TabsTrigger>
+              </TabsList>
+            )}
 
-          {/* Schema graph view */}
-          {isDatabaseDoc && detailTab === "graph" ? (
-            <div data-testid="schema-graph-panel">
-              {schemaGraphQuery.isLoading && (
-                <div className="flex h-[300px] items-center justify-center rounded-md border text-sm text-muted-foreground">
-                  Loading schema graph…
+            <DocViewPanel
+              tabbed={canShowSchemaGraphTabs(isDatabaseDoc, docDetail.data.status)}
+              value={detailTab}
+            >
+              {/* Schema graph view */}
+              {isDatabaseDoc && detailTab === "graph" ? (
+                <div data-testid="schema-graph-panel">
+                  {schemaGraphQuery.isLoading && (
+                    <div className="flex h-[300px] items-center justify-center rounded-md border text-sm text-muted-foreground">
+                      Loading schema graph…
+                    </div>
+                  )}
+                  {schemaGraphQuery.isError && (
+                    <div className="flex h-[300px] flex-col items-center justify-center gap-3 rounded-md border text-sm text-muted-foreground">
+                      <p>
+                        This document was generated before the interactive graph feature was added.
+                      </p>
+                      <p>
+                        <strong>Regenerate the document</strong> to build the full Schema Graph with
+                        all tables.
+                      </p>
+                      <Button onClick={() => setShowGenerate(true)}>
+                        Regenerate Documentation
+                      </Button>
+                    </div>
+                  )}
+                  {schemaGraphQuery.data && <SchemaGraphExplorer graph={schemaGraphQuery.data} />}
                 </div>
-              )}
-              {schemaGraphQuery.isError && (
-                <div className="flex h-[300px] flex-col items-center justify-center gap-3 rounded-md border text-sm text-muted-foreground">
-                  <p>This document was generated before the interactive graph feature was added.</p>
-                  <p>
-                    <strong>Regenerate the document</strong> to build the full Schema Graph with all
-                    tables.
-                  </p>
-                  <Button onClick={() => setShowGenerate(true)}>Regenerate Documentation</Button>
-                </div>
-              )}
-              {schemaGraphQuery.data && <SchemaGraphExplorer graph={schemaGraphQuery.data} />}
-            </div>
-          ) : (
-            (() => {
-              // The versions array is ordered version-desc, so the first row is
-              // the latest. When the user is viewing a previous version we show
-              // that version's stored markdown read-only; otherwise the doc's
-              // current content.
-              const versions = docDetail.data.versions ?? [];
-              const viewing =
-                viewingVersionId != null
-                  ? versions.find((v) => v.id === viewingVersionId)
-                  : undefined;
-              const shownContent = viewing
-                ? versionBody.data?.id === viewing.id
-                  ? versionBody.data.content
-                  : undefined
-                : docDetail.data.content;
-              if (viewing && shownContent === undefined) {
-                return (
-                  <p
-                    className="text-sm text-muted-foreground"
-                    role="status"
-                    data-testid="version-view-loading"
-                  >
-                    {versionBody.isError
-                      ? `Could not load v${viewing.version}.`
-                      : `Loading v${viewing.version}…`}
-                  </p>
-                );
-              }
-              return (
-                shownContent && (
-                  <div>
-                    {viewing && (
-                      <div
-                        className="mb-3 flex items-center justify-between rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
-                        data-testid="version-view-banner"
+              ) : (
+                (() => {
+                  // The versions array is ordered version-desc, so the first row is
+                  // the latest. When the user is viewing a previous version we show
+                  // that version's stored markdown read-only; otherwise the doc's
+                  // current content.
+                  const versions = docDetail.data.versions ?? [];
+                  const viewing =
+                    viewingVersionId != null
+                      ? versions.find((v) => v.id === viewingVersionId)
+                      : undefined;
+                  const shownContent = viewing
+                    ? versionBody.data?.id === viewing.id
+                      ? versionBody.data.content
+                      : undefined
+                    : docDetail.data.content;
+                  if (viewing && shownContent === undefined) {
+                    return (
+                      <p
+                        className="text-sm text-muted-foreground"
+                        role="status"
+                        data-testid="version-view-loading"
                       >
-                        <span>
-                          Viewing v{viewing.version} (read-only) —{" "}
-                          {viewing.diffSummary ?? "Full generation"}
-                        </span>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setViewingVersionId(null)}
-                          data-testid="version-history-back-to-latest"
-                        >
-                          Back to latest
-                        </Button>
+                        {versionBody.isError
+                          ? `Could not load v${viewing.version}.`
+                          : `Loading v${viewing.version}…`}
+                      </p>
+                    );
+                  }
+                  return (
+                    shownContent && (
+                      <div>
+                        {viewing && (
+                          <div
+                            className="mb-3 flex items-center justify-between rounded-md border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
+                            data-testid="version-view-banner"
+                          >
+                            <span>
+                              Viewing v{viewing.version} (read-only) —{" "}
+                              {viewing.diffSummary ?? "Full generation"}
+                            </span>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setViewingVersionId(null)}
+                              data-testid="version-history-back-to-latest"
+                            >
+                              Back to latest
+                            </Button>
+                          </div>
+                        )}
+                        <MarkdownPreviewer content={shownContent} />
                       </div>
-                    )}
-                    <MarkdownPreviewer content={shownContent} />
-                  </div>
-                )
-              );
-            })()
-          )}
+                    )
+                  );
+                })()
+              )}
+            </DocViewPanel>
+          </Tabs>
 
           {/* Version history — render whenever the detail payload carries
               versions; mark the latest and allow viewing a previous version's
@@ -652,7 +659,7 @@ export default function DocumentationPage(): React.ReactElement {
                             </span>
                           )}
                           {isLatest && (
-                            <span className="rounded bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-700">
+                            <span className="rounded bg-success-muted px-1.5 py-0.5 text-xs font-medium text-success">
                               Current
                             </span>
                           )}
@@ -1025,11 +1032,11 @@ function GenerationProgress({
 }): React.ReactElement {
   const rows = Object.values(sections).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
   const statusStyle: Record<DocSectionProgressEvent["status"], string> = {
-    queued: "text-gray-500",
-    generating: "text-yellow-700 animate-pulse",
-    done: "text-green-700",
-    degraded: "text-amber-700",
-    failed: "text-red-700",
+    queued: "text-muted-foreground",
+    generating: "text-warning animate-pulse",
+    done: "text-success",
+    degraded: "text-warning",
+    failed: "text-destructive",
   };
   const statusLabel: Record<DocSectionProgressEvent["status"], string> = {
     queued: "Queued",
@@ -1078,7 +1085,7 @@ function GenerationProgress({
       )}
       {/* Surface section-level warnings live (#243), not just after refresh. */}
       {rows.some((s) => s.warning) && (
-        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-amber-800">
+        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-warning">
           {rows
             .filter((s) => s.warning)
             .map((s) => (
@@ -1141,13 +1148,13 @@ export function DocListProgress({ docId }: { docId: string }): React.ReactElemen
 
 function StatusBadge({ status }: { status: string }): React.ReactElement {
   const colors: Record<string, string> = {
-    ready: "bg-green-100 text-green-700",
-    generating: "bg-yellow-100 text-yellow-700",
-    pending: "bg-gray-100 text-gray-700",
-    failed: "bg-red-100 text-red-700",
+    ready: "bg-success-muted text-success",
+    generating: "bg-warning-muted text-warning",
+    pending: "bg-muted text-foreground",
+    failed: "bg-destructive/10 text-destructive",
     // Epic #204 (#225) — degraded sits between ready and failed: content exists
     // but some sections failed or couldn't be auto-verified against source.
-    degraded: "bg-amber-100 text-amber-800",
+    degraded: "bg-warning-muted text-warning",
   };
   // Friendly label: show "needs review" rather than the raw "degraded" status —
   // a flagged doc is for review, not necessarily inaccurate.
@@ -1162,11 +1169,11 @@ function StatusBadge({ status }: { status: string }): React.ReactElement {
 function IndexingBadge({ state }: { state?: string | null }): React.ReactElement {
   const normalized = state ?? "pending";
   const colors: Record<string, string> = {
-    indexed: "bg-emerald-100 text-emerald-700",
-    pending: "bg-slate-100 text-slate-700",
-    quarantined: "bg-amber-100 text-amber-800",
-    rejected: "bg-rose-100 text-rose-700",
-    failed: "bg-red-100 text-red-700",
+    indexed: "bg-success-muted text-success",
+    pending: "bg-muted text-foreground",
+    quarantined: "bg-warning-muted text-warning",
+    rejected: "bg-destructive/10 text-destructive",
+    failed: "bg-destructive/10 text-destructive",
   };
   return (
     <span
@@ -1377,11 +1384,11 @@ export function FailedGenerationBanner({
   onRegenerate: () => void;
 }): React.ReactElement {
   return (
-    <Card className="border-red-300 bg-red-50 p-4" role="alert">
-      <p className="font-medium text-red-900">
+    <Card className="border-destructive/40 bg-destructive/10 p-4" role="alert">
+      <p className="font-medium text-destructive">
         {interrupted ? "Generation was interrupted" : "Generation failed"}
       </p>
-      <p className="mt-1 text-sm text-red-800">
+      <p className="mt-1 text-sm text-destructive">
         {interrupted
           ? "The server restarted or stopped while this document was being generated, so it never finished. Regenerating reuses the modules already analysed before the interruption."
           : "This document could not be generated. You can try again; if it keeps failing, check the server logs."}
@@ -1434,24 +1441,46 @@ export function DegradedWarningsBanner({
   const headline = modeNotice && !reviewRecommended ? null : tierHeadline;
 
   return (
-    <Card className="border-amber-300 bg-amber-50 p-4" role="alert">
-      {modeNotice && <p className="font-medium text-amber-900">{modeNotice}</p>}
-      {headline && <p className="font-medium text-amber-900">{headline}</p>}
+    <Card className="border-warning/40 bg-warning-muted p-4" role="alert">
+      {modeNotice && <p className="font-medium text-warning">{modeNotice}</p>}
+      {headline && <p className="font-medium text-warning">{headline}</p>}
       {warnings.length > 0 && (
-        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-800">
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-warning">
           {warnings.map((w, i) => (
             <li key={i}>{formatWarningDetail(w)}</li>
           ))}
         </ul>
       )}
-      <p className="mt-3 text-xs text-amber-700">
+      <p className="mt-3 text-xs text-warning">
         Flagged sections contain statements that could not be automatically verified against the
         retrieved source — this does not by itself mean they are inaccurate (the supporting code may
         simply not have been retrieved). Statements the model inferred from the code are tagged{" "}
-        <code className="rounded bg-amber-100 px-1">_(inferred)_</code> inline, so you can tell
+        <code className="rounded bg-warning-muted px-1">_(inferred)_</code> inline, so you can tell
         verified facts from inferred ones.
       </p>
     </Card>
+  );
+}
+
+/**
+ * #268 — wraps the document / schema-graph view in the active tab's panel when
+ * the tab strip is shown, so each tab's `aria-controls` resolves to a real
+ * `role="tabpanel"`. Without the strip (non-database docs) it is a passthrough.
+ */
+function DocViewPanel({
+  tabbed,
+  value,
+  children,
+}: {
+  tabbed: boolean;
+  value: string;
+  children: React.ReactNode;
+}) {
+  if (!tabbed) return <>{children}</>;
+  return (
+    <TabsContent value={value} className="mt-0">
+      {children}
+    </TabsContent>
   );
 }
 

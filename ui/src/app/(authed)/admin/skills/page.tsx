@@ -14,6 +14,7 @@ import { ApiError } from "@/lib/api-client";
 import { skillsApi, type SkillDetail, type SkillSummary } from "@/lib/library-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -252,18 +253,17 @@ function SkillRow({
             Archive
           </Button>
         ) : null}
-        <Button
-          variant="destructive"
-          size="sm"
-          disabled={remove.isPending}
-          onClick={() => {
-            if (window.confirm(`Delete skill ${skill.key}? Versions are kept for audit.`)) {
-              remove.mutate();
-            }
-          }}
-        >
-          Delete
-        </Button>
+        <ConfirmDialog
+          title={`Delete skill ${skill.key}?`}
+          description="Versions are kept for audit."
+          confirmLabel="Delete"
+          onConfirm={() => remove.mutate()}
+          trigger={
+            <Button variant="destructive" size="sm" disabled={remove.isPending}>
+              Delete
+            </Button>
+          }
+        />
       </td>
     </tr>
   );

@@ -21,6 +21,7 @@ import {
 } from "@/lib/mcp-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -179,16 +180,16 @@ function ServerRow({ server, onChange }: { server: MCPServerView; onChange: () =
         <Button variant="outline" size="sm" disabled={test.isPending} onClick={() => test.mutate()}>
           Test
         </Button>
-        <Button
-          variant="destructive"
-          size="sm"
-          disabled={remove.isPending}
-          onClick={() => {
-            if (window.confirm(`Delete MCP server ${server.label}?`)) remove.mutate();
-          }}
-        >
-          Delete
-        </Button>
+        <ConfirmDialog
+          title={`Delete MCP server ${server.label}?`}
+          confirmLabel="Delete"
+          onConfirm={() => remove.mutate()}
+          trigger={
+            <Button variant="destructive" size="sm" disabled={remove.isPending}>
+              Delete
+            </Button>
+          }
+        />
       </td>
     </tr>
   );

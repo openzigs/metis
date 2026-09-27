@@ -13,6 +13,13 @@ import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError } from "@/lib/api-client";
@@ -109,87 +116,94 @@ export function ConnectorsSection({ projectId }: ConnectorsSectionProps) {
           </div>
         </div>
         {lastSummary && (
-          <p className="mt-3 text-xs text-emerald-600" data-testid="connectors-last-summary">
+          <p className="mt-3 text-xs text-success" data-testid="connectors-last-summary">
             Ingested {lastSummary.ingested} · skipped {lastSummary.skipped} · failed{" "}
             {lastSummary.failed}
           </p>
         )}
       </Card>
 
-      {mode && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label={mode === "confluence" ? "Confluence ingest" : "Jira ingest"}
+      {/* #268 — Radix Dialog: focus trap, Escape, focus return. */}
+      <Dialog
+        open={mode !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setMode(null);
+            ingest.reset();
+          }
+        }}
+      >
+        <DialogContent
+          className="max-w-md"
           data-testid="connector-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          aria-describedby={undefined}
         >
-          <Card className="w-full max-w-md p-4">
-            <h3 className="text-sm font-semibold">
+          <DialogHeader>
+            <DialogTitle className="text-sm">
               {mode === "confluence" ? "Ingest a Confluence space" : "Ingest a Jira query"}
-            </h3>
-            {mode === "confluence" ? (
-              <div className="mt-3 space-y-3">
-                <div>
-                  <Label htmlFor="space-key">Space key</Label>
-                  <Input
-                    id="space-key"
-                    data-testid="confluence-space-key"
-                    value={spaceKey}
-                    onChange={(e) => setSpaceKey(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="cql-query">CQL query (optional)</Label>
-                  <Input
-                    id="cql-query"
-                    data-testid="confluence-query"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                  />
-                </div>
-              </div>
-            ) : (
-              <div className="mt-3">
-                <Label htmlFor="jql">JQL</Label>
+            </DialogTitle>
+          </DialogHeader>
+          {mode === "confluence" ? (
+            <div className="space-y-3">
+              <div>
+                <Label htmlFor="space-key">Space key</Label>
                 <Input
-                  id="jql"
-                  data-testid="jira-jql"
-                  value={jql}
-                  onChange={(e) => setJql(e.target.value)}
-                  placeholder='project = "ENG" AND status = "Done"'
+                  id="space-key"
+                  data-testid="confluence-space-key"
+                  value={spaceKey}
+                  onChange={(e) => setSpaceKey(e.target.value)}
                 />
               </div>
-            )}
-            {ingest.error && (
-              <p className="mt-2 text-xs text-red-600" data-testid="connector-error">
-                {ingest.error instanceof ApiError ? ingest.error.message : String(ingest.error)}
-              </p>
-            )}
-            <div className="mt-4 flex justify-end gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                data-testid="connector-cancel"
-                onClick={() => {
-                  setMode(null);
-                  ingest.reset();
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                disabled={!canSubmit || ingest.isPending}
-                data-testid="connector-submit"
-                onClick={() => ingest.mutate()}
-              >
-                {ingest.isPending ? "Ingesting…" : "Ingest"}
-              </Button>
+              <div>
+                <Label htmlFor="cql-query">CQL query (optional)</Label>
+                <Input
+                  id="cql-query"
+                  data-testid="confluence-query"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </div>
             </div>
-          </Card>
-        </div>
-      )}
+          ) : (
+            <div>
+              <Label htmlFor="jql">JQL</Label>
+              <Input
+                id="jql"
+                data-testid="jira-jql"
+                value={jql}
+                onChange={(e) => setJql(e.target.value)}
+                placeholder='project = "ENG" AND status = "Done"'
+              />
+            </div>
+          )}
+          {ingest.error && (
+            <p className="text-xs text-destructive" data-testid="connector-error">
+              {ingest.error instanceof ApiError ? ingest.error.message : String(ingest.error)}
+            </p>
+          )}
+          <DialogFooter className="gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              data-testid="connector-cancel"
+              onClick={() => {
+                setMode(null);
+                ingest.reset();
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              disabled={!canSubmit || ingest.isPending}
+              data-testid="connector-submit"
+              onClick={() => ingest.mutate()}
+            >
+              {ingest.isPending ? "Ingesting…" : "Ingest"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

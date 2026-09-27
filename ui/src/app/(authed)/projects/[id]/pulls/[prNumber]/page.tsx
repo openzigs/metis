@@ -33,12 +33,12 @@ import { ApiError } from "@/lib/api-client";
 function VerdictBadge({ verdict }: { verdict: string | null }): React.ReactElement {
   const tone =
     verdict === "satisfied" || verdict === "approve"
-      ? "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-200"
+      ? "bg-success-muted text-success"
       : verdict === "not_satisfied" || verdict === "request_changes"
-        ? "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200"
+        ? "bg-destructive/10 text-destructive"
         : verdict === "uncertain" || verdict === "comment"
-          ? "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-200"
-          : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200";
+          ? "bg-info-muted text-info"
+          : "bg-muted text-foreground";
   return (
     <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${tone}`}>
       {verdict ?? "—"}
@@ -48,20 +48,18 @@ function VerdictBadge({ verdict }: { verdict: string | null }): React.ReactEleme
 
 function AcVerdictRow({ verdict }: { verdict: PrReviewVerdict }): React.ReactElement {
   return (
-    <li className="space-y-2 rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+    <li className="space-y-2 rounded-md border border-border p-3">
       <div className="flex items-center justify-between">
-        <span className="font-mono text-xs text-zinc-500 dark:text-zinc-400">{verdict.acId}</span>
+        <span className="font-mono text-xs text-muted-foreground">{verdict.acId}</span>
         <VerdictBadge verdict={verdict.verdict} />
       </div>
-      <p className="text-sm text-zinc-800 dark:text-zinc-200">{verdict.reasoning}</p>
+      <p className="text-sm text-foreground">{verdict.reasoning}</p>
       {verdict.evidenceFiles.length > 0 && (
         <div className="space-y-1">
-          <p className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-            Evidence
-          </p>
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Evidence</p>
           <ul className="space-y-0.5">
             {verdict.evidenceFiles.map((f) => (
-              <li key={f} className="font-mono text-xs text-zinc-700 dark:text-zinc-300">
+              <li key={f} className="font-mono text-xs text-foreground">
                 {f}
               </li>
             ))}
@@ -98,15 +96,15 @@ export function ReReviewProgress({
       className="flex flex-col items-end gap-1"
       data-testid="re-review-progress"
     >
-      <div className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
         {running ? (
           <span
             aria-hidden="true"
             data-testid="re-review-spinner"
-            className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-zinc-400 border-t-transparent"
+            className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-border border-t-transparent"
           />
         ) : (
-          <span aria-hidden="true" className="text-green-600 dark:text-green-400">
+          <span aria-hidden="true" className="text-success">
             ✓
           </span>
         )}
@@ -117,14 +115,14 @@ export function ReReviewProgress({
         </span>
       </div>
       <div
-        className="h-1 w-40 overflow-hidden rounded bg-zinc-200 dark:bg-zinc-800"
+        className="h-1 w-40 overflow-hidden rounded bg-muted"
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(progress)}
       >
         <div
-          className={`h-full rounded transition-all ${running ? "bg-blue-500" : "bg-green-500"}`}
+          className={`h-full rounded transition-all ${running ? "bg-info" : "bg-success"}`}
           style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}
         />
       </div>
@@ -135,11 +133,9 @@ export function ReReviewProgress({
 function PermissionDeniedSurface({ message }: { message: string }): React.ReactElement {
   return (
     <Card className="p-6">
-      <h2 className="text-base font-medium text-zinc-900 dark:text-zinc-100">
-        Permission required
-      </h2>
-      <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">{message}</p>
-      <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-500">
+      <h2 className="text-base font-medium text-foreground">Permission required</h2>
+      <p className="mt-2 text-sm text-muted-foreground">{message}</p>
+      <p className="mt-2 text-xs text-muted-foreground">
         Ask a project administrator to grant the <code>pr.review.manage</code> permission to re-run
         reviews, or <code>pr.review.read</code> to view review history.
       </p>
@@ -223,14 +219,14 @@ export default function ProjectPullDetailPage(): React.ReactElement {
 
   if (!projectId || !prNumber || !owner || !repo) {
     return (
-      <p className="p-4 text-sm text-zinc-500">
+      <p className="p-4 text-sm text-muted-foreground">
         Missing required URL parameters (projectId, prNumber, owner, repo).
       </p>
     );
   }
 
   if (detailQuery.isLoading) {
-    return <p className="p-4 text-sm text-zinc-500">Loading review…</p>;
+    return <p className="p-4 text-sm text-muted-foreground">Loading review…</p>;
   }
 
   // 403 surface — the user can SEE the page exists but is told why they can't read it.
@@ -240,7 +236,7 @@ export default function ProjectPullDetailPage(): React.ReactElement {
         <div className="space-y-4 p-4">
           <Link
             href={`/projects/${encodeURIComponent(projectId)}/pulls`}
-            className="text-sm text-blue-600 hover:underline dark:text-blue-400"
+            className="text-sm text-info hover:underline"
           >
             ← Back to PR reviews
           </Link>
@@ -253,18 +249,18 @@ export default function ProjectPullDetailPage(): React.ReactElement {
         <div className="space-y-4 p-4">
           <Link
             href={`/projects/${encodeURIComponent(projectId)}/pulls`}
-            className="text-sm text-blue-600 hover:underline dark:text-blue-400"
+            className="text-sm text-info hover:underline"
           >
             ← Back to PR reviews
           </Link>
-          <Card className="p-6 text-sm text-zinc-600 dark:text-zinc-400">
+          <Card className="p-6 text-sm text-muted-foreground">
             No automated review has been recorded for this PR yet.
           </Card>
         </div>
       );
     }
     return (
-      <p className="p-4 text-sm text-red-600">
+      <p className="p-4 text-sm text-destructive">
         Failed to load review: {(detailQuery.error as Error).message ?? "unknown error"}.
       </p>
     );
@@ -276,7 +272,7 @@ export default function ProjectPullDetailPage(): React.ReactElement {
     <div className="space-y-4 p-4">
       <Link
         href={`/projects/${encodeURIComponent(projectId)}/pulls`}
-        className="text-sm text-blue-600 hover:underline dark:text-blue-400"
+        className="text-sm text-info hover:underline"
       >
         ← Back to PR reviews
       </Link>
@@ -286,7 +282,7 @@ export default function ProjectPullDetailPage(): React.ReactElement {
           <h1 className="text-xl font-semibold">
             {review.repoOwner}/{review.repoName}#{review.prNumber}
           </h1>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+          <p className="mt-1 text-sm text-muted-foreground">
             Last reviewed{" "}
             {review.lastReviewedSha ? (
               <code className="font-mono">{review.lastReviewedSha.slice(0, 7)}</code>
@@ -299,14 +295,14 @@ export default function ProjectPullDetailPage(): React.ReactElement {
             href={review.prUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="mt-1 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
+            className="mt-1 inline-block text-sm text-info hover:underline"
           >
             View on GitHub ↗
           </a>
           {review.lastRunId && (
             <Link
               href={`/runs/${review.lastRunId}`}
-              className="ml-3 mt-1 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
+              className="ml-3 mt-1 inline-block text-sm text-info hover:underline"
             >
               View AgentRun replay →
             </Link>
@@ -342,9 +338,7 @@ export default function ProjectPullDetailPage(): React.ReactElement {
             <p
               role="status"
               className={
-                reRunMessage.kind === "denied"
-                  ? "text-xs text-amber-700 dark:text-amber-400"
-                  : "text-xs text-red-700 dark:text-red-400"
+                reRunMessage.kind === "denied" ? "text-xs text-warning" : "text-xs text-destructive"
               }
             >
               {reRunMessage.text}
@@ -354,12 +348,12 @@ export default function ProjectPullDetailPage(): React.ReactElement {
       </header>
 
       <Card className="p-4">
-        <h2 className="mb-3 text-sm font-medium text-zinc-700 dark:text-zinc-300">
+        <h2 className="mb-3 text-sm font-medium text-foreground">
           Acceptance criteria ({review.acVerdicts.length} total,{" "}
           {(review.acPassRate * 100).toFixed(0)}% satisfied)
         </h2>
         {review.acVerdicts.length === 0 ? (
-          <p className="text-sm text-zinc-500">
+          <p className="text-sm text-muted-foreground">
             No acceptance criteria were captured for this review.
           </p>
         ) : (

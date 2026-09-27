@@ -16,11 +16,23 @@
  * Accessibility:
  *  - Each badge has a unique text label AND a unique icon glyph (so colour
  *    is never the only signal — passes deuteranopia / protanopia / tritanopia).
- *  - Colours hit WCAG AA contrast in light + dark themes (the Tailwind
- *    *-100 / *-900 pairings used here are the project-wide default).
+ *  - Colours come from the semantic status tokens (#267): success / info /
+ *    warning, each asserted ≥4.5:1 on its own tint in both themes
+ *    (ui/tests/contrast-tokens.test.ts).
+ *  - The review confirmation is a Radix Dialog (#268): focus trap, Escape,
+ *    focus return to the Review button.
  */
 import * as React from "react";
 import { Check, HelpCircle, Sparkle } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 
 export type FindingDerivation = "extracted" | "inferred" | "ambiguous";
 
@@ -48,22 +60,19 @@ const VARIANTS: Record<
   { className: string; label: string; icon: React.ReactNode; testid: string }
 > = {
   extracted: {
-    className:
-      "bg-green-100 text-green-900 border-green-300 dark:bg-green-900/30 dark:text-green-100 dark:border-green-700",
+    className: "bg-success-muted text-success border-success/40",
     label: "EXTRACTED",
     icon: <Check className="h-3 w-3" aria-hidden="true" />,
     testid: "derivation-badge-extracted",
   },
   inferred: {
-    className:
-      "bg-yellow-100 text-yellow-900 border-yellow-300 dark:bg-yellow-900/30 dark:text-yellow-100 dark:border-yellow-700",
+    className: "bg-info-muted text-info border-info/40",
     label: "INFERRED",
     icon: <Sparkle className="h-3 w-3" aria-hidden="true" />,
     testid: "derivation-badge-inferred",
   },
   ambiguous: {
-    className:
-      "bg-orange-100 text-orange-900 border-orange-300 dark:bg-orange-900/30 dark:text-orange-100 dark:border-orange-700",
+    className: "bg-warning-muted text-warning border-warning/40",
     label: "AMBIGUOUS",
     icon: <HelpCircle className="h-3 w-3" aria-hidden="true" />,
     testid: "derivation-badge-ambiguous",
@@ -153,20 +162,22 @@ export function DerivationBadge(props: DerivationBadgeProps): React.ReactElement
           data-testid="derivation-badge-review-button"
           aria-label="Review this ambiguous finding"
           onClick={() => setOpen(true)}
-          className="rounded border border-orange-300 bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-900 hover:bg-orange-100 dark:bg-orange-900/20 dark:text-orange-100 dark:border-orange-700 dark:hover:bg-orange-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-600"
+          className="rounded border border-warning/40 bg-warning-muted px-2 py-0.5 text-xs font-medium text-warning hover:bg-warning/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warning"
         >
           Review
         </button>
       ) : null}
-      {open ? (
-        <DerivationBadgeReviewModal
-          agentResultId={agentResultId}
-          confidence={confidence}
-          submitting={submitting}
-          onCancel={() => setOpen(false)}
-          onConfirm={handleConfirm}
-        />
-      ) : null}
+      <Dialog open={open} onOpenChange={(next) => !submitting && setOpen(next)}>
+        {open ? (
+          <DerivationBadgeReviewModal
+            agentResultId={agentResultId}
+            confidence={confidence}
+            submitting={submitting}
+            onCancel={() => setOpen(false)}
+            onConfirm={handleConfirm}
+          />
+        ) : null}
+      </Dialog>
     </span>
   );
 }
@@ -182,48 +193,34 @@ interface ReviewModalProps {
 function DerivationBadgeReviewModal(props: ReviewModalProps): React.ReactElement {
   const { agentResultId, confidence, submitting, onCancel, onConfirm } = props;
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Review ambiguous finding"
-      data-testid="derivation-badge-review-dialog"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-    >
-      <div className="w-full max-w-md rounded border border-zinc-300 bg-white p-4 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
-        <h3 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
-          Review ambiguous finding
-        </h3>
-        <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
+    <DialogContent className="max-w-md" data-testid="derivation-badge-review-dialog">
+      <DialogHeader>
+        <DialogTitle className="text-base">Review ambiguous finding</DialogTitle>
+        <DialogDescription>
           The analysis agent flagged this finding for human review. Confirm to record an audit row
           noting that you have reviewed it.
-        </p>
-        <dl className="mt-3 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs text-zinc-600 dark:text-zinc-400">
-          <dt>Confidence</dt>
-          <dd className="tabular-nums">{formatRawConfidence(confidence)}</dd>
-          <dt>Agent run</dt>
-          <dd className="font-mono break-all">{agentResultId}</dd>
-        </dl>
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={submitting}
-            className="rounded border border-zinc-300 bg-white px-3 py-1 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            data-testid="derivation-badge-review-confirm"
-            onClick={onConfirm}
-            disabled={submitting}
-            className="rounded bg-orange-600 px-3 py-1 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-60"
-          >
-            {submitting ? "Recording…" : "Confirm review"}
-          </button>
-        </div>
-      </div>
-    </div>
+        </DialogDescription>
+      </DialogHeader>
+      <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <dt>Confidence</dt>
+        <dd className="tabular-nums">{formatRawConfidence(confidence)}</dd>
+        <dt>Agent run</dt>
+        <dd className="font-mono break-all">{agentResultId}</dd>
+      </dl>
+      <DialogFooter className="gap-2">
+        <Button variant="outline" size="sm" onClick={onCancel} disabled={submitting}>
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          data-testid="derivation-badge-review-confirm"
+          onClick={onConfirm}
+          disabled={submitting}
+        >
+          {submitting ? "Recording…" : "Confirm review"}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
   );
 }
 

@@ -2,10 +2,11 @@
  * Tests for the Sync Dashboard page.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import SyncDashboardPage from "@/app/(authed)/projects/[id]/sync/page";
 import type { DriftEventRow } from "@metis/shared";
+import { expectAccessibleModal } from "./a11y/modal-dialog";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }),
@@ -114,5 +115,27 @@ describe("SyncDashboardPage", () => {
       expect(screen.getByText("Page 1 of 2")).toBeInTheDocument();
     });
     expect(screen.getByText("Next")).toBeInTheDocument();
+  });
+});
+
+describe("SyncDashboardPage — diff dialog accessibility (#268)", () => {
+  it("is a named modal dialog: focus trapped, Escape closes, focus returns", async () => {
+    const user = userEvent.setup();
+    mockFetchDriftEvents.mockResolvedValue({ items: [MOCK_DRIFT], total: 1 });
+    render(<SyncDashboardPage />);
+    const row = await screen.findByRole("button", { name: /title changed/i });
+    row.focus();
+    await user.keyboard("{Enter}");
+    await expectAccessibleModal(user, "Drift Details", row);
+  });
+
+  it("the close control has an accessible name", async () => {
+    const user = userEvent.setup();
+    mockFetchDriftEvents.mockResolvedValue({ items: [MOCK_DRIFT], total: 1 });
+    render(<SyncDashboardPage />);
+    await user.click(await screen.findByText("title changed"));
+    const dialog = await screen.findByRole("dialog", { name: "Drift Details" });
+    await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 });

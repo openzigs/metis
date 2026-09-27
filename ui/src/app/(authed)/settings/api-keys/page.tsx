@@ -18,6 +18,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   configApi,
   loadProviderPrefs,
@@ -73,33 +74,37 @@ function RuntimeConfigSection({ initialTab }: { initialTab: SettingsTab }) {
   );
   return (
     <Card className="p-0" data-testid="settings-config-tabs">
-      <div className="flex items-center gap-2 border-b px-3 py-2" role="tablist">
-        <Button
-          type="button"
-          variant={tab === "config" ? "default" : "ghost"}
-          size="sm"
-          role="tab"
-          aria-selected={tab === "config"}
-          onClick={() => setTab("config")}
-          data-testid="settings-tab-secrets"
+      {/* #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, aria-controls. */}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as SettingsTab)}>
+        <TabsList
+          aria-label="Runtime configuration sections"
+          className="flex h-auto w-full justify-start gap-2 rounded-none border-b bg-transparent px-3 py-2"
         >
-          Runtime configuration
-        </Button>
-        <Button
-          type="button"
-          variant={tab === "audit" ? "default" : "ghost"}
-          size="sm"
-          role="tab"
-          aria-selected={tab === "audit"}
-          onClick={() => setTab("audit")}
-          data-testid="settings-tab-audit"
-        >
-          Audit log
-        </Button>
-      </div>
-      <div className="p-4" role="tabpanel">
-        {tab === "config" ? <ConfigTabBody /> : <AuditLogTab />}
-      </div>
+          {(
+            [
+              ["config", "Runtime configuration", "settings-tab-secrets"],
+              ["audit", "Audit log", "settings-tab-audit"],
+            ] as const
+          ).map(([value, label, testId]) => (
+            <TabsTrigger key={value} value={value} asChild>
+              <Button
+                type="button"
+                variant={tab === value ? "default" : "ghost"}
+                size="sm"
+                data-testid={testId}
+              >
+                {label}
+              </Button>
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        <TabsContent value="config" className="mt-0 p-4">
+          <ConfigTabBody />
+        </TabsContent>
+        <TabsContent value="audit" className="mt-0 p-4">
+          <AuditLogTab />
+        </TabsContent>
+      </Tabs>
     </Card>
   );
 }

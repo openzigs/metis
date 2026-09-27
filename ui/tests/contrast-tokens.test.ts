@@ -137,3 +137,122 @@ describe("migrated surface text contrast (SC 1.4.3, #266)", () => {
     }
   }
 });
+
+/**
+ * #267 — `--destructive` re-tuned. It is used both as TEXT (`text-destructive`,
+ * 114 call sites) on the page surfaces and as a FILL under
+ * `--destructive-foreground` (Button / Badge / AlertDialog action). Before the
+ * change it measured 3.76:1 (light) and 1.99:1 (dark) as text.
+ */
+describe("destructive contrast (SC 1.4.3, #267)", () => {
+  for (const theme of THEMES) {
+    for (const surface of ["background", "card", "muted"] as const) {
+      it(`${theme.name}: --destructive text meets ≥4.5:1 against --${surface}`, () => {
+        expect(
+          contrast(token(theme.block, "destructive"), token(theme.block, surface)),
+        ).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+    it(`${theme.name}: --destructive-foreground meets ≥4.5:1 on --destructive`, () => {
+      expect(
+        contrast(token(theme.block, "destructive-foreground"), token(theme.block, "destructive")),
+      ).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+});
+
+/**
+ * #267 — semantic status tokens. Each status has three tokens:
+ *  - `--X`          text colour on the page surfaces AND on its own tint;
+ *  - `--X-foreground` text on a solid `--X` fill;
+ *  - `--X-muted`    the tint behind soft badges / alerts (`bg-X-muted text-X`).
+ * `warning` includes the amber badges #285's review measured just under 4.5:1
+ * in the light theme.
+ */
+const STATUSES = ["success", "warning", "info"] as const;
+
+describe("status token contrast (SC 1.4.3, #267)", () => {
+  for (const theme of THEMES) {
+    for (const status of STATUSES) {
+      for (const surface of ["background", "card", `${status}-muted`] as const) {
+        it(`${theme.name}: --${status} meets ≥4.5:1 against --${surface}`, () => {
+          expect(
+            contrast(token(theme.block, status), token(theme.block, surface)),
+          ).toBeGreaterThanOrEqual(4.5);
+        });
+      }
+      it(`${theme.name}: --${status}-foreground meets ≥4.5:1 on --${status}`, () => {
+        expect(
+          contrast(token(theme.block, `${status}-foreground`), token(theme.block, status)),
+        ).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+  }
+});
+
+/**
+ * #267 — chart series tokens `--chart-1..5`. Series marks are meaningful
+ * graphics (SC 1.4.11): each must clear ≥3:1 against the chart surface in both
+ * themes. Five DISTINCT colours are required, or two series read as one.
+ */
+describe("chart token contrast (SC 1.4.11, #267)", () => {
+  for (const theme of THEMES) {
+    for (let i = 1; i <= 5; i += 1) {
+      for (const surface of ["background", "card"] as const) {
+        it(`${theme.name}: --chart-${i} meets ≥3:1 against --${surface}`, () => {
+          expect(
+            contrast(token(theme.block, `chart-${i}`), token(theme.block, surface)),
+          ).toBeGreaterThanOrEqual(3);
+        });
+      }
+    }
+    it(`${theme.name}: the five chart colours are distinct`, () => {
+      const values = [1, 2, 3, 4, 5].map((i) => token(theme.block, `chart-${i}`));
+      expect(new Set(values).size).toBe(5);
+    });
+  }
+});
+
+/**
+ * The tokens only reach utilities (`text-success`, `bg-warning-muted`, …)
+ * through the `@theme inline` mapping; a token missing there generates no CSS
+ * and the class silently does nothing.
+ */
+describe("status + chart tokens are exposed to Tailwind (#267)", () => {
+  const theme = css.match(/@theme inline\s*\{([\s\S]*?)\}/)?.[1] ?? "";
+  const names = [
+    ...STATUSES.flatMap((s) => [s, `${s}-foreground`, `${s}-muted`]),
+    ...[1, 2, 3, 4, 5].map((i) => `chart-${i}`),
+  ];
+  for (const name of names) {
+    it(`--color-${name} maps to hsl(var(--${name}))`, () => {
+      expect(theme).toContain(`--color-${name}: hsl(var(--${name}));`);
+    });
+  }
+});
+
+/**
+ * #267 — `--destructive` has no `-muted` tint: soft destructive badges and
+ * rows use `bg-destructive/10` over the page (and the Alert uses `/5`). Check
+ * the text against that composite, not against the bare page.
+ */
+function composite(fg: string, alpha: number, bg: string): [number, number, number] {
+  const top = hslToRgb(...parseHsl(fg));
+  const under = hslToRgb(...parseHsl(bg));
+  return [0, 1, 2].map((i) => top[i] * alpha + under[i] * (1 - alpha)) as [number, number, number];
+}
+
+describe("destructive text on its translucent tint (SC 1.4.3, #267)", () => {
+  for (const theme of THEMES) {
+    for (const surface of ["background", "card"] as const) {
+      it(`${theme.name}: --destructive on bg-destructive/10 over --${surface} meets ≥4.5:1`, () => {
+        const text = relLuminance(hslToRgb(...parseHsl(token(theme.block, "destructive"))));
+        const tint = relLuminance(
+          composite(token(theme.block, "destructive"), 0.1, token(theme.block, surface)),
+        );
+        const [hi, lo] = text > tint ? [text, tint] : [tint, text];
+        expect((hi + 0.05) / (lo + 0.05)).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+  }
+});

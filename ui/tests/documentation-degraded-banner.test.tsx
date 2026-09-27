@@ -132,7 +132,7 @@ describe("DegradedWarningsBanner — per-section tier tags in the breakdown", ()
 });
 
 describe("DegradedWarningsBanner — a11y + styling preserved", () => {
-  it("keeps role='alert' and the amber Card styling regardless of severity", () => {
+  it("keeps role='alert' and the warning-token Card styling regardless of severity", () => {
     const { container } = render(
       <DegradedWarningsBanner
         warnings={[tierWarning("Overview & Domain", "narrative")]}
@@ -141,9 +141,9 @@ describe("DegradedWarningsBanner — a11y + styling preserved", () => {
     );
     const alert = screen.getByRole("alert");
     expect(alert).toBeInTheDocument();
-    // Amber styling is retained for both calm and review-recommended states.
-    expect(container.querySelector(".bg-amber-50")).not.toBeNull();
-    expect(container.querySelector(".border-amber-300")).not.toBeNull();
+    // Warning styling (the #267 token, formerly raw amber) holds for both states.
+    expect(container.querySelector(".bg-warning-muted")).not.toBeNull();
+    expect(container.querySelector(".border-warning\\/40")).not.toBeNull();
   });
 });
 

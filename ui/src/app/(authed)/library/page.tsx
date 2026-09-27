@@ -17,6 +17,7 @@ import { ArtifactsSection } from "@/components/library/artifacts-section";
 import { LibraryBrowseSection } from "@/components/library/browse-section";
 import { ConnectorsSection } from "@/components/library/connectors-section";
 import { LibraryProjectPicker } from "@/components/library/project-picker";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 type Tab = "browse" | "templates" | "artifacts" | "connectors";
 
@@ -47,38 +48,36 @@ export default function LibraryPage() {
 
       <LibraryProjectPicker projectId={projectId} />
 
-      <div role="tablist" aria-label="Library sections" className="flex gap-1 border-b">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.id}
-            data-testid={`library-tab-${t.id}`}
-            onClick={() => setTab(t.id)}
-            className={
-              "border-b-2 px-3 py-2 text-sm transition-colors " +
-              (tab === t.id
-                ? "border-primary font-medium text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground")
-            }
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      <div role="tabpanel" aria-label={`${tab} panel`}>
-        {tab === "browse" ? (
+      {/* #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, aria-controls. */}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
+        <TabsList
+          aria-label="Library sections"
+          className="flex h-auto w-full justify-start gap-1 rounded-none border-b bg-transparent p-0"
+        >
+          {TABS.map((t) => (
+            <TabsTrigger
+              key={t.id}
+              value={t.id}
+              data-testid={`library-tab-${t.id}`}
+              className="rounded-none border-b-2 border-transparent px-3 py-2 font-normal text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:font-medium data-[state=active]:text-foreground data-[state=active]:shadow-none"
+            >
+              {t.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        <TabsContent value="browse">
           <LibraryBrowseSection projectId={projectId} />
-        ) : tab === "templates" ? (
+        </TabsContent>
+        <TabsContent value="templates">
           <TemplatesSection />
-        ) : tab === "artifacts" ? (
+        </TabsContent>
+        <TabsContent value="artifacts">
           <ArtifactsSection projectId={projectId} />
-        ) : (
+        </TabsContent>
+        <TabsContent value="connectors">
           <ConnectorsSection projectId={projectId} />
-        )}
-      </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

@@ -1,6 +1,8 @@
 /**
  * Epic #609 / Issue #618 — review queue page tests (/reviews).
  */
+import userEvent from "@testing-library/user-event";
+import { expectApgTabKeyboard } from "./a11y/tab-keyboard";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
@@ -92,7 +94,7 @@ describe("<ReviewsPage />", () => {
     );
     await screen.findByText(/No reviews assigned to you/i);
     listMock.mockResolvedValueOnce(page([makeReview({ id: "rev-2", title: "My request" })]));
-    fireEvent.click(screen.getByTestId("reviews-tab-requested"));
+    fireEvent.mouseDown(screen.getByTestId("reviews-tab-requested"));
     expect(await screen.findByText("My request")).toBeInTheDocument();
     expect(listMock).toHaveBeenLastCalledWith(expect.objectContaining({ requester: "me" }));
   });
@@ -105,7 +107,7 @@ describe("<ReviewsPage />", () => {
       </Wrapper>,
     );
     expect(await screen.findByText(/No reviews assigned to you/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("reviews-tab-requested"));
+    fireEvent.mouseDown(screen.getByTestId("reviews-tab-requested"));
     expect(await screen.findByText(/You haven't requested any reviews/i)).toBeInTheDocument();
   });
 
@@ -163,5 +165,19 @@ describe("<ReviewsPage />", () => {
       </Wrapper>,
     );
     expect(await screen.findByText(/1\/2 decisions/i)).toBeInTheDocument();
+  });
+});
+
+describe("<ReviewsPage /> keyboard (#268)", () => {
+  it("arrow keys move between the queue tabs (APG Tabs)", async () => {
+    const user = userEvent.setup();
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <ReviewsPage />
+      </Wrapper>,
+    );
+    await screen.findByText(/No reviews assigned to you/i);
+    await expectApgTabKeyboard(user, "Review queues");
   });
 });

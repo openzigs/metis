@@ -15,6 +15,7 @@ import { queryKeys } from "@/lib/query-keys";
 import { useSocket } from "@/lib/socket-client";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const TABS = ["pending", "running", "completed", "failed", "cancelled"] as const;
 type Tab = (typeof TABS)[number];
@@ -96,66 +97,72 @@ export default function TasksPage() {
         </p>
       </header>
 
-      <div className="flex flex-wrap gap-2" role="tablist">
-        {TABS.map((t) => (
-          <Button
-            key={t}
-            variant={t === tab ? "default" : "outline"}
-            size="sm"
-            onClick={() => setTab(t)}
-            data-testid={`tab-${t}`}
-            role="tab"
-            aria-selected={t === tab}
-          >
-            {TAB_LABELS[t]}
-          </Button>
-        ))}
-      </div>
+      {/* #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, aria-controls. */}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
+        <TabsList
+          aria-label="Task status"
+          className="flex h-auto flex-wrap justify-start gap-2 bg-transparent p-0"
+        >
+          {TABS.map((t) => (
+            <TabsTrigger key={t} value={t} asChild>
+              <Button
+                variant={t === tab ? "default" : "outline"}
+                size="sm"
+                data-testid={`tab-${t}`}
+              >
+                {TAB_LABELS[t]}
+              </Button>
+            </TabsTrigger>
+          ))}
+        </TabsList>
 
-      {actionError ? <p className="text-sm text-destructive">{actionError}</p> : null}
+        {actionError ? <p className="mt-4 text-sm text-destructive">{actionError}</p> : null}
 
-      <Card className="p-0">
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase text-muted-foreground">
-            <tr>
-              <th className="px-4 py-3">Task</th>
-              <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Trigger</th>
-              <th className="px-4 py-3">Attempts</th>
-              <th className="px-4 py-3">Created</th>
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {list.isLoading ? (
-              <tr>
-                <td className="px-4 py-6 text-muted-foreground" colSpan={6}>
-                  Loading…
-                </td>
-              </tr>
-            ) : items.length === 0 ? (
-              <tr>
-                <td className="px-4 py-6 text-muted-foreground" colSpan={6}>
-                  No tasks in {TAB_LABELS[tab]}.
-                </td>
-              </tr>
-            ) : (
-              items.map((task: TaskRow) => (
-                <TaskRowView
-                  key={task.id}
-                  task={task}
-                  expanded={expanded.has(task.id)}
-                  onToggle={() => toggle(task.id)}
-                  onCancel={() => cancel.mutate(task.id)}
-                  onRetry={() => retry.mutate(task.id)}
-                  cancelDisabled={cancel.isPending}
-                  retryDisabled={retry.isPending}
-                />
-              ))
-            )}
-          </tbody>
-        </table>
-      </Card>
+        <TabsContent value={tab} className="mt-6">
+          <Card className="p-0">
+            <table className="w-full text-left text-sm">
+              <thead className="text-xs uppercase text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-3">Task</th>
+                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3">Trigger</th>
+                  <th className="px-4 py-3">Attempts</th>
+                  <th className="px-4 py-3">Created</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {list.isLoading ? (
+                  <tr>
+                    <td className="px-4 py-6 text-muted-foreground" colSpan={6}>
+                      Loading…
+                    </td>
+                  </tr>
+                ) : items.length === 0 ? (
+                  <tr>
+                    <td className="px-4 py-6 text-muted-foreground" colSpan={6}>
+                      No tasks in {TAB_LABELS[tab]}.
+                    </td>
+                  </tr>
+                ) : (
+                  items.map((task: TaskRow) => (
+                    <TaskRowView
+                      key={task.id}
+                      task={task}
+                      expanded={expanded.has(task.id)}
+                      onToggle={() => toggle(task.id)}
+                      onCancel={() => cancel.mutate(task.id)}
+                      onRetry={() => retry.mutate(task.id)}
+                      cancelDisabled={cancel.isPending}
+                      retryDisabled={retry.isPending}
+                    />
+                  ))
+                )}
+              </tbody>
+            </table>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

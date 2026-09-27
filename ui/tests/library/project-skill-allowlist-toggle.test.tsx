@@ -3,7 +3,7 @@
  * guarded write through the existing PUT endpoint.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "../test-utils";
 import {
@@ -104,13 +104,14 @@ describe("<ProjectSkillAllowlistToggle />", () => {
     availableMock.mockResolvedValue({
       items: [{ skillId: "s1", skillKey: "k", name: "Scan", description: "" }],
     });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     renderToggle();
     await user.click(await screen.findByTestId("project-skill-disallow-btn-s1"));
-    expect(confirmSpy).toHaveBeenCalledOnce();
+    // #268 — an AlertDialog replaced window.confirm; nothing is written yet.
+    const dialog = await screen.findByRole("alertdialog");
+    expect(setProjectSkillMock).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(setProjectSkillMock).toHaveBeenCalledWith("p1", "s1", false));
-    confirmSpy.mockRestore();
   });
 
   it("aborts the first-row write when the confirm is dismissed", async () => {
@@ -118,13 +119,13 @@ describe("<ProjectSkillAllowlistToggle />", () => {
     availableMock.mockResolvedValue({
       items: [{ skillId: "s1", skillKey: "k", name: "Scan", description: "" }],
     });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     const user = userEvent.setup();
     renderToggle();
     await user.click(await screen.findByTestId("project-skill-disallow-btn-s1"));
-    expect(confirmSpy).toHaveBeenCalledOnce();
+    await screen.findByRole("alertdialog");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
     expect(setProjectSkillMock).not.toHaveBeenCalled();
-    confirmSpy.mockRestore();
   });
 
   it("allows re-enabling an explicitly-disabled skill via PUT enabled=true", async () => {

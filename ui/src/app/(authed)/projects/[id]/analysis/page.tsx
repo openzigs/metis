@@ -108,12 +108,12 @@ function formatTokens(n: number): string {
 function StatusBadge({ status }: { status: string }): React.ReactElement {
   const colour =
     status === "completed"
-      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30"
+      ? "bg-success-muted text-success border-success/30"
       : status === "failed"
-        ? "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30"
+        ? "bg-destructive/10 text-destructive border-destructive/30"
         : status === "cancelled"
-          ? "bg-zinc-500/15 text-foreground border-zinc-500/30"
-          : "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30";
+          ? "bg-muted text-foreground border-border/30"
+          : "bg-info-muted text-info border-info/30";
   return (
     <span className={`inline-block rounded border px-2 py-0.5 text-xs font-medium ${colour}`}>
       {status}
@@ -475,9 +475,7 @@ export default function AnalysisPage(): React.ReactElement {
               {formatTokens(costCap.data.monthlyUsed)} /{" "}
               {costCap.data.monthlyCap === 0 ? "\u221E" : formatTokens(costCap.data.monthlyCap)}
             </div>
-            {costCap.data.exceeded ? (
-              <div className="text-red-700 dark:text-red-400">cap exceeded</div>
-            ) : null}
+            {costCap.data.exceeded ? <div className="text-destructive">cap exceeded</div> : null}
           </div>
         ) : null}
       </header>
@@ -606,12 +604,12 @@ export default function AnalysisPage(): React.ReactElement {
               {start.isPending ? "Starting\u2026" : "Run analysis"}
             </Button>
             {selectedHasPending ? (
-              <p className="text-sm text-amber-700 dark:text-amber-400">
+              <p className="text-sm text-warning">
                 Wait for selected documents to finish ingesting.
               </p>
             ) : null}
             {start.error instanceof ApiError ? (
-              <p role="alert" className="text-sm text-red-700 dark:text-red-400">
+              <p role="alert" className="text-sm text-destructive">
                 {start.error.message}
               </p>
             ) : null}
@@ -634,7 +632,7 @@ export default function AnalysisPage(): React.ReactElement {
                   onClick={() => setSelectedAnalysisId(item.id)}
                   className={`w-full rounded border px-2 py-2 text-left text-sm transition ${
                     selectedAnalysisId === item.id
-                      ? "border-blue-500/50 bg-blue-500/10"
+                      ? "border-info/50 bg-info/10"
                       : "border-border hover:bg-muted/40"
                   }`}
                 >
@@ -744,9 +742,7 @@ export default function AnalysisPage(): React.ReactElement {
                           </div>
                         ) : null}
                         {agent.errorMessage ? (
-                          <p className="mt-2 text-xs text-red-700 dark:text-red-400">
-                            {agent.errorMessage}
-                          </p>
+                          <p className="mt-2 text-xs text-destructive">{agent.errorMessage}</p>
                         ) : null}
                       </div>
                     );
@@ -950,7 +946,7 @@ export default function AnalysisPage(): React.ReactElement {
                   detail.data.agentResults.some((a) => a.findings.length > 0) ? (
                     <a
                       href={`/projects/${projectId}/publish?analysisId=${detail.data.id}`}
-                      className="inline-flex items-center gap-1.5 rounded border border-border bg-muted/60 px-3 py-1.5 text-xs font-medium text-foreground transition hover:border-zinc-500 hover:bg-accent/60"
+                      className="inline-flex items-center gap-1.5 rounded border border-border bg-muted/60 px-3 py-1.5 text-xs font-medium text-foreground transition hover:border-foreground/40 hover:bg-accent/60"
                     >
                       <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 16 16">
                         <path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z" />
@@ -1010,7 +1006,7 @@ export default function AnalysisPage(): React.ReactElement {
                           data-confidence={f.supportPanel?.confidence ?? "none"}
                           className={`rounded border p-3 ${
                             isGap
-                              ? "border-amber-700/50 bg-amber-50 dark:bg-amber-950/20"
+                              ? "border-warning/50 bg-warning-muted"
                               : "border-border bg-muted/30"
                           } ${findingConfidenceClasses(f.supportPanel)}`}
                         >
@@ -1034,8 +1030,8 @@ export default function AnalysisPage(): React.ReactElement {
                                 <span
                                   className={`mt-1 inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${
                                     isGap
-                                      ? "bg-amber-50 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
-                                      : "bg-sky-50 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300"
+                                      ? "bg-warning-muted text-warning"
+                                      : "bg-info-muted text-info"
                                   }`}
                                 >
                                   {isGap ? "Gap for " : "Grounded in "}
@@ -1109,7 +1105,7 @@ export default function AnalysisPage(): React.ReactElement {
                               })}
                             </ul>
                           ) : isGap ? (
-                            <p className="mt-2 text-xs text-amber-700 dark:text-amber-400/80">
+                            <p className="mt-2 text-xs text-warning">
                               No supporting evidence retrieved from the selected documents.
                             </p>
                           ) : null}
@@ -1374,7 +1370,7 @@ function RequirementEditModal(props: {
             />
           </div>
           {errorMessage ? (
-            <p className="text-sm text-red-700 dark:text-red-400" role="alert">
+            <p className="text-sm text-destructive" role="alert">
               {errorMessage}
             </p>
           ) : null}

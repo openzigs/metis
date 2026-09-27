@@ -37,21 +37,21 @@ describe("<SandboxStatusBadge />", () => {
     render(<SandboxStatusBadge outcome="completed" />);
     const badge = screen.getByTestId("sandbox-badge-passed");
     expect(badge).toHaveTextContent("PASSED");
-    expect(badge.className).toMatch(/green/);
+    expect(badge.className).toMatch(/text-success/);
   });
 
   it("renders FAILED:TIMEOUT in amber when outcome=timeout", () => {
     render(<SandboxStatusBadge outcome="timeout" />);
     const badge = screen.getByTestId("sandbox-badge-failed-timeout");
     expect(badge).toHaveTextContent(/timeout/i);
-    expect(badge.className).toMatch(/amber/);
+    expect(badge.className).toMatch(/text-warning/);
   });
 
   it("renders ERROR in red and exposes errorMessage in title attr (hover tooltip)", () => {
     render(<SandboxStatusBadge outcome="error" errorMessage="container OOM-killed" />);
     const badge = screen.getByTestId("sandbox-badge-error");
     expect(badge).toHaveTextContent("ERROR");
-    expect(badge.className).toMatch(/red/);
+    expect(badge.className).toMatch(/text-destructive/);
     expect(badge.getAttribute("title")).toContain("container OOM-killed");
   });
 

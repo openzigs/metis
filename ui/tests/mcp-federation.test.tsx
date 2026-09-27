@@ -109,7 +109,7 @@ beforeEach(() => {
 describe("MCP Federated tab", () => {
   it("renders entries with source badges and metadata", async () => {
     render(<McpSettingsPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
-    fireEvent.click(screen.getByRole("tab", { name: /federated/i }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /federated/i }));
     await waitFor(() => expect(searchMock).toHaveBeenCalled());
 
     const entries = await screen.findAllByTestId("federation-entry");
@@ -124,7 +124,7 @@ describe("MCP Federated tab", () => {
   it("admin install button calls installFederated and refreshes", async () => {
     installFederatedMock.mockResolvedValue(FAKE_INSTALLED);
     render(<McpSettingsPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
-    fireEvent.click(screen.getByRole("tab", { name: /federated/i }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /federated/i }));
     await screen.findAllByTestId("federation-entry");
 
     const installBtn = screen.getAllByTestId("install-button")[0]!;
@@ -137,7 +137,7 @@ describe("MCP Federated tab", () => {
     render(<McpSettingsPage />, {
       wrapper: makeWrapper({ initialUser: { ...TEST_USER, role: "reader" } }),
     });
-    fireEvent.click(screen.getByRole("tab", { name: /federated/i }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /federated/i }));
     await screen.findAllByTestId("federation-entry");
 
     expect(screen.getByText(/admin approval/i)).toBeInTheDocument();
@@ -148,7 +148,7 @@ describe("MCP Federated tab", () => {
 
   it("source filter passes through to the API", async () => {
     render(<McpSettingsPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
-    fireEvent.click(screen.getByRole("tab", { name: /federated/i }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /federated/i }));
     await waitFor(() => expect(searchMock).toHaveBeenCalled());
 
     fireEvent.change(screen.getByLabelText(/source filter/i), {
@@ -166,7 +166,7 @@ describe("MCP Federated tab", () => {
   it("renders empty state when no entries match", async () => {
     searchMock.mockResolvedValue({ total: 0, entries: [] });
     render(<McpSettingsPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
-    fireEvent.click(screen.getByRole("tab", { name: /federated/i }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /federated/i }));
     await waitFor(() => expect(searchMock).toHaveBeenCalled());
     expect(await screen.findByText(/No matching servers/i)).toBeInTheDocument();
   });

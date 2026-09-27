@@ -79,12 +79,12 @@ const RISK_COPY: Record<GapReportRiskClass, RiskCopy> = {
   breaking: {
     label: "Breaking",
     tone: "breaking",
-    className: "border-red-700/60 bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300",
+    className: "border-destructive/60 bg-destructive/10 text-destructive",
   },
   expanding: {
     label: "Expanding",
     tone: "additive",
-    className: "border-sky-700/50 bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300",
+    className: "border-info/50 bg-info-muted text-info",
   },
   neutral: {
     label: "Neutral",
@@ -138,18 +138,15 @@ interface ReconCopy {
 const RECON_COPY: Record<NonNullable<GapReportDatabaseChange["reconciliation"]>, ReconCopy> = {
   matched: {
     label: "Matched live schema",
-    className:
-      "border-emerald-700/50 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300",
+    className: "border-success/50 bg-success-muted text-success",
   },
   "table-not-found": {
     label: "Table not found",
-    className:
-      "border-violet-700/50 bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300",
+    className: "border-dashed border-muted-foreground/60 bg-muted text-foreground",
   },
   "column-not-found": {
     label: "Column not found",
-    className:
-      "border-violet-700/50 bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300",
+    className: "border-dashed border-muted-foreground/60 bg-muted text-foreground",
   },
 };
 
@@ -194,7 +191,7 @@ function SuggestedDdl({ ddl }: { ddl: string | null }): React.ReactElement {
     <figure data-testid="db-suggested-ddl" className="space-y-1">
       <figcaption
         data-testid="db-ddl-review-label"
-        className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300"
+        className="text-[11px] font-semibold uppercase tracking-wide text-warning"
       >
         Suggested DDL — for review only, never executed
       </figcaption>
@@ -220,15 +217,12 @@ function ConsumerSummary({
 }): React.ReactElement {
   if (!change.identityResolved) {
     return (
-      <p
-        data-testid="db-consumers-unknown"
-        className="text-[11px] text-amber-700 dark:text-amber-300"
-      >
+      <p data-testid="db-consumers-unknown" className="text-[11px] text-warning">
         Cross-project impact unknown — database identity not linked.{" "}
         <Link
           href={`/projects/${projectId}/connections`}
           data-testid="db-identity-manager-link"
-          className="underline decoration-dotted underline-offset-2 hover:text-amber-700 dark:hover:text-amber-200"
+          className="underline decoration-dotted underline-offset-2 hover:text-warning"
         >
           Link a database identity
         </Link>{" "}
@@ -311,9 +305,9 @@ function CrossProjectBanner({
         <div
           data-testid="db-cross-project-banner"
           role="note"
-          className="space-y-1 rounded border border-amber-700/50 bg-amber-50 dark:bg-amber-950/30 p-2"
+          className="space-y-1 rounded border border-warning/50 bg-warning-muted p-2"
         >
-          <p className="text-xs font-semibold text-amber-700 dark:text-amber-200">
+          <p className="text-xs font-semibold text-warning">
             Cross-project impact — this change affects {projectNames.length} other{" "}
             {projectNames.length === 1 ? "project" : "projects"}: {projectNames.join(", ")}
           </p>
@@ -322,7 +316,7 @@ function CrossProjectBanner({
               <li
                 key={`${im.projectId}-${im.object}-${im.usage}-${i}`}
                 data-testid="db-cross-project-impact"
-                className="text-[11px] text-amber-700 dark:text-amber-100/90"
+                className="text-[11px] text-warning"
               >
                 <span className="font-medium">{im.projectName}</span> {usageVerb(im.usage)}{" "}
                 <span className="font-mono">{im.object}</span> —{" "}
@@ -459,12 +453,12 @@ export function GapReportSchemaSection({ projectId, changes }: Props): React.Rea
       {unverified.length > 0 ? (
         <div
           data-testid="db-unverified-changes"
-          className="space-y-1.5 rounded border border-violet-300 dark:border-violet-800/50 bg-violet-50 dark:bg-violet-950/20 p-2"
+          className="space-y-1.5 rounded border border-dashed border-muted-foreground/60 bg-muted p-2"
         >
-          <h6 className="text-[11px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
+          <h6 className="text-[11px] font-semibold uppercase tracking-wide text-foreground">
             Unverified against live schema — could not confirm
           </h6>
-          <p className="text-[11px] text-violet-700 dark:text-violet-200/80">
+          <p className="text-[11px] text-foreground">
             These objects were referenced in code but could not be found in the live schema, so the
             change could not be confirmed. Treat them as leads to check, not confirmed changes.
           </p>

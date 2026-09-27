@@ -10,6 +10,14 @@
 import { formatCents, type CostForecast } from "@/lib/finops-api";
 import { plotPoints, referenceLineY, toPolyline, type ChartPoint } from "./forecast-chart-math";
 
+/**
+ * #267 — theme tokens, not hex, so the chart follows the Light/Dark toggle.
+ * `--chart-1` clears 3:1 against the page in both themes (SC 1.4.11), and
+ * over-budget reuses `--destructive`.
+ */
+const SERIES_COLOR = "hsl(var(--chart-1))";
+const OVER_BUDGET_COLOR = "hsl(var(--destructive))";
+
 interface Props {
   forecast: CostForecast | null;
   budgetCents: number | null;
@@ -62,7 +70,7 @@ export function ForecastChart({ forecast, budgetCents }: Props) {
             x2={DIMS.width - DIMS.padding}
             y1={budgetY}
             y2={budgetY}
-            stroke="#ef4444"
+            stroke={OVER_BUDGET_COLOR}
             strokeDasharray="4 3"
             strokeWidth={1}
           />
@@ -70,12 +78,12 @@ export function ForecastChart({ forecast, budgetCents }: Props) {
         <polyline
           points={toPolyline(plotted)}
           fill="none"
-          stroke={overBudget ? "#ef4444" : "#2563eb"}
+          stroke={overBudget ? OVER_BUDGET_COLOR : SERIES_COLOR}
           strokeWidth={2}
         />
         {plotted.map((p) => (
           <g key={p.label}>
-            <circle cx={p.x} cy={p.y} r={4} fill={overBudget ? "#ef4444" : "#2563eb"}>
+            <circle cx={p.x} cy={p.y} r={4} fill={overBudget ? OVER_BUDGET_COLOR : SERIES_COLOR}>
               <title>{`${p.label}: ${formatCents(p.value)}`}</title>
             </circle>
             <text

@@ -59,25 +59,23 @@ export const SUPPORT_PANEL_COPY: Record<SupportPanelConfidence, ConfidenceCopy> 
   high: {
     label: "High confidence",
     tooltip: `Every verification lens agreed the retrieved evidence backs this finding. ${SUPPORT_PANEL_CAVEAT}`,
-    className:
-      "border-emerald-700/50 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300",
+    className: "border-success/50 bg-success-muted text-success",
   },
   medium: {
     label: "Mixed confidence",
     tooltip: `The verification lenses did not fully agree: at least one dissented or was uncertain, but the supporting lenses outnumbered them. Open "Why?" for the dissenting lens's reason. ${SUPPORT_PANEL_CAVEAT}`,
-    className: "border-sky-700/50 bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300",
+    className: "border-info/50 bg-info-muted text-info",
   },
   low: {
     label: "Low confidence",
     tooltip: `More verification lenses doubted this finding than backed it. It is still shown in full and nothing was removed — open "Why?" to read each lens's reason and decide for yourself. ${SUPPORT_PANEL_CAVEAT}`,
-    className: "border-rose-700/60 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300",
+    className: "border-destructive/60 bg-destructive/10 text-destructive",
   },
   "no-signal": {
     label: "Not judged",
     tooltip:
       "The verification panel produced no usable verdict for this finding — it could not be checked either way. This is MISSING information, not doubt: treat the finding exactly as you would one the panel never looked at.",
-    className:
-      "border-slate-400/60 bg-slate-100 text-slate-700 dark:border-slate-600/60 dark:bg-slate-900/60 dark:text-slate-300",
+    className: "border-border/60 bg-muted text-foreground",
   },
 };
 
@@ -91,14 +89,10 @@ export const SUPPORT_PANEL_COPY: Record<SupportPanelConfidence, ConfidenceCopy> 
  * because it is the loudest thing this system says about a finding.
  */
 export const ABSENCE_VERDICT_CLASSES: Record<AbsenceClaimVerdict | "no-signal", string> = {
-  supported:
-    "border-emerald-700/50 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300",
-  contradicted:
-    "border-rose-700/60 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300",
-  unexamined:
-    "border-amber-700/60 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300",
-  "no-signal":
-    "border-slate-400/60 bg-slate-100 text-slate-700 dark:border-slate-600/60 dark:bg-slate-900/60 dark:text-slate-300",
+  supported: "border-success/50 bg-success-muted text-success",
+  contradicted: "border-destructive/60 bg-destructive/10 text-destructive",
+  unexamined: "border-warning/60 bg-warning-muted text-warning",
+  "no-signal": "border-border/60 bg-muted text-foreground",
 };
 
 /** How each per-lens outcome is labelled in the disclosure. */
@@ -240,7 +234,7 @@ export function SupportPanelDetails({
               <span
                 className={
                   v.counted && v.judgement === "unsupported"
-                    ? "font-semibold text-rose-700 dark:text-rose-300"
+                    ? "font-semibold text-destructive"
                     : "font-semibold text-foreground"
                 }
               >
@@ -278,7 +272,7 @@ export function SupportPanelDetails({
  */
 export function findingConfidenceClasses(panel: FindingSupportPanel | null | undefined): string {
   return describeSupportPanel(panel)?.secondClass
-    ? "border-dashed border-rose-300 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-950/10 opacity-75"
+    ? "border-dashed border-destructive/40 bg-destructive/10 opacity-75"
     : "";
 }
 
@@ -335,7 +329,7 @@ export function RequirementConfidenceNote({
       */}
       {(confidence.absenceCautions ?? []).length > 0 ? (
         <ul
-          className="mt-1 space-y-0.5 border-l-2 border-amber-700/60 pl-3 text-amber-700 dark:text-amber-200"
+          className="mt-1 space-y-0.5 border-l-2 border-warning/60 pl-3 text-warning"
           data-testid="requirement-absence-cautions"
         >
           {(confidence.absenceCautions ?? []).map((c) => (

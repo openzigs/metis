@@ -8,7 +8,9 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "./test-utils";
+import { expectAccessibleModal } from "./a11y/modal-dialog";
 
 vi.mock("@/lib/enterprise-api", () => {
   const atlassianApi = {
@@ -43,6 +45,16 @@ beforeEach(() => {
 });
 
 describe("ConnectorsSection (#96)", () => {
+  it("the ingest modal is an accessible dialog (#268)", async () => {
+    atlassian.status.mockResolvedValue({ configured: true, serverId: "srv-1" });
+    const user = userEvent.setup();
+    render(<ConnectorsSection projectId="p1" />, { wrapper: makeWrapper() });
+    const opener = screen.getByTestId("add-from-jira");
+    await waitFor(() => expect(opener).not.toBeDisabled());
+    await user.click(opener);
+    await expectAccessibleModal(user, "Ingest a Jira query", opener);
+  });
+
   it("disables connector buttons when mcp-atlassian is not configured", async () => {
     atlassian.status.mockResolvedValue({ configured: false, serverId: null });
     render(<ConnectorsSection projectId="p1" />, { wrapper: makeWrapper() });

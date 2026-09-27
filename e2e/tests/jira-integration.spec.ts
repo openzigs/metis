@@ -565,8 +565,7 @@ test.describe("Epic #556 — Jira Connection Management UI", () => {
     const card = jira.connectionCard("to-be-deleted");
     await expect(card).toBeVisible();
 
-    // Accept the confirm dialog and delete
-    page.on("dialog", (dialog) => dialog.accept());
+    // Delete, confirming in the AlertDialog (#268 replaced window.confirm)
     await jira.clickDelete(card);
 
     // Connection should disappear

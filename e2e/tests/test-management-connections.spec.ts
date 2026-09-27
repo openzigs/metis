@@ -142,8 +142,6 @@ test.describe("Epic #856 — #871 Test Management Connections", () => {
       return route.fallback();
     });
 
-    page.on("dialog", (d) => d.accept());
-
     const tmc = new TestManagementConnectionsPage(page, projectId);
     await tmc.goto();
 
@@ -167,6 +165,10 @@ test.describe("Epic #856 — #871 Test Management Connections", () => {
     await expect(tmc.testResult(rowId)).toContainText("42");
 
     await tmc.deleteButton(rowId).click();
+    // #268 — an AlertDialog replaced window.confirm; confirm it.
+    const confirm = page.getByRole("alertdialog");
+    await expect(confirm).toContainText("Prod TestRail");
+    await confirm.getByRole("button", { name: "Delete" }).click();
     await expect(tmc.row(rowId)).toBeHidden();
     await expect(tmc.emptyState).toBeVisible();
   });

@@ -13,11 +13,11 @@ const alertVariants = cva(
     variants: {
       variant: {
         default: "bg-background text-foreground",
-        info: "border-blue-500/40 bg-blue-50 text-blue-900 dark:bg-blue-950/40 dark:text-blue-100",
-        success:
-          "border-emerald-500/40 bg-emerald-50 text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-100",
-        warning:
-          "border-amber-500/40 bg-amber-50 text-amber-900 dark:bg-amber-950/40 dark:text-amber-100",
+        // #267 — semantic status tokens instead of the raw blue/emerald/amber
+        // palette, so both themes share one contrast-checked definition.
+        info: "border-info/40 bg-info-muted text-info [&>svg]:text-info",
+        success: "border-success/40 bg-success-muted text-success [&>svg]:text-success",
+        warning: "border-warning/40 bg-warning-muted text-warning [&>svg]:text-warning",
         destructive:
           "border-destructive/50 bg-destructive/5 text-destructive dark:border-destructive [&>svg]:text-destructive",
       },

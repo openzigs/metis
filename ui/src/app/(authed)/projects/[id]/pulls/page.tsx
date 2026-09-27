@@ -30,12 +30,12 @@ function formatTimestamp(iso: string): string {
 function VerdictBadge({ verdict }: { verdict: string | null }): React.ReactElement {
   const tone =
     verdict === "approve"
-      ? "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-200"
+      ? "bg-success-muted text-success"
       : verdict === "request_changes"
-        ? "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200"
+        ? "bg-destructive/10 text-destructive"
         : verdict === "comment"
-          ? "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-200"
-          : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200";
+          ? "bg-info-muted text-info"
+          : "bg-muted text-foreground";
   return (
     <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${tone}`}>
       {verdict ?? "—"}
@@ -45,10 +45,10 @@ function VerdictBadge({ verdict }: { verdict: string | null }): React.ReactEleme
 
 function PrReviewRow({ row }: { row: PrReviewStateView }): React.ReactElement {
   return (
-    <tr className="border-b border-zinc-200 dark:border-zinc-800">
+    <tr className="border-b border-border">
       <td className="px-3 py-2 text-sm font-medium">
         <a
-          className="text-blue-600 hover:underline dark:text-blue-400"
+          className="text-info hover:underline"
           href={row.prUrl}
           target="_blank"
           rel="noopener noreferrer"
@@ -64,22 +64,17 @@ function PrReviewRow({ row }: { row: PrReviewStateView }): React.ReactElement {
           ? "—"
           : `${formatPercent(row.acPassRate)} (${row.acVerdicts.filter((v) => v.verdict === "satisfied").length}/${row.acVerdicts.length})`}
       </td>
-      <td className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">
+      <td className="px-3 py-2 text-xs text-muted-foreground">
         {row.lastReviewedSha ? row.lastReviewedSha.slice(0, 7) : "—"}
       </td>
-      <td className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">
-        {formatTimestamp(row.updatedAt)}
-      </td>
+      <td className="px-3 py-2 text-xs text-muted-foreground">{formatTimestamp(row.updatedAt)}</td>
       <td className="px-3 py-2 text-sm">
         {row.lastRunId ? (
-          <Link
-            className="text-blue-600 hover:underline dark:text-blue-400"
-            href={`/runs/${row.lastRunId}`}
-          >
+          <Link className="text-info hover:underline" href={`/runs/${row.lastRunId}`}>
             View run →
           </Link>
         ) : (
-          <span className="text-zinc-400">—</span>
+          <span className="text-muted-foreground">—</span>
         )}
       </td>
     </tr>
@@ -98,32 +93,32 @@ export default function ProjectPullsPage(): React.ReactElement {
   });
 
   if (!id) {
-    return <p className="p-4 text-sm text-zinc-500">Loading project…</p>;
+    return <p className="p-4 text-sm text-muted-foreground">Loading project…</p>;
   }
 
   return (
     <div className="space-y-4 p-4">
       <header>
         <h1 className="text-xl font-semibold">PR reviews</h1>
-        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="mt-1 text-sm text-muted-foreground">
           History of automated PR reviews triggered by the GitHub webhook.
         </p>
       </header>
 
       <Card className="overflow-hidden">
         {reviewsQuery.isLoading ? (
-          <p className="p-6 text-sm text-zinc-500">Loading reviews…</p>
+          <p className="p-6 text-sm text-muted-foreground">Loading reviews…</p>
         ) : reviewsQuery.isError ? (
-          <p className="p-6 text-sm text-red-600">Failed to load reviews. Try again later.</p>
+          <p className="p-6 text-sm text-destructive">Failed to load reviews. Try again later.</p>
         ) : (reviewsQuery.data?.items.length ?? 0) === 0 ? (
-          <p className="p-6 text-sm text-zinc-500">
+          <p className="p-6 text-sm text-muted-foreground">
             No PR reviews recorded yet. They will appear here once the GitHub webhook fires for a
             connected repository.
           </p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left">
-              <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
+              <thead className="bg-muted text-xs uppercase tracking-wide text-muted-foreground">
                 <tr>
                   <th className="px-3 py-2 font-medium">PR</th>
                   <th className="px-3 py-2 font-medium">Verdict</th>
@@ -144,7 +139,7 @@ export default function ProjectPullsPage(): React.ReactElement {
       </Card>
 
       {reviewsQuery.data && (
-        <p className="text-xs text-zinc-500">
+        <p className="text-xs text-muted-foreground">
           Showing {reviewsQuery.data.items.length} of {reviewsQuery.data.total} reviews.
         </p>
       )}

@@ -12,6 +12,7 @@ import { formatLibrarySaveError } from "@/lib/format-agent-save-error";
 import { agentsApi, skillsApi, type AgentDetail, type AgentSummary } from "@/lib/library-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -252,16 +253,16 @@ function AgentRow({
             Archive
           </Button>
         ) : null}
-        <Button
-          variant="destructive"
-          size="sm"
-          disabled={remove.isPending}
-          onClick={() => {
-            if (window.confirm(`Delete agent ${agent.key}?`)) remove.mutate();
-          }}
-        >
-          Delete
-        </Button>
+        <ConfirmDialog
+          title={`Delete agent ${agent.key}?`}
+          confirmLabel="Delete"
+          onConfirm={() => remove.mutate()}
+          trigger={
+            <Button variant="destructive" size="sm" disabled={remove.isPending}>
+              Delete
+            </Button>
+          }
+        />
       </td>
     </tr>
   );

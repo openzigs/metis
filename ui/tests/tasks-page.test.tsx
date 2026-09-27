@@ -4,6 +4,7 @@
  * Covers: tab rendering, loading/empty/data states, expand/collapse,
  * cancel and retry mutations, action errors, and tab switching.
  */
+import { expectApgTabKeyboard } from "./a11y/tab-keyboard";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -283,5 +284,14 @@ describe("TasksPage — retry action", () => {
     await waitFor(() => expect(screen.getByTestId("retry-t1")).toBeInTheDocument());
     fireEvent.click(screen.getByTestId("retry-t1"));
     await waitFor(() => expect(screen.getByText(/Retry failed/i)).toBeInTheDocument());
+  });
+});
+
+describe("TasksPage — keyboard (#268)", () => {
+  it("arrow keys move between the status tabs (APG Tabs)", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole("tab", { name: /Waiting/i });
+    await expectApgTabKeyboard(user, "Task status");
   });
 });
