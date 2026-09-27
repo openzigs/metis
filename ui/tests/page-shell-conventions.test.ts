@@ -44,6 +44,17 @@ const DELEGATES: Record<string, string> = {
     "components/custom-agents/AgentAuthoringWizard.tsx",
 };
 
+/**
+ * Pages that only redirect and render nothing of their own. Named explicitly
+ * rather than inferred from `redirect(` in the source, so a page that
+ * redirects only on some branch still has to render a `PageHeader`.
+ */
+const REDIRECT_ONLY = new Set([
+  "app/(authed)/agents/page.tsx",
+  "app/(authed)/projects/[id]/repositories/page.tsx",
+  "app/(authed)/skills/page.tsx",
+]);
+
 const PAGES = walk(AUTHED, (n) => n === "page.tsx");
 
 describe("every authed page uses PageHeader (#270)", () => {
@@ -55,7 +66,12 @@ describe("every authed page uses PageHeader (#270)", () => {
     const name = rel(page);
     it(`${name} renders PageHeader, delegates to it, or only redirects`, () => {
       const src = read(page);
-      if (/\bredirect\(/.test(src) && !/<PageHeader\b/.test(src)) return;
+      if (REDIRECT_ONLY.has(name)) {
+        expect(src).toMatch(/\bredirect\(/);
+        // Nothing to render: a page that returns anything is not redirect-only.
+        expect(src).not.toMatch(/\breturn\b/);
+        return;
+      }
       const delegate = DELEGATES[name];
       const headerSource = delegate ? read(path.join(SRC, delegate)) : src;
       expect(headerSource).toMatch(/<PageHeader\b/);

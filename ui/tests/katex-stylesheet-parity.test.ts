@@ -2,8 +2,9 @@
 /**
  * #310 — the math the chat and the markdown previewer render is produced by
  * the katex copy NESTED inside `rehype-katex`, but the stylesheet that styles
- * it is `@import`ed by `src/app/globals.css` from the UI's OWN direct `katex`
- * dependency. Those are two installs, and nothing ties them together.
+ * it is loaded from the UI's OWN direct `katex` dependency — by a dynamic
+ * `import()` in `src/lib/katex-css.ts` since #272 moved it out of
+ * `globals.css`. Those are two installs, and nothing ties them together.
  *
  * KaTeX 0.18.0 prefixed its CSS classes with `katex-` (`.sizing` became
  * `.katex-sizing`). Bumping only the UI's direct katex to 0.18 while
@@ -21,7 +22,8 @@ import { fileURLToPath } from "node:url";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_ROOT = path.resolve(dirname, "..");
-const GLOBALS = path.join(UI_ROOT, "src/app/globals.css");
+/** #272 — the lazy loader that imports the katex stylesheet (was globals.css). */
+const LOADER = path.join(UI_ROOT, "src/lib/katex-css.ts");
 
 type KatexLike = {
   version: string;
@@ -35,11 +37,11 @@ function producerKatex(): KatexLike {
   return req("katex") as KatexLike;
 }
 
-/** The stylesheet globals.css imports, resolved the way the CSS bundler does (from ui/). */
+/** The stylesheet the lazy loader imports, resolved the way the bundler does (from ui/). */
 function importedStylesheet(): { css: string; version: string } {
-  const source = readFileSync(GLOBALS, "utf8");
-  const match = source.match(/@import\s+["'](katex\/[^"']+\.css)["']/);
-  if (!match) throw new Error("globals.css no longer imports a katex stylesheet");
+  const source = readFileSync(LOADER, "utf8");
+  const match = source.match(/import\(\s*["'](katex\/[^"']+\.css)["']\s*\)/);
+  if (!match) throw new Error("lib/katex-css.ts no longer imports a katex stylesheet");
   const katexDir = realpathSync(path.join(UI_ROOT, "node_modules/katex"));
   const cssPath = path.join(katexDir, match[1].slice("katex/".length));
   const pkg = JSON.parse(readFileSync(path.join(katexDir, "package.json"), "utf8")) as {

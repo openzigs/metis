@@ -210,6 +210,15 @@ describe("chart token contrast (SC 1.4.11, #267)", () => {
         });
       }
     }
+    // Avatar initials (PresenceAvatars, discussion-message-list) are
+    // `text-background` on `bg-chart-N`: that is text, so SC 1.4.3's 4.5:1.
+    for (let i = 1; i <= CHART_SERIES; i += 1) {
+      it(`${theme.name}: --background text meets ≥4.5:1 on --chart-${i}`, () => {
+        expect(
+          contrast(token(theme.block, "background"), token(theme.block, `chart-${i}`)),
+        ).toBeGreaterThanOrEqual(4.5);
+      });
+    }
     it(`${theme.name}: the ${CHART_SERIES} chart colours are distinct`, () => {
       const values = CHART_INDEXES.map((i) => token(theme.block, `chart-${i}`));
       expect(new Set(values).size).toBe(CHART_SERIES);

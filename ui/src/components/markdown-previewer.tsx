@@ -474,7 +474,6 @@ function sanitizeMermaidCode(raw: string): string {
   return code.trim();
 }
 
-/** Derive a human-readable diagram title from the first Mermaid directive keyword. */
 /**
  * Mermaid options for the previewer. Node fill, text, line and border colours
  * are the theme tokens of the active theme; where a token cannot be read
@@ -505,6 +504,7 @@ function previewerMermaidConfig(isDark: boolean): MermaidConfig {
   };
 }
 
+/** Derive a human-readable diagram title from the first Mermaid directive keyword. */
 function mermaidDiagramTitle(code: string): string {
   const firstLine = code.trimStart().split(/\r?\n/)[0]?.toLowerCase() ?? "";
   if (/^\s*erdiagram\b/.test(firstLine)) return "Entity Relationship Diagram";

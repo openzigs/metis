@@ -53,7 +53,20 @@ function escape(s: string): string {
 
 /** A static value import (or re-export, or CSS `@import`) of `spec`. */
 function staticImportOf(spec: string): RegExp {
-  const q = `["']${escape(spec)}["']`;
+  return staticImportMatching(`["']${escape(spec)}["']`);
+}
+
+/**
+ * A static value import of the `ui/src` module `rel` by ANY specifier that
+ * resolves to it: the `@/` alias or a relative path (`./x`, `../components/x`),
+ * with or without the extension.
+ */
+function staticImportOfModule(rel: string): RegExp {
+  const base = escape(path.posix.basename(rel).replace(/\.tsx?$/, ""));
+  return staticImportMatching(`["'](?:@/|\\.{1,2}/)(?:[^"']*/)?${base}(?:\\.tsx?)?["']`);
+}
+
+function staticImportMatching(q: string): RegExp {
   return new RegExp(
     [
       `^\\s*import\\s+(?!type\\b)[^;]*?\\bfrom\\s+${q}`,
@@ -84,7 +97,9 @@ describe("heavy viewers are not in the page bundles (#272)", () => {
   for (const [boundary, lib] of Object.entries(BOUNDARIES)) {
     it(`${boundary} (${lib}) is only reached through a dynamic import`, () => {
       const spec = `@/${boundary.replace(/\.tsx?$/, "")}`;
-      const importers = FILES.filter((f) => staticImportOf(spec).test(f.src)).map((f) => f.rel);
+      const importers = FILES.filter(
+        (f) => f.rel !== boundary && staticImportOfModule(boundary).test(f.src),
+      ).map((f) => f.rel);
       expect(importers).toEqual([]);
       const dynamicImporters = FILES.filter((f) =>
         new RegExp(`import\\(\\s*["']${escape(spec)}["']\\s*\\)`).test(f.src),
@@ -103,5 +118,14 @@ describe("heavy viewers are not in the page bundles (#272)", () => {
     expect(
       staticImportOf("katex/dist/katex.min.css").test('@import "katex/dist/katex.min.css";'),
     ).toBe(true);
+    const boundary = staticImportOfModule("components/schema-graph-explorer.tsx");
+    expect(boundary.test('import X from "@/components/schema-graph-explorer";')).toBe(true);
+    expect(boundary.test('import { X } from "./schema-graph-explorer";')).toBe(true);
+    expect(boundary.test('import X from "../components/schema-graph-explorer.tsx";')).toBe(true);
+    expect(boundary.test('import type { X } from "./schema-graph-explorer";')).toBe(false);
+    expect(boundary.test('import X from "./my-schema-graph-explorer";')).toBe(false);
+    expect(boundary.test('const X = dynamic(() => import("./schema-graph-explorer"));')).toBe(
+      false,
+    );
   });
 });

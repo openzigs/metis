@@ -11,7 +11,7 @@ const PUBLIC_PREFIXES = ["/_next", "/favicon", "/api/auth/", "/invites/"];
 
 /**
  * Auth gate. Lets authenticated requests through; for a request whose
- * short-lived access cookie has lapsed it attempts an edge-side token refresh
+ * short-lived access cookie has lapsed it attempts a proxy-side token refresh
  * before bouncing, and only redirects truly-unauthenticated visitors to /login
  * (preserving the originally requested path as `?next=`).
  *

@@ -72,8 +72,8 @@ gh pr merge <pr> --squash --delete-branch   # only after a clean re-read
    `api-docker-build` group any more — it serialised `api` across refs only while the
    runners shared one Docker daemon; see the comment on the `api` job in `ci.yml`.) Read the
    **`api-outcome`** check: it passes on a supersede, and fails only on a genuine `api`
-   failure. Confirm with `gh run view <id> --json jobs`, then **re-run the job — do not
-   "fix" anything** (#1067).
+   failure. Confirm with `gh run view <id> --json jobs`, then read the newer run — re-run
+   the job only if none exists — and **do not "fix" anything** (#1067).
 2. **`postgres-adapter` can exit 1 with every test passing** — a vitest
    `EnvironmentTeardownError: Closing rpc while "onUserConsoleLog" was pending` from
    `server/tests/lib/testcoverage/cost-tracker.test.ts`. **Discriminate on the `Test Files`
