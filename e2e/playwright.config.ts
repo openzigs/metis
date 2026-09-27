@@ -157,6 +157,21 @@ export default defineConfig({
             // 20 req/15 min auth limiter throttles credential stuffing, not
             // e2e flows — raise it so a full-suite run never trips RATE_LIMITED.
             RATE_LIMIT_MAX: process.env.RATE_LIMIT_MAX ?? "100000",
+            // #221 — never close an idle keep-alive socket from the server side.
+            // Each APIRequestContext pools its sockets in a keep-alive
+            // http.Agent (one per context since playwright-core 1.63; one shared
+            // by every context before). That agent has no `timeout`, so Node
+            // never applies the server's `Keep-Alive: timeout=5` hint to it: a
+            // pooled socket stays "free" until the pool sees the server close
+            // it. Node's default closes an idle socket at ~6 s; a request that
+            // reuses the socket as that happens — a window as wide as any
+            // event-loop lag on a loaded runner — dies with `socket hang up` /
+            // `ECONNRESET`. Long-lived contexts (a spec's `adminApi`, a
+            // `beforeEach` `api`) are exposed. Nothing waits longer because of
+            // this: it removes the one close the client cannot see, and sockets
+            // close when their context is disposed. Production keeps Node's
+            // default unless an operator sets it.
+            HTTP_KEEP_ALIVE_TIMEOUT_MS: process.env.HTTP_KEEP_ALIVE_TIMEOUT_MS ?? "0",
           },
         },
         {

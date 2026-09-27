@@ -1316,9 +1316,15 @@ jobs:
         # for DIAGNOSING a flake but must never hide one — a spec that only
         # passes on the retry fails this job, so flakes get fixed rather than
         # absorbed.
+        #
+        # No `--reporter` flag (#260): it REPLACED the config's CI reporters
+        # (list + html), so `playwright-report/` was never written and the upload
+        # below was a no-op. The HTML report is the one artifact that times every
+        # step of the FAILED first attempt — the retry's trace cannot say where
+        # a 120 s timeout went. The log output is unchanged (list stays on).
         run: |
           echo "e2e stack: API=${E2E_API_PORT} UI=${E2E_UI_PORT}"
-          pnpm --filter @metis/e2e test --reporter=list --fail-on-flaky-tests
+          pnpm --filter @metis/e2e test --fail-on-flaky-tests
 
       - name: Upload Playwright report
         # Only upload on failure to avoid accumulating report artifacts on

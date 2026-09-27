@@ -82,7 +82,6 @@ test.describe("Manual approval reconciliation (#1350)", () => {
   }) => {
     const quarantine = new QuarantinePage(page, filename);
     const approvePath = `/projects/${projectId}/documents/${documentId}/approve`;
-    const listPath = `/projects/${projectId}/quarantine`;
     const failure = "E2E simulated approval cleanup failure";
     await quarantine.goto(projectId);
     await quarantine.expectReconciling(SHOWN_CLEANUP_ERROR, CLEANUP_ERROR);
@@ -95,10 +94,19 @@ test.describe("Manual approval reconciliation (#1350)", () => {
       // Fault boundary: ONLY this browser POST is intercepted before the server.
       // It does not simulate a real vector/BM25 cleanup failure. List/auth calls
       // stay real; the following successful POST runs the actual reconciler.
+      //
+      // #297 — the route stays registered for the rest of the test and passes
+      // every later request on; it is NOT a `{ times: 1 }` route. Removing the
+      // last route makes Playwright switch Chromium's request interception off,
+      // and a request the page starts in that instant is left paused and never
+      // reaches the server. Here that request is the list refresh the failed
+      // retry starts ~1 ms after the 409 settles, so the refresh never answered.
+      let failedOnce = false;
       await page.route(
         (url) => url.pathname.endsWith(approvePath),
         async (route) => {
-          if (route.request().method() !== "POST") return route.continue();
+          if (failedOnce || route.request().method() !== "POST") return route.fallback();
+          failedOnce = true;
           await responseGate;
           await route.fulfill({
             // The real approve route maps cleanup exceptions to 409. A 5xx
@@ -107,15 +115,12 @@ test.describe("Manual approval reconciliation (#1350)", () => {
             json: { success: false, error: { code: "DOCUMENT_APPROVE_FAILED", message: failure } },
           });
         },
-        { times: 1 },
       );
       const failedResponse = page.waitForResponse(
         (response) =>
           response.url().endsWith(approvePath) && response.request().method() === "POST",
       );
-      const refreshedList = page.waitForResponse(
-        (response) => response.url().endsWith(listPath) && response.request().method() === "GET",
-      );
+      const listRefresh = quarantine.watchListRefreshes(projectId);
       try {
         await quarantine.retry.click();
         await expect(quarantine.retrying).toBeDisabled();
@@ -126,7 +131,7 @@ test.describe("Manual approval reconciliation (#1350)", () => {
       await expect(quarantine.approvalError).toHaveText(
         `Unable to finish approval/indexing: ${failure}`,
       );
-      expect((await refreshedList).status()).toBe(200);
+      await listRefresh.expectRefreshed();
       await quarantine.expectReconciling(SHOWN_CLEANUP_ERROR, CLEANUP_ERROR);
       await quarantine.reload();
       await quarantine.expectReconciling(SHOWN_CLEANUP_ERROR, CLEANUP_ERROR);
