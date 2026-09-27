@@ -46,6 +46,8 @@ const NODE_WIDTH = 240;
 const HEADER_HEIGHT = 40;
 const ROW_HEIGHT = 22;
 const MAX_VISIBLE_COLUMNS = 10;
+/** One framing for the first layout and every fullscreen toggle (#124). */
+const FIT_VIEW_OPTIONS = { padding: 0.2 } as const;
 
 /** Node payload carried through React Flow. */
 interface TableNodeData extends Record<string, unknown> {
@@ -371,9 +373,19 @@ function SchemaGraphInner({ graph }: { graph: SchemaGraph }): React.ReactElement
 
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Keep React Flow framed when toggling fullscreen.
+  // Keep React Flow framed when toggling fullscreen — and ONLY then. The
+  // `fitView` prop below frames the first layout; re-fitting on mount as well
+  // started a second, animated zoom ~50 ms after the nodes were already on
+  // screen, sliding every node out from under a pointer resting on it, so the
+  // hover tooltip vanished (#124).
+  const framedFullscreen = useRef(isFullscreen);
   useEffect(() => {
-    const t = setTimeout(() => fitView({ duration: 200, padding: 0.2 }), 50);
+    if (framedFullscreen.current === isFullscreen) return;
+    const t = setTimeout(() => {
+      // Recorded when the fit runs, so a re-run that cancels it re-schedules it.
+      framedFullscreen.current = isFullscreen;
+      void fitView({ ...FIT_VIEW_OPTIONS, duration: 200 });
+    }, 50);
     return () => clearTimeout(t);
   }, [isFullscreen, fitView]);
 
@@ -426,6 +438,7 @@ function SchemaGraphInner({ graph }: { graph: SchemaGraph }): React.ReactElement
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
         fitView
+        fitViewOptions={FIT_VIEW_OPTIONS}
         onlyRenderVisibleElements
         minZoom={0.1}
         proOptions={{ hideAttribution: true }}

@@ -1130,7 +1130,13 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: generative-e2e-traces
-          path: e2e/test-results
+          # #260 — `stack-data/` is the stack's own SQLite/LanceDB/uploads, not
+          # test evidence, and LanceDB names table directories `tc:<id>`. One
+          # colon in any path fails the WHOLE upload, which is how a flake's
+          # video and error context were lost. Exclude it; keep everything else.
+          path: |
+            e2e/test-results
+            !e2e/test-results/stack-data
           if-no-files-found: ignore
           retention-days: 3
 
@@ -1220,6 +1226,12 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-traces
-          path: e2e/test-results
+          # #260 — `stack-data/` is the stack's own SQLite/LanceDB/uploads, not
+          # test evidence, and LanceDB names table directories `tc:<id>`. One
+          # colon in any path fails the WHOLE upload, which is how a flake's
+          # video and error context were lost. Exclude it; keep everything else.
+          path: |
+            e2e/test-results
+            !e2e/test-results/stack-data
           if-no-files-found: ignore
           retention-days: 3
