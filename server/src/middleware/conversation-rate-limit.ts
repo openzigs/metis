@@ -10,6 +10,7 @@
  */
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { clusterRateLimitStore } from "./cluster-rate-limit-store.js";
+import { envMs } from "../lib/config/env-ms.js";
 import type { RequestHandler } from "express";
 import type { ApiResponse } from "@metis/shared";
 
@@ -37,7 +38,8 @@ function intFromEnv(name: string, fallback: number): number {
 // `as unknown as RequestHandler` bridges the Express 4↔5 type split.
 export const conversationRateLimiter: RequestHandler = rateLimit({
   store: clusterRateLimitStore("ai-conversation"),
-  windowMs: intFromEnv("AI_CONVERSATION_RATE_LIMIT_WINDOW_MS", FIFTEEN_MIN_MS),
+  // #123 — a millisecond setting: the shared strict parser, never parseInt.
+  windowMs: envMs("AI_CONVERSATION_RATE_LIMIT_WINDOW_MS", FIFTEEN_MIN_MS, { min: 1 }),
   limit: () => intFromEnv("AI_CONVERSATION_RATE_LIMIT_MAX", DEFAULT_MAX),
   standardHeaders: true,
   legacyHeaders: false,

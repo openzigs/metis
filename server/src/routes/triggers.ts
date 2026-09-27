@@ -220,10 +220,13 @@ export function triggersWebhookRouter(): Router {
 
   // #680 — throttle these UNAUTHENTICATED receivers so a flood cannot amplify DB
   // load (the /github and /slack handlers scan the trigger table per request).
-  r.use(webhookReceiverRateLimiter);
+  // #105 — ON EACH ROUTE, never as a path-less `r.use`: this router is mounted
+  // on the shared `/webhooks` prefix, and a router-level limiter runs for every
+  // request that ENTERS the router, matched or not — so `/webhooks/jira/issues`
+  // was counted here and again by the sync router (half the configured budget).
 
   // Generic webhook fire: POST /api/triggers/:id/fire
-  r.post("/:id/fire", async (req: Request, res: Response) => {
+  r.post("/:id/fire", webhookReceiverRateLimiter, async (req: Request, res: Response) => {
     const id = String(req.params.id);
     // #680 — signature-first: reject a request with no signature header BEFORE the
     // DB lookup, so an unsigned flood never touches the database.
@@ -251,7 +254,7 @@ export function triggersWebhookRouter(): Router {
   });
 
   // GitHub: POST /api/webhooks/github
-  r.post("/github", async (req: Request, res: Response) => {
+  r.post("/github", webhookReceiverRateLimiter, async (req: Request, res: Response) => {
     const sig = req.header("x-hub-signature-256");
     const event = req.header("x-github-event") ?? "unknown";
     const body = req.body as { repository?: { full_name?: string } };
@@ -288,7 +291,7 @@ export function triggersWebhookRouter(): Router {
   });
 
   // Slack: POST /api/webhooks/slack
-  r.post("/slack", async (req: Request, res: Response) => {
+  r.post("/slack", webhookReceiverRateLimiter, async (req: Request, res: Response) => {
     const sig = req.header("x-slack-signature");
     const ts = req.header("x-slack-request-timestamp");
     const body = req.body as { team_id?: string; channel_id?: string; command?: string };

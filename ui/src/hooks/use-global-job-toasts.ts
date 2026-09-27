@@ -31,7 +31,7 @@
  * listeners idempotent — but unnecessary.
  *
  * The browser socket is loosely typed, so events are subscribed via the
- * `socket.on("name" as never, handler as never)` escape hatch used by the
+ * `socket.on(<event> as never, handler as never)` escape hatch used by the
  * sibling job-event hooks (`use-job-events.ts`, `use-active-jobs.ts`).
  */
 import { useEffect } from "react";

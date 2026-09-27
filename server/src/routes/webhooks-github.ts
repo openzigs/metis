@@ -25,6 +25,7 @@ import {
 } from "../lib/sync/index.js";
 import { recordDelivery } from "../lib/agents/pr-reviewer/webhook-dedup.js";
 import { githubIssuesWebhookRateLimiter } from "../middleware/github-issues-webhook-rate-limit.js";
+import { webhookReceiverRateLimiter } from "../middleware/webhook-receiver-rate-limit.js";
 import type { PrReviewQueue } from "../lib/agents/pr-reviewer/queue.js";
 import { getPrReviewWorker } from "../lib/agents/pr-reviewer/worker-singleton.js";
 import { executePrReviewJob } from "../lib/agents/pr-reviewer/pr-review-job.js";
@@ -64,7 +65,11 @@ export interface GithubPrRouterDeps {
 export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
   const r = Router();
 
-  r.post("/github/pr", async (req: Request, res: Response) => {
+  // #105 — this receiver was throttled only because the triggers router's
+  // path-less limiter leaked onto the shared `/webhooks` prefix. Scoping that
+  // limiter to its own routes would have left `/github/pr` unthrottled, so it
+  // now carries the shared receiver budget explicitly — counted once.
+  r.post("/github/pr", webhookReceiverRateLimiter, async (req: Request, res: Response) => {
     const secret = deps.resolveSecret?.() ?? process.env.GITHUB_WEBHOOK_SECRET ?? "";
     const sig = req.header("x-hub-signature-256") ?? undefined;
     const ts = req.header("x-webhook-timestamp") ?? undefined;
@@ -210,7 +215,9 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
   // Issue #438 — defence-in-depth: rate-limit so HMAC failures don't go
   // unthrottled, and dedup on `X-GitHub-Delivery` so re-deliveries don't
   // re-write `tasks.md` twice.
-  r.post("/github/issues", githubIssuesWebhookRateLimiter, async (req: Request, res: Response) => {
+  // #105 — keeps the shared receiver budget it had via the leak, now counted once.
+  const issuesLimiters = [webhookReceiverRateLimiter, githubIssuesWebhookRateLimiter];
+  r.post("/github/issues", issuesLimiters, async (req: Request, res: Response) => {
     const secret = deps.resolveSecret?.() ?? process.env.GITHUB_WEBHOOK_SECRET ?? "";
     const sig = req.header("x-hub-signature-256") ?? undefined;
     const ts = req.header("x-webhook-timestamp") ?? undefined;

@@ -88,42 +88,68 @@ export const SOCKET_COMPUTED_EMITTERS: Readonly<Record<string, string>> = {
   "testcoverage:run-finished": "lib/testcoverage/socket-emitter.ts",
 };
 
+/** An exempted non-socket emit: the file that owns it and why it is exempt. */
+export interface NonSocketEmit {
+  /** The one server file, relative to `server/src`, whose emits of this name are excused. */
+  file: string;
+  reason: string;
+}
+
 /**
  * #113 — `.emit("<literal>")` names in `server/src` that are NOT Socket.IO
  * events: other Node `EventEmitter`s share the call shape. Each entry needs a
  * reason; an entry no longer emitted fails the guard (`staleNonSocketEmits`), so
  * it cannot outlive its reason and later excuse a misspelling of the same name.
+ *
+ * #122 — each entry is scoped to its OWNING file. An exemption for the whole of
+ * `server/src` would also excuse a real socket `.emit("config.changed")` (or a
+ * misspelled socket event that happens to match) written anywhere else.
  */
-export const SOCKET_NON_SOCKET_EMITS: Readonly<Record<string, string>> = {
-  "config.changed":
-    "ConfigService is a Node EventEmitter; in-process subscribers rebuild on a config write.",
-  sessionStart: "Async runner hook bus (getHookBus()), not a socket.",
-  sessionEnd: "Async runner hook bus (getHookBus()), not a socket.",
+export const SOCKET_NON_SOCKET_EMITS: Readonly<Record<string, NonSocketEmit>> = {
+  "config.changed": {
+    file: "lib/config/config-service.ts",
+    reason:
+      "ConfigService is a Node EventEmitter; in-process subscribers rebuild on a config write.",
+  },
+  sessionStart: {
+    file: "lib/async/runner.ts",
+    reason: "Async runner hook bus (getHookBus()), not a socket.",
+  },
+  sessionEnd: {
+    file: "lib/async/runner.ts",
+    reason: "Async runner hook bus (getHookBus()), not a socket.",
+  },
 };
 
 /**
  * #113 — listener names `ui/src` may use that are not `ServerToClientEvents`:
- * Socket.IO's own socket/manager lifecycle events, and `name`, the placeholder
- * in the hooks' doc comments describing the `socket.on("name" as never, …)`
- * escape hatch (the extractor reads comments too).
+ * Socket.IO's own socket/manager lifecycle events. (#122 dropped `name`, which
+ * was exempt only because doc comments used it as a quoted placeholder.)
  */
 export function isReservedListenName(name: string): boolean {
   return (
     name === "connect" ||
     name === "connect_error" ||
     name === "disconnect" ||
-    name === "name" ||
     /^reconnect(_[a-z]+)?$/.test(name)
   );
+}
+
+/** One `.emit("<literal>")` found in a server file. */
+export interface EmitSite {
+  event: string;
+  /** Path relative to `server/src`, `/`-separated. */
+  file: string;
 }
 
 /** Inputs to {@link findUndeclaredEventNames}. */
 export interface EventNameCheckInput {
   declaredEvents: readonly string[];
-  emitters: readonly string[];
+  /** Every emit, with the file it is in (#122 — exemptions are per file). */
+  emitSites: readonly EmitSite[];
   consumers: readonly string[];
-  /** Keys of {@link SOCKET_NON_SOCKET_EMITS}. */
-  nonSocketEmits: readonly string[];
+  /** Exempt non-socket emit name → the one file whose emits of it are excused. */
+  nonSocketEmits: Readonly<Record<string, string>>;
 }
 
 /** Names used in code that the contract does not declare. */
@@ -145,16 +171,21 @@ export interface EventNameReport {
  */
 export function findUndeclaredEventNames(input: EventNameCheckInput): EventNameReport {
   const declared = new Set(input.declaredEvents);
-  const nonSocket = new Set(input.nonSocketEmits);
-  const emitted = new Set(input.emitters);
+  const exemptIn = (site: EmitSite) =>
+    Object.prototype.hasOwnProperty.call(input.nonSocketEmits, site.event) &&
+    input.nonSocketEmits[site.event] === site.file;
+  const excused = input.emitSites.filter(exemptIn);
   return {
-    undeclaredEmits: sortedUnique(input.emitters).filter(
-      (e) => !declared.has(e) && !nonSocket.has(e),
+    undeclaredEmits: sortedUnique(
+      input.emitSites.filter((s) => !declared.has(s.event) && !exemptIn(s)).map((s) => s.event),
     ),
     undeclaredListens: sortedUnique(input.consumers).filter(
       (e) => !declared.has(e) && !isReservedListenName(e),
     ),
-    staleNonSocketEmits: sortedUnique(input.nonSocketEmits).filter((e) => !emitted.has(e)),
+    // Stale: its owning file no longer emits it (an emit elsewhere does not count).
+    staleNonSocketEmits: sortedUnique(Object.keys(input.nonSocketEmits)).filter(
+      (e) => !excused.some((s) => s.event === e),
+    ),
   };
 }
 
@@ -291,21 +322,24 @@ export function parseDeclaredEvents(socketSource: string): string[] {
  * {@link SOCKET_COMPUTED_EMITTERS} instead.
  */
 export function extractEmittedEvents(serverSource: string): string[] {
-  return extractEventLiterals(serverSource, /\.emit\(\s*"([^"]+)"/g);
+  // #122 — double- or single-quoted; a back-reference keeps the quotes paired.
+  return extractEventLiterals(serverSource, /\.emit\(\s*(["'])([^"'\n]+)\1/g);
 }
 
 /**
- * Extract every event name passed as a string literal to `.on("<event>", …)`
+ * Extract every event name passed as a string literal to `.on("<event>", …)` or `.once(…)`
  * from a blob of UI source.
  */
 export function extractConsumedEvents(uiSource: string): string[] {
-  return extractEventLiterals(uiSource, /\.on\(\s*"([^"]+)"/g);
+  // #122 — `.once(` subscribes too, and a name may be single-quoted.
+  return extractEventLiterals(uiSource, /\.(?:on|once)\(\s*(["'])([^"'\n]+)\1/g);
 }
 
+/** The event name is the pattern's SECOND group (the first is the quote). */
 function extractEventLiterals(source: string, pattern: RegExp): string[] {
   const found = new Set<string>();
   for (const m of source.matchAll(pattern)) {
-    found.add(m[1]);
+    found.add(m[2]);
   }
   return [...found].sort();
 }

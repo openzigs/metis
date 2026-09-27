@@ -14,7 +14,7 @@
  *     the `docs/ARCHITECTURE.md` §7.6.4 realtime event catalogue (#91).
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -122,12 +122,14 @@ describe("checkSocketContract (pure, two-sided — #91)", () => {
  */
 describe("findUndeclaredEventNames (#113 — a misspelled copy beside a correct one)", () => {
   const declaredEvents = ["drift:detected", "job:lifecycle"];
+  const at = (file: string, ...events: string[]) => events.map((event) => ({ event, file }));
   const base = {
     declaredEvents,
-    emitters: ["drift:detected", "job:lifecycle"],
+    emitSites: at("lib/emit.ts", "drift:detected", "job:lifecycle"),
     consumers: ["drift:detected", "job:lifecycle"],
-    nonSocketEmits: [],
+    nonSocketEmits: {} as Record<string, string>,
   };
+  const emittersOf = (sites: readonly { event: string }[]) => sites.map((s) => s.event);
 
   it("reports nothing when every name is declared", () => {
     expect(findUndeclaredEventNames(base)).toEqual({
@@ -140,14 +142,18 @@ describe("findUndeclaredEventNames (#113 — a misspelled copy beside a correct 
   it("FAILS on a misspelled LISTENER next to the correct listener", () => {
     const input = { ...base, consumers: ["drift:detected", "drift:detectd", "job:lifecycle"] };
     // The declared-event check alone stays green on exactly this input …
-    expect(checkSocketContract({ ...input, allowlist: [] })).toEqual(EMPTY_REPORT);
+    expect(
+      checkSocketContract({ ...input, emitters: emittersOf(input.emitSites), allowlist: [] }),
+    ).toEqual(EMPTY_REPORT);
     // … and the name check is what catches it.
     expect(findUndeclaredEventNames(input).undeclaredListens).toEqual(["drift:detectd"]);
   });
 
   it("FAILS on a misspelled EMIT next to the correct emit", () => {
-    const input = { ...base, emitters: ["drift:detected", "drift:detectd", "job:lifecycle"] };
-    expect(checkSocketContract({ ...input, allowlist: [] })).toEqual(EMPTY_REPORT);
+    const input = { ...base, emitSites: [...base.emitSites, ...at("lib/x.ts", "drift:detectd")] };
+    expect(
+      checkSocketContract({ ...input, emitters: emittersOf(input.emitSites), allowlist: [] }),
+    ).toEqual(EMPTY_REPORT);
     expect(findUndeclaredEventNames(input).undeclaredEmits).toEqual(["drift:detectd"]);
   });
 
@@ -160,27 +166,61 @@ describe("findUndeclaredEventNames (#113 — a misspelled copy beside a correct 
       "reconnect",
       "reconnect_attempt",
       "reconnect_failed",
-      "name",
     ];
     expect(findUndeclaredEventNames({ ...base, consumers }).undeclaredListens).toEqual([]);
-    for (const name of ["connected", "disconnect:all", "reconnects", "xreconnect", "names"]) {
+    // #122 — `name` was exempt only as a doc-comment placeholder; it is not reserved.
+    for (const name of [
+      "connected",
+      "disconnect:all",
+      "reconnects",
+      "xreconnect",
+      "names",
+      "name",
+    ]) {
       expect(isReservedListenName(name), name).toBe(false);
     }
   });
 
   it("reserved LISTEN names are not a pass for an emit", () => {
-    const report = findUndeclaredEventNames({ ...base, emitters: [...base.emitters, "connect"] });
+    const report = findUndeclaredEventNames({
+      ...base,
+      emitSites: [...base.emitSites, ...at("lib/emit.ts", "connect")],
+    });
     expect(report.undeclaredEmits).toEqual(["connect"]);
   });
 
   it("excuses a listed non-socket emit, and flags a listed one that is no longer emitted", () => {
     const report = findUndeclaredEventNames({
       ...base,
-      emitters: [...base.emitters, "config.changed"],
-      nonSocketEmits: ["config.changed", "gone.event"],
+      emitSites: [...base.emitSites, ...at("lib/config.ts", "config.changed")],
+      nonSocketEmits: { "config.changed": "lib/config.ts", "gone.event": "lib/gone.ts" },
     });
     expect(report.undeclaredEmits).toEqual([]);
     expect(report.staleNonSocketEmits).toEqual(["gone.event"]);
+  });
+
+  it("#122 — an exemption covers its OWNING file only; the same name elsewhere is flagged", () => {
+    const report = findUndeclaredEventNames({
+      ...base,
+      emitSites: [
+        ...base.emitSites,
+        ...at("lib/config.ts", "config.changed"),
+        ...at("routes/socket-bridge.ts", "config.changed"),
+      ],
+      nonSocketEmits: { "config.changed": "lib/config.ts" },
+    });
+    expect(report.undeclaredEmits).toEqual(["config.changed"]);
+    expect(report.staleNonSocketEmits).toEqual([]);
+  });
+
+  it("#122 — an exemption whose owning file stopped emitting is stale, even if another file emits it", () => {
+    const report = findUndeclaredEventNames({
+      ...base,
+      emitSites: [...base.emitSites, ...at("lib/elsewhere.ts", "config.changed")],
+      nonSocketEmits: { "config.changed": "lib/config.ts" },
+    });
+    expect(report.staleNonSocketEmits).toEqual(["config.changed"]);
+    expect(report.undeclaredEmits).toEqual(["config.changed"]);
   });
 });
 
@@ -289,6 +329,19 @@ describe("extractEmittedEvents / extractConsumedEvents", () => {
     expect(extractConsumedEvents(src)).toEqual(["comment:mention", "task:status"]);
   });
 
+  it("#122 — reads single-quoted names, and `.once(` as a listener", () => {
+    expect(extractEmittedEvents(`io.emit('job:lifecycle', d); s.emit( 'drift:detectd' );`)).toEqual(
+      ["drift:detectd", "job:lifecycle"],
+    );
+    expect(
+      extractConsumedEvents(
+        `s.on('task:status', f); s.once("auth:ok", g); s.once( 'heartbeat', h);`,
+      ),
+    ).toEqual(["auth:ok", "heartbeat", "task:status"]);
+    // Quotes must pair: a mixed pair is not a string literal.
+    expect(extractEmittedEvents(`x.emit("a', 1)`)).toEqual([]);
+  });
+
   it("returns an empty list when there are no matches", () => {
     expect(extractEmittedEvents("const x = 1;")).toEqual([]);
     expect(extractConsumedEvents("const x = 1;")).toEqual([]);
@@ -304,20 +357,30 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..", "..");
 const socketTsPath = join(repoRoot, "packages", "shared", "src", "socket.ts");
 
-/** Recursively read every .ts/.tsx file under `dir` into one concatenated blob. */
-function readSourceTree(dir: string): string {
-  let blob = "";
+/** Every non-test .ts/.tsx file under `root`, with its `/`-separated path relative to `root`. */
+function readSourceFiles(root: string, dir = root): Array<{ file: string; source: string }> {
+  const out: Array<{ file: string; source: string }> = [];
   for (const entry of readdirSync(dir)) {
     if (entry === "node_modules" || entry === "dist" || entry === ".next") continue;
     const full = join(dir, entry);
     const st = statSync(full);
     if (st.isDirectory()) {
-      blob += readSourceTree(full);
+      out.push(...readSourceFiles(root, full));
     } else if (/\.(ts|tsx)$/.test(entry) && !/\.test\.(ts|tsx)$/.test(entry)) {
-      blob += readFileSync(full, "utf8") + "\n";
+      out.push({
+        file: relative(root, full).split(sep).join("/"),
+        source: readFileSync(full, "utf8"),
+      });
     }
   }
-  return blob;
+  return out;
+}
+
+/** Recursively read every .ts/.tsx file under `dir` into one concatenated blob. */
+function readSourceTree(dir: string): string {
+  return readSourceFiles(dir)
+    .map((f) => f.source + "\n")
+    .join("");
 }
 
 describe("realtime contract guard (live repo scan)", () => {
@@ -327,7 +390,13 @@ describe("realtime contract guard (live repo scan)", () => {
   const computedEmitters = Object.entries(SOCKET_COMPUTED_EMITTERS)
     .filter(([event, file]) => readFileSync(join(serverSrc, file), "utf8").includes(`"${event}"`))
     .map(([event]) => event);
-  const serverEmitters = [...extractEmittedEvents(readSourceTree(serverSrc)), ...computedEmitters];
+  const serverEmitSites = [
+    ...readSourceFiles(serverSrc).flatMap(({ file, source }) =>
+      extractEmittedEvents(source).map((event) => ({ event, file })),
+    ),
+    ...computedEmitters.map((event) => ({ event, file: SOCKET_COMPUTED_EMITTERS[event] })),
+  ];
+  const serverEmitters = serverEmitSites.map((s) => s.event);
   const uiConsumers = extractConsumedEvents(readSourceTree(join(repoRoot, "ui", "src")));
   const allowlist = Object.keys(SOCKET_EVENT_ALLOWLIST);
   const catalogue = parseEventCatalogue(
@@ -364,9 +433,11 @@ describe("realtime contract guard (live repo scan)", () => {
   it("every emitted and listened-for name is declared, reserved or a listed non-socket emit (#113)", () => {
     const report = findUndeclaredEventNames({
       declaredEvents,
-      emitters: serverEmitters,
+      emitSites: serverEmitSites,
       consumers: uiConsumers,
-      nonSocketEmits: Object.keys(SOCKET_NON_SOCKET_EMITS),
+      nonSocketEmits: Object.fromEntries(
+        Object.entries(SOCKET_NON_SOCKET_EMITS).map(([event, { file }]) => [event, file]),
+      ),
     });
     expect(
       report,
@@ -379,7 +450,7 @@ describe("realtime contract guard (live repo scan)", () => {
   });
 
   it("every non-socket emit entry carries a non-empty documented reason (#113)", () => {
-    for (const [event, reason] of Object.entries(SOCKET_NON_SOCKET_EMITS)) {
+    for (const [event, { reason }] of Object.entries(SOCKET_NON_SOCKET_EMITS)) {
       expect(reason.trim().length, `non-socket emit "${event}" needs a reason`).toBeGreaterThan(0);
     }
   });

@@ -10,8 +10,33 @@
  *   - save → clear → save revives the SAME row (the index still holds the
  *     soft-deleted name, so a fresh create could never succeed);
  *   - the cleared row is invisible to `list()` and the revived one visible again;
- *   - two concurrent first saves both succeed and leave one row, whose value the
- *     in-process cache agrees with.
+ *   - #122: INDEPENDENT writers (separate `VaultService` instances, so no
+ *     `ConfigService` write queue serialises them) racing first saves of one
+ *     name all succeed and leave one row.
+ *
+ * What the race test does and does not prove (#122, measured on this suite):
+ * Prisma issues `vault.upsert` on Postgres as ONE native
+ * `INSERT … ON CONFLICT ("name") DO UPDATE`, which cannot raise a unique clash
+ * however the writers interleave. So the vault's retry-on-P2002 is not reached
+ * here: removing it leaves this suite green (3/3 runs, 20 rounds × 8 writers),
+ * and no test on a real database can reach it while Prisma keeps the native
+ * form. The retry stays as the guard for Prisma's emulated (read-then-write)
+ * upsert; its unit test drives it through a double. What this suite pins is
+ * the property the retry exists for — concurrent first saves never fail.
+ *
+ * The CONTROL ARM is what makes that race test non-vacuous. It runs the SAME
+ * harness — the same two `VaultService` writers, the same number of calls, the
+ * same app Prisma client, the real `create`/`rotate` (encryption included) —
+ * with only the decision swapped for the pre-#93 read-then-write shape: choose
+ * create-vs-rotate from `list()`. That arm must see a P2002 clash. So a harness
+ * that stopped interleaving these writers (a change that serialised them, or a
+ * pool of one) fails here instead of letting the race test pass for nothing.
+ * It proves the HARNESS races; it does not by itself prove the native upsert
+ * is the reason the race test passes — the P2002 count above does that.
+ *
+ * #106 (review of PR #259): `VaultService.rotate` filters on `deletedAt: null`
+ * inside its one UPDATE. The unit doubles model Prisma's `P2025` by hand, so
+ * the last test runs the real rotate against a soft-deleted row here.
  *
  * Gated like the other `*-postgres.integration.test.ts` suites: runs only when
  * `RUN_INTEGRATION_TESTS=1` AND `DATABASE_URL` is Postgres-shaped (via
@@ -24,7 +49,12 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { selectPrismaAdapter } from "../src/lib/prisma.js";
 import { ConfigService } from "../src/lib/config/config-service.js";
 import { getKeyDef } from "../src/lib/config/key-registry.js";
-import { VaultService } from "../src/lib/vault/vault-service.js";
+import {
+  SecretNotFoundError,
+  VaultService,
+  type SecretScope,
+  type SecretSummary,
+} from "../src/lib/vault/vault-service.js";
 
 const databaseUrl = process.env.DATABASE_URL ?? "";
 const isPostgres = databaseUrl.startsWith("postgres://") || databaseUrl.startsWith("postgresql://");
@@ -33,16 +63,16 @@ const enabled = process.env.RUN_INTEGRATION_TESTS === "1" && isPostgres;
 /** A secret-tier key; stored in the vault as `global:<KEY>`. */
 const KEY = "GITHUB_TOKEN";
 const ROW_NAME = `global:${KEY}`;
+// 32 bytes of base64 — a test key, not a secret.
+const MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
+const ROUNDS = 20;
+const PER_WRITER = 4;
 
 describe.runIf(enabled)("Config secret save → clear → save on real Postgres (integration)", () => {
   // An independent client, so assertions read the table rather than anything
   // the service under test holds.
   const db = new PrismaClient({ adapter: selectPrismaAdapter(databaseUrl) });
-  const vault = new VaultService({
-    // 32 bytes of base64 — a test key, not a secret.
-    masterKey: Buffer.alloc(32, 7).toString("base64"),
-    isProduction: false,
-  });
+  const vault = new VaultService({ masterKey: MASTER_KEY, isProduction: false });
 
   beforeEach(async () => {
     await db.secret.deleteMany({ where: { name: ROW_NAME } });
@@ -87,15 +117,71 @@ describe.runIf(enabled)("Config secret save → clear → save on real Postgres 
     expect(reader.describeSource(KEY).source).toBe("vault");
   });
 
-  it("accepts two concurrent first saves and keeps cache and vault agreeing", async () => {
-    const svc = new ConfigService({ vault, env: {} });
-
-    await Promise.all([svc.setSecret(KEY, "gho_a"), svc.setSecret(KEY, "gho_b")]);
-
-    const rows = await db.secret.findMany({ where: { name: ROW_NAME } });
-    expect(rows).toHaveLength(1);
+  it("independent writers racing first saves of one name all succeed, leaving one row", async () => {
+    // Two VaultService instances x several calls each: nothing in-process
+    // serialises them, unlike two saves through one ConfigService.
+    const writers = [vault, new VaultService({ masterKey: MASTER_KEY, isProduction: false })];
+    for (let round = 0; round < ROUNDS; round++) {
+      await db.secret.deleteMany({ where: { name: ROW_NAME } });
+      const results = await Promise.allSettled(
+        writers.flatMap((w, i) =>
+          Array.from({ length: PER_WRITER }, (_, j) => w.upsert(KEY, `gho_${i}_${j}`, "global")),
+        ),
+      );
+      const failed = results.filter((r) => r.status === "rejected");
+      expect(failed, `round ${round}: ${JSON.stringify(failed)}`).toEqual([]);
+      const rows = await db.secret.findMany({ where: { name: ROW_NAME } });
+      expect(rows).toHaveLength(1);
+    }
+    // Read back through the consumer path: a fresh service loading the vault.
     const reader = new ConfigService({ vault, env: {} });
     await reader.loadSecrets();
-    expect(svc.get(KEY)).toBe(reader.get(KEY));
+    expect(reader.get(KEY)).toMatch(/^gho_[01]_\d$/);
+  });
+
+  it("control arm: the same two VaultService writers through a read-then-write DO clash here", async () => {
+    // The pre-#93 decision — create-vs-rotate chosen from `list()` — over the
+    // real `create`/`rotate`. Everything else matches the race test above.
+    class ReadThenWriteVault extends VaultService {
+      override async upsert(
+        label: string,
+        plaintext: string,
+        scope: SecretScope = "global",
+      ): Promise<SecretSummary> {
+        const existing = (await this.list(scope)).find((s) => s.label === label);
+        if (existing) return this.rotate(existing.id, plaintext);
+        return this.create(label, plaintext, scope);
+      }
+    }
+    const writers = [
+      new ReadThenWriteVault({ masterKey: MASTER_KEY, isProduction: false }),
+      new ReadThenWriteVault({ masterKey: MASTER_KEY, isProduction: false }),
+    ];
+    let clashes = 0;
+    for (let round = 0; round < ROUNDS && clashes === 0; round++) {
+      await db.secret.deleteMany({ where: { name: ROW_NAME } });
+      const results = await Promise.allSettled(
+        writers.flatMap((w, i) =>
+          Array.from({ length: PER_WRITER }, (_, j) => w.upsert(KEY, `gho_${i}_${j}`, "global")),
+        ),
+      );
+      clashes += results.filter(
+        (r) => r.status === "rejected" && (r.reason as { code?: string }).code === "P2002",
+      ).length;
+    }
+    expect(clashes).toBeGreaterThan(0);
+  });
+
+  it("#106: rotate refuses a soft-deleted row and leaves its ciphertext as it was", async () => {
+    const created = await vault.create(KEY, "gho_live", "global");
+    await vault.delete(created.id);
+    const before = await db.secret.findUniqueOrThrow({ where: { id: created.id } });
+
+    await expect(vault.rotate(created.id, "gho_after_delete")).rejects.toBeInstanceOf(
+      SecretNotFoundError,
+    );
+    const after = await db.secret.findUniqueOrThrow({ where: { id: created.id } });
+    expect(after.ciphertext).toBe(before.ciphertext);
+    expect(after.deletedAt).not.toBeNull();
   });
 });

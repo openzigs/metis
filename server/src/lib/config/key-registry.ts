@@ -27,6 +27,7 @@ import {
   validateEgressAllowlistEntry,
 } from "@metis/shared";
 import { modelPricesSchema } from "../finops/model-prices-schema.js";
+import { MAX_TIMEOUT_MS } from "./env-ms.js";
 
 export type ConfigTier = "bootstrap" | "secret" | "tunable";
 export type ConfigValueType = "string" | "int" | "bool" | "json" | "csv";
@@ -732,9 +733,14 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   AI_TOOL_APPROVAL_TIMEOUT_MS: {
     tier: "tunable",
     valueType: "int",
-    schema: z.coerce.number().int().positive(),
+    // #123 — plain digits, capped under Node's timer ceiling: a coerced `1.2e6`
+    // or a value past 2^31-1 would otherwise be stored and become a 1 ms timer.
+    schema: z.preprocess(
+      (v) => (typeof v === "number" ? String(v) : v),
+      z.string().trim().regex(/^\d+$/).pipe(z.coerce.number().int().min(1).max(MAX_TIMEOUT_MS)),
+    ),
     description:
-      "How long a chat tool call waits for its owner to approve or deny it (#142), in ms. An unanswered approval EXPIRES and counts as a denial; the tool does not run. Default 120000.",
+      "How long a chat tool call waits for its owner to approve or deny it (#142), in ms. An unanswered approval EXPIRES and counts as a denial; the tool does not run. Plain digits only (write 120000, not 1.2e5); 1 to 2147453647. Default 120000.",
     sensitive: false,
   },
   LOCAL_GEMMA_BASE_URL: {

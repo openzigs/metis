@@ -230,6 +230,27 @@ describe("/api/jira/connections", () => {
     expect(mockUpdate).toHaveBeenCalled();
   });
 
+  // #106 — token/CA rotation runs through PATCH; it stays admin/coordinator-only.
+  it("PATCH /connections/:id rejects an unauthenticated token rotation", async () => {
+    const res = await request(app)
+      .patch("/api/jira/connections/jira_1")
+      .send({ apiToken: "rotated" });
+    expect(res.status).toBe(401);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /connections/:id rejects a token rotation by a role without connector.write", async () => {
+    for (const user of ["developer", "reader"]) {
+      const token = await login(user);
+      const res = await request(app)
+        .patch("/api/jira/connections/jira_1")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ apiToken: "rotated", tlsCaCert: "-----BEGIN CERTIFICATE-----" });
+      expect(res.status, user).toBe(403);
+    }
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
   it("DELETE /connections/:id soft-deletes", async () => {
     const token = await login("admin");
     const res = await request(app)

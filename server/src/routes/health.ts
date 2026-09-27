@@ -5,7 +5,14 @@
  * - `/api/health/deep` and `/readyz` exercise the database and confirm the
  *   vault key is loaded (readiness).
  *
- * Neither route is authenticated.
+ * Neither route is authenticated: kubelet and load balancers probe `/readyz`
+ * without credentials, so the deep check cannot require auth (#121). Because
+ * of that, NO exception text reaches the response body — a Prisma connection
+ * error can carry the datasource host, a file path or a user name, and an
+ * embedder failure the provider URL or a response body. Each failing check
+ * answers a fixed message and the raw error goes to the server log only.
+ * Operators read the detail from the logs (or, for embeddings, from the
+ * authenticated Admin → Embedding backends panel).
  */
 import { Router, type RequestHandler } from "express";
 import type { DeepHealthCheck, HealthCheck } from "@metis/shared";
@@ -17,6 +24,23 @@ import { getConfigService } from "../lib/config/index.js";
 import { probeMCPRuntime } from "../health/mcp-runtime-probe.js";
 
 const log = createChildLogger("health");
+
+/**
+ * #121 — the fixed, detail-free messages a failing check returns. Exported so
+ * the tests assert the exact public text rather than "anything but the error".
+ */
+export const HEALTH_CHECK_MESSAGES = {
+  database: "database unavailable",
+  embeddings: "embeddings unavailable",
+  mcp: "MCP check failed",
+  scheduler: "scheduler check failed",
+  ai: "AI provider check failed",
+  mcpRuntime: "MCP runtime probe failed",
+} as const;
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 const startedAt = Date.now();
 const VERSION = process.env.npm_package_version ?? "0.1.0";
@@ -64,8 +88,8 @@ export const deepHandler: RequestHandler = async (_req, res) => {
     await prisma.$queryRawUnsafe("SELECT 1");
     checks.database = { status: "ok", latencyMs: Date.now() - dbStart };
   } catch (err) {
-    log.error("Database health check failed", { error: (err as Error).message });
-    checks.database = { status: "error", message: (err as Error).message };
+    log.error("Database health check failed", { error: errorText(err) });
+    checks.database = { status: "error", message: HEALTH_CHECK_MESSAGES.database };
   }
 
   const hasVaultKey =
@@ -110,8 +134,8 @@ export const deepHandler: RequestHandler = async (_req, res) => {
       }
     }
   } catch (err) {
-    log.warn("MCP health check failed", { error: (err as Error).message });
-    checks.mcp = { status: "degraded", message: (err as Error).message };
+    log.warn("MCP health check failed", { error: errorText(err) });
+    checks.mcp = { status: "degraded", message: HEALTH_CHECK_MESSAGES.mcp };
   }
 
   // Scheduler subsystem (Phase 11) — deep check confirms the scheduler is
@@ -148,7 +172,8 @@ export const deepHandler: RequestHandler = async (_req, res) => {
         : { status: h.status, message: `queue=${h.queueDepth} running=${h.running}` };
     }
   } catch (err) {
-    checks.scheduler = { status: "degraded", message: (err as Error).message };
+    log.warn("Scheduler health check failed", { error: errorText(err) });
+    checks.scheduler = { status: "degraded", message: HEALTH_CHECK_MESSAGES.scheduler };
   }
 
   // AI provider reachability — skipped in offline mode so /readyz stays cheap.
@@ -168,8 +193,8 @@ export const deepHandler: RequestHandler = async (_req, res) => {
         : { status: "degraded", message: `${cfg.provider} unreachable` };
     }
   } catch (err) {
-    log.warn("AI health check failed", { error: (err as Error).message });
-    checks.ai = { status: "degraded", message: (err as Error).message };
+    log.warn("AI health check failed", { error: errorText(err) });
+    checks.ai = { status: "degraded", message: HEALTH_CHECK_MESSAGES.ai };
   }
 
   // Embeddings backend (issue #783). READINESS, not decoration: an embedder that
@@ -186,10 +211,12 @@ export const deepHandler: RequestHandler = async (_req, res) => {
     const { getEmbedder } = await import("../lib/rag/embedder.js");
     const health = getEmbedder().snapshot();
     if (health.status === "error") {
-      checks.embeddings = {
-        status: "error",
-        message: `${health.backend}: ${health.error ?? "unavailable"}`,
-      };
+      // #121 — the load error names hosts and ports; log it, never return it.
+      log.error("Embeddings health check failed", {
+        backend: health.backend,
+        error: health.error ?? "unavailable",
+      });
+      checks.embeddings = { status: "error", message: HEALTH_CHECK_MESSAGES.embeddings };
     } else if (health.fellBack) {
       checks.embeddings = {
         status: "degraded",
@@ -206,7 +233,8 @@ export const deepHandler: RequestHandler = async (_req, res) => {
       };
     }
   } catch (err) {
-    checks.embeddings = { status: "error", message: (err as Error).message };
+    log.error("Embeddings health check failed", { error: errorText(err) });
+    checks.embeddings = { status: "error", message: HEALTH_CHECK_MESSAGES.embeddings };
   }
 
   // Issue #330 — MCP runtime substrate probe (network, wrapper image cache,
@@ -217,13 +245,20 @@ export const deepHandler: RequestHandler = async (_req, res) => {
     const probe = await probeMCPRuntime();
     const summary = probe.checks.map((c) => `${c.name}=${c.status}`).join(" ");
     if (probe.status === "fail") {
+      // #121 — a sub-check's `detail` can hold a daemon error or a kubeconfig
+      // context name; it goes to the log, and the public body keeps name+status.
+      log.warn("MCP runtime probe failed", { checks: probe.checks });
       checks.mcpRuntime = { status: "degraded", message: summary };
     } else {
       checks.mcpRuntime = { status: "ok", message: summary };
     }
-    mcpRuntimeDetail = probe;
+    mcpRuntimeDetail = {
+      ...probe,
+      checks: probe.checks.map((c) => ({ name: c.name, status: c.status })),
+    };
   } catch (err) {
-    checks.mcpRuntime = { status: "degraded", message: (err as Error).message };
+    log.warn("MCP runtime probe failed", { error: errorText(err) });
+    checks.mcpRuntime = { status: "degraded", message: HEALTH_CHECK_MESSAGES.mcpRuntime };
   }
 
   const overall: DeepHealthCheck["status"] = Object.values(checks).every((c) => c.status === "ok")

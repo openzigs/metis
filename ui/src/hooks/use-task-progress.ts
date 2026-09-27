@@ -19,7 +19,7 @@
  * the poll. No new bus kind, no `job:lifecycle` bridge (independent of #419).
  *
  * The browser socket is loosely typed, so events are subscribed via the
- * `socket.on("name" as never, handler as never)` escape hatch used elsewhere in
+ * `socket.on(<event> as never, handler as never)` escape hatch used elsewhere in
  * the UI (see `use-job-events.ts` / `use-connector-events.ts`).
  */
 import { useEffect, useRef, useState } from "react";

@@ -660,8 +660,10 @@ jobs:
 
       # Issue #112 — prove the #93 config-secret upsert on real Postgres: save →
       # clear → save revives the SAME soft-deleted row (the unique `secrets.name`
-      # still holds it), and two concurrent first saves leave one row. The unit
-      # tests model the index and the soft-delete by hand; this runs the real one.
+      # still holds it). #122 — independent VaultService writers racing first saves
+      # of one name all succeed and leave one row; a control arm proves the harness
+      # really races. Postgres runs the upsert as one ON CONFLICT statement, so the
+      # vault's retry-on-P2002 is NOT reached here (its unit test covers it).
       - name: Prove config secret save/clear/save on real Postgres
         working-directory: server
         run: pnpm test:integration config-secret-vault-postgres

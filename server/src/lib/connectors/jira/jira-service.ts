@@ -14,8 +14,9 @@ import type {
   JiraIssueDetail,
   JiraSearchRequest,
 } from "@metis/shared";
+import { ulid } from "ulid";
 import { prisma } from "../../prisma.js";
-import { getVaultService } from "../../vault/vault-service.js";
+import { getVaultService, SecretNotFoundError } from "../../vault/vault-service.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { ConnectorError } from "../types.js";
@@ -84,6 +85,51 @@ async function buildClient(row: JiraRow): Promise<JiraClient> {
 
 // ---- CRUD (#560) -----------------------------------------------------------
 
+/**
+ * #106 — a vault label for a NEW Jira secret. `Secret.name` is `@unique` and
+ * vault deletes are soft, so a name derived only from project + connection label
+ * can already be taken: by a soft-deleted secret, by the secret of a connection
+ * that was renamed away from this label, or by another label that sanitizes to
+ * the same string ("a b" and "a-b"). Creating under it 500'd on the unique
+ * index. A per-secret suffix makes a create unable to collide, and — unlike an
+ * upsert on the shared name — never overwrites another connection's live token.
+ */
+function newJiraSecretLabel(kind: "jira" | "jira-ca", projectId: string, label: string): string {
+  return `${kind}-${projectId}-${label}`.replace(/[^a-zA-Z0-9_.-]/g, "-") + `-${ulid()}`;
+}
+
+/**
+ * #106 — write `value` into the connection's secret `secretId` in place when it
+ * is still live; otherwise (none yet, or soft-deleted) create a new one under a
+ * collision-free label. Returns the NEW secret's id, or `null` when rotated.
+ *
+ * The liveness check IS the rotation: `rotate` updates the one row by id and
+ * refuses a soft-deleted one, so there is no list of every project secret and
+ * no window between a check and the write for a delete to slip into.
+ */
+async function rotateOrReplace(
+  secretId: string | null,
+  value: string,
+  fresh: { kind: "jira" | "jira-ca"; projectId: string; label: string; description: string },
+): Promise<string | null> {
+  const vault = getVaultService();
+  if (secretId) {
+    try {
+      await vault.rotate(secretId, value);
+      return null;
+    } catch (err) {
+      if (!(err instanceof SecretNotFoundError)) throw err;
+    }
+  }
+  const created = await vault.create(
+    newJiraSecretLabel(fresh.kind, fresh.projectId, fresh.label),
+    value,
+    "project",
+    { description: fresh.description },
+  );
+  return created.id;
+}
+
 export async function listJiraConnections(projectId: string): Promise<JiraConnectionDetail[]> {
   const rows = await prisma.jiraConnection.findMany({
     where: { projectId, deletedAt: null },
@@ -116,7 +162,7 @@ export async function createJiraConnection(
 
   // Store the API token in vault
   const vault = getVaultService();
-  const secretLabel = `jira-${projectId}-${input.label}`.replace(/[^a-zA-Z0-9_.-]/g, "-");
+  const secretLabel = newJiraSecretLabel("jira", projectId, input.label);
   const secret = await vault.create(secretLabel, input.apiToken, "project", {
     description: `Jira ${input.edition} API token for ${input.label}`,
   });
@@ -124,7 +170,7 @@ export async function createJiraConnection(
   // Store TLS CA cert in vault if provided
   let tlsCaSecretId: string | null = null;
   if (input.tlsCaCert) {
-    const caLabel = `jira-ca-${projectId}-${input.label}`.replace(/[^a-zA-Z0-9_.-]/g, "-");
+    const caLabel = newJiraSecretLabel("jira-ca", projectId, input.label);
     const caSecret = await vault.create(caLabel, input.tlsCaCert, "project", {
       description: `TLS CA cert for Jira ${input.label}`,
     });
@@ -174,38 +220,49 @@ export async function updateJiraConnection(
   if (input.tlsRejectUnauthorized !== undefined)
     data.tlsRejectUnauthorized = input.tlsRejectUnauthorized;
 
-  // Rotate secret if new apiToken provided
+  // #106 — rotate the connection's OWN secrets in place. Re-creating one under
+  // the same derived name hit `Secret.name @unique` and 500'd; rotating keeps
+  // the id, so nothing is orphaned. A secret deleted out from under the
+  // connection (e.g. from the vault admin page) is replaced with a new one
+  // instead, since rotating a soft-deleted row would leave it unreadable.
+  // Secrets rotated in place leave no key in `data`, so the audit names them here.
+  const rotated: string[] = [];
+  const label = input.label ?? existing.label;
   if (input.apiToken) {
-    const vault = getVaultService();
-    const secretLabel = `jira-${existing.projectId}-${input.label ?? existing.label}`.replace(
-      /[^a-zA-Z0-9_.-]/g,
-      "-",
-    );
-    const secret = await vault.create(secretLabel, input.apiToken, "project", {
-      description: `Jira ${input.edition ?? existing.edition} API token (rotated)`,
+    const replaced = await rotateOrReplace(existing.secretId, input.apiToken, {
+      kind: "jira",
+      projectId: existing.projectId,
+      label,
+      description: `Jira ${input.edition ?? existing.edition} API token for ${label}`,
     });
-    data.secretId = secret.id;
+    if (replaced) data.secretId = replaced;
+    else rotated.push("apiToken");
   }
 
   // Rotate TLS CA cert if provided
   if (input.tlsCaCert !== undefined) {
     if (input.tlsCaCert) {
-      const vault = getVaultService();
-      const caLabel = `jira-ca-${existing.projectId}-${input.label ?? existing.label}`.replace(
-        /[^a-zA-Z0-9_.-]/g,
-        "-",
-      );
-      const caSecret = await vault.create(caLabel, input.tlsCaCert, "project", {
-        description: `TLS CA cert for Jira ${input.label ?? existing.label} (rotated)`,
+      const replaced = await rotateOrReplace(existing.tlsCaSecretId, input.tlsCaCert, {
+        kind: "jira-ca",
+        projectId: existing.projectId,
+        label,
+        description: `TLS CA cert for Jira ${label}`,
       });
-      data.tlsCaSecretId = caSecret.id;
+      if (replaced) data.tlsCaSecretId = replaced;
+      else rotated.push("tlsCaCert");
     } else {
       data.tlsCaSecretId = null;
     }
   }
 
   // Reset status on connection-altering changes
-  if (data.baseUrl || data.secretId || data.edition || data.username) {
+  if (
+    data.baseUrl ||
+    data.secretId ||
+    rotated.includes("apiToken") ||
+    data.edition ||
+    data.username
+  ) {
     data.status = "untested";
     data.errorMessage = null;
   }
@@ -216,7 +273,7 @@ export async function updateJiraConnection(
     actor: { id: actorId },
     action: "connector.jira.update",
     target: { type: "jira_connection", id },
-    metadata: { projectId: existing.projectId, fields: Object.keys(data) },
+    metadata: { projectId: existing.projectId, fields: [...Object.keys(data), ...rotated] },
   });
 
   return toApi(row);
