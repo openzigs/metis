@@ -164,7 +164,7 @@ describe("#246 — a section whose fact-check fails is never published as verifi
     expect(failed[0].message).not.toContain("invalid model");
     expect(deriveDocStatus(result.warnings)).toBe("degraded");
     expect(summarizeWarnings(result.warnings)).toContain(
-      `${groups.length} section(s) could not be fact-checked because the grounding check failed`,
+      `${groups.length} section(s) could not be fully fact-checked because the grounding check failed`,
     );
     // A 4xx is not retried: one judge call per section.
     expect(judgeCalls()).toBe(groups.length);
@@ -177,7 +177,7 @@ describe("#246 — a section whose fact-check fails is never published as verifi
     });
     const result = await synth(router(provider, docsGenTuning("local", "gemma3:12b")));
     const summary = summarizeWarnings(result.warnings);
-    expect(summary).toContain("1 section(s) could not be fact-checked");
+    expect(summary).toContain("1 section(s) could not be fully fact-checked");
     expect(result.warnings.filter((w) => w.kind === "grounding-failed")).toHaveLength(1);
   });
 
@@ -314,15 +314,25 @@ describe("#247 / #180 — grounding calls on the real Anthropic provider", () =>
     bodies.length = 0;
     __resetModelCatalogForTests();
     vi.stubEnv("ANTHROPIC_MODEL", "claude-sonnet-4-6");
+    // No ambient endpoint: each test names the one it serves (PR #252 review).
+    vi.stubEnv("ANTHROPIC_BASE_URL", "");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
-  const anthropicRouter = () =>
+  const anthropicRouter = (model = "claude-sonnet-4-6") =>
     router(
-      new AnthropicProvider({ apiKey: "k", baseUrl: base, model: "claude-sonnet-4-6" }),
-      docsGenTuning("anthropic", "claude-sonnet-4-6"),
+      new AnthropicProvider({ apiKey: "k", baseUrl: base, model }),
+      docsGenTuning("anthropic", model),
     );
+  // `ANTHROPIC_BASE_URL` is what tells METIS which model SERVES a `claude-*`
+  // name; the provider under test still talks to the loopback server.
+  const servedByDeepSeek = () =>
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic");
 
   it("claim extraction and the judge send thinking disabled; sections do not", async () => {
+    servedByDeepSeek();
     const result = await synth(anthropicRouter());
     expect(result.warnings).toEqual([]);
     const claims = bodies.filter((b) => kindOf(b) === "claims");
@@ -340,7 +350,36 @@ describe("#247 / #180 — grounding calls on the real Anthropic provider", () =>
     for (const b of sections) expect(b).not.toHaveProperty("thinking");
   });
 
+  it("real Claude on a non-DeepSeek endpoint is sent no thinking field on any call", async () => {
+    // PR #252 review — Claude models that reject `thinking: {type: "disabled"}`
+    // with a 400 must be sent the request they were sent before #247.
+    vi.stubEnv("ANTHROPIC_MODEL", "claude-fable-5");
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://api.anthropic.com");
+    const result = await synth(anthropicRouter("claude-fable-5"));
+    expect(result.warnings).toEqual([]);
+    const claims = bodies.filter((b) => kindOf(b) === "claims");
+    const verdicts = bodies.filter((b) => kindOf(b) === "verdicts");
+    expect(claims).toHaveLength(groups.length);
+    expect(verdicts).toHaveLength(groups.length);
+    expect(new Set(verdicts.map((b) => b.model))).toEqual(new Set(["claude-fable-5"]));
+    for (const b of bodies) expect(b).not.toHaveProperty("thinking");
+  });
+
+  it("decides per model: only the call whose model thinks by default is sent it", async () => {
+    // The judge is a DeepSeek model by name; the claim model is real Claude
+    // (Haiku) on Anthropic's own endpoint. Two calls, two answers.
+    vi.stubEnv("DOCS_GEN_ANTHROPIC_JUDGE_MODEL", "deepseek-v4-pro");
+    await synth(anthropicRouter());
+    const claims = bodies.filter((b) => kindOf(b) === "claims");
+    const verdicts = bodies.filter((b) => kindOf(b) === "verdicts");
+    expect(claims.length).toBeGreaterThan(0);
+    expect(verdicts.length).toBeGreaterThan(0);
+    for (const b of claims) expect(b).not.toHaveProperty("thinking");
+    for (const b of verdicts) expect(b.thinking).toEqual({ type: "disabled" });
+  });
+
   it("DOCS_GEN_ANTHROPIC_GROUNDING_THINKING=1 keeps the model's default thinking", async () => {
+    servedByDeepSeek();
     vi.stubEnv("DOCS_GEN_ANTHROPIC_GROUNDING_THINKING", "1");
     await synth(anthropicRouter());
     expect(bodies.length).toBeGreaterThan(0);
@@ -356,7 +395,7 @@ describe("#247 / #180 — grounding calls on the real Anthropic provider", () =>
       .map(([row]) => row)
       .filter((row) => String(row.sessionId).startsWith("docs-grounding-"));
     expect(grounding).toHaveLength(groups.length * 2);
-    // Billed to the model that answered (the claim model is Haiku by default).
+    // Billed under the model asked for (the claim model is Haiku by default).
     expect(new Set(grounding.map((r) => r.model))).toEqual(
       new Set(["claude-haiku-4-5", "claude-sonnet-4-6"]),
     );

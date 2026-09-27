@@ -27,7 +27,9 @@ vi.mock("../finops/index.js", async (importOriginal) => {
   return { ...actual, recordUsage: vi.fn() };
 });
 
+import { AIProviderError } from "../ai/errors.js";
 import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../ai/types.js";
+import { summarizeWarnings } from "./grounding/degraded-warnings.js";
 import type { GroundingContext } from "./grounding/grounding-context.js";
 import type { FaithfulnessResult } from "./grounding/citation-validator.js";
 import {
@@ -927,6 +929,56 @@ describe("per-batch grounding", () => {
     expect(warning.message).toContain('"p2", "p3" could not be checked');
     expect(warning.message).toContain("covers only 1 of its 2 parts");
     expect(warning.message).not.toContain('"p0"');
+  });
+
+  // PR #252 review — a check that THREW on one batch of an otherwise verified
+  // section is a failed check: counted, and never recorded for reuse.
+  it("a batch whose check throws beside a verified one → grounding-failed, counted, not reused", async () => {
+    let n = 0;
+    let throwOn = 2;
+    scoreFaithfulnessMock.mockImplementation(async (section: string) => {
+      if (section !== RULES.label) return verified(1, 1);
+      n += 1;
+      if (n === throwOn) {
+        throw new AIProviderError("anthropic chat failed (Error): 503 overloaded", 503);
+      }
+      return verified(10, 10);
+    });
+    const runOnce = () =>
+      synthesizeFinalDocument(
+        pairs(4),
+        META,
+        "business-requirements",
+        "BRD",
+        routerFor(fakeModel()),
+        "p1",
+        ragGrounding(),
+        undefined,
+        undefined,
+        undefined,
+        { effectiveConfigHash: "cfg" },
+      );
+    // Control: with every check passing, the section IS recorded for reuse.
+    throwOn = -1;
+    const clean = await runOnce();
+    expect(clean.sectionSynthesis?.records.map((r) => r.sectionId)).toContain("rules");
+    n = 0;
+    throwOn = 2;
+    const result = await runOnce();
+    const failed = result.warnings.filter(
+      (w) => w.section === RULES.label && w.kind === "grounding-failed",
+    );
+    expect(failed).toHaveLength(1);
+    expect(failed[0].message).toContain("only partly fact-checked");
+    expect(failed[0].message).toContain('"p2", "p3"');
+    expect(failed[0].message).toContain("covers only 1 of its 2 parts");
+    expect(failed[0].message).toContain("5xx");
+    expect(failed[0].message).not.toContain("overloaded");
+    expect(summarizeWarnings(result.warnings)).toContain(
+      "1 section(s) could not be fully fact-checked",
+    );
+    const recorded = result.sectionSynthesis?.records.map((r) => r.sectionId) ?? [];
+    expect(recorded).not.toContain("rules");
   });
 
   it("says which part went unchecked when a batch comes back unverified", async () => {

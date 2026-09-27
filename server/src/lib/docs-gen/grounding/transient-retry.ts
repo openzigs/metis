@@ -6,8 +6,9 @@
  * its fact-check (`anthropic chat failed (TypeError): terminated`). Transient
  * failures — a stream the peer closed mid-reply, a 5xx, a 429, a timeout — are
  * now retried with exponential backoff before the section is given up on.
- * Anything else (a 4xx configuration error, a cancelled run, a first-token
- * timeout) is thrown at once: asking again would fail the same way.
+ * Anything else (a 4xx, a METIS configuration error such as a missing key, a
+ * cancelled run, a first-token timeout, a plain code error the Anthropic
+ * adapter stamped 502) is thrown at once: asking again would fail the same way.
  *
  * This sits ABOVE the providers' own retries (the Anthropic SDK retries some
  * request-level failures; the OpenAI-compatible client retries 429/503 and
@@ -16,6 +17,7 @@
  * ({@link DEFAULT_GROUNDING_ATTEMPTS} tries) so the product of the two layers
  * stays bounded too.
  */
+import { AIError } from "../../ai/errors.js";
 import { createChildLogger } from "../../logger.js";
 
 const log = createChildLogger("docs-gen:grounding-retry");
@@ -34,6 +36,7 @@ export type GroundingErrorClass =
   | "rate-limited"
   | "server-error"
   | "client-error"
+  | "config-error"
   | "cancelled"
   | "other";
 
@@ -59,18 +62,48 @@ const errorText = (err: unknown): string => {
   return `${err.name} ${err.message} ${(err as { code?: string }).code ?? ""}${causeText}`;
 };
 
-/** A numeric HTTP status carried on the error itself, or stated as "returned NNN". */
+/**
+ * The Anthropic adapter wraps every SDK error as
+ * `anthropic <op> failed (<name>): <message>` and, when the original carried
+ * no HTTP status, STAMPS 502 on it (`anthropic-provider.ts` `mapError`). The
+ * SDK's own HTTP errors start their message with the status
+ * (`APIError.makeMessage`), so a wrapped message that does not is one whose
+ * 502 is the stamp, not the server's answer.
+ */
+const ANTHROPIC_WRAPPED = /^anthropic \S+ failed \(([\w$]+)\): ([\s\S]*)$/;
+
+function wrappedOf(err: unknown): { name: string; message: string } | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const m = ANTHROPIC_WRAPPED.exec(err.message);
+  return m ? { name: m[1], message: m[2] } : undefined;
+}
+
+/**
+ * A numeric HTTP status carried on the error itself, or stated as "returned
+ * NNN". A status the Anthropic adapter stamped on an error that had none is
+ * not a status (PR #252 review): a plain code bug is not a 5xx.
+ */
 function statusOf(err: unknown): number | undefined {
   if (err && typeof err === "object") {
     const s = (err as { status?: unknown }).status;
-    if (typeof s === "number" && s >= 100 && s <= 599) return s;
+    const wrapped = wrappedOf(err);
+    // Only the adapter's default (502) can be a stamp; any other status on a
+    // wrapped error was read off the SDK error itself.
+    const stamped = s === 502 && wrapped !== undefined && !/^\d{3}\b/.test(wrapped.message);
+    if (typeof s === "number" && s >= 100 && s <= 599 && !stamped) return s;
   }
   const m = /\breturned (\d{3})\b/.exec(errorText(err));
   return m ? Number(m[1]) : undefined;
 }
 
+/** METIS errors that say the provider is not usable as configured — never transient. */
+const CONFIG_ERROR_CODES = new Set(["AI_CONFIG_INVALID", "AI_PROVIDER_RETIRED", "AI_OFFLINE"]);
+const CONFIG_ERROR_NAMES = new Set(["AIConfigError", "AIProviderRetiredError", "AIOfflineError"]);
+/** Error names that mean the call was aborted on purpose. */
+const ABORT_NAMES = new Set(["AbortError", "APIUserAbortError", "TaskAbortError"]);
+
 const TERMINATED =
-  /\bterminated\b|ECONNRESET|socket hang up|other side closed|EPIPE|UND_ERR_SOCKET|premature close|fetch failed|ECONNREFUSED|EAI_AGAIN/i;
+  /\bterminated\b|ECONNRESET|socket hang up|other side closed|EPIPE|UND_ERR_SOCKET|premature close|fetch failed|ECONNREFUSED|EAI_AGAIN|\bConnection error\b/i;
 const TIMEOUT = /ETIMEDOUT|timed out|\btimeout\b|TimeoutError/i;
 
 /**
@@ -80,22 +113,36 @@ const TIMEOUT = /ETIMEDOUT|timed out|\btimeout\b|TimeoutError/i;
  */
 export function classifyGroundingError(err: unknown, signal?: AbortSignal): GroundingErrorClass {
   if (signal?.aborted) return "cancelled";
-  if (err instanceof Error && (err.name === "AbortError" || err.name === "APIUserAbortError")) {
+  const wrapped = wrappedOf(err);
+  if (err instanceof AIError && err.code === "AI_CANCELLED") return "cancelled";
+  if (err instanceof Error && ABORT_NAMES.has(err.name)) return "cancelled";
+  if (
+    wrapped &&
+    (ABORT_NAMES.has(wrapped.name) || /^Request was aborted\b/.test(wrapped.message))
+  ) {
     return "cancelled";
   }
   // #111 — a first-token timeout is deliberately never re-sent: the identical
   // prompt repeats the whole prefill on a local runtime and times out the same way.
   if (err instanceof Error && err.name === "FirstTokenTimeoutError") return "other";
+  // PR #252 review — a missing key, a retired or offline provider: asking
+  // again fails the same way, whatever status the error carries (500/503).
+  if (err instanceof AIError && CONFIG_ERROR_CODES.has(err.code)) return "config-error";
+  if (wrapped && CONFIG_ERROR_NAMES.has(wrapped.name)) return "config-error";
+  const status = statusOf(err);
+  // An explicit 4xx is the server's answer and wins over any wording in the
+  // message (a 400 that mentions "timeout" is still a rejected request).
+  if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429) {
+    return "client-error";
+  }
   const text = errorText(err);
-  // A dropped stream is checked before the status: the Anthropic adapter
-  // stamps 502 on any error that carried no status of its own.
+  // A dropped stream is checked before a 5xx: the connection died, whatever
+  // the adapter labelled it.
   if (TERMINATED.test(text)) return "stream-terminated";
   if (TIMEOUT.test(text)) return "timeout";
-  const status = statusOf(err);
   if (status === 429) return "rate-limited";
   if (status === 408) return "timeout";
   if (status !== undefined && status >= 500) return "server-error";
-  if (status !== undefined && status >= 400) return "client-error";
   return "other";
 }
 
@@ -122,6 +169,8 @@ export function describeGroundingErrorClass(cls: GroundingErrorClass): string {
       return "the provider returned a server error (HTTP 5xx)";
     case "client-error":
       return "the provider rejected the request (HTTP 4xx — check the grounding model and credentials)";
+    case "config-error":
+      return "the AI provider is not usable as configured (check the provider settings and credentials)";
     case "cancelled":
       return "the run was cancelled";
     default:

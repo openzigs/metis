@@ -582,16 +582,26 @@ export function markWarningSampled(
  * read like a verified section. The message names the error CLASS only —
  * never the exception's text, which can carry a provider response body (#67).
  */
-export function groundingFailedWarning(section: string, errorClass: string): DocWarning {
-  return {
-    kind: "grounding-failed",
-    section,
-    message:
-      `Section "${section}" was NOT fact-checked: the grounding check failed (${errorClass}), ` +
+export function groundingFailedWarning(
+  section: string,
+  errorClass: string,
+  /**
+   * PR #252 review — a batched section where SOME batches' checks threw and
+   * others passed: it is partly verified, and says which part was not. Still
+   * `grounding-failed`, so it is counted and never recorded for reuse.
+   */
+  partial?: { modules: readonly string[]; checkedParts: number; totalParts: number },
+): DocWarning {
+  const message = partial
+    ? `Section "${section}" was only partly fact-checked: the grounding check failed ` +
+      `(${errorClass}) for the part written from ${nameModules(partial.modules)}, so its ` +
+      `faithfulness score covers only ${partial.checkedParts} of its ${partial.totalParts} parts ` +
+      `and none of that part's statements were verified against the source. Review that part ` +
+      `against the code before relying on it, or regenerate to run the check again.`
+    : `Section "${section}" was NOT fact-checked: the grounding check failed (${errorClass}), ` +
       `so none of its statements were verified against the source. Review it against the code ` +
-      `before relying on it, or regenerate to run the check again.`,
-    severity: "warning",
-  };
+      `before relying on it, or regenerate to run the check again.`;
+  return { kind: "grounding-failed", section, message, severity: "warning" };
 }
 
 /** The section label {@link groundingModeRunWarning} uses: it concerns the whole document. */
@@ -1183,7 +1193,7 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
     parts.push(`${notChecked} section(s) were not fact-checked (DOCS_GEN_GROUNDING=off)`);
   if (checkFailed > 0)
     parts.push(
-      `${checkFailed} section(s) could not be fact-checked because the grounding check failed — regenerate to retry`,
+      `${checkFailed} section(s) could not be fully fact-checked because the grounding check failed — regenerate to retry`,
     );
   if (spotChecked > 0)
     parts.push(`${spotChecked} section(s) were only spot-checked (DOCS_GEN_GROUNDING=sample)`);

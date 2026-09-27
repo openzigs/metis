@@ -37,7 +37,7 @@ describe("#246 groundingFailedWarning", () => {
       groundingFailedWarning("Integrations", "x"),
       groundingModeRunWarning({ mode: "sample", sampleRate: 0.25 })!,
     ]);
-    expect(summary).toContain("1 section(s) could not be fact-checked");
+    expect(summary).toContain("1 section(s) could not be fully fact-checked");
     expect(summary).toContain("1 section(s) were only spot-checked");
     expect(summary).toMatch(/^Needs review/);
   });

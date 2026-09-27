@@ -574,11 +574,14 @@ at the start of each document.
 **When a check fails (#246).** A claim-extraction or judge call that fails
 transiently — a stream dropped mid-reply, an HTTP 5xx or 429, a timeout — is
 retried up to three times in all with exponential backoff (0.5 s, then 1 s);
-a 4xx (a wrong grounding model, bad credentials) is not retried. A section
-whose check still fails is kept, with a `grounding-failed` ("NOT fact-checked")
-warning naming the error class, the document is `degraded`, the summary counts
-those sections on their own line apart from spot-checked ones, and the section
-is not recorded for reuse, so regenerating checks it again.
+a 4xx (a wrong grounding model, bad credentials), a METIS configuration error
+(a missing key, a retired or offline provider) and a plain code error are not
+retried. A section whose check still fails is kept, with a `grounding-failed`
+("NOT fact-checked") warning naming the error class, the document is
+`degraded`, the summary counts those sections on their own line apart from
+spot-checked ones, and the section is not recorded for reuse, so regenerating
+checks it again. A section written in batches where only some batches' checks
+failed gets the same `grounding-failed` warning, naming the unchecked part.
 
 **How the sample is drawn.** A section is split into passages (paragraphs,
 lists, tables, fenced blocks — headings travel with the passages under them)

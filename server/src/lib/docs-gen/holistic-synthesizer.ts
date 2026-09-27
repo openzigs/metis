@@ -68,6 +68,7 @@ import {
   resolveClaimMaxOutputTokens,
   resolveFactsMaxOutputTokens,
   resolveSectionMaxOutputTokens,
+  servedModelThinksByDefault,
 } from "./output-caps.js";
 import {
   FACT_SLICES,
@@ -393,9 +394,11 @@ export interface DocsGenTuning {
    * default on `anthropic`, where a model that thinks by default (DeepSeek's
    * Anthropic-compatible endpoint) drew its reasoning from those calls' output
    * caps — `DOCS_GEN_ANTHROPIC_GROUNDING_THINKING=1` turns thinking back on for
-   * quality experiments. Absent on `local` (thinking is already off there
-   * through {@link disableThinking}, #183/#187) and `bedrock`, whose requests
-   * are unchanged.
+   * quality experiments. Applied per call only when that call's model is
+   * served as one that thinks by default (`servedModelThinksByDefault`): real
+   * Claude models are sent no `thinking` field, as before. Absent on `local`
+   * (thinking is already off there through {@link disableThinking},
+   * #183/#187) and `bedrock`, whose requests are unchanged.
    */
   groundingDisableThinking?: boolean;
   /** When true, run an extra low-temp refine pass per section (slower, better). */
@@ -3494,6 +3497,8 @@ async function synthesizeBatchedSection(input: {
   const results: FaithfulnessResult[] = [];
   // Replies the pooled score does not cover: unverified, or scoring threw.
   const unchecked: typeof replies = [];
+  // The subset of `unchecked` whose scoring THREW (PR #252 review).
+  const threw: typeof replies = [];
   // #246 — the error class of each batch whose scoring threw.
   const scoringErrors: GroundingErrorClass[] = [];
   const policy = input.grounding ?? FULL_GROUNDING;
@@ -3521,6 +3526,7 @@ async function synthesizeBatchedSection(input: {
         if (!r.verified) unchecked.push(d);
       } catch (err) {
         unchecked.push(d);
+        threw.push(d);
         const errorClass = classifyGroundingError(err);
         scoringErrors.push(errorClass);
         log.warn("Faithfulness scoring failed for a section batch; batch unverified", {
@@ -3544,6 +3550,20 @@ async function synthesizeBatchedSection(input: {
         replies.length,
       ),
     );
+    // PR #252 review — a check that THREW on part of an otherwise verified
+    // section is a failed check, not merely an unverified part: it is counted
+    // in the "could not be fully fact-checked" line and, being
+    // `grounding-failed`, keeps the section out of the reuse store so the
+    // regenerate its warning asks for really runs the check again.
+    if (threw.length > 0) {
+      warnings.push(
+        groundingFailedWarning(group.label, describeGroundingErrorClass(scoringErrors[0]), {
+          modules: threw.flatMap(names),
+          checkedParts: replies.length - unchecked.length,
+          totalParts: replies.length,
+        }),
+      );
+    }
   }
   // #246 — no batch was verified and at least one check threw: the section was
   // not fact-checked, and says so (a pooled verified score keeps the
@@ -3773,8 +3793,14 @@ export async function synthesizeFinalDocument(
     // model the bundle's provider was built for, so each must carry its own
     // cap. Inheriting the provider's `defaultMaxTokens` would ask a Haiku-class
     // claim/judge model for a section-sized budget it rejects outright.
-    // #247 — thinking off on the grounding calls only (Anthropic by default).
-    const groundingThinkingOff = bundle.tuning.groundingDisableThinking === true;
+    // #247 — thinking off on the grounding calls only (Anthropic by default),
+    // and only for a model SERVED as one that thinks by default (DeepSeek's
+    // Anthropic-compatible endpoint), decided per model. Several real Claude
+    // models reject `thinking: {type: "disabled"}` with a 400, so a Claude model
+    // on api.anthropic.com is sent exactly the request it was sent before —
+    // the same rule `resolvePhase1Reasoning` applies (PR #252 review).
+    const groundingThinkingOff = (model: string): boolean =>
+      bundle.tuning.groundingDisableThinking === true && servedModelThinksByDefault(model);
     const claimExtractor = groundingActive
       ? new ClaimExtractor({
           provider: bundle.provider,
@@ -3783,7 +3809,7 @@ export async function synthesizeFinalDocument(
           // #152 — its own cap, not the section cap.
           maxTokens: resolveClaimMaxOutputTokens(bundle.tuning.claimModel),
           ...(claimFormat ? { responseFormat: claimFormat } : {}),
-          ...(groundingThinkingOff ? { disableThinking: true } : {}),
+          ...(groundingThinkingOff(bundle.tuning.claimModel) ? { disableThinking: true } : {}),
           onUsage: recordGroundingUsage,
         })
       : null;
@@ -3798,7 +3824,7 @@ export async function synthesizeFinalDocument(
           promptCaching: bundle.supportsCaching,
           maxTokens: resolveSectionMaxOutputTokens(bundle.tuning.judgeModel),
           ...(judgeFormat ? { responseFormat: judgeFormat } : {}),
-          ...(groundingThinkingOff ? { disableThinking: true } : {}),
+          ...(groundingThinkingOff(bundle.tuning.judgeModel) ? { disableThinking: true } : {}),
           onUsage: recordGroundingUsage,
         })
       : null;

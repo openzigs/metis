@@ -3,7 +3,13 @@
  * the backoff waits.
  */
 import { describe, expect, it, vi } from "vitest";
-import { AIProviderError } from "../../ai/errors.js";
+import {
+  AIConfigError,
+  AIError,
+  AIOfflineError,
+  AIProviderError,
+  AIProviderRetiredError,
+} from "../../ai/errors.js";
 import {
   abortableSleep,
   classifyGroundingError,
@@ -42,6 +48,34 @@ describe("classifyGroundingError", () => {
     [Object.assign(new Error("no first token"), { name: "FirstTokenTimeoutError" }), "other"],
     [new Error("something odd"), "other"],
     ["a string", "other"],
+    // PR #252 review — what the Anthropic adapter makes of each failure.
+    [new AIProviderError("anthropic chat failed (Error): 502 Bad gateway", 502), "server-error"],
+    [
+      new AIProviderError("anthropic chat failed (Error): Connection error.", 502),
+      "stream-terminated",
+    ],
+    [new AIProviderError("anthropic chat failed (Error): Request timed out.", 502), "timeout"],
+    [
+      new AIProviderError("anthropic chat failed (Error): 400 thinking.type: disabled", 400),
+      "client-error",
+    ],
+    // A code bug with no status of its own: the stamped 502 is not a 5xx.
+    [
+      new AIProviderError(
+        "anthropic chat failed (TypeError): Cannot read properties of undefined",
+        502,
+      ),
+      "other",
+    ],
+    [new AIProviderError("anthropic chat failed (Error): Request was aborted.", 502), "cancelled"],
+    [new AIProviderError("anthropic chat failed (AIConfigError): no API key", 500), "config-error"],
+    // An explicit 4xx wins over the wording of its message.
+    [status(400, "budget_tokens timeout must be positive"), "client-error"],
+    [new Error("bedrock-gateway returned 422: request timed out field invalid"), "client-error"],
+    [new AIConfigError("anthropic provider requires ANTHROPIC_API_KEY"), "config-error"],
+    [new AIProviderRetiredError("copilot"), "config-error"],
+    [new AIOfflineError(), "config-error"],
+    [new AIError("AI_CANCELLED", "cancelled", 499), "cancelled"],
   ])("%s → %s", (err, expected) => {
     expect(classifyGroundingError(err)).toBe(expected);
   });
@@ -61,6 +95,7 @@ describe("classifyGroundingError", () => {
           "rate-limited",
           "server-error",
           "client-error",
+          "config-error",
           "cancelled",
           "other",
         ] as const
@@ -76,6 +111,8 @@ describe("classifyGroundingError", () => {
     expect(describeGroundingErrorClass("timeout")).toContain("timed out");
     expect(describeGroundingErrorClass("cancelled")).toContain("cancelled");
     expect(describeGroundingErrorClass("other")).toBe("the grounding call failed");
+    expect(describeGroundingErrorClass("config-error")).toContain("not usable as configured");
+    expect(describeGroundingErrorClass("config-error")).not.toContain("5xx");
   });
 });
 
@@ -97,6 +134,21 @@ describe("withTransientRetry", () => {
 
   it("does not retry a 4xx configuration error", async () => {
     const err = status(400, "invalid model");
+    const call = vi.fn().mockRejectedValue(err);
+    const sleep = vi.fn(async () => {});
+    await expect(withTransientRetry(call, ctx, { sleep })).rejects.toBe(err);
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a missing API key", new AIConfigError("anthropic provider requires ANTHROPIC_API_KEY")],
+    [
+      "a code bug the Anthropic adapter stamped 502",
+      new AIProviderError("anthropic chat failed (TypeError): x is not a function", 502),
+    ],
+    ["a 400 whose message says timeout", status(400, "timeout must be an integer")],
+  ])("does not retry %s (PR #252 review)", async (_label, err) => {
     const call = vi.fn().mockRejectedValue(err);
     const sleep = vi.fn(async () => {});
     await expect(withTransientRetry(call, ctx, { sleep })).rejects.toBe(err);

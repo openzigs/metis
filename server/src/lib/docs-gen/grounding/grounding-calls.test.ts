@@ -131,7 +131,7 @@ describe("#180 usage of the grounding calls", () => {
       {
         stage: "claims",
         provider: "anthropic",
-        model: "grounding-model",
+        model: "claim-model",
         inputTokens: 100,
         outputTokens: 20,
         cacheReadTokens: 7,
@@ -169,7 +169,24 @@ describe("#180 usage of the grounding calls", () => {
     expect(events).toHaveLength(p.chat.mock.calls.length);
   });
 
-  it("falls back to the requested model and the provider key when the reply names none", async () => {
+  it("bills the model it asked for, as section calls do, not the name the reply echoes", async () => {
+    // PR #252 review — an endpoint serving a `claude-*` name as another model
+    // echoes the served name; billing that would price one run under two names.
+    const events: GroundingUsageEvent[] = [];
+    const p = provider(async () => reply(verdictsReply, { model: "deepseek-v4-flash" }));
+    await new FaithfulnessJudge({
+      provider: p,
+      model: "claude-sonnet-4-6",
+      onUsage: (e) => events.push(e),
+    }).judge([CLAIM], ctx);
+    expect(events.map((e) => e.model)).toEqual(["claude-sonnet-4-6"]);
+    // With no model of its own, the judge runs — and bills — the provider's.
+    const bare: GroundingUsageEvent[] = [];
+    await new FaithfulnessJudge({ provider: p, onUsage: (e) => bare.push(e) }).judge([CLAIM], ctx);
+    expect(bare.map((e) => e.model)).toEqual(["section-model"]);
+  });
+
+  it("uses the requested model and the provider key when the reply names none", async () => {
     const events: GroundingUsageEvent[] = [];
     const p = provider(async () =>
       reply(claimsReply, { model: "", provider: "" as ChatResponse["provider"] }),
