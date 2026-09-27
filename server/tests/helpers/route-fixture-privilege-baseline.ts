@@ -54,10 +54,6 @@ export const ROUTE_FIXTURE_BASELINE: readonly FixtureBaselineEntry[] = [
     note: "not project-scoped — ACP token scope issuance; asserts scopes directly",
   },
   {
-    file: "src/routes/ai-sdk.messages.test.ts",
-    note: "not project-scoped — AI SDK message shape, no project-owned data",
-  },
-  {
     file: "src/routes/notification-preferences.test.ts",
     note: "not project-scoped — /users/me/** self-scoped preferences",
   },

@@ -25,6 +25,8 @@ const skillService = {
   remove: vi.fn(),
 };
 const sessionRuntime = { loadSkillIntoSession: vi.fn() };
+// #305 — `loadAuthorizedSession` reads the session before SessionRuntime runs.
+const sessionFindFirst = vi.hoisted(() => vi.fn());
 const searchLibraryMock = vi.fn();
 const importSkillsMock = vi.fn();
 
@@ -41,6 +43,7 @@ vi.mock("../src/lib/prisma.js", async () => {
     },
     userRole: {},
     auditLog: { create: vi.fn(async () => ({})) },
+    aISession: { findFirst: sessionFindFirst },
   });
   return { prisma };
 });
@@ -91,6 +94,11 @@ beforeAll(() => {
 beforeEach(async () => {
   for (const fn of Object.values(skillService)) fn.mockReset();
   sessionRuntime.loadSkillIntoSession.mockReset();
+  sessionFindFirst.mockReset();
+  sessionFindFirst.mockImplementation(
+    async ({ where }: { where: { id: string; userId: string } }) =>
+      where.id === "sess_1" ? { id: "sess_1", userId: where.userId, projectId: null } : null,
+  );
   searchLibraryMock.mockReset();
   importSkillsMock.mockReset();
   app = createApp();
@@ -301,5 +309,15 @@ describe("POST /api/skills/:id/load", () => {
       .send({ sessionId: "sess_1" });
     expect(res.status).toBe(200);
     expect(res.body.data.alreadyLoaded).toBe(false);
+  });
+
+  it("#305 — a session the caller cannot open answers 404 and loads nothing", async () => {
+    const res = await request(app)
+      .post("/api/skills/s1/load")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ sessionId: "someone-elses-session" });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("AI_SESSION_NOT_FOUND");
+    expect(sessionRuntime.loadSkillIntoSession).not.toHaveBeenCalled();
   });
 });

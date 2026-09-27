@@ -15,6 +15,9 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireRunProjectAccess } from "../middleware/require-run-project-access.js";
 import { listRuns } from "../lib/replay/runs-service.js";
+import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { isAdminActor, listAccessibleProjectIds } from "../lib/acp/authz.js";
+import { AppError } from "../middleware/error-handler.js";
 import { getSandboxSessionRepo } from "../lib/sandbox/repos/sandbox-session.repo.js";
 
 function ok<T>(data: T): ApiResponse<T> {
@@ -31,13 +34,21 @@ function parseDate(value: unknown): Date | undefined {
 export function runsRouter(): Router {
   const r = Router();
 
+  // #305 — an explicit `?projectId=` must name a project the caller can reach
+  // (404 otherwise); every non-admin list, filtered or not, is narrowed to the
+  // caller's projects, so `?sessionId=` cannot surface another tenant's runs.
   r.get("/", requireAuth, requirePermission("analysis.read"), async (req, res) => {
+    if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
     const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
     const from = parseDate(req.query.from);
     const to = parseDate(req.query.to);
     const limit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : undefined;
-    const items = await listRuns({ projectId, sessionId, from, to, limit });
+    if (projectId) await assertProjectAccess(req.user, projectId);
+    const accessibleProjectIds = isAdminActor(req.user)
+      ? undefined
+      : await listAccessibleProjectIds(req.user);
+    const items = await listRuns({ projectId, sessionId, from, to, limit, accessibleProjectIds });
     res.json(ok({ items }));
   });
 

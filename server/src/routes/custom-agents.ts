@@ -227,6 +227,11 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
     }
     if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
     await assertWorkspaceAdminForProject(req.user, parsed.data.projectId);
+    // #305 — the caller must also reach the AGENT's own project, not just the
+    // target one: an agent id from another workspace answers 404 exactly like
+    // an unknown id, so a foreign agent can never be enabled (and then read
+    // back) through a project the caller administers. Built-ins stay open.
+    await resolveForRead(req);
     try {
       const row = await setAgentEnabledForProject(
         String(req.params.id),

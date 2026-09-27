@@ -25,6 +25,7 @@ import { FrontmatterError } from "../lib/library/frontmatter.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
+import { loadAuthorizedSession } from "../lib/ai/conversation/session-access.js";
 
 function ok<T>(data: T): { success: true; data: T } {
   return { success: true, data };
@@ -269,6 +270,9 @@ export function skillsRouter(): Router {
     if (!sessionId.success) {
       throw new AppError(400, "VALIDATION_ERROR", "sessionId required");
     }
+    // #305 — the target session must be the caller's AND its project still
+    // reachable (`loadAuthorizedSession`), before any skill lookup or write.
+    await loadAuthorizedSession(req.user, sessionId.data.sessionId);
     try {
       const result = await getSessionRuntime().loadSkillIntoSession(
         { sessionId: sessionId.data.sessionId, skillId: String(req.params.id) },

@@ -32,6 +32,10 @@ type Session = {
 };
 
 const sessions: Session[] = [];
+// #305 — vault secret ownership rows (`Secret.createdById`) the BYOK check reads.
+const secretRows = vi.hoisted(
+  () => [] as Array<{ id: string; createdById: string | null; deletedAt: Date | null }>,
+);
 const tokenRows: Array<Record<string, unknown>> = [];
 const approvalRows: Array<Record<string, unknown>> = [];
 
@@ -89,6 +93,12 @@ vi.mock("../src/lib/prisma.js", async () => {
       findMany: vi.fn(async () => approvalRows),
     },
     auditLog: { create: vi.fn(async () => undefined) },
+    secret: {
+      findFirst: vi.fn(
+        async ({ where }: { where: { id: string; deletedAt: null } }) =>
+          secretRows.find((r) => r.id === where.id && r.deletedAt === null) ?? null,
+      ),
+    },
   };
   return { prisma };
 });
@@ -102,6 +112,11 @@ vi.mock("../src/lib/vault/vault-service.js", () => ({
   getVaultService: () => ({ read: vaultRead }),
   // Re-export classes used elsewhere (kept minimal — only what tests touch).
   VaultService: class {},
+}));
+
+// #305 — the per-turn BYOK check reads the session owner's durable role.
+vi.mock("../src/lib/auth/durable-roles.js", () => ({
+  resolveDurableRole: vi.fn(async () => "developer"),
 }));
 
 import { aiRouter, setAIProviderForTests } from "../src/routes/ai.js";
@@ -133,6 +148,12 @@ beforeAll(() => {
 
 beforeEach(() => {
   sessions.length = 0;
+  secretRows.length = 0;
+  secretRows.push(
+    { id: "secret-1", createdById: "user-1", deletedAt: null },
+    { id: "missing", createdById: "user-1", deletedAt: null },
+    { id: "someone-elses", createdById: "user-2", deletedAt: null },
+  );
   aiMessageRows.length = 0;
   tokenRows.length = 0;
   approvalRows.length = 0;
@@ -623,6 +644,43 @@ describe("BYOK provider key resolution via vault", () => {
     );
     expect(res.status).toBe(502);
     expect(res.body.error.code).toBe("AI_PROVIDER_KEY_UNAVAILABLE");
+  });
+
+  it("#305 — refuses a providerSecretRef the caller does not own: 404, no session", async () => {
+    const app = makeApp();
+    const res = await auth(
+      request(app).post("/api/ai/sessions").send({ providerSecretRef: "someone-elses" }),
+    );
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("SECRET_NOT_FOUND");
+    expect(sessions).toHaveLength(0);
+  });
+
+  it("#305 — refuses an unknown providerSecretRef the same way", async () => {
+    const app = makeApp();
+    const res = await auth(
+      request(app).post("/api/ai/sessions").send({ providerSecretRef: "no-such-secret" }),
+    );
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("SECRET_NOT_FOUND");
+    expect(sessions).toHaveLength(0);
+  });
+
+  it("#305 — a stored foreign ref is never decrypted on a turn", async () => {
+    // A session written before the create-time check (or by any other path)
+    // still holds another user's secret id: the turn must refuse it.
+    const app = makeApp();
+    const created = await auth(request(app).post("/api/ai/sessions").send({}));
+    const sessionId = created.body.data.session.id;
+    sessions[0]!.providerSecretRef = "someone-elses";
+    const res = await auth(
+      request(app)
+        .post("/api/ai/chat")
+        .send({ sessionId, messages: [{ role: "user", content: "hi" }] }),
+    );
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe("AI_PROVIDER_KEY_UNAVAILABLE");
+    expect(vaultRead).not.toHaveBeenCalled();
   });
 });
 
