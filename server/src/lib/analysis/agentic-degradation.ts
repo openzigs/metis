@@ -37,6 +37,7 @@ import {
 import type { AIProvider } from "../ai/types.js";
 import { extractJsonObject, repairAgentJson } from "./agent-runner.js";
 import {
+  answerNeedsDocumentResolution,
   repairFinding,
   repairFindingsAnswer,
   type FindingsRepair,
@@ -132,9 +133,11 @@ export function isSchemaValidFinalAnswer(text: string): boolean {
   if (!parsed || typeof parsed !== "object") return false;
   // #298 — judge the answer the orchestrator will actually validate: one
   // over-long `documentId` or note is repaired there, so it must not fire the
-  // retry (or fail the #214 measurement) here. Resolution against the known
-  // documents cannot change validity — a resolved id and a dropped one are
-  // both valid — so the gate needs no document list.
+  // retry (or fail the #214 measurement) here. The gate needs no document
+  // list: the repair accepts a resolved id only when the resolved citation is
+  // itself valid and otherwise drops it exactly as it does here, so resolving
+  // against the known documents never changes the verdict (pinned by
+  // findings-repair.test.ts and agentic-findings-repair-pipeline.test.ts).
   const repaired = repairFindingsAnswer(parsed).value as Record<string, unknown>;
   // The orchestrator stamps the real `agentKey` after the loop returns, so a
   // missing or wrong one here must not decide the gate.
@@ -185,6 +188,29 @@ export function salvageRepairedFindings(
     if (salvaged.length >= 50) break; // agentOutputSchema caps findings at 50.
   }
   return { findings: salvaged, repairs };
+}
+
+/**
+ * #298 — the known documents for salvaging `raw`, loaded only when its
+ * findings carry a citation `documentId` the schema would reject. Never throws.
+ */
+async function documentsFor(
+  raw: string,
+  load: (() => Promise<readonly KnownDocument[]>) | undefined,
+): Promise<{ knownDocuments?: readonly KnownDocument[] }> {
+  if (!load) return {};
+  let parsed: unknown;
+  try {
+    parsed = extractJsonObject(raw);
+  } catch {
+    return {};
+  }
+  if (!answerNeedsDocumentResolution(parsed)) return {};
+  try {
+    return { knownDocuments: await load() };
+  } catch {
+    return {};
+  }
 }
 
 /** Outcome of {@link salvageWithRepair}. */
@@ -238,14 +264,17 @@ export async function salvageWithRepair(
     signal?: AbortSignal;
     /** OUTPUT cap for the repair call — it must be able to echo `source` back in full (#1218). */
     maxOutputTokens?: number;
-    /** #298 — documents an over-long citation `documentId` may be resolved against. */
-    knownDocuments?: readonly KnownDocument[];
+    /**
+     * #298 — loads the documents an over-long citation `documentId` may be
+     * resolved against. Called only when a salvaged answer actually carries
+     * such an id; a failure degrades to "no known documents".
+     */
+    loadKnownDocuments?: () => Promise<readonly KnownDocument[]>;
   },
 ): Promise<SalvageResult> {
   const sourceKind = classifyFinalAnswer(source);
-  const { knownDocuments: known, ...repairOpts } = opts;
-  const knownDocuments = known ? { knownDocuments: known } : {};
-  const first = salvageRepairedFindings(source, knownDocuments);
+  const { loadKnownDocuments, ...repairOpts } = opts;
+  const first = salvageRepairedFindings(source, await documentsFor(source, loadKnownDocuments));
   const none = {
     sourceKind,
     repairAttempted: false,
@@ -284,7 +313,11 @@ export async function salvageWithRepair(
       fieldRepairs: [],
     };
   }
-  const recovered = salvageRepairedFindings(JSON.stringify(repaired), knownDocuments);
+  const repairedText = JSON.stringify(repaired);
+  const recovered = salvageRepairedFindings(
+    repairedText,
+    await documentsFor(repairedText, loadKnownDocuments),
+  );
   return {
     findings: recovered.findings,
     sourceKind,

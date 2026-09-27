@@ -2120,9 +2120,9 @@ export class AnalysisOrchestrator {
         const { agentOutputSchema } = await import("@metis/shared");
         const onDrop = makeCitationDropLogger(input.analysisId, agentKey, "agentic");
         // #298 — the project's documents, for resolving a citation `documentId`
-        // the model wrote as a filename or path. Loaded at most once per run:
-        // on a valid answer only when it carries such an id, and on the
-        // degraded (salvage) path unconditionally. Scoped to this project.
+        // the model wrote as a filename or path. Loaded at most once per run,
+        // and only when an answer (or a salvaged one) carries such an id.
+        // Scoped to this project.
         // A lookup failure degrades to "no known documents": the id is then
         // dropped rather than resolved, and the pass is never failed by it.
         let knownDocuments: Promise<readonly KnownDocument[]> | undefined;
@@ -2261,8 +2261,9 @@ export class AnalysisOrchestrator {
                 // #1218 — repair echoes the payload back, so its own cap must
                 // clear the cap that produced it or it truncates in turn.
                 maxOutputTokens: repairMaxOutputTokens(finalAnswerMaxOutputTokens),
-                // #298 — resolve an over-long citation `documentId` here too.
-                knownDocuments: await loadKnownDocuments(),
+                // #298 — resolve an over-long citation `documentId` here too
+                // (loaded only when a salvaged finding carries one).
+                loadKnownDocuments,
               },
             );
             const salvaged = salvage.findings;

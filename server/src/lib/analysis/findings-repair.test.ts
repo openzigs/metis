@@ -136,6 +136,64 @@ describe("repairFindingsAnswer — citation documentId", () => {
   });
 });
 
+describe("repairFindingsAnswer — the verdict never depends on the document list (PR #300 review)", () => {
+  const LONG_PLAIN_PATH = "docs/requirements/product/lending/2026/final/review/Loan Terms.md";
+  const CODE = { filePath: "src/loan.ts", startLine: 1, endLine: 9 };
+  // Every branch of the repair: resolvable with and without a chunk, an
+  // anchor-only chunk, a code citation, an unresolvable id, a bad chunkIndex.
+  const SHAPES: Array<[string, Record<string, unknown>]> = [
+    ["resolvable, chunkIndex present", { documentId: PATH_AS_ID, chunkIndex: 4 }],
+    ["resolvable, chunkIndex missing, no anchor", { documentId: LONG_PLAIN_PATH }],
+    ["resolvable, chunkIndex missing, #chunk anchor", { documentId: PATH_AS_ID }],
+    ["resolvable, chunkIndex invalid", { documentId: PATH_AS_ID, chunkIndex: -1 }],
+    ["resolvable, also a code citation, no chunkIndex", { documentId: LONG_PLAIN_PATH, ...CODE }],
+    ["unresolvable, chunkIndex present", { documentId: SNIPPET_AS_ID, chunkIndex: 0 }],
+    ["unresolvable, also a code citation", { documentId: SNIPPET_AS_ID, ...CODE }],
+  ];
+
+  for (const [label, citation] of SHAPES) {
+    it(`${label}: valid both with and without documents`, () => {
+      const input = answer([citation]);
+      const without = repairFindingsAnswer(input);
+      const withDocs = repairFindingsAnswer(input, { knownDocuments: KNOWN });
+      expect(agentOutputSchema.safeParse(without.value).success).toBe(true);
+      expect(agentOutputSchema.safeParse(withDocs.value).success).toBe(true);
+      // And the finding itself always survives.
+      expect(agentOutputSchema.parse(withDocs.value).findings).toHaveLength(1);
+      // The same number of citations are touched either way: nothing silent.
+      expect(withDocs.repairs).toHaveLength(1);
+      expect(without.repairs).toHaveLength(1);
+    });
+  }
+
+  it("does not resolve a citation that would be an incomplete document citation — it drops it", () => {
+    const { value, repairs } = repairFindingsAnswer(answer([{ documentId: LONG_PLAIN_PATH }]), {
+      knownDocuments: KNOWN,
+    });
+    expect(agentOutputSchema.parse(value).findings[0]!.citations).toEqual([]);
+    expect(repairs.map((r) => r.kind)).toEqual(["citation-dropped"]);
+  });
+
+  it("recovers a missing chunkIndex from the `#chunkN` anchor search_knowledge prints", () => {
+    const { value, repairs } = repairFindingsAnswer(answer([{ documentId: PATH_AS_ID }]), {
+      knownDocuments: KNOWN,
+    });
+    expect(agentOutputSchema.parse(value).findings[0]!.citations).toEqual([
+      { documentId: "doc_loanterms_0001", chunkIndex: 4 },
+    ]);
+    expect(repairs.map((r) => r.kind)).toEqual(["document-id-resolved"]);
+  });
+
+  it("keeps a resolvable code citation with no chunkIndex as a code citation", () => {
+    const { value, repairs } = repairFindingsAnswer(
+      answer([{ documentId: LONG_PLAIN_PATH, ...CODE }]),
+      { knownDocuments: KNOWN },
+    );
+    expect(agentOutputSchema.parse(value).findings[0]!.citations).toEqual([CODE]);
+    expect(repairs.map((r) => r.kind)).toEqual(["document-id-dropped"]);
+  });
+});
+
 describe("repairFindingsAnswer — notes", () => {
   it("truncates an over-long note to the limit, with an ellipsis, and records it", () => {
     const long = "Investigated the loan-term configuration. ".repeat(20);
@@ -283,7 +341,7 @@ describe("recording repairs", () => {
     const out = withFindingsRepairNote({ notes: ["mine"] }, repairs);
     expect(out.notes).toHaveLength(2);
     expect(out.notes[0]).toBe("mine");
-    expect(out.notes[1]).toMatch(/^REPAIRED \(#298\): 3 over-limit field/);
+    expect(out.notes[1]).toMatch(/^REPAIRED: 3 over-limit field/);
     expect(out.notes[1]!.length).toBeLessThanOrEqual(NOTE_MAX_LENGTH);
     expect(findingsRepairNote([])).toBeUndefined();
     const untouched = { notes: ["mine"] };

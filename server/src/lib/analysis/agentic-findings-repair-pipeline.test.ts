@@ -106,6 +106,7 @@ vi.mock("../socket/job-events.js", () => ({
 }));
 
 const { AnalysisOrchestrator } = await import("./orchestrator.js");
+const { isSchemaValidFinalAnswer } = await import("./agentic-degradation.js");
 
 const DOC_AGENT_ANSWER = JSON.stringify({ summary: "ok", findings: [], notes: [] });
 
@@ -247,7 +248,7 @@ describe("#298 — an over-long documentId and note are repaired, not fatal", ()
     expect(output.notes[0]!.endsWith("…")).toBe(true);
     expect(output.notes[0]!.slice(0, 100)).toBe(LONG_NOTE.slice(0, 100));
     // Every repair is recorded on the persisted output.
-    const repairNote = output.notes.find((n) => n.startsWith("REPAIRED (#298)"));
+    const repairNote = output.notes.find((n) => n.startsWith("REPAIRED:"));
     expect(repairNote).toContain("1 document-id-resolved");
     expect(repairNote).toContain("1 citation-dropped");
     expect(repairNote).toContain("1 note-truncated");
@@ -277,7 +278,64 @@ describe("#298 — an over-long documentId and note are repaired, not fatal", ()
     expect(output.findings[0]!.citations).toEqual([
       expect.objectContaining({ documentId: KNOWN_DOC_ID, chunkIndex: 2 }),
     ]);
-    expect(output.notes.some((n) => n.startsWith("REPAIRED (#298)"))).toBe(true);
+    expect(output.notes.some((n) => n.startsWith("REPAIRED:"))).toBe(true);
+  });
+
+  // PR #300 review — a resolvable id on a citation with NO chunkIndex. The
+  // gate (no documents) dropped it and said "valid"; the orchestrator
+  // (documents) resolved it into an incomplete document citation and the
+  // parse threw, so the pass degraded with no retry and salvage lost the
+  // finding. Gate and orchestrator must reach the same verdict.
+  const NO_CHUNK = JSON.stringify({
+    summary: "One gap found.",
+    findings: [
+      finding([
+        { documentId: "docs/requirements/product/lending/final/Loan Terms and Conditions.md" },
+      ]),
+    ],
+    notes: [LONG_NOTE],
+  });
+
+  it("gate and orchestrator agree on a resolvable id with no chunkIndex: accepted, finding kept", async () => {
+    expect(isSchemaValidFinalAnswer(NO_CHUNK)).toBe(true);
+
+    const recorded = await runPipeline(NO_CHUNK);
+
+    const output = persistedCodeOutput();
+    expect(retryCalls(recorded)).toHaveLength(0);
+    expect(output.summary).toBe("One gap found.");
+    expect(output.findings).toHaveLength(1);
+    // Incomplete as a document citation even once resolved ⇒ dropped, recorded.
+    expect(output.findings[0]!.citations).toEqual([]);
+    const repairNote = output.notes.find((n) => n.startsWith("REPAIRED:"));
+    expect(repairNote).toContain("1 citation-dropped");
+    expect(repairNote).toContain("1 note-truncated");
+  });
+
+  it("salvage keeps the finding with a resolvable id and no chunkIndex, and records the repair", async () => {
+    const noSummary = JSON.stringify({ ...JSON.parse(NO_CHUNK), summary: undefined });
+
+    await runPipeline(noSummary);
+
+    const output = persistedCodeOutput();
+    expect(output.summary).toMatch(/^Code analysis degraded/);
+    expect(output.findings).toHaveLength(1);
+    expect(output.findings[0]!.citations).toEqual([]);
+    expect(output.notes.find((n) => n.startsWith("REPAIRED:"))).toContain("1 citation-dropped");
+  });
+
+  it("a failing document lookup drops the id instead of failing the pass", async () => {
+    documentFindMany.mockRejectedValueOnce(new Error("db down"));
+
+    const recorded = await runPipeline(ANSWER_298);
+
+    const output = persistedCodeOutput();
+    expect(retryCalls(recorded)).toHaveLength(0);
+    expect(output.summary).toBe("One gap found.");
+    expect(output.findings).toHaveLength(1);
+    // Nothing to resolve against: both invalid-id citations are dropped.
+    expect(output.findings[0]!.citations).toEqual([]);
+    expect(output.notes.find((n) => n.startsWith("REPAIRED:"))).toContain("2 citation-dropped");
   });
 
   it("a genuinely malformed answer is still rejected — nothing is invented", async () => {

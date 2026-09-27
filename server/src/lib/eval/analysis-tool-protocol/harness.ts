@@ -136,6 +136,10 @@ export interface ProtocolRunRecord {
    * #298 — present only on a pass with a valid answer: the over-limit fields
    * that answer carried and the gate accepted REPAIRED, as `path: kind` pairs
    * (`findings.1.citations.3: citation-dropped`). Absent = nothing repaired.
+   * The harness has no project documents, so it cannot resolve an id the way
+   * the orchestrator can: its `citation-dropped` / `document-id-dropped`
+   * counts are an UPPER bound on citation loss (production may report some
+   * of them as `document-id-resolved`). Validity is unaffected either way.
    */
   fieldRepairs?: string[];
 }

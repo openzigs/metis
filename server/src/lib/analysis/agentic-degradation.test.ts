@@ -8,7 +8,7 @@
  * the mocked-well-formed-JSON providers in the existing suites never exercised
  * this, which is why the bug shipped.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { agentOutputSchema } from "@metis/shared";
 import type { AIProvider, ChatMessage, ChatResponse } from "../ai/types.js";
 import type { AgentTool } from "./tools/types.js";
@@ -418,7 +418,7 @@ describe("#298 findings field repair on the shared validation path", () => {
     } as unknown as AIProvider;
     const result = await salvageWithRepair(provider, raw, {
       agentKey: "code",
-      knownDocuments: [{ id: "doc_loanterms_0001", filename: "Loan Terms.md" }],
+      loadKnownDocuments: async () => [{ id: "doc_loanterms_0001", filename: "Loan Terms.md" }],
     });
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0]!.citations).toEqual([
@@ -447,6 +447,58 @@ describe("#298 findings field repair on the shared validation path", () => {
     expect(result.repairSucceeded).toBe(true);
     expect(result.findings).toHaveLength(1);
     expect(result.fieldRepairs.map((r) => r.kind)).toEqual(["citation-dropped"]);
+  });
+
+  it("salvage loads documents only when a salvaged finding needs one, and survives a failing load", async () => {
+    const noRepair = {
+      chat: async () => {
+        throw new Error("no repair call expected");
+      },
+    } as unknown as AIProvider;
+    const load = vi.fn(async () => [{ id: "doc_loanterms_0001", filename: "Loan Terms.md" }]);
+
+    // Nothing to resolve (a valid id): the loader is never called.
+    const clean = JSON.stringify({
+      findings: [finding([{ documentId: "doc_loanterms_0001", chunkIndex: 1 }])],
+    });
+    const none = await salvageWithRepair(noRepair, clean, {
+      agentKey: "code",
+      loadKnownDocuments: load,
+    });
+    expect(none.findings).toHaveLength(1);
+    expect(load).not.toHaveBeenCalled();
+
+    // A failing load degrades to dropping the id; the finding survives.
+    const bad = JSON.stringify({
+      findings: [finding([{ documentId: PATH_AS_ID, chunkIndex: 4 }])],
+    });
+    const failed = await salvageWithRepair(noRepair, bad, {
+      agentKey: "code",
+      loadKnownDocuments: async () => {
+        throw new Error("db down");
+      },
+    });
+    expect(failed.findings).toHaveLength(1);
+    expect(failed.fieldRepairs.map((r) => r.kind)).toEqual(["citation-dropped"]);
+  });
+
+  it("salvage after a syntax repair resolves against the loaded documents", async () => {
+    const truncated = '{"summary":"s","findings":[{"category":"architecture","severity":"med';
+    const repaired = JSON.stringify({
+      summary: "s",
+      findings: [finding([{ documentId: PATH_AS_ID }])],
+    });
+    const provider = { chat: async () => reply(repaired) } as unknown as AIProvider;
+    const load = vi.fn(async () => [{ id: "doc_loanterms_0001", filename: "Loan Terms.md" }]);
+    const result = await salvageWithRepair(provider, truncated, {
+      agentKey: "code",
+      loadKnownDocuments: load,
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(result.findings[0]!.citations).toEqual([
+      { documentId: "doc_loanterms_0001", chunkIndex: 4 },
+    ]);
+    expect(result.fieldRepairs.map((r) => r.kind)).toEqual(["document-id-resolved"]);
   });
 
   it("the retry prompt states the id format and the stored length limits", () => {

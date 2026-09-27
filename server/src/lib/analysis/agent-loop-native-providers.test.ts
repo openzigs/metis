@@ -698,12 +698,16 @@ describe("#214 native final answer — same schema guidance, and an identical re
  * #214 measured three of twelve DeepSeek passes lost to ONE over-long field —
  * a citation `documentId` that was a path, or a note over 512 characters — in
  * both tool protocols. Driven here through the real Anthropic-compatible
- * adapter, served the RECORDED DeepSeek tool-calling reply, to the #769 retry:
- * the retry prompt on the wire now states the id format and the limits, and an
+ * adapter to the #769 retry. Native mode's first turn is the RECORDED DeepSeek
+ * tool-calling reply (`tools-chat.json`); every other turn — and all of text
+ * mode, for which no recorded DeepSeek text-protocol tool call exists and none
+ * can be recorded without a paid call — is synthesised in DeepSeek's wire
+ * format. It asserts that the retry prompt in the REQUEST the real adapter
+ * sent states the id format and the limits, and that an
  * answer whose only defects are those two fields is accepted (repaired later
  * by the orchestrator), while a genuinely malformed one is still rejected.
  */
-describe("#298 over-long findings fields — recorded DeepSeek replies, both protocols", () => {
+describe("#298 over-long findings fields — DeepSeek adapter loopback, both protocols", () => {
   const deepseek = FAMILIES.find((f) => f.recordedRuntime === "deepseek")!;
   const pass = buildAgenticPassPrompt({
     projectName: "loopback",

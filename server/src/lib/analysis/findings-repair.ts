@@ -11,10 +11,13 @@
  *
  * What this does, per field, and nothing else:
  *   - a citation `documentId` the schema would reject is resolved to the real
- *     id when it names exactly one known document (by filename / path), and is
- *     otherwise REMOVED from the citation. A citation left with no valid
- *     identity (no `documentId`, and not a complete code citation) is removed
- *     from the finding — the FINDING always survives;
+ *     id when it names exactly one known document (by filename / path) AND the
+ *     resolved citation is a complete document citation (a missing `chunkIndex`
+ *     is recovered from a `#chunkN` anchor), and is otherwise REMOVED from the
+ *     citation — so whether documents were supplied never changes the
+ *     verdict. A citation left with no valid identity (no `documentId`, and
+ *     not a complete code citation) is removed from the finding — the FINDING
+ *     always survives;
  *   - a `notes` entry over the limit is truncated with an ellipsis.
  *
  * The stored limits stay the contract: nothing here widens a schema, and the
@@ -113,6 +116,37 @@ function resolveDocument(value: string, known: readonly KnownDocument[]): string
   return matches.size === 1 ? [...matches][0] : undefined;
 }
 
+/** `Loan Terms.md#chunk3` → 3 — the anchor `search_knowledge` prints a hit with. */
+function chunkIndexFromAnchor(value: string): number | undefined {
+  const m = /#chunk(\d+)\s*$/i.exec(value);
+  return m ? Number(m[1]) : undefined;
+}
+
+/**
+ * The citation with its `documentId` resolved to a known document's real id —
+ * but ONLY when the result is a complete, valid document citation. A missing
+ * `chunkIndex` is recovered from a `#chunkN` anchor on the id the model wrote;
+ * anything still invalid returns `undefined`, so the caller falls through to
+ * dropping the id exactly as it would with no document list. That keeps the
+ * repair's VERDICT independent of whether documents were supplied: the #1314
+ * gate (no documents) and the orchestrator / salvage (documents) never
+ * disagree about whether an answer is valid.
+ */
+function resolveDocumentCitation(
+  citation: Record<string, unknown>,
+  documentId: string,
+  known: readonly KnownDocument[],
+): Record<string, unknown> | undefined {
+  const id = resolveDocument(documentId, known);
+  if (id === undefined) return undefined;
+  const candidate: Record<string, unknown> = { ...citation, documentId: id };
+  if (candidate.chunkIndex === undefined) {
+    const anchored = chunkIndexFromAnchor(documentId);
+    if (anchored !== undefined) candidate.chunkIndex = anchored;
+  }
+  return documentCitationSchema.safeParse(candidate).success ? candidate : undefined;
+}
+
 function truncateNote(note: string, max: number): string {
   let cut = max - ELLIPSIS.length;
   // Never leave half a surrogate pair before the ellipsis.
@@ -140,9 +174,9 @@ function repairCitations(
     }
     const path = `${prefix}.citations.${j}`;
     const originalLength = citation.documentId.length;
-    const resolved = resolveDocument(citation.documentId, known);
+    const resolved = resolveDocumentCitation(citation, citation.documentId, known);
     if (resolved !== undefined) {
-      kept.push({ ...citation, documentId: resolved });
+      kept.push(resolved);
       repairs.push({ kind: "document-id-resolved", path, originalLength });
       return;
     }
@@ -238,7 +272,7 @@ export function summarizeFindingsRepairs(repairs: readonly FindingsRepair[]): st
 export function findingsRepairNote(repairs: readonly FindingsRepair[]): string | undefined {
   if (repairs.length === 0) return undefined;
   const note =
-    `REPAIRED (#298): ${repairs.length} over-limit field(s) in the model's findings answer were ` +
+    `REPAIRED: ${repairs.length} over-limit field(s) in the model's findings answer were ` +
     `repaired instead of rejecting the answer (${summarizeFindingsRepairs(repairs)}).`;
   return note.length > NOTE_MAX_LENGTH ? truncateNote(note, NOTE_MAX_LENGTH) : note;
 }
