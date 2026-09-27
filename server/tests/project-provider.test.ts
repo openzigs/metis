@@ -5,8 +5,8 @@
  * `resolveProjectProvider` is the shared helper that the Spec Kit command
  * dispatch uses to build the project's REAL AI provider (instead of silently
  * falling back to the offline stub). It mirrors the chat route's
- * `buildProvider({ config: loadAIConfig() })` construction plus the
- * per-project `aiProviderId` / `aiModel` override (`ai.ts:428-443`).
+ * construction: the override provider's own config (#254, as chat loads a
+ * session's stored provider since #241) plus the per-project `aiModel`.
  *
  * Strategy: mock the three collaborators (`loadAIConfig`, `buildProvider`,
  * `prisma`) so we can assert exactly which config is handed to the factory,
@@ -33,10 +33,7 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
-import {
-  resolveProjectProvider,
-  applyProjectProviderOverride,
-} from "../src/lib/ai/project-provider.js";
+import { resolveProjectProvider, loadProjectAIConfig } from "../src/lib/ai/project-provider.js";
 import { AIProviderError } from "../src/lib/ai/errors.js";
 
 const baseConfig = () => ({
@@ -60,43 +57,43 @@ beforeEach(() => {
 
 afterEach(() => vi.clearAllMocks());
 
-describe("applyProjectProviderOverride", () => {
-  it("returns the base config untouched when override is null", () => {
+describe("loadProjectAIConfig", () => {
+  it("loads the deployment config unchanged when there is no override", () => {
     const cfg = baseConfig();
-    expect(applyProjectProviderOverride(cfg, null)).toEqual(cfg);
+    expect(loadProjectAIConfig(null)).toEqual(cfg);
+    expect(loadAIConfig).toHaveBeenCalledWith(process.env, {});
   });
 
-  it("overrides the provider key when aiProviderId is set", () => {
-    const out = applyProjectProviderOverride(baseConfig(), {
-      aiProviderId: "openai",
-      aiModel: null,
-    });
+  // #254 — the override provider's OWN config (endpoint + credential), loaded
+  // the way chat loads a session's stored provider — never the global one with
+  // its key swapped.
+  it("loads the override provider's own config when aiProviderId is set", () => {
+    loadAIConfig.mockImplementation((_env: unknown, opts: { provider?: string }) => ({
+      ...baseConfig(),
+      provider: opts.provider ?? "anthropic",
+    }));
+    const out = loadProjectAIConfig({ aiProviderId: "openai", aiModel: null });
+    expect(loadAIConfig).toHaveBeenCalledWith(process.env, { provider: "openai" });
     expect(out.provider).toBe("openai");
-    expect(out.model).toBe("claude-sonnet-4-6");
   });
 
   it("overrides the model when aiModel is set", () => {
-    const out = applyProjectProviderOverride(baseConfig(), {
-      aiProviderId: null,
-      aiModel: "gpt-4.1",
-    });
+    const out = loadProjectAIConfig({ aiProviderId: null, aiModel: "gpt-4.1" });
     expect(out.provider).toBe("anthropic");
     expect(out.model).toBe("gpt-4.1");
   });
 
   it("ignores empty-string override fields (falls back to config)", () => {
-    const out = applyProjectProviderOverride(baseConfig(), {
-      aiProviderId: "",
-      aiModel: "",
-    });
+    const out = loadProjectAIConfig({ aiProviderId: "", aiModel: "" });
+    expect(loadAIConfig).toHaveBeenCalledWith(process.env, {});
     expect(out.provider).toBe("anthropic");
     expect(out.model).toBe("claude-sonnet-4-6");
   });
 
-  it("does not mutate the input config", () => {
+  it("does not mutate the loaded config", () => {
     const cfg = baseConfig();
-    applyProjectProviderOverride(cfg, { aiProviderId: "openai", aiModel: "gpt-4.1" });
-    expect(cfg.provider).toBe("anthropic");
+    loadAIConfig.mockReturnValue(cfg);
+    loadProjectAIConfig({ aiProviderId: null, aiModel: "gpt-4.1" });
     expect(cfg.model).toBe("claude-sonnet-4-6");
   });
 });
@@ -112,8 +109,13 @@ describe("resolveProjectProvider", () => {
   });
 
   it("honors the per-project provider + model override", async () => {
+    loadAIConfig.mockImplementation((_env: unknown, opts: { provider?: string }) => ({
+      ...baseConfig(),
+      provider: opts.provider ?? "anthropic",
+    }));
     projectFindFirst.mockResolvedValue({ aiProviderId: "openai", aiModel: "gpt-4.1" });
     await resolveProjectProvider("p1");
+    expect(loadAIConfig).toHaveBeenCalledWith(process.env, { provider: "openai" });
     const cfgArg = buildProvider.mock.calls[0][0].config;
     expect(cfgArg.provider).toBe("openai");
     expect(cfgArg.model).toBe("gpt-4.1");

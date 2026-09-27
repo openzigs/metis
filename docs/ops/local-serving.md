@@ -330,7 +330,7 @@ chat to answer promptly during docs-gen, raise `OLLAMA_NUM_PARALLEL` and
 | Env var | Default | Governs |
 |---|---|---|
 | `LOCAL_GEMMA_MAX_CONCURRENCY` | `1` | Max in-flight requests per local server (normalised origin of `LOCAL_GEMMA_BASE_URL`), across docs-gen, grounding, analysis and chat. Set it to the server's `OLLAMA_NUM_PARALLEL`. Positive integer; anything else keeps `1` and warns. |
-| `AI_STREAM_QUEUE_MAX_WAIT_MS` | `600000` | How long one streamed-chat model call (the turn's own, a tool-loop call, or a sub-agent's) may wait for a local slot before the turn ends with `STREAM_QUEUE_TIMEOUT`. Positive integer; it cannot be disabled, because the hard ceiling no longer counts queue time and an unbounded wait would hold the turn open forever. |
+| `AI_STREAM_QUEUE_MAX_WAIT_MS` | `600000` | How long one streamed-chat model call (the turn's own, a tool-loop call, or a sub-agent's) may wait for a local slot before the turn ends with `STREAM_QUEUE_TIMEOUT`. Positive integer; plain digits, max 2147453647 (#257); it cannot be disabled, because the hard ceiling no longer counts queue time and an unbounded wait would hold the turn open forever. |
 | `LOCAL_GEMMA_SEND_REASONING_EFFORT` | `auto` | Whether `reasoning_effort` is sent. `auto`: send; if the model rejects it, retry once without and remember the model. `always`: send, never fall back. `never`: never send. |
 
 With thinking off (the docs-gen default; `DOCS_GEN_LOCAL_ENABLE_THINKING`

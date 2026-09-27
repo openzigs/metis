@@ -111,6 +111,7 @@ import {
   createDefaultSymbolLineLookup,
 } from "../lib/code-graph/project-code-searcher.js";
 import { getConfigService } from "../lib/config/config-service.js";
+import { envMs } from "../lib/config/env-ms.js";
 import { getModelCatalog } from "../lib/ai/model-catalog.js";
 import { resolveAgentModel } from "../lib/agent-runtime/definition.js";
 import { renderSkillCatalog, type SkillCatalogEntry } from "../lib/agent-runtime/skills.js";
@@ -138,12 +139,12 @@ function defaultFusedCodeDeps(): FusedCodeDeps {
 // Read on every request so tests can poke env vars between calls. Defaults
 // match the review brief: 60s socket idle timeout, 15s heartbeat, 5min hard
 // ceiling.
-const intEnv = (raw: string | undefined, fallback: number, min = 1): number => {
-  if (raw == null) return fallback;
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n >= min ? n : fallback;
-};
-function streamLimits(): {
+//
+// #257 — each goes through the shared strict parser (#123): plain digits inside
+// [min, 2147453647]; anything else keeps the default and logs a warning naming
+// the setting. `parseInt` read `1.2e6` / `1_200_000` as 1 ms, and a value past
+// 2^31-1 became a 1 ms Node timer. Exported for the per-setting tests.
+export function streamLimits(): {
   socketTimeoutMs: number;
   heartbeatIntervalMs: number;
   hardCeilingMs: number;
@@ -151,18 +152,18 @@ function streamLimits(): {
   queueMaxWaitMs: number;
 } {
   return {
-    socketTimeoutMs: intEnv(process.env.AI_STREAM_SOCKET_TIMEOUT_MS, 60_000, 1000),
-    heartbeatIntervalMs: intEnv(process.env.AI_STREAM_HEARTBEAT_MS, 15_000, 1),
-    hardCeilingMs: intEnv(process.env.AI_STREAM_MAX_DURATION_MS, 5 * 60_000, 1),
+    socketTimeoutMs: envMs("AI_STREAM_SOCKET_TIMEOUT_MS", 60_000, { min: 1000 }),
+    heartbeatIntervalMs: envMs("AI_STREAM_HEARTBEAT_MS", 15_000, { min: 1 }),
+    hardCeilingMs: envMs("AI_STREAM_MAX_DURATION_MS", 5 * 60_000, { min: 1 }),
     // #1366 — no TOKEN for this long ends the turn. Distinct from the socket
     // timeout (which the heartbeat keeps resetting) and from the hard ceiling
     // (a total-duration cap that cannot see a stall inside a long turn). Set to
     // 0 to disable.
-    idleTimeoutMs: intEnv(process.env.AI_STREAM_IDLE_TIMEOUT_MS, 90_000, 0),
+    idleTimeoutMs: envMs("AI_STREAM_IDLE_TIMEOUT_MS", 90_000, { min: 0 }),
     // #204 — how long one model call may wait for a local-model slot before the
     // turn is given up. Separate from the hard ceiling, which no longer counts
     // queue time.
-    queueMaxWaitMs: intEnv(process.env.AI_STREAM_QUEUE_MAX_WAIT_MS, 10 * 60_000, 1),
+    queueMaxWaitMs: envMs("AI_STREAM_QUEUE_MAX_WAIT_MS", 10 * 60_000, { min: 1 }),
   };
 }
 
