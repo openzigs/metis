@@ -30,19 +30,21 @@ export const VERDICT_COPY: Record<RequirementVerdict, VerdictCopy> = {
     label: "Implemented",
     tooltip:
       "The code agent retrieved and cited code that satisfies this requirement. Check the cited locations before closing it out.",
-    className: "border-emerald-700/50 bg-emerald-950/40 text-emerald-300",
+    className:
+      "border-emerald-700/50 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300",
   },
   "gap-confirmed": {
     label: "Gap confirmed",
     tooltip:
       "The code agent successfully searched the codebase and the code it inspected does NOT satisfy this requirement. This is the only state that means 'this needs building' — see the searched scope for what was actually checked.",
-    className: "border-red-700/50 bg-red-950/40 text-red-300",
+    className: "border-red-700/50 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300",
   },
   "could-not-verify": {
     label: "Could not verify",
     tooltip:
       "The analysis could NOT determine whether this requirement is implemented: its code searches failed, returned nothing usable, or never reached this requirement. This is NOT a confirmed gap — the functionality may well already exist. Re-run the analysis or check the code before planning work.",
-    className: "border-violet-700/50 bg-violet-950/40 text-violet-300",
+    className:
+      "border-violet-700/50 bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300",
   },
 };
 

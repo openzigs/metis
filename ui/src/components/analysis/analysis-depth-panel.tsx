@@ -23,8 +23,8 @@ interface Props {
 /** A deep requirement gets an accent badge; a standard one a muted badge. */
 function depthBadgeClass(depth: RequirementEscalation["depth"]): string {
   return depth === "deep"
-    ? "bg-amber-900/40 text-amber-300 border-amber-700/50"
-    : "bg-zinc-800 text-zinc-400 border-zinc-700";
+    ? "bg-amber-50 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 border-amber-700/50"
+    : "bg-muted text-muted-foreground border-border";
 }
 
 /** Human-readable tooltip explaining a requirement's escalation decision. */
@@ -47,10 +47,10 @@ export function AnalysisDepthPanel({ escalation }: Props): React.ReactElement | 
 
   return (
     <div data-testid="analysis-depth-panel" className="space-y-2">
-      <h4 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
+      <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
         Analysis depth
       </h4>
-      <p className="text-xs text-zinc-500" data-testid="analysis-depth-summary">
+      <p className="text-xs text-muted-foreground" data-testid="analysis-depth-summary">
         {deepCount} deep · {standardCount} standard. High-ambiguity / high-impact requirements
         (score ≥ {escalation.threshold.toFixed(2)}) received a deeper multi-hop pass.
       </p>
@@ -59,7 +59,7 @@ export function AnalysisDepthPanel({ escalation }: Props): React.ReactElement | 
           <li
             key={r.requirementId}
             data-testid={`analysis-depth-req-${r.requirementId}`}
-            className="flex flex-wrap items-center gap-2 rounded border border-zinc-800 bg-zinc-900/30 p-2 text-xs"
+            className="flex flex-wrap items-center gap-2 rounded border border-border bg-muted/30 p-2 text-xs"
           >
             <span
               data-testid={`analysis-depth-badge-${r.requirementId}`}
@@ -68,9 +68,9 @@ export function AnalysisDepthPanel({ escalation }: Props): React.ReactElement | 
             >
               {r.depth === "deep" ? "deep analysis" : "standard"}
             </span>
-            <span className="font-mono text-zinc-500">{r.requirementId}</span>
-            <span className="flex-1 text-zinc-300">{r.text}</span>
-            <span className="text-zinc-500" title={scoreTooltip(r)}>
+            <span className="font-mono text-muted-foreground">{r.requirementId}</span>
+            <span className="flex-1 text-foreground">{r.text}</span>
+            <span className="text-muted-foreground" title={scoreTooltip(r)}>
               {r.score.toFixed(2)}
             </span>
           </li>

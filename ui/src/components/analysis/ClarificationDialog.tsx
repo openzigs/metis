@@ -49,13 +49,13 @@ export function AnsweredRounds({
     <div className="space-y-3" data-testid="answered-rounds">
       {rounds.map((r) => (
         <div key={r.round} className="space-y-2">
-          <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Round {r.round} — {r.answered.length} answered
           </p>
           {r.answered.map((q) => (
-            <div key={q.id} className="rounded border border-zinc-800 p-3">
-              <p className="text-sm font-medium text-zinc-200">{q.question}</p>
-              <p className="mt-1 text-sm text-zinc-400">{q.submitted}</p>
+            <div key={q.id} className="rounded border border-border p-3">
+              <p className="text-sm font-medium text-foreground">{q.question}</p>
+              <p className="mt-1 text-sm text-muted-foreground">{q.submitted}</p>
             </div>
           ))}
         </div>
@@ -242,24 +242,24 @@ export function ClarificationDialogPanel({
     return (
       <Card className="space-y-3 p-4" data-testid="clarification-complete">
         <div className="flex items-center gap-2">
-          <span className="text-emerald-400">✓</span>
+          <span className="text-emerald-700 dark:text-emerald-400">✓</span>
           <h3 className="font-semibold">Clarification Complete</h3>
         </div>
         {/* Issue #1117 (finding A) — lead with what the USER did. The old line
             reported the resolution model's tally ("1 ambiguities resolved")
             after fourteen substantive answers, which reads as thirteen answers
             having been thrown away. */}
-        <p className="text-sm text-zinc-400">
+        <p className="text-sm text-muted-foreground">
           {addressedCount} ambiguit{addressedCount === 1 ? "y" : "ies"} addressed across{" "}
           {state.rounds.length} round(s).
           {state.escalatedToSonnet && (
-            <span className="ml-1 text-amber-400">
+            <span className="ml-1 text-amber-700 dark:text-amber-400">
               (Escalated to Sonnet for complex resolution)
             </span>
           )}
         </p>
         {modelConfirmedCount < addressedCount && (
-          <p className="text-xs text-zinc-500" data-testid="clarification-model-confirmed">
+          <p className="text-xs text-muted-foreground" data-testid="clarification-model-confirmed">
             METIS confirmed {modelConfirmedCount} of these as fully resolved. The rest are recorded
             from your answers and carried into the analysis either way — no answer was discarded.
           </p>
@@ -278,18 +278,18 @@ export function ClarificationDialogPanel({
         <h3 className="text-lg font-semibold">Clarifying Questions</h3>
         <div className="flex items-center gap-2">
           {csvActions}
-          <span className="rounded border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
+          <span className="rounded border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
             Round {state.currentRound} / {state.maxRounds}
           </span>
         </div>
       </div>
-      <p className="text-sm text-zinc-400">
+      <p className="text-sm text-muted-foreground">
         Please answer these questions to resolve requirement ambiguities. You can also export them
         to CSV, answer offline, and re-import the file.
       </p>
 
       {importSummary && (
-        <p className="text-xs text-zinc-400" data-testid="clarify-import-summary">
+        <p className="text-xs text-muted-foreground" data-testid="clarify-import-summary">
           Imported {importSummary.applied} answer(s); {importSummary.skipped} skipped
           {importSummary.unmatched.length > 0 && (
             <> ; unmatched: {importSummary.unmatched.join(", ")}</>
@@ -300,15 +300,15 @@ export function ClarificationDialogPanel({
 
       {/* Epic #201 (#213) — addressed vs remaining, rehydrated from persisted state. */}
       <div className="flex flex-wrap gap-2 text-xs" data-testid="clarification-progress">
-        <span className="rounded bg-emerald-900/40 px-2 py-0.5 text-emerald-300">
+        <span className="rounded bg-emerald-50 dark:bg-emerald-900/40 px-2 py-0.5 text-emerald-700 dark:text-emerald-300">
           {addressedFields.size} addressed
         </span>
-        <span className="rounded bg-amber-900/40 px-2 py-0.5 text-amber-300">
+        <span className="rounded bg-amber-50 dark:bg-amber-900/40 px-2 py-0.5 text-amber-700 dark:text-amber-300">
           {remainingFields.length} remaining
         </span>
         {/* Issue #1104 (finding C) — "0 resolved" said nothing about the twelve
             answers already submitted. Count them explicitly. */}
-        <span className="rounded bg-zinc-800 px-2 py-0.5 text-zinc-300">
+        <span className="rounded bg-muted px-2 py-0.5 text-foreground">
           {answeredCount} of {questions.length} answered
         </span>
       </div>
@@ -325,19 +325,19 @@ export function ClarificationDialogPanel({
           return (
             <div
               key={q.id}
-              className="rounded border border-zinc-800 p-3"
+              className="rounded border border-border p-3"
               data-testid={isSelfResolved ? "grounded-question" : "open-question"}
             >
               <Label className="mb-1 block text-sm font-medium">{q.question}</Label>
-              {q.context && <p className="mb-2 text-xs text-zinc-500">{q.context}</p>}
+              {q.context && <p className="mb-2 text-xs text-muted-foreground">{q.context}</p>}
 
               {isSelfResolved && (
                 <div className="mb-2 space-y-1">
                   <span
                     className={
                       grounded
-                        ? "inline-block rounded bg-emerald-900/40 px-2 py-0.5 text-xs text-emerald-300"
-                        : "inline-block rounded bg-amber-900/40 px-2 py-0.5 text-xs text-amber-300"
+                        ? "inline-block rounded bg-emerald-50 dark:bg-emerald-900/40 px-2 py-0.5 text-xs text-emerald-700 dark:text-emerald-300"
+                        : "inline-block rounded bg-amber-50 dark:bg-amber-900/40 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300"
                     }
                     data-testid="grounding-badge"
                   >
@@ -350,7 +350,7 @@ export function ClarificationDialogPanel({
                     // instead of raw `connector:repo:…` ids; keep the full raw ids
                     // in the tooltip for copy/deep-link.
                     <p
-                      className="text-xs text-zinc-500"
+                      className="text-xs text-muted-foreground"
                       data-testid="suggested-answer-source"
                       title={sources.join(", ")}
                     >
@@ -376,7 +376,7 @@ export function ClarificationDialogPanel({
       <div className="flex items-center justify-between pt-2">
         {/* Issue #1117 (finding A) — count the user's own answers, not the
             resolution model's confirmations. */}
-        <p className="text-xs text-zinc-500">
+        <p className="text-xs text-muted-foreground">
           {addressedCount} ambiguit{addressedCount === 1 ? "y" : "ies"} addressed so far
         </p>
         <Button
@@ -388,7 +388,9 @@ export function ClarificationDialogPanel({
       </div>
 
       {submitMutation.isError && (
-        <p className="text-sm text-red-400">Failed to submit answers. Please try again.</p>
+        <p className="text-sm text-red-700 dark:text-red-400">
+          Failed to submit answers. Please try again.
+        </p>
       )}
     </Card>
   );

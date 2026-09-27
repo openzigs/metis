@@ -43,7 +43,7 @@ function EffortBadge({ storyPoints }: { storyPoints: number | null }): React.Rea
     return (
       <span
         data-testid="gap-effort-unestimated"
-        className="inline-flex items-center rounded-full border border-zinc-700/60 bg-zinc-900/60 px-2 py-0.5 text-[11px] font-semibold text-zinc-400"
+        className="inline-flex items-center rounded-full border border-border/60 bg-muted/60 px-2 py-0.5 text-[11px] font-semibold text-muted-foreground"
         title="No story-point estimate is recorded for this requirement."
       >
         Unestimated
@@ -53,7 +53,7 @@ function EffortBadge({ storyPoints }: { storyPoints: number | null }): React.Rea
   return (
     <span
       data-testid="gap-effort-estimate"
-      className="inline-flex items-center rounded-full border border-sky-700/50 bg-sky-950/40 px-2 py-0.5 text-[11px] font-semibold text-sky-300"
+      className="inline-flex items-center rounded-full border border-sky-700/50 bg-sky-50 dark:bg-sky-950/40 px-2 py-0.5 text-[11px] font-semibold text-sky-700 dark:text-sky-300"
       title="Effort estimate in story points (existing requirement estimate)."
     >
       {storyPoints} {storyPoints === 1 ? "point" : "points"}
@@ -66,15 +66,17 @@ function FindingItem({ f }: { f: GapReportFindingRef }): React.ReactElement {
   return (
     <li
       data-testid={`gap-finding-${f.id}`}
-      className="rounded border border-zinc-800/70 bg-zinc-950/40 p-2"
+      className="rounded border border-border/70 bg-muted/40 p-2"
     >
       <div className="flex items-center gap-2">
-        <span className="text-xs font-medium text-zinc-200">{f.title}</span>
-        <span className="text-[10px] uppercase tracking-wide text-zinc-500">{f.severity}</span>
+        <span className="text-xs font-medium text-foreground">{f.title}</span>
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          {f.severity}
+        </span>
         <VerdictBadge verdict={f.verdict} />
         <VerificationBadge status={f.verificationStatus} />
       </div>
-      <p className="mt-1 text-xs text-zinc-400">{f.body}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{f.body}</p>
       {f.citations.length > 0 ? (
         <ul className="mt-1 space-y-1">
           {f.citations.map((c) => (
@@ -98,12 +100,12 @@ function GapReportCard({
     <Card
       data-testid={`gap-report-card-${req.requirementId}`}
       data-verdict={req.verdict ?? "none"}
-      className="space-y-3 border-zinc-800 bg-zinc-900/30 p-4"
+      className="space-y-3 border-border bg-muted/30 p-4"
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <h5 className="text-sm font-semibold text-zinc-100">{req.title}</h5>
-          <p className="mt-0.5 text-xs text-zinc-400">{req.body}</p>
+          <h5 className="text-sm font-semibold text-foreground">{req.title}</h5>
+          <p className="mt-0.5 text-xs text-muted-foreground">{req.body}</p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
           {/* Issue #773 — the verdict LEADS: it is the field a BA acts on. */}
@@ -116,12 +118,12 @@ function GapReportCard({
 
       {/* Current implementation — cited, code-grounded evidence of what exists. */}
       <section data-testid="gap-current-impl" className="space-y-1">
-        <h6 className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+        <h6 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Current implementation
         </h6>
         {hasEvidence ? (
           <>
-            <p className="text-xs text-zinc-400">
+            <p className="text-xs text-muted-foreground">
               Grounded in {citedFindingCount} cited{" "}
               {citedFindingCount === 1 ? "finding" : "findings"}:
             </p>
@@ -132,7 +134,7 @@ function GapReportCard({
             </ul>
           </>
         ) : (
-          <p data-testid="gap-no-evidence" className="text-xs text-amber-300">
+          <p data-testid="gap-no-evidence" className="text-xs text-amber-700 dark:text-amber-300">
             Nothing found in code for this requirement. Review it manually — no source evidence was
             linked.
           </p>
@@ -144,9 +146,13 @@ function GapReportCard({
           appear here. A finding we could not verify is rendered below, under its
           own heading, so "we could not check" never reads as "you must build it". */}
       <section data-testid="gap-description" className="space-y-1.5">
-        <h6 className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Gap</h6>
+        <h6 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Gap
+        </h6>
         {req.gapFindings.length === 0 ? (
-          <p className="text-xs text-zinc-500">No gap findings were linked to this requirement.</p>
+          <p className="text-xs text-muted-foreground">
+            No gap findings were linked to this requirement.
+          </p>
         ) : (
           <ul className="space-y-2">
             {req.gapFindings.map((f) => (
@@ -162,12 +168,12 @@ function GapReportCard({
       {req.unverifiedFindings.length > 0 ? (
         <section
           data-testid="gap-could-not-verify"
-          className="space-y-1.5 rounded border border-violet-800/50 bg-violet-950/20 p-2"
+          className="space-y-1.5 rounded border border-violet-300 dark:border-violet-800/50 bg-violet-50 dark:bg-violet-950/20 p-2"
         >
-          <h6 className="text-[11px] font-semibold uppercase tracking-wide text-violet-300">
+          <h6 className="text-[11px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
             Could not verify — not a confirmed gap
           </h6>
-          <p className="text-xs text-violet-200/80">
+          <p className="text-xs text-violet-700 dark:text-violet-200/80">
             Code search did not return usable evidence for the claims below, so the analysis could
             not tell whether this requirement is already implemented. Do not plan work from these
             without re-running the analysis or checking the code yourself.
@@ -209,8 +215,8 @@ function RetrievalPanel({ retrieval }: { retrieval: AnalysisRetrievalHealth }): 
       data-degraded={retrieval.degraded ? "true" : "false"}
       className={`rounded border p-2 text-xs ${
         retrieval.degraded
-          ? "border-violet-800/50 bg-violet-950/20 text-violet-200"
-          : "border-zinc-800 bg-zinc-900/30 text-zinc-400"
+          ? "border-violet-300 dark:border-violet-800/50 bg-violet-50 dark:bg-violet-950/20 text-violet-700 dark:text-violet-200"
+          : "border-border bg-muted/30 text-muted-foreground"
       }`}
     >
       <summary className="cursor-pointer font-semibold">
@@ -239,7 +245,11 @@ function RetrievalPanel({ retrieval }: { retrieval: AnalysisRetrievalHealth }): 
                   of. The panel must not render them both as a flat "miss". */}
               <span
                 className={
-                  s.errored ? "text-amber-400" : s.hit ? "text-emerald-400" : "text-zinc-500"
+                  s.errored
+                    ? "text-amber-700 dark:text-amber-400"
+                    : s.hit
+                      ? "text-emerald-700 dark:text-emerald-400"
+                      : "text-muted-foreground"
                 }
               >
                 {s.errored ? "error" : s.hit ? "hit" : "no results"}
@@ -287,8 +297,8 @@ function SqlLineageCoveragePanel({
       data-unresolved={anyUnresolved ? "true" : "false"}
       className={`rounded border p-2 text-xs ${
         anyUnresolved
-          ? "border-amber-800/50 bg-amber-950/20 text-amber-200"
-          : "border-zinc-800 bg-zinc-900/30 text-zinc-400"
+          ? "border-amber-300 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-200"
+          : "border-border bg-muted/30 text-muted-foreground"
       }`}
     >
       <summary className="cursor-pointer font-semibold">
@@ -310,8 +320,8 @@ function SqlLineageCoveragePanel({
               .filter(([, v]) => v.unresolved > 0)
               .map(([source, v]) => (
                 <li key={source} className="font-mono">
-                  <span className="text-amber-400">{source}</span>: {v.unresolved} of {v.total}{" "}
-                  unresolved
+                  <span className="text-amber-700 dark:text-amber-400">{source}</span>:{" "}
+                  {v.unresolved} of {v.total} unresolved
                 </li>
               ))}
           </ul>
@@ -319,7 +329,10 @@ function SqlLineageCoveragePanel({
             <ul className="space-y-0.5">
               {coverage.unresolvedRefs.map((ref) => (
                 <li key={ref.edgeId} data-testid="sql-lineage-unresolved-ref" className="font-mono">
-                  <span className="text-amber-400">{reasonLabel(ref.reason)}</span> {ref.filePath}
+                  <span className="text-amber-700 dark:text-amber-400">
+                    {reasonLabel(ref.reason)}
+                  </span>{" "}
+                  {ref.filePath}
                   {ref.toQualifiedName ? ` → ${ref.toQualifiedName}` : ""}
                   {ref.placeholder ? ` (${ref.placeholder})` : ""}
                 </li>
@@ -327,7 +340,7 @@ function SqlLineageCoveragePanel({
             </ul>
           ) : null}
           {coverage.unresolvedEdges > coverage.unresolvedRefs.length ? (
-            <p className="text-zinc-500">
+            <p className="text-muted-foreground">
               …and {coverage.unresolvedEdges - coverage.unresolvedRefs.length} more unresolved
               edge(s) not listed.
             </p>
@@ -364,10 +377,10 @@ export function GapReport({
     <section data-testid="gap-report" className="space-y-2">
       <div className="flex items-start justify-between gap-2">
         <div>
-          <h4 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
+          <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             Gap report
           </h4>
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-muted-foreground">
             Per requirement: current implementation (with code citations), the gap, and the effort
             estimate. Assembled from the analysis — no claim without a citation or an explicit
             no-evidence marker.
@@ -386,7 +399,7 @@ export function GapReport({
       </div>
 
       {exportMutation.isError ? (
-        <p className="text-xs text-red-400" role="alert">
+        <p className="text-xs text-red-700 dark:text-red-400" role="alert">
           Export failed. Please try again.
         </p>
       ) : null}
@@ -396,13 +409,13 @@ export function GapReport({
       {sqlLineageCoverage ? <SqlLineageCoveragePanel coverage={sqlLineageCoverage} /> : null}
 
       {query.isLoading ? (
-        <p className="text-sm text-zinc-500">Loading gap report…</p>
+        <p className="text-sm text-muted-foreground">Loading gap report…</p>
       ) : query.isError ? (
-        <p className="text-sm text-red-400" role="alert">
+        <p className="text-sm text-red-700 dark:text-red-400" role="alert">
           Could not load the gap report.
         </p>
       ) : requirements.length === 0 ? (
-        <p className="text-sm text-zinc-500">
+        <p className="text-sm text-muted-foreground">
           No requirements to report on yet. Complete an analysis to populate the gap report.
         </p>
       ) : (

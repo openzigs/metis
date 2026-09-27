@@ -30,13 +30,15 @@ export const VERIFICATION_COPY: Record<FindingVerificationStatus, VerificationCo
     label: "Confirmed",
     tooltip:
       "The verifier confirmed this finding against the retrieved source code: at least one cited file and line range was actually found in the code. Its code evidence is supported.",
-    className: "border-emerald-700/50 bg-emerald-950/40 text-emerald-300",
+    className:
+      "border-emerald-700/50 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300",
   },
   unverified: {
     label: "Unverified",
     tooltip:
       "The analysis could NOT confirm this finding against the code: every code location it cited was missing from the retrieved source. Review it manually before acting — it is still shown, but its evidence is unproven.",
-    className: "border-amber-700/50 bg-amber-950/40 text-amber-300",
+    className:
+      "border-amber-700/50 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300",
   },
   // Issue #773 — the finding claims something is NOT in the codebase, but the
   // code search that would have shown otherwise did not work. Distinct hue from
@@ -46,7 +48,8 @@ export const VERIFICATION_COPY: Record<FindingVerificationStatus, VerificationCo
     label: "Could not verify",
     tooltip:
       "This finding claims something is missing from the code — but the analysis could not actually search the code (its searches failed, returned nothing, or ran out of budget). This is NOT a confirmed gap. Do not plan work from it: re-run the analysis or check the code manually.",
-    className: "border-violet-700/50 bg-violet-950/40 text-violet-300",
+    className:
+      "border-violet-700/50 bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300",
   },
 };
 

@@ -113,7 +113,7 @@ function PromotionBanner({
       <div
         role="status"
         data-testid="promotion-banner"
-        className="rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300"
+        className="rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300"
       >
         All approvals resolved — artifact promotion is unblocked.
       </div>
@@ -126,7 +126,7 @@ function PromotionBanner({
     <div
       role="alert"
       data-testid="promotion-banner"
-      className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300"
+      className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300"
     >
       {/* #1104 — name what is being withheld. "Promotion blocked" alone never
           told the user that 14 finished requirements were sitting behind it. */}
@@ -136,7 +136,10 @@ function PromotionBanner({
       {parts.join(", ")} approval(s) must be resolved before specs are promoted.
       {/* #1117 (finding E) — reconcile the two counts explicitly. */}
       {pendingByType && (
-        <span className="mt-1 block text-xs text-amber-200/80" data-testid="pending-by-type">
+        <span
+          className="mt-1 block text-xs text-amber-700 dark:text-amber-200/80"
+          data-testid="pending-by-type"
+        >
           The counts differ because one approval is raised per reviewable item, not per requirement.
           Pending: {pendingByType}.
         </span>
@@ -186,22 +189,22 @@ function ApprovalCard({
     <Card className="space-y-3 p-4" data-testid={`approval-${approval.id}`}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="rounded border border-zinc-700 bg-zinc-800/60 px-2 py-0.5 text-xs text-zinc-300">
+          <span className="rounded border border-border bg-muted/60 px-2 py-0.5 text-xs text-foreground">
             {TYPE_LABELS[approval.type] ?? approval.type}
           </span>
           {requirement ? (
-            <span className="text-sm font-medium text-zinc-200">{requirement.title}</span>
+            <span className="text-sm font-medium text-foreground">{requirement.title}</span>
           ) : (
-            <span className="font-mono text-xs text-zinc-400">{approval.itemId}</span>
+            <span className="font-mono text-xs text-muted-foreground">{approval.itemId}</span>
           )}
         </div>
         <span
           className={
             approval.status === "approved"
-              ? "text-xs text-emerald-400"
+              ? "text-xs text-emerald-700 dark:text-emerald-400"
               : approval.status === "rejected"
-                ? "text-xs text-red-400"
-                : "text-xs text-amber-300"
+                ? "text-xs text-red-700 dark:text-red-400"
+                : "text-xs text-amber-700 dark:text-amber-300"
           }
         >
           {approval.status}
@@ -209,18 +212,18 @@ function ApprovalCard({
       </div>
 
       {requirement && (
-        <div className="space-y-2 rounded border border-zinc-800 bg-zinc-900/40 p-2">
+        <div className="space-y-2 rounded border border-border bg-muted/40 p-2">
           {requirement.description && (
-            <p className="text-xs text-zinc-400">{requirement.description}</p>
+            <p className="text-xs text-muted-foreground">{requirement.description}</p>
           )}
           {requirement.ambiguities.length > 0 && (
             <div className="space-y-1">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Open questions ({requirement.ambiguities.length})
               </p>
               <ul className="space-y-1">
                 {requirement.ambiguities.map((amb) => (
-                  <li key={amb.field} className="text-xs text-amber-300/90">
+                  <li key={amb.field} className="text-xs text-amber-700 dark:text-amber-300/90">
                     {amb.suggestedQuestion || amb.description}
                   </li>
                 ))}
@@ -260,7 +263,7 @@ function ApprovalCard({
       )}
 
       {isResolved && approval.reviewNote && (
-        <p className="text-xs text-zinc-500">Note: {approval.reviewNote}</p>
+        <p className="text-xs text-muted-foreground">Note: {approval.reviewNote}</p>
       )}
     </Card>
   );
@@ -297,7 +300,7 @@ export function ApprovalsPanel({
   if (query.isLoading) {
     return (
       <Card className="p-4">
-        <p className="text-sm text-zinc-400">Loading approvals…</p>
+        <p className="text-sm text-muted-foreground">Loading approvals…</p>
       </Card>
     );
   }
@@ -308,7 +311,11 @@ export function ApprovalsPanel({
   if (query.isError) {
     return (
       <Card id="approvals" className="space-y-2 p-4">
-        <p role="alert" data-testid="approvals-error" className="text-sm text-red-400">
+        <p
+          role="alert"
+          data-testid="approvals-error"
+          className="text-sm text-red-700 dark:text-red-400"
+        >
           Could not load the approvals for this analysis. Requirements stay withheld until every
           approval is resolved.
         </p>
@@ -335,7 +342,7 @@ export function ApprovalsPanel({
     <div id="approvals" className="space-y-4" data-testid="approvals-panel">
       <div className="space-y-1">
         <h3 className="text-lg font-semibold">Approvals</h3>
-        <p className="text-sm text-zinc-400">
+        <p className="text-sm text-muted-foreground">
           Review and resolve the human-in-the-loop checkpoints below. Specs are not promoted until
           every approval is resolved.
         </p>
@@ -347,7 +354,7 @@ export function ApprovalsPanel({
         <div
           role="alert"
           data-testid="promotion-blocked-live"
-          className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300"
+          className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300"
         >
           {blockedEvent.reason}
         </div>
@@ -365,7 +372,7 @@ export function ApprovalsPanel({
 
       {pending.length > 0 && (
         <div className="space-y-2">
-          <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Pending ({pending.length})
           </p>
           {pending.map((approval) => (
@@ -383,7 +390,7 @@ export function ApprovalsPanel({
 
       {resolved.length > 0 && (
         <div className="space-y-2">
-          <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Resolved ({resolved.length})
           </p>
           {resolved.map((approval) => (

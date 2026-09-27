@@ -108,12 +108,12 @@ function formatTokens(n: number): string {
 function StatusBadge({ status }: { status: string }): React.ReactElement {
   const colour =
     status === "completed"
-      ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30"
       : status === "failed"
-        ? "bg-red-500/15 text-red-300 border-red-500/30"
+        ? "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30"
         : status === "cancelled"
-          ? "bg-zinc-500/15 text-zinc-300 border-zinc-500/30"
-          : "bg-blue-500/15 text-blue-300 border-blue-500/30";
+          ? "bg-zinc-500/15 text-foreground border-zinc-500/30"
+          : "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30";
   return (
     <span className={`inline-block rounded border px-2 py-0.5 text-xs font-medium ${colour}`}>
       {status}
@@ -462,20 +462,22 @@ export default function AnalysisPage(): React.ReactElement {
           <h1 className="text-2xl font-semibold">
             Requirements Analysis — {project.data?.name ?? "loading…"}
           </h1>
-          <p className="text-sm text-zinc-400">
+          <p className="text-sm text-muted-foreground">
             Synthesize structured requirements &amp; acceptance criteria from this project&apos;s
             documents and code. (To map a requirement change to affected code across multiple
             projects, use Impact Analysis.)
           </p>
         </div>
         {costCap.data ? (
-          <div className="rounded border border-zinc-700 bg-zinc-900/40 px-3 py-2 text-xs">
-            <div className="text-zinc-400">Monthly token usage</div>
+          <div className="rounded border border-border bg-muted/40 px-3 py-2 text-xs">
+            <div className="text-muted-foreground">Monthly token usage</div>
             <div className="font-mono">
               {formatTokens(costCap.data.monthlyUsed)} /{" "}
               {costCap.data.monthlyCap === 0 ? "\u221E" : formatTokens(costCap.data.monthlyCap)}
             </div>
-            {costCap.data.exceeded ? <div className="text-red-400">cap exceeded</div> : null}
+            {costCap.data.exceeded ? (
+              <div className="text-red-700 dark:text-red-400">cap exceeded</div>
+            ) : null}
           </div>
         ) : null}
       </header>
@@ -483,7 +485,7 @@ export default function AnalysisPage(): React.ReactElement {
       <Card className="space-y-4 p-4">
         <div>
           <h2 className="text-lg font-semibold">Start a new analysis</h2>
-          <p className="text-sm text-zinc-400">
+          <p className="text-sm text-muted-foreground">
             Pick the specialist agents and (optionally) constrain to specific documents.
           </p>
         </div>
@@ -509,7 +511,7 @@ export default function AnalysisPage(): React.ReactElement {
                     />
                     <span>{p?.avatar ?? "\ud83e\udd16"}</span>
                     <span className="font-medium">{p?.name ?? agent}</span>
-                    <span className="text-zinc-400">— {p?.role ?? agent}</span>
+                    <span className="text-muted-foreground">— {p?.role ?? agent}</span>
                   </label>
                 );
               })}
@@ -540,7 +542,7 @@ export default function AnalysisPage(): React.ReactElement {
         />
 
         {/* Epic #597 — Enhancement options */}
-        <div className="rounded border border-zinc-800 p-3">
+        <div className="rounded border border-border p-3">
           <Label className="mb-2 block text-sm font-medium">Enhancement Options</Label>
           <div className="flex items-center gap-6">
             <label className="flex items-center gap-2 text-sm">
@@ -604,12 +606,12 @@ export default function AnalysisPage(): React.ReactElement {
               {start.isPending ? "Starting\u2026" : "Run analysis"}
             </Button>
             {selectedHasPending ? (
-              <p className="text-sm text-amber-400">
+              <p className="text-sm text-amber-700 dark:text-amber-400">
                 Wait for selected documents to finish ingesting.
               </p>
             ) : null}
             {start.error instanceof ApiError ? (
-              <p role="alert" className="text-sm text-red-400">
+              <p role="alert" className="text-sm text-red-700 dark:text-red-400">
                 {start.error.message}
               </p>
             ) : null}
@@ -622,7 +624,7 @@ export default function AnalysisPage(): React.ReactElement {
           <h3 className="mb-3 text-base font-semibold">Past runs</h3>
           {list.isLoading ? <p className="text-sm">Loading…</p> : null}
           {list.data?.items?.length === 0 ? (
-            <p className="text-sm text-zinc-500">No analyses yet.</p>
+            <p className="text-sm text-muted-foreground">No analyses yet.</p>
           ) : null}
           <ul className="space-y-1">
             {list.data?.items?.map((item) => (
@@ -633,14 +635,16 @@ export default function AnalysisPage(): React.ReactElement {
                   className={`w-full rounded border px-2 py-2 text-left text-sm transition ${
                     selectedAnalysisId === item.id
                       ? "border-blue-500/50 bg-blue-500/10"
-                      : "border-zinc-800 hover:bg-zinc-900/40"
+                      : "border-border hover:bg-muted/40"
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="font-mono text-xs text-zinc-400">{item.id.slice(0, 12)}</span>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {item.id.slice(0, 12)}
+                    </span>
                     <StatusBadge status={item.status} />
                   </div>
-                  <div className="mt-1 text-xs text-zinc-500">
+                  <div className="mt-1 text-xs text-muted-foreground">
                     {new Date(item.startedAt).toLocaleString()} · {formatTokens(item.totalTokens)}{" "}
                     tok
                   </div>
@@ -652,7 +656,7 @@ export default function AnalysisPage(): React.ReactElement {
 
         <Card className="md:col-span-2 p-4">
           {!detail.data ? (
-            <p className="text-sm text-zinc-500">Select a run to view details.</p>
+            <p className="text-sm text-muted-foreground">Select a run to view details.</p>
           ) : (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
@@ -660,7 +664,7 @@ export default function AnalysisPage(): React.ReactElement {
                   <h3 className="text-base font-semibold">
                     Run {detail.data.id.slice(0, 12)} <StatusBadge status={detail.data.status} />
                   </h3>
-                  <p className="text-xs text-zinc-500">
+                  <p className="text-xs text-muted-foreground">
                     Started {new Date(detail.data.startedAt).toLocaleString()} ·{" "}
                     {formatTokens(detail.data.totalTokens)} tok
                   </p>
@@ -703,7 +707,7 @@ export default function AnalysisPage(): React.ReactElement {
               <AnalysisDepthPanel escalation={detail.data.escalation} />
 
               <div>
-                <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-400">
+                <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                   Agents
                 </h4>
                 <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
@@ -711,10 +715,7 @@ export default function AnalysisPage(): React.ReactElement {
                     const persona = personaByKey.get(agent.agentKey);
                     const isSpecialist = agent.agentKey !== "synthesis";
                     return (
-                      <div
-                        key={agent.id}
-                        className="rounded border border-zinc-800 bg-zinc-900/30 p-3"
-                      >
+                      <div key={agent.id} className="rounded border border-border bg-muted/30 p-3">
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2">
                             <span className="text-lg">{persona?.avatar ?? "\ud83e\udd16"}</span>
@@ -722,7 +723,7 @@ export default function AnalysisPage(): React.ReactElement {
                               <div className="text-sm font-medium">
                                 {persona?.name ?? agent.agentKey}
                               </div>
-                              <div className="text-xs text-zinc-500">
+                              <div className="text-xs text-muted-foreground">
                                 {persona?.role ?? agent.agentKey} · {agent.findings.length} finding
                                 {agent.findings.length === 1 ? "" : "s"}
                               </div>
@@ -743,7 +744,9 @@ export default function AnalysisPage(): React.ReactElement {
                           </div>
                         ) : null}
                         {agent.errorMessage ? (
-                          <p className="mt-2 text-xs text-red-400">{agent.errorMessage}</p>
+                          <p className="mt-2 text-xs text-red-700 dark:text-red-400">
+                            {agent.errorMessage}
+                          </p>
                         ) : null}
                       </div>
                     );
@@ -775,7 +778,7 @@ export default function AnalysisPage(): React.ReactElement {
               {/* Issue #1232 — requirements are the actionable output, so they
                   are read before the findings they were derived from. */}
               <div data-testid="requirements-section">
-                <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-400">
+                <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                   Requirements
                 </h4>
                 {/* Epic #726 (#736) — filter the list by coverage classification. */}
@@ -785,7 +788,7 @@ export default function AnalysisPage(): React.ReactElement {
                   role="group"
                   aria-label="Filter requirements by coverage"
                 >
-                  <span className="mr-1 text-xs text-zinc-500">Coverage:</span>
+                  <span className="mr-1 text-xs text-muted-foreground">Coverage:</span>
                   {(
                     [
                       [null, "All"],
@@ -822,10 +825,7 @@ export default function AnalysisPage(): React.ReactElement {
                       (req) => coverageFilter === null || (req.coverage ?? null) === coverageFilter,
                     )
                     .map((req) => (
-                      <div
-                        key={req.id}
-                        className="rounded border border-zinc-800 bg-zinc-900/30 p-3"
-                      >
+                      <div key={req.id} className="rounded border border-border bg-muted/30 p-3">
                         <div className="flex items-start justify-between gap-2">
                           <div>
                             <div className="flex items-center gap-2">
@@ -833,7 +833,7 @@ export default function AnalysisPage(): React.ReactElement {
                               {/* Epic #726 (#736) — coverage classification badge. */}
                               <CoverageBadge coverage={req.coverage} />
                             </div>
-                            <div className="text-xs text-zinc-500">
+                            <div className="text-xs text-muted-foreground">
                               {req.type} · {req.priority} · {req.reviewStatus}
                             </div>
                           </div>
@@ -899,7 +899,7 @@ export default function AnalysisPage(): React.ReactElement {
                         </div>
                         {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
                         <RequirementCollabRow requirementId={req.id} />
-                        <p className="mt-1 max-w-prose text-sm leading-relaxed text-zinc-300">
+                        <p className="mt-1 max-w-prose text-sm leading-relaxed text-foreground">
                           {req.body}
                         </p>
                         {/* Epic #1107 (#1110) — the panel's rolled-up confidence
@@ -915,7 +915,7 @@ export default function AnalysisPage(): React.ReactElement {
                             {req.labels.map((l) => (
                               <span
                                 key={l}
-                                className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300"
+                                className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
                               >
                                 {l}
                               </span>
@@ -928,11 +928,11 @@ export default function AnalysisPage(): React.ReactElement {
                           requirementId={req.id}
                           workspaceId={project.data?.workspaceId ?? null}
                         />
-                        <div className="mt-3 border-t border-zinc-800 pt-3">
+                        <div className="mt-3 border-t border-border pt-3">
                           <TraceabilityView projectId={projectId} requirementId={req.id} />
                         </div>
                         {historyReqId === req.id ? (
-                          <div className="mt-3 border-t border-zinc-800 pt-3">
+                          <div className="mt-3 border-t border-border pt-3">
                             <RequirementHistoryTab requirementId={req.id} />
                           </div>
                         ) : null}
@@ -943,14 +943,14 @@ export default function AnalysisPage(): React.ReactElement {
 
               <div data-testid="findings-section">
                 <div className="mb-2 flex items-center justify-between">
-                  <h4 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
+                  <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                     Findings
                   </h4>
                   {detail.data.status === "completed" &&
                   detail.data.agentResults.some((a) => a.findings.length > 0) ? (
                     <a
                       href={`/projects/${projectId}/publish?analysisId=${detail.data.id}`}
-                      className="inline-flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-800/60 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-700/60"
+                      className="inline-flex items-center gap-1.5 rounded border border-border bg-muted/60 px-3 py-1.5 text-xs font-medium text-foreground transition hover:border-zinc-500 hover:bg-accent/60"
                     >
                       <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 16 16">
                         <path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z" />
@@ -967,7 +967,7 @@ export default function AnalysisPage(): React.ReactElement {
                   role="group"
                   aria-label="Filter findings by verification status"
                 >
-                  <span className="mr-1 text-xs text-zinc-500">Verification:</span>
+                  <span className="mr-1 text-xs text-muted-foreground">Verification:</span>
                   {(
                     [
                       [null, "All"],
@@ -1010,8 +1010,8 @@ export default function AnalysisPage(): React.ReactElement {
                           data-confidence={f.supportPanel?.confidence ?? "none"}
                           className={`rounded border p-3 ${
                             isGap
-                              ? "border-amber-700/50 bg-amber-950/20"
-                              : "border-zinc-800 bg-zinc-900/30"
+                              ? "border-amber-700/50 bg-amber-50 dark:bg-amber-950/20"
+                              : "border-border bg-muted/30"
                           } ${findingConfidenceClasses(f.supportPanel)}`}
                         >
                           <div className="flex items-start justify-between gap-2">
@@ -1020,11 +1020,11 @@ export default function AnalysisPage(): React.ReactElement {
                               <div className="mt-1 flex flex-wrap items-center gap-2">
                                 <span
                                   data-testid="finding-severity"
-                                  className="rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-200"
+                                  className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-foreground"
                                 >
                                   {f.severity}
                                 </span>
-                                <span className="text-xs text-zinc-500">{f.category}</span>
+                                <span className="text-xs text-muted-foreground">{f.category}</span>
                                 <PersonaTag
                                   persona={personaByKey.get(f.agentKey)}
                                   agentKey={f.agentKey}
@@ -1034,8 +1034,8 @@ export default function AnalysisPage(): React.ReactElement {
                                 <span
                                   className={`mt-1 inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${
                                     isGap
-                                      ? "bg-amber-900/40 text-amber-300"
-                                      : "bg-sky-900/40 text-sky-300"
+                                      ? "bg-amber-50 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
+                                      : "bg-sky-50 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300"
                                   }`}
                                 >
                                   {isGap ? "Gap for " : "Grounded in "}
@@ -1081,7 +1081,7 @@ export default function AnalysisPage(): React.ReactElement {
                               makes the list scannable. */}
                           <FindingBody body={f.body} />
                           {f.citations.length > 0 ? (
-                            <ul className="mt-2 space-y-1 text-xs text-zinc-400">
+                            <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
                               {f.citations.map((c, idx) => {
                                 // #734 \u2014 a code citation renders as its
                                 // `filePath:startLine-endLine` locator, visually
@@ -1109,7 +1109,7 @@ export default function AnalysisPage(): React.ReactElement {
                               })}
                             </ul>
                           ) : isGap ? (
-                            <p className="mt-2 text-xs text-amber-400/80">
+                            <p className="mt-2 text-xs text-amber-700 dark:text-amber-400/80">
                               No supporting evidence retrieved from the selected documents.
                             </p>
                           ) : null}
@@ -1145,7 +1145,7 @@ export default function AnalysisPage(): React.ReactElement {
                       );
                     })}
                   {detail.data.agentResults.every((a) => a.findings.length === 0) ? (
-                    <p className="text-sm text-zinc-500">No findings yet.</p>
+                    <p className="text-sm text-muted-foreground">No findings yet.</p>
                   ) : null}
                 </div>
               </div>
@@ -1245,7 +1245,7 @@ function RequirementCollabRow({ requirementId }: { requirementId: string }): Rea
 
   return (
     <div className="mt-2 flex items-center gap-2" data-testid={`req-collab-${requirementId}`}>
-      <span className="text-xs text-zinc-500">Assignees</span>
+      <span className="text-xs text-muted-foreground">Assignees</span>
       <AssigneePicker requirementId={requirementId} />
       <SLABadge deadline={nextDeadline ?? null} />
     </div>
@@ -1329,7 +1329,7 @@ function RequirementEditModal(props: {
               value={body}
               onChange={(e) => setBody(e.target.value)}
               rows={6}
-              className="w-full rounded border border-zinc-700 bg-zinc-900/40 p-2 text-sm"
+              className="w-full rounded border border-border bg-muted/40 p-2 text-sm"
             />
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -1339,7 +1339,7 @@ function RequirementEditModal(props: {
                 id="req-edit-type"
                 value={type}
                 onChange={(e) => setType(e.target.value)}
-                className="w-full rounded border border-zinc-700 bg-zinc-900/40 p-2 text-sm"
+                className="w-full rounded border border-border bg-muted/40 p-2 text-sm"
               >
                 {REQ_TYPES.map((t) => (
                   <option key={t} value={t}>
@@ -1354,7 +1354,7 @@ function RequirementEditModal(props: {
                 id="req-edit-priority"
                 value={priority}
                 onChange={(e) => setPriority(e.target.value)}
-                className="w-full rounded border border-zinc-700 bg-zinc-900/40 p-2 text-sm"
+                className="w-full rounded border border-border bg-muted/40 p-2 text-sm"
               >
                 {REQ_PRIORITIES.map((p) => (
                   <option key={p} value={p}>
@@ -1374,7 +1374,7 @@ function RequirementEditModal(props: {
             />
           </div>
           {errorMessage ? (
-            <p className="text-sm text-red-400" role="alert">
+            <p className="text-sm text-red-700 dark:text-red-400" role="alert">
               {errorMessage}
             </p>
           ) : null}

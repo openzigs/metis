@@ -57,9 +57,9 @@ interface ModelRecommendationData {
 }
 
 const DEPTH_COLORS: Record<ReasoningDepth, string> = {
-  simple: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
-  moderate: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-  complex: "bg-purple-500/15 text-purple-300 border-purple-500/30",
+  simple: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
+  moderate: "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30",
+  complex: "bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/30",
 };
 
 const DEPTH_LABELS: Record<ReasoningDepth, string> = {
@@ -137,7 +137,7 @@ export function ModelRecommendation({
 
   if (isLoading || !data) {
     return (
-      <div className="rounded border border-zinc-700 bg-zinc-900/40 p-3 text-xs text-zinc-400">
+      <div className="rounded border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
         Loading model recommendation…
       </div>
     );
@@ -147,14 +147,14 @@ export function ModelRecommendation({
 
   return (
     <div
-      className="rounded border border-zinc-700 bg-zinc-900/40 p-3 space-y-2"
+      className="rounded border border-border bg-muted/40 p-3 space-y-2"
       data-testid="model-recommendation"
     >
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-zinc-200">Model Selection</span>
+        <span className="text-sm font-medium text-foreground">Model Selection</span>
         <Select value={override} onValueChange={(v) => onOverrideChange(v as ModelOverride)}>
           <SelectTrigger
-            className="h-7 w-auto gap-1 border-zinc-600 bg-zinc-800 px-2 py-1 text-xs text-zinc-200"
+            className="h-7 w-auto gap-1 border-border bg-muted px-2 py-1 text-xs text-foreground"
             aria-label="Model override"
           >
             <SelectValue />
@@ -170,9 +170,9 @@ export function ModelRecommendation({
       </div>
 
       <div className="flex items-center gap-2 text-sm">
-        <span className="font-mono text-zinc-100">{selection.modelName}</span>
+        <span className="font-mono text-foreground">{selection.modelName}</span>
         {selection.wasDowngraded && (
-          <span className="rounded border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-300">
+          <span className="rounded border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300">
             Budget downgraded
           </span>
         )}
@@ -183,23 +183,23 @@ export function ModelRecommendation({
           {DEPTH_LABELS[profile.reasoningDepth]} reasoning
         </span>
         {profile.tokenEstimate != null ? (
-          <span className="rounded border border-zinc-600 px-1.5 py-0.5 text-zinc-400">
+          <span className="rounded border border-border px-1.5 py-0.5 text-muted-foreground">
             ~{profile.tokenEstimate.toLocaleString()} tokens
           </span>
         ) : (
-          <span className="rounded border border-zinc-600 px-1.5 py-0.5 text-zinc-500">
+          <span className="rounded border border-border px-1.5 py-0.5 text-muted-foreground">
             Token estimate unavailable
           </span>
         )}
         {selection.estimatedCost != null ? (
-          <span className="rounded border border-zinc-600 px-1.5 py-0.5 text-zinc-400">
+          <span className="rounded border border-border px-1.5 py-0.5 text-muted-foreground">
             ~${selection.estimatedCost.toFixed(4)}
           </span>
         ) : null}
       </div>
 
-      <p className="text-xs text-zinc-500">{estimateCaption(data.estimate)}</p>
-      <p className="text-xs text-zinc-400">{selection.rationale}</p>
+      <p className="text-xs text-muted-foreground">{estimateCaption(data.estimate)}</p>
+      <p className="text-xs text-muted-foreground">{selection.rationale}</p>
     </div>
   );
 }

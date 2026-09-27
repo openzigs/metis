@@ -24,11 +24,11 @@ const KIND_LABELS: Record<CrossDocFindingSummary["kind"], string> = {
 };
 
 const SEVERITY_CLASS: Record<CrossDocFindingSummary["severity"], string> = {
-  critical: "border-red-700/60 bg-red-950/30",
-  high: "border-red-700/50 bg-red-950/20",
-  medium: "border-amber-700/50 bg-amber-950/20",
-  low: "border-zinc-700/50 bg-zinc-900/30",
-  info: "border-zinc-800 bg-zinc-900/30",
+  critical: "border-red-700/60 bg-red-50 dark:bg-red-950/30",
+  high: "border-red-700/50 bg-red-50 dark:bg-red-950/20",
+  medium: "border-amber-700/50 bg-amber-50 dark:bg-amber-950/20",
+  low: "border-border/50 bg-muted/30",
+  info: "border-border bg-muted/30",
 };
 
 /**
@@ -41,7 +41,7 @@ const SEVERITY_CLASS: Record<CrossDocFindingSummary["severity"], string> = {
  */
 function EvidenceRefs({ ids, evidence }: { ids: string[]; evidence?: ResolvedEvidenceRef[] }) {
   if (ids.length === 0) {
-    return <span className="text-xs text-zinc-500">No evidence references</span>;
+    return <span className="text-xs text-muted-foreground">No evidence references</span>;
   }
 
   // Index resolved refs by their raw id so each raw id renders at most one chip
@@ -56,7 +56,7 @@ function EvidenceRefs({ ids, evidence }: { ids: string[]; evidence?: ResolvedEvi
         return (
           <span
             key={id}
-            className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300"
+            className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground"
             title={`Evidence: ${title}`}
           >
             {label}
@@ -74,19 +74,19 @@ function FindingCard({ finding }: { finding: CrossDocFindingSummary }) {
       data-testid={`cross-doc-finding-${finding.kind}`}
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="text-sm font-medium text-zinc-100">{finding.title}</div>
+        <div className="text-sm font-medium text-foreground">{finding.title}</div>
         <div className="flex shrink-0 items-center gap-1">
-          <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-zinc-300">
+          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-foreground">
             {KIND_LABELS[finding.kind]}
           </span>
           {finding.scope ? (
-            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
+            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
               {finding.scope}
             </span>
           ) : null}
         </div>
       </div>
-      <p className="mt-1 whitespace-pre-line text-xs text-zinc-400">{finding.detail}</p>
+      <p className="mt-1 whitespace-pre-line text-xs text-muted-foreground">{finding.detail}</p>
       <EvidenceRefs ids={finding.evidenceIds} evidence={finding.evidence} />
     </div>
   );
@@ -100,10 +100,10 @@ export function CrossDocFindingsPanel({
   if (!crossDocFindings || crossDocFindings.findings.length === 0) {
     return (
       <div data-testid="cross-doc-panel">
-        <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-400">
+        <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Cross-document findings
         </h4>
-        <p className="text-sm text-zinc-500">
+        <p className="text-sm text-muted-foreground">
           No cross-document contradictions or completeness gaps detected.
         </p>
       </div>
@@ -116,10 +116,10 @@ export function CrossDocFindingsPanel({
   return (
     <div data-testid="cross-doc-panel">
       <div className="mb-2 flex items-center justify-between">
-        <h4 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
+        <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Cross-document findings
         </h4>
-        <span className="text-xs text-zinc-500">
+        <span className="text-xs text-muted-foreground">
           {crossDocFindings.contradictionCount} contradiction
           {crossDocFindings.contradictionCount === 1 ? "" : "s"} ·{" "}
           {crossDocFindings.completenessGapCount} gap
@@ -129,7 +129,7 @@ export function CrossDocFindingsPanel({
 
       {contradictions.length > 0 ? (
         <div className="mb-3 space-y-2">
-          <h5 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+          <h5 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Contradictions
           </h5>
           {contradictions.map((f) => (
@@ -140,7 +140,7 @@ export function CrossDocFindingsPanel({
 
       {gaps.length > 0 ? (
         <div className="space-y-2">
-          <h5 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+          <h5 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Completeness gaps
           </h5>
           {gaps.map((f) => (

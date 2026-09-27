@@ -13,17 +13,20 @@ export const NO_CRITERIA_MESSAGE =
 export function AcceptanceCriteriaList({ criteria }: { criteria: string[] }): React.ReactElement {
   return (
     <div className="mt-2" data-testid="acceptance-criteria">
-      <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
         Acceptance criteria
       </div>
       {criteria.length > 0 ? (
-        <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-zinc-300">
+        <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-foreground">
           {criteria.map((c, i) => (
             <li key={`${i}-${c.slice(0, 24)}`}>{c}</li>
           ))}
         </ul>
       ) : (
-        <p className="mt-1 text-sm italic text-amber-300/80" data-testid="no-acceptance-criteria">
+        <p
+          className="mt-1 text-sm italic text-amber-700 dark:text-amber-300/80"
+          data-testid="no-acceptance-criteria"
+        >
           {NO_CRITERIA_MESSAGE}
         </p>
       )}

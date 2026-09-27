@@ -59,23 +59,25 @@ export const SUPPORT_PANEL_COPY: Record<SupportPanelConfidence, ConfidenceCopy> 
   high: {
     label: "High confidence",
     tooltip: `Every verification lens agreed the retrieved evidence backs this finding. ${SUPPORT_PANEL_CAVEAT}`,
-    className: "border-emerald-700/50 bg-emerald-950/40 text-emerald-300",
+    className:
+      "border-emerald-700/50 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300",
   },
   medium: {
     label: "Mixed confidence",
     tooltip: `The verification lenses did not fully agree: at least one dissented or was uncertain, but the supporting lenses outnumbered them. Open "Why?" for the dissenting lens's reason. ${SUPPORT_PANEL_CAVEAT}`,
-    className: "border-sky-700/50 bg-sky-950/40 text-sky-300",
+    className: "border-sky-700/50 bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300",
   },
   low: {
     label: "Low confidence",
     tooltip: `More verification lenses doubted this finding than backed it. It is still shown in full and nothing was removed — open "Why?" to read each lens's reason and decide for yourself. ${SUPPORT_PANEL_CAVEAT}`,
-    className: "border-rose-700/60 bg-rose-950/40 text-rose-300",
+    className: "border-rose-700/60 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300",
   },
   "no-signal": {
     label: "Not judged",
     tooltip:
       "The verification panel produced no usable verdict for this finding — it could not be checked either way. This is MISSING information, not doubt: treat the finding exactly as you would one the panel never looked at.",
-    className: "border-slate-600/60 bg-slate-900/60 text-slate-300",
+    className:
+      "border-slate-400/60 bg-slate-100 text-slate-700 dark:border-slate-600/60 dark:bg-slate-900/60 dark:text-slate-300",
   },
 };
 
@@ -89,10 +91,14 @@ export const SUPPORT_PANEL_COPY: Record<SupportPanelConfidence, ConfidenceCopy> 
  * because it is the loudest thing this system says about a finding.
  */
 export const ABSENCE_VERDICT_CLASSES: Record<AbsenceClaimVerdict | "no-signal", string> = {
-  supported: "border-emerald-700/50 bg-emerald-950/40 text-emerald-300",
-  contradicted: "border-rose-700/60 bg-rose-950/40 text-rose-300",
-  unexamined: "border-amber-700/60 bg-amber-950/40 text-amber-300",
-  "no-signal": "border-slate-600/60 bg-slate-900/60 text-slate-300",
+  supported:
+    "border-emerald-700/50 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300",
+  contradicted:
+    "border-rose-700/60 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300",
+  unexamined:
+    "border-amber-700/60 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300",
+  "no-signal":
+    "border-slate-400/60 bg-slate-100 text-slate-700 dark:border-slate-600/60 dark:bg-slate-900/60 dark:text-slate-300",
 };
 
 /** How each per-lens outcome is labelled in the disclosure. */
@@ -193,7 +199,7 @@ export function SupportPanelDetails({
       data-testid="support-panel-details"
       data-confidence={summary.confidence}
     >
-      <summary className="cursor-pointer text-zinc-400 hover:text-zinc-200">
+      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
         Why? {summary.headline}
       </summary>
       {/*
@@ -206,39 +212,43 @@ export function SupportPanelDetails({
       {summary.absence ? (
         <p
           data-testid={`absence-verdict-detail-${summary.absence.verdict ?? "no-signal"}`}
-          className="mt-1 border-l-2 border-zinc-600 pl-3 text-zinc-300"
+          className="mt-1 border-l-2 border-border pl-3 text-foreground"
         >
           <span className="font-semibold">{summary.absence.label}</span> —{" "}
           {summary.absence.sentence}
           {summary.absence.reasoning ? (
-            <span className="text-zinc-400"> {summary.absence.reasoning}</span>
+            <span className="text-muted-foreground"> {summary.absence.reasoning}</span>
           ) : null}
           {summary.absence.citation ? (
-            <code className="ml-1 rounded bg-zinc-800 px-1 text-[10px] text-zinc-300">
+            <code className="ml-1 rounded bg-muted px-1 text-[10px] text-foreground">
               {summary.absence.citation}
             </code>
           ) : null}
         </p>
       ) : null}
-      <ul className="mt-1 space-y-1 border-l border-zinc-700 pl-3">
+      <ul className="mt-1 space-y-1 border-l border-border pl-3">
         {panel.votes.map((v) => {
           const outcome = v.counted
             ? VOTE_OUTCOME_LABEL[v.judgement ?? "uncertain"]
             : VOTE_OUTCOME_LABEL[v.discardReason ?? "no-signal"];
           return (
-            <li key={v.lens} data-testid={`support-panel-vote-${v.lens}`} className="text-zinc-400">
+            <li
+              key={v.lens}
+              data-testid={`support-panel-vote-${v.lens}`}
+              className="text-muted-foreground"
+            >
               <span
                 className={
                   v.counted && v.judgement === "unsupported"
-                    ? "font-semibold text-rose-300"
-                    : "font-semibold text-zinc-300"
+                    ? "font-semibold text-rose-700 dark:text-rose-300"
+                    : "font-semibold text-foreground"
                 }
               >
                 {v.lens} lens — {outcome}
               </span>
-              {v.reasoning ? <span className="text-zinc-400">: {v.reasoning}</span> : null}
+              {v.reasoning ? <span className="text-muted-foreground">: {v.reasoning}</span> : null}
               {v.citation ? (
-                <code className="ml-1 rounded bg-zinc-800 px-1 text-[10px] text-zinc-300">
+                <code className="ml-1 rounded bg-muted px-1 text-[10px] text-foreground">
                   {v.citation}
                 </code>
               ) : null}
@@ -246,7 +256,7 @@ export function SupportPanelDetails({
           );
         })}
       </ul>
-      <ul className="mt-1 space-y-0.5 pl-3 text-[11px] text-zinc-500">
+      <ul className="mt-1 space-y-0.5 pl-3 text-[11px] text-muted-foreground">
         {summary.caveats.map((c) => (
           <li key={c}>{c}</li>
         ))}
@@ -268,7 +278,7 @@ export function SupportPanelDetails({
  */
 export function findingConfidenceClasses(panel: FindingSupportPanel | null | undefined): string {
   return describeSupportPanel(panel)?.secondClass
-    ? "border-dashed border-rose-800/50 bg-rose-950/10 opacity-75"
+    ? "border-dashed border-rose-300 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-950/10 opacity-75"
     : "";
 }
 
@@ -317,7 +327,7 @@ export function RequirementConfidenceNote({
       >
         Evidence: {copy.label}
       </span>
-      {unjudgedNote ? <span className="ml-2 text-zinc-500">{unjudgedNote}</span> : null}
+      {unjudgedNote ? <span className="ml-2 text-muted-foreground">{unjudgedNote}</span> : null}
       {/*
         #1111 — an absence caution on a REQUIREMENT is where it matters most: a
         requirement synthesised from "X is not implemented" is an instruction to
@@ -325,7 +335,7 @@ export function RequirementConfidenceNote({
       */}
       {(confidence.absenceCautions ?? []).length > 0 ? (
         <ul
-          className="mt-1 space-y-0.5 border-l-2 border-amber-700/60 pl-3 text-amber-200"
+          className="mt-1 space-y-0.5 border-l-2 border-amber-700/60 pl-3 text-amber-700 dark:text-amber-200"
           data-testid="requirement-absence-cautions"
         >
           {(confidence.absenceCautions ?? []).map((c) => (
@@ -334,7 +344,7 @@ export function RequirementConfidenceNote({
                 ? `This may already exist — the evidence check found what "${c.findingTitle}" says is missing.`
                 : `Not confirmed missing — nothing retrieved covers what "${c.findingTitle}" says is missing.`}
               {c.citation ? (
-                <code className="ml-1 rounded bg-zinc-800 px-1 text-[10px] text-zinc-300">
+                <code className="ml-1 rounded bg-muted px-1 text-[10px] text-foreground">
                   {c.citation}
                 </code>
               ) : null}
@@ -344,7 +354,7 @@ export function RequirementConfidenceNote({
       ) : null}
       {confidence.dissent.length > 0 ? (
         <ul
-          className="mt-1 space-y-0.5 border-l border-zinc-700 pl-3 text-zinc-400"
+          className="mt-1 space-y-0.5 border-l border-border pl-3 text-muted-foreground"
           data-testid="requirement-confidence-dissent"
         >
           {confidence.dissent.map((d) => (

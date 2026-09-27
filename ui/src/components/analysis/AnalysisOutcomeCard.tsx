@@ -33,15 +33,15 @@ export function AnalysisOutcomeCard({
     <section
       data-testid="analysis-outcome-card"
       aria-labelledby="analysis-outcome-heading"
-      className="rounded border border-emerald-800/40 bg-emerald-950/20 p-4"
+      className="rounded border border-emerald-300 dark:border-emerald-800/40 bg-emerald-50 dark:bg-emerald-950/20 p-4"
     >
       <h4
         id="analysis-outcome-heading"
-        className="mb-2 text-sm font-semibold uppercase tracking-wide text-emerald-300"
+        className="mb-2 text-sm font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300"
       >
         Outcome
       </h4>
-      <p className="max-w-prose whitespace-pre-line text-sm leading-relaxed text-zinc-200">
+      <p className="max-w-prose whitespace-pre-line text-sm leading-relaxed text-foreground">
         {summary}
       </p>
     </section>

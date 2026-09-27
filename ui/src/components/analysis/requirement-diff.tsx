@@ -35,10 +35,10 @@ interface Props {
 }
 
 const SEVERITY_CLASS: Record<RequirementDiffSeverity, string> = {
-  critical: "border-red-700/60 bg-red-950/40 text-red-300",
-  high: "border-orange-700/60 bg-orange-950/40 text-orange-300",
-  medium: "border-amber-700/60 bg-amber-950/40 text-amber-300",
-  low: "border-zinc-700/60 bg-zinc-900/60 text-zinc-400",
+  critical: "border-red-700/60 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300",
+  high: "border-orange-700/60 bg-orange-50 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300",
+  medium: "border-amber-700/60 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300",
+  low: "border-border/60 bg-muted/60 text-muted-foreground",
 };
 
 const CHANGE_LABEL: Record<RequirementDiffEntry["changeType"], string> = {
@@ -112,7 +112,7 @@ function DiffText({
   side: "current" | "proposed";
 }): React.ReactElement {
   return (
-    <p className="text-xs leading-relaxed text-zinc-300">
+    <p className="text-xs leading-relaxed text-foreground">
       {tokens.map((t, idx) => {
         if (t.status === "equal") return <span key={idx}>{t.text}</span>;
         if (side === "current" && t.status === "delete") {
@@ -120,7 +120,7 @@ function DiffText({
             <span
               key={idx}
               data-testid="diff-removed"
-              className="rounded bg-red-950/60 text-red-300 line-through"
+              className="rounded bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 line-through"
             >
               {t.text}
             </span>
@@ -131,7 +131,7 @@ function DiffText({
             <span
               key={idx}
               data-testid="diff-added"
-              className="rounded bg-emerald-950/60 text-emerald-300"
+              className="rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300"
             >
               {t.text}
             </span>
@@ -151,20 +151,20 @@ function DiffCard({ entry }: { entry: RequirementDiffEntry }): React.ReactElemen
   return (
     <Card
       data-testid={`requirement-diff-card-${entry.current?.requirementId ?? entry.proposed?.requirementId}`}
-      className="space-y-3 border-zinc-800 bg-zinc-900/30 p-4"
+      className="space-y-3 border-border bg-muted/30 p-4"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span
             data-testid="diff-change-type"
-            className="inline-flex items-center rounded border border-zinc-700/60 bg-zinc-900/60 px-2 py-0.5 text-[11px] font-semibold text-zinc-300"
+            className="inline-flex items-center rounded border border-border/60 bg-muted/60 px-2 py-0.5 text-[11px] font-semibold text-foreground"
           >
             {CHANGE_LABEL[entry.changeType]}
           </span>
           <SeverityBadge severity={entry.severity} />
           <span
             data-testid="diff-impact"
-            className="inline-flex items-center rounded-full border border-sky-700/50 bg-sky-950/40 px-2 py-0.5 text-[11px] font-semibold text-sky-300"
+            className="inline-flex items-center rounded-full border border-sky-700/50 bg-sky-50 dark:bg-sky-950/40 px-2 py-0.5 text-[11px] font-semibold text-sky-700 dark:text-sky-300"
             title="Change impact score (0–1) from the Change Analysis engine."
           >
             impact {entry.impactScore.toFixed(2)}
@@ -172,7 +172,7 @@ function DiffCard({ entry }: { entry: RequirementDiffEntry }): React.ReactElemen
         </div>
       </div>
 
-      <p data-testid="diff-summary" className="text-xs text-zinc-400">
+      <p data-testid="diff-summary" className="text-xs text-muted-foreground">
         {entry.diffSummary}
       </p>
 
@@ -182,17 +182,17 @@ function DiffCard({ entry }: { entry: RequirementDiffEntry }): React.ReactElemen
           {/* Current (base) side */}
           <section
             data-testid="diff-current"
-            className="space-y-2 rounded border border-zinc-800/70 bg-zinc-950/40 p-3"
+            className="space-y-2 rounded border border-border/70 bg-muted/40 p-3"
           >
-            <h6 className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+            <h6 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Current
             </h6>
             {entry.current ? (
               <>
-                <h5 className="text-sm font-semibold text-zinc-100">{entry.current.title}</h5>
+                <h5 className="text-sm font-semibold text-foreground">{entry.current.title}</h5>
                 <DiffText tokens={tokens} side="current" />
                 <div className="space-y-1">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     Current implementation
                   </p>
                   {entry.current.hasEvidence ? (
@@ -205,14 +205,17 @@ function DiffCard({ entry }: { entry: RequirementDiffEntry }): React.ReactElemen
                       ))}
                     </ul>
                   ) : (
-                    <p data-testid="diff-current-no-evidence" className="text-xs text-amber-300">
+                    <p
+                      data-testid="diff-current-no-evidence"
+                      className="text-xs text-amber-700 dark:text-amber-300"
+                    >
                       No source evidence linked for the current requirement.
                     </p>
                   )}
                 </div>
               </>
             ) : (
-              <p data-testid="diff-no-current" className="text-xs text-zinc-500">
+              <p data-testid="diff-no-current" className="text-xs text-muted-foreground">
                 New requirement — nothing existed before.
               </p>
             )}
@@ -221,18 +224,18 @@ function DiffCard({ entry }: { entry: RequirementDiffEntry }): React.ReactElemen
           {/* Proposed (head) side */}
           <section
             data-testid="diff-proposed"
-            className="space-y-2 rounded border border-zinc-800/70 bg-zinc-950/40 p-3"
+            className="space-y-2 rounded border border-border/70 bg-muted/40 p-3"
           >
-            <h6 className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+            <h6 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Proposed
             </h6>
             {entry.proposed ? (
               <>
-                <h5 className="text-sm font-semibold text-zinc-100">{entry.proposed.title}</h5>
+                <h5 className="text-sm font-semibold text-foreground">{entry.proposed.title}</h5>
                 <DiffText tokens={tokens} side="proposed" />
                 {entry.proposed.gapReport && entry.proposed.gapReport.gapFindings.length > 0 ? (
                   <div className="space-y-1">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                       Gap
                     </p>
                     <ul className="space-y-1">
@@ -240,22 +243,22 @@ function DiffCard({ entry }: { entry: RequirementDiffEntry }): React.ReactElemen
                         <li
                           key={f.id}
                           data-testid={`diff-gap-finding-${f.id}`}
-                          className="rounded border border-zinc-800/70 bg-zinc-950/60 p-2 text-xs text-zinc-400"
+                          className="rounded border border-border/70 bg-muted/60 p-2 text-xs text-muted-foreground"
                         >
-                          <span className="font-medium text-zinc-200">{f.title}</span>
+                          <span className="font-medium text-foreground">{f.title}</span>
                           <p className="mt-0.5">{f.body}</p>
                         </li>
                       ))}
                     </ul>
                   </div>
                 ) : (
-                  <p className="text-xs text-zinc-500">
+                  <p className="text-xs text-muted-foreground">
                     No gap findings linked to the proposed requirement.
                   </p>
                 )}
               </>
             ) : (
-              <p data-testid="diff-no-proposed" className="text-xs text-zinc-500">
+              <p data-testid="diff-no-proposed" className="text-xs text-muted-foreground">
                 Removed requirement — no proposed version.
               </p>
             )}
@@ -295,19 +298,19 @@ export function RequirementDiff({
     <section data-testid="requirement-diff" className="space-y-2">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h4 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
+          <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             Current vs proposed
           </h4>
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-muted-foreground">
             Side-by-side diff of the requirements that CHANGED against a base run. Current
             implementation evidence on the left, the proposed requirement + gap on the right.
           </p>
         </div>
-        <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <span>Compare to</span>
           <select
             data-testid="diff-base-picker"
-            className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+            className="rounded border border-border bg-muted px-2 py-1 text-xs text-foreground"
             value={baseId ?? ""}
             onChange={(e) => setBaseId(e.target.value || undefined)}
           >
@@ -322,18 +325,18 @@ export function RequirementDiff({
       </div>
 
       {query.isLoading ? (
-        <p className="text-sm text-zinc-500">Loading current-vs-proposed diff…</p>
+        <p className="text-sm text-muted-foreground">Loading current-vs-proposed diff…</p>
       ) : query.isError ? (
-        <p className="text-sm text-red-400" role="alert">
+        <p className="text-sm text-red-700 dark:text-red-400" role="alert">
           Could not load the current-vs-proposed diff.
         </p>
       ) : diff && diff.baseAnalysisId == null ? (
-        <p data-testid="diff-no-base" className="text-sm text-zinc-500">
+        <p data-testid="diff-no-base" className="text-sm text-muted-foreground">
           No prior run to compare against. Run the analysis again, or pick a base run once one
           exists.
         </p>
       ) : entries.length === 0 ? (
-        <p data-testid="diff-no-changes" className="text-sm text-zinc-500">
+        <p data-testid="diff-no-changes" className="text-sm text-muted-foreground">
           No requirement changes between these two runs.
         </p>
       ) : (

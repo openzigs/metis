@@ -15,7 +15,7 @@ interface Props {
 export function AnalysisRunSummary({ docCount, hasRequirements }: Props): React.ReactElement {
   const docLabel = `${docCount} document${docCount === 1 ? "" : "s"}`;
   return (
-    <p className="text-xs text-zinc-400" data-testid="analysis-run-summary">
+    <p className="text-xs text-muted-foreground" data-testid="analysis-run-summary">
       This run uses {docLabel} + requirements provided: {hasRequirements ? "yes" : "no"}.
     </p>
   );

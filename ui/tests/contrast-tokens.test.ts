@@ -108,3 +108,32 @@ describe("non-text contrast (SC 1.4.11)", () => {
     }
   }
 });
+
+/**
+ * SC 1.4.3 Contrast (Minimum) — #266. The dark-only `text-zinc-*` / `bg-zinc-*`
+ * surfaces on the Templates and Analysis screens were replaced with these
+ * token pairs (text on the surfaces it is painted over). Each pair must clear
+ * 4.5:1 in BOTH themes, so the migrated screens are legible whichever theme is
+ * active. `bg-muted/NN` translucent panels sit between `--background` and
+ * `--muted`, so checking both ends bounds every alpha in between.
+ */
+const TEXT_PAIRS = [
+  ["foreground", "background"],
+  ["foreground", "card"],
+  ["foreground", "muted"],
+  ["muted-foreground", "background"],
+  ["muted-foreground", "card"],
+  ["muted-foreground", "muted"],
+  ["primary-foreground", "primary"],
+] as const;
+
+describe("migrated surface text contrast (SC 1.4.3, #266)", () => {
+  for (const theme of THEMES) {
+    for (const [fg, bg] of TEXT_PAIRS) {
+      it(`${theme.name}: --${fg} meets ≥4.5:1 against --${bg}`, () => {
+        const ratio = contrast(token(theme.block, fg), token(theme.block, bg));
+        expect(ratio).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+  }
+});
