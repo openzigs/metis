@@ -142,13 +142,18 @@ describeIfLance("LanceVectorStore ANN index deferral (#207)", { timeout: 60_000 
 
     // …and the superseded build and old table versions are reclaimed.
     // Lance deletes a superseded build's files but leaves its empty directory, so
-    // count the builds that still hold bytes.
+    // count the builds that still hold bytes: exactly the table's current indices
+    // (#253 adds the `id` BTREE index beside the vector one).
     const indicesDir = path.join(tableDir(), "_indices");
     const live: string[] = [];
     for (const dir of await fs.readdir(indicesDir)) {
       if ((await fs.readdir(path.join(indicesDir, dir))).length > 0) live.push(dir);
     }
-    expect(live).toHaveLength(1);
+    const current = await (
+      await (await vectordb!.connect(root)).openTable(`p_${PROJECT}`)
+    ).listIndices();
+    expect(current.filter((i) => i.columns.includes("vector"))).toHaveLength(1);
+    expect(live.sort()).toEqual(current.map((i) => (i as { uuid?: string }).uuid).sort());
     const versions = await fs.readdir(path.join(tableDir(), "_versions"));
     // 25 upserts are ~50 versions (a delete and an add each) plus the index and
     // compaction commits. Cleanup after the second build leaves only what followed it.
