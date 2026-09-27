@@ -457,9 +457,26 @@ overrides:
 # scripts. It shared the `pnpm` field with the overrides above and pnpm 11 drops
 # it in the same breath ("...were ignored: pnpm.overrides, pnpm.onlyBuiltDependencies"),
 # so it moves here too — otherwise the native builds below stop running.
+#
+# #2 — better-sqlite3 is allowed at ONE exact version, 12.11.1, and 13.x is
+# deliberately NOT allowed. Two copies are locked, and only one needs a build:
+#   - 12.11.1 (via @prisma/adapter-better-sqlite3) downloads its binary in
+#     `prebuild-install || node-gyp rebuild` — without the script it has none.
+#   - 13.x (the server's own) BUNDLES `prebuilds/<platform>-<arch>.node` for
+#     linux/linuxmusl/darwin/win32 x64+arm64 and loads them first
+#     (lib/binding.js). It declares `"gypfile": false`, but pnpm ignores that
+#     field and runs the implicit `node-gyp rebuild` for any package with a
+#     binding.gyp. On macOS/Linux that rebuild is a no-op; on windows-latest
+#     node-gyp cannot find a Visual Studio it recognises and the whole
+#     `pnpm install` fails (#2) — for a binary that is never loaded.
+# pnpm >= 10.19 accepts `name@exact-version` here. A bare `better-sqlite3`
+# would allow both. The `this repository (#2)` block of
+# `scripts/lib/native-build-allowlist-core.test.mjs` fails when the lockfile
+# moves 12.x off this version (its binary would silently stop being fetched) or
+# when 13.x is allowed again.
 onlyBuiltDependencies:
   - "@prisma/engines"
-  - better-sqlite3
+  - better-sqlite3@12.11.1
   - esbuild
   - prisma
   - puppeteer

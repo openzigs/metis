@@ -44,6 +44,7 @@
  * the fix, instead of an `execFileSync` stack trace.
  */
 import { execFileSync } from "node:child_process";
+import path from "node:path";
 
 /**
  * Ask git where the repository root is.
@@ -55,10 +56,14 @@ import { execFileSync } from "node:child_process";
  * @returns {string} absolute path to the repository root
  */
 function gitToplevel() {
-  return execFileSync("git", ["rev-parse", "--show-toplevel"], {
+  const top = execFileSync("git", ["rev-parse", "--show-toplevel"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
+  // #2 — git prints forward slashes on Windows (`D:/a/metis/metis`), so a root
+  // compared against a native path (`D:\a\metis\metis\scripts`) never matched.
+  // `path.resolve` gives the platform's own form; on POSIX it changes nothing.
+  return top && path.resolve(top);
 }
 
 /**

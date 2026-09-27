@@ -11,6 +11,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege, stated rather than inherited from the repository default (which
+# is `read` today but is a setting, not a property of this file). No job here
+# writes to the repository; the image builds' `type=gha` cache uses the runtime
+# token, which this does not govern.
+permissions:
+  contents: read
+
 # Every job runs on a GitHub-hosted runner. Standard runners are FREE and
 # uncapped on public repositories. Larger runners are charged EVEN on public
 # repositories, so do not reach for one to recover speed — cache instead.
@@ -22,10 +29,14 @@ jobs:
     # `timeout-minutes`, GitHub's 6-hour default applies, and cancelling does not kill
     # a hung `docker build` promptly. The image builds below now cache across runs
     # in the GitHub Actions cache (#3), so a warm run no longer rebuilds every
-    # layer; 60 covers a COLD run (first build after a cache eviction), which is
-    # the case this number has to survive. Measured figures: docs/OPERATIONS.md >
-    # "Container Image Sizes" > "CI build cache".
-    timeout-minutes: 60
+    # layer. The bound has to survive a COLD run (first build after a cache
+    # eviction). #4 — measured: the whole job was 27-31 min on `main` while its
+    # Test step ran the entire monorepo (816 s); with the scoped step below (18 s)
+    # it ran 13m12s-18m45s over three runs on #4's branch. A cold build adds ~6 min
+    # over warm (13m30s vs 7m25s for the four images, docs/OPERATIONS.md >
+    # "Container Image Sizes" > "CI build cache"), so ~20-25 min cold; 40 keeps
+    # roughly the 2x headroom 60 had over the old 28-minute cold run.
+    timeout-minutes: 40
     # #801 follow-up — the `api` job builds FOUR Docker images on the SHARED
     # shared daemon. Run-scoped tags (#801) stopped concurrent runs from
     # deleting each other's images, but they did not stop the two builds from
@@ -108,8 +119,19 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Test
-        run: pnpm test
+      # #4 — ONLY the suites no other job runs: scripts, shared, ui-kit and
+      # embeddings-svc (18 s measured on PR #287's run). This step used to be the root `pnpm test` — the
+      # WHOLE monorepo — which was 86% of this job's wall clock and re-ran the ui
+      # suite (the `ui` job runs it) and the server suite (now the `server` job).
+      #
+      # Exclusions, not an allowlist, so a NEW package is tested here by default
+      # rather than by nobody. `!metis` is load-bearing: only-negative filters
+      # typed at the root select the root package too, and the root's own `test`
+      # script is the whole-monorepo fan-out — without it this step silently runs
+      # everything again (measured on #4). `ci-test-ownership-repo.test.mjs`
+      # fails when any package's suite runs in no job or in two.
+      - name: Test (packages no other job tests)
+        run: pnpm -r --filter '!metis' --filter '!@metis/e2e' --filter '!@metis/ui' --filter '!@metis/server' run test
 
       # #3 — a run on main ran OUT OF DISK building these ("Free space left:
       # 55 MB"). Drop the preinstalled toolchains this job never uses (.NET,
@@ -419,6 +441,51 @@ jobs:
       - name: Build UI
         working-directory: ui
         run: pnpm build
+
+  # #4 — the server unit suite on the DEFAULT (SQLite) Prisma client, moved out of
+  # `api`. It used to run inside `api`'s root `pnpm test`, concurrently with the ui
+  # suite on the same runner (~12.5 min there); here it has a runner to itself and
+  # runs in parallel with `api`'s image builds instead of ahead of them.
+  #
+  # It is NOT a duplicate of `postgres-adapter`, which runs the same files against
+  # the POSTGRES-generated client: there 15 files (321 tests, PR #287) skip themselves —
+  # every `*.sqlite.test.ts` among them. Measured on #4 by comparing the per-file
+  # results of both jobs, not their totals. `ci-test-ownership-repo.test.mjs`
+  # keeps the ownership honest.
+  server:
+    runs-on: ubuntu-latest
+    # 9m04s measured for the whole job on PR #287's run (36336030407). 20 bounds a
+    # hang without cutting a slow cold run.
+    timeout-minutes: 20
+    env:
+      NODE_ENV: development
+      NPM_CONFIG_PRODUCTION: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+
+      - name: Clean stale artifacts
+        run: rm -rf node_modules dist
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Build shared packages
+        run: pnpm --filter @metis/shared run build
+
+      - name: Test server (SQLite client)
+        working-directory: server
+        run: pnpm test
 
   # Epic #294 (#303) — metis-sql-lineage Python sidecar checks.
   #
@@ -836,41 +903,43 @@ jobs:
   # not modify macOS/Linux behavior). The non-gating run still surfaces the
   # Windows results in the checks UI so the remaining gap stays visible.
   windows:
-    # ENABLED. It was gated behind `vars.WINDOWS_CI_ENABLED` only because Windows
-    # minutes billed at 2x while every other job ran free on a self-hosted runner.
-    # On a PUBLIC repository standard hosted runners are free and uncapped,
-    # Windows included, so the sole reason for the gate is gone.
+    # RUNS ON EVERY PUSH AND PR, and GATES (#2). It was gated behind
+    # `vars.WINDOWS_CI_ENABLED` twice over: first because Windows minutes billed at
+    # 2x on the private repository (no longer true — standard hosted runners are
+    # free on a public one), then because `pnpm install` died here before a single
+    # test ran (#2).
     #
     # Turning it back on is not bookkeeping. METIS documents native Windows 11
     # development (docs/DEVELOPMENT.md §7.6) and the epic behind that found real
     # Windows-only defects — a `prefetch:embeddings` that exited 0 having done
     # nothing, MAX_PATH truncation, skills materialising as plain files under
-    # `core.symlinks=false`. One such defect shipped BECAUSE this job was off:
-    # the `embeddings:smoke` step failed while its own assertion passed, and the
-    # changelog records it went unnoticed since the job "had not run since the
-    # step was added". A documented platform with no test is a promise that
-    # breaks silently.
-    # GATED OFF because it is BROKEN (#2) — not because of cost, which was the
-    # old reason and no longer applies on a public repository.
+    # `core.symlinks=false`. One such defect shipped BECAUSE this job was off.
+    # A documented platform with no test is a promise that breaks silently.
     #
-    # It fails during `pnpm install`, before a single test runs: `better-sqlite3`
-    # finds no prebuilt binary for node 22 on win32-x64, falls back to node-gyp,
-    # and the runner image has no Visual Studio installation node-gyp
-    # recognises. That is a native-module packaging problem and says NOTHING
-    # about whether METIS works on Windows.
+    # #2 — WHY THE INSTALL NOW SUCCEEDS, and why no toolchain step is needed.
+    # The failing script was `node-gyp rebuild` in better-sqlite3@13 (the server's
+    # own copy), and node-gyp found no Visual Studio it recognises on this image.
+    # That rebuild was never needed: 13.x BUNDLES prebuilt binaries (win32-x64
+    # among them) and loads them first. pnpm ran it anyway — it runs the implicit
+    # `node-gyp rebuild` for any allowed package with a binding.gyp, ignoring the
+    # package's `"gypfile": false` — because `onlyBuiltDependencies` allowed
+    # better-sqlite3 by bare name. It now allows ONLY 12.11.1 (pulled in by
+    # @prisma/adapter-better-sqlite3), whose `prebuild-install` downloads a
+    # win32-x64 binary for node 22; node-gyp is only its fallback. See
+    # pnpm-workspace.yaml; `native-build-allowlist-core.test.mjs` keeps the list
+    # matched to the lockfile.
     #
-    # `continue-on-error: true` was tried first and is the wrong tool: it stops
-    # the WORKFLOW failing but the job still reports `failure`, so every pull
-    # request would carry a red X forever. A permanently red check trains people
-    # to stop reading the check column, which costs more than the signal is
-    # worth. Making the failing STEP non-fatal instead would be worse still — a
-    # green check over a broken install is a fail-open, and this repository has
-    # spent real effort removing those.
+    # So there is deliberately NO setup-msbuild / windows-build-tools step: it
+    # would add minutes to every run to support a path that must not be taken.
+    # If it IS taken again (a node major without a prebuild, a new native
+    # dependency), the install step below fails with a message saying so, and
+    # the "native modules load" step proves the binaries actually work.
     #
-    # Set `WINDOWS_CI_ENABLED=true` to run it — it costs nothing now — and
-    # delete this gate entirely once #2 lands.
-    if: ${{ vars.WINDOWS_CI_ENABLED == 'true' }}
-    timeout-minutes: 30 # bound it — an unbounded job can hold a runner for 6h
+    # There is no `continue-on-error` on this job: a permanently non-blocking
+    # check earns the same distrust as a permanently red one.
+    # Bound it — an unbounded job can hold a runner for 6h. ~6 min of gating
+    # steps plus the non-gating full suite's own 30-minute bound (#2).
+    timeout-minutes: 45
     runs-on: windows-latest
     env:
       NODE_ENV: development
@@ -889,8 +958,29 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
 
+      # #2 — fail LOUDLY, with the reason, rather than leaving the next person to
+      # dig a node-gyp error out of a 3,000-line install log.
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile --prod=false
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile --prod=false
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error title=Windows install failed (see #2)::pnpm install exited $LASTEXITCODE on win32. The known cause is a native module running node-gyp, which needs an MSVC toolchain this job deliberately does not install: either a package allowed by onlyBuiltDependencies (pnpm-workspace.yaml) that did not need its build, or one finding no prebuilt binary for node $(node --version) on win32-x64. Check the log above for 'gyp ERR!' and which package printed it."
+            exit 1
+          }
+
+      # #2 — an install that SUCCEEDS is not yet proof the binaries work: load
+      # each native module the server needs and run one real operation, through
+      # the same resolution the server and Prisma's adapter use.
+      - name: Native modules load (prebuilt, no compiler)
+        working-directory: server
+        run: >-
+          node -e "const { createRequire } = require('node:module');
+          const D = require('better-sqlite3');
+          if (new D(':memory:').prepare('select 1 as x').get().x !== 1) throw new Error('better-sqlite3 select failed');
+          const viaAdapter = createRequire(require.resolve('@prisma/adapter-better-sqlite3'))('better-sqlite3');
+          if (new viaAdapter(':memory:').prepare('select 2 as x').get().x !== 2) throw new Error('adapter better-sqlite3 select failed');
+          console.log('better-sqlite3 OK (server + prisma adapter) on', process.platform, process.arch, process.version);"
 
       - name: Generate Prisma client
         run: pnpm db:generate
@@ -941,8 +1031,13 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # #2 — one test FILE at a time here. The runner suites (`*-runner.test.mjs`)
+      # spawn node and git per case, and process creation on this Windows image is
+      # slow enough that four files doing it at once pushed a 10 s `beforeAll` and a
+      # 5 s case over their bounds on one run of #2 and not the next. Serial costs
+      # ~1-2 min; a bigger timeout would only hide the contention (#1379).
       - name: Test cross-platform tooling (scripts)
-        run: pnpm --filter @metis/scripts test
+        run: pnpm --filter @metis/scripts test --no-file-parallelism
 
       - name: Test GPU/Gemma variant selection
         working-directory: server
@@ -970,6 +1065,14 @@ jobs:
       - name: Test Windows embeddings dev path (#785)
         working-directory: server
         run: pnpm exec vitest run src/lib/main-module.test.ts src/lib/rag/embed-cache.test.ts src/lib/rag/embed-smoke.test.ts
+
+      # #75 (from #51) — the boot-time migration guard runs the Prisma CLI with
+      # `process.execPath` and NO shell. Everywhere else that is tested with a faked
+      # platform; the suite's real-spawn arm runs the guard's exact spawn here, on
+      # win32, where a `.cmd` shim or a path with spaces would need a shell.
+      - name: Test migration guard's shell-less spawn on Windows (#75)
+        working-directory: server
+        run: pnpm exec vitest run tests/migration-guard.test.ts
 
       # Issue #785 — run the smoke check itself, end to end, on Windows. Uses the
       # offline hash stub (AI_OFFLINE=1) so it needs NO model download and NO
@@ -999,8 +1102,15 @@ jobs:
 
       # NON-GATING: full suite includes pre-existing POSIX-only tests (see the
       # GATING POLICY note above). Reported but does not block merge.
+      #
+      # #2 — until the root `test` script's filter was double-quoted, this step ran
+      # NOTHING here: cmd.exe passed `'!@metis/e2e'` to pnpm with its quotes,
+      # pnpm printed "No projects matched the filters" and exited 0, and the step
+      # "passed" in 2 s. It now runs every suite, so it has its own bound: a step
+      # timeout under `continue-on-error` fails only this step, never the job.
       - name: Test (full suite — non-gating)
         continue-on-error: true
+        timeout-minutes: 30
         run: pnpm test
 
   # Epic #209 (#236) — generative-path e2e + coverage gate.

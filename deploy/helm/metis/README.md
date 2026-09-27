@@ -64,6 +64,14 @@ home directory (`/home/metis`) is an `emptyDir`. With a Postgres `DATABASE_URL`,
 `persistence.data.enabled=false` (as `values-prod.yaml` does) to keep the data
 directory on an `emptyDir` instead of a `ReadWriteOnce` PVC.
 
+Each PVC has its own toggle — `persistence.data.enabled`,
+`persistence.uploads.enabled`, `persistence.lancedb.enabled` — and a disabled one is
+an `emptyDir` (#75). With uploads on S3 (`uploads.backend=s3`) and vectors in
+pgvector (`scaling.vectorStore=pgvector`) nothing durable is written to the uploads
+or LanceDB directories, so `values-prod.yaml` disables all three: a `ReadWriteOnce`
+claim mounted by two server replicas cannot attach on a second node
+(Multi-Attach).
+
 **Reclaim policy** is `Retain` by default — the PVC survives `helm uninstall`
 via `helm.sh/resource-policy: keep`. To switch to multi-replica RWX:
 
@@ -73,10 +81,19 @@ helm install metis ./deploy/helm/metis \
   --set server.replicaCount=2
 ```
 
-The chart **fails-closed** when `server.replicaCount > 1` without
-`persistence.efs.enabled=true` — LanceDB and the in-process scheduler are
-still single-writer. That gate exists to keep an over-eager operator from
-silently corrupting the vector store.
+With `scaling.enforce=true` (as `values-prod.yaml` sets) the chart
+**fails-closed** when more than one server pod can run — `server.replicaCount > 1`,
+or `autoscaling.server.enabled` with `maxReplicas > 1` (#75) — and it lacks the shared backends
+(Postgres `DATABASE_URL`, `scaling.vectorStore=pgvector`, `uploads.backend=s3`)
+or still mounts any server PVC as `ReadWriteOnce` (#75) — disable it, or make
+it RWX with `persistence.efs.enabled=true`.
+
+The opt-in backup CronJob (`backup.enabled=true`) mounts the server's PVCs
+read-only — the data directory (the SQLite database) and the uploads and
+LanceDB volumes inside it, each only when its PVC exists — and its default
+command archives the whole data directory except `repo-extracts` (#75). It
+copies a live database: see the consistency note on `backup.command` in
+`values.yaml`.
 
 To run with no persistence (CI / scratch namespaces only):
 
@@ -257,7 +274,8 @@ backends via the `scaling` and `uploads` value blocks:
 
 The chart's scaling guard (`metis.assertScalingBackends`) replaces the old
 single-writer `assertPersistenceTopology` block. When `scaling.enforce: true`
-(set in `values-prod.yaml`) it fails `helm template/install` if `replicaCount > 1`
+(set in `values-prod.yaml`) it fails `helm template/install` if more than one server
+pod can run (`replicaCount > 1`, or an enabled server HPA with `maxReplicas > 1`)
 without a Postgres `DATABASE_URL`, `vectorStore: pgvector`, and `uploads.backend: s3`.
 The chart default is `enforce: false` so a bare `helm install` renders cleanly;
 the rendered `NOTES.txt` still **warns** when N>1 lacks the shared backends.

@@ -86,7 +86,8 @@ app.kubernetes.io/component: {{ .component }}
 {{/*
 Scaling-readiness guard (epic #518 / issue #540).
 
-Multi-replica (server.replicaCount > 1) is now SUPPORTED, but only when every
+Multi-replica (more than one server pod — server.replicaCount > 1, or an
+enabled server HPA that can scale past 1; see metis.serverReplicaCeiling) is now SUPPORTED, but only when every
 formerly per-pod stateful dependency is pointed at a shared backend. This helper
 replaces the old single-writer `replicaCount > 1` hard-block: it no longer
 forbids N>1, it instead validates that the shared backends are configured.
@@ -95,7 +96,9 @@ For N>1 it requires:
   - a Postgres DATABASE_URL  (scaling.database.url postgres://… OR the DATABASE_URL
     secret key present via secrets/externalSecrets), AND
   - scaling.vectorStore=pgvector            (LanceDB is not N>1 safe), AND
-  - uploads.backend=s3                        (RWO PVC is single-node).
+  - uploads.backend=s3                        (RWO PVC is single-node), AND
+  - no ReadWriteOnce server PVC (#75): persistence.{uploads,lancedb,data}
+    disabled, or persistence.efs.enabled=true.
 It strongly recommends (and the rendered NOTES warns on):
   - scaling.rateLimitBackend=postgres, scaling.ssoStateBackend=postgres,
     scaling.leaderElection=postgres.
@@ -104,8 +107,47 @@ It strongly recommends (and the rendered NOTES warns on):
 `helm template/install`. Set scaling.enforce=false to bypass (e.g. you supply
 DATABASE_URL out-of-band and accept ownership). See docs/EKS_DEPLOYMENT.md §9.
 */}}
+{{/*
+The most server pods that can run at once (#75). `server.replicaCount` is only
+the Deployment's starting size: when the server HPA is enabled it owns the
+count and may scale to maxReplicas (and never below minReplicas), so a chart
+with replicaCount: 1 and the default HPA (minReplicas: 2) still runs two pods.
+Every "is this N>1?" decision below reads this, never replicaCount alone.
+*/}}
+{{- define "metis.serverReplicaCeiling" -}}
+{{- $n := int .Values.server.replicaCount -}}
+{{- $hpa := .Values.autoscaling.server -}}
+{{- if $hpa.enabled -}}
+{{- $n = max $n (int $hpa.minReplicas) (int $hpa.maxReplicas) -}}
+{{- end -}}
+{{- /* server.enabled=false: no Deployment, so the HPA has nothing to scale. */ -}}
+{{- if not .Values.server.enabled -}}
+{{- $n = 0 -}}
+{{- end -}}
+{{- $n -}}
+{{- end -}}
+
+{{/*
+The NOTES.txt warning for N>1 without the shared backends (#75). A named template
+rather than inline NOTES text because `helm template` never renders NOTES and
+Helm 3's `install --dry-run` needs a cluster, so render-tests.sh reaches it
+through a probe template instead.
+*/}}
+{{- define "metis.scalingNotesWarning" -}}
+{{- $serverCeiling := int (include "metis.serverReplicaCeiling" .) }}
+{{- if gt $serverCeiling 1 }}
+{{- if not (and .Values.scaling.database.url (eq .Values.scaling.vectorStore "pgvector") (eq .Values.uploads.backend "s3")) }}
+
+  ⚠️  up to {{ $serverCeiling }} server pods (replicaCount={{ .Values.server.replicaCount }}{{ if .Values.autoscaling.server.enabled }}, HPA {{ .Values.autoscaling.server.minReplicas }}..{{ .Values.autoscaling.server.maxReplicas }}{{ end }}) but the shared backends are not all set.
+     For a correct N>1 deployment set: DATABASE_URL (postgres), VECTOR_STORE=pgvector,
+     UPLOAD_STORAGE_BACKEND=s3, DISCUSSION_RATE_LIMIT_BACKEND=postgres,
+     SSO_STATE_BACKEND=postgres, SCHEDULER_LEADER_ELECTION=postgres. See docs/EKS_DEPLOYMENT.md §9b–§9f.
+{{- end }}
+{{- end }}
+{{- end -}}
+
 {{- define "metis.assertScalingBackends" -}}
-{{- if gt (int .Values.server.replicaCount) 1 -}}
+{{- if gt (int (include "metis.serverReplicaCeiling" .)) 1 -}}
 {{- $enforce := .Values.scaling.enforce -}}
 {{- if $enforce -}}
 {{- $hasPgUrl := false -}}
@@ -117,13 +159,27 @@ DATABASE_URL out-of-band and accept ownership). See docs/EKS_DEPLOYMENT.md §9.
 {{- /* DATABASE_URL may instead be supplied via the Secret (keyMap/externalSecrets). */ -}}
 {{- $secretDbUrl := or .Values.externalSecrets.enabled .Values.secrets.existingSecret (hasKey .Values.secrets.keyMap "DATABASE_URL") -}}
 {{- if not (or $hasPgUrl $secretDbUrl) -}}
-{{- fail "metis: server.replicaCount > 1 requires a Postgres DATABASE_URL (#539). Set scaling.database.url=postgres://… or supply DATABASE_URL via secrets/externalSecrets, then set scaling.vectorStore=pgvector and uploads.backend=s3. See docs/EKS_DEPLOYMENT.md §9. Set scaling.enforce=false to override." -}}
+{{- fail "metis: more than one server pod (server.replicaCount > 1, or autoscaling.server enabled with maxReplicas > 1) requires a Postgres DATABASE_URL (#539). Set scaling.database.url=postgres://… or supply DATABASE_URL via secrets/externalSecrets, then set scaling.vectorStore=pgvector and uploads.backend=s3. See docs/EKS_DEPLOYMENT.md §9. Set scaling.enforce=false to override." -}}
 {{- end -}}
 {{- if ne .Values.scaling.vectorStore "pgvector" -}}
-{{- fail "metis: server.replicaCount > 1 requires scaling.vectorStore=pgvector (#543) — embedded LanceDB is not multi-replica safe. See docs/EKS_DEPLOYMENT.md §9d. Set scaling.enforce=false to override." -}}
+{{- fail "metis: more than one server pod (server.replicaCount > 1, or autoscaling.server enabled with maxReplicas > 1) requires scaling.vectorStore=pgvector (#543) — embedded LanceDB is not multi-replica safe. See docs/EKS_DEPLOYMENT.md §9d. Set scaling.enforce=false to override." -}}
 {{- end -}}
 {{- if ne .Values.uploads.backend "s3" -}}
-{{- fail "metis: server.replicaCount > 1 requires uploads.backend=s3 (#546) — an RWO PVC is single-node so replicas can't share uploads. See docs/EKS_DEPLOYMENT.md §9f. Set scaling.enforce=false to override." -}}
+{{- fail "metis: more than one server pod (server.replicaCount > 1, or autoscaling.server enabled with maxReplicas > 1) requires uploads.backend=s3 (#546) — an RWO PVC is single-node so replicas can't share uploads. See docs/EKS_DEPLOYMENT.md §9f. Set scaling.enforce=false to override." -}}
+{{- end -}}
+{{- /*
+#75 — the shared backends above are not enough on their own: every server pod
+mounts the server's PVCs, and a ReadWriteOnce claim attaches to ONE node, so a
+second replica scheduled elsewhere never starts (Multi-Attach). With the backends
+set nothing durable is written to them, so turn them off (values-prod.yaml), or
+make them RWX with persistence.efs.enabled=true.
+*/ -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.efs.enabled) -}}
+{{- range $volume := list "uploads" "lancedb" "data" -}}
+{{- if (index $.Values.persistence $volume).enabled -}}
+{{- fail (printf "metis: more than one server pod (server.replicaCount > 1, or autoscaling.server enabled with maxReplicas > 1) cannot mount the ReadWriteOnce PVC persistence.%s (#75) — a second replica on another node cannot attach it (Multi-Attach). Set persistence.%s.enabled=false (it becomes an emptyDir; nothing durable is written there once the shared backends are set — see values-prod.yaml), or persistence.efs.enabled=true for ReadWriteMany. Set scaling.enforce=false to override." $volume $volume) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

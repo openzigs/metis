@@ -1511,6 +1511,17 @@ export function getVectorStore(): VectorStore {
   return singleton;
 }
 
+/**
+ * #75 — which backend {@link getVectorStore} selects, WITHOUT constructing it, for
+ * callers that must know (the `/readyz` pgvector check) but must not open a store.
+ * Same ladder, same precedence: offline wins over pgvector.
+ */
+export function activeVectorBackend(): "local" | "pgvector" | "lancedb" {
+  if (isOfflineVectorMode()) return "local";
+  if (isPgVectorMode()) return "pgvector";
+  return "lancedb";
+}
+
 function isOfflineVectorMode(): boolean {
   if (process.env.AI_OFFLINE === "1" || process.env.AI_OFFLINE === "true") return true;
   if (process.env.VECTOR_STORE === "local") return true;

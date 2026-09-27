@@ -152,7 +152,10 @@ else
 fi
 
 # Single replica with enforce=true renders fine (no shared backends required).
-if template --set scaling.enforce=true --set server.replicaCount=1 >/dev/null 2>&1; then
+# "Single" means the HPA is off too: the default HPA (minReplicas: 2) would run
+# a second pod whatever replicaCount says, so it is tested separately below.
+if template --set scaling.enforce=true --set server.replicaCount=1 \
+  --set autoscaling.server.enabled=false >/dev/null 2>&1; then
   echo "  ✓ enforce=true + replicas=1 renders cleanly"
   PASS=$((PASS + 1))
 else
@@ -168,7 +171,9 @@ SCALED=$(template --set scaling.enforce=true \
   --set scaling.rateLimitBackend=postgres \
   --set scaling.ssoStateBackend=postgres \
   --set scaling.leaderElection=postgres \
-  --set uploads.backend=s3 --set uploads.s3.bucket=b --set uploads.s3.region=us-east-1)
+  --set uploads.backend=s3 --set uploads.s3.bucket=b --set uploads.s3.region=us-east-1 \
+  --set persistence.uploads.enabled=false --set persistence.lancedb.enabled=false \
+  --set persistence.data.enabled=false)
 if [[ -n "${SCALED}" ]] && ! echo "${SCALED}" | grep -qi "execution error"; then
   echo "  ✓ replicas=2 with all shared backends renders cleanly"
   PASS=$((PASS + 1))
@@ -192,6 +197,88 @@ assert_not_contains "ui deployment has no VECTOR_STORE" "name: VECTOR_STORE" "${
 # EFS still works as an orthogonal RWX toggle.
 EFS_RENDER2=$(template --set persistence.efs.enabled=true)
 assert_contains "EFS toggle still switches to RWX" "ReadWriteMany" "${EFS_RENDER2}"
+
+# #75 — shared backends alone are not enough: every server pod mounts the server
+# PVCs, and a ReadWriteOnce claim attaches to one node (Multi-Attach). Each RWO
+# server PVC left enabled must fail-closed under enforce, and EFS (RWX) must not.
+SCALED_ARGS=(--set scaling.enforce=true
+  --set scaling.database.url=postgres://u:p@db:5432/metis --set scaling.vectorStore=pgvector
+  --set uploads.backend=s3 --set uploads.s3.bucket=b --set uploads.s3.region=us-east-1
+  --set persistence.uploads.enabled=false --set persistence.lancedb.enabled=false
+  --set persistence.data.enabled=false)
+for vol in uploads lancedb data; do
+  RWO_OUT=$(template "${SCALED_ARGS[@]}" --set "persistence.${vol}.enabled=true" || true)
+  assert_contains "enforce + replicas=2 refuses an RWO ${vol} PVC (#75)" \
+    "cannot mount the ReadWriteOnce PVC persistence.${vol}" "${RWO_OUT}"
+done
+RWX_OUT=$(template "${SCALED_ARGS[@]}" --set persistence.uploads.enabled=true --set persistence.efs.enabled=true || true)
+assert_not_contains "enforce + replicas=2 accepts the same PVC as RWX (EFS)" "execution error" "${RWX_OUT}"
+assert "enforce + replicas=1 + HPA off still renders RWO PVCs" 3 \
+  "$(count_kind PersistentVolumeClaim "$(template --set scaling.enforce=true --set server.replicaCount=1 \
+    --set autoscaling.server.enabled=false)")"
+
+# #75 names the HPA path: replicaCount is only the Deployment's starting size,
+# and an enabled HPA sets the real pod count. The guard must count the most
+# server pods that can exist — replicaCount, or the HPA's maxReplicas when it
+# is on — not replicaCount alone. Each arm keeps replicaCount=1 so only the HPA
+# can push the count past one.
+for vol in uploads lancedb data; do
+  HPA_RWO=$(template "${SCALED_ARGS[@]}" --set server.replicaCount=1 \
+    --set autoscaling.server.enabled=true --set autoscaling.server.minReplicas=2 \
+    --set "persistence.${vol}.enabled=true" || true)
+  assert_contains "enforce + replicas=1 + HPA minReplicas=2 refuses an RWO ${vol} PVC (#75)" \
+    "cannot mount the ReadWriteOnce PVC persistence.${vol}" "${HPA_RWO}"
+done
+HPA_SCALE_UP=$(template "${SCALED_ARGS[@]}" --set server.replicaCount=1 \
+  --set autoscaling.server.enabled=true --set autoscaling.server.minReplicas=1 \
+  --set autoscaling.server.maxReplicas=3 --set persistence.uploads.enabled=true || true)
+assert_contains "enforce + replicas=1 + HPA 1..3 refuses an RWO PVC (it can scale up) (#75)" \
+  "cannot mount the ReadWriteOnce PVC persistence.uploads" "${HPA_SCALE_UP}"
+HPA_NO_BACKENDS=$(template --set scaling.enforce=true --set server.replicaCount=1 \
+  --set autoscaling.server.enabled=true --set autoscaling.server.minReplicas=2 || true)
+assert_contains "enforce + replicas=1 + HPA minReplicas=2 still needs the shared backends" \
+  "requires scaling.vectorStore=pgvector" "${HPA_NO_BACKENDS}"
+HPA_ONE=$(template --set scaling.enforce=true --set server.replicaCount=1 \
+  --set autoscaling.server.enabled=true --set autoscaling.server.minReplicas=1 \
+  --set autoscaling.server.maxReplicas=1 || true)
+assert "enforce + replicas=1 + HPA 1..1 renders RWO PVCs" 3 "$(count_kind PersistentVolumeClaim "${HPA_ONE}")"
+# No server at all is zero server pods, whatever the (default-on) server HPA says —
+# hpa.yaml renders it, but it has no Deployment to scale.
+NO_SERVER=$(template --set scaling.enforce=true --set server.enabled=false --set server.replicaCount=1 || true)
+assert_not_contains "enforce + server.enabled=false ignores the server HPA" "execution error" "${NO_SERVER}"
+# Without enforce the same topology renders, and NOTES must still warn: it read
+# replicaCount alone and stayed silent about the HPA's second pod. `helm template`
+# never renders NOTES, and Helm 3's `install --dry-run=client` still dials a
+# cluster, so render the helper NOTES includes through a throwaway probe template
+# in a copy of the chart.
+notes() {
+  local tmp
+  tmp=$(mktemp -d)
+  cp -R "${CHART_DIR}" "${tmp}/metis"
+  printf '%s\n' 'apiVersion: v1' 'kind: ConfigMap' 'metadata:' '  name: notes-probe' 'data:' \
+    '  warning: {{ include "metis.scalingNotesWarning" . | toJson }}' \
+    >"${tmp}/metis/templates/zz-notes-probe.yaml"
+  helm template metis "${tmp}/metis" --show-only templates/zz-notes-probe.yaml "$@" 2>&1
+  rm -rf "${tmp}"
+}
+assert_contains "NOTES.txt renders metis.scalingNotesWarning" 'include "metis.scalingNotesWarning"' \
+  "$(cat "${CHART_DIR}/templates/NOTES.txt")"
+assert_contains "NOTES warns: replicas=1 + default HPA is still N>1 (#75)" \
+  "up to 6 server pods (replicaCount=1, HPA 2..6)" "$(notes --set server.replicaCount=1)"
+assert_not_contains "NOTES silent: replicas=1 + HPA off" "server pods" \
+  "$(notes --set server.replicaCount=1 --set autoscaling.server.enabled=false)"
+
+# Each server PVC has its own toggle; a disabled one is an emptyDir, never a
+# claim the pod cannot find.
+for vol in uploads lancedb; do
+  ONE_OFF=$(template --set "persistence.${vol}.enabled=false")
+  ONE_OFF_SERVER=$(echo "${ONE_OFF}" | awk '/^kind: Deployment$/{d=1} /^---$/{d=0; s=0} d && /^  name: metis-server$/{s=1} s')
+  assert "persistence.${vol}.enabled=false: 2× PVC" 2 "$(count_kind PersistentVolumeClaim "${ONE_OFF}")"
+  assert_not_contains "persistence.${vol}.enabled=false: no ${vol} PVC rendered" "name: metis-server-${vol}" "${ONE_OFF}"
+  assert_not_contains "persistence.${vol}.enabled=false: pod claims no ${vol} PVC" "claimName: metis-server-${vol}" "${ONE_OFF_SERVER}"
+  assert_contains "persistence.${vol}.enabled=false: ${vol} still mounted (emptyDir)" \
+    "mountPath: /app/server/data/${vol}" "${ONE_OFF_SERVER}"
+done
 
 # ---------------------------------------------------------------------------
 echo "Test 5: Secrets — sub-issue #368 (three modes)"
@@ -616,6 +703,64 @@ assert_not_contains "prod: data PVC not rendered" "name: metis-server-data" "${P
 
 EFS_DATA=$(template --set persistence.efs.enabled=true | awk '/^  name: metis-server-data$/,/^---$/')
 assert_contains "EFS toggle moves the data PVC to efs-sc too" 'storageClassName: "efs-sc"' "${EFS_DATA}"
+
+# #75 — prod mounts no ReadWriteOnce PVC at all into its 2+ server replicas:
+# uploads are on S3 and vectors in pgvector, so both directories are emptyDirs.
+for vol in uploads lancedb; do
+  assert_not_contains "prod: no RWO ${vol} PVC in the server pod (#75)" "claimName: metis-server-${vol}" "${PROD_SERVER}"
+  assert_not_contains "prod: ${vol} PVC not rendered (#75)" "name: metis-server-${vol}" "${PROD_RENDER}"
+  assert_contains "prod: ${vol} dir still writable (#75)" "mountPath: /app/server/data/${vol}"$'\n' "${PROD_SERVER}"$'\n'
+done
+assert "prod: 0× PVC (#75)" 0 "$(count_kind PersistentVolumeClaim "${PROD_RENDER}")"
+
+# ---------------------------------------------------------------------------
+echo "Test 13: backup CronJob captures the data directory — #75"
+# ---------------------------------------------------------------------------
+# On SQLite the database is /app/server/data/metis.db on the server-data PVC (#60).
+# The CronJob used to mount only uploads + lancedb and tar only those two, so
+# `backup.enabled=true` backed up everything except the database.
+backup_cronjob() {
+  echo "$1" | awk '/^kind: CronJob$/{c=1} /^---$/{c=0} c'
+}
+BK=$(backup_cronjob "$(template --set backup.enabled=true)")
+assert_contains "backup: mounts the server-data PVC" "claimName: metis-server-data" "${BK}"
+assert_contains "backup: data dir mounted read-only" "mountPath: /app/server/data"$'\n'"                  readOnly: true" "${BK}"
+assert_contains "backup: still mounts uploads" "claimName: metis-server-uploads" "${BK}"
+assert_contains "backup: still mounts lancedb" "claimName: metis-server-lancedb" "${BK}"
+assert_contains "backup: default command archives the WHOLE data dir" "-C /app/server/data ." "${BK}"
+assert_not_contains "backup: default command no longer names only uploads + lancedb" "/app/server/data uploads lancedb" "${BK}"
+BK_LINE_DATA=$(echo "${BK}" | grep -n "mountPath: /app/server/data$" | cut -d: -f1)
+BK_LINE_UP=$(echo "${BK}" | grep -n "mountPath: /app/server/data/uploads$" | cut -d: -f1)
+assert "backup: data mounted before the volumes nested in it" "yes" \
+  "$([[ -n "${BK_LINE_DATA}" && -n "${BK_LINE_UP}" && ${BK_LINE_DATA} -lt ${BK_LINE_UP} ]] && echo yes || echo no)"
+# Only PVCs that exist are mounted — a disabled one is a per-pod emptyDir.
+BK_PROD=$(backup_cronjob "$(template -f "${CHART_DIR}/values-prod.yaml" --set backup.enabled=true)")
+assert_not_contains "backup (prod): no server PVC claimed" "claimName: metis-server-" "${BK_PROD}"
+BK_NODATA=$(backup_cronjob "$(template --set backup.enabled=true --set persistence.data.enabled=false)")
+assert_not_contains "backup: data PVC off -> not claimed" "claimName: metis-server-data" "${BK_NODATA}"
+assert_contains "backup: data PVC off -> uploads still claimed" "claimName: metis-server-uploads" "${BK_NODATA}"
+# The RWO backup pod must land on the server pod's node. values.yaml documents a
+# podAffinity for it; render that exact commented example (uncommented, with this
+# release's name) and check its labels select the server pod — a label drift
+# would leave the backup silently Pending on Multi-Attach again.
+AFF_FILE=$(mktemp)
+awk '/^backup:/{b=1} b && /^  #   affinity:$/{e=1} e && !/^  #/{exit} e' "${CHART_DIR}/values.yaml" \
+  | sed -e 's/^  #   /    /' -e 's/<release>/metis/' | { echo "backup:"; cat; } >"${AFF_FILE}"
+# Only the affinity block: the CronJob's own labels carry the same instance label.
+# (No awk `exit` in these pipelines: under pipefail the writer's SIGPIPE is exit 141.)
+BK_AFF=$(backup_cronjob "$(template --set backup.enabled=true -f "${AFF_FILE}")" \
+  | awk '/^          affinity:$/{a=1; next} a && /^          [a-z]/{a=0; done=1} a && !done')
+rm -f "${AFF_FILE}"
+assert_contains "backup: documented podAffinity renders into the CronJob" "topologyKey: kubernetes.io/hostname" "${BK_AFF}"
+SERVER_POD_LABELS=$(template | awk '/^kind: Deployment$/{d=1} /^---$/{d=0; s=0} d && /^  name: metis-server$/{s=1} s' \
+  | awk '/^  template:$/{t=1} t && !done && /^      labels:$/{l=1; next} l && /^        /{print; next} l{l=0; done=1}')
+for label in "app.kubernetes.io/instance: metis" "app.kubernetes.io/component: server"; do
+  # Whole-line matches: `component: serverX` must not pass as `component: server`.
+  assert "backup: documented podAffinity selects ${label}" yes \
+    "$(grep -qxE " +${label}" <<<"${BK_AFF}" && echo yes || echo no)"
+  assert "server pod carries ${label}" yes \
+    "$(grep -qxE " +${label}" <<<"${SERVER_POD_LABELS}" && echo yes || echo no)"
+done
 
 # ---------------------------------------------------------------------------
 echo

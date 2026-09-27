@@ -766,7 +766,9 @@ prerequisite — see [`OPERATIONS.md`](./OPERATIONS.md) §10.2.
   when `scaling.enforce=true` (set in `values-prod.yaml`); the chart default is
   `enforce=false` so a bare install renders, with `NOTES.txt` warning if N>1 lacks
   the backends. **If you have NOT set up the shared backends, pin
-  `server.replicaCount=1`** (the `values-dev.yaml` profile does this).
+  `server.replicaCount=1` and `autoscaling.server.enabled=false`** (the
+  `values-dev.yaml` profile does this) — the server HPA is on by default and
+  counts as N>1 whatever `replicaCount` says (#75).
 - The chart does **not** install ESO, AWS LB Controller, EBS/EFS CSI, or
   cert-manager. Cluster prerequisites are owned by the operator.
 - `gp3` StorageClass is **not** provisioned by EKS by default — you must

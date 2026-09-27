@@ -85,12 +85,15 @@ disasterRecovery:
 persistence:
   enabled: true
   reclaimPolicy: Retain
+  # #75 — the same reasoning as `data` below, for the two older volumes: uploads
+  # are on S3 (uploads.backend=s3) and vectors in pgvector (scaling.vectorStore),
+  # so nothing durable is written to either directory. As ReadWriteOnce gp3 claims
+  # mounted by 2 server replicas (and the HPA's minReplicas: 2) they could not
+  # attach on a second node (Multi-Attach). Both are emptyDirs here.
   uploads:
-    size: 50Gi
-    storageClassName: gp3
+    enabled: false
   lancedb:
-    size: 20Gi
-    storageClassName: gp3
+    enabled: false
   # #60 — DATABASE_URL is Postgres (externalSecrets) and uploads are on S3, so the
   # server's data directory holds only scratch (repo archive extracts): an emptyDir,
   # not a ReadWriteOnce PVC that a second replica on another node could not attach.

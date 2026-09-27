@@ -3,7 +3,8 @@
  *
  * - `/api/health` and `/healthz` return 200 immediately (liveness).
  * - `/api/health/deep` and `/readyz` exercise the database and confirm the
- *   vault key is loaded (readiness).
+ *   vault key is loaded (readiness), and — under `VECTOR_STORE=pgvector` — that
+ *   the `vector` extension exists (#75).
  *
  * Neither route is authenticated: kubelet and load balancers probe `/readyz`
  * without credentials, so the deep check cannot require auth (#121). Because
@@ -36,7 +37,21 @@ export const HEALTH_CHECK_MESSAGES = {
   scheduler: "scheduler check failed",
   ai: "AI provider check failed",
   mcpRuntime: "MCP runtime probe failed",
+  vectorStore: "vector store check failed",
+  pgvectorMissing: "pgvector extension is not available in this database",
 } as const;
+
+/**
+ * #75 — whether the `vector` extension is installed, whether it could be, and
+ * whether THIS role could create it. pgvector's control file is not `trusted`,
+ * so `CREATE EXTENSION vector` needs a superuser. Catalog and GUC reads only:
+ * cheap enough for every `/readyz` hit, and they need no privilege beyond
+ * connecting. Exported so the tests answer exactly this query.
+ */
+export const PGVECTOR_READINESS_SQL =
+  "SELECT (SELECT count(*) FROM pg_extension WHERE extname = 'vector') AS installed, " +
+  "(SELECT count(*) FROM pg_available_extensions WHERE name = 'vector') AS available, " +
+  "current_setting('is_superuser') AS superuser";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -235,6 +250,55 @@ export const deepHandler: RequestHandler = async (_req, res) => {
   } catch (err) {
     log.error("Embeddings health check failed", { error: errorText(err) });
     checks.embeddings = { status: "error", message: HEALTH_CHECK_MESSAGES.embeddings };
+  }
+
+  // #75 — the vector store. Under VECTOR_STORE=pgvector a Postgres WITHOUT the
+  // `vector` extension used to boot cleanly and pass every probe, then fail on the
+  // first vector write (`CREATE EXTENSION IF NOT EXISTS vector` in
+  // PgVectorStore.ensureSchema) — mid-ingest, on a pod already taking traffic.
+  // Not available ⇒ error ⇒ 503, so that rollout never goes ready. Available but
+  // not yet created is ok when this role is a superuser (the first write creates
+  // it). Otherwise it is degraded, not error: that write may fail, but managed
+  // Postgres grants CREATE EXTENSION through its own role (RDS `rds_superuser`),
+  // which this catalog read cannot see — so warn, and do not block the rollout.
+  try {
+    const { activeVectorBackend } = await import("../lib/rag/vector-store.js");
+    const backend = activeVectorBackend();
+    if (backend !== "pgvector") {
+      checks.vectorStore = { status: "ok", message: backend };
+    } else {
+      const rows =
+        await prisma.$queryRawUnsafe<
+          Array<{ installed: unknown; available: unknown; superuser: unknown }>
+        >(PGVECTOR_READINESS_SQL);
+      const installed = Number(rows[0]?.installed ?? 0) > 0;
+      const available = Number(rows[0]?.available ?? 0) > 0;
+      // A text GUC ('on' / 'off'), so no driver's boolean mapping is involved.
+      const superuser = rows[0]?.superuser === "on";
+      if (installed) {
+        checks.vectorStore = { status: "ok", message: "pgvector (extension installed)" };
+      } else if (available && !superuser) {
+        checks.vectorStore = {
+          status: "degraded",
+          message:
+            "pgvector (extension available but not created, and this role is not a superuser — " +
+            "the first write's CREATE EXTENSION vector may fail; create the extension ahead of time)",
+        };
+      } else if (available) {
+        checks.vectorStore = {
+          status: "ok",
+          message: "pgvector (extension available; created on first write)",
+        };
+      } else {
+        log.error("pgvector readiness: the `vector` extension is not available", {
+          hint: "install pgvector into this Postgres, or use an image that ships it (pgvector/pgvector)",
+        });
+        checks.vectorStore = { status: "error", message: HEALTH_CHECK_MESSAGES.pgvectorMissing };
+      }
+    }
+  } catch (err) {
+    log.error("Vector store health check failed", { error: errorText(err) });
+    checks.vectorStore = { status: "error", message: HEALTH_CHECK_MESSAGES.vectorStore };
   }
 
   // Issue #330 — MCP runtime substrate probe (network, wrapper image cache,
