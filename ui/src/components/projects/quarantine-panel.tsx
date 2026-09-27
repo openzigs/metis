@@ -47,7 +47,17 @@ export function QuarantinePanel({ projectId }: { projectId: string }) {
     mutationFn: (documentId: string) => quarantineApi.approve(projectId, documentId),
     // Approval may have committed before cleanup failed. Reload on either outcome
     // so a failed initial approval becomes an explicit indexing retry.
-    onSettled: () => qc.invalidateQueries({ queryKey: QK(projectId) }),
+    //
+    // React Query holds a mutation in `pending` until the promise `onSettled`
+    // returns has resolved. On success that is wanted: the row keeps its
+    // disabled "Retrying indexing…" button until the refreshed list drops it. On
+    // failure it is not: awaiting the refresh there hid the approval error — and
+    // kept the button disabled — for as long as an unrelated list GET took, so a
+    // slow refresh read as "the failure was never reported" (#220).
+    onSettled: (_data, error) => {
+      const refreshed = qc.invalidateQueries({ queryKey: QK(projectId) });
+      return error ? undefined : refreshed;
+    },
   });
 
   const reject = useMutation({

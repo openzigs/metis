@@ -188,6 +188,50 @@ describe("QuarantinePanel", () => {
     expect(mocks.approve).toHaveBeenCalledTimes(2);
   });
 
+  it("reports a failed retry without waiting for the list refresh it triggers (#220)", async () => {
+    mocks.list.mockResolvedValueOnce({ items: [reconcilingRow], autoApproveTrustedSources: false });
+    let releaseRefresh!: () => void;
+    mocks.list.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseRefresh = () =>
+            resolve({ items: [reconcilingRow], autoApproveTrustedSources: false });
+        }),
+    );
+    mocks.approve.mockRejectedValueOnce(new Error("E2E simulated approval cleanup failure"));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Retry indexing" }));
+    // The refresh is in flight and never answers until released below.
+    await waitFor(() => expect(mocks.list).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Unable to finish approval/indexing: E2E simulated approval cleanup failure",
+    );
+    expect(screen.getByRole("button", { name: "Retry indexing" })).toBeEnabled();
+    releaseRefresh();
+    await waitFor(() => expect(screen.getByText(/Approval saved/)).toBeInTheDocument());
+    expect(screen.getByRole("alert")).toHaveTextContent("E2E simulated approval cleanup failure");
+  });
+
+  it("keeps a successful retry pending until the refreshed list drops the row", async () => {
+    mocks.list.mockResolvedValueOnce({ items: [reconcilingRow], autoApproveTrustedSources: false });
+    let releaseRefresh!: () => void;
+    mocks.list.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseRefresh = () => resolve({ items: [], autoApproveTrustedSources: false });
+        }),
+    );
+    mocks.approve.mockResolvedValueOnce({});
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Retry indexing" }));
+    await waitFor(() => expect(mocks.list).toHaveBeenCalledTimes(2));
+    // No second click can land while the recovered row is still on screen.
+    expect(screen.getByRole("button", { name: "Retrying indexing…" })).toBeDisabled();
+    releaseRefresh();
+    expect(await screen.findByText("Quarantine is empty.")).toBeInTheDocument();
+    expect(mocks.approve).toHaveBeenCalledTimes(1);
+  });
+
   it("shows list failures rather than an empty quarantine and lets the user reload", async () => {
     mocks.list.mockRejectedValueOnce(new Error("List unavailable"));
     renderPanel();
