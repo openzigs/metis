@@ -255,6 +255,9 @@ const GLOBAL_RECEIVERS_BY_FAMILY: Readonly<Record<string, ReadonlySet<string>>> 
     "Collectors",
   ]),
   cs: new Set(["Math", "String", "Array", "Object"]),
+  // Issue #161 — the standard-library namespaces of C++ and Rust.
+  c: new Set(["std"]),
+  rs: new Set(["std", "core", "alloc"]),
 };
 
 /** True when `receiver` is a runtime / test-framework namespace in `language`. */
@@ -473,7 +476,10 @@ export function isRuntimeOrTestModule(spec: string): boolean {
 
 /** Language families whose symbols can call one another. */
 function languageFamily(language: string): string {
-  return language === "ts" || language === "js" ? "js" : language;
+  if (language === "ts" || language === "js") return "js";
+  // Issue #161 — C++ calls C freely, and `.h` headers are parsed as C++.
+  if (language === "cpp") return "c";
+  return language;
 }
 
 /**
@@ -590,7 +596,7 @@ export function isKotlinConstructorCandidate(
 }
 
 /** Languages where a bare `foo()` inside a class is an implicit `this.foo()`. */
-const IMPLICIT_THIS_LANGUAGES: ReadonlySet<string> = new Set(["java", "cs", "kt"]);
+const IMPLICIT_THIS_LANGUAGES: ReadonlySet<string> = new Set(["java", "cs", "kt", "scala", "cpp"]);
 
 /** Declared directly in its file, not inside a class or function. */
 function isTopLevel(sym: ResolvableSymbol): boolean {
@@ -775,7 +781,7 @@ function resolveBare(name: string, site: ResolutionSite, index: ResolutionIndex)
   if (site.runtimeImports?.has(name)) return null;
 
   // 1. Same-file definition wins outright — lexical shadowing. A bare call
-  //    cannot reach a method, except in Java/C#/Kotlin where it is an implicit `this.`.
+  //    cannot reach a method, except in Java/C#/Kotlin/Scala/C++ where it is an implicit `this.`.
   const sameFile = IMPLICIT_THIS_LANGUAGES.has(site.language)
     ? index.fileToNameIndex
     : index.fileToBareIndex;

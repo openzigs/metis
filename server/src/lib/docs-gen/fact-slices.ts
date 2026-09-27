@@ -175,7 +175,11 @@ export type MinedRuleLanguage =
   | "sql"
   | "cs"
   | "kt"
-  | "cbl";
+  | "cbl"
+  | "scala"
+  | "rs"
+  | "c"
+  | "cpp";
 
 /**
  * One deterministically mined rule, language-neutral. This is the shape
@@ -229,6 +233,10 @@ const LANGUAGES: ReadonlySet<string> = new Set([
   "cs",
   "kt",
   "cbl",
+  "scala",
+  "rs",
+  "c",
+  "cpp",
 ]);
 
 function isPersistedMinedRule(value: unknown): value is PersistedMinedRule {

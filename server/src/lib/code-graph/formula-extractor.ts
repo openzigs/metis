@@ -7,9 +7,11 @@
  * - Conditional business logic (complex if-else chains)
  * - Validation patterns (range checks, null guards, regex matches)
  *
- * Supports TypeScript/JavaScript and Java.
+ * Supports TypeScript/JavaScript, Java, Python and Go; constants and arithmetic
+ * assignments for Scala, Rust, C and C++ (#161).
  */
 import type { Language } from "./parsers.js";
+import { isLiteralValue, trailingIdentifier } from "./rule-miner-brace-shared.js";
 
 export interface ExtractedFormula {
   /** Type of the extracted pattern */
@@ -72,6 +74,12 @@ export function extractFormulas(
       break;
     case "go":
       extractGoFormulas(lines, filePath, formulas);
+      break;
+    case "scala":
+    case "rs":
+    case "c":
+    case "cpp":
+      extractBraceFamilyFormulas(lines, filePath, formulas, language);
       break;
     default:
       // Fallback: basic pattern matching for any language
@@ -348,6 +356,114 @@ function extractGoFormulas(lines: string[], filePath: string, out: ExtractedForm
           symbolContext: null,
         });
       }
+    }
+  }
+}
+
+// ============================================================================
+// Scala / Rust / C / C++ extraction — Issue #161
+//
+// Constants (a literal bound to a constant-looking or const-qualified name)
+// and arithmetic assignments. Linear: the assignment is split with indexOf,
+// never with a regex that could backtrack across the line, and the name is
+// read by a bounded character scan.
+// ============================================================================
+
+/** `x = …` split at its first plain `=` (not `==`, `<=`, `>=`, `!=`, `=>`, `+=` …). */
+function splitAssignment(code: string): { left: string; right: string } | null {
+  for (let k = 1; k < code.length - 1; k++) {
+    if (code[k] !== "=") continue;
+    const before = code[k - 1];
+    const after = code[k + 1];
+    if ("=!<>+-*/%&|^:".includes(before) || after === "=" || after === ">") continue;
+    return { left: code.slice(0, k).trim(), right: code.slice(k + 1).trim() };
+  }
+  return null;
+}
+
+/** The declared name on an assignment's left side: `val Rate: Double` → `Rate`. */
+function declaredName(left: string, language: Language): string {
+  let l = left;
+  if (language === "scala" || language === "rs") {
+    // `name: Type` — the type follows a colon (Rust paths use `::`, skipped).
+    for (let k = 0; k < l.length; k++) {
+      if (l[k] === ":" && l[k + 1] !== ":" && l[k - 1] !== ":") {
+        l = l.slice(0, k);
+        break;
+      }
+    }
+  }
+  if (l.endsWith("]")) l = l.slice(0, l.lastIndexOf("["));
+  return trailingIdentifier(l);
+}
+
+const BRACE_CONST_KEYWORD: Record<string, RegExp> = {
+  // A capitalised `val` (Scala's constant convention).
+  scala: /^(?:(?:private|protected|final|override|lazy)\s+)*val\s+[A-Z]/,
+  rs: /^(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s/,
+  c: /\b(?:const|constexpr)\b/,
+  cpp: /\b(?:const|constexpr)\b/,
+};
+const C_DEFINE_RE = /^#\s*define\s+([A-Za-z_]\w*)[ \t]+(\S.*)$/;
+
+function extractBraceFamilyFormulas(
+  lines: string[],
+  filePath: string,
+  out: ExtractedFormula[],
+  language: Language,
+): void {
+  const constKeyword = BRACE_CONST_KEYWORD[language];
+  for (let i = 0; i < lines.length; i++) {
+    let code = lines[i].trim();
+    const comment = code.indexOf("//");
+    if (comment >= 0) code = code.slice(0, comment).trim();
+    if (code.endsWith(";")) code = code.slice(0, -1).trim();
+    if (code.length === 0) continue;
+    const lineNum = i + 1;
+    const push = (
+      kind: ExtractedFormula["kind"],
+      name: string,
+      expression: string,
+      resolvedValue: string | null,
+    ) =>
+      out.push({
+        kind,
+        expression,
+        description: kind === "constant" ? `Constant ${name}` : `Calculation for ${name}`,
+        name,
+        resolvedValue,
+        filePath,
+        startLine: lineNum,
+        endLine: lineNum,
+        symbolContext: null,
+      });
+
+    const def = language === "c" || language === "cpp" ? C_DEFINE_RE.exec(code) : null;
+    if (def) {
+      const value = def[2].trim();
+      if (isLiteralValue(value)) push("constant", def[1], value, value);
+      else if (containsMathOps(value) && value.length > 10) push("arithmetic", def[1], value, null);
+      continue;
+    }
+    const assign = splitAssignment(code);
+    if (!assign) continue;
+    const name = declaredName(assign.left, language);
+    if (!name) continue;
+    const { right } = assign;
+    if (constKeyword.test(assign.left) && isLiteralValue(right)) {
+      push("constant", name, right, right);
+      continue;
+    }
+    // A calculation: arithmetic on the right, not a call-only or string value.
+    if (
+      right.length > 10 &&
+      containsMathOps(right) &&
+      !right.startsWith('"') &&
+      !right.startsWith("new ") &&
+      !right.startsWith("if ") &&
+      !right.startsWith("match ")
+    ) {
+      push("arithmetic", name, right, null);
     }
   }
 }

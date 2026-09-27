@@ -20,7 +20,8 @@ describe("detectLanguage", () => {
   });
 
   it("returns null for unknown extensions", () => {
-    expect(detectLanguage("foo.rs")).toBeNull();
+    // `.rs` became Rust in #161; Ruby has no code-graph parser.
+    expect(detectLanguage("foo.rb")).toBeNull();
     expect(detectLanguage("Makefile")).toBeNull();
   });
 });

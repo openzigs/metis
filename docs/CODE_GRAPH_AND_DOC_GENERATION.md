@@ -299,8 +299,14 @@ calls `ingestCodeGraph()` ([connectors.ts](../server/src/routes/connectors.ts#L2
 **Parsing:**
 
 - **Tree-sitter** WASM grammars parse TypeScript, JavaScript, Python, Go,
-  Java, C#, and Kotlin (`.kt`/`.kts`)
-  ([parsers-tree-sitter.ts](../server/src/lib/code-graph/parsers-tree-sitter.ts#L81-L110)).
+  Java, C#, Kotlin (`.kt`/`.kts`), Scala (`.scala`), Rust (`.rs`), C (`.c`)
+  and C++ (`.cpp`/`.cc`/`.cxx`/`.hpp`/`.hh`/`.hxx`, and `.h` headers, which the
+  C++ grammar reads for C code too)
+  ([parsers-tree-sitter.ts](../server/src/lib/code-graph/parsers-tree-sitter.ts#L81-L110);
+  the Scala, Rust and C/C++ walkers are in
+  [parsers-tree-sitter-more.ts](../server/src/lib/code-graph/parsers-tree-sitter-more.ts), #161).
+  Those four have no regex fallback: without a booted grammar a file is
+  recorded as its module alone.
 - **SAS** uses a dedicated regex parser
   ([parsers.ts](../server/src/lib/code-graph/parsers.ts#L27-L110)).
 - **COBOL** (`.cbl`/`.cob`/`.cobol` programs, `.cpy` copybooks; fixed and
@@ -504,10 +510,13 @@ runs in stages:
    ([holistic-synthesizer.ts](../server/src/lib/docs-gen/holistic-synthesizer.ts#L933-L1022)).
 2. **Extract per-module facts from real source bodies** (not just names or
    embedding previews), supplemented by deterministic formula/rule miners
-   (Java, TypeScript/JavaScript, Python, Go, C#, Kotlin, SAS, SQL, COBOL —
-   `server/src/lib/code-graph/*-rule-miner.ts`; a condition, precondition or
-   filter written across several lines is joined and read whole by
-   `rule-miner-continuation.ts`, #170) and rationale findings
+   (Java, TypeScript/JavaScript, Python, Go, C#, Kotlin, Scala, Rust, C/C++,
+   SAS, SQL, COBOL — `server/src/lib/code-graph/*-rule-miner.ts`; a condition,
+   precondition or filter written across several lines is joined and read
+   whole by `rule-miner-continuation.ts`, #170). A language outside that list
+   (e.g. Ruby or Groovy, which are embedded for retrieval only) is not parsed
+   into the code graph and has **no rule miner** — its rules are not mined
+   deterministically. Rationale findings are extracted too
    ([holistic-synthesizer.ts](../server/src/lib/docs-gen/holistic-synthesizer.ts#L1473-L1585)).
    Module extraction defaults to **3 concurrent modules**
    (`DOCS_GEN_PHASE1_CONCURRENCY`), bounded to stay within gateway idle
