@@ -94,6 +94,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let A = ""; // coordinator in ws-a
     let B = ""; // coordinator in ws-b — the attacker
     let READER_A = ""; // reader in ws-a — the wrong-role caller
+    let DEV_B = ""; // developer in ws-b — holds vault.read, created no secret
 
     const app = () => {
       const a = express();
@@ -140,7 +141,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ),
       );
 
-      for (const id of ["u-admin", "u-a", "u-b", "u-reader-a"]) {
+      for (const id of ["u-admin", "u-a", "u-b", "u-reader-a", "u-dev-b"]) {
         await db.user.create({
           data: { id, username: id, displayName: id, email: `${id}@example.test` },
         });
@@ -190,6 +191,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.agentRun.create({
         data: { id: "run-a", sessionId: "chat-a", projectId: "proj-a-0001" },
       });
+      // A real, enabled library skill (p-a has no skill allow-list rows, so
+      // every enabled skill is allowed there).
+      await db.skill.create({ data: { id: "sk-real", key: "real-skill", name: "Real skill" } });
       // A custom agent owned by p-a.
       await db.customAgent.create({
         data: { id: "ca-a", projectId: "proj-a-0001", name: "agent-a" },
@@ -216,23 +220,33 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           snapshotUpdatedAt,
         },
       });
-      // A vault secret created by u-a.
-      await db.secret.create({
-        data: {
-          id: "sec-a",
-          name: "global:a-key",
-          ciphertext: "x",
-          iv: "x",
-          tag: "x",
-          salt: "x",
-          createdById: "u-a",
-        },
-      });
+      // Vault secrets: one created by u-a, one by the admin (the only role
+      // that holds vault.write, so the usual shape of a shared BYOK key), and
+      // one the admin has since soft-deleted.
+      for (const [id, createdById, deletedAt] of [
+        ["sec-a", "u-a", null],
+        ["sec-admin", "u-admin", null],
+        ["sec-gone", "u-admin", new Date()],
+      ] as const) {
+        await db.secret.create({
+          data: {
+            id,
+            name: `global:${id}`,
+            ciphertext: "x",
+            iv: "x",
+            tag: "x",
+            salt: "x",
+            createdById,
+            deletedAt,
+          },
+        });
+      }
 
       ADMIN = token("u-admin", "admin", []);
       A = token("u-a", "coordinator", ["ws-a"]);
       B = token("u-b", "coordinator", ["ws-b"]);
       READER_A = token("u-reader-a", "reader", ["ws-a"]);
+      DEV_B = token("u-dev-b", "developer", ["ws-b"]);
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -477,16 +491,45 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await db.backgroundRun.count({ where: { projectId: "proj-a-0001" } })).toBe(0);
       });
 
-      it("GET/POST /api/ai/sessions/:id/skills and POST /api/skills/:id/load — 404", async () => {
-        expect((await call("get", "/api/ai/sessions/s-b-in-a/skills", B)).status).toBe(404);
-        expect(
-          (await call("post", "/api/ai/sessions/s-b-in-a/skills", B, { skillKey: "any" })).status,
-        ).toBe(404);
-        expect(
-          (await call("post", "/api/skills/any/load", B, { sessionId: "s-b-in-a" })).status,
-        ).toBe(404);
+      // A REAL, enabled skill that p-a allows (no allow-list rows = every
+      // enabled skill), so without the session check the load would SUCCEED:
+      // the refusal must be the session's 404, not the skill lookup's.
+      const loadedSkillsOf = async (id: string) =>
+        (await db.aISession.findUnique({ where: { id } }))?.loadedSkillIds;
+
+      it("GET /api/ai/sessions/:id/skills — 404 AI_SESSION_NOT_FOUND", async () => {
+        const res = await call("get", "/api/ai/sessions/s-b-in-a/skills", B);
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe("AI_SESSION_NOT_FOUND");
         // The project-less chat is still the owner's.
         expect((await call("get", "/api/ai/sessions/s-b-free/skills", B)).status).toBe(200);
+      });
+
+      it("POST /api/ai/sessions/:id/skills (real skill) — 404 AI_SESSION_NOT_FOUND, nothing loaded", async () => {
+        const res = await call("post", "/api/ai/sessions/s-b-in-a/skills", B, {
+          skillKey: "real-skill",
+        });
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe("AI_SESSION_NOT_FOUND");
+        expect(await loadedSkillsOf("s-b-in-a")).toBe("[]");
+      });
+
+      it("POST /api/skills/:id/load (real skill) — 404 AI_SESSION_NOT_FOUND, nothing loaded", async () => {
+        const res = await call("post", "/api/skills/sk-real/load", B, { sessionId: "s-b-in-a" });
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe("AI_SESSION_NOT_FOUND");
+        expect(await loadedSkillsOf("s-b-in-a")).toBe("[]");
+      });
+
+      it("the same real skill loads into the caller's project-less chat (positive control)", async () => {
+        const byKey = await call("post", "/api/ai/sessions/s-b-free/skills", B, {
+          skillKey: "real-skill",
+        });
+        expect(byKey.status).toBe(201);
+        expect(JSON.parse((await loadedSkillsOf("s-b-free")) ?? "[]")).toEqual(["sk-real"]);
+        const byId = await call("post", "/api/skills/sk-real/load", B, { sessionId: "s-b-free" });
+        expect(byId.status).toBe(200);
+        expect(byId.body.data.alreadyLoaded).toBe(true);
       });
 
       it("GET /api/ai/sessions?status=resumable — omits the unreachable project's session", async () => {
@@ -498,34 +541,59 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     // ── providerSecretRef ─────────────────────────────────────────────────
     describe("POST /api/ai/sessions providerSecretRef", () => {
-      it("another user's vault secret: 404 SECRET_NOT_FOUND and no session", async () => {
+      // #305's rule: a caller may reference a secret they may READ — the
+      // `vault.read` permission `GET /api/vault/:id/reveal` requires, over every
+      // live secret (the vault has no project or workspace binding).
+      const create = (bearer: string | undefined, ref: string) =>
+        call("post", "/api/ai/sessions", bearer, { providerSecretRef: ref });
+
+      it("a developer and a coordinator (vault.read) may use a key the admin created", async () => {
+        const dev = await create(DEV_B, "sec-admin");
+        expect(dev.status).toBe(201);
+        expect(dev.body.data.session.providerSecretRef).toBe("sec-admin");
+        const coord = await create(B, "sec-admin");
+        expect(coord.status).toBe(201);
+        // Another user's key is readable too — creation is not ownership.
+        expect((await create(B, "sec-a")).status).toBe(201);
+      });
+
+      it("a reader (no vault.read): 404 SECRET_NOT_FOUND and no session", async () => {
         const before = await db.aISession.count();
-        const res = await call("post", "/api/ai/sessions", B, { providerSecretRef: "sec-a" });
-        expect(res.status).toBe(404);
-        expect(res.body.error.code).toBe("SECRET_NOT_FOUND");
+        for (const ref of ["sec-admin", "sec-a"]) {
+          const res = await create(READER_A, ref);
+          expect(res.status).toBe(404);
+          expect(res.body.error.code).toBe("SECRET_NOT_FOUND");
+        }
+        expect(await db.aISession.count()).toBe(before);
+      });
+
+      it("a soft-deleted secret (unreadable via the vault): the same 404, no session", async () => {
+        const before = await db.aISession.count();
+        for (const bearer of [DEV_B, ADMIN]) {
+          const res = await create(bearer, "sec-gone");
+          expect(res.status).toBe(404);
+          expect(res.body.error.code).toBe("SECRET_NOT_FOUND");
+        }
         expect(await db.aISession.count()).toBe(before);
       });
 
       it("an unknown secret id: the same 404", async () => {
-        const res = await call("post", "/api/ai/sessions", B, { providerSecretRef: "nope" });
+        const res = await create(B, "nope");
         expect(res.status).toBe(404);
         expect(res.body.error.code).toBe("SECRET_NOT_FOUND");
       });
 
       it("anonymous: 401", async () => {
         __resetAIRateLimiter();
-        expect(
-          (await call("post", "/api/ai/sessions", undefined, { providerSecretRef: "sec-a" }))
-            .status,
-        ).toBe(401);
+        expect((await create(undefined, "sec-a")).status).toBe(401);
       });
 
-      it("the secret's creator, and a system admin, may reference it", async () => {
-        const own = await call("post", "/api/ai/sessions", A, { providerSecretRef: "sec-a" });
-        expect(own.status).toBe(201);
-        expect(own.body.data.session.providerSecretRef).toBe("sec-a");
-        const admin = await call("post", "/api/ai/sessions", ADMIN, { providerSecretRef: "sec-a" });
-        expect(admin.status).toBe(201);
+      it("a system admin may reference any live secret (positive control)", async () => {
+        for (const ref of ["sec-a", "sec-admin"]) {
+          const res = await create(ADMIN, ref);
+          expect(res.status).toBe(201);
+          expect(res.body.data.session.providerSecretRef).toBe(ref);
+        }
       });
     });
   },

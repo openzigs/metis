@@ -292,10 +292,11 @@ async function resolveProviderKey(
   ownerUserId: string,
 ): Promise<string | undefined> {
   if (!ref) return undefined;
-  // #305 — decrypt only a secret the session OWNER may use, judged on the
-  // owner's current role. A foreign ref answers exactly like a missing one.
+  // #305 — decrypt only a secret the session OWNER may read (`vault.read`),
+  // judged on the owner's current role. An unreadable ref answers exactly like
+  // a missing one, and never falls back to other credentials.
   const role = await resolveDurableRole(ownerUserId);
-  if (!(await canUseSecret({ userId: ownerUserId, role }, ref))) {
+  if (!(await canUseSecret({ role }, ref))) {
     log.warn("AI session BYOK key refused: secret not usable by the session owner", {
       ref,
       userId: ownerUserId,
@@ -826,8 +827,9 @@ export function aiRouter(): Router {
         issues: parsed.error.flatten(),
       });
     }
-    // #305 — a BYOK ref must name a vault secret the caller may use (their own,
-    // or any for a system admin); otherwise 404 and nothing is created.
+    // #305 — a BYOK ref must name a live vault secret the caller may read
+    // (`vault.read`, as `GET /api/vault/:id/reveal`); otherwise 404 and nothing
+    // is created.
     if (parsed.data.providerSecretRef) {
       await assertSecretUsable(req.user!, parsed.data.providerSecretRef);
     }

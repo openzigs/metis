@@ -8,5 +8,6 @@ section: Security
   reach the project. A project in another workspace answers "not found".
 - A chat in a project you have lost access to stays closed on every route, including model
   switches, plans, background messages, skills and the resumable-session list.
-- A chat can use only a vault provider key you added (any key for a system administrator),
-  checked when the chat is created and on every turn.
+- A chat can use only a vault provider key you may read (the vault's `vault.read` permission:
+  administrators, coordinators and developers; not readers), checked when the chat is created
+  and on every turn.
