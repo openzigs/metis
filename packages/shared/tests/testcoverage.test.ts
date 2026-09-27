@@ -188,6 +188,21 @@ describe("request body schemas", () => {
     expect(CreateRunBodySchema.parse({}).mode).toBe("A");
   });
 
+  it("CreateRunBodySchema keeps a positive integer per-run budgetCents (#249)", () => {
+    // The upper bound is the operator's cap, which only the server knows —
+    // the route refuses a value above it (server/tests/routes/test-coverage.test.ts).
+    expect(CreateRunBodySchema.parse({ budgetCents: 75 }).budgetCents).toBe(75);
+    expect(CreateRunBodySchema.parse({}).budgetCents).toBeUndefined();
+    for (const bad of [0, -1, 1.5, "50"]) {
+      expect(() => CreateRunBodySchema.parse({ budgetCents: bad })).toThrow();
+    }
+  });
+
+  it("CreateRunBodySchema rejects fields no server code reads, instead of stripping them (#249)", () => {
+    expect(() => CreateRunBodySchema.parse({ modelTag: "haiku" })).toThrow();
+    expect(() => CreateRunBodySchema.parse({ importIds: ["imp-1"] })).toThrow();
+  });
+
   it("OverrideMappingBodySchema requires reason", () => {
     expect(() => OverrideMappingBodySchema.parse({ status: "COVERED", reason: "" })).toThrow();
   });

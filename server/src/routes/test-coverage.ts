@@ -36,7 +36,7 @@ import {
   type TestCoverageEmitter,
 } from "../lib/testcoverage/task-runner.js";
 import type { JudgeModelCaller } from "../lib/testcoverage/judge.js";
-import { readBudget } from "../lib/testcoverage/cost-tracker.js";
+import { DEFAULT_BUDGET_CENTS, readBudget } from "../lib/testcoverage/cost-tracker.js";
 import { buildCoverageReport } from "../lib/testcoverage/report-builder.js";
 import {
   exportCoverageReportToExcel,
@@ -243,6 +243,20 @@ export function testCoverageRouter(deps: TestCoverageRouterDeps = {}): Router {
       const projectId = String(req.params.projectId);
       await ensureProject(projectId);
       const body = CreateRunBodySchema.parse(req.body ?? {});
+      // #249 — a per-run cap may only LOWER the operator's cap. This route
+      // needs only `analysis.run`, which the `developer` role holds, so a
+      // client-chosen ceiling above `TESTCOVERAGE_BUDGET_CENTS` would let the
+      // lowest role that can start a run spend past what the operator set.
+      // Refused, not clamped: a 202 that ran under a different cap than the one
+      // sent is the silent drop #249 exists to remove.
+      if (body.budgetCents !== undefined && body.budgetCents > DEFAULT_BUDGET_CENTS) {
+        throw new AppError(
+          400,
+          "BUDGET_ABOVE_OPERATOR_CAP",
+          `budgetCents may not exceed the operator's cap of ${DEFAULT_BUDGET_CENTS} cents (TESTCOVERAGE_BUDGET_CENTS)`,
+          { maxBudgetCents: DEFAULT_BUDGET_CENTS },
+        );
+      }
       const existing = await prisma.testCoverageRun.findFirst({
         where: { projectId, status: { in: ["queued", "running"] } },
       });
@@ -264,13 +278,16 @@ export function testCoverageRouter(deps: TestCoverageRouterDeps = {}): Router {
           mode: body.mode,
           status: "queued",
           contentHash,
+          // #249 — the per-run cap is stored on the row, so the runner and
+          // `GET …/budget` both read the value the client sent.
+          ...(body.budgetCents !== undefined ? { budgetCents: body.budgetCents } : {}),
         },
       });
       audit({
         actor: { id: actor.id },
         action: "test-coverage.run.start",
         target: { type: "project", id: projectId },
-        args: { runId: run.id, mode: body.mode },
+        args: { runId: run.id, mode: body.mode, budgetCents: body.budgetCents ?? null },
       });
       // Fire-and-forget. The handler is registered by #862.
       Promise.resolve(enqueueRun({ runId: run.id, projectId })).catch(() => {

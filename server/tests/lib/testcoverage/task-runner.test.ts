@@ -394,6 +394,45 @@ describe("the budget endpoint reads the run's own cap and live spend (#81)", () 
     expect(view).toMatchObject({ limitCents: cap, usedCents: 1, remainingCents: cap - 1 });
   });
 
+  it("runs under a LOWER per-run cap the route stored on the row, not the process default (#249)", async () => {
+    const processCap = DEFAULT_BUDGET_CENTS + 40;
+    const posted = processCap - 17;
+    const { db, row } = statefulRun();
+    // POST /runs stored the client's cap when it created the queued row.
+    row.budgetCents = posted;
+    await runTestCoverageJob(
+      { runId: "run-1", projectId: "p-1" },
+      // The process-wide cap the runtime would pass.
+      { db: db as never, indexer: indexer() as never, budgetCents: processCap },
+    );
+    expect(row.budgetCents).toBe(posted);
+    const view = await readBudget("run-1", { db: db as never });
+    expect(view).toMatchObject({ limitCents: posted, usedCents: 1 });
+  });
+
+  it("clamps a stored cap ABOVE the operator's down to it, so no row can raise the ceiling (#249 review)", async () => {
+    const processCap = DEFAULT_BUDGET_CENTS + 1;
+    const { db, row } = statefulRun();
+    row.budgetCents = processCap * 500;
+    await runTestCoverageJob(
+      { runId: "run-1", projectId: "p-1" },
+      { db: db as never, indexer: indexer() as never, budgetCents: processCap },
+    );
+    expect(row.budgetCents).toBe(processCap);
+    const view = await readBudget("run-1", { db: db as never });
+    expect(view).toMatchObject({ limitCents: processCap });
+  });
+
+  it("clamps against DEFAULT_BUDGET_CENTS when the runtime passes no cap (the production wiring)", async () => {
+    const { db, row } = statefulRun();
+    row.budgetCents = DEFAULT_BUDGET_CENTS * 500;
+    await runTestCoverageJob(
+      { runId: "run-1", projectId: "p-1" },
+      { db: db as never, indexer: indexer() as never },
+    );
+    expect(row.budgetCents).toBe(DEFAULT_BUDGET_CENTS);
+  });
+
   it("reports the cap and the index-phase spend WHILE the run is still going", async () => {
     const cap = DEFAULT_BUDGET_CENTS + 55;
     const { db } = statefulRun();

@@ -3,8 +3,15 @@ export {
   recordUsageAndFlush,
   setUsageEmitter,
   getPendingUsageWrites,
+  canonicalTokenCounts,
+  priceCanonicalTokens,
 } from "./token-tracker.js";
-export type { RecordUsageInput, RecordUsageResult } from "./token-tracker.js";
+export type {
+  RecordUsageInput,
+  RecordUsageResult,
+  StoredTokenCounts,
+  CanonicalTokenCounts,
+} from "./token-tracker.js";
 export {
   assertWithinBudget,
   projectMonthlyCost,

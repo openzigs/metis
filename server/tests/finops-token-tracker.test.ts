@@ -214,3 +214,87 @@ describe("recordUsage — cached input is priced once, per provider convention (
     expect(r.costCents).toBe(330);
   });
 });
+
+describe("recordUsage — totalTokens counts a cached token once (#248)", () => {
+  const GATEWAY_MODEL = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+  it("does not add the cache reads again on a gateway call: prompt_tokens already includes them", async () => {
+    const ticks: Array<{ totalTokens: number }> = [];
+    setUsageEmitter((_p, payload) => ticks.push(payload));
+    const r = await recordUsageAndFlush({
+      projectId: "p",
+      sessionId: "s",
+      provider: "bedrock-gateway",
+      model: GATEWAY_MODEL,
+      inputTokens: 1_000,
+      outputTokens: 200,
+      cacheReadTokens: 800,
+    });
+    // 1,000 prompt (800 of them cached) + 200 output. The double count was 2,000.
+    expect(r.totalTokens).toBe(1_200);
+    // Read back what a reader sees: the persisted row and the live tick.
+    expect(persisted[0]).toMatchObject({
+      // #248 decision: inputTokens stays the provider-reported prompt count.
+      inputTokens: 1_000,
+      cacheReadTokens: 800,
+      totalTokens: 1_200,
+    });
+    expect(ticks[0]?.totalTokens).toBe(1_200);
+  });
+
+  it("leaves native Anthropic unchanged: input_tokens EXCLUDES cache reads and writes", async () => {
+    const r = await recordUsageAndFlush({
+      projectId: "p",
+      sessionId: "s",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      inputTokens: 1_000,
+      outputTokens: 200,
+      cacheReadTokens: 800,
+      cacheWriteTokens: 50,
+    });
+    expect(r.totalTokens).toBe(2_050);
+    expect(persisted[0]?.totalTokens).toBe(2_050);
+  });
+});
+
+describe("canonicalTokenCounts — the one uncached-share rule every cost reader uses (#248, #264)", () => {
+  it("gateway: fresh input is the prompt minus the reads; writes are not a separate line", async () => {
+    const { canonicalTokenCounts } = await import("../src/lib/finops/token-tracker.js");
+    expect(
+      canonicalTokenCounts("bedrock-gateway", {
+        inputTokens: 1_000,
+        outputTokens: 10,
+        cacheReadTokens: 900,
+        // #264 decision: on the OpenAI-compatible convention any write is
+        // already inside prompt_tokens, so it is priced there, at the input
+        // rate, and never billed a second time.
+        cacheWriteTokens: 40,
+      }),
+    ).toEqual({
+      freshInputTokens: 100,
+      outputTokens: 10,
+      cacheReadTokens: 900,
+      cacheWriteTokens: 0,
+      totalTokens: 1_010,
+    });
+  });
+
+  it("native Anthropic: every field is already disjoint", async () => {
+    const { canonicalTokenCounts } = await import("../src/lib/finops/token-tracker.js");
+    expect(
+      canonicalTokenCounts("anthropic", {
+        inputTokens: 100,
+        outputTokens: 10,
+        cacheReadTokens: 900,
+        cacheWriteTokens: 40,
+      }),
+    ).toEqual({
+      freshInputTokens: 100,
+      outputTokens: 10,
+      cacheReadTokens: 900,
+      cacheWriteTokens: 40,
+      totalTokens: 1_050,
+    });
+  });
+});

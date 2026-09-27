@@ -164,12 +164,23 @@ export type SuggestionDto = z.infer<typeof SuggestionSchema>;
 
 // ---- Request bodies -------------------------------------------------------
 
-export const CreateRunBodySchema = z.object({
-  mode: RunModeSchema.default("A"),
-  /// Optional override list of importIds to use for the run (defaults to all
-  /// completed imports for the project).
-  importIds: z.array(z.string()).optional(),
-});
+/**
+ * #249 — `.strict()`: a field the server does not act on is a 400, never
+ * silently stripped into a 202 that ignored it. `importIds` and `modelTag` were
+ * removed for that reason — no route or runner code ever read either.
+ */
+export const CreateRunBodySchema = z
+  .object({
+    mode: RunModeSchema.default("A"),
+    /// Per-run cost cap in cents; the process default when omitted. Stored on
+    /// the run, which is what the runner and the budget endpoint both read.
+    /// It may only LOWER the operator's `TESTCOVERAGE_BUDGET_CENTS` cap: the
+    /// server refuses a value above it, because the route needs only
+    /// `analysis.run`, which non-admin roles hold. The bound lives on the
+    /// server, not here, because only the server knows the operator's cap.
+    budgetCents: z.number().int().min(1).optional(),
+  })
+  .strict();
 export type CreateRunBody = z.infer<typeof CreateRunBodySchema>;
 
 export const OverrideMappingBodySchema = z.object({

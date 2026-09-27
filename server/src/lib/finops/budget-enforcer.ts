@@ -16,7 +16,8 @@
  *     powers `GET /api/projects/:id/usage`.
  */
 import { prisma } from "../prisma.js";
-import { computeCostCents, resolveRate } from "./provider-rates.js";
+import { resolveRate } from "./provider-rates.js";
+import { canonicalTokenCounts, priceCanonicalTokens } from "./token-tracker.js";
 
 export class BudgetExceededError extends Error {
   readonly status = 402;
@@ -170,14 +171,11 @@ export async function projectMonthlyCostForCeiling(
   let cents = 0;
   let unpricedTokens = 0;
   for (const r of rows) {
+    // #264 — re-price through the same uncached-share rule `recordUsage` uses,
+    // or a gateway row's cache reads are billed again at the input rate.
     const rowCents =
       r.costCents ??
-      computeCostCents(resolveRate(r.provider, r.model), {
-        inputTokens: r.inputTokens,
-        outputTokens: r.outputTokens,
-        cacheReadTokens: r.cacheReadTokens,
-        cacheWriteTokens: r.cacheWriteTokens,
-      });
+      priceCanonicalTokens(resolveRate(r.provider, r.model), canonicalTokenCounts(r.provider, r));
     if (rowCents === null) unpricedTokens += r.totalTokens;
     else cents += rowCents;
   }

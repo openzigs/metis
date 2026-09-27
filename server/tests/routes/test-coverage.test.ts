@@ -4,7 +4,7 @@
  * Covers: import upload + paste, RBAC, run creation, in-progress conflict,
  * report aggregation, mapping override, suggestion update.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import express, { type Express } from "express";
 import request from "supertest";
 
@@ -71,9 +71,21 @@ vi.mock("../../src/middleware/auth.js", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 
-vi.mock("../../src/middleware/require-permission.js", () => ({
-  requirePermission: () => (_req: unknown, _res: unknown, next: () => void) => next(),
-}));
+// Pass-through by default; the #249 review block below flips `real` to run the
+// actual role check, so its wrong-role and unauthenticated cases are refused
+// by the same middleware production mounts.
+const permissionCheck = vi.hoisted(() => ({ real: false }));
+vi.mock("../../src/middleware/require-permission.js", async () => {
+  const actual = await vi.importActual<typeof import("../../src/middleware/require-permission.js")>(
+    "../../src/middleware/require-permission.js",
+  );
+  return {
+    requirePermission:
+      (...args: Parameters<typeof actual.requirePermission>) =>
+      (...mw: Parameters<ReturnType<typeof actual.requirePermission>>) =>
+        permissionCheck.real ? actual.requirePermission(...args)(...mw) : mw[2](),
+  };
+});
 
 // PR #879 review — connector + export-dispatch mocks
 vi.mock("../../src/lib/testcoverage/index.js", async () => {
@@ -117,7 +129,7 @@ import { prisma } from "../../src/lib/prisma.js";
 import { audit } from "../../src/lib/audit/audit-service.js";
 import { getProject } from "../../src/lib/projects/project-service.js";
 import { testCoverageRouter } from "../../src/routes/test-coverage.js";
-import { AppError } from "../../src/middleware/error-handler.js";
+import { AppError, errorHandler } from "../../src/middleware/error-handler.js";
 import { DEFAULT_BUDGET_CENTS } from "../../src/lib/testcoverage/cost-tracker.js";
 import {
   exportSuggestionsToGithub,
@@ -471,6 +483,210 @@ describe("GET /projects/:projectId/test-coverage/runs/:runId", () => {
     const app = createApp(mockUser);
     const res = await request(app).get("/projects/proj-1/test-coverage/runs/run-x");
     expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /runs — a per-run budgetCents reaches the budget read (#249)", () => {
+  /** The real app's error handler, so a rejected body is the 400 a client sees. */
+  function appWithRealErrors(): Express {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as unknown as { user: typeof mockUser }).user = mockUser;
+      next();
+    });
+    app.use(
+      "/projects/:projectId/test-coverage",
+      testCoverageRouter({ enqueueRun: vi.fn().mockResolvedValue(undefined) }),
+    );
+    app.use(errorHandler);
+    return app;
+  }
+
+  /** ONE stateful run table: the POST writes it, the budget GET reads it back. */
+  function statefulRuns() {
+    const rows = new Map<string, Record<string, unknown>>();
+    vi.mocked(prisma.testCaseDoc.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.testCoverageRun.create).mockImplementation((async ({
+      data,
+    }: {
+      data: Record<string, unknown>;
+    }) => {
+      const row = {
+        id: `run-${rows.size + 1}`,
+        tokenCostCents: 0,
+        budgetCents: null,
+        embeddingTokens: 0,
+        judgeTokens: 0,
+        suggestionTokens: 0,
+        ...data,
+      };
+      rows.set(row.id, row);
+      return row;
+    }) as never);
+    vi.mocked(prisma.testCoverageRun.findFirst).mockImplementation((async ({
+      where,
+    }: {
+      where: { id?: string; projectId: string; status?: unknown };
+    }) => {
+      if (!where.id) return null; // the in-progress check: nothing queued
+      const row = rows.get(where.id);
+      return row && row.projectId === where.projectId ? row : null;
+    }) as never);
+    vi.mocked(prisma.testCoverageRun.findUnique).mockImplementation(
+      (async ({ where }: { where: { id: string } }) => rows.get(where.id) ?? null) as never,
+    );
+    vi.mocked(prisma.aITokenUsage.aggregate).mockResolvedValue({
+      _sum: { totalTokens: null },
+    } as never);
+    return rows;
+  }
+
+  it("stores a non-default cap and GET …/budget reports it before the run starts", async () => {
+    statefulRuns();
+    const app = appWithRealErrors();
+    // Below the operator's cap: a per-run cap may only lower it.
+    const cap = DEFAULT_BUDGET_CENTS - 7;
+    expect(cap).toBeGreaterThan(0);
+    const post = await request(app)
+      .post("/projects/proj-1/test-coverage/runs")
+      .send({ budgetCents: cap });
+    expect(post.status).toBe(202);
+    const runId = post.body.data.id as string;
+    const budget = await request(app).get(`/projects/proj-1/test-coverage/runs/${runId}/budget`);
+    expect(budget.status).toBe(200);
+    expect(budget.body.data).toMatchObject({ limitCents: cap, usedCents: 0, remainingCents: cap });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ args: expect.objectContaining({ budgetCents: cap }) }),
+    );
+  });
+
+  it("without a cap, the run reads the process default", async () => {
+    statefulRuns();
+    const app = appWithRealErrors();
+    const post = await request(app).post("/projects/proj-1/test-coverage/runs").send({});
+    expect(post.status).toBe(202);
+    const budget = await request(app).get(
+      `/projects/proj-1/test-coverage/runs/${post.body.data.id as string}/budget`,
+    );
+    expect(budget.body.data.limitCents).toBe(DEFAULT_BUDGET_CENTS);
+  });
+
+  it.each([
+    ["a zero cap", { budgetCents: 0 }],
+    ["a fractional cap", { budgetCents: 12.5 }],
+    ["a modelTag nothing reads", { modelTag: "haiku" }],
+    ["importIds nothing reads", { importIds: ["imp-1"] }],
+  ])("400s on %s instead of accepting a value it would drop", async (_label, body) => {
+    statefulRuns();
+    const res = await request(appWithRealErrors())
+      .post("/projects/proj-1/test-coverage/runs")
+      .send(body);
+    expect(res.status).toBe(400);
+    expect(prisma.testCoverageRun.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /runs — a per-run cap cannot exceed the operator's (#249 review)", () => {
+  // `mockUser` is a `developer`: the lowest role holding `analysis.run`, the
+  // only permission this route requires. The real `requirePermission` runs.
+  function app(user: { userId: string; role: string } | null = mockUser): Express {
+    const a = express();
+    a.use(express.json());
+    a.use((req, _res, next) => {
+      if (user) (req as unknown as { user: typeof user }).user = user;
+      next();
+    });
+    a.use(
+      "/projects/:projectId/test-coverage",
+      testCoverageRouter({ enqueueRun: vi.fn().mockResolvedValue(undefined) }),
+    );
+    a.use(errorHandler);
+    return a;
+  }
+
+  beforeEach(() => {
+    permissionCheck.real = true;
+    vi.mocked(prisma.testCoverageRun.findFirst).mockResolvedValue(null as never);
+    vi.mocked(prisma.testCaseDoc.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.testCoverageRun.create).mockImplementation((async ({
+      data,
+    }: {
+      data: Record<string, unknown>;
+    }) => ({ id: "run-1", ...data })) as never);
+  });
+  afterEach(() => {
+    permissionCheck.real = false;
+  });
+
+  it("refuses an unauthenticated caller before reading the cap, creating no run", async () => {
+    const res = await request(app(null))
+      .post("/projects/proj-1/test-coverage/runs")
+      .send({ budgetCents: 1 });
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe("AUTH_REQUIRED");
+    expect(prisma.testCoverageRun.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses a reader (no analysis.run) even with a cap below the operator's", async () => {
+    const res = await request(app({ userId: "user-r", role: "reader" }))
+      .post("/projects/proj-1/test-coverage/runs")
+      .send({ budgetCents: 1 });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("FORBIDDEN");
+    expect(prisma.testCoverageRun.create).not.toHaveBeenCalled();
+  });
+
+  // As designed: no role raises the ceiling per run. An operator who wants a
+  // higher cap sets TESTCOVERAGE_BUDGET_CENTS; that is the only way up.
+  it.each(["admin", "coordinator"])(
+    "refuses a cap above the operator's from %s too — no role raises it per run",
+    async (role) => {
+      const res = await request(app({ userId: "user-a", role }))
+        .post("/projects/proj-1/test-coverage/runs")
+        .send({ budgetCents: DEFAULT_BUDGET_CENTS + 1 });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("BUDGET_ABOVE_OPERATOR_CAP");
+      expect(prisma.testCoverageRun.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("lets an admin LOWER the cap for one run", async () => {
+    const res = await request(app({ userId: "user-a", role: "admin" }))
+      .post("/projects/proj-1/test-coverage/runs")
+      .send({ budgetCents: 1 });
+    expect(res.status).toBe(202);
+    expect(prisma.testCoverageRun.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ budgetCents: 1 }) }),
+    );
+  });
+
+  it.each([
+    ["one cent above", DEFAULT_BUDGET_CENTS + 1],
+    ["500x the default", DEFAULT_BUDGET_CENTS * 500],
+  ])("refuses a developer's cap %s the operator's, creating no run", async (_label, cap) => {
+    expect(mockUser.role).toBe("developer");
+    const res = await request(app())
+      .post("/projects/proj-1/test-coverage/runs")
+      .send({ budgetCents: cap });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({
+      code: "BUDGET_ABOVE_OPERATOR_CAP",
+      details: { maxBudgetCents: DEFAULT_BUDGET_CENTS },
+    });
+    expect(prisma.testCoverageRun.create).not.toHaveBeenCalled();
+  });
+
+  it("accepts a cap exactly equal to the operator's", async () => {
+    const res = await request(app())
+      .post("/projects/proj-1/test-coverage/runs")
+      .send({ budgetCents: DEFAULT_BUDGET_CENTS });
+    expect(res.status).toBe(202);
+    expect(prisma.testCoverageRun.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ budgetCents: DEFAULT_BUDGET_CENTS }),
+      }),
+    );
   });
 });
 
