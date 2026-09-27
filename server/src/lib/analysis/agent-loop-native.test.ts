@@ -341,8 +341,11 @@ describe("#141 fallback when the provider drops native tools", () => {
     expect(result.toolProtocol).toBe("text-fallback");
     expect(order).toEqual(["search_code_graph:x"]);
     expect(result.finalResponse).toBe('{"findings":[]}');
-    // The re-asked turn does not use up the turn cap; every call is counted.
-    expect(result.turnsUsed).toBe(3);
+    // The re-asked turn does not use up the turn cap, and the discarded reply
+    // is reported apart from the turns so #214 compares like with like.
+    expect(result.turnsUsed).toBe(2);
+    expect(result.toolsDroppedTurns).toBe(1);
+    expect(requests).toHaveLength(3);
     expect(requests[0]!.opts.tools).toBeDefined();
     expect(requests[0]!.opts.systemMessage).toContain(NATIVE_TOOL_PROTOCOL);
     for (const r of requests.slice(1)) {
@@ -393,6 +396,8 @@ describe("#141 fallback when the provider drops native tools", () => {
     expect(result.toolProtocol).toBe("native");
     expect(result.finalResponse).toBe("answer without tools");
     expect(requests).toHaveLength(2);
+    // Still "native", but the tool-less turn is visible.
+    expect(result.toolsDroppedTurns).toBe(1);
   });
 
   it("switches at most once — a text-protocol reply is never re-asked", async () => {
@@ -409,6 +414,7 @@ describe("#141 fallback when the provider drops native tools", () => {
     const { provider, requests } = responder([{ content: "answer", toolsDropped: true }]);
     const result = await runAgentLoop(provider, input, { maxTurns: 3 });
     expect(result.toolProtocol).toBeUndefined();
+    expect(result.toolsDroppedTurns).toBeUndefined();
     expect(requests).toHaveLength(1);
   });
 });

@@ -361,6 +361,15 @@ export interface AgentLoopResult {
    * that result is unchanged.
    */
   toolProtocol?: "native" | "text-fallback";
+  /**
+   * #141 — replies the provider produced WITHOUT the offered tools while the
+   * loop was in native mode (`toolsDropped`): the one discarded before a text
+   * fallback, plus any later turn that could not switch because native calls
+   * were already in the transcript. Reported only when native mode was
+   * requested, so a `"native"` run that went tool-less part-way is visible.
+   * The discarded reply is NOT in `turnsUsed` (its tokens stay in `usage`).
+   */
+  toolsDroppedTurns?: number;
 }
 
 const DEFAULT_USAGE: TokenUsage = {
@@ -1437,6 +1446,7 @@ export async function runAgentLoop(
   // that reply is already in `messages` (a budget stop leaves it out).
   let lastHadNativeCalls = false;
   let lastAppended = false;
+  let toolsDroppedTurns = 0;
 
   for (let turn = 0; turn < maxTurns; turn++) {
     if (options.signal?.aborted) {
@@ -1528,7 +1538,10 @@ export async function runAgentLoop(
     // call a tool at all. Where this loop owns the system prompt (the analysis
     // path) and no native call is in the transcript yet, switch to the text
     // protocol and ask again — the same investigation the flag-off path runs.
-    // The discarded reply's tokens stay counted; `turnsUsed` counts it too.
+    // The discarded reply's tokens stay counted; it is reported in
+    // `toolsDroppedTurns`, not `turnsUsed`, so a fallback run's turns compare
+    // like with like against a pure text run.
+    if (nativeMode && response.toolsDropped === true) toolsDroppedTurns++;
     if (
       nativeMode &&
       response.toolsDropped === true &&
@@ -1543,6 +1556,7 @@ export async function runAgentLoop(
         model: options.model ?? provider.model,
       });
       turn--;
+      turnsUsed--;
       continue;
     }
 
@@ -1817,6 +1831,8 @@ export async function runAgentLoop(
     ...(compactionOptions ? { transcriptCompaction: { ...compactionMeta } } : {}),
     toolCalls,
     graphContext: graphContextMeta,
-    ...(options.native ? { toolProtocol: nativeMode ? "native" : "text-fallback" } : {}),
+    ...(options.native
+      ? { toolProtocol: nativeMode ? "native" : "text-fallback", toolsDroppedTurns }
+      : {}),
   };
 }

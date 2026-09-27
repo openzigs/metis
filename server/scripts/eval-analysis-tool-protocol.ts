@@ -10,11 +10,18 @@
  *     [--connector <connectorId>] [--model <id>] [--runs 3] [--modes text,native] \
  *     [--max-turns 8] [--max-tokens 40000] [--out <dir>]
  *
- * `<corpus.json>` is an array of `{ "id": "...", "requirements": [{ "id": "...", "text": "..." }] }`.
+ * `<corpus.json>` is an array of
+ * `{ "id": "...", "requirements": [{ "id": "...", "text": "..." }], "extraInstructions"?: "..." }`.
  * The project must already be ingested (code graph + symbols): the tools are
  * the orchestrator's own (`assembleAgenticCodeTools`), run against the database
  * and index this process is configured for. `--connector` adds the file tools
  * when that connector's clone is on disk.
+ *
+ * Each case's prompt carries the same seeded blocks a real run does — fused
+ * code-graph context, and (from `extraInstructions`) the affected-code and
+ * affected-schema blocks, gated on the project's own database-aware decision —
+ * built by the orchestrator's shared `agentic-pass-context` functions, and the
+ * loop gets the orchestrator's budget after their token carve-out.
  *
  * The provider is built exactly as the analysis route builds it (the direct
  * OpenAI-compatible client for `bedrock-gateway` / `local-gemma`, the factory
@@ -33,7 +40,11 @@ import { buildProvider, loadAIConfig, type AIProvider } from "../src/lib/ai/inde
 import { BedrockDirectProvider } from "../src/lib/ai/providers/bedrock-direct-provider.js";
 import { resolveAnalysisNativeTools } from "../src/lib/analysis/agent-loop.js";
 import { assembleAgenticCodeTools } from "../src/lib/analysis/orchestrator.js";
-import { buildAgenticCodePrompt } from "../src/lib/analysis/prompts.js";
+import {
+  assembleAgenticPassSeeds,
+  resolveDatabaseAwareDecision,
+} from "../src/lib/analysis/agentic-pass-context.js";
+import { prisma } from "../src/lib/prisma.js";
 import { resolveExistingCloneDir } from "../src/lib/analysis/clone-availability.js";
 import { getKnowledgeService } from "../src/lib/rag/knowledge-service.js";
 import {
@@ -71,8 +82,6 @@ async function main(): Promise<void> {
   const { values } = parseArgs({
     options: {
       project: { type: "string" },
-      "project-name": { type: "string", default: "project" },
-      "project-description": { type: "string", default: "" },
       connector: { type: "string" },
       cases: { type: "string" },
       model: { type: "string" },
@@ -96,18 +105,35 @@ async function main(): Promise<void> {
   const maxTurns = positiveInt(values["max-turns"], "max-turns", 8)!;
   const maxTokens = positiveInt(values["max-tokens"], "max-tokens");
 
+  const project = await prisma.project.findUnique({
+    where: { id: values.project },
+    select: { name: true, description: true, databaseAwareAnalysis: true },
+  });
+  if (!project) throw new Error(`project ${values.project} not found`);
+  const projectId = values.project;
+  const databaseAware = await resolveDatabaseAwareDecision(
+    projectId,
+    project.databaseAwareAnalysis,
+  );
+
   const provider = analysisProvider();
   const model = values.model ?? provider.model;
   const cloneDir = await resolveExistingCloneDir(values.connector);
   const tools = assembleAgenticCodeTools({ knowledgeService: getKnowledgeService(), cloneDir });
-  const toolContext = { projectId: values.project, connectorId: values.connector, cloneDir };
-  const buildPass = (c: (typeof cases)[number]) => ({
-    ...buildAgenticCodePrompt({
-      projectName: values["project-name"],
-      projectDescription: values["project-description"],
+  const toolContext = { projectId, connectorId: values.connector, cloneDir };
+  const buildPass = async (c: (typeof cases)[number]) => ({
+    projectName: project.name,
+    projectDescription: project.description,
+    requirements: c.requirements,
+    seeds: await assembleAgenticPassSeeds({
+      projectId,
+      projectName: project.name,
+      projectDescription: project.description,
+      extraInstructions: c.extraInstructions,
       requirements: c.requirements,
-      fileToolsAvailable: cloneDir !== undefined,
+      databaseAware: databaseAware.enabled,
     }),
+    fileToolsAvailable: cloneDir !== undefined,
     tools,
     toolContext,
   });
@@ -126,6 +152,7 @@ async function main(): Promise<void> {
       `provider: ${provider.key}   model: ${model}`,
       `cases: ${cases.length}   runs per case: ${runsPerCase}   passes: ${cases.length * runsPerCase * modes.length}`,
       `tools: ${tools.map((t) => t.name).join(", ")}`,
+      `database-aware: ${databaseAware.enabled ? "on" : "off"} (${databaseAware.reason})`,
       ...plan,
     ].join("\n"),
   );

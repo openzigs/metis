@@ -5,9 +5,15 @@
  * function the orchestrator uses), the flag is restored, and validity,
  * degradation, tool errors and tokens are counted from what the loop returned.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../../ai/types.js";
 import type { AgentTool } from "../../analysis/tools/types.js";
+import * as agentLoop from "../../analysis/agent-loop.js";
+import {
+  agenticPassEffectiveBudget,
+  buildAgenticPassPrompt,
+  type AgenticPassSeeds,
+} from "../../analysis/agentic-pass-context.js";
 import {
   formatProtocolComparison,
   parseProtocolCases,
@@ -38,18 +44,40 @@ const tools: AgentTool[] = [
 ];
 
 const CASES: ProtocolCase[] = [{ id: "c1", requirements: [{ id: "R1", text: "rates" }] }];
-const pass = (): ProtocolPassInput => ({
-  systemMessage: "ROLE",
-  userMessage: "TASK",
+// Spy on the loop so a test can read the options the harness handed it (the
+// real loop still runs).
+vi.mock("../../analysis/agent-loop.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../analysis/agent-loop.js")>();
+  return { ...actual, runAgentLoop: vi.fn(actual.runAgentLoop) };
+});
+
+const EMPTY_SEEDS: AgenticPassSeeds = {
+  fused: { block: "", tokens: 0 },
+  affectedCode: { block: "", tokens: 0 },
+  affectedSchema: { block: "", tokens: 0 },
+};
+const passWith = (seeds: AgenticPassSeeds): ProtocolPassInput => ({
+  projectName: "Rates",
+  projectDescription: "rate engine",
+  requirements: [{ id: "R1", text: "rates" }],
+  seeds,
+  fileToolsAvailable: true,
   tools,
   toolContext: { projectId: "p" },
 });
+const pass = (): ProtocolPassInput => passWith(EMPTY_SEEDS);
 
 /**
  * Answers per protocol: on the native channel it calls one tool natively, on
  * the text protocol it writes the call as JSON; then it answers `answer`.
  */
-function provider(opts: { toolCapable: boolean; answer?: string; failNative?: boolean }) {
+function provider(opts: {
+  toolCapable: boolean;
+  answer?: string;
+  failNative?: boolean;
+  /** Answer the post-tool turn WITHOUT the offered tools (`toolsDropped`). */
+  dropToolsLater?: boolean;
+}) {
   const seen: Array<{ messages: ChatMessage[]; opts: ChatOptions }> = [];
   const r = (content: string, extra: Partial<ChatResponse> = {}): ChatResponse => ({
     content,
@@ -70,7 +98,12 @@ function provider(opts: { toolCapable: boolean; answer?: string; failNative?: bo
       const investigated = messages.some(
         (m) => m.role === "tool" || /^Tool result/.test(String(m.content)),
       );
-      if (investigated) return r(opts.answer ?? VALID);
+      if (investigated) {
+        return r(
+          opts.answer ?? VALID,
+          o.tools && opts.dropToolsLater ? { toolsDropped: true } : {},
+        );
+      }
       if (o.tools) {
         return r("", {
           toolCalls: [{ id: "t1", name: "search_code_graph", args: { query: "boom" } }],
@@ -180,6 +213,17 @@ describe("runToolProtocolComparison", () => {
     expect(failing.records.find((r) => r.mode === "text")!.error).toBeUndefined();
   });
 
+  it("a native run that went tool-less part-way is not counted as native end to end", async () => {
+    const cmp = await runToolProtocolComparison({
+      provider: provider({ toolCapable: true, dropToolsLater: true }).provider,
+      cases: CASES,
+      buildPass: pass,
+      modes: ["native"],
+    });
+    expect(cmp.records[0]).toMatchObject({ protocol: "native", toolsDroppedTurns: 1 });
+    expect(cmp.summaries[0]).toMatchObject({ nativeRuns: 0, toolsDroppedTurns: 1 });
+  });
+
   it("names the turn limit when the pass ran out of turns mid-investigation", async () => {
     const cmp = await runToolProtocolComparison({
       provider: provider({ toolCapable: true, answer: "prose" }).provider,
@@ -203,6 +247,63 @@ describe("runToolProtocolComparison", () => {
   });
 });
 
+describe("pass fidelity — the orchestrator's prompt blocks and budget carve-out (#214)", () => {
+  const SEEDS: AgenticPassSeeds = {
+    fused: { block: "FUSED-SYMBOL-CONTEXT rateTable()", tokens: 1_000 },
+    affectedCode: { block: "AFFECTED-CODE src/rates.ts", tokens: 2_000 },
+    affectedSchema: { block: "AFFECTED-SCHEMA rate_card.amount", tokens: 500 },
+  };
+
+  it("seeds the fused, affected-code and affected-schema blocks into the prompt", async () => {
+    const { provider: p, seen } = provider({ toolCapable: true });
+    await runToolProtocolComparison({
+      provider: p,
+      cases: CASES,
+      buildPass: () => passWith(SEEDS),
+      modes: ["text"],
+    });
+    const firstPrompt = seen[0]!.messages.map((m) => String(m.content)).join("\n");
+    expect(firstPrompt).toContain("FUSED-SYMBOL-CONTEXT rateTable()");
+    expect(firstPrompt).toContain("AFFECTED-CODE src/rates.ts");
+    expect(firstPrompt).toContain("AFFECTED-SCHEMA rate_card.amount");
+    // …and the whole prompt is the orchestrator's, not a lookalike.
+    // The seeded blocks ride in the user turn, so it must be the orchestrator's
+    // user message verbatim (the system turn gains the loop's tool manifest).
+    const { userMessage } = buildAgenticPassPrompt(passWith(SEEDS));
+    expect(firstPrompt).toContain(userMessage);
+  });
+
+  it("hands the loop the orchestrator's effective budget, not the raw one", async () => {
+    const loop = vi.mocked(agentLoop.runAgentLoop);
+    loop.mockClear();
+    const cmp = await runToolProtocolComparison({
+      provider: provider({ toolCapable: true }).provider,
+      cases: CASES,
+      buildPass: () => passWith(SEEDS),
+      modes: ["text"],
+      maxTokens: 10_000,
+    });
+    // 10,000 − 1,000 − 2,000 − 500, above the 5,000 half-budget floor.
+    expect(loop.mock.calls[0]![2].maxTokens).toBe(6_500);
+    expect(agenticPassEffectiveBudget(10_000, SEEDS)).toBe(6_500);
+    expect(cmp.records[0]!.tokenBudget).toBe(6_500);
+  });
+
+  it("defaults to the orchestrator's ANALYSIS_AGENT_TOKEN_BUDGET and keeps the half-budget floor", async () => {
+    const loop = vi.mocked(agentLoop.runAgentLoop);
+    loop.mockClear();
+    const huge: AgenticPassSeeds = { ...SEEDS, fused: { block: "F", tokens: 90_000 } };
+    await runToolProtocolComparison({
+      provider: provider({ toolCapable: true }).provider,
+      cases: CASES,
+      buildPass: () => passWith(huge),
+      modes: ["text"],
+    });
+    // Default budget 100,000; the seed would leave 7,500, so the floor (50,000) wins.
+    expect(loop.mock.calls[0]![2].maxTokens).toBe(50_000);
+  });
+});
+
 describe("summaries, report and corpus parsing", () => {
   it("summarises an empty mode as zeros", () => {
     expect(summarizeMode("native", [])).toMatchObject({
@@ -223,14 +324,16 @@ describe("summaries, report and corpus parsing", () => {
     const md = formatProtocolComparison(cmp);
     expect(md).toContain("### Analysis tool protocol — local-gemma / m");
     expect(md).toContain(
-      "| text | 1 | 0 | 0 | 100.0% | 0.0% | 0 | 1 | 1 | 2 | 200 | 20 | 220 | 1 |",
+      "| text | 1 | 0 | 0 | 0 | 100.0% | 0.0% | 0 | 1 | 1 | 2 | 200 | 20 | 220 | 1 |",
     );
-    expect(md).toContain("| native | 1 | 1 | 0 | 100.0% |");
+    expect(md).toContain("| native | 1 | 1 | 0 | 0 | 100.0% |");
     expect(md).not.toMatch(/never ran natively/);
   });
 
   it("parses a corpus and rejects bad shapes and duplicate ids", () => {
     expect(parseProtocolCases(CASES)).toEqual(CASES);
+    const withNotes = [{ ...CASES[0]!, extraInstructions: "add a surcharge column" }];
+    expect(parseProtocolCases(withNotes)).toEqual(withNotes);
     expect(() => parseProtocolCases([])).toThrow();
     expect(() => parseProtocolCases([{ id: "x", requirements: [] }])).toThrow();
     expect(() => parseProtocolCases([...CASES, ...CASES])).toThrow(/duplicate case id "c1"/);

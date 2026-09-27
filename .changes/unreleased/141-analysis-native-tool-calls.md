@@ -11,4 +11,5 @@ section: Changed
 - New `pnpm eval:analysis-tools` runs the analysis code pass on a corpus with
   native tool calls off and on and reports findings validity, degraded-pass
   rate, tool-call errors and tokens per run, so the default can be decided on
-  measured numbers (#214). `--dry-run` makes no model call.
+  measured numbers (#214). Each pass gets the orchestrator's own prompt blocks
+  and token budget. `--dry-run` makes no model call.

@@ -31,11 +31,8 @@ import {
   type AnalysisAgentKey,
   type AnalysisSpecialistAgentKey,
   type AgentOutput,
-  type DatabaseAwareAnalysisSetting,
   ANALYSIS_RETRIEVE_K,
   ANALYSIS_SPECIALIST_AGENT_KEYS,
-  DATABASE_AWARE_ANALYSIS_SETTINGS,
-  DEFAULT_DATABASE_AWARE_ANALYSIS_SETTING,
   deriveCapabilityReasons,
   isCodeCitation,
   MAX_REQUIREMENTS_FOR_RETRIEVAL,
@@ -175,7 +172,7 @@ import {
   type AgentTool,
   type ToolContext,
 } from "./tools/index.js";
-import { buildAgenticCodePrompt, buildRequirementGroundedPrompt } from "./prompts.js";
+import { buildRequirementGroundedPrompt } from "./prompts.js";
 import {
   buildRetrievalQueries,
   CODE_REQUIREMENTS_QUERY,
@@ -208,12 +205,11 @@ import {
   type RunAffectedSchemaDeps,
 } from "./affected-schema-context.js";
 import {
-  resolveDatabaseAwareAnalysis,
-  readDbAwareEnvDefault,
-  hasSchemaData as probeHasSchemaData,
-  type DbAwareEnvDefault,
-  type SchemaDataPrismaClient,
-} from "./database-aware-resolver.js";
+  agenticPassEffectiveBudget,
+  buildAgenticPassPrompt,
+  resolveAgentTokenBudget,
+  resolveDatabaseAwareDecision,
+} from "./agentic-pass-context.js";
 import {
   buildRequirementInputAccount,
   extractNewRequirementCandidates,
@@ -347,8 +343,6 @@ interface SynthesisOutcome {
   };
 }
 
-/** Default token budget per agentic agent loop (100k tokens). */
-const DEFAULT_AGENT_TOKEN_BUDGET = 100_000;
 /** Minimum token budget per repo in multi-repo analysis (#663 review). */
 const MIN_PER_REPO_TOKEN_BUDGET = 50_000;
 /** Default max turns for the agentic loop (the FLOOR — see {@link resolveAgenticMaxTurns}). */
@@ -424,9 +418,6 @@ function resolveAgenticMaxTurns(requirementCount = 0): number {
     });
   }
   return turns;
-}
-function resolveAgentTokenBudget(): number {
-  return getConfigService().getNumber("ANALYSIS_AGENT_TOKEN_BUDGET", DEFAULT_AGENT_TOKEN_BUDGET);
 }
 
 /** A connector reference the budget capper accepts (id + display label). */
@@ -2210,22 +2201,17 @@ export class AnalysisOrchestrator {
           maxTurns: number,
           passBudget: number,
         ): Promise<{ output: AgentOutput; usage: TokenUsage }> => {
-          const { systemMessage, userMessage } = buildAgenticCodePrompt({
+          // #141 / #214 — the prompt and the budget carve-out are shared with the
+          // tool-protocol eval harness, so #214 measures THIS pass.
+          const seeds = { fused, affectedCode, affectedSchema };
+          const { systemMessage, userMessage } = buildAgenticPassPrompt({
             projectName: input.projectName,
             projectDescription: input.projectDescription,
             requirements: passRequirements,
-            retrievedContext: fused.block || undefined,
-            affectedCode: affectedCode.block || undefined,
-            // #824 — the deterministic AFFECTED SCHEMA block (schema-change awareness).
-            affectedSchema: affectedSchema.block || undefined,
-            // #777 — tell the agent WHAT IT ACTUALLY HAS. Without this it plans around
-            // reading files it can never open and spends turns discovering that.
+            seeds,
             fileToolsAvailable,
           });
-          const effectiveBudget = Math.max(
-            Math.floor(passBudget / 2),
-            passBudget - fused.tokens - affectedCode.tokens - affectedSchema.tokens,
-          );
+          const effectiveBudget = agenticPassEffectiveBudget(passBudget, seeds);
           // #1221 — resolved against the model this pass will actually run on
           // so the cap is clamped to that model's ceiling. `provider.model` is
           // the fallback because that is what the adapter uses when
@@ -3772,36 +3758,7 @@ export class AnalysisOrchestrator {
     projectId: string,
     settingRaw: string | undefined,
   ): Promise<AnalysisDatabaseAware> {
-    const settings: readonly string[] = DATABASE_AWARE_ANALYSIS_SETTINGS;
-    const setting: DatabaseAwareAnalysisSetting = settings.includes(settingRaw ?? "")
-      ? (settingRaw as DatabaseAwareAnalysisSetting)
-      : DEFAULT_DATABASE_AWARE_ANALYSIS_SETTING;
-
-    // #849 — read via the shared helper so the run path and the gap-report
-    // path apply the identical default (ON) and the identical
-    // explicitly-configured probe (`describeSource`).
-    const envDefault: DbAwareEnvDefault = readDbAwareEnvDefault(getConfigService());
-
-    let dataPresent = false;
-    try {
-      dataPresent = await probeHasSchemaData(
-        prisma as unknown as SchemaDataPrismaClient,
-        projectId,
-      );
-    } catch (err) {
-      log.warn("Database-aware schema-data probe failed; degrading to no schema data", {
-        analysisId,
-        projectId,
-        error: (err as Error).message,
-      });
-    }
-
-    const resolved = resolveDatabaseAwareAnalysis({
-      setting,
-      envDefault,
-      hasSchemaData: dataPresent,
-    });
-    const record: AnalysisDatabaseAware = { setting, ...resolved };
+    const record = await resolveDatabaseAwareDecision(projectId, settingRaw, { analysisId });
 
     try {
       await persistAnalysisDatabaseAware(analysisId, record);

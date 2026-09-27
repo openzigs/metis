@@ -4,15 +4,23 @@
  *
  * #214 decides whether `ANALYSIS_NATIVE_TOOL_CALLS` flips on. It needs, per
  * tool protocol: findings validity, the degraded-pass rate, tool-call error
- * counts and tokens per run. This module produces exactly those, from the SAME
- * code the orchestrator's agentic pass runs:
+ * counts and tokens per run. This module produces those from the orchestrator's
+ * agentic LOOP, set up the way the orchestrator sets it up:
  *
  *   • the protocol decision is {@link resolveAnalysisNativeTools} — the one
  *     function the orchestrator calls — evaluated with the flag set per mode,
  *     so "native" here means what it means in production (a model the catalog
  *     marks not tool-capable reports `text`, never a fake native number);
+ *   • the prompt (fused code context, affected-code and affected-schema blocks)
+ *     and the budget carve-out are the orchestrator's own
+ *     {@link buildAgenticPassPrompt} / {@link agenticPassEffectiveBudget};
  *   • the loop options mirror the orchestrator's (`promptCaching`, the #769
  *     final-answer retry gated on the #1314 schema check, the #1221 output cap).
+ *
+ * What it does NOT run: the orchestrator's post-loop salvage/repair, citation
+ * grounding and escalation split. So `degraded` here means "the loop plus its
+ * #769 retry produced no schema-valid answer", not "the pass shipped zero
+ * findings", and `findingsValid` is schema validity, not findings quality.
  *
  * The provider, tools and prompts are injected, so the unit tests drive it with
  * a scripted stub and the CLI (`server/scripts/eval-analysis-tool-protocol.ts`)
@@ -33,6 +41,12 @@ import {
   extractJsonObject,
   resolveFinalAnswerMaxOutputTokens,
 } from "../../analysis/agent-runner.js";
+import {
+  agenticPassEffectiveBudget,
+  buildAgenticPassPrompt,
+  resolveAgentTokenBudget,
+  type AgenticPassSeeds,
+} from "../../analysis/agentic-pass-context.js";
 import type { AgentTool, ToolContext } from "../../analysis/tools/types.js";
 
 /** The two protocols #214 compares. */
@@ -45,6 +59,12 @@ export const protocolCaseSchema = z.object({
     .array(z.object({ id: z.string().min(1).max(120), text: z.string().min(1).max(20_000) }))
     .min(1)
     .max(200),
+  /**
+   * The operator's free-text new requirements (the analysis run's
+   * `extraInstructions`). The affected-code and affected-schema blocks are
+   * derived from this, exactly as in a real run; omitted ⇒ both are empty.
+   */
+  extraInstructions: z.string().max(20_000).optional(),
 });
 export type ProtocolCase = z.infer<typeof protocolCaseSchema>;
 
@@ -59,10 +79,17 @@ export function parseProtocolCases(json: unknown): ProtocolCase[] {
   return cases;
 }
 
-/** What one agentic pass needs besides the provider. */
+/**
+ * What one agentic pass needs besides the provider: the orchestrator's prompt
+ * inputs and seeds (the harness builds the prompt and budget from them with the
+ * orchestrator's own functions), plus the tools.
+ */
 export interface ProtocolPassInput {
-  systemMessage: string;
-  userMessage: string;
+  projectName: string;
+  projectDescription: string;
+  requirements: Array<{ id: string; text: string }>;
+  seeds: AgenticPassSeeds;
+  fileToolsAvailable: boolean;
   tools: AgentTool[];
   toolContext: ToolContext;
 }
@@ -73,6 +100,11 @@ export interface ProtocolRunRecord {
   run: number;
   /** The protocol the pass actually ENDED on (see the module header). */
   protocol: "native" | "text" | "text-fallback";
+  /**
+   * Replies produced without the offered tools in native mode (the loop's
+   * `toolsDroppedTurns`). A `"native"` run with any is not native end to end.
+   */
+  toolsDroppedTurns: number;
   /** A schema-valid findings answer (the orchestrator's `hasFinalAnswer`). */
   findingsValid: boolean;
   findingsCount: number;
@@ -83,6 +115,8 @@ export interface ProtocolRunRecord {
   turnsUsed: number;
   toolCalls: number;
   toolErrors: number;
+  /** The loop's token budget after the seed carve-out (the orchestrator's `effectiveBudget`). */
+  tokenBudget: number;
   usage: TokenUsage;
   durationMs: number;
   /** The pass threw (provider error). Counted as degraded. */
@@ -92,8 +126,10 @@ export interface ProtocolRunRecord {
 export interface ProtocolModeSummary {
   mode: ProtocolMode;
   runs: number;
-  /** Runs whose pass actually used native tool calls end to end. */
+  /** Runs whose pass actually used native tool calls end to end (no tool-less turn). */
   nativeRuns: number;
+  /** Tool-less native replies across the mode's runs (see {@link ProtocolRunRecord.toolsDroppedTurns}). */
+  toolsDroppedTurns: number;
   textFallbackRuns: number;
   findingsValidRate: number;
   degradedRate: number;
@@ -125,7 +161,11 @@ export interface ProtocolComparisonOptions {
   modes?: ProtocolMode[];
   runsPerCase?: number;
   maxTurns?: number;
-  /** The pass's token budget (the orchestrator's `ANALYSIS_AGENT_TOKEN_BUDGET`). */
+  /**
+   * The pass's token budget BEFORE the seed carve-out (defaults to the
+   * orchestrator's `ANALYSIS_AGENT_TOKEN_BUDGET`). The loop receives
+   * {@link agenticPassEffectiveBudget} of it, as in production.
+   */
   maxTokens?: number;
   /** Progress callback, one call per finished pass. */
   onRecord?: (r: ProtocolRunRecord) => void;
@@ -145,7 +185,7 @@ function findingsIn(text: string): number {
 }
 
 function recordFrom(
-  base: Pick<ProtocolRunRecord, "caseId" | "mode" | "run" | "durationMs">,
+  base: Pick<ProtocolRunRecord, "caseId" | "mode" | "run" | "durationMs" | "tokenBudget">,
   requestedNative: boolean,
   r: AgentLoopResult,
 ): ProtocolRunRecord {
@@ -153,6 +193,7 @@ function recordFrom(
   return {
     ...base,
     protocol: r.toolProtocol ?? (requestedNative ? "native" : "text"),
+    toolsDroppedTurns: r.toolsDroppedTurns ?? 0,
     findingsValid: r.hasFinalAnswer,
     findingsCount: r.hasFinalAnswer ? findingsIn(r.finalResponse) : 0,
     degraded,
@@ -186,7 +227,8 @@ export function summarizeMode(
   return {
     mode,
     runs: n,
-    nativeRuns: rs.filter((r) => r.protocol === "native").length,
+    nativeRuns: rs.filter((r) => r.protocol === "native" && r.toolsDroppedTurns === 0).length,
+    toolsDroppedTurns: rs.reduce((a, r) => a + r.toolsDroppedTurns, 0),
     textFallbackRuns: rs.filter((r) => r.protocol === "text-fallback").length,
     findingsValidRate: n === 0 ? 0 : rs.filter((r) => r.findingsValid).length / n,
     degradedRate: n === 0 ? 0 : rs.filter((r) => r.degraded).length / n,
@@ -218,26 +260,31 @@ export async function runToolProtocolComparison(
   try {
     for (const c of opts.cases) {
       const pass = await opts.buildPass(c);
+      const { systemMessage, userMessage } = buildAgenticPassPrompt(pass);
+      const tokenBudget = agenticPassEffectiveBudget(
+        opts.maxTokens ?? resolveAgentTokenBudget(),
+        pass.seeds,
+      );
       for (let run = 1; run <= runsPerCase; run++) {
         for (const mode of modes) {
           process.env[FLAG] = mode === "native" ? "true" : "false";
           const native = resolveAnalysisNativeTools(opts.provider, model, pass.tools);
           const started = now();
-          const base = { caseId: c.id, mode, run };
+          const base = { caseId: c.id, mode, run, tokenBudget };
           let record: ProtocolRunRecord;
           try {
             const result = await runAgentLoop(
               opts.provider,
               {
-                systemMessage: pass.systemMessage,
-                userMessage: pass.userMessage,
+                systemMessage,
+                userMessage,
                 tools: pass.tools,
                 toolContext: pass.toolContext,
               },
               {
                 ...(native ? { native } : {}),
                 maxTurns: opts.maxTurns ?? 8,
-                ...(opts.maxTokens ? { maxTokens: opts.maxTokens } : {}),
+                maxTokens: tokenBudget,
                 model,
                 promptCaching: { system: true, messages: true },
                 finalAnswerRetry: {
@@ -256,6 +303,7 @@ export async function runToolProtocolComparison(
             record = {
               ...base,
               protocol: native ? "native" : "text",
+              toolsDroppedTurns: 0,
               findingsValid: false,
               findingsCount: 0,
               degraded: true,
@@ -297,8 +345,8 @@ export function formatProtocolComparison(c: ProtocolComparison): string {
     "",
     `${c.cases} case(s) × ${c.runsPerCase} run(s) per mode.`,
     "",
-    "| Mode | Runs | Native runs | Text fallbacks | Findings valid | Degraded | Errors | Tool calls | Tool errors | Mean turns | Mean prompt tok | Mean completion tok | Mean total tok | Mean findings |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    "| Mode | Runs | Native runs | Text fallbacks | Tool-less native turns | Findings valid | Degraded | Errors | Tool calls | Tool errors | Mean turns | Mean prompt tok | Mean completion tok | Mean total tok | Mean findings |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ...c.summaries.map(
       (s) =>
         "| " +
@@ -307,6 +355,7 @@ export function formatProtocolComparison(c: ProtocolComparison): string {
           s.runs,
           s.nativeRuns,
           s.textFallbackRuns,
+          s.toolsDroppedTurns,
           pct(s.findingsValidRate),
           pct(s.degradedRate),
           s.errors,
