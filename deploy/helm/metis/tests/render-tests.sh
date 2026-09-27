@@ -247,11 +247,22 @@ assert "enforce + replicas=1 + HPA 1..1 renders RWO PVCs" 3 "$(count_kind Persis
 NO_SERVER=$(template --set scaling.enforce=true --set server.enabled=false --set server.replicaCount=1 || true)
 assert_not_contains "enforce + server.enabled=false ignores the server HPA" "execution error" "${NO_SERVER}"
 # Without enforce the same topology renders, and NOTES must still warn: it read
-# replicaCount alone and stayed silent about the HPA's second pod. NOTES is not
-# part of `helm template`, so render it with a client-side dry-run install.
+# replicaCount alone and stayed silent about the HPA's second pod. `helm template`
+# never renders NOTES, and Helm 3's `install --dry-run=client` still dials a
+# cluster, so render the helper NOTES includes through a throwaway probe template
+# in a copy of the chart.
 notes() {
-  helm install metis "${CHART_DIR}" --dry-run=client "$@" 2>&1 | awk '/^NOTES:$/{n=1} n'
+  local tmp
+  tmp=$(mktemp -d)
+  cp -R "${CHART_DIR}" "${tmp}/metis"
+  printf '%s\n' 'apiVersion: v1' 'kind: ConfigMap' 'metadata:' '  name: notes-probe' 'data:' \
+    '  warning: {{ include "metis.scalingNotesWarning" . | toJson }}' \
+    >"${tmp}/metis/templates/zz-notes-probe.yaml"
+  helm template metis "${tmp}/metis" --show-only templates/zz-notes-probe.yaml "$@" 2>&1
+  rm -rf "${tmp}"
 }
+assert_contains "NOTES.txt renders metis.scalingNotesWarning" 'include "metis.scalingNotesWarning"' \
+  "$(cat "${CHART_DIR}/templates/NOTES.txt")"
 assert_contains "NOTES warns: replicas=1 + default HPA is still N>1 (#75)" \
   "up to 6 server pods (replicaCount=1, HPA 2..6)" "$(notes --set server.replicaCount=1)"
 assert_not_contains "NOTES silent: replicas=1 + HPA off" "server pods" \

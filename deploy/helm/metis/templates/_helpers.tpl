@@ -127,6 +127,25 @@ Every "is this N>1?" decision below reads this, never replicaCount alone.
 {{- $n -}}
 {{- end -}}
 
+{{/*
+The NOTES.txt warning for N>1 without the shared backends (#75). A named template
+rather than inline NOTES text because `helm template` never renders NOTES and
+Helm 3's `install --dry-run` needs a cluster, so render-tests.sh reaches it
+through a probe template instead.
+*/}}
+{{- define "metis.scalingNotesWarning" -}}
+{{- $serverCeiling := int (include "metis.serverReplicaCeiling" .) }}
+{{- if gt $serverCeiling 1 }}
+{{- if not (and .Values.scaling.database.url (eq .Values.scaling.vectorStore "pgvector") (eq .Values.uploads.backend "s3")) }}
+
+  ⚠️  up to {{ $serverCeiling }} server pods (replicaCount={{ .Values.server.replicaCount }}{{ if .Values.autoscaling.server.enabled }}, HPA {{ .Values.autoscaling.server.minReplicas }}..{{ .Values.autoscaling.server.maxReplicas }}{{ end }}) but the shared backends are not all set.
+     For a correct N>1 deployment set: DATABASE_URL (postgres), VECTOR_STORE=pgvector,
+     UPLOAD_STORAGE_BACKEND=s3, DISCUSSION_RATE_LIMIT_BACKEND=postgres,
+     SSO_STATE_BACKEND=postgres, SCHEDULER_LEADER_ELECTION=postgres. See docs/EKS_DEPLOYMENT.md §9b–§9f.
+{{- end }}
+{{- end }}
+{{- end -}}
+
 {{- define "metis.assertScalingBackends" -}}
 {{- if gt (int (include "metis.serverReplicaCeiling" .)) 1 -}}
 {{- $enforce := .Values.scaling.enforce -}}
