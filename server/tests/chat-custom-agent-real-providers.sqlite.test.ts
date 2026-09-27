@@ -597,6 +597,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ).toBe(true);
       });
 
+      it("is rate-limited like the other session reads", async () => {
+        await db.user.create({
+          data: { id: "u-rate", username: "u-rate", displayName: "r", email: "r@example.test" },
+        });
+        const t = issueTokens({
+          userId: "u-rate",
+          username: "u-rate",
+          role: "developer",
+          permissions: [],
+        }).accessToken;
+        process.env.AI_CONVERSATION_RATE_LIMIT_MAX = "2";
+        try {
+          const codes: number[] = [];
+          for (let i = 0; i < 3; i++) {
+            const res = await request(app())
+              .get("/api/ai/session-agents")
+              .set("Authorization", `Bearer ${t}`);
+            codes.push(res.status);
+          }
+          expect(codes).toEqual([200, 200, 429]);
+        } finally {
+          delete process.env.AI_CONVERSATION_RATE_LIMIT_MAX;
+        }
+      });
+
       it("a project the caller cannot reach is 404", async () => {
         const res = await request(app())
           .get("/api/ai/session-agents?projectId=p-ws")

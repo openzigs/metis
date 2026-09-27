@@ -1053,13 +1053,18 @@ export function aiRouter(): Router {
 
   // #236 — the agents a new session may bind, both kinds, for ONE picker.
   // With a project: the caller must reach it (404 otherwise, as everywhere).
-  r.get("/session-agents", requireAuth, async (req: Request, res: Response) => {
-    userIdOrThrow(req);
-    const raw = req.query.projectId;
-    const projectId = typeof raw === "string" && raw.length > 0 ? raw.slice(0, 120) : null;
-    if (projectId) await assertProjectAccess(req.user!, projectId);
-    res.json(ok({ items: await listBindableAgents(projectId) }));
-  });
+  r.get(
+    "/session-agents",
+    requireAuth,
+    conversationRateLimiter,
+    async (req: Request, res: Response) => {
+      userIdOrThrow(req);
+      const raw = req.query.projectId;
+      const projectId = typeof raw === "string" && raw.length > 0 ? raw.slice(0, 120) : null;
+      if (projectId) await assertProjectAccess(req.user!, projectId);
+      res.json(ok({ items: await listBindableAgents(projectId) }));
+    },
+  );
 
   r.get(
     "/sessions/:id",
