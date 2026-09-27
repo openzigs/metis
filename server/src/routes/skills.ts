@@ -17,6 +17,10 @@ import {
   LibraryImporter,
   InlineLoader,
 } from "../lib/library/index.js";
+import { RepoLoader } from "../lib/library/import.js";
+import { openRepoContentFetcher } from "../lib/connectors/repo/repo-service.js";
+import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { skillRepoImportRateLimiter } from "../middleware/skill-import-rate-limit.js";
 import { FrontmatterError } from "../lib/library/frontmatter.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
@@ -67,6 +71,14 @@ const importInlineSchema = z.object({
     )
     .min(1)
     .max(50),
+});
+
+// #237 — a skills import from a project's repository connector.
+const importRepositorySchema = z.object({
+  projectId: z.string().min(1).max(120),
+  connectorId: z.string().min(1).max(120),
+  /** Repo-relative directory to import from; the repository root when absent. */
+  path: z.string().max(1024).optional(),
 });
 
 export function skillsRouter(): Router {
@@ -200,8 +212,9 @@ export function skillsRouter(): Router {
     }
   });
 
-  // Bulk import \u2014 inline (paste / multi-file upload). Repo + filesystem
-  // sources are wired in routes/library.ts.
+  // Bulk import \u2014 inline (paste / multi-file upload). A repository
+  // connector source is `/import/repository` below; the filesystem source is
+  // workspace auto-discovery.
   r.post(
     "/import/inline",
     requireAuth,
@@ -216,6 +229,31 @@ export function skillsRouter(): Router {
       const importer = new LibraryImporter();
       const loader = new InlineLoader(parsed.data.files);
       const result = await importer.importSkills(loader, actorFromReq(req));
+      res.status(201).json(ok(result));
+    },
+  );
+
+  // #237 — the same import from a project's git repository connector: each
+  // SKILL.md with its supporting files (`RepoLoader`). The SAME permission as
+  // the inline import; the caller must also reach the project, and the
+  // connector must be that project's (404 otherwise).
+  r.post(
+    "/import/repository",
+    skillRepoImportRateLimiter,
+    requireAuth,
+    requirePermission("skill.manage"),
+    async (req: Request, res: Response) => {
+      const parsed = importRepositorySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid import payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      const { projectId, connectorId, path } = parsed.data;
+      await assertProjectAccess(req.user!, projectId);
+      const { fetcher, label } = await openRepoContentFetcher(projectId, connectorId);
+      const loader = new RepoLoader(fetcher, path ?? "", label, "skills");
+      const result = await new LibraryImporter().importSkills(loader, actorFromReq(req));
       res.status(201).json(ok(result));
     },
   );

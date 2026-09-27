@@ -48,9 +48,22 @@ export interface SessionAgent {
    */
   allowlist: string[] | null;
   approvalOverride: ApprovalPolicyOverride | null;
+  /**
+   * A bound CUSTOM agent the session may no longer use (gone, no longer owned
+   * by or enabled for the project, or unreadable). The session then fails
+   * closed on skills too: its `loadedSkillIds` came from that agent, so no
+   * skill catalog and no `load_skill` are offered.
+   */
+  customUnusable: boolean;
 }
 
-const NONE: SessionAgent = { ref: null, definition: null, allowlist: null, approvalOverride: null };
+const NONE: SessionAgent = {
+  ref: null,
+  definition: null,
+  allowlist: null,
+  approvalOverride: null,
+  customUnusable: false,
+};
 
 /** The session's agent ref: its custom `agentRef`, else its library `agentId`. */
 export function sessionAgentRef(s: SessionAgentBinding): string | null {
@@ -65,8 +78,8 @@ function jsonToolRefs(raw: string | null | undefined): string[] {
     : [];
 }
 
-function closed(ref: string): SessionAgent {
-  return { ref, definition: null, allowlist: [], approvalOverride: null };
+function closed(ref: string, custom: boolean): SessionAgent {
+  return { ref, definition: null, allowlist: [], approvalOverride: null, customUnusable: custom };
 }
 
 /**
@@ -101,20 +114,21 @@ export async function loadSessionAgent(
       const def = await loadBoundCustomAgent(s.agentRef, s.projectId, db);
       if (!def) {
         log.warn("Session custom agent unavailable; offering no tools", { agentRef: s.agentRef });
-        return closed(ref);
+        return closed(ref, true);
       }
       return {
         ref,
         definition: def,
         allowlist: [...(def.toolAllowlist ?? [])],
         approvalOverride: def.approvalPolicy,
+        customUnusable: false,
       };
     }
     const row = (await db.agent.findFirst({
       where: { id: s.agentId! },
       select: { tools: true, approvalPolicy: true },
     })) as { tools?: string | null; approvalPolicy?: string | null } | null;
-    if (!row) return closed(ref);
+    if (!row) return closed(ref, false);
     const refs = jsonToolRefs(row.tools);
     return {
       ref,
@@ -122,13 +136,14 @@ export async function loadSessionAgent(
       definition: null,
       allowlist: refs.length > 0 ? refs : null,
       approvalOverride: readStoredOverride(row.approvalPolicy ?? null),
+      customUnusable: false,
     };
   } catch (err) {
     log.warn("Session agent unreadable; offering no tools", {
       ref,
       error: (err as Error).message,
     });
-    return closed(ref);
+    return closed(ref, Boolean(s.agentRef));
   }
 }
 

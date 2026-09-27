@@ -466,6 +466,54 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
+    it("an agent WITH skills the project stops using fails closed on skills too: no load_skill, no catalog", async () => {
+      await db.customAgent.create({
+        data: {
+          id: "c-skilled-shared",
+          projectId: null,
+          name: "Skilled shared",
+          systemPrompt: "You are skilled.",
+          tools: JSON.stringify(["count_rows"]),
+          skillKeys: JSON.stringify(["release-notes"]),
+        },
+      });
+      await db.customAgentEnablement.create({
+        data: { customAgentId: "c-skilled-shared", projectId: IDS.project, enabled: true },
+      });
+      try {
+        setAIProviderForTests(PROVIDERS[1]!.make());
+        const created = await createSession(alice, {
+          projectId: IDS.project,
+          agentRef: "custom:c-skilled-shared",
+          policy: { low: "auto" },
+        });
+        expect(created.status, created.text).toBe(201);
+        // The session's skills came from the agent.
+        expect(JSON.parse(created.body.data.session.loadedSkillIds)).toEqual(["s-release"]);
+        const sid = created.body.data.session.id as string;
+        // Positive control: while the agent is usable, its skill IS offered.
+        await say("/api/ai/chat", sid, "plain");
+        expect([...seen[0]!.tools].sort()).toEqual(["count_rows", "load_skill"]);
+        expect(seen[0]!.system).toContain("- release-notes: Release notes");
+        seen.length = 0;
+        await db.customAgentEnablement.update({
+          where: {
+            customAgentId_projectId: { customAgentId: "c-skilled-shared", projectId: IDS.project },
+          },
+          data: { enabled: false },
+        });
+        const res = await say("/api/ai/chat", sid, "turn one");
+        expect(res.status, res.text.slice(0, 500)).toBe(200);
+        expect(seen[0]!.tools).toEqual([]);
+        expect(seen[0]!.system).not.toContain("You are skilled.");
+        expect(seen[0]!.system).not.toContain("release-notes");
+        expect(seen[0]!.system).not.toContain(bodyMarker("release-notes"));
+      } finally {
+        await db.customAgentEnablement.deleteMany({ where: { customAgentId: "c-skilled-shared" } });
+        await db.customAgent.delete({ where: { id: "c-skilled-shared" } });
+      }
+    });
+
     it("a fork keeps the custom agent: the forked session is offered the same allowlist, never more", async () => {
       setAIProviderForTests(PROVIDERS[1]!.make());
       const created = await createSession(alice, {
@@ -555,6 +603,65 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const res = await createSession(alice, { projectId: "p-ws", agentRef: "custom:c-ws" });
         expect(res.status, res.text).toBe(201);
         expect(res.body.data.session.agentRef).toBe("custom:c-ws");
+      });
+    });
+
+    describe("#304 — a session binds only a project the caller can reach", () => {
+      const cases: Array<{ name: string; token: () => string; body: Record<string, unknown> }> = [
+        {
+          name: "another workspace's project via projectId",
+          token: () => bob,
+          body: { projectId: "p-ws" },
+        },
+        {
+          name: "another workspace's project via a single projectIds entry",
+          token: () => bob,
+          body: { projectIds: ["p-ws"] },
+        },
+        {
+          name: "another workspace's project with a library agent",
+          token: () => bob,
+          body: { projectId: "p-ws", agentRef: `library:${IDS.lead}` },
+        },
+      ];
+      for (const c of cases) {
+        it(`refuses ${c.name}: 404 NOT_FOUND, nothing created`, async () => {
+          const before = await db.aISession.count();
+          const res = await createSession(c.token(), c.body);
+          expect(res.status, res.text).toBe(404);
+          expect(res.body.error?.code).toBe("NOT_FOUND");
+          expect(await db.aISession.count()).toBe(before);
+        });
+      }
+
+      it("refuses an unauthenticated caller: 401, nothing created", async () => {
+        const before = await db.aISession.count();
+        const res = await request(app()).post("/api/ai/sessions").send({ projectId: "p-ws" });
+        expect(res.status).toBe(401);
+        expect(await db.aISession.count()).toBe(before);
+      });
+
+      it("a member binds it (positive control), and so does an admin (as designed)", async () => {
+        const member = await createSession(alice, { projectIds: ["p-ws"] });
+        expect(member.status, member.text).toBe(201);
+        expect(member.body.data.session.projectId).toBe("p-ws");
+        const admin = issueTokens({
+          userId: IDS.bob,
+          username: "admin",
+          role: "admin",
+          permissions: [],
+          workspaces: [],
+        }).accessToken;
+        const res = await createSession(admin, { projectId: "p-ws" });
+        expect(res.status, res.text).toBe(201);
+        expect(res.body.data.session.projectId).toBe("p-ws");
+      });
+
+      it("a project that no longer exists still degrades to an unscoped session (#607, unchanged)", async () => {
+        const res = await createSession(bob, { projectId: "p-gone" });
+        expect(res.status, res.text).toBe(201);
+        expect(res.body.data.session.projectId).toBeNull();
+        expect(res.body.data.scope.reason).toBe("stale-project");
       });
     });
 
@@ -678,6 +785,43 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         } finally {
           await db.customAgentEnablement.deleteMany({ where: { customAgentId: "c-only-ws" } });
           await db.customAgent.delete({ where: { id: "c-only-ws" } });
+        }
+      });
+
+      it("a shared agent the project has DISABLED (an enabled:false row) is not offered", async () => {
+        await db.customAgent.create({
+          data: {
+            id: "c-disabled-here",
+            projectId: null,
+            name: "Disabled here",
+            systemPrompt: "You are switched off.",
+            tools: "[]",
+          },
+        });
+        await db.customAgentEnablement.create({
+          data: { customAgentId: "c-disabled-here", projectId: IDS.project, enabled: false },
+        });
+        try {
+          const res = await request(app())
+            .get(`/api/ai/session-agents?projectId=${IDS.project}`)
+            .set("Authorization", `Bearer ${alice}`);
+          expect(res.status).toBe(200);
+          const refs = (res.body.data.items as Array<{ ref: string }>).map((i) => i.ref);
+          expect(refs).not.toContain("custom:c-disabled-here");
+          expect(refs).toContain("custom:c-shared"); // an ENABLED row still lists
+          // And the session create refuses it as well.
+          const before = await db.aISession.count();
+          const bind = await createSession(alice, {
+            projectId: IDS.project,
+            agentRef: "custom:c-disabled-here",
+          });
+          expect(bind.status).toBe(404);
+          expect(await db.aISession.count()).toBe(before);
+        } finally {
+          await db.customAgentEnablement.deleteMany({
+            where: { customAgentId: "c-disabled-here" },
+          });
+          await db.customAgent.delete({ where: { id: "c-disabled-here" } });
         }
       });
 

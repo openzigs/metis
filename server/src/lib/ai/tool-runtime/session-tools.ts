@@ -146,9 +146,15 @@ export async function loadSessionAgent(
   allowlist: string[] | null;
   approvalOverride: ApprovalPolicyOverride | null;
   ref: string | null;
+  customUnusable: boolean;
 }> {
   const a = await loadBoundSessionAgent({ agentId, ...custom }, prisma);
-  return { allowlist: a.allowlist, approvalOverride: a.approvalOverride, ref: a.ref };
+  return {
+    allowlist: a.allowlist,
+    approvalOverride: a.approvalOverride,
+    ref: a.ref,
+    customUnusable: a.customUnusable,
+  };
 }
 
 function parseIds(raw: string | null | undefined): string[] {
@@ -247,11 +253,16 @@ export async function resolveSessionTools(
   });
   const agentAllowlist = agent.allowlist;
   const skillAllowlist = input.agents?.allowlist;
-  const catalog = await resolveSkillCatalog({
-    skillIds: parseIds(input.session.loadedSkillIds),
-    projectId,
-    ...(skillAllowlist ? { allowlist: skillAllowlist } : {}),
-  });
+  // #236 — a custom agent the project stopped using fails closed on skills as
+  // well as tools: the session's skills came from that agent, so neither the
+  // catalog nor `load_skill` is offered (no persona, no tools, no skills).
+  const catalog = agent.customUnusable
+    ? []
+    : await resolveSkillCatalog({
+        skillIds: parseIds(input.session.loadedSkillIds),
+        projectId,
+        ...(skillAllowlist ? { allowlist: skillAllowlist } : {}),
+      });
   const native = resolveCapabilities(input.provider, input.model).nativeToolCalls;
   const progressive =
     native && flags.chatTools && flags.progressiveSkills !== false && catalog.length > 0;

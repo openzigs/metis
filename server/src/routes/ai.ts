@@ -21,7 +21,10 @@ import { z } from "zod";
 import type { ApiResponse, CompactionEventDto, ModelCatalogResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { aiRateLimiter } from "../middleware/ai-rate-limit.js";
-import { conversationRateLimiter } from "../middleware/conversation-rate-limit.js";
+import {
+  conversationPreAuthRateLimiter,
+  conversationRateLimiter,
+} from "../middleware/conversation-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { buildSystemBlock as buildChronicleBlock } from "../lib/memory/chronicle.js";
@@ -865,6 +868,11 @@ export function aiRouter(): Router {
         effectiveProjectId = null;
         scopeDegradationReason = "stale-project";
       } else {
+        // #304 — the project exists; the caller must also be able to reach it
+        // (the project routes' own check). No access reads as 404 NOT_FOUND
+        // and nothing is created — never a session bound to another
+        // workspace's knowledge base, code graph, skills or provider.
+        await assertProjectAccess(req.user!, effectiveProjectId);
         if (project.aiProviderId && isRetiredProviderKey(project.aiProviderId)) {
           // #149 — a project still overriding to a removed provider. Refused by
           // name: binding the session to it would create a chat that can never
@@ -932,10 +940,9 @@ export function aiRouter(): Router {
             "A custom agent runs only in a session scoped to one project",
           );
         }
-        // The caller must reach the project, and the project must own or have
-        // enabled the agent. Either failure reads as "not found" so another
-        // project's agents cannot be probed.
-        await assertProjectAccess(req.user!, effectiveProjectId);
+        // The caller reached the project above (#304); the project must also
+        // own or have enabled the agent. Either failure reads as "not found"
+        // so another project's agents cannot be probed.
         const def = await loadBoundCustomAgent(parsed.data.agentRef, effectiveProjectId);
         if (!def) throw new AppError(404, "AGENT_NOT_FOUND", "Agent not found");
         resolvedAgentRef = def.ref;
@@ -1053,8 +1060,11 @@ export function aiRouter(): Router {
 
   // #236 — the agents a new session may bind, both kinds, for ONE picker.
   // With a project: the caller must reach it (404 otherwise, as everywhere).
+  // A per-IP ceiling runs BEFORE auth (JWT verification is the first cost an
+  // anonymous flood would otherwise impose); the per-user limiter follows it.
   r.get(
     "/session-agents",
+    conversationPreAuthRateLimiter,
     requireAuth,
     conversationRateLimiter,
     async (req: Request, res: Response) => {

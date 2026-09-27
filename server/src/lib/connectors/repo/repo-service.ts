@@ -38,6 +38,7 @@ import { assertConnectorHostAllowed, resolveAndAssertConnectorHost } from "../ne
 import { ConnectorError, NOOP_EMITTER, type ConnectorEmitter } from "../types.js";
 import { isDriverDetailCode, sanitizeDriverError } from "../driver-error.js";
 import { resolveVaultRef } from "../vault-resolver.js";
+import type { RepoFetcher } from "../../library/import.js";
 import { validateLocalSourcePath } from "./local-source.js";
 import { sourceIngestSummary } from "../source-ingest-state.js";
 import {
@@ -798,6 +799,44 @@ export async function fetchRepoMetadata(
     readme,
     manifests,
     headSha,
+  };
+}
+
+/**
+ * #237 — read access to ONE git repository connector's tree, for the skills
+ * import (`POST /api/skills/import/repository`). The connector must belong to
+ * `projectId` (404 otherwise — another project's connector cannot be named),
+ * must be a git provider, and its API host passes the same allowlist, DNS pin
+ * and vault-resolved credential as every other connector call. Paths are
+ * repo-relative; `RepoLoader` decides which are safe to list and read.
+ */
+export async function openRepoContentFetcher(
+  projectId: string,
+  id: string,
+): Promise<{ fetcher: RepoFetcher; label: string }> {
+  const conn = await getRepoConnector(projectId, id);
+  const git = assertGitConnector(conn);
+  await assertHostFromBaseUrl(conn.apiBaseUrl);
+  const octokit = await acquireOctokit(conn.apiBaseUrl, conn.secretRef);
+  const where = { owner: git.ownerOrOrg, repo: git.repoName };
+  return {
+    label: `${git.ownerOrOrg}/${git.repoName}`,
+    fetcher: {
+      async list(dir: string) {
+        const r = await octokit.rest.repos.getContent({ ...where, path: dir });
+        return Array.isArray(r.data)
+          ? r.data.map((e) => ({ path: e.path, type: e.type, size: e.size }))
+          : [];
+      },
+      async read(filePath: string) {
+        const r = await octokit.rest.repos.getContent({ ...where, path: filePath });
+        const d = r.data;
+        if (Array.isArray(d) || d.type !== "file") {
+          throw new ConnectorError(400, "REPO_PATH_NOT_A_FILE", "path is not a file");
+        }
+        return decodeContent(d.content, d.encoding);
+      },
+    },
   };
 }
 

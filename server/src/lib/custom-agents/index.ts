@@ -22,7 +22,7 @@ import {
   readStoredOverride,
 } from "../agent-runtime/policy.js";
 import { assertNoSecrets, DefinitionSecretError } from "../agent-runtime/secret-scan.js";
-import { knownToolNames, unknownToolRefs } from "../agent-runtime/tool-refs.js";
+import { knownToolNames, mcpLabelSlug, unknownToolRefs } from "../agent-runtime/tool-refs.js";
 import { getToolRegistry, type ToolRegistry } from "../ai/tool-registry.js";
 
 export class CustomAgentError extends Error {}
@@ -150,12 +150,46 @@ async function assertSkillsExist(keys: readonly string[] | null | undefined): Pr
 export function assertKnownTools(
   tools: readonly string[] | null | undefined,
   registry: Pick<ToolRegistry, "list"> = getToolRegistry(),
+  configuredMcpServers: ReadonlySet<string> = new Set(),
 ): void {
   if (!tools || tools.length === 0) return;
-  const unknown = unknownToolRefs(tools, knownToolNames(registry));
+  const unknown = unknownToolRefs(tools, knownToolNames(registry), configuredMcpServers);
   if (unknown.length > 0) {
     throw new CustomAgentError(`Unknown tools: ${unknown.join(", ")}`);
   }
+}
+
+/**
+ * #238 — the MCP servers an agent in `projectId` may name, from MCP CONFIG
+ * (not the live registry, which holds only running servers' tools): the
+ * project's own servers and the global servers on its allow-list — what the
+ * chat runtime offers the project (`listForProject`). A workspace-shared agent
+ * (`projectId` null) may name any configured global server. Read only when a
+ * ref names an MCP server, as slugs (`mcpLabelSlug`).
+ */
+export async function configuredMcpServerSlugs(
+  tools: readonly string[] | null | undefined,
+  projectId: string | null,
+): Promise<Set<string>> {
+  if (!tools?.some((t) => /^mcp:[^*]/.test(t))) return new Set();
+  const rows = projectId
+    ? [
+        ...(await prisma.mCPServer.findMany({
+          where: { projectId, scope: "project", deletedAt: null },
+          select: { label: true },
+        })),
+        ...(
+          await prisma.projectMCPAllowlist.findMany({
+            where: { projectId, mcpServer: { scope: "global", deletedAt: null } },
+            select: { mcpServer: { select: { label: true } } },
+          })
+        ).map((a) => a.mcpServer),
+      ]
+    : await prisma.mCPServer.findMany({
+        where: { scope: "global", deletedAt: null },
+        select: { label: true },
+      });
+  return new Set(rows.map((r) => mcpLabelSlug(r.label)));
 }
 
 function overrideJson(v: CustomAgentApprovalPolicy | null | undefined): string | null {
@@ -312,7 +346,11 @@ export async function createAgent(
   actorId?: string,
 ): Promise<CustomAgentDto> {
   validate(input);
-  assertKnownTools(input.tools);
+  assertKnownTools(
+    input.tools,
+    getToolRegistry(),
+    await configuredMcpServerSlugs(input.tools, input.projectId),
+  );
   await assertSkillsExist(input.skillKeys);
   const existing = await prisma.customAgent.findFirst({
     where: { projectId: input.projectId, name: input.name },
@@ -354,7 +392,11 @@ export async function updateAgent(
     throw new CustomAgentError("Built-in agents cannot be modified");
   }
   validate(patch, { allowEmpty: true });
-  assertKnownTools(patch.tools);
+  assertKnownTools(
+    patch.tools,
+    getToolRegistry(),
+    await configuredMcpServerSlugs(patch.tools, existing.projectId),
+  );
   await assertSkillsExist(patch.skillKeys);
   const row = await prisma.customAgent.update({
     where: { id },

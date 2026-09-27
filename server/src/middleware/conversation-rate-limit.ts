@@ -56,3 +56,42 @@ export const conversationRateLimiter: RequestHandler = rateLimit({
     },
   } satisfies ApiResponse,
 }) as unknown as RequestHandler;
+
+/**
+ * Pre-auth, per-IP ceiling for the conversation routes (#236, CodeQL
+ * `js/missing-rate-limiting`). Mounted IN FRONT of `requireAuth`, whose JWT
+ * verification is otherwise the first thing an anonymous flood pays for; the
+ * per-user {@link conversationRateLimiter} still runs after auth.
+ *
+ * Deliberately generous: every user behind one NAT or proxy shares an IP, so
+ * the default (1,200 / 15 min) is four times the per-user budget and a chat
+ * page's normal use never reaches it. `AI_CONVERSATION_PREAUTH_RATE_LIMIT_MAX`
+ * overrides it, read per request. The auth limiter (20 / 15 min, keyed for
+ * credential stuffing) is far too tight to reuse here.
+ */
+export const CONVERSATION_PREAUTH_DEFAULT_MAX = 1_200;
+
+// `as unknown as RequestHandler` bridges the Express 4↔5 type split.
+export const conversationPreAuthRateLimiter: RequestHandler = rateLimit({
+  store: clusterRateLimitStore("ai-conversation-preauth"),
+  windowMs: envMs("AI_CONVERSATION_RATE_LIMIT_WINDOW_MS", FIFTEEN_MIN_MS, { min: 1 }),
+  limit: () => {
+    const raw = process.env.AI_CONVERSATION_PREAUTH_RATE_LIMIT_MAX;
+    if (raw == null || raw === "") {
+      return process.env.NODE_ENV === "test" ? TEST_DEFAULT_MAX : CONVERSATION_PREAUTH_DEFAULT_MAX;
+    }
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : CONVERSATION_PREAUTH_DEFAULT_MAX;
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req, res) =>
+    `ip:${ipKeyGenerator(req.ip ?? "", res.req?.socket?.remoteFamily === "IPv6" ? 64 : 32)}`,
+  message: {
+    success: false,
+    error: {
+      code: "AI_CONVERSATION_RATE_LIMITED",
+      message: "Too many conversation requests — slow down",
+    },
+  } satisfies ApiResponse,
+}) as unknown as RequestHandler;

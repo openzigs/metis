@@ -157,6 +157,55 @@ describe("#237 RepoLoader (skills) — walks the tree, bounded, and reports what
     await expect(new RepoLoader(fetcher, "/etc", "x", "skills").load()).rejects.toThrow(
       /INVALID_ROOT/,
     );
+    // A Windows drive-letter root and a NUL byte are refused too, not walked.
+    for (const root of ["C:/skills", "c:skills", "skills\0x"]) {
+      await expect(new RepoLoader(fetcher, root, "x", "skills").load()).rejects.toThrow(
+        /INVALID_ROOT/,
+      );
+    }
+    expect(fetcher.list).not.toHaveBeenCalled();
+  });
+
+  // With an EMPTY root `within()` admits every path, so the drive-letter and
+  // NUL checks in `cleanRepoPath` are the only thing standing between a
+  // hostile listing and a fetch.
+  for (const root of ["", "/", "./"]) {
+    it(`with the repository root (${JSON.stringify(root)}) a drive-letter or NUL path is refused, never fetched`, async () => {
+      const hostile: Entry[] = [
+        { path: "C:/skills/evil/SKILL.md", type: "file" },
+        { path: "d:evil/SKILL.md", type: "file" },
+        { path: "C:", type: "dir" },
+        { path: "skills/a\0b/SKILL.md", type: "file" },
+        { path: "skills/ok/\0.md", type: "file" },
+      ];
+      const { fetcher, reads, lists } = fakeRepo(
+        { "skills/ok/SKILL.md": skillMd("ok") },
+        { extra: { "": hostile } },
+      );
+      const loader = new RepoLoader(fetcher, root, "abc123", "skills");
+      const files = await loader.load();
+      expect(files.map((f) => f.path)).toEqual(["skills/ok/SKILL.md"]);
+      expect(reads).toEqual(["skills/ok/SKILL.md"]);
+      expect(lists).not.toContain("C:");
+      expect(loader.rejectedPaths().map((r) => r.path)).toEqual(hostile.map((h) => h.path));
+    });
+  }
+
+  it("reads only files beneath a SKILL.md directory: an unrelated file inside the import root is never fetched", async () => {
+    const { fetcher, reads } = fakeRepo({
+      "skills/pdf/SKILL.md": skillMd("pdf"),
+      "skills/pdf/references/guide.md": "GUIDE",
+      "skills/unrelated/notes.md": "NOT A SKILL FILE",
+      "skills/README.md": "NOT A SKILL FILE EITHER",
+    });
+    const loader = new RepoLoader(fetcher, "skills", "abc123", "skills");
+    const files = await loader.load();
+    expect(files.map((f) => f.path).sort()).toEqual([
+      "skills/pdf/SKILL.md",
+      "skills/pdf/references/guide.md",
+    ]);
+    expect(reads).not.toContain("skills/unrelated/notes.md");
+    expect(reads).not.toContain("skills/README.md");
   });
 
   it("never fetches a binary type, an oversize file (by reported size) or a symlink/submodule", async () => {
