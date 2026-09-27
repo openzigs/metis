@@ -915,6 +915,10 @@ export interface Phase1Coverage {
   truncatedChunks: number;
   /** Leaf chunks whose call failed (no facts, not cached). */
   failedChunks: number;
+  /** #224 — the module's code files (distinct symbol files) Phase 1 tried to read. */
+  sourceFilesTotal: number;
+  /** #224 — of {@link sourceFilesTotal}, the files that could not be read (none of their code was sent). */
+  sourceFilesUnread: number;
 }
 
 /**

@@ -50,6 +50,8 @@ import {
   JSON_OBJECT_RESPONSE_FORMAT,
   jsonObjectShapeInstruction,
 } from "./structured-output-schemas.js";
+import { reportGroundingUsage, type GroundingUsageListener } from "./grounding-usage.js";
+import { withTransientRetry, type GroundingRetryOptions } from "./transient-retry.js";
 
 const log = createChildLogger("docs-gen:faithfulness-judge");
 
@@ -158,6 +160,16 @@ export interface FaithfulnessJudgeDeps {
    * `json_object` mode the schema is stated in the system prompt.
    */
   responseFormat?: ResponseFormat;
+  /**
+   * #247 — send `disableThinking` on every judge call. A model that thinks by
+   * default (DeepSeek on its Anthropic-compatible endpoint) otherwise spends
+   * the verdict list's output cap on reasoning. Default false: unchanged request.
+   */
+  disableThinking?: boolean;
+  /** #180 — told the usage of every judge call that returned a response. */
+  onUsage?: GroundingUsageListener;
+  /** #246 — retry of transient provider failures (defaults in `transient-retry.ts`). */
+  retry?: GroundingRetryOptions;
 }
 
 /**
@@ -189,6 +201,9 @@ export class FaithfulnessJudge {
   private readonly promptCaching: boolean;
   private readonly maxTokens: number | undefined;
   private readonly responseFormat: ResponseFormat | undefined;
+  private readonly disableThinking: boolean;
+  private readonly onUsage: GroundingUsageListener | undefined;
+  private readonly retry: GroundingRetryOptions | undefined;
 
   constructor(deps: FaithfulnessJudgeDeps) {
     this.provider = deps.provider;
@@ -200,6 +215,9 @@ export class FaithfulnessJudge {
     this.promptCaching = deps.promptCaching ?? false;
     this.maxTokens = deps.maxTokens;
     this.responseFormat = deps.responseFormat;
+    this.disableThinking = deps.disableThinking ?? false;
+    this.onUsage = deps.onUsage;
+    this.retry = deps.retry;
   }
 
   /**
@@ -328,19 +346,35 @@ export class FaithfulnessJudge {
         { role: "system", content: system },
         { role: "user", content: userContent },
       ];
-      return this.provider.chat(messages, {
-        model: this.model,
-        signal,
-        disableTools: true,
-        // #1226 — cap sized for THIS judge's model, never inherited from the
-        // provider's section-model default.
-        ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
-        // #390 — tag prompt-cache hit-ratio telemetry by workload.
-        callType: "grounding",
-        ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
-        // #336 — structured verdict list on the local/vLLM path when enabled.
-        ...(format ? { responseFormat: format } : {}),
-      });
+      // #246 — a dropped stream, 5xx, 429 or timeout is asked again with
+      // backoff; a 4xx or a cancelled run is thrown at once.
+      return withTransientRetry(
+        async () => {
+          const response = await this.provider.chat(messages, {
+            model: this.model,
+            signal,
+            disableTools: true,
+            // #1226 — cap sized for THIS judge's model, never inherited from the
+            // provider's section-model default.
+            ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
+            // #390 — tag prompt-cache hit-ratio telemetry by workload.
+            callType: "grounding",
+            ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
+            // #336 — structured verdict list on the local/vLLM path when enabled.
+            ...(format ? { responseFormat: format } : {}),
+            // #247 — structured, extractive: no reasoning spend on the output cap.
+            ...(this.disableThinking ? { disableThinking: true } : {}),
+          });
+          // #180 — every call that answered is billed, parsed or not.
+          reportGroundingUsage(this.onUsage, "verdicts", response, {
+            provider: this.provider.key,
+            model: this.model ?? this.provider.model,
+          });
+          return response;
+        },
+        { stage: "verdicts", signal },
+        this.retry,
+      );
     };
 
     // #25 — an unparseable batch is retried ONCE before it is counted as

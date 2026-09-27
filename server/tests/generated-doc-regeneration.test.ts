@@ -211,6 +211,10 @@ vi.mock("../src/lib/ai/index.js", () => ({
     offline: false,
     stream: state.stream,
     complete: vi.fn(async () => ({ content: '{"claims":[]}' })),
+    // #246 — the grounders call `chat`. Without it every section's fact-check
+    // threw, which used to pass silently; it now marks the section
+    // "NOT fact-checked" and keeps it out of the reuse record.
+    chat: vi.fn(async () => ({ content: '{"claims":[]}' })),
   }),
 }));
 vi.mock("../src/lib/ai/config.js", () => ({

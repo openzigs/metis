@@ -204,7 +204,7 @@ export function logRunCost(
     ...(zeroPriced.length ? { zeroPricedModels: zeroPriced } : {}),
     // Only the calls the usage tracker records are counted.
     scope:
-      "calls recorded by the usage tracker: Phase-1 facts and Phase-2 sections (grounding calls are not recorded yet, #180)",
+      "calls recorded by the usage tracker: Phase-1 facts, Phase-2 sections, and grounding (claim extraction and the faithfulness judge), with their cache reads and writes",
   });
   return estimate;
 }

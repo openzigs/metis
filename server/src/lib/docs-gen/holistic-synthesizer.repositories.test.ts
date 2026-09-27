@@ -1,5 +1,5 @@
 /** #1354: real roots, source extraction, cache and citation pipeline; only DB/LLM mocked. */
-import { chmod, mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -76,6 +76,9 @@ import { repositoryPathIdentity } from "./repository-identity.js";
 import { phase1ChunkLimits } from "./phase1-chunking.js";
 import {
   deriveDocStatus,
+  SOURCE_FILES_MISSING_REMEDY,
+  SOURCE_FILES_SECTION,
+  SOURCE_FILES_UNREADABLE_REMEDY,
   SQL_FILES_SECTION,
   summarizeWarnings,
 } from "./grounding/degraded-warnings.js";
@@ -618,5 +621,122 @@ describe("#1354 actual multi-repository synthesis", () => {
     );
     expect(prepared.skippedDirectories).toEqual([]);
     expect(prepared.skippedFiles).toEqual([]);
+  });
+});
+
+// #224 — a module's code file that cannot be read, when others in the module
+// can, is named in the document instead of silently left out of Phase 1.
+describe("#224 unreadable code files of a partly read module", () => {
+  /** Repository `a` gains a second symbol file, `src/extra.ts`. */
+  function withExtraFile(): void {
+    const extra = (id: string) =>
+      id === "a"
+        ? [
+            {
+              id: "a-extra",
+              codeGraphId: "graph-a",
+              qualifiedName: "Extra.run",
+              kind: "method",
+              filePath: "src/extra.ts",
+              language: "ts",
+              startLine: 1,
+              endLine: 3,
+            },
+          ]
+        : [];
+    db.codeSymbol.findMany.mockImplementation(async ({ where }) =>
+      ["a", "b"]
+        .filter((id) => !where.codeGraphId || where.codeGraphId === `graph-${id}`)
+        .flatMap((id) => [...symbols(id), ...extra(id)]),
+    );
+    db.codeSymbol.groupBy.mockResolvedValue([
+      ...["a", "b"].map((id) => ({
+        codeGraphId: `graph-${id}`,
+        filePath: "src/rules.ts",
+        _count: { _all: 3 },
+      })),
+      { codeGraphId: "graph-a", filePath: "src/extra.ts", _count: { _all: 1 } },
+    ]);
+  }
+  const moduleA = (): ModuleGroup =>
+    ({
+      dir: "src",
+      syms: [...symbols("a"), { ...symbols("a")[1], id: "a-extra", filePath: "src/extra.ts" }],
+    }) as unknown as ModuleGroup;
+
+  it("names a file deleted from the clone, with the re-ingest remedy, through synthesis", async () => {
+    withExtraFile(); // src/extra.ts is in the code graph but was never written
+    const result = await synthesizeHolisticDocument("p", "architecture", "Architecture");
+    const w = result.warnings.find((x) => x.section === SOURCE_FILES_SECTION);
+    expect(w).toBeDefined();
+    expect(w!.kind).toBe("source-unavailable");
+    expect(w!.message).toContain("src/extra.ts");
+    expect(w!.message).toContain(SOURCE_FILES_MISSING_REMEDY);
+    expect(w!.message).not.toContain(SOURCE_FILES_UNREADABLE_REMEDY);
+    expect(deriveDocStatus(result.warnings)).toBe("degraded");
+    const summary = summarizeWarnings(result.warnings);
+    expect(summary).toMatch(/^Degraded output/);
+    expect(summary).toContain("missing from the clone");
+    expect(summary).toContain("re-ingest");
+    // Not the whole-module #330 warning: the module's other file was read.
+    expect(summary).not.toContain("source code could not be read");
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "names a chmod-000 file beside a readable one, with the read-access remedy",
+    async () => {
+      const locked = path.join(root, "a", "src", "extra.ts");
+      await writeFile(locked, "export class Extra { run() { return 1; } }");
+      await chmod(locked, 0o000);
+      try {
+        const prepared = await preparePhase1Module(moduleA(), path.join(root, "a"));
+        expect(prepared.unreadSourceFiles).toEqual([{ file: "src/extra.ts", cause: "unreadable" }]);
+        expect([...prepared.fileLines.keys()]).toEqual(["src/rules.ts"]);
+
+        withExtraFile();
+        const result = await synthesizeHolisticDocument("p", "architecture", "Architecture");
+        const w = result.warnings.find((x) => x.section === SOURCE_FILES_SECTION)!;
+        expect(w.message).toContain(SOURCE_FILES_UNREADABLE_REMEDY);
+        expect(w.message).not.toContain(SOURCE_FILES_MISSING_REMEDY);
+        expect(summarizeWarnings(result.warnings)).toContain("give the server read access");
+      } finally {
+        await chmod(locked, 0o644);
+      }
+    },
+  );
+
+  it("counts the unread files in the module's Phase-1 coverage", async () => {
+    const facts = await extractModuleFacts(moduleA(), provider, false, "p", path.join(root, "a"));
+    expect(facts!.phase1Coverage).toMatchObject({ sourceFilesTotal: 2, sourceFilesUnread: 1 });
+    expect(facts!.phase1UnreadSourceFiles).toEqual([{ file: "src/extra.ts", cause: "missing" }]);
+    expect(facts!.sourceUnavailable).toBe(false);
+  });
+
+  it("leaves a module with NO readable file to the #330 warning (no duplicate listing)", async () => {
+    const facts = await extractModuleFacts(
+      {
+        dir: "src",
+        syms: [{ ...symbols("a")[1], filePath: "src/gone.ts" }],
+      } as unknown as ModuleGroup,
+      provider,
+      false,
+      "p",
+      path.join(root, "a"),
+    );
+    expect(facts!.sourceUnavailable).toBe(true);
+    expect(facts!.phase1UnreadSourceFiles).toBeUndefined();
+    expect(facts!.phase1Coverage).toMatchObject({ sourceFilesTotal: 1, sourceFilesUnread: 1 });
+  });
+
+  it("refuses a symlink that escapes the clone, and says it stays unread", async () => {
+    const outside = await mkdtemp(path.join(os.tmpdir(), "metis-224-outside-"));
+    try {
+      await writeFile(path.join(outside, "secret.ts"), "export const x = 1;");
+      await symlink(path.join(outside, "secret.ts"), path.join(root, "a", "src", "extra.ts"));
+      const prepared = await preparePhase1Module(moduleA(), path.join(root, "a"));
+      expect(prepared.unreadSourceFiles).toEqual([{ file: "src/extra.ts", cause: "refused" }]);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });

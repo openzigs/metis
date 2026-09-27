@@ -68,6 +68,7 @@ import {
   resolveClaimMaxOutputTokens,
   resolveFactsMaxOutputTokens,
   resolveSectionMaxOutputTokens,
+  servedModelThinksByDefault,
 } from "./output-caps.js";
 import {
   FACT_SLICES,
@@ -139,6 +140,7 @@ import {
   phase1ChunksFailedWarning,
   sqlScanIncompleteWarning,
   sqlFilesSkippedWarning,
+  sourceFilesUnreadWarning,
   formulaLinesSkippedWarning,
   sectionFailedWarning,
   sectionTruncatedWarning,
@@ -153,6 +155,7 @@ import {
   groundingModeRunWarning,
   groundingSampledWarning,
   groundingSkippedWarning,
+  groundingFailedWarning,
   markWarningSampled,
   resolveSectionFaithfulnessThreshold,
   tierForSection,
@@ -173,6 +176,12 @@ import {
   type ExcludedByPolicy,
 } from "./module-grouping.js";
 import { ClaimExtractor } from "./grounding/claim-extractor.js";
+import type { GroundingUsageEvent } from "./grounding/grounding-usage.js";
+import {
+  classifyGroundingError,
+  describeGroundingErrorClass,
+  type GroundingErrorClass,
+} from "./grounding/transient-retry.js";
 import {
   FaithfulnessJudge,
   DEFAULT_JUDGE_MAX_BATCH,
@@ -379,6 +388,19 @@ export interface DocsGenTuning {
    * spends its full token budget on reasoning and returns empty content.
    */
   disableThinking: boolean;
+  /**
+   * #247 — send `disableThinking` on the GROUNDING calls (claim extraction and
+   * the faithfulness judge) only; section synthesis is unaffected. True by
+   * default on `anthropic`, where a model that thinks by default (DeepSeek's
+   * Anthropic-compatible endpoint) drew its reasoning from those calls' output
+   * caps — `DOCS_GEN_ANTHROPIC_GROUNDING_THINKING=1` turns thinking back on for
+   * quality experiments. Applied per call only when that call's model is
+   * served as one that thinks by default (`servedModelThinksByDefault`): real
+   * Claude models are sent no `thinking` field, as before. Absent on `local`
+   * (thinking is already off there through {@link disableThinking},
+   * #183/#187) and `bedrock`, whose requests are unchanged.
+   */
+  groundingDisableThinking?: boolean;
   /** When true, run an extra low-temp refine pass per section (slower, better). */
   refine: boolean;
   /**
@@ -550,6 +572,8 @@ export function docsGenTuning(kind: DocsGenProviderKind, configModel: string): D
       supportsCaching: true,
       temperature: floatFromEnv("DOCS_GEN_ANTHROPIC_TEMPERATURE", 0.2),
       disableThinking: false,
+      // #247 — claim extraction and the judge are structured and extractive.
+      groundingDisableThinking: !boolFromEnv("DOCS_GEN_ANTHROPIC_GROUNDING_THINKING"),
       refine: false,
       concisePrompt: false,
       // #336 — structured output is a LOCAL/vLLM-only capability gate. The
@@ -1082,6 +1106,8 @@ export interface ModuleFacts {
   phase1SkippedFiles?: string[];
   /** #191 — the module's directory could not be listed, so none of its `.sql` files was mined. */
   phase1SkippedDirectories?: string[];
+  /** #224 — code files of a partly read module that could not be read (a document warning names them). */
+  phase1UnreadSourceFiles?: UnreadSourceFile[];
 }
 
 interface ProjectMeta {
@@ -1503,6 +1529,18 @@ async function runHolisticSynthesis(
   if (skippedSqlFiles.length > 0 || skippedSqlDirectories.length > 0) {
     phase1Warnings.push(sqlFilesSkippedWarning(skippedSqlFiles, skippedSqlDirectories));
   }
+  // #224 — code files a partly read module could not read: named, by cause.
+  const unreadSourceFiles = facts.flatMap((f) =>
+    (f.phase1UnreadSourceFiles ?? []).map((u) => ({ module: f.moduleName, ...u })),
+  );
+  if (unreadSourceFiles.length > 0) {
+    log.warn("Phase 1 could not read some modules' source files", {
+      projectId,
+      docType,
+      files: unreadSourceFiles.length,
+    });
+    phase1Warnings.push(sourceFilesUnreadWarning(unreadSourceFiles));
+  }
   if (failedModules.length > 0) {
     log.warn("Phase 1 fact extraction failed for all or part of one or more modules", {
       projectId,
@@ -1911,6 +1949,33 @@ export interface PreparedPhase1Module {
    * files was mined. A directory that does not exist is not listed here.
    */
   skippedDirectories: string[];
+  /**
+   * #224 — code files of the module that could not be read, with why: none of
+   * their functions, rules or formulas reached Phase 1.
+   */
+  unreadSourceFiles: UnreadSourceFile[];
+}
+
+/**
+ * #224 — why a module's code file could not be read. `missing`: the file is not
+ * in the clone (the clone is behind the code graph); `unreadable`: permissions
+ * or I/O; `refused`: the path resolves outside the repository (#217, by design).
+ */
+export type UnreadSourceCause = "missing" | "unreadable" | "refused";
+
+/** #224 — one code file Phase 1 could not read. */
+export interface UnreadSourceFile {
+  file: string;
+  cause: UnreadSourceCause;
+}
+
+/** #224 — classify a failed source read (see {@link UnreadSourceCause}). */
+export function unreadSourceCause(err: unknown): UnreadSourceCause {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (code === "ENOENT" || code === "ENOTDIR") return "missing";
+  if (code) return "unreadable";
+  // `resolveSourcePath` refuses absolute paths and paths escaping the clone.
+  return /escapes root|path unavailable/i.test(String(err)) ? "refused" : "unreadable";
 }
 
 /**
@@ -1970,12 +2035,22 @@ export async function preparePhase1Module(
   const fileLines = new Map<string, string[]>();
   const skippedFiles: string[] = [];
   const skippedDirectories: string[] = [];
+  const unreadSourceFiles: UnreadSourceFile[] = [];
   for (const filePath of filePaths) {
     try {
       const fullSource = await readFile(await resolveSourcePath(cloneDir, filePath), "utf-8");
       fileLines.set(filePath, fullSource.split("\n"));
-    } catch {
-      // unreadable — file may have been deleted or path is wrong
+    } catch (err) {
+      // #224 — never silent: the file's functions, rules and formulas are
+      // missing, so it is logged, counted in coverage and named in a warning.
+      const cause = cloneDir ? unreadSourceCause(err) : "missing";
+      log.warn("Module source file could not be read — its code is missing from Phase 1", {
+        modulePath: m.dir,
+        file: filePath,
+        cause,
+        err: String(err).slice(0, 200),
+      });
+      unreadSourceFiles.push({ file: filePath, cause });
     }
   }
   const units: Phase1Unit[] = [];
@@ -2054,7 +2129,15 @@ export async function preparePhase1Module(
     }
   }
 
-  return { filePaths, fileLines, units, sourceCharsTotal, skippedFiles, skippedDirectories };
+  return {
+    filePaths,
+    fileLines,
+    units,
+    sourceCharsTotal,
+    skippedFiles,
+    skippedDirectories,
+    unreadSourceFiles,
+  };
 }
 
 /**
@@ -2088,7 +2171,15 @@ export async function extractModuleFacts(
   const callables = m.syms.filter(isCallableSymbol);
   const methodCount = callables.length;
 
-  const { fileLines, units, sourceCharsTotal, skippedFiles, skippedDirectories } =
+  const {
+    filePaths,
+    fileLines,
+    units,
+    sourceCharsTotal,
+    skippedFiles,
+    skippedDirectories,
+    unreadSourceFiles,
+  } =
     hooks?.prepared ?? (await preparePhase1Module(m, cloneDir, includeTests, hooks?.pathPrefixes));
 
   // Issue #330 — detect the silent "source unavailable" degradation: a module
@@ -2462,6 +2553,8 @@ export async function extractModuleFacts(
     cacheHits: counters.cacheHits,
     truncatedChunks: counters.truncated,
     failedChunks: counters.failed,
+    sourceFilesTotal: filePaths.length,
+    sourceFilesUnread: unreadSourceFiles.length,
   };
   log.info("Phase 1 module coverage", { modulePath: m.dir, moduleName, ...coverage });
 
@@ -2480,6 +2573,11 @@ export async function extractModuleFacts(
     phase1Coverage: coverage,
     ...(skippedFiles.length > 0 ? { phase1SkippedFiles: skippedFiles } : {}),
     ...(skippedDirectories.length > 0 ? { phase1SkippedDirectories: skippedDirectories } : {}),
+    // #224 — a module with NO readable file is `sourceUnavailable` (#330), a
+    // louder warning of its own; only a partly read module lists its files here.
+    ...(unreadSourceFiles.length > 0 && !sourceUnavailable
+      ? { phase1UnreadSourceFiles: unreadSourceFiles }
+      : {}),
     ...(factsTruncated ? { factsTruncated } : {}),
   };
 }
@@ -2507,11 +2605,13 @@ export function summarizePhase1Coverage(facts: readonly ModuleFacts[]): Phase1Co
     cacheHits: 0,
     truncatedChunks: 0,
     failedChunks: 0,
+    sourceFilesTotal: 0,
+    sourceFilesUnread: 0,
   };
   for (const f of facts) {
     if (!f.phase1Coverage) continue;
     for (const key of Object.keys(sum) as Array<keyof Phase1Coverage>) {
-      sum[key] += f.phase1Coverage[key];
+      sum[key] += f.phase1Coverage[key] ?? 0;
     }
   }
   return {
@@ -2984,15 +3084,22 @@ async function validateSectionGrounding(
     });
     return gradeFaithfulness(sectionLabel, sectionMarkdown, result, projectId, section);
   } catch (err) {
-    // A faithfulness-scoring failure must NOT crash synthesis. Degrade to the
-    // original section with no warning — we cannot assert it is unfaithful, only
-    // that we failed to verify it.
-    log.warn("Faithfulness scoring failed for section; passing through unverified", {
+    // A faithfulness-scoring failure must NOT crash synthesis, and must not
+    // pass silently either (#246): the section is kept, with no score (it was
+    // not checked, which is not "below the bar"), and a warning that says it
+    // was not fact-checked — naming the error class, never its raw text.
+    const errorClass = classifyGroundingError(err);
+    log.warn("Faithfulness scoring failed for section; section not fact-checked", {
       projectId,
       section: sectionLabel,
+      errorClass,
       err: String(err),
     });
-    return { markdown: sectionMarkdown, warning: null, score: null };
+    return {
+      markdown: sectionMarkdown,
+      warning: groundingFailedWarning(sectionLabel, describeGroundingErrorClass(errorClass)),
+      score: null,
+    };
   }
 }
 
@@ -3390,6 +3497,10 @@ async function synthesizeBatchedSection(input: {
   const results: FaithfulnessResult[] = [];
   // Replies the pooled score does not cover: unverified, or scoring threw.
   const unchecked: typeof replies = [];
+  // The subset of `unchecked` whose scoring THREW (PR #252 review).
+  const threw: typeof replies = [];
+  // #246 — the error class of each batch whose scoring threw.
+  const scoringErrors: GroundingErrorClass[] = [];
   const policy = input.grounding ?? FULL_GROUNDING;
   // DOCS_GEN_GROUNDING=off — no batch is decomposed or judged; the section is
   // recorded as not fact-checked below.
@@ -3415,9 +3526,13 @@ async function synthesizeBatchedSection(input: {
         if (!r.verified) unchecked.push(d);
       } catch (err) {
         unchecked.push(d);
+        threw.push(d);
+        const errorClass = classifyGroundingError(err);
+        scoringErrors.push(errorClass);
         log.warn("Faithfulness scoring failed for a section batch; batch unverified", {
           projectId,
           section: group.label,
+          errorClass,
           err: String(err),
         });
       }
@@ -3435,17 +3550,44 @@ async function synthesizeBatchedSection(input: {
         replies.length,
       ),
     );
+    // PR #252 review — a check that THREW on part of an otherwise verified
+    // section is a failed check, not merely an unverified part: it is counted
+    // in the "could not be fully fact-checked" line and, being
+    // `grounding-failed`, keeps the section out of the reuse store so the
+    // regenerate its warning asks for really runs the check again.
+    if (threw.length > 0) {
+      warnings.push(
+        groundingFailedWarning(group.label, describeGroundingErrorClass(scoringErrors[0]), {
+          modules: threw.flatMap(names),
+          checkedParts: replies.length - unchecked.length,
+          totalParts: replies.length,
+        }),
+      );
+    }
   }
+  // #246 — no batch was verified and at least one check threw: the section was
+  // not fact-checked, and says so (a pooled verified score keeps the
+  // batch-unverified warning above instead).
+  const checkFailed = scoringErrors.length > 0 && !pooled?.verified;
   const outcome: SectionGroundingOutcome =
     skipped && markdown
       ? { markdown, warning: groundingSkippedWarning(group.label), score: null }
-      : pooled && markdown
-        ? gradeFaithfulness(group.label, markdown, pooled, projectId, {
-            threshold: group.faithfulnessThreshold,
-            narrative: group.narrative,
-            reconstruction: group.reconstruction,
-          })
-        : { markdown, warning: null, score: null };
+      : checkFailed && markdown
+        ? {
+            markdown,
+            warning: groundingFailedWarning(
+              group.label,
+              describeGroundingErrorClass(scoringErrors[0]),
+            ),
+            score: null,
+          }
+        : pooled && markdown
+          ? gradeFaithfulness(group.label, markdown, pooled, projectId, {
+              threshold: group.faithfulnessThreshold,
+              narrative: group.narrative,
+              reconstruction: group.reconstruction,
+            })
+          : { markdown, warning: null, score: null };
 
   log.info("Batched section synthesized", {
     projectId,
@@ -3611,6 +3753,21 @@ export async function synthesizeFinalDocument(
     faithfulnessJudge: FaithfulnessJudge | null;
   }
   const grounderCache = new Map<Phase2ProviderBundle, SectionGrounder>();
+  // #180 — grounding calls are billed like section calls: the project's usage
+  // dashboard and this run's cost estimate, once per call that answered.
+  const groundingSessionId = `docs-grounding-${projectId}-${Date.now()}-${randomBytes(3).toString("hex")}`;
+  const recordGroundingUsage = (event: GroundingUsageEvent): void => {
+    const tokens = {
+      provider: event.provider,
+      model: event.model,
+      inputTokens: event.inputTokens,
+      outputTokens: event.outputTokens,
+      cacheReadTokens: event.cacheReadTokens,
+      cacheWriteTokens: event.cacheWriteTokens,
+    };
+    recordUsage({ projectId, sessionId: groundingSessionId, ...tokens });
+    noteRunUsage(tokens);
+  };
   const grounderFor = (bundle: Phase2ProviderBundle): SectionGrounder => {
     const cached = grounderCache.get(bundle);
     if (cached) return cached;
@@ -3636,6 +3793,14 @@ export async function synthesizeFinalDocument(
     // model the bundle's provider was built for, so each must carry its own
     // cap. Inheriting the provider's `defaultMaxTokens` would ask a Haiku-class
     // claim/judge model for a section-sized budget it rejects outright.
+    // #247 — thinking off on the grounding calls only (Anthropic by default),
+    // and only for a model SERVED as one that thinks by default (DeepSeek's
+    // Anthropic-compatible endpoint), decided per model. Several real Claude
+    // models reject `thinking: {type: "disabled"}` with a 400, so a Claude model
+    // on api.anthropic.com is sent exactly the request it was sent before —
+    // the same rule `resolvePhase1Reasoning` applies (PR #252 review).
+    const groundingThinkingOff = (model: string): boolean =>
+      bundle.tuning.groundingDisableThinking === true && servedModelThinksByDefault(model);
     const claimExtractor = groundingActive
       ? new ClaimExtractor({
           provider: bundle.provider,
@@ -3644,6 +3809,8 @@ export async function synthesizeFinalDocument(
           // #152 — its own cap, not the section cap.
           maxTokens: resolveClaimMaxOutputTokens(bundle.tuning.claimModel),
           ...(claimFormat ? { responseFormat: claimFormat } : {}),
+          ...(groundingThinkingOff(bundle.tuning.claimModel) ? { disableThinking: true } : {}),
+          onUsage: recordGroundingUsage,
         })
       : null;
     // #anthropic-prompt-caching — when the provider supports caching, the judge
@@ -3657,6 +3824,8 @@ export async function synthesizeFinalDocument(
           promptCaching: bundle.supportsCaching,
           maxTokens: resolveSectionMaxOutputTokens(bundle.tuning.judgeModel),
           ...(judgeFormat ? { responseFormat: judgeFormat } : {}),
+          ...(groundingThinkingOff(bundle.tuning.judgeModel) ? { disableThinking: true } : {}),
+          onUsage: recordGroundingUsage,
         })
       : null;
     const grounder: SectionGrounder = { claimExtractor, faithfulnessJudge };
@@ -4210,7 +4379,14 @@ export async function synthesizeFinalDocument(
       const liveWarning = finalOutcome.warning ?? truncationWarning;
       // A failed/empty section or malformed legacy evidence cannot establish
       // completeness. Never let recording a reuse candidate break generation.
-      if (!sharedEscalationEnabled && reuse?.effectiveConfigHash) {
+      // #246 — nor can a section whose fact-check FAILED: reused, it would keep
+      // its stale "not fact-checked" warning and the regenerate its warning
+      // asks for would never check it again.
+      const checkFailed = warnings.slice(warningStart).some((w) => w.kind === "grounding-failed");
+      if (checkFailed) {
+        log.info("Section fact-check failed; not recorded for reuse", { section: group.id });
+      }
+      if (!sharedEscalationEnabled && reuse?.effectiveConfigHash && !checkFailed) {
         try {
           synthesisRecords.push(
             recordSectionSynthesis(group.id, inputHashes, {
