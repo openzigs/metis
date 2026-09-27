@@ -179,6 +179,80 @@ describe("#141 native tool calls in runAgentLoop", () => {
     expect(retry.messages.at(-1)).toEqual({ role: "user", content: "ANSWER NOW" });
   });
 
+  it("#214 a retry answer that repeats the last tool-calling reply's text is accepted", async () => {
+    const answer = '{"summary":"s","findings":[]}';
+    const p = stub([
+      { content: answer, toolCalls: [call("c1", "search_code_graph", "x")] },
+      { content: answer },
+    ]);
+    const result = await runAgentLoop(p, input, {
+      maxTurns: 1,
+      native,
+      finalAnswerRetry: { instruction: "ANSWER NOW" },
+    });
+    expect(result.turnsExhausted).toBe(true);
+    expect(result.finalAnswerRetry).toEqual({ attempted: true, succeeded: true });
+    expect(result.hasFinalAnswer).toBe(true);
+    expect(result.finalResponse).toBe(answer);
+    expect(result.salvageSource).toBeUndefined();
+  });
+
+  it("#214 an invalid retry keeps the tool-calling reply out of the answer", async () => {
+    const p = stub([
+      { content: "Let me look further.", toolCalls: [call("c1", "search_code_graph", "x")] },
+      { content: "still prose" },
+    ]);
+    const result = await runAgentLoop(p, input, {
+      maxTurns: 1,
+      native,
+      finalAnswerRetry: { instruction: "ANSWER NOW", isValidFinalAnswer: (t) => t.startsWith("{") },
+    });
+    expect(result.finalAnswerRetry).toEqual({ attempted: true, succeeded: false });
+    expect(result.hasFinalAnswer).toBe(false);
+    expect(result.finalResponse).toMatch(/tool-call limit/);
+    expect(result.salvageSource).toBe("still prose");
+  });
+
+  it("#214 a native turn costs ONE turn of the cap — the same as a text turn", async () => {
+    const cap = 3;
+    const nativeRun = stub(
+      Array.from({ length: cap + 1 }, (_, i) =>
+        i < cap
+          ? {
+              content: "",
+              toolCalls: [
+                call(`n${i}a`, "search_code_graph", `a${i}`),
+                call(`n${i}b`, "search_code_symbols", `b${i}`),
+              ],
+            }
+          : { content: '{"findings":[]}' },
+      ),
+    );
+    const textRun = stub(
+      Array.from({ length: cap + 1 }, (_, i) =>
+        i < cap
+          ? {
+              content:
+                `{"tool": "search_code_graph", "args": {"q": "a${i}"}}\n` +
+                `{"tool": "search_code_symbols", "args": {"q": "b${i}"}}`,
+            }
+          : { content: '{"findings":[]}' },
+      ),
+    );
+    const opts = { maxTurns: cap, finalAnswerRetry: { instruction: "ANSWER NOW" } };
+    const n = await runAgentLoop(nativeRun, input, { ...opts, native });
+    const nativeOrder = order.splice(0);
+    const t = await runAgentLoop(textRun, input, opts);
+    expect(n.turnsUsed).toBe(cap);
+    expect(t.turnsUsed).toBe(cap);
+    // cap loop calls + ONE retry, in both protocols; every call ran in both.
+    expect(nativeRun.requests).toHaveLength(cap + 1);
+    expect(textRun.requests).toHaveLength(cap + 1);
+    expect(nativeOrder).toEqual(order);
+    expect(n.toolCalls).toHaveLength(cap * 2);
+    expect(n.turnsExhausted).toBe(t.turnsExhausted);
+  });
+
   it("a budget stop leaves the un-run calls out of the retry transcript", async () => {
     const p = stub([
       {
