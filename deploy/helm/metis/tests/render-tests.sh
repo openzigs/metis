@@ -736,12 +736,13 @@ AFF_FILE=$(mktemp)
 awk '/^backup:/{b=1} b && /^  #   affinity:$/{e=1} e && !/^  #/{exit} e' "${CHART_DIR}/values.yaml" \
   | sed -e 's/^  #   /    /' -e 's/<release>/metis/' | { echo "backup:"; cat; } >"${AFF_FILE}"
 # Only the affinity block: the CronJob's own labels carry the same instance label.
+# (No awk `exit` in these pipelines: under pipefail the writer's SIGPIPE is exit 141.)
 BK_AFF=$(backup_cronjob "$(template --set backup.enabled=true -f "${AFF_FILE}")" \
-  | awk '/^          affinity:$/{a=1; next} a && /^          [a-z]/{exit} a')
+  | awk '/^          affinity:$/{a=1; next} a && /^          [a-z]/{a=0; done=1} a && !done')
 rm -f "${AFF_FILE}"
 assert_contains "backup: documented podAffinity renders into the CronJob" "topologyKey: kubernetes.io/hostname" "${BK_AFF}"
 SERVER_POD_LABELS=$(template | awk '/^kind: Deployment$/{d=1} /^---$/{d=0; s=0} d && /^  name: metis-server$/{s=1} s' \
-  | awk '/^  template:$/{t=1} t && /^      labels:$/{l=1; next} l && /^        /{print; next} l{exit}')
+  | awk '/^  template:$/{t=1} t && !done && /^      labels:$/{l=1; next} l && /^        /{print; next} l{l=0; done=1}')
 for label in "app.kubernetes.io/instance: metis" "app.kubernetes.io/component: server"; do
   # Whole-line matches: `component: serverX` must not pass as `component: server`.
   assert "backup: documented podAffinity selects ${label}" yes \
