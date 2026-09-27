@@ -128,6 +128,26 @@ describe("ensureSchemaUpToDate", () => {
     }
   });
 
+  it("the guard's real, shell-less spawn of the resolved CLI runs on THIS platform (#75)", async () => {
+    // The two tests around this one fake the platform AND the spawn, so they prove
+    // the options, not that Windows can run the command without a shell. This one
+    // keeps everything the guard does — process.execPath, the CLI it resolves,
+    // `shell: false`, its cwd and env — and swaps only the subcommand for
+    // `--version`, which needs no database. On the `windows` CI job it is the real
+    // win32 proof #51 left open.
+    const { spawnSync } = await import("node:child_process");
+    const calls: string[][] = [];
+    const spawn = ((cmd: string, args: string[], o: Parameters<typeof spawnSync>[2]) => {
+      calls.push([cmd, ...args]);
+      return spawnSync(cmd, [args[0], "--version"], o);
+    }) as unknown as typeof spawnSync;
+    const env = { ...process.env };
+    delete env.METIS_SKIP_MIGRATE;
+    const out = await ensureSchemaUpToDate({ spawn, env });
+    expect(out.status).toBe("applied");
+    expect(calls[0]?.slice(2)).toEqual(["migrate", "deploy"]);
+  });
+
   it("does not spawn through a shell on POSIX", async () => {
     const orig = Object.getOwnPropertyDescriptor(process, "platform")!;
     Object.defineProperty(process, "platform", { value: "linux", configurable: true });
