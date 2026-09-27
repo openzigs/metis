@@ -107,14 +107,20 @@ describe("tools on the request", () => {
 
   it("sends no tools when disabled or when the catalog marks the model not tool-capable", async () => {
     const p = make();
-    await p.chat(USER, { tools: TOOLS, disableTools: true });
+    expect((await p.chat(USER, { tools: TOOLS })).toolsDropped).toBeUndefined();
+    const disabled = await p.chat(USER, { tools: TOOLS, disableTools: true });
     expect(lastParams()).not.toHaveProperty("tools");
+    // #141 — disabling tools is the caller's choice, not a drop.
+    expect(disabled.toolsDropped).toBeUndefined();
     process.env[MODEL_CATALOG_OVERRIDES_ENV] = JSON.stringify({
       "anthropic:claude-sonnet-5": { capabilities: { tools: false } },
     });
     __resetModelCatalogForTests();
-    await p.chat(USER, { tools: TOOLS });
+    const dropped = await p.chat(USER, { tools: TOOLS });
     expect(lastParams()).not.toHaveProperty("tools");
+    // #141 — the reply says it was produced without the tools it was offered.
+    expect(dropped.toolsDropped).toBe(true);
+    expect((await p.chat(USER, {})).toolsDropped).toBeUndefined();
     expect(logWarn.mock.calls.some(([m]) => String(m).includes("Dropping ChatOptions.tools"))).toBe(
       true,
     );

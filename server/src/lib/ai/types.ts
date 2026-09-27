@@ -202,6 +202,15 @@ export interface ChatResponse {
    * assistant {@link ChatMessage} of the next request.
    */
   nativeContent?: NativeAssistantContent;
+  /**
+   * #141 — `true` when the caller supplied {@link ChatOptions.tools} (and did
+   * not set `disableTools`) but this reply was produced WITHOUT them: the
+   * catalog marks the model not tool-capable, or the runtime rejected `tools`
+   * and the adapter retried without them. The model never saw the tools, so a
+   * caller relying on native calls must fall back (the analysis agent loop
+   * switches to its text protocol). Absent otherwise.
+   */
+  toolsDropped?: boolean;
 }
 
 export type ChatChunk =

@@ -148,12 +148,7 @@ import {
   isEmptyElicitation,
   runElicitation,
 } from "./elicitation-pipeline.js";
-import {
-  runAgentLoop,
-  buildCachedSystemPrompt,
-  analysisNativeToolCallsEnabled,
-  nativeToolSpecsFor,
-} from "./agent-loop.js";
+import { runAgentLoop, buildCachedSystemPrompt, resolveAnalysisNativeTools } from "./agent-loop.js";
 import { summarizeToolCalls, type ToolCallRecord } from "./tool-telemetry.js";
 import {
   FINAL_ANSWER_INSTRUCTION,
@@ -2243,9 +2238,7 @@ export class AnalysisOrchestrator {
           );
           // #141 — native tool calls on a tool-capable model when the operator
           // enabled them; the text protocol otherwise (and by default).
-          const nativeTools = analysisNativeToolCallsEnabled()
-            ? nativeToolSpecsFor(this.deps.provider, input.model, tools)
-            : undefined;
+          const nativeTools = resolveAnalysisNativeTools(this.deps.provider, input.model, tools);
           const loopResult = await runAgentLoop(
             this.deps.provider,
             { systemMessage, userMessage, tools, toolContext },

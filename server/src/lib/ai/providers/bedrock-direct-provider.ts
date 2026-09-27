@@ -954,7 +954,15 @@ export class OpenAICompatibleProvider implements AIProvider {
    * model gets this provider key's defaults, which match {@link capabilities}.
    */
   capabilitiesFor(model: string): ProviderCapabilities {
-    return catalogCapabilities(this.key, model);
+    const caps = catalogCapabilities(this.key, model);
+    // #141 — a runtime that has already rejected `tools` for this model (see
+    // {@link toolsRejectedModels}) is not tool-capable, whatever the catalog
+    // guessed, so a caller choosing between native and text tool calls picks
+    // the text protocol from then on instead of losing its tools silently.
+    const resolved = this.modelProfileMap[model] ?? model;
+    return caps.nativeToolCalls && this.toolsRejectedModels.has(resolved)
+      ? { ...caps, nativeToolCalls: false }
+      : caps;
   }
 
   /**
@@ -1415,9 +1423,12 @@ export class OpenAICompatibleProvider implements AIProvider {
     let triedWithoutTemperature = false;
     let includeReasoningEffort = !this.reasoningEffortRejectedModels.has(model);
 
+    // #141 — the caller asked for tools; if they do not go out, say so.
+    const toolsRequested = !!opts.tools && opts.tools.length > 0 && !opts.disableTools;
+
     for (;;) {
       try {
-        return await this.chatOnce(
+        const response = await this.chatOnce(
           messages,
           opts,
           model,
@@ -1426,6 +1437,7 @@ export class OpenAICompatibleProvider implements AIProvider {
           includeReasoningEffort,
           includeTools,
         );
+        return toolsRequested && !includeTools ? { ...response, toolsDropped: true } : response;
       } catch (err) {
         if (err instanceof ReasoningEffortRejectedError && includeReasoningEffort) {
           includeReasoningEffort = false;
