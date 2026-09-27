@@ -149,7 +149,10 @@ test.describe("Analysis page — evaluate new requirements (#907 / #908)", () =>
     });
 
     await test.step("start the analysis and confirm a run is created", async () => {
-      await expect(analysis.runButton).toBeEnabled();
+      // The pasted document is auto-selected while it is still ingesting, and
+      // the page keeps "Run analysis" disabled until every selected document is
+      // ready. Under CI load ingestion outlasted the default 15 s (PR #280).
+      await expect(analysis.runButton).toBeEnabled({ timeout: 60_000 });
       await analysis.runButton.click();
       await expect(page.getByRole("heading", { name: /^Run / })).toBeVisible({ timeout: 60_000 });
     });
