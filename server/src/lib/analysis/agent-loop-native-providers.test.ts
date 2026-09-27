@@ -34,6 +34,8 @@ import {
   runAgentLoop,
   type AgentLoopResult,
 } from "./agent-loop.js";
+import { buildAgenticPassPrompt } from "./agentic-pass-context.js";
+import { FINAL_ANSWER_INSTRUCTION, isSchemaValidFinalAnswer } from "./agentic-degradation.js";
 import type { AgentTool } from "./tools/types.js";
 import type { AIConfig } from "../ai/config.js";
 import type { AIProvider } from "../ai/types.js";
@@ -549,5 +551,143 @@ describe("#141 runtime rejection of tools — fall back to the text protocol", (
     expect(next.toolProtocol).toBeUndefined();
     expect(seen).toHaveLength(1);
     expect(seen[0]!.body.tools).toBeUndefined();
+  });
+});
+
+// ── #214 — the final answer and the #769 retry after a native transcript ──
+
+/**
+ * The live #214 measurement (DeepSeek-flash, Anthropic-compatible) saw two
+ * native passes hit the turn cap and then report the #769 retry as "returned
+ * valid JSON, did not validate". The prompt was NOT the cause — the schema
+ * guidance a native pass sees is the text protocol's, byte for byte (pinned
+ * below). The cause was the retry gate: in native mode it rejected any retry
+ * answer whose text EQUALLED the last tool-calling reply's text, so a model
+ * that wrote its findings JSON next to a final tool call and then — asked to
+ * answer — repeated that same JSON had a schema-valid answer thrown away.
+ */
+describe("#214 native final answer — same schema guidance, and an identical retry answer is accepted", () => {
+  /** The real agentic pass prompt, so the real findings schema is on the wire. */
+  const pass = buildAgenticPassPrompt({
+    projectName: "loopback",
+    projectDescription: "loopback project",
+    requirements: [{ id: "REQ-1", text: "Interest rates are configurable." }],
+    seeds: {
+      fused: { block: "", tokens: 0 },
+      affectedCode: { block: "", tokens: 0 },
+      affectedSchema: { block: "", tokens: 0 },
+    },
+    fileToolsAvailable: true,
+  });
+  const passInput = { ...pass, tools: TOOLS, toolContext: { projectId: "p-214" } };
+  /** Schema-valid under the #1314 gate the orchestrator uses. */
+  const ANSWER = JSON.stringify({
+    summary: "Rates are hard-coded; REQ-1 is a gap.",
+    findings: [],
+    notes: ["Investigation cut short by the turn cap."],
+  });
+  // Lines that exist only in the findings schema / output contract.
+  const SCHEMA_GUIDANCE = [
+    '"verdict": "implemented|gap-confirmed|could-not-verify"',
+    '"requirementId": "<the REQ-xxx id this finding addresses>"',
+    "### Output contract",
+  ];
+
+  async function turnCapPass(provider: AIProvider, model: string): Promise<AgentLoopResult> {
+    const native = resolveAnalysisNativeTools(provider, model, TOOLS);
+    return runAgentLoop(provider, passInput, {
+      ...(native ? { native } : {}),
+      maxTurns: 2,
+      model,
+      promptCaching: { system: true, messages: true },
+      finalAnswerRetry: {
+        instruction: FINAL_ANSWER_INSTRUCTION,
+        isValidFinalAnswer: isSchemaValidFinalAnswer,
+      },
+    });
+  }
+
+  const PAIR = FAMILIES.filter((f) =>
+    ["anthropic-compatible (recorded DeepSeek replies)", "openai (factory)"].includes(f.name),
+  );
+  expect(PAIR).toHaveLength(2);
+
+  describe.each(PAIR)("$name", (f) => {
+    it("native: a retry answer identical to the last tool-calling reply's text is the answer", async () => {
+      process.env.ANALYSIS_NATIVE_TOOL_CALLS = "true";
+      const provider = f.make(origin);
+      const first = f.recordedRuntime
+        ? recorded(f.recordedRuntime, "tools-chat").reply
+        : reply(f.wire, "", [
+            { id: "call_a", name: "search_code", args: { query: "interest rate" } },
+          ]);
+      queue = [
+        first,
+        // The last turn: the findings JSON AND one more tool call.
+        reply(f.wire, ANSWER, [{ id: "call_last", name: "search_code", args: { query: "rate" } }]),
+        // Asked to answer with no tools, the model repeats that JSON verbatim.
+        reply(f.wire, ANSWER),
+      ];
+
+      const result = await turnCapPass(provider, f.model);
+
+      expect(result.toolProtocol).toBe("native");
+      expect(result.turnsUsed).toBe(2);
+      expect(result.turnsExhausted).toBe(true);
+      expect(result.finalAnswerRetry).toEqual({ attempted: true, succeeded: true });
+      expect(result.hasFinalAnswer).toBe(true);
+      expect(result.finalResponse).toBe(ANSWER);
+      expect(result.salvageSource).toBeUndefined();
+      expect(seen).toHaveLength(3);
+
+      // Every turn, and the retry, carries the findings schema guidance.
+      for (const req of seen) {
+        const system = viewRecordedContent(f.wire, req.body).system;
+        for (const line of SCHEMA_GUIDANCE) expect(system).toContain(line);
+        expect(system).not.toContain('{"tool":');
+      }
+      // The retry: tool-free, no native-tools tail, the #769 instruction last.
+      const retry = seen[2]!.body;
+      expect(toolChoice(f.wire, retry)).toBe("none");
+      const view = viewRecordedContent(f.wire, retry);
+      expect(view.system).not.toContain(NATIVE_TOOL_PROTOCOL.trim().split("\n")[2]);
+      expect(view.turns.at(-1)!.role).toBe("user");
+      expect(view.turns.at(-1)!.text).toContain(FINAL_ANSWER_INSTRUCTION.split("\n")[0]);
+    });
+
+    it("native and text send the SAME answer-format guidance and the SAME retry prompt", async () => {
+      const systems: Record<string, string[]> = {};
+      for (const mode of ["text", "native"] as const) {
+        seen.length = 0;
+        process.env.ANALYSIS_NATIVE_TOOL_CALLS = mode === "native" ? "true" : "false";
+        const provider = f.make(origin);
+        queue =
+          mode === "native"
+            ? [
+                reply(f.wire, "", [{ id: "c1", name: "search_code", args: { query: "a" } }]),
+                reply(f.wire, "", [{ id: "c2", name: "search_code", args: { query: "b" } }]),
+                reply(f.wire, ANSWER),
+              ]
+            : [
+                reply(f.wire, '{"tool": "search_code", "args": {"query": "a"}}'),
+                reply(f.wire, '{"tool": "search_code", "args": {"query": "b"}}'),
+                reply(f.wire, ANSWER),
+              ];
+        const result = await turnCapPass(provider, f.model);
+        expect(result.finalAnswerRetry).toEqual({ attempted: true, succeeded: true });
+        expect(seen).toHaveLength(3);
+        systems[mode] = seen.map((s) => viewRecordedContent(f.wire, s.body).system);
+        const lastTurn = viewRecordedContent(f.wire, seen[2]!.body).turns.at(-1)!;
+        expect(lastTurn.text).toContain(FINAL_ANSWER_INSTRUCTION);
+      }
+      // Turn prompts differ ONLY in the tool section: the text manifest vs the
+      // native tail. Everything before it — protocol, role, schema — is shared.
+      const lead = (s: string, marker: string) => s.slice(0, s.indexOf(marker));
+      expect(lead(systems.native![0]!, NATIVE_TOOL_PROTOCOL)).toBe(
+        lead(systems.text![0]!, "\n## Available tools (full definitions)"),
+      );
+      // The retry system prompt is byte-identical across the two protocols.
+      expect(systems.native![2]).toBe(systems.text![2]);
+    });
   });
 });

@@ -1697,11 +1697,15 @@ export async function runAgentLoop(
     options.finalAnswerRetry?.isValidFinalAnswer ??
     ((text: string) => !isToolCallReply(text, registeredTools));
   // #141 — in native mode a reply that still made tool calls is not an answer,
-  // whatever its prose says ("Let me look at…").
-  const finalResponseBeforeRetry = finalResponse;
+  // whatever its prose says ("Let me look at…"). #214 — tracked as a FLAG on
+  // `finalResponse`, never by comparing text: the old `text === <that reply's
+  // text>` test also rejected a retry answer that merely REPEATED it, and a
+  // model that wrote its findings JSON next to a last tool call and then, asked
+  // to answer, returned the same JSON had a schema-valid answer thrown away
+  // (the two native `turn-limit` failures measured live in #214).
+  let finalIsToolCallingReply = nativeMode && lastHadNativeCalls;
   const isValidFinalAnswer = (text: string): boolean =>
-    !(nativeMode && lastHadNativeCalls && text === finalResponseBeforeRetry) &&
-    isValidAnswerText(text);
+    !finalIsToolCallingReply && isValidAnswerText(text);
 
   // P0 #769 — SALVAGE. The loop ended without a usable answer but the whole
   // investigation is sitting in `messages`. Spend ONE more, tool-free call
@@ -1760,8 +1764,10 @@ export async function runAgentLoop(
       totalUsage.promptTokens += retryResponse.usage?.promptTokens ?? 0;
       totalUsage.completionTokens += retryResponse.usage?.completionTokens ?? 0;
       totalUsage.totalTokens += retryResponse.usage?.totalTokens ?? 0;
-      if (isValidFinalAnswer(retryResponse.content)) {
+      // The retry reply is a fresh, tool-free answer: judge its text alone.
+      if (isValidAnswerText(retryResponse.content)) {
         finalResponse = retryResponse.content;
+        finalIsToolCallingReply = false;
         retryMeta.succeeded = true;
       } else {
         // #1217 — the answer did not validate, but it is still the best record
@@ -1809,10 +1815,7 @@ export async function runAgentLoop(
   // model was still emitting a tool call, `finalResponse` is raw `{"tool":...}`
   // protocol JSON. Never hand that to a caller: substitute a safe,
   // human-readable fallback. Pure post-loop sanitization — no model call.
-  if (
-    isToolCallReply(finalResponse, registeredTools) ||
-    (nativeMode && lastHadNativeCalls && finalResponse === finalResponseBeforeRetry)
-  ) {
+  if (isToolCallReply(finalResponse, registeredTools) || finalIsToolCallingReply) {
     // #1217 (D1) — keep the pre-overwrite text for the caller's salvage pass.
     // A retry answer, if there was one, is the better source and wins.
     salvageSource ??= finalResponse;
