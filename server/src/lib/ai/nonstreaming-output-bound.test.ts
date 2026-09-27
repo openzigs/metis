@@ -42,7 +42,7 @@ describe("#1257 — the bound is DERIVED from the SDK, not asserted against itse
     ).toThrow(/Streaming is required/);
   });
 
-  it("is 21333 on @anthropic-ai/sdk 0.104.2", () => {
+  it("is 21333 on @anthropic-ai/sdk 0.127.0", () => {
     // A LITERAL, deliberately. The derivation is checked against the SDK above;
     // this pins the number the docs, the ADR and the config registry all quote,
     // so a silent change to either shows up as a diff rather than as agreement
@@ -180,7 +180,8 @@ describe("#1257 — a non-finite request is a defect, not an over-large cap", ()
  *
  * `Messages.create` passes `MODEL_NONSTREAMING_TOKENS[body.model]` as a second
  * argument, and `calculateNonstreamingTimeout` throws when `max_tokens` exceeds
- * it — 8,192 for eight `claude-opus-4*` ids, far below the general 21,333. The
+ * it — 8,192 for three `claude-opus-4*` ids (eight before SDK 0.127.0), far
+ * below the general 21,333. The
  * original oracle tests called that function with ONE argument, which skips the
  * second condition entirely and so could never have caught this.
  */
@@ -203,7 +204,7 @@ describe("#1257 — the SDK's SECOND throw condition, per model", () => {
 
     // Anti-vacuity: a parse that silently found nothing would pass every
     // comparison below against an equally empty mirror.
-    expect(Object.keys(fromSdk).length).toBe(8);
+    expect(Object.keys(fromSdk).length).toBe(3);
     expect(SDK_MODEL_NONSTREAMING_TOKENS).toEqual(fromSdk);
   });
 
@@ -224,34 +225,37 @@ describe("#1257 — the SDK's SECOND throw condition, per model", () => {
   );
 
   it("drops the effective bound to 8192 for a listed model", () => {
-    expect(nonStreamingBoundForModel("claude-opus-4-0")).toBe(8_192);
-    expect(nonStreamingBoundForModel("claude-opus-4-1-20250805")).toBe(8_192);
+    expect(nonStreamingBoundForModel("claude-opus-4@20250514")).toBe(8_192);
+    expect(nonStreamingBoundForModel("claude-opus-4-1@20250805")).toBe(8_192);
   });
 
   it("leaves an UNLISTED model on the general bound rather than guessing lower", () => {
     // Mirrors the SDK's `?? undefined`, which skips the per-model condition.
     expect(nonStreamingBoundForModel("claude-sonnet-5")).toBe(21_333);
     expect(nonStreamingBoundForModel("claude-opus-5")).toBe(21_333);
+    // Listed by SDK 0.104.2, dropped by 0.127.0 — the SDK no longer caps them.
+    expect(nonStreamingBoundForModel("claude-opus-4-0")).toBe(21_333);
+    expect(nonStreamingBoundForModel("claude-opus-4-1-20250805")).toBe(21_333);
     expect(nonStreamingBoundForModel(undefined)).toBe(21_333);
     expect(nonStreamingBoundForModel(null)).toBe(21_333);
   });
 
   it("clamps a 21,000-token request that the general bound would have passed", () => {
-    // The panel's exact scenario: ANTHROPIC_MODEL=claude-opus-4-0 with the
-    // synthesis default. Before this fix the request was reported clean at
+    // The panel's scenario (then on `claude-opus-4-0`, which SDK 0.127.0 no
+    // longer lists): a per-model-capped id with the synthesis default. Before this fix the request was reported clean at
     // 21,000 and threw client-side anyway.
     __resetNonStreamingBoundWarnings();
     const warn = vi.fn();
     const result = boundNonStreamingOutputTokens(21_000, "anthropic", {
       logger: { warn },
-      model: "claude-opus-4-0",
+      model: "claude-opus-4-1@20250805",
     });
     expect(result.clamped).toBe(true);
     expect(result.value).toBe(8_192);
     expect(result.bound).toBe(8_192);
     const meta = warn.mock.calls[0]![1] as Record<string, unknown>;
     expect(meta.boundSource).toContain("MODEL_NONSTREAMING_TOKENS");
-    expect(meta.model).toBe("claude-opus-4-0");
+    expect(meta.model).toBe("claude-opus-4-1@20250805");
   });
 
   it("still reports the general bound's source when that is what bound it", () => {

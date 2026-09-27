@@ -870,26 +870,29 @@ describe("AnthropicProvider logs the output budget (#1257)", () => {
 /**
  * #1257 (adversarial panel, `instruction-correctness`) — the SDK's SECOND throw
  * condition. `Messages.create` looks the outgoing `body.model` up in
- * `MODEL_NONSTREAMING_TOKENS` and throws above 8,192 for eight `claude-opus-4*`
- * ids, well below the general 21,333. `ANTHROPIC_MODEL` is an unconstrained
+ * `MODEL_NONSTREAMING_TOKENS` and throws above 8,192 for the `claude-opus-4*`
+ * ids it lists (three as of SDK 0.127.0), well below the general 21,333. `ANTHROPIC_MODEL` is an unconstrained
  * string, so those ids are reachable in a real deployment.
  */
 describe("AnthropicProvider honours the SDK's PER-MODEL non-streaming ceiling (#1257)", () => {
   it("clamps to 8192 for a listed model, where 21,333 would still have thrown", async () => {
-    const p = new AnthropicProvider({ apiKey: "k", model: "claude-opus-4-0" });
+    const p = new AnthropicProvider({ apiKey: "k", model: "claude-opus-4-1@20250805" });
     await p.chat(messages, { maxTokens: 21_000 });
     expect(lastCreateBody().max_tokens).toBe(8_192);
   });
 
   it("matches on the NORMALIZED outgoing id, not the caller's Bedrock spelling", async () => {
-    // `us.anthropic.claude-opus-4-1-20250805-v1:0` is not in the SDK's table;
-    // what the provider actually sends — `claude-opus-4-1-20250805` — is.
+    // `anthropic.claude-opus-4-1-20250805-v1:0` IS in the SDK's table under
+    // the caller's spelling; what the provider actually sends —
+    // `claude-opus-4-1-20250805` — is not (SDK 0.127.0 dropped it), so the SDK
+    // applies only the general bound. Matching on the caller's spelling would
+    // clamp to 8,192 for nothing.
     await provider().chat(messages, {
-      model: "us.anthropic.claude-opus-4-1-20250805-v1:0",
+      model: "anthropic.claude-opus-4-1-20250805-v1:0",
       maxTokens: 21_000,
     });
     expect(lastCreateBody().model).toBe("claude-opus-4-1-20250805");
-    expect(lastCreateBody().max_tokens).toBe(8_192);
+    expect(lastCreateBody().max_tokens).toBe(21_000);
   });
 
   it("leaves an unlisted model on the general bound", async () => {
@@ -903,7 +906,11 @@ describe("AnthropicProvider honours the SDK's PER-MODEL non-streaming ceiling (#
     const { default: RealAnthropic } =
       await vi.importActual<typeof import("@anthropic-ai/sdk")>("@anthropic-ai/sdk");
     const client = new RealAnthropic({ apiKey: "test-key-not-used" });
-    for (const model of ["claude-opus-4-0", "claude-opus-4-1-20250805", "claude-sonnet-5"]) {
+    for (const model of [
+      "claude-opus-4-1@20250805",
+      "claude-opus-4-1-20250805",
+      "claude-sonnet-5",
+    ]) {
       await provider().chat(messages, { model, maxTokens: 128_000 });
       const body = lastCreateBody();
       expect(

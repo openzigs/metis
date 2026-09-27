@@ -23,7 +23,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import postcss from "postcss";
+import postcss, { type AtRule, type Container, type Document, type Root } from "postcss";
 import tailwind from "@tailwindcss/postcss";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -39,18 +39,39 @@ const CANDIDATES = [
 ];
 
 let css = "";
+let root: Root | null = null;
 let emptyBase = "";
 
-/** Return the full text of the rule block for a selector (nested blocks included). */
+/**
+ * Every top-level rule whose selector IS `selector` or extends it with a
+ * variant suffix, rendered with its enclosing at-rules (`@media`, `@layer`...)
+ * and any nested blocks.
+ *
+ * Walks the PostCSS AST rather than searching the text, because Tailwind is
+ * free to change its output SHAPE: 4.3.1 emitted `.x { &:where(.dark, .dark *)
+ * { ... } }` and 4.3.3 flattens that to `.x:where(.dark, .dark *) { ... }`,
+ * which a `${selector} {` text search no longer finds. Including the
+ * enclosing at-rules keeps the "not tied to prefers-color-scheme" check honest
+ * in the flattened shape, where the media query wraps the rule instead of
+ * nesting inside it.
+ */
 function ruleFor(selector: string): string {
-  const start = css.indexOf(`${selector} {`);
-  if (start === -1) return "";
-  let depth = 0;
-  for (let i = css.indexOf("{", start); i < css.length; i++) {
-    if (css[i] === "{") depth++;
-    else if (css[i] === "}" && --depth === 0) return css.slice(start, i + 1);
-  }
-  return css.slice(start);
+  const out: string[] = [];
+  root?.walkRules((rule) => {
+    if (rule.parent?.type === "rule") return; // included in its parent's text
+    const matches = rule.selectors.some(
+      (s) =>
+        s === selector || (s.startsWith(selector) && !/[\w\\-]/.test(s.charAt(selector.length))),
+    );
+    if (!matches) return;
+    const context: string[] = [];
+    for (let p: Container | Document | undefined = rule.parent; p && p.type !== "root";) {
+      if (p.type === "atrule") context.unshift(`@${(p as AtRule).name} ${(p as AtRule).params}`);
+      p = (p as Container).parent as Container | Document | undefined;
+    }
+    out.push([...context, rule.toString()].join("\n"));
+  });
+  return out.join("\n");
 }
 
 beforeAll(async () => {
@@ -62,6 +83,7 @@ beforeAll(async () => {
     from: GLOBALS,
   });
   css = result.css;
+  root = result.root;
 }, 30_000);
 
 afterAll(() => {
