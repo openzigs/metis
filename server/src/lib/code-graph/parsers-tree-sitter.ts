@@ -65,16 +65,10 @@ type SyntaxNode = {
   childForFieldName: (name: string) => SyntaxNode | null;
   parent: SyntaxNode | null;
 };
-interface WebTreeSitterModule {
-  Parser: {
-    new (): {
-      setLanguage: (lang: unknown) => unknown;
-      parse: (source: string) => Tree | null;
-    };
-    init: () => Promise<void>;
-  };
-  Language: { load: (path: string) => Promise<unknown> };
-}
+// Typed from the package's own declarations (#310): a hand-written interface
+// over this untyped `require()` let web-tree-sitter 0.25's API change
+// (`Parser` became a named export) typecheck cleanly and fail at startup.
+type WebTreeSitterModule = typeof import("web-tree-sitter");
 
 const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
 

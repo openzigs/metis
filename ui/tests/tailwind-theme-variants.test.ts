@@ -99,6 +99,8 @@ describe("dark: variant follows the next-themes class toggle (#265)", () => {
 
   it("does not tie dark: utilities to the OS colour scheme", () => {
     const rule = ruleFor(".dark\\:bg-zinc-900");
+    // Guard against passing on nothing: an absent rule never mentions the media query.
+    expect(rule).not.toBe("");
     expect(rule).not.toMatch(/prefers-color-scheme/);
   });
 });
