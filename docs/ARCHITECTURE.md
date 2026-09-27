@@ -4800,7 +4800,7 @@ Below is the exhaustive list of all 56 API endpoints in METIS:
 | Method | Path | Auth Required | Description |
 |---|---|---|---|
 | `GET` | `/api/health` | No | Basic health check (status, uptime, version) |
-| `GET` | `/api/health/deep` | No | Deep health check (DB connectivity, Socket.IO clients, latency) |
+| `GET` | `/api/health/deep` | No | Deep health check (DB connectivity, Socket.IO clients, latency). Public for probes, so a failing check returns a fixed message and the raw error goes to the server log only (#121) |
 
 ### Source offer (`/source`, `/api/source`)
 

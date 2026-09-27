@@ -20,6 +20,7 @@ import { isLoopbackHostname, isPrivateIp } from "@metis/shared";
 import { AIConfigError, AIProviderRetiredError } from "./errors.js";
 import type { ProviderKey } from "./types.js";
 import { getConfigService } from "../config/config-service.js";
+import { parseStrictMs } from "../config/env-ms.js";
 import { HAIKU_MODEL_ID, SONNET_MODEL_ID } from "./model-router.js";
 import {
   COPILOT_MIGRATION_DOC,
@@ -482,10 +483,21 @@ export function loadAIConfig(env: NodeJS.ProcessEnv = process.env): AIConfig {
     model: defaultModel(provider, e),
     offline,
     rateLimit: {
-      windowMs: intOr(e.AI_RATE_LIMIT_WINDOW_MS, DEFAULT_RATE_WINDOW_MS, 1000),
+      // #123 — millisecond settings use the shared strict parser, never parseInt.
+      windowMs: parseStrictMs(
+        "AI_RATE_LIMIT_WINDOW_MS",
+        e.AI_RATE_LIMIT_WINDOW_MS,
+        DEFAULT_RATE_WINDOW_MS,
+        { min: 1000 },
+      ),
       max: intOr(e.AI_RATE_LIMIT_MAX, DEFAULT_RATE_MAX),
     },
-    pingTimeoutMs: intOr(e.AI_PING_TIMEOUT_MS, DEFAULT_PING_TIMEOUT_MS, 100),
+    pingTimeoutMs: parseStrictMs(
+      "AI_PING_TIMEOUT_MS",
+      e.AI_PING_TIMEOUT_MS,
+      DEFAULT_PING_TIMEOUT_MS,
+      { min: 100 },
+    ),
     sdkProvider,
     gatewayBaseUrl: trimmed(e.BEDROCK_GATEWAY_URL) ?? trimmed(e.GATEWAY_BASE_URL),
     gatewayApiKey: trimmed(e.BEDROCK_GATEWAY_API_KEY) ?? trimmed(e.GATEWAY_API_KEY),

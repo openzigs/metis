@@ -61,13 +61,13 @@ export function syncWebhookRouter(deps: SyncRouterDeps = {}): Router {
   const r = Router();
 
   // #680 — throttle these UNAUTHENTICATED receivers (they are already
-  // signature-first: the HMAC is verified before any DB work).
-  r.use(webhookReceiverRateLimiter);
+  // signature-first: the HMAC is verified before any DB work). #105 — on the
+  // route, not a path-less `r.use` on the shared `/webhooks` prefix.
 
   /**
    * POST /jira/issues — receive Jira issue lifecycle webhooks.
    */
-  r.post("/jira/issues", async (req: Request, res: Response) => {
+  r.post("/jira/issues", webhookReceiverRateLimiter, async (req: Request, res: Response) => {
     const secret = deps.resolveJiraSecret?.() ?? process.env.JIRA_WEBHOOK_SECRET ?? "";
     const sig =
       req.header("x-hub-signature") ?? req.header("x-atlassian-webhook-signature") ?? undefined;

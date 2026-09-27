@@ -22,6 +22,7 @@ import { LOAD_SKILL_TOOL_NAME } from "@metis/shared";
 import { prisma } from "../../prisma.js";
 import { createChildLogger } from "../../logger.js";
 import { getConfigService } from "../../config/config-service.js";
+import { parseStrictMs } from "../../config/env-ms.js";
 import { getMCPRegistry } from "../../mcp/mcp-service.js";
 import { formatToolSchemas } from "../../analysis/agent-loop.js";
 import { getChatCodeTools, type ChatCodeToolDeps } from "../../analysis/tools/index.js";
@@ -309,7 +310,7 @@ export async function resolveSessionTools(
           callable,
           limits,
           budget: new SubAgentBudget(limits.tokenBudget),
-          approvalTimeoutMs: getConfigService().getNumber("AI_TOOL_APPROVAL_TIMEOUT_MS", 120_000),
+          approvalTimeoutMs: approvalTimeoutMs(),
           ...(skillAllowlist ? { allowlist: skillAllowlist } : {}),
           // Re-checked when a sub-agent is CALLED: it may have been disabled
           // for the project since the tool list was built.
@@ -390,9 +391,25 @@ export interface SessionGateInput {
   broker?: ToolApprovalBroker;
 }
 
+const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000;
+
+/**
+ * #123 — `AI_TOOL_APPROVAL_TIMEOUT_MS`, read through the shared strict parser:
+ * `getNumber` is a `parseInt`, so `1.2e6` became a 1 ms approval window (every
+ * tool call denied at once) and a value past 2^31-1 overflowed to 1 ms as well.
+ */
+export function approvalTimeoutMs(): number {
+  return parseStrictMs(
+    "AI_TOOL_APPROVAL_TIMEOUT_MS",
+    getConfigService().get("AI_TOOL_APPROVAL_TIMEOUT_MS"),
+    DEFAULT_APPROVAL_TIMEOUT_MS,
+    { min: 1 },
+  );
+}
+
 /** The session's approval gate for one turn. */
 export function sessionGate(input: SessionGateInput): ApprovalGateService {
-  const timeoutMs = getConfigService().getNumber("AI_TOOL_APPROVAL_TIMEOUT_MS", 120_000);
+  const timeoutMs = approvalTimeoutMs();
   return new ApprovalGateService({
     sessionId: input.session.id,
     userId: input.session.userId,

@@ -10,8 +10,24 @@
  *   - save → clear → save revives the SAME row (the index still holds the
  *     soft-deleted name, so a fresh create could never succeed);
  *   - the cleared row is invisible to `list()` and the revived one visible again;
- *   - two concurrent first saves both succeed and leave one row, whose value the
- *     in-process cache agrees with.
+ *   - #122: INDEPENDENT writers (separate `VaultService` instances, so no
+ *     `ConfigService` write queue serialises them) racing first saves of one
+ *     name all succeed and leave one row.
+ *
+ * What the race test does and does not prove (#122, measured on this suite):
+ * Prisma issues `vault.upsert` on Postgres as ONE native
+ * `INSERT … ON CONFLICT ("name") DO UPDATE`, which cannot raise a unique clash
+ * however the writers interleave. So the vault's retry-on-P2002 is not reached
+ * here: removing it leaves this suite green (3/3 runs, 20 rounds × 8 writers),
+ * and no test on a real database can reach it while Prisma keeps the native
+ * form. The retry stays as the guard for Prisma's emulated (read-then-write)
+ * upsert; its unit test drives it through a double. What this suite pins is
+ * the property the retry exists for — concurrent first saves never fail — and
+ * it CAN fail: with `upsert` turned into a read-then-write (the shape Prisma
+ * emulates) the race test is red without the retry and green with it, which is
+ * the retry's whole job. A control arm runs that read-then-write shape
+ * directly and must see a clash, so a harness that stopped racing would fail
+ * instead of passing vacuously.
  *
  * Gated like the other `*-postgres.integration.test.ts` suites: runs only when
  * `RUN_INTEGRATION_TESTS=1` AND `DATABASE_URL` is Postgres-shaped (via
@@ -33,16 +49,16 @@ const enabled = process.env.RUN_INTEGRATION_TESTS === "1" && isPostgres;
 /** A secret-tier key; stored in the vault as `global:<KEY>`. */
 const KEY = "GITHUB_TOKEN";
 const ROW_NAME = `global:${KEY}`;
+// 32 bytes of base64 — a test key, not a secret.
+const MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
+const ROUNDS = 20;
+const PER_WRITER = 4;
 
 describe.runIf(enabled)("Config secret save → clear → save on real Postgres (integration)", () => {
   // An independent client, so assertions read the table rather than anything
   // the service under test holds.
   const db = new PrismaClient({ adapter: selectPrismaAdapter(databaseUrl) });
-  const vault = new VaultService({
-    // 32 bytes of base64 — a test key, not a secret.
-    masterKey: Buffer.alloc(32, 7).toString("base64"),
-    isProduction: false,
-  });
+  const vault = new VaultService({ masterKey: MASTER_KEY, isProduction: false });
 
   beforeEach(async () => {
     await db.secret.deleteMany({ where: { name: ROW_NAME } });
@@ -87,15 +103,56 @@ describe.runIf(enabled)("Config secret save → clear → save on real Postgres 
     expect(reader.describeSource(KEY).source).toBe("vault");
   });
 
-  it("accepts two concurrent first saves and keeps cache and vault agreeing", async () => {
-    const svc = new ConfigService({ vault, env: {} });
-
-    await Promise.all([svc.setSecret(KEY, "gho_a"), svc.setSecret(KEY, "gho_b")]);
-
-    const rows = await db.secret.findMany({ where: { name: ROW_NAME } });
-    expect(rows).toHaveLength(1);
+  it("independent writers racing first saves of one name all succeed, leaving one row", async () => {
+    // Two VaultService instances x several calls each: nothing in-process
+    // serialises them, unlike two saves through one ConfigService.
+    const writers = [vault, new VaultService({ masterKey: MASTER_KEY, isProduction: false })];
+    for (let round = 0; round < ROUNDS; round++) {
+      await db.secret.deleteMany({ where: { name: ROW_NAME } });
+      const results = await Promise.allSettled(
+        writers.flatMap((w, i) =>
+          Array.from({ length: PER_WRITER }, (_, j) => w.upsert(KEY, `gho_${i}_${j}`, "global")),
+        ),
+      );
+      const failed = results.filter((r) => r.status === "rejected");
+      expect(failed, `round ${round}: ${JSON.stringify(failed)}`).toEqual([]);
+      const rows = await db.secret.findMany({ where: { name: ROW_NAME } });
+      expect(rows).toHaveLength(1);
+    }
+    // Read back through the consumer path: a fresh service loading the vault.
     const reader = new ConfigService({ vault, env: {} });
     await reader.loadSecrets();
-    expect(svc.get(KEY)).toBe(reader.get(KEY));
+    expect(reader.get(KEY)).toMatch(/^gho_[01]_\d$/);
+  });
+
+  it("control arm: the same race through a read-then-write DOES clash here", async () => {
+    // Proves the harness really interleaves writers on this database. If this
+    // ever stops clashing, the test above no longer shows anything.
+    let clashes = 0;
+    for (let round = 0; round < ROUNDS && clashes === 0; round++) {
+      await db.secret.deleteMany({ where: { name: ROW_NAME } });
+      const results = await Promise.allSettled(
+        Array.from({ length: PER_WRITER * 2 }, async () => {
+          const found = await db.secret.findUnique({ where: { name: ROW_NAME } });
+          if (found) return;
+          await db.secret.create({
+            data: {
+              name: ROW_NAME,
+              description: "",
+              ciphertext: "x",
+              iv: "",
+              tag: "",
+              salt: "",
+              keyVersion: 1,
+              algorithm: "aes-256-gcm",
+            },
+          });
+        }),
+      );
+      clashes += results.filter(
+        (r) => r.status === "rejected" && (r.reason as { code?: string }).code === "P2002",
+      ).length;
+    }
+    expect(clashes).toBeGreaterThan(0);
   });
 });

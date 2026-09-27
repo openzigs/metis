@@ -14,7 +14,7 @@
  * this layer only adds push so a disconnected socket still converges via poll.
  *
  * The browser socket is loosely typed, so events are subscribed via the
- * `socket.on("name" as never, handler as never)` escape hatch used elsewhere in
+ * `socket.on(<event> as never, handler as never)` escape hatch used elsewhere in
  * the UI (see `use-connector-events.ts`).
  */
 import { useEffect, useState } from "react";

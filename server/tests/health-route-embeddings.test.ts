@@ -72,7 +72,9 @@ describe("/readyz — embeddings check (#783)", () => {
     });
     const res = await request(app).get("/readyz");
     expect(res.body.checks.embeddings.status).toBe("error");
-    expect(res.body.checks.embeddings.message).toContain("ECONNREFUSED");
+    // #121 — the load error names a host and port; it goes to the log only.
+    expect(res.body.checks.embeddings.message).toBe("embeddings unavailable");
+    expect(JSON.stringify(res.body)).not.toContain("ECONNREFUSED");
     // Overall error → 503. This is what stops the rollout.
     expect(res.body.status).toBe("error");
     expect(res.status).toBe(503);
@@ -122,7 +124,8 @@ describe("/readyz — embeddings check (#783)", () => {
     });
     const res = await request(app).get("/readyz");
     expect(res.body.checks.embeddings.status).toBe("error");
-    expect(res.body.checks.embeddings.message).toContain("registry exploded");
+    expect(res.body.checks.embeddings.message).toBe("embeddings unavailable");
+    expect(JSON.stringify(res.body)).not.toContain("registry exploded");
     // The other checks still ran.
     expect(res.body.checks.database.status).toBe("ok");
   });

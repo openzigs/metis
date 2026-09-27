@@ -24,7 +24,7 @@
  * no parallel progress path — `JobKind` stays the single chokepoint (Epic #406).
  *
  * The browser socket is loosely typed, so events are subscribed via the
- * `socket.on("name" as never, handler as never)` escape hatch used elsewhere in
+ * `socket.on(<event> as never, handler as never)` escape hatch used elsewhere in
  * the UI (see `use-job-events.ts` / `use-task-progress.ts`).
  */
 import { useEffect, useRef, useState } from "react";

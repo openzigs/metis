@@ -707,3 +707,117 @@ describe("ConfigService — concurrent writes of one key (#112)", () => {
     expect(svc.get("OPENAI_API_KEY")).toBe("sk-b");
   });
 });
+
+/**
+ * #122 — the vault READERS that fill the cache (boot-time `loadSecrets()`, which
+ * `server.ts` starts without awaiting, and `refreshSecret()`) must not overwrite
+ * a value a write cached after they read. Each test holds the reader's
+ * `vault.read` open, completes a write, then releases the stale read.
+ */
+describe("ConfigService — readers racing writes (#122)", () => {
+  function gate() {
+    let release!: () => void;
+    const opened = new Promise<void>((r) => (release = r));
+    return { opened, release };
+  }
+
+  /** Make the NEXT `vault.read` return what the vault held, but only once released. */
+  function holdNextRead(spies: ReturnType<typeof makeStubVault>["spies"]) {
+    const g = gate();
+    const real = spies.read.getMockImplementation()!;
+    let reached!: () => void;
+    const started = new Promise<void>((r) => (reached = r));
+    spies.read.mockImplementationOnce(async (id: string) => {
+      const value = await real(id); // what the vault held when the read ran
+      reached();
+      await g.opened;
+      return value;
+    });
+    return { started, release: g.release };
+  }
+
+  it("a boot loadSecrets() read cannot overwrite a setSecret that landed during it", async () => {
+    const { vault, spies } = makeStubVault([
+      { id: "v1", label: "OPENAI_API_KEY", plaintext: "sk-old" },
+    ]);
+    const held = holdNextRead(spies);
+    const svc = new ConfigService({ vault, env: {} });
+
+    const boot = svc.loadSecrets(); // as server.ts does: not awaited first
+    await held.started;
+    await svc.setSecret("OPENAI_API_KEY", "sk-new");
+    held.release();
+    await boot;
+
+    expect(svc.get("OPENAI_API_KEY")).toBe("sk-new");
+  });
+
+  it("a boot loadSecrets() read cannot resurrect a secret cleared during it", async () => {
+    const { vault, spies } = makeStubVault([
+      { id: "v1", label: "OPENAI_API_KEY", plaintext: "sk-old" },
+    ]);
+    const held = holdNextRead(spies);
+    const svc = new ConfigService({ vault, env: { OPENAI_API_KEY: "env" } });
+
+    const boot = svc.loadSecrets();
+    await held.started;
+    await svc.clearSecret("OPENAI_API_KEY");
+    held.release();
+    await boot;
+
+    expect(svc.get("OPENAI_API_KEY")).toBe("env");
+    expect(svc.describeSource("OPENAI_API_KEY").source).toBe("env");
+  });
+
+  it("a refreshSecret() read cannot overwrite a setSecret that landed during it", async () => {
+    const { vault, spies } = makeStubVault([
+      { id: "v1", label: "OPENAI_API_KEY", plaintext: "sk-old" },
+    ]);
+    const svc = new ConfigService({ vault, env: {} });
+    await svc.loadSecrets();
+    const held = holdNextRead(spies);
+
+    const refresh = svc.refreshSecret("OPENAI_API_KEY");
+    await held.started;
+    await svc.setSecret("OPENAI_API_KEY", "sk-new");
+    held.release();
+    await refresh;
+
+    expect(svc.get("OPENAI_API_KEY")).toBe("sk-new");
+  });
+
+  it("a refreshSecret() that found no entry cannot evict a value written during it", async () => {
+    const { vault, spies } = makeStubVault();
+    const svc = new ConfigService({ vault, env: {} });
+    const realList = spies.list.getMockImplementation()!;
+    const g = gate();
+    let reached!: () => void;
+    const started = new Promise<void>((r) => (reached = r));
+    spies.list.mockImplementationOnce(async () => {
+      const value = await realList(); // empty: nothing stored yet
+      reached();
+      await g.opened;
+      return value;
+    });
+
+    const refresh = svc.refreshSecret("OPENAI_API_KEY");
+    await started;
+    await svc.setSecret("OPENAI_API_KEY", "sk-new");
+    g.release();
+    await refresh;
+
+    expect(svc.get("OPENAI_API_KEY")).toBe("sk-new");
+  });
+
+  it("with no competing write, both readers still fill the cache", async () => {
+    const { vault, store } = makeStubVault([
+      { id: "v1", label: "OPENAI_API_KEY", plaintext: "sk-a" },
+    ]);
+    const svc = new ConfigService({ vault, env: {} });
+    await svc.loadSecrets();
+    expect(svc.get("OPENAI_API_KEY")).toBe("sk-a");
+    store.get("v1")!.plaintext = "sk-b"; // changed by another replica
+    await svc.refreshSecret("OPENAI_API_KEY");
+    expect(svc.get("OPENAI_API_KEY")).toBe("sk-b");
+  });
+});

@@ -29,6 +29,7 @@
  */
 import { Agent, type Dispatcher } from "undici";
 import { createChildLogger } from "../../logger.js";
+import { envMs, MAX_TIMEOUT_MS, TIMER_HEADROOM_MS } from "../../config/env-ms.js";
 import { lastUserText, traceModelChat, traceModelStream } from "../../otel/genai-spans.js";
 import { recordCacheHit } from "../cache-hit-telemetry.js";
 import { ToolTagStreamParser } from "./tool-tag-parser.js";
@@ -63,7 +64,7 @@ const log = createChildLogger("ai-openai-compatible");
  * timeout always fires STRICTLY AFTER them, so the app timer wins and produces a
  * precise, actionable error instead of an opaque undici `TypeError: fetch failed`.
  */
-const UNDICI_HEADERS_TIMEOUT_MARGIN_MS = 30_000;
+const UNDICI_HEADERS_TIMEOUT_MARGIN_MS = TIMER_HEADROOM_MS;
 
 /**
  * Pure resolver for the undici dispatcher transport timeouts, exported for unit
@@ -292,7 +293,8 @@ export function computeBackoffDelay(
 /**
  * Parse an `AI_*` integer env knob into a clamped value, consistent with the
  * `intOr` helper in `config.ts`: blank/non-numeric/below-min falls back to the
- * provided default. Used for `AI_MAX_RETRIES` / `AI_RETRY_BASE_DELAY_MS`.
+ * provided default. Used for `AI_MAX_RETRIES` (a count, clamped to [1, 6]);
+ * millisecond settings go through the strict {@link envMs} instead (#123).
  */
 function envIntOr(raw: string | undefined, fallback: number, min = 0): number {
   if (raw == null || raw.trim().length === 0) return fallback;
@@ -324,39 +326,24 @@ export const LOCAL_TIMEOUT_ENV = {
   request: "LOCAL_GEMMA_REQUEST_TIMEOUT_MS",
 } as const;
 
-/** Node clamps any timer longer than 2^31-1 ms to 1 ms (TimeoutOverflowWarning). */
-const MAX_NODE_TIMER_MS = 2_147_483_647;
-
 /**
  * Largest accepted `LOCAL_GEMMA_*_TIMEOUT_MS` value. undici's `headersTimeout`
  * is sized to the budget PLUS {@link UNDICI_HEADERS_TIMEOUT_MARGIN_MS}, so the
  * budget itself must leave room for the margin under the Node timer ceiling —
  * otherwise undici's own timer overflows to 1 ms. ~24.8 days; `0` means "never".
+ * The shared strict parser's cap (#123) is built on the same margin.
  */
-export const MAX_LOCAL_TIMEOUT_MS = MAX_NODE_TIMER_MS - UNDICI_HEADERS_TIMEOUT_MARGIN_MS;
+export const MAX_LOCAL_TIMEOUT_MS = MAX_TIMEOUT_MS;
 
 /**
- * Parse a `LOCAL_GEMMA_*_TIMEOUT_MS` knob STRICTLY: plain decimal digits only, at
- * most {@link MAX_LOCAL_TIMEOUT_MS}. `parseInt` read `1_200_000` and `1.2e6` as
- * `1`, and an over-limit value becomes a 1 ms Node timer — either way a setting
- * meant to RAISE the budget failed every stream at once. Unset/blank keeps the
- * default silently; anything else invalid keeps the default and warns.
+ * Parse a `LOCAL_GEMMA_*_TIMEOUT_MS` knob STRICTLY via the shared {@link envMs}
+ * (#116, #123): plain decimal digits only, at most {@link MAX_LOCAL_TIMEOUT_MS}.
  */
 function envTimeoutMsOr(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw == null || raw.trim().length === 0) return fallback;
-  const value = raw.trim();
-  if (/^\d+$/.test(value)) {
-    const n = Number(value);
-    if (n <= MAX_LOCAL_TIMEOUT_MS) return n;
-  }
-  log.warn("Ignoring invalid local timeout; keeping the default", {
-    env: name,
-    value: raw.slice(0, 40),
-    defaultMs: fallback,
-    maxMs: MAX_LOCAL_TIMEOUT_MS,
+  return envMs(name, fallback, {
+    max: MAX_LOCAL_TIMEOUT_MS,
+    warning: "Ignoring invalid local timeout; keeping the default",
   });
-  return fallback;
 }
 
 /**
@@ -937,8 +924,7 @@ export class OpenAICompatibleProvider implements AIProvider {
       Math.max(MIN_MAX_ATTEMPTS, opts.maxAttempts ?? envMaxAttempts),
     );
     this.retryBaseDelayMs =
-      opts.retryBaseDelayMs ??
-      envIntOr(process.env.AI_RETRY_BASE_DELAY_MS, DEFAULT_RETRY_BASE_DELAY_MS, 0);
+      opts.retryBaseDelayMs ?? envMs("AI_RETRY_BASE_DELAY_MS", DEFAULT_RETRY_BASE_DELAY_MS);
     this.sleepFn = opts.sleepFn ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.randomFn = opts.randomFn ?? Math.random;
     this.dispatcher = this.buildDispatcher();

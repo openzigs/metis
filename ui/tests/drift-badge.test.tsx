@@ -87,8 +87,10 @@ describe("DriftBadge", () => {
     render(<DriftBadge projectId="p1" count={1} />);
     const classes = screen.getByRole("button").className.split(/\s+/);
     expect(classes).toEqual(expect.arrayContaining(["h-6", "min-w-6"]));
-    // No smaller size may override them.
-    expect(classes.filter((c) => /^(h|min-w|w|size)-\[/.test(c))).toEqual([]);
+    // No other size class may override them — arbitrary (`h-[18px]`) OR
+    // standard (`h-5`, `size-4`, `max-h-4`) (#122).
+    const sizing = classes.filter((c) => /^(min-|max-)?(h|w|size)-/.test(c));
+    expect(sizing.sort()).toEqual(["h-6", "min-w-6"]);
   });
 
   it("takes its look from the ui-kit Badge destructive variant, not a hand copy (#113)", () => {

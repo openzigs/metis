@@ -101,6 +101,26 @@ export class ConfigService extends EventEmitter {
    */
   private readonly writeChains = new Map<string, Promise<unknown>>();
 
+  /**
+   * #122 — per-key count of completed secret writes (`setSecret` /
+   * `clearSecret`). The vault READERS that also fill the cache — the boot-time
+   * `loadSecrets()` (started without `await` in `server.ts`) and
+   * `refreshSecret()` — note the count before they read and drop their result
+   * if it moved: a value read before a write committed must not overwrite the
+   * newer value that write cached. Readers are not queued behind writes, so a
+   * slow boot preload cannot delay a save.
+   */
+  private readonly secretWriteGen = new Map<string, number>();
+
+  private secretGen(key: string): number {
+    return this.secretWriteGen.get(key) ?? 0;
+  }
+
+  /** Call AFTER the store write commits and BEFORE the cache is updated. */
+  private bumpSecretGen(key: string): void {
+    this.secretWriteGen.set(key, this.secretGen(key) + 1);
+  }
+
   constructor(opts: ConfigServiceOptions = {}) {
     super();
     this.vault = opts.vault ?? getVaultService();
@@ -221,14 +241,16 @@ export class ConfigService extends EventEmitter {
   }
 
   private async doLoadSecrets(): Promise<void> {
+    // #122 — snapshot BEFORE the vault read; see `secretWriteGen`.
+    const genAtStart = new Map(this.secretWriteGen);
+    const unchanged = (key: string) => this.secretGen(key) === (genAtStart.get(key) ?? 0);
     const summaries = await this.vault.list(VAULT_SCOPE);
     const secretKeys = new Set(listKeysByTier("secret"));
     for (const summary of summaries) {
       if (!secretKeys.has(summary.label)) continue; // ignore vault entries we don't own
-      this.secretSummaries.set(summary.label, summary);
+      let plaintext: string | undefined;
       try {
-        const { plaintext } = await this.vault.read(summary.id);
-        this.secretCache.set(summary.label, plaintext);
+        ({ plaintext } = await this.vault.read(summary.id));
       } catch (err) {
         // Failing to decrypt one secret must not break the rest of the boot.
         log.error("Failed to preload secret from vault", {
@@ -236,6 +258,9 @@ export class ConfigService extends EventEmitter {
           err: (err as Error).message,
         });
       }
+      if (!unchanged(summary.label)) continue; // a newer write owns the cache
+      this.secretSummaries.set(summary.label, summary);
+      if (plaintext !== undefined) this.secretCache.set(summary.label, plaintext);
     }
     log.info("Vault secrets preloaded", {
       loaded: this.secretCache.size,
@@ -251,15 +276,19 @@ export class ConfigService extends EventEmitter {
     const def = getKeyDef(key);
     if (!def) throw new ConfigUnknownKeyError(key);
     if (def.tier !== "secret") return;
+    // #122 — a write that lands while this reads owns the cache; see `secretWriteGen`.
+    const gen = this.secretGen(key);
     const summaries = await this.vault.list(VAULT_SCOPE);
     const match = summaries.find((s) => s.label === key);
     if (!match) {
+      if (this.secretGen(key) !== gen) return;
       this.secretSummaries.delete(key);
       this.secretCache.delete(key);
       return;
     }
-    this.secretSummaries.set(key, match);
     const { plaintext } = await this.vault.read(match.id);
+    if (this.secretGen(key) !== gen) return;
+    this.secretSummaries.set(key, match);
     this.secretCache.set(key, plaintext);
   }
 
@@ -315,6 +344,7 @@ export class ConfigService extends EventEmitter {
         description: def.description,
         createdById: opts.actorId ?? null,
       });
+      this.bumpSecretGen(key);
       this.secretSummaries.set(key, written);
       this.secretCache.set(key, plaintext);
       return written;
@@ -347,6 +377,7 @@ export class ConfigService extends EventEmitter {
       if (existing) {
         await this.vault.delete(existing.id);
       }
+      this.bumpSecretGen(key);
       this.secretSummaries.delete(key);
       this.secretCache.delete(key);
     });

@@ -99,16 +99,56 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
+/**
+ * #106 — a vault double that behaves like the real table: `Secret.name` is
+ * UNIQUE (soft-deleted rows keep their name), `read` sees live rows only, and
+ * `rotate` rewrites a row in place. The previous double accepted any create,
+ * so a rotation that re-created an existing name could never fail here.
+ */
+interface SecretRow {
+  id: string;
+  name: string;
+  plaintext: string;
+  deletedAt: Date | null;
+}
+const secrets = new Map<string, SecretRow>();
 let vaultWriteCounter = 0;
-vi.mock("../src/lib/vault/vault-service.js", () => ({
-  getVaultService: () => ({
-    read: vi.fn(async (id: string) => ({ plaintext: `plaintext-${id}`, id })),
-    create: vi.fn(async (label: string, _value: string) => {
-      vaultWriteCounter++;
-      return { id: `secret_${vaultWriteCounter}`, label };
-    }),
-    list: vi.fn(async () => []),
+const vaultDouble = {
+  read: vi.fn(async (id: string) => {
+    const row = secrets.get(id);
+    if (!row || row.deletedAt) throw new Error(`Secret ${id} not found`);
+    return { plaintext: row.plaintext, summary: { id } };
   }),
+  create: vi.fn(async (label: string, value: string, scope = "global") => {
+    const name = `${scope}:${label}`;
+    if ([...secrets.values()].some((r) => r.name === name)) {
+      throw Object.assign(new Error("Unique constraint failed on the fields: (`name`)"), {
+        code: "P2002",
+      });
+    }
+    vaultWriteCounter++;
+    const row = { id: `secret_${vaultWriteCounter}`, name, plaintext: value, deletedAt: null };
+    secrets.set(row.id, row);
+    return { id: row.id, label };
+  }),
+  rotate: vi.fn(async (id: string, value: string) => {
+    const row = secrets.get(id);
+    if (!row) throw new Error(`Secret ${id} not found`);
+    row.plaintext = value;
+    return { id };
+  }),
+  delete: vi.fn(async (id: string) => {
+    const row = secrets.get(id);
+    if (row) row.deletedAt = new Date();
+  }),
+  list: vi.fn(async (scope?: string) =>
+    [...secrets.values()]
+      .filter((r) => !r.deletedAt && (!scope || r.name.startsWith(`${scope}:`)))
+      .map((r) => ({ id: r.id, label: r.name.slice(r.name.indexOf(":") + 1) })),
+  ),
+};
+vi.mock("../src/lib/vault/vault-service.js", () => ({
+  getVaultService: () => vaultDouble,
 }));
 
 vi.mock("../src/lib/connectors/jira/jira-client.js", async (importOriginal) => {
@@ -146,6 +186,20 @@ vi.mock("../src/lib/connectors/jira/jira-client.js", async (importOriginal) => {
   };
 });
 
+vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/audit/audit-service.js")>()),
+  audit: vi.fn(),
+}));
+
+// The SSRF host guard resolves DNS; these tests exercise the vault path, so the
+// guard is stubbed (its own suite covers it) and the file stays hermetic.
+vi.mock("../src/lib/connectors/network-allowlist.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/connectors/network-allowlist.js")>()),
+  assertConnectorHostAllowed: vi.fn(async () => undefined),
+}));
+
+import { createJiraClient } from "../src/lib/connectors/jira/jira-client.js";
+import { audit } from "../src/lib/audit/audit-service.js";
 import {
   listJiraConnections,
   getJiraConnection,
@@ -161,6 +215,7 @@ import {
 beforeEach(() => {
   rows.clear();
   counter = 0;
+  secrets.clear();
   vaultWriteCounter = 0;
 });
 
@@ -246,12 +301,14 @@ describe("Jira service — CRUD", () => {
       },
       "user_1",
     );
-    const beforeSecretId = rows.get(created.id)!.secretId;
+    const secretId = rows.get(created.id)!.secretId;
 
     await updateJiraConnection(created.id, { apiToken: "new-token" }, "user_1");
-    const afterSecretId = rows.get(created.id)!.secretId;
 
-    expect(afterSecretId).not.toBe(beforeSecretId);
+    // #106 — rotated IN PLACE: same secret, new value, nothing orphaned.
+    expect(rows.get(created.id)!.secretId).toBe(secretId);
+    expect((await vaultDouble.read(secretId)).plaintext).toBe("new-token");
+    expect(secrets.size).toBe(1);
   });
 
   it("stores TLS CA cert in vault when provided", async () => {
@@ -288,6 +345,151 @@ describe("Jira service — CRUD", () => {
     await updateJiraConnection(created.id, { baseUrl: "https://new.atlassian.net" }, "user_1");
     const updated = await getJiraConnection(created.id);
     expect(updated.status).toBe("untested");
+  });
+});
+
+describe("Jira service — secret rotation against a unique-name vault (#106)", () => {
+  const base = {
+    edition: "datacenter" as const,
+    baseUrl: "https://jira.example.com",
+    username: "svc",
+  };
+  const CA_OLD = "-----BEGIN CERTIFICATE-----\nOLD\n-----END CERTIFICATE-----";
+  const CA_NEW = "-----BEGIN CERTIFICATE-----\nNEW\n-----END CERTIFICATE-----";
+
+  /** What the connection actually reads: the credentials handed to the client. */
+  async function credentialsOf(id: string) {
+    const client = vi.mocked(createJiraClient);
+    client.mockClear();
+    await testJiraConnection(id, "user_1");
+    return client.mock.calls.at(-1)![0];
+  }
+
+  it("updating the API token WITHOUT renaming succeeds and is what the connection reads back", async () => {
+    const created = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "old-token" },
+      "user_1",
+    );
+    rows.get(created.id)!.status = "ok";
+
+    const updated = await updateJiraConnection(created.id, { apiToken: "new-token" }, "user_1");
+
+    expect(updated.status).toBe("untested");
+    expect((await credentialsOf(created.id)).apiToken).toBe("new-token");
+  });
+
+  it("updating the TLS CA cert WITHOUT renaming succeeds and is what the connection reads back", async () => {
+    const created = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "t", tlsCaCert: CA_OLD },
+      "user_1",
+    );
+    const caId = rows.get(created.id)!.tlsCaSecretId;
+
+    await updateJiraConnection(created.id, { tlsCaCert: CA_NEW }, "user_1");
+
+    expect(rows.get(created.id)!.tlsCaSecretId).toBe(caId);
+    expect((await credentialsOf(created.id)).tlsCaCert).toBe(CA_NEW);
+  });
+
+  it("adding a first TLS CA cert on update stores a new secret the connection reads", async () => {
+    const created = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "t" },
+      "user_1",
+    );
+    await updateJiraConnection(created.id, { tlsCaCert: CA_NEW }, "user_1");
+    expect((await credentialsOf(created.id)).tlsCaCert).toBe(CA_NEW);
+
+    await updateJiraConnection(created.id, { tlsCaCert: "" }, "user_1");
+    expect((await credentialsOf(created.id)).tlsCaCert).toBeNull();
+  });
+
+  it("a token whose secret was deleted from the vault is replaced, not rotated into a dead row", async () => {
+    const created = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "old", tlsCaCert: CA_OLD },
+      "user_1",
+    );
+    const { secretId, tlsCaSecretId } = rows.get(created.id)!;
+    await vaultDouble.delete(secretId);
+    await vaultDouble.delete(tlsCaSecretId!);
+
+    await updateJiraConnection(created.id, { apiToken: "new", tlsCaCert: CA_NEW }, "user_1");
+
+    expect(rows.get(created.id)!.secretId).not.toBe(secretId);
+    const creds = await credentialsOf(created.id);
+    expect(creds.apiToken).toBe("new");
+    expect(creds.tlsCaCert).toBe(CA_NEW);
+  });
+
+  it("creating under a label whose old secret name is soft-deleted in the vault succeeds", async () => {
+    // A secret left behind (soft-deleted) under the name the old scheme derived.
+    secrets.set("secret_old", {
+      id: "secret_old",
+      name: "project:jira-proj_1-prod",
+      plaintext: "stale",
+      deletedAt: new Date(),
+    });
+    const created = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "fresh", tlsCaCert: CA_OLD },
+      "user_1",
+    );
+    const creds = await credentialsOf(created.id);
+    expect(creds.apiToken).toBe("fresh");
+    expect(creds.tlsCaCert).toBe(CA_OLD);
+  });
+
+  it("re-using a label a renamed connection gave up never touches that connection's token", async () => {
+    const a = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "token-a" },
+      "user_1",
+    );
+    await updateJiraConnection(a.id, { label: "prod-old" }, "user_1");
+    const b = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "token-b" },
+      "user_1",
+    );
+    expect((await credentialsOf(a.id)).apiToken).toBe("token-a");
+    expect((await credentialsOf(b.id)).apiToken).toBe("token-b");
+  });
+
+  it("two labels that sanitize to the same string keep separate tokens", async () => {
+    const a = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "team a", apiToken: "token-a" },
+      "user_1",
+    );
+    const b = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "team-a", apiToken: "token-b" },
+      "user_1",
+    );
+    await updateJiraConnection(b.id, { apiToken: "token-b2" }, "user_1");
+    expect((await credentialsOf(a.id)).apiToken).toBe("token-a");
+    expect((await credentialsOf(b.id)).apiToken).toBe("token-b2");
+  });
+
+  it("the audit record names the rotated secrets even though the row keeps its ids", async () => {
+    const created = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "t", tlsCaCert: CA_OLD },
+      "user_1",
+    );
+    vi.mocked(audit).mockClear();
+    await updateJiraConnection(created.id, { apiToken: "t2", tlsCaCert: CA_NEW }, "user_1");
+    expect(vi.mocked(audit)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "connector.jira.update",
+        metadata: expect.objectContaining({
+          fields: expect.arrayContaining(["apiToken", "tlsCaCert"]),
+        }),
+      }),
+    );
   });
 });
 
