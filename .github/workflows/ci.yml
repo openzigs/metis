@@ -936,7 +936,9 @@ jobs:
     #
     # There is no `continue-on-error` on this job: a permanently non-blocking
     # check earns the same distrust as a permanently red one.
-    timeout-minutes: 30 # bound it — an unbounded job can hold a runner for 6h
+    # Bound it — an unbounded job can hold a runner for 6h. ~6 min of gating
+    # steps plus the non-gating full suite's own 30-minute bound (#2).
+    timeout-minutes: 45
     runs-on: windows-latest
     env:
       NODE_ENV: development
@@ -1094,8 +1096,15 @@ jobs:
 
       # NON-GATING: full suite includes pre-existing POSIX-only tests (see the
       # GATING POLICY note above). Reported but does not block merge.
+      #
+      # #2 — until the root `test` script's filter was double-quoted, this step ran
+      # NOTHING here: cmd.exe passed `'!@metis/e2e'` to pnpm with its quotes,
+      # pnpm printed "No projects matched the filters" and exited 0, and the step
+      # "passed" in 2 s. It now runs every suite, so it has its own bound: a step
+      # timeout under `continue-on-error` fails only this step, never the job.
       - name: Test (full suite — non-gating)
         continue-on-error: true
+        timeout-minutes: 30
         run: pnpm test
 
   # Epic #209 (#236) — generative-path e2e + coverage gate.

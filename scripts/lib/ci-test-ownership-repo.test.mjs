@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { auditOwnership, testOwnership } from "./ci-test-ownership-core.mjs";
+import { auditOwnership, resolvePnpmTest, testOwnership } from "./ci-test-ownership-core.mjs";
 
 /**
  * #4 — every workspace package's unit suite runs in exactly ONE default-configuration
@@ -85,6 +85,24 @@ describe("CI unit-suite ownership (#4)", () => {
 
   it("runs every package's unit suite in exactly one default-configuration job", () => {
     expect(auditOwnership(owners, VARIANT_JOBS)).toEqual([]);
+  });
+
+  it("quotes the root package's script arguments so cmd.exe passes them too (#2)", () => {
+    // pnpm runs package scripts through cmd.exe on Windows, which does NOT strip
+    // single quotes: `--filter '!@metis/e2e'` reached pnpm as the literal
+    // `'!@metis/e2e'`, matched no project, printed "No projects matched the
+    // filters" and exited 0 — so the root `pnpm test` ran NOTHING on Windows and
+    // the windows job's full-suite step passed in 2 s (measured on #2). Double
+    // quotes are stripped by both cmd.exe and sh.
+    const scripts = JSON.parse(read("package.json")).scripts ?? {};
+    const singleQuoted = Object.entries(scripts)
+      .filter(([, cmd]) => /'/.test(String(cmd)))
+      .map(([name]) => name);
+    expect(singleQuoted).toEqual([]);
+    // …and the model above still reads the root `test` as the fan-out it is.
+    expect(resolvePnpmTest(scripts.test, ".", packages)).toEqual(
+      expect.arrayContaining(["@metis/server", "@metis/ui", "@metis/scripts"]),
+    );
   });
 
   it("keeps the ui suite in `ui` and the SQLite server suite out of `postgres-adapter`", () => {

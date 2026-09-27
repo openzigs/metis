@@ -12,7 +12,7 @@
   "scripts": {
     "dev": "pnpm -r --parallel --filter ./server --filter ./ui run dev",
     "build": "pnpm db:generate && pnpm -r --filter ./packages/shared --filter ./packages/ui-kit --filter ./server --filter ./ui run build",
-    "test": "pnpm -r --filter '!@metis/e2e' run test",
+    "test": "pnpm -r --filter \"!@metis/e2e\" run test",
     "lint": "node scripts/lib/check-no-nul.mjs && node scripts/verify-no-company-identifiers.mjs && node scripts/verify-license-metadata.mjs && node scripts/verify-cla-workflow.mjs && eslint . --max-warnings=0",
     "lint:no-nul": "node scripts/lib/check-no-nul.mjs",
     "identifiers:verify": "node scripts/verify-no-company-identifiers.mjs",
