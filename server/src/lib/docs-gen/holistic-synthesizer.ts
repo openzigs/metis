@@ -59,11 +59,17 @@ import {
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { resolveClaimModelOverride } from "../ai/claim-model-config.js";
 import {
+  detectRepetitionLoop,
   detectTruncation,
   describeTruncation,
   mergeTruncation,
   type TruncationDetection,
 } from "./truncation.js";
+import {
+  MinedLineIndex,
+  minedLineSources,
+  type MinedLineSource,
+} from "./grounding/mined-line-sources.js";
 import {
   resolveClaimMaxOutputTokens,
   resolveFactsMaxOutputTokens,
@@ -1089,6 +1095,14 @@ export interface ModuleFacts {
    * section directly, independent of whether the LLM repeated them in `facts`.
    */
   minedRules?: PersistedMinedRule[];
+  /**
+   * #166 — the code line(s) each mined rule cites, captured while Phase 1 had
+   * the module's files in memory, with a hash of each file's content. The
+   * faithfulness judge checks a claim naming a rule's `file:line` against this
+   * code rather than the facts text that summarises it. Not persisted: rebuilt
+   * from the files every run.
+   */
+  minedRuleSources?: MinedLineSource[];
   /**
    * #156 — true when a Phase-1 reply was still cut off by the output-token cap
    * after its chunk was split down as far as it goes (a single line range of
@@ -2393,15 +2407,20 @@ export async function extractModuleFacts(
     chunk: Phase1Unit[],
     part: string | null,
     depth: number,
+    /** #166 — an enclosing chunk was already split because its reply looped. */
+    loopSplit = false,
   ): Promise<Array<{ text: string; truncated: boolean }>> => {
     const messages = buildMessages(chunk, part);
     const cacheKey = chunkCacheKey(messages);
-    const splitAndExtract = async (): Promise<Array<{ text: string; truncated: boolean }>> => {
+    const splitAndExtract = async (
+      forLoop = false,
+    ): Promise<Array<{ text: string; truncated: boolean }>> => {
       const [first, second] = splitPhase1Chunk(chunk)!;
       const base = part ?? "1";
+      const childLoopSplit = loopSplit || forLoop;
       return [
-        ...(await extractChunk(first, `${base}.1`, depth + 1)),
-        ...(await extractChunk(second, `${base}.2`, depth + 1)),
+        ...(await extractChunk(first, `${base}.1`, depth + 1, childLoopSplit)),
+        ...(await extractChunk(second, `${base}.2`, depth + 1, childLoopSplit)),
       ];
     };
     if (cacheable) {
@@ -2410,10 +2429,15 @@ export async function extractModuleFacts(
           where: { projectId_cacheKey: { projectId, cacheKey } },
         });
         const isMarker = cached?.facts === PHASE1_SPLIT_MARKER;
+        // #166 — a loop row from another detector version: fall through.
+        const loopPrefix = cached ? phase1LoopPrefix(cached.facts) : null;
         // A remembered split is used only when this chunk can still be split;
         // otherwise (split rules changed) the marker is stale: never return it
         // as facts — fall through to the model.
-        const usable = cached && (!isMarker || shouldSplitPhase1Chunk(chunk, depth, limits));
+        const usable =
+          cached &&
+          loopPrefix !== "stale" &&
+          (!isMarker || shouldSplitPhase1Chunk(chunk, depth, limits));
         if (cached && usable) {
           counters.cacheHits += 1;
           prisma.docsGenFactCache
@@ -2425,6 +2449,13 @@ export async function extractModuleFacts(
           // A remembered split: this chunk's reply ran past the cap last time,
           // so go straight to its halves instead of paying for the cut-off again.
           if (isMarker) return splitAndExtract();
+          // #166 — a remembered repetition loop: its usable prefix, still
+          // reported as cut off, never the model again for the same input.
+          if (loopPrefix !== null) {
+            counters.truncated += 1;
+            for (const k of leafSymbols(chunk)) truncatedFns.add(k);
+            return [{ text: loopPrefix, truncated: true }];
+          }
           for (const k of leafSymbols(chunk)) extractedFns.add(k);
           return [{ text: cached.facts, truncated: false }];
         }
@@ -2455,6 +2486,41 @@ export async function extractModuleFacts(
     }
     if (reply.truncation.truncated) {
       const split = shouldSplitPhase1Chunk(chunk, depth, limits);
+      // #166 — a reply cut off because the model was repeating itself is not
+      // short of room, but the files it never reached are still unread, so a
+      // looping chunk that can be split is split ONCE (below): each half is
+      // asked on its own, and the split marker means the loop is paid for
+      // once. A half that loops again — or a chunk that cannot be split —
+      // keeps the part before the loop, remembered under its cache key
+      // (prompt, model, cap, config and detector version) so the next run
+      // reuses it, even when empty, until any of those change.
+      const loop = detectRepetitionLoop(reply.text);
+      if (loop && (!split || loopSplit)) {
+        log.warn(
+          "Phase 1 chunk cut off in a repetition loop; keeping the text before the loop, not re-extracting",
+          {
+            modulePath: m.dir,
+            moduleName,
+            part,
+            depth,
+            replyChars: reply.text.length,
+            keptChars: loop.usablePrefix.length,
+            repeats: loop.repeats,
+            maxTokens,
+          },
+        );
+        counters.truncated += 1;
+        for (const k of leafSymbols(chunk)) truncatedFns.add(k);
+        if (cacheable) {
+          await writeChunkRow(
+            cacheKey,
+            chunk,
+            `${PHASE1_LOOP_MARKER}\n${loop.usablePrefix}`,
+            reply.usage,
+          );
+        }
+        return [{ text: loop.usablePrefix, truncated: true }];
+      }
       log.warn(
         split
           ? "Phase 1 chunk cut off by the output cap; splitting it and re-extracting each half"
@@ -2471,11 +2537,12 @@ export async function extractModuleFacts(
           maxTokens,
           finishReason: reply.truncation.reason,
           signals: reply.truncation.signals,
+          repetitionLoop: loop !== null,
         },
       );
       if (split) {
         if (cacheable) await writeChunkRow(cacheKey, chunk, PHASE1_SPLIT_MARKER, reply.usage);
-        return splitAndExtract();
+        return splitAndExtract(loop !== null);
       }
       counters.truncated += 1;
       for (const k of leafSymbols(chunk)) truncatedFns.add(k);
@@ -2570,6 +2637,7 @@ export async function extractModuleFacts(
     dataLineage,
     sourceUnavailable,
     minedRules,
+    ...(minedRules.length > 0 ? { minedRuleSources: minedLineSources(minedRules, fileLines) } : {}),
     phase1Coverage: coverage,
     ...(skippedFiles.length > 0 ? { phase1SkippedFiles: skippedFiles } : {}),
     ...(skippedDirectories.length > 0 ? { phase1SkippedDirectories: skippedDirectories } : {}),
@@ -2630,6 +2698,34 @@ export function summarizePhase1Coverage(facts: readonly ModuleFacts[]): Phase1Co
  * on its own) instead of paying for the cut-off reply again. Never facts.
  */
 export const PHASE1_SPLIT_MARKER = "[[phase1: chunk split — reply exceeded the output cap]]";
+
+/**
+ * #166 — the first line of a fact-cache row holding the usable prefix of a
+ * reply cut off in a repetition loop. The row is reused (as truncated facts)
+ * for the same chunk key, so the loop is not paid for on every run; the key
+ * covers the prompt, model, output cap and effective config, so changing any
+ * of them extracts afresh.
+ */
+export const PHASE1_LOOP_MARKER_PREFIX = "[[phase1: reply cut off in a repetition loop";
+/**
+ * The detector's version is part of the marker: a row written under an older
+ * {@link detectRepetitionLoop} is stale (its "loop" may not be one) and is
+ * never reused — the chunk is extracted afresh. Bump it whenever the detector's
+ * verdict can change.
+ */
+export const PHASE1_LOOP_DETECTOR_VERSION = 2;
+export const PHASE1_LOOP_MARKER = `${PHASE1_LOOP_MARKER_PREFIX} — detector v${PHASE1_LOOP_DETECTOR_VERSION}, prefix kept]]`;
+
+/**
+ * The facts of a current {@link PHASE1_LOOP_MARKER} row (possibly empty),
+ * `"stale"` for a loop row from another detector version, or `null` for any
+ * other row.
+ */
+function phase1LoopPrefix(facts: string): string | "stale" | null {
+  if (facts.startsWith(`${PHASE1_LOOP_MARKER}\n`))
+    return facts.slice(PHASE1_LOOP_MARKER.length + 1);
+  return facts.startsWith(PHASE1_LOOP_MARKER_PREFIX) ? "stale" : null;
+}
 
 const PHASE1_SYSTEM_MESSAGE = `You are a senior software analyst. You will be given source code from one module of a larger system. Extract a COMPREHENSIVE, STRUCTURED set of facts about this module. Your output will be combined with facts from many other modules to produce a holistic document.
 
@@ -3124,6 +3220,7 @@ function gradeFaithfulness(
         sectionLabel,
         result.unparseable,
         result.truncated ? "truncated" : undefined,
+        result.verified && result.totalClaims > 0,
       )
     : null;
   if (unparseableWarning) {
@@ -3188,7 +3285,12 @@ function gradeFaithfulness(
   //     source" — the gap is mandated structural inference, not fabrication.
   //   - literal (Business Rules, Integrations): "may be unreliable" — an
   //     unsupported claim genuinely signals fabrication.
-  const tierWarning = buildFaithfulnessWarning(sectionLabel, result, threshold, section);
+  const scored = buildFaithfulnessWarning(sectionLabel, result, threshold, section);
+  // #165 — a section only partly checked keeps saying so below the bar too:
+  // the score covers the checked passages, not the ones that went unchecked.
+  const tierWarning = unparseableWarning
+    ? { ...scored, message: `${scored.message} ${unparseableWarning.message}` }
+    : scored;
   const warning = sample ? markWarningSampled(tierWarning, sample) : tierWarning;
   return { markdown: sectionMarkdown, warning, score };
 }
@@ -3335,6 +3437,7 @@ async function synthesizeBatchedSection(input: {
     const grounding = claimExtractor
       ? mergeFactsIntoContext(input.baseGrounding, batchSources, bundle.factsCharCap)
       : input.baseGrounding;
+    const batchFacts = batch.map((m) => m.entry).join("\n\n---\n\n");
     let result: SectionGroupResult;
     calls += 1;
     try {
@@ -3343,13 +3446,14 @@ async function synthesizeBatchedSection(input: {
         input.meta,
         input.title,
         input.docType,
-        batch.map((m) => m.entry).join("\n\n---\n\n"),
+        batchFacts,
         renderBatchFormulas(group, batch),
         bundle.provider,
         bundle.supportsCaching,
         projectId,
         bundle.tuning,
-        grounding ? renderGroundingBlock(grounding) : "",
+        // #168 — facts already in the batch's facts text are listed by id only.
+        grounding ? renderGroundingBlock(grounding, { factsBlob: batchFacts }) : "",
         input.flowBlob,
         batchNoteFor(group, batch.includes(lead), batch.length, plan.modules.length),
         // A batch reply is never refined: it is one part of a section merged
@@ -3768,6 +3872,8 @@ export async function synthesizeFinalDocument(
     recordUsage({ projectId, sessionId: groundingSessionId, ...tokens });
     noteRunUsage(tokens);
   };
+  // #166 — every mined rule's code line, for the judge (built once per run).
+  const minedLines = new MinedLineIndex(facts.flatMap((f) => f.minedRuleSources ?? []));
   const grounderFor = (bundle: Phase2ProviderBundle): SectionGrounder => {
     const cached = grounderCache.get(bundle);
     if (cached) return cached;
@@ -3820,11 +3926,13 @@ export async function synthesizeFinalDocument(
       ? new FaithfulnessJudge({
           provider: bundle.provider,
           model: bundle.tuning.judgeModel,
-          charBudget: bundle.factsCharCap,
+          // #171 — the judge keeps its OWN evidence budget per batch; tying it
+          // to `factsCharCap` doubled its prompt at a 200k cap.
           promptCaching: bundle.supportsCaching,
           maxTokens: resolveSectionMaxOutputTokens(bundle.tuning.judgeModel),
           ...(judgeFormat ? { responseFormat: judgeFormat } : {}),
           ...(groundingThinkingOff(bundle.tuning.judgeModel) ? { disableThinking: true } : {}),
+          minedLines,
           onUsage: recordGroundingUsage,
         })
       : null;
@@ -3996,7 +4104,11 @@ export async function synthesizeFinalDocument(
         );
       }
 
-      const groundingBlock = sectionGrounding ? renderGroundingBlock(sectionGrounding) : "";
+      // #168 — each module's facts are sent once: the grounding block lists a
+      // `facts:` source already in the facts blob by id, not by text again.
+      const groundingBlock = sectionGrounding
+        ? renderGroundingBlock(sectionGrounding, { factsBlob })
+        : "";
       const prompts = buildSectionPrompts(
         group,
         meta,
@@ -4237,7 +4349,9 @@ export async function synthesizeFinalDocument(
                 esc.factsCharCap,
               );
             }
-            const escBlock = escGrounding ? renderGroundingBlock(escGrounding) : "";
+            const escBlock = escGrounding
+              ? renderGroundingBlock(escGrounding, { factsBlob: escFactsBlob })
+              : "";
             const escMd = await generateSectionGroup(
               group,
               meta,

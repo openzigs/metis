@@ -176,6 +176,20 @@ describe("indexingFailureMessage — transport causes keep their wording (#152)"
     ).toBe(m.INDEXING_PROVIDER_CLOSED_MESSAGE);
   });
 
+  // #165 — embedding calls are not streamed: a reset under `fetch failed`
+  // happened before any response arrived.
+  it("a reset under fetch failed is a close before any response, not a mid-response drop", () => {
+    for (const code of ["ECONNRESET", "EPIPE"]) {
+      expect(indexingFailureMessage(undici("fetch failed", code, `read ${code}`))).toBe(
+        m.INDEXING_PROVIDER_CLOSED_MESSAGE,
+      );
+    }
+    // A reset that ended a body already arriving keeps the drop wording.
+    expect(indexingFailureMessage(undici("terminated", "ECONNRESET", "read ECONNRESET"))).toBe(
+      m.INDEXING_PROVIDER_DROPPED_MESSAGE,
+    );
+  });
+
   it("every transport message is distinct, speaks about indexing, and passes through unchanged", () => {
     const msgs = [
       m.INDEXING_PROVIDER_UNREACHABLE_MESSAGE,

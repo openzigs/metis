@@ -278,6 +278,23 @@ export function isConnectionDropped(err: unknown): boolean {
   return classifyTransportFailure(err) === "dropped";
 }
 
+/**
+ * #165 — true when a reset (`ECONNRESET`/`EPIPE`) sits under undici's
+ * `fetch failed` wrapper, i.e. the connection died before any response. For
+ * generation this stays "dropped" (the local mid-stream retry keys on it); a
+ * caller whose requests are not streamed — indexing's embedding calls — reads
+ * it as "closed before any response" instead.
+ */
+export function isResetBeforeResponse(err: unknown): boolean {
+  const chain = causeChain(err);
+  return chain.some((e, i) => {
+    const code = readCode(e);
+    return (
+      (code === "ECONNRESET" || code === "EPIPE") && chain.slice(0, i).some(isFetchFailedWrapper)
+    );
+  });
+}
+
 const TRANSPORT_MESSAGES: Readonly<Record<TransportFailure, string>> = {
   unreachable: GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
   slow: GENERATION_PROVIDER_SLOW_MESSAGE,

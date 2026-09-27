@@ -333,4 +333,53 @@ describe("renderGroundingBlock", () => {
     expect(block).toContain("dual approval");
     expect(block).toContain("END GROUNDING SOURCES");
   });
+
+  // #168 — a section prompt already carries each module's facts entry in its
+  // EXTRACTED MODULE FACTS; the grounding block must not repeat it.
+  describe("with the prompt's facts blob (#168)", () => {
+    const entryA =
+      "### MODULE: alpha\n(1 classes, 1 methods)\n\nRULES\n- Alpha orders ship in 2 days.";
+    const entryB =
+      "### MODULE: beta\n(1 classes, 1 methods)\n\nRULES\n- Beta invoices are due in 30 days.";
+    const ctx = buildGroundingContext({
+      factsSources: [
+        { moduleDir: "alpha", idx: 0, label: "alpha", text: entryA },
+        { moduleDir: "beta", idx: 1, label: "beta", text: entryB },
+      ],
+      ragChunks: [chunk()],
+    });
+
+    it("lists a facts source already in the blob by id and entry header, not its text", () => {
+      const blob = `${entryA}\n\n---\n\n${entryB}`;
+      const block = renderGroundingBlock(ctx, { factsBlob: blob });
+      expect(block).toContain("[SOURCE id=facts:alpha:0 kind=facts");
+      expect(block).toContain(
+        '(text: the "### MODULE: alpha" entry in EXTRACTED MODULE FACTS above)',
+      );
+      expect(block).not.toContain("Alpha orders ship in 2 days.");
+      expect(block).not.toContain("Beta invoices are due in 30 days.");
+      // Non-facts sources keep their text.
+      expect(block).toContain("Invoices over 1000 require manager approval.");
+      // The prompt as a whole holds each fact once.
+      const prompt = `${blob}\n\n${block}`;
+      expect(prompt.split("Alpha orders ship in 2 days.")).toHaveLength(2);
+    });
+
+    it("keeps the text of a facts source the blob does not hold, so no fact is dropped", () => {
+      const block = renderGroundingBlock(ctx, { factsBlob: entryA });
+      expect(block).not.toContain("Alpha orders ship in 2 days.");
+      expect(block).toContain("Beta invoices are due in 30 days.");
+      // Every fact reaches the prompt: in the blob or in the block.
+      const prompt = `${entryA}\n\n${block}`;
+      for (const fact of ["Alpha orders ship in 2 days.", "Beta invoices are due in 30 days."]) {
+        expect(prompt.split(fact)).toHaveLength(2);
+      }
+    });
+
+    it("renders exactly as before when no blob is given", () => {
+      expect(renderGroundingBlock(ctx, {})).toBe(renderGroundingBlock(ctx));
+      expect(renderGroundingBlock(ctx)).toContain("Alpha orders ship in 2 days.");
+      expect(renderGroundingBlock(ctx)).not.toContain("listed without its text");
+    });
+  });
 });

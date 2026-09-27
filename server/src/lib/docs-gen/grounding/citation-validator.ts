@@ -288,16 +288,18 @@ export async function scoreFaithfulness(
     ctx,
     deps.signal,
   );
-  if (unparseable) {
+  const claimsIncomplete = unparseable
+    ? { unparseable: "claims" as const, ...(truncated ? { truncated: true as const } : {}) }
+    : {};
+  if (unparseable && claims.length === 0) {
     // #117 — "the reply did not parse" is not "the section makes no claims".
     // #152 — and a reply cut off at the output cap says so.
-    return {
-      ...unverifiedResult(section, 0),
-      unparseable: "claims",
-      ...(truncated ? { truncated: true as const } : {}),
-    };
+    return { ...unverifiedResult(section, 0), ...claimsIncomplete };
   }
-  return judgeDecomposedClaims(section, claims, ctx, deps);
+  // #165 — the passages that did parse are still judged; the result keeps the
+  // claims-stage failure so the warning says part of the section went unchecked.
+  const result = await judgeDecomposedClaims(section, claims, ctx, deps);
+  return { ...result, ...claimsIncomplete };
 }
 
 /**
@@ -326,11 +328,13 @@ export async function judgeDecomposedClaims(
   }
 
   const diagnostics = { batches: 0, unparseableBatches: 0, truncatedBatches: 0 };
+  // #171 — each claim's cited sources select the evidence its batch is judged on.
   const verdicts = await deps.judge.judge(
     claims.map((c) => c.claim),
     ctx,
     deps.signal,
     diagnostics,
+    claims.map((c) => c.sourceIds),
   );
   const verdictsUnparseable = {
     ...(diagnostics.unparseableBatches > 0 ? { unparseable: "verdicts" as const } : {}),

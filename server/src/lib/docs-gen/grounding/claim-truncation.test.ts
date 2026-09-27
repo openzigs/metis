@@ -180,7 +180,10 @@ describe("ClaimExtractor — a reply cut off at the output cap (#152)", () => {
     expect(result.claims).toHaveLength(1);
   });
 
-  it("stops at the first batch that stays unparseable instead of spending the rest", async () => {
+  // #165 — was "stops at the first batch": one failed passage no longer costs
+  // the others' claims, but a model that fails two passages in a row is stuck,
+  // and the rest of the section is not asked.
+  it("stops after two passages in a row stay cut off instead of spending the rest", async () => {
     const { markdown } = formulasSection();
     const { provider, calls } = alwaysTruncated();
     // Tiny cap: every batch — and every split of it — is cut off.
@@ -188,9 +191,11 @@ describe("ClaimExtractor — a reply cut off at the output cap (#152)", () => {
     const result = await extractor.decompose(markdown, ctx);
     expect(result).toEqual({ claims: [], unparseable: true, truncated: true });
     const batches = splitForClaimExtraction(markdown, DEFAULT_CLAIM_BATCH_CHARS);
-    // Only the first batch (and its splits) were asked; the others never were.
+    expect(batches.length).toBeGreaterThan(2);
+    // Two passages at two calls each (#165), and the third never asked.
+    expect(calls).toHaveLength(4);
     const asked = calls.map((c) => String(c.messages[1].content));
-    expect(asked.some((u) => u.includes(batches[1].slice(0, 80)))).toBe(false);
+    expect(asked.some((u) => u.includes(batches[2].slice(0, 80)))).toBe(false);
   });
 
   it("a later batch in json_object mode stays in json_object once json_schema was ignored", async () => {
@@ -238,17 +243,19 @@ describe("splitForClaimExtraction (#152)", () => {
     expect(chunks[1].startsWith("### B")).toBe(true);
   });
 
-  it("never splits inside a fenced block", () => {
+  it("never splits a fenced block that fits the budget", () => {
     const fence = ["```", "x = 1", "", "y = 2", "", "z = 3", "```"].join("\n");
     const text = `Intro line.\n\n${fence}\n\nOutro line.`;
-    const chunks = splitForClaimExtraction(text, 15);
+    const chunks = splitForClaimExtraction(text, 35);
+    expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.some((c) => c.includes(fence))).toBe(true);
   });
 
   it("never splits a fence that follows its lead-in line without a blank line", () => {
     const fence = ["```", "a = 1", "b = 2", "c = 3", "```"].join("\n");
     const block = `Formula:\n${fence}`;
-    const chunks = splitForClaimExtraction(`Intro line.\n\n${block}`, 20);
+    const chunks = splitForClaimExtraction(`Intro line.\n\n${block}`, 40);
+    expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.some((c) => c.includes(fence))).toBe(true);
   });
 
