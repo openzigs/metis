@@ -21,6 +21,10 @@
  * path), contributing path-keyed rules that render into the Phase-1 prompt like
  * the other miners. See holistic-synthesizer.ts `mineSqlForCloneDir`.
  *
+ * Multi-line constructs — a CHECK condition, a view's WHERE filter, an IF whose
+ * THEN is on a later line — are joined into one logical line first (#170,
+ * {@link joinLogicalLine}: bounded look-ahead, no regex, linear time).
+ *
  * Strategy: a deterministic line-local literal scanner is the SOLE producer of
  * the {@link MinedSqlRule}s returned by {@link mineSqlRules}. It gives precise
  * file:line provenance (which the AST cannot cleanly map back to source lines)
@@ -31,6 +35,7 @@
  * (no `RegExp` constructor on non-literal input).
  */
 import nodeSqlParser from "node-sql-parser";
+import { joinLogicalLine, opensBracket } from "./rule-miner-continuation.js";
 
 const { Parser } = nodeSqlParser;
 
@@ -74,10 +79,32 @@ const DEFAULT_RE = /\bDEFAULT\s+('[^']*'|"[^"]*"|[\w.()-]+)/i;
 const TRIGGER_RE = /\bCREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+"?([A-Za-z_]\w*)"?/i;
 // CREATE VIEW <name> ... — view detection (the WHERE may be on a later line).
 const VIEW_RE = /\bCREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+"?([A-Za-z_]\w*)"?/i;
-// WHERE <condition> — capture the filter expression (line-local).
-const WHERE_RE = /\bWHERE\s+(.+?)\s*;?\s*$/i;
+// WHERE <condition> — capture the filter expression; the trailing `;` and
+// whitespace are trimmed in code ({@link whereCondition}). `(.+?)\s*;?\s*$` let
+// three quantifiers share a whitespace run: cubic on a long one (#170).
+const WHERE_RE = /\bWHERE\s+([^\n]+)$/i;
 // IF <cond> THEN — plpgsql / proc conditional.
 const PROC_IF_RE = /^\s*(?:ELSE\s*)?IF\s+(.+?)\s+THEN\b/i;
+// #170 — an IF whose THEN is on a later line: `IF a > 1` ⏎ `AND b < 2 THEN`.
+const PROC_IF_HEAD_RE = /^\s*(?:ELSE\s*)?IF\s/i;
+const THEN_RE = /\bTHEN\b/i;
+const hasThen = (text: string): boolean => THEN_RE.test(text);
+const CHECK_HEAD_RE = /\bCHECK\s*\(/i;
+// #170 — a boolean filter continued on the next line: it ends in AND / OR / an
+// operator, or the next line starts with AND / OR / NOT. Anchored, single token.
+const SQL_TRAILING_OP_RE = /(?:\bAND|\bOR|\bNOT|[(=<>,])$/i;
+const SQL_LEADING_OP_RE = /^(?:AND|OR|NOT)\b/i;
+
+function sqlBooleanContinues(last: string, next: string): boolean {
+  return !last.endsWith(";") && (SQL_TRAILING_OP_RE.test(last) || SQL_LEADING_OP_RE.test(next));
+}
+
+/** The WHERE condition without its trailing `;` / whitespace. */
+function whereCondition(captured: string): string {
+  let c = captured.trimEnd();
+  if (c.endsWith(";")) c = c.slice(0, -1).trimEnd();
+  return c;
+}
 // CREATE FUNCTION / PROCEDURE — to scope proc conditionals.
 const PROC_DECL_RE = /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"?([A-Za-z_]\w*)"?/i;
 // Start of a DML (data-manipulation) statement. Data rows are NOT business
@@ -205,12 +232,19 @@ export function mineSqlRules(
     if (procDecl) currentProc = procDecl[1];
 
     // ---- 1. CHECK constraint ----
-    const checkMatch = CHECK_RE.exec(line);
+    // #170 — `CHECK (` ⏎ `amount > 0` ⏎ `AND amount < 1000)`: the condition is
+    // read to its closing `)` across lines (bounded look-ahead).
+    const checkJoin =
+      CHECK_HEAD_RE.test(line) && opensBracket(line, "--")
+        ? joinLogicalLine(lines, i, { comment: "--" })
+        : null;
+    const checkText = checkJoin ? checkJoin.text : line;
+    const checkMatch = CHECK_RE.exec(checkText);
     if (checkMatch) {
       const cond = balancedParen(checkMatch[1]);
       rules.push({
         kind: "check",
-        expression: truncate(line, MAX_EXPR),
+        expression: truncate(checkText, MAX_EXPR),
         summary: `Value rule (CHECK): ${truncate(cond, 150)}`,
         filePath,
         line: lineNum,
@@ -319,12 +353,17 @@ export function mineSqlRules(
       const viewName = VIEW_RE.exec(line)?.[1] ?? "";
       // Scan this + the next several lines for a WHERE clause.
       for (let j = i; j < Math.min(i + 12, lines.length); j++) {
-        const wm = WHERE_RE.exec(lines[j]);
+        // #170 — `WHERE a = 1` ⏎ `AND b = 2;` is read as one filter.
+        const wJoin = WHERE_RE.test(lines[j])
+          ? joinLogicalLine(lines, j, { comment: "--", continues: sqlBooleanContinues })
+          : null;
+        const wText = wJoin ? wJoin.text : lines[j];
+        const wm = WHERE_RE.exec(wText);
         if (wm) {
           rules.push({
             kind: "view-filter",
-            expression: truncate(lines[j].trim(), MAX_EXPR),
-            summary: `View \`${viewName}\` includes rows where ${truncate(wm[1], 140)}`,
+            expression: truncate(wText.trim(), MAX_EXPR),
+            summary: `View \`${viewName}\` includes rows where ${truncate(whereCondition(wm[1]), 140)}`,
             filePath,
             line: baseLine + j,
             context: ctx,
@@ -337,11 +376,17 @@ export function mineSqlRules(
     }
 
     // ---- 10. proc/function conditional (IF ... THEN) ----
-    const ifMatch = PROC_IF_RE.exec(line);
+    // #170 — an IF whose THEN is on a later line is read up to the THEN.
+    const ifJoin =
+      PROC_IF_HEAD_RE.test(line) && !hasThen(line)
+        ? joinLogicalLine(lines, i, { comment: "--", until: hasThen })
+        : null;
+    const ifText = ifJoin ? ifJoin.text : line;
+    const ifMatch = PROC_IF_RE.exec(ifText);
     if (ifMatch) {
       rules.push({
         kind: "proc-conditional",
-        expression: truncate(line, MAX_EXPR),
+        expression: truncate(ifText, MAX_EXPR),
         summary: `Branch when ${truncate(ifMatch[1], 140)}`,
         filePath,
         line: lineNum,

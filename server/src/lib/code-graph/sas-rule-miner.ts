@@ -46,6 +46,7 @@ import {
   type SqlLineageAccess,
   type SqlLineageClient,
 } from "./sql-lineage-client.js";
+import { joinLogicalLine } from "./rule-miner-continuation.js";
 
 export interface MinedSasRule {
   kind:
@@ -106,6 +107,11 @@ const MACRO_DECL_RE = /^\s*%macro\s+([A-Za-z_][A-Za-z0-9_]{0,63})\s*(?:\(([^)]*)
 /** Cap on a single rendered expression so one runaway line can't blow the budget. */
 const MAX_EXPR = 200;
 
+// #170 — an IF / ELSE IF / WHERE statement whose condition continues past this
+// line (no `;` yet) is read up to its terminating `;` as one logical line.
+const CONTINUABLE_STMT_RE = /^(?:else\s+)?if\s|^where\s/i;
+const statementEnded = (text: string): boolean => text.includes(";");
+
 function truncate(s: string, n: number): string {
   const t = s.replace(/\s+/g, " ").trim();
   return t.length <= n ? t : `${t.slice(0, n - 1)}…`;
@@ -136,16 +142,23 @@ export function mineSasRules(
     const lineNum = baseLine + i;
     if (line.length === 0) continue;
 
-    const lower = line.toLowerCase();
+    // #170 — `if a > 1` ⏎ `and b < 2 then flag = 1;` is one statement: join it
+    // to its `;` (bounded look-ahead; `null` keeps the physical line).
+    const joined =
+      CONTINUABLE_STMT_RE.test(line) && !line.includes(";")
+        ? joinLogicalLine(lines, i, { until: statementEnded })
+        : null;
+    const stmt = joined ? joined.text : line;
+    const lower = stmt.toLowerCase();
 
     // ---- 1. Conditional IF/THEN (and ELSE IF) — branch logic ----
-    const cond = CONDITIONAL_IF_RE.exec(line);
+    const cond = CONDITIONAL_IF_RE.exec(stmt);
     if (cond) {
       const expr = cond[1];
       const consequence = cond[2].trim().replace(/;?\s*$/, "");
       rules.push({
         kind: "conditional",
-        expression: truncate(line, MAX_EXPR),
+        expression: truncate(stmt, MAX_EXPR),
         summary: `When ${truncate(expr, 120)} then ${truncate(consequence || "(branch)", 80)}`,
         filePath,
         line: lineNum,
@@ -155,12 +168,12 @@ export function mineSasRules(
     }
 
     // Bare ELSE consequence (paired with a preceding IF/THEN).
-    if (lower.startsWith("else ") && !/^else\s+if\b/i.test(line)) {
-      const m = ELSE_RE.exec(line);
+    if (lower.startsWith("else ") && !/^else\s+if\b/i.test(stmt)) {
+      const m = ELSE_RE.exec(stmt);
       if (m) {
         rules.push({
           kind: "conditional",
-          expression: truncate(line, MAX_EXPR),
+          expression: truncate(stmt, MAX_EXPR),
           summary: `Otherwise ${truncate(m[1], 120)}`,
           filePath,
           line: lineNum,
@@ -172,11 +185,11 @@ export function mineSasRules(
 
     // ---- 2. Subsetting IF (no THEN) — pure row filter ----
     if (lower.startsWith("if ")) {
-      const m = SUBSETTING_IF_RE.exec(line);
-      if (m && !/\bthen\b/i.test(line)) {
+      const m = SUBSETTING_IF_RE.exec(stmt);
+      if (m && !/\bthen\b/i.test(stmt)) {
         rules.push({
           kind: "subsetting-if",
-          expression: truncate(line, MAX_EXPR),
+          expression: truncate(stmt, MAX_EXPR),
           summary: `Keep observation only when ${truncate(m[1], 140)}`,
           filePath,
           line: lineNum,
@@ -188,11 +201,11 @@ export function mineSasRules(
 
     // ---- 3. WHERE filter ----
     if (lower.startsWith("where ")) {
-      const m = WHERE_RE.exec(line);
+      const m = WHERE_RE.exec(stmt);
       if (m) {
         rules.push({
           kind: "where-filter",
-          expression: truncate(line, MAX_EXPR),
+          expression: truncate(stmt, MAX_EXPR),
           summary: `Select rows where ${truncate(m[1], 140)}`,
           filePath,
           line: lineNum,
@@ -203,7 +216,7 @@ export function mineSasRules(
     }
 
     // ---- 4. RETAIN — carried state across iterations ----
-    if (lower.startsWith("retain ")) {
+    if (line.toLowerCase().startsWith("retain ")) {
       const m = RETAIN_RE.exec(line);
       if (m) {
         rules.push({

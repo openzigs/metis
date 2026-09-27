@@ -27,9 +27,13 @@
  * rule, even when its condition compares against a constant.
  *
  * Deterministic line-local passes (no LLM call), mirroring {@link mineJavaRules}
- * / {@link mineTsRules}. Semgrep-safe: every regex is a literal (no `RegExp`
+ * / {@link mineTsRules}. A guard, guard helper, throw or ternary that spans
+ * lines is joined into one logical line first (#170, {@link joinLogicalLine}:
+ * bounded look-ahead, no regex, linear time). Semgrep-safe: every regex is a literal (no `RegExp`
  * constructor on non-literal input) and none nests unbounded quantifiers.
  */
+
+import { joinLogicalLine, opensBracket, operatorContinues } from "./rule-miner-continuation.js";
 
 export interface MinedCsRule {
   kind:
@@ -100,6 +104,9 @@ const LOG_CALL_RE =
 // A condition that only tests whether logging is enabled.
 const LOG_LEVEL_COND_RE = /\bIsEnabled\s*\(|\bLogLevel\.|\bIs(?:Debug|Trace|Info)Enabled\b/;
 const EXIT_RE = /^\s*(?:throw\b|return\b)/;
+// #170 — the start of an `if (` header, to decide whether to join a condition
+// that continues onto later lines.
+const IF_HEAD_RE = /^\s*(?:\}\s*)?(?:else\s+)?if\s*\(/;
 // FluentValidation rule entry points.
 const FLUENT_START_RE = /\bRuleFor(?:Each)?\s*\(\s*\w+\s*=>\s*\w+\.([\w.]+)\s*\)/;
 const FLUENT_VALIDATORS = new Set([
@@ -204,6 +211,30 @@ function ifBody(lines: string[], headerIdx: number): string[] {
     if (depth <= 0) break;
   }
   return body;
+}
+
+/**
+ * The condition of `x = cond ? a : b`: from the first `=` not followed by `=` or
+ * `?`, up to the next `?` that is not a `??`. Same result (trimmed) as the regex
+ * it replaces, `/=\s*([^=?][^?]*?)\s*\?(?!\?)/`, which was cubic on a run of
+ * `=x` pairs followed by whitespace (#170). One pass: linear.
+ */
+function ternaryCondition(text: string): string | null {
+  let from = 0;
+  for (;;) {
+    const eq = text.indexOf("=", from);
+    if (eq === -1 || eq + 1 >= text.length) return null;
+    const first = text[eq + 1];
+    if (first === "=" || first === "?") {
+      from = eq + 1;
+      continue;
+    }
+    const q = text.indexOf("?", eq + 2);
+    if (q === -1) return null;
+    if (text[q + 1] !== "?") return text.slice(eq + 1, q).trim();
+    // `??` — no `=` before it can reach past it; resume after it.
+    from = q + 2;
+  }
 }
 
 function isLoggingOnly(statements: string[]): boolean {
@@ -419,27 +450,44 @@ export function mineCsRules(
       // No recognised validator: fall through so other passes still see the line.
     }
 
+    // #170 — a statement whose parentheses stay open at the end of this line
+    // (`ArgumentOutOfRangeException.ThrowIfNegative(` ⏎ `qty);`, a multi-line
+    // `throw new X(`, an `if (` split across lines) is read as one logical line
+    // anchored here; `null` keeps the physical line.
+    const logical = opensBracket(raw) ? joinLogicalLine(lines, i, { comment: "//" }) : null;
+    const stmt = logical ? logical.text : raw;
+    const stmtLine = logical ? logical.text : line;
+    // Only a construct that STARTS on this physical line is this line's rule.
+    const headLen = logical ? line.length : Infinity;
+    const starts = (m: RegExpExecArray | null): m is RegExpExecArray =>
+      m !== null && m.index < headLen;
+
     // ---- 4. .NET guard helpers ----
-    const hMatch = THROW_HELPER_RE.exec(raw);
+    const hRaw = THROW_HELPER_RE.exec(stmt);
+    const hMatch = starts(hRaw) ? hRaw : null;
     if (hMatch) {
       push(
         "precondition",
-        line,
+        stmtLine,
         `${hMatch[2]} guard on ${truncate(hMatch[3], 120)} (${hMatch[1]})`,
         i,
       );
       continue;
     }
-    const gMatch = GUARD_AGAINST_RE.exec(raw);
+    const gRaw = GUARD_AGAINST_RE.exec(stmt);
+    const gMatch = starts(gRaw) ? gRaw : null;
     if (gMatch) {
-      push("precondition", line, `Guard against ${gMatch[1]}: ${truncate(gMatch[2], 120)}`, i);
+      push("precondition", stmtLine, `Guard against ${gMatch[1]}: ${truncate(gMatch[2], 120)}`, i);
       continue;
     }
 
     // ---- 5. throws ----
     const tMatch = THROW_RE.exec(raw);
     if (tMatch) {
-      const msg = tMatch[2] ? stripQuotes(tMatch[2]) : "";
+      // #170 — `throw new X(` ⏎ `"message")`: read the message off the next line.
+      const tFull = !tMatch[2] && logical ? THROW_RE.exec(stmt) : null;
+      const msgLit = tMatch[2] ?? (tFull && tFull.index < headLen ? tFull[2] : undefined);
+      const msg = msgLit ? stripQuotes(msgLit) : "";
       push("throw", line, `Throws ${tMatch[1]}${msg ? `: ${truncate(msg, 140)}` : ""}`, i);
       // Fall through — an inline `if (...) throw` also encodes the guard.
     }
@@ -481,42 +529,53 @@ export function mineCsRules(
     }
 
     // ---- 7. guard clauses ----
-    const inline = INLINE_IF_RE.exec(raw);
+    // #170 — an `if (` condition split across lines is read whole; its body is
+    // read after the header's last line.
+    const isHeader = logical !== null && IF_HEAD_RE.test(raw);
+    const guardText = isHeader ? stmt : raw;
+    const guardLine = isHeader ? stmtLine : line;
+    const inline = INLINE_IF_RE.exec(guardText);
     if (inline) {
-      push("guard", line, `Rejects when ${truncate(inline[1], 140)}`, i);
+      push("guard", guardLine, `Rejects when ${truncate(inline[1], 140)}`, i);
       continue;
     }
-    const inlineStmt = INLINE_STMT_IF_RE.exec(raw);
-    if (inlineStmt && !IF_RE.test(raw)) {
+    const inlineStmt = INLINE_STMT_IF_RE.exec(guardText);
+    if (inlineStmt && !IF_RE.test(guardText)) {
       // `if (x > 10) DoSomething();` — a rule only when it is not a log line.
       const cond = inlineStmt[1];
       if (!LOG_CALL_RE.test(inlineStmt[2]) && !LOG_LEVEL_COND_RE.test(cond)) {
         if (comparesToConstant(cond)) {
-          push("guard", line, `Branches on threshold ${truncate(cond, 140)}`, i);
+          push("guard", guardLine, `Branches on threshold ${truncate(cond, 140)}`, i);
         }
       }
       continue;
     }
-    const ifMatch = IF_RE.exec(raw);
+    const ifMatch = IF_RE.exec(guardText);
     if (ifMatch) {
       const cond = ifMatch[1];
       if (LOG_LEVEL_COND_RE.test(cond)) continue;
-      const body = ifBody(lines, i);
+      const body = ifBody(lines, isHeader ? logical.end : i);
       if (isLoggingOnly(body)) continue;
       const exits = exitsAfterLogging(body);
       if (exits) {
-        push("guard", line, `Rejects/exits when ${truncate(cond, 140)}`, i);
+        push("guard", guardLine, `Rejects/exits when ${truncate(cond, 140)}`, i);
       } else if (comparesToConstant(cond)) {
-        push("guard", line, `Branches on threshold ${truncate(cond, 140)}`, i);
+        push("guard", guardLine, `Branches on threshold ${truncate(cond, 140)}`, i);
       }
       continue;
     }
 
     // ---- 8. threshold ternary: `var fee = total > FreeShippingMin ? 0 : 5;` ----
-    if (!tMatch && line.includes("?") && line.includes(":")) {
-      const condMatch = /=\s*([^=?][^?]*?)\s*\?(?!\?)/.exec(line);
-      if (condMatch && comparesToConstant(condMatch[1])) {
-        push("guard", line, `Branches on threshold ${truncate(condMatch[1], 140)}`, i);
+    // #170 — `= cond` ⏎ `? a` ⏎ `: b` (or `=` ⏎ `cond ? a : b`) is read whole.
+    const ternary =
+      !tMatch && line.includes("=") && !(line.includes("?") && line.includes(":"))
+        ? joinLogicalLine(lines, i, { comment: "//", continues: operatorContinues })
+        : null;
+    const tern = ternary ? ternary.text : line;
+    if (!tMatch && tern.includes("?") && tern.includes(":")) {
+      const cond = ternaryCondition(tern);
+      if (cond !== null && comparesToConstant(cond)) {
+        push("guard", tern, `Branches on threshold ${truncate(cond, 140)}`, i);
       }
     }
   }

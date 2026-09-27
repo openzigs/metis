@@ -542,6 +542,53 @@ function isMemberCapable(sym: ResolvableSymbol): boolean {
   return sym.kind === "method" || (sym.language === "go" && sym.kind === "function");
 }
 
+/**
+ * Languages whose classes a Kotlin constructor call can instantiate: Kotlin's
+ * own and, on the JVM, Java's.
+ */
+export const KOTLIN_CONSTRUCTIBLE_LANGUAGES: ReadonlySet<string> = new Set(["kt", "java"]);
+
+/**
+ * #170 — Kotlin has no `new`, so `Order(1)` (a constructor) and `Column { }` /
+ * `Text("…")` (Compose functions) are the same call shape. The parser records
+ * every capitalised Kotlin call as a candidate constructor — a `references`
+ * edge with `metadata.via === "new"`. At ingest, once every project symbol is
+ * known, this keeps it a constructor reference only when a Kotlin or Java
+ * `class` of that name exists in the project, and otherwise turns it into the
+ * `calls` edge it is. Edges of any other language pass through unchanged.
+ *
+ * `index` holds only the files parsed on this run; on an incremental ingest a
+ * class in an unchanged file is not in it, so `persistedClassNames` carries
+ * the names of such classes read from the database (#170 review).
+ */
+export function reclassifyKotlinConstructorCall<M>(
+  edge: { kind: string; toQualifiedName: string; metadata?: M },
+  language: string,
+  index: ResolutionIndex,
+  persistedClassNames: ReadonlySet<string> = new Set(),
+): { kind: string; metadata: M | undefined } {
+  const unchanged = { kind: edge.kind, metadata: edge.metadata };
+  if (!isKotlinConstructorCandidate(edge, language)) return unchanged;
+  const isClass =
+    persistedClassNames.has(edge.toQualifiedName) ||
+    (index.nameToSymbols.get(edge.toQualifiedName) ?? []).some(
+      (s) => s.kind === "class" && KOTLIN_CONSTRUCTIBLE_LANGUAGES.has(s.language),
+    );
+  return isClass ? unchanged : { kind: "calls", metadata: undefined };
+}
+
+/** A capitalised Kotlin call the parser recorded as a candidate constructor. */
+export function isKotlinConstructorCandidate(
+  edge: { kind: string; metadata?: unknown },
+  language: string,
+): boolean {
+  return (
+    language === "kt" &&
+    edge.kind === "references" &&
+    (edge.metadata as { via?: unknown } | undefined)?.via === "new"
+  );
+}
+
 /** Languages where a bare `foo()` inside a class is an implicit `this.foo()`. */
 const IMPLICIT_THIS_LANGUAGES: ReadonlySet<string> = new Set(["java", "cs", "kt"]);
 

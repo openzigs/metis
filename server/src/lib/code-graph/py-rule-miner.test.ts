@@ -203,3 +203,68 @@ describe("renderMinedPyRules", () => {
     expect(out).toMatch(/truncated for prompt budget/);
   });
 });
+
+describe("minePyRules — conditions that span lines (#170)", () => {
+  it("mines a parenthesised multi-line guard whole, anchored at the `if` line", () => {
+    const src = [
+      "def ftp(athlete):",
+      "    if (",
+      "        athlete.threshold_power is None",
+      "        or athlete.threshold_power <= 0",
+      "    ):",
+      '        raise ValueError("threshold power must be positive")',
+    ].join("\n");
+    const rules = minePyRules(src, FILE, 1);
+    const guard = rules.find((r) => r.kind === "guard")!;
+    expect(guard.line).toBe(2);
+    expect(guard.summary).toBe(
+      "Rejects when ( athlete.threshold_power is None or athlete.threshold_power <= 0 ) (then raise)",
+    );
+    expect(rules.find((r) => r.kind === "raise")?.line).toBe(6);
+  });
+
+  it("follows a backslash continuation and an open bracket on `elif`", () => {
+    const src = [
+      "def price(total, tier):",
+      '    if tier == "gold" and \\',
+      "            total > 1000:",
+      "        return total * 0.8",
+      "    elif (total > 500 and",
+      '          tier != "bronze"):',
+      "        return total * 0.9",
+    ].join("\n");
+    const rules = minePyRules(src, FILE, 1).filter((r) => r.kind === "early-return");
+    expect(rules.map((r) => [r.line, r.summary])).toEqual([
+      [2, 'Early exit when tier == "gold" and total > 1000'],
+      [5, 'Early exit when (total > 500 and tier != "bronze")'],
+    ]);
+  });
+
+  it("reads a multi-line raise and a multi-line assert", () => {
+    const src = [
+      "raise NotImplementedError(",
+      '    "unsupported tier"',
+      ")",
+      "assert (",
+      "    total >= 0",
+      '), "total must be non-negative"',
+    ].join("\n");
+    const rules = minePyRules(src, FILE, 1);
+    expect(rules.map((r) => [r.kind, r.line, r.summary])).toEqual([
+      ["raise", 1, "Raises NotImplementedError: unsupported tier"],
+      ["assert", 4, "Asserts ( total >= 0 ) — total must be non-negative"],
+    ]);
+  });
+
+  it("stays linear on adversarial multi-line input (ReDoS)", () => {
+    const inputs = [
+      Array.from({ length: 2_000 }, () => "if (a and").join("\n"),
+      Array.from({ length: 2_000 }, () => "if a and \\").join("\n"),
+      `raise E(\n${" ".repeat(4000)}\n)`,
+      `assert (${" ".repeat(3990)}\n)`,
+    ];
+    const start = performance.now();
+    for (const src of inputs) minePyRules(src, FILE, 1);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+});

@@ -15,9 +15,13 @@
  *   5. numeric / string constants (thresholds, limits, status codes).
  *
  * Deterministic line-local passes (no LLM call), mirroring {@link mineJavaRules}
- * / {@link mineSasRules}. Covers JS too — same family. Semgrep-safe: all regex
+ * / {@link mineSasRules}. Covers JS too — same family. A guard, ternary, throw
+ * or zod chain that spans lines is read as one logical line (#170,
+ * {@link joinLogicalLine}: bounded look-ahead, no regex, linear time). Semgrep-safe: all regex
  * are literal (no `RegExp` constructor on non-literal input).
  */
+
+import { joinLogicalLine, opensBracket } from "./rule-miner-continuation.js";
 
 export interface MinedTsRule {
   kind: "guard" | "throw" | "schema-constraint" | "union" | "const";
@@ -63,6 +67,13 @@ const CONST_RE =
 // Threshold comparison against a numeric / quoted literal.
 const THRESHOLD_RE = /(?:[<>]=?|===?|!==?)\s*(?:-?\d+(?:\.\d+)?|["'][^"']*["'])/;
 const THROW_OR_RETURN_RE = /^\s*(?:throw\b|return\b)/;
+// #170 — the start of an `if (` header, used to decide whether to join a
+// condition that continues onto later lines.
+const IF_HEAD_RE = /^\s*(?:\}\s*)?(?:else\s+)?if\s*\(/;
+// #170 — a zod chain continued on the next line: `email: z` ⏎ `.string()` ⏎ `.email()`.
+// `\s*` sits between two fixed tokens, so it cannot backtrack against another quantifier.
+const ZOD_JOINED_BASE_RE = /\bz\s*\.\s*[a-z]/;
+const ZOD_CHAIN_HEAD_RE = /\bz\s*$/;
 
 function truncate(s: string, n: number): string {
   const t = s.replace(/\s+/g, " ").trim();
@@ -71,6 +82,56 @@ function truncate(s: string, n: number): string {
 
 function stripQuotes(s: string): string {
   return s.replace(/^[`"']|[`"']$/g, "").trim();
+}
+
+/**
+ * The condition of `x = cond ? a : b` — the text between the first `=` and the
+ * next `?` — in the `[whole, cond]` shape of the regex it replaces
+ * (`/=\s*(.+?)\s*\?/`, which was cubic on a run of `=` then whitespace, #170).
+ */
+function ternaryCondition(text: string): [string, string] | null {
+  const eq = text.indexOf("=");
+  if (eq === -1) return null;
+  const q = text.indexOf("?", eq + 2);
+  if (q === -1) return null;
+  return [text.slice(eq, q + 1), text.slice(eq + 1, q).trim()];
+}
+
+// #170 — `const fee = …` / `let x: T = …` / `obj.field = …` — the head of an
+// assignment whose right-hand side may be a ternary continued on later lines.
+// `=(?![=>])` excludes `==`/`===`/`=>`. Linear: `\s*` is followed by a literal
+// `:` or `=`, and a type annotation is `[^=]*` up to the one `=` it can stop at.
+const ASSIGN_HEAD_RE =
+  /^\s*(?:(?:export\s+)?(?:const|let|var)\s+[\w$]+|[\w$.]+)\s*(?::[^=]*)?=(?![=>])/;
+// A ternary carried on: the next line starts with `?` (not `?.` / `??`) or `:`,
+// or the last line ends with `=`, `?`, `:`, `&&` or `||`.
+const TERNARY_NEXT_RE = /^(?:\?(?![.?])|:)/;
+const TERNARY_LAST_RE = /(?:[=?:]|&&|\|\|)$/;
+
+function ternaryContinues(last: string, next: string): boolean {
+  return TERNARY_NEXT_RE.test(next) || TERNARY_LAST_RE.test(last);
+}
+
+/**
+ * The condition of a joined `x = cond ? a : b`: between the ASSIGNMENT `=` (not
+ * one inside `==`, `===`, `!=`, `<=`, `>=`, `=>`) and the first `?` that is not
+ * `?.` / `??`. Null when there is no such `?`.
+ */
+function assignedTernaryCondition(text: string): [string, string] | null {
+  const head = ASSIGN_HEAD_RE.exec(text);
+  if (!head) return null;
+  const eq = head[0].length - 1;
+  for (let q = text.indexOf("?", eq + 1); q !== -1; q = text.indexOf("?", q + 2)) {
+    const next = text[q + 1];
+    if (next === "." || next === "?") continue;
+    return [text.slice(eq, q + 1), text.slice(eq + 1, q).trim()];
+  }
+  return null;
+}
+
+/** A zod chain whose next line continues it with `.method(...)`. */
+function chainContinues(_last: string, next: string): boolean {
+  return next.startsWith(".");
 }
 
 /** Does the if-body (next few lines) throw or return early? */
@@ -156,11 +217,21 @@ export function mineTsRules(
     }
 
     // ---- 3. zod / schema constraints (may be several per line) ----
-    if (ZOD_BASE_RE.test(raw)) {
+    // #170 — a chain continued on following `.method()` lines is read whole.
+    // Only a `.`-led next line continues the chain: a `z.object({` whose braces
+    // span the whole schema must not absorb its fields' constraints.
+    const zodChain =
+      (ZOD_BASE_RE.test(raw) || ZOD_CHAIN_HEAD_RE.test(line)) &&
+      !opensBracket(raw) &&
+      (lines[i + 1] ?? "").trim().startsWith(".")
+        ? joinLogicalLine(lines, i, { comment: "//", continues: chainContinues })
+        : null;
+    const zodText = zodChain ? zodChain.text : raw;
+    if (zodChain ? ZOD_JOINED_BASE_RE.test(zodText) : ZOD_BASE_RE.test(raw)) {
       const found: string[] = [];
       ZOD_CONSTRAINT_RE.lastIndex = 0;
       let zm: RegExpExecArray | null;
-      while ((zm = ZOD_CONSTRAINT_RE.exec(raw)) !== null) {
+      while ((zm = ZOD_CONSTRAINT_RE.exec(zodText)) !== null) {
         found.push(zm[1]);
       }
       if (found.length > 0) {
@@ -169,7 +240,7 @@ export function mineTsRules(
         const field = fieldMatch ? fieldMatch[1] : "";
         rules.push({
           kind: "schema-constraint",
-          expression: truncate(line, MAX_EXPR),
+          expression: truncate(zodChain ? zodText : line, MAX_EXPR),
           summary: `${field ? `Field \`${field}\` ` : ""}schema constraints: ${found.join(", ")}`,
           filePath,
           line: lineNum,
@@ -183,7 +254,12 @@ export function mineTsRules(
     const tMatch = THROW_RE.exec(raw);
     if (tMatch) {
       const exType = tMatch[1];
-      const msg = tMatch[2] ? stripQuotes(tMatch[2]) : "";
+      // #170 — `throw new XError(` ⏎ `"message")`: read the message off the next line.
+      const tJoined =
+        !tMatch[2] && opensBracket(raw) ? joinLogicalLine(lines, i, { comment: "//" }) : null;
+      const tFull = tJoined ? THROW_RE.exec(tJoined.text) : null;
+      const msgLit = tMatch[2] ?? tFull?.[2];
+      const msg = msgLit ? stripQuotes(msgLit) : "";
       rules.push({
         kind: "throw",
         expression: truncate(line, MAX_EXPR),
@@ -196,11 +272,19 @@ export function mineTsRules(
     }
 
     // ---- 5. guard clauses (if / inline if / threshold ternary) ----
-    const inline = INLINE_IF_RE.exec(raw);
+    // #170 — a condition that spans lines is read up to its closing `)`; the
+    // rule is anchored at the `if` line and the body is read after the header.
+    const header =
+      IF_HEAD_RE.test(raw) && opensBracket(raw)
+        ? joinLogicalLine(lines, i, { comment: "//" })
+        : null;
+    const guardText = header ? header.text : raw;
+    const guardLine = header ? header.text : line;
+    const inline = INLINE_IF_RE.exec(guardText);
     if (inline) {
       rules.push({
         kind: "guard",
-        expression: truncate(line, MAX_EXPR),
+        expression: truncate(guardLine, MAX_EXPR),
         summary: `Rejects when ${truncate(inline[1], 140)}`,
         filePath,
         line: lineNum,
@@ -208,15 +292,15 @@ export function mineTsRules(
       });
       continue;
     }
-    const ifMatch = IF_RE.exec(raw);
+    const ifMatch = IF_RE.exec(guardText);
     if (ifMatch) {
       const cond = ifMatch[1];
-      const exits = bodyExits(lines, i);
+      const exits = bodyExits(lines, header ? header.end : i);
       const hasThreshold = THRESHOLD_RE.test(cond);
       if (exits || hasThreshold) {
         rules.push({
           kind: "guard",
-          expression: truncate(line, MAX_EXPR),
+          expression: truncate(guardLine, MAX_EXPR),
           summary: exits
             ? `Rejects/exits when ${truncate(cond, 140)}`
             : `Branches on threshold ${truncate(cond, 140)}`,
@@ -228,12 +312,21 @@ export function mineTsRules(
       continue;
     }
     // Threshold ternary: `... = cond ? a : b` with a comparison constant.
-    if (line.includes("?") && line.includes(":") && THRESHOLD_RE.test(line) && !tMatch) {
-      const condMatch = /=\s*(.+?)\s*\?/.exec(line);
+    // #170 — `= cond` ⏎ `? a` ⏎ `: b` (or `=` ⏎ `cond ? a : b`) is read whole.
+    // Joined only from an assignment/declaration head that opens no bracket, and
+    // only across `?` / `:` / trailing-operator continuations — so a JSX block or
+    // a call's argument list is never read as a ternary.
+    const ternary =
+      ASSIGN_HEAD_RE.test(raw) && !(line.includes("?") && line.includes(":")) && !opensBracket(raw)
+        ? joinLogicalLine(lines, i, { comment: "//", continues: ternaryContinues })
+        : null;
+    const tern = ternary ? ternary.text : line;
+    if (tern.includes("?") && tern.includes(":") && THRESHOLD_RE.test(tern) && !tMatch) {
+      const condMatch = ternary ? assignedTernaryCondition(tern) : ternaryCondition(tern);
       if (condMatch && THRESHOLD_RE.test(condMatch[1])) {
         rules.push({
           kind: "guard",
-          expression: truncate(line, MAX_EXPR),
+          expression: truncate(tern, MAX_EXPR),
           summary: `Branches on threshold ${truncate(condMatch[1], 140)}`,
           filePath,
           line: lineNum,

@@ -1528,8 +1528,10 @@ function walkCSharp(
 // walker's property handling so annotated DTO fields reach the rule miner.
 // `companion object` scopes are transparent: `Foo.create()` is how callers name
 // a companion member. Emits `imports` for `import` headers, `calls` for
-// invocations, and `references` (via `new`) for a call to a capitalised name,
-// which in Kotlin is a constructor call (there is no `new`).
+// invocations, and `references` (via `new`) for a call to a capitalised name —
+// only a CANDIDATE constructor call (Kotlin has no `new`, and a Compose
+// `Column { }` looks the same): ingest keeps it a reference only when a class of
+// that name exists, else records a call (`reclassifyKotlinConstructorCall`, #170).
 //
 // Known grammar gap (@tree-sitter-grammars/tree-sitter-kotlin 1.1.0): a
 // `fun interface` declaration parses as an ERROR node; its members are still

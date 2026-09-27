@@ -185,3 +185,133 @@ describe("renderMinedTsRules", () => {
     expect(out).toMatch(/truncated for prompt budget/);
   });
 });
+
+describe("mineTsRules — conditions that span lines (#170)", () => {
+  it("mines the issue's multi-line guard whole, anchored at the `if` line", () => {
+    const src = [
+      "function ftp(athlete: Athlete) {",
+      "  if (",
+      "    athlete.thresholdPower === undefined ||",
+      "    athlete.thresholdPower <= 0",
+      '  ) throw new RangeError("threshold power must be positive");',
+      "}",
+    ].join("\n");
+    const rules = mineTsRules(src, FILE, 10);
+    const guard = rules.find((r) => r.kind === "guard")!;
+    expect(guard.line).toBe(11);
+    expect(guard.summary).toBe(
+      "Rejects when athlete.thresholdPower === undefined || athlete.thresholdPower <= 0",
+    );
+    // The throw on the closing line is still its own rule, as before.
+    expect(rules.find((r) => r.kind === "throw")?.line).toBe(14);
+  });
+
+  it("reads a K&R block guard whose condition continues on the next line", () => {
+    const src = [
+      'if (tier === "gold" &&',
+      "    total > 1000) {",
+      "  return total * 0.8;",
+      "}",
+    ].join("\n");
+    const [guard] = mineTsRules(src, FILE, 1).filter((r) => r.kind === "guard");
+    expect(guard).toMatchObject({
+      line: 1,
+      summary: 'Rejects/exits when tier === "gold" && total > 1000',
+    });
+  });
+
+  it("reads a threshold ternary whose branches are on later lines", () => {
+    const src = ["const shipping = total > 250", "  ? 0", "  : 12;"].join("\n");
+    const [guard] = mineTsRules(src, FILE, 1).filter((r) => r.kind === "guard");
+    expect(guard).toMatchObject({ line: 1, summary: "Branches on threshold total > 250" });
+  });
+
+  it("reads a ternary that starts on the line after the assignment", () => {
+    const src = ["const band =", '  total >= 10000 ? "enterprise" : "retail";'].join("\n");
+    const [guard] = mineTsRules(src, FILE, 1).filter((r) => r.kind === "guard");
+    expect(guard).toMatchObject({ line: 1, summary: "Branches on threshold total >= 10000" });
+  });
+
+  it("does not read JSX or a call's arguments as a ternary", () => {
+    const src = [
+      'const el = (<p className="x">',
+      "  {items.length === 1 ? 'one' : 'many'}",
+      "</p>);",
+    ].join("\n");
+    // Line 2 is mined on its own as before; nothing is attributed to line 1.
+    expect(mineTsRules(src, FILE, 1).filter((r) => r.line === 1)).toEqual([]);
+  });
+
+  it("reads a zod chain continued on `.method()` lines, but not an object's fields", () => {
+    const src = [
+      "const S = z.object({",
+      "  name: z",
+      "    .string()",
+      "    .min(2)",
+      "    .max(80),",
+      "  email: z.string().email(),",
+      "});",
+    ].join("\n");
+    const rules = mineTsRules(src, FILE, 1).filter((r) => r.kind === "schema-constraint");
+    expect(rules.map((r) => [r.line, r.summary])).toEqual([
+      [2, "Field `name` schema constraints: min, max"],
+      [6, "Field `email` schema constraints: email"],
+    ]);
+  });
+
+  it("reads a thrown error's message from the next line", () => {
+    const src = ["throw new ValidationError(", '  "total must be finite",', ");"].join("\n");
+    expect(mineTsRules(src, FILE, 1)[0]).toMatchObject({
+      kind: "throw",
+      line: 1,
+      summary: "Throws ValidationError: total must be finite",
+    });
+  });
+
+  it("keeps a single-line guard containing a regex literal (`\\/\\/` is not a comment)", () => {
+    const src = [
+      'if (typeof url !== "string" || !/^https?:\\/\\//i.test(url)) {',
+      "  return null;",
+      "}",
+      "const x = 1;",
+    ].join("\n");
+    expect(mineTsRules(src, FILE, 1).find((r) => r.kind === "guard")?.summary).toBe(
+      'Rejects/exits when typeof url !== "string" || !/^https?:\\/\\//i.test(url)',
+    );
+  });
+
+  it("stays linear on adversarial multi-line input (ReDoS)", () => {
+    const n = 4000;
+    const inputs = [
+      // An unclosed condition on every line: each join is bounded.
+      Array.from({ length: 2_000 }, () => "if (a &&").join("\n"),
+      // A `=` run then whitespace after the line's only `?`: the old ternary
+      // regex `/=\s*(.+?)\s*\?/` was cubic here (2 s at 2,000 characters).
+      `x ? y : 1 > 2 ${"=".repeat(n / 2)}${" ".repeat(n / 2)}z`,
+      `const x = ${"=a".repeat(n / 4)}${" ".repeat(n / 2)}\n  ? 1\n  : 2;`,
+      `const s = z\n${"  .min(1)\n".repeat(20)}`,
+      `throw new E(\n${" ".repeat(n)}\n"m")`,
+    ];
+    const start = performance.now();
+    for (const src of inputs) mineTsRules(src, FILE, 1);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+});
+
+describe("mineTsRules — typed multi-line ternary (#170)", () => {
+  it("reads a ternary on a typed declaration", () => {
+    const src = ["const fee: number = total > 100", "  ? 0", "  : 5;"].join("\n");
+    expect(mineTsRules(src, FILE, 1)[0]).toMatchObject({
+      kind: "guard",
+      line: 1,
+      summary: "Branches on threshold total > 100",
+    });
+  });
+
+  it("stays linear on a long typed-declaration head with no `=` (ReDoS)", () => {
+    const start = performance.now();
+    mineTsRules(`const x: ${" ".repeat(100_000)}T`, FILE, 1);
+    mineTsRules(`const x${" ".repeat(100_000)}T`, FILE, 1);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+});
