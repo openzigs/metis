@@ -78,6 +78,12 @@ describe("provider override and the deployment-wide model", () => {
     expect(providerDefaultModel("anthropic", env)).toBe("offline-stub");
   });
 
+  it("an unset AI_PROVIDER is the offline-stub deployment, so AI_MODEL does not follow an override", () => {
+    const env = { ...base(), AI_PROVIDER: undefined };
+    expect(providerDefaultModel("anthropic", env)).toBe("claude-sonnet-4-6");
+    expect(providerDefaultModel("offline-stub", env)).toBe("gpt-deployment-pinned");
+  });
+
   it("an invalid configuration throws the loader's error", () => {
     expect(() => providerDefaultModel("not-a-provider", base())).toThrow(
       "Invalid AI configuration",
