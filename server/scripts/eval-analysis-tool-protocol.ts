@@ -179,7 +179,8 @@ async function main(): Promise<void> {
         `${r.caseId} run ${r.run} ${r.mode}: ${r.protocol}, valid=${r.findingsValid}, ` +
           `turns=${r.turnsUsed}, tools=${r.toolCalls} (${r.toolErrors} err), tokens=${r.usage.totalTokens}` +
           (r.error ? `, error=${r.error}` : "") +
-          (r.answerSchemaIssues ? `, schema=[${r.answerSchemaIssues.join("; ")}]` : ""),
+          (r.answerSchemaIssues ? `, schema=[${r.answerSchemaIssues.join("; ")}]` : "") +
+          (r.fieldRepairs ? `, repaired=[${r.fieldRepairs.join("; ")}]` : ""),
       ),
   });
   const md = formatProtocolComparison(comparison);

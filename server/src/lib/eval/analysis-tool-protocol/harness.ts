@@ -50,6 +50,7 @@ import {
   resolveAgenticMaxTurns,
   type AgenticPassSeeds,
 } from "../../analysis/agentic-pass-context.js";
+import { repairFindingsAnswer } from "../../analysis/findings-repair.js";
 import type { AgentTool, ToolContext } from "../../analysis/tools/types.js";
 
 /** The two protocols #214 compares. */
@@ -131,6 +132,16 @@ export interface ProtocolRunRecord {
    * schema-valid and was rejected for another reason.
    */
   answerSchemaIssues?: string[];
+  /**
+   * #298 — present only on a pass with a valid answer: the over-limit fields
+   * that answer carried and the gate accepted REPAIRED, as `path: kind` pairs
+   * (`findings.1.citations.3: citation-dropped`). Absent = nothing repaired.
+   * The harness has no project documents, so it cannot resolve an id the way
+   * the orchestrator can: its `citation-dropped` / `document-id-dropped`
+   * counts are an UPPER bound on citation loss (production may report some
+   * of them as `document-id-resolved`). Validity is unaffected either way.
+   */
+  fieldRepairs?: string[];
 }
 
 export interface ProtocolModeSummary {
@@ -213,9 +224,10 @@ export function answerSchemaIssues(text: string): string[] {
     return ["not-json"];
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return ["not-json"];
-  // Same agentKey stamp as the gate: the orchestrator sets the real one later.
+  // Same repair and agentKey stamp as the gate (#298): the orchestrator
+  // repairs over-limit fields and sets the real agentKey later.
   const result = agentOutputSchema.safeParse({
-    ...(parsed as Record<string, unknown>),
+    ...(repairFindingsAnswer(parsed).value as Record<string, unknown>),
     agentKey: ANALYSIS_AGENT_KEYS[0],
   });
   if (result.success) return [];
@@ -224,12 +236,24 @@ export function answerSchemaIssues(text: string): string[] {
     .map((i) => `${i.path.join(".") || "(root)"}: ${i.code}`);
 }
 
+/** #298 — the repairs the gate applied to a valid answer, as `path: kind` pairs. */
+export function answerFieldRepairs(text: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = extractJsonObject(text);
+  } catch {
+    return [];
+  }
+  return repairFindingsAnswer(parsed).repairs.map((r) => `${r.path}: ${r.kind}`);
+}
+
 function recordFrom(
   base: Pick<ProtocolRunRecord, "caseId" | "mode" | "run" | "durationMs" | "tokenBudget">,
   requestedNative: boolean,
   r: AgentLoopResult,
 ): ProtocolRunRecord {
   const degraded = !r.hasFinalAnswer;
+  const fieldRepairs = degraded ? [] : answerFieldRepairs(r.finalResponse);
   return {
     ...base,
     protocol: r.toolProtocol ?? (requestedNative ? "native" : "text"),
@@ -249,6 +273,7 @@ function recordFrom(
     ...(degraded
       ? { answerSchemaIssues: answerSchemaIssues(r.salvageSource ?? r.finalResponse) }
       : {}),
+    ...(fieldRepairs.length > 0 ? { fieldRepairs } : {}),
     finalAnswerRetry: r.finalAnswerRetry?.attempted === true,
     turnsUsed: r.turnsUsed,
     toolCalls: r.toolCalls.length,

@@ -156,6 +156,13 @@ import {
   selectSalvageSource,
   type AgenticDegradationReason,
 } from "./agentic-degradation.js";
+import {
+  repairFindingsAnswerWithDocuments,
+  summarizeFindingsRepairs,
+  withFindingsRepairNote,
+  type FindingsRepair,
+  type KnownDocument,
+} from "./findings-repair.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import { runEnabledCustomAgents } from "./custom-agent-phase.js";
 import { RequirementsExtractor } from "./requirements-extractor.js";
@@ -2112,6 +2119,24 @@ export class AnalysisOrchestrator {
         const { extractJsonObject } = await import("./agent-runner.js");
         const { agentOutputSchema } = await import("@metis/shared");
         const onDrop = makeCitationDropLogger(input.analysisId, agentKey, "agentic");
+        // #298 — the project's documents, for resolving a citation `documentId`
+        // the model wrote as a filename or path. Loaded at most once per run,
+        // and only when an answer (or a salvaged one) carries such an id.
+        // Scoped to this project.
+        // A lookup failure degrades to "no known documents": the id is then
+        // dropped rather than resolved, and the pass is never failed by it.
+        let knownDocuments: Promise<readonly KnownDocument[]> | undefined;
+        const loadKnownDocuments = (): Promise<readonly KnownDocument[]> =>
+          (knownDocuments ??= (async () => {
+            try {
+              return await prisma.document.findMany({
+                where: { projectId: input.projectId, deletedAt: null },
+                select: { id: true, filename: true },
+              });
+            } catch {
+              return [];
+            }
+          })());
 
         /**
          * #483/#734 — run ONE agentic loop over `passRequirements` with the given
@@ -2190,6 +2215,8 @@ export class AnalysisOrchestrator {
           // an honest note + a capability reason); it never throws away the run.
           let validated: AgentOutput | undefined;
           let reason: AgenticDegradationReason | null = null;
+          // #298 — every field repair this pass made, recorded below.
+          let fieldRepairs: FindingsRepair[] = [];
           if (!loopResult.hasFinalAnswer) {
             // The loop (and its one bounded retry) never produced a JSON answer.
             reason = loopResult.budgetExhausted
@@ -2207,7 +2234,12 @@ export class AnalysisOrchestrator {
               if (parsed && typeof parsed === "object") {
                 (parsed as Record<string, unknown>).agentKey = agentKey;
               }
-              validated = agentOutputSchema.parse(parsed);
+              // #298 — repair an over-long citation `documentId` / note rather
+              // than let one field reject the whole answer. The schema below
+              // still rejects a genuinely malformed answer.
+              const repaired = await repairFindingsAnswerWithDocuments(parsed, loadKnownDocuments);
+              validated = agentOutputSchema.parse(repaired.value);
+              fieldRepairs = repaired.repairs;
             } catch {
               reason = "schema-invalid";
             }
@@ -2229,9 +2261,13 @@ export class AnalysisOrchestrator {
                 // #1218 — repair echoes the payload back, so its own cap must
                 // clear the cap that produced it or it truncates in turn.
                 maxOutputTokens: repairMaxOutputTokens(finalAnswerMaxOutputTokens),
+                // #298 — resolve an over-long citation `documentId` here too
+                // (loaded only when a salvaged finding carries one).
+                loadKnownDocuments,
               },
             );
             const salvaged = salvage.findings;
+            fieldRepairs = salvage.fieldRepairs;
             log.warn("Agentic code pass degraded; salvaging investigation", {
               analysisId: input.analysisId,
               reason,
@@ -2262,6 +2298,16 @@ export class AnalysisOrchestrator {
               toolCalls: loopResult.toolCalls,
               salvaged,
             });
+          }
+          // #298 — no repair is silent: it is logged with its kind and position
+          // (never the model's text) and noted on the persisted output.
+          if (fieldRepairs.length > 0) {
+            log.warn("Agentic findings answer repaired instead of rejected", {
+              analysisId: input.analysisId,
+              repairs: summarizeFindingsRepairs(fieldRepairs),
+              paths: fieldRepairs.slice(0, 20).map((r) => `${r.path}:${r.kind}`),
+            });
+            validated = withFindingsRepairNote(validated, fieldRepairs);
           }
           // #773 — did THIS pass's retrieval actually work? The two signals the
           // verdict needs are computed here: the searched-scope-backed evidence

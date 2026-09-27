@@ -15,6 +15,7 @@ import {
   type AgenticPassSeeds,
 } from "../../analysis/agentic-pass-context.js";
 import {
+  answerFieldRepairs,
   answerSchemaIssues,
   formatProtocolComparison,
   parseProtocolCases,
@@ -253,6 +254,42 @@ describe("runToolProtocolComparison", () => {
     });
     expect(ok.records[0]!.findingsValid).toBe(true);
     expect("answerSchemaIssues" in ok.records[0]!).toBe(false);
+  });
+
+  it("#298: an answer with one over-long documentId and one over-long note is valid in BOTH modes, repairs recorded", async () => {
+    const answer298 = JSON.stringify({
+      summary: "s",
+      findings: [
+        {
+          category: "architecture",
+          severity: "low",
+          title: "t",
+          body: "b",
+          tags: [],
+          citations: [{ documentId: `docs/${"deep/".repeat(15)}Spec.md`, chunkIndex: 0 }],
+        },
+      ],
+      notes: ["n".repeat(600)],
+    });
+    const cmp = await runToolProtocolComparison({
+      provider: provider({ toolCapable: true, answer: answer298 }).provider,
+      cases: CASES,
+      buildPass: pass,
+      modes: ["text", "native"],
+    });
+    expect(cmp.records.map((r) => r.protocol)).toEqual(["text", "native"]);
+    for (const r of cmp.records) {
+      expect(r).toMatchObject({
+        findingsValid: true,
+        degraded: false,
+        findingsCount: 1,
+        fieldRepairs: ["findings.0.citations.0: citation-dropped", "notes.0: note-truncated"],
+      });
+      expect("answerSchemaIssues" in r).toBe(false);
+    }
+    // A clean answer records no repairs at all.
+    expect(answerFieldRepairs(VALID)).toEqual([]);
+    expect(answerFieldRepairs("prose")).toEqual([]);
   });
 
   it("answerSchemaIssues: empty for a schema-valid answer, not-json for prose, capped", () => {

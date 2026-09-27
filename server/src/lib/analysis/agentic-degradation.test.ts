@@ -8,7 +8,8 @@
  * the mocked-well-formed-JSON providers in the existing suites never exercised
  * this, which is why the bug shipped.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { agentOutputSchema } from "@metis/shared";
 import type { AIProvider, ChatMessage, ChatResponse } from "../ai/types.js";
 import type { AgentTool } from "./tools/types.js";
 import { runAgentLoop } from "./agent-loop.js";
@@ -16,7 +17,9 @@ import {
   FINAL_ANSWER_INSTRUCTION,
   buildDegradedAgentOutput,
   isJsonFinalAnswer,
+  isSchemaValidFinalAnswer,
   salvageFindings,
+  salvageWithRepair,
 } from "./agentic-degradation.js";
 
 const reply = (content: string): ChatResponse => ({
@@ -361,5 +364,189 @@ describe("#769 salvage helpers", () => {
     });
     expect(out.findings).toEqual([]);
     expect(out.summary).toContain("no tool calls completed");
+  });
+});
+
+// ── #298 — one over-long field no longer rejects the whole answer ──────────
+
+describe("#298 findings field repair on the shared validation path", () => {
+  const PATH_AS_ID = "docs/requirements/product/lending/2026/final/Loan Terms.md#chunk4";
+  const finding = (citations: unknown[], title: unknown = "Loan term is hard-coded") => ({
+    category: "architecture",
+    severity: "medium",
+    title,
+    body: "body",
+    tags: [],
+    citations,
+  });
+  /** The #214 shape: one over-long documentId, one over-long note. */
+  const answer298 = JSON.stringify({
+    summary: "One gap found.",
+    findings: [finding([{ documentId: PATH_AS_ID, chunkIndex: 4 }])],
+    notes: ["n".repeat(700)],
+  });
+
+  it("the #1314 gate accepts an answer whose only defects are a documentId and a note", () => {
+    expect(isSchemaValidFinalAnswer(answer298)).toBe(true);
+  });
+
+  it("the gate still rejects a genuinely malformed answer", () => {
+    const malformed = JSON.stringify({
+      summary: "One gap found.",
+      findings: [finding([{ documentId: PATH_AS_ID, chunkIndex: 4 }], 42)],
+      notes: ["n".repeat(700)],
+    });
+    expect(isSchemaValidFinalAnswer(malformed)).toBe(false);
+    expect(isSchemaValidFinalAnswer(JSON.stringify({ findings: [], notes: [] }))).toBe(false);
+  });
+
+  it("salvage recovers a finding whose citation id is a path, resolving it when known", async () => {
+    // No summary ⇒ the answer as a whole is invalid and only salvage runs.
+    const raw = JSON.stringify({
+      findings: [
+        finding([{ documentId: PATH_AS_ID, chunkIndex: 4 }]),
+        finding([], 42), // genuinely malformed — still rejected
+      ],
+    });
+    expect(salvageFindings(raw)).toHaveLength(1);
+    expect(salvageFindings(raw)[0]!.citations).toEqual([]);
+
+    const provider = {
+      chat: async () => {
+        throw new Error("no repair call expected");
+      },
+    } as unknown as AIProvider;
+    const result = await salvageWithRepair(provider, raw, {
+      agentKey: "code",
+      loadKnownDocuments: async () => [{ id: "doc_loanterms_0001", filename: "Loan Terms.md" }],
+    });
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]!.citations).toEqual([
+      { documentId: "doc_loanterms_0001", chunkIndex: 4 },
+    ]);
+    expect(result.fieldRepairs).toEqual([
+      {
+        kind: "document-id-resolved",
+        path: "findings.0.citations.0",
+        originalLength: PATH_AS_ID.length,
+      },
+    ]);
+    expect(result.repairAttempted).toBe(false);
+  });
+
+  it("salvage after a syntax repair also repairs fields and reports them", async () => {
+    const truncated = '{"summary":"s","findings":[{"category":"architecture","severity":"med';
+    const repaired = JSON.stringify({
+      summary: "s",
+      findings: [finding([{ documentId: PATH_AS_ID, chunkIndex: 4 }])],
+    });
+    const provider = {
+      chat: async () => reply(repaired),
+    } as unknown as AIProvider;
+    const result = await salvageWithRepair(provider, truncated, { agentKey: "code" });
+    expect(result.repairSucceeded).toBe(true);
+    expect(result.findings).toHaveLength(1);
+    expect(result.fieldRepairs.map((r) => r.kind)).toEqual(["citation-dropped"]);
+  });
+
+  it("salvage loads documents only when a salvaged finding needs one, and survives a failing load", async () => {
+    const noRepair = {
+      chat: async () => {
+        throw new Error("no repair call expected");
+      },
+    } as unknown as AIProvider;
+    const load = vi.fn(async () => [{ id: "doc_loanterms_0001", filename: "Loan Terms.md" }]);
+
+    // Nothing to resolve (a valid id): the loader is never called.
+    const clean = JSON.stringify({
+      findings: [finding([{ documentId: "doc_loanterms_0001", chunkIndex: 1 }])],
+    });
+    const none = await salvageWithRepair(noRepair, clean, {
+      agentKey: "code",
+      loadKnownDocuments: load,
+    });
+    expect(none.findings).toHaveLength(1);
+    expect(load).not.toHaveBeenCalled();
+
+    // A failing load degrades to dropping the id; the finding survives.
+    const bad = JSON.stringify({
+      findings: [finding([{ documentId: PATH_AS_ID, chunkIndex: 4 }])],
+    });
+    const failed = await salvageWithRepair(noRepair, bad, {
+      agentKey: "code",
+      loadKnownDocuments: async () => {
+        throw new Error("db down");
+      },
+    });
+    expect(failed.findings).toHaveLength(1);
+    expect(failed.fieldRepairs.map((r) => r.kind)).toEqual(["citation-dropped"]);
+  });
+
+  it("salvage after a syntax repair resolves against the loaded documents", async () => {
+    const truncated = '{"summary":"s","findings":[{"category":"architecture","severity":"med';
+    const repaired = JSON.stringify({
+      summary: "s",
+      findings: [finding([{ documentId: PATH_AS_ID }])],
+    });
+    const provider = { chat: async () => reply(repaired) } as unknown as AIProvider;
+    const load = vi.fn(async () => [{ id: "doc_loanterms_0001", filename: "Loan Terms.md" }]);
+    const result = await salvageWithRepair(provider, truncated, {
+      agentKey: "code",
+      loadKnownDocuments: load,
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(result.findings[0]!.citations).toEqual([
+      { documentId: "doc_loanterms_0001", chunkIndex: 4 },
+    ]);
+    expect(result.fieldRepairs.map((r) => r.kind)).toEqual(["document-id-resolved"]);
+  });
+
+  it("the retry prompt states the id format and the stored length limits", () => {
+    for (const line of [
+      "`documentId` is the opaque id exactly as the context or a tool result gave it",
+      "10-64 characters, or `code-graph:<symbolId>` (at most 320)",
+      "Never a file path, a filename or quoted text",
+      "`filePath` + `startLine` + `endLine`",
+      "`summary` at most 2048 characters; each finding's `title` at most 255 and `body` at most 4096.",
+      "At most 50 findings, at most 20 citations per finding, and at most 20 `notes` of at most 512 characters each.",
+    ]) {
+      expect(FINAL_ANSWER_INSTRUCTION).toContain(line);
+    }
+  });
+
+  it("every limit the retry prompt states is the schema's own bound", () => {
+    const base = { agentKey: "code", summary: "s", findings: [], notes: [] };
+    const ok = (v: unknown) => agentOutputSchema.safeParse(v).success;
+    const f = (over: Record<string, unknown>) => ({
+      ...finding([]),
+      ...over,
+    });
+    const cite = (documentId: string) => ({
+      ...base,
+      findings: [finding([{ documentId, chunkIndex: 0 }])],
+    });
+    // documentId: 10-64, or code-graph: up to 320.
+    expect(ok(cite("a".repeat(10)))).toBe(true);
+    expect(ok(cite("a".repeat(9)))).toBe(false);
+    expect(ok(cite("a".repeat(64)))).toBe(true);
+    expect(ok(cite("a".repeat(65)))).toBe(false);
+    expect(ok(cite("code-graph:" + "a".repeat(309)))).toBe(true);
+    expect(ok(cite("code-graph:" + "a".repeat(310)))).toBe(false);
+    // summary / title / body.
+    expect(ok({ ...base, summary: "s".repeat(2048) })).toBe(true);
+    expect(ok({ ...base, summary: "s".repeat(2049) })).toBe(false);
+    expect(ok({ ...base, findings: [f({ title: "t".repeat(255) })] })).toBe(true);
+    expect(ok({ ...base, findings: [f({ title: "t".repeat(256) })] })).toBe(false);
+    expect(ok({ ...base, findings: [f({ body: "b".repeat(4096) })] })).toBe(true);
+    expect(ok({ ...base, findings: [f({ body: "b".repeat(4097) })] })).toBe(false);
+    // counts: findings, citations, notes; note length.
+    expect(ok({ ...base, findings: Array(50).fill(f({})) })).toBe(true);
+    expect(ok({ ...base, findings: Array(51).fill(f({})) })).toBe(false);
+    const c = { documentId: "a".repeat(10), chunkIndex: 0 };
+    expect(ok({ ...base, findings: [f({ citations: Array(20).fill(c) })] })).toBe(true);
+    expect(ok({ ...base, findings: [f({ citations: Array(21).fill(c) })] })).toBe(false);
+    expect(ok({ ...base, notes: Array(20).fill("n".repeat(512)) })).toBe(true);
+    expect(ok({ ...base, notes: Array(21).fill("n") })).toBe(false);
+    expect(ok({ ...base, notes: ["n".repeat(513)] })).toBe(false);
   });
 });
