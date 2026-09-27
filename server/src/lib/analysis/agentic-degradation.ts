@@ -37,6 +37,12 @@ import {
 import type { AIProvider } from "../ai/types.js";
 import { extractJsonObject, repairAgentJson } from "./agent-runner.js";
 import {
+  repairFinding,
+  repairFindingsAnswer,
+  type FindingsRepair,
+  type KnownDocument,
+} from "./findings-repair.js";
+import {
   classifyFinalAnswer,
   isToolCallReply,
   type AgentLoopResult,
@@ -96,6 +102,15 @@ export const FINAL_ANSWER_INSTRUCTION = [
   "",
   "Report only what you actually established. If your investigation was cut short, say so in `notes`",
   "and return the findings you DID ground — an empty `findings` array is acceptable, invented findings are not.",
+  "",
+  // #298 — the limits the answer is validated against, stated where the model
+  // writes it. Pinned to `agentOutputSchema` by agentic-degradation.test.ts.
+  "Field formats and limits (the answer is validated against them):",
+  "- A document citation's `documentId` is the opaque id exactly as the context or a tool result gave it:",
+  "  10-64 characters, or `code-graph:<symbolId>` (at most 320). Never a file path, a filename or quoted text;",
+  "  cite a source file as `filePath` + `startLine` + `endLine` instead.",
+  "- `summary` at most 2048 characters; each finding's `title` at most 255 and `body` at most 4096.",
+  "- At most 50 findings, at most 20 citations per finding, and at most 20 `notes` of at most 512 characters each.",
 ].join("\n");
 
 /**
@@ -115,10 +130,16 @@ export function isSchemaValidFinalAnswer(text: string): boolean {
     return false;
   }
   if (!parsed || typeof parsed !== "object") return false;
+  // #298 — judge the answer the orchestrator will actually validate: one
+  // over-long `documentId` or note is repaired there, so it must not fire the
+  // retry (or fail the #214 measurement) here. Resolution against the known
+  // documents cannot change validity — a resolved id and a dropped one are
+  // both valid — so the gate needs no document list.
+  const repaired = repairFindingsAnswer(parsed).value as Record<string, unknown>;
   // The orchestrator stamps the real `agentKey` after the loop returns, so a
   // missing or wrong one here must not decide the gate.
   return agentOutputSchema.safeParse({
-    ...(parsed as Record<string, unknown>),
+    ...repaired,
     agentKey: ANALYSIS_AGENT_KEYS[0],
   }).success;
 }
@@ -129,22 +150,41 @@ export function isSchemaValidFinalAnswer(text: string): boolean {
  * wholly wasted"). Never throws: any parse failure yields `[]`.
  */
 export function salvageFindings(raw: string): AgentFindingPayload[] {
+  return salvageRepairedFindings(raw).findings;
+}
+
+/**
+ * {@link salvageFindings}, with #298's citation repair applied to each
+ * candidate first — so a finding whose only defect is an over-long citation
+ * `documentId` is recovered rather than rejected — and the repairs returned
+ * for the caller to record.
+ */
+export function salvageRepairedFindings(
+  raw: string,
+  opts: { knownDocuments?: readonly KnownDocument[] } = {},
+): { findings: AgentFindingPayload[]; repairs: FindingsRepair[] } {
   let parsed: unknown;
   try {
     parsed = extractJsonObject(raw);
   } catch {
-    return [];
+    return { findings: [], repairs: [] };
   }
-  if (!parsed || typeof parsed !== "object") return [];
+  if (!parsed || typeof parsed !== "object") return { findings: [], repairs: [] };
   const findings = (parsed as { findings?: unknown }).findings;
-  if (!Array.isArray(findings)) return [];
+  if (!Array.isArray(findings)) return { findings: [], repairs: [] };
   const salvaged: AgentFindingPayload[] = [];
-  for (const candidate of findings) {
-    const result = agentFindingPayloadSchema.safeParse(candidate);
-    if (result.success) salvaged.push(result.data);
+  const repairs: FindingsRepair[] = [];
+  for (const [i, candidate] of findings.entries()) {
+    const repaired = repairFinding(candidate, `findings.${i}`, opts);
+    const result = agentFindingPayloadSchema.safeParse(repaired.value);
+    if (result.success) {
+      salvaged.push(result.data);
+      // Only a salvaged finding's repairs happened to anything that is kept.
+      repairs.push(...repaired.repairs);
+    }
     if (salvaged.length >= 50) break; // agentOutputSchema caps findings at 50.
   }
-  return salvaged;
+  return { findings: salvaged, repairs };
 }
 
 /** Outcome of {@link salvageWithRepair}. */
@@ -164,6 +204,8 @@ export interface SalvageResult {
    */
   repairParsed: boolean;
   repairSucceeded: boolean;
+  /** #298 — field repairs applied to the recovered findings (empty when none). */
+  fieldRepairs: FindingsRepair[];
 }
 
 /**
@@ -196,17 +238,24 @@ export async function salvageWithRepair(
     signal?: AbortSignal;
     /** OUTPUT cap for the repair call — it must be able to echo `source` back in full (#1218). */
     maxOutputTokens?: number;
+    /** #298 — documents an over-long citation `documentId` may be resolved against. */
+    knownDocuments?: readonly KnownDocument[];
   },
 ): Promise<SalvageResult> {
   const sourceKind = classifyFinalAnswer(source);
-  const findings = salvageFindings(source);
+  const { knownDocuments: known, ...repairOpts } = opts;
+  const knownDocuments = known ? { knownDocuments: known } : {};
+  const first = salvageRepairedFindings(source, knownDocuments);
   const none = {
     sourceKind,
     repairAttempted: false,
     repairParsed: false,
     repairSucceeded: false,
+    fieldRepairs: [],
   };
-  if (findings.length > 0) return { ...none, findings };
+  if (first.findings.length > 0) {
+    return { ...none, findings: first.findings, fieldRepairs: first.repairs };
+  }
   if (sourceKind !== "truncated-json" && sourceKind !== "malformed-json") {
     return { ...none, findings: [] };
   }
@@ -219,7 +268,7 @@ export async function salvageWithRepair(
       provider,
       source,
       new Error(`Salvage source was ${sourceKind}`),
-      opts,
+      repairOpts,
     );
   } catch (err) {
     if ((err as Error).name === "AbortError") throw err;
@@ -232,15 +281,17 @@ export async function salvageWithRepair(
       repairAttempted: true,
       repairParsed: false,
       repairSucceeded: false,
+      fieldRepairs: [],
     };
   }
-  const recovered = salvageFindings(JSON.stringify(repaired));
+  const recovered = salvageRepairedFindings(JSON.stringify(repaired), knownDocuments);
   return {
-    findings: recovered,
+    findings: recovered.findings,
     sourceKind,
     repairAttempted: true,
     repairParsed: true,
-    repairSucceeded: recovered.length > 0,
+    repairSucceeded: recovered.findings.length > 0,
+    fieldRepairs: recovered.repairs,
   };
 }
 

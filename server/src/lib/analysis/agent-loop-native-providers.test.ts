@@ -691,3 +691,116 @@ describe("#214 native final answer — same schema guidance, and an identical re
     });
   });
 });
+
+// ── #298 — an over-long documentId / note no longer rejects the final answer ──
+
+/**
+ * #214 measured three of twelve DeepSeek passes lost to ONE over-long field —
+ * a citation `documentId` that was a path, or a note over 512 characters — in
+ * both tool protocols. Driven here through the real Anthropic-compatible
+ * adapter, served the RECORDED DeepSeek tool-calling reply, to the #769 retry:
+ * the retry prompt on the wire now states the id format and the limits, and an
+ * answer whose only defects are those two fields is accepted (repaired later
+ * by the orchestrator), while a genuinely malformed one is still rejected.
+ */
+describe("#298 over-long findings fields — recorded DeepSeek replies, both protocols", () => {
+  const deepseek = FAMILIES.find((f) => f.recordedRuntime === "deepseek")!;
+  const pass = buildAgenticPassPrompt({
+    projectName: "loopback",
+    projectDescription: "loopback project",
+    requirements: [{ id: "REQ-1", text: "Interest rates are configurable." }],
+    seeds: {
+      fused: { block: "", tokens: 0 },
+      affectedCode: { block: "", tokens: 0 },
+      affectedSchema: { block: "", tokens: 0 },
+    },
+    fileToolsAvailable: true,
+  });
+  const passInput = { ...pass, tools: TOOLS, toolContext: { projectId: "p-298" } };
+  const finding = (title: unknown) => ({
+    category: "architecture",
+    severity: "medium",
+    title,
+    body: "Rates are read from a constant.",
+    tags: [],
+    citations: [
+      {
+        documentId: "src/main/java/com/example/lending/rates/InterestRateCalculator.java",
+        chunkIndex: 0,
+      },
+    ],
+  });
+  const ANSWER_298 = JSON.stringify({
+    summary: "Rates are hard-coded; REQ-1 is a gap.",
+    findings: [finding("Interest rate is hard-coded")],
+    notes: ["Investigated the rate calculator and its callers. ".repeat(12)],
+  });
+  const MALFORMED = JSON.stringify({
+    summary: "Rates are hard-coded; REQ-1 is a gap.",
+    findings: [finding(42)],
+    notes: [],
+  });
+  const LIMIT_LINES = [
+    "10-64 characters, or `code-graph:<symbolId>` (at most 320)",
+    "at most 20 `notes` of at most 512 characters each",
+  ];
+
+  function script(mode: "text" | "native", retryAnswer: string): Scripted[] {
+    const w = deepseek.wire;
+    return mode === "native"
+      ? [
+          recorded("deepseek", "tools-chat").reply,
+          reply(w, "", [{ id: "call_more", name: "search_code", args: { query: "rate" } }]),
+          reply(w, retryAnswer),
+        ]
+      : [
+          reply(w, '{"tool": "search_code", "args": {"query": "interest rate"}}'),
+          reply(w, '{"tool": "search_code", "args": {"query": "rate"}}'),
+          reply(w, retryAnswer),
+        ];
+  }
+
+  async function run(mode: "text" | "native", retryAnswer: string): Promise<AgentLoopResult> {
+    process.env.ANALYSIS_NATIVE_TOOL_CALLS = mode === "native" ? "true" : "false";
+    const provider = deepseek.make(origin);
+    queue = script(mode, retryAnswer);
+    const native = resolveAnalysisNativeTools(provider, deepseek.model, TOOLS);
+    return runAgentLoop(provider, passInput, {
+      ...(native ? { native } : {}),
+      maxTurns: 2,
+      model: deepseek.model,
+      promptCaching: { system: true, messages: true },
+      finalAnswerRetry: {
+        instruction: FINAL_ANSWER_INSTRUCTION,
+        isValidFinalAnswer: isSchemaValidFinalAnswer,
+      },
+    });
+  }
+
+  it.each(["text", "native"] as const)(
+    "%s: the retry states the limits, and the over-long answer is accepted",
+    async (mode) => {
+      const result = await run(mode, ANSWER_298);
+
+      expect(result.toolProtocol).toBe(mode === "native" ? "native" : undefined);
+      expect(result.turnsExhausted).toBe(true);
+      expect(result.finalAnswerRetry).toEqual({ attempted: true, succeeded: true });
+      expect(result.hasFinalAnswer).toBe(true);
+      expect(result.finalResponse).toBe(ANSWER_298);
+      expect(seen).toHaveLength(3);
+      const retryTurn = viewRecordedContent(deepseek.wire, seen[2]!.body).turns.at(-1)!;
+      expect(retryTurn.role).toBe("user");
+      for (const line of LIMIT_LINES) expect(retryTurn.text).toContain(line);
+    },
+  );
+
+  it.each(["text", "native"] as const)(
+    "%s: a genuinely malformed retry answer is still rejected",
+    async (mode) => {
+      const result = await run(mode, MALFORMED);
+
+      expect(result.finalAnswerRetry).toEqual({ attempted: true, succeeded: false });
+      expect(result.hasFinalAnswer).toBe(false);
+    },
+  );
+});
