@@ -27,7 +27,13 @@
 import { createHash } from "node:crypto";
 import type { ParsedEdge, ParsedFile, ParsedSymbol, RationaleHint, SymbolKind } from "./parsers.js";
 import { buildCodeQualifiedName, moduleQualifiedName } from "./qualified-name.js";
-import { STATEMENT_VERBS, lexCobol, type CobolLine, type CobolToken } from "./cobol-source.js";
+import {
+  STATEMENT_VERBS,
+  isLevelNumberAt,
+  lexCobol,
+  type CobolLine,
+  type CobolToken,
+} from "./cobol-source.js";
 
 const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
 
@@ -143,9 +149,61 @@ function parseCobolInner(filePath: string, source: string): ParsedFile {
   /** The innermost open procedure symbol (paragraph, section, program, or the module). */
   const caller = (): string => paragraph?.qname ?? section?.qname ?? container();
 
+  /**
+   * Open the section (`NAME SECTION.`) or paragraph (`NAME.`) whose header
+   * starts at `tokens[i]` — a word or, for a digits-only name, a number that
+   * starts a sentence in area A. Returns how many tokens after `i` it consumed,
+   * or -1 when `tokens[i]` starts no header.
+   */
+  const openHeader = (i: number): number => {
+    const t = tokens[i];
+    const next = tokens[i + 1];
+    const prev = tokens[i - 1];
+    const startsSentence = !prev || prev.kind === "period";
+    const inAreaA = !lines[t.line].fixed || t.col < 4;
+    if (
+      !t.first ||
+      !startsSentence ||
+      !inAreaA ||
+      NOT_A_PARAGRAPH.has(t.upper) ||
+      STATEMENT_VERBS.has(t.upper) ||
+      t.upper.startsWith("END-")
+    ) {
+      return -1;
+    }
+    if (next?.upper === "SECTION") {
+      closeSection(t.line - 1);
+      section = {
+        kind: "function",
+        name: t.upper,
+        qname: buildCodeQualifiedName(container(), t.upper),
+        parent: container(),
+        start: t.line,
+      };
+      return 0;
+    }
+    if (next?.kind === "period") {
+      closeParagraph(t.line - 1);
+      paragraph = {
+        kind: "function",
+        name: t.upper,
+        qname: buildCodeQualifiedName(container(), t.upper),
+        parent: section?.qname ?? container(),
+        start: t.line,
+      };
+      return 1;
+    }
+    return -1;
+  };
+
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     const next = tokens[i + 1];
+    // A paragraph or section may be named by digits alone (`0100.`).
+    if (t.kind === "number") {
+      if (division === "procedure") i += Math.max(0, openHeader(i));
+      continue;
+    }
     if (t.kind !== "word") continue;
 
     // ---- divisions ----
@@ -228,40 +286,10 @@ function parseCobolInner(filePath: string, source: string): ParsedFile {
     if (division !== "procedure") continue;
 
     // ---- section / paragraph headers ----
-    const prev = tokens[i - 1];
-    const startsSentence = !prev || prev.kind === "period";
-    const inAreaA = !lines[t.line].fixed || t.col < 4;
-    if (
-      t.first &&
-      startsSentence &&
-      inAreaA &&
-      !NOT_A_PARAGRAPH.has(t.upper) &&
-      !STATEMENT_VERBS.has(t.upper) &&
-      !t.upper.startsWith("END-")
-    ) {
-      if (next?.upper === "SECTION") {
-        closeSection(t.line - 1);
-        section = {
-          kind: "function",
-          name: t.upper,
-          qname: buildCodeQualifiedName(container(), t.upper),
-          parent: container(),
-          start: t.line,
-        };
-        continue;
-      }
-      if (next?.kind === "period") {
-        closeParagraph(t.line - 1);
-        paragraph = {
-          kind: "function",
-          name: t.upper,
-          qname: buildCodeQualifiedName(container(), t.upper),
-          parent: section?.qname ?? container(),
-          start: t.line,
-        };
-        i++;
-        continue;
-      }
+    const consumed = openHeader(i);
+    if (consumed >= 0) {
+      i += consumed;
+      continue;
     }
 
     // ---- PERFORM a [THRU b] ----
@@ -306,11 +334,18 @@ function parseCobolInner(filePath: string, source: string): ParsedFile {
     if (t.upper === "GO") {
       let j = i + 1;
       if (tokens[j]?.upper === "TO") j++;
+      const targets: CobolToken[] = [];
       for (; j < tokens.length; j++) {
         const g = tokens[j];
         if (g.kind !== "word" && g.kind !== "number") break;
         if (g.upper === "DEPENDING" || STATEMENT_VERBS.has(g.upper) || g.upper.startsWith("END-"))
           break;
+        targets.push(g);
+      }
+      // Several names only in `GO TO a b c DEPENDING ON x`; otherwise the one
+      // target is followed by other words (`AT END GO TO x NOT AT END ...`).
+      const named = tokens[j]?.upper === "DEPENDING" ? targets : targets.slice(0, 1);
+      for (const g of named) {
         edges.push({
           kind: "calls",
           fromQualifiedName: caller(),
@@ -409,7 +444,7 @@ function collectDataItems(
       } else if (next?.upper === "SECTION" || (t.upper === "END" && next?.upper === "PROGRAM")) {
         close(t.line - 1);
       }
-    } else if (t.kind === "number" && (Number(t.text) === 1 || Number(t.text) === 77)) {
+    } else if (isLevelNumberAt(tokens, i) && (Number(t.text) === 1 || Number(t.text) === 77)) {
       close(t.line - 1);
       isItem = true;
     }

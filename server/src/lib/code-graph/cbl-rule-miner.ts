@@ -28,7 +28,14 @@
  * No regular expression runs over source text (ReDoS-free by construction).
  */
 import { MAX_CONTINUATION_LINES, MAX_LOGICAL_CHARS } from "./rule-miner-continuation.js";
-import { isStatementBoundary, lexCobol, renderTokens, type CobolToken } from "./cobol-source.js";
+import {
+  isLevelNumberAt,
+  isStatementBoundary,
+  lexCobol,
+  renderTokens,
+  type CobolFormat,
+  type CobolToken,
+} from "./cobol-source.js";
 
 export interface MinedCblRule {
   kind:
@@ -87,14 +94,14 @@ function readUntil(
   tokens: readonly CobolToken[],
   from: number,
   anchorLine: number,
-  stop: (t: CobolToken) => boolean,
+  stop: (t: CobolToken, k: number) => boolean,
 ): Read {
   const out: CobolToken[] = [];
   let chars = 0;
   let k = from;
   for (; k < tokens.length; k++) {
     const t = tokens[k];
-    if (stop(t)) return { tokens: out, end: k, capped: false };
+    if (stop(t, k)) return { tokens: out, end: k, capped: false };
     chars += t.text.length + 1;
     if (t.line - anchorLine >= MAX_CONTINUATION_LINES || chars > MAX_LOGICAL_CHARS) {
       return { tokens: out, end: k, capped: true };
@@ -112,6 +119,8 @@ function isStatusField(t: CobolToken): boolean {
 }
 
 interface EvaluateFrame {
+  /** A SEARCH statement's scope: its WHEN arms are not EVALUATE branches. */
+  search?: boolean;
   subject: string | null;
   labels: string[];
   line: number;
@@ -127,6 +136,10 @@ interface EvaluateFrame {
  * @param context  Optional symbol qualified name.
  * @param maxRules Most rules returned (default {@link MAX_RULES}). Docs-gen
  *                 Phase 1 passes `Infinity`: it must not lose any rule.
+ * @param format   The file's source format at `source`'s first line. Pass it
+ *                 whenever `source` is a slice: a paragraph on its own can
+ *                 look like fixed format when its file is free format. Omitted,
+ *                 the format is guessed from `source` itself.
  */
 export function mineCblRules(
   source: string,
@@ -134,8 +147,9 @@ export function mineCblRules(
   baseLine: number,
   context: string | null = null,
   maxRules: number = MAX_RULES,
+  format?: CobolFormat,
 ): MinedCblRule[] {
-  return mineCblTokens(lexCobol(source).tokens, filePath, baseLine, context, maxRules);
+  return mineCblTokens(lexCobol(source, format).tokens, filePath, baseLine, context, maxRules);
 }
 
 /**
@@ -185,19 +199,21 @@ export function mineCblTokens(
     }
 
     // ---- data items: track the parent, mine level-88 condition names ----
-    if (t.kind === "number" && t.first && tokens[i + 1]?.kind === "word") {
+    if (isLevelNumberAt(tokens, i)) {
       const level = Number(t.text);
       const name = tokens[i + 1];
       if (level === 88) {
         let j = i + 2;
         if (tokens[j]?.upper === "VALUE" || tokens[j]?.upper === "VALUES") j++;
         if (tokens[j]?.upper === "IS" || tokens[j]?.upper === "ARE") j++;
-        // Values run to the period (or the next level number on a new line).
+        // Values run to the period (or, with the period missing, the next
+        // entry's level number) — a value list continued onto a line that
+        // starts with a number (`4 5 6.`) is still this entry's.
         const values = readUntil(
           tokens,
           j,
           t.line,
-          (v) => v.kind === "period" || (v.first && v.kind === "number"),
+          (v, k) => v.kind === "period" || isLevelNumberAt(tokens, k),
         );
         const vals = text(values);
         if (vals.length > 0) {
@@ -267,7 +283,21 @@ export function mineCblTokens(
       continue;
     }
     if (t.upper === "END-EVALUATE") {
+      // A SEARCH left open by a missing END-SEARCH ends with its EVALUATE.
+      while (evaluates[evaluates.length - 1]?.search) evaluates.pop();
       closeEvaluate();
+      continue;
+    }
+
+    // ---- SEARCH [ALL] <table> ... WHEN ... [END-SEARCH] ----
+    // Its WHEN arms are table-lookup conditions, not branches of an enclosing
+    // EVALUATE, so the SEARCH opens a scope of its own that mines nothing.
+    if (t.upper === "SEARCH") {
+      evaluates.push({ search: true, subject: null, labels: [], line: t.line, expression: "" });
+      continue;
+    }
+    if (t.upper === "END-SEARCH") {
+      if (evaluates[evaluates.length - 1]?.search) evaluates.pop();
       continue;
     }
 
@@ -281,7 +311,7 @@ export function mineCblTokens(
         (c) => c.upper === "THEN" || isStatementBoundary(c),
       );
       const armText = text(arm);
-      if (frame && armText.length > 0 && arm.tokens[0].upper !== "OTHER") {
+      if (frame && !frame.search && armText.length > 0 && arm.tokens[0].upper !== "OTHER") {
         if (frame.subject !== null) {
           frame.labels.push(armText);
         } else {

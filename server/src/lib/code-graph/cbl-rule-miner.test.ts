@@ -223,3 +223,59 @@ describe("renderMinedCblRules (#160)", () => {
     expect(renderMinedCblRules(rules, 80)).toContain("more COBOL rules truncated");
   });
 });
+
+describe("mineCblRules — review follow-ups (#160)", () => {
+  const mine = (lines: string[]) =>
+    mineCblRules([">>SOURCE FREE", ...lines].join("\n"), "src/CAL.cbl", 1);
+
+  it("reads a level-88 value list continued onto a line that starts with a number", () => {
+    const rules = mine([
+      "01 WS-MONTH PIC 99.",
+      "   88 Q1-MONTH VALUES 1 2 3",
+      "      4 5 6.",
+      "   88 Q3-MONTH VALUES 7 THRU 9",
+      "      10 THRU 12.",
+      "   88 BAD-A VALUE 0",
+      "   88 BAD-B VALUE 99.",
+    ]);
+    expect(rules.map((r) => r.expression)).toEqual([
+      "88 Q1-MONTH VALUE 1 2 3 4 5 6",
+      "88 Q3-MONTH VALUE 7 THRU 9 10 THRU 12",
+      // A missing period still ends the list at the next level-88 entry.
+      "88 BAD-A VALUE 0",
+      "88 BAD-B VALUE 99",
+    ]);
+  });
+
+  it("does not count a SEARCH ... WHEN nested in an EVALUATE as one of its branches", () => {
+    const rules = mine([
+      "PROCEDURE DIVISION.",
+      "MAIN.",
+      "    EVALUATE WS-TYPE",
+      "      WHEN 'A'",
+      "        SEARCH WS-TABLE",
+      "          AT END MOVE 0 TO WS-X",
+      "          WHEN WS-KEY (WS-IDX) = 'Z' MOVE 1 TO WS-X",
+      "        END-SEARCH",
+      "      WHEN 'B' CONTINUE",
+      "    END-EVALUATE",
+      "    EVALUATE WS-CODE",
+      "      WHEN 1",
+      "        EVALUATE WS-SUB",
+      "          WHEN 'X'",
+      // No END-SEARCH: the SEARCH ends with the EVALUATE around it, so the
+      // outer EVALUATE's next WHEN is its own again.
+      "            SEARCH ALL WS-TABLE",
+      "              WHEN WS-KEY (WS-IDX) = 'Y' MOVE 2 TO WS-X",
+      "        END-EVALUATE",
+      "      WHEN 2 CONTINUE",
+      "    END-EVALUATE.",
+    ]);
+    const evaluates = rules.filter((r) => r.kind === "evaluate");
+    expect(evaluates.map((r) => r.expression)).toEqual([
+      "EVALUATE WS-TYPE WHEN 'A'; 'B'",
+      "EVALUATE WS-CODE WHEN 1; 2",
+      "EVALUATE WS-SUB WHEN 'X'",
+    ]);
+  });
+});

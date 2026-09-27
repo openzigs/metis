@@ -179,6 +179,46 @@ describe("Phase 1 COBOL rule inventory (#160)", () => {
     expect(parsePersistedMinedRules(JSON.stringify(written))).toEqual(written);
   });
 
+  it("mines a free-format file's paragraphs as free format (#160 review)", async () => {
+    // A short paragraph name and bodies with a valid fixed-format indicator in
+    // column 7: read on its own, the paragraph would look fixed-format.
+    const P = "src/PAY.cbl";
+    const tail = "WS-AMOUNT-PAYABLE-TO-VENDOR-ACCOUNT > WS-CREDIT-LIMIT-FOR-VENDOR-ACCOUNT";
+    const source = [
+      ">>SOURCE FREE",
+      "IDENTIFICATION DIVISION.",
+      "PROGRAM-ID. PAY.",
+      "PROCEDURE DIVISION.",
+      "MAIN.",
+      "    IF WS-AMT > 100",
+      "       GO TO ERR",
+      "    END-IF",
+      `    IF WS-CODE = 'A' AND ${tail}`,
+      "       DISPLAY 'OVER'",
+      "    END-IF.",
+      "ERR.",
+      "    DISPLAY 'E'.",
+    ].join("\n");
+    await setup({ [P]: source }, [
+      sym("p", "PAY", "class", P, 2, 13),
+      sym("m", "MAIN", "function", P, 5, 11, `${P}::PAY::MAIN`),
+      sym("e", "ERR", "function", P, 12, 13, `${P}::PAY::ERR`),
+    ]);
+    await synthesizeHolisticDocument("p", "architecture", "Architecture");
+    const p1 = phase1Prompts.join("\n====\n");
+    expect(p1).toContain("DETERMINISTICALLY-MINED COBOL RULE INVENTORY (2 rules)");
+    expect(p1).toContain(`- ${P}:6: Rejects/transfers control to ERR when WS-AMT > 100`);
+    expect(p1).toContain(`- ${P}:9: Branches when WS-CODE = 'A' AND ${tail}`);
+    expect(
+      persisted()
+        .filter((r) => r.language === "cbl")
+        .map((r) => [r.kind, r.line, r.context]),
+    ).toEqual([
+      ["guard", 6, `${P}::PAY::MAIN`],
+      ["condition", 9, `${P}::PAY::MAIN`],
+    ]);
+  });
+
   it("pages a rule-dense copybook across Phase-1 calls without dropping a rule", async () => {
     const n = 600;
     const lines = [" 01  WS-CODES.", "     05 WS-CODE PIC 9(4)."];

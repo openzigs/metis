@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { compileMetisignore, DEFAULT_METISIGNORE, isIgnored } from "./metisignore.js";
 import { detectLanguage, initCodeGraphParsers, parseSource, type ParsedFile } from "./parsers.js";
-import { buildCopybookIndex, resolveCopybook } from "./cobol-parser.js";
+import { buildCopybookIndex, resolveCopybook, type CopybookIndex } from "./cobol-parser.js";
 import {
   createResolutionIndex,
   indexSymbol,
@@ -769,9 +769,13 @@ async function persistParsed(
   }
 
   // ── Pass 2: build import-target index and persist edges. ────────────────
-  const { importTargets, runtimeImports } = buildFileImportIndex(parsedFiles, fileToSymbols);
   // #160 — `COPY name` binds to the copybook file's module symbol.
   const copybooks = buildCopybookIndex(parsedFiles.map((f) => f.filePath));
+  const { importTargets, runtimeImports } = buildFileImportIndex(
+    parsedFiles,
+    fileToSymbols,
+    copybooks,
+  );
   const persistedClassNames = await loadPersistedClassNames(
     prisma,
     codeGraphId,
@@ -1819,9 +1823,9 @@ export async function extractSchemaUsage(
 function buildFileImportIndex(
   parsedFiles: ParsedFile[],
   fileToSymbols: Map<string, unknown[]>,
+  copybooks: CopybookIndex,
 ): { importTargets: Map<string, string[]>; runtimeImports: Map<string, Set<string>> } {
   const filePaths = new Set<string>(parsedFiles.map((f) => f.filePath));
-  const copybooks = buildCopybookIndex(filePaths);
   // `OrderService.java` → every parsed path with that basename (Java imports).
   const javaByBasename = new Map<string, string[]>();
   for (const fp of filePaths) {

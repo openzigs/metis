@@ -309,7 +309,10 @@ calls `ingestCodeGraph()` ([connectors.ts](../server/src/routes/connectors.ts#L2
   are classes, sections and paragraphs are functions, level-01/77 items and
   `FD`/`SD` are types; `PERFORM`/`GO TO`/`CALL 'X'` are calls and `COPY` is an
   import bound to the copybook file at ingest (#160). The only npm COBOL
-  grammar ships no WASM build, so there is no tree-sitter path.
+  grammar ships no WASM build, so there is no tree-sitter path. Docs-gen
+  Phase 1 mines a COBOL file one paragraph at a time, so the source format is
+  decided once over the whole file and handed to each paragraph — a paragraph
+  of a free-format file can look fixed-format on its own.
 - Extension recognition (e.g. TSX/JSX, C# scripts) is not a guarantee of
   complete language-semantic analysis.
 

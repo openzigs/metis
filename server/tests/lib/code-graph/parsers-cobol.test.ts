@@ -343,3 +343,74 @@ describe("resolveCopybook (#160)", () => {
     expect(resolveCopybook("USER", "legacy/b/USER.cbl", index)).toBeNull();
   });
 });
+
+describe("parseCobol — review follow-ups (#160)", () => {
+  const F = "legacy/PAY.cbl";
+  const free = (lines: string[]) => [">>SOURCE FREE", ...lines].join("\n");
+
+  it("takes only the one GO TO target unless the statement is GO TO ... DEPENDING ON", () => {
+    const p = parseCobol(
+      F,
+      free([
+        "PROGRAM-ID. PAY.",
+        "PROCEDURE DIVISION.",
+        "READ-PARA.",
+        "    READ IN-FILE AT END GO TO EOF-PARA NOT AT END ADD 1 TO WS-N END-READ.",
+        "ROUTE-PARA.",
+        "    GO TO P1 P2",
+        "          P3 DEPENDING ON WS-I.",
+        "EOF-PARA.",
+        "    GOBACK.",
+      ]),
+    );
+    expect(calls(p).filter((c) => c[2] === "GO TO")).toEqual([
+      ["READ-PARA", "EOF-PARA", "GO TO"],
+      ["ROUTE-PARA", "P1", "GO TO"],
+      ["ROUTE-PARA", "P2", "GO TO"],
+      ["ROUTE-PARA", "P3", "GO TO"],
+    ]);
+  });
+
+  it("recognises a paragraph or section named only by digits, so PERFORM binds to it", () => {
+    const p = parseCobol(
+      F,
+      free([
+        "PROGRAM-ID. PAY.",
+        "PROCEDURE DIVISION.",
+        "0000 SECTION.",
+        "0100.",
+        "    PERFORM 0200.",
+        "0200.",
+        "    DISPLAY 'X'.",
+      ]),
+    );
+    expect(names(p, "function")).toEqual(expect.arrayContaining(["0000", "0100", "0200"]));
+    const s = p.symbols.find((x) => x.name === "0100")!;
+    expect([s.startLine, s.endLine]).toEqual([5, 6]);
+    expect(calls(p)).toEqual([["0100", "0200", "PERFORM"]]);
+  });
+
+  it("does not end a record at a VALUE continued onto a line that starts with 1", () => {
+    const p = parseCobol(
+      F,
+      fixed(
+        [
+          " DATA DIVISION.",
+          " WORKING-STORAGE SECTION.",
+          " 01  WS-REC.",
+          "     05 WS-COUNT PIC 9 VALUE",
+          "        1.",
+          "     05 WS-CODE  PIC X.",
+          " 01  WS-OTHER    PIC X.",
+        ],
+        "PAY00001",
+      ),
+    );
+    const at = (n: string) => {
+      const s = p.symbols.find((x) => x.name === n)!;
+      return [s.startLine, s.endLine];
+    };
+    expect(names(p, "type")).toEqual(["WS-REC", "WS-OTHER"]);
+    expect(at("WS-REC")).toEqual([3, 6]);
+  });
+});

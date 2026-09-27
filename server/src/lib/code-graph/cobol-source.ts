@@ -24,7 +24,9 @@
  * `$SET SOURCEFORMAT"FREE"|"FIXED"` switch it from the next line on; with no
  * directive, a file is fixed unless one of its lines has something other than a
  * valid indicator character in column 7 (`PROCEDURE DIVISION.` at column 1 is
- * free format). `*>` starts an inline comment in either format.
+ * free format). A caller mining a slice of a file passes the format the file
+ * is in at the slice's first line ({@link cobolLineFormats}) rather than let the
+ * slice guess. `*>` starts an inline comment in either format.
  *
  * Complexity: every function here is a single left-to-right pass over its
  * input with no regular expression applied to unbounded text, so normalising
@@ -40,6 +42,9 @@ export interface CobolLine {
   /** Whether the line was read as fixed format (area A = code columns 0–3). */
   fixed: boolean;
 }
+
+/** The two reference formats a COBOL source line can be read in. */
+export type CobolFormat = "fixed" | "free";
 
 /** Valid column-7 indicator characters in fixed format. */
 const FIXED_INDICATORS = new Set([" ", "*", "/", "-", "D", "d", "$"]);
@@ -110,26 +115,39 @@ function openQuoteAfter(text: string, open = ""): string {
 }
 
 /**
+ * The format a file with no caller-supplied format starts in: the first
+ * directive decides it; with none before them, the lines are fixed format
+ * unless one of them cannot be.
+ */
+function guessFixed(raw: readonly string[]): boolean {
+  for (const line of raw) {
+    const dir = formatDirective(line.length > 7 ? line.slice(7) : "") ?? formatDirective(line);
+    if (dir) return dir === "fixed";
+    if (line.trim().length > 0 && breaksFixedFormat(line)) return false;
+  }
+  return true;
+}
+
+/**
+ * The format each physical line of a whole file is read in (index 0 = line 1).
+ * A caller that mines a slice of the file — docs-gen Phase 1 reads one
+ * paragraph at a time — passes the slice's first-line format to
+ * {@link normalizeCobolSource}, because a slice on its own may carry neither
+ * the file's `>>SOURCE` directive nor a line that gives free format away.
+ */
+export function cobolLineFormats(source: string): CobolFormat[] {
+  return normalizeCobolSource(source).map((l) => (l.fixed ? "fixed" : "free"));
+}
+
+/**
  * Normalise COBOL source into one {@link CobolLine} per physical line (so line
  * numbers are unchanged). Comment, directive and continuation lines get empty
  * `code`; a continuation line's text is appended to the last code line (for a
  * continued literal, without its opening quote), as the compiler reads it.
  */
-export function normalizeCobolSource(source: string): CobolLine[] {
+export function normalizeCobolSource(source: string, initialFormat?: CobolFormat): CobolLine[] {
   const raw = source.split(/\r?\n/).map(expandTabs);
-  let fixed = true;
-  // No leading directive: fixed unless some line cannot be fixed format.
-  for (const line of raw) {
-    const dir = formatDirective(line.length > 7 ? line.slice(7) : "") ?? formatDirective(line);
-    if (dir) {
-      fixed = dir === "fixed";
-      break;
-    }
-    if (line.trim().length > 0 && breaksFixedFormat(line)) {
-      fixed = false;
-      break;
-    }
-  }
+  let fixed = initialFormat ? initialFormat === "fixed" : guessFixed(raw);
 
   const out: CobolLine[] = [];
   let lastCode = -1;
@@ -302,8 +320,11 @@ export function tokenizeCobol(lines: readonly CobolLine[]): CobolToken[] {
 }
 
 /** Normalise and tokenise in one step. */
-export function lexCobol(source: string): { lines: CobolLine[]; tokens: CobolToken[] } {
-  const lines = normalizeCobolSource(source);
+export function lexCobol(
+  source: string,
+  initialFormat?: CobolFormat,
+): { lines: CobolLine[]; tokens: CobolToken[] } {
+  const lines = normalizeCobolSource(source, initialFormat);
   return { lines, tokens: tokenizeCobol(lines) };
 }
 
@@ -376,6 +397,23 @@ export const STATEMENT_VERBS: ReadonlySet<string> = new Set([
   "WHEN",
   "WRITE",
 ]);
+
+/**
+ * True when `tokens[i]` is a level number opening a data description entry:
+ * first on its line and followed by a data name — not a numeric value
+ * continued onto a new line (`4 5 6.`, `1.`, `10 THRU 12.`).
+ */
+export function isLevelNumberAt(tokens: readonly CobolToken[], i: number): boolean {
+  const t = tokens[i];
+  const next = tokens[i + 1];
+  return (
+    t?.kind === "number" &&
+    t.first &&
+    next?.kind === "word" &&
+    next.upper !== "THRU" &&
+    next.upper !== "THROUGH"
+  );
+}
 
 /** A statement verb, or a scope terminator (`END-IF`, `END-EVALUATE`, ...). */
 export function isStatementBoundary(t: CobolToken): boolean {
