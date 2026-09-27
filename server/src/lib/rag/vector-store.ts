@@ -538,6 +538,11 @@ interface LanceTable {
   cleanupOldVersions?(olderThanMinutes?: number): Promise<unknown>;
   /** #207 — merge the small fragments one-add-per-document leaves behind. */
   compactFiles?(): Promise<unknown>;
+  /**
+   * #253 — BTREE index on a scalar column (`vectordb` 0.21.2 `Table.createScalarIndex`,
+   * `node_modules/vectordb/dist/index.d.ts`). Optional: structural doubles omit it.
+   */
+  createScalarIndex?(column: string, replace?: boolean): Promise<void>;
 }
 
 interface LanceSchema {
@@ -587,6 +592,16 @@ export const LANCE_INDEX_METRIC = "cosine";
 
 /** Issue #207 — reclaim old table versions after this many writes to one table. */
 export const LANCE_CLEANUP_EVERY_WRITES = 100;
+
+/**
+ * Issue #253 — the column `upsert` looks rows up by. A BTREE index on it lets
+ * `countRows`/`delete` with `id IN (...)` skip every fragment the index covers;
+ * `vectordb` 0.21.2 documents set membership as a filter a scalar index serves
+ * (`createScalarIndex`, `node_modules/vectordb/dist/index.d.ts`). It is rebuilt on
+ * each {@link LANCE_CLEANUP_EVERY_WRITES} maintenance cycle, so at most that many
+ * writes' fragments are ever scanned. Building it over 50,000 ids measured ~4 ms.
+ */
+export const LANCE_ID_INDEX_COLUMN = "id";
 
 /**
  * Issue #207 — only versions at least this old are reclaimed. A search reads the
@@ -668,7 +683,14 @@ export class LanceVectorStore implements VectorStore {
         swapTable: (id, shadow, guard) => this.swapTable(id, shadow, guard),
       },
       (write) => {
+        // #253 — keep the write counter across the reset. Document approval replays
+        // every document's rows in here, so dropping the counter meant the ingest
+        // path never reached LANCE_CLEANUP_EVERY_WRITES: no compaction, and a
+        // fragment per write for every later upsert to scan. The counter only paces
+        // maintenance; it is not state another instance's cut-over can invalidate.
+        const writes = this.writesSinceCleanup.get(projectId);
         this.forgetTableState(projectId);
+        if (writes !== undefined) this.writesSinceCleanup.set(projectId, writes);
         return fn(write);
       },
     );
@@ -1054,10 +1076,14 @@ export class LanceVectorStore implements VectorStore {
         // FROM these rows, which means they are already written.
         return;
       }
-      // Upsert = delete by id then add. Lance does not yet expose merge
-      // semantics through the JS client.
+      // Upsert = delete by id then add. #253 — only delete when a row is there to
+      // replace. A `vectordb` delete scans every fragment and commits a table version
+      // even when it matches nothing, and a new document's chunks never match. The
+      // count is served by the id index (LANCE_ID_INDEX_COLUMN) for every fragment
+      // it covers, so it reads only the fragments written since the last refresh.
       const ids = lanceRows.map((r) => sqlString(r.id));
-      await table.delete(`id IN (${ids.join(", ")})`);
+      const byId = `${LANCE_ID_INDEX_COLUMN} IN (${ids.join(", ")})`;
+      if ((await table.countRows(byId)) > 0) await table.delete(byId);
       await table.add(lanceRows);
       await this.maintainIndex(projectId, table, lanceRows.length);
     });
@@ -1133,11 +1159,24 @@ export class LanceVectorStore implements VectorStore {
     this.writesSinceCleanup.set(projectId, 0);
     try {
       if (typeof table.compactFiles === "function") await table.compactFiles();
+    } catch (err) {
+      log.warn("table compaction failed", { projectId, error: (err as Error).message });
+    }
+    // #253 — after compaction (which rewrites fragments) and before cleanup (which
+    // reclaims the build this one supersedes).
+    try {
+      if (typeof table.createScalarIndex === "function") {
+        await table.createScalarIndex(LANCE_ID_INDEX_COLUMN, true);
+      }
+    } catch (err) {
+      log.warn("id index build failed", { projectId, error: (err as Error).message });
+    }
+    try {
       if (typeof table.cleanupOldVersions === "function") {
         await table.cleanupOldVersions(this.cleanupOlderThanMinutes);
       }
     } catch (err) {
-      log.warn("table compaction/cleanup failed", { projectId, error: (err as Error).message });
+      log.warn("table version cleanup failed", { projectId, error: (err as Error).message });
     }
   }
 
@@ -1231,12 +1270,21 @@ export class LanceVectorStore implements VectorStore {
     let q: LanceQuery = table.search(query).limit(k).metricType("cosine");
     const where = buildLanceWhere(filter);
     if (where) q = q.where(where);
-    const results = await q.execute<Record<string, unknown> & { _distance?: number }>();
-    return results.map((r) => ({
-      row: fromLanceRow(r as LanceRow),
-      // Lance cosine returns 1 - cos_sim. Map back to a similarity score.
-      score: typeof r._distance === "number" ? 1 - r._distance : 0,
-    }));
+    const results = await q.execute<LanceRow>();
+    // Issue #277 — score from the returned vectors, never from `_distance`. On an
+    // exhaustively searched table `_distance` is the exact cosine distance, but once
+    // an IVF_PQ index serves the query it can be the PQ approximation — measured at
+    // 1.3–4.6× the cosine distance on clustered data, and about 2·(1 − cos) from a
+    // pre-#255 `l2` index on unit vectors — so `1 − _distance` changed scale when a project passed
+    // VECTOR_ANN_THRESHOLD and every fixed score threshold moved with it. The exact
+    // cosine of the k returned rows is one scale either way, and re-sorting by it
+    // makes the order of those k rows exact too (which k rows come back is still the
+    // index's call).
+    const hits = results.map((r) => {
+      const row = fromLanceRow(r);
+      return { row, score: cosineSimilarity(query, row.vector) };
+    });
+    return hits.sort((a, b) => b.score - a.score);
   }
 
   async modelCoverage(projectId: string): Promise<ModelCoverage> {
