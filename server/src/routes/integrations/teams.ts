@@ -84,7 +84,7 @@ function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.infer<S> {
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
     throw new AppError(400, "VALIDATION_ERROR", "Invalid payload", {
-      issues: parsed.error.errors,
+      issues: parsed.error.issues,
     });
   }
   return parsed.data;
@@ -133,7 +133,7 @@ const notificationTargetSchema = z.object({
    * for the proactive send. Captured by the operator from a channel the bot is
    * installed in (the same reference the #548 store records on inbound activity).
    */
-  reference: z.record(z.unknown()),
+  reference: z.record(z.string(), z.unknown()),
 });
 
 const linkIdentitySchema = z.object({

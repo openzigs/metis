@@ -171,7 +171,7 @@ const generateSchema = z
       .enum(["business-requirements", "architecture", "user-guide"])
       .optional()
       .default("business-requirements"),
-    scopeFilter: z.record(z.unknown()).optional().default({}),
+    scopeFilter: z.record(z.string(), z.unknown()).optional().default({}),
     autoUpdate: z.boolean().optional().default(false),
     sharedReferenceDocumentIds: z.array(z.string().min(1)).max(100).default([]),
     /**

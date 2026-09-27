@@ -23,7 +23,7 @@ import {
   dispatchToHttp,
   type FetchLike,
 } from "./dispatcher.js";
-import { SPEC_KIT_TOOLS } from "./tools.js";
+import { SPEC_KIT_TOOLS, toolInputSchema } from "./tools.js";
 
 export interface CreateSpecKitMcpServerOptions {
   config: SpecKitMcpConfig;
@@ -56,7 +56,7 @@ export function createSpecKitMcpServer(opts: CreateSpecKitMcpServerOptions): Mcp
       tool.name,
       {
         description: tool.description,
-        inputSchema: tool.inputSchema,
+        inputSchema: toolInputSchema(tool.inputSchema),
       },
       async (args: unknown) => {
         const safeArgs = (args ?? {}) as Record<string, unknown>;

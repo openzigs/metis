@@ -47,7 +47,7 @@ const validModelIds = [
 
 const modelPreferenceSchema = z.object({
   defaultModel: z.enum(validModelIds).nullable().optional(),
-  taskTypeOverrides: z.record(z.string()).optional(),
+  taskTypeOverrides: z.record(z.string(), z.string()).optional(),
   budgetDowngradeThreshold: z.number().int().positive().nullable().optional(),
 });
 

@@ -240,7 +240,7 @@ describe("runToolProtocolComparison", () => {
     for (const r of [...cmp.records, ...capped.records]) {
       expect(r).toMatchObject({
         degraded: true,
-        answerSchemaIssues: ["findings.0.severity: invalid_enum_value"],
+        answerSchemaIssues: ["findings.0.severity: invalid_value"],
       });
       expect(JSON.stringify(r)).not.toContain("SECRET");
     }

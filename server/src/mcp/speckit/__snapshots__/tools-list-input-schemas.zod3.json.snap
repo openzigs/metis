@@ -1,0 +1,153 @@
+{
+  "speckit_constitution": {
+    "type": "object",
+    "properties": {
+      "content": {
+        "type": "string",
+        "description": "Project-level constitution overrides (markdown)."
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "speckit_specify": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Free-form description of the feature."
+      },
+      "featureSlug": {
+        "type": "string",
+        "description": "Optional override for the slug suffix (default derived from title)."
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "speckit_clarify": {
+    "type": "object",
+    "properties": {
+      "input": {
+        "type": "string",
+        "default": "",
+        "description": "Answer text (empty asks a question)."
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "speckit_plan": {
+    "type": "object",
+    "properties": {
+      "featureSlug": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Per-feature slug, e.g. `001-payments-redesign`."
+      },
+      "force": {
+        "type": "boolean",
+        "description": "Set true to bypass phase gates (audited as severity:high)."
+      }
+    },
+    "required": [
+      "featureSlug"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "speckit_checklist": {
+    "type": "object",
+    "properties": {
+      "featureSlug": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Per-feature slug, e.g. `001-payments-redesign`."
+      },
+      "force": {
+        "type": "boolean",
+        "description": "Set true to bypass phase gates (audited as severity:high)."
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "merge",
+          "overwrite"
+        ]
+      },
+      "domains": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "featureSlug"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "speckit_tasks": {
+    "type": "object",
+    "properties": {},
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "speckit_analyze": {
+    "type": "object",
+    "properties": {},
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "speckit_implement": {
+    "type": "object",
+    "properties": {},
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "speckit_taskstoissues": {
+    "type": "object",
+    "properties": {
+      "featureSlug": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Per-feature slug, e.g. `001-payments-redesign`."
+      },
+      "force": {
+        "type": "boolean",
+        "description": "Set true to bypass phase gates (audited as severity:high)."
+      },
+      "repo": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner",
+          "name"
+        ],
+        "additionalProperties": false,
+        "description": "Override the destination repo (otherwise resolved from project config)."
+      },
+      "parentEpicNumber": {
+        "type": "integer",
+        "exclusiveMinimum": 0
+      },
+      "dryRun": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "featureSlug"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+}

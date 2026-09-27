@@ -4,7 +4,6 @@
 import { z } from "zod";
 import {
   DB_DRIVERS,
-  DEFAULT_RETRIEVE_K,
   DOCUMENT_STATUSES,
   MAX_DOCUMENT_BYTES,
   MAX_RETRIEVE_K,
@@ -128,7 +127,11 @@ export const DEFAULT_RETRIEVAL_MODE: RetrievalMode = "hybrid";
 
 export const retrieveQuerySchema = z.object({
   query: z.string().min(1).max(2048),
-  k: z.number().int().min(1).max(MAX_RETRIEVE_K).default(DEFAULT_RETRIEVE_K).optional(),
+  // No `.default()`: under zod 3 the outer `.optional()` meant it never fired, and
+  // an absent `k` reached the search service as `undefined`. zod 4 applies a
+  // default inside `.optional()`, so keeping it would change what the route
+  // searches with and audits (#309).
+  k: z.number().int().min(1).max(MAX_RETRIEVE_K).optional(),
   documentIds: z.array(idSchema).max(100).optional(),
   mode: z.enum(RETRIEVAL_MODES).optional(),
 });

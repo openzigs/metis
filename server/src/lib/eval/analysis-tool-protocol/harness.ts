@@ -211,7 +211,7 @@ const MAX_ANSWER_SCHEMA_ISSUES = 10;
 
 /**
  * #214 — why `text` fails the schema {@link isSchemaValidFinalAnswer} gates on,
- * as `path: code` pairs (`findings.0.severity: invalid_enum_value`). Issue
+ * as `path: code` pairs (`findings.0.severity: invalid_value`). Issue
  * MESSAGES are deliberately left out: zod quotes the received value in some of
  * them, and that value is model-authored commentary on the customer's source.
  * `[]` = schema-valid; `["not-json"]` = no JSON object to check.

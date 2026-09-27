@@ -26,8 +26,8 @@ import {
 // platform in plaintext.
 export const VAULT_REF_PATTERN = /\$\{vault:[^}]+\}/;
 
-const mcpEnvShape = z.record(z.string());
-const mcpHeadersShape = z.record(z.string());
+const mcpEnvShape = z.record(z.string(), z.string());
+const mcpHeadersShape = z.record(z.string(), z.string());
 const mcpArgsShape = z.array(z.string()).max(64);
 
 // Tool descriptor surfaced to the UI — never includes raw plaintext args.
@@ -50,10 +50,10 @@ const mcpBaseShape = {
   command: z.string().max(2048).nullable(),
   args: z.array(z.string()).max(64).nullable().default(null),
   url: z.string().url().nullable(),
-  headers: z.record(z.string()).nullable().default(null),
-  envJson: z.record(z.string()).nullable().default(null),
+  headers: z.record(z.string(), z.string()).nullable().default(null),
+  envJson: z.record(z.string(), z.string()).nullable().default(null),
   envSecretId: idSchema.nullable(),
-  envSecretRefs: z.record(z.string()).nullable().default(null),
+  envSecretRefs: z.record(z.string(), z.string()).nullable().default(null),
   trustLevel: z.enum(MCP_TRUST_LEVELS).default("untrusted"),
   defaultToolRisk: z.enum(MCP_TOOL_RISKS).default("medium"),
   version: z.string().nullable().default(null),
@@ -129,7 +129,7 @@ export const createMCPServerSchema = z
     url: z.string().url().optional(),
     headers: mcpHeadersShape.optional(),
     env: mcpEnvShape.optional(),
-    envSecretRefs: z.record(z.string()).optional(),
+    envSecretRefs: z.record(z.string(), z.string()).optional(),
     trustLevel: z.enum(MCP_TRUST_LEVELS).default("untrusted"),
     defaultToolRisk: z.enum(MCP_TOOL_RISKS).default("medium"),
     version: z.string().max(64).optional(),
@@ -158,7 +158,7 @@ export const updateMCPServerSchema = z
     url: z.string().url().nullable().optional(),
     headers: mcpHeadersShape.nullable().optional(),
     env: mcpEnvShape.nullable().optional(),
-    envSecretRefs: z.record(z.string()).nullable().optional(),
+    envSecretRefs: z.record(z.string(), z.string()).nullable().optional(),
     trustLevel: z.enum(MCP_TRUST_LEVELS).optional(),
     defaultToolRisk: z.enum(MCP_TOOL_RISKS).optional(),
     version: z.string().max(64).nullable().optional(),
@@ -185,13 +185,13 @@ export const mcpJsonServerEntrySchema = z
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
     url: z.string().url().optional(),
-    headers: z.record(z.string()).optional(),
-    env: z.record(z.string()).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
   })
   .passthrough();
 export const mcpJsonImportSchema = z.object({
-  servers: z.record(mcpJsonServerEntrySchema).optional(),
-  mcpServers: z.record(mcpJsonServerEntrySchema).optional(),
+  servers: z.record(z.string(), mcpJsonServerEntrySchema).optional(),
+  mcpServers: z.record(z.string(), mcpJsonServerEntrySchema).optional(),
   inputs: z.unknown().optional(),
 });
 export type MCPJsonImport = z.infer<typeof mcpJsonImportSchema>;
@@ -249,7 +249,8 @@ export const mcpToolApprovalSchema = z.object({
   sessionId: z.string(),
   serverId: z.string(),
   toolName: z.string(),
-  args: z.unknown(),
+  // `.optional()`: zod 4 rejects an absent `z.unknown()` key, zod 3 admitted it (#309).
+  args: z.unknown().optional(),
   status: z.enum(MCP_APPROVAL_STATUSES),
   createdAt: z.string(),
   decidedAt: z.string().nullable(),
@@ -274,12 +275,12 @@ export const copilotMcpJsonServerSchema = z
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
     url: z.string().url().optional(),
-    env: z.record(z.string()).optional(),
-    headers: z.record(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
   })
   .passthrough();
 export const copilotMcpJsonSchema = z.object({
-  servers: z.record(copilotMcpJsonServerSchema).default({}),
+  servers: z.record(z.string(), copilotMcpJsonServerSchema).default({}),
 });
 export type CopilotMcpJson = z.infer<typeof copilotMcpJsonSchema>;
 export type CopilotMcpJsonServer = z.infer<typeof copilotMcpJsonServerSchema>;
@@ -373,7 +374,7 @@ export const createScheduledJobSchema = z.object({
   name: z.string().min(1).max(128),
   cron: cronSchema,
   taskType: z.string().min(1).max(64).default("http-webhook"),
-  payload: z.record(z.unknown()).default({}),
+  payload: z.record(z.string(), z.unknown()).default({}),
   projectId: idSchema.optional().nullable(),
   enabled: z.boolean().default(true),
   maxAttempts: z.number().int().min(1).max(20).default(DEFAULT_MAX_TASK_ATTEMPTS),
@@ -414,7 +415,7 @@ export const createTaskSchema = z.object({
   type: z.string().min(1).max(128),
   trigger: z.enum(TASK_TRIGGERS).default("manual"),
   priority: z.number().int().min(1).max(10).default(DEFAULT_TASK_PRIORITY),
-  payload: z.record(z.unknown()).default({}),
+  payload: z.record(z.string(), z.unknown()).default({}),
   maxAttempts: z.number().int().min(1).max(20).default(DEFAULT_MAX_TASK_ATTEMPTS),
   scheduledFor: dateSchema.optional(),
   scheduledJobId: idSchema.optional(),

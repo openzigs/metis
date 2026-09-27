@@ -6,7 +6,7 @@ export const generationInputSnapshotSchema = z
   .object({
     version: z.literal(1),
     fingerprint: z.string().min(1),
-    items: z.record(z.string()),
+    items: z.record(z.string(), z.string()),
   })
   .strict();
 export type GenerationInputSnapshot = z.infer<typeof generationInputSnapshotSchema>;

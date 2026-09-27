@@ -20,7 +20,37 @@ export interface SpecKitToolDef<Shape extends z.ZodRawShape = z.ZodRawShape> {
   /** Zod schema for the tool's input arguments. */
   inputSchema: Shape;
   /** Maps validated input → REST dispatch payload. */
-  toDispatchInput: (args: z.infer<z.ZodObject<Shape>>) => DispatchInput;
+  toDispatchInput(args: z.infer<z.ZodObject<Shape>>): DispatchInput;
+}
+
+/**
+ * #309 — the MCP SDK derives `tools/list` JSON Schemas from these shapes, and on
+ * zod 4 it converts in `io: "input"` mode, which stops emitting the
+ * `additionalProperties: false` zod 3's converter always wrote. Hosts had been
+ * told these objects are closed; this metadata keeps telling them so. It is
+ * metadata only: unknown keys are still stripped, never rejected.
+ */
+const CLOSED_OBJECT = { additionalProperties: false } as const;
+
+/**
+ * The input schema a tool is registered with (see {@link CLOSED_OBJECT}). An
+ * EMPTY shape stays a raw shape: the SDK advertises that as the bare
+ * `{ type: "object", properties: {} }` on both zod majors, which is what the
+ * no-argument tools have always sent.
+ */
+export function toolInputSchema<S extends z.ZodRawShape>(shape: S): S | z.ZodObject<S> {
+  return Object.keys(shape).length === 0 ? shape : z.object(shape).meta(CLOSED_OBJECT);
+}
+
+/**
+ * Types each entry against ITS OWN shape. zod 4 infers `unknown` for every key of
+ * the default `z.ZodRawShape`, so a bare `satisfies ReadonlyArray<SpecKitToolDef>`
+ * no longer gives `toDispatchInput` typed arguments (#309).
+ */
+function defineTool<const N extends string, S extends z.ZodRawShape>(
+  def: SpecKitToolDef<S> & { name: N },
+): SpecKitToolDef<S> & { name: N } {
+  return def;
 }
 
 const featureSlugShape = {
@@ -35,7 +65,7 @@ const forceShape = {
 } as const;
 
 export const SPEC_KIT_TOOLS = [
-  {
+  defineTool({
     name: "speckit_constitution",
     description:
       "Generate or update the project constitution from `.github/instructions/*.md` plus optional overrides. Bumps semver based on principle add/remove/edit.",
@@ -46,8 +76,8 @@ export const SPEC_KIT_TOOLS = [
       command: "speckit.constitution",
       input: args.content ?? "",
     }),
-  },
-  {
+  }),
+  defineTool({
     name: "speckit_specify",
     description:
       "Create a new feature: produces `specs/<NNN-slug>/spec.md` with stakeholders, scope, ACs, NFRs.",
@@ -63,8 +93,8 @@ export const SPEC_KIT_TOOLS = [
       input: args.prompt,
       body: args.featureSlug ? { featureSlug: args.featureSlug } : {},
     }),
-  },
-  {
+  }),
+  defineTool({
     name: "speckit_clarify",
     description:
       "Append a clarification Q&A row. Empty input adds a new question; non-empty answers the latest open question.",
@@ -75,8 +105,8 @@ export const SPEC_KIT_TOOLS = [
       command: "speckit.clarify",
       input: args.input,
     }),
-  },
-  {
+  }),
+  defineTool({
     name: "speckit_plan",
     description:
       "Run the expanded planner: emits `plan.md`, `research.md`, `data-model.md`, `quickstart.md`, and `contracts/api.openapi.yaml`. Requires spec gate.",
@@ -86,8 +116,8 @@ export const SPEC_KIT_TOOLS = [
       body: { featureSlug: args.featureSlug },
       force: args.force ?? false,
     }),
-  },
-  {
+  }),
+  defineTool({
     name: "speckit_checklist",
     description:
       "Generate per-domain quality checklists (security, performance, accessibility, observability, testability by default). Requires plan gate.",
@@ -106,27 +136,27 @@ export const SPEC_KIT_TOOLS = [
       },
       force: args.force ?? false,
     }),
-  },
-  {
+  }),
+  defineTool({
     name: "speckit_tasks",
     description: "Generate `tasks.md` with topologically-ordered tasks and Fibonacci sizing.",
     inputSchema: {},
     toDispatchInput: () => ({ command: "speckit.tasks" }),
-  },
-  {
+  }),
+  defineTool({
     name: "speckit_analyze",
     description: "Cross-phase consistency check across spec/plan/tasks; produces `analysis.md`.",
     inputSchema: {},
     toDispatchInput: () => ({ command: "speckit.analyze" }),
-  },
-  {
+  }),
+  defineTool({
     name: "speckit_implement",
     description:
       "Return the orchestrator handoff payload that picks up `tasks.md` and routes to executors.",
     inputSchema: {},
     toDispatchInput: () => ({ command: "speckit.implement" }),
-  },
-  {
+  }),
+  defineTool({
     name: "speckit_taskstoissues",
     description:
       "Materialize `tasks.md` rows as GitHub issues (idempotent on (featureSlug, taskId)). Requires tasks gate.",
@@ -135,6 +165,7 @@ export const SPEC_KIT_TOOLS = [
       ...forceShape,
       repo: z
         .object({ owner: z.string(), name: z.string() })
+        .meta(CLOSED_OBJECT)
         .optional()
         .describe("Override the destination repo (otherwise resolved from project config)."),
       parentEpicNumber: z.number().int().positive().optional(),
@@ -150,8 +181,8 @@ export const SPEC_KIT_TOOLS = [
       },
       force: args.force ?? false,
     }),
-  },
-] as const satisfies ReadonlyArray<SpecKitToolDef>;
+  }),
+] as const;
 
 export type SpecKitToolName = (typeof SPEC_KIT_TOOLS)[number]["name"];
 

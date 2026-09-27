@@ -37,9 +37,12 @@ const keySchema = z.string().regex(KEY_PARAM_PATTERN, "Invalid key format");
 // Body for PUT — value can be any JSON shape; the per-key Zod schema parses
 // it. Bound at 8 KiB to keep an accidental megabyte JSON blob from blowing up
 // the request pipeline.
-const putBodySchema = z.object({
-  value: z.unknown().refine((v) => v !== undefined, { message: "value is required" }),
-});
+// The presence check is on the OBJECT, not the key: zod 4 rejects an absent
+// `z.unknown()` key with its own "expected nonoptional" issue before a key-level
+// refine runs, which would change the `fieldErrors.value` text clients see (#309).
+const putBodySchema = z
+  .object({ value: z.unknown().optional() })
+  .refine((b) => b.value !== undefined, { message: "value is required", path: ["value"] });
 
 const auditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),

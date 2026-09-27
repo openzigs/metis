@@ -86,7 +86,7 @@ export function workspacesRouter(): Router {
     const parsed = createWorkspaceSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new AppError(400, "VALIDATION_ERROR", "Invalid workspace payload", {
-        issues: parsed.error.errors,
+        issues: parsed.error.issues,
       });
     }
 
@@ -141,7 +141,7 @@ export function workspacesRouter(): Router {
     const parsed = updateWorkspaceSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new AppError(400, "VALIDATION_ERROR", "Invalid update payload", {
-        issues: parsed.error.errors,
+        issues: parsed.error.issues,
       });
     }
 
@@ -235,7 +235,7 @@ export function workspacesRouter(): Router {
       const parsed = updateMemberRoleSchema.safeParse(req.body);
       if (!parsed.success) {
         throw new AppError(400, "VALIDATION_ERROR", "Invalid role", {
-          issues: parsed.error.errors,
+          issues: parsed.error.issues,
         });
       }
 
@@ -316,7 +316,7 @@ export function workspacesRouter(): Router {
       const parsed = inviteSchema.safeParse(req.body);
       if (!parsed.success) {
         throw new AppError(400, "VALIDATION_ERROR", "Invalid invite payload", {
-          issues: parsed.error.errors,
+          issues: parsed.error.issues,
         });
       }
 

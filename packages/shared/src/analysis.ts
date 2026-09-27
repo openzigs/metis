@@ -63,7 +63,7 @@ export type Analysis = z.infer<typeof analysisSchema>;
 
 export const createAnalysisSchema = z.object({
   projectId: idSchema,
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type CreateAnalysisInput = z.infer<typeof createAnalysisSchema>;
 

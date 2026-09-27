@@ -12,7 +12,9 @@ export const reconciliationTargetSchema = z
 export const reconciliationSchema = reconciliationTargetSchema
   .extend({
     expectedFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-    requestId: z.string().uuid(),
+    // `z.guid()` is zod 3's `.uuid()`: zod 4's `.uuid()` also enforces the RFC 9562
+    // version/variant nibbles and would reject idempotency keys it used to accept (#309).
+    requestId: z.guid(),
     decision: z.enum(["provider-managed", "keep-explicit", "revoked"]),
     reason: z.string().trim().min(10).max(1000),
   })

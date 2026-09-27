@@ -83,7 +83,7 @@ export const createAuditLogSchema = z.object({
   targetId: z.string().min(1).max(128),
   argsHash: z.string().max(128).optional(),
   resultHash: z.string().max(128).optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type CreateAuditLogInput = z.infer<typeof createAuditLogSchema>;
 

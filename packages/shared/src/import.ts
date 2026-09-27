@@ -92,7 +92,8 @@ const tokenSchema = z.string().min(1).max(8192);
 /** Preview request: validate config + creds without persisting. */
 export const importPreviewRequestSchema = z.object({
   source: z.enum(IMPORT_SOURCES),
-  filter: z.unknown(),
+  // `.optional()`: zod 4 rejects an absent `z.unknown()` key, zod 3 admitted it (#309).
+  filter: z.unknown().optional(),
   /** API token for github/azure-devops/linear (not needed for jira reuse). */
   token: tokenSchema.optional(),
   baseUrl: baseUrlSchema.optional(),
@@ -103,7 +104,8 @@ export type ImportPreviewRequest = z.infer<typeof importPreviewRequestSchema>;
 export const createImportSourceSchema = z.object({
   source: z.enum(IMPORT_SOURCES),
   label: z.string().min(1).max(200),
-  filter: z.unknown(),
+  // `.optional()`: zod 4 rejects an absent `z.unknown()` key, zod 3 admitted it (#309).
+  filter: z.unknown().optional(),
   token: tokenSchema.optional(),
   baseUrl: baseUrlSchema.optional(),
   syncEnabled: z.boolean().default(false),

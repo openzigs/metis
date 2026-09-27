@@ -657,7 +657,7 @@ function buildModelProfileMap(env: AIEnv): Record<string, string> | undefined {
     } catch {
       throw new AIConfigError("BEDROCK_MODEL_PROFILES must be valid JSON");
     }
-    const result = z.record(z.string().min(1)).safeParse(parsedJson);
+    const result = z.record(z.string(), z.string().min(1)).safeParse(parsedJson);
     if (!result.success) {
       throw new AIConfigError(
         "BEDROCK_MODEL_PROFILES must be a flat JSON object mapping model IDs to profile ARN strings",

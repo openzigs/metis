@@ -15,7 +15,11 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import { createImportSourceSchema, importPreviewRequestSchema } from "@metis/shared";
+import {
+  createImportSourceSchema,
+  importPreviewRequestSchema,
+  retrieveQuerySchema,
+} from "@metis/shared";
 
 vi.mock("./auth.js", () => ({
   requireAuth: (req: { user?: unknown }, _res: unknown, next: () => void) => {
@@ -27,6 +31,9 @@ vi.mock("./auth.js", () => ({
 const { errorHandler } = await import("./error-handler.js");
 const { onlineEvalRouter } = await import("../routes/eval-online.js");
 const { agentsRouter } = await import("../routes/agents.js");
+const { configRouter } = await import("../routes/admin/config.js");
+const { workspacesRouter } = await import("../routes/workspaces.js");
+const { reconciliationSchema } = await import("../lib/auth/role-reconciliation.js");
 
 /** A route that parses the body with a REAL shared schema and lets a ZodError escape. */
 function parsingApp(schema: { parse: (v: unknown) => unknown }) {
@@ -229,5 +236,72 @@ describe("{ issues: flatten() } 400s", () => {
     const issues = res.body.error.details.issues;
     expect(issues.fieldErrors).toEqual({});
     expect(issues.formErrors).toHaveLength(1);
+  });
+});
+
+describe("more 400 shapes and parse semantics", () => {
+  function mounted(prefix: string, router: express.Router) {
+    const app = express();
+    app.use(express.json());
+    app.use(prefix, router);
+    app.use(errorHandler);
+    return app;
+  }
+
+  it("PUT /api/admin/config/:key with no value → 400 INVALID_BODY, `value is required`", async () => {
+    const res = await request(mounted("/api/admin/config", configRouter()))
+      .put("/api/admin/config/SCHEDULER_TICK_INTERVAL_MS")
+      .send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("INVALID_BODY");
+    expect(res.body.error.details.issues).toEqual({
+      formErrors: [],
+      fieldErrors: { value: ["value is required"] },
+    });
+  });
+
+  it("POST /api/workspaces with a bad body → 400 VALIDATION_ERROR with an issues ARRAY", async () => {
+    const res = await request(mounted("/api/workspaces", workspacesRouter()))
+      .post("/api/workspaces")
+      .send({ name: "" });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+    const issues = res.body.error.details.issues as Array<{
+      path: string[];
+      code: string;
+      message: string;
+    }>;
+    expect(Array.isArray(issues)).toBe(true);
+    expect(issues.map((i) => i.path.join(".")).sort()).toEqual(["name", "slug"]);
+    for (const i of issues) {
+      expect(typeof i.code).toBe("string");
+      expect(typeof i.message).toBe("string");
+    }
+  });
+
+  it("a retrieve body without k leaves k undefined (no default fires)", () => {
+    const parsed = retrieveQuerySchema.parse({ query: "rates" });
+    expect(parsed).toEqual({ query: "rates" });
+    expect(parsed.k).toBeUndefined();
+  });
+
+  it("a reconciliation requestId keeps accepting any UUID-shaped key", () => {
+    const base = {
+      targetId: "u-1",
+      username: "someone",
+      expectedFingerprint: "a".repeat(64),
+      decision: "keep-explicit",
+      reason: "reviewed by the operator",
+    };
+    // Version nibble 9 and variant nibble c: not RFC 9562, UUID-shaped all the same.
+    for (const requestId of [
+      "123e4567-e89b-12d3-a456-426614174000",
+      "123e4567-e89b-92d3-c456-426614174000",
+    ]) {
+      expect(reconciliationSchema.safeParse({ ...base, requestId }).success).toBe(true);
+    }
+    expect(reconciliationSchema.safeParse({ ...base, requestId: "not-a-uuid" }).success).toBe(
+      false,
+    );
   });
 });

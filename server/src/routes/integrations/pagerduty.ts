@@ -52,7 +52,7 @@ const registerSchema = z.object({
 function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.infer<S> {
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
-    throw new AppError(400, "VALIDATION_ERROR", "Invalid payload", { issues: parsed.error.errors });
+    throw new AppError(400, "VALIDATION_ERROR", "Invalid payload", { issues: parsed.error.issues });
   }
   return parsed.data;
 }

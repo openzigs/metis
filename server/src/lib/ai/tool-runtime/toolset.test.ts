@@ -33,7 +33,7 @@ function registryWith(...defs: ToolDefinition[]): ToolRegistry {
 
 const mcpDef = (server: string, tool: string) =>
   def(`mcp:${server}:${tool}`, {
-    schema: z.record(z.unknown()),
+    schema: z.record(z.string(), z.unknown()),
     origin: { kind: "mcp", serverId: `srv-${server}`, serverLabel: server },
   });
 
@@ -213,7 +213,7 @@ describe("zodToJsonSchema", () => {
       a: z.array(z.string()),
       e: z.enum(["x", "y"]),
       l: z.literal("k"),
-      r: z.record(z.unknown()),
+      r: z.record(z.string(), z.unknown()),
       u: z.union([z.string(), z.number()]),
       d: z.string().default("d"),
       nn: z.string().nullable(),
@@ -242,7 +242,7 @@ describe("zodToJsonSchema", () => {
   });
 
   it("top-level parameters are always an object schema", () => {
-    expect(toolParametersSchema(z.record(z.unknown()))).toEqual({ type: "object" });
+    expect(toolParametersSchema(z.record(z.string(), z.unknown()))).toEqual({ type: "object" });
     expect(toolParametersSchema(z.string())).toEqual({ type: "object", properties: {} });
   });
 });

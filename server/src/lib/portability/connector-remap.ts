@@ -51,9 +51,9 @@ function modelRemapSchema<M extends RemappableModel>(model: M) {
   return z
     .object({
       // valueMap: field -> { oldValue: newValue }
-      valueMap: z.record(fieldEnum, z.record(z.string(), RemapScalar)).optional(),
+      valueMap: z.partialRecord(fieldEnum, z.record(z.string(), RemapScalar)).optional(),
       // byId: rowId -> { field: newValue }
-      byId: z.record(z.string().min(1), z.record(fieldEnum, RemapScalar)).optional(),
+      byId: z.record(z.string().min(1), z.partialRecord(fieldEnum, RemapScalar)).optional(),
     })
     .strict();
 }
@@ -149,8 +149,8 @@ export function computeModelRemap(
   model: RemappableModel,
   rows: RemapRow[],
   remap: {
-    valueMap?: Record<string, Record<string, unknown>>;
-    byId?: Record<string, Record<string, unknown>>;
+    valueMap?: Partial<Record<string, Record<string, unknown>>>;
+    byId?: Record<string, Partial<Record<string, unknown>>>;
   },
 ): ModelRemapResult {
   const changes: FieldChange[] = [];
