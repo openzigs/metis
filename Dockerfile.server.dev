@@ -19,7 +19,9 @@
 # in production images.
 # ==============================================================================
 
-ARG NODE_VERSION=20
+# Node 22 like Dockerfile.server: undici 8 (server/package.json) needs >=22.19.0
+# and better-sqlite3 13 needs >=22 (#308). The `22` tag tracks the latest 22.x.
+ARG NODE_VERSION=22
 
 # ----- Stage 1: deps + build -----------------------------------------------
 FROM node:${NODE_VERSION}-alpine AS builder

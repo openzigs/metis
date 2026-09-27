@@ -54,10 +54,10 @@ async function buildPinnedDispatcher(hostname: string): Promise<unknown> {
   if (!lookup) {
     throw new Error(`makePinnedLookup returned undefined for ${hostname}`);
   }
-  const { Agent } = (await import("undici")) as unknown as {
-    Agent: new (opts: { connect: { lookup: typeof lookup } }) => unknown;
-  };
-  return new Agent({ connect: { lookup } });
+  // Wrapped for Node's built-in `fetch` (`importers/http.ts`), which cannot
+  // drive a bare undici 8 dispatcher (#308).
+  const { pinnedAgentForBuiltinFetch } = await import("../net/builtin-fetch-dispatcher.js");
+  return pinnedAgentForBuiltinFetch(lookup);
 }
 
 function guardConfig(deps: ImporterDeps): {

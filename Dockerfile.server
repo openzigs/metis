@@ -20,7 +20,7 @@
 # Instant Client is also a glibc build. Trixie, not bookworm: better-sqlite3 13's
 # prebuilt binary needs glibc >= 2.38 and bookworm ships 2.36 (measured: the
 # module failed to load with "GLIBC_2.38 not found"). Node 22, not 20: the repo's
-# `engines.node` is >=22.12.0, better-sqlite3 13 requires >=22, and on Node 20 its
+# `engines.node` is >=22.19.0 (undici 8), better-sqlite3 13 requires >=22, and on Node 20 its
 # binary segfaulted on first use (measured, #39). Measured runtime size and what makes it up:
 # docs/OPERATIONS.md > "Container Image Sizes" (#34, #39). CI starts this image and
 # polls /healthz (scripts/lib/smoke-server-image.mjs), so an image that cannot boot

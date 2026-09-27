@@ -116,10 +116,10 @@ const defaultDispatcherFactory: DispatcherFactory = async (pinned) => {
   ): void => {
     cb(null, pinned.address, fam);
   };
-  const undici = (await import("undici")) as unknown as {
-    Agent: new (opts: { connect: { lookup: typeof lookup } }) => DispatcherLike;
-  };
-  return new undici.Agent({ connect: { lookup } });
+  // Wrapped for Node's built-in `fetch`, which cannot drive a bare undici 8
+  // dispatcher (#308).
+  const { pinnedAgentForBuiltinFetch } = await import("./builtin-fetch-dispatcher.js");
+  return pinnedAgentForBuiltinFetch(lookup);
 };
 
 interface ValidatedTarget {

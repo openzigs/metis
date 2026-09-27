@@ -27,7 +27,8 @@
  * NOTE: `embed()` is intentionally unimplemented — embeddings stay on the
  * dedicated embeddings backend. The local-gemma chat path never calls it.
  */
-import { Agent, type Dispatcher } from "undici";
+import type { Dispatcher } from "undici";
+import { agentForBuiltinFetch } from "../../net/builtin-fetch-dispatcher.js";
 import { createChildLogger } from "../../logger.js";
 import { envMs, MAX_TIMEOUT_MS, TIMER_HEADROOM_MS } from "../../config/env-ms.js";
 import { lastUserText, traceModelChat, traceModelStream } from "../../otel/genai-spans.js";
@@ -1059,7 +1060,9 @@ export class OpenAICompatibleProvider implements AIProvider {
       this.firstByteTimeoutMs,
       this.requestTimeoutMs,
     );
-    return new Agent({ headersTimeout, bodyTimeout });
+    // Wrapped because the dispatcher is handed to Node's BUILT-IN `fetch`,
+    // which cannot drive a bare undici 8 `Agent` (#308).
+    return agentForBuiltinFetch({ headersTimeout, bodyTimeout });
   }
 
   get model(): string {

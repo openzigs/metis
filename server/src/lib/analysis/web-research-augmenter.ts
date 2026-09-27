@@ -20,7 +20,8 @@
  * the corporate network — a firewall-friendly alternative tracked separately.
  */
 import { randomUUID } from "node:crypto";
-import { ProxyAgent, type Dispatcher } from "undici";
+import type { Dispatcher } from "undici";
+import { proxyAgentForBuiltinFetch } from "../net/builtin-fetch-dispatcher.js";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import type {
@@ -118,7 +119,9 @@ export function getProxyDispatcher(targetUrl: string): Dispatcher | undefined {
   if (!proxyUrl) return undefined;
 
   try {
-    return new ProxyAgent(proxyUrl);
+    // Wrapped for Node's built-in `fetch` (see `proxyFetch`), which cannot
+    // drive a bare undici 8 dispatcher (#308).
+    return proxyAgentForBuiltinFetch(proxyUrl);
   } catch (err) {
     // The URL itself is deliberately not logged: a proxy URL can carry
     // `user:password@` credentials.

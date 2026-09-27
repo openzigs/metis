@@ -376,7 +376,9 @@ describe("resolveConnectorDispatcher", () => {
       address: "140.82.114.6",
       family: 4,
     });
-    expect(dispatcher.constructor.name).toBe("ProxyAgent");
+    // Wrapped for Node's built-in fetch (#308); the ProxyAgent is inside.
+    expect(dispatcher.constructor.name).toBe("BuiltinFetchDispatcher");
+    expect((dispatcher as unknown as { inner: object }).inner.constructor.name).toBe("ProxyAgent");
     await dispatcher.close?.();
   });
 
@@ -388,7 +390,7 @@ describe("resolveConnectorDispatcher", () => {
       address: "10.1.2.3",
       family: 4,
     });
-    expect(dispatcher.constructor.name).not.toBe("ProxyAgent");
+    expect((dispatcher as unknown as { inner: object }).inner.constructor.name).toBe("Agent");
     await dispatcher.close?.();
   });
 });
