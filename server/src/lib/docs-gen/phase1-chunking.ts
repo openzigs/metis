@@ -43,6 +43,7 @@ import { mineGoRules } from "../code-graph/go-rule-miner.js";
 import { mineTsRules } from "../code-graph/ts-rule-miner.js";
 import { mineCsRules } from "../code-graph/cs-rule-miner.js";
 import { mineKtRules } from "../code-graph/kt-rule-miner.js";
+import { mineCblRules } from "../code-graph/cbl-rule-miner.js";
 import { mineSqlRules } from "../code-graph/sql-rule-miner.js";
 import { detectLanguage } from "../code-graph/parsers.js";
 import { toPersistedMinedRules, type PersistedMinedRule } from "./fact-slices.js";
@@ -328,6 +329,11 @@ function mineRulesIn(
       return toPersistedMinedRules("cs", mineCsRules(text, filePath, baseLine, context, UNCAPPED));
     case "kt":
       return toPersistedMinedRules("kt", mineKtRules(text, filePath, baseLine, context, UNCAPPED));
+    case "cbl":
+      return toPersistedMinedRules(
+        "cbl",
+        mineCblRules(text, filePath, baseLine, context, UNCAPPED),
+      );
     case "sas":
       return toPersistedMinedRules("sas", mineSasRules(text, filePath, baseLine, context));
     default:

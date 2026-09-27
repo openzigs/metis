@@ -15,6 +15,7 @@
 import { createHash } from "node:crypto";
 import { buildCodeQualifiedName, moduleQualifiedName } from "./qualified-name.js";
 import { isTreeSitterReady, parseWithTreeSitter } from "./parsers-tree-sitter.js";
+import { parseCobol } from "./cobol-parser.js";
 
 export {
   initCodeGraphParsers,
@@ -25,7 +26,7 @@ export type { StringLiteral } from "./parsers-tree-sitter.js";
 
 export type SymbolKind = "function" | "class" | "interface" | "type" | "module" | "method";
 export type EdgeKind = "calls" | "imports" | "defines" | "references";
-export type Language = "ts" | "js" | "py" | "go" | "java" | "sas" | "cs" | "kt";
+export type Language = "ts" | "js" | "py" | "go" | "java" | "sas" | "cs" | "kt" | "cbl";
 
 export interface ParsedSymbol {
   kind: SymbolKind;
@@ -115,6 +116,11 @@ export const LANGUAGE_BY_EXT: Record<string, Language> = {
   // Kotlin DSL build files) share the grammar.
   kt: "kt",
   kts: "kt",
+  // Issue #160 — COBOL programs and copybooks (line-oriented scanner, no grammar).
+  cbl: "cbl",
+  cob: "cbl",
+  cobol: "cbl",
+  cpy: "cbl",
 };
 
 export function detectLanguage(filePath: string): Language | null {
@@ -1595,6 +1601,10 @@ export function parseSource(filePath: string, source: string, language: Language
     // backend). Issue #199.
     if (language === "sas") {
       return parseSas(filePath, source);
+    }
+    // COBOL likewise has no grammar here (#160).
+    if (language === "cbl") {
+      return parseCobol(filePath, source);
     }
     if (isTreeSitterReady()) {
       return parseWithTreeSitter(filePath, source, language);

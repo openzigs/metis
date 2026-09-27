@@ -13,6 +13,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { mineTsRules } from "../code-graph/ts-rule-miner.js";
 import { mineKtRules } from "../code-graph/kt-rule-miner.js";
+import { mineCblRules } from "../code-graph/cbl-rule-miner.js";
 import { minePyRules } from "../code-graph/py-rule-miner.js";
 import { mineGoRules } from "../code-graph/go-rule-miner.js";
 import { mineCsRules } from "../code-graph/cs-rule-miner.js";
@@ -243,6 +244,7 @@ describe("mineUnit over whole files", () => {
     ["x.go", (i: number) => `const Max${i} = ${i}`, mineGoRules],
     ["X.cs", (i: number) => `    public const int Max${i} = ${i};`, mineCsRules],
     ["X.kt", (i: number) => `const val MAX_${i} = ${i}`, mineKtRules],
+    ["X.cbl", (i: number) => `       88 LIMIT-${i} VALUE ${i}.`, mineCblRules],
   ] as const)(
     "%s: mines all 550 rules past the miner's default cap of 400",
     (file, line, miner) => {

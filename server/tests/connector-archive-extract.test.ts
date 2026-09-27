@@ -80,6 +80,19 @@ describe("extractArchiveBuffer", () => {
     await expect(fs.access(path.join(result.dir, "README.md"))).rejects.toBeTruthy();
   });
 
+  it("extracts COBOL programs and copybooks from an uploaded archive (#160)", async () => {
+    const buf = await zipFrom({
+      "legacy/ORDERS.cbl": "       IDENTIFICATION DIVISION.\n",
+      "legacy/PRICING.cob": "       IDENTIFICATION DIVISION.\n",
+      "legacy/BILLING.cobol": "       IDENTIFICATION DIVISION.\n",
+      "legacy/copy/CUSTREC.cpy": "       01  CUSTOMER-REC.\n",
+    });
+    const result = await extractArchiveBuffer(CONNECTOR_ID, buf);
+    expect(result.filesWritten).toBe(4);
+    const copybook = await fs.readFile(path.join(result.dir, "legacy/copy/CUSTREC.cpy"), "utf-8");
+    expect(copybook).toContain("CUSTOMER-REC");
+  });
+
   it("skips macOS __MACOSX / AppleDouble junk even when it has a source extension", async () => {
     // A real Finder-created zip carries a parallel `__MACOSX/` tree of `._*`
     // resource-fork stubs. `._app.sas` would pass the `.sas` extension filter,

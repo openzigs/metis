@@ -40,6 +40,7 @@ import { renderMinedTsRules } from "../code-graph/ts-rule-miner.js";
 import { renderMinedSqlRules } from "../code-graph/sql-rule-miner.js";
 import { renderMinedCsRules } from "../code-graph/cs-rule-miner.js";
 import { renderMinedKtRules } from "../code-graph/kt-rule-miner.js";
+import { renderMinedCblRules } from "../code-graph/cbl-rule-miner.js";
 import {
   buildCodeGraphSummary,
   renderCrossModuleDeps,
@@ -2815,6 +2816,7 @@ function buildPhase1UserMessage(input: {
   const tsRules = byLanguage(["ts", "js"]);
   const csRules = byLanguage(["cs"]);
   const ktRules = byLanguage(["kt"]);
+  const cblRules = byLanguage(["cbl"]);
   const sqlRules = byLanguage(["sql"]);
   const sasWorkflow = input.sasSteps.length > 0 ? { steps: [...input.sasSteps] } : null;
   const sasWorkflowBlock = sasWorkflow
@@ -2875,6 +2877,8 @@ ${tsRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED TYPESCRIPT RULE INVENTORY 
 ${csRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED C# RULE INVENTORY (${csRules.length} rules) ===\nThese C# rules (guard clauses, ThrowIf / Guard.Against helpers, thrown exceptions, DataAnnotations validation attributes, FluentValidation rules, switch dispatch on status/enum values, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(csRules, renderMinedCsRules)}\n=== END C# MINED RULES ===\n` : ""}
 
 ${ktRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED KOTLIN RULE INVENTORY (${ktRules.length} rules) ===\nThese Kotlin rules (require/check preconditions, guard clauses and elvis guards, thrown exceptions, when dispatch on status/enum values, validation annotations, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(ktRules, renderMinedKtRules)}\n=== END KOTLIN MINED RULES ===\n` : ""}
+
+${cblRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED COBOL RULE INVENTORY (${cblRules.length} rules) ===\nThese COBOL rules (level-88 condition names, IF conditions and guards, class-test and file-status validations, EVALUATE dispatch and decision-table arms, COMPUTE formulas) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES (or FORMULAS) section, paraphrased into business language. Do NOT omit any.\n\n${byFile(cblRules, renderMinedCblRules)}\n=== END COBOL MINED RULES ===\n` : ""}
 
 ${sqlRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED SQL RULE INVENTORY (${sqlRules.length} rules) ===\nThese SQL schema rules (CHECK constraints, NOT NULL, UNIQUE, PRIMARY/FOREIGN KEY referential rules, DEFAULT values, triggers, view WHERE filters, stored-proc conditionals) were extracted from the module's .sql files by deterministic passes and are GUARANTEED present. EVERY ONE below MUST appear as a bullet in your RULES (or ENTITIES) section, paraphrased into business language. Do NOT omit any.\n\n${byFile(sqlRules, renderMinedSqlRules)}\n=== END SQL MINED RULES ===\n` : ""}
 

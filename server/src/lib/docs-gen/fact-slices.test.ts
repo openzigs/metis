@@ -216,6 +216,11 @@ describe("toPersistedMinedRules / parsePersistedMinedRules (#155)", () => {
     expect(parsePersistedMinedRules(JSON.stringify(rows))).toEqual(rows);
   });
 
+  it("round-trips COBOL rules (#160)", () => {
+    const rows = [rule({ language: "cbl", file: "src/ORDERS.cbl", kind: "condition-name" })];
+    expect(parsePersistedMinedRules(JSON.stringify(rows))).toEqual(rows);
+  });
+
   it("accepts an empty inventory as a valid (not legacy) row", () => {
     expect(parsePersistedMinedRules("[]")).toEqual([]);
   });

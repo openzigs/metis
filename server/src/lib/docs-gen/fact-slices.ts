@@ -165,7 +165,17 @@ export function countFactBullets(text: string): number {
 // ============================================================================
 
 /** Languages with a deterministic rule miner. */
-export type MinedRuleLanguage = "java" | "ts" | "js" | "py" | "go" | "sas" | "sql" | "cs" | "kt";
+export type MinedRuleLanguage =
+  | "java"
+  | "ts"
+  | "js"
+  | "py"
+  | "go"
+  | "sas"
+  | "sql"
+  | "cs"
+  | "kt"
+  | "cbl";
 
 /**
  * One deterministically mined rule, language-neutral. This is the shape
@@ -218,6 +228,7 @@ const LANGUAGES: ReadonlySet<string> = new Set([
   "sql",
   "cs",
   "kt",
+  "cbl",
 ]);
 
 function isPersistedMinedRule(value: unknown): value is PersistedMinedRule {

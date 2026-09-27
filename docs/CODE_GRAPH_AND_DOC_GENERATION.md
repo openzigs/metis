@@ -303,6 +303,13 @@ calls `ingestCodeGraph()` ([connectors.ts](../server/src/routes/connectors.ts#L2
   ([parsers-tree-sitter.ts](../server/src/lib/code-graph/parsers-tree-sitter.ts#L81-L110)).
 - **SAS** uses a dedicated regex parser
   ([parsers.ts](../server/src/lib/code-graph/parsers.ts#L27-L110)).
+- **COBOL** (`.cbl`/`.cob`/`.cobol` programs, `.cpy` copybooks; fixed and
+  free format) uses a line-oriented scanner
+  ([cobol-parser.ts](../server/src/lib/code-graph/cobol-parser.ts)): programs
+  are classes, sections and paragraphs are functions, level-01/77 items and
+  `FD`/`SD` are types; `PERFORM`/`GO TO`/`CALL 'X'` are calls and `COPY` is an
+  import bound to the copybook file at ingest (#160). The only npm COBOL
+  grammar ships no WASM build, so there is no tree-sitter path.
 - Extension recognition (e.g. TSX/JSX, C# scripts) is not a guarantee of
   complete language-semantic analysis.
 
@@ -494,7 +501,7 @@ runs in stages:
    ([holistic-synthesizer.ts](../server/src/lib/docs-gen/holistic-synthesizer.ts#L933-L1022)).
 2. **Extract per-module facts from real source bodies** (not just names or
    embedding previews), supplemented by deterministic formula/rule miners
-   (Java, TypeScript/JavaScript, Python, Go, C#, Kotlin, SAS, SQL —
+   (Java, TypeScript/JavaScript, Python, Go, C#, Kotlin, SAS, SQL, COBOL —
    `server/src/lib/code-graph/*-rule-miner.ts`; a condition, precondition or
    filter written across several lines is joined and read whole by
    `rule-miner-continuation.ts`, #170) and rationale findings

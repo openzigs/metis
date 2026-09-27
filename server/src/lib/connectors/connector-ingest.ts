@@ -376,6 +376,11 @@ export const SOURCE_EXTENSIONS = new Set([
   ".cs",
   ".sql",
   ".sas",
+  // #160 — COBOL programs and copybooks.
+  ".cbl",
+  ".cob",
+  ".cobol",
+  ".cpy",
   ".xml",
   ".yaml",
   ".yml",
