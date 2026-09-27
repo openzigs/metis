@@ -373,10 +373,10 @@ export async function makePinnedDispatcher(pinned: PinnedHost): Promise<Dispatch
     // rebinding hole).
     throw new ConnectorError(500, "PIN_UNAVAILABLE", "pinned lookup unavailable");
   }
-  const undici = (await import("undici")) as unknown as {
-    Agent: new (opts: { connect: { lookup: typeof lookup } }) => DispatcherLike;
-  };
-  return new undici.Agent({ connect: { lookup } });
+  // Wrapped for Node's built-in `fetch`, which cannot drive a bare undici 8
+  // dispatcher (#308).
+  const { pinnedAgentForBuiltinFetch } = await import("../net/builtin-fetch-dispatcher.js");
+  return pinnedAgentForBuiltinFetch(lookup);
 }
 
 /**
@@ -434,8 +434,6 @@ export function resolveCorporateProxyUrl(hostname: string): string | undefined {
 export async function resolveConnectorDispatcher(pinned: PinnedHost): Promise<DispatcherLike> {
   const proxyUrl = resolveCorporateProxyUrl(pinned.hostname);
   if (!proxyUrl) return makePinnedDispatcher(pinned);
-  const undici = (await import("undici")) as unknown as {
-    ProxyAgent: new (url: string) => DispatcherLike;
-  };
-  return new undici.ProxyAgent(proxyUrl);
+  const { proxyAgentForBuiltinFetch } = await import("../net/builtin-fetch-dispatcher.js");
+  return proxyAgentForBuiltinFetch(proxyUrl);
 }

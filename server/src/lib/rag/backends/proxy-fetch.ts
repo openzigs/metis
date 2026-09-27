@@ -120,10 +120,10 @@ const dispatcherCache = new Map<string, unknown>();
 async function defaultDispatcherFactory(proxyUrl: string): Promise<unknown> {
   const cached = dispatcherCache.get(proxyUrl);
   if (cached) return cached;
-  const undici = (await import("undici")) as unknown as {
-    ProxyAgent: new (uri: string) => unknown;
-  };
-  const agent = new undici.ProxyAgent(proxyUrl);
+  // Wrapped for Node's built-in `fetch`, which cannot drive a bare undici 8
+  // dispatcher (#308).
+  const { proxyAgentForBuiltinFetch } = await import("../../net/builtin-fetch-dispatcher.js");
+  const agent = proxyAgentForBuiltinFetch(proxyUrl);
   dispatcherCache.set(proxyUrl, agent);
   return agent;
 }

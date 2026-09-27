@@ -13,6 +13,7 @@
  * `RequestInit` (including the non-standard `dispatcher`) so we can assert it.
  */
 import { Agent } from "undici";
+import { BuiltinFetchDispatcher } from "../../net/builtin-fetch-dispatcher.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatChunk } from "../types.js";
 
@@ -295,6 +296,15 @@ describe("resolveUndiciTimeouts", () => {
   });
 });
 
+/**
+ * The provider's dispatcher is an undici `Agent` wrapped for Node's built-in
+ * `fetch` (#308): a bare undici 8 `Agent` is rejected by it.
+ */
+function expectWrappedAgent(d: unknown): void {
+  expect(d).toBeInstanceOf(BuiltinFetchDispatcher);
+  expect((d as BuiltinFetchDispatcher).inner).toBeInstanceOf(Agent);
+}
+
 describe("chat() undici dispatcher", () => {
   it("passes a per-request undici Agent dispatcher with the resolved transport timeouts", async () => {
     let captured: CapturedInit | undefined;
@@ -306,7 +316,7 @@ describe("chat() undici dispatcher", () => {
     const provider = makeProvider({ firstByteTimeoutMs: 600_000, requestTimeoutMs: 300_000 });
     await provider.chat([{ role: "user", content: "hi" }]);
 
-    expect(captured?.dispatcher).toBeInstanceOf(Agent);
+    expectWrappedAgent(captured?.dispatcher);
     // The dispatcher is sized from the app-level budgets via the pure resolver:
     // headersTimeout = max(firstByteTimeoutMs, requestTimeoutMs) + 30s margin, so
     // undici cannot preempt the app-level timers. (undici keeps these on an
@@ -328,7 +338,7 @@ describe("chat() undici dispatcher", () => {
 
     expect(seen).toHaveLength(2);
     expect(seen[0]).toBe(seen[1]);
-    expect(seen[0]).toBeInstanceOf(Agent);
+    expectWrappedAgent(seen[0]);
   });
 });
 
@@ -346,7 +356,7 @@ describe("stream() undici dispatcher", () => {
       chunks.push(c);
     }
 
-    expect(captured?.dispatcher).toBeInstanceOf(Agent);
+    expectWrappedAgent(captured?.dispatcher);
     // Sanity: the stream still produced a delta + done despite the dispatcher.
     expect(chunks.some((c) => c.type === "delta")).toBe(true);
     expect(chunks.some((c) => c.type === "done")).toBe(true);

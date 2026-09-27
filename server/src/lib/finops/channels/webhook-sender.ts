@@ -171,10 +171,10 @@ export async function makePinnedDispatcher(pinned: PinnedHost): Promise<Dispatch
     // re-open the rebind hole).
     throw new Error("pinned lookup unavailable");
   }
-  const undici = (await import("undici")) as unknown as {
-    Agent: new (opts: { connect: { lookup: typeof lookup } }) => DispatcherLike;
-  };
-  return new undici.Agent({ connect: { lookup } });
+  // Wrapped for Node's built-in `fetch`, which cannot drive a bare undici 8
+  // dispatcher (#308).
+  const { pinnedAgentForBuiltinFetch } = await import("../../net/builtin-fetch-dispatcher.js");
+  return pinnedAgentForBuiltinFetch(lookup);
 }
 
 /** Options for {@link pinnedFetch}. */

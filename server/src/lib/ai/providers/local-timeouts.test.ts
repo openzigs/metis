@@ -25,6 +25,7 @@ const {
   LOCAL_TIMEOUT_ENV,
   MAX_LOCAL_TIMEOUT_MS,
 } = await import("./openai-compatible-provider.js");
+const { BuiltinFetchDispatcher } = await import("../../net/builtin-fetch-dispatcher.js");
 
 type Init = RequestInit & { dispatcher?: unknown };
 type Opts = ConstructorParameters<typeof OpenAICompatibleProvider>[0];
@@ -208,12 +209,17 @@ describe("LOCAL_GEMMA_FIRST_BYTE_TIMEOUT_MS", () => {
     }) as unknown as typeof fetch;
     process.env.LOCAL_GEMMA_FIRST_BYTE_TIMEOUT_MS = "1800000";
     await provider().chat([{ role: "user", content: "hi" }]);
-    const optionsSym = Object.getOwnPropertySymbols(dispatcher).find(
-      (s) => s.description === "options",
-    );
+    // The dispatcher is wrapped for Node's built-in fetch (#308); the transport
+    // options live on the undici Agent inside it.
+    expect(dispatcher).toBeInstanceOf(BuiltinFetchDispatcher);
+    const agent = (dispatcher as InstanceType<typeof BuiltinFetchDispatcher>).inner;
+    const optionsSym = Object.getOwnPropertySymbols(agent).find((s) => s.description === "options");
     expect(optionsSym).toBeDefined();
-    const options = (dispatcher as Record<symbol, { headersTimeout: number }>)[optionsSym!];
+    const options = (
+      agent as unknown as Record<symbol, { headersTimeout: number; bodyTimeout: number }>
+    )[optionsSym!];
     expect(options.headersTimeout).toBe(1_800_000 + 30_000);
+    expect(options.bodyTimeout).toBe(0);
   });
 });
 

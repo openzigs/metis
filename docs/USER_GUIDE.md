@@ -168,7 +168,7 @@ Before installing METIS, make sure you have the following software on your compu
 
 | Software | Minimum Version | What It Is | How to Check |
 |---|---|---|---|
-| **Node.js** | 22.12.0 | The runtime that executes METIS | Run `node --version` in your terminal |
+| **Node.js** | 22.19.0 | The runtime that executes METIS | Run `node --version` in your terminal |
 | **pnpm** | 10.16.0 | The package manager METIS uses for installing dependencies | Run `pnpm --version` in your terminal |
 | **Git** | 2.0+ | Version control system | Run `git --version` in your terminal |
 
@@ -191,7 +191,7 @@ Before installing METIS, make sure you have the following software on your compu
 If you don't have Node.js:
 
 1. Go to [https://nodejs.org](https://nodejs.org)
-2. Download the **LTS** (Long Term Support) version — it must be 22.12.0 or higher
+2. Download the **LTS** (Long Term Support) version — it must be 22.19.0 or higher
 3. Run the installer and follow the prompts
 4. Open a new terminal window and verify with `node --version`
 
@@ -3178,7 +3178,7 @@ For the complete API reference with all 56 endpoints, see [ARCHITECTURE.md](ARCH
 **Problem**: `pnpm dev` fails with errors.
 
 **Solution**:
-1. Make sure you're using Node.js 22.12.0 or higher: `node --version`
+1. Make sure you're using Node.js 22.19.0 or higher: `node --version`
 2. Delete `node_modules` and reinstall: `rm -rf node_modules && pnpm install`
 3. Build the shared package: `pnpm --filter @metis/shared build`. If the error mentions
    `Cannot find module '@metis/shared/dist/index.js'`, this is the fix — installing does
