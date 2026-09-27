@@ -314,6 +314,64 @@ Full runbook, including the EKS specifics, the pgvector column-width path and wh
 is kept vs lost on a rollback:
 [docs/EMBEDDINGS_BACKENDS.md § Runbook](./EMBEDDINGS_BACKENDS.md#runbook--migrating-a-deployment-to-a-new-embedding-model-787).
 
+### 6.2 Embedding parity fixtures and the `onnxruntime-node` pin (#307)
+
+A **runtime** upgrade can move the vector space just as surely as a model change,
+and it is worse because nothing notices: stored vectors keep their model tag, so no
+reindex is triggered, and search keeps answering — new query vectors are simply
+scored against stored vectors from a slightly different space.
+
+**The pin.** `pnpm-workspace.yaml` overrides `onnxruntime-node` to exactly
+**1.22.0**. `@huggingface/transformers` 4.3.0 declares 1.30.0, whose quantized (q8)
+CPU kernels move every vector of the default embedder (gte-modernbert-base, CLS,
+normalised, q8) to cos 0.915–0.969 of what transformers.js 3.8.1 + ORT 1.21.0 stored
+— far below the 0.999 bar. On 1.22.0, 4.3.0 reproduces the stored vectors at
+cos 1.0000. It is 1.22.0 rather than 1.21.0 because transformers.js 4 needs
+`InferenceSession.inputMetadata` (first in 1.22.0) for decoder-architecture models,
+so on 1.21.0 the `embeddinggemma` backend fails its first embed.
+
+**The gate.** `server/tests/embed-parity-real-model.test.ts`:
+
+- on every PR (unit suite): the installed `onnxruntime-node` is the pinned version,
+  and the committed fixtures are well-formed and describe the shipped config;
+- in `.github/workflows/embed-real-model-nightly.yml` (nightly, and on every PR that
+  touches the lockfile, `pnpm-workspace.yaml`, a manifest or the embed path): the
+  production embedder, from the built `dist`, in the worker runtime, embeds ten fixed
+  strings at **cos ≥ 0.999 per string** against the fixture, and the cross-encoder
+  scores its pairs within 0.1 of the recorded logits. The same job loads the sidecar's
+  real models, `embeddinggemma` included.
+
+**Moving the pin — or taking any transformers.js / onnxruntime-node change that
+fails the gate — is a re-embed, not a dependency bump.** Do it deliberately: change
+the persisted embedding identity so the reuse guard sees the new space (see §6.1 and
+the runbook it links), then `pnpm embeddings:migrate reindex --all`, then re-record
+the fixtures under the new runtime and update `RECORD_*` in
+`server/tests/fixtures/embed-parity-probe.mjs`.
+
+**Fixtures are per platform.** q8 vectors are not portable: under 3.8.1 alone,
+darwin-arm64 and linux-x64 agree only to cos ≈ 0.987–1.000. So there is one
+`server/tests/fixtures/embed-parity-v3-gte-modernbert-q8.<platform>-<arch>.json` per
+platform, the test picks the one for `process.platform`-`process.arch`, and an
+opted-in run on a platform with no fixture **fails**. Two linux-x64 recordings on
+different runner CPUs agreed to cos ≥ 0.999999.
+
+**Re-recording.** Only from a tree that resolves transformers.js 3.8.1 + ORT 1.21.0 —
+the parent of the #307 upgrade — because the fixture is the truth the upgrade is
+measured against; the probe's `record` mode refuses any other pair.
+
+```bash
+git worktree add ../parity-rec <last-3.8.1-commit> && cd ../parity-rec
+pnpm install --frozen-lockfile --prod=false
+pnpm --filter @metis/shared build && pnpm --filter @metis/server build
+cd server && node tests/fixtures/embed-parity-probe.mjs record   # this machine's platform
+```
+
+Record linux-x64 **natively on a GitHub runner**, never under emulation (an emulated
+amd64 container does not run the host's native kernels): push a branch at that commit
+carrying the current workflow and probe, then
+`gh workflow run embed-real-model-nightly.yml --ref <branch> -f record=true` and take
+the `embed-parity-fixture-linux-x64` artifact.
+
 ---
 
 ## 7. Container Image Sizes

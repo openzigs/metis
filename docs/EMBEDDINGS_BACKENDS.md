@@ -12,13 +12,24 @@ versa.
 > [Selection precedence](#selection-precedence). Every backend implements the
 > same `EmbedBackend` interface and is registered in the embedder registry.
 
-## Local runtime: `@huggingface/transformers` v3
+## Local runtime: `@huggingface/transformers` v4
 
 The three local backends (`xenova`, `embeddinggemma`, and the `sidecar`'s
-in-process pipelines) all run on **`@huggingface/transformers` v3**
-(transformers.js v3) — the maintained successor to `@xenova/transformers`, which
-was pinned at 2.17.2 and is no longer developed. The migration landed in
+in-process pipelines) all run on **`@huggingface/transformers` v4** (4.3.0, since
+#307) — the maintained successor to `@xenova/transformers`, which was pinned at
+2.17.2 and is no longer developed. The v2 → v3 migration landed in
 [#781](https://github.com/openzigs/metis-private/issues/781).
+
+**The ONNX runtime under it is pinned to `onnxruntime-node` 1.22.0** (an override in
+`pnpm-workspace.yaml`), not the 1.30.0 that 4.3.0 declares. ORT 1.30's q8 kernels move
+the default embedder's vectors to cos 0.915–0.969 of those stored under 3.8.1 + ORT
+1.21.0; 1.22.0 reproduces them at cos 1.0000 and is the lowest ORT on which
+transformers.js 4 can run `embeddinggemma`. A parity gate enforces it, and **moving
+the pin is a re-embed** — see
+[OPERATIONS.md §6.2](./OPERATIONS.md#62-embedding-parity-fixtures-and-the-onnxruntime-node-pin-307).
+v4 also made the tokenizer's `model_max_length` a getter; the #189 2,048-token cap is
+therefore applied with `Object.defineProperty` (a plain assignment was silently
+dropped in the embed worker).
 
 Why it matters:
 
@@ -30,7 +41,7 @@ Why it matters:
 - **`embeddinggemma` now actually works.** That backend's default model,
   `onnx-community/embeddinggemma-300m-ONNX`, is a Gemma3 architecture and was
   therefore **unloadable on the old runtime** — the backend was effectively dead
-  on arrival. It loads and embeds (768-dim) under v3.
+  on arrival. It loads and embeds (768-dim) under v3 and v4.
 
 The `xenova` **registry key is retained** (`EMBED_BACKEND=xenova`) for config
 compatibility — it names a backend and its persisted
@@ -1759,8 +1770,8 @@ certify hash noise as REAL in one run out of four. At 0.25 the stub clears it
 
 ## Windows dev path (#785)
 
-Both local modes work on Windows. `onnxruntime-node` (**1.21.0**, resolved as a
-transitive dependency of `@huggingface/transformers` 3.8.1) publishes **prebuilt
+Both local modes work on Windows. `onnxruntime-node` (**1.22.0**, a transitive
+dependency of `@huggingface/transformers`, pinned by #307) publishes **prebuilt
 `win32-x64` and `win32-arm64`** binaries, so there is **no native compilation** and
 no Visual Studio Build Tools requirement.
 

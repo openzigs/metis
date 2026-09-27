@@ -7,7 +7,8 @@
  * TypeScript. Each vector encodes what the worker applied, so tests can read it:
  *   [text.length, tokenizer.model_max_length, env.allowRemoteModels === false ? 1 : 0,
  *    rows in this model call]
- * `model` names containing "fail-load" reject at load; a `@<n>ms` suffix sets the
+ * `model` names containing "fail-load" reject at load; names containing "v4-tokenizer"
+ * get a transformers.js 4-shaped tokenizer (below); a `@<n>ms` suffix sets the
  * per-text block (default BUSY_MS_PER_TEXT); the text "__explode__" rejects at run,
  * and "__crash__" exits the thread it runs on.
  */
@@ -27,10 +28,26 @@ function blockThread(ms) {
   }
 }
 
+/**
+ * Issue #307 — transformers.js 4 turned `model_max_length` from a plain field into a
+ * prototype GETTER over the tokenizer config (`PreTrainedTokenizer`, 4.3.0), so an
+ * assignment throws in strict code and is silently dropped in sloppy code.
+ */
+class V4Tokenizer {
+  constructor(config) {
+    this._tokenizerConfig = config;
+  }
+  get model_max_length() {
+    return this._tokenizerConfig.model_max_length ?? Infinity;
+  }
+}
+
 export async function pipeline(task, model, opts) {
   if (task !== "feature-extraction") throw new Error(`unexpected task ${task}`);
   if (model.includes("fail-load")) throw new Error(`cannot load ${model}`);
-  const tokenizer = { model_max_length: 8192 };
+  const tokenizer = model.includes("v4-tokenizer")
+    ? new V4Tokenizer({ model_max_length: 8192 })
+    : { model_max_length: 8192 };
   const perText = Number(/@(\d+)ms$/.exec(model)?.[1] ?? BUSY_MS_PER_TEXT);
   const run = async (texts, runOpts) => {
     const rows = Array.isArray(texts) ? texts : [texts];

@@ -1,32 +1,49 @@
 /**
  * Issue #307 — the in-process embedder must produce the SAME vectors after a
- * `@huggingface/transformers` upgrade as the version every stored vector came from.
+ * `@huggingface/transformers` upgrade as the library pair every stored vector came
+ * from: transformers.js 3.8.1 on onnxruntime-node 1.21.0.
  *
- * Every project's index holds vectors computed under transformers.js 3.8.1. A
- * library upgrade that moves them does not fail anything: search keeps returning
- * results. It just ranks new query vectors against old stored vectors from a
- * slightly different space, and that degradation stays invisible until someone
- * re-embeds every project. So the upgrade is only acceptable if a fixed set of strings
- * still embeds to the vectors recorded under 3.8.1
- * (`fixtures/embed-parity-v3-gte-modernbert-q8.json`), row by row.
+ * A library upgrade that moves vectors does not fail anything: search keeps
+ * returning results. It just ranks new query vectors against old stored vectors
+ * from a slightly different space, and that degradation stays invisible until
+ * someone re-embeds every project. So an upgrade is only acceptable if a fixed set
+ * of strings still embeds to the vectors recorded under 3.8.1, row by row.
+ *
+ * #307 measured that the drift lives in onnxruntime-node, not transformers.js:
+ * 4.3.0 on its own ORT 1.30 lands at cos 0.915–0.969, while 4.3.0 on ORT 1.21 or
+ * 1.22 is cos 1.0000. That is why `pnpm-workspace.yaml` overrides onnxruntime-node
+ * to 1.22.0 (the lowest release transformers.js 4 can run decoder models on — see
+ * the comment there), and why this file also asserts, on EVERY run, that the
+ * installed ORT is that pin. Moving the pin is a re-embed decision
+ * (docs/OPERATIONS.md, "Embedding parity fixtures").
+ *
+ * q8 vectors are not portable across platforms (darwin-arm64 vs linux-x64 go
+ * down to cos 0.987 under 3.8.1 alone), so there is one fixture per
+ * `${process.platform}-${process.arch}`
+ * (`fixtures/embed-parity-v3-gte-modernbert-q8.<platform>-<arch>.json`), and an
+ * opted-in run on a platform with no fixture FAILS rather than skipping.
  *
  * The probe runs the PRODUCTION path: `XenovaEmbedder` from the built `dist`, under
  * plain node, in the worker runtime (#189), with the shipped model, CLS pooling,
  * normalisation and `q8` dtype. It includes a row longer than the 2,048-token cap,
- * so truncation that is no longer honoured shows up as a moved vector. A second process scores the
- * in-process cross-encoder, whose raw logits were recorded alongside.
+ * so truncation that is no longer honoured shows up as a moved vector. A second
+ * process scores the in-process cross-encoder, whose raw logits were recorded
+ * alongside.
  *
- * Opt-in, like `embed-worker-real-model.test.ts`, because it needs the weights
- * (~150 MB, downloaded once or read from TRANSFORMERS_CACHE) and a built server:
+ * The real-model half is opt-in, like `embed-worker-real-model.test.ts`, because it
+ * needs the weights (~150 MB, downloaded once or read from TRANSFORMERS_CACHE) and
+ * a built server:
  *
  *   pnpm --filter @metis/shared build && pnpm --filter @metis/server build
  *   EMBED_REAL_MODEL_TEST=1 pnpm --filter @metis/server exec vitest run tests/embed-parity-real-model.test.ts
  *
  * `.github/workflows/embed-real-model-nightly.yml` runs it nightly and on any pull
- * request that changes the dependency manifests or the embed path.
+ * request that changes the dependency manifests, the lockfile, the pnpm overrides
+ * or the embed path.
  */
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -38,23 +55,44 @@ import {
   resolvePooling,
 } from "../src/lib/rag/embed-model-config.js";
 import { formatEmbeddingIdentity } from "../src/lib/rag/embedding-identity.js";
-// @ts-expect-error — plain-JS fixture shared with the probe process; no .d.ts.
-import { PARITY_TEXTS } from "./fixtures/embed-parity-probe.mjs";
+import {
+  PARITY_TEXTS,
+  RECORD_ONNXRUNTIME_VERSION,
+  RECORD_TRANSFORMERS_VERSION,
+  fixtureFileName,
+  platformKey,
+  platformOfFixture,
+  // @ts-expect-error — plain-JS fixture shared with the probe process; no .d.ts.
+} from "./fixtures/embed-parity-probe.mjs";
 
 const run = promisify(execFile);
-const PROBE = fileURLToPath(new URL("./fixtures/embed-parity-probe.mjs", import.meta.url));
-const FIXTURE = fileURLToPath(
-  new URL("./fixtures/embed-parity-v3-gte-modernbert-q8.json", import.meta.url),
-);
+const FIXTURE_DIR = fileURLToPath(new URL("./fixtures/", import.meta.url));
+const PROBE = join(FIXTURE_DIR, "embed-parity-probe.mjs");
 const DIST_EMBEDDER = fileURLToPath(new URL("../dist/lib/rag/embedder.js", import.meta.url));
 
 /** Per-string floor the upgrade must clear (issue #307). */
 const MIN_PARITY_COSINE = 0.999;
 /** Largest drift allowed on a raw cross-encoder logit (they span roughly −12…+9). */
 const MAX_RERANK_LOGIT_DRIFT = 0.1;
+/**
+ * Platforms that MUST carry a fixture: the CI runner (`linux-x64`, where the
+ * PR-time parity job runs) and the platform the #307 measurements were taken on.
+ */
+const REQUIRED_PLATFORMS = ["darwin-arm64", "linux-x64"];
+/**
+ * The onnxruntime-node `pnpm-workspace.yaml` pins (#307). Deliberately a literal:
+ * moving it must be a reviewed edit here AND there, never a lockfile side effect.
+ */
+const PINNED_ONNXRUNTIME_VERSION = "1.22.0";
 
 interface ParityFixture {
-  recordedWith: { transformersVersion: string };
+  recordedWith: {
+    transformersVersion: string;
+    onnxruntimeVersion: string;
+    platform: string;
+    node: string;
+    cpu: string;
+  };
   model: string;
   identity: string;
   pooling: string;
@@ -68,6 +106,7 @@ interface ParityFixture {
 
 interface EmbedProbe {
   transformersVersion: string;
+  onnxruntimeVersion: string;
   runtime: string;
   identity: string;
   pooling: string;
@@ -91,6 +130,27 @@ function cosine(a: readonly number[], b: readonly number[]): number {
   return dot / Math.sqrt(na * nb);
 }
 
+/** Every committed parity fixture, keyed by the platform its file name names. */
+function loadFixtures(): Map<string, ParityFixture> {
+  const out = new Map<string, ParityFixture>();
+  for (const name of readdirSync(FIXTURE_DIR)) {
+    const key = platformOfFixture(name) as string | null;
+    if (key) out.set(key, JSON.parse(readFileSync(join(FIXTURE_DIR, name), "utf8")));
+  }
+  return out;
+}
+
+/**
+ * The onnxruntime-node version transformers.js actually loads — resolved from the
+ * installed `@huggingface/transformers`, which is the copy the pnpm override pins.
+ */
+function installedOnnxruntimeVersion(): string {
+  const require = createRequire(import.meta.url);
+  const fromTransformers = createRequire(require.resolve("@huggingface/transformers"));
+  const pkg = fromTransformers.resolve("onnxruntime-node/package.json");
+  return (JSON.parse(readFileSync(pkg, "utf8")) as { version: string }).version;
+}
+
 async function probe<T>(mode: "embed" | "rerank"): Promise<T> {
   const { stdout } = await run(process.execPath, [PROBE, mode], {
     // `tests/setup.ts` pins `inline` for mocked suites; the probe runs the real
@@ -104,50 +164,88 @@ async function probe<T>(mode: "embed" | "rerank"): Promise<T> {
   return JSON.parse((line as string).slice("PROBE_RESULT ".length)) as T;
 }
 
-describe("embed parity fixture (#307)", () => {
-  const fixture = JSON.parse(readFileSync(FIXTURE, "utf8")) as ParityFixture;
+describe("embed parity fixtures (#307)", () => {
+  const fixtures = loadFixtures();
 
-  it("was recorded under 3.8.1 with the shipped model, pooling, dtype and worker runtime", () => {
-    // The shipped config is DERIVED, never restated: if the default model,
-    // pooling or dtype moves, this fixture no longer describes production and
-    // must be re-recorded, which is the same re-embed decision as an upgrade.
-    expect(fixture.recordedWith.transformersVersion).toBe("3.8.1");
-    expect(fixture.model).toBe(DEFAULT_SIDECAR_EMBED_MODEL);
-    expect(fixture.pooling).toBe(resolvePooling(DEFAULT_SIDECAR_EMBED_MODEL).pooling);
-    expect(fixture.dtype).toBe(resolveDtype({}));
-    expect(fixture.identity).toBe(
-      formatEmbeddingIdentity(fixture.model, fixture.pooling as "cls", fixture.dtype as "q8"),
-    );
-    expect(fixture.runtime).toBe("worker");
-    expect(fixture.dimension).toBe(DEFAULT_EMBED_DIMENSION);
+  it("maps platform keys to file names and back", () => {
+    expect(fixtureFileName("linux-x64")).toBe("embed-parity-v3-gte-modernbert-q8.linux-x64.json");
+    expect(platformOfFixture(fixtureFileName("darwin-arm64"))).toBe("darwin-arm64");
+    expect(platformOfFixture("embed-parity-v3-gte-modernbert-q8.json")).toBeNull();
+    expect(platformOfFixture("embed-parity-probe.mjs")).toBeNull();
+    expect(platformKey("win32", "x64")).toBe("win32-x64");
   });
 
-  it("holds one unit-length vector per probe text, in probe order", () => {
-    expect(fixture.texts).toEqual(PARITY_TEXTS);
-    expect(fixture.vectors).toHaveLength(PARITY_TEXTS.length);
-    for (const v of fixture.vectors) {
-      expect(v).toHaveLength(fixture.dimension);
-      expect(Math.sqrt(v.reduce((s, x) => s + x * x, 0))).toBeCloseTo(1, 4);
-    }
-    // The rows are distinct: a fixture of one repeated vector would pass any
-    // parity check against a model that ignores its input.
-    expect(cosine(fixture.vectors[0], fixture.vectors[2])).toBeLessThan(0.9);
-    expect(fixture.rerank.scores).toHaveLength(3);
+  it("carries a fixture for every platform that must gate", () => {
+    expect([...fixtures.keys()].sort()).toEqual(expect.arrayContaining(REQUIRED_PLATFORMS));
+  });
+
+  it.each(REQUIRED_PLATFORMS)(
+    "%s was recorded on that platform, under 3.8.1 + ORT 1.21.0, with the shipped config",
+    (key) => {
+      const fixture = fixtures.get(key) as ParityFixture;
+      expect(fixture, `no fixture for ${key}`).toBeDefined();
+      // A fixture copied under another platform's name would gate against the
+      // wrong kernels and pass or fail for the wrong reason.
+      expect(fixture.recordedWith.platform).toBe(key);
+      expect(fixture.recordedWith.transformersVersion).toBe(RECORD_TRANSFORMERS_VERSION);
+      expect(fixture.recordedWith.onnxruntimeVersion).toBe(RECORD_ONNXRUNTIME_VERSION);
+      // The shipped config is DERIVED, never restated: if the default model,
+      // pooling or dtype moves, this fixture no longer describes production and
+      // must be re-recorded, which is the same re-embed decision as an upgrade.
+      expect(fixture.model).toBe(DEFAULT_SIDECAR_EMBED_MODEL);
+      expect(fixture.pooling).toBe(resolvePooling(DEFAULT_SIDECAR_EMBED_MODEL).pooling);
+      expect(fixture.dtype).toBe(resolveDtype({}));
+      expect(fixture.identity).toBe(
+        formatEmbeddingIdentity(fixture.model, fixture.pooling as "cls", fixture.dtype as "q8"),
+      );
+      expect(fixture.runtime).toBe("worker");
+      expect(fixture.dimension).toBe(DEFAULT_EMBED_DIMENSION);
+
+      expect(fixture.texts).toEqual(PARITY_TEXTS);
+      expect(fixture.vectors).toHaveLength(PARITY_TEXTS.length);
+      for (const v of fixture.vectors) {
+        expect(v).toHaveLength(fixture.dimension);
+        expect(Math.sqrt(v.reduce((s, x) => s + x * x, 0))).toBeCloseTo(1, 4);
+      }
+      // The rows are distinct: a fixture of one repeated vector would pass any
+      // parity check against a model that ignores its input.
+      expect(cosine(fixture.vectors[0], fixture.vectors[2])).toBeLessThan(0.9);
+      expect(fixture.rerank.scores).toHaveLength(3);
+    },
+  );
+
+  it("runs on the pinned onnxruntime-node (#307)", () => {
+    // pnpm-workspace.yaml overrides onnxruntime-node because the q8 kernels in
+    // later ORT releases move stored vectors (cos 0.915–0.969 on 1.30). If the
+    // override is dropped, or a transformers.js bump drags a new ORT past it, this
+    // fails on every PR — not just on the real-model job.
+    expect(installedOnnxruntimeVersion()).toBe(PINNED_ONNXRUNTIME_VERSION);
   });
 });
 
 describe.runIf(process.env.EMBED_REAL_MODEL_TEST === "1")(
   "real gte-modernbert matches the transformers.js 3.8.1 vectors (#307)",
   () => {
-    const fixture = JSON.parse(readFileSync(FIXTURE, "utf8")) as ParityFixture;
+    const key = platformKey() as string;
+    const fixturePath = join(FIXTURE_DIR, fixtureFileName(key) as string);
 
-    it("embeds every fixed string to cosine >= 0.999 of its recorded vector", async () => {
-      // Opted in but not built is a failure, never a skip (#201).
+    /** Opted in but not built, or no fixture for this platform, is a failure — never a skip (#201). */
+    function preconditions(): ParityFixture {
       expect(existsSync(DIST_EMBEDDER), `${DIST_EMBEDDER} missing — run the server build`).toBe(
         true,
       );
+      expect(
+        existsSync(fixturePath),
+        `no parity fixture for ${key}: record one under 3.8.1 (docs/OPERATIONS.md, "Embedding parity fixtures")`,
+      ).toBe(true);
+      return JSON.parse(readFileSync(fixturePath, "utf8")) as ParityFixture;
+    }
+
+    it("embeds every fixed string to cosine >= 0.999 of its recorded vector", async () => {
+      const fixture = preconditions();
       const got = await probe<EmbedProbe>("embed");
 
+      expect(got.onnxruntimeVersion).toBe(PINNED_ONNXRUNTIME_VERSION);
       expect(got.runtime).toBe("worker");
       expect(got.identity).toBe(fixture.identity);
       expect(got.pooling).toBe(fixture.pooling);
@@ -162,7 +260,9 @@ describe.runIf(process.env.EMBED_REAL_MODEL_TEST === "1")(
       }));
       // eslint-disable-next-line no-console
       console.info(
-        `embed parity vs ${fixture.recordedWith.transformersVersion} (running ${got.transformersVersion}):\n` +
+        `embed parity on ${key} vs ${fixture.recordedWith.transformersVersion} + ORT ` +
+          `${fixture.recordedWith.onnxruntimeVersion} (running ${got.transformersVersion} + ORT ` +
+          `${got.onnxruntimeVersion}):\n` +
           report.map((r) => `  ${r.cosine.toFixed(6)}  ${JSON.stringify(r.text)}`).join("\n"),
       );
       for (const r of report) {
@@ -184,9 +284,7 @@ describe.runIf(process.env.EMBED_REAL_MODEL_TEST === "1")(
     }, 300_000);
 
     it("scores the cross-encoder pairs to the recorded raw logits", async () => {
-      expect(existsSync(DIST_EMBEDDER), `${DIST_EMBEDDER} missing — run the server build`).toBe(
-        true,
-      );
+      const fixture = preconditions();
       const got = await probe<{ scores: number[] }>("rerank");
       expect(got.scores).toHaveLength(fixture.rerank.scores.length);
       got.scores.forEach((s, i) => {

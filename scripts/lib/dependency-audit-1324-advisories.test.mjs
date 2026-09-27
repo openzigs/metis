@@ -217,7 +217,11 @@ describe("the #1324 advisory set is closed in the resolved tree", () => {
 
     it("resolves NO tar copy below 7.5.21", () => {
       const resolved = resolvedVersions("tar");
-      expect(resolved.length, "expected at least one tar copy in the tree").toBeGreaterThan(0);
+      // #307 moved onnxruntime-node 1.21.0 -> 1.22.0, whose installer uses adm-zip,
+      // so tar's only consumer left the tree and `resolved` is empty today. The
+      // lockfile parser is proven live by the nanoid and deepmerge-ts cases above;
+      // the override stays as a backstop, and this still fails if a copy below
+      // 7.5.21 ever comes back.
       const breaching = resolved.filter((v) => !isAtLeast(v, FIXED));
       expect(
         breaching,

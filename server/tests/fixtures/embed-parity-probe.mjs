@@ -18,7 +18,7 @@
 //
 // WHY ONE FIXTURE PER PLATFORM. q8 vectors are not bit-portable: onnxruntime's
 // quantized CPU kernels differ by OS/arch, and under 3.8.1 alone darwin-arm64 and
-// linux-x64 already disagree at cos ~0.996 — below the 0.999 bar. A fixture
+// linux-x64 already disagree down to cos 0.987 — below the 0.999 bar. A fixture
 // recorded on one platform therefore cannot gate another. The test picks the file
 // named for `${process.platform}-${process.arch}` and FAILS (never skips) when it
 // is missing, so a new platform must be recorded before it can gate anything.
