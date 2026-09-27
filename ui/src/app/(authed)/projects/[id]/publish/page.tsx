@@ -38,6 +38,7 @@ import { PublishConfirmDialog } from "@/components/publishing/publish-confirm-di
 import { BatchRowActions } from "@/components/publishing/batch-row-actions";
 import { ResponsiveTable, type ResponsiveColumn } from "@/components/tables/responsive-table";
 import type { PublishBatch } from "@metis/shared";
+import { PageHeader } from "@/components/ui/page-header";
 
 const keys = {
   drafts: (pid: string) => ["publishing", "drafts", pid] as const,
@@ -47,17 +48,17 @@ const keys = {
 function statusClass(status: string): string {
   switch (status) {
     case "completed":
-      return "bg-emerald-100 text-emerald-700";
+      return "bg-success-muted text-success";
     case "running":
-      return "bg-amber-100 text-amber-700";
+      return "bg-warning-muted text-warning";
     case "failed":
-      return "bg-red-100 text-red-700";
+      return "bg-destructive/10 text-destructive";
     case "approved":
-      return "bg-sky-100 text-sky-700";
+      return "bg-info-muted text-info";
     case "published":
-      return "bg-emerald-100 text-emerald-700";
+      return "bg-success-muted text-success";
     default:
-      return "bg-slate-100 text-slate-700";
+      return "bg-muted text-foreground";
   }
 }
 
@@ -279,7 +280,7 @@ export default function PublishingPage() {
         cell: (b) => (
           <>
             {b.targetOwner}/{b.targetRepo}
-            {b.dryRun && <span className="ml-1 text-xs text-slate-400">(dry)</span>}
+            {b.dryRun && <span className="ml-1 text-xs text-muted-foreground">(dry)</span>}
           </>
         ),
       },
@@ -297,7 +298,9 @@ export default function PublishingPage() {
         key: "started",
         header: "Started",
         cell: (b) => (
-          <span className="text-xs text-slate-500">{new Date(b.startedAt).toLocaleString()}</span>
+          <span className="text-xs text-muted-foreground">
+            {new Date(b.startedAt).toLocaleString()}
+          </span>
         ),
       },
       {
@@ -369,16 +372,14 @@ export default function PublishingPage() {
   const approveGateBlock =
     extractApprovalGateBlock(approve.error) ?? extractApprovalGateBlock(bulkError);
 
-  if (!projectId) return <p className="text-sm text-slate-500">Select a project.</p>;
+  if (!projectId) return <p className="text-sm text-muted-foreground">Select a project.</p>;
 
   return (
     <div className="flex flex-col gap-8">
-      <header>
-        <h1 className="text-xl font-semibold">Publishing</h1>
-        <p className="text-sm text-slate-500">
-          Generate GitHub issue drafts from an analysis, then dry-run or publish them as a batch.
-        </p>
-      </header>
+      <PageHeader
+        title="Publishing"
+        description="Generate GitHub issue drafts from an analysis, then dry-run or publish them as a batch."
+      />
 
       <ApprovalGateSettingsCard projectId={projectId} />
 
@@ -434,12 +435,12 @@ export default function PublishingPage() {
             {generate.isPending ? "Generating…" : "Generate"}
           </Button>
           {generate.error && (
-            <span className="text-xs text-red-600">
+            <span className="text-xs text-destructive">
               {generate.error instanceof ApiError ? generate.error.message : String(generate.error)}
             </span>
           )}
           {generate.data && (
-            <span className="text-xs text-emerald-600">
+            <span className="text-xs text-success">
               {generate.data.summary.upserted} created · {generate.data.summary.refreshed} refreshed
             </span>
           )}
@@ -467,9 +468,9 @@ export default function PublishingPage() {
             adjacent to the action however long the list is. */}
         {approveGateBlock && <ApprovalGateBlockNotice block={approveGateBlock} />}
         {drafts.isLoading ? (
-          <p className="text-xs text-slate-500">Loading…</p>
+          <p className="text-xs text-muted-foreground">Loading…</p>
         ) : (
-          <ul className="mt-3 divide-y divide-slate-200">
+          <ul className="mt-3 divide-y divide-border">
             {(drafts.data ?? []).map((d) => (
               <li key={d.id} className="py-2">
                 <div className="flex items-center justify-between">
@@ -488,7 +489,7 @@ export default function PublishingPage() {
                     />
                     <div>
                       <div className="text-sm font-medium">{d.title}</div>
-                      <div className="text-xs text-slate-500">
+                      <div className="text-xs text-muted-foreground">
                         {d.draftType} · sp={d.storyPoints}
                       </div>
                     </div>
@@ -525,7 +526,7 @@ export default function PublishingPage() {
                   <p
                     role="alert"
                     data-testid={`approve-error-${d.id}`}
-                    className="mt-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900"
+                    className="mt-1 rounded border border-warning/40 bg-warning-muted px-2 py-1 text-xs text-warning"
                   >
                     {approveGateBlock
                       ? "Blocked by the approval gate — this draft needs an approved, up-to-date review. Details are at the top of this list."
@@ -537,7 +538,7 @@ export default function PublishingPage() {
               </li>
             ))}
             {!drafts.data?.length && (
-              <li className="py-2 text-xs text-slate-500">No drafts yet.</li>
+              <li className="py-2 text-xs text-muted-foreground">No drafts yet.</li>
             )}
           </ul>
         )}
@@ -588,7 +589,7 @@ export default function PublishingPage() {
             />
             <p
               id="batchSecretHelp"
-              className={`mt-1 text-xs ${vaultRefHintText ? "text-red-600" : "text-slate-500"}`}
+              className={`mt-1 text-xs ${vaultRefHintText ? "text-destructive" : "text-muted-foreground"}`}
             >
               {vaultRefHintText ??
                 "Label of a secret stored in the vault, wrapped as ${vault:label} — not the token itself."}
@@ -645,21 +646,23 @@ export default function PublishingPage() {
           >
             {publish.isPending ? "Publishing…" : dryRun ? "Run dry-run" : "Publish now"}
           </Button>
-          <span className="text-xs text-slate-500">{selectedDrafts.size} drafts selected</span>
+          <span className="text-xs text-muted-foreground">
+            {selectedDrafts.size} drafts selected
+          </span>
           {publish.error && !publishGateBlock && (
-            <span className="text-xs text-red-600" role="alert" data-testid="publish-error">
+            <span className="text-xs text-destructive" role="alert" data-testid="publish-error">
               {publish.error instanceof ApiError ? publish.error.message : String(publish.error)}
               {/* #1094 — show the code so a user can self-diagnose or search
                   for it, instead of only seeing prose. */}
               {publish.error instanceof ApiError && publish.error.code ? (
-                <span className="ml-1 font-mono text-slate-500">({publish.error.code})</span>
+                <span className="ml-1 font-mono text-muted-foreground">({publish.error.code})</span>
               ) : null}
             </span>
           )}
         </div>
         {publishGateBlock && <ApprovalGateBlockNotice block={publishGateBlock} />}
         {publish.data && (
-          <div className="mt-3 text-xs text-slate-700">
+          <div className="mt-3 text-xs text-foreground">
             Batch <code>{publish.data.batch.id.slice(0, 10)}</code> · run status{" "}
             <span className={`rounded px-2 py-0.5 ${statusClass(publish.data.run.status)}`}>
               {publish.data.run.status}
@@ -686,7 +689,7 @@ export default function PublishingPage() {
           />
         </div>
         {liveBatchId && (
-          <div className="mt-4 rounded border bg-slate-50 p-3 text-xs">
+          <div className="mt-4 rounded border bg-muted p-3 text-xs">
             <div className="mb-1 flex items-center justify-between">
               <span>
                 Live · <code>{liveBatchId.slice(0, 10)}</code>
@@ -716,7 +719,9 @@ export default function PublishingPage() {
                 {liveLog.map((l, i) => (
                   <li key={i}>{l}</li>
                 ))}
-                {liveLog.length === 0 && <li className="text-slate-400">Waiting for events…</li>}
+                {liveLog.length === 0 && (
+                  <li className="text-muted-foreground">Waiting for events…</li>
+                )}
               </ol>
             </PausableLiveRegion>
           </div>

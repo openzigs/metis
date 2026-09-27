@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/lib/auth-context";
+import { PageHeader } from "@/components/ui/page-header";
 
 /**
  * Admin view of an SSO provider (Issue #451): the config-read API masks stored
@@ -324,12 +325,10 @@ export default function AdminAuthPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <div>
-        <h1 className="text-2xl font-bold">Authentication Configuration</h1>
-        <p className="text-muted-foreground">
-          Manage SSO providers, SCIM provisioning, and role mappings.
-        </p>
-      </div>
+      <PageHeader
+        title="Authentication Configuration"
+        description="Manage SSO providers, SCIM provisioning, and role mappings."
+      />
 
       {message && (
         <div className="rounded-md border bg-muted px-3 py-2 text-sm" role="status">
@@ -529,7 +528,7 @@ export default function AdminAuthPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               {ldapConfigured && (
-                <div className="rounded-md border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950 px-3 py-2 text-sm text-green-700 dark:text-green-300">
+                <div className="rounded-md border border-success/40 bg-success-muted px-3 py-2 text-sm text-success">
                   LDAP is configured. Set <code>AUTH_MODE=ldap</code> to enable.
                 </div>
               )}
@@ -611,8 +610,8 @@ export default function AdminAuthPage() {
                 <div
                   className={`rounded-md border px-3 py-2 text-sm ${
                     ldapTestResult.startsWith("✓")
-                      ? "border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-300"
-                      : "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300"
+                      ? "border-success/40 bg-success-muted text-success"
+                      : "border-destructive/40 bg-destructive/10 text-destructive"
                   }`}
                 >
                   {ldapTestResult}

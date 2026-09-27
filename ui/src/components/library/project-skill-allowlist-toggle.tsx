@@ -152,9 +152,9 @@ export function ProjectSkillAllowlistToggle({ projectId, skillId, canManage }: P
           className={
             "rounded px-2 py-0.5 text-xs " +
             (resolution.state === "explicitly-enabled"
-              ? "bg-green-100 text-green-900"
+              ? "bg-success-muted text-success"
               : resolution.state === "explicitly-disabled"
-                ? "bg-amber-100 text-amber-900"
+                ? "bg-warning-muted text-warning"
                 : "bg-muted text-muted-foreground")
           }
         >
@@ -204,7 +204,7 @@ export function ProjectSkillAllowlistToggle({ projectId, skillId, canManage }: P
       <p className="max-w-[14rem] text-right text-xs text-muted-foreground">
         {STATE_HINT[resolution.state]}
         {canManage && writesFirstExplicitRow ? (
-          <span className="block text-amber-700">
+          <span className="block text-warning">
             Allowing the first skill restricts this project to only the skills you allow.
           </span>
         ) : null}

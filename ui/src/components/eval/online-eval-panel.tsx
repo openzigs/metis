@@ -106,7 +106,7 @@ export function OnlineEvalPanel() {
 
       {showStubWarning ? (
         <Card
-          className="border-yellow-300 bg-yellow-50 p-3 text-sm dark:bg-yellow-950/30"
+          className="border-warning/40 bg-warning-muted p-3 text-sm"
           data-testid="online-stub-judge-warning"
         >
           <strong>
@@ -183,7 +183,7 @@ export function OnlineEvalPanel() {
             Loading online eval windows…
           </div>
         ) : list.isError ? (
-          <div className="p-6 text-sm text-red-600" data-testid="online-windows-error">
+          <div className="p-6 text-sm text-destructive" data-testid="online-windows-error">
             Failed to load online eval windows.
           </div>
         ) : windows.length === 0 ? (
@@ -237,7 +237,7 @@ function OnlineWindowsTable({ windows }: { windows: OnlineEvalWindowSummary[] })
               {w.judge}
               {w.judgeMeaningful ? null : (
                 <span
-                  className="ml-1 rounded bg-yellow-100 px-1 py-0.5 text-[10px] font-semibold uppercase text-yellow-900 dark:bg-yellow-900/40 dark:text-yellow-200"
+                  className="ml-1 rounded bg-warning-muted px-1 py-0.5 text-[10px] font-semibold uppercase text-warning"
                   title="Lexical placeholder judge — not a quality signal (#1317)"
                   data-testid={`online-window-stub-${w.windowId}`}
                 >
@@ -247,7 +247,7 @@ function OnlineWindowsTable({ windows }: { windows: OnlineEvalWindowSummary[] })
             </TableCell>
             <TableCell>
               {w.driftAlert ? (
-                <span className="text-red-600" data-testid={`online-drift-${w.windowId}`}>
+                <span className="text-destructive" data-testid={`online-drift-${w.windowId}`}>
                   Drift
                 </span>
               ) : (

@@ -20,6 +20,7 @@ import {
 } from "@/components/tables/responsive-table";
 import { documentsApi, projectsApi, type DocumentRow, type Project } from "@/lib/projects-api";
 import { ApiError } from "@/lib/api-client";
+import { PageHeader } from "@/components/ui/page-header";
 
 interface AggregatedRow extends DocumentRow {
   projectId: string;
@@ -118,14 +119,10 @@ export default function DocumentsTopLevelPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="documents-top-root">
-      <header>
-        <h1 className="text-2xl font-semibold">Documents</h1>
-        <p className="text-sm text-muted-foreground">
-          Every document you can access, across every project. Use the filter to scope to a single
-          project. Upload happens inside the destination project so the file lands in the right RAG
-          namespace.
-        </p>
-      </header>
+      <PageHeader
+        title="Documents"
+        description="Every document you can access, across every project. Use the filter to scope to a single project. Upload happens inside the destination project so the file lands in the right RAG namespace."
+      />
       <Card className="space-y-3 p-4" data-testid="documents-top-controls">
         <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-4">
           <label className="text-sm">
@@ -218,9 +215,7 @@ function SpecToggle({
       type="button"
       title={isSpec ? "Remove spec tag" : "Tag as spec (used by spec scan mode)"}
       className={`${touchTargetClass} justify-center rounded px-1.5 py-0.5 text-xs font-medium transition-colors ${
-        isSpec
-          ? "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
-          : "bg-muted text-muted-foreground hover:bg-muted/80"
+        isSpec ? "bg-info-muted text-info" : "bg-muted text-muted-foreground hover:bg-muted/80"
       }`}
       disabled={mutation.isPending}
       onClick={() => mutation.mutate()}

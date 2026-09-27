@@ -21,17 +21,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import type { JiraConnectionDetail, JiraIssue, JiraIssueDetail } from "@metis/shared";
+import { PageHeader } from "@/components/ui/page-header";
 
 // ---- Status badge helper ---------------------------------------------------
 
 function statusColor(status: string): string {
   switch (status) {
     case "ok":
-      return "bg-emerald-100 text-emerald-700";
+      return "bg-success-muted text-success";
     case "error":
-      return "bg-red-100 text-red-700";
+      return "bg-destructive/10 text-destructive";
     default:
-      return "bg-slate-100 text-slate-700";
+      return "bg-muted text-foreground";
   }
 }
 
@@ -244,12 +245,10 @@ export default function JiraPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <header>
-        <h1 className="text-2xl font-semibold">Jira Integration</h1>
-        <p className="text-sm text-muted-foreground">
-          Connect to Jira Cloud or Data Center instances to browse and analyze issues.
-        </p>
-      </header>
+      <PageHeader
+        title="Jira Integration"
+        description="Connect to Jira Cloud or Data Center instances to browse and analyze issues."
+      />
 
       {/* ── Connection management (#562) ─────────────────────────────── */}
       <section className="space-y-3">
@@ -359,7 +358,7 @@ export default function JiraPage() {
               >
                 Cancel
               </Button>
-              {formError && <span className="text-sm text-red-600">{formError}</span>}
+              {formError && <span className="text-sm text-destructive">{formError}</span>}
             </div>
           </Card>
         )}
@@ -394,7 +393,7 @@ export default function JiraPage() {
                   </div>
                   <div className="font-mono text-xs text-muted-foreground">{conn.baseUrl}</div>
                   {conn.errorMessage && (
-                    <div className="mt-1 text-xs text-red-600">{conn.errorMessage}</div>
+                    <div className="mt-1 text-xs text-destructive">{conn.errorMessage}</div>
                   )}
                 </div>
                 <div
@@ -597,7 +596,7 @@ export default function JiraPage() {
             <div className="flex-1 min-w-0 space-y-2">
               {searchResults.isError && (
                 <div
-                  className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700"
+                  className="rounded border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
                   role="alert"
                   data-testid="jira-search-error"
                 >

@@ -11,7 +11,7 @@
  */
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
-import mermaid from "mermaid";
+import { loadMermaid } from "@/lib/mermaid";
 import DOMPurify from "dompurify";
 import type { WorkspaceProjectTraceability, WorkspaceTraceabilitySummary } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
@@ -134,9 +134,12 @@ function CrossProjectLinkMap({
   React.useEffect(() => {
     if (!source) return;
     let cancelled = false;
-    mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
-    mermaid
-      .render(`rollup-links-${Math.random().toString(36).slice(2, 8)}`, source)
+    // #272 — mermaid is fetched on first use rather than bundled with the page.
+    loadMermaid()
+      .then((mermaid) => {
+        mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
+        return mermaid.render(`rollup-links-${Math.random().toString(36).slice(2, 8)}`, source);
+      })
       .then(({ svg }) => {
         if (!cancelled) {
           setSvg(svg);

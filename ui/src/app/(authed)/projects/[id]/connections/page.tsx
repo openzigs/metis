@@ -34,6 +34,7 @@ import { useConnectorProgress, useConnectorDiscovery } from "@/hooks/use-connect
 import { DbConnectorWizard } from "@/components/connectors/db-connector-wizard";
 import { DatabaseResourceManager } from "@/components/connectors/database-resource-manager";
 import { RebuildCacheButton } from "@/components/projects/rebuild-cache-button";
+import { PageHeader } from "@/components/ui/page-header";
 
 const repoKeys = {
   list: (pid: string) => ["connectors", "repos", pid] as const,
@@ -51,13 +52,13 @@ const projectKeys = {
 function statusBadge(status: string): string {
   switch (status) {
     case "ready":
-      return "bg-emerald-100 text-emerald-700";
+      return "bg-success-muted text-success";
     case "error":
-      return "bg-red-100 text-red-700";
+      return "bg-destructive/10 text-destructive";
     case "testing":
-      return "bg-amber-100 text-amber-700";
+      return "bg-warning-muted text-warning";
     default:
-      return "bg-slate-100 text-slate-700";
+      return "bg-muted text-foreground";
   }
 }
 
@@ -489,19 +490,17 @@ export default function ConnectionsPage() {
 
   return (
     <div className="space-y-8 p-6">
-      <header>
-        <h1 className="text-2xl font-semibold">
-          Connections
-          {(suggested.data?.count ?? 0) > 0 && (
-            <Badge variant="secondary" className="ml-2 align-middle">
+      <PageHeader
+        title="Connections"
+        titleExtra={
+          (suggested.data?.count ?? 0) > 0 ? (
+            <Badge variant="secondary">
               {suggested.data!.count} suggestion{suggested.data!.count > 1 ? "s" : ""}
             </Badge>
-          )}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Repo and database connectors for this project. Secrets are stored as vault references —
-          never as plaintext.
-        </p>
+          ) : undefined
+        }
+        description="Repo and database connectors for this project. Secrets are stored as vault references — never as plaintext."
+      >
         {testResultMessage ? (
           <p className="mt-2 text-sm text-muted-foreground">
             Last test: <span className="font-mono">{testResultMessage}</span>
@@ -511,7 +510,7 @@ export default function ConnectionsPage() {
           <input
             id="allow-credential-scan"
             type="checkbox"
-            className="h-4 w-4 cursor-pointer accent-emerald-600"
+            className="h-4 w-4 cursor-pointer accent-success"
             data-testid="allow-credential-scan-toggle"
             checked={project.data?.allowCredentialScan === true}
             disabled={!project.data || toggleAllowCredentialScan.isPending}
@@ -524,7 +523,7 @@ export default function ConnectionsPage() {
             </span>
           </label>
         </div>
-      </header>
+      </PageHeader>
 
       {/* ── Suggested connectors (Epic #467) ────────────────────────── */}
       {(suggested.data?.count ?? 0) > 0 && (
@@ -709,11 +708,11 @@ export default function ConnectionsPage() {
               </Button>
             )}
             {repoSource === "github" && !isVaultRefOrEmpty(repoSecretRef) ? (
-              <span className="text-sm text-red-600">
+              <span className="text-sm text-destructive">
                 Secret ref must look like ${"${vault:name}"}.
               </span>
             ) : null}
-            {repoError ? <span className="text-sm text-red-600">{repoError}</span> : null}
+            {repoError ? <span className="text-sm text-destructive">{repoError}</span> : null}
           </div>
         </Card>
 
@@ -726,10 +725,7 @@ export default function ConnectionsPage() {
                     <div className="flex items-center gap-2">
                       <span className="font-medium">{r.label}</span>
                       {r.isPrimary && (
-                        <Badge
-                          className="bg-indigo-100 text-indigo-700"
-                          data-testid="primary-badge"
-                        >
+                        <Badge className="bg-info-muted text-info" data-testid="primary-badge">
                           Primary
                         </Badge>
                       )}
@@ -800,7 +796,7 @@ export default function ConnectionsPage() {
                       </div>
                     )}
                     {r.errorMessage ? (
-                      <div className="mt-1 text-xs text-red-600">{r.errorMessage}</div>
+                      <div className="mt-1 text-xs text-destructive">{r.errorMessage}</div>
                     ) : null}
                     <div className="flex items-center gap-1 font-mono text-xs text-muted-foreground">
                       <span className="shrink-0 text-muted-foreground/60">Token:</span>
@@ -852,7 +848,7 @@ export default function ConnectionsPage() {
                           {r.secretRef ? (
                             r.secretRef
                           ) : (
-                            <span className="italic text-amber-500">not set — click to add</span>
+                            <span className="italic text-warning">not set — click to add</span>
                           )}
                         </button>
                       )}
@@ -987,9 +983,9 @@ export default function ConnectionsPage() {
             <p className="text-sm text-muted-foreground">No repo connectors yet.</p>
           ) : null}
           {deepIngestResult ? (
-            <div className="rounded border border-emerald-600/30 bg-emerald-950/20 p-3 text-sm">
-              <div className="mb-1 font-medium text-emerald-400">Deep ingest complete</div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono text-xs text-zinc-300">
+            <div className="rounded border border-success/40 bg-success-muted p-3 text-sm">
+              <div className="mb-1 font-medium text-success">Deep ingest complete</div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono text-xs text-foreground">
                 <span>Files parsed</span>
                 <span>
                   {deepIngestResult.summary.codeGraph.filesParsed} /{" "}
@@ -1010,14 +1006,14 @@ export default function ConnectionsPage() {
             </div>
           ) : null}
           {refreshIngestResult ? (
-            <div className="rounded border border-sky-600/30 bg-sky-950/20 p-3 text-sm">
-              <div className="mb-1 font-medium text-sky-400">
+            <div className="rounded border border-info/40 bg-info-muted p-3 text-sm">
+              <div className="mb-1 font-medium text-info">
                 Sync complete &mdash;{" "}
                 {refreshIngestResult.summary.pulled
                   ? `pulled ${refreshIngestResult.summary.filesChanged} changed file${refreshIngestResult.summary.filesChanged === 1 ? "" : "s"}`
                   : "fresh clone (pull failed)"}
               </div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono text-xs text-zinc-300">
+              <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono text-xs text-foreground">
                 <span>Files re-parsed</span>
                 <span>
                   {refreshIngestResult.summary.codeGraph.filesParsed} /{" "}
@@ -1137,7 +1133,7 @@ export default function ConnectionsPage() {
             <Button onClick={() => createDb.mutate()} disabled={!dbLabel || createDb.isPending}>
               Add database connector
             </Button>
-            {dbError ? <span className="text-sm text-red-600">{dbError}</span> : null}
+            {dbError ? <span className="text-sm text-destructive">{dbError}</span> : null}
           </div>
         </Card>
 
@@ -1175,7 +1171,7 @@ export default function ConnectionsPage() {
                     )}
                   </div>
                   {d.errorMessage ? (
-                    <div className="mt-1 text-xs text-red-600">{d.errorMessage}</div>
+                    <div className="mt-1 text-xs text-destructive">{d.errorMessage}</div>
                   ) : null}
                 </div>
                 <div className="flex items-center gap-2">
@@ -1219,7 +1215,7 @@ export default function ConnectionsPage() {
               <Button variant="outline" onClick={() => setQueryDbId("")}>
                 Close
               </Button>
-              {queryError ? <span className="text-sm text-red-600">{queryError}</span> : null}
+              {queryError ? <span className="text-sm text-destructive">{queryError}</span> : null}
             </div>
             {queryResult ? (
               <pre className="max-h-64 overflow-auto rounded bg-muted p-2 text-xs">

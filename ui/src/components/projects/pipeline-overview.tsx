@@ -56,11 +56,11 @@ const STATE_LABEL: Record<PipelineStageState, string> = {
 
 function StateIcon({ state }: { state: PipelineStageState }) {
   const cls = "h-4 w-4 shrink-0";
-  if (state === "done") return <CheckCircle2 className={cn(cls, "text-emerald-500")} aria-hidden />;
+  if (state === "done") return <CheckCircle2 className={cn(cls, "text-success")} aria-hidden />;
   if (state === "running")
-    return <Loader2 className={cn(cls, "text-blue-500 motion-safe:animate-spin")} aria-hidden />;
+    return <Loader2 className={cn(cls, "text-info motion-safe:animate-spin")} aria-hidden />;
   if (state === "attention")
-    return <AlertTriangle className={cn(cls, "text-amber-500")} aria-hidden />;
+    return <AlertTriangle className={cn(cls, "text-warning")} aria-hidden />;
   return <Circle className={cn(cls, "text-muted-foreground")} aria-hidden />;
 }
 

@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiFetch } from "@/lib/api-client";
 import { workspaceSlugSuggestionMessage } from "@/lib/error-suggestion";
+import { PageHeader } from "@/components/ui/page-header";
 
 interface Workspace {
   id: string;
@@ -78,21 +79,20 @@ export default function WorkspacesPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Workspaces</h1>
-          <p className="text-sm text-muted-foreground">
-            Manage organization workspaces. Projects belong to a workspace for multi-tenant
-            isolation.
-          </p>
-        </div>
-        {!showForm && (
-          <Button onClick={() => setShowForm(true)} className="gap-2">
-            <Plus className="h-4 w-4" />
-            New workspace
-          </Button>
-        )}
-      </div>
+      <PageHeader
+        title="Workspaces"
+        description="Manage organization workspaces. Projects belong to a workspace for multi-tenant isolation."
+        actions={
+          <>
+            {!showForm && (
+              <Button onClick={() => setShowForm(true)} className="gap-2">
+                <Plus className="h-4 w-4" />
+                New workspace
+              </Button>
+            )}
+          </>
+        }
+      />
 
       {/* Create form */}
       {showForm && (

@@ -123,7 +123,7 @@ export function ChangedRequirementGroup({
           Distinct from the #936 relevance tiers (per-table) and #957 risk badges. */}
       {item.matchQuality === "weak" ? (
         <p
-          className="rounded border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200"
+          className="rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
           data-testid="weak-match-banner"
           role="status"
         >
@@ -154,7 +154,7 @@ export function ChangedRequirementGroup({
           table is covered (or has no write path). */}
       {writePathGaps.length > 0 ? (
         <div
-          className="rounded border border-red-500/50 bg-red-500/10 px-3 py-2 text-sm text-red-800 dark:text-red-200"
+          className="rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
           data-testid="write-path-gap-callout"
           role="status"
         >

@@ -58,13 +58,13 @@ function FieldDiff({
       <div className="grid grid-cols-2 gap-2">
         <div>
           <p className="mb-0.5 text-muted-foreground">Your version</p>
-          <pre className="whitespace-pre-wrap rounded bg-amber-50 p-1 font-mono dark:bg-amber-900/20">
+          <pre className="whitespace-pre-wrap rounded bg-warning-muted p-1 font-mono">
             {String(clientVal ?? "(empty)")}
           </pre>
         </div>
         <div>
           <p className="mb-0.5 text-muted-foreground">Server version</p>
-          <pre className="whitespace-pre-wrap rounded bg-emerald-50 p-1 font-mono dark:bg-emerald-900/20">
+          <pre className="whitespace-pre-wrap rounded bg-success-muted p-1 font-mono">
             {String(serverVal ?? "(empty)")}
           </pre>
         </div>
@@ -123,7 +123,7 @@ export function MergeConflictModal<T extends Record<string, unknown>>({
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <GitMerge className="h-4 w-4 text-amber-500" />
+            <GitMerge className="h-4 w-4 text-warning" />
             Merge Conflict
           </DialogTitle>
           <DialogDescription>

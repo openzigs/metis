@@ -70,10 +70,9 @@ const SKIPPED_NO_DATA_REASONS: ReadonlySet<AnalysisDatabaseAwareReason> = new Se
 ]);
 
 const TONE_CLASS: Record<Tone, string> = {
-  ran: "border-emerald-700/50 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300",
+  ran: "border-success/40 bg-success-muted text-success",
   off: "border-border/60 bg-muted/60 text-muted-foreground",
-  skipped:
-    "border-amber-700/50 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-300",
+  skipped: "border-warning/40 bg-warning-muted text-warning",
 };
 
 export function AnalysisDatabaseAwareIndicator({
@@ -101,15 +100,12 @@ export function AnalysisDatabaseAwareIndicator({
         {copy.label}
       </span>
       {showSkippedHint ? (
-        <span
-          data-testid="database-aware-skipped-hint"
-          className="text-amber-700 dark:text-amber-200/80"
-        >
+        <span data-testid="database-aware-skipped-hint" className="text-warning">
           Schema-impact analysis skipped — no schema data.{" "}
           <Link
             href={`/projects/${projectId}/connections`}
             data-testid="database-aware-connections-link"
-            className="underline decoration-dotted underline-offset-2 hover:text-amber-700 dark:hover:text-amber-100"
+            className="underline decoration-dotted underline-offset-2 hover:text-warning"
           >
             Connect a database or re-ingest
           </Link>

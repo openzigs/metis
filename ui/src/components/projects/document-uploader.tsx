@@ -166,7 +166,7 @@ export function DocumentUploader({ projectId, onUploaded }: Props) {
                     item.status === "error"
                       ? "text-destructive"
                       : item.status === "done"
-                        ? "text-green-600 dark:text-green-400"
+                        ? "text-success"
                         : "text-muted-foreground"
                   }`}
                   data-testid={`upload-status-${item.status}`}

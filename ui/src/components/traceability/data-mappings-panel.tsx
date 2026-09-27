@@ -178,10 +178,10 @@ export function DataMappingsPanel({
     <section
       aria-label="Data mappings"
       data-testid="data-mappings-panel"
-      className="mt-3 rounded border border-zinc-800 bg-zinc-950/40 p-3"
+      className="mt-3 rounded border border-border bg-muted/40 p-3"
     >
       <div className="flex items-center justify-between gap-2">
-        <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Data mappings
         </h4>
         <div className="flex gap-1">
@@ -206,30 +206,32 @@ export function DataMappingsPanel({
 
       {/* List / loading / error / empty states */}
       {mappings.isLoading ? (
-        <p className="mt-2 text-xs text-zinc-500" role="status">
+        <p className="mt-2 text-xs text-muted-foreground" role="status">
           Loading mappings…
         </p>
       ) : mappings.isError ? (
-        <p className="mt-2 text-xs text-red-400" role="alert">
+        <p className="mt-2 text-xs text-destructive" role="alert">
           Failed to load data mappings.
         </p>
       ) : list.length === 0 ? (
-        <p className="mt-2 text-xs text-zinc-500">No data mappings linked yet.</p>
+        <p className="mt-2 text-xs text-muted-foreground">No data mappings linked yet.</p>
       ) : (
         <ul className="mt-2 space-y-1.5" aria-label="Linked data mappings">
           {list.map((m) => (
             <li
               key={m.id}
               data-testid="data-mapping-row"
-              className="flex items-center justify-between gap-2 rounded bg-zinc-900/40 px-2 py-1.5"
+              className="flex items-center justify-between gap-2 rounded bg-muted/40 px-2 py-1.5"
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="truncate font-mono text-xs text-zinc-200">{targetPath(m)}</span>
+                  <span className="truncate font-mono text-xs text-foreground">
+                    {targetPath(m)}
+                  </span>
                   <ConfidenceBadge confidence={m.confidence} />
                   {m.source === "llm-suggested" ? <Badge variant="outline">AI</Badge> : null}
                 </div>
-                <div className="text-[11px] text-zinc-500">
+                <div className="text-[11px] text-muted-foreground">
                   {m.dbConnectorLabel ?? m.dbConnectorId}
                   {m.note ? ` · ${m.note}` : ""}
                 </div>
@@ -250,7 +252,7 @@ export function DataMappingsPanel({
 
       {/* Add-mapping form */}
       {showForm ? (
-        <form onSubmit={submitForm} className="mt-3 space-y-2 border-t border-zinc-800 pt-3">
+        <form onSubmit={submitForm} className="mt-3 space-y-2 border-t border-border pt-3">
           <div>
             <Label htmlFor="dm-connector">Database connector</Label>
             <Select
@@ -317,12 +319,12 @@ export function DataMappingsPanel({
       {/* Suggested candidates */}
       {candidates ? (
         <div
-          className="mt-3 border-t border-zinc-800 pt-3"
+          className="mt-3 border-t border-border pt-3"
           aria-label="Suggested data mappings"
           data-testid="data-mapping-suggestions"
         >
           {suggestNote ? (
-            <p className="mb-2 text-[11px] text-amber-400" role="status">
+            <p className="mb-2 text-[11px] text-warning" role="status">
               {suggestNote}
             </p>
           ) : null}
@@ -332,17 +334,17 @@ export function DataMappingsPanel({
                 <li
                   key={`${c.dbConnectorId}-${c.schemaName ?? ""}-${c.tableName}-${c.columnName ?? ""}-${i}`}
                   data-testid="data-mapping-candidate"
-                  className="flex items-center justify-between gap-2 rounded border border-dashed border-zinc-700 bg-zinc-900/30 px-2 py-1.5"
+                  className="flex items-center justify-between gap-2 rounded border border-dashed border-border bg-muted/30 px-2 py-1.5"
                 >
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="truncate font-mono text-xs text-zinc-200">
+                      <span className="truncate font-mono text-xs text-foreground">
                         {targetPath(c)}
                       </span>
                       <ConfidenceBadge confidence={c.confidence} lowConfidence={c.lowConfidence} />
                     </div>
                     {c.rationale ? (
-                      <div className="text-[11px] text-zinc-500">{c.rationale}</div>
+                      <div className="text-[11px] text-muted-foreground">{c.rationale}</div>
                     ) : null}
                   </div>
                   <Button

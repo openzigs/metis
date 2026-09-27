@@ -21,6 +21,7 @@ import {
 import { projectsApi, type Project } from "@/lib/projects-api";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { ApiError } from "@/lib/api-client";
+import { PageHeader } from "@/components/ui/page-header";
 
 interface AggregatedRepo extends RepoConnector {
   projectName: string;
@@ -105,14 +106,16 @@ export default function RepositoriesTopLevelPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="repositories-top-root">
-      <header>
-        <h1 className="text-2xl font-semibold">Repositories</h1>
-        <p className="text-sm text-muted-foreground">
-          Read-only catalogue of every Git repository connection across projects. To create or edit,
-          open the project and use its
-          <strong> Connections</strong> tab.
-        </p>
-      </header>
+      <PageHeader
+        title="Repositories"
+        description={
+          <>
+            Read-only catalogue of every Git repository connection across projects. To create or
+            edit, open the project and use its
+            <strong> Connections</strong> tab.
+          </>
+        }
+      />
       <Card className="space-y-3 p-4" data-testid="repositories-top-controls">
         <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-4">
           <label className="text-sm">

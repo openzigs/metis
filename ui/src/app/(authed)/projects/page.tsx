@@ -27,6 +27,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { PageHeader } from "@/components/ui/page-header";
 
 const WORKSPACE_STORAGE_KEY = "metis.activeWorkspaceId";
 
@@ -61,25 +62,23 @@ export default function ProjectsPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Projects</h1>
-          <p className="text-sm text-muted-foreground">
-            Browse, create, and manage migration projects.
-          </p>
-        </div>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button data-testid="new-project-button">New project</Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Create project</DialogTitle>
-            </DialogHeader>
-            <ProjectCreateForm workspaceId={activeWorkspaceId} onCreated={() => setOpen(false)} />
-          </DialogContent>
-        </Dialog>
-      </header>
+      <PageHeader
+        title="Projects"
+        description="Browse, create, and manage migration projects."
+        actions={
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+              <Button data-testid="new-project-button">New project</Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Create project</DialogTitle>
+              </DialogHeader>
+              <ProjectCreateForm workspaceId={activeWorkspaceId} onCreated={() => setOpen(false)} />
+            </DialogContent>
+          </Dialog>
+        }
+      />
 
       {list.isLoading ? (
         <SkeletonText lines={4} />

@@ -18,6 +18,7 @@ import { finopsApi, formatCents } from "@/lib/finops-api";
 import { ForecastChart } from "@/components/finops/ForecastChart";
 import { BudgetForm } from "@/components/finops/BudgetForm";
 import { AlertRuleEditor } from "@/components/finops/AlertRuleEditor";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function WorkspaceFinopsPage() {
   const params = useParams<{ id: string }>();
@@ -50,16 +51,18 @@ export default function WorkspaceFinopsPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">FinOps</h1>
-        <a
-          href={finopsApi.chargebackPdfUrl(workspaceId)}
-          className="rounded bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
-          download
-        >
-          Download Chargeback PDF
-        </a>
-      </div>
+      <PageHeader
+        title="FinOps"
+        actions={
+          <a
+            href={finopsApi.chargebackPdfUrl(workspaceId)}
+            className="rounded bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
+            download
+          >
+            Download Chargeback PDF
+          </a>
+        }
+      />
 
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">

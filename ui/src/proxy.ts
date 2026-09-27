@@ -10,12 +10,17 @@ const PUBLIC_PATHS = new Set(["/login"]);
 const PUBLIC_PREFIXES = ["/_next", "/favicon", "/api/auth/", "/invites/"];
 
 /**
- * Edge auth gate. Lets authenticated requests through; for a request whose
+ * Auth gate. Lets authenticated requests through; for a request whose
  * short-lived access cookie has lapsed it attempts an edge-side token refresh
  * before bouncing, and only redirects truly-unauthenticated visitors to /login
  * (preserving the originally requested path as `?next=`).
+ *
+ * #274 — this is Next 16's `proxy` file convention (formerly `middleware.ts`).
+ * Proxy runs on the Node.js runtime; nothing here needed the Edge runtime —
+ * `lib/edge-auth.ts` uses `fetch` and the NextResponse cookie API, which Node
+ * provides — and a proxy file may not set `runtime` at all.
  */
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
   if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
@@ -68,14 +73,14 @@ export const config = {
      * routes. The handler itself short-circuits the public + auth-proxy paths so
      * the redirect never fires for those.
      *
-     * `/api/*` is excluded deliberately: when middleware runs on a route, Next
-     * buffers the incoming request body up to `middlewareClientMaxBodySize`
+     * `/api/*` is excluded deliberately: when the proxy runs on a route, Next
+     * buffers the incoming request body up to `proxyClientMaxBodySize`
      * (default 10 MB) before the route handler sees it. That truncated the
      * streaming upload proxy (`api/[...path]/route.ts`) for any .zip larger than
      * 10 MB, so busboy on the Express side failed with "Unexpected end of form"
      * (the server's own cap is 50 MiB — MAX_UPLOAD_ARCHIVE_BYTES). The proxy
      * already authenticates every call by injecting the cookie-derived Bearer
-     * token and the Express server is the real authz boundary, so middleware has
+     * token and the Express server is the real authz boundary, so the proxy has
      * no job on API routes — excluding them restores true streaming with no size
      * cap beyond the server's, and an unauthenticated API call now returns a
      * 401 JSON envelope instead of a 302 redirect to the HTML login page.

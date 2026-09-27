@@ -18,6 +18,7 @@ import {
   shortRunId,
 } from "@/lib/format-change-run-label";
 import type { ChangeAnalysisDetail, RequirementChange } from "@metis/shared";
+import { PageHeader } from "@/components/ui/page-header";
 
 type Analysis = { id: string; status: string; startedAt: string; completedAt: string | null };
 
@@ -91,11 +92,11 @@ export default function ChangeAnalysisPage() {
   return (
     <div className="space-y-6">
       <div className="px-6">
-        <h1 className="text-2xl font-bold mb-4">Change Analysis</h1>
-        <p className="text-muted-foreground mb-6">
-          Compare requirements between analysis runs to detect additions, removals, and
-          modifications.
-        </p>
+        <PageHeader
+          className="mb-6"
+          title="Change Analysis"
+          description="Compare requirements between analysis runs to detect additions, removals, and modifications."
+        />
 
         {/* Trigger form */}
         <div className="rounded-lg border bg-card p-4 mb-6" data-testid="trigger-form">
@@ -300,9 +301,9 @@ function ChangeCard({
   isReviewing: boolean;
 }) {
   const typeColors: Record<string, string> = {
-    added: "border-l-green-500",
-    removed: "border-l-red-500",
-    modified: "border-l-yellow-500",
+    added: "border-l-success",
+    removed: "border-l-destructive",
+    modified: "border-l-warning",
   };
   const severityColors: Record<string, string> = {
     critical: "bg-destructive/10 text-destructive",

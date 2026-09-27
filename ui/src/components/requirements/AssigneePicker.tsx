@@ -84,13 +84,13 @@ export function AssigneePicker({ requirementId, className }: AssigneePickerProps
         {assignments.map((a) => (
           <span
             key={a.id}
-            className="flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-xs text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300"
+            className="flex items-center gap-1 rounded-full bg-info-muted px-2 py-0.5 text-xs text-info"
           >
             @{a.assignee?.username ?? a.assigneeId}
             <button
               aria-label={`Remove ${a.assignee?.username ?? a.assigneeId}`}
               onClick={() => removeMutation.mutate(a.assigneeId)}
-              className="ml-0.5 rounded-full p-0.5 hover:bg-indigo-200 dark:hover:bg-indigo-800"
+              className="ml-0.5 rounded-full p-0.5 hover:bg-info-muted"
             >
               <X className="h-2.5 w-2.5" />
             </button>

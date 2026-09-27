@@ -18,8 +18,10 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import mermaid from "mermaid";
 import DOMPurify from "dompurify";
+import { useTheme } from "next-themes";
+import { loadMermaid } from "@/lib/mermaid";
+import { useKatexCss } from "@/lib/katex-css";
 
 interface ChatMarkdownProps {
   content: string;
@@ -30,15 +32,27 @@ export function ChatMarkdown({ content, streaming = false }: ChatMarkdownProps) 
   const containerRef = useRef<HTMLDivElement>(null);
   const [mermaidSvgs, setMermaidSvgs] = useState<Map<string, string>>(new Map());
 
-  const isDark =
-    typeof window !== "undefined" && document.documentElement.classList.contains("dark");
-  const mermaidThemeRef = useRef<string>("");
-  const desiredTheme = isDark ? "dark" : "default";
-  if (mermaidThemeRef.current !== desiredTheme) {
+  // #272 — mermaid is loaded (and configured) only when a diagram needs
+  // drawing; the theme comes from next-themes so a toggle re-renders diagrams.
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === "dark";
+  useKatexCss(content);
+
+  const renderMermaid = useCallback(async () => {
+    if (!containerRef.current) return;
+    const codeEls = containerRef.current.querySelectorAll<HTMLElement>("code.language-mermaid");
+    if (codeEls.length === 0) return;
+
+    let mermaid: Awaited<ReturnType<typeof loadMermaid>>;
+    try {
+      mermaid = await loadMermaid();
+    } catch {
+      return; // The chunk failed to load — the code blocks stay as source.
+    }
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: "strict",
-      theme: desiredTheme,
+      theme: isDark ? "dark" : "default",
       // Render node labels as SVG <text>, NOT HTML inside <foreignObject>.
       // The SVG is sanitized with DOMPurify (SVG profile) before injection, which
       // empties foreignObject HTML — leaving blank flowchart nodes. SVG text
@@ -46,13 +60,6 @@ export function ChatMarkdown({ content, streaming = false }: ChatMarkdownProps) 
       htmlLabels: false,
       flowchart: { htmlLabels: false },
     });
-    mermaidThemeRef.current = desiredTheme;
-  }
-
-  const renderMermaid = useCallback(async () => {
-    if (!containerRef.current) return;
-    const codeEls = containerRef.current.querySelectorAll<HTMLElement>("code.language-mermaid");
-    if (codeEls.length === 0) return;
 
     const newSvgs = new Map<string, string>();
     for (const codeEl of Array.from(codeEls)) {
@@ -85,7 +92,7 @@ export function ChatMarkdown({ content, streaming = false }: ChatMarkdownProps) 
         return merged;
       });
     }
-  }, []);
+  }, [isDark]);
 
   // Render mermaid only after streaming stops (avoids re-rendering mid-stream)
   useEffect(() => {

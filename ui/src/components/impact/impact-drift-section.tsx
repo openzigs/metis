@@ -37,7 +37,7 @@ function ChangeChips({
   if (values.length === 0) return null;
   const color =
     tone === "added"
-      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+      ? "border-success/40 bg-success-muted text-success"
       : "border-destructive/40 bg-destructive/10 text-destructive";
   return (
     <div className="flex flex-wrap items-center gap-1" data-testid={testid}>
@@ -96,7 +96,7 @@ function RequirementDriftRow({ drift }: { drift: RequirementDrift }) {
           {drift.tablesTierChanged.map((t) => (
             <span
               key={`${t.tableName}.${t.columnName ?? ""}`}
-              className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300"
+              className="rounded border border-warning/40 bg-warning-muted px-1.5 py-0.5 text-xs text-warning"
             >
               {t.columnName ? `${t.tableName}.${t.columnName}` : t.tableName}: {t.fromTier ?? "—"} →{" "}
               {t.toTier ?? "—"}

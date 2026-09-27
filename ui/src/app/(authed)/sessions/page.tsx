@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { sdkApi } from "@/lib/sdk-alignment-api";
+import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 const QK = ["resumable-sessions"];
 
@@ -31,32 +33,28 @@ export default function SessionsPage() {
 
   return (
     <div className="space-y-4 p-2 md:p-0" data-testid="sessions-root">
-      <header>
-        <h1 className="text-2xl font-semibold">Sessions</h1>
-        <p className="text-sm text-muted-foreground">
-          Resume a session within 24 hours of its last activity.
-        </p>
-      </header>
+      <PageHeader
+        title="Sessions"
+        description="Resume a session within 24 hours of its last activity."
+      />
 
       <Card className="p-4">
         {isLoading ? (
           <SkeletonText lines={3} />
         ) : !data || data.length === 0 ? (
-          <div
-            className="flex flex-col items-center gap-3 py-8 text-center"
+          <EmptyState
+            className="border-0"
             data-testid="sessions-empty"
-          >
-            <p className="text-sm font-medium">No resumable sessions</p>
-            <p className="max-w-md text-sm text-muted-foreground">
-              Resumable sessions are recent chats from the last 24 hours. Start a conversation in
-              Chat and it will show up here so you can pick up where you left off.
-            </p>
-            <Button asChild size="sm" className="mt-1">
-              <Link href="/chat" data-testid="sessions-empty-cta">
-                Start a chat
-              </Link>
-            </Button>
-          </div>
+            title="No resumable sessions"
+            description="Resumable sessions are recent chats from the last 24 hours. Start a conversation in Chat and it will show up here so you can pick up where you left off."
+            action={
+              <Button asChild size="sm">
+                <Link href="/chat" data-testid="sessions-empty-cta">
+                  Start a chat
+                </Link>
+              </Button>
+            }
+          />
         ) : (
           <ul className="space-y-2">
             {data.map((s) => (
@@ -70,7 +68,7 @@ export default function SessionsPage() {
                   <div className="text-xs text-muted-foreground">
                     {s.currentModel || s.model}
                     {s.planModeActive && (
-                      <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-amber-900">
+                      <span className="ml-2 rounded bg-warning-muted px-1.5 py-0.5 text-warning">
                         plan-mode
                       </span>
                     )}

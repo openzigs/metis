@@ -19,6 +19,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { scannerApi, type ScanMode } from "@/lib/scanner-api";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function RepoScannerPage() {
   const params = useParams<{ id: string; repoId: string }>();
@@ -65,19 +66,18 @@ export default function RepoScannerPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="scanner-repo-root">
-      <header className="space-y-2">
-        <Link
-          href={`/projects/${projectId}/connections`}
-          className="text-xs text-muted-foreground underline"
-        >
-          ← Back to connections
-        </Link>
-        <h1 className="text-2xl font-semibold">AI bug scanner</h1>
-        <p className="text-sm text-muted-foreground">
-          Run rule-based and heuristic scans against this repository. Each scan runs in the
-          background; results are reviewed and triaged below before being published.
-        </p>
-      </header>
+      <PageHeader
+        eyebrow={
+          <Link
+            href={`/projects/${projectId}/connections`}
+            className="text-xs text-muted-foreground underline"
+          >
+            ← Back to connections
+          </Link>
+        }
+        title="AI bug scanner"
+        description="Run rule-based and heuristic scans against this repository. Each scan runs in the background; results are reviewed and triaged below before being published."
+      />
 
       <Card className="space-y-3 p-4" data-testid="scanner-repo-start-card">
         <h2 className="text-base font-semibold">Start a new scan</h2>

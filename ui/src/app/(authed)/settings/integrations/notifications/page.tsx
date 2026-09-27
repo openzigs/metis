@@ -40,6 +40,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/ui/page-header";
 
 const ACTIVE_WORKSPACE_STORAGE_KEY = "metis.activeWorkspaceId";
 
@@ -73,13 +74,10 @@ export default function NotificationIntegrationsPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="notification-integrations-page">
-      <header className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Notification integrations</h1>
-        <p className="text-sm text-muted-foreground">
-          Connect Slack and PagerDuty, then choose which alert events route to each channel. Secrets
-          (bot tokens, routing keys) are stored server-side and never shown.
-        </p>
-      </header>
+      <PageHeader
+        title="Notification integrations"
+        description="Connect Slack and PagerDuty, then choose which alert events route to each channel. Secrets (bot tokens, routing keys) are stored server-side and never shown."
+      />
 
       <div className="flex items-center gap-2">
         <Label htmlFor="ni-workspace-select">Workspace</Label>
@@ -115,7 +113,7 @@ export default function NotificationIntegrationsPage() {
         <>
           {!canManage ? (
             <p
-              className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+              className="rounded border border-warning/40 bg-warning-muted p-3 text-sm text-warning"
               data-testid="ni-readonly-notice"
             >
               You have read-only access to this workspace&apos;s integrations. A workspace admin can
@@ -205,7 +203,7 @@ function SlackCard({ workspaceId, canManage }: { workspaceId: string; canManage:
       ) : null}
 
       {installation.error ? (
-        <p className="text-sm text-red-700" data-testid="slack-error">
+        <p className="text-sm text-destructive" data-testid="slack-error">
           Failed to load Slack status: {errorMessage(installation.error)}
         </p>
       ) : null}
@@ -224,12 +222,12 @@ function SlackCard({ workspaceId, canManage }: { workspaceId: string; canManage:
       ) : null}
 
       {actionError ? (
-        <p className="text-sm text-red-700" data-testid="slack-action-error">
+        <p className="text-sm text-destructive" data-testid="slack-action-error">
           {actionError}
         </p>
       ) : null}
       {notice ? (
-        <p className="text-sm text-green-700" data-testid="slack-notice">
+        <p className="text-sm text-success" data-testid="slack-notice">
           {notice}
         </p>
       ) : null}
@@ -363,7 +361,7 @@ function PagerDutyCard({ workspaceId, canManage }: { workspaceId: string; canMan
       ) : null}
 
       {configs.error ? (
-        <p className="text-sm text-red-700" data-testid="pagerduty-error">
+        <p className="text-sm text-destructive" data-testid="pagerduty-error">
           Failed to load PagerDuty configs: {errorMessage(configs.error)}
         </p>
       ) : null}
@@ -393,7 +391,7 @@ function PagerDutyCard({ workspaceId, canManage }: { workspaceId: string; canMan
                 <button
                   onClick={() => remove.mutate(cfg.serviceKey)}
                   disabled={remove.isPending}
-                  className="rounded px-2 py-0.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                  className="rounded px-2 py-0.5 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
                   aria-label={`Delete PagerDuty service ${cfg.serviceKey}`}
                   data-testid={`pagerduty-delete-${cfg.serviceKey}`}
                 >
@@ -406,7 +404,7 @@ function PagerDutyCard({ workspaceId, canManage }: { workspaceId: string; canMan
       ) : null}
 
       {actionError ? (
-        <p className="text-sm text-red-700" data-testid="pagerduty-action-error">
+        <p className="text-sm text-destructive" data-testid="pagerduty-action-error">
           {actionError}
         </p>
       ) : null}
@@ -548,7 +546,7 @@ function EventRoutingCard({ workspaceId, canManage }: { workspaceId: string; can
       ) : null}
 
       {channels.error ? (
-        <p className="text-sm text-red-700" data-testid="routing-error">
+        <p className="text-sm text-destructive" data-testid="routing-error">
           Failed to load channels: {errorMessage(channels.error)}
         </p>
       ) : null}
@@ -580,7 +578,7 @@ function EventRoutingCard({ workspaceId, canManage }: { workspaceId: string; can
                 <button
                   onClick={() => remove.mutate(ch.id)}
                   disabled={remove.isPending}
-                  className="rounded px-2 py-0.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                  className="rounded px-2 py-0.5 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
                   aria-label={`Remove ${ch.type} channel`}
                   data-testid={`routing-delete-${ch.id}`}
                 >
@@ -593,7 +591,7 @@ function EventRoutingCard({ workspaceId, canManage }: { workspaceId: string; can
       ) : null}
 
       {actionError ? (
-        <p className="text-sm text-red-700" data-testid="routing-action-error">
+        <p className="text-sm text-destructive" data-testid="routing-action-error">
           {actionError}
         </p>
       ) : null}
@@ -645,7 +643,7 @@ function EventRoutingCard({ workspaceId, canManage }: { workspaceId: string; can
               <p
                 id="routing-target-error"
                 role="alert"
-                className="mt-1 text-xs text-red-700"
+                className="mt-1 text-xs text-destructive"
                 data-testid="routing-target-error"
               >
                 {validationError}
@@ -653,7 +651,7 @@ function EventRoutingCard({ workspaceId, canManage }: { workspaceId: string; can
             ) : emailTypoSuggestion ? (
               <p
                 role="status"
-                className="mt-1 text-xs text-amber-600"
+                className="mt-1 text-xs text-warning"
                 data-testid="routing-target-hint"
               >
                 Did you mean “{emailTypoSuggestion}”? You can still add the address as entered.
@@ -681,7 +679,7 @@ function ConnectionBadge({ connected, testId }: { connected: boolean; testId: st
     <span
       data-testid={testId}
       className={`rounded px-2 py-1 text-xs font-medium ${
-        connected ? "bg-green-100 text-green-900" : "bg-muted text-muted-foreground"
+        connected ? "bg-success-muted text-success" : "bg-muted text-muted-foreground"
       }`}
     >
       {connected ? "Connected" : "Not connected"}

@@ -7,7 +7,10 @@
  */
 @import "tw-animate-css";
 @plugin "@tailwindcss/typography";
-@import "katex/dist/katex.min.css";
+/*
+ * #272 — the KaTeX stylesheet is NOT imported here: `lib/katex-css.ts` loads it
+ * when a markdown view first renders math, so pages without math skip it.
+ */
 
 /*
  * #265 — Tailwind 4's `dark:` variant defaults to
@@ -86,6 +89,13 @@
   --chart-4: 262 83% 58%;
   --chart-5: 347 77% 50%;
   /*
+   * #301 — two more series for the seven-category token breakdown chart,
+   * which hard-coded seven hex colours. Green and slate are far enough from
+   * chart-1..5 to read as their own series; both clear 3:1 on the page.
+   */
+  --chart-6: 142 71% 29%;
+  --chart-7: 215 19% 42%;
+  /*
    * #660 (SC 1.4.11 Non-text Contrast) — darkened from `240 5.9% 90%`
    * (~1.27:1 vs the white background, well below the 3:1 floor) to
    * `240 6% 54%` so component boundaries and form-control (input) edges clear
@@ -138,6 +148,8 @@
   --chart-3: 38 92% 50%;
   --chart-4: 255 92% 76%;
   --chart-5: 351 95% 71%;
+  --chart-6: 142 69% 58%;
+  --chart-7: 215 20% 65%;
   /*
    * #660 (SC 1.4.11 Non-text Contrast) — lightened from `240 3.7% 15.9%`
    * (~1.34:1 vs the near-black background, well below the 3:1 floor) to
@@ -180,6 +192,8 @@
   --color-chart-3: hsl(var(--chart-3));
   --color-chart-4: hsl(var(--chart-4));
   --color-chart-5: hsl(var(--chart-5));
+  --color-chart-6: hsl(var(--chart-6));
+  --color-chart-7: hsl(var(--chart-7));
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));

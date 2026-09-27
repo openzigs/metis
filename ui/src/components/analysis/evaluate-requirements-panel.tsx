@@ -93,7 +93,7 @@ export function EvaluateRequirementsPanel({
           />
           {truncatedBy > 0 ? (
             <p
-              className="text-xs text-amber-700 dark:text-amber-300"
+              className="text-xs text-warning"
               data-testid="evaluate-requirements-truncated"
               role="status"
             >
@@ -103,7 +103,7 @@ export function EvaluateRequirementsPanel({
             </p>
           ) : null}
           <div
-            className={`text-right text-xs ${overLimit ? "text-red-700 dark:text-red-400" : "text-muted-foreground"}`}
+            className={`text-right text-xs ${overLimit ? "text-destructive" : "text-muted-foreground"}`}
             data-testid="evaluate-requirements-counter"
             aria-live="polite"
           >

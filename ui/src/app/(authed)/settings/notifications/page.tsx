@@ -25,6 +25,7 @@ import {
 } from "@/lib/notification-preferences-api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/ui/page-header";
 
 /** localStorage key used by the pre-#608 page. Read once for import, then removed. */
 export const LEGACY_STORAGE_KEY = "metis.settings.notifications";
@@ -205,29 +206,29 @@ export default function SettingsNotificationsPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-notifications-root">
-      <header className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Notifications</h1>
-          <p className="text-sm text-muted-foreground">
-            Choose which channels deliver which events. Synced to your account across devices.
-          </p>
-        </div>
-        {savedToast ? (
-          <span
-            role="status"
-            aria-live="polite"
-            className="rounded bg-emerald-100 px-2 py-1 text-xs text-emerald-900"
-            data-testid="settings-notifications-saved"
-          >
-            Saved
-          </span>
-        ) : null}
-      </header>
+      <PageHeader
+        title="Notifications"
+        description="Choose which channels deliver which events. Synced to your account across devices."
+        actions={
+          <>
+            {savedToast ? (
+              <span
+                role="status"
+                aria-live="polite"
+                className="rounded bg-success-muted px-2 py-1 text-xs text-success"
+                data-testid="settings-notifications-saved"
+              >
+                Saved
+              </span>
+            ) : null}
+          </>
+        }
+      />
 
       {errorMessage || query.isError ? (
         <div
           role="alert"
-          className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900"
+          className="rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
           data-testid="settings-notifications-error"
         >
           {query.isError ? "Loading notification preferences failed." : errorMessage}

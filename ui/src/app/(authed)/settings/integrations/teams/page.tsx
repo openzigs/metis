@@ -33,6 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/ui/page-header";
 
 const ACTIVE_WORKSPACE_STORAGE_KEY = "metis.activeWorkspaceId";
 
@@ -66,13 +67,10 @@ export default function TeamsIntegrationPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="teams-integration-page">
-      <header className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Microsoft Teams</h1>
-        <p className="text-sm text-muted-foreground">
-          Connect a Microsoft Teams bot so discussions and notifications can bridge into Teams
-          channels. The bot app password is stored server-side (encrypted) and never shown.
-        </p>
-      </header>
+      <PageHeader
+        title="Microsoft Teams"
+        description="Connect a Microsoft Teams bot so discussions and notifications can bridge into Teams channels. The bot app password is stored server-side (encrypted) and never shown."
+      />
 
       <div className="flex items-center gap-2">
         <Label htmlFor="teams-workspace-select">Workspace</Label>
@@ -108,7 +106,7 @@ export default function TeamsIntegrationPage() {
         <>
           {!canManage ? (
             <p
-              className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+              className="rounded border border-warning/40 bg-warning-muted p-3 text-sm text-warning"
               data-testid="teams-readonly-notice"
             >
               You have read-only access to this workspace&apos;s integrations. A workspace admin can
@@ -206,7 +204,7 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
           </span>
         ) : summary ? (
           <span
-            className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800"
+            className="rounded-full bg-success-muted px-2 py-0.5 text-xs font-medium text-success"
             data-testid="teams-status-connected"
           >
             Connected
@@ -222,12 +220,12 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
       </div>
 
       {actionError ? (
-        <p className="text-sm text-red-600" data-testid="teams-action-error">
+        <p className="text-sm text-destructive" data-testid="teams-action-error">
           {actionError}
         </p>
       ) : null}
       {notice ? (
-        <p className="text-sm text-emerald-700" data-testid="teams-notice">
+        <p className="text-sm text-success" data-testid="teams-notice">
           {notice}
         </p>
       ) : null}
@@ -329,7 +327,7 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
               autoComplete="off"
             />
             {singleTenantMissing ? (
-              <p className="text-xs text-red-600" data-testid="teams-tenant-required">
+              <p className="text-xs text-destructive" data-testid="teams-tenant-required">
                 A SingleTenant bot requires a tenant id.
               </p>
             ) : null}
@@ -452,7 +450,7 @@ function ManifestBuilder({ workspaceId, canManage }: { workspaceId: string; canM
         </div>
       </div>
       {error ? (
-        <p className="text-sm text-red-600" data-testid="teams-manifest-error">
+        <p className="text-sm text-destructive" data-testid="teams-manifest-error">
           {error}
         </p>
       ) : null}

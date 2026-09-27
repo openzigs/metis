@@ -26,6 +26,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function AdminSkillsPage() {
   const qc = useQueryClient();
@@ -51,36 +52,33 @@ export default function AdminSkillsPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <header className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Skills</h1>
-          <p className="text-sm text-muted-foreground">
-            Reusable instruction blocks injected into chat sessions. Each save creates an immutable
-            version row.
-          </p>
-        </div>
-        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogTrigger asChild>
-            <Button data-testid="new-skill">New skill</Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-3xl">
-            <DialogHeader>
-              <DialogTitle>Create skill</DialogTitle>
-              <DialogDescription>
-                Author a skill as <code>SKILL.md</code> — YAML frontmatter plus a Markdown body that
-                becomes the skill instructions.
-              </DialogDescription>
-            </DialogHeader>
-            <SkillForm
-              onCancel={() => setCreateOpen(false)}
-              onSaved={() => {
-                setCreateOpen(false);
-                invalidate();
-              }}
-            />
-          </DialogContent>
-        </Dialog>
-      </header>
+      <PageHeader
+        title="Skills"
+        description="Reusable instruction blocks injected into chat sessions. Each save creates an immutable version row."
+        actions={
+          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+            <DialogTrigger asChild>
+              <Button data-testid="new-skill">New skill</Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-3xl">
+              <DialogHeader>
+                <DialogTitle>Create skill</DialogTitle>
+                <DialogDescription>
+                  Author a skill as <code>SKILL.md</code> — YAML frontmatter plus a Markdown body
+                  that becomes the skill instructions.
+                </DialogDescription>
+              </DialogHeader>
+              <SkillForm
+                onCancel={() => setCreateOpen(false)}
+                onSaved={() => {
+                  setCreateOpen(false);
+                  invalidate();
+                }}
+              />
+            </DialogContent>
+          </Dialog>
+        }
+      />
 
       <div className="flex items-center gap-3">
         <Input
@@ -221,9 +219,9 @@ function SkillRow({
         {skill.archived ? (
           <span className="rounded bg-muted px-2 py-0.5 text-xs">archived</span>
         ) : skill.enabled ? (
-          <span className="rounded bg-green-100 px-2 py-0.5 text-xs text-green-900">enabled</span>
+          <span className="rounded bg-success-muted px-2 py-0.5 text-xs text-success">enabled</span>
         ) : (
-          <span className="rounded bg-yellow-100 px-2 py-0.5 text-xs text-yellow-900">
+          <span className="rounded bg-warning-muted px-2 py-0.5 text-xs text-warning">
             disabled
           </span>
         )}

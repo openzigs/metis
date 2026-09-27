@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ImpactAnalysesTable } from "@/components/impact/impact-analyses-table";
 import { useImpactAnalyses } from "@/lib/impact-analysis-hooks";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function ImpactAnalysesPage() {
   const { data, isLoading, isError } = useImpactAnalyses();
@@ -17,18 +18,20 @@ export default function ImpactAnalysesPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="impact-list-root">
-      <header className="flex items-center justify-between">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold">Impact analysis</h1>
-          <p className="text-sm text-muted-foreground">
+      <PageHeader
+        title="Impact analysis"
+        description={
+          <>
             Trace requirement changes to affected code across multiple projects. (To synthesize
             requirements for a single project, use that project&apos;s Requirements Analysis tab.)
-          </p>
-        </div>
-        <Button asChild data-testid="impact-list-new">
-          <Link href="/impact-analyses/new">New analysis</Link>
-        </Button>
-      </header>
+          </>
+        }
+        actions={
+          <Button asChild data-testid="impact-list-new">
+            <Link href="/impact-analyses/new">New analysis</Link>
+          </Button>
+        }
+      />
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground" data-testid="impact-list-loading">

@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { scannerApi, type ExemplarGrade, type Rule, type RuleSet } from "@/lib/scanner-api";
+import { PageHeader } from "@/components/ui/page-header";
 
 const MIN_EXEMPLARS = 5;
 const LANGUAGES = [
@@ -52,16 +53,18 @@ export default function RuleSetsPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="scanner-rule-sets-root">
-      <header className="space-y-2">
-        {/* #430: removed redundant "← Back to project" link — the project
-            section-nav (ProjectTabs, rendered by the project layout) is the
-            single coherent navigation affordance for moving between sections. */}
-        <h1 className="text-2xl font-semibold">Bug-scanner rule sets</h1>
-        <p className="text-sm text-muted-foreground">
-          Author natural-language rules, compile them into retrieval plans, and grade at least{" "}
-          {MIN_EXEMPLARS} exemplars before activation.
-        </p>
-      </header>
+      {/* #430: removed redundant "← Back to project" link — the project
+          section-nav (ProjectTabs, rendered by the project layout) is the
+          single coherent navigation affordance for moving between sections. */}
+      <PageHeader
+        title="Bug-scanner rule sets"
+        description={
+          <>
+            Author natural-language rules, compile them into retrieval plans, and grade at least{" "}
+            {MIN_EXEMPLARS} exemplars before activation.
+          </>
+        }
+      />
 
       <Card className="space-y-3 p-4" data-testid="scanner-create-set-card">
         <h2 className="text-base font-semibold">Create rule set</h2>

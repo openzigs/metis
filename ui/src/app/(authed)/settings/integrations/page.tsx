@@ -21,6 +21,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
+import { PageHeader } from "@/components/ui/page-header";
 
 interface IntegrationLink {
   href: string;
@@ -92,14 +93,16 @@ const INTEGRATIONS: IntegrationLink[] = [
 export default function SettingsIntegrationsPage() {
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-integrations-root">
-      <header>
-        <h1 className="text-2xl font-semibold">Integrations</h1>
-        <p className="text-sm text-muted-foreground">
-          Manage third-party systems that Metis can read from or write to. Connections are
-          project-scoped — pick a category below to view the aggregated surface or jump into a
-          project&apos;s settings.
-        </p>
-      </header>
+      <PageHeader
+        title="Integrations"
+        description={
+          <>
+            Manage third-party systems that Metis can read from or write to. Connections are
+            project-scoped — pick a category below to view the aggregated surface or jump into a
+            project&apos;s settings.
+          </>
+        }
+      />
       <div
         className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3"
         data-testid="settings-integrations-grid"

@@ -20,6 +20,7 @@ import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/ui/page-header";
 
 const SECTION_TYPES = ["text", "markdown", "checklist", "number", "select", "tags"] as const;
 const PLATFORMS = ["github", "jira", "universal"] as const;
@@ -80,7 +81,7 @@ function SectionEditor({
         <span className="text-sm font-medium text-foreground">{section.label || section.key}</span>
         <button
           onClick={onRemove}
-          className="text-xs text-red-700 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
+          className="text-xs text-destructive hover:text-destructive"
           aria-label={`Remove section ${section.key}`}
         >
           Remove
@@ -393,7 +394,7 @@ export default function TemplateSettingsPage() {
     const schema = parseSchema(template.schema);
     return (
       <div className="max-w-5xl mx-auto p-6 space-y-4">
-        <h1 className="text-xl font-bold text-foreground">Edit Template: {template.name}</h1>
+        <PageHeader title={`Edit Template: ${template.name}`} />
         <TemplateForm
           initial={schema || undefined}
           onSave={(s, n) => handleUpdate(editingId, s, n)}
@@ -408,7 +409,7 @@ export default function TemplateSettingsPage() {
   if (creating) {
     return (
       <div className="max-w-5xl mx-auto p-6 space-y-4">
-        <h1 className="text-xl font-bold text-foreground">Create Template</h1>
+        <PageHeader title="Create Template" />
         <TemplateForm
           onSave={handleCreate}
           onCancel={() => setCreating(false)}
@@ -421,15 +422,11 @@ export default function TemplateSettingsPage() {
   // List mode
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-foreground">Issue Templates</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Configure issue body templates for AI-generated drafts
-          </p>
-        </div>
-        <Button onClick={() => setCreating(true)}>+ New Template</Button>
-      </div>
+      <PageHeader
+        title="Issue Templates"
+        description="Configure issue body templates for AI-generated drafts"
+        actions={<Button onClick={() => setCreating(true)}>+ New Template</Button>}
+      />
 
       {isLoading && <div className="text-muted-foreground">Loading templates…</div>}
 
@@ -447,7 +444,7 @@ export default function TemplateSettingsPage() {
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-foreground">{template.name}</span>
                   {template.isDefault && (
-                    <span className="text-xs bg-blue-50 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded">
+                    <span className="text-xs bg-info-muted text-info px-2 py-0.5 rounded">
                       Default
                     </span>
                   )}
@@ -483,7 +480,7 @@ export default function TemplateSettingsPage() {
                         <Button
                           variant="outline"
                           size="sm"
-                          className="text-red-700 dark:text-red-400 border-red-400/50"
+                          className="text-destructive border-destructive/40"
                           onClick={() => deleteMutation.mutate(template.id)}
                         >
                           Confirm
@@ -496,7 +493,7 @@ export default function TemplateSettingsPage() {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="text-red-700 dark:text-red-400"
+                        className="text-destructive"
                         onClick={() => setConfirmDelete(template.id)}
                       >
                         Delete

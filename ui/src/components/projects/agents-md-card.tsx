@@ -94,7 +94,7 @@ export function AgentsMdCard({ projectId }: Props) {
       {preview.isLoading || md.isLoading ? (
         <div className="text-xs text-muted-foreground">Loading…</div>
       ) : md.isError || preview.isError ? (
-        <div className="text-xs text-red-600">
+        <div className="text-xs text-destructive">
           Failed to load AGENTS.md:{" "}
           {((md.error ?? preview.error) as Error | null)?.message ?? "unknown error"}
         </div>

@@ -29,6 +29,7 @@ import { fireTerminalToast } from "@/lib/terminal-toast";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ApiError } from "@/lib/api-client";
+import { PageHeader } from "@/components/ui/page-header";
 
 function VerdictBadge({ verdict }: { verdict: string | null }): React.ReactElement {
   const tone =
@@ -277,12 +278,10 @@ export default function ProjectPullDetailPage(): React.ReactElement {
         ← Back to PR reviews
       </Link>
 
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">
-            {review.repoOwner}/{review.repoName}#{review.prNumber}
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+      <PageHeader
+        title={`${review.repoOwner}/${review.repoName}#${review.prNumber}`}
+        description={
+          <>
             Last reviewed{" "}
             {review.lastReviewedSha ? (
               <code className="font-mono">{review.lastReviewedSha.slice(0, 7)}</code>
@@ -290,62 +289,67 @@ export default function ProjectPullDetailPage(): React.ReactElement {
               "—"
             )}{" "}
             • Verdict: <VerdictBadge verdict={review.lastVerdict} />
-          </p>
-          <a
-            href={review.prUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-1 inline-block text-sm text-info hover:underline"
-          >
-            View on GitHub ↗
-          </a>
-          {review.lastRunId && (
-            <Link
-              href={`/runs/${review.lastRunId}`}
-              className="ml-3 mt-1 inline-block text-sm text-info hover:underline"
+          </>
+        }
+        actions={
+          <div className="flex flex-col items-end gap-2">
+            <Button
+              type="button"
+              onClick={() => {
+                setReRunMessage(null);
+                reRun.mutate();
+              }}
+              disabled={reRun.isPending || activeJobId !== null}
+              data-testid="re-run-button"
             >
-              View AgentRun replay →
-            </Link>
-          )}
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          <Button
-            type="button"
-            onClick={() => {
-              setReRunMessage(null);
-              reRun.mutate();
-            }}
-            disabled={reRun.isPending || activeJobId !== null}
-            data-testid="re-run-button"
+              {reRun.isPending || activeJobId !== null ? "Re-running…" : "Re-run review"}
+            </Button>
+            {/* LIVE progress while a re-review job is in flight (#421). */}
+            {activeJobId !== null && (
+              <ReReviewProgress
+                status={
+                  jobEvent?.status === "completed"
+                    ? "completed"
+                    : jobEvent?.status === "progress"
+                      ? "progress"
+                      : "started"
+                }
+                progress={jobEvent?.progress ?? 0}
+                message={jobEvent?.message}
+              />
+            )}
+            {reRunMessage && (
+              <p
+                role="status"
+                className={
+                  reRunMessage.kind === "denied"
+                    ? "text-xs text-warning"
+                    : "text-xs text-destructive"
+                }
+              >
+                {reRunMessage.text}
+              </p>
+            )}
+          </div>
+        }
+      >
+        <a
+          href={review.prUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-1 inline-block text-sm text-info hover:underline"
+        >
+          View on GitHub ↗
+        </a>
+        {review.lastRunId && (
+          <Link
+            href={`/runs/${review.lastRunId}`}
+            className="ml-3 mt-1 inline-block text-sm text-info hover:underline"
           >
-            {reRun.isPending || activeJobId !== null ? "Re-running…" : "Re-run review"}
-          </Button>
-          {/* LIVE progress while a re-review job is in flight (#421). */}
-          {activeJobId !== null && (
-            <ReReviewProgress
-              status={
-                jobEvent?.status === "completed"
-                  ? "completed"
-                  : jobEvent?.status === "progress"
-                    ? "progress"
-                    : "started"
-              }
-              progress={jobEvent?.progress ?? 0}
-              message={jobEvent?.message}
-            />
-          )}
-          {reRunMessage && (
-            <p
-              role="status"
-              className={
-                reRunMessage.kind === "denied" ? "text-xs text-warning" : "text-xs text-destructive"
-              }
-            >
-              {reRunMessage.text}
-            </p>
-          )}
-        </div>
-      </header>
+            View AgentRun replay →
+          </Link>
+        )}
+      </PageHeader>
 
       <Card className="p-4">
         <h2 className="mb-3 text-sm font-medium text-foreground">

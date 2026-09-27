@@ -35,9 +35,9 @@ interface Props {
 }
 
 const SEVERITY_CLASS: Record<RequirementDiffSeverity, string> = {
-  critical: "border-red-700/60 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300",
-  high: "border-orange-700/60 bg-orange-50 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300",
-  medium: "border-amber-700/60 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300",
+  critical: "border-destructive/40 bg-destructive/10 text-destructive",
+  high: "border-warning/40 bg-warning-muted text-warning",
+  medium: "border-warning/40 bg-warning-muted text-warning",
   low: "border-border/60 bg-muted/60 text-muted-foreground",
 };
 
@@ -120,7 +120,7 @@ function DiffText({
             <span
               key={idx}
               data-testid="diff-removed"
-              className="rounded bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 line-through"
+              className="rounded bg-destructive/10 text-destructive line-through"
             >
               {t.text}
             </span>
@@ -131,7 +131,7 @@ function DiffText({
             <span
               key={idx}
               data-testid="diff-added"
-              className="rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300"
+              className="rounded bg-success-muted text-success"
             >
               {t.text}
             </span>
@@ -164,7 +164,7 @@ function DiffCard({ entry }: { entry: RequirementDiffEntry }): React.ReactElemen
           <SeverityBadge severity={entry.severity} />
           <span
             data-testid="diff-impact"
-            className="inline-flex items-center rounded-full border border-sky-700/50 bg-sky-50 dark:bg-sky-950/40 px-2 py-0.5 text-[11px] font-semibold text-sky-700 dark:text-sky-300"
+            className="inline-flex items-center rounded-full border border-info/40 bg-info-muted px-2 py-0.5 text-[11px] font-semibold text-info"
             title="Change impact score (0–1) from the Change Analysis engine."
           >
             impact {entry.impactScore.toFixed(2)}
@@ -205,10 +205,7 @@ function DiffCard({ entry }: { entry: RequirementDiffEntry }): React.ReactElemen
                       ))}
                     </ul>
                   ) : (
-                    <p
-                      data-testid="diff-current-no-evidence"
-                      className="text-xs text-amber-700 dark:text-amber-300"
-                    >
+                    <p data-testid="diff-current-no-evidence" className="text-xs text-warning">
                       No source evidence linked for the current requirement.
                     </p>
                   )}
@@ -327,7 +324,7 @@ export function RequirementDiff({
       {query.isLoading ? (
         <p className="text-sm text-muted-foreground">Loading current-vs-proposed diff…</p>
       ) : query.isError ? (
-        <p className="text-sm text-red-700 dark:text-red-400" role="alert">
+        <p className="text-sm text-destructive" role="alert">
           Could not load the current-vs-proposed diff.
         </p>
       ) : diff && diff.baseAnalysisId == null ? (

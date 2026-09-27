@@ -58,9 +58,9 @@ const KIND_LABELS: Record<AlignedRow["kind"], string> = {
 };
 
 const KIND_CLASSES: Record<AlignedRow["kind"], string> = {
-  match: "border-green-200 bg-green-50",
-  missed: "border-amber-200 bg-amber-50",
-  hallucinated: "border-red-200 bg-red-50",
+  match: "border-success/40 bg-success-muted",
+  missed: "border-warning/40 bg-warning-muted",
+  hallucinated: "border-destructive/40 bg-destructive/10",
 };
 
 const FIELDS: { key: keyof DomainRequirement; label: string }[] = [

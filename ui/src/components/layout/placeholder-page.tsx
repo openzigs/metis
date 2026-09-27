@@ -1,4 +1,5 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "@/components/ui/page-header";
 
 interface PlaceholderProps {
   title: string;
@@ -13,12 +14,7 @@ interface PlaceholderProps {
 export function PlaceholderPage({ title, description }: PlaceholderProps) {
   return (
     <section aria-labelledby="page-title" className="space-y-4">
-      <header className="space-y-1">
-        <h1 id="page-title" className="text-2xl font-semibold tracking-tight">
-          {title}
-        </h1>
-        <p className="text-sm text-muted-foreground">{description}</p>
-      </header>
+      <PageHeader title={title} titleId="page-title" description={description} />
       <Card>
         <CardHeader>
           <CardTitle>Coming soon</CardTitle>

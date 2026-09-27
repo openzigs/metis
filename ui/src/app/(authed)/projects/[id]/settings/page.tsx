@@ -27,6 +27,7 @@ import { CustomAgentsEnablementCard } from "@/components/projects/custom-agents-
 import { InferenceProfileCard } from "@/components/projects/inference-profile-card";
 import { QuarantinePanel } from "@/components/projects/quarantine-panel";
 import { ChroniclePanel } from "@/components/projects/chronicle-panel";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function ProjectSettingsPage() {
   const params = useParams<{ id: string }>();
@@ -62,24 +63,28 @@ export default function ProjectSettingsPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="project-settings-root">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Project settings</h1>
-          <p className="text-sm text-muted-foreground">
+      <PageHeader
+        title="Project settings"
+        description={
+          <>
             {p.name} · <code>{p.slug}</code> · {p.status}
-          </p>
-        </div>
-        {!isArchived ? (
-          <Button
-            variant="outline"
-            onClick={() => archive.mutate()}
-            disabled={archive.isPending}
-            data-testid="archive-button"
-          >
-            {archive.isPending ? "Archiving…" : "Archive"}
-          </Button>
-        ) : null}
-      </header>
+          </>
+        }
+        actions={
+          <>
+            {!isArchived ? (
+              <Button
+                variant="outline"
+                onClick={() => archive.mutate()}
+                disabled={archive.isPending}
+                data-testid="archive-button"
+              >
+                {archive.isPending ? "Archiving…" : "Archive"}
+              </Button>
+            ) : null}
+          </>
+        }
+      />
 
       <Card className="space-y-4 p-4">
         <h2 className="text-lg font-semibold">Settings</h2>

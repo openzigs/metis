@@ -44,7 +44,7 @@ export function ApprovalGateSettingsCard({ projectId }: { projectId: string }) {
   return (
     <Card className="p-4" data-testid="approval-gate-card">
       <h2 className="text-sm font-semibold">Approval gate</h2>
-      <p className="mt-1 text-xs text-slate-500">
+      <p className="mt-1 text-xs text-muted-foreground">
         When enabled, publishing issue drafts and exporting requirements or generated documents is
         blocked unless each item has an approved, up-to-date review.
       </p>
@@ -60,12 +60,12 @@ export function ApprovalGateSettingsCard({ projectId }: { projectId: string }) {
         <Label htmlFor="requireApprovedReview">Require approved review to publish/export</Label>
       </div>
       {!canToggle && (
-        <p className="mt-2 text-xs text-slate-400">
+        <p className="mt-2 text-xs text-muted-foreground">
           Only review administrators (coordinator/admin) can change this setting.
         </p>
       )}
       {update.error && (
-        <p className="mt-2 text-xs text-red-600" data-testid="approval-gate-toggle-error">
+        <p className="mt-2 text-xs text-destructive" data-testid="approval-gate-toggle-error">
           {update.error instanceof ApiError ? update.error.message : String(update.error)}
         </p>
       )}
@@ -106,7 +106,7 @@ export function ApprovalGateBlockNotice({ block }: { block: ApprovalGateBlock })
   return (
     <div
       role="alert"
-      className="mb-3 rounded border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900"
+      className="mb-3 rounded border border-warning/40 bg-warning-muted p-3 text-xs text-warning"
       data-testid="approval-gate-block"
     >
       <p className="font-semibold">

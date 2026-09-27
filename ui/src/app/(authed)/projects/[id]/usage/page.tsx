@@ -20,6 +20,7 @@ import { useQuery } from "@tanstack/react-query";
 import { projectsApi } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Card } from "@/components/ui/card";
+import { PageHeader } from "@/components/ui/page-header";
 
 /** #22 — `null` is an UNPRICED model: unknown spend, never shown as $0. */
 function formatCents(cents: number | null): string {
@@ -118,18 +119,24 @@ export default function ProjectUsagePage() {
 
   return (
     <div className="space-y-6 p-6" data-testid="usage-root">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Usage — {project.name}</h1>
-          <p className="text-sm text-muted-foreground">
+      <PageHeader
+        title={<>Usage — {project.name}</>}
+        description={
+          <>
             Tokens and cost from {new Date(u.from).toLocaleDateString()} to{" "}
             {new Date(u.to).toLocaleDateString()}.
-          </p>
-        </div>
-        <Link href={`/projects/${id}`} className="text-sm underline" data-testid="usage-back-link">
-          ← Back to project
-        </Link>
-      </header>
+          </>
+        }
+        actions={
+          <Link
+            href={`/projects/${id}`}
+            className="text-sm underline"
+            data-testid="usage-back-link"
+          >
+            ← Back to project
+          </Link>
+        }
+      />
 
       <section
         className="grid grid-cols-1 gap-3 md:grid-cols-4"
@@ -274,7 +281,7 @@ export default function ProjectUsagePage() {
             <select
               value={range}
               onChange={(e) => setRange(e.target.value)}
-              className="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs dark:border-gray-700 dark:bg-gray-800"
+              className="rounded-md border border-border bg-background px-2 py-1 text-xs"
               data-testid="usage-range-select"
             >
               <option value="7d">Last 7 days</option>
@@ -284,7 +291,7 @@ export default function ProjectUsagePage() {
             <select
               value={groupBy}
               onChange={(e) => setGroupBy(e.target.value)}
-              className="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs dark:border-gray-700 dark:bg-gray-800"
+              className="rounded-md border border-border bg-background px-2 py-1 text-xs"
               data-testid="usage-groupby-select"
             >
               <option value="day">By Day</option>
@@ -294,7 +301,7 @@ export default function ProjectUsagePage() {
             </select>
             <button
               onClick={() => projectsApi.exportUsageCsv(id, { range, groupBy })}
-              className="rounded-md bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-700"
+              className="rounded-md bg-info px-2 py-1 text-xs text-info-foreground hover:bg-info/90"
               data-testid="usage-csv-export"
             >
               Export CSV
@@ -352,11 +359,13 @@ export default function ProjectUsagePage() {
                   return (
                     <div key={i} className="flex flex-1 flex-col items-center gap-1">
                       <div
-                        className="w-full rounded-t bg-blue-500"
+                        className="w-full rounded-t bg-info"
                         style={{ height: `${Math.max(pct, 2)}%` }}
                         title={`${formatTokens(row.totalTokens)} tokens / ${formatUsd(row.estimatedCostUsd)}`}
                       />
-                      <span className="text-[10px] text-gray-500 truncate max-w-full">{label}</span>
+                      <span className="text-[10px] text-muted-foreground truncate max-w-full">
+                        {label}
+                      </span>
                     </div>
                   );
                 });
@@ -440,9 +449,9 @@ function Tile({ label, value, testId }: { label: string; value: string; testId: 
 
 function VerdictBadge({ verdict }: { verdict: "allowed" | "blocked" | "redacted" }) {
   const map: Record<typeof verdict, string> = {
-    allowed: "bg-emerald-100 text-emerald-900",
-    blocked: "bg-rose-100 text-rose-900",
-    redacted: "bg-amber-100 text-amber-900",
+    allowed: "bg-success-muted text-success",
+    blocked: "bg-destructive/10 text-destructive",
+    redacted: "bg-warning-muted text-warning",
   };
   return (
     <span
@@ -580,10 +589,10 @@ function BudgetGauge({
 
   const pct = Math.min(status.percentUsed * 100, 100);
   const barColor = !status.allowed
-    ? "bg-red-500"
+    ? "bg-destructive"
     : status.shouldDowngrade
-      ? "bg-amber-500"
-      : "bg-emerald-500";
+      ? "bg-warning"
+      : "bg-success";
 
   return (
     <div className="space-y-2" data-testid="budget-gauge-inner">
@@ -603,7 +612,7 @@ function BudgetGauge({
         <div className={`h-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
       </div>
       {status.message && (
-        <p className={`text-xs ${!status.allowed ? "text-red-600" : "text-amber-600"}`}>
+        <p className={`text-xs ${!status.allowed ? "text-destructive" : "text-warning"}`}>
           {status.message}
         </p>
       )}
@@ -629,14 +638,13 @@ interface AgentStepRow {
   estimatedCostUsd: number | null;
 }
 const STEP_COLORS = [
-  "bg-blue-500",
-  "bg-emerald-500",
-  "bg-amber-500",
-  "bg-purple-500",
-  "bg-rose-500",
-  "bg-cyan-500",
-  "bg-indigo-500",
-  "bg-orange-500",
+  "bg-chart-1",
+  "bg-chart-2",
+  "bg-chart-3",
+  "bg-chart-4",
+  "bg-chart-5",
+  "bg-chart-6",
+  "bg-chart-7",
 ];
 function AgentStepChart({ rows, total }: { rows: AgentStepRow[]; total: number }) {
   const sorted = [...rows].sort((a, b) => b.totalTokens - a.totalTokens);

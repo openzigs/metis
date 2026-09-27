@@ -42,7 +42,7 @@ Open http://localhost:3000 and log in with the seeded admin (`admin@metis.local`
 ```
 metis/
   server/              Express + Socket.IO API (Vitest)
-  ui/                  Next.js 15 / React 19 (Vitest + RTL)
+  ui/                  Next.js 16 / React 19 (Vitest + RTL)
   packages/shared/     Zod schemas, types, RBAC permissions shared by server & UI
   packages/ui-kit/     Reusable React primitives (shadcn-derived)
   e2e/                 Playwright end-to-end smoke suite
@@ -333,8 +333,16 @@ This recompiles the native SQLite3 bindings for your current Node.js version. Th
 - Tailwind + shadcn primitives (`packages/ui-kit`); avoid raw CSS modules.
 - Colour through the theme tokens in `ui/src/app/globals.css`, not the raw palette: status is
   `success` / `warning` / `info` / `destructive` (`text-warning`, `bg-warning-muted`, or the
-  `Badge` / `Alert` variants of the same names), chart series are `hsl(var(--chart-1..5))`.
-  Every token pair is contrast-tested in both themes (`ui/tests/contrast-tokens.test.ts`).
+  `Badge` / `Alert` variants of the same names), chart series and categorical colours are
+  `--chart-1..7` (`bg-chart-3`, `hsl(var(--chart-3))`). Every token pair is contrast-tested in
+  both themes (`ui/tests/contrast-tokens.test.ts`), and `ui/tests/a11y/semantic-token-migration.test.ts`
+  fails on any raw palette class (`text-amber-700`, `bg-white`) in `ui/src` or `packages/ui-kit/src`.
+- Every page opens with the ui-kit `PageHeader` (title, description, actions — the one `<h1>`
+  style); empty lists use `EmptyState`, route `loading.tsx` uses `PageHeaderSkeleton`
+  (`ui/tests/page-shell-conventions.test.ts`).
+- Heavy viewers load on demand: `loadMermaid()` (`ui/src/lib/mermaid.ts`), `useKatexCss()`,
+  and `next/dynamic` for the schema graph and diff viewer. A static value import of `mermaid`,
+  `@xyflow/react` or `react-diff-viewer-continued` fails `ui/tests/lazy-heavy-viewers.test.ts`.
 - Tabs, modals and confirmations use the ui-kit `Tabs`, `Dialog` and `AlertDialog` /
   `ConfirmDialog` — never a hand-rolled `role="tablist"`, a `fixed inset-0` backdrop or
   `window.confirm`. Icon-only buttons need an `aria-label`. `ui/tests/a11y/` enforces all four.

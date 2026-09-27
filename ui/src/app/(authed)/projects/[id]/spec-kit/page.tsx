@@ -33,6 +33,7 @@ import { useAuth } from "@/lib/auth-context";
 import { PresenceAvatars } from "@/components/presence/PresenceAvatars";
 import { CommentPanel } from "@/components/comments/CommentPanel";
 import { MessageSquare } from "lucide-react";
+import { PageHeader } from "@/components/ui/page-header";
 
 const COMMAND_LABELS: Record<SpecKitCommand, string> = {
   specify: "/specify",
@@ -176,8 +177,7 @@ export default function SpecKitPage() {
       data-testid="spec-kit-root"
     >
       <aside className="space-y-4" aria-label="Spec Kit navigation">
-        <header className="space-y-1">
-          <h1 className="text-lg font-semibold">Spec Kit</h1>
+        <PageHeader title="Spec Kit">
           {/* #372 (Epic #370, Phase 1): frame Spec Kit as the BA/PM
               "author the intent" front-door — where a business analyst or
               product manager authors intent (spec → plan → tasks) that then
@@ -202,7 +202,7 @@ export default function SpecKitPage() {
           >
             ← Back to project
           </Link>
-        </header>
+        </PageHeader>
 
         <Card className="space-y-2 p-3" data-testid="spec-kit-toggle-card">
           <div className="flex items-center justify-between">

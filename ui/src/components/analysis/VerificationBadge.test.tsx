@@ -31,12 +31,12 @@ describe("VerificationBadge (#740)", () => {
   it("gives each state a distinct colour class (visually distinguishable)", () => {
     const classes = new Set(Object.values(VERIFICATION_COPY).map((c) => c.className));
     // Issue #773 added a THIRD state: an absence claim the run's retrieval could
-    // not back. It gets its own hue — conflating it with `unverified` (a wrong
+    // not back. It gets its own (neutral, dashed) look — conflating it with `unverified` (a wrong
     // citation) would hide the more expensive failure mode.
     expect(classes.size).toBe(3);
-    expect(VERIFICATION_COPY.confirmed.className).toMatch(/emerald/);
-    expect(VERIFICATION_COPY.unverified.className).toMatch(/amber/);
-    expect(VERIFICATION_COPY["could-not-verify"].className).toMatch(/violet/);
+    expect(VERIFICATION_COPY.confirmed.className).toMatch(/\bbg-success-muted\b/);
+    expect(VERIFICATION_COPY.unverified.className).toMatch(/\bbg-warning-muted\b/);
+    expect(VERIFICATION_COPY["could-not-verify"].className).toMatch(/\bborder-dashed\b/);
   });
 
   it("#773 — spells out that a could-not-verify finding is NOT a confirmed gap", () => {

@@ -25,6 +25,7 @@ import { evalApi, type Bench, type BenchRunSummary } from "@/lib/eval-api";
 import { useAuth } from "@/lib/auth-context";
 import { queryKeys } from "@/lib/query-keys";
 import { ApiError } from "@/lib/api-client";
+import { PageHeader } from "@/components/ui/page-header";
 
 const BENCHES: Bench[] = ["swe-bench-pro", "tau-bench"];
 const BENCH_LABELS: Record<Bench, string> = {
@@ -73,16 +74,19 @@ export default function EvalLeaderboardPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="eval-leaderboard-root">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Eval &amp; Bench Leaderboard</h1>
-        <p className="text-sm text-muted-foreground">
-          Nightly SWE-bench-Pro and TAU-bench results plus the BA-pipeline domain regression suite.{" "}
-          <Link className="underline" href="/admin">
-            Admin
-          </Link>{" "}
-          settings → enable nightly runs by setting <code>EVAL_NIGHTLY_ENABLED=true</code>.
-        </p>
-      </header>
+      <PageHeader
+        title={<>Eval &amp; Bench Leaderboard</>}
+        description={
+          <>
+            Nightly SWE-bench-Pro and TAU-bench results plus the BA-pipeline domain regression
+            suite.{" "}
+            <Link className="underline" href="/admin">
+              Admin
+            </Link>{" "}
+            settings → enable nightly runs by setting <code>EVAL_NIGHTLY_ENABLED=true</code>.
+          </>
+        }
+      />
 
       <Tabs defaultValue="benchmarks">
         <TabsList data-testid="eval-tabs">
@@ -145,7 +149,7 @@ export default function EvalLeaderboardPage() {
 
           {feedback ? (
             <Card
-              className="border-yellow-200 bg-yellow-50 p-3 text-sm"
+              className="border-warning/40 bg-warning-muted p-3 text-sm"
               data-testid="trigger-feedback"
             >
               {feedback}
@@ -167,7 +171,7 @@ export default function EvalLeaderboardPage() {
                 Loading leaderboard…
               </div>
             ) : list.isError ? (
-              <div className="p-6 text-sm text-red-600" data-testid="leaderboard-error">
+              <div className="p-6 text-sm text-destructive" data-testid="leaderboard-error">
                 Failed to load leaderboard.
               </div>
             ) : (

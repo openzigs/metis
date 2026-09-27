@@ -10,6 +10,7 @@
  * - Export buttons (PDF, Word, Markdown)
  */
 import { useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -28,9 +29,23 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MarkdownPreviewer } from "@/components/markdown-previewer";
-import { SchemaGraphExplorer } from "@/components/schema-graph-explorer";
+import { Skeleton } from "@/components/ui/skeleton";
 import { VersionArtifacts } from "@/components/documentation/version-artifacts";
 import type { DocSectionProgressEvent, SchemaGraph } from "@metis/shared";
+import { PageHeader } from "@/components/ui/page-header";
+
+/**
+ * #272 — the schema graph (@xyflow/react, its dagre layout and stylesheet) is
+ * fetched only when a schema graph is actually shown, not with the
+ * documentation page. `ssr: false`: React Flow measures the DOM.
+ */
+const SchemaGraphExplorer = dynamic(
+  () => import("@/components/schema-graph-explorer").then((m) => m.SchemaGraphExplorer),
+  {
+    ssr: false,
+    loading: () => <Skeleton className="h-[60vh] w-full" data-testid="schema-graph-loading" />,
+  },
+);
 
 interface DocWarning {
   kind: string;
@@ -300,12 +315,14 @@ export default function DocumentationPage(): React.ReactElement {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Documentation</h1>
-        <Button onClick={() => setShowGenerate(true)} data-testid="generate-docs-btn">
-          Generate Documentation
-        </Button>
-      </div>
+      <PageHeader
+        title="Documentation"
+        actions={
+          <Button onClick={() => setShowGenerate(true)} data-testid="generate-docs-btn">
+            Generate Documentation
+          </Button>
+        }
+      />
 
       {/* Generate modal */}
       {showGenerate && (

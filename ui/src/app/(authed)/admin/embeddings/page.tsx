@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function AdminEmbeddingsPage() {
   const qc = useQueryClient();
@@ -70,14 +71,10 @@ export default function AdminEmbeddingsPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Embedding backends</h1>
-        <p className="text-sm text-muted-foreground">
-          The active backend powers retrieval (RAG) embeddings. Switching backends may change the
-          vector dimension — reindex each project below so its stored vectors match the active
-          model.
-        </p>
-      </header>
+      <PageHeader
+        title="Embedding backends"
+        description="The active backend powers retrieval (RAG) embeddings. Switching backends may change the vector dimension — reindex each project below so its stored vectors match the active model."
+      />
 
       <Card className="space-y-4 p-6" data-testid="active-backend">
         <div className="flex items-center justify-between gap-4">
@@ -272,7 +269,7 @@ export default function AdminEmbeddingsPage() {
               ) : null}
 
               {lastReindexMessage ? (
-                <p className="text-sm text-emerald-600" data-testid="reindex-result">
+                <p className="text-sm text-success" data-testid="reindex-result">
                   {lastReindexMessage}
                 </p>
               ) : null}

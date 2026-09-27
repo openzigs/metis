@@ -91,7 +91,7 @@ export function DomainEvalPanel() {
             Loading domain runs…
           </div>
         ) : list.isError ? (
-          <div className="p-6 text-sm text-red-600" data-testid="domain-runs-error">
+          <div className="p-6 text-sm text-destructive" data-testid="domain-runs-error">
             Failed to load domain eval runs.
           </div>
         ) : runs.length === 0 ? (
@@ -197,7 +197,7 @@ export function DomainDriftCell({
     <div className="flex flex-col gap-0.5">
       {driftAlert ? (
         <span
-          className="w-fit rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700"
+          className="w-fit rounded bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive"
           data-testid={`domain-drift-badge-${runId}`}
         >
           Drift
@@ -207,7 +207,7 @@ export function DomainDriftCell({
       )}
       {staleness ? (
         <span
-          className="w-fit rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"
+          className="w-fit rounded bg-warning-muted px-2 py-0.5 text-xs font-medium text-warning"
           data-testid={`domain-drift-stale-${runId}`}
           title={staleness}
         >
@@ -240,7 +240,7 @@ function DomainRunDetail({ runId, onClose }: { runId: string; onClose: () => voi
           Loading run detail…
         </p>
       ) : detail.isError || !detail.data ? (
-        <p className="text-sm text-red-600" data-testid="domain-detail-error">
+        <p className="text-sm text-destructive" data-testid="domain-detail-error">
           Failed to load run detail.
         </p>
       ) : (

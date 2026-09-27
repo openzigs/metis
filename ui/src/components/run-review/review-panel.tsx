@@ -21,9 +21,9 @@ const VERDICT_LABEL: Record<PrReviewRecord["judge"]["overallVerdict"], string> =
   comment: "Comment",
 };
 const VERDICT_TONE: Record<PrReviewRecord["judge"]["overallVerdict"], string> = {
-  approve: "bg-emerald-100 text-emerald-900 border-emerald-300",
-  request_changes: "bg-red-100 text-red-900 border-red-300",
-  comment: "bg-slate-100 text-slate-900 border-slate-300",
+  approve: "bg-success-muted text-success border-success/40",
+  request_changes: "bg-destructive/10 text-destructive border-destructive/40",
+  comment: "bg-muted text-foreground border-border",
 };
 
 export function ReviewPanel({ review }: { review: PrReviewRecord }) {
@@ -83,10 +83,10 @@ export function AcMatrix({ verdicts }: { verdicts: PrReviewVerdict[] }) {
             <span
               className={`rounded px-2 py-0.5 text-xs font-medium ${
                 v.verdict === "satisfied"
-                  ? "bg-emerald-100 text-emerald-900"
+                  ? "bg-success-muted text-success"
                   : v.verdict === "not_satisfied"
-                    ? "bg-red-100 text-red-900"
-                    : "bg-amber-100 text-amber-900"
+                    ? "bg-destructive/10 text-destructive"
+                    : "bg-warning-muted text-warning"
               }`}
             >
               {v.verdict}
@@ -126,10 +126,10 @@ export function CommentList({ comments }: { comments: PrReviewComment[] }) {
               <span
                 className={`rounded px-2 py-0.5 text-xs ${
                   c.severity === "risk"
-                    ? "bg-red-100 text-red-900"
+                    ? "bg-destructive/10 text-destructive"
                     : c.severity === "warning"
-                      ? "bg-amber-100 text-amber-900"
-                      : "bg-slate-100 text-slate-900"
+                      ? "bg-warning-muted text-warning"
+                      : "bg-muted text-foreground"
                 }`}
               >
                 {c.severity}
@@ -162,7 +162,9 @@ export function SandboxResults({ results }: { results: PrReviewSandboxResult[] }
               <span className="font-mono text-xs">{r.acId}</span>
               <span
                 className={`rounded px-2 py-0.5 text-xs ${
-                  r.exitCode === 0 ? "bg-emerald-100 text-emerald-900" : "bg-red-100 text-red-900"
+                  r.exitCode === 0
+                    ? "bg-success-muted text-success"
+                    : "bg-destructive/10 text-destructive"
                 }`}
               >
                 exit {r.exitCode} · {r.durationMs}ms

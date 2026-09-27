@@ -98,7 +98,7 @@ export function OnlineTrendChart({ windows, width = 480, height = 140 }: OnlineT
           stroke="currentColor"
           strokeWidth={2}
           strokeDasharray={seg.meaningful ? undefined : "4 3"}
-          className={seg.meaningful ? "text-primary" : "text-yellow-600"}
+          className={seg.meaningful ? "text-primary" : "text-warning"}
           data-testid={`online-trend-segment-${i}`}
           data-judge-meaningful={seg.meaningful ? "true" : "false"}
         />
@@ -108,10 +108,10 @@ export function OnlineTrendChart({ windows, width = 480, height = 140 }: OnlineT
         const r = w.driftAlert ? 5 : 3;
         const shared = {
           className: w.driftAlert
-            ? "text-red-600"
+            ? "text-destructive"
             : w.judgeMeaningful
               ? "fill-primary text-primary"
-              : "text-yellow-600",
+              : "text-warning",
           "data-testid": `online-point-${w.windowId}`,
           "data-drift-alert": w.driftAlert ? "true" : "false",
           "data-judge-meaningful": w.judgeMeaningful ? "true" : "false",

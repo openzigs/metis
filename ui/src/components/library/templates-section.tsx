@@ -118,7 +118,7 @@ export function TemplatesSection() {
                             key={v}
                             className={
                               t.required.includes(v)
-                                ? "mr-1 rounded bg-rose-100 px-1 text-rose-900"
+                                ? "mr-1 rounded bg-destructive/10 px-1 text-destructive"
                                 : "mr-1 rounded bg-muted px-1"
                             }
                           >
@@ -309,7 +309,9 @@ function RunDialog({ template, onClose }: { template: PromptTemplate; onClose: (
             <label key={v} className="block space-y-1 text-sm">
               <span className="text-muted-foreground">
                 {v}
-                {template.required.includes(v) ? <span className="text-rose-500"> *</span> : null}
+                {template.required.includes(v) ? (
+                  <span className="text-destructive"> *</span>
+                ) : null}
               </span>
               <Input
                 data-testid={`template-run-var-${v}`}

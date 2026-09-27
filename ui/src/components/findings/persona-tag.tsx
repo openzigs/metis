@@ -39,7 +39,7 @@ export interface PersonaTagProps {
 const FALLBACK_AVATAR = "🤖";
 
 const BASE =
-  "inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-800/60 px-2 py-0.5 text-xs font-medium text-zinc-200";
+  "inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/60 px-2 py-0.5 text-xs font-medium text-foreground";
 
 export function PersonaTag({
   persona,
@@ -62,7 +62,7 @@ export function PersonaTag({
       <span aria-hidden="true">{avatar}</span>
       <span data-testid="persona-tag-name">{name}</span>
       {!compact && role ? (
-        <span className="text-zinc-400" data-testid="persona-tag-role">
+        <span className="text-muted-foreground" data-testid="persona-tag-role">
           · {role}
         </span>
       ) : null}

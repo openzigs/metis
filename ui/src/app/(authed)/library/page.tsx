@@ -18,6 +18,7 @@ import { LibraryBrowseSection } from "@/components/library/browse-section";
 import { ConnectorsSection } from "@/components/library/connectors-section";
 import { LibraryProjectPicker } from "@/components/library/project-picker";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PageHeader } from "@/components/ui/page-header";
 
 type Tab = "browse" | "templates" | "artifacts" | "connectors";
 
@@ -36,15 +37,17 @@ export default function LibraryPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="library-root">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Library</h1>
-        <p className="text-sm text-muted-foreground">
-          Skills, agents, prompt templates, and artifacts.{" "}
-          {projectId
-            ? "Toggle skills/agents per project; templates and artifacts are scoped to your account."
-            : "Open a project to manage per-project access."}
-        </p>
-      </header>
+      <PageHeader
+        title="Library"
+        description={
+          <>
+            Skills, agents, prompt templates, and artifacts.{" "}
+            {projectId
+              ? "Toggle skills/agents per project; templates and artifacts are scoped to your account."
+              : "Open a project to manage per-project access."}
+          </>
+        }
+      />
 
       <LibraryProjectPicker projectId={projectId} />
 

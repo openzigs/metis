@@ -144,7 +144,7 @@ export function NotificationsDrawer() {
                     (n.level === "error"
                       ? "border-destructive/50 bg-destructive/5"
                       : n.level === "warn"
-                        ? "border-amber-300 bg-amber-50/40 dark:bg-amber-950/30"
+                        ? "border-warning/40 bg-warning-muted"
                         : "border-border bg-muted/30")
                   }
                   data-testid={`notification-${n.id}`}

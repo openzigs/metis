@@ -38,9 +38,9 @@ const TRUST_LABEL: Record<DomainTrust, string> = {
 };
 
 const TRUST_STYLE: Record<DomainTrust, string> = {
-  high: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-  medium: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-  low: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
+  high: "border-success/40 bg-success-muted text-success",
+  medium: "border-warning/40 bg-warning-muted text-warning",
+  low: "border-destructive/40 bg-destructive/10 text-destructive",
 };
 
 interface EnhancementResultsProps {
@@ -125,7 +125,7 @@ export function ClarificationImpactNote({
         </p>
       )}
       {unattributedCount > 0 && (
-        <p className="text-amber-700 dark:text-amber-300" data-testid="clarification-unattributed">
+        <p className="text-warning" data-testid="clarification-unattributed">
           {unattributedCount} answer{unattributedCount === 1 ? "" : "s"} could not be matched to a
           saved requirement, so {unattributedCount === 1 ? "it refines" : "they refine"} the
           requirement text shown here but will not appear in a published issue.
@@ -158,7 +158,7 @@ function GapsSummaryBanner({
       <div
         data-testid="gaps-summary"
         role="status"
-        className="rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300"
+        className="rounded border border-success/40 bg-success-muted px-3 py-2 text-sm text-success"
       >
         <span aria-hidden>✓</span> No open questions — requirements look complete
         {requirementCount > 0 && ` across ${requirementCount} requirements`}.
@@ -170,7 +170,7 @@ function GapsSummaryBanner({
     <div
       data-testid="gaps-summary"
       role="alert"
-      className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300"
+      className="flex flex-wrap items-center justify-between gap-2 rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
     >
       <span>
         <span aria-hidden>⚠</span> {totalAmbiguities} open questions / ambiguities detected across{" "}
@@ -180,7 +180,7 @@ function GapsSummaryBanner({
       </span>
       <a
         href={`#${QUESTIONS_ANCHOR}`}
-        className="shrink-0 rounded border border-amber-500/40 px-2 py-0.5 text-xs font-medium hover:bg-amber-500/20"
+        className="shrink-0 rounded border border-warning/40 px-2 py-0.5 text-xs font-medium hover:bg-warning-muted"
       >
         Review questions
       </a>
@@ -201,7 +201,7 @@ function EvidenceReview({ digests }: { digests: EvidenceDigest[] }): React.React
               <div className="mb-1 flex items-center justify-between gap-2">
                 <span className="text-sm font-medium text-foreground">{digest.query}</span>
                 {digest.needsHumanReview && (
-                  <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">
+                  <span className="rounded border border-warning/40 bg-warning-muted px-2 py-0.5 text-xs text-warning">
                     Needs Review
                   </span>
                 )}
@@ -220,7 +220,7 @@ function EvidenceReview({ digests }: { digests: EvidenceDigest[] }): React.React
                         href={source.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-blue-700 dark:text-blue-400 hover:underline"
+                        className="text-info hover:underline"
                       >
                         {source.title}
                       </a>
@@ -397,13 +397,13 @@ function GapsPreviewPanel({
           <p
             role="alert"
             data-testid="clarify-start-error"
-            className="mt-1 text-sm text-red-700 dark:text-red-400"
+            className="mt-1 text-sm text-destructive"
           >
             Could not start the interactive session, so these gaps cannot be answered yet.{" "}
             <button
               type="button"
               onClick={onRetryStart}
-              className="underline hover:text-red-700 dark:hover:text-red-300"
+              className="underline hover:text-destructive"
             >
               Try again
             </button>

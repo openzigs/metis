@@ -3,7 +3,7 @@ import { ACCESS_COOKIE, REFRESH_COOKIE, UPSTREAM_API_BASE } from "@/lib/config";
 
 /**
  * Edge-safe auth helpers shared by the Node route-handler proxy
- * (`auth-proxy.ts`) and the Edge middleware (`middleware.ts`). Everything here
+ * (`auth-proxy.ts`) and the auth gate (`proxy.ts`, #274). Everything here
  * uses only `fetch` + plain objects so it is safe under the Next.js Edge
  * runtime (no Node-only APIs).
  *

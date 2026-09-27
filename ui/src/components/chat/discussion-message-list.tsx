@@ -23,13 +23,13 @@ export interface DiscussionListMessage extends DiscussionMessage {
 
 function avatarColor(seed: string): string {
   const colors = [
-    "bg-violet-600",
-    "bg-indigo-600",
-    "bg-sky-600",
-    "bg-emerald-600",
-    "bg-amber-600",
-    "bg-rose-600",
-    "bg-teal-600",
+    "bg-chart-1",
+    "bg-chart-2",
+    "bg-chart-3",
+    "bg-chart-4",
+    "bg-chart-5",
+    "bg-chart-6",
+    "bg-chart-7",
   ];
   let hash = 0;
   for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) & 0xffffffff;
@@ -70,7 +70,7 @@ export function DiscussionMessageItem({
     >
       <div
         className={cn(
-          "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white",
+          "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-background",
           isAi ? "bg-foreground" : avatarColor(seed),
         )}
         aria-hidden

@@ -14,6 +14,7 @@ import { useQuery } from "@tanstack/react-query";
 import { prReviewsApi, type PrReviewStateView } from "@/lib/pr-reviews-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Card } from "@/components/ui/card";
+import { PageHeader } from "@/components/ui/page-header";
 
 function formatPercent(rate: number): string {
   return `${(rate * 100).toFixed(0)}%`;
@@ -98,12 +99,10 @@ export default function ProjectPullsPage(): React.ReactElement {
 
   return (
     <div className="space-y-4 p-4">
-      <header>
-        <h1 className="text-xl font-semibold">PR reviews</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          History of automated PR reviews triggered by the GitHub webhook.
-        </p>
-      </header>
+      <PageHeader
+        title="PR reviews"
+        description="History of automated PR reviews triggered by the GitHub webhook."
+      />
 
       <Card className="overflow-hidden">
         {reviewsQuery.isLoading ? (

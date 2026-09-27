@@ -31,10 +31,10 @@ export function VersionDiff({ changedFields }: { changedFields: ChangedFields })
         <div key={field} data-testid={`diff-field-${field}`} className="text-xs">
           <dt className="font-semibold text-muted-foreground">{field}</dt>
           <dd className="mt-0.5 space-y-0.5">
-            <del className="block whitespace-pre-wrap break-words rounded bg-red-500/10 px-2 py-1 text-red-700 no-underline dark:text-red-400">
+            <del className="block whitespace-pre-wrap break-words rounded bg-destructive/10 px-2 py-1 text-destructive no-underline">
               {formatDiffValue(change.from)}
             </del>
-            <ins className="block whitespace-pre-wrap break-words rounded bg-emerald-500/10 px-2 py-1 text-emerald-700 no-underline dark:text-emerald-400">
+            <ins className="block whitespace-pre-wrap break-words rounded bg-success-muted px-2 py-1 text-success no-underline">
               {formatDiffValue(change.to)}
             </ins>
           </dd>

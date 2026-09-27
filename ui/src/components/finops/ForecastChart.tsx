@@ -52,7 +52,7 @@ export function ForecastChart({ forecast, budgetCents }: Props) {
     <div className="rounded-lg border bg-card p-4 space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold">Spend Forecast</h3>
-        <span className={`text-xs font-medium ${overBudget ? "text-red-500" : "text-green-600"}`}>
+        <span className={`text-xs font-medium ${overBudget ? "text-destructive" : "text-success"}`}>
           {overBudget ? "Over budget" : "On track"}
         </span>
       </div>

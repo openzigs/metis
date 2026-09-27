@@ -24,6 +24,7 @@ import {
   Webhook,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
+import { PageHeader } from "@/components/ui/page-header";
 
 interface HubLink {
   href: string;
@@ -121,16 +122,18 @@ const HUB_LINKS: HubLink[] = [
 export default function SettingsHubPage() {
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-hub-root">
-      <header>
-        <h1 className="text-2xl font-semibold">Settings</h1>
-        <p className="text-sm text-muted-foreground">
-          Pick a category to view or edit. Sensitive credentials live in the dedicated{" "}
-          <Link href="/vault" className="underline">
-            Vault
-          </Link>{" "}
-          surface.
-        </p>
-      </header>
+      <PageHeader
+        title="Settings"
+        description={
+          <>
+            Pick a category to view or edit. Sensitive credentials live in the dedicated{" "}
+            <Link href="/vault" className="underline">
+              Vault
+            </Link>{" "}
+            surface.
+          </>
+        }
+      />
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         {HUB_LINKS.map((link) => (
           <Link

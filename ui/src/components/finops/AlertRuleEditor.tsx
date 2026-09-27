@@ -60,7 +60,7 @@ export function AlertRuleEditor({ workspaceId }: Props) {
       <h3 className="text-sm font-semibold">Alert Rules</h3>
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading rules…</p>}
-      {error && <p className="text-sm text-red-500">Failed to load rules.</p>}
+      {error && <p className="text-sm text-destructive">Failed to load rules.</p>}
 
       {rules.length > 0 && (
         <ul className="space-y-1">
@@ -79,7 +79,9 @@ export function AlertRuleEditor({ workspaceId }: Props) {
                 <button
                   onClick={() => toggleMutation.mutate(rule)}
                   className={`rounded px-2 py-0.5 text-xs ${
-                    rule.enabled ? "bg-green-100 text-green-700" : "bg-muted text-muted-foreground"
+                    rule.enabled
+                      ? "bg-success-muted text-success"
+                      : "bg-muted text-muted-foreground"
                   }`}
                   aria-label={`Toggle rule ${rule.name}`}
                 >
@@ -87,7 +89,7 @@ export function AlertRuleEditor({ workspaceId }: Props) {
                 </button>
                 <button
                   onClick={() => deleteMutation.mutate(rule.id)}
-                  className="rounded px-2 py-0.5 text-xs text-red-500 hover:bg-red-50"
+                  className="rounded px-2 py-0.5 text-xs text-destructive hover:bg-destructive/10"
                   aria-label={`Delete rule ${rule.name}`}
                 >
                   Delete
@@ -144,7 +146,7 @@ export function AlertRuleEditor({ workspaceId }: Props) {
           </button>
         ))}
       </div>
-      {createMutation.isError && <p className="text-xs text-red-500">Failed to create rule.</p>}
+      {createMutation.isError && <p className="text-xs text-destructive">Failed to create rule.</p>}
     </div>
   );
 }

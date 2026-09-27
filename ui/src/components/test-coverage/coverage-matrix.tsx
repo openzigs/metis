@@ -46,9 +46,9 @@ const REQ_COL_WIDTH = 280;
 const HEADER_HEIGHT = 36;
 
 function scoreClass(score: number): string {
-  if (score >= 0.8) return "bg-green-500/80 text-white";
-  if (score >= 0.5) return "bg-amber-500/80 text-white";
-  return "bg-red-500/80 text-white";
+  if (score >= 0.8) return "bg-success/80 text-success-foreground";
+  if (score >= 0.5) return "bg-warning/80 text-warning-foreground";
+  return "bg-destructive/80 text-destructive-foreground";
 }
 
 export function CoverageMatrix({

@@ -12,6 +12,7 @@ import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { scannerApi, type ScanFinding } from "@/lib/scanner-api";
 import { ApiError } from "@/lib/api-client";
+import { PageHeader } from "@/components/ui/page-header";
 
 /**
  * Turn a publish failure into an operator-actionable message. A
@@ -47,14 +48,17 @@ export default function ScanTriagePage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="scanner-triage-root">
-      <header className="space-y-2">
-        <Link
-          href={`/projects/${projectId}/overview`}
-          className="text-xs text-muted-foreground underline"
-        >
-          ← Back to project
-        </Link>
-        <h1 className="text-2xl font-semibold">Scan triage</h1>
+      <PageHeader
+        eyebrow={
+          <Link
+            href={`/projects/${projectId}/overview`}
+            className="text-xs text-muted-foreground underline"
+          >
+            ← Back to project
+          </Link>
+        }
+        title="Scan triage"
+      >
         {scanQuery.data ? (
           <p className="text-xs text-muted-foreground" data-testid="scanner-triage-meta">
             commit {scanQuery.data.commitSha.slice(0, 8)} · mode {scanQuery.data.mode} · status{" "}
@@ -62,7 +66,7 @@ export default function ScanTriagePage() {
             symbols · {scanQuery.data.totalTokens.toLocaleString()} tokens
           </p>
         ) : null}
-      </header>
+      </PageHeader>
 
       <Card className="p-4" data-testid="scanner-triage-card">
         {findingsQuery.isLoading ? (

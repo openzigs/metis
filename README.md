@@ -99,7 +99,7 @@ the pre-traffic audit.
 | Path                  | Purpose                                                           |
 | --------------------- | ----------------------------------------------------------------- |
 | `server/`             | Express 5 + Prisma 6 + Socket.IO 4 backend                        |
-| `ui/`                 | Next.js 15 + Tailwind v4 + shadcn frontend                        |
+| `ui/`                 | Next.js 16 + Tailwind v4 + shadcn frontend                        |
 | `packages/shared/`    | Cross-cutting types, zod schemas, utilities (`@metis/shared`)     |
 | `packages/ui-kit/`    | Shared shadcn-derived component primitives (`@metis/ui-kit`)      |
 | `e2e/`                | Playwright end-to-end smoke suite                                 |

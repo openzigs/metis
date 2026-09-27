@@ -6,8 +6,8 @@ import { cn } from "@/lib/utils";
 
 const DECISION_CLASSES: Record<ReviewerDecision, string> = {
   pending: "bg-muted text-muted-foreground",
-  approved: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-  rejected: "bg-red-500/15 text-red-600 dark:text-red-400",
+  approved: "bg-success-muted text-success",
+  rejected: "bg-destructive/10 text-destructive",
 };
 
 export function ReviewerPanel({

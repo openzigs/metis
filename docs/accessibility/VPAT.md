@@ -18,7 +18,7 @@ of the Information Technology Industry Council (ITI).
 | Field | Value |
 |-------|-------|
 | **Name of product / version** | METIS — `0.1.0` (pre-stable alpha) |
-| **Product description** | Multi-package web application for AI-assisted requirements analysis, specification generation, and publishing. `server/` (Express + Prisma + LanceDB RAG), `ui/` (Next.js 14 + Tailwind + shadcn/Radix). |
+| **Product description** | Multi-package web application for AI-assisted requirements analysis, specification generation, and publishing. `server/` (Express + Prisma + LanceDB RAG), `ui/` (Next.js 16 + Tailwind + shadcn/Radix). |
 | **Report date** | 2026-07-04 |
 | **Report version** | 1.1 (internal formal WCAG-EM self-evaluation) |
 | **Contact information** | METIS engineering team (via the project issue tracker) |

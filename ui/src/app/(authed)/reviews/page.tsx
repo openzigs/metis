@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { reviewsApi, type ReviewRequest } from "@/lib/reviews-api";
 import { queryKeys } from "@/lib/query-keys";
 import { DueDateBadge, ReviewStatusBadge } from "@/components/reviews/review-badges";
+import { PageHeader } from "@/components/ui/page-header";
 
 const TABS = ["assigned", "requested"] as const;
 type Tab = (typeof TABS)[number];
@@ -46,13 +47,15 @@ export default function ReviewsPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Reviews</h1>
-        <p className="text-sm text-muted-foreground">
-          Formal review &amp; approval requests for requirements and specs. Approvals of requirement
-          scopes create a baseline automatically.
-        </p>
-      </header>
+      <PageHeader
+        title="Reviews"
+        description={
+          <>
+            Formal review &amp; approval requests for requirements and specs. Approvals of
+            requirement scopes create a baseline automatically.
+          </>
+        }
+      />
 
       {/* #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, aria-controls. */}
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>

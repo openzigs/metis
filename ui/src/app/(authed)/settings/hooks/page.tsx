@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { sdkApi } from "@/lib/sdk-alignment-api";
 import { SDK_HOOK_EVENTS, type SdkHookEvent } from "@metis/shared";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function HooksSettingsPage() {
   const qc = useQueryClient();
@@ -52,12 +53,10 @@ export default function HooksSettingsPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="hooks-root">
-      <header>
-        <h1 className="text-2xl font-semibold">Hooks</h1>
-        <p className="text-sm text-muted-foreground">
-          Subscribe webhooks to copilot lifecycle events. Imported hooks start disabled.
-        </p>
-      </header>
+      <PageHeader
+        title="Hooks"
+        description="Subscribe webhooks to copilot lifecycle events. Imported hooks start disabled."
+      />
 
       <Card className="p-4 space-y-3">
         <Input

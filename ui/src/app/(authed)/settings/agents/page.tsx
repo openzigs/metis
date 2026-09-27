@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { sdkApi, type CreateCustomAgentInput } from "@/lib/sdk-alignment-api";
 import type { CustomAgentDto } from "@metis/shared";
+import { PageHeader } from "@/components/ui/page-header";
 
 const QK = ["custom-agents"];
 
@@ -45,12 +46,10 @@ export default function AgentsSettingsPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="custom-agents-root">
-      <header>
-        <h1 className="text-2xl font-semibold">Custom Agents</h1>
-        <p className="text-sm text-muted-foreground">
-          Built-in specialists are read-only. Add project-scoped agents to tailor behavior.
-        </p>
-      </header>
+      <PageHeader
+        title="Custom Agents"
+        description="Built-in specialists are read-only. Add project-scoped agents to tailor behavior."
+      />
 
       <Card className="p-4 space-y-3" data-testid="custom-agents-create">
         <h2 className="text-lg font-medium">Add agent</h2>

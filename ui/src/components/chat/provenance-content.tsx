@@ -12,15 +12,16 @@ const PROJECT_TAG_RE = /\[([^\]]+)\]\s+([\w\-.]+#\d+)/g;
 
 /**
  * Colors assigned deterministically to project names for consistent
- * badge styling across messages.
+ * badge styling across messages. #301 — the chart series colour is the badge
+ * BORDER, so the label keeps full text contrast in both themes.
  */
 const BADGE_COLORS = [
-  "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-  "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-  "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
-  "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200",
-  "bg-pink-100 text-pink-800 dark:bg-pink-900 dark:text-pink-200",
-  "bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-200",
+  "border-chart-1",
+  "border-chart-2",
+  "border-chart-3",
+  "border-chart-4",
+  "border-chart-5",
+  "border-chart-6",
 ];
 
 function colorForProject(name: string): string {
@@ -70,7 +71,7 @@ export function ProvenanceContent({ content }: Props) {
         return (
           <span key={i}>
             <span
-              className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${colorForProject(part.project)}`}
+              className={`inline-flex items-center rounded-full border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-foreground ${colorForProject(part.project)}`}
             >
               {part.project}
             </span>{" "}

@@ -55,11 +55,11 @@ function uniq(ids: string[]): string[] {
 function statusBadgeClass(status: DocumentRow["status"]): string {
   switch (status) {
     case "ready":
-      return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30";
+      return "bg-success-muted text-success border-success/40";
     case "failed":
-      return "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30";
+      return "bg-destructive/10 text-destructive border-destructive/40";
     default:
-      return "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30";
+      return "bg-info-muted text-info border-info/40";
   }
 }
 
@@ -183,11 +183,7 @@ export function AddDocumentsPanel({
       </div>
 
       {selectedNotReady.length > 0 ? (
-        <p
-          className="mt-2 text-xs text-amber-700 dark:text-amber-400"
-          role="status"
-          data-testid="add-documents-warning"
-        >
+        <p className="mt-2 text-xs text-warning" role="status" data-testid="add-documents-warning">
           {selectedNotReady.length} selected document
           {selectedNotReady.length === 1 ? " is" : "s are"} still ingesting — wait until ready
           before running.
@@ -221,7 +217,7 @@ export function AddDocumentsPanel({
             </div>
             {urlError ? (
               <p
-                className="text-xs text-red-700 dark:text-red-400"
+                className="text-xs text-destructive"
                 role="alert"
                 data-testid="add-documents-url-error"
               >

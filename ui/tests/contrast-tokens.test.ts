@@ -191,13 +191,17 @@ describe("status token contrast (SC 1.4.3, #267)", () => {
 });
 
 /**
- * #267 — chart series tokens `--chart-1..5`. Series marks are meaningful
- * graphics (SC 1.4.11): each must clear ≥3:1 against the chart surface in both
- * themes. Five DISTINCT colours are required, or two series read as one.
+ * #267 — chart series tokens `--chart-1..5` (#301 added 6 and 7 for the
+ * seven-category token breakdown). Series marks are meaningful graphics
+ * (SC 1.4.11): each must clear ≥3:1 against the chart surface in both themes.
+ * Seven DISTINCT colours are required, or two series read as one.
  */
+const CHART_SERIES = 7;
+const CHART_INDEXES = Array.from({ length: CHART_SERIES }, (_, i) => i + 1);
+
 describe("chart token contrast (SC 1.4.11, #267)", () => {
   for (const theme of THEMES) {
-    for (let i = 1; i <= 5; i += 1) {
+    for (let i = 1; i <= CHART_SERIES; i += 1) {
       for (const surface of ["background", "card"] as const) {
         it(`${theme.name}: --chart-${i} meets ≥3:1 against --${surface}`, () => {
           expect(
@@ -206,9 +210,9 @@ describe("chart token contrast (SC 1.4.11, #267)", () => {
         });
       }
     }
-    it(`${theme.name}: the five chart colours are distinct`, () => {
-      const values = [1, 2, 3, 4, 5].map((i) => token(theme.block, `chart-${i}`));
-      expect(new Set(values).size).toBe(5);
+    it(`${theme.name}: the ${CHART_SERIES} chart colours are distinct`, () => {
+      const values = CHART_INDEXES.map((i) => token(theme.block, `chart-${i}`));
+      expect(new Set(values).size).toBe(CHART_SERIES);
     });
   }
 });
@@ -222,7 +226,7 @@ describe("status + chart tokens are exposed to Tailwind (#267)", () => {
   const theme = css.match(/@theme inline\s*\{([\s\S]*?)\}/)?.[1] ?? "";
   const names = [
     ...STATUSES.flatMap((s) => [s, `${s}-foreground`, `${s}-muted`]),
-    ...[1, 2, 3, 4, 5].map((i) => `chart-${i}`),
+    ...CHART_INDEXES.map((i) => `chart-${i}`),
   ];
   for (const name of names) {
     it(`--color-${name} maps to hsl(var(--${name}))`, () => {

@@ -50,7 +50,7 @@ export function FindingBody({ body }: { body: string }): React.ReactElement | nu
           aria-expanded={expanded}
           aria-controls={bodyId}
           onClick={() => setExpanded((v) => !v)}
-          className="mt-1 rounded text-xs font-medium text-sky-700 dark:text-sky-400 underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
+          className="mt-1 rounded text-xs font-medium text-info underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-info"
         >
           {expanded ? "Show less" : "Show more"}
         </button>

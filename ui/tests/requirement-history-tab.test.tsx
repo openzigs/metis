@@ -18,13 +18,19 @@ vi.mock("@/lib/auth-context", () => ({
 }));
 
 // Replace the heavy diff viewer with a marker so we can assert it rendered.
-vi.mock("react-diff-viewer-continued", () => ({
-  default: ({ leftTitle, rightTitle }: { leftTitle: string; rightTitle: string }) => (
-    <div data-testid="diff">
-      {leftTitle} vs {rightTitle}
-    </div>
-  ),
-}));
+// `diffViewerLoads` counts evaluations of the module (#272: it must load only
+// when a comparison is shown, not with the tab).
+const diffViewerLoads = vi.hoisted(() => ({ count: 0 }));
+vi.mock("react-diff-viewer-continued", () => {
+  diffViewerLoads.count += 1;
+  return {
+    default: ({ leftTitle, rightTitle }: { leftTitle: string; rightTitle: string }) => (
+      <div data-testid="diff">
+        {leftTitle} vs {rightTitle}
+      </div>
+    ),
+  };
+});
 
 // Radix dropdown relies on pointer APIs jsdom lacks; render a flat menu instead.
 vi.mock("@/components/ui/dropdown-menu", () => ({
@@ -78,6 +84,19 @@ describe("RequirementHistoryTab", () => {
     useAuth.mockReturnValue({ user: { role: "reader" } });
   });
 
+  // Runs first: once any test has loaded the diff viewer it stays loaded.
+  it("loads the diff viewer only once two versions are compared (#272)", async () => {
+    list.mockResolvedValue(page([entry(2), entry(1)]));
+    render(<RequirementHistoryTab requirementId="req-1" />);
+    await waitFor(() => expect(screen.getByText("Version 2")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /Version 2/ }));
+    expect(diffViewerLoads.count).toBe(0);
+
+    fireEvent.click(screen.getByRole("button", { name: /Version 1/ }));
+    expect(await screen.findByTestId("diff")).toHaveTextContent("Version 1 vs Version 2");
+    expect(diffViewerLoads.count).toBe(1);
+  });
+
   it("renders the timeline from the API", async () => {
     list.mockResolvedValue(page([entry(2), entry(1)]));
     render(<RequirementHistoryTab requirementId="req-1" />);
@@ -102,7 +121,7 @@ describe("RequirementHistoryTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /Version 1/ }));
 
     await waitFor(() => expect(screen.getByTestId("version-diff")).toBeInTheDocument());
-    expect(screen.getByTestId("diff")).toHaveTextContent("Version 1 vs Version 2");
+    expect(await screen.findByTestId("diff")).toHaveTextContent("Version 1 vs Version 2");
   });
 
   it("hides restore controls for readers", async () => {

@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { FileQuestion } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PAGE_TITLE_CLASS } from "@/components/ui/page-header";
 
 /**
  * Issue #430 (epic #407) — branded application-wide 404.
@@ -44,7 +45,7 @@ export default function NotFound() {
       </Link>
 
       <FileQuestion className="h-12 w-12 text-muted-foreground" aria-hidden />
-      <h1 className="text-2xl font-semibold">Page not found</h1>
+      <h1 className={PAGE_TITLE_CLASS}>Page not found</h1>
       <p className="max-w-md text-sm text-muted-foreground">
         We couldn&apos;t find the page you were looking for. The link may be broken, or the page may
         have been moved or deleted.

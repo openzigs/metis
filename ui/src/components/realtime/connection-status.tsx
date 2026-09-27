@@ -92,14 +92,16 @@ export function ConnectionStatus() {
       data-testid="connection-status"
       className={cn(
         "fixed inset-x-0 top-0 z-[60] flex items-center justify-center gap-2 px-3 py-1.5 text-center text-xs font-medium shadow-sm",
-        reconnecting ? "bg-amber-500/95 text-amber-950" : "bg-rose-600/95 text-rose-50",
+        reconnecting
+          ? "bg-warning/95 text-warning-foreground"
+          : "bg-destructive/95 text-destructive-foreground",
       )}
     >
       <span
         aria-hidden="true"
         className={cn(
           "inline-block h-2 w-2 rounded-full",
-          reconnecting ? "animate-pulse bg-amber-900" : "bg-rose-200",
+          reconnecting ? "animate-pulse bg-warning-muted" : "bg-destructive/10",
         )}
       />
       {label(shownStatus)}

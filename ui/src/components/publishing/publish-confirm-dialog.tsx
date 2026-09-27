@@ -72,7 +72,7 @@ export function PublishConfirmDialog({
         </DialogHeader>
 
         <p
-          className="mt-2 rounded bg-red-50 p-2 text-sm text-red-800"
+          className="mt-2 rounded bg-destructive/10 p-2 text-sm text-destructive"
           data-testid="publish-confirm-irreversible"
         >
           This writes to GitHub. Issues created here cannot be deleted from Metis — they can only be
@@ -81,13 +81,13 @@ export function PublishConfirmDialog({
 
         <dl className="mt-3 space-y-1 text-sm">
           <div className="flex gap-2">
-            <dt className="text-slate-500">Repository</dt>
+            <dt className="text-muted-foreground">Repository</dt>
             <dd className="font-mono font-medium" data-testid="publish-confirm-target">
               {repo}
             </dd>
           </div>
           <div className="flex gap-2">
-            <dt className="text-slate-500">Drafts selected</dt>
+            <dt className="text-muted-foreground">Drafts selected</dt>
             <dd className="font-medium" data-testid="publish-confirm-selection">
               {draftCount}
             </dd>
@@ -103,19 +103,16 @@ export function PublishConfirmDialog({
               </p>
               <ul className="mt-2 flex flex-wrap gap-2">
                 {summary.map((s) => (
-                  <li
-                    key={s.kind}
-                    className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700"
-                  >
+                  <li key={s.kind} className="rounded bg-muted px-2 py-0.5 text-xs text-foreground">
                     {s.kind} × {s.count}
                   </li>
                 ))}
               </ul>
             </>
           ) : planLoading ? (
-            <p className="text-sm text-slate-500">Working out what will be written…</p>
+            <p className="text-sm text-muted-foreground">Working out what will be written…</p>
           ) : (
-            <p className="text-sm text-amber-800">
+            <p className="text-sm text-warning">
               {planError
                 ? "Could not compute the plan for this batch. The publish will still run exactly as configured above — continue only if the repository is right."
                 : "No plan available for this batch."}
@@ -125,7 +122,7 @@ export function PublishConfirmDialog({
 
         {credential && (
           <p
-            className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-800"
+            className="mt-2 rounded bg-warning-muted p-2 text-xs text-warning"
             data-testid="publish-confirm-credential"
           >
             {credential}

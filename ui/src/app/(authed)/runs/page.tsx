@@ -19,6 +19,7 @@ import {
   type ResponsiveColumn,
 } from "@/components/tables/responsive-table";
 import { runsApi, type AgentRunListFilters, type AgentRunSummary } from "@/lib/runs-api";
+import { PageHeader } from "@/components/ui/page-header";
 
 function formatTimestamp(iso: string | null): string {
   if (!iso) return "—";
@@ -32,13 +33,13 @@ function formatTimestamp(iso: string | null): string {
 function statusClass(status: string): string {
   switch (status) {
     case "completed":
-      return "text-green-600";
+      return "text-success";
     case "failed":
-      return "text-red-600";
+      return "text-destructive";
     case "cancelled":
-      return "text-amber-600";
+      return "text-warning";
     default:
-      return "text-blue-600";
+      return "text-info";
   }
 }
 
@@ -49,7 +50,7 @@ const runColumns: ResponsiveColumn<AgentRunSummary>[] = [
     cell: (r) => (
       <Link
         href={`/runs/${r.id}`}
-        className={`${touchTargetClass} text-blue-600 underline-offset-2 hover:underline`}
+        className={`${touchTargetClass} text-info underline-offset-2 hover:underline`}
       >
         {formatTimestamp(r.startedAt)}
       </Link>
@@ -88,12 +89,10 @@ export default function RunsPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="runs-page">
-      <div>
-        <h1 className="text-2xl font-semibold">Agent Runs</h1>
-        <p className="text-sm text-muted-foreground">
-          Deterministic replay of every multi-agent execution. Click a run to view the timeline.
-        </p>
-      </div>
+      <PageHeader
+        title="Agent Runs"
+        description="Deterministic replay of every multi-agent execution. Click a run to view the timeline."
+      />
 
       <Card className="space-y-3 p-4">
         <div className="grid gap-3 sm:grid-cols-4">
@@ -146,7 +145,7 @@ export default function RunsPage() {
             <SkeletonText lines={4} />
           </div>
         ) : runs.isError ? (
-          <div className="p-6 text-sm text-red-600">
+          <div className="p-6 text-sm text-destructive">
             Failed to load runs: {(runs.error as Error).message}
           </div>
         ) : (runs.data?.items ?? []).length === 0 ? (

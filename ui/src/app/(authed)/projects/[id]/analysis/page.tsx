@@ -96,6 +96,7 @@ import {
 } from "@/components/requirements/MergeConflictModal";
 import { requirementUpdateApi, assignmentApi } from "@/lib/collaboration-api";
 import { MessageSquare } from "lucide-react";
+import { PageHeader } from "@/components/ui/page-header";
 
 const SPECIALIST_AGENTS: AnalysisAgentKey[] = ["document", "code", "database", "web"];
 
@@ -457,28 +458,32 @@ export default function AnalysisPage(): React.ReactElement {
 
   return (
     <div className="space-y-6 p-6">
-      <header className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">
-            Requirements Analysis — {project.data?.name ?? "loading…"}
-          </h1>
-          <p className="text-sm text-muted-foreground">
+      <PageHeader
+        title={<>Requirements Analysis — {project.data?.name ?? "loading…"}</>}
+        description={
+          <>
             Synthesize structured requirements &amp; acceptance criteria from this project&apos;s
             documents and code. (To map a requirement change to affected code across multiple
             projects, use Impact Analysis.)
-          </p>
-        </div>
-        {costCap.data ? (
-          <div className="rounded border border-border bg-muted/40 px-3 py-2 text-xs">
-            <div className="text-muted-foreground">Monthly token usage</div>
-            <div className="font-mono">
-              {formatTokens(costCap.data.monthlyUsed)} /{" "}
-              {costCap.data.monthlyCap === 0 ? "\u221E" : formatTokens(costCap.data.monthlyCap)}
-            </div>
-            {costCap.data.exceeded ? <div className="text-destructive">cap exceeded</div> : null}
-          </div>
-        ) : null}
-      </header>
+          </>
+        }
+        actions={
+          <>
+            {costCap.data ? (
+              <div className="rounded border border-border bg-muted/40 px-3 py-2 text-xs">
+                <div className="text-muted-foreground">Monthly token usage</div>
+                <div className="font-mono">
+                  {formatTokens(costCap.data.monthlyUsed)} /{" "}
+                  {costCap.data.monthlyCap === 0 ? "\u221E" : formatTokens(costCap.data.monthlyCap)}
+                </div>
+                {costCap.data.exceeded ? (
+                  <div className="text-destructive">cap exceeded</div>
+                ) : null}
+              </div>
+            ) : null}
+          </>
+        }
+      />
 
       <Card className="space-y-4 p-4">
         <div>

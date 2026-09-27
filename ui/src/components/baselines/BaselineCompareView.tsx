@@ -31,9 +31,9 @@ function PinList({
   if (entries.length === 0) return null;
   const toneClass =
     tone === "added"
-      ? "text-emerald-700 dark:text-emerald-400"
+      ? "text-success"
       : tone === "removed"
-        ? "text-red-700 dark:text-red-400"
+        ? "text-destructive"
         : "text-muted-foreground";
   return (
     <section className="space-y-1" data-testid={testId}>

@@ -101,7 +101,7 @@ export function BudgetSettingsCard({ projectId, current, canEdit = true }: Props
           <span
             role="status"
             aria-live="polite"
-            className="rounded bg-emerald-100 px-2 py-1 text-xs text-emerald-900"
+            className="rounded bg-success-muted px-2 py-1 text-xs text-success"
             data-testid="budget-saved-toast"
           >
             Saved

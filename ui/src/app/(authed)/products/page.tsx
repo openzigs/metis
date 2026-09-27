@@ -21,6 +21,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function ProductsPage() {
   const qc = useQueryClient();
@@ -54,82 +55,79 @@ export default function ProductsPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Products</h1>
-          <p className="text-sm text-muted-foreground">
-            Multi-repository product documentation — group repos, detect relationships, and generate
-            unified docs.
-          </p>
-        </div>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button data-testid="new-product-button">New product</Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Create product</DialogTitle>
-            </DialogHeader>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                create.mutate();
-              }}
-              className="space-y-4"
-            >
-              <div className="space-y-2">
-                <Label htmlFor="product-name">Name</Label>
-                <Input
-                  id="product-name"
-                  value={name}
-                  onChange={(e) => {
-                    const newName = e.target.value;
-                    setName(newName);
-                    if (!slugManuallyEdited) {
-                      setSlug(
-                        newName
-                          .toLowerCase()
-                          .replace(/[^a-z0-9\s-]/g, "")
-                          .replace(/\s+/g, "-")
-                          .replace(/-+/g, "-")
-                          .replace(/^-|-$/g, ""),
-                      );
-                    }
-                  }}
-                  placeholder="My Product"
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="product-slug">Slug</Label>
-                <Input
-                  id="product-slug"
-                  value={slug}
-                  onChange={(e) => {
-                    setSlug(e.target.value);
-                    setSlugManuallyEdited(true);
-                  }}
-                  placeholder="my-product"
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="product-description">Description</Label>
-                <Input
-                  id="product-description"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Optional description"
-                />
-              </div>
-              {error && <p className="text-sm text-destructive">{error}</p>}
-              <Button type="submit" disabled={create.isPending} className="w-full">
-                {create.isPending ? "Creating…" : "Create"}
-              </Button>
-            </form>
-          </DialogContent>
-        </Dialog>
-      </header>
+      <PageHeader
+        title="Products"
+        description="Multi-repository product documentation — group repos, detect relationships, and generate unified docs."
+        actions={
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+              <Button data-testid="new-product-button">New product</Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Create product</DialogTitle>
+              </DialogHeader>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  create.mutate();
+                }}
+                className="space-y-4"
+              >
+                <div className="space-y-2">
+                  <Label htmlFor="product-name">Name</Label>
+                  <Input
+                    id="product-name"
+                    value={name}
+                    onChange={(e) => {
+                      const newName = e.target.value;
+                      setName(newName);
+                      if (!slugManuallyEdited) {
+                        setSlug(
+                          newName
+                            .toLowerCase()
+                            .replace(/[^a-z0-9\s-]/g, "")
+                            .replace(/\s+/g, "-")
+                            .replace(/-+/g, "-")
+                            .replace(/^-|-$/g, ""),
+                        );
+                      }
+                    }}
+                    placeholder="My Product"
+                    required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="product-slug">Slug</Label>
+                  <Input
+                    id="product-slug"
+                    value={slug}
+                    onChange={(e) => {
+                      setSlug(e.target.value);
+                      setSlugManuallyEdited(true);
+                    }}
+                    placeholder="my-product"
+                    required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="product-description">Description</Label>
+                  <Input
+                    id="product-description"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="Optional description"
+                  />
+                </div>
+                {error && <p className="text-sm text-destructive">{error}</p>}
+                <Button type="submit" disabled={create.isPending} className="w-full">
+                  {create.isPending ? "Creating…" : "Create"}
+                </Button>
+              </form>
+            </DialogContent>
+          </Dialog>
+        }
+      />
 
       {list.isLoading && <SkeletonText lines={3} />}
 

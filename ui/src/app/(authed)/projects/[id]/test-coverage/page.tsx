@@ -47,6 +47,7 @@ import {
 } from "@/lib/test-coverage-api";
 import { CoverageMatrix } from "@/components/test-coverage/coverage-matrix";
 import { testManagementApi } from "@/lib/test-management-api";
+import { PageHeader } from "@/components/ui/page-header";
 
 function parseGwt(json: string): { given: string[]; when: string[]; then: string[] } {
   try {
@@ -204,13 +205,13 @@ function safeNum(value: number | null | undefined): number {
 function severityClass(sev: string): string {
   switch (sev) {
     case "critical":
-      return "bg-red-700 text-white";
+      return "bg-destructive text-destructive-foreground";
     case "high":
-      return "bg-red-500 text-white";
+      return "bg-destructive text-destructive-foreground";
     case "medium":
-      return "bg-amber-500 text-white";
+      return "bg-warning text-warning-foreground";
     default:
-      return "bg-slate-400 text-white";
+      return "bg-muted-foreground text-background";
   }
 }
 
@@ -218,13 +219,13 @@ function statusClass(status: string): string {
   switch (status) {
     case "running":
     case "queued":
-      return "bg-blue-500 text-white";
+      return "bg-info text-info-foreground";
     case "succeeded":
-      return "bg-green-600 text-white";
+      return "bg-success text-success-foreground";
     case "failed":
-      return "bg-red-600 text-white";
+      return "bg-destructive text-destructive-foreground";
     default:
-      return "bg-slate-400 text-white";
+      return "bg-muted-foreground text-background";
   }
 }
 
@@ -437,13 +438,10 @@ export default function TestCoveragePage() {
 
   return (
     <div className="p-6 space-y-6" data-testid="test-coverage-page">
-      <header className="space-y-1">
-        <h1 className="text-2xl font-bold">Test Coverage</h1>
-        <p className="text-sm text-muted-foreground">
-          Import existing tests, run gap analysis, and export coverage reports or AI-generated
-          suggestions.
-        </p>
-      </header>
+      <PageHeader
+        title="Test Coverage"
+        description="Import existing tests, run gap analysis, and export coverage reports or AI-generated suggestions."
+      />
 
       {/* ---- Section 1: Import ---- */}
       <Card className="p-4 space-y-3" data-testid="tc-import-card">
@@ -760,14 +758,14 @@ export default function TestCoveragePage() {
           />
           <div className="flex gap-3 text-xs text-muted-foreground">
             <span>
-              <span className="inline-block w-3 h-3 bg-green-500 align-middle mr-1" />≥ 0.8 covered
+              <span className="inline-block w-3 h-3 bg-success align-middle mr-1" />≥ 0.8 covered
             </span>
             <span>
-              <span className="inline-block w-3 h-3 bg-amber-500 align-middle mr-1" />
+              <span className="inline-block w-3 h-3 bg-warning align-middle mr-1" />
               0.5–0.8 partial
             </span>
             <span>
-              <span className="inline-block w-3 h-3 bg-red-500 align-middle mr-1" />
+              <span className="inline-block w-3 h-3 bg-destructive align-middle mr-1" />
               &lt; 0.5 uncovered
             </span>
           </div>
@@ -816,7 +814,10 @@ export default function TestCoveragePage() {
                   <div className="flex items-center gap-2">
                     <span className="font-medium truncate">{s.title}</span>
                     {s.lowConfidence && (
-                      <Badge className="bg-amber-500 text-white" data-testid="tc-low-conf-badge">
+                      <Badge
+                        className="bg-warning text-warning-foreground"
+                        data-testid="tc-low-conf-badge"
+                      >
                         low confidence
                       </Badge>
                     )}
@@ -914,7 +915,7 @@ export default function TestCoveragePage() {
             <DialogDescription>
               Review the generated Given/When/Then before accepting.
               {activeSuggestion?.lowConfidence && (
-                <span className="block mt-1 text-amber-600 font-medium">
+                <span className="block mt-1 text-warning font-medium">
                   ⚠ Low-confidence: faithfulness &lt; 0.6.
                 </span>
               )}

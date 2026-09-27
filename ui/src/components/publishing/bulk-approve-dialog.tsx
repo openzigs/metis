@@ -63,16 +63,16 @@ export function BulkApproveDialog({
         </DialogHeader>
         <ul className="mt-2 space-y-1 text-sm" data-testid="bulk-approve-counts">
           <li>
-            <span className="text-emerald-700 font-medium">{counts.created}</span> will be approved
+            <span className="text-success font-medium">{counts.created}</span> will be approved
             (draft → approved)
           </li>
           <li>
-            <span className="text-sky-700 font-medium">{counts.updated}</span> already approved
+            <span className="text-info font-medium">{counts.updated}</span> already approved
             (re-confirmed)
           </li>
           <li>
-            <span className="text-slate-500 font-medium">{counts.skipped}</span> skipped (published
-            or failed)
+            <span className="text-muted-foreground font-medium">{counts.skipped}</span> skipped
+            (published or failed)
           </li>
         </ul>
         <div className="mt-4 flex justify-end gap-2">

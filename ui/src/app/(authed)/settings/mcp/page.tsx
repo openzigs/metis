@@ -32,6 +32,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PageHeader } from "@/components/ui/page-header";
 
 type TabId = "connected" | "registry" | "federated" | "import-export";
 
@@ -46,18 +47,20 @@ export default function McpSettingsPage() {
   const [tab, setTab] = useState<TabId>("connected");
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="mcp-settings-page">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">MCP platform</h1>
-          <p className="text-sm text-muted-foreground">
+      <PageHeader
+        title="MCP platform"
+        description={
+          <>
             Browse the public registry, govern per-tool access, verify server integrity, and
             round-trip Copilot CLI <code>mcp.json</code> configs.
-          </p>
-        </div>
-        <Button asChild>
-          <Link href="/admin/mcp">Add MCP server</Link>
-        </Button>
-      </header>
+          </>
+        }
+        actions={
+          <Button asChild>
+            <Link href="/admin/mcp">Add MCP server</Link>
+          </Button>
+        }
+      />
       {/* #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, aria-controls. */}
       <Tabs value={tab} onValueChange={(v) => setTab(v as TabId)}>
         <TabsList
