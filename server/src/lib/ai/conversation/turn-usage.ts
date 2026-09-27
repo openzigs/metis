@@ -36,7 +36,14 @@ export const ESTIMATED_TURN_AGENT_STEP = "chat-estimated";
 
 /** True when a provider reported any usage at all for a call or turn. */
 export function isReportedUsage(u: TokenUsage | null | undefined): u is TokenUsage {
-  return !!u && (u.promptTokens > 0 || u.completionTokens > 0 || u.totalTokens > 0);
+  return (
+    !!u &&
+    (u.promptTokens > 0 ||
+      u.completionTokens > 0 ||
+      u.totalTokens > 0 ||
+      (u.cacheReadTokens ?? 0) > 0 ||
+      (u.cacheWriteTokens ?? 0) > 0)
+  );
 }
 
 /**

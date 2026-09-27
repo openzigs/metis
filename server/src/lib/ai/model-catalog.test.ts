@@ -333,6 +333,34 @@ describe("ensureLocalDiscovery (#195)", () => {
     );
   });
 
+  it("a refresh whose listing fails keeps the previous facts (#293 review)", async () => {
+    let now = 1_000;
+    await ensureLocalDiscovery(BASE, "k", { fetchImpl: listing() as never, now: () => now });
+    expect(lookupCatalogEntry("local-gemma", "m", {})?.contextWindow).toBe(4_096);
+    for (const failing of [
+      vi.fn(async () => new Response("down", { status: 503 })),
+      vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      }),
+      vi.fn(async () => new Response(JSON.stringify({ nope: true }))),
+    ]) {
+      now += DISCOVERY_TTL_MS + 1;
+      await expect(discoverLocalModels(BASE, "k", failing as never, () => now)).resolves.toEqual([
+        { id: "m", contextWindow: 4_096 },
+      ]);
+      expect(failing).toHaveBeenCalledTimes(1);
+      expect(lookupCatalogEntry("local-gemma", "m", {})?.contextWindow).toBe(4_096);
+      // The timestamp moved: a runtime that stays down is not re-probed at once.
+      const again = vi.fn();
+      await discoverLocalModels(BASE, "k", again as never, () => now);
+      expect(again).not.toHaveBeenCalled();
+    }
+    // A listing that SUCCEEDS with no models is believed.
+    now += DISCOVERY_TTL_MS + 1;
+    const empty = vi.fn(async () => new Response(JSON.stringify({ data: [] })));
+    await expect(discoverLocalModels(BASE, "k", empty as never, () => now)).resolves.toEqual([]);
+  });
+
   it("an already-aborted signal returns without waiting", async () => {
     const f = vi.fn(() => new Promise<Response>(() => undefined));
     const ac = new AbortController();

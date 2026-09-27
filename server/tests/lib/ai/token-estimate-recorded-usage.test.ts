@@ -32,7 +32,10 @@
  * carries tools (≈230 tokens in the DeepSeek recording: 367 reported for ~135
  * estimated). It is a fixed per-request cost, absorbed by calibration once a
  * tool-offering turn reports usage, and small against any window where overflow
- * matters. See the #203 decision on `messages.countTokens` in
+ * matters. Likewise NOT a tolerance: a multi-turn tool transcript (`tool-results`)
+ * is under-counted by ~30% — a shape the chat pre-send estimate never sees, since
+ * past tool activity is not replayed; pinned below as a characterisation.
+ * See the #203 decision on `messages.countTokens` in
  * `server/src/lib/ai/conversation/token-estimator.ts`.
  */
 import http from "node:http";
@@ -144,8 +147,35 @@ function recordedPrompt(f: RecordedFixture): { messages: ChatMessage[]; tools: C
   const body = f.exchanges[0].request.body ?? {};
   const messages: ChatMessage[] = [];
   if (body.system !== undefined) messages.push({ role: "system", content: text(body.system) });
-  for (const m of body.messages as Array<{ role: ChatMessage["role"]; content: unknown }>) {
-    messages.push({ role: m.role, content: text(m.content) });
+  // OpenAI-compatible transcripts carry tool calls / results as fields beside
+  // the content; they are rebuilt so the adapter re-sends the same turns.
+  const toolNames = new Map<string, string>();
+  for (const m of body.messages as Array<Body & { role: ChatMessage["role"] }>) {
+    const calls = (m.tool_calls as Array<{ id: string; function: Body }> | undefined) ?? [];
+    if (calls.length > 0) {
+      messages.push({
+        role: m.role,
+        content: text(m.content),
+        toolCalls: calls.map((c) => {
+          toolNames.set(c.id, String(c.function.name));
+          return {
+            id: c.id,
+            name: String(c.function.name),
+            args: JSON.parse(String(c.function.arguments)) as Record<string, unknown>,
+          };
+        }),
+      });
+    } else if (m.role === "tool") {
+      const id = String(m.tool_call_id);
+      messages.push({
+        role: "tool",
+        content: text(m.content),
+        toolCallId: id,
+        name: toolNames.get(id) ?? "",
+      });
+    } else {
+      messages.push({ role: m.role, content: text(m.content) });
+    }
   }
   const tools = ((body.tools as Body[] | undefined) ?? []).map((t) => {
     const fn = (t.function as Body | undefined) ?? t;
@@ -265,5 +295,43 @@ describe("#203 — the estimate after one calibrated turn, against recorded inpu
     expect(Math.abs(estimate - truth) / truth).toBeLessThanOrEqual(0.15);
     // Without the specs it was less than half the real prompt.
     expect(estimateMessagesTokens(withTools.messages, ratio)).toBeLessThan(truth * 0.5);
+  });
+
+  it("ollama: a held-out multi-turn tool transcript is UNDER-counted by a measured ~30%", async () => {
+    // #293 review — the text-prompt case above calibrates and estimates two
+    // near-identical prompts, so it mostly shows the arithmetic. This case is
+    // held out: a 5-message transcript (system, user, an assistant turn with
+    // two native tool calls, two tool results) plus the tool specs, 278 input
+    // tokens recorded, estimated on the ratio learned from the ~38-token
+    // `text-chat` prompt.
+    //
+    // Measured: 194 estimated vs 278 reported, a 30% UNDER-count. Tool-call
+    // arguments are not message text, and the runtime's chat template frames
+    // each tool call and result with tokens the estimator cannot see. This is
+    // a characterisation, NOT a tolerance: the chat pre-send estimate never
+    // sees a transcript like this (past tool activity is not replayed —
+    // `context-builder.ts`), and a tool loop's own calls are metered from
+    // provider-reported usage. Both bounds are pinned so a change to the
+    // estimator that moves this residual must restate it here.
+    const rt = RUNTIMES.find((r) => r.name === "ollama")!;
+    const first = await replay(rt, "text-chat");
+    const held = await replay(rt, "tool-results");
+    const ratio = resolveTokenRatio({
+      provider: rt.provider,
+      model: "recorded",
+      samples: [{ promptChars: promptChars(first.messages), inputTokens: first.inputTokens }],
+      env: {},
+    });
+    expect(held.messages).toHaveLength(5);
+    expect(held.messages.filter((m) => m.role === "tool")).toHaveLength(2);
+    expect(held.tools).toHaveLength(2);
+    const truth = held.inputTokens;
+    expect(truth).toBe(278);
+    const estimate =
+      estimateMessagesTokens(held.messages, ratio) +
+      estimateCharTokens(nativeToolChars(held.tools), ratio);
+    const under = (truth - estimate) / truth;
+    expect(under).toBeGreaterThan(0.25);
+    expect(under).toBeLessThan(0.35);
   });
 });

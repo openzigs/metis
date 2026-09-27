@@ -459,6 +459,7 @@ async function probeLocalRuntime(
 ): Promise<DiscoveredModel[]> {
   const headers = { Authorization: `Bearer ${apiKey}` };
   let listed: Array<{ id?: unknown; max_model_len?: unknown }> = [];
+  let listingFailed = true;
   try {
     const resp = await fetchImpl(`${base}/models`, {
       headers,
@@ -466,10 +467,25 @@ async function probeLocalRuntime(
     });
     if (resp.ok) {
       const json = (await resp.json()) as { data?: unknown };
-      if (Array.isArray(json.data)) listed = json.data as typeof listed;
+      if (Array.isArray(json.data)) {
+        listed = json.data as typeof listed;
+        listingFailed = false;
+      }
     }
   } catch (err) {
     log.debug("Local model listing failed", { error: (err as Error).message });
+  }
+
+  // #293 review — a refresh whose listing FAILED (network error, non-2xx, no
+  // `data` array) keeps the previous facts rather than overwriting them with
+  // nothing: since #195 a stale cache is refreshed from every tool-carrying
+  // local call, so a transient runtime blip would otherwise erase a known
+  // `tools: false` for a whole TTL. The timestamp still moves, so a runtime
+  // that stays down is not re-probed on every call.
+  const previous = discoveryCache.get(base);
+  if (listingFailed && previous) {
+    discoveryCache.set(base, { at: now(), models: previous.models });
+    return previous.models;
   }
 
   const ids = listed

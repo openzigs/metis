@@ -18,6 +18,13 @@ describe("isReportedUsage", () => {
     expect(isReportedUsage({ promptTokens: 0, completionTokens: 0, totalTokens: 5 })).toBe(true);
     expect(isReportedUsage({ promptTokens: 9, completionTokens: 0, totalTokens: 0 })).toBe(true);
   });
+
+  it("counts a report of cache tokens alone as reported (#293 review)", () => {
+    const zero = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    expect(isReportedUsage({ ...zero, cacheReadTokens: 4 })).toBe(true);
+    expect(isReportedUsage({ ...zero, cacheWriteTokens: 4 })).toBe(true);
+    expect(isReportedUsage({ ...zero, cacheReadTokens: 0, cacheWriteTokens: 0 })).toBe(false);
+  });
 });
 
 describe("billableTurnUsage", () => {
