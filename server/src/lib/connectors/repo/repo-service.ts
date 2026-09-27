@@ -819,17 +819,31 @@ export async function openRepoContentFetcher(
   await assertHostFromBaseUrl(conn.apiBaseUrl);
   const octokit = await acquireOctokit(conn.apiBaseUrl, conn.secretRef);
   const where = { owner: git.ownerOrOrg, repo: git.repoName };
+  // An API failure (a path that does not exist, a revoked token) is reported
+  // by status and code; the upstream message stays out of the response.
+  const getContent = async (p: string) => {
+    try {
+      return await octokit.rest.repos.getContent({ ...where, path: p });
+    } catch (err) {
+      if (err instanceof ConnectorError) throw err;
+      const status = (err as { status?: unknown }).status;
+      log.warn("Repository content read failed", { connectorId: id, status });
+      throw status === 404
+        ? new ConnectorError(404, "REPO_PATH_NOT_FOUND", "path not found in the repository")
+        : new ConnectorError(502, "REPO_READ_FAILED", "the repository could not be read");
+    }
+  };
   return {
     label: `${git.ownerOrOrg}/${git.repoName}`,
     fetcher: {
       async list(dir: string) {
-        const r = await octokit.rest.repos.getContent({ ...where, path: dir });
+        const r = await getContent(dir);
         return Array.isArray(r.data)
           ? r.data.map((e) => ({ path: e.path, type: e.type, size: e.size }))
           : [];
       },
       async read(filePath: string) {
-        const r = await octokit.rest.repos.getContent({ ...where, path: filePath });
+        const r = await getContent(filePath);
         const d = r.data;
         if (Array.isArray(d) || d.type !== "file") {
           throw new ConnectorError(400, "REPO_PATH_NOT_A_FILE", "path is not a file");

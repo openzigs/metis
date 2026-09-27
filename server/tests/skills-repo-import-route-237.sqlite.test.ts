@@ -97,14 +97,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     const app = () => {
       const a = express();
+      // One trusted proxy hop: each test's client IP is its own X-Forwarded-For,
+      // so the pre-auth limiter's counter never carries over between tests.
+      a.set("trust proxy", 1);
       a.use(express.json());
       a.use("/api/skills", skillsRouter());
       a.use(notFoundHandler);
       a.use(errorHandler);
       return a;
     };
-    const importRepo = (body: Record<string, unknown>, bearer?: string) => {
-      const req = request(app()).post("/api/skills/import/repository");
+    const importRepo = (body: Record<string, unknown>, bearer?: string, ip = "203.0.113.1") => {
+      const req = request(app()).post("/api/skills/import/repository").set("X-Forwarded-For", ip);
       if (bearer) req.set("Authorization", `Bearer ${bearer}`);
       return req.send(body);
     };
@@ -259,9 +262,32 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     }
 
+    it("a path that does not exist in the repository is a 404, not a 500", async () => {
+      const res = await importRepo(
+        { projectId: "p-1", connectorId: "rc-1", path: "no-such-dir" },
+        token("u-admin", "admin"),
+      );
+      expect(res.status, res.text).toBe(404);
+      expect(res.body.error?.code).toBe("REPO_PATH_NOT_FOUND");
+      expect(res.text).not.toContain("Not Found");
+    });
+
     it("is rate-limited per IP BEFORE authentication (an anonymous flood gets 429, not 401)", async () => {
-      process.env.SKILL_REPO_IMPORT_RATE_LIMIT_MAX = "1";
-      const res = await importRepo({ projectId: "p-1", connectorId: "rc-1" });
+      process.env.SKILL_REPO_IMPORT_RATE_LIMIT_MAX = "2";
+      const codes: number[] = [];
+      for (let i = 0; i < 4; i++) {
+        codes.push(
+          (await importRepo({ projectId: "p-1", connectorId: "rc-1" }, undefined, "203.0.113.99"))
+            .status,
+        );
+      }
+      expect(codes).toEqual([401, 401, 429, 429]);
+      // A valid admin token from the flooding IP is refused too: the limit is pre-auth.
+      const res = await importRepo(
+        { projectId: "p-1", connectorId: "rc-1" },
+        token("u-admin", "admin"),
+        "203.0.113.99",
+      );
       expect(res.status).toBe(429);
       expect(res.body.error?.code).toBe("SKILL_IMPORT_RATE_LIMITED");
       expect(getContent).not.toHaveBeenCalled();
