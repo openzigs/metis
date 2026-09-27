@@ -348,12 +348,19 @@ the runbook it links), then `pnpm embeddings:migrate reindex --all`, then re-rec
 the fixtures under the new runtime and update `RECORD_*` in
 `server/tests/fixtures/embed-parity-probe.mjs`.
 
-**Fixtures are per platform.** q8 vectors are not portable: under 3.8.1 alone,
-darwin-arm64 and linux-x64 agree only to cos ≈ 0.987–1.000. So there is one
-`server/tests/fixtures/embed-parity-v3-gte-modernbert-q8.<platform>-<arch>.json` per
-platform, the test picks the one for `process.platform`-`process.arch`, and an
-opted-in run on a platform with no fixture **fails**. Two linux-x64 recordings on
-different runner CPUs agreed to cos ≥ 0.999999.
+**Fixtures are per platform — and, on linux-x64, per instruction set.** q8 vectors
+are not portable, because onnxruntime picks its quantized kernels by OS, arch and ISA.
+Measured under 3.8.1 + ORT 1.21.0 alone: darwin-arm64 vs linux-x64 agree only to
+cos 0.987–1.000, and a GitHub runner exposing AVX512-VNNI vs one exposing only AVX2
+differ at cos 0.991 on two of the ten strings (the same CPU model, EPYC 9V74, has
+appeared in both classes). Runners that share a class agree at cos 1.0000 across AMD
+and Intel parts. So each fixture is keyed by `platformKey()` in the probe —
+`darwin-arm64`, `linux-x64-avx512vnni`, `linux-x64-avx2` — the test picks the host's
+key, and an opted-in run on a host whose key has no fixture **fails**.
+
+> **Pre-existing, not introduced by #307:** the same drift applies to production. A
+> project indexed on an AVX512-VNNI host and queried from an AVX2-only host (or from
+> macOS) carries it, whatever the library versions.
 
 **Re-recording.** Only from a tree that resolves transformers.js 3.8.1 + ORT 1.21.0 —
 the parent of the #307 upgrade — because the fixture is the truth the upgrade is
@@ -370,7 +377,8 @@ Record linux-x64 **natively on a GitHub runner**, never under emulation (an emul
 amd64 container does not run the host's native kernels): push a branch at that commit
 carrying the current workflow and probe, then
 `gh workflow run embed-real-model-nightly.yml --ref <branch> -f record=true` and take
-the `embed-parity-fixture-linux-x64` artifact.
+the `embed-parity-fixture` artifact, whose file name carries the runner's key. The ISA
+class is random per run, so dispatch a few and keep one per class.
 
 ---
 

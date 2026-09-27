@@ -17,11 +17,12 @@
  * installed ORT is that pin. Moving the pin is a re-embed decision
  * (docs/OPERATIONS.md, "Embedding parity fixtures").
  *
- * q8 vectors are not portable across platforms (darwin-arm64 vs linux-x64 go
- * down to cos 0.987 under 3.8.1 alone), so there is one fixture per
- * `${process.platform}-${process.arch}`
- * (`fixtures/embed-parity-v3-gte-modernbert-q8.<platform>-<arch>.json`), and an
- * opted-in run on a platform with no fixture FAILS rather than skipping.
+ * q8 vectors are not portable across platforms, nor across x64 instruction sets:
+ * under 3.8.1 alone, darwin-arm64 vs linux-x64 go down to cos 0.987, and a linux-x64
+ * runner exposing AVX512-VNNI vs one exposing only AVX2 differ at cos 0.991 on two
+ * rows. So there is one fixture per key — `darwin-arm64`, `linux-x64-avx512vnni`,
+ * `linux-x64-avx2`, … (`platformKey()` in the probe) — and an opted-in run on a host
+ * whose key has no fixture FAILS rather than skipping.
  *
  * The probe runs the PRODUCTION path: `XenovaEmbedder` from the built `dist`, under
  * plain node, in the worker runtime (#189), with the shipped model, CLS pooling,
@@ -60,8 +61,10 @@ import {
   RECORD_ONNXRUNTIME_VERSION,
   RECORD_TRANSFORMERS_VERSION,
   fixtureFileName,
+  linuxCpuFlags,
   platformKey,
   platformOfFixture,
+  x64IsaClass,
   // @ts-expect-error — plain-JS fixture shared with the probe process; no .d.ts.
 } from "./fixtures/embed-parity-probe.mjs";
 
@@ -75,10 +78,11 @@ const MIN_PARITY_COSINE = 0.999;
 /** Largest drift allowed on a raw cross-encoder logit (they span roughly −12…+9). */
 const MAX_RERANK_LOGIT_DRIFT = 0.1;
 /**
- * Platforms that MUST carry a fixture: the CI runner (`linux-x64`, where the
- * PR-time parity job runs) and the platform the #307 measurements were taken on.
+ * Keys that MUST carry a fixture: both ISA classes GitHub's linux-x64 runners have
+ * been observed to expose (the PR-time parity job lands on either, at random), and
+ * the platform the #307 measurements were taken on.
  */
-const REQUIRED_PLATFORMS = ["darwin-arm64", "linux-x64"];
+const REQUIRED_PLATFORMS = ["darwin-arm64", "linux-x64-avx512vnni", "linux-x64-avx2"];
 /**
  * The onnxruntime-node `pnpm-workspace.yaml` pins (#307). Deliberately a literal:
  * moving it must be a reviewed edit here AND there, never a lockfile side effect.
@@ -168,11 +172,32 @@ describe("embed parity fixtures (#307)", () => {
   const fixtures = loadFixtures();
 
   it("maps platform keys to file names and back", () => {
-    expect(fixtureFileName("linux-x64")).toBe("embed-parity-v3-gte-modernbert-q8.linux-x64.json");
+    expect(fixtureFileName("linux-x64-avx2")).toBe(
+      "embed-parity-v3-gte-modernbert-q8.linux-x64-avx2.json",
+    );
     expect(platformOfFixture(fixtureFileName("darwin-arm64"))).toBe("darwin-arm64");
+    expect(platformOfFixture(fixtureFileName("linux-x64-avx512vnni"))).toBe("linux-x64-avx512vnni");
     expect(platformOfFixture("embed-parity-v3-gte-modernbert-q8.json")).toBeNull();
     expect(platformOfFixture("embed-parity-probe.mjs")).toBeNull();
+  });
+
+  it("keys linux-x64 by the ISA class that picks onnxruntime's q8 kernel", () => {
+    expect(x64IsaClass(["avx2", "avx512f", "avx512bw", "avx512_vnni", "avx_vnni"])).toBe(
+      "avx512vnni",
+    );
+    expect(x64IsaClass(["avx2", "avx_vnni"])).toBe("avxvnni");
+    expect(x64IsaClass(["avx2", "avx512f", "avx512bw"])).toBe("avx512bw");
+    expect(x64IsaClass(["sse4_2", "avx2"])).toBe("avx2");
+    expect(x64IsaClass(["sse4_2"])).toBe("baseline");
+    expect(platformKey("linux", "x64", ["avx2"])).toBe("linux-x64-avx2");
+    expect(platformKey("linux", "x64", ["avx2", "avx512_vnni"])).toBe("linux-x64-avx512vnni");
+    // Only linux-x64 is split by ISA; elsewhere the key is platform-arch.
+    expect(platformKey("darwin", "arm64", null)).toBe("darwin-arm64");
     expect(platformKey("win32", "x64")).toBe("win32-x64");
+    expect(
+      linuxCpuFlags(() => "processor\t: 0\nflags\t\t: fpu sse4_2 avx2 avx512_vnni\nbugs\t\t:\n"),
+    ).toEqual(["fpu", "sse4_2", "avx2", "avx512_vnni"]);
+    expect(linuxCpuFlags(() => "processor\t: 0\n")).toBeNull();
   });
 
   it("carries a fixture for every platform that must gate", () => {

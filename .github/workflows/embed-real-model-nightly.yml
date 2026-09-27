@@ -39,7 +39,8 @@ on:
     inputs:
       record:
         description: >-
-          Record this runner's (linux-x64) #307 parity fixture instead of testing.
+          Record this runner's (linux-x64, ISA class varies per run) #307 parity
+          fixture instead of testing.
           Only from a ref that still resolves transformers.js 3.8.1 + onnxruntime-node
           1.21.0; the probe refuses anything else. See docs/OPERATIONS.md.
         type: boolean
@@ -85,16 +86,16 @@ jobs:
         run: |
           grep -m1 'model name' /proc/cpuinfo || true
           echo "ISA: $(grep -o -w 'avx512_vnni\|avx_vnni\|avx512f\|avx2' /proc/cpuinfo | sort -u | tr '\n' ' ')"
-      - name: Record the linux-x64 parity fixture (#307)
+      - name: Record this runner's parity fixture (#307)
         if: ${{ inputs.record }}
         working-directory: server
-        run: node tests/fixtures/embed-parity-probe.mjs record "$RUNNER_TEMP/embed-parity-v3-gte-modernbert-q8.linux-x64.json"
+        run: mkdir -p "$RUNNER_TEMP/parity" && node tests/fixtures/embed-parity-probe.mjs record "$RUNNER_TEMP/parity"
       - name: Upload the recorded fixture
         if: ${{ inputs.record }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: embed-parity-fixture-linux-x64
-          path: ${{ runner.temp }}/embed-parity-v3-gte-modernbert-q8.linux-x64.json
+          name: embed-parity-fixture
+          path: ${{ runner.temp }}/parity/*.json
           if-no-files-found: error
       - name: Real model in the embed worker, from dist
         if: ${{ !inputs.record }}

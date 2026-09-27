@@ -14,14 +14,18 @@
 //   embed   the default embedder (worker runtime, the production default)
 //   rerank  the in-process cross-encoder (inline runtime, as #222 requires)
 //   record  runs `embed` and `rerank` in two child processes and writes THIS
-//           platform's fixture (argv[3] overrides the output path)
+//           host's fixture into this directory (argv[3] overrides the directory)
 //
-// WHY ONE FIXTURE PER PLATFORM. q8 vectors are not bit-portable: onnxruntime's
-// quantized CPU kernels differ by OS/arch, and under 3.8.1 alone darwin-arm64 and
-// linux-x64 already disagree down to cos 0.987 — below the 0.999 bar. A fixture
-// recorded on one platform therefore cannot gate another. The test picks the file
-// named for `${process.platform}-${process.arch}` and FAILS (never skips) when it
-// is missing, so a new platform must be recorded before it can gate anything.
+// WHY ONE FIXTURE PER PLATFORM — AND, ON x64, PER ISA. q8 vectors are not
+// bit-portable: onnxruntime picks its quantized (u8s8) CPU kernels by OS, arch and
+// instruction set. Under 3.8.1 + ORT 1.21.0 alone, darwin-arm64 vs linux-x64
+// disagree down to cos 0.987, and two linux-x64 GitHub runners disagree at cos
+// 0.991 on two rows when one exposes AVX512-VNNI and the other only AVX2 (measured
+// for #307; same CPU model, EPYC 9V74, on both sides). Runners that share an ISA
+// class agree at cos 1.0000. So the key is `<platform>-<arch>` plus, on linux-x64,
+// the ISA class (`linux-x64-avx512vnni`, `linux-x64-avx2`, ...); the test picks the
+// file for the host's key and FAILS (never skips) when it is missing, so a new
+// class must be recorded before it can gate anything.
 //
 // RE-RECORDING — see "Embedding parity fixtures" in docs/OPERATIONS.md. Only ever
 // from a tree that still resolves transformers.js 3.8.1 + onnxruntime-node 1.21.0
@@ -29,11 +33,13 @@
 // recorded under the NEW library would compare the upgrade with itself. linux-x64
 // (the CI platform) is recorded NATIVELY on a GitHub runner, never under
 // emulation: `gh workflow run embed-real-model-nightly.yml --ref <branch>
-// -f record=true` uploads it as the `embed-parity-fixture-linux-x64` artifact.
+// -f record=true` uploads it as the `embed-parity-fixture` artifact. The runner's
+// ISA class is random per run, so dispatch until each class you need has one.
 import { execFile } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { cpus } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
@@ -72,9 +78,43 @@ export const RECORD_ONNXRUNTIME_VERSION = "1.21.0";
 
 const FIXTURE_STEM = "embed-parity-v3-gte-modernbert-q8";
 
-/** `<platform>-<arch>` as node reports it, e.g. `linux-x64`, `darwin-arm64`. */
-export function platformKey(platform = process.platform, arch = process.arch) {
-  return `${platform}-${arch}`;
+/**
+ * The x64 instruction-set class that decides which u8s8 GEMM kernel onnxruntime
+ * runs, from the `flags` of /proc/cpuinfo, most capable first.
+ */
+export function x64IsaClass(flags) {
+  const has = new Set(flags);
+  if (has.has("avx512_vnni")) return "avx512vnni";
+  if (has.has("avx_vnni")) return "avxvnni";
+  if (has.has("avx512bw")) return "avx512bw";
+  if (has.has("avx2")) return "avx2";
+  return "baseline";
+}
+
+/** The host CPU flags from /proc/cpuinfo (linux only), `null` when it has no flags line. */
+export function linuxCpuFlags(readCpuinfo = () => readFileSync("/proc/cpuinfo", "utf8")) {
+  const line = readCpuinfo()
+    .split("\n")
+    .find((l) => l.startsWith("flags"));
+  return line
+    ? line
+        .slice(line.indexOf(":") + 1)
+        .trim()
+        .split(/\s+/)
+    : null;
+}
+
+/**
+ * The fixture key: `<platform>-<arch>`, plus the ISA class on linux-x64, e.g.
+ * `darwin-arm64`, `linux-x64-avx512vnni`, `linux-x64-avx2`.
+ */
+export function platformKey(
+  platform = process.platform,
+  arch = process.arch,
+  flags = platform === "linux" && arch === "x64" ? linuxCpuFlags() : null,
+) {
+  const base = `${platform}-${arch}`;
+  return platform === "linux" && arch === "x64" && flags ? `${base}-${x64IsaClass(flags)}` : base;
 }
 
 /** The fixture file name for one platform. */
@@ -84,7 +124,9 @@ export function fixtureFileName(key = platformKey()) {
 
 /** Inverse of `fixtureFileName`; `null` for any other file. */
 export function platformOfFixture(fileName) {
-  const m = new RegExp(`^${FIXTURE_STEM}\\.([a-z0-9]+-[a-z0-9]+)\\.json$`).exec(fileName);
+  const m = new RegExp(`^${FIXTURE_STEM}\\.([a-z0-9]+-[a-z0-9]+(?:-[a-z0-9]+)?)\\.json$`).exec(
+    fileName,
+  );
   return m ? m[1] : null;
 }
 
@@ -168,7 +210,16 @@ async function runProbe(mode) {
   return JSON.parse(line.slice("PROBE_RESULT ".length));
 }
 
-async function record(outPath) {
+/** /proc/cpuinfo, or "" where there is none — so `isaFlags` is [] off linux. */
+function safeCpuinfo() {
+  try {
+    return readFileSync("/proc/cpuinfo", "utf8");
+  } catch {
+    return "";
+  }
+}
+
+async function record(outDir) {
   const embed = await runProbe("embed");
   const rerank = await runProbe("rerank");
   for (const got of [embed, rerank]) {
@@ -191,6 +242,9 @@ async function record(outPath) {
       platform: key,
       node: process.versions.node,
       cpu: cpus()[0]?.model ?? "unknown",
+      isaFlags: (linuxCpuFlags(safeCpuinfo) ?? []).filter((f) =>
+        ["avx2", "avx512bw", "avx512_vnni", "avx_vnni", "amx_int8"].includes(f),
+      ),
       recordedOn: new Date().toISOString().slice(0, 10),
       issue: 307,
     },
@@ -204,7 +258,9 @@ async function record(outPath) {
     vectors: embed.vectors,
     rerank: { model: RERANK_MODEL, scores: rerank.scores },
   };
-  const target = outPath ?? fileURLToPath(new URL(fixtureFileName(key), import.meta.url));
+  const target = outDir
+    ? join(outDir, fixtureFileName(key))
+    : fileURLToPath(new URL(fixtureFileName(key), import.meta.url));
   writeFileSync(target, `${JSON.stringify(fixture)}\n`);
   process.stdout.write(`recorded ${key} fixture -> ${target}\n`);
 }
