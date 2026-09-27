@@ -193,7 +193,17 @@ export { MAX_EMBED_SEQUENCE_TOKENS };
  */
 export const EMBED_WORKER_MAX_TEXTS_PER_CALL = 16;
 
-/** Lower (never raise) a pipeline tokenizer's truncation length. */
+/**
+ * Lower (never raise) a pipeline tokenizer's truncation length.
+ *
+ * #307 — defined as an OWN data property, never assigned. transformers.js 4 made
+ * `model_max_length` a prototype getter over the tokenizer config, so an assignment
+ * throws in strict code and is silently DROPPED in sloppy code (the embed worker's
+ * body), leaving every row to run at the model's full 8,192 tokens. An own property
+ * shadows that getter in v4 and simply replaces the plain field v3 had; v4's
+ * truncation reads `this.model_max_length`, so it sees the cap either way.
+ * `EMBED_WORKER_SOURCE` mirrors this.
+ */
 export function capTokenizerSequenceLength(
   pipeline: Pick<XenovaPipeline, "tokenizer">,
   maxTokens: number = MAX_EMBED_SEQUENCE_TOKENS,
@@ -201,11 +211,17 @@ export function capTokenizerSequenceLength(
   const tokenizer = pipeline.tokenizer;
   if (!tokenizer) return null;
   const current = tokenizer.model_max_length;
-  tokenizer.model_max_length =
-    typeof current === "number" && Number.isFinite(current)
-      ? Math.min(current, maxTokens)
-      : maxTokens;
-  return tokenizer.model_max_length;
+  Object.defineProperty(tokenizer, "model_max_length", {
+    value:
+      typeof current === "number" && Number.isFinite(current)
+        ? Math.min(current, maxTokens)
+        : maxTokens,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  // Read back through the tokenizer, not the value we meant to write (#307).
+  return tokenizer.model_max_length as number;
 }
 
 interface XenovaTensor {

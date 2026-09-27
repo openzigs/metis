@@ -209,6 +209,33 @@ describe("createWorkerPipeline", () => {
     expect(fallback).toMatch(/^file:.*transformers.*\.cjs$/);
   });
 
+  it("applies the token cap in the worker to a transformers.js 4 getter-only tokenizer (#307)", async () => {
+    // The worker body is sloppy-mode CommonJS: assigning to v4's getter-only
+    // `model_max_length` there does not throw, it is silently ignored — so rows ran
+    // at the model's full 8,192 tokens, the #189 hang this cap exists to prevent.
+    // The stub echoes the length the tokenizer READS BACK at run time.
+    const pipeline = await createWorkerPipeline({
+      model: "acme/busy-v4-tokenizer",
+      dtype: "q8",
+      maxTokens: 512,
+      transformersEnv: {},
+      moduleUrl: FIXTURE_URL,
+    });
+    try {
+      expect(pipeline.maxTokens).toBe(512);
+      const out = await pipeline(["abc"], { pooling: "cls", normalize: true });
+      expect(Array.from(out.data)).toEqual([3, 512, 0, 1]);
+    } finally {
+      await pipeline.close();
+    }
+  });
+
+  it("applies the token cap inline to a transformers.js 4 getter-only tokenizer (#307)", async () => {
+    await expect(
+      busyEmbedder("inline", { model: "acme/busy-v4-tokenizer" }).embed(["abcde"]),
+    ).resolves.toMatchObject({ vectors: [[5, MAX_EMBED_SEQUENCE_TOKENS, 0, 1]] });
+  });
+
   it("unwraps a CommonJS module's default export in the worker", async () => {
     const cjsShaped = `data:text/javascript,${encodeURIComponent(
       `import * as busy from ${JSON.stringify(FIXTURE_URL)}; export default { ...busy };`,
@@ -267,6 +294,28 @@ describe("runtime + settings resolution", () => {
       allowRemoteModels: false,
       allowLocalModels: true,
     });
+  });
+
+  it("capTokenizerSequenceLength caps a transformers.js 4 getter-only tokenizer (#307)", () => {
+    // v4's `model_max_length` is a prototype getter; a plain assignment throws here
+    // (strict) and is dropped silently in the worker body (sloppy).
+    class V4Tokenizer {
+      constructor(private readonly _tokenizerConfig: { model_max_length?: number }) {}
+      get model_max_length(): number {
+        return this._tokenizerConfig.model_max_length ?? Infinity;
+      }
+      /** How v4 truncates: it reads `this.model_max_length` at call time. */
+      truncationLength(): number {
+        return Math.min(Infinity, this.model_max_length);
+      }
+    }
+    const tokenizer = new V4Tokenizer({ model_max_length: 8192 });
+    expect(capTokenizerSequenceLength({ tokenizer })).toBe(2048);
+    expect(tokenizer.truncationLength()).toBe(2048);
+    // Lower-only still holds, and an unset config (getter → Infinity) takes the cap.
+    const short = new V4Tokenizer({ model_max_length: 512 });
+    expect(capTokenizerSequenceLength({ tokenizer: short })).toBe(512);
+    expect(capTokenizerSequenceLength({ tokenizer: new V4Tokenizer({}) }, 1024)).toBe(1024);
   });
 
   it("capTokenizerSequenceLength lowers, never raises, the truncation length", () => {

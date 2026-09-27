@@ -6,16 +6,48 @@
 # in the worker in CI. This job does, nightly and on demand, to catch a CJS/ESM
 # loader defect in the worker's `import()` of transformers.js, and to check the
 # chunker's #201 token bound against the model's own tokenizer.
+#
+# Issue #307 — it also runs the embedding PARITY gate: the production embedder
+# (gte-modernbert, CLS, normalised, q8, worker runtime) must reproduce the vectors
+# recorded under transformers.js 3.8.1 + onnxruntime-node 1.21.0 at cosine >= 0.999
+# per string, or every stored vector is silently in a different space from new
+# queries. So it also runs on any pull request that can move those vectors — a
+# dependency manifest, the lockfile, the pnpm overrides (the onnxruntime-node pin
+# lives there) or the embed path — not only nightly.
 name: Embed Real Model Nightly
 
 on:
   schedule:
     # 04:00 UTC daily — staggered after the eval nightlies (02:00, 03:00 UTC).
     - cron: "0 4 * * *"
+  pull_request:
+    paths:
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - server/package.json
+      - server/embeddings-svc/package.json
+      - server/src/lib/rag/embed*.ts
+      - server/src/lib/rag/reranker.ts
+      - server/embeddings-svc/src/pipelines.ts
+      - server/embeddings-svc/tests/pipelines-modernbert.integration.test.ts
+      - server/tests/embed-parity-real-model.test.ts
+      - server/tests/embed-worker-real-model.test.ts
+      - server/tests/fixtures/embed-parity-*
+      - server/tests/fixtures/real-model-worker-probe.mjs
+      - .github/workflows/embed-real-model-nightly.yml
   workflow_dispatch:
+    inputs:
+      record:
+        description: >-
+          Record this runner's (linux-x64, ISA class varies per run) #307 parity
+          fixture instead of testing.
+          Only from a ref that still resolves transformers.js 3.8.1 + onnxruntime-node
+          1.21.0; the probe refuses anything else. See docs/OPERATIONS.md.
+        type: boolean
+        default: false
 
 concurrency:
-  group: embed-real-model-nightly
+  group: embed-real-model-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -39,14 +71,47 @@ jobs:
         run: pnpm --filter @metis/shared run build
       - name: Build server
         run: pnpm --filter @metis/server run build
-      # The weights (~150 MB) come from the Hugging Face hub only on a cache miss, so
-      # a hub outage or rate limit does not turn a warm run red. The key names the
-      # model; bump it when the model or its revision changes.
+      # The weights (~500 MB: gte-modernbert-base, the ms-marco cross-encoder and,
+      # since #307, embeddinggemma-300m) come from the Hugging Face hub only on a
+      # cache miss, so a hub outage or rate limit does not turn a warm run red.
+      # Bump the key when a model or its revision changes, or a model is added.
       - name: Cache model weights
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/transformers
-          key: transformers-gte-modernbert-base-v1-${{ runner.os }}
+          key: transformers-embed-models-v2-${{ runner.os }}
+      # q8 kernels are CPU-dependent (#307), so the log names the CPU the vectors
+      # were computed on — the first thing to read when parity moves.
+      - name: Runner CPU
+        run: |
+          grep -m1 'model name' /proc/cpuinfo || true
+          echo "ISA: $(grep -o -w 'avx512_vnni\|avx_vnni\|avx512f\|avx2' /proc/cpuinfo | sort -u | tr '\n' ' ')"
+      - name: Record this runner's parity fixture (#307)
+        if: ${{ inputs.record }}
+        working-directory: server
+        run: mkdir -p "$RUNNER_TEMP/parity" && node tests/fixtures/embed-parity-probe.mjs record "$RUNNER_TEMP/parity"
+      - name: Upload the recorded fixture
+        if: ${{ inputs.record }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: embed-parity-fixture
+          path: ${{ runner.temp }}/parity/*.json
+          if-no-files-found: error
       - name: Real model in the embed worker, from dist
+        if: ${{ !inputs.record }}
         working-directory: server
         run: pnpm exec vitest run tests/embed-worker-real-model.test.ts
+      - name: Embedding parity with transformers.js 3.8.1 (#307)
+        if: ${{ !inputs.record }}
+        working-directory: server
+        run: pnpm exec vitest run tests/embed-parity-real-model.test.ts
+      # #307 — the sidecar's REAL loads, including embeddinggemma, a decoder
+      # architecture: transformers.js 4 reads `session.inputMetadata` for those,
+      # which onnxruntime-node only exposes from 1.22.0. This is what goes red if
+      # the ORT pin in pnpm-workspace.yaml is ever moved below that.
+      - name: Sidecar pipelines load the real models (#307)
+        if: ${{ !inputs.record }}
+        working-directory: server/embeddings-svc
+        env:
+          EMBEDDINGS_MODEL_DOWNLOAD_TESTS: "1"
+        run: pnpm exec vitest run tests/pipelines-modernbert.integration.test.ts

@@ -135,10 +135,17 @@ const { parentPort, workerData } = require("node:worker_threads");
     const tokenizer = pipe.tokenizer;
     if (tokenizer) {
       const current = tokenizer.model_max_length;
-      tokenizer.model_max_length =
-        typeof current === "number" && Number.isFinite(current)
-          ? Math.min(current, workerData.maxTokens)
-          : workerData.maxTokens;
+      // #307: defineProperty, not assignment — v4's getter-only field drops a
+      // sloppy-mode assignment without a word (see capTokenizerSequenceLength).
+      Object.defineProperty(tokenizer, "model_max_length", {
+        value:
+          typeof current === "number" && Number.isFinite(current)
+            ? Math.min(current, workerData.maxTokens)
+            : workerData.maxTokens,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
       maxTokens = tokenizer.model_max_length;
     }
     let config = null;

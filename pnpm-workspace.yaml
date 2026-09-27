@@ -339,11 +339,50 @@ overrides:
   # GHSA-r292-9mhp-454m (CVSS 7.5): uncontrolled recursion in node-tar's
   # mapHas/filesFilter — an uncatchable stack-overflow DoS from a crafted
   # long-path archive with member selection. OSV records `introduced 0, fixed
-  # 7.5.21`. Sole consumer is onnxruntime-node@1.21.0 (pnpm-lock.yaml), which
-  # extracts the ONNX runtime binary at install time. Resolves 7.5.22 (published
+  # 7.5.21`. Its sole consumer was onnxruntime-node@1.21.0, which extracts the
+  # ONNX runtime binary at install time; #307 moved ORT to 1.22.0 (adm-zip, not
+  # tar), so this line governs nothing today and stays as a backstop. Resolves 7.5.22 (published
   # 2026-07-24, mature); verified 2026-08-27 that both 7.5.21 and 7.5.22 return
   # zero vulns on api.osv.dev.
   tar@<7.5.21: ^7.5.21
+
+  # #307 — NOT a security pin: this one holds the EMBEDDING SPACE still.
+  # @huggingface/transformers 4.3.0 declares onnxruntime-node EXACTLY 1.30.0, and
+  # ORT 1.30's quantized (q8) CPU kernels move every vector the default embedder
+  # (gte-modernbert-base, CLS, normalised, q8) produces: cos 0.915–0.969 against
+  # the vectors transformers.js 3.8.1 + ORT 1.21.0 stored in every project's index,
+  # far below the 0.999 bar. transformers.js itself is not the cause — 4.3.0 on an
+  # older ORT measures cos 1.0000 — so pinning the runtime keeps both the upgrade
+  # and the stored vectors.
+  #
+  # WHY 1.22.0 AND NOT 1.21.0 (what every stored vector was computed on). Both
+  # reproduce the 3.8.1 vectors at cos 1.0000 (darwin-arm64 and linux-x64,
+  # measured for #307). But transformers.js 4 iterates `session.inputMetadata`,
+  # which onnxruntime-node first exposes in 1.22.0, for every decoder-architecture
+  # model: on 1.21.0 the `embeddinggemma` backend fails its first embed with
+  # "session.inputMetadata is not iterable" (server/embeddings-svc's
+  # pipelines-modernbert.integration.test.ts, which the embed-real-model workflow
+  # now runs). 1.22.0 is the lowest release that serves both.
+  #
+  # This runs 4.3.0 on a runtime it does not declare; the parity gate is what makes
+  # that safe to ship: server/tests/embed-parity-real-model.test.ts asserts on every
+  # PR that the installed ORT is this version, and the `embed-real-model` workflow
+  # embeds a fixed string set on linux-x64 at cos >= 0.999 per string against
+  # fixtures recorded under 3.8.1 + ORT 1.21.0. EXACT version on purpose.
+  #
+  # MOVING THIS PIN IS A RE-EMBED DECISION, not a dependency bump: see
+  # docs/OPERATIONS.md ("Embedding parity fixtures") and docs/ARCHITECTURE.md.
+  # Its CPU binaries ship inside the package and its install script (CUDA only)
+  # never runs: onnxruntime-node is not in onlyBuiltDependencies below.
+  onnxruntime-node: 1.22.0
+  # adm-zip enters ONLY via onnxruntime-node@1.22.0's CUDA install script
+  # (script/install-utils.js), which never runs here (see above) — but the audit
+  # gate cannot know that. 0.5.18 carries GHSA-7q85-xj36-vmfc (CVSS 7.5, fixed
+  # 0.6.1) and GHSA-xcpc-8h2w-3j85 (CVSS 7.5, fixed 0.6.0), plus the moderate
+  # GHSA-vwc7-r8mq-g2x9 (last affected 0.6.0). `<0.6.1` is the widest `fixed`
+  # event (#1208). 0.6.1 published 2026-09-11, clear of minimumReleaseAge;
+  # verified 2026-09-27 that it returns ZERO vulns on api.osv.dev.
+  adm-zip@<0.6.1: ^0.6.1
 
   # GHSA-73wf-gq98-2v4g (CVSS 7.5) and GHSA-c83g-rgw3-j3cx (High), both published
   # 2026-09-01 against an UNCHANGED lockfile — a crash / prototype write while

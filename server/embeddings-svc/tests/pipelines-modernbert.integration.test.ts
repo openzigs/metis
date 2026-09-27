@@ -11,8 +11,9 @@
  * `embeddinggemma` backend was dead on arrival before this upgrade.
  *
  * OPT-IN: these download hundreds of MB from HuggingFace, so they are SKIPPED
- * by default and skipped in CI (which has no HF egress budget and no model
- * cache). Run them locally with:
+ * by default and in the unit CI jobs. Since #307 the `embed-real-model`
+ * workflow (nightly, and on PRs that touch dependencies or the embed path) runs
+ * them against a cached model dir. Run them locally with:
  *
  *   EMBEDDINGS_MODEL_DOWNLOAD_TESTS=1 pnpm --filter @metis/embeddings-svc test
  *
