@@ -913,14 +913,18 @@ jobs:
     # A documented platform with no test is a promise that breaks silently.
     #
     # #2 — WHY THE INSTALL NOW SUCCEEDS, and why no toolchain step is needed.
-    # The failure was `better-sqlite3` finding no prebuilt binary for this node on
-    # win32-x64, falling back to node-gyp, and node-gyp finding no Visual Studio it
-    # recognises. Both copies the lockfile resolves now install WITHOUT a compiler:
-    #   - better-sqlite3@13 (the server's own) BUNDLES its prebuilds, win32-x64
-    #     among them, and has no install script at all;
-    #   - better-sqlite3@12 (pulled in by @prisma/adapter-better-sqlite3) runs
-    #     `prebuild-install`, whose release assets include node-v127 (node 22)
-    #     win32-x64 — node-gyp is only its fallback.
+    # The failing script was `node-gyp rebuild` in better-sqlite3@13 (the server's
+    # own copy), and node-gyp found no Visual Studio it recognises on this image.
+    # That rebuild was never needed: 13.x BUNDLES prebuilt binaries (win32-x64
+    # among them) and loads them first. pnpm ran it anyway — it runs the implicit
+    # `node-gyp rebuild` for any allowed package with a binding.gyp, ignoring the
+    # package's `"gypfile": false` — because `onlyBuiltDependencies` allowed
+    # better-sqlite3 by bare name. It now allows ONLY 12.11.1 (pulled in by
+    # @prisma/adapter-better-sqlite3), whose `prebuild-install` downloads a
+    # win32-x64 binary for node 22; node-gyp is only its fallback. See
+    # pnpm-workspace.yaml; `native-build-allowlist-core.test.mjs` keeps the list
+    # matched to the lockfile.
+    #
     # So there is deliberately NO setup-msbuild / windows-build-tools step: it
     # would add minutes to every run to support a path that must not be taken.
     # If it IS taken again (a node major without a prebuild, a new native
@@ -955,7 +959,7 @@ jobs:
         run: |
           pnpm install --frozen-lockfile --prod=false
           if ($LASTEXITCODE -ne 0) {
-            Write-Output "::error title=Windows install failed (see #2)::pnpm install exited $LASTEXITCODE on win32. The known cause is a native module (better-sqlite3, a tree-sitter grammar) finding no prebuilt binary for node $(node --version) on win32-x64 and falling back to node-gyp, which needs an MSVC toolchain this job deliberately does not install. Check the log above for 'gyp ERR!' and whether the package still publishes a win32-x64 prebuild for this node ABI."
+            Write-Output "::error title=Windows install failed (see #2)::pnpm install exited $LASTEXITCODE on win32. The known cause is a native module running node-gyp, which needs an MSVC toolchain this job deliberately does not install: either a package allowed by onlyBuiltDependencies (pnpm-workspace.yaml) that did not need its build, or one finding no prebuilt binary for node $(node --version) on win32-x64. Check the log above for 'gyp ERR!' and which package printed it."
             exit 1
           }
 
