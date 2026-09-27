@@ -48,6 +48,7 @@ import {
   CITATION_INSTRUCTION,
 } from "../lib/ai/index.js";
 import type {
+  AIConfig,
   AIProvider,
   AssembledChatSystem,
   ChatChunk,
@@ -62,6 +63,7 @@ import {
   type SessionToolRuntime,
 } from "../lib/ai/tool-runtime/session-tools.js";
 import { runChatToolTurn, type ChatToolRecord } from "../lib/ai/tool-runtime/chat-turn.js";
+import { TurnUsageMeter } from "../lib/ai/conversation/turn-usage.js";
 import { collectGuardedStream } from "../lib/ai/tool-runtime/stream-collect.js";
 import type { ToolEvent } from "../lib/ai/tool-runtime/types.js";
 import { toolApprovalsRouter } from "./ai-tool-approvals.js";
@@ -70,13 +72,18 @@ import {
   withIdleTimeout,
   StreamIdleTimeoutError,
   STREAM_IDLE_TIMEOUT_CODE,
+  STREAM_QUEUE_TIMEOUT_CODE,
 } from "../lib/ai/stream-idle.js";
 import { effectiveModel } from "../lib/ai/model-switch.js";
 import {
   assertSessionAcceptsTurns,
   loadAuthorizedSession,
 } from "../lib/ai/conversation/session-access.js";
-import { isRetiredProviderKey, retiredProviderMessage } from "../lib/ai/retired-providers.js";
+import {
+  isRetiredProviderError,
+  isRetiredProviderKey,
+  retiredProviderMessage,
+} from "../lib/ai/retired-providers.js";
 import {
   calibrationPromptChars,
   ContextOverflowError,
@@ -90,7 +97,7 @@ import {
 import { providerSummarizer, type CompactionOutcome } from "../lib/async/compaction.js";
 import { getOnlineEvalScorer } from "../lib/eval/online/scorer.js";
 import { messageText } from "../lib/ai/index.js";
-import { AIError, AIOfflineError } from "../lib/ai/errors.js";
+import { AIError, AIOfflineError, AIProviderError } from "../lib/ai/errors.js";
 import { getSemanticCache, shouldSkipCache } from "../lib/ai/semantic-cache.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
 import {
@@ -141,6 +148,7 @@ function streamLimits(): {
   heartbeatIntervalMs: number;
   hardCeilingMs: number;
   idleTimeoutMs: number;
+  queueMaxWaitMs: number;
 } {
   return {
     socketTimeoutMs: intEnv(process.env.AI_STREAM_SOCKET_TIMEOUT_MS, 60_000, 1000),
@@ -151,14 +159,14 @@ function streamLimits(): {
     // (a total-duration cap that cannot see a stall inside a long turn). Set to
     // 0 to disable.
     idleTimeoutMs: intEnv(process.env.AI_STREAM_IDLE_TIMEOUT_MS, 90_000, 0),
+    // #204 — how long one model call may wait for a local-model slot before the
+    // turn is given up. Separate from the hard ceiling, which no longer counts
+    // queue time.
+    queueMaxWaitMs: intEnv(process.env.AI_STREAM_QUEUE_MAX_WAIT_MS, 10 * 60_000, 1),
   };
 }
 
 let providerOverride: AIProvider | null = null;
-function provider(opts: { apiKeyOverride?: string } = {}): AIProvider {
-  if (providerOverride) return providerOverride;
-  return buildProvider({ config: loadAIConfig(), apiKeyOverride: opts.apiKeyOverride });
-}
 
 /** Test seam — tests inject a deterministic stub. */
 export function setAIProviderForTests(p: AIProvider | null): void {
@@ -166,13 +174,41 @@ export function setAIProviderForTests(p: AIProvider | null): void {
 }
 
 /**
- * #138 — the provider a session's chat turns use, with its BYOK key resolved.
- * The manual `/compact` route summarises with the same model and credentials.
+ * #138 / #241 — the provider a session's turns run on, with its BYOK key
+ * resolved. Chat, stream and the manual `/compact` all use it.
+ *
+ * #241 — it is the provider STORED ON THE SESSION (`ai_sessions.provider`: the
+ * project's override when the session was created, the deployment's provider
+ * otherwise), not the deployment's current one. The session's model was chosen
+ * for that provider, and its safety pass and usage rows already name it, so the
+ * turn must go there too. A session provider this server cannot build (no
+ * endpoint or credentials configured) is refused with a message naming it —
+ * never run on the global provider instead. Retired providers never reach
+ * here: `assertSessionAcceptsTurns` refuses them first (409, #149).
  */
 export async function chatProviderForSession(session: {
+  provider: string;
   providerSecretRef: string | null;
 }): Promise<AIProvider> {
-  return provider({ apiKeyOverride: await resolveProviderKey(session.providerSecretRef) });
+  const apiKeyOverride = await resolveProviderKey(session.providerSecretRef);
+  if (providerOverride) return providerOverride;
+  let config: AIConfig;
+  try {
+    config = loadAIConfig(process.env, { provider: session.provider });
+  } catch (err) {
+    if (isRetiredProviderError(err)) throw err;
+    // The loader's reason can name the configured endpoint or the allowed-host
+    // list — for the server log, never for the chat user.
+    log.warn("Chat session provider is not configured on this server", {
+      provider: session.provider,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+    throw new AIProviderError(
+      `This chat session runs on AI provider "${session.provider}", which is not configured on this server. An administrator can find the reason in the server log. Configure it, or start a new chat.`,
+      503,
+    );
+  }
+  return buildProvider({ config, apiKeyOverride });
 }
 
 /**
@@ -667,6 +703,11 @@ function replyToolCall(r: ChatToolRecord): ReplyToolCall {
  * sub-agent call carries (the cache posture — never the parent's `sessionId`,
  * model, reasoning effort or local-slot callback: a sub-agent starts FRESH),
  * the tool-result cap, and the session's token accounting for its calls.
+ *
+ * #204 — `queueHooks`, when given, are the turn's local-slot QUEUE hooks: a
+ * sub-agent call that waits for the local model's slot pauses the turn's hard
+ * ceiling exactly as the parent's own calls do. They report the wait only; the
+ * parent's one-shot slot signal is never passed down.
  */
 function bindSubAgents(
   tools: SessionToolRuntime,
@@ -676,6 +717,7 @@ function bindSubAgents(
     providerChatOptions: Partial<SubAgentChatOptions>;
     toolResultMaxChars: number;
     meter: { sessionId: string; userId: string; projectId: string | null };
+    queueHooks?: Pick<SubAgentChatOptions, "onSlotQueued" | "onSlotAcquired">;
   },
 ): void {
   const ctx = tools.subAgents;
@@ -685,12 +727,13 @@ function bindSubAgents(
     model: _model,
     reasoningEffort: _effort,
     onSlotAcquired: _slot,
+    onSlotQueued: _queued,
     signal: _signal,
     ...providerChatOptions
   } = live.providerChatOptions;
   ctx.signal = live.signal;
   ctx.onToolEvent = live.onToolEvent;
-  ctx.providerChatOptions = providerChatOptions;
+  ctx.providerChatOptions = { ...providerChatOptions, ...(live.queueHooks ?? {}) };
   ctx.toolResultMaxChars = live.toolResultMaxChars;
   ctx.onUsage = (usage, model) => {
     getTokenTracker().record({
@@ -1108,9 +1151,21 @@ export function aiRouter(): Router {
     // Set once the reply is on record: a later failure must not add a second,
     // error-marked reply to the same question.
     let replyRecorded = false;
-    let providerKey: string = loadAIConfig().provider;
+    let providerKey: string = session.provider;
+    // #243 — what this turn has spent, metered even if it fails.
+    let meter: TurnUsageMeter | null = null;
     try {
-      const apiKeyOverride = await resolveProviderKey(session.providerSecretRef);
+      // #241 — the session's own provider (a project override included).
+      const providerInstance = await chatProviderForSession(session);
+      providerKey = providerInstance.key;
+      const turnMeter = new TurnUsageMeter({
+        sessionId: session.id,
+        userId,
+        projectId: session.projectId,
+        provider: providerInstance.key,
+        model,
+      });
+      meter = turnMeter;
 
       // Epic #164 — budget gate (fail fast, before paying for tokens).
       if (session.projectId) {
@@ -1129,9 +1184,6 @@ export function aiRouter(): Router {
         });
         if (safe.redacted) userText = safe.text;
       }
-
-      const providerInstance = provider({ apiKeyOverride });
-      providerKey = providerInstance.key;
 
       // #140/#713 — the tools this turn offers: natively when the model is
       // tool-capable, the curated code tools on the text protocol when it is
@@ -1235,7 +1287,7 @@ export function aiRouter(): Router {
                   content: cacheHit.response,
                   usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
                   model,
-                  provider: loadAIConfig().provider,
+                  provider: providerInstance.key,
                   cached: true,
                 },
                 transcript: { userOrdinal: turn.userRow.ordinal, replyOrdinal: cachedRow.ordinal },
@@ -1297,6 +1349,8 @@ export function aiRouter(): Router {
             onToolEvent: emitToolEventToSession,
             // Recorded as each call finishes, so a later failure keeps them.
             onToolRecord: (rec) => toolCalls.push(replyToolCall(rec)),
+            // #243 — each model call's usage as it returns.
+            onUsage: (u) => turnMeter.add(u),
           },
         );
         response = {
@@ -1304,11 +1358,12 @@ export function aiRouter(): Router {
           content: loop.replyText,
           usage: loop.usage,
           model,
-          provider: loadAIConfig().provider,
+          provider: providerInstance.key,
           ...(loop.finishReason ? { finishReason: loop.finishReason } : {}),
         };
       } else {
         response = await providerInstance.chat(promptMessages, chatProviderOptions);
+        turnMeter.add(response.usage);
       }
 
       // Epic #164 — output safety pass + per-project usage telemetry.
@@ -1332,6 +1387,7 @@ export function aiRouter(): Router {
           cacheReadTokens: response.usage.cacheReadTokens,
           cacheWriteTokens: response.usage.cacheWriteTokens,
         });
+        turnMeter.markProjectRecorded();
       }
 
       // #136/#137 — the reply, with the provider-reported usage, into the transcript.
@@ -1382,6 +1438,7 @@ export function aiRouter(): Router {
         projectId: session.projectId ?? undefined,
         breakdown,
       });
+      turnMeter.markPerUserRecorded();
 
       // Epic #647 / Issue #651 — store in semantic cache on miss
       if (
@@ -1438,6 +1495,8 @@ export function aiRouter(): Router {
         contexts: ragCapture.contexts,
       });
     } catch (err) {
+      // #243 — the model calls this turn already paid for are metered, once.
+      meter?.recordFailedTurn();
       // #136 — the question is already in the transcript; record that its turn
       // failed, so the history never shows an unanswered question with no reason.
       if (prepared && !replyRecorded) {
@@ -1491,6 +1550,15 @@ export function aiRouter(): Router {
         }
         throw err;
       }
+    }
+    // #241 — the session's own provider (a project override included), built
+    // before the SSE stream opens so one this server cannot run is a plain
+    // HTTP error naming it, never a turn on the global provider.
+    let streamProvider: AIProvider;
+    try {
+      streamProvider = await chatProviderForSession(session);
+    } catch (err) {
+      throw aiErrorToAppError(err);
     }
     const model = parsed.data.model ?? effectiveModel(session);
     const reasoningEffort =
@@ -1551,10 +1619,17 @@ export function aiRouter(): Router {
       }
     }, limits.heartbeatIntervalMs);
     let hardCeiling: ReturnType<typeof setTimeout> | undefined;
+    // #204 — when the running ceiling fires; `null` while it is paused.
+    let ceilingDeadline: number | null = null;
     // Why the turn was stopped, when the server stopped it (recorded on the reply).
     let stoppedBy: { code: string; message: string } | null = null;
-    const armHardCeiling = (): void => {
+    const pauseHardCeiling = (): void => {
       if (hardCeiling) clearTimeout(hardCeiling);
+      ceilingDeadline = null;
+    };
+    const armHardCeiling = (budgetMs: number = limits.hardCeilingMs): void => {
+      if (hardCeiling) clearTimeout(hardCeiling);
+      ceilingDeadline = Date.now() + budgetMs;
       hardCeiling = setTimeout(() => {
         stoppedBy = {
           code: "STREAM_MAX_DURATION",
@@ -1580,7 +1655,7 @@ export function aiRouter(): Router {
         }
         ac.abort();
         safeEnd();
-      }, limits.hardCeilingMs);
+      }, budgetMs);
       // Keep timers from blocking process exit during graceful shutdown tests.
       hardCeiling.unref?.();
     };
@@ -1601,7 +1676,7 @@ export function aiRouter(): Router {
     const onToolEvent = (ev: ToolEvent): void => {
       if (ev.phase === "awaiting_approval") {
         awaiting.add(ev.callId);
-        if (hardCeiling) clearTimeout(hardCeiling);
+        pauseHardCeiling();
       } else if ((ev.phase === "result" || ev.phase === "error") && awaiting.delete(ev.callId)) {
         if (awaiting.size === 0 && !ended) armHardCeiling();
       }
@@ -1611,6 +1686,69 @@ export function aiRouter(): Router {
         /* socket already gone */
       }
       emitToolEventToSession(ev);
+    };
+
+    // #204 — the local provider queues behind a per-base-URL FIFO limiter. The
+    // hard ceiling measures GENERATION time: while a model call waits for its
+    // slot the ceiling is paused (its remaining budget kept), the wait has its
+    // own limit (AI_STREAM_QUEUE_MAX_WAIT_MS), and the client is told it is
+    // waiting (`queue` frames). A wait past the limit ends the turn with
+    // STREAM_QUEUE_TIMEOUT; nothing was generated for it.
+    let queueTimer: ReturnType<typeof setTimeout> | undefined;
+    let queuedAt: number | null = null;
+    let ceilingLeftMs: number | null = null;
+    const onSlotQueued = (position: number): void => {
+      if (ended || queuedAt !== null) return;
+      queuedAt = Date.now();
+      ceilingLeftMs = ceilingDeadline === null ? null : Math.max(ceilingDeadline - queuedAt, 0);
+      pauseHardCeiling();
+      try {
+        send("queue", {
+          type: "queue",
+          state: "waiting",
+          position,
+          maxWaitMs: limits.queueMaxWaitMs,
+        });
+      } catch {
+        /* socket already gone */
+      }
+      queueTimer = setTimeout(() => {
+        const waited = Math.round(limits.queueMaxWaitMs / 1000);
+        stoppedBy = {
+          code: STREAM_QUEUE_TIMEOUT_CODE,
+          message: `The local model was busy with other work for ${waited}s, so this message was not answered. Try again later.`,
+        };
+        log.warn("AI stream gave up waiting for a local model slot", {
+          sessionId: session.id,
+          userId,
+          queueMaxWaitMs: limits.queueMaxWaitMs,
+        });
+        try {
+          send("error", stoppedBy);
+        } catch {
+          /* nothing left to write */
+        }
+        ac.abort();
+        safeEnd();
+      }, limits.queueMaxWaitMs);
+      queueTimer.unref?.();
+    };
+    const onQueueSlotAcquired = (): void => {
+      if (queuedAt === null) return;
+      const waitedMs = Date.now() - queuedAt;
+      queuedAt = null;
+      if (queueTimer) clearTimeout(queueTimer);
+      queueTimer = undefined;
+      if (ended) return;
+      try {
+        send("queue", { type: "queue", state: "acquired", waitedMs });
+      } catch {
+        /* socket already gone */
+      }
+      // Resume the ceiling with what was left of it — unless it was paused for
+      // an approval as well, whose own rule re-arms it.
+      if (ceilingLeftMs !== null && awaiting.size === 0) armHardCeiling(ceilingLeftMs);
+      ceilingLeftMs = null;
     };
 
     // #137 — `null` until the provider reports usage: an unreported turn is
@@ -1635,17 +1773,20 @@ export function aiRouter(): Router {
     // #142 — every tool call this turn made or refused, recorded as it finished.
     const toolCalls: ReplyToolCall[] = [];
     let prepared: PreparedTurn | null = null;
-    let providerKey: string = loadAIConfig().provider;
+    const providerKey: string = streamProvider.key;
+    // #243 — what this turn has spent, metered even if it fails.
+    const meter = new TurnUsageMeter({
+      sessionId: session.id,
+      userId,
+      projectId: session.projectId,
+      provider: streamProvider.key,
+      model,
+    });
     // Set once the reply is on record: a later failure (usage accounting, say)
     // must not add a second, error-marked reply to the same question — as /chat.
     let replyRecorded = false;
 
     try {
-      const apiKeyOverride = await resolveProviderKey(session.providerSecretRef);
-
-      const streamProvider = provider({ apiKeyOverride });
-      providerKey = streamProvider.key;
-
       // #140 — the tools this turn offers (see the /chat route).
       const tools = await resolveSessionTools({
         session: { ...session, userId },
@@ -1699,7 +1840,15 @@ export function aiRouter(): Router {
         // #700 — same cache posture as the non-stream /chat route.
         ...CHAT_CACHE_OPTS,
         ...(reasoningEffort ? { reasoningEffort } : {}),
-        ...(slot ? { onSlotAcquired: slot.resolve } : {}),
+        ...(slot
+          ? {
+              onSlotQueued,
+              onSlotAcquired: () => {
+                slot.resolve();
+                onQueueSlotAcquired();
+              },
+            }
+          : {}),
       };
 
       if (tools.mode !== "off") {
@@ -1709,6 +1858,7 @@ export function aiRouter(): Router {
           providerChatOptions: streamProviderOptions,
           toolResultMaxChars: turn.build.toolResultMaxChars,
           meter: { sessionId: session.id, userId, projectId: session.projectId },
+          ...(slot ? { queueHooks: { onSlotQueued, onSlotAcquired: onQueueSlotAcquired } } : {}),
         });
         // #140 — bounded tool loop (shared with analysis). Every call passes the
         // session's approval gate before it runs (#142) and is reported as a
@@ -1719,7 +1869,13 @@ export function aiRouter(): Router {
         // the #718 tool-tag stream parser is never involved and no protocol
         // string leaks as a delta.
         const native = tools.mode === "native";
-        const { onSlotAcquired: _unused, ...loopOptions } = streamProviderOptions;
+        // The one-shot slot signal is not the loop's: each model call gets its
+        // own (below). The queue hooks stay, so a text-protocol call (`chat`)
+        // is timed the same way (#204).
+        const { onSlotAcquired: _unused, ...loopBase } = streamProviderOptions;
+        const loopOptions: Partial<ChatOptions> = slot
+          ? { ...loopBase, onSlotAcquired: onQueueSlotAcquired }
+          : loopBase;
         let streamedText = "";
         const streamDelta = (text: string): void => {
           if (!text) return;
@@ -1753,6 +1909,8 @@ export function aiRouter(): Router {
               // was handled. `tool_event` (#143) is the full lifecycle.
               send("tool_call", { type: "tool_call", name: rec.tool, arguments: rec.args });
             },
+            // #243 — each model call's usage as it returns.
+            onUsage: (u) => meter.add(u),
             ...(native
               ? {
                   callModel: async (m: ChatMessage[], o: ChatOptions) => {
@@ -1762,7 +1920,14 @@ export function aiRouter(): Router {
                     return collectGuardedStream(
                       streamProvider.stream(m, {
                         ...o,
-                        ...(turnSlot ? { onSlotAcquired: turnSlot.resolve } : {}),
+                        ...(turnSlot
+                          ? {
+                              onSlotAcquired: () => {
+                                turnSlot.resolve();
+                                onQueueSlotAcquired();
+                              },
+                            }
+                          : {}),
                       }),
                       {
                         provider: streamProvider.key,
@@ -1811,7 +1976,10 @@ export function aiRouter(): Router {
         );
         for await (const chunk of guarded) {
           const c = chunk as ChatChunk;
-          if (c.type === "usage") reportedUsage = c.usage;
+          if (c.type === "usage") {
+            reportedUsage = c.usage;
+            meter.set(c.usage);
+          }
           if (observeOnline && c.type === "delta") observedAnswer += c.content;
           if (c.type === "delta") finalAnswer += c.content;
           if (c.type === "done") finishReason = c.finishReason ?? null;
@@ -1852,7 +2020,7 @@ export function aiRouter(): Router {
       getTokenTracker().record({
         sessionId: session.id,
         userId,
-        provider: loadAIConfig().provider,
+        provider: streamProvider.key,
         model,
         usage: {
           ...usageForTelemetry,
@@ -1863,6 +2031,7 @@ export function aiRouter(): Router {
         // Issue #428 — stamp the direct projectId (see streaming path above).
         projectId: session.projectId ?? undefined,
       });
+      meter.markPerUserRecorded();
       // #210 — the per-project store the budget gate reads, as /chat writes it.
       // `reportedUsage` is the whole turn: every model call of a code-tool loop
       // summed (sub-agent calls meter themselves through `bindSubAgents`, and a
@@ -1878,6 +2047,7 @@ export function aiRouter(): Router {
           cacheReadTokens: reportedUsage.cacheReadTokens,
           cacheWriteTokens: reportedUsage.cacheWriteTokens,
         });
+        meter.markProjectRecorded();
       }
       audit({
         actor: { id: userId },
@@ -1903,6 +2073,8 @@ export function aiRouter(): Router {
         });
       }
     } catch (err) {
+      // #243 — the model calls this turn already paid for are metered, once.
+      meter.recordFailedTurn();
       let frame: { code: string; message: string };
       if (err instanceof StreamIdleTimeoutError) {
         // #1366 AC — logged with the session id so a stall can be diagnosed
@@ -1952,6 +2124,7 @@ export function aiRouter(): Router {
     } finally {
       clearInterval(heartbeat);
       if (hardCeiling) clearTimeout(hardCeiling);
+      if (queueTimer) clearTimeout(queueTimer);
       safeEnd();
     }
   });

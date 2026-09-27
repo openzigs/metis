@@ -421,9 +421,16 @@ export interface ChatOptions {
    * before its stream is opened, on every attempt. A caller that runs its own
    * deadline over the stream (chat's idle timeout) starts it here, so time spent
    * waiting behind another generation is not counted as a stall. Providers that
-   * do not queue never call it.
+   * do not queue never call it. #204 — the non-streaming `chat()` calls it too.
    */
   onSlotAcquired?: () => void;
+  /**
+   * #204 — called by a provider that QUEUES requests when this request has to
+   * WAIT for a slot (never when one is free), with its 1-based queue position,
+   * before {@link onSlotAcquired}. Chat's `/stream` route uses it to pause its
+   * generation ceiling, bound the wait, and tell the user it is waiting.
+   */
+  onSlotQueued?: (position: number) => void;
 }
 
 export interface EmbedResult {

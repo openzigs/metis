@@ -59,8 +59,19 @@ export type StreamEvent =
   /** #143 — one step of one tool call (started, awaiting approval, result, error). */
   | AiToolEvent
   | { type: "usage"; usage: TokenUsage }
+  /**
+   * #204 — the turn is WAITING for the local model (another generation holds
+   * its only slot): `waiting` when it starts, with the wait's server-side limit;
+   * `acquired` when the model starts on this turn. The wait does not count
+   * against the response's own time limit.
+   */
+  | StreamQueueEvent
   | { type: "done" }
   | { type: "error"; message: string; code?: string };
+
+export type StreamQueueEvent =
+  | { type: "queue"; state: "waiting"; position: number | null; maxWaitMs: number | null }
+  | { type: "queue"; state: "acquired"; waitedMs: number | null };
 
 /**
  * Issue #607 — scope metadata echoed by POST /ai/sessions. When the applied
@@ -324,9 +335,18 @@ export async function resumeChatSession(id: string): Promise<ResumedChat | null>
       method: "POST",
     });
     const session = await getSession(id);
+    let messages = transcriptToDisplay(res.messages ?? []);
+    // #245 — resume returns the first page only; follow the paged read until
+    // the server says there is no more, so a long conversation comes back
+    // whole. Later pages may carry a summary that folded rows already held,
+    // so they are merged, not appended.
+    if (res.hasMore) {
+      const rest = await getTranscriptSince(id, res.nextAfterOrdinal);
+      messages = mergeTranscriptDelta(messages, rest, (row) => row);
+    }
     return {
       session,
-      messages: transcriptToDisplay(res.messages ?? []),
+      messages,
       readOnlyReason: res.session?.readOnlyReason ?? null,
     };
   } catch {
@@ -520,6 +540,12 @@ export async function* streamChat(
           const lapses = Date.parse(ev.expiresAt);
           if (Number.isFinite(lapses)) deadline = Math.max(deadline, lapses + idleTimeoutMs);
         }
+        // #204 — likewise while the turn waits for the local model: the server
+        // sends nothing but keep-alives until the slot is free or its own queue
+        // limit ends the turn, so the stall guard waits that long too.
+        if (ev.type === "queue" && ev.state === "waiting" && ev.maxWaitMs !== null) {
+          deadline = Math.max(deadline, Date.now() + ev.maxWaitMs + idleTimeoutMs);
+        }
         yield ev;
       }
     }
@@ -562,6 +588,28 @@ export function parseSseFrame(frame: string): StreamEvent | null {
       return { type: "compaction", compaction: payload as CompactionEventDto };
     case "tool_event":
       return parseToolEvent(payload);
+    case "queue": {
+      const p = payload as {
+        state?: unknown;
+        position?: unknown;
+        maxWaitMs?: unknown;
+        waitedMs?: unknown;
+      };
+      const num = (v: unknown): number | null =>
+        typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
+      if (p.state === "waiting") {
+        return {
+          type: "queue",
+          state: "waiting",
+          position: num(p.position),
+          maxWaitMs: num(p.maxWaitMs),
+        };
+      }
+      if (p.state === "acquired") {
+        return { type: "queue", state: "acquired", waitedMs: num(p.waitedMs) };
+      }
+      return null;
+    }
     case "done":
       return { type: "done" };
     case "error": {

@@ -157,7 +157,17 @@ export interface ResumeSessionResponse {
      */
     readOnlyReason: string | null;
   };
+  /**
+   * #245 — the FIRST page of the transcript, at most {@link TRANSCRIPT_PAGE_MAX}
+   * rows. When `hasMore` is `true` the reader continues with
+   * `GET /api/ai/sessions/:id/messages?afterOrdinal=nextAfterOrdinal` until it
+   * is `false`; a reader that stops earlier is not holding the whole
+   * conversation.
+   */
   messages: TranscriptMessageDto[];
+  hasMore: boolean;
+  /** The last ordinal this page covers (0 when the transcript is empty). */
+  nextAfterOrdinal: number;
 }
 
 /** `POST /api/ai/sessions/:id/fork` body. */

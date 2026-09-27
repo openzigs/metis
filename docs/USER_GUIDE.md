@@ -2410,6 +2410,19 @@ Both fields persist on the `Project` row and are read at session-create time. Th
   *summarised*, and a *Summary of earlier messages* block shows what the model
   now reads instead. Nothing is deleted. Very large tool results are shortened
   for the model the same way — the full result stays in the history.
+- **Long histories load in pages.** Resuming a chat downloads the first page of
+  its history (up to 500 messages) and fetches the rest page by page, so even a
+  very long conversation comes back complete.
+- **A chat keeps the provider it started with.** A chat started in a project
+  with its own AI provider (Project settings) keeps using that provider for every
+  message, even if the server's default provider changes. If that provider is no
+  longer configured on the server, the chat says so and asks you to configure it
+  or start a new chat — it never silently switches to another provider.
+- **Waiting for a local model.** On a local model that serves one request at a
+  time, a message sent while it is busy (for example with documentation
+  generation) shows *Waiting for the local model* until it starts. That wait does
+  not count against the response's time limit; it has its own limit
+  (`AI_STREAM_QUEUE_MAX_WAIT_MS`, default 10 minutes).
 - **Fork from here.** Every answer has a *Fork from here* link. It starts a new
   chat containing the conversation up to that answer, with the same model,
   agent, skills and project, and opens it; the original chat is unchanged.

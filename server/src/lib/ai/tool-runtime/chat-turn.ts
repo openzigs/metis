@@ -77,6 +77,12 @@ export interface ChatToolTurnOptions {
   onToolRecord?: (record: ChatToolRecord) => void;
   /** A streaming model caller (the /stream route); defaults to `provider.chat`. */
   callModel?: (messages: ChatMessage[], opts: ChatOptions) => Promise<ChatResponse>;
+  /**
+   * #243 — called with each model call's reported usage as soon as that call
+   * returns, so a turn that fails on a LATER call can still meter what the
+   * earlier ones cost. The loop's `usage` (on success) is the sum of these.
+   */
+  onUsage?: (usage: TokenUsage) => void;
 }
 
 function capForModel(text: string, maxChars: number | undefined): string {
@@ -147,6 +153,13 @@ export async function runChatToolTurn(
         ...(input.native ? { native: { tools: input.toolset.specs() } } : {}),
         callModel: async (m, o) => {
           const r = await callModel(m, o);
+          if (r.usage) {
+            try {
+              options.onUsage?.(r.usage);
+            } catch {
+              /* a listener must never break the loop */
+            }
+          }
           finishReason = r.finishReason;
           turnTexts.push(r.content);
           return r;

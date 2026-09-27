@@ -182,6 +182,92 @@ describe("resumeChatSession (#1367, #139)", () => {
   });
 });
 
+// #245 — resume returns one bounded page; the client follows `hasMore` through
+// the paged read so a long conversation still comes back whole.
+describe("resumeChatSession — a transcript longer than one page (#245)", () => {
+  const PAGE = 500;
+  const rows = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, i) =>
+      row({
+        ordinal: from + i,
+        role: (from + i) % 2 === 1 ? "user" : "assistant",
+        parts: text(`r${from + i}`),
+      }),
+    );
+
+  it("ends with every row, in order, when resume says there is more", async () => {
+    const total = PAGE * 2 + 7;
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path.endsWith("/resume")) {
+        return {
+          session: { id: "sess_1", readOnlyReason: null },
+          messages: rows(1, PAGE),
+          hasMore: true,
+          nextAfterOrdinal: PAGE,
+        };
+      }
+      const m = /afterOrdinal=(\d+)/.exec(path);
+      if (m) {
+        const after = Number(m[1]);
+        const end = Math.min(after + PAGE, total);
+        return {
+          sessionId: "sess_1",
+          messages: rows(after + 1, end),
+          compactionUpdates: [],
+          hasMore: end < total,
+          nextAfterOrdinal: end,
+        };
+      }
+      return { session: SESSION };
+    });
+    const restored = await resumeChatSession("sess_1");
+    expect(restored!.messages.map((m) => m.ordinal)).toEqual(
+      Array.from({ length: total }, (_, i) => i + 1),
+    );
+    expect(restored!.messages.at(-1)!.content).toBe(`r${total}`);
+    expect(apiFetch.mock.calls.map((c) => c[0]).filter((p) => String(p).includes("?"))).toEqual([
+      `/ai/sessions/sess_1/messages?afterOrdinal=${PAGE}`,
+      `/ai/sessions/sess_1/messages?afterOrdinal=${PAGE * 2}`,
+    ]);
+  });
+
+  it("applies a later page's compaction to rows the first page returned", async () => {
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path.endsWith("/resume")) {
+        return { session: { id: "s" }, messages: rows(1, 2), hasMore: true, nextAfterOrdinal: 2 };
+      }
+      if (path.includes("afterOrdinal=2")) {
+        return {
+          sessionId: "s",
+          messages: [row({ ordinal: 3, role: "system", kind: "summary", parts: text("S") })],
+          compactionUpdates: [
+            { ordinal: 1, compactedAt: "2026-01-02T00:00:00.000Z", compactedIntoId: "m3" },
+          ],
+          hasMore: false,
+          nextAfterOrdinal: 3,
+        };
+      }
+      return { session: SESSION };
+    });
+    const restored = await resumeChatSession("s");
+    expect(restored!.messages.map((m) => [m.ordinal, m.role, m.compacted])).toEqual([
+      [1, "user", true],
+      [2, "assistant", false],
+      [3, "summary", false],
+    ]);
+  });
+
+  it("reads nothing more when resume returned the whole transcript", async () => {
+    apiFetch.mockImplementation(async (path: string) =>
+      path.endsWith("/resume")
+        ? { messages: rows(1, 2), hasMore: false, nextAfterOrdinal: 2 }
+        : { session: SESSION },
+    );
+    expect((await resumeChatSession("s"))!.messages).toHaveLength(2);
+    expect(apiFetch.mock.calls.some((c) => String(c[0]).includes("/messages"))).toBe(false);
+  });
+});
+
 describe("getTranscript / forkChatSession", () => {
   it("reads the transcript with the id encoded", async () => {
     apiFetch.mockResolvedValue({

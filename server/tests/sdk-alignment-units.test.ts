@@ -16,8 +16,6 @@ import {
   scanDirectory,
   validateDirectoryEntry,
 } from "../src/lib/library/skill-directories.js";
-import { DEFAULT_SESSION_SNAPSHOT_INTERVAL } from "@metis/shared";
-import { getSnapshotInterval, shouldSnapshot } from "../src/lib/ai/session-snapshot.js";
 
 describe("parseModelCommand (#120)", () => {
   it("parses /model <name>", () => {
@@ -196,27 +194,5 @@ describe("scanDirectory (#113)", () => {
     if (previousRoots === undefined) delete process.env.SKILL_DIRECTORIES_ALLOWED_ROOTS;
     else process.env.SKILL_DIRECTORIES_ALLOWED_ROOTS = previousRoots;
     await fs.rm(root, { recursive: true, force: true });
-  });
-});
-
-describe("session snapshot helpers (#122)", () => {
-  it("getSnapshotInterval falls back to default for invalid env values", () => {
-    const original = process.env.SESSION_SNAPSHOT_INTERVAL;
-    process.env.SESSION_SNAPSHOT_INTERVAL = "abc";
-    expect(getSnapshotInterval()).toBe(DEFAULT_SESSION_SNAPSHOT_INTERVAL);
-    process.env.SESSION_SNAPSHOT_INTERVAL = "0";
-    expect(getSnapshotInterval()).toBe(DEFAULT_SESSION_SNAPSHOT_INTERVAL);
-    process.env.SESSION_SNAPSHOT_INTERVAL = "7";
-    expect(getSnapshotInterval()).toBe(7);
-    if (original === undefined) delete process.env.SESSION_SNAPSHOT_INTERVAL;
-    else process.env.SESSION_SNAPSHOT_INTERVAL = original;
-  });
-
-  it("shouldSnapshot only fires on multiples of the interval", () => {
-    expect(shouldSnapshot(0, 5)).toBe(false);
-    expect(shouldSnapshot(1, 5)).toBe(false);
-    expect(shouldSnapshot(5, 5)).toBe(true);
-    expect(shouldSnapshot(10, 5)).toBe(true);
-    expect(shouldSnapshot(12, 5)).toBe(false);
   });
 });

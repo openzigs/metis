@@ -19,6 +19,7 @@ import type {
   SdkReasoningEffort,
   TranscriptResponse,
 } from "@metis/shared";
+import { TRANSCRIPT_PAGE_MAX } from "@metis/shared";
 import { prisma } from "../../prisma.js";
 import { AppError } from "../../../middleware/error-handler.js";
 import { audit } from "../../audit/audit-service.js";
@@ -32,7 +33,6 @@ import {
   countMessages,
   getMessageByOrdinal,
   listActiveMessages,
-  listMessages,
   listMessagesPage,
   toDto,
 } from "./transcript-store.js";
@@ -93,7 +93,13 @@ export async function readTranscriptPage(
   sessionId: string,
   opts: { afterOrdinal: number; limit: number },
 ): Promise<TranscriptResponse> {
-  const session = await loadAuthorizedSession(user, sessionId);
+  return transcriptPage(await loadAuthorizedSession(user, sessionId), opts);
+}
+
+async function transcriptPage(
+  session: AISession,
+  opts: { afterOrdinal: number; limit: number },
+): Promise<TranscriptResponse> {
   if (opts.afterOrdinal <= 0 && session.snapshot && (await countMessages(session.id)) === 0) {
     await importLegacySnapshot(session.id, session.snapshot);
   }
@@ -111,31 +117,32 @@ export async function readTranscriptPage(
   };
 }
 
-/** The full transcript of a session the caller may read. */
-export async function readTranscript(user: AuthPayload | undefined, sessionId: string) {
-  const session = await loadAuthorizedSession(user, sessionId);
-  let rows = await listMessages(session.id);
-  if (rows.length === 0 && session.snapshot) {
-    if ((await importLegacySnapshot(session.id, session.snapshot)) > 0) {
-      rows = await listMessages(session.id);
-    }
-  }
-  return { session, messages: rows.map(toDto) };
-}
-
+/**
+ * #139 — resume: the session state and the FIRST page of its transcript.
+ *
+ * #245 — bounded like the paged read (#212): at most
+ * {@link TRANSCRIPT_PAGE_MAX} rows, with `hasMore` / `nextAfterOrdinal` saying
+ * where the reader continues (`GET /sessions/:id/messages?afterOrdinal=…`).
+ * It used to return every row in one response on every page load.
+ */
 export async function resumeSession(
   user: AuthPayload | undefined,
   sessionId: string,
 ): Promise<ResumeSessionResponse> {
   // Expiry first: an expired session is refused before any legacy import
   // writes rows for it (PR #205 review).
-  const authorized = await loadAuthorizedSession(user, sessionId);
-  const last = authorized.snapshotUpdatedAt ?? authorized.updatedAt;
+  const session = await loadAuthorizedSession(user, sessionId);
+  const last = session.snapshotUpdatedAt ?? session.updatedAt;
   if (last.getTime() < Date.now() - resumeTtlHours() * 3600 * 1000) {
     throw new AppError(404, "SESSION_RESUME", "Session has expired and cannot be resumed");
   }
-  const { session, messages } = await readTranscript(user, sessionId);
-  return { session: sessionStateDto(session), messages };
+  const page = await transcriptPage(session, { afterOrdinal: 0, limit: TRANSCRIPT_PAGE_MAX });
+  return {
+    session: sessionStateDto(session),
+    messages: page.messages,
+    hasMore: page.hasMore,
+    nextAfterOrdinal: page.nextAfterOrdinal,
+  };
 }
 
 const MAX_TITLE = 200;
