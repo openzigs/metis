@@ -6,7 +6,8 @@
  * by accident; a value past 2^31-1 ms became a 1 ms Node timer. Each of the
  * four forms must keep the setting's default and log a warning that names it.
  *
- * `AI_STREAM_*` (read in `routes/ai.ts`) is not covered here — see the PR.
+ * `AI_STREAM_*` (read in `routes/ai.ts`) is covered in
+ * `ai-stream-ms-settings-strict.test.ts` (#257).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 

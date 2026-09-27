@@ -38,6 +38,7 @@ import {
 import {
   buildProvider,
   loadAIConfig,
+  providerDefaultModel,
   parsePolicyJson,
   policyToJson,
   normalizePolicy,
@@ -111,6 +112,7 @@ import {
   createDefaultSymbolLineLookup,
 } from "../lib/code-graph/project-code-searcher.js";
 import { getConfigService } from "../lib/config/config-service.js";
+import { envMs } from "../lib/config/env-ms.js";
 import { getModelCatalog } from "../lib/ai/model-catalog.js";
 import { resolveAgentModel } from "../lib/agent-runtime/definition.js";
 import { renderSkillCatalog, type SkillCatalogEntry } from "../lib/agent-runtime/skills.js";
@@ -138,12 +140,14 @@ function defaultFusedCodeDeps(): FusedCodeDeps {
 // Read on every request so tests can poke env vars between calls. Defaults
 // match the review brief: 60s socket idle timeout, 15s heartbeat, 5min hard
 // ceiling.
-const intEnv = (raw: string | undefined, fallback: number, min = 1): number => {
-  if (raw == null) return fallback;
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n >= min ? n : fallback;
-};
-function streamLimits(): {
+//
+// #257 — each goes through the shared strict parser (#123): plain digits inside
+// [min, 2147453647]; anything else keeps the default and logs a warning naming
+// the setting. `parseInt` read `1.2e6` / `1_200_000` as 1 ms, and a value past
+// 2^31-1 became a 1 ms Node timer. Exported for the per-setting tests. Read on
+// every request, so a bad value warns once per (setting, value), not per turn.
+const ONCE = { warnOnce: true } as const;
+export function streamLimits(): {
   socketTimeoutMs: number;
   heartbeatIntervalMs: number;
   hardCeilingMs: number;
@@ -151,18 +155,18 @@ function streamLimits(): {
   queueMaxWaitMs: number;
 } {
   return {
-    socketTimeoutMs: intEnv(process.env.AI_STREAM_SOCKET_TIMEOUT_MS, 60_000, 1000),
-    heartbeatIntervalMs: intEnv(process.env.AI_STREAM_HEARTBEAT_MS, 15_000, 1),
-    hardCeilingMs: intEnv(process.env.AI_STREAM_MAX_DURATION_MS, 5 * 60_000, 1),
+    socketTimeoutMs: envMs("AI_STREAM_SOCKET_TIMEOUT_MS", 60_000, { min: 1000, ...ONCE }),
+    heartbeatIntervalMs: envMs("AI_STREAM_HEARTBEAT_MS", 15_000, { min: 1, ...ONCE }),
+    hardCeilingMs: envMs("AI_STREAM_MAX_DURATION_MS", 5 * 60_000, { min: 1, ...ONCE }),
     // #1366 — no TOKEN for this long ends the turn. Distinct from the socket
     // timeout (which the heartbeat keeps resetting) and from the hard ceiling
     // (a total-duration cap that cannot see a stall inside a long turn). Set to
     // 0 to disable.
-    idleTimeoutMs: intEnv(process.env.AI_STREAM_IDLE_TIMEOUT_MS, 90_000, 0),
+    idleTimeoutMs: envMs("AI_STREAM_IDLE_TIMEOUT_MS", 90_000, { min: 0, ...ONCE }),
     // #204 — how long one model call may wait for a local-model slot before the
     // turn is given up. Separate from the hard ceiling, which no longer counts
     // queue time.
-    queueMaxWaitMs: intEnv(process.env.AI_STREAM_QUEUE_MAX_WAIT_MS, 10 * 60_000, 1),
+    queueMaxWaitMs: envMs("AI_STREAM_QUEUE_MAX_WAIT_MS", 10 * 60_000, { min: 1, ...ONCE }),
   };
 }
 
@@ -848,6 +852,12 @@ export function aiRouter(): Router {
           // Validated at write time in project-service against
           // SUPPORTED_PROVIDER_KEYS, so the cast is safe at session-bind.
           resolvedProvider = project.aiProviderId as typeof cfg.provider;
+          // #283 — a provider-only override gets THAT provider's default model,
+          // never the deployment's (`cfg.model` names a model of the global
+          // provider). `aiModel` and a request `model` still win below.
+          if (parsed.data.model === undefined) {
+            resolvedModel = providerDefaultModel(project.aiProviderId);
+          }
         }
         if (project.aiModel && parsed.data.model === undefined) {
           resolvedModel = project.aiModel;
