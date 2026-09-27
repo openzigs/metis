@@ -568,6 +568,64 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.body.data.session.agentRef).toBeNull();
     });
 
+    describe("the custom agent's saved model (#145 applies as for a library agent)", () => {
+      const SAVED = "gpt-4.1-mini";
+      beforeAll(async () => {
+        await db.customAgent.create({
+          data: {
+            id: "c-modelled",
+            projectId: IDS.project,
+            name: "Modelled",
+            systemPrompt: "You are modelled.",
+            model: SAVED,
+            tools: "[]",
+          },
+        });
+      });
+      beforeEach(() => {
+        // The test server's own provider key is `offline-stub`, a closed
+        // catalog: vouch for the saved model the way an operator would.
+        process.env.AI_MODEL_CATALOG_OVERRIDES = JSON.stringify({
+          [`offline-stub:${SAVED}`]: {},
+        });
+      });
+      afterEach(() => {
+        delete process.env.AI_MODEL_CATALOG_OVERRIDES;
+      });
+      afterAll(async () => {
+        await db.customAgent.delete({ where: { id: "c-modelled" } });
+      });
+
+      it("the session runs on the agent's saved model, and that model is on the wire", async () => {
+        setAIProviderForTests(PROVIDERS[1]!.make()); // default model gpt-4.1
+        const created = await createSession(alice, {
+          projectId: IDS.project,
+          agentRef: "custom:c-modelled",
+        });
+        expect(created.status, created.text).toBe(201);
+        expect(created.body.data.session.model).toBe(SAVED);
+        expect(created.body.data.warnings).toBeUndefined();
+        const res = await say("/api/ai/chat", created.body.data.session.id, "plain");
+        expect(res.status, res.text.slice(0, 500)).toBe(200);
+        expect(seen).toHaveLength(1);
+        expect(seen[0]!.model).toBe(SAVED);
+        expect(seen[0]!.system).toContain("You are modelled.");
+      });
+
+      it("a model named in the request still wins over the agent's", async () => {
+        setAIProviderForTests(PROVIDERS[1]!.make());
+        const created = await createSession(alice, {
+          projectId: IDS.project,
+          agentRef: "custom:c-modelled",
+          model: "gpt-4.1",
+        });
+        expect(created.status, created.text).toBe(201);
+        expect(created.body.data.session.model).toBe("gpt-4.1");
+        await say("/api/ai/chat", created.body.data.session.id, "plain");
+        expect(seen[0]!.model).toBe("gpt-4.1");
+      });
+    });
+
     describe("GET /api/ai/session-agents — the one picker's list", () => {
       it("lists library agents and the project's own + enabled custom agents, never another project's", async () => {
         const res = await request(app())
@@ -586,6 +644,41 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(refs).not.toContain(`custom:${IDS.outsider}`);
         expect(refs).not.toContain("library:a-disabled");
         expect(refs).not.toContain("library:a-archived");
+      });
+
+      it("a shared agent enabled ONLY in another project is not offered here (the enablement is per project)", async () => {
+        await db.customAgent.create({
+          data: {
+            id: "c-only-ws",
+            projectId: null,
+            name: "Only in p-ws",
+            systemPrompt: "You belong elsewhere.",
+            tools: "[]",
+          },
+        });
+        await db.customAgentEnablement.create({
+          data: { customAgentId: "c-only-ws", projectId: "p-ws", enabled: true },
+        });
+        try {
+          const here = await request(app())
+            .get(`/api/ai/session-agents?projectId=${IDS.project}`)
+            .set("Authorization", `Bearer ${alice}`);
+          expect(here.status).toBe(200);
+          const hereRefs = (here.body.data.items as Array<{ ref: string }>).map((i) => i.ref);
+          expect(hereRefs).not.toContain("custom:c-only-ws");
+          expect(hereRefs).toContain("custom:c-shared"); // enabled HERE: still listed
+          // Positive control: the project that enabled it does list it.
+          const there = await request(app())
+            .get("/api/ai/session-agents?projectId=p-ws")
+            .set("Authorization", `Bearer ${alice}`);
+          expect(there.status).toBe(200);
+          const thereRefs = (there.body.data.items as Array<{ ref: string }>).map((i) => i.ref);
+          expect(thereRefs).toContain("custom:c-only-ws");
+          expect(thereRefs).not.toContain("custom:c-shared");
+        } finally {
+          await db.customAgentEnablement.deleteMany({ where: { customAgentId: "c-only-ws" } });
+          await db.customAgent.delete({ where: { id: "c-only-ws" } });
+        }
       });
 
       it("without a project: library agents only", async () => {
