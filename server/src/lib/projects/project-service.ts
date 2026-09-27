@@ -310,7 +310,7 @@ const MAX_AI_MODEL_LENGTH = 200;
 /**
  * Validate + normalize a per-project AI model id override.
  *
- * Free-form (Bedrock/Copilot model IDs are open-ended), but length-capped
+ * Free-form (provider model IDs are open-ended), but length-capped
  * at 200 chars. Empty / whitespace / null / undefined all collapse to null
  * meaning "use the global default at session-bind time".
  */

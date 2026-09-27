@@ -4386,8 +4386,11 @@ model TestCoverageRun {
   mode             String    @default("A")
   /// sha256 over the canonical sorted set of input contentHashes.
   contentHash      String
-  /// Sum of token costs (cents * 100) tracked across the run lifecycle.
+  /// Sum of priced token costs, in cents, tracked across the run lifecycle.
   tokenCostCents   Int       @default(0)
+  /// #81 — the per-run budget cap (cents) the run executed under. NULL on rows
+  /// written before #81; readers fall back to the current default for those.
+  budgetCents      Int?
   /// Tokens spent on the embedding phase (#878).
   embeddingTokens  Int       @default(0)
   /// Tokens spent on the LLM judge phase (#878).

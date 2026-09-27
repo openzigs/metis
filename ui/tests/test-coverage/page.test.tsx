@@ -610,6 +610,83 @@ describe("TestCoveragePage", () => {
     expect(line.textContent ?? "").toMatch(/\+ 1,500 unpriced tokens/);
   });
 
+  describe("tells unpriced embedding apart from unpriced LLM spend (#92)", () => {
+    function withBudget(budget: Record<string, unknown>) {
+      const now = new Date().toISOString();
+      api.listRuns.mockResolvedValue([
+        {
+          id: "run-1",
+          projectId: "p1",
+          status: "succeeded",
+          triggeredById: null,
+          modelTag: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ]);
+      api.getReport.mockResolvedValue({
+        runId: "run-1",
+        requirements: [],
+        testCases: [],
+        mappings: [],
+        gaps: [],
+        suggestions: [],
+        summary: { total: 0, covered: 0, gaps: 0, suggestions: 0, coveragePct: 0 },
+      });
+      api.getBudget.mockResolvedValue({
+        usedCents: 3,
+        limitCents: 20,
+        remainingCents: 17,
+        ...budget,
+      });
+    }
+
+    it("embedding-only unpriced: a lower-bound note naming the embed: key, and no stop", async () => {
+      withBudget({ unpricedTokens: 1200, unpricedEmbeddingTokens: 1200, unpricedLlmTokens: 0 });
+      renderPage();
+      const note = await screen.findByTestId("tc-budget-unpriced-embedding");
+      expect(note.textContent ?? "").toMatch(/1,200 embedding tokens have no price/);
+      expect(note.textContent ?? "").toMatch(/did not stop the run/);
+      expect(note.textContent ?? "").toMatch(/MODEL_PRICES/);
+      expect(note.textContent ?? "").toMatch(/embed:<backend>:<model>/);
+      expect(note.textContent ?? "").toMatch(/re-run/);
+      expect(screen.queryByTestId("tc-budget-unpriced-llm")).toBeNull();
+    });
+
+    it("LLM unpriced: an alert that the budget stopped the run's LLM work, and how to fix it", async () => {
+      withBudget({ unpricedTokens: 800, unpricedEmbeddingTokens: 0, unpricedLlmTokens: 800 });
+      renderPage();
+      const alert = await screen.findByTestId("tc-budget-unpriced-llm");
+      expect(alert).toHaveAttribute("role", "alert");
+      expect(alert.textContent ?? "").toMatch(/800 tokens came from a judge or suggestion model/);
+      expect(alert.textContent ?? "").toMatch(/stopped this run's LLM work/);
+      expect(alert.textContent ?? "").toMatch(/MODEL_PRICES/);
+      expect(alert.textContent ?? "").toMatch(/re-run/);
+      expect(screen.queryByTestId("tc-budget-unpriced-embedding")).toBeNull();
+    });
+
+    it("both shares at once: both notes, each with its own count", async () => {
+      withBudget({ unpricedTokens: 2000, unpricedEmbeddingTokens: 1500, unpricedLlmTokens: 500 });
+      renderPage();
+      expect((await screen.findByTestId("tc-budget-unpriced-llm")).textContent).toMatch(
+        /^500 tokens/,
+      );
+      expect(screen.getByTestId("tc-budget-unpriced-embedding").textContent).toMatch(
+        /^1,500 embedding tokens/,
+      );
+      // The combined figure on the budget line is unchanged.
+      expect(screen.getByTestId("tc-budget-line").textContent).toMatch(/\+ 2,000 unpriced tokens/);
+    });
+
+    it("no unpriced spend: neither note", async () => {
+      withBudget({ unpricedTokens: 0, unpricedEmbeddingTokens: 0, unpricedLlmTokens: 0 });
+      renderPage();
+      await screen.findByTestId("tc-budget-line");
+      expect(screen.queryByTestId("tc-budget-unpriced-llm")).toBeNull();
+      expect(screen.queryByTestId("tc-budget-unpriced-embedding")).toBeNull();
+    });
+  });
+
   it("submits a connector pull from the picker", async () => {
     api.pullFromConnector.mockResolvedValue({
       id: "imp-conn-1",

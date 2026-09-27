@@ -717,6 +717,32 @@ export default function TestCoveragePage() {
                     % used
                   </div>
                 )}
+                {/* #92 — the two kinds of unknown spend mean different things:
+                    an unpriced judge/suggestion model stops the run's LLM work,
+                    an unpriced embedder only makes the figure a lower bound. */}
+                {budget && safeNum(budget.unpricedLlmTokens) > 0 && (
+                  <div
+                    className="md:col-span-3 text-xs text-destructive"
+                    data-testid="tc-budget-unpriced-llm"
+                    role="alert"
+                  >
+                    {safeNum(budget.unpricedLlmTokens).toLocaleString("en-US")} tokens came from a
+                    judge or suggestion model METIS has no price for, so the budget stopped this
+                    run&apos;s LLM work. Price that model with a <code>MODEL_PRICES</code> entry (
+                    <code>&lt;provider&gt;:&lt;model&gt;</code>) and re-run.
+                  </div>
+                )}
+                {budget && safeNum(budget.unpricedEmbeddingTokens) > 0 && (
+                  <div
+                    className="md:col-span-3 text-xs text-muted-foreground"
+                    data-testid="tc-budget-unpriced-embedding"
+                  >
+                    {safeNum(budget.unpricedEmbeddingTokens).toLocaleString("en-US")} embedding
+                    tokens have no price. They did not stop the run, but the spend shown is a lower
+                    bound. Price the embedder with a <code>MODEL_PRICES</code> key{" "}
+                    <code>embed:&lt;backend&gt;:&lt;model&gt;</code> and re-run for an exact figure.
+                  </div>
+                )}
               </div>
             )}
           </div>

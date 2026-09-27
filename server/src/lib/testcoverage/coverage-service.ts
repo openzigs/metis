@@ -260,6 +260,14 @@ export async function runCoverageScoring(
     state: "done",
     detail: { ...judgeStats, promotedToCovered, budgetExceeded },
   });
+  // #81 — persist the match + judge spend now, so the budget endpoint reads it
+  // while the suggestion phase runs. Accounting never fails the run.
+  await cost.flush().catch((err: unknown) => {
+    log.error("test-coverage run cost could not be persisted", {
+      runId: input.runId,
+      error: String(err),
+    });
+  });
 
   // --- Persist mappings + gaps --------------------------------------------
   await db.coverageMapping.deleteMany({ where: { runId: input.runId } });

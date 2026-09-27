@@ -10,6 +10,7 @@ import {
   TEST_COVERAGE_PHASES,
   type TestCoverageEvent,
 } from "../../../src/lib/testcoverage/task-runner.js";
+import { readBudget, DEFAULT_BUDGET_CENTS } from "../../../src/lib/testcoverage/cost-tracker.js";
 
 function makeDb(overrides: Record<string, unknown> = {}) {
   const updates: Array<{ where: unknown; data: Record<string, unknown> }> = [];
@@ -310,6 +311,138 @@ describe("runTestCoverageJob", () => {
     );
     expect(reqFindMany).toHaveBeenCalled();
     expect(events[events.length - 1]).toMatchObject({ type: "run:completed" });
+  });
+});
+
+describe("the budget endpoint reads the run's own cap and live spend (#81)", () => {
+  /**
+   * ONE stateful run row serving both sides: the runner writes it, and
+   * `readBudget` — what the budget endpoint calls — reads it back. Asserting on
+   * the read, not on the update calls, is the point: before #81 every write
+   * succeeded and the read still reported the default cap.
+   */
+  function statefulRun() {
+    const row: Record<string, unknown> = {
+      id: "run-1",
+      status: "queued",
+      createdById: "user-1",
+      tokenCostCents: 0,
+      budgetCents: null,
+      embeddingTokens: 0,
+      judgeTokens: 0,
+      suggestionTokens: 0,
+    };
+    const { db } = makeDb({
+      testCoverageRun: {
+        findUnique: vi.fn(async () => ({ ...row })),
+        update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          Object.assign(row, data);
+          return { ...row };
+        }),
+      },
+      testCaseDoc: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "doc-1",
+            contentHash: "abc",
+            title: "Login",
+            preconditions: null,
+            stepsJson: JSON.stringify([{ action: "click", expected: "ok" }]),
+            expected: "Dashboard",
+            priority: "medium",
+            tags: JSON.stringify(["auth"]),
+            externalId: null,
+            source: "csv",
+          },
+        ]),
+      },
+      aITokenUsage: { aggregate: vi.fn(async () => ({ _sum: { totalTokens: null } })) },
+    });
+    return { db, row };
+  }
+
+  /** Bills 1,000 tokens of a priced cloud embedder (rounds up to 1 cent), then optionally throws. */
+  function indexer(opts: { fail?: boolean } = {}) {
+    return {
+      index: vi.fn(
+        async (
+          _p: string,
+          _c: unknown[],
+          o?: { cost?: { record: (u: Record<string, unknown>) => void } },
+        ) => {
+          o?.cost?.record({
+            phase: "embedding",
+            embedder: "openai",
+            modelId: "text-embedding-3-small",
+            embeddingTokens: 1_000,
+          });
+          if (opts.fail) throw new Error("index blew up");
+          return { inserted: 1, skipped: [] };
+        },
+      ),
+    };
+  }
+
+  it("a run started with a non-default budgetCents reads that cap back through readBudget", async () => {
+    const cap = DEFAULT_BUDGET_CENTS + 55;
+    const { db } = statefulRun();
+    await runTestCoverageJob(
+      { runId: "run-1", projectId: "p-1" },
+      { db: db as never, indexer: indexer() as never, budgetCents: cap },
+    );
+    const view = await readBudget("run-1", { db: db as never });
+    expect(view).toMatchObject({ limitCents: cap, usedCents: 1, remainingCents: cap - 1 });
+  });
+
+  it("reports the cap and the index-phase spend WHILE the run is still going", async () => {
+    const cap = DEFAULT_BUDGET_CENTS + 55;
+    const { db } = statefulRun();
+    const reads: Array<Promise<unknown>> = [];
+    await runTestCoverageJob(
+      { runId: "run-1", projectId: "p-1" },
+      {
+        db: db as never,
+        indexer: indexer() as never,
+        budgetCents: cap,
+        // A budget tile polling the endpoint as the index phase finishes.
+        emitter: (e) => {
+          if (e.type === "run:progress" && e.phase === "index" && e.detail) {
+            reads.push(readBudget("run-1", { db: db as never }));
+          }
+        },
+      },
+    );
+    expect(reads).toHaveLength(1);
+    expect(await reads[0]).toMatchObject({ limitCents: cap, usedCents: 1 });
+  });
+
+  it("reports the run's cap from the moment it starts, before any phase has flushed", async () => {
+    const cap = DEFAULT_BUDGET_CENTS + 55;
+    const { db } = statefulRun();
+    let early: unknown;
+    const slowIndexer = {
+      index: vi.fn(async () => {
+        // A budget tile polling while the (long) index phase is still running.
+        early = await readBudget("run-1", { db: db as never });
+        return { inserted: 1, skipped: [] };
+      }),
+    };
+    await runTestCoverageJob(
+      { runId: "run-1", projectId: "p-1" },
+      { db: db as never, indexer: slowIndexer as never, budgetCents: cap },
+    );
+    expect(early).toMatchObject({ limitCents: cap, usedCents: 0 });
+  });
+
+  it("persists spend incurred before a run failed, instead of reading $0.00", async () => {
+    const { db, row } = statefulRun();
+    await runTestCoverageJob(
+      { runId: "run-1", projectId: "p-1" },
+      { db: db as never, indexer: indexer({ fail: true }) as never },
+    );
+    expect(row.status).toBe("failed");
+    const view = await readBudget("run-1", { db: db as never });
+    expect(view).toMatchObject({ usedCents: 1, breakdown: { embeddingTokens: 1_000 } });
   });
 });
 

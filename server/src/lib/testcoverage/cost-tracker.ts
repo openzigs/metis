@@ -71,14 +71,12 @@ export interface CoverageBudgetView {
    * #77 — the embedding share of {@link unpricedTokens}. Reported, but it does
    * not stop the run: see {@link CoverageCostTracker.exceeded}.
    *
-   * Served by the budget endpoint and not yet rendered: the budget tile shows
-   * the combined {@link unpricedTokens}, so it cannot tell an operator which
-   * kind of unknown spend they are looking at. Splitting the tile is #92.
+   * The budget tile renders it separately from {@link unpricedLlmTokens} (#92).
    */
   unpricedEmbeddingTokens: number;
   /**
    * #43 — the judge/suggestion share of {@link unpricedTokens}. Non-zero means
-   * the budget refuses further LLM work. Unrendered today; see #92.
+   * the budget refuses further LLM work. Rendered by the budget tile (#92).
    */
   unpricedLlmTokens: number;
   /** Per-phase token counts. */
@@ -336,7 +334,11 @@ export class CoverageCostTracker {
     return this.unpricedLlmTokens > 0 || this.usedCents >= this.limitCents;
   }
 
-  /** Persist the current totals to `TestCoverageRun`. */
+  /**
+   * Persist the current totals — and the cap they are measured against (#81)
+   * — to `TestCoverageRun`. Called after each phase, so the budget endpoint
+   * reads live spend during a run rather than zeros until it ends.
+   */
   async flush(): Promise<void> {
     // Let this run's usage rows land first, so a budget read sees them.
     await Promise.all([...this.inflight]);
@@ -345,6 +347,7 @@ export class CoverageCostTracker {
       where: { id: this.scope.runId },
       data: {
         tokenCostCents: this.usedCents,
+        budgetCents: this.limitCents,
         embeddingTokens: this.embeddingTokens,
         judgeTokens: this.judgeTokens,
         suggestionTokens: this.suggestionTokens,
@@ -356,6 +359,10 @@ export class CoverageCostTracker {
 /**
  * Read the persisted budget view for a run without instantiating a tracker.
  * Backs the `GET /api/projects/:id/test-coverage/runs/:runId/budget` endpoint.
+ *
+ * #81 — the cap is the one the run persisted. `options.budgetCents` (then
+ * {@link DEFAULT_BUDGET_CENTS}) is only the fallback for a row written before
+ * the cap was recorded; it never overrides a stored cap.
  */
 export async function readBudget(
   runId: string,
@@ -366,6 +373,7 @@ export async function readBudget(
     where: { id: runId },
     select: {
       tokenCostCents: true,
+      budgetCents: true,
       embeddingTokens: true,
       judgeTokens: true,
       suggestionTokens: true,
@@ -392,7 +400,7 @@ export async function readBudget(
   ]);
   const embeddingTokens = unpricedEmbedding._sum.totalTokens ?? 0;
   const llmTokens = Math.max(0, (unpricedTotal._sum.totalTokens ?? 0) - embeddingTokens);
-  const limit = options.budgetCents ?? DEFAULT_BUDGET_CENTS;
+  const limit = row.budgetCents ?? options.budgetCents ?? DEFAULT_BUDGET_CENTS;
   return {
     limitCents: limit,
     usedCents: row.tokenCostCents,

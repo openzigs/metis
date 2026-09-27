@@ -4572,8 +4572,11 @@ Judge and suggestion calls are recorded under the provider and model that
 served them. If that model has no price (see [Unpriced usage](#unpriced-usage)),
 its spend is unknown, so the run cannot show it is under the cap: after the
 call that reveals it, no further judge batches or LLM phases run, and the
-budget line reads `$x + N unpriced tokens` rather than `$0.00`. Pricing the
-model with `MODEL_PRICES` lets later runs proceed.
+budget line reads `$x + N unpriced tokens` rather than `$0.00`, and a red note
+under it says the budget stopped the run's LLM work. Pricing the model with
+`MODEL_PRICES` lets later runs proceed. Unpriced *embedding* tokens get their
+own grey note instead: they do not stop the run, but the spend shown is a lower
+bound until the embedder is priced with a `embed:<backend>:<model>` key.
 
 The budget is checked before every judge batch and before every suggestion
 cluster, so a run stops part-way through either phase once the cap is reached.

@@ -10,6 +10,8 @@
  * are logged but never surface to the caller — accounting must never crash
  * a chat run.
  */
+import { conventionForProvider, normalizeTokenUsage } from "../ai/cache-verification.js";
+import type { UsageProvider } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { computeCostCents, resolveRate } from "./provider-rates.js";
@@ -78,11 +80,27 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
   const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
   // #22 — the single pricing source; `null` for a model METIS has no price for.
   const rate = resolveRate(input.provider, input.model);
+  // #179 — `inputTokens` arrives in the provider's own usage convention. On
+  // every OpenAI-compatible provider (the Bedrock gateway included) the prompt
+  // count already INCLUDES the cache reads, so pricing it at the input rate and
+  // the reads again at the cache-read rate billed each cached token twice.
+  // Derive the fresh (uncached) input first, exactly as `estimateUsageCostUsd`
+  // does for `ai_token_usages`, so the two usage tables agree on one call.
+  const priced = normalizeTokenUsage(
+    {
+      promptTokens: inputTokens,
+      completionTokens: outputTokens,
+      totalTokens: 0,
+      cacheReadTokens,
+      cacheWriteTokens,
+    },
+    conventionForProvider(input.provider as UsageProvider),
+  );
   const costCents = computeCostCents(rate, {
-    inputTokens,
+    inputTokens: priced.freshInputTokens,
     outputTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
+    cacheReadTokens: priced.cacheReadTokens,
+    cacheWriteTokens: priced.cacheWriteTokens,
   });
 
   if (totalTokens === 0) {

@@ -253,6 +253,27 @@ describe("runCoverageScoring", () => {
     expect(matchStates).toEqual(["running", "done"]);
   });
 
+  it("persists the match/judge spend before the suggestion phase, so a live budget read sees it (#81)", async () => {
+    const { db, state } = makeDb({
+      requirements: [{ id: "r1", title: "X", body: "body content", priority: "low" }],
+    });
+    const seenDuringSuggest: Record<string, unknown>[] = [];
+    const watchingCaller: JudgeModelCaller = {
+      async call(...args: Parameters<JudgeModelCaller["call"]>) {
+        // What the budget endpoint would read while this suggestion call runs.
+        seenDuringSuggest.push({ ...state.run });
+        return stubCaller.call(...args);
+      },
+    };
+    await runCoverageScoring(
+      { runId: "run-1", projectId: "p-1", userId: "u-1" },
+      { db: db as never, caller: watchingCaller, budgetCents: 10_000 },
+    );
+    expect(seenDuringSuggest.length).toBeGreaterThan(0);
+    expect(seenDuringSuggest[0]).toMatchObject({ budgetCents: 10_000 });
+    expect(seenDuringSuggest[0]!.embeddingTokens).toBeGreaterThan(0);
+  });
+
   it("hydrates existing test cases and persists coverage mappings", async () => {
     const { db, state } = makeDb({
       requirements: [

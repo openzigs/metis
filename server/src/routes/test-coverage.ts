@@ -36,7 +36,7 @@ import {
   type TestCoverageEmitter,
 } from "../lib/testcoverage/task-runner.js";
 import type { JudgeModelCaller } from "../lib/testcoverage/judge.js";
-import { readBudget, DEFAULT_BUDGET_CENTS } from "../lib/testcoverage/cost-tracker.js";
+import { readBudget } from "../lib/testcoverage/cost-tracker.js";
 import { buildCoverageReport } from "../lib/testcoverage/report-builder.js";
 import {
   exportCoverageReportToExcel,
@@ -319,7 +319,8 @@ export function testCoverageRouter(deps: TestCoverageRouterDeps = {}): Router {
         const runId = String(req.params.runId);
         const run = await prisma.testCoverageRun.findFirst({ where: { id: runId, projectId } });
         if (!run) throw new AppError(404, "RUN_NOT_FOUND", "Run not found");
-        const view = await readBudget(runId, { budgetCents: DEFAULT_BUDGET_CENTS });
+        // #81 — the cap the run stored; the default only for pre-#81 rows.
+        const view = await readBudget(runId);
         res.json(ok(view));
       } catch (err) {
         next(err);
