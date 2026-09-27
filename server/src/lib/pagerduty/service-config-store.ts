@@ -96,15 +96,14 @@ export class PagerDutyServiceConfigStore {
 
     // 1. Encrypt + persist the plaintext routing key; keep only a ${vault:label}.
     const label = vaultLabel(workspaceId, serviceKey);
-    const existingSecret = await this.findSecretByLabel(label);
-    if (existingSecret) {
-      await this.vault.rotate(existingSecret.id, input.routingKey);
-    } else {
-      await this.vault.create(label, input.routingKey, "project", {
-        description: `PagerDuty routing key (workspace ${workspaceId}, service ${serviceKey})`,
-        createdById: input.createdById ?? null,
-      });
-    }
+    // #258 — one upsert on the name, which this (workspace, service) pair alone owns.
+    // The earlier find-live-then-create missed the SOFT-DELETED secret a delete
+    // leaves behind, so a re-register re-created a taken name and 500'd; the
+    // upsert revives that row with the new value instead.
+    await this.vault.upsert(label, input.routingKey, "project", {
+      description: `PagerDuty routing key (workspace ${workspaceId}, service ${serviceKey})`,
+      createdById: input.createdById ?? null,
+    });
     const routingKeyRef = `\${vault:${label}}`;
 
     // 2. Upsert the secret-free config row.

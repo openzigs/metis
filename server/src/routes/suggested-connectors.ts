@@ -31,6 +31,7 @@ import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { getVaultService } from "../lib/vault/vault-service.js";
+import { rotateOrCreate } from "../lib/vault/secret-rotation.js";
 import {
   createDbConnector,
   deleteDbConnector,
@@ -346,19 +347,22 @@ export function suggestedConnectorsRouter(): Router {
         if (existingPlaintext === body.password) {
           vaultRef = row.passwordVaultRef;
           mutation = "reused";
-        } else {
-          await vault.rotate(row.passwordVaultRef, body.password);
-          vaultRef = row.passwordVaultRef;
-          mutation = "rotated";
         }
-      } else {
-        const label = `provisioned-cred:project:${projectId}:suggestion:${row.id}`;
-        const summary = await vault.create(label, body.password, "project", {
+      }
+      if (mutation !== "reused") {
+        // #258 — rotate the suggestion's own secret in place; when it is gone
+        // (never written, or deleted — `rotate` refuses a deleted secret, which
+        // 500'd here) create a new one under a label no earlier secret holds. A
+        // label fixed by the row id was still held by the secret a failed
+        // provision rolled back, so the retry 500'd on `Secret.name`.
+        const written = await rotateOrCreate(vault, row.passwordVaultRef, body.password, {
+          label: `provisioned-cred:project:${projectId}:suggestion:${row.id}`,
+          scope: "project",
           description: `Provisioned dev DB password from suggestion ${row.id}`,
           createdById: actorId,
         });
-        vaultRef = summary.id;
-        mutation = "created";
+        vaultRef = written.id;
+        mutation = written.created ? "created" : "rotated";
       }
     }
 
@@ -383,7 +387,12 @@ export function suggestedConnectorsRouter(): Router {
 
       await prisma.suggestedConnector.update({
         where: { id: row.id },
-        data: { status: "accepted", acceptedConnectorId: created.id },
+        data: {
+          status: "accepted",
+          acceptedConnectorId: created.id,
+          // A replaced secret is the one the suggestion holds from now on.
+          ...(mutation === "created" && vaultRef ? { passwordVaultRef: vaultRef } : {}),
+        },
       });
       suggestionUpdated = true;
 

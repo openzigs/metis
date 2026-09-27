@@ -22,6 +22,7 @@ import type {
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../../prisma.js";
 import { getVaultService, type VaultService } from "../../vault/vault-service.js";
+import { rotateOrCreate } from "../../vault/secret-rotation.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { ConnectorError } from "../types.js";
@@ -146,38 +147,80 @@ async function findOrThrow(
 
 // ---- Auth-config persistence (raw → vault refs) ---------------------------
 
+/** The secret id inside a stored `${vault:<id>}` ref, or null. */
+function refId(ref: string | null | undefined): string | null {
+  const m = ref ? /^\$\{vault:([^}]+)\}$/.exec(ref) : null;
+  return m ? m[1] : null;
+}
+
+/**
+ * #258 — write one credential. On update, `existingRef` is the connection's own
+ * ref for the same field: its secret is rotated in place. With no live secret
+ * behind it (new connection, or the secret was deleted) a new secret is created
+ * under a collision-free label. Re-creating under the derived name hit
+ * `Secret.name @unique` — held by the connection's own secret, or by a
+ * soft-deleted one — and 500'd.
+ */
+async function writeSecret(
+  vault: VaultService,
+  existingRef: string | null | undefined,
+  value: string,
+  label: string,
+  description: string,
+): Promise<string> {
+  const { id } = await rotateOrCreate(vault, refId(existingRef), value, {
+    label: sanitizeLabelComponent(label),
+    scope: "project",
+    description,
+  });
+  return asVaultRef(id);
+}
+
 async function persistAuthConfig(
   vault: VaultService,
   projectId: string,
   label: string,
   input: CreateTestManagementConnectionInput["auth"],
+  existing: Partial<Record<string, string>> = {},
 ): Promise<TestManagementAuthConfigRefs> {
-  const base = sanitizeLabelComponent(`testmgmt-${projectId}-${label}`);
+  const base = `testmgmt-${projectId}-${label}`;
   switch (input.kind) {
     case "xray": {
-      const cid = await vault.create(`${base}-client-id`, input.clientId, "project", {
-        description: `Xray client_id for ${label}`,
-      });
-      const csec = await vault.create(`${base}-client-secret`, input.clientSecret, "project", {
-        description: `Xray client_secret for ${label}`,
-      });
-      return {
-        kind: "xray",
-        clientIdRef: asVaultRef(cid.id),
-        clientSecretRef: asVaultRef(csec.id),
-      };
+      const clientIdRef = await writeSecret(
+        vault,
+        existing.clientIdRef,
+        input.clientId,
+        `${base}-client-id`,
+        `Xray client_id for ${label}`,
+      );
+      const clientSecretRef = await writeSecret(
+        vault,
+        existing.clientSecretRef,
+        input.clientSecret,
+        `${base}-client-secret`,
+        `Xray client_secret for ${label}`,
+      );
+      return { kind: "xray", clientIdRef, clientSecretRef };
     }
     case "zephyr": {
-      const t = await vault.create(`${base}-bearer`, input.bearerToken, "project", {
-        description: `Zephyr bearer token for ${label}`,
-      });
-      return { kind: "zephyr", bearerTokenRef: asVaultRef(t.id) };
+      const bearerTokenRef = await writeSecret(
+        vault,
+        existing.bearerTokenRef,
+        input.bearerToken,
+        `${base}-bearer`,
+        `Zephyr bearer token for ${label}`,
+      );
+      return { kind: "zephyr", bearerTokenRef };
     }
     case "testrail": {
-      const k = await vault.create(`${base}-api-key`, input.apiKey, "project", {
-        description: `TestRail API key for ${label}`,
-      });
-      return { kind: "testrail", email: input.email, apiKeyRef: asVaultRef(k.id) };
+      const apiKeyRef = await writeSecret(
+        vault,
+        existing.apiKeyRef,
+        input.apiKey,
+        `${base}-api-key`,
+        `TestRail API key for ${label}`,
+      );
+      return { kind: "testrail", email: input.email, apiKeyRef };
     }
   }
 }
@@ -187,20 +230,58 @@ async function persistTlsConfig(
   projectId: string,
   label: string,
   input: NonNullable<CreateTestManagementConnectionInput["tlsConfig"]>,
+  existingCaCertRef: string | null = null,
 ): Promise<PersistedTlsConfig | null> {
   if (!input) return null;
   let caCertRef: string | null = null;
   if (input.caCert) {
-    const base = sanitizeLabelComponent(`testmgmt-${projectId}-${label}-ca`);
-    const s = await vault.create(base, input.caCert, "project", {
-      description: `TLS CA cert for ${label}`,
-    });
-    caCertRef = asVaultRef(s.id);
+    caCertRef = await writeSecret(
+      vault,
+      existingCaCertRef,
+      input.caCert,
+      `testmgmt-${projectId}-${label}-ca`,
+      `TLS CA cert for ${label}`,
+    );
   }
   return {
     rejectUnauthorized: input.rejectUnauthorized ?? true,
     caCertRef,
   };
+}
+
+/** Prisma's unique-index violation (`P2002`), matched on its code alone. */
+function isUniqueConstraintError(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2002";
+}
+
+function labelTaken(label: string): ConnectorError {
+  return new ConnectorError(
+    409,
+    "TESTMGMT_LABEL_TAKEN",
+    `label '${label}' already exists in this project`,
+  );
+}
+
+/**
+ * #258 — `@@unique([projectId, label])` also covers SOFT-DELETED connections,
+ * so a deleted connection kept its label and re-using it 500'd on the index. A
+ * deleted connection is never read by label, so its label moves to a tombstone
+ * embedding its own id. Done at write time, so rows deleted earlier are freed too.
+ */
+async function releaseDeletedLabel(
+  db: NonNullable<TestManagementServiceDeps["prisma"]>,
+  projectId: string,
+  label: string,
+): Promise<void> {
+  const holder = await db.testManagementConnection.findFirst({
+    where: { projectId, label, deletedAt: { not: null } },
+    select: { id: true },
+  });
+  if (!holder) return;
+  await db.testManagementConnection.update({
+    where: { id: holder.id },
+    data: { label: `${label}~deleted-${holder.id}` },
+  });
 }
 
 // ---- Vault → resolved plaintext (in-process only) -------------------------
@@ -311,13 +392,8 @@ export async function createTestManagementConnection(
   const existing = await db.testManagementConnection.findFirst({
     where: { projectId, label: input.label, deletedAt: null },
   });
-  if (existing) {
-    throw new ConnectorError(
-      409,
-      "TESTMGMT_LABEL_TAKEN",
-      `label '${input.label}' already exists in this project`,
-    );
-  }
+  if (existing) throw labelTaken(input.label);
+  await releaseDeletedLabel(db, projectId, input.label);
 
   log.info("Creating test management connection", {
     projectId,
@@ -330,19 +406,31 @@ export async function createTestManagementConnection(
     ? await persistTlsConfig(vault, projectId, input.label, input.tlsConfig)
     : null;
 
-  const row = await db.testManagementConnection.create({
-    data: {
-      projectId,
-      label: input.label,
-      kind: input.kind,
-      baseUrl: input.baseUrl,
-      authConfigJson: JSON.stringify(refs),
-      proxyConfigJson: input.proxyConfig ? JSON.stringify(input.proxyConfig) : null,
-      tlsConfigJson: tls ? JSON.stringify(tls) : null,
-      status: "untested",
-      createdById: actorId,
-    },
-  });
+  let row;
+  try {
+    row = await db.testManagementConnection.create({
+      data: {
+        projectId,
+        label: input.label,
+        kind: input.kind,
+        baseUrl: input.baseUrl,
+        authConfigJson: JSON.stringify(refs),
+        proxyConfigJson: input.proxyConfig ? JSON.stringify(input.proxyConfig) : null,
+        tlsConfigJson: tls ? JSON.stringify(tls) : null,
+        status: "untested",
+        createdById: actorId,
+      },
+    });
+  } catch (err) {
+    // A concurrent create took the label after the check above: 409, and the
+    // secrets just written belong to no connection, so they are withdrawn.
+    if (!isUniqueConstraintError(err)) throw err;
+    const written = [...Object.values(refs), tls?.caCertRef].map((r) =>
+      typeof r === "string" ? refId(r) : null,
+    );
+    for (const id of written) if (id) await vault.delete(id).catch(() => undefined);
+    throw labelTaken(input.label);
+  }
 
   audit({
     actor: { id: actorId },
@@ -385,13 +473,8 @@ export async function updateTestManagementConnection(
         NOT: { id: existing.id },
       },
     });
-    if (dup) {
-      throw new ConnectorError(
-        409,
-        "TESTMGMT_LABEL_TAKEN",
-        `label '${input.label}' already exists in this project`,
-      );
-    }
+    if (dup) throw labelTaken(input.label);
+    await releaseDeletedLabel(db, existing.projectId, input.label);
     data.label = input.label;
   }
 
@@ -403,11 +486,13 @@ export async function updateTestManagementConnection(
         `cannot change connection kind from '${existing.kind}' to '${input.auth.kind}'`,
       );
     }
+    const stored = parseJsonOr<Partial<Record<string, string>>>(existing.authConfigJson, {});
     const refs = await persistAuthConfig(
       vault,
       existing.projectId,
       (data.label as string | undefined) ?? existing.label,
       input.auth,
+      stored,
     );
     data.authConfigJson = JSON.stringify(refs);
     authChanged = true;
@@ -426,6 +511,7 @@ export async function updateTestManagementConnection(
         existing.projectId,
         (data.label as string | undefined) ?? existing.label,
         input.tlsConfig,
+        parseJsonOr<PersistedTlsConfig | null>(existing.tlsConfigJson, null)?.caCertRef ?? null,
       );
       data.tlsConfigJson = tls ? JSON.stringify(tls) : null;
     }
@@ -437,7 +523,15 @@ export async function updateTestManagementConnection(
     data.errorMessage = null;
   }
 
-  const row = await db.testManagementConnection.update({ where: { id }, data });
+  let row;
+  try {
+    row = await db.testManagementConnection.update({ where: { id }, data });
+  } catch (err) {
+    if (isUniqueConstraintError(err) && typeof data.label === "string") {
+      throw labelTaken(data.label);
+    }
+    throw err;
+  }
 
   audit({
     actor: { id: actorId },

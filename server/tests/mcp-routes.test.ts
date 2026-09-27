@@ -36,6 +36,7 @@ interface Row {
 }
 
 const servers = new Map<string, Row>();
+const secretRows: Array<{ id: string; name: string; ciphertext: string }> = [];
 const allowlist = new Map<string, Set<string>>();
 let next = 0;
 
@@ -56,16 +57,26 @@ vi.mock("../src/lib/prisma.js", async () => {
     userRole: {},
     auditLog: { create: vi.fn(async () => ({})) },
     secret: {
-      create: vi.fn(async ({ data }: { data: { name: string; ciphertext: string } }) => ({
-        id: `sec_${Math.random().toString(36).slice(2, 9)}`,
-        name: data.name,
-        description: "",
-        ciphertext: data.ciphertext,
-        keyVersion: 1,
-        algorithm: "aes-256-gcm",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })),
+      // #258 — like the real table: `name` is UNIQUE, soft-deleted rows included.
+      create: vi.fn(async ({ data }: { data: { name: string; ciphertext: string } }) => {
+        if (secretRows.some((r) => r.name === data.name)) {
+          throw Object.assign(new Error("Unique constraint failed on the fields: (`name`)"), {
+            code: "P2002",
+          });
+        }
+        const row = {
+          id: `sec_${Math.random().toString(36).slice(2, 9)}`,
+          name: data.name,
+          description: "",
+          ciphertext: data.ciphertext,
+          keyVersion: 1,
+          algorithm: "aes-256-gcm",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        secretRows.push(row);
+        return row;
+      }),
     },
     mCPServer: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
@@ -160,6 +171,7 @@ import { createApp } from "../src/app.js";
 import { bootstrapMCP } from "../src/lib/mcp/index.js";
 import { setMCPRegistry } from "../src/lib/mcp/mcp-service.js";
 import type { MCPTransportClient } from "../src/lib/mcp/types.js";
+import { getVaultService } from "../src/lib/vault/vault-service.js";
 
 let app: ReturnType<typeof createApp>;
 let token: string;
@@ -194,6 +206,7 @@ beforeAll(() => {
 
 beforeEach(async () => {
   servers.clear();
+  secretRows.length = 0;
   allowlist.clear();
   next = 0;
   app = createApp();
@@ -463,6 +476,90 @@ describe("/api/mcp", () => {
       .send({ env: { OPENAI_API_KEY: "sk-aaaaaaaaaaaaaaaaaaaaaaaa" } });
     expect(res.status).toBe(200);
     expect(res.body.data.env.OPENAI_API_KEY).toMatch(/^\$\{vault:/);
+  });
+
+  describe("auto-vaulted secret labels cannot clash (#258)", () => {
+    /** The plaintext stored behind a `${vault:<label>}` ref the route wrote. */
+    async function plaintextBehind(ref: string): Promise<string> {
+      const label = /^\$\{vault:(.+)\}$/.exec(ref)![1];
+      const row = secretRows.find((r) => r.name.endsWith(`:${label}`))!;
+      return getVaultService().decrypt(row.ciphertext);
+    }
+
+    it("PATCHing a NEW token value twice stores and points at each new value", async () => {
+      const create = await request(app)
+        .post("/api/mcp")
+        .set("Authorization", `Bearer ${token}`)
+        .send({
+          label: "gh",
+          transport: "stdio",
+          command: "node",
+          env: { GITHUB_TOKEN: "ghp_ONE" },
+        });
+      expect(create.status).toBe(201);
+      const id = create.body.data.id as string;
+
+      for (const value of ["ghp_TWO", "ghp_THREE"]) {
+        const res = await request(app)
+          .patch(`/api/mcp/${id}`)
+          .set("Authorization", `Bearer ${token}`)
+          .send({ env: { GITHUB_TOKEN: value } });
+        expect(res.status).toBe(200);
+        const stored = JSON.parse(servers.get(id)!.envJson!) as Record<string, string>;
+        expect(await plaintextBehind(stored.GITHUB_TOKEN)).toBe(value);
+      }
+    });
+
+    it("the same server label in two projects keeps two separate secrets", async () => {
+      const refs: string[] = [];
+      for (const [projectId, value] of [
+        ["project-aaaa", "ghp_AAA"],
+        ["project-bbbb", "ghp_BBB"],
+      ]) {
+        const res = await request(app)
+          .post("/api/mcp")
+          .set("Authorization", `Bearer ${token}`)
+          .send({
+            label: "gh",
+            scope: "project",
+            projectId,
+            transport: "stdio",
+            command: "node",
+            env: { GITHUB_TOKEN: value },
+          });
+        expect(res.status).toBe(201);
+        refs.push(res.body.data.env.GITHUB_TOKEN as string);
+      }
+      expect(refs[0]).not.toBe(refs[1]);
+      expect(await plaintextBehind(refs[0])).toBe("ghp_AAA");
+      expect(await plaintextBehind(refs[1])).toBe("ghp_BBB");
+    });
+
+    it("PATCH without auth is 401 and writes no secret", async () => {
+      const res = await request(app)
+        .patch("/api/mcp/mcp_1")
+        .send({ env: { GITHUB_TOKEN: "ghp_X" } });
+      expect(res.status).toBe(401);
+      expect(secretRows).toHaveLength(0);
+    });
+
+    it("POST/PATCH from a role without mcp.manage is 403 and writes no secret", async () => {
+      const login = await request(app)
+        .post("/api/auth/login")
+        .send({ username: "reader", password: "password" });
+      const reader = login.body.data.accessToken as string;
+      const post = await request(app)
+        .post("/api/mcp")
+        .set("Authorization", `Bearer ${reader}`)
+        .send({ label: "gh", transport: "stdio", command: "node", env: { GITHUB_TOKEN: "ghp_X" } });
+      expect(post.status).toBe(403);
+      const patch = await request(app)
+        .patch("/api/mcp/mcp_1")
+        .set("Authorization", `Bearer ${reader}`)
+        .send({ env: { GITHUB_TOKEN: "ghp_X" } });
+      expect(patch.status).toBe(403);
+      expect(secretRows).toHaveLength(0);
+    });
   });
 
   it("PATCH on unknown id returns 404 before attempting vault writes", async () => {

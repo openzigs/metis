@@ -82,7 +82,8 @@ vi.mock("../../src/lib/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock("../../src/lib/vault/vault-service.js", () => ({
+vi.mock("../../src/lib/vault/vault-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/lib/vault/vault-service.js")>()),
   getVaultService: () => ({
     create: vaultCreate,
     rotate: vaultRotate,
@@ -97,6 +98,7 @@ vi.mock("../../src/lib/audit/audit-service.js", () => ({
 }));
 
 import { discoverAndUpsertConnections } from "../../src/lib/connectors/repo/connection-discovery.js";
+import { SecretNotFoundError } from "../../src/lib/vault/vault-service.js";
 
 let tmpDir: string;
 
@@ -240,6 +242,107 @@ describe("discoverAndUpsertConnections — credential extraction (#703)", () => 
     expect(vaultRotate).toHaveBeenCalledWith("vault_old", "new-password");
     expect(vaultCreate).not.toHaveBeenCalled();
     expect(auditCalls.at(-1)?.metadata).toMatchObject({ vaultMutation: "rotated" });
+  });
+
+  it("replaces a secret deleted from the vault instead of skipping the row (#258)", async () => {
+    existingRows.set(
+      JSON.stringify({
+        projectId: "proj-G",
+        driverType: "postgresql",
+        host: "db-host",
+        port: 5432,
+        database: "appdb",
+      }),
+      { id: "sc_pre", passwordVaultRef: "vault_deleted" },
+    );
+    // A soft-deleted secret: not readable, and `rotate` refuses it.
+    vaultRead.mockRejectedValue(new Error("Secret vault_deleted not found"));
+    vaultRotate.mockImplementation(async (id: string) => {
+      throw new SecretNotFoundError(id);
+    });
+
+    await writeFile(
+      "application-dev.properties",
+      [
+        "spring.datasource.url=jdbc:postgresql://db-host:5432/appdb",
+        "spring.datasource.username=alice",
+        "spring.datasource.password=new-password",
+      ].join("\n"),
+    );
+
+    const summary = await discoverAndUpsertConnections("proj-G", tmpDir);
+
+    expect(summary.errors).toBe(0);
+    expect(vaultCreate).toHaveBeenCalledTimes(1);
+    expect(vaultCreate.mock.calls[0]![1]).toBe("new-password");
+    const ref = upserted.at(-1)!.passwordVaultRef;
+    expect(ref).toMatch(/^vault_/);
+    expect(ref).not.toBe("vault_deleted");
+    expect(auditCalls.at(-1)?.metadata).toMatchObject({ vaultMutation: "created" });
+  });
+
+  it("a secret left behind under the derived name does not block a new suggestion (#258)", async () => {
+    // Like the real vault: `Secret.name` is UNIQUE, soft-deleted rows included.
+    const names = new Set<string>();
+    vaultCreate.mockImplementation(async (label: string) => {
+      if (names.has(label)) {
+        throw Object.assign(new Error("Unique constraint failed on the fields: (`name`)"), {
+          code: "P2002",
+        });
+      }
+      names.add(label);
+      return { id: `vault_${names.size}` };
+    });
+    await writeFile(
+      "application-dev.properties",
+      [
+        "spring.datasource.url=jdbc:postgresql://db-host:5432/appdb",
+        "spring.datasource.password=first",
+      ].join("\n"),
+    );
+    await discoverAndUpsertConnections("proj-H", tmpDir);
+    // The suggestion row is gone; its secret row stays behind.
+    existingRows.clear();
+    await writeFile(
+      "application-dev.properties",
+      [
+        "spring.datasource.url=jdbc:postgresql://db-host:5432/appdb",
+        "spring.datasource.password=second",
+      ].join("\n"),
+    );
+
+    const summary = await discoverAndUpsertConnections("proj-H", tmpDir);
+
+    expect(summary.errors).toBe(0);
+    expect(upserted.at(-1)!.passwordVaultRef).toBe("vault_2");
+    expect(vaultCreate.mock.calls[1]![1]).toBe("second");
+  });
+
+  it("a vault failure other than not-found is not papered over with a new secret (#258)", async () => {
+    existingRows.set(
+      JSON.stringify({
+        projectId: "proj-I",
+        driverType: "postgresql",
+        host: "db-host",
+        port: 5432,
+        database: "appdb",
+      }),
+      { id: "sc_pre", passwordVaultRef: "vault_old" },
+    );
+    vaultRead.mockResolvedValue({ summary: { id: "vault_old" }, plaintext: "old" });
+    vaultRotate.mockRejectedValue(new Error("db down"));
+    await writeFile(
+      "application-dev.properties",
+      [
+        "spring.datasource.url=jdbc:postgresql://db-host:5432/appdb",
+        "spring.datasource.password=new",
+      ].join("\n"),
+    );
+
+    const summary = await discoverAndUpsertConnections("proj-I", tmpDir);
+
+    expect(summary.errors).toBe(1);
+    expect(vaultCreate).not.toHaveBeenCalled();
   });
 
   it("audit entry never includes the plaintext password", async () => {

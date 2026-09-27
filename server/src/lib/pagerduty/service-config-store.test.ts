@@ -106,9 +106,25 @@ function makeVault() {
       _scope: string,
       _opts: unknown,
     ): Promise<{ id: string }> {
+      // Like the real table: `Secret.name` is UNIQUE and a soft-deleted row
+      // keeps its name (#258).
+      const name = `project:${label}`;
+      if (secrets.some((x) => x.name === name)) {
+        throw Object.assign(new Error("Unique constraint failed on the fields: (`name`)"), {
+          code: "P2002",
+        });
+      }
       const id = `sec-${++seq}`;
-      secrets.push({ id, name: `project:${label}`, plaintext, deletedAt: null });
+      secrets.push({ id, name, plaintext, deletedAt: null });
       return { id };
+    },
+    // Like the real `upsert`: keyed on the unique name, reviving a soft-deleted row.
+    async upsert(label: string, plaintext: string, scope: string, opts: unknown) {
+      const s = secrets.find((x) => x.name === `project:${label}`);
+      if (!s) return this.create(label, plaintext, scope, opts);
+      s.plaintext = plaintext;
+      s.deletedAt = null;
+      return { id: s.id };
     },
     async rotate(id: string, plaintext: string) {
       const s = secrets.find((x) => x.id === id);
@@ -220,6 +236,17 @@ describe("PagerDutyServiceConfigStore", () => {
     expect(secrets[0].deletedAt).not.toBeNull();
     // Second delete is a no-op.
     expect(await store.delete("ws-1", "default")).toBe(false);
+  });
+
+  it("re-registering after a delete revives the secret with the NEW key (#258)", async () => {
+    const { store } = newStore();
+    await store.register({ workspaceId: "ws-1", serviceKey: "default", routingKey: "rk-old" });
+    await store.delete("ws-1", "default");
+
+    await store.register({ workspaceId: "ws-1", serviceKey: "default", routingKey: "rk-new" });
+
+    expect(await store.resolveRoutingKey("ws-1", "default")).toBe("rk-new");
+    expect(secrets).toHaveLength(1);
   });
 
   it("rejects a blank serviceKey", async () => {

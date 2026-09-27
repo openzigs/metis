@@ -107,15 +107,14 @@ export class SlackInstallationStore {
     //    `${vault:label}` reference. The label is deterministic so a re-install
     //    rotates the same secret rather than leaking orphans.
     const label = vaultLabel(workspaceId, slackTeamId);
-    const existingSecret = await this.findSecretByLabel(label);
-    if (existingSecret) {
-      await this.vault.rotate(existingSecret.id, input.botToken);
-    } else {
-      await this.vault.create(label, input.botToken, "project", {
-        description: `Slack bot token (workspace ${workspaceId})`,
-        createdById: input.createdById ?? null,
-      });
-    }
+    // #258 — one upsert on the name, which this (workspace, Slack team) pair alone owns.
+    // The earlier find-live-then-create missed the SOFT-DELETED secret an uninstall
+    // leaves behind, so a reinstall re-created a taken name and 500'd; the
+    // upsert revives that row with the new value instead.
+    await this.vault.upsert(label, input.botToken, "project", {
+      description: `Slack bot token (workspace ${workspaceId})`,
+      createdById: input.createdById ?? null,
+    });
     const botTokenRef = `\${vault:${label}}`;
 
     // 2. Upsert the installation row (secret-free). One active install per

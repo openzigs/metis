@@ -36,6 +36,7 @@ import { diffSchemas, snapshotToolSchemas } from "../lib/mcp/integrity.js";
 import { exportToCopilotMcpJson, parseCopilotMcpJson } from "../lib/mcp/mcp-json-format.js";
 import { scanForHiddenChars } from "../lib/mcp/hidden-char-scanner.js";
 import { getVaultService } from "../lib/vault/vault-service.js";
+import { freshSecretLabel } from "../lib/vault/secret-rotation.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -67,7 +68,7 @@ function svc(): MCPRegistryService {
 /**
  * SEC-7: scan a record of strings for secret-shaped entries and replace any
  * plaintext with a `${vault:...}` ref. The plaintext is persisted to the
- * vault under a deterministic label so re-imports are idempotent. Returns
+ * vault under a fresh, collision-free label (#258). Returns
  * the (possibly rewritten) record alongside the new ref map. Vault writes
  * happen in-place; on failure the entry is left as-is and an error is
  * recorded so the caller can decide whether to reject the request.
@@ -106,7 +107,11 @@ async function vaultPlaintextSecrets(
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "");
     const fieldTag = ctx.field === "header" ? "header-" : "";
-    const secretLabel = `mcp-${slugLabel || "server"}-${fieldTag}${slugKey}`;
+    // #258 — a label no earlier secret holds. Fixed by server label + key, it
+    // was taken by the previous write of the same key, so updating a secret
+    // value (PATCH), re-creating a deleted server, or using the same server
+    // label in another project was refused on `Secret.name @unique`.
+    const secretLabel = freshSecretLabel(`mcp-${slugLabel || "server"}-${fieldTag}${slugKey}`);
     try {
       const summary = await vault.create(secretLabel, v, ctx.scope, {
         description: `Auto-vaulted ${ctx.field} from /api/mcp direct write for ${ctx.label}`,

@@ -57,6 +57,13 @@ class FakeDb {
 
   secret = {
     create: async (args: { data: Partial<SecretRow> }): Promise<SecretRow> => {
+      // Like the real table: `Secret.name` is UNIQUE and a soft-deleted row
+      // keeps its name (#258).
+      if (this.secrets.some((s) => s.name === args.data.name)) {
+        throw Object.assign(new Error("Unique constraint failed on the fields: (`name`)"), {
+          code: "P2002",
+        });
+      }
       const row: SecretRow = {
         id: `sec_${++this.sseq}`,
         description: "",
@@ -74,6 +81,16 @@ class FakeDb {
         ...args.data,
       } as SecretRow;
       this.secrets.push(row);
+      return row;
+    },
+    upsert: async (args: {
+      where: { name: string };
+      create: Partial<SecretRow>;
+      update: Partial<SecretRow>;
+    }): Promise<SecretRow> => {
+      const row = this.secrets.find((s) => s.name === args.where.name);
+      if (!row) return this.secret.create({ data: args.create });
+      Object.assign(row, args.update, { updatedAt: new Date() });
       return row;
     },
     findFirst: async (args: {
@@ -216,6 +233,17 @@ describe("TeamsInstallationStore (#548)", () => {
     expect(await store.resolveAppPassword("ws-1")).toBeNull();
   });
 
+  it("reinstall after uninstall revives the secret with the NEW value (#258)", async () => {
+    await store.install({ workspaceId: "ws-1", appId: "app-1", appPassword: "old-value" });
+    expect(await store.uninstall("ws-1")).toBe(true);
+
+    await store.install({ workspaceId: "ws-1", appId: "app-1", appPassword: "new-value" });
+
+    expect((await store.resolveAppPassword("ws-1"))?.appPassword).toBe("new-value");
+    expect(db.secrets).toHaveLength(1);
+    expect(db.secrets[0].deletedAt).toBeNull();
+  });
+
   it("uninstall is idempotent (returns false when nothing installed)", async () => {
     expect(await store.uninstall("ws-empty")).toBe(false);
   });
@@ -299,6 +327,7 @@ describe("TeamsInstallationStore (#548)", () => {
 function vaultOver(vault: VaultService, db: FakeDb): VaultService {
   const wrapped = vault as unknown as {
     create: VaultService["create"];
+    upsert: VaultService["upsert"];
     read: VaultService["read"];
     rotate: VaultService["rotate"];
     delete: VaultService["delete"];
@@ -327,6 +356,27 @@ function vaultOver(vault: VaultService, db: FakeDb): VaultService {
     });
     return { id: row.id, label, scope, keyVersion: env.keyVersion } as never;
   }) as VaultService["create"];
+
+  wrapped.upsert = (async (
+    label: string,
+    plaintext: string,
+    scope = "global",
+    opts: { description?: string; createdById?: string | null } = {},
+  ) => {
+    const env = await realEncrypt(plaintext);
+    const name = `${scope}:${label}`;
+    const cipher = {
+      ciphertext: env.ciphertext,
+      keyVersion: env.keyVersion,
+      algorithm: env.algorithm,
+    };
+    const row = await db.secret.upsert({
+      where: { name },
+      create: { name, ...cipher, createdById: opts.createdById ?? null },
+      update: { ...cipher, deletedAt: null },
+    });
+    return { id: row.id, label, scope, keyVersion: env.keyVersion } as never;
+  }) as VaultService["upsert"];
 
   wrapped.read = (async (id: string) => {
     const row = await db.secret.findFirst({ where: { id, deletedAt: null } });
