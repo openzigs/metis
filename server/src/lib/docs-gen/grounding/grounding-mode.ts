@@ -286,6 +286,7 @@ export async function scoreFaithfulnessSampled(
     firstChars += passages[next].text.length;
   }
   let decompositions = 0;
+  let claimsIncomplete: Pick<FaithfulnessResult, "unparseable" | "truncated"> = {};
   for (;;) {
     drawn.push(...draw);
     decompositions += 1;
@@ -294,7 +295,7 @@ export async function scoreFaithfulnessSampled(
       ctx,
       deps.signal,
     );
-    if (out.unparseable) {
+    if (out.unparseable && out.claims.length === 0 && claims.length === 0) {
       return {
         section,
         totalClaims: 0,
@@ -309,6 +310,14 @@ export async function scoreFaithfulnessSampled(
       };
     }
     claims.push(...out.claims);
+    if (out.unparseable) {
+      // #165 — keep what parsed; a failed draw is not topped up again.
+      claimsIncomplete = {
+        unparseable: "claims",
+        ...(out.truncated ? { truncated: true as const } : {}),
+      };
+      break;
+    }
     if (claims.length >= options.minClaims || queue.length === 0) break;
     // Top up: enough further passages, at the density seen so far, to reach
     // the minimum (at least one).
@@ -336,7 +345,7 @@ export async function scoreFaithfulnessSampled(
   const result = await judgeDecomposedClaims(section, claims, ctx, deps);
   // Coverage is always attached in sample mode, so pooled batch coverage adds
   // up; a draw that reached every passage is a full check (see isPartialSample).
-  return { ...result, sampled: sample };
+  return { ...result, ...claimsIncomplete, sampled: sample };
 }
 
 function coverage(

@@ -341,16 +341,40 @@ function firstSourceHost(digest: EvidenceDigest): string | undefined {
  * labelled with its stable id so the model can cite ids verbatim. Returns an
  * empty string when there is no grounding evidence (the caller can then skip
  * the block entirely).
+ *
+ * #168 — `factsBlob`: the EXTRACTED MODULE FACTS text the same prompt already
+ * carries. A `facts:` source whose text appears verbatim in it is listed by id,
+ * label and module header only, pointing at that entry, instead of being sent a
+ * second time. A facts source whose text is NOT in the blob keeps its text, so
+ * no fact the model could cite is ever dropped from the prompt. The context
+ * itself is unchanged: the judge still reads every source's text.
  */
-export function renderGroundingBlock(ctx: GroundingContext): string {
+export function renderGroundingBlock(
+  ctx: GroundingContext,
+  opts: { factsBlob?: string } = {},
+): string {
   if (ctx.isEmpty) return "";
+  const blob = opts.factsBlob ?? "";
+  let referenced = 0;
   const parts = ctx.sources.map((s) => {
-    return `[SOURCE id=${s.sourceId} kind=${s.kind} label=${JSON.stringify(s.label)}]\n${s.text}`;
+    const header = `[SOURCE id=${s.sourceId} kind=${s.kind} label=${JSON.stringify(s.label)}]`;
+    if (s.kind === "facts" && blob && blob.includes(s.text)) {
+      referenced++;
+      const entry = s.text.split("\n", 1)[0];
+      return `${header}\n(text: the "${entry}" entry in EXTRACTED MODULE FACTS above)`;
+    }
+    return `${header}\n${s.text}`;
   });
   return [
     "=== RETRIEVED GROUNDING SOURCES ===",
     "Every factual claim you write MUST be grounded in one or more of the",
     "sources below and cite their `id` value(s). Do NOT invent source ids.",
+    ...(referenced > 0
+      ? [
+          "A `kind=facts` source listed without its text is the named MODULE entry in",
+          "EXTRACTED MODULE FACTS above; cite its `id` for claims drawn from that entry.",
+        ]
+      : []),
     "",
     parts.join("\n\n---\n\n"),
     "",

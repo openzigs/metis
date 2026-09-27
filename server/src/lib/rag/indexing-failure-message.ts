@@ -29,6 +29,7 @@ import {
   GENERATION_PROVIDER_TLS_MESSAGE,
   GENERATION_PROVIDER_UNREACHABLE_MESSAGE,
   generationFailureMessage,
+  isResetBeforeResponse,
 } from "../docs-gen/generation-failure-message.js";
 
 export const INDEXING_FAILED_MESSAGE =
@@ -159,6 +160,9 @@ export function indexingFailureMessage(err: unknown): string {
   if (/^storage read failed\b/i.test(message)) return INDEXING_STORAGE_MESSAGE;
   if (message === "rejected") return INDEXING_REJECTED_MESSAGE;
 
+  // #165 — embedding calls are not streamed, so a reset under `fetch failed`
+  // came before any response, not while one was arriving.
+  if (isResetBeforeResponse(err)) return INDEXING_PROVIDER_CLOSED_MESSAGE;
   const provider = PROVIDER_VERDICTS.get(generationFailureMessage(err));
   if (provider) return provider;
 

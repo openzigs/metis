@@ -438,7 +438,8 @@ export function sectionUnderReconstructedWarning(
  * #152 — `cause: "truncated"` is a reply stopped at the output cap. The remedy
  * is then the cap, never the structured-output mode: telling the operator to
  * set `json_object` for a cut-off reply was wrong, and circular when the reply
- * had already been retried in `json_object` mode. The non-truncated remedy is
+ * had already been retried in `json_object` mode. `partial` (#165): only some
+ * passages' claim lists failed, and the others were scored. The non-truncated remedy is
  * worded conditionally for the same reason — by the time this warning exists a
  * `json_schema` reply has already been retried in `json_object` mode.
  */
@@ -446,13 +447,18 @@ export function groundingUnparseableWarning(
   section: string,
   stage: "claims" | "verdicts",
   cause?: "truncated",
+  partial = false,
 ): DocWarning {
+  // #165 — the claims of the passages that did parse were still checked.
+  const unchecked = partial
+    ? "so the statements in those passages were not checked (the rest were)"
+    : "so none of its statements were checked";
   let what: string;
   let remedy: string;
   if (cause === "truncated") {
     what =
       stage === "claims"
-        ? "the grounding model's claim list exceeded its output cap even after the section was split into smaller passages, so none of its statements were checked"
+        ? `the grounding model's claim list exceeded its output cap${partial ? " for part of the section" : ""} even after the section was split into smaller passages, ${unchecked}`
         : "some of the grounding model's verdict lists exceeded its output cap, so those statements were not checked";
     remedy =
       stage === "claims"
@@ -461,7 +467,7 @@ export function groundingUnparseableWarning(
   } else {
     what =
       stage === "claims"
-        ? "the grounding model's claim list could not be parsed, so none of its statements were checked"
+        ? `the grounding model's claim list could not be parsed${partial ? " for part of the section" : ""}, ${unchecked}`
         : "some of the grounding model's verdicts could not be parsed, so those statements were not checked";
     remedy =
       "If DOCS_GEN_LOCAL_STRUCTURED_OUTPUT is off, a local model that answers in prose may " +

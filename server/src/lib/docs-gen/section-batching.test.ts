@@ -457,9 +457,20 @@ describe("mergeBatchSections — fences", () => {
     ["an unclosed fence nested by a tab", "1. **Rule**\n\t", "```", "sql", "\tSELECT 1"],
     ["an unclosed nested ~~~ fence", "1. **Rule**\n    ", "~~~", "sql", "    SELECT 1"],
     ["an unclosed nested 5-backtick fence", "- **Rule**\n  ", "`````", "sql", "  SELECT 1"],
+    // #173: the body sits at column 0, so CommonMark has already ended the
+    // list item and closed the fence; the code renders as a paragraph after
+    // an empty block. A synthetic close would open a new, unclosed fence.
+    [
+      "an unclosed nested fence whose body is dedented",
+      "1. **Rule**\n   ",
+      "```",
+      "sql",
+      "SELECT 1",
+      false,
+    ],
   ])(
     "closes %s so the next batch and section still render as headings",
-    (_label, prefix, marker, lang, code) => {
+    (_label, prefix, marker, lang, code, codeInsideBlock = true) => {
       const a = `## R\n\n### A\n\n${prefix}${marker}${lang}\n${code}`;
       const b = "## R\n\n### B\n\n- rule from batch two";
       const merged = mergeBatchSections([a, b], "R");
@@ -467,7 +478,7 @@ describe("mergeBatchSections — fences", () => {
       // (a) the code is inside a code block ...
       const codeBlocks = [...html.matchAll(/<pre><code[^>]*>([\s\S]*?)<\/code><\/pre>/g)];
       expect(codeBlocks).toHaveLength(1);
-      expect(codeBlocks[0][1]).toContain(code.trim().split("\n")[0].trim());
+      if (codeInsideBlock) expect(codeBlocks[0][1]).toContain(code.trim().split("\n")[0].trim());
       expect(codeBlocks[0][1]).not.toContain("rule from batch two");
       // (b) ... and nothing after it is: the next batch's topic and the
       // following section still render as headings.

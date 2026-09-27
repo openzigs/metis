@@ -439,16 +439,37 @@ describe("FaithfulnessJudge.judge — batching & robustness (#grounding)", () =>
     expect(out!.every((v) => v.supported)).toBe(true);
   });
 
-  it("treats a batch with <50% matched verdicts as unverifiable", async () => {
-    // Only 3 of 10 claims get a verdict → 30% < MIN_BATCH_MATCH_RATIO (50%).
+  it("treats a batch with <50% matched verdicts as unverifiable once its re-run fails too", async () => {
+    // Only 1 claim per call gets a verdict → 10% of 10, then 20% of each half of 5.
+    const provider = programmableProvider((cs) =>
+      cs.slice(0, 1).map((c) => ({ claim: c, supported: true, sourceIds: [] })),
+    );
+    const judge = new FaithfulnessJudge({ provider, maxBatch: 40 });
+    const out = await judge.judge(claims(10), ctx);
+    // #171 — the batch, then its two halves once; all unverifiable → null.
+    expect(provider.chat).toHaveBeenCalledTimes(3);
+    expect(out).toBeNull();
+    expect(MIN_BATCH_MATCH_RATIO).toBe(0.5);
+  });
+
+  // #171 — a small judge that loses track of a large batch is given the same
+  // claims again as two smaller batches before the batch is written off.
+  it("re-judges a <50% batch once as two smaller batches, keeping what they match", async () => {
+    // 3 verdicts per call: 30% of 10 (too few), then 60% of each half of 5.
     const provider = programmableProvider((cs) =>
       cs.slice(0, 3).map((c) => ({ claim: c, supported: true, sourceIds: [] })),
     );
     const judge = new FaithfulnessJudge({ provider, maxBatch: 40 });
     const out = await judge.judge(claims(10), ctx);
-    // Single batch, all unverifiable → null.
-    expect(out).toBeNull();
-    expect(MIN_BATCH_MATCH_RATIO).toBe(0.5);
+    expect(provider.chat).toHaveBeenCalledTimes(3);
+    expect(out).toHaveLength(6);
+  });
+
+  it("does not re-split a one-claim batch", async () => {
+    const provider = programmableProvider(() => []);
+    const judge = new FaithfulnessJudge({ provider });
+    expect(await judge.judge(claims(1), ctx)).toBeNull();
+    expect(provider.chat).toHaveBeenCalledTimes(1);
   });
 
   it("keeps usable batches and drops only the unverifiable one (mixed batches)", async () => {
@@ -460,7 +481,8 @@ describe("FaithfulnessJudge.judge — batching & robustness (#grounding)", () =>
     );
     const judge = new FaithfulnessJudge({ provider, maxBatch: 5 });
     const out = await judge.judge(claims(10), ctx); // 2 batches of 5
-    expect(provider.chat).toHaveBeenCalledTimes(2);
+    // #171 — the garbage batch is re-run once as two halves (garbage again).
+    expect(provider.chat).toHaveBeenCalledTimes(4);
     expect(out).not.toBeNull();
     // Only the first batch's 5 verdicts survive; the second batch is dropped.
     expect(out).toHaveLength(5);
@@ -472,7 +494,8 @@ describe("FaithfulnessJudge.judge — batching & robustness (#grounding)", () =>
     );
     const judge = new FaithfulnessJudge({ provider, maxBatch: 5 });
     const out = await judge.judge(claims(10), ctx);
-    expect(provider.chat).toHaveBeenCalledTimes(2);
+    // #171 — each batch, then each batch's two halves once.
+    expect(provider.chat).toHaveBeenCalledTimes(6);
     expect(out).toBeNull();
   });
 
@@ -595,7 +618,9 @@ describe("FaithfulnessJudge prompt caching (#anthropic-prompt-caching)", () => {
     expect(parts[1].text).toContain("Invoices over 1000 require manager approval");
   });
 
-  it("re-sends an IDENTICAL evidence block across every batch (the cache win)", async () => {
+  // #171 — evidence is per batch now; batches that select the same sources
+  // still send byte-identical evidence, so the cache still serves them.
+  it("re-sends an IDENTICAL evidence block across batches that select the same sources", async () => {
     const provider = mockProvider(
       JSON.stringify({
         verdicts: claims(5).map((c) => ({ claim: c, supported: true, sourceIds: [] })),
@@ -604,7 +629,7 @@ describe("FaithfulnessJudge prompt caching (#anthropic-prompt-caching)", () => {
     const judge = new FaithfulnessJudge({ provider, promptCaching: true, maxBatch: 5 });
     await judge.judge(claims(10), ctx); // 2 batches
     const calls = (provider.chat as ReturnType<typeof vi.fn>).mock.calls;
-    expect(calls.length).toBe(2);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
     const evidence0 = (calls[0][0][1].content as Part[])[1].text;
     const evidence1 = (calls[1][0][1].content as Part[])[1].text;
     // Identical evidence prefix → batch 2 reads it from cache instead of re-billing.

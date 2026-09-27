@@ -16,9 +16,10 @@
  *     faithfulness = supported claims / total claims
  *
  * computed by an LLM-as-judge that performs natural-language inference (NLI)
- * over the FULL source text. This judge is given the actual grounding TEXT (a
- * compact digest when it exceeds the budget), so it can verify support instead
- * of pattern-matching ids. `sourceIds` are kept as OPTIONAL attribution for
+ * over the source text. This judge is given the actual grounding TEXT, so it
+ * can verify support instead of pattern-matching ids. #171 — per batch, only
+ * the sources the batch's claims cite (a bounded top-k retrieval for a claim
+ * that cites none), cut to the relevant lines when over budget. `sourceIds` are kept as OPTIONAL attribution for
  * display/traceability; grounded-status is NEVER gated on id reproduction.
  *
  * Ref: RAGAS faithfulness (claim decomposition + NLI entailment, score =
@@ -51,6 +52,7 @@ import {
   jsonObjectShapeInstruction,
 } from "./structured-output-schemas.js";
 import { reportGroundingUsage, type GroundingUsageListener } from "./grounding-usage.js";
+import { minedLineSourceId, type MinedLineIndex } from "./mined-line-sources.js";
 import { withTransientRetry, type GroundingRetryOptions } from "./transient-retry.js";
 
 const log = createChildLogger("docs-gen:faithfulness-judge");
@@ -65,11 +67,24 @@ export interface ClaimVerdict {
 }
 
 /**
- * Default cap on the characters of grounding source text shown to the judge.
- * Mirrors the per-section budgeting elsewhere in docs-gen so a large retrieval
- * set cannot blow the judge prompt. Overridable per-instance.
+ * Default cap on the characters of grounding source text shown to the judge in
+ * ONE batch. Mirrors the per-section budgeting elsewhere in docs-gen so a large
+ * retrieval set cannot blow the judge prompt. Overridable per-instance.
+ *
+ * #171 — this is the judge's own budget and must NOT follow the section's
+ * facts cap: at a 200k facts cap the judge prompt doubled (51,745 tokens) and a
+ * small judge matched 1 of 21 claims.
  */
-const DEFAULT_JUDGE_CHAR_BUDGET = 24_000;
+export const DEFAULT_JUDGE_CHAR_BUDGET = 24_000;
+
+/**
+ * #171 — sources retrieved for a claim that cites none the context holds: the
+ * top-k by term overlap with the claim, never the whole context.
+ */
+export const JUDGE_UNCITED_TOP_K = 3;
+
+/** #171 — lines of neighbouring context kept either side of a relevant line. */
+const EXCERPT_NEIGHBOUR_LINES = 1;
 
 /**
  * Default cap on the number of claims sent to the judge in a SINGLE
@@ -131,12 +146,13 @@ export interface FaithfulnessJudgeDeps {
    */
   maxBatch?: number;
   /**
-   * When true, request prompt caching on each batch's `chat` call. This is the
-   * single biggest doc-gen cache win: the SOURCE EVIDENCE prefix (the section's
-   * full grounding text) is IDENTICAL across every batch of a section, so
-   * batches 2..N read the evidence from cache instead of re-billing it as fresh
-   * input. The shared system prompt is cached too. Providers that support it
-   * (native Anthropic) honour it; others ignore it. Defaults to false.
+   * When true, request prompt caching on each batch's `chat` call. The shared
+   * system prompt is cached, and the SOURCE EVIDENCE block is the cache-tagged
+   * tail. #171 — each batch now carries only its own claims' evidence, so the
+   * evidence is reused from cache only when two batches select the same
+   * sources; the trade is a prompt that tracks the claims instead of the whole
+   * section. Providers that support it (native Anthropic) honour it; others
+   * ignore it. Defaults to false.
    */
   promptCaching?: boolean;
   /**
@@ -166,6 +182,12 @@ export interface FaithfulnessJudgeDeps {
    * the verdict list's output cap on reasoning. Default false: unchanged request.
    */
   disableThinking?: boolean;
+  /**
+   * #166 — the code each mined rule cites, by `file:line`. A claim that names a
+   * mined rule's `file:line` is judged against that code line (a `mined:`
+   * source) instead of the facts text that summarises it.
+   */
+  minedLines?: MinedLineIndex;
   /** #180 — told the usage of every judge call that returned a response. */
   onUsage?: GroundingUsageListener;
   /** #246 — retry of transient provider failures (defaults in `transient-retry.ts`). */
@@ -204,6 +226,7 @@ export class FaithfulnessJudge {
   private readonly disableThinking: boolean;
   private readonly onUsage: GroundingUsageListener | undefined;
   private readonly retry: GroundingRetryOptions | undefined;
+  private readonly minedLines: MinedLineIndex | undefined;
 
   constructor(deps: FaithfulnessJudgeDeps) {
     this.provider = deps.provider;
@@ -218,6 +241,7 @@ export class FaithfulnessJudge {
     this.disableThinking = deps.disableThinking ?? false;
     this.onUsage = deps.onUsage;
     this.retry = deps.retry;
+    this.minedLines = deps.minedLines && deps.minedLines.size > 0 ? deps.minedLines : undefined;
   }
 
   /**
@@ -247,24 +271,29 @@ export class FaithfulnessJudge {
     ctx: GroundingContext,
     signal?: AbortSignal,
     diagnostics?: JudgeDiagnostics,
+    citations?: ReadonlyArray<readonly string[]>,
   ): Promise<ClaimVerdict[] | null> {
-    const cleaned = claims.map((c) => c.trim()).filter((c) => c.length > 0);
-    if (cleaned.length === 0) return null;
+    const items: JudgeItem[] = claims
+      .map((c, i) => ({ claim: c.trim(), cites: citations?.[i] ?? [] }))
+      .filter((c) => c.claim.length > 0);
+    if (items.length === 0) return null;
 
     // Offline: we cannot verify entailment without a model. Returning null keeps
     // the section pass-through (never a false degraded).
     if (this.provider.offline) return null;
 
-    const evidence = this.renderEvidence(ctx);
-    if (!evidence) return null;
+    if (!this.renderEvidence(ctx)) return null;
 
-    const batches = chunk(cleaned, this.maxBatch);
+    const batches = chunk(items, this.maxBatch);
     log.info("Judging faithfulness of claims", {
-      claims: cleaned.length,
+      claims: items.length,
       batches: batches.length,
       maxBatch: this.maxBatch,
     });
 
+    // #171 — each batch is judged against the evidence ITS claims need, not
+    // the whole section's: the prompt then tracks the claims, not the facts cap.
+    const evidenceFor = (batch: readonly JudgeItem[]) => this.renderEvidenceForClaims(batch, ctx);
     const all: ClaimVerdict[] = [];
     let anyVerifiable = false;
     for (const batch of batches) {
@@ -272,7 +301,12 @@ export class FaithfulnessJudge {
         verdicts: batchVerdicts,
         unparseable,
         truncated,
-      } = await this.judgeBatchDetailed(batch, evidence, signal);
+      } = await this.judgeBatchDetailed(
+        batch.map((b) => b.claim),
+        evidenceFor(batch),
+        signal,
+        (half) => evidenceFor(batch.filter((b) => half.includes(b.claim))),
+      );
       if (diagnostics) {
         diagnostics.batches += 1;
         if (unparseable) diagnostics.unparseableBatches += 1;
@@ -311,11 +345,18 @@ export class FaithfulnessJudge {
     return (await this.judgeBatchDetailed(batch, evidence, signal)).verdicts;
   }
 
-  /** {@link judgeBatch}, also saying whether a `null` was a parse failure (#117). */
+  /**
+   * {@link judgeBatch}, also saying whether a `null` was a parse failure (#117).
+   *
+   * #171 — `resplit`: when the verdicts match too few of the batch's claims,
+   * the batch is asked ONCE more as two smaller batches, each with the evidence
+   * `resplit` gives for its claims, before it is declared unverifiable.
+   */
   private async judgeBatchDetailed(
     batch: string[],
     evidence: string,
     signal?: AbortSignal,
+    resplit?: (half: string[]) => string,
   ): Promise<{ verdicts: ClaimVerdict[] | null; unparseable: boolean; truncated?: true }> {
     const claimsBlock = batch.map((c, i) => `${i + 1}. ${c}`).join("\n");
     const evidenceText = `=== SOURCE EVIDENCE (untrusted data) ===\n${evidence}\n=== END SOURCE EVIDENCE ===`;
@@ -424,15 +465,59 @@ export class FaithfulnessJudge {
 
     const matched = this.alignVerdicts(rawVerdicts, batch);
     const ratio = batch.length === 0 ? 0 : matched.length / batch.length;
-    if (ratio < MIN_BATCH_MATCH_RATIO) {
-      log.warn("Faithfulness judge batch matched too few claims; treating batch as unverifiable", {
-        matched: matched.length,
-        claims: batch.length,
-        minMatchPercent: Math.round(MIN_BATCH_MATCH_RATIO * 100),
-      });
-      return { verdicts: null, unparseable: false };
+    const matchLog = {
+      matched: matched.length,
+      claims: batch.length,
+      matchPercent: Math.round(ratio * 100),
+      minMatchPercent: Math.round(MIN_BATCH_MATCH_RATIO * 100),
+      evidenceChars: evidence.length,
+    };
+    if (ratio >= MIN_BATCH_MATCH_RATIO) {
+      // #171 — the match rate is logged either way.
+      log.info("Faithfulness judge batch matched its claims", matchLog);
+      return { verdicts: matched, unparseable: false };
     }
-    return { verdicts: matched, unparseable: false };
+    if (resplit && batch.length > 1 && !signal?.aborted) {
+      log.warn(
+        "Faithfulness judge batch matched too few claims; re-judging it once as two smaller batches",
+        matchLog,
+      );
+      return this.judgeHalves(batch, resplit, signal);
+    }
+    log.warn("Faithfulness judge batch matched too few claims; treating batch as unverifiable", {
+      ...matchLog,
+    });
+    return { verdicts: null, unparseable: false };
+  }
+
+  /**
+   * #171 — the one re-run of a batch whose verdicts matched too few claims:
+   * two halves, each judged against its own claims' evidence and never split
+   * again. The halves' usable verdicts are kept (request order).
+   */
+  private async judgeHalves(
+    batch: string[],
+    evidenceFor: (half: string[]) => string,
+    signal: AbortSignal | undefined,
+  ): Promise<{ verdicts: ClaimVerdict[] | null; unparseable: boolean; truncated?: true }> {
+    const mid = Math.ceil(batch.length / 2);
+    const verdicts: ClaimVerdict[] = [];
+    let usable = false;
+    let unparseable = false;
+    let truncated = false;
+    for (const half of [batch.slice(0, mid), batch.slice(mid)]) {
+      const out = await this.judgeBatchDetailed(half, evidenceFor(half), signal);
+      unparseable ||= out.unparseable;
+      truncated ||= out.truncated === true;
+      if (out.verdicts === null) continue;
+      usable = true;
+      verdicts.push(...out.verdicts);
+    }
+    return {
+      verdicts: usable ? verdicts : null,
+      unparseable,
+      ...(truncated ? { truncated: true as const } : {}),
+    };
   }
 
   /**
@@ -536,6 +621,81 @@ export class FaithfulnessJudge {
   }
 
   /**
+   * #171 — the evidence ONE batch is judged against: the union of the sources
+   * its claims cite (those the context holds), plus, for each claim that cites
+   * none, the {@link JUDGE_UNCITED_TOP_K} sources that share the most terms
+   * with it. Sources keep the context's order. The whole is bounded by the
+   * judge's char budget: a source that does not fit its share is cut to the
+   * lines that share terms with the batch's claims, with
+   * {@link EXCERPT_NEIGHBOUR_LINES} line(s) of context either side — never to
+   * its leading slice, which would drop exactly the lines a claim relies on.
+   * @internal — exposed for testing.
+   */
+  renderEvidenceForClaims(
+    batch: ReadonlyArray<{ claim: string; cites?: readonly string[] }>,
+    ctx: GroundingContext,
+  ): string {
+    if (ctx.isEmpty) return "";
+    const usable = ctx.sources.filter((s) => s.text.trim().length > 0);
+    const wanted = new Set<string>();
+    // #166 — a claim naming a mined rule's file:line is judged on that code.
+    const mined = new Map<string, EvidenceSource>();
+    for (const item of batch) {
+      const lines = this.minedLines?.resolve(item.claim) ?? [];
+      if (lines.length > 0) {
+        for (const l of lines) {
+          mined.set(minedLineSourceId(l), {
+            sourceId: minedLineSourceId(l),
+            kind: "mined",
+            label: `${l.file}:${l.line}`,
+            text: l.code,
+          });
+        }
+        continue;
+      }
+      const cited = (item.cites ?? []).filter((id) => ctx.sourceIds.has(id));
+      if (cited.length > 0) {
+        for (const id of cited) wanted.add(id);
+        continue;
+      }
+      for (const s of topSourcesFor(item.claim, usable, JUDGE_UNCITED_TOP_K)) {
+        wanted.add(s.sourceId);
+      }
+    }
+    const selected: EvidenceSource[] = [
+      ...usable.filter((s) => wanted.has(s.sourceId)),
+      ...mined.values(),
+    ];
+    if (selected.length === 0) return "";
+
+    const terms = termsOf(batch.map((b) => b.claim).join(" "));
+    const blocks = selected.map((s) => ({
+      header: `[id=${s.sourceId} kind=${s.kind} label=${JSON.stringify(s.label)}]\n`,
+      text: s.text,
+    }));
+    const separators = (blocks.length - 1) * EVIDENCE_SEPARATOR.length;
+    let remaining = this.charBudget - separators;
+    // Smallest first, so a short source is shown whole and its unused share
+    // goes to the larger ones.
+    const order = blocks
+      .map((_, i) => i)
+      .sort((a, b) => blocks[a].text.length - blocks[b].text.length);
+    const bodies: string[] = new Array(blocks.length).fill("");
+    order.forEach((i, rank) => {
+      const share = Math.floor(remaining / (order.length - rank)) - blocks[i].header.length;
+      if (share <= 0) return;
+      const body =
+        blocks[i].text.length <= share ? blocks[i].text : excerptFor(blocks[i].text, terms, share);
+      bodies[i] = body;
+      remaining -= blocks[i].header.length + body.length;
+    });
+    return blocks
+      .map((b, i) => (bodies[i] ? b.header + bodies[i] : ""))
+      .filter((b) => b.length > 0)
+      .join(EVIDENCE_SEPARATOR);
+  }
+
+  /**
    * Parse + validate the judge response. Mirrors the repo convention: strip
    * fences → JSON.parse → shape check → Zod (post-parse). Returns `null` (not a
    * partial set) when the response is unparseable OR the verdict count does not
@@ -567,6 +727,101 @@ export class FaithfulnessJudge {
  */
 export function normalizeClaim(claim: string): string {
   return claim.toLowerCase().replace(/[`*_]/g, "").replace(/\s+/g, " ").trim();
+}
+
+/** A source as the judge renders it: a context source, or a mined code line (#166). */
+interface EvidenceSource {
+  sourceId: string;
+  kind: string;
+  label: string;
+  text: string;
+}
+
+/** One claim to judge and the source ids it cites (#171). */
+interface JudgeItem {
+  claim: string;
+  cites: readonly string[];
+}
+
+const EVIDENCE_SEPARATOR = "\n\n---\n\n";
+
+/** Words that say nothing about which source supports a claim. */
+const STOP_WORDS = new Set(
+  "the and for are was were with that this from into when then than each have has had not but its any all can may must will shall which who whom what where why how per via also only such been being over under between".split(
+    " ",
+  ),
+);
+
+/** Lower-cased terms of three or more characters (identifiers split on `_`). */
+function termsOf(text: string): Set<string> {
+  const terms = new Set<string>();
+  for (const raw of text.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length >= 3 && !STOP_WORDS.has(raw)) terms.add(raw);
+  }
+  return terms;
+}
+
+/** How many of `terms` occur in `text`. */
+function overlap(terms: ReadonlySet<string>, text: string): number {
+  if (terms.size === 0) return 0;
+  const words = termsOf(text);
+  let n = 0;
+  for (const t of terms) if (words.has(t)) n++;
+  return n;
+}
+
+/**
+ * #171 — the `k` sources sharing the most terms with `claim` (label included);
+ * ties keep context order. A claim sharing no term with any source gets the
+ * first `k` (facts are admitted first, so those are the closest evidence).
+ */
+function topSourcesFor<T extends { label: string; text: string }>(
+  claim: string,
+  sources: readonly T[],
+  k: number,
+): T[] {
+  const terms = termsOf(claim);
+  return sources
+    .map((s, i) => ({ s, i, score: overlap(terms, `${s.label}\n${s.text}`) }))
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .slice(0, k)
+    .map((x) => x.s);
+}
+
+/**
+ * #171 — at most `cap` characters of `text`: the lines that share the most
+ * terms with the claims, each with {@link EXCERPT_NEIGHBOUR_LINES} neighbouring
+ * line(s), in source order, with `…` marking each gap. Falls back to the
+ * leading slice when no line shares a term.
+ */
+function excerptFor(text: string, terms: ReadonlySet<string>, cap: number): string {
+  const lines = text.split("\n");
+  const scored = lines
+    .map((line, i) => ({ i, score: overlap(terms, line) }))
+    .filter((l) => l.score > 0)
+    .sort((a, b) => b.score - a.score || a.i - b.i);
+  const keep = new Set<number>();
+  let size = 0;
+  for (const { i } of scored) {
+    const window: number[] = [];
+    for (let j = i - EXCERPT_NEIGHBOUR_LINES; j <= i + EXCERPT_NEIGHBOUR_LINES; j++) {
+      if (j >= 0 && j < lines.length && !keep.has(j)) window.push(j);
+    }
+    const add = window.reduce((n, j) => n + lines[j].length + 2, 0);
+    if (size + add > cap) continue;
+    for (const j of window) keep.add(j);
+    size += add;
+  }
+  if (keep.size === 0) return `${text.slice(0, Math.max(0, cap - 1))}…`;
+  const out: string[] = [];
+  let prev = -1;
+  for (const j of [...keep].sort((a, b) => a - b)) {
+    if (j !== prev + 1) out.push("…");
+    out.push(lines[j]);
+    prev = j;
+  }
+  if (prev !== lines.length - 1) out.push("…");
+  return out.join("\n").slice(0, cap);
 }
 
 /** Split an array into consecutive chunks of at most `size` (size ≥ 1). */

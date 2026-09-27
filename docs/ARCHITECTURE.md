@@ -562,11 +562,24 @@ mode. (The older vLLM `guided_json` extra-body param is deprecated and not used.
   parsed and never retried in `json_object` mode (the same prompt is cut off
   the same way). The extractor batches a section into passages of at most
   `DEFAULT_CLAIM_BATCH_CHARS` (8,000) characters and splits a passage whose
-  reply is still cut off in two, down to 500 characters; the judge counts a
-  cut-off batch in `JudgeDiagnostics.truncatedBatches`. Either way
+  reply is still cut off in two — once (#165): a half cut off again is a stuck
+  model, so a passage costs at most 2 calls, and two failed passages in a row
+  end the section's extraction. Oversized and unclosed fences are split by line,
+  each passage carries its parent heading, and the claims of the passages that
+  parsed are kept and judged (the warning says only part went unchecked). The
+  judge counts a cut-off batch in `JudgeDiagnostics.truncatedBatches`. Either way
   `FaithfulnessResult.truncated` selects warning wording that names the cap
   (`DOCS_GEN_CLAIM_MAX_OUTPUT_TOKENS` / `DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS`)
   instead of the structured-output mode.
+- **Judge evidence per batch (#171, #166).** Each judge batch sees the union of
+  the sources its claims cite, a top-3 term-overlap retrieval for a claim citing
+  none, and — for a claim naming a mined rule's `file:line` — that code line (a
+  `mined:<fileHash>:<line>` source captured in Phase 1), bounded by the judge's
+  own 24,000-character budget (never `factsCharCap`); an over-budget source is
+  cut to the lines sharing terms with the claims. A batch matching under half
+  its claims is re-judged once as two halves. Section prompts list a `facts:`
+  source already in EXTRACTED MODULE FACTS by id only (#168), so each module's
+  facts are sent once.
 - **Graceful degradation.** A runtime that does not support the field (some
   Ollama / LM Studio builds) returns a **400/422**; the provider — only when the
   request carried `response_format` — logs one warn and retries **once without

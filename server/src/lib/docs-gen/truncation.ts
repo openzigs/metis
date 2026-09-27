@@ -159,3 +159,113 @@ export function describeTruncation(detection: TruncationDetection): string {
   if (detection.signals.placeholder) parts.push("gateway max-tokens placeholder in output");
   return parts.length > 0 ? parts.join(" + ") : "unknown truncation signal";
 }
+
+// ---------------------------------------------------------------------------
+// #166 — repetition loops
+// ---------------------------------------------------------------------------
+
+/** A reply that ran to the cap repeating itself, and the part worth keeping. */
+export interface RepetitionLoop {
+  /** The reply up to the loop's second copy of its repeated unit, whole lines only. */
+  usablePrefix: string;
+  /** The repeated unit (digits normalised to `#`). */
+  unit: string;
+  /** How many times the unit occurs in the inspected tail. */
+  repeats: number;
+}
+
+/** Characters at the end of a reply inspected for a loop. */
+const LOOP_TAIL_CHARS = 4_000;
+/** Non-empty lines at the end of the tail compared for a line-level loop. */
+const LOOP_TAIL_LINES = 12;
+/** At most this many distinct lines among them reads as a loop. */
+const LOOP_MAX_DISTINCT_LINES = 3;
+/** A last line at least this long is read for a loop within it. */
+const LOOP_LONG_LINE_CHARS = 1_000;
+/** Words per n-gram for a loop within long lines. */
+const LOOP_NGRAM = 6;
+/** An n-gram repeated at least this often, covering at least half the tail's words. */
+const LOOP_MIN_REPEATS = 6;
+
+const normaliseLoopText = (s: string): string =>
+  s.trim().toLowerCase().replace(/\d+/g, "#").replace(/\s+/g, " ");
+
+/**
+ * #166 — detect a reply cut off at the output cap because the model was
+ * repeating itself (the Phase-1 NOTES runaways: up to 28K characters of the
+ * same aside). A bigger cap or a smaller chunk does not fix that, so the caller
+ * keeps {@link RepetitionLoop.usablePrefix} instead of asking again.
+ *
+ * Two linear checks on the last {@link LOOP_TAIL_CHARS} characters, digits
+ * normalised so "step 11"/"step 12" count as one: the last
+ * {@link LOOP_TAIL_LINES} non-empty lines hold at most
+ * {@link LOOP_MAX_DISTINCT_LINES} distinct lines, or — in a last line of
+ * {@link LOOP_LONG_LINE_CHARS}+ characters — one word {@link LOOP_NGRAM}-gram
+ * occurs {@link LOOP_MIN_REPEATS}+ times and covers half its words (a loop
+ * inside one long line). `null` otherwise —
+ * including for a reply simply cut off mid-list, which is not a loop.
+ */
+export function detectRepetitionLoop(text: string): RepetitionLoop | null {
+  const tail = text.slice(-LOOP_TAIL_CHARS);
+  const lines = tail
+    .split("\n")
+    .map(normaliseLoopText)
+    .filter((l) => l.length > 0);
+  const last = lines.slice(-LOOP_TAIL_LINES);
+  if (last.length >= LOOP_TAIL_LINES && new Set(last).size <= LOOP_MAX_DISTINCT_LINES) {
+    const counts = new Map<string, number>();
+    for (const l of last) counts.set(l, (counts.get(l) ?? 0) + 1);
+    const [unit, repeats] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+    return {
+      usablePrefix: prefixBeforeSecond(text, (l) => (normaliseLoopText(l) === unit ? 1 : 0)),
+      unit,
+      repeats,
+    };
+  }
+  // A loop inside one line: only a long last line is read for one, so a list
+  // whose items share a template phrase is never mistaken for a loop.
+  const lastLine = lines.at(-1) ?? "";
+  if (lastLine.length < LOOP_LONG_LINE_CHARS) return null;
+  const words = lastLine.split(" ");
+  if (words.length < LOOP_NGRAM * LOOP_MIN_REPEATS) return null;
+  const grams = new Map<string, number>();
+  for (let i = 0; i + LOOP_NGRAM <= words.length; i++) {
+    const g = words.slice(i, i + LOOP_NGRAM).join(" ");
+    grams.set(g, (grams.get(g) ?? 0) + 1);
+  }
+  const [unit, repeats] = [...grams.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (repeats < LOOP_MIN_REPEATS || repeats * LOOP_NGRAM < words.length / 2) return null;
+  return {
+    usablePrefix: prefixBeforeSecond(text, (l) => countIn(l, unit)),
+    unit,
+    repeats,
+  };
+}
+
+/**
+ * `text` up to (not including) the line where the repeated unit occurs for the
+ * second time (`occurrences` counts it per line), so one copy is kept and a
+ * line that holds it several times — a loop inside one line — is dropped. Always whole lines, trailing blank
+ * lines trimmed.
+ */
+function prefixBeforeSecond(text: string, occurrences: (line: string) => number): string {
+  const lines = text.split("\n");
+  let seen = 0;
+  let cut = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    seen += occurrences(lines[i]);
+    if (seen >= 2) {
+      cut = i;
+      break;
+    }
+  }
+  return lines.slice(0, cut).join("\n").trimEnd();
+}
+
+/** Occurrences of `unit` in `line` once normalised. */
+function countIn(line: string, unit: string): number {
+  const norm = normaliseLoopText(line);
+  let n = 0;
+  for (let at = norm.indexOf(unit); at >= 0; at = norm.indexOf(unit, at + unit.length)) n++;
+  return n;
+}

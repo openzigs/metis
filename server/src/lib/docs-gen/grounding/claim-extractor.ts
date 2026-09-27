@@ -47,6 +47,9 @@ export interface ClaimDecomposition {
    * #117 — true when the model's reply could not be parsed as a claim list, so
    * the empty `claims` means "not checked", not "nothing to check". The caller
    * surfaces it as a grounding warning on the document.
+   *
+   * #165 — set too when only SOME passages failed: `claims` then holds the
+   * claims of the passages that parsed, and the failed passages are unchecked.
    */
   unparseable?: true;
   /**
@@ -78,56 +81,154 @@ const MIN_SPLIT_CHARS = 500;
 /**
  * #152 — split a section into passages of at most `budget` characters for
  * claim extraction, by subsection where it can: a heading starts a new passage
- * once the current one is at least half full, paragraphs (blank-line separated)
- * are kept whole, and a fenced block is never cut. Only a paragraph larger than
- * the budget on its own is split, by line; a single line longer than the budget
- * is left whole. Joining the passages back loses no line. A non-positive budget,
- * or a text that already fits, returns the text as one passage.
+ * once the current one is at least half full, and paragraphs (blank-line
+ * separated) and fenced blocks are kept whole when they fit. A block larger than
+ * the budget on its own — a paragraph or, since #165, a fenced block — is split
+ * by line; a single line longer than the budget is left whole. An UNCLOSED fence
+ * no longer swallows the rest of the section as one block: its opener is read
+ * as an ordinary line (#165).
+ *
+ * #165 — a passage that does not start with a heading is prefixed with the
+ * heading it sits under, so the model sees its lines in their subsection's
+ * context; a piece of a split fence re-opens (and closes) the fence the same
+ * way. Those prefixes are counted within the budget. Every line of the text
+ * appears in the passages, in order. A non-positive budget, or a text that
+ * already fits, returns the text as one passage.
  * @internal — exported for testing.
  */
 export function splitForClaimExtraction(text: string, budget: number): string[] {
   if (budget <= 0 || text.length <= budget) return [text];
 
+  const lines = text.split("\n");
+  // #165 — an opener with no closer: read it as a plain line, not a fence.
+  const unclosedOpener = findUnclosedFenceOpener(lines);
+
   // Blocks: blank-line separated paragraphs, with fenced blocks kept intact.
-  const blocks: string[] = [];
+  const blocks: string[][] = [];
   let current: string[] = [];
-  let inFence = false;
-  for (const line of text.split("\n")) {
-    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
-    if (!inFence && line.trim() === "") {
-      if (current.length > 0) blocks.push(current.join("\n"));
+  let fence: string | null = null;
+  lines.forEach((line, i) => {
+    const marker = FENCE_LINE.exec(line)?.[1];
+    if (fence === null && marker && i !== unclosedOpener) fence = marker;
+    else if (fence !== null && marker && isClosingMarker(marker, fence)) fence = null;
+    if (fence === null && line.trim() === "") {
+      if (current.length > 0) blocks.push(current);
       current = [];
-      continue;
+      return;
     }
     current.push(line);
-  }
-  if (current.length > 0) blocks.push(current.join("\n"));
+  });
+  if (current.length > 0) blocks.push(current);
 
   const chunks: string[] = [];
   let chunk = "";
+  let heading: string | null = null;
   const flush = () => {
     if (chunk) chunks.push(chunk);
     chunk = "";
   };
-  const add = (piece: string, sep: string) => {
-    if (chunk && chunk.length + sep.length + piece.length > budget) flush();
-    chunk = chunk ? chunk + sep + piece : piece;
-  };
   for (const block of blocks) {
-    if (/^#{1,6}\s/.test(block) && chunk.length >= budget / 2) flush();
-    // A block holding a fence anywhere (e.g. "Formula:" directly above it).
-    const fenced = /(^|\n)\s*(```|~~~)/.test(block);
-    if (block.length <= budget || fenced) {
-      add(block, "\n\n");
-      continue;
+    const blockText = block.join("\n");
+    if (HEADING_LINE.test(block[0]) && chunk.length >= budget / 2) flush();
+    if (blockText.length <= budget) {
+      if (chunk && chunk.length + 2 + blockText.length > budget) flush();
+      chunk = chunk ? `${chunk}\n\n${blockText}` : withHeading(heading, blockText, budget);
+    } else {
+      // An oversized block: pack it line by line. A chunk holding only the
+      // headings above it is not sent on its own: it becomes the pieces' prefix.
+      const headingsOnly =
+        chunk !== "" && chunk.split("\n").every((l) => l.trim() === "" || HEADING_LINE.test(l));
+      const context = HEADING_LINE.test(block[0]) ? block[0] : headingsOnly ? chunk : heading;
+      if (headingsOnly) chunk = "";
+      flush();
+      chunks.push(...packLines(block, budget, context));
     }
-    // An oversized paragraph: pack it line by line.
-    flush();
-    for (const line of block.split("\n")) add(line, "\n");
-    flush();
+    if (!block.some((l) => FENCE_LINE.test(l))) {
+      heading = [...block].reverse().find((l) => HEADING_LINE.test(l)) ?? heading;
+    }
   }
   flush();
   return chunks;
+}
+
+const FENCE_LINE = /^\s*(`{3,}|~{3,})/;
+const HEADING_LINE = /^#{1,6}\s/;
+
+/**
+ * #165 — `piece` prefixed with the heading it sits under, unless it starts
+ * with a heading of its own or the prefix would not fit in `budget`.
+ */
+function withHeading(heading: string | null, piece: string, budget: number): string {
+  if (heading === null || HEADING_LINE.test(piece)) return piece;
+  const prefixed = `${heading}\n\n${piece}`;
+  return prefixed.length <= budget ? prefixed : piece;
+}
+
+function isClosingMarker(marker: string, open: string): boolean {
+  return marker[0] === open[0] && marker.length >= open.length;
+}
+
+/** Index of a fence opener that is never closed, or -1. */
+function findUnclosedFenceOpener(lines: readonly string[]): number {
+  let open: string | null = null;
+  let at = -1;
+  lines.forEach((line, i) => {
+    const marker = FENCE_LINE.exec(line)?.[1];
+    if (!marker) return;
+    if (open === null) {
+      open = marker;
+      at = i;
+    } else if (isClosingMarker(marker, open)) open = null;
+  });
+  return open === null ? -1 : at;
+}
+
+/**
+ * #165 — pack an oversized block's lines into pieces of at most `budget`
+ * characters. A piece after the first is prefixed with `heading` (when that
+ * fits), and a piece that starts or ends inside a fence re-opens / closes it,
+ * so every piece still reads as code in its subsection. The prefixes and
+ * markers are counted within the budget; a single line longer than the budget
+ * is left whole.
+ */
+function packLines(block: readonly string[], budget: number, heading: string | null): string[] {
+  const pieces: string[] = [];
+  let lines: string[] = [];
+  /** Lines added from the block to the current piece (not re-opened markers). */
+  let own = 0;
+  let fence: { opener: string; marker: string } | null = null;
+  const ownHeading = HEADING_LINE.test(block[0]);
+  const lead = () =>
+    heading !== null && (pieces.length > 0 || !ownHeading) ? `${heading}\n\n` : "";
+  const closer = () => (fence ? fence.marker[0].repeat(fence.marker.length) : "");
+  const size = (extra: string[]) => {
+    const body = [...lines, ...extra].join("\n");
+    const close = fence ? `\n${closer()}` : "";
+    return lead().length + body.length + close.length;
+  };
+  const emit = () => {
+    const body = [...lines];
+    if (fence) body.push(closer());
+    const text = body.join("\n");
+    const prefixed = lead() + text;
+    pieces.push(prefixed.length <= budget ? prefixed : text);
+    lines = fence ? [fence.opener] : [];
+    own = 0;
+  };
+  for (const line of block) {
+    if (own > 0 && size([line]) > budget) emit();
+    lines.push(line);
+    own++;
+    const marker = FENCE_LINE.exec(line)?.[1];
+    if (fence === null && marker) fence = { opener: line.trim(), marker };
+    else if (fence !== null && marker && isClosingMarker(marker, fence.marker)) fence = null;
+  }
+  if (own > 0) {
+    // A fence still open here was unclosed in the source: leave it as it was.
+    const prefixed = lead() + lines.join("\n");
+    pieces.push(prefixed.length <= budget ? prefixed : lines.join("\n"));
+  }
+  return pieces;
 }
 
 // ── Zod schema — applied AFTER JSON.parse + shape check, never at the boundary.
@@ -245,6 +346,28 @@ export interface ClaimExtractorDeps {
   retry?: GroundingRetryOptions;
 }
 
+/** One passage's claims, and why part of it yielded none (#165). */
+interface PassageOutcome {
+  claims: GroundedClaim[];
+  failure: "truncated" | "unparseable" | null;
+}
+
+/**
+ * #165 — a passage cut off at the cap is split at most this many times. Run 7's
+ * chain (8,036 → 3,994 → 2,023 → 1,001 chars) spent four full-cap calls on a
+ * model stuck repeating itself; one split is enough to tell "too big for the
+ * cap" from "stuck".
+ */
+const MAX_SPLIT_DEPTH = 1;
+
+/**
+ * #165 — passages in a row that yield no usable claim list before the rest of
+ * the section is abandoned. One failed passage no longer costs the section its
+ * other passages' claims; two in a row mean the model is not producing claim
+ * lists at all.
+ */
+const MAX_CONSECUTIVE_FAILED_PASSAGES = 2;
+
 /** One claim-extraction call's outcome (#152). */
 type BatchOutcome =
   | { kind: "parsed"; decomposition: ClaimDecomposition }
@@ -310,21 +433,44 @@ export class ClaimExtractor {
     // batch of the section goes straight to `json_object`.
     const state = { format: this.responseFormat };
     const claims: GroundedClaim[] = [];
+    let failed: "truncated" | "unparseable" | null = null;
+    let failedPassages = 0;
+    let consecutiveFailures = 0;
     for (const batch of batches) {
-      const outcome = await this.decomposeBatch(batch, idList, state, signal);
-      if (outcome.kind !== "parsed") {
-        // All-or-nothing, as before batching: a partial claim list would score
-        // only part of the section and read as a verdict on all of it. The
-        // remaining batches are not asked — their answer could not be used.
-        log.warn("Claim decomposition incomplete; the section is unverified", {
-          cause: outcome.kind,
-          mode: state.format?.type ?? "off",
-        });
-        return outcome.kind === "truncated"
-          ? { claims: [], unparseable: true, truncated: true }
-          : { claims: [], unparseable: true };
+      if (signal?.aborted) break;
+      const outcome = await this.decomposeBatch(batch, idList, state, signal, 0);
+      // #165 — the claims a passage did yield are kept, even when part of it
+      // failed; only the failed part goes unchecked.
+      claims.push(...outcome.claims);
+      if (outcome.failure === null) {
+        consecutiveFailures = 0;
+        continue;
       }
-      claims.push(...outcome.decomposition.claims);
+      failedPassages += 1;
+      consecutiveFailures += 1;
+      // A cut-off reply outranks an unparseable one: it names the cap to raise.
+      if (failed !== "truncated") failed = outcome.failure;
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILED_PASSAGES) {
+        // Two passages in a row gave no usable claim list: the model is stuck
+        // (e.g. a repetition loop), and asking the rest would only spend more.
+        log.warn("Claim decomposition stopped after consecutive failed passages", {
+          failedPassages,
+          batches: batches.length,
+        });
+        break;
+      }
+    }
+    if (failed !== null) {
+      log.warn("Claim decomposition incomplete; the failed passages are unverified", {
+        cause: failed,
+        failedPassages,
+        batches: batches.length,
+        claimsKept: claims.length,
+        mode: state.format?.type ?? "off",
+      });
+      return failed === "truncated"
+        ? { claims, unparseable: true, truncated: true }
+        : { claims, unparseable: true };
     }
     if (state.format) log.info("Claim decomposition parsed", { mode: state.format.type });
     return { claims };
@@ -333,15 +479,21 @@ export class ClaimExtractor {
   /**
    * #152 — decompose one passage. A reply stopped at the output cap is never
    * parsed and never re-asked in `json_object` mode (the same prompt would be
-   * cut off the same way); the passage is split in two and each half asked on
-   * its own, down to {@link MIN_SPLIT_CHARS}.
+   * cut off the same way); the passage is split and each part asked on its own.
+   *
+   * #165 — split at most ONCE (`depth`), and stop at the first part that is
+   * cut off too: a model that runs to the cap on half the passage is stuck (a
+   * repetition loop), not short of room, and halving again only multiplies
+   * full-cap calls. A passage cut off on every reply therefore costs 2 calls.
+   * The claims of parts that did parse are returned with the failure.
    */
   private async decomposeBatch(
     passage: string,
     idList: string,
     state: { format: ResponseFormat | undefined },
     signal: AbortSignal | undefined,
-  ): Promise<BatchOutcome> {
+    depth: number,
+  ): Promise<PassageOutcome> {
     let outcome = await this.ask(passage, idList, state.format, signal);
     // #117 — a runtime can accept `json_schema` with HTTP 200 and ignore it, so
     // an unparseable (NOT cut-off) reply in that mode is retried once in JSON mode.
@@ -354,15 +506,22 @@ export class ClaimExtractor {
       state.format = JSON_OBJECT_RESPONSE_FORMAT;
       outcome = await this.ask(passage, idList, state.format, signal);
     }
-    if (outcome.kind !== "truncated") return outcome;
+    if (outcome.kind === "parsed") return { claims: outcome.decomposition.claims, failure: null };
+    if (outcome.kind === "unparseable") return { claims: [], failure: "unparseable" };
 
     const halves = splitForClaimExtraction(passage, Math.ceil(passage.length / 2));
-    if (passage.length < MIN_SPLIT_CHARS * 2 || halves.length < 2 || signal?.aborted) {
-      log.warn("Claim list exceeded the output cap; the passage cannot be split further", {
+    if (
+      depth >= MAX_SPLIT_DEPTH ||
+      passage.length < MIN_SPLIT_CHARS * 2 ||
+      halves.length < 2 ||
+      signal?.aborted
+    ) {
+      log.warn("Claim list exceeded the output cap; the passage is not split further", {
         chars: passage.length,
+        depth,
         maxTokens: this.maxTokens,
       });
-      return outcome;
+      return { claims: [], failure: "truncated" };
     }
     log.warn("Claim list exceeded the output cap; splitting the passage and asking again", {
       chars: passage.length,
@@ -371,11 +530,11 @@ export class ClaimExtractor {
     });
     const claims: GroundedClaim[] = [];
     for (const half of halves) {
-      const part = await this.decomposeBatch(half, idList, state, signal);
-      if (part.kind !== "parsed") return part;
-      claims.push(...part.decomposition.claims);
+      const part = await this.decomposeBatch(half, idList, state, signal, depth + 1);
+      claims.push(...part.claims);
+      if (part.failure !== null) return { claims, failure: part.failure };
     }
-    return { kind: "parsed", decomposition: { claims } };
+    return { claims, failure: null };
   }
 
   private async ask(

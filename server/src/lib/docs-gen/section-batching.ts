@@ -308,8 +308,29 @@ function readFence(
   // same character and at least as long.
   const opener = lines[start];
   const indent = nested ? opener.slice(0, opener.length - opener.trimStart().length) : "";
+  // A body line indented less than a nested opener has already ended the list
+  // item under CommonMark, and that implicitly closed the fence. A synthetic
+  // marker here would OPEN a new top-level fence that never closes (#173).
+  if (nested) {
+    const openerWidth = indentWidth(opener);
+    const dedented = body
+      .slice(1)
+      .some((line) => line.trim() !== "" && indentWidth(line) < openerWidth);
+    if (dedented) return { text: body.join("\n"), next: i };
+  }
   body.push(indent + open);
   return { text: body.join("\n"), next: i };
+}
+
+/** Width of a line's leading whitespace in columns, a tab advancing to the next multiple of 4. */
+function indentWidth(line: string): number {
+  let width = 0;
+  for (const ch of line) {
+    if (ch === " ") width++;
+    else if (ch === "\t") width += 4 - (width % 4);
+    else break;
+  }
+  return width;
 }
 
 function startsBlock(line: string): boolean {
