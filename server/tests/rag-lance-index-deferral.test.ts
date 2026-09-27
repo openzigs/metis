@@ -11,32 +11,41 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VECTOR_ANN_THRESHOLD } from "@metis/shared";
 import {
   LANCE_CLEANUP_EVERY_WRITES,
+  LANCE_INDEX_METRIC,
   LANCE_INDEX_REBUILD_GROWTH_FACTOR,
   LanceVectorStore,
   type VectorRow,
 } from "../src/lib/rag/vector-store.js";
 
-let lanceLoadable = true;
-let LocalTable: { prototype: Record<string, unknown> } | null = null;
+interface LanceIntrospection {
+  listIndices(): Promise<Array<{ name: string; columns: string[] }>>;
+  indexStats(name: string): Promise<{
+    numIndexedRows: number | null;
+    numUnindexedRows: number | null;
+    distanceType?: string;
+  }>;
+}
+interface VectordbModule {
+  LocalTable: { prototype: Record<string, unknown> };
+  connect(uri: string): Promise<{ openTable(name: string): Promise<LanceIntrospection> }>;
+}
 
-beforeAll(async () => {
-  try {
-    const mod = (await import("vectordb")) as unknown as {
-      LocalTable: { prototype: Record<string, unknown> };
-    };
-    LocalTable = mod.LocalTable;
-  } catch (err) {
-    lanceLoadable = false;
-    // eslint-disable-next-line no-console
-    console.warn("vectordb not loadable on this host, skipping #207 tests:", err);
-  }
-});
+// PR #255 review — resolved at COLLECTION time, so the skip below is real. (It used
+// to be set in a `beforeAll`, which runs after `describe` has already been chosen.)
+let vectordb: VectordbModule | null = null;
+try {
+  vectordb = (await import("vectordb")) as unknown as VectordbModule;
+} catch (err) {
+  // eslint-disable-next-line no-console
+  console.warn("vectordb not loadable on this host, skipping #207 tests:", err);
+}
+const LocalTable = vectordb?.LocalTable ?? null;
 
-const describeIfLance = lanceLoadable ? describe : describe.skip;
+const describeIfLance = vectordb ? describe : describe.skip;
 
 const DIM = 64;
 const PROJECT = "ingest";
@@ -102,6 +111,15 @@ function tableDir(): string {
   return path.join(root, `p_${PROJECT}.lance`);
 }
 
+/** The table's vector-index stats as Lance reports them, or null when it has none. */
+async function vectorIndexStats(): Promise<Awaited<
+  ReturnType<LanceIntrospection["indexStats"]>
+> | null> {
+  const table = await (await vectordb!.connect(root)).openTable(`p_${PROJECT}`);
+  const index = (await table.listIndices()).find((i) => i.columns.includes("vector"));
+  return index ? table.indexStats(index.name) : null;
+}
+
 // Real IVF_PQ training (k-means over 256 partitions) is CPU work, not contended I/O;
 // the budget covers a loaded CI runner.
 describeIfLance("LanceVectorStore ANN index deferral (#207)", { timeout: 60_000 }, () => {
@@ -160,6 +178,129 @@ describeIfLance("LanceVectorStore ANN index deferral (#207)", { timeout: 60_000 
     for (const probe of probes) {
       const hits = await store.search(PROJECT, probe.vector, 5);
       expect(hits[0]?.row.id, `self-hit for ${probe.id}`).toBe(probe.id);
+    }
+  });
+
+  it("keeps an index covering the table through a re-sync that re-upserts the same rows", async () => {
+    // PR #255 review — a re-sync deletes and re-adds every row by id, so the row count
+    // stays flat. Lance drops the index whose rows are gone; a trigger that reads only
+    // the count left the table with NO index until it doubled or the process restarted.
+    const spy = vi.spyOn(LocalTable!.prototype as never, "createIndex" as never);
+    const store = new LanceVectorStore({ root });
+    for (let pass = 0; pass < 3; pass++) {
+      await ingest(store, 30, 50);
+      expect(await store.count(PROJECT)).toBe(1500);
+      const stats = await vectorIndexStats();
+      expect(stats, `a vector index exists after pass ${pass}`).not.toBeNull();
+      // The same invariant growth-by-doubling keeps for an append-only table: the
+      // index covers the larger part of it.
+      expect(stats!.numIndexedRows ?? 0).toBeGreaterThan(stats!.numUnindexedRows ?? 0);
+    }
+    // Bounded, not per write: 90 upserts. One build at the crossing, then two per
+    // full re-sync (a build covers the table; half of it replaced, it no longer does).
+    expect(spy).toHaveBeenCalledTimes(5);
+  });
+
+  it("forgets a dropped table's index state, so the recreated table is indexed again", async () => {
+    // PR #255 review — `dropTable` must reset the per-table bookkeeping. Otherwise the
+    // new table inherits the old one's coverage (2,400 here) and, with 1,200 rows of
+    // coverage-check budget left over, stays unindexed past the threshold.
+    const spy = vi.spyOn(LocalTable!.prototype as never, "createIndex" as never);
+    const store = new LanceVectorStore({ root });
+    await ingest(store, 1, 2400); // one write, one build over 2,400 rows
+    expect(spy).toHaveBeenCalledTimes(1);
+    await store.dropTable(PROJECT);
+    await ingest(store, 11, 100); // crosses the threshold again at 1,100
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(await vectorIndexStats()).not.toBeNull();
+  });
+
+  it("forgets the live table's index state on swapTable, so the swapped-in table is indexed", async () => {
+    // PR #255 review — same as drop, for the shadow-reindex cut-over. `vectordb` has no
+    // `renameTable`, so this drives the drop+recreate fallback that production uses;
+    // the recreated live table carries rows, not the shadow's index.
+    const store = new LanceVectorStore({ root });
+    await ingest(store, 25, 100); // live indexed at 2,200
+    const shadow = `${PROJECT}-shadow`;
+    const vecs = vectors(1200, 99);
+    for (let d = 0; d < 12; d++) {
+      await store.upsert(shadow, rowsFor(500 + d, vecs.slice(d * 100, (d + 1) * 100)));
+    }
+    await store.swapTable(PROJECT, shadow);
+    expect(await store.count(PROJECT)).toBe(1200);
+    expect(await vectorIndexStats(), "the recreated live table starts unindexed").toBeNull();
+
+    const spy = vi.spyOn(LocalTable!.prototype as never, "createIndex" as never);
+    await ingest(store, 1, 50, 900);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(await vectorIndexStats()).not.toBeNull();
+  });
+
+  it("re-trains an index built with another metric, as every table indexed before this fix was", async () => {
+    // PR #255 review — until now `createIndex` passed no metric, so every existing
+    // table was indexed with `l2`. It is re-trained once, on the first write after
+    // a restart, rather than served by the wrong metric until it doubles.
+    const conn = await vectordb!.connect(root);
+    const vecs = vectors(1100, 5);
+    const legacy = await (
+      conn as unknown as {
+        createTable(
+          name: string,
+          rows: Array<Record<string, unknown>>,
+        ): Promise<{
+          createIndex(p: Record<string, unknown>): Promise<unknown>;
+        }>;
+      }
+    ).createTable(
+      `p_${PROJECT}`,
+      vecs.map((vector, i) => ({
+        id: `legacy-${i}`,
+        vector,
+        text: "t",
+        document_id: "legacy",
+        chunk_index: i,
+        filename: "f",
+        model: "test-model",
+        created_at: 0,
+      })),
+    );
+    await legacy.createIndex({
+      type: "ivf_pq",
+      column: "vector",
+      num_partitions: 256,
+      num_sub_vectors: 16,
+    });
+    expect((await vectorIndexStats())?.distanceType).toBe("l2");
+
+    const spy = vi.spyOn(LocalTable!.prototype as never, "createIndex" as never);
+    await ingest(new LanceVectorStore({ root }), 1, 50, 700);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect((await vectorIndexStats())?.distanceType).toBe(LANCE_INDEX_METRIC);
+  });
+
+  it(`trains the index with the metric search() queries with (${LANCE_INDEX_METRIC}), so ranking matches an exhaustive search`, async () => {
+    // PR #255 review — `vectordb` ranks an indexed table by the INDEX's metric and
+    // ignores the query's `metricType`. Trained with the default `l2`, a query for a
+    // stored vector at a different magnitude (cosine distance 0) found whatever lay
+    // nearest in Euclidean space instead.
+    const store = new LanceVectorStore({ root });
+    const base = vectors(1100, 3);
+    const norm = (i: number): number => 0.2 + ((i * 37) % 50) / 5; // 0.2 … 10
+    const stored = base.map((v, i) => v.map((x) => x * norm(i)));
+    for (let d = 0; d < 11; d++) {
+      await store.upsert(PROJECT, rowsFor(d, stored.slice(d * 100, (d + 1) * 100)));
+    }
+    const stats = await vectorIndexStats();
+    expect(stats?.distanceType).toBe(LANCE_INDEX_METRIC);
+
+    // Exhaustive cosine top-1 of `c * stored[i]` is row i by construction.
+    const probeRows = [0, 137, 404, 555, 811, 1099];
+    for (const i of probeRows) {
+      const probe = base[i].map((x) => x * 3.3);
+      const hits = await store.search(PROJECT, probe, 5);
+      expect(hits[0]?.row.id, `cosine top-1 for row ${i}`).toBe(
+        `d${Math.floor(i / 100)}-c${i % 100}`,
+      );
     }
   });
 });
@@ -253,6 +394,18 @@ describe("LanceVectorStore index deferral — client edge cases (#207)", () => {
     expect(cleanupOldVersions).toHaveBeenCalledTimes(2);
     // The grace period keeps an in-flight search from losing the files it is reading.
     expect(cleanupOldVersions).toHaveBeenCalledWith(1);
+  });
+
+  it("dropTable resets the cleanup counter along with the index state", async () => {
+    const { store, table } = fakeStore(vi.fn());
+    const compactFiles = vi.fn().mockResolvedValue({});
+    Object.assign(table, { compactFiles });
+    const half = LANCE_CLEANUP_EVERY_WRITES / 2 + 10;
+    for (let i = 0; i < half; i++) await store.upsert("fake", batch(i, 1));
+    await store.dropTable("fake");
+    for (let i = 0; i < half; i++) await store.upsert("fake", batch(i, 1));
+    // Neither table has taken LANCE_CLEANUP_EVERY_WRITES writes.
+    expect(compactFiles).not.toHaveBeenCalled();
   });
 
   it("a failing cleanup is logged, never surfaced as a failed write", async () => {

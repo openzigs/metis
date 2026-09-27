@@ -118,6 +118,12 @@ export interface EmbedBackendDescriptor {
   defaultDimension: number;
   /** True when the backend can run with no outbound network (air-gapped). */
   offlineCapable: boolean;
+  /**
+   * #222 — true when the backend runs an ONNX session inside this process. The
+   * in-process cross-encoder reranker must not load beside one on another thread
+   * (see `assertRerankOnnxSingleThread` in `reranker.ts`). Omitted = false.
+   */
+  inProcessOnnx?: boolean;
 }
 
 export type EmbedBackendFactory = (cfg: EmbedderConfig) => EmbedBackend;

@@ -19,6 +19,7 @@ import {
   createCrossEncoderReranker,
   getReranker,
 } from "../src/lib/rag/reranker.js";
+import { getBackendDescriptor, registerBackend } from "../src/lib/rag/embedder-registry.js";
 
 /** The configuration from the issue: defaults, plus `RAG_RERANK=1`. */
 function conflictingEnv(): void {
@@ -122,5 +123,64 @@ describe("the reranker factories refuse too — scripts that never call createAp
     conflictingEnv();
     vi.stubEnv("EMBED_INPROCESS_RUNTIME", "inline");
     expect(createCrossEncoderReranker().enabled).toBe(true);
+  });
+});
+
+/**
+ * PR #255 review — the eval harness builds its embedder from a per-arm backend
+ * (`createArmEmbedFn` → `new Embedder({ backend: spec.backend })`), not from the
+ * process environment. The factory judges the configuration the caller passes.
+ */
+describe("createCrossEncoderReranker judges the caller's embedder, not the env's (#222)", () => {
+  it("refuses an in-process ONNX arm even when the env names an HTTP backend", () => {
+    conflictingEnv();
+    vi.stubEnv("EMBED_BACKEND", "openai");
+    expect(() => createCrossEncoderReranker({ embed: { backend: "xenova" } })).toThrow(
+      /EMBED_INPROCESS_RUNTIME/,
+    );
+  });
+
+  it("allows the hash-floor arm under the default env, which would conflict on its own", () => {
+    conflictingEnv();
+    expect(createCrossEncoderReranker({ embed: { backend: "offline" } }).enabled).toBe(true);
+  });
+
+  it("honours the caller's runtime over the env's", () => {
+    conflictingEnv();
+    const inline = { backend: "xenova", inProcessRuntime: "inline" } as const;
+    expect(createCrossEncoderReranker({ embed: inline }).enabled).toBe(true);
+    vi.stubEnv("EMBED_INPROCESS_RUNTIME", "inline");
+    expect(() =>
+      createCrossEncoderReranker({ embed: { backend: "xenova", inProcessRuntime: "worker" } }),
+    ).toThrow(/EMBED_INPROCESS_RUNTIME/);
+  });
+});
+
+describe("the in-process ONNX backend list comes from the backend registry (#222)", () => {
+  it("refuses a newly registered in-process ONNX backend without editing the reranker", () => {
+    registerBackend(
+      "test-onnx-222",
+      () => {
+        throw new Error("never constructed by the check");
+      },
+      {
+        label: "test",
+        description: "test",
+        requiresEgress: false,
+        defaultModel: "m",
+        defaultDimension: 8,
+        offlineCapable: true,
+        inProcessOnnx: true,
+      },
+    );
+    conflictingEnv();
+    vi.stubEnv("EMBED_BACKEND", "test-onnx-222");
+    expect(() => assertRerankOnnxSingleThread()).toThrow(/RAG_RERANK/);
+  });
+
+  it("the built-in in-process backends declare it", () => {
+    expect(getBackendDescriptor("xenova")?.inProcessOnnx).toBe(true);
+    expect(getBackendDescriptor("embeddinggemma")?.inProcessOnnx).toBe(true);
+    expect(getBackendDescriptor("sidecar")?.inProcessOnnx).toBeFalsy();
   });
 });

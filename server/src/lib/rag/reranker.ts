@@ -48,8 +48,12 @@
  */
 import { createChildLogger } from "../logger.js";
 import { resolveDtype } from "./embed-model-config.js";
-import { resolveInProcessRuntime } from "./embed-worker-pipeline.js";
-import { resolveBackendKey } from "./embedder-registry.js";
+import { type InProcessEmbedRuntime, resolveInProcessRuntime } from "./embed-worker-pipeline.js";
+// Side effect: registers the built-in embed backends, whose descriptors say which of
+// them run ONNX in-process. Without it the check below would find no descriptor and
+// pass every backend.
+import "./embedder.js";
+import { getBackendDescriptor, resolveBackendKey } from "./embedder-registry.js";
 import {
   EmbeddingsClient,
   getEmbeddingsClient,
@@ -70,6 +74,21 @@ export interface RerankerOptions {
   model?: string;
   /** Skip the rerank for queries shorter than this many characters. */
   minQueryLength?: number;
+  /**
+   * #222 / PR #255 review — the embed configuration the caller ACTUALLY runs beside
+   * this reranker, when it is not the process environment's. The eval harness builds
+   * its embedder from a per-arm backend, so judging the environment's backend
+   * refused safe arms and passed unsafe ones. Omitted fields fall back to the env.
+   */
+  embed?: RerankEmbedConfig;
+}
+
+/** The parts of an embedder's configuration that decide the #222 thread conflict. */
+export interface RerankEmbedConfig {
+  /** Embed backend registry key (the `Embedder` `backend` option). */
+  backend?: string;
+  /** The `Embedder` `inProcessRuntime` option. */
+  inProcessRuntime?: InProcessEmbedRuntime;
 }
 
 export interface Reranker {
@@ -279,12 +298,6 @@ class RemoteReranker implements Reranker {
 }
 
 /**
- * Embed backends that run an ONNX session inside this process (see the
- * `registerBackend` calls in `embedder.ts`). Every other backend embeds over HTTP.
- */
-const IN_PROCESS_ONNX_BACKENDS: ReadonlySet<string> = new Set(["xenova", "embeddinggemma"]);
-
-/**
  * Issue #222 — why the in-process cross-encoder cannot load here, or `null` when it can.
  *
  * `onnxruntime-node` (1.21, via `@huggingface/transformers` 3.8.1) aborts the whole
@@ -297,11 +310,13 @@ const IN_PROCESS_ONNX_BACKENDS: ReadonlySet<string> = new Set(["xenova", "embedd
  * HTTP embed backend holds no ONNX session; the `inline` runtime puts both sessions on
  * the main thread, which is the pre-#189 arrangement the reranker was measured on.
  */
-function inProcessRerankThreadConflict(): string | null {
+function inProcessRerankThreadConflict(embed: RerankEmbedConfig = {}): string | null {
   if (resolveEmbeddingsMode() === "sidecar") return null;
-  const backend = resolveBackendKey();
-  if (!IN_PROCESS_ONNX_BACKENDS.has(backend)) return null;
-  if (resolveInProcessRuntime() !== "worker") return null;
+  const backend = resolveBackendKey({ backend: embed.backend });
+  // Which backends hold an in-process ONNX session is the registry's to say (its
+  // `inProcessOnnx` descriptor flag), so a new one cannot slip past this check.
+  if (!getBackendDescriptor(backend)?.inProcessOnnx) return null;
+  if ((embed.inProcessRuntime ?? resolveInProcessRuntime()) !== "worker") return null;
   return (
     `The in-process cross-encoder reranker cannot run beside the "${backend}" embedder ` +
     `on its worker thread (EMBED_INPROCESS_RUNTIME=worker): onnxruntime-node aborts the ` +
@@ -346,7 +361,7 @@ export function createCrossEncoderReranker(opts: RerankerOptions = {}): Reranker
   }
   // #222 — a clear error here beats a V8 abort on the next embed. Scripts (the eval
   // harness) reach this without going through `createApp()`'s boot check.
-  const conflict = inProcessRerankThreadConflict();
+  const conflict = inProcessRerankThreadConflict(opts.embed);
   if (conflict) throw new Error(conflict);
   return new XenovaCrossEncoderReranker(opts);
 }

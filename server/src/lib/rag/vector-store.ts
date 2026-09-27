@@ -529,7 +529,11 @@ interface LanceTable {
   schema?: Promise<LanceSchema> | LanceSchema;
   /** #207 — index introspection. Optional: structural test doubles omit it. */
   listIndices?(): Promise<Array<{ name: string; columns: string[] }>>;
-  indexStats?(indexName: string): Promise<{ numIndexedRows: number | null }>;
+  indexStats?(indexName: string): Promise<{
+    numIndexedRows: number | null;
+    numUnindexedRows?: number | null;
+    distanceType?: string;
+  }>;
   /** #207 — drop table versions (and the index builds only they reference). */
   cleanupOldVersions?(olderThanMinutes?: number): Promise<unknown>;
   /** #207 — merge the small fragments one-add-per-document leaves behind. */
@@ -572,6 +576,15 @@ interface LanceRow extends Record<string, unknown> {
  */
 export const LANCE_INDEX_REBUILD_GROWTH_FACTOR = 2;
 
+/**
+ * PR #255 review — the metric the ANN index is trained with. It must be the metric
+ * {@link LanceVectorStore.search} queries with: `vectordb` ranks an indexed table by
+ * the INDEX's metric and ignores the query's `metricType`, so an index trained with
+ * the default (`l2`) ranked non-normalised vectors by Euclidean distance while the
+ * query asked for cosine.
+ */
+export const LANCE_INDEX_METRIC = "cosine";
+
 /** Issue #207 — reclaim old table versions after this many writes to one table. */
 export const LANCE_CLEANUP_EVERY_WRITES = 100;
 
@@ -583,6 +596,17 @@ export const LANCE_CLEANUP_EVERY_WRITES = 100;
  */
 const DEFAULT_CLEANUP_OLDER_THAN_MINUTES = 1;
 
+/**
+ * PR #255 review — rows that may be written before an index covering `indexed` rows,
+ * with `unindexed` outside it, can have lost the majority. Each written row moves the
+ * balance by at most two (a replaced indexed row becomes an unindexed one), so half
+ * the margin is safe. Re-reading at that point costs O(log n) cheap metadata reads
+ * per index build, against a build that trains over the whole table.
+ */
+function checkAfterRows(indexed: number, unindexed: number): number {
+  return Math.floor((indexed - unindexed) / 2);
+}
+
 export interface LanceVectorStoreOptions extends VectorStoreOptions {
   /** Grace period for {@link LANCE_CLEANUP_EVERY_WRITES} cleanup. Tests pass `0`. */
   cleanupOlderThanMinutes?: number;
@@ -592,11 +616,17 @@ export class LanceVectorStore implements VectorStore {
   private readonly root: string;
   /**
    * #207 — per project, the row count at the last ANN build ATTEMPT (0 = never).
-   * Absent = not yet read from the table; see {@link indexedRowCount}.
+   * Absent = not yet read from the table; see {@link readIndexCoverage}.
    */
   private readonly indexedRows = new Map<string, number>();
   /** #207 — per project, writes since the last version cleanup. */
   private readonly writesSinceCleanup = new Map<string, number>();
+  /**
+   * PR #255 review — per project, how many more rows may be WRITTEN (not net rows)
+   * before the index's coverage is re-read from the table. A re-sync replaces rows
+   * without growing the count, so the count alone cannot tell the index went stale.
+   */
+  private readonly indexCheckBudget = new Map<string, number>();
   private readonly cleanupOlderThanMinutes: number;
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly tableCache = new Map<string, LanceTable>();
@@ -620,6 +650,8 @@ export class LanceVectorStore implements VectorStore {
     this.tableCache.delete(projectId);
     this.dimensions.delete(projectId);
     this.indexedRows.delete(projectId);
+    this.writesSinceCleanup.delete(projectId);
+    this.indexCheckBudget.delete(projectId);
   }
 
   withProjectWrite<T>(
@@ -839,6 +871,10 @@ export class LanceVectorStore implements VectorStore {
       // #207 — the live name now holds a different table; re-read its index coverage.
       this.indexedRows.delete(projectId);
       this.indexedRows.delete(shadowProjectId);
+      this.writesSinceCleanup.delete(projectId);
+      this.writesSinceCleanup.delete(shadowProjectId);
+      this.indexCheckBudget.delete(projectId);
+      this.indexCheckBudget.delete(shadowProjectId);
       const shadowDim = this.dimensions.get(shadowProjectId);
       this.dimensions.delete(shadowProjectId);
       if (shadowDim) this.dimensions.set(projectId, shadowDim);
@@ -1023,7 +1059,7 @@ export class LanceVectorStore implements VectorStore {
       const ids = lanceRows.map((r) => sqlString(r.id));
       await table.delete(`id IN (${ids.join(", ")})`);
       await table.add(lanceRows);
-      await this.maintainIndex(projectId, table);
+      await this.maintainIndex(projectId, table, lanceRows.length);
     });
   }
 
@@ -1042,21 +1078,41 @@ export class LanceVectorStore implements VectorStore {
    * Old versions, and with them superseded index builds, are reclaimed after each build
    * and every {@link LANCE_CLEANUP_EVERY_WRITES} writes.
    */
-  private async maintainIndex(projectId: string, table: LanceTable): Promise<void> {
+  private async maintainIndex(
+    projectId: string,
+    table: LanceTable,
+    rowsWritten: number,
+  ): Promise<void> {
     const writes = (this.writesSinceCleanup.get(projectId) ?? 0) + 1;
     let cleanupDue = writes >= LANCE_CLEANUP_EVERY_WRITES;
 
     const total = await table.countRows();
     if (total > VECTOR_ANN_THRESHOLD) {
-      const indexed = await this.indexedRowCount(projectId, table);
+      let indexed = this.indexedRows.get(projectId);
+      let budget = (this.indexCheckBudget.get(projectId) ?? 0) - rowsWritten;
+      // Read the index's REAL coverage from the table the first time this process
+      // sees it (so a restart neither re-trains a covering index nor trusts a lost
+      // one), and again whenever enough rows have been written that the index might
+      // no longer cover the larger part of the table. That second read is the
+      // re-sync case (PR #255 review): re-upserting a repository deletes and re-adds
+      // every row, so the count stays flat while the index covers fewer and fewer of
+      // them, and Lance drops it entirely once none are left.
+      if (indexed === undefined || budget <= 0) {
+        const coverage = await this.readIndexCoverage(projectId, table, indexed ?? 0);
+        indexed = coverage.indexed;
+        budget = coverage.checkAfterRows;
+      }
       if (indexed === 0 || total >= indexed * LANCE_INDEX_REBUILD_GROWTH_FACTOR) {
         // Recorded BEFORE the attempt: a build that fails (e.g. too few rows to
-        // train) is retried at the next growth step, not on every following write.
-        this.indexedRows.set(projectId, total);
+        // train) is retried at the next growth step or coverage check, not on every
+        // following write.
+        indexed = total;
+        budget = checkAfterRows(total, 0);
         try {
           await table.createIndex({
             type: "ivf_pq",
             column: "vector",
+            metric_type: LANCE_INDEX_METRIC,
             num_partitions: 256,
             num_sub_vectors: 16,
             replace: true,
@@ -1066,6 +1122,8 @@ export class LanceVectorStore implements VectorStore {
           log.warn("createIndex failed", { error: (err as Error).message });
         }
       }
+      this.indexedRows.set(projectId, indexed);
+      this.indexCheckBudget.set(projectId, budget);
     }
 
     if (!cleanupDue) {
@@ -1084,27 +1142,42 @@ export class LanceVectorStore implements VectorStore {
   }
 
   /**
-   * #207 — the row count the table's vector index was built over, or 0 when it has
-   * none. Read from the table once per process (so a restart does not re-train an
-   * index that already covers the table), then tracked in memory.
+   * #207 / PR #255 review — how many rows the table's vector index usefully covers,
+   * read from the table: 0 ("build one") when there is no vector index, when it was
+   * trained with a metric other than {@link LANCE_INDEX_METRIC}, or when at least as
+   * many rows sit outside it as inside it. Also returns how many rows may be written
+   * before that can have changed.
+   *
+   * A client with no introspection API (a structural test double, an older build)
+   * cannot say, so the caller's `fallback` stands and the table is not re-read.
    */
-  private async indexedRowCount(projectId: string, table: LanceTable): Promise<number> {
-    const known = this.indexedRows.get(projectId);
-    if (known !== undefined) return known;
-    let indexed = 0;
-    if (typeof table.listIndices === "function" && typeof table.indexStats === "function") {
-      try {
-        const index = (await table.listIndices()).find((i) => i.columns.includes("vector"));
-        if (index) indexed = (await table.indexStats(index.name)).numIndexedRows ?? 0;
-      } catch (err) {
-        log.warn("vector index introspection failed", {
-          projectId,
-          error: (err as Error).message,
-        });
-      }
+  private async readIndexCoverage(
+    projectId: string,
+    table: LanceTable,
+    fallback: number,
+  ): Promise<{ indexed: number; checkAfterRows: number }> {
+    if (typeof table.listIndices !== "function" || typeof table.indexStats !== "function") {
+      return { indexed: fallback, checkAfterRows: Number.POSITIVE_INFINITY };
     }
-    this.indexedRows.set(projectId, indexed);
-    return indexed;
+    const none = { indexed: 0, checkAfterRows: 0 };
+    try {
+      const index = (await table.listIndices()).find((i) => i.columns.includes("vector"));
+      if (!index) return none;
+      const stats = await table.indexStats(index.name);
+      if (stats.distanceType !== undefined && stats.distanceType !== LANCE_INDEX_METRIC) {
+        return none;
+      }
+      const indexed = stats.numIndexedRows ?? 0;
+      const unindexed = stats.numUnindexedRows ?? 0;
+      if (unindexed >= indexed) return none;
+      return { indexed, checkAfterRows: checkAfterRows(indexed, unindexed) };
+    } catch (err) {
+      log.warn("vector index introspection failed", {
+        projectId,
+        error: (err as Error).message,
+      });
+      return none;
+    }
   }
 
   async deleteByDocument(projectId: string, documentId: string): Promise<number> {
