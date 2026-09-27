@@ -187,3 +187,49 @@ describe("valid AI_* millisecond values are still honoured", () => {
     expect(schema.safeParse(String(MAX_TIMEOUT_MS)).success).toBe(true);
   });
 });
+
+// Review of PR #259 — the lower bounds are part of the runtime read, not only of
+// the admin-write schema. `0` would make an approval expire at once (every tool
+// call denied) or give express-rate-limit a zero-length window, so the RUNTIME
+// read must keep the default. Dropping a `min` from a call site turns these red.
+describe("the runtime read enforces each setting's lower bound", () => {
+  it("AI_TOOL_APPROVAL_TIMEOUT_MS=0 keeps the default", () => {
+    process.env.AI_TOOL_APPROVAL_TIMEOUT_MS = "0";
+    expect(approvalTimeoutMs()).toBe(120_000);
+    expectWarned("AI_TOOL_APPROVAL_TIMEOUT_MS", "0");
+  });
+
+  it("AI_CONVERSATION_RATE_LIMIT_WINDOW_MS=0 keeps the default", async () => {
+    process.env.AI_CONVERSATION_RATE_LIMIT_WINDOW_MS = "0";
+    vi.resetModules();
+    rateLimitOpts.length = 0;
+    await import("../src/middleware/conversation-rate-limit.js");
+    expect(rateLimitOpts.at(-1)?.windowMs).toBe(15 * 60_000);
+    expectWarned("AI_CONVERSATION_RATE_LIMIT_WINDOW_MS", "0");
+  });
+
+  it("AI_RATE_LIMIT_WINDOW_MS below 1000 and AI_PING_TIMEOUT_MS below 100 keep their defaults", () => {
+    process.env.AI_RATE_LIMIT_WINDOW_MS = "999";
+    process.env.AI_PING_TIMEOUT_MS = "99";
+    const cfg = loadAIConfig();
+    expect(cfg.rateLimit.windowMs).toBe(15 * 60_000);
+    expect(cfg.pingTimeoutMs).toBe(1_500);
+    expectWarned("AI_RATE_LIMIT_WINDOW_MS", "999");
+    expectWarned("AI_PING_TIMEOUT_MS", "99");
+  });
+
+  it("each bound is inclusive: the smallest legal value is honoured", async () => {
+    process.env.AI_TOOL_APPROVAL_TIMEOUT_MS = "1";
+    process.env.AI_RATE_LIMIT_WINDOW_MS = "1000";
+    process.env.AI_PING_TIMEOUT_MS = "100";
+    process.env.AI_CONVERSATION_RATE_LIMIT_WINDOW_MS = "1";
+    expect(approvalTimeoutMs()).toBe(1);
+    const cfg = loadAIConfig();
+    expect(cfg.rateLimit.windowMs).toBe(1_000);
+    expect(cfg.pingTimeoutMs).toBe(100);
+    vi.resetModules();
+    rateLimitOpts.length = 0;
+    await import("../src/middleware/conversation-rate-limit.js");
+    expect(rateLimitOpts.at(-1)?.windowMs).toBe(1);
+  });
+});

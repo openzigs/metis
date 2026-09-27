@@ -16,7 +16,7 @@ import type {
 } from "@metis/shared";
 import { ulid } from "ulid";
 import { prisma } from "../../prisma.js";
-import { getVaultService } from "../../vault/vault-service.js";
+import { getVaultService, SecretNotFoundError } from "../../vault/vault-service.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { ConnectorError } from "../types.js";
@@ -102,6 +102,10 @@ function newJiraSecretLabel(kind: "jira" | "jira-ca", projectId: string, label: 
  * #106 — write `value` into the connection's secret `secretId` in place when it
  * is still live; otherwise (none yet, or soft-deleted) create a new one under a
  * collision-free label. Returns the NEW secret's id, or `null` when rotated.
+ *
+ * The liveness check IS the rotation: `rotate` updates the one row by id and
+ * refuses a soft-deleted one, so there is no list of every project secret and
+ * no window between a check and the write for a delete to slip into.
  */
 async function rotateOrReplace(
   secretId: string | null,
@@ -110,10 +114,11 @@ async function rotateOrReplace(
 ): Promise<string | null> {
   const vault = getVaultService();
   if (secretId) {
-    const live = await vault.list("project");
-    if (live.some((s) => s.id === secretId)) {
+    try {
       await vault.rotate(secretId, value);
       return null;
+    } catch (err) {
+      if (!(err instanceof SecretNotFoundError)) throw err;
     }
   }
   const created = await vault.create(

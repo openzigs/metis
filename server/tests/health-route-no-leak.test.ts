@@ -9,7 +9,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { queryRaw, snapshot, probe, logError, logWarn, scheduler } = vi.hoisted(() => ({
+const { queryRaw, snapshot, probe, logError, logWarn, scheduler, mcpRegistry } = vi.hoisted(() => ({
+  mcpRegistry: vi.fn(),
   queryRaw: vi.fn(),
   snapshot: vi.fn(),
   probe: vi.fn(),
@@ -33,6 +34,13 @@ vi.mock("../src/lib/rag/embedder.js", () => ({
 
 vi.mock("../src/health/mcp-runtime-probe.js", () => ({
   probeMCPRuntime: probe,
+}));
+
+// Only the health route's registry lookup is replaced; the rest of the MCP
+// module stays real so `createApp()` wires its routes as usual.
+vi.mock("../src/lib/mcp/index.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/mcp/index.js")>()),
+  getMCPRegistry: mcpRegistry,
 }));
 
 vi.mock("../src/lib/scheduler/index.js", () => ({
@@ -60,7 +68,10 @@ import type { AIProvider } from "../src/lib/ai/index.js";
 const DB_ERROR =
   "Can't reach database server at `db.internal.example:5432` (user `metis_owner`, file /srv/metis/data/prod.db)";
 const EMBED_ERROR = "connect ECONNREFUSED 10.20.30.40:5050 (https://embed.internal.example/v1)";
+const MCP_ERROR = "registry list failed: sqlite /srv/metis/data/mcp.db locked by pid 4242";
 const LEAKS = [
+  "/srv/metis/data/mcp.db",
+  "pid 4242",
   "db.internal.example",
   "metis_owner",
   "/srv/metis/data/prod.db",
@@ -93,6 +104,9 @@ beforeEach(() => {
     runtime: "docker-stdio",
     checks: [{ name: "dockerSocket", status: "ok" }],
     generatedAt: 0,
+  });
+  mcpRegistry.mockReset().mockImplementation(() => {
+    throw new Error("MCP registry not initialised");
   });
   scheduler.mockReset().mockImplementation(() => {
     throw new Error("not initialised");
@@ -213,6 +227,35 @@ describe.each(["/api/health/deep", "/readyz"])("%s never returns exception text 
       "Scheduler health check failed",
       expect.objectContaining({ error: "scheduler exploded at /opt/metis" }),
     );
+  });
+
+  // Review of PR #259: the MCP-registry catch had no test, so reverting its
+  // message to `errorText(err)` stayed green.
+  it("MCP registry list() throwing → fixed message, raw error logged", async () => {
+    mcpRegistry.mockImplementation(() => ({
+      list: async () => {
+        throw new Error(MCP_ERROR);
+      },
+    }));
+    const res = await request(app).get(path);
+    expect(res.body.checks.mcp).toEqual({
+      status: "degraded",
+      message: HEALTH_CHECK_MESSAGES.mcp,
+    });
+    expectNoLeak(res.body);
+    expect(logWarn).toHaveBeenCalledWith(
+      "MCP health check failed",
+      expect.objectContaining({ error: MCP_ERROR }),
+    );
+  });
+
+  it("getMCPRegistry() throwing omits the MCP check and echoes nothing", async () => {
+    mcpRegistry.mockImplementation(() => {
+      throw new Error(MCP_ERROR);
+    });
+    const res = await request(app).get(path);
+    expect(res.body.checks.mcp).toBeUndefined();
+    expectNoLeak(res.body);
   });
 
   it("a failing MCP runtime sub-check's detail stays in the log, not the body", async () => {

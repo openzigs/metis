@@ -29,6 +29,11 @@ function isUniqueConstraintError(err: unknown): boolean {
   return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2002";
 }
 
+/** Prisma's "record to update not found" (`P2025`), matched on its code alone. */
+function isRecordNotFoundError(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2025";
+}
+
 const ALGORITHM = "aes-256-gcm" as const;
 const KEY_VERSION = 0x01;
 const KEY_LENGTH = 32; // 256 bits
@@ -86,6 +91,18 @@ export class VaultConfigurationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "VaultConfigurationError";
+  }
+}
+
+/**
+ * #106 — the secret does not exist or is soft-deleted. `rotate` throws it rather
+ * than write a new value into a row every reader already treats as gone.
+ */
+export class SecretNotFoundError extends Error {
+  readonly code = "SECRET_NOT_FOUND";
+  constructor(id: string) {
+    super(`Secret ${id} not found`);
+    this.name = "SecretNotFoundError";
   }
 }
 
@@ -373,17 +390,28 @@ export class VaultService {
 
   /**
    * Rotate the plaintext under an existing label, preserving id and scope.
+   *
+   * #106 — LIVE rows only. The liveness filter is part of the one UPDATE, so a
+   * delete that lands between a caller's check and this write cannot be
+   * written through: a missing or soft-deleted id throws
+   * {@link SecretNotFoundError} and nothing is stored.
    */
   async rotate(id: string, newPlaintext: string): Promise<SecretSummary> {
     const envelope = await this.encrypt(newPlaintext);
-    const row = await prisma.secret.update({
-      where: { id },
-      data: {
-        ciphertext: envelope.ciphertext,
-        keyVersion: envelope.keyVersion,
-        algorithm: envelope.algorithm,
-      },
-    });
+    let row;
+    try {
+      row = await prisma.secret.update({
+        where: { id, deletedAt: null },
+        data: {
+          ciphertext: envelope.ciphertext,
+          keyVersion: envelope.keyVersion,
+          algorithm: envelope.algorithm,
+        },
+      });
+    } catch (err) {
+      if (isRecordNotFoundError(err)) throw new SecretNotFoundError(id);
+      throw err;
+    }
     log.info("Secret rotated", { id });
     return this.toSummary(row, this.scopeOf(row.name));
   }

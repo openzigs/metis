@@ -32,10 +32,23 @@ vi.mock("../src/lib/prisma.js", () => ({
           });
         },
       ),
+      // Honours a `deletedAt` filter in `where` the way Prisma does (#106): no
+      // matching row is a `P2025`, and nothing is written.
       update: vi.fn(
-        async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-          const row = secretRows.find((r) => r.id === where.id);
-          if (!row) throw new Error("not found");
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; deletedAt?: null };
+          data: Record<string, unknown>;
+        }) => {
+          const row = secretRows.find(
+            (r) =>
+              r.id === where.id && (!("deletedAt" in where) || r.deletedAt === where.deletedAt),
+          );
+          if (!row) {
+            throw Object.assign(new Error("Record to update not found."), { code: "P2025" });
+          }
           Object.assign(row, data);
           row.updatedAt = new Date();
           return row;
@@ -74,7 +87,7 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
-import { VaultService } from "../src/lib/vault/vault-service.js";
+import { SecretNotFoundError, VaultService } from "../src/lib/vault/vault-service.js";
 import { prisma } from "../src/lib/prisma.js";
 
 const MASTER = Buffer.alloc(32, 7).toString("base64");
@@ -130,6 +143,32 @@ describe("VaultService persistence", () => {
   it("rejects empty labels", async () => {
     const v = new VaultService({ masterKey: MASTER, isProduction: false });
     await expect(v.create("   ", "x")).rejects.toThrow(/label/);
+  });
+
+  // Review of PR #259 — rotate must not write into a soft-deleted row: the
+  // caller could otherwise "rotate" a credential every reader treats as gone.
+  it("refuses to rotate a soft-deleted secret and leaves its ciphertext untouched", async () => {
+    const v = new VaultService({ masterKey: MASTER, isProduction: false });
+    const created = await v.create("jira-token", "old", "project");
+    await v.delete(created.id);
+    const row = secretRows.find((r) => r.id === created.id)!;
+    const cipherBefore = row.ciphertext;
+
+    await expect(v.rotate(created.id, "new")).rejects.toBeInstanceOf(SecretNotFoundError);
+    expect(row.ciphertext).toBe(cipherBefore);
+  });
+
+  it("refuses to rotate a secret that never existed", async () => {
+    const v = new VaultService({ masterKey: MASTER, isProduction: false });
+    await expect(v.rotate("missing", "new")).rejects.toBeInstanceOf(SecretNotFoundError);
+  });
+
+  it("any other store failure from rotate propagates unchanged", async () => {
+    const v = new VaultService({ masterKey: MASTER, isProduction: false });
+    const created = await v.create("jira-token", "old", "project");
+    const boom = new Error("database is locked");
+    vi.mocked(prisma.secret.update).mockRejectedValueOnce(boom);
+    await expect(v.rotate(created.id, "new")).rejects.toBe(boom);
   });
 
   it("throws when reading a non-existent secret", async () => {

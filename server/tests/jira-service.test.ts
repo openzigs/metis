@@ -131,9 +131,11 @@ const vaultDouble = {
     secrets.set(row.id, row);
     return { id: row.id, label };
   }),
+  // Like the real `rotate` (#106, review of PR #259): live rows only — a
+  // soft-deleted row is refused with `SecretNotFoundError` and left untouched.
   rotate: vi.fn(async (id: string, value: string) => {
     const row = secrets.get(id);
-    if (!row) throw new Error(`Secret ${id} not found`);
+    if (!row || row.deletedAt) throw new SecretNotFoundError(id);
     row.plaintext = value;
     return { id };
   }),
@@ -147,7 +149,8 @@ const vaultDouble = {
       .map((r) => ({ id: r.id, label: r.name.slice(r.name.indexOf(":") + 1) })),
   ),
 };
-vi.mock("../src/lib/vault/vault-service.js", () => ({
+vi.mock("../src/lib/vault/vault-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/vault/vault-service.js")>()),
   getVaultService: () => vaultDouble,
 }));
 
@@ -200,6 +203,7 @@ vi.mock("../src/lib/connectors/network-allowlist.js", async (importOriginal) => 
 
 import { createJiraClient } from "../src/lib/connectors/jira/jira-client.js";
 import { audit } from "../src/lib/audit/audit-service.js";
+import { SecretNotFoundError } from "../src/lib/vault/vault-service.js";
 import {
   listJiraConnections,
   getJiraConnection,
@@ -422,6 +426,60 @@ describe("Jira service — secret rotation against a unique-name vault (#106)", 
     const creds = await credentialsOf(created.id);
     expect(creds.apiToken).toBe("new");
     expect(creds.tlsCaCert).toBe(CA_NEW);
+  });
+
+  // Review of PR #259 — the soft-deleted row is never written, and the new
+  // secret takes a fresh, suffixed name rather than the dead row's name.
+  it("a soft-deleted token secret keeps its old value; the new one gets a fresh suffixed name", async () => {
+    const created = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "old" },
+      "user_1",
+    );
+    const deadId = rows.get(created.id)!.secretId;
+    const deadName = secrets.get(deadId)!.name;
+    await vaultDouble.delete(deadId);
+
+    await updateJiraConnection(created.id, { apiToken: "new" }, "user_1");
+
+    expect(secrets.get(deadId)!.plaintext).toBe("old");
+    const fresh = secrets.get(rows.get(created.id)!.secretId)!;
+    expect(fresh.id).not.toBe(deadId);
+    expect(fresh.plaintext).toBe("new");
+    expect(fresh.name).not.toBe(deadName);
+    expect(fresh.name).toMatch(/^project:jira-proj_1-prod-[0-9A-HJKMNP-TV-Z]{26}$/);
+  });
+
+  it("a rotation looks up only its own secret — it never lists the project's secrets", async () => {
+    const created = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "old", tlsCaCert: CA_OLD },
+      "user_1",
+    );
+    const { secretId, tlsCaSecretId } = rows.get(created.id)!;
+    vaultDouble.list.mockClear();
+    vaultDouble.rotate.mockClear();
+
+    await updateJiraConnection(created.id, { apiToken: "new", tlsCaCert: CA_NEW }, "user_1");
+
+    expect(vaultDouble.list).not.toHaveBeenCalled();
+    expect(vaultDouble.rotate.mock.calls.map(([id]) => id).sort()).toEqual(
+      [secretId, tlsCaSecretId].sort(),
+    );
+  });
+
+  it("a vault failure other than not-found propagates instead of minting a new secret", async () => {
+    const created = await createJiraConnection(
+      "proj_1",
+      { ...base, label: "prod", apiToken: "old" },
+      "user_1",
+    );
+    const before = secrets.size;
+    vaultDouble.rotate.mockRejectedValueOnce(new Error("vault master key unavailable"));
+    await expect(updateJiraConnection(created.id, { apiToken: "new" }, "user_1")).rejects.toThrow(
+      "vault master key unavailable",
+    );
+    expect(secrets.size).toBe(before);
   });
 
   it("creating under a label whose old secret name is soft-deleted in the vault succeeds", async () => {

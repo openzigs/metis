@@ -22,12 +22,21 @@
  * and no test on a real database can reach it while Prisma keeps the native
  * form. The retry stays as the guard for Prisma's emulated (read-then-write)
  * upsert; its unit test drives it through a double. What this suite pins is
- * the property the retry exists for — concurrent first saves never fail — and
- * it CAN fail: with `upsert` turned into a read-then-write (the shape Prisma
- * emulates) the race test is red without the retry and green with it, which is
- * the retry's whole job. A control arm runs that read-then-write shape
- * directly and must see a clash, so a harness that stopped racing would fail
- * instead of passing vacuously.
+ * the property the retry exists for — concurrent first saves never fail.
+ *
+ * The CONTROL ARM is what makes that race test non-vacuous. It runs the SAME
+ * harness — the same two `VaultService` writers, the same number of calls, the
+ * same app Prisma client, the real `create`/`rotate` (encryption included) —
+ * with only the decision swapped for the pre-#93 read-then-write shape: choose
+ * create-vs-rotate from `list()`. That arm must see a P2002 clash. So a harness
+ * that stopped interleaving these writers (a change that serialised them, or a
+ * pool of one) fails here instead of letting the race test pass for nothing.
+ * It proves the HARNESS races; it does not by itself prove the native upsert
+ * is the reason the race test passes — the P2002 count above does that.
+ *
+ * #106 (review of PR #259): `VaultService.rotate` filters on `deletedAt: null`
+ * inside its one UPDATE. The unit doubles model Prisma's `P2025` by hand, so
+ * the last test runs the real rotate against a soft-deleted row here.
  *
  * Gated like the other `*-postgres.integration.test.ts` suites: runs only when
  * `RUN_INTEGRATION_TESTS=1` AND `DATABASE_URL` is Postgres-shaped (via
@@ -40,7 +49,12 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { selectPrismaAdapter } from "../src/lib/prisma.js";
 import { ConfigService } from "../src/lib/config/config-service.js";
 import { getKeyDef } from "../src/lib/config/key-registry.js";
-import { VaultService } from "../src/lib/vault/vault-service.js";
+import {
+  SecretNotFoundError,
+  VaultService,
+  type SecretScope,
+  type SecretSummary,
+} from "../src/lib/vault/vault-service.js";
 
 const databaseUrl = process.env.DATABASE_URL ?? "";
 const isPostgres = databaseUrl.startsWith("postgres://") || databaseUrl.startsWith("postgresql://");
@@ -125,34 +139,49 @@ describe.runIf(enabled)("Config secret save → clear → save on real Postgres 
     expect(reader.get(KEY)).toMatch(/^gho_[01]_\d$/);
   });
 
-  it("control arm: the same race through a read-then-write DOES clash here", async () => {
-    // Proves the harness really interleaves writers on this database. If this
-    // ever stops clashing, the test above no longer shows anything.
+  it("control arm: the same two VaultService writers through a read-then-write DO clash here", async () => {
+    // The pre-#93 decision — create-vs-rotate chosen from `list()` — over the
+    // real `create`/`rotate`. Everything else matches the race test above.
+    class ReadThenWriteVault extends VaultService {
+      override async upsert(
+        label: string,
+        plaintext: string,
+        scope: SecretScope = "global",
+      ): Promise<SecretSummary> {
+        const existing = (await this.list(scope)).find((s) => s.label === label);
+        if (existing) return this.rotate(existing.id, plaintext);
+        return this.create(label, plaintext, scope);
+      }
+    }
+    const writers = [
+      new ReadThenWriteVault({ masterKey: MASTER_KEY, isProduction: false }),
+      new ReadThenWriteVault({ masterKey: MASTER_KEY, isProduction: false }),
+    ];
     let clashes = 0;
     for (let round = 0; round < ROUNDS && clashes === 0; round++) {
       await db.secret.deleteMany({ where: { name: ROW_NAME } });
       const results = await Promise.allSettled(
-        Array.from({ length: PER_WRITER * 2 }, async () => {
-          const found = await db.secret.findUnique({ where: { name: ROW_NAME } });
-          if (found) return;
-          await db.secret.create({
-            data: {
-              name: ROW_NAME,
-              description: "",
-              ciphertext: "x",
-              iv: "",
-              tag: "",
-              salt: "",
-              keyVersion: 1,
-              algorithm: "aes-256-gcm",
-            },
-          });
-        }),
+        writers.flatMap((w, i) =>
+          Array.from({ length: PER_WRITER }, (_, j) => w.upsert(KEY, `gho_${i}_${j}`, "global")),
+        ),
       );
       clashes += results.filter(
         (r) => r.status === "rejected" && (r.reason as { code?: string }).code === "P2002",
       ).length;
     }
     expect(clashes).toBeGreaterThan(0);
+  });
+
+  it("#106: rotate refuses a soft-deleted row and leaves its ciphertext as it was", async () => {
+    const created = await vault.create(KEY, "gho_live", "global");
+    await vault.delete(created.id);
+    const before = await db.secret.findUniqueOrThrow({ where: { id: created.id } });
+
+    await expect(vault.rotate(created.id, "gho_after_delete")).rejects.toBeInstanceOf(
+      SecretNotFoundError,
+    );
+    const after = await db.secret.findUniqueOrThrow({ where: { id: created.id } });
+    expect(after.ciphertext).toBe(before.ciphertext);
+    expect(after.deletedAt).not.toBeNull();
   });
 });
