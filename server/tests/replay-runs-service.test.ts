@@ -513,3 +513,78 @@ describe("replay/runs-service computeRunCost", () => {
     expect(runs[0].status).toBe("completed");
   });
 });
+
+describe("replay/runs-service computeRunCost — cached input is priced once (#264)", () => {
+  // Claude 3.5 Sonnet v2 on the gateway: 0.3c / 1k input, 0.03c / 1k cache read.
+  const GATEWAY_MODEL = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+  function windowedRun(sessionId: string): Promise<string> {
+    return startRun({ sessionId }).then((id) => {
+      runs[0].startedAt = new Date("2026-01-01T00:00:00Z");
+      runs[0].completedAt = new Date("2026-01-01T01:00:00Z");
+      return id;
+    });
+  }
+
+  it("prices a gateway row whose prompt tokens are all cache reads at the cache-read rate only", async () => {
+    const runId = await windowedRun("sess-gw");
+    // OpenAI-compatible convention: the 1M prompt tokens INCLUDE the 1M reads.
+    seedUsage({
+      sessionId: "sess-gw",
+      createdAt: new Date("2026-01-01T00:10:00Z"),
+      provider: "bedrock-gateway",
+      model: GATEWAY_MODEL,
+      inputTokens: 1_000_000,
+      cacheReadTokens: 1_000_000,
+      totalTokens: 1_000_000,
+    });
+    const cost = await computeRunCost(runId);
+    // 1,000 × 0.03c = 30c. The double-billed figure was 300c + 30c = 330c.
+    expect(cost.costCents).toBe(30);
+    // The agent-run row a reader sees carries the corrected figure.
+    await finishRun({ runId, status: "completed", ...cost });
+    expect(runs[0].costCents).toBe(30);
+  });
+
+  it("normalises per row, so one malformed row cannot borrow another row's prompt tokens", async () => {
+    const runId = await windowedRun("sess-rows");
+    // Row 1 is malformed (more reads than prompt): its reads clamp to 0.
+    seedUsage({
+      sessionId: "sess-rows",
+      createdAt: new Date("2026-01-01T00:10:00Z"),
+      provider: "bedrock-gateway",
+      model: GATEWAY_MODEL,
+      inputTokens: 0,
+      cacheReadTokens: 1_000_000,
+      totalTokens: 0,
+    });
+    // Row 2 is 1M fresh prompt tokens.
+    seedUsage({
+      sessionId: "sess-rows",
+      createdAt: new Date("2026-01-01T00:20:00Z"),
+      provider: "bedrock-gateway",
+      model: GATEWAY_MODEL,
+      inputTokens: 1_000_000,
+      totalTokens: 1_000_000,
+    });
+    const cost = await computeRunCost(runId);
+    // Row 2 alone at the input rate: 300c. Normalising the SUMMED group would
+    // have read 1M prompt with 1M reads and billed 30c.
+    expect(cost.costCents).toBe(300);
+  });
+
+  it("leaves native Anthropic unchanged: input_tokens EXCLUDES the reads, so both are billed", async () => {
+    const runId = await windowedRun("sess-native");
+    seedUsage({
+      sessionId: "sess-native",
+      createdAt: new Date("2026-01-01T00:10:00Z"),
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      inputTokens: 1_000_000,
+      cacheReadTokens: 1_000_000,
+    });
+    const cost = await computeRunCost(runId);
+    // Sonnet: $3 / MTok input (300c) + $0.30 / MTok cache read (30c).
+    expect(cost.costCents).toBe(330);
+  });
+});

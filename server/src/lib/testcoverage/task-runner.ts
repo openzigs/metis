@@ -57,7 +57,7 @@ export interface TestCoverageRunnerDeps {
   db?: typeof prisma;
   /** LLM bridge for judge + suggestion phases. When omitted, those phases are skipped. */
   caller?: JudgeModelCaller;
-  /** Per-run cost ceiling, defaults to {@link CoverageCostTracker.DEFAULT_BUDGET_CENTS}. */
+  /** Process-wide cost ceiling, defaults to {@link CoverageCostTracker.DEFAULT_BUDGET_CENTS}; a cap stored on the run (#249) wins. */
   budgetCents?: number;
 }
 
@@ -80,12 +80,17 @@ export async function runTestCoverageJob(
   if (!existing) return;
   if (existing.status !== "queued") return;
 
+  // #249 — a cap the client sent with POST /runs is stored on the row and wins
+  // over the process-wide default; otherwise the start-of-run write below
+  // would overwrite it with the default.
+  const budgetCents = existing.budgetCents ?? deps.budgetCents;
+
   // #72 — ONE tracker for the whole run. The index phase below is the largest
   // embedding consumer a run has, and it executes before `runCoverageScoring`
   // exists, so a tracker owned by the service could never see it.
   const cost = new CoverageCostTracker(
     { runId, projectId, userId: existing.createdById },
-    { budgetCents: deps.budgetCents, db },
+    { budgetCents, db },
   );
 
   const progress: Record<TestCoveragePhase, "pending" | "running" | "done" | "skipped"> = {
@@ -156,7 +161,7 @@ export async function runTestCoverageJob(
         {
           db,
           caller: deps.caller,
-          budgetCents: deps.budgetCents,
+          budgetCents,
           cost,
           emit: (event) => {
             // Map service-level events onto runner phases.

@@ -285,7 +285,8 @@ export const testCoverageApi = {
   getRun: (projectId: string, runId: string) =>
     apiFetch<TestCoverageRun>(`/projects/${projectId}/test-coverage/runs/${runId}`),
 
-  createRun: (projectId: string, body: { budgetCents?: number; modelTag?: string } = {}) =>
+  // #249 — the server rejects any other field (400) rather than dropping it.
+  createRun: (projectId: string, body: { mode?: "A" | "B"; budgetCents?: number } = {}) =>
     apiFetch<TestCoverageRun>(`/projects/${projectId}/test-coverage/runs`, {
       method: "POST",
       body,

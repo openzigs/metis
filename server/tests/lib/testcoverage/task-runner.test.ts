@@ -394,6 +394,21 @@ describe("the budget endpoint reads the run's own cap and live spend (#81)", () 
     expect(view).toMatchObject({ limitCents: cap, usedCents: 1, remainingCents: cap - 1 });
   });
 
+  it("runs under the per-run cap the route stored on the row, not the process default (#249)", async () => {
+    const posted = DEFAULT_BUDGET_CENTS + 77;
+    const { db, row } = statefulRun();
+    // POST /runs stored the client's cap when it created the queued row.
+    row.budgetCents = posted;
+    await runTestCoverageJob(
+      { runId: "run-1", projectId: "p-1" },
+      // The process-wide default the runtime would pass.
+      { db: db as never, indexer: indexer() as never, budgetCents: DEFAULT_BUDGET_CENTS + 1 },
+    );
+    expect(row.budgetCents).toBe(posted);
+    const view = await readBudget("run-1", { db: db as never });
+    expect(view).toMatchObject({ limitCents: posted, usedCents: 1 });
+  });
+
   it("reports the cap and the index-phase spend WHILE the run is still going", async () => {
     const cap = DEFAULT_BUDGET_CENTS + 55;
     const { db } = statefulRun();

@@ -4500,6 +4500,10 @@ curl -X POST \
 # → 202 { "data": { "runId": "..." } }
 ```
 
+The body is optional. `mode` is `"A"` (default) or `"B"`, and `budgetCents` caps
+this run's AI spend in cents (1 to 10,000; the server default applies when it is
+omitted). Any other field is rejected with a 400.
+
 Poll the run for progress:
 
 ```bash

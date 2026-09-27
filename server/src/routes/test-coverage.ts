@@ -264,13 +264,16 @@ export function testCoverageRouter(deps: TestCoverageRouterDeps = {}): Router {
           mode: body.mode,
           status: "queued",
           contentHash,
+          // #249 — the per-run cap is stored on the row, so the runner and
+          // `GET …/budget` both read the value the client sent.
+          ...(body.budgetCents !== undefined ? { budgetCents: body.budgetCents } : {}),
         },
       });
       audit({
         actor: { id: actor.id },
         action: "test-coverage.run.start",
         target: { type: "project", id: projectId },
-        args: { runId: run.id, mode: body.mode },
+        args: { runId: run.id, mode: body.mode, budgetCents: body.budgetCents ?? null },
       });
       // Fire-and-forget. The handler is registered by #862.
       Promise.resolve(enqueueRun({ runId: run.id, projectId })).catch(() => {

@@ -10,7 +10,7 @@
  */
 import { prisma } from "../prisma.js";
 import { currentSpanIds } from "../otel/genai-spans.js";
-import { getRate, computeCostCents } from "../finops/index.js";
+import { getRate, computeCostCents, canonicalTokenCounts } from "../finops/index.js";
 
 export type AgentRunKind = "analysis" | "chat" | "tool";
 export type AgentRunStatus = "running" | "completed" | "failed" | "cancelled";
@@ -142,7 +142,7 @@ export async function computeRunCost(runId: string): Promise<RunCost> {
   interface Group {
     provider: string;
     model: string;
-    inputTokens: number;
+    freshInputTokens: number;
     outputTokens: number;
     cacheReadTokens: number;
     cacheWriteTokens: number;
@@ -155,15 +155,19 @@ export async function computeRunCost(runId: string): Promise<RunCost> {
     const g = groups.get(key) ?? {
       provider: row.provider,
       model: row.model,
-      inputTokens: 0,
+      freshInputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
     };
-    g.inputTokens += row.inputTokens;
-    g.outputTokens += row.outputTokens;
-    g.cacheReadTokens += row.cacheReadTokens;
-    g.cacheWriteTokens += row.cacheWriteTokens;
+    // #264 — make each row's counts disjoint BEFORE summing (the same rule
+    // `recordUsage` prices with), so a gateway row's cache reads are not billed
+    // again at the input rate, and one row's clamp cannot borrow another's.
+    const c = canonicalTokenCounts(row.provider, row);
+    g.freshInputTokens += c.freshInputTokens;
+    g.outputTokens += c.outputTokens;
+    g.cacheReadTokens += c.cacheReadTokens;
+    g.cacheWriteTokens += c.cacheWriteTokens;
     groups.set(key, g);
   }
 
@@ -173,7 +177,7 @@ export async function computeRunCost(runId: string): Promise<RunCost> {
     // #22 — an unpriced model has no cost to attribute; its tokens still count.
     if (!rate) continue;
     costCents += computeCostCents(rate, {
-      inputTokens: g.inputTokens,
+      inputTokens: g.freshInputTokens,
       outputTokens: g.outputTokens,
       cacheReadTokens: g.cacheReadTokens,
       cacheWriteTokens: g.cacheWriteTokens,

@@ -14,7 +14,7 @@ import { conventionForProvider, normalizeTokenUsage } from "../ai/cache-verifica
 import type { UsageProvider } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
-import { computeCostCents, resolveRate } from "./provider-rates.js";
+import { computeCostCents, resolveRate, type TokenRate } from "./provider-rates.js";
 
 const log = createChildLogger("finops-token-tracker");
 
@@ -68,6 +68,84 @@ const sanitize = (n: unknown): number => {
   return Math.min(Math.max(0, Math.trunc(n)), Number.MAX_SAFE_INTEGER);
 };
 
+/** The four token counts a `token_usages` row stores, in the provider's own convention. */
+export interface StoredTokenCounts {
+  /** The provider-reported prompt count — see {@link canonicalTokenCounts}. */
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+/** One call's tokens with every token in exactly one bucket. */
+export interface CanonicalTokenCounts {
+  /** Uncached input, billed at the input rate. */
+  freshInputTokens: number;
+  outputTokens: number;
+  /** Billed at the cache-read rate. */
+  cacheReadTokens: number;
+  /** Billed at the cache-write rate. Always 0 on the OpenAI-compatible convention. */
+  cacheWriteTokens: number;
+  /** Full prompt + output, each cached token counted once. */
+  totalTokens: number;
+}
+
+/**
+ * #179 / #248 / #264 — the ONE place `token_usages` counts are made disjoint.
+ * `recordUsage`, the agent-run cost (`replay/runs-service.ts`) and the budget
+ * ceiling's re-pricing (`budget-enforcer.ts`) all go through here, so the three
+ * cannot disagree about a call.
+ *
+ * `inputTokens` is stored AS REPORTED (#248 decision): on native `anthropic`
+ * it excludes the cache fields; on every OpenAI-compatible provider (the
+ * Bedrock gateway, `openai`, `azure`, local runtimes) the prompt count already
+ * INCLUDES the cache reads, so the fresh share is the prompt minus the reads.
+ *
+ * Cache writes on the OpenAI-compatible convention (#264 decision): priced at 0
+ * as a SEPARATE line, because whatever a provider charges to write the cache is
+ * inside `prompt_tokens` and is therefore already billed, once, at the input
+ * rate. No METIS OpenAI-compatible client reads a write field today (they
+ * record `cacheWriteTokens: 0`). What this leaves unbilled is only a write
+ * PREMIUM over the input rate (e.g. 1.25x on models that charge one); pricing
+ * it needs the provider to report writes, and the fresh share to subtract them.
+ */
+export function canonicalTokenCounts(
+  provider: string,
+  counts: StoredTokenCounts,
+): CanonicalTokenCounts {
+  const normalized = normalizeTokenUsage(
+    {
+      promptTokens: counts.inputTokens,
+      completionTokens: counts.outputTokens,
+      totalTokens: 0,
+      cacheReadTokens: counts.cacheReadTokens,
+      cacheWriteTokens: counts.cacheWriteTokens,
+    },
+    conventionForProvider(provider as UsageProvider),
+  );
+  const outputTokens = sanitize(counts.outputTokens);
+  return {
+    freshInputTokens: normalized.freshInputTokens,
+    outputTokens,
+    cacheReadTokens: normalized.cacheReadTokens,
+    cacheWriteTokens: normalized.cacheWriteTokens,
+    totalTokens: normalized.totalPromptTokens + outputTokens,
+  };
+}
+
+/** Price canonical counts; `null` when the model is unpriced (#22). */
+export function priceCanonicalTokens(
+  rate: TokenRate | null,
+  counts: CanonicalTokenCounts,
+): number | null {
+  return computeCostCents(rate, {
+    inputTokens: counts.freshInputTokens,
+    outputTokens: counts.outputTokens,
+    cacheReadTokens: counts.cacheReadTokens,
+    cacheWriteTokens: counts.cacheWriteTokens,
+  });
+}
+
 /**
  * Record a usage event. Returns the canonical token totals + computed cost
  * synchronously; the durable insert + Socket.IO emit run on a microtask.
@@ -77,31 +155,18 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
   const outputTokens = sanitize(input.outputTokens);
   const cacheReadTokens = sanitize(input.cacheReadTokens);
   const cacheWriteTokens = sanitize(input.cacheWriteTokens);
-  const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
-  // #22 — the single pricing source; `null` for a model METIS has no price for.
-  const rate = resolveRate(input.provider, input.model);
-  // #179 — `inputTokens` arrives in the provider's own usage convention. On
-  // every OpenAI-compatible provider (the Bedrock gateway included) the prompt
-  // count already INCLUDES the cache reads, so pricing it at the input rate and
-  // the reads again at the cache-read rate billed each cached token twice.
-  // Derive the fresh (uncached) input first, exactly as `estimateUsageCostUsd`
-  // does for `ai_token_usages`, so the two usage tables agree on one call.
-  const priced = normalizeTokenUsage(
-    {
-      promptTokens: inputTokens,
-      completionTokens: outputTokens,
-      totalTokens: 0,
-      cacheReadTokens,
-      cacheWriteTokens,
-    },
-    conventionForProvider(input.provider as UsageProvider),
-  );
-  const costCents = computeCostCents(rate, {
-    inputTokens: priced.freshInputTokens,
+  // #179 — price the fresh (uncached) input, not the reported prompt count,
+  // exactly as `estimateUsageCostUsd` does for `ai_token_usages`, so the two
+  // usage tables agree on one call. #248 — and count each token once.
+  const canonical = canonicalTokenCounts(input.provider, {
+    inputTokens,
     outputTokens,
-    cacheReadTokens: priced.cacheReadTokens,
-    cacheWriteTokens: priced.cacheWriteTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
   });
+  const totalTokens = canonical.totalTokens;
+  // #22 — the single pricing source; `null` for a model METIS has no price for.
+  const costCents = priceCanonicalTokens(resolveRate(input.provider, input.model), canonical);
 
   if (totalTokens === 0) {
     return { totalTokens, costCents };

@@ -3,6 +3,7 @@ import {
   AcceptSuggestionBodySchema,
   CoverageMappingSchema,
   CreateRunBodySchema,
+  MAX_RUN_BUDGET_CENTS,
   GapItemSchema,
   GwtSchema,
   ImportStatusSchema,
@@ -186,6 +187,22 @@ describe("CoverageMapping + GapItem + Suggestion", () => {
 describe("request body schemas", () => {
   it("CreateRunBodySchema defaults mode to A", () => {
     expect(CreateRunBodySchema.parse({}).mode).toBe("A");
+  });
+
+  it("CreateRunBodySchema keeps a bounded per-run budgetCents (#249)", () => {
+    expect(CreateRunBodySchema.parse({ budgetCents: 75 }).budgetCents).toBe(75);
+    expect(CreateRunBodySchema.parse({ budgetCents: MAX_RUN_BUDGET_CENTS }).budgetCents).toBe(
+      MAX_RUN_BUDGET_CENTS,
+    );
+    expect(CreateRunBodySchema.parse({}).budgetCents).toBeUndefined();
+    for (const bad of [0, -1, 1.5, MAX_RUN_BUDGET_CENTS + 1, "50"]) {
+      expect(() => CreateRunBodySchema.parse({ budgetCents: bad })).toThrow();
+    }
+  });
+
+  it("CreateRunBodySchema rejects fields no server code reads, instead of stripping them (#249)", () => {
+    expect(() => CreateRunBodySchema.parse({ modelTag: "haiku" })).toThrow();
+    expect(() => CreateRunBodySchema.parse({ importIds: ["imp-1"] })).toThrow();
   });
 
   it("OverrideMappingBodySchema requires reason", () => {

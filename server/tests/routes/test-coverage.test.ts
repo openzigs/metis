@@ -117,8 +117,9 @@ import { prisma } from "../../src/lib/prisma.js";
 import { audit } from "../../src/lib/audit/audit-service.js";
 import { getProject } from "../../src/lib/projects/project-service.js";
 import { testCoverageRouter } from "../../src/routes/test-coverage.js";
-import { AppError } from "../../src/middleware/error-handler.js";
+import { AppError, errorHandler } from "../../src/middleware/error-handler.js";
 import { DEFAULT_BUDGET_CENTS } from "../../src/lib/testcoverage/cost-tracker.js";
+import { MAX_RUN_BUDGET_CENTS } from "@metis/shared";
 import {
   exportSuggestionsToGithub,
   exportSuggestionsToXray,
@@ -471,6 +472,106 @@ describe("GET /projects/:projectId/test-coverage/runs/:runId", () => {
     const app = createApp(mockUser);
     const res = await request(app).get("/projects/proj-1/test-coverage/runs/run-x");
     expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /runs — a per-run budgetCents reaches the budget read (#249)", () => {
+  /** The real app's error handler, so a rejected body is the 400 a client sees. */
+  function appWithRealErrors(): Express {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as unknown as { user: typeof mockUser }).user = mockUser;
+      next();
+    });
+    app.use(
+      "/projects/:projectId/test-coverage",
+      testCoverageRouter({ enqueueRun: vi.fn().mockResolvedValue(undefined) }),
+    );
+    app.use(errorHandler);
+    return app;
+  }
+
+  /** ONE stateful run table: the POST writes it, the budget GET reads it back. */
+  function statefulRuns() {
+    const rows = new Map<string, Record<string, unknown>>();
+    vi.mocked(prisma.testCaseDoc.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.testCoverageRun.create).mockImplementation((async ({
+      data,
+    }: {
+      data: Record<string, unknown>;
+    }) => {
+      const row = {
+        id: `run-${rows.size + 1}`,
+        tokenCostCents: 0,
+        budgetCents: null,
+        embeddingTokens: 0,
+        judgeTokens: 0,
+        suggestionTokens: 0,
+        ...data,
+      };
+      rows.set(row.id, row);
+      return row;
+    }) as never);
+    vi.mocked(prisma.testCoverageRun.findFirst).mockImplementation((async ({
+      where,
+    }: {
+      where: { id?: string; projectId: string; status?: unknown };
+    }) => {
+      if (!where.id) return null; // the in-progress check: nothing queued
+      const row = rows.get(where.id);
+      return row && row.projectId === where.projectId ? row : null;
+    }) as never);
+    vi.mocked(prisma.testCoverageRun.findUnique).mockImplementation(
+      (async ({ where }: { where: { id: string } }) => rows.get(where.id) ?? null) as never,
+    );
+    vi.mocked(prisma.aITokenUsage.aggregate).mockResolvedValue({
+      _sum: { totalTokens: null },
+    } as never);
+    return rows;
+  }
+
+  it("stores a non-default cap and GET …/budget reports it before the run starts", async () => {
+    statefulRuns();
+    const app = appWithRealErrors();
+    const cap = DEFAULT_BUDGET_CENTS + 55;
+    const post = await request(app)
+      .post("/projects/proj-1/test-coverage/runs")
+      .send({ budgetCents: cap });
+    expect(post.status).toBe(202);
+    const runId = post.body.data.id as string;
+    const budget = await request(app).get(`/projects/proj-1/test-coverage/runs/${runId}/budget`);
+    expect(budget.status).toBe(200);
+    expect(budget.body.data).toMatchObject({ limitCents: cap, usedCents: 0, remainingCents: cap });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ args: expect.objectContaining({ budgetCents: cap }) }),
+    );
+  });
+
+  it("without a cap, the run reads the process default", async () => {
+    statefulRuns();
+    const app = appWithRealErrors();
+    const post = await request(app).post("/projects/proj-1/test-coverage/runs").send({});
+    expect(post.status).toBe(202);
+    const budget = await request(app).get(
+      `/projects/proj-1/test-coverage/runs/${post.body.data.id as string}/budget`,
+    );
+    expect(budget.body.data.limitCents).toBe(DEFAULT_BUDGET_CENTS);
+  });
+
+  it.each([
+    ["a zero cap", { budgetCents: 0 }],
+    ["a cap above the bound", { budgetCents: MAX_RUN_BUDGET_CENTS + 1 }],
+    ["a fractional cap", { budgetCents: 12.5 }],
+    ["a modelTag nothing reads", { modelTag: "haiku" }],
+    ["importIds nothing reads", { importIds: ["imp-1"] }],
+  ])("400s on %s instead of accepting a value it would drop", async (_label, body) => {
+    statefulRuns();
+    const res = await request(appWithRealErrors())
+      .post("/projects/proj-1/test-coverage/runs")
+      .send(body);
+    expect(res.status).toBe(400);
+    expect(prisma.testCoverageRun.create).not.toHaveBeenCalled();
   });
 });
 

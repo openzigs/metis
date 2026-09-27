@@ -12,6 +12,8 @@ interface MockUsageRow {
   costCents: number | null;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   provider: string;
   model: string;
   createdAt: Date;
@@ -233,5 +235,47 @@ describe("summarizeUsage — the projection the ceiling enforces (PR #41 re-revi
     const summary = await summarizeUsage("p1", {}, fixedNow);
     expect(summary.projectedMonthlyCostCents).toBe(0);
     expect(summary.monthToDateUnpricedTokens).toBe(15);
+  });
+});
+
+describe("projectMonthlyCostForCeiling — re-pricing prices cached input once (#264)", () => {
+  // Claude 3.5 Sonnet v2 on the gateway: 0.3c / 1k input, 0.03c / 1k cache read.
+  const GATEWAY_MODEL = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+  // Day 31 of a 31-day month, so the projection equals month-to-date.
+  const fixedNow = new Date(Date.UTC(2026, 4, 31, 23, 0, 0));
+
+  it("prices a NULL-cost gateway row whose prompt tokens are all cache reads at the cache-read rate only", async () => {
+    usageRows.push({
+      projectId: "p1",
+      provider: "bedrock-gateway",
+      model: GATEWAY_MODEL,
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      cacheReadTokens: 1_000_000,
+      cacheWriteTokens: 0,
+      totalTokens: 1_000_000,
+      costCents: null,
+      createdAt: new Date(Date.UTC(2026, 4, 3, 12, 0, 0)),
+    });
+    const ceiling = await projectMonthlyCostForCeiling("p1", fixedNow);
+    // 30c, not the double-billed 330c.
+    expect(ceiling).toEqual({ projectedCents: 30, unpricedTokens: 0 });
+  });
+
+  it("leaves native Anthropic unchanged: input_tokens EXCLUDES the reads, so both are billed", async () => {
+    usageRows.push({
+      projectId: "p1",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      cacheReadTokens: 1_000_000,
+      cacheWriteTokens: 0,
+      totalTokens: 2_000_000,
+      costCents: null,
+      createdAt: new Date(Date.UTC(2026, 4, 3, 12, 0, 0)),
+    });
+    const ceiling = await projectMonthlyCostForCeiling("p1", fixedNow);
+    expect(ceiling).toEqual({ projectedCents: 330, unpricedTokens: 0 });
   });
 });
