@@ -157,3 +157,29 @@ describe("chat page — tool approvals (#142)", () => {
     expect(screen.queryByText("other")).toBeNull();
   });
 });
+
+describe("chat page — waiting for the local model (#204)", () => {
+  it("says the turn is waiting while it is queued, and stops saying so when it is not", async () => {
+    streamEvents = [{ type: "queue", state: "waiting", position: 2, maxWaitMs: 600_000 }];
+    render(<ChatPage />);
+    await send("hello");
+    const note = await screen.findByTestId("chat-queue-note");
+    expect(note.textContent).toContain("Waiting for the local model");
+    expect(note.textContent).toContain("1 ahead of this one");
+    act(() => releaseStream());
+    await waitFor(() => expect(screen.queryByTestId("chat-queue-note")).toBeNull());
+  });
+
+  it("clears the note once the model starts on this turn", async () => {
+    streamEvents = [
+      { type: "queue", state: "waiting", position: 1, maxWaitMs: 600_000 },
+      { type: "queue", state: "acquired", waitedMs: 1500 },
+    ];
+    render(<ChatPage />);
+    await send("hello");
+    await waitFor(() => expect(screen.getByLabelText("Message")).toBeTruthy());
+    // Both frames are handled before the stream pauses; the last one wins.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId("chat-queue-note")).toBeNull();
+  });
+});

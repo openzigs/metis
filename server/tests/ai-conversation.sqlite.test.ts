@@ -919,6 +919,61 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(JSON.stringify(res.body)).not.toContain("CLIENT-SNAPSHOT");
     });
 
+    // #245 — resume is bounded like the paged read: one page, and where to go on.
+    it("#245 — resume returns at most one page, and following hasMore ends with every row", async () => {
+      const { TRANSCRIPT_PAGE_MAX } = await import("@metis/shared");
+      const sid = await newSession(alice);
+      const total = TRANSCRIPT_PAGE_MAX * 2 + 5;
+      await db.aIMessage.createMany({
+        data: Array.from({ length: total }, (_, i) => ({
+          sessionId: sid,
+          ordinal: i + 1,
+          role: i % 2 === 0 ? "user" : "assistant",
+          kind: "message",
+          content: JSON.stringify([{ type: "text", text: `r${i + 1}` }]),
+          estimatedTokens: 1,
+        })),
+      });
+      const resumed = await as(alice).post(`/api/ai/sessions/${sid}/resume`);
+      expect(resumed.status).toBe(200);
+      expect(resumed.body.data.messages).toHaveLength(TRANSCRIPT_PAGE_MAX);
+      expect(resumed.body.data).toMatchObject({
+        hasMore: true,
+        nextAfterOrdinal: TRANSCRIPT_PAGE_MAX,
+      });
+      // The reader continues exactly where resume stopped, and ends with every row.
+      const ordinals: number[] = resumed.body.data.messages.map(
+        (m: { ordinal: number }) => m.ordinal,
+      );
+      let cursor: number = resumed.body.data.nextAfterOrdinal;
+      let more: boolean = resumed.body.data.hasMore;
+      while (more) {
+        const page = await as(alice).get(`/api/ai/sessions/${sid}/messages?afterOrdinal=${cursor}`);
+        expect(page.status).toBe(200);
+        ordinals.push(...page.body.data.messages.map((m: { ordinal: number }) => m.ordinal));
+        more = page.body.data.hasMore;
+        cursor = page.body.data.nextAfterOrdinal;
+      }
+      expect(ordinals).toEqual(Array.from({ length: total }, (_, i) => i + 1));
+    });
+
+    it("#245 — a short transcript resumes whole, saying there is no more", async () => {
+      const sid = await newSession(alice);
+      await send(alice, sid, "short");
+      const resumed = await as(alice).post(`/api/ai/sessions/${sid}/resume`);
+      expect(resumed.body.data.messages).toHaveLength(2);
+      expect(resumed.body.data).toMatchObject({ hasMore: false, nextAfterOrdinal: 2 });
+      const empty = await newSession(alice);
+      const none = await as(alice).post(`/api/ai/sessions/${empty}/resume`);
+      expect(none.body.data).toMatchObject({ messages: [], hasMore: false, nextAfterOrdinal: 0 });
+    });
+
+    // #202 — moved from the removed `rehydrate` unit test onto the route.
+    it("resume of an unknown session id is a 404", async () => {
+      const res = await as(alice).post(`/api/ai/sessions/no-such-session/resume`);
+      expect(res.status).toBe(404);
+    });
+
     it("the /model switch is honoured by the next turn", async () => {
       const sid = await newSession(alice);
       await as(alice).post(`/api/ai/sessions/${sid}/resume`);

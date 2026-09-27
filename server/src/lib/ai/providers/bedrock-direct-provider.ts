@@ -991,8 +991,11 @@ export class OpenAICompatibleProvider implements AIProvider {
    * MUST arm their timeouts only after this resolves and MUST call the returned
    * release on every exit path.
    */
-  private acquireSlot(signal: AbortSignal | undefined): Promise<ReleaseSlot> {
-    return this.limiter ? this.limiter.acquire(signal) : Promise.resolve(() => undefined);
+  private acquireSlot(
+    signal: AbortSignal | undefined,
+    onQueued?: (position: number) => void,
+  ): Promise<ReleaseSlot> {
+    return this.limiter ? this.limiter.acquire(signal, onQueued) : Promise.resolve(() => undefined);
   }
 
   /**
@@ -1164,7 +1167,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
     // Queue for a local concurrency slot BEFORE anything is timed: time spent
     // waiting behind another generation must never count as a first-byte stall.
-    const release = await this.acquireSlot(opts.signal);
+    const release = await this.acquireSlot(opts.signal, opts.onSlotQueued);
     try {
       // #127 — tell a caller that times the stream when the queue wait is over,
       // so its own idle deadline can start here rather than at enqueue.
@@ -1526,8 +1529,10 @@ export class OpenAICompatibleProvider implements AIProvider {
         if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
         // Queue for a local concurrency slot BEFORE the request timer starts, and
         // hold it until the body is read (see local-concurrency-limiter.ts).
-        const release = await this.acquireSlot(opts.signal);
+        const release = await this.acquireSlot(opts.signal, opts.onSlotQueued);
         try {
+          // #204 — as on the streaming path: the queue wait is over.
+          opts.onSlotAcquired?.();
           const controller = new AbortController();
           if (opts.signal) {
             if (opts.signal.aborted) throw new DOMException("Aborted", "AbortError");

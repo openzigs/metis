@@ -1,7 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /**
- * Tests for plan-mode state machine (#121) and session snapshot persistence
+ * Tests for plan-mode state machine (#121) and the resumable-session list
  * (#122). Prisma is mocked in-memory.
+ *
+ * #202 — the client-snapshot helpers (`writeSnapshot`, `readSnapshot`,
+ * `rehydrate`) were removed; resume's expiry, ownership and unknown-id refusals
+ * are asserted on the transcript routes in `ai-conversation.sqlite.test.ts`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -124,13 +128,7 @@ import {
   getCurrentPlan,
   recordPendingPlan,
 } from "../src/lib/ai/plan-mode.js";
-import {
-  SessionSnapshotError,
-  listResumable,
-  readSnapshot,
-  rehydrate,
-  writeSnapshot,
-} from "../src/lib/ai/session-snapshot.js";
+import { listResumable } from "../src/lib/ai/session-snapshot.js";
 
 function seedSession(id: string, overrides: Partial<SessionRow> = {}): SessionRow {
   const row: SessionRow = {
@@ -219,27 +217,7 @@ describe("plan-mode state machine (#121)", () => {
   });
 });
 
-describe("session snapshot (#122)", () => {
-  it("writes and reads a snapshot round-trip", async () => {
-    seedSession("s1");
-    await writeSnapshot("s1", {
-      v: 1,
-      messages: [{ role: "user", content: "hi" }],
-      currentModel: "claude",
-      currentReasoningEffort: "high",
-      loadedSkillIds: ["x"],
-      customAgentIds: ["a1"],
-    });
-    const snap = await readSnapshot("s1");
-    expect(snap?.messages[0]?.content).toBe("hi");
-    expect(snap?.currentModel).toBe("claude");
-  });
-
-  it("readSnapshot returns null when no snapshot exists", async () => {
-    seedSession("s1");
-    expect(await readSnapshot("s1")).toBeNull();
-  });
-
+describe("resumable sessions (#122)", () => {
   it("listResumable filters out sessions older than the TTL", async () => {
     const fresh = new Date();
     const old = new Date(Date.now() - 48 * 3600 * 1000);
@@ -247,31 +225,5 @@ describe("session snapshot (#122)", () => {
     seedSession("old", { snapshotUpdatedAt: old, snapshot: '{"v":1}' });
     const list = await listResumable("u1");
     expect(list.map((s) => s.id)).toEqual(["fresh"]);
-  });
-
-  it("rehydrate returns the snapshot and dto for a fresh session", async () => {
-    seedSession("s1", {
-      snapshotUpdatedAt: new Date(),
-      snapshot: JSON.stringify({
-        v: 1,
-        messages: [],
-        currentModel: null,
-        currentReasoningEffort: null,
-        loadedSkillIds: [],
-        customAgentIds: [],
-      }),
-    });
-    const r = await rehydrate("s1");
-    expect(r.session.id).toBe("s1");
-    expect(r.snapshot?.v).toBe(1);
-  });
-
-  it("rehydrate refuses an expired session", async () => {
-    seedSession("s1", { snapshotUpdatedAt: new Date(Date.now() - 48 * 3600 * 1000) });
-    await expect(rehydrate("s1")).rejects.toThrow(SessionSnapshotError);
-  });
-
-  it("rehydrate refuses an unknown id", async () => {
-    await expect(rehydrate("nope")).rejects.toThrow(SessionSnapshotError);
   });
 });

@@ -86,8 +86,12 @@ export class FifoSemaphore {
    * Wait for a slot. Resolves with an idempotent release function. Rejects with
    * an `AbortError` if `signal` aborts while still queued (the waiter is removed,
    * so it never consumes a slot).
+   *
+   * #204 — `onQueued` is called (synchronously, once) only when the request has
+   * to WAIT, with its 1-based position in the queue, so a caller can tell its
+   * user it is waiting behind another generation. A free slot never calls it.
    */
-  acquire(signal?: AbortSignal): Promise<ReleaseSlot> {
+  acquire(signal?: AbortSignal, onQueued?: (position: number) => void): Promise<ReleaseSlot> {
     if (signal?.aborted) return Promise.reject(abortError());
     if (this.active < this.limit) {
       this.active++;
@@ -121,6 +125,11 @@ export class FifoSemaphore {
       };
       signal?.addEventListener("abort", onAbort, { once: true });
       this.waiters.push(waiter);
+      try {
+        onQueued?.(position);
+      } catch {
+        /* a listener must never break the queue */
+      }
     });
   }
 

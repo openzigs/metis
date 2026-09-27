@@ -94,6 +94,8 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   // #138 — shown when older turns were summarised to fit the model's context.
   const [compactionNote, setCompactionNote] = useState<string | null>(null);
+  // #204 — shown while the turn waits behind another local-model generation.
+  const [queueNote, setQueueNote] = useState<string | null>(null);
   const [forking, setForking] = useState(false);
   // #149 — set when the resumed session is read-only (its provider was removed).
   const [readOnlyReason, setReadOnlyReason] = useState<string | null>(null);
@@ -281,6 +283,7 @@ export default function ChatPage() {
       if (!aborted) setError((err as Error).message);
     } finally {
       setStreaming(false);
+      setQueueNote(null);
       abortRef.current = null;
       // #136 — re-render from the server transcript: it is the record, and it
       // carries the ordinals "fork from here" needs. #212 — only what changed:
@@ -336,7 +339,18 @@ export default function ChatPage() {
   }
 
   function handleEvent(ev: StreamEvent, assistantMsgId: string) {
+    // #204 — anything but a `queue` frame means the model is past the queue.
+    if (ev.type !== "queue") setQueueNote(null);
     switch (ev.type) {
+      case "queue":
+        setQueueNote(
+          ev.state === "waiting"
+            ? `Waiting for the local model — it is busy with another request${
+                ev.position && ev.position > 1 ? ` (${ev.position - 1} ahead of this one)` : ""
+              }. This time does not count against the response's time limit.`
+            : null,
+        );
+        break;
       case "delta":
         setMessages((prev) =>
           prev.map((m) =>
@@ -422,6 +436,11 @@ export default function ChatPage() {
           >
             {readOnlyReason}
           </div>
+        ) : null}
+        {queueNote ? (
+          <p role="status" data-testid="chat-queue-note" className="text-xs text-muted-foreground">
+            {queueNote}
+          </p>
         ) : null}
         {compactionNote ? (
           <p

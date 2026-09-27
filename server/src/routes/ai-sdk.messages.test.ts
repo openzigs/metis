@@ -38,9 +38,7 @@ vi.mock("../lib/ai/plan-mode.js", () => ({
   recordPendingPlan: vi.fn(),
 }));
 vi.mock("../lib/ai/session-snapshot.js", () => ({
-  SessionSnapshotError: class extends Error {},
   listResumable: vi.fn(),
-  rehydrate: vi.fn(),
 }));
 vi.mock("../lib/async/compaction.js", () => ({ compactSession: vi.fn() }));
 

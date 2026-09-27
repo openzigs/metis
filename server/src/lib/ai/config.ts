@@ -464,10 +464,22 @@ function applyConfigServiceOverlay(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * Load + validate the AI configuration from a process-env-like object. Passing
  * a custom env makes the function trivially testable without mutating
  * `process.env`.
+ *
+ * #241 — `opts.provider` loads the configuration of THAT provider instead of the
+ * deployment's selected one: its own endpoint and credentials, from the same
+ * env + Admin → Settings view. A chat session bound to a per-project override
+ * runs on it this way. It is applied AFTER the runtime-config overlay, which
+ * would otherwise put the global `AI_PROVIDER` back. A provider whose
+ * endpoint or credentials are not configured throws `AIConfigError` — never a
+ * fall-back to the global provider.
  */
-export function loadAIConfig(env: NodeJS.ProcessEnv = process.env): AIConfig {
+export function loadAIConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  opts: { provider?: string } = {},
+): AIConfig {
   const merged = applyConfigServiceOverlay(env);
   assertNoRetiredProviderConfig(env, merged);
+  if (opts.provider) merged.AI_PROVIDER = opts.provider;
   const parsed = aiEnvSchema.safeParse(merged);
   if (!parsed.success) {
     throw new AIConfigError("Invalid AI configuration", {

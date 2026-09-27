@@ -309,17 +309,22 @@ first-token stall. The limiter is keyed on the server's origin (scheme, host,
 port), with `localhost`, `127.0.0.1` and `[::1]` treated as one host, so two
 settings that spell the same Ollama differently still share one limit.
 
-**Known limitation: deadlines set by callers still count queue time.** Only the
-provider's own first-byte, idle and request timers wait for a slot. A deadline a
-caller sets around the whole call starts when the call is made, and there is no
-bound on how long a request can wait in the queue. Two examples are the chat
-route's idle timeout (`AI_STREAM_IDLE_TIMEOUT_MS`, 90 s) and impact analysis's
-LLM deadline. At the default limit of 1, an interactive chat or impact analysis
-started during a long docs-gen run waits behind it and can fail on that deadline.
-The waiter is removed cleanly when that happens. This is not new: the same wait
-used to happen inside Ollama's own queue. If you need chat to stay responsive
-during docs-gen, raise `OLLAMA_NUM_PARALLEL` and `LOCAL_GEMMA_MAX_CONCURRENCY`
-together, or run docs-gen when nobody is chatting.
+**Chat waits in the queue visibly, with its own limit.** The streamed chat's
+idle timeout (`AI_STREAM_IDLE_TIMEOUT_MS`, 90 s) and — since #204 — its hard
+ceiling (`AI_STREAM_MAX_DURATION_MS`, 5 min) count only time after the slot is
+acquired. While a chat answer waits behind another generation the chat page shows
+"Waiting for the local model", and the wait is bounded by
+`AI_STREAM_QUEUE_MAX_WAIT_MS` (default 600000 = 10 min): past it the turn ends
+with `STREAM_QUEUE_TIMEOUT` and leaves the queue.
+
+**Known limitation: other callers' deadlines still count queue time.** Only the
+provider's own first-byte, idle and request timers, and chat's (above), wait for
+a slot. A deadline a caller sets around the whole call starts when the call is
+made — impact analysis's LLM deadline is one. At the default limit of 1, an
+impact analysis started during a long docs-gen run waits behind it and can fail
+on that deadline. The waiter is removed cleanly when that happens. If you need
+chat to answer promptly during docs-gen, raise `OLLAMA_NUM_PARALLEL` and
+`LOCAL_GEMMA_MAX_CONCURRENCY` together, or run docs-gen when nobody is chatting.
 
 | Env var | Default | Governs |
 |---|---|---|

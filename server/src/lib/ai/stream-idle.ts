@@ -19,6 +19,12 @@
 
 export const STREAM_IDLE_TIMEOUT_CODE = "STREAM_IDLE_TIMEOUT";
 
+/**
+ * #204 — a chat turn gave up waiting for a local-model slot
+ * (`AI_STREAM_QUEUE_MAX_WAIT_MS`). Nothing was generated for it.
+ */
+export const STREAM_QUEUE_TIMEOUT_CODE = "STREAM_QUEUE_TIMEOUT";
+
 export class StreamIdleTimeoutError extends Error {
   readonly code = STREAM_IDLE_TIMEOUT_CODE;
   readonly idleMs: number;
