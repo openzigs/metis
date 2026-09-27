@@ -6,16 +6,45 @@
 # in the worker in CI. This job does, nightly and on demand, to catch a CJS/ESM
 # loader defect in the worker's `import()` of transformers.js, and to check the
 # chunker's #201 token bound against the model's own tokenizer.
+#
+# Issue #307 — it also runs the embedding PARITY gate: the production embedder
+# (gte-modernbert, CLS, normalised, q8, worker runtime) must reproduce the vectors
+# recorded under transformers.js 3.8.1 + onnxruntime-node 1.21.0 at cosine >= 0.999
+# per string, or every stored vector is silently in a different space from new
+# queries. So it also runs on any pull request that can move those vectors — a
+# dependency manifest, the lockfile, the pnpm overrides (the onnxruntime-node pin
+# lives there) or the embed path — not only nightly.
 name: Embed Real Model Nightly
 
 on:
   schedule:
     # 04:00 UTC daily — staggered after the eval nightlies (02:00, 03:00 UTC).
     - cron: "0 4 * * *"
+  pull_request:
+    paths:
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - server/package.json
+      - server/embeddings-svc/package.json
+      - server/src/lib/rag/embed*.ts
+      - server/src/lib/rag/reranker.ts
+      - server/tests/embed-parity-real-model.test.ts
+      - server/tests/embed-worker-real-model.test.ts
+      - server/tests/fixtures/embed-parity-*
+      - server/tests/fixtures/real-model-worker-probe.mjs
+      - .github/workflows/embed-real-model-nightly.yml
   workflow_dispatch:
+    inputs:
+      record:
+        description: >-
+          Record this runner's (linux-x64) #307 parity fixture instead of testing.
+          Only from a ref that still resolves transformers.js 3.8.1 + onnxruntime-node
+          1.21.0; the probe refuses anything else. See docs/OPERATIONS.md.
+        type: boolean
+        default: false
 
 concurrency:
-  group: embed-real-model-nightly
+  group: embed-real-model-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -47,6 +76,28 @@ jobs:
         with:
           path: ${{ github.workspace }}/.cache/transformers
           key: transformers-gte-modernbert-base-v1-${{ runner.os }}
+      # q8 kernels are CPU-dependent (#307), so the log names the CPU the vectors
+      # were computed on — the first thing to read when parity moves.
+      - name: Runner CPU
+        run: |
+          grep -m1 'model name' /proc/cpuinfo || true
+          echo "ISA: $(grep -o -w 'avx512_vnni\|avx_vnni\|avx512f\|avx2' /proc/cpuinfo | sort -u | tr '\n' ' ')"
+      - name: Record the linux-x64 parity fixture (#307)
+        if: ${{ inputs.record }}
+        working-directory: server
+        run: node tests/fixtures/embed-parity-probe.mjs record "$RUNNER_TEMP/embed-parity-v3-gte-modernbert-q8.linux-x64.json"
+      - name: Upload the recorded fixture
+        if: ${{ inputs.record }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: embed-parity-fixture-linux-x64
+          path: ${{ runner.temp }}/embed-parity-v3-gte-modernbert-q8.linux-x64.json
+          if-no-files-found: error
       - name: Real model in the embed worker, from dist
+        if: ${{ !inputs.record }}
         working-directory: server
         run: pnpm exec vitest run tests/embed-worker-real-model.test.ts
+      - name: Embedding parity with transformers.js 3.8.1 (#307)
+        if: ${{ !inputs.record }}
+        working-directory: server
+        run: pnpm exec vitest run tests/embed-parity-real-model.test.ts

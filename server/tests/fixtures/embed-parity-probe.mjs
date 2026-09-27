@@ -1,24 +1,41 @@
-// Issue #307 (Dependabot #11) — embed a FIXED set of strings through the production
-// in-process embedder, from the BUILT `dist`, under plain `node`, and print the
-// vectors (and the cross-encoder's logits) on one `PROBE_RESULT <json>` line.
+// Issue #307 — embed a FIXED set of strings through the production in-process
+// embedder, from the BUILT `dist`, under plain `node`, and print the vectors (and
+// the cross-encoder's logits) on one `PROBE_RESULT <json>` line.
 //
 // `tests/embed-parity-real-model.test.ts` compares that output with vectors
-// RECORDED under @huggingface/transformers 3.8.1
-// (`fixtures/embed-parity-v3-gte-modernbert-q8.json`). A library upgrade that moves
-// a stored vector makes every project's index silently inconsistent with its new
-// queries, so the upgrade is only acceptable if this output does not move.
+// RECORDED under @huggingface/transformers 3.8.1 + onnxruntime-node 1.21.0
+// (`fixtures/embed-parity-v3-gte-modernbert-q8.<platform>-<arch>.json`). A library
+// upgrade that moves a stored vector makes every project's index silently
+// inconsistent with its new queries, so the upgrade is only acceptable if this
+// output does not move.
 //
 // argv[2] is the mode — one ONNX runtime per process, never two (#201/#222:
 // onnxruntime-node aborts the process when sessions live on two threads at once):
 //   embed   the default embedder (worker runtime, the production default)
 //   rerank  the in-process cross-encoder (inline runtime, as #222 requires)
+//   record  runs `embed` and `rerank` in two child processes and writes THIS
+//           platform's fixture (argv[3] overrides the output path)
 //
-// Re-record (only ever against the library version the fixture names):
-//   node tests/fixtures/embed-parity-probe.mjs embed  > embed.out
-//   node tests/fixtures/embed-parity-probe.mjs rerank > rerank.out
-// then assemble the fixture from the two PROBE_RESULT lines.
+// WHY ONE FIXTURE PER PLATFORM. q8 vectors are not bit-portable: onnxruntime's
+// quantized CPU kernels differ by OS/arch, and under 3.8.1 alone darwin-arm64 and
+// linux-x64 already disagree at cos ~0.996 — below the 0.999 bar. A fixture
+// recorded on one platform therefore cannot gate another. The test picks the file
+// named for `${process.platform}-${process.arch}` and FAILS (never skips) when it
+// is missing, so a new platform must be recorded before it can gate anything.
+//
+// RE-RECORDING — see "Embedding parity fixtures" in docs/OPERATIONS.md. Only ever
+// from a tree that still resolves transformers.js 3.8.1 + onnxruntime-node 1.21.0
+// (the parent of #307's bump); `record` refuses anything else, because a fixture
+// recorded under the NEW library would compare the upgrade with itself. linux-x64
+// (the CI platform) is recorded NATIVELY on a GitHub runner, never under
+// emulation: `gh workflow run embed-real-model-nightly.yml --ref <branch>
+// -f record=true` uploads it as the `embed-parity-fixture-linux-x64` artifact.
+import { execFile } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { cpus } from "node:os";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 export const PARITY_TEXTS = [
   "Users must be locked out after five failed login attempts.",
@@ -49,20 +66,63 @@ export const RERANK_PASSAGES = [
   "Preheat the oven and fold the bananas into the batter.",
 ];
 
+/** The library pair every stored vector came from; `record` accepts nothing else. */
+export const RECORD_TRANSFORMERS_VERSION = "3.8.1";
+export const RECORD_ONNXRUNTIME_VERSION = "1.21.0";
+
+const FIXTURE_STEM = "embed-parity-v3-gte-modernbert-q8";
+
+/** `<platform>-<arch>` as node reports it, e.g. `linux-x64`, `darwin-arm64`. */
+export function platformKey(platform = process.platform, arch = process.arch) {
+  return `${platform}-${arch}`;
+}
+
+/** The fixture file name for one platform. */
+export function fixtureFileName(key = platformKey()) {
+  return `${FIXTURE_STEM}.${key}.json`;
+}
+
+/** Inverse of `fixtureFileName`; `null` for any other file. */
+export function platformOfFixture(fileName) {
+  const m = new RegExp(`^${FIXTURE_STEM}\\.([a-z0-9]+-[a-z0-9]+)\\.json$`).exec(fileName);
+  return m ? m[1] : null;
+}
+
 const MODEL = "Alibaba-NLP/gte-modernbert-base";
 const DIMENSION = 768;
+const RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2";
+const SELF = fileURLToPath(import.meta.url);
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) await main(process.argv[2]);
 
-async function main(mode) {
+/** Versions of the transformers.js + onnxruntime-node the BUILT server resolves. */
+async function libraryVersions() {
   const dist = new URL("../../dist/", import.meta.url);
-  const require = createRequire(new URL("lib/rag/embedder.js", dist));
+  const entry = createRequire(new URL("lib/rag/embedder.js", dist)).resolve(
+    "@huggingface/transformers",
+  );
   // The package `exports` map hides package.json; the library reports its own version.
-  const loaded = await import(require.resolve("@huggingface/transformers"));
+  const loaded = await import(pathToFileURL(entry).href);
   const transformersVersion = (loaded.env ?? loaded.default.env).version;
+  // onnxruntime-node is transformers.js's dependency, so resolve it from THERE:
+  // that is the copy the pipeline loads, and the one the pnpm override pins.
+  const fromTransformers = createRequire(entry);
+  const onnxruntimeVersion = fromTransformers(
+    fromTransformers.resolve("onnxruntime-node/package.json"),
+  ).version;
+  return { transformersVersion, onnxruntimeVersion };
+}
+
+async function main(mode) {
+  if (mode === "record") {
+    await record(process.argv[3]);
+    return;
+  }
+  const dist = new URL("../../dist/", import.meta.url);
+  const versions = await libraryVersions();
   const emit = (result) =>
-    process.stdout.write(`\nPROBE_RESULT ${JSON.stringify({ transformersVersion, ...result })}\n`);
+    process.stdout.write(`\nPROBE_RESULT ${JSON.stringify({ ...versions, ...result })}\n`);
 
   if (mode === "rerank") {
     const { createCrossEncoderReranker } = await import(new URL("lib/rag/reranker.js", dist).href);
@@ -95,4 +155,56 @@ async function main(mode) {
   } finally {
     await embedder.close();
   }
+}
+
+async function runProbe(mode) {
+  const { stdout } = await promisify(execFile)(process.execPath, [SELF, mode], {
+    env: { ...process.env, EMBED_INPROCESS_RUNTIME: mode === "rerank" ? "inline" : "worker" },
+    maxBuffer: 8 * 1024 * 1024,
+    timeout: 240_000,
+  });
+  const line = stdout.split("\n").find((l) => l.startsWith("PROBE_RESULT "));
+  if (!line) throw new Error(`no PROBE_RESULT line from '${mode}':\n${stdout}`);
+  return JSON.parse(line.slice("PROBE_RESULT ".length));
+}
+
+async function record(outPath) {
+  const embed = await runProbe("embed");
+  const rerank = await runProbe("rerank");
+  for (const got of [embed, rerank]) {
+    if (
+      got.transformersVersion !== RECORD_TRANSFORMERS_VERSION ||
+      got.onnxruntimeVersion !== RECORD_ONNXRUNTIME_VERSION
+    ) {
+      throw new Error(
+        `refusing to record: this tree resolves transformers.js ${got.transformersVersion} + ` +
+          `onnxruntime-node ${got.onnxruntimeVersion}; a parity fixture must come from ` +
+          `${RECORD_TRANSFORMERS_VERSION} + ${RECORD_ONNXRUNTIME_VERSION}, the pair every stored vector came from`,
+      );
+    }
+  }
+  const key = platformKey();
+  const fixture = {
+    recordedWith: {
+      transformersVersion: embed.transformersVersion,
+      onnxruntimeVersion: embed.onnxruntimeVersion,
+      platform: key,
+      node: process.versions.node,
+      cpu: cpus()[0]?.model ?? "unknown",
+      recordedOn: new Date().toISOString().slice(0, 10),
+      issue: 307,
+    },
+    model: MODEL,
+    identity: embed.identity,
+    pooling: embed.pooling,
+    dtype: embed.dtype,
+    runtime: embed.runtime,
+    dimension: embed.dimension,
+    texts: embed.texts,
+    vectors: embed.vectors,
+    rerank: { model: RERANK_MODEL, scores: rerank.scores },
+  };
+  const target = outPath ?? fileURLToPath(new URL(fixtureFileName(key), import.meta.url));
+  writeFileSync(target, `${JSON.stringify(fixture)}\n`);
+  process.stdout.write(`recorded ${key} fixture -> ${target}\n`);
 }
