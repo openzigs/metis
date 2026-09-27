@@ -109,11 +109,11 @@ function resultsWorktreeRoot() {
 
 /**
  * #2 — whether two paths name the same directory. Compared by REAL path, not by
- * string: on Windows git prints the long, forward-slash form
- * (`C:/Users/runneradmin/...`) while the process may hold the 8.3 short form of
- * the same directory (`C:\Users\RUNNER~1\...`, which is what `os.tmpdir()`
- * returns on the hosted runner), and `path.resolve` normalises neither the case
- * nor the short name. `realpathSync.native` resolves both.
+ * string: on Windows git prints the long, forward-slash form of a directory
+ * while the process may hold its 8.3 short form (a `RUNNER~1` path segment,
+ * which is what `os.tmpdir()` returns on the hosted runner), and `path.resolve`
+ * normalises neither the case nor the short name. `realpathSync.native`
+ * resolves both.
  *
  * @param {string} a
  * @param {string} b
