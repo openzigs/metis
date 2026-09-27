@@ -13,6 +13,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { mineTsRules } from "../code-graph/ts-rule-miner.js";
 import { mineKtRules } from "../code-graph/kt-rule-miner.js";
+import { mineCblRules } from "../code-graph/cbl-rule-miner.js";
 import { minePyRules } from "../code-graph/py-rule-miner.js";
 import { mineGoRules } from "../code-graph/go-rule-miner.js";
 import { mineCsRules } from "../code-graph/cs-rule-miner.js";
@@ -243,6 +244,7 @@ describe("mineUnit over whole files", () => {
     ["x.go", (i: number) => `const Max${i} = ${i}`, mineGoRules],
     ["X.cs", (i: number) => `    public const int Max${i} = ${i};`, mineCsRules],
     ["X.kt", (i: number) => `const val MAX_${i} = ${i}`, mineKtRules],
+    ["X.cbl", (i: number) => `       88 LIMIT-${i} VALUE ${i}.`, mineCblRules],
   ] as const)(
     "%s: mines all 550 rules past the miner's default cap of 400",
     (file, line, miner) => {
@@ -458,6 +460,83 @@ function syntheticModule(files: number, fnsPerFile: number, linesPerFn: number) 
   }
   return { symbols, units, moduleLevelLines };
 }
+
+// ============================================================================
+// COBOL: the source format is decided per file, not per unit (#160 review)
+// ============================================================================
+
+describe("mineUnit on COBOL: the source format is the file's, not the slice's", () => {
+  const F = "src/PAY.cbl";
+  const para = (name: string, startLine: number, endLine: number): SymbolRange => ({
+    kind: "function",
+    qualifiedName: `${F}::PAY::${name}`,
+    filePath: F,
+    startLine,
+    endLine,
+  });
+  const seq = (l: string, i: number) => `${String(i + 1).padStart(6, "0")}${l}`;
+  // A short paragraph name and a body whose column 7 always holds a valid
+  // fixed-format indicator (` ` or the `D` of END-IF): on its own the slice
+  // reads as fixed format — `IF` cut to its sequence area, END-IF a debug line.
+  const TAIL = "WS-AMOUNT-PAYABLE-TO-VENDOR-ACCOUNT > WS-CREDIT-LIMIT-FOR-VENDOR-ACCOUNT";
+  const body = [
+    "MAIN.",
+    "    IF WS-AMT > 100",
+    "       GO TO ERR",
+    "    END-IF",
+    `    IF WS-CODE = 'A' AND ${TAIL}`,
+    "       DISPLAY 'OVER'",
+    "    END-IF.",
+    "ERR.",
+    "    DISPLAY 'E'.",
+  ];
+  const expected = (mainLine: number) => [
+    ["guard", mainLine + 1, "IF WS-AMT > 100"],
+    ["condition", mainLine + 4, `IF WS-CODE = 'A' AND ${TAIL}`],
+  ];
+  const rulesOf = (lines: string[], symbols: SymbolRange[]) =>
+    minedUnits(F, lines, symbols)
+      .flatMap((u) => u.rules)
+      .map((r) => [r.kind, r.line, r.expression]);
+
+  it("reads a `>>SOURCE FREE` file's paragraph as free format", () => {
+    const lines = [">>SOURCE FREE", "PROCEDURE DIVISION.", ...body];
+    // Precondition: mining the whole file finds both rules.
+    expect(mineCblRules(lines.join("\n"), F, 1).map((r) => [r.kind, r.line, r.expression])).toEqual(
+      expected(3),
+    );
+    expect(rulesOf(lines, [para("MAIN", 3, 9), para("ERR", 10, 11)])).toEqual(expected(3));
+  });
+
+  it("reads a paragraph of a directive-less free-format file as free format", () => {
+    const lines = ["IDENTIFICATION DIVISION.", "PROGRAM-ID. PAY.", "PROCEDURE DIVISION.", ...body];
+    expect(rulesOf(lines, [para("MAIN", 4, 10), para("ERR", 11, 12)])).toEqual(expected(4));
+  });
+
+  it("follows a mid-file `>>SOURCE FREE` into the paragraphs after it", () => {
+    const lines = [
+      ...[" IDENTIFICATION DIVISION.", " PROGRAM-ID. PAY.", " PROCEDURE DIVISION."].map(seq),
+      "       >>SOURCE FREE",
+      ...body,
+    ];
+    expect(rulesOf(lines, [para("MAIN", 5, 11), para("ERR", 12, 13)])).toEqual(expected(5));
+  });
+
+  it("still reads a fixed-format file's paragraph as fixed (sequence area dropped)", () => {
+    const lines = [
+      " PROCEDURE DIVISION.",
+      " MAIN.",
+      "     IF WS-AMT > 100",
+      "        GO TO ERR",
+      "     END-IF.",
+      " ERR.",
+      "     DISPLAY 'E'.",
+    ].map(seq);
+    expect(rulesOf(lines, [para("MAIN", 2, 5), para("ERR", 6, 7)])).toEqual([
+      ["guard", 3, "IF WS-AMT > 100"],
+    ]);
+  });
+});
 
 describe("planPhase1Chunks", () => {
   const limits = phase1ChunkLimits(16_384);

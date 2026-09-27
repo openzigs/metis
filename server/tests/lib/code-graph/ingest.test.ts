@@ -322,6 +322,89 @@ describe("ingestCodeGraph (#308)", () => {
     expect(callsTo(store, "place", "src/main/kotlin/com/acme/Order.kt")).toHaveLength(1);
   });
 
+  it("ingests COBOL programs and copybooks with bound PERFORM, CALL and COPY edges (#160)", async () => {
+    // Fixed format: sequence number, indicator (column 7), text from column 8.
+    const fixed = (lines: string[]) =>
+      lines.map((l, i) => `${String(i + 1).padStart(6, "0")}${l}`).join("\n");
+    const root = await makeFixture({
+      "legacy/orders/ORDERS.cbl": fixed([
+        " IDENTIFICATION DIVISION.",
+        " PROGRAM-ID. ORDERS.",
+        " DATA DIVISION.",
+        " WORKING-STORAGE SECTION.",
+        "     COPY CUSTREC.",
+        " PROCEDURE DIVISION.",
+        " MAIN-PARA.",
+        "     PERFORM CHECK-PARA",
+        "     PERFORM ERROR-PARA",
+        "     CALL 'PRICING'",
+        "     GOBACK.",
+        " CHECK-PARA.",
+        "     COPY ERRPARA.",
+        "     CONTINUE.",
+      ]),
+      "legacy/copy/CUSTREC.cpy": fixed([" 01  CUSTOMER-REC.", "     05 CU-ID PIC 9(8)."]),
+      "legacy/copy/ERRPARA.cpy": fixed([" ERROR-PARA.", "     DISPLAY 'ERROR'."]),
+      // A second, un-copied ERROR-PARA: only the COPY says which one is meant.
+      "legacy/other/ALTERR.cpy": fixed([" ERROR-PARA.", "     DISPLAY 'OTHER'."]),
+      "legacy/pricing/PRICING.cob": fixed([
+        " IDENTIFICATION DIVISION.",
+        " PROGRAM-ID. PRICING.",
+        " PROCEDURE DIVISION.",
+        " P1.",
+        "     GOBACK.",
+      ]),
+    });
+    const { prisma, store } = makePrismaMock();
+    const stats = await ingestCodeGraph(prisma, { projectId: "proj1", rootDir: root });
+
+    expect(stats.filesParsed).toBe(5);
+    expect(stats.languageStats.cbl).toBeGreaterThan(0);
+    const ORDERS = "legacy/orders/ORDERS.cbl";
+    expect(
+      store.codeSymbols
+        .filter((s: any) => s.filePath === ORDERS)
+        .map((s: any) => [s.kind, s.name, s.language]),
+    ).toEqual(
+      expect.arrayContaining([
+        ["class", "ORDERS", "cbl"],
+        ["function", "MAIN-PARA", "cbl"],
+        ["function", "CHECK-PARA", "cbl"],
+      ]),
+    );
+    // PERFORM binds to the same-file paragraph.
+    const [perform] = callsTo(store, "CHECK-PARA", ORDERS);
+    expect(perform.toSymbolId).toBe(symbolId(store, ORDERS, "CHECK-PARA"));
+    // PERFORM of a paragraph a procedure copybook brings in binds to that copybook's paragraph.
+    const [copied] = callsTo(store, "ERROR-PARA", ORDERS);
+    expect(copied.toSymbolId).toBe(symbolId(store, "legacy/copy/ERRPARA.cpy", "ERROR-PARA"));
+    // CALL 'PRICING' binds to the program in another file.
+    const [call] = callsTo(store, "PRICING", ORDERS);
+    expect(call.toSymbolId).toBe(symbolId(store, "legacy/pricing/PRICING.cob", "PRICING"));
+    // COPY binds to the copybook file's module symbol.
+    const copy = store.codeEdges.find(
+      (e: any) => e.kind === "imports" && e.toQualifiedName === "CUSTREC",
+    ) as any;
+    expect(copy.toSymbolId).toBe(symbolId(store, "legacy/copy/CUSTREC.cpy", "CUSTREC.cpy"));
+  });
+
+  it("leaves a COPY of an unknown copybook unbound rather than guessing a symbol (#160)", async () => {
+    const fixed = (lines: string[]) =>
+      lines.map((l, i) => `${String(i + 1).padStart(6, "0")}${l}`).join("\n");
+    const root = await makeFixture({
+      // A program named like the missing copybook must not capture the COPY.
+      "legacy/A.cbl": fixed([" IDENTIFICATION DIVISION.", " PROGRAM-ID. A.", "     COPY B."]),
+      "legacy/B-PROG.cbl": fixed([" IDENTIFICATION DIVISION.", " PROGRAM-ID. B."]),
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "proj1", rootDir: root });
+    const copy = store.codeEdges.find(
+      (e: any) => e.kind === "imports" && e.toQualifiedName === "B",
+    ) as any;
+    expect(copy).toBeDefined();
+    expect(copy.toSymbolId).toBeNull();
+  });
+
   it("resolves a bare Kotlin call to a sibling method as an implicit `this.` (#159)", async () => {
     const root = await makeFixture({
       "src/main/kotlin/com/acme/Checkout.kt": `package com.acme\nclass Checkout {\n  fun submit(total: Int) {\n    validate(total)\n  }\n  private fun validate(total: Int) {\n    require(total > 0)\n  }\n}\n`,

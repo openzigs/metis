@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { compileMetisignore, DEFAULT_METISIGNORE, isIgnored } from "./metisignore.js";
 import { detectLanguage, initCodeGraphParsers, parseSource, type ParsedFile } from "./parsers.js";
+import { buildCopybookIndex, resolveCopybook, type CopybookIndex } from "./cobol-parser.js";
 import {
   createResolutionIndex,
   indexSymbol,
@@ -768,7 +769,13 @@ async function persistParsed(
   }
 
   // ── Pass 2: build import-target index and persist edges. ────────────────
-  const { importTargets, runtimeImports } = buildFileImportIndex(parsedFiles, fileToSymbols);
+  // #160 — `COPY name` binds to the copybook file's module symbol.
+  const copybooks = buildCopybookIndex(parsedFiles.map((f) => f.filePath));
+  const { importTargets, runtimeImports } = buildFileImportIndex(
+    parsedFiles,
+    fileToSymbols,
+    copybooks,
+  );
   const persistedClassNames = await loadPersistedClassNames(
     prisma,
     codeGraphId,
@@ -793,7 +800,11 @@ async function persistParsed(
       if (!fromId) continue; // Dropped: no source symbol — should not happen.
 
       let toId: string | null = qnameToId.get(edge.toQualifiedName) ?? null;
-      if (!toId) {
+      if (!toId && file.language === "cbl" && edge.kind === "imports") {
+        // A copybook name is a file, never a symbol: an unresolved COPY stays unbound.
+        const copybook = resolveCopybook(edge.toQualifiedName, file.filePath, copybooks);
+        toId = copybook ? (qnameToId.get(copybook) ?? null) : null;
+      } else if (!toId) {
         toId = resolveEdgeTarget(edge.toQualifiedName, edge.receiver, site, index);
       }
       // #170 — a capitalised Kotlin call is a constructor only if a class exists.
@@ -1812,6 +1823,7 @@ export async function extractSchemaUsage(
 function buildFileImportIndex(
   parsedFiles: ParsedFile[],
   fileToSymbols: Map<string, unknown[]>,
+  copybooks: CopybookIndex,
 ): { importTargets: Map<string, string[]>; runtimeImports: Map<string, Set<string>> } {
   const filePaths = new Set<string>(parsedFiles.map((f) => f.filePath));
   // `OrderService.java` → every parsed path with that basename (Java imports).
@@ -1835,6 +1847,12 @@ function buildFileImportIndex(
         let names = runtimeImports.get(file.filePath);
         if (!names) runtimeImports.set(file.filePath, (names = new Set()));
         for (const n of edge.importedNames) names.add(n);
+        continue;
+      }
+      if (file.language === "cbl") {
+        // #160 — a copied procedure copybook's paragraphs are PERFORM targets.
+        const resolved = resolveCopybook(raw, file.filePath, copybooks);
+        if (resolved && fileToSymbols.has(resolved)) targets.push(resolved);
         continue;
       }
       if (file.language === "java") {

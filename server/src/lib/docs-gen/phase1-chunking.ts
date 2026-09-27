@@ -43,6 +43,8 @@ import { mineGoRules } from "../code-graph/go-rule-miner.js";
 import { mineTsRules } from "../code-graph/ts-rule-miner.js";
 import { mineCsRules } from "../code-graph/cs-rule-miner.js";
 import { mineKtRules } from "../code-graph/kt-rule-miner.js";
+import { mineCblRules } from "../code-graph/cbl-rule-miner.js";
+import { cobolLineFormats, type CobolFormat } from "../code-graph/cobol-source.js";
 import { mineSqlRules } from "../code-graph/sql-rule-miner.js";
 import { detectLanguage } from "../code-graph/parsers.js";
 import { toPersistedMinedRules, type PersistedMinedRule } from "./fact-slices.js";
@@ -101,6 +103,12 @@ export interface SourceUnit {
    * of a function).
    */
   partOf?: { startLine: number; endLine: number };
+  /**
+   * COBOL only (#160): the source format the FILE is in at this unit's first
+   * line. A paragraph read on its own can look fixed-format when its file is
+   * free-format, so the format is decided once over the whole file.
+   */
+  cobolFormat?: CobolFormat;
 }
 
 /** A line with nothing to read: blank, or only braces/brackets/parens/semicolons/commas. */
@@ -152,6 +160,9 @@ export function buildSourceUnits(
   }
 
   const units: SourceUnit[] = [];
+  const cobolFormats =
+    detectLanguage(filePath) === "cbl" ? cobolLineFormats(lines.join("\n")) : null;
+  const formatAt = (line: number) => (cobolFormats ? { cobolFormat: cobolFormats[line - 1] } : {});
   const pushGap = (from: number, to: number): void => {
     let a = from;
     let b = to;
@@ -166,6 +177,7 @@ export function buildSourceUnits(
       label: filePath,
       symbols: [],
       text: lines.slice(a - 1, b).join("\n"),
+      ...formatAt(a),
     });
   };
   let cursor = 1;
@@ -179,6 +191,7 @@ export function buildSourceUnits(
       label: sp.label,
       symbols: sp.symbols,
       text: lines.slice(sp.start - 1, sp.end).join("\n"),
+      ...formatAt(sp.start),
     });
     cursor = sp.end + 1;
   }
@@ -312,6 +325,7 @@ function mineRulesIn(
   filePath: string,
   baseLine: number,
   context: string | null,
+  cobolFormat?: CobolFormat,
 ): PersistedMinedRule[] {
   switch (detectLanguage(filePath)) {
     case "java":
@@ -328,6 +342,11 @@ function mineRulesIn(
       return toPersistedMinedRules("cs", mineCsRules(text, filePath, baseLine, context, UNCAPPED));
     case "kt":
       return toPersistedMinedRules("kt", mineKtRules(text, filePath, baseLine, context, UNCAPPED));
+    case "cbl":
+      return toPersistedMinedRules(
+        "cbl",
+        mineCblRules(text, filePath, baseLine, context, UNCAPPED, cobolFormat),
+      );
     case "sas":
       return toPersistedMinedRules("sas", mineSasRules(text, filePath, baseLine, context));
     default:
@@ -389,7 +408,9 @@ export function mineUnit(unit: SourceUnit, symbols: readonly SymbolRange[]): Pha
   // Only this file's callables, once per unit (the rule-context lookups below
   // would otherwise scan every module symbol per rule).
   const fileSymbols = symbols.filter((sym) => sym.filePath === filePath && isCallableSymbol(sym));
-  const rules = dedupeMinedRules(mineRulesIn(text, filePath, startLine, null)).map((r) => ({
+  const rules = dedupeMinedRules(
+    mineRulesIn(text, filePath, startLine, null, unit.cobolFormat),
+  ).map((r) => ({
     ...r,
     context: innermostCallableAt(fileSymbols, filePath, r.line),
   }));
