@@ -197,9 +197,14 @@ export async function chatProviderForSession(session: {
     config = loadAIConfig(process.env, { provider: session.provider });
   } catch (err) {
     if (isRetiredProviderError(err)) throw err;
-    const reason = err instanceof Error ? err.message : String(err);
+    // The loader's reason can name the configured endpoint or the allowed-host
+    // list — for the server log, never for the chat user.
+    log.warn("Chat session provider is not configured on this server", {
+      provider: session.provider,
+      reason: err instanceof Error ? err.message : String(err),
+    });
     throw new AIProviderError(
-      `This chat session runs on AI provider "${session.provider}", which is not configured on this server (${reason}). Configure it, or start a new chat.`,
+      `This chat session runs on AI provider "${session.provider}", which is not configured on this server. An administrator can find the reason in the server log. Configure it, or start a new chat.`,
       503,
     );
   }
@@ -698,6 +703,11 @@ function replyToolCall(r: ChatToolRecord): ReplyToolCall {
  * sub-agent call carries (the cache posture — never the parent's `sessionId`,
  * model, reasoning effort or local-slot callback: a sub-agent starts FRESH),
  * the tool-result cap, and the session's token accounting for its calls.
+ *
+ * #204 — `queueHooks`, when given, are the turn's local-slot QUEUE hooks: a
+ * sub-agent call that waits for the local model's slot pauses the turn's hard
+ * ceiling exactly as the parent's own calls do. They report the wait only; the
+ * parent's one-shot slot signal is never passed down.
  */
 function bindSubAgents(
   tools: SessionToolRuntime,
@@ -707,6 +717,7 @@ function bindSubAgents(
     providerChatOptions: Partial<SubAgentChatOptions>;
     toolResultMaxChars: number;
     meter: { sessionId: string; userId: string; projectId: string | null };
+    queueHooks?: Pick<SubAgentChatOptions, "onSlotQueued" | "onSlotAcquired">;
   },
 ): void {
   const ctx = tools.subAgents;
@@ -722,7 +733,7 @@ function bindSubAgents(
   } = live.providerChatOptions;
   ctx.signal = live.signal;
   ctx.onToolEvent = live.onToolEvent;
-  ctx.providerChatOptions = providerChatOptions;
+  ctx.providerChatOptions = { ...providerChatOptions, ...(live.queueHooks ?? {}) };
   ctx.toolResultMaxChars = live.toolResultMaxChars;
   ctx.onUsage = (usage, model) => {
     getTokenTracker().record({
@@ -1847,6 +1858,7 @@ export function aiRouter(): Router {
           providerChatOptions: streamProviderOptions,
           toolResultMaxChars: turn.build.toolResultMaxChars,
           meter: { sessionId: session.id, userId, projectId: session.projectId },
+          ...(slot ? { queueHooks: { onSlotQueued, onSlotAcquired: onQueueSlotAcquired } } : {}),
         });
         // #140 — bounded tool loop (shared with analysis). Every call passes the
         // session's approval gate before it runs (#142) and is reported as a

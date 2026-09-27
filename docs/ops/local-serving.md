@@ -312,7 +312,8 @@ settings that spell the same Ollama differently still share one limit.
 **Chat waits in the queue visibly, with its own limit.** The streamed chat's
 idle timeout (`AI_STREAM_IDLE_TIMEOUT_MS`, 90 s) and — since #204 — its hard
 ceiling (`AI_STREAM_MAX_DURATION_MS`, 5 min) count only time after the slot is
-acquired. While a chat answer waits behind another generation the chat page shows
+acquired — for the turn's own model calls, each call of its tool loop, and the
+calls of any sub-agent it delegates to. While a chat answer waits behind another generation the chat page shows
 "Waiting for the local model", and the wait is bounded by
 `AI_STREAM_QUEUE_MAX_WAIT_MS` (default 600000 = 10 min): past it the turn ends
 with `STREAM_QUEUE_TIMEOUT` and leaves the queue.
@@ -329,6 +330,7 @@ chat to answer promptly during docs-gen, raise `OLLAMA_NUM_PARALLEL` and
 | Env var | Default | Governs |
 |---|---|---|
 | `LOCAL_GEMMA_MAX_CONCURRENCY` | `1` | Max in-flight requests per local server (normalised origin of `LOCAL_GEMMA_BASE_URL`), across docs-gen, grounding, analysis and chat. Set it to the server's `OLLAMA_NUM_PARALLEL`. Positive integer; anything else keeps `1` and warns. |
+| `AI_STREAM_QUEUE_MAX_WAIT_MS` | `600000` | How long one streamed-chat model call (the turn's own, a tool-loop call, or a sub-agent's) may wait for a local slot before the turn ends with `STREAM_QUEUE_TIMEOUT`. Positive integer; it cannot be disabled, because the hard ceiling no longer counts queue time and an unbounded wait would hold the turn open forever. |
 | `LOCAL_GEMMA_SEND_REASONING_EFFORT` | `auto` | Whether `reasoning_effort` is sent. `auto`: send; if the model rejects it, retry once without and remember the model. `always`: send, never fall back. `never`: never send. |
 
 With thinking off (the docs-gen default; `DOCS_GEN_LOCAL_ENABLE_THINKING`

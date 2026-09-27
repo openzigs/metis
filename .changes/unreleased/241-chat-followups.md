@@ -10,3 +10,9 @@ section: Fixed
   in pages and ends with every message. A message waiting for a busy local model
   shows "Waiting for the local model", and that wait has its own limit
   (`AI_STREAM_QUEUE_MAX_WAIT_MS`) instead of counting against the response's.
+
+- A chat's provider is fixed when the chat is created: every chat, with or
+  without a project override, keeps the provider it started on. Changing the
+  server default or removing a project's override applies to new chats only;
+  start a new chat to move an existing conversation. `AI_OFFLINE` still stops
+  all traffic.

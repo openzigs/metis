@@ -86,4 +86,51 @@ describe("queue frames (#204)", () => {
       vi.useRealTimers();
     }
   });
+
+  it("once the slot is acquired the stall guard is back to the idle budget, not the queue limit", async () => {
+    vi.useFakeTimers();
+    try {
+      let i = 0;
+      const cancel = vi.fn(async () => {});
+      streamFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        body: {
+          getReader: () => ({
+            read: async () => {
+              i++;
+              if (i === 1) {
+                return {
+                  value: frame("queue", { state: "waiting", position: 1, maxWaitMs: 60_000 }),
+                  done: false,
+                };
+              }
+              if (i === 2) {
+                return { value: frame("queue", { state: "acquired", waitedMs: 500 }), done: false };
+              }
+              return new Promise<never>(() => {}); // the model then goes silent
+            },
+            cancel,
+          }),
+        },
+      });
+      const seen: Array<{ type: string; code?: string }> = [];
+      const run = (async () => {
+        for await (const ev of streamChat("s1", "go", undefined, 1_000)) {
+          seen.push({ type: ev.type, ...("code" in ev && ev.code ? { code: ev.code } : {}) });
+        }
+      })();
+      // Well inside the 60s queue limit: the stall is still caught at ~1s.
+      await vi.advanceTimersByTimeAsync(1_500);
+      await run;
+      expect(seen).toEqual([
+        { type: "queue" },
+        { type: "queue" },
+        { type: "error", code: "STREAM_IDLE_TIMEOUT" },
+      ]);
+      expect(cancel).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

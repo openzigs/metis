@@ -459,7 +459,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     }
 
     // PR #239 panel — the turn's live context reaches its sub-agents.
-    it("local-gemma /api/ai/stream: a sub-agent's calls get the turn's abort signal but never the parent's sessionId or local-slot callback", async () => {
+    // #204 — they DO get the turn's local-slot QUEUE hooks (report-only: a queued
+    // sub-agent call pauses the turn's hard ceiling), never the parent's one-shot
+    // slot signal. The queue path itself is proven on the wire in
+    // chat-session-provider-usage-queue.sqlite.test.ts.
+    it("local-gemma /api/ai/stream: a sub-agent's calls get the turn's abort signal and queue hooks but never the parent's sessionId or slot signal", async () => {
       process.env.LOCAL_GEMMA_MAX_CONCURRENCY = "1";
       resetLocalConcurrencyLimitersForTests();
       const provider = PROVIDERS.find((p) => p.local)!.make();
@@ -482,9 +486,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       for (const [, opts] of subCalls) {
         expect(opts?.signal).toBeInstanceOf(AbortSignal);
         expect(opts).not.toHaveProperty("sessionId");
-        expect(opts).not.toHaveProperty("onSlotAcquired");
         expect(opts).not.toHaveProperty("reasoningEffort");
+        expect(opts?.onSlotQueued).toBeTypeOf("function");
+        expect(opts?.onSlotAcquired).toBeTypeOf("function");
       }
+      // Every sub-agent call got the SAME report-only hook pair — not a fresh
+      // one-shot slot signal per call.
+      expect(subCalls[0]![1]!.onSlotAcquired).toBe(subCalls[1]![1]!.onSlotAcquired);
+      // Nothing queued (one call at a time), so nothing was reported.
+      expect(res.text).not.toContain("event: queue");
     });
 
     it("local-gemma: the user stopping a turn stops its running sub-agent and frees the one local slot", async () => {

@@ -72,8 +72,11 @@ interface Seen {
   body: Body;
   headers: IncomingMessage["headers"];
 }
-/** What the OpenAI-shaped server does with its next request. */
-type Step = "text" | "tool" | "fail" | "hang";
+/**
+ * What the OpenAI-shaped server does with its next request. `delegate` calls
+ * the first sub-agent tool (`agent_*`) the request offers.
+ */
+type Step = "text" | "tool" | "delegate" | "fail" | "hang";
 
 const IDS = {
   alice: "u-alice",
@@ -81,6 +84,7 @@ const IDS = {
   azure: "p-azure",
   plain: "p-plain",
   retired: "p-retired",
+  delegating: "p-delegating",
 } as const;
 
 async function usageSettled(): Promise<void> {
@@ -97,13 +101,22 @@ function readBody(req: IncomingMessage): Promise<Body> {
   });
 }
 
-function openAiReply(res: ServerResponse, streaming: boolean, step: "text" | "tool"): void {
+function openAiReply(res: ServerResponse, body: Body, step: "text" | "tool" | "delegate"): void {
+  const streaming = body.stream === true;
   const usage = { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 };
+  const offered = ((body.tools as Array<{ function: { name: string } }> | undefined) ?? []).map(
+    (t) => t.function.name,
+  );
+  const agentTool = offered.find((n) => n.startsWith("agent_"));
   const toolCall = {
     id: `call_${Math.random().toString(36).slice(2, 8)}`,
     type: "function",
-    function: { name: "count_rows", arguments: JSON.stringify({ table: "t" }) },
+    function:
+      step === "delegate"
+        ? { name: agentTool ?? "no_agent_offered", arguments: JSON.stringify({ task: "count t" }) }
+        : { name: "count_rows", arguments: JSON.stringify({ table: "t" }) },
   };
+  if (step === "delegate") step = "tool";
   const finish = step === "tool" ? "tool_calls" : "stop";
   if (!streaming) {
     res.writeHead(200, { "content-type": "application/json" });
@@ -206,6 +219,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const openaiSeen: Seen[] = [];
     const anthropicSeen: Seen[] = [];
     const steps: Step[] = [];
+    /** Run, in order, as each OpenAI-shaped request arrives (before it is answered). */
+    const onOpenAiRequest: Array<() => void> = [];
     const hanging: ServerResponse[] = [];
     const savedEnv: Record<string, string | undefined> = {};
     const ENV_KEYS = [
@@ -222,6 +237,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       "AI_STREAM_QUEUE_MAX_WAIT_MS",
       "AI_STREAM_IDLE_TIMEOUT_MS",
       "LOCAL_GEMMA_MAX_CONCURRENCY",
+      "CHAT_CODE_SEARCH_TOOLS",
     ];
 
     const app = () => {
@@ -235,8 +251,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     };
     const post = (url: string, body: object = {}) =>
       request(app()).post(url).set("Authorization", `Bearer ${alice}`).send(body);
-    async function newSession(projectId?: string): Promise<{ id: string; provider: string }> {
-      const res = await post("/api/ai/sessions", projectId ? { projectId } : {});
+    async function newSession(
+      projectId?: string,
+      extra: Body = {},
+    ): Promise<{ id: string; provider: string }> {
+      const res = await post("/api/ai/sessions", { ...(projectId ? { projectId } : {}), ...extra });
       expect(res.status, res.text).toBe(201);
       return res.body.data.session as { id: string; provider: string };
     }
@@ -266,12 +285,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         [IDS.azure, "azure", null],
         [IDS.plain, null, null],
         [IDS.retired, "copilot-native", null],
+        [IDS.delegating, null, null],
       ];
       for (const [id, aiProviderId, aiModel] of projects) {
         await db.project.create({
           data: { id, name: id, slug: id, createdById: IDS.alice, aiProviderId, aiModel },
         });
       }
+      // #204 — a project whose chat may delegate to a sub-agent.
+      await db.customAgent.create({
+        data: {
+          id: "c-counter",
+          projectId: IDS.delegating,
+          name: "Counter",
+          description: "Counts rows.",
+          systemPrompt: "You count rows.",
+          tools: JSON.stringify(["count_rows"]),
+        },
+      });
       alice = issueTokens({
         userId: IDS.alice,
         username: "alice",
@@ -292,7 +323,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             res.end(JSON.stringify({ error: { message: "upstream exploded" } }));
             return;
           }
-          openAiReply(res, body.stream === true, step);
+          onOpenAiRequest.shift()?.();
+          openAiReply(res, body, step);
         });
       });
       anthropicServer = createServer((req, res) => {
@@ -333,6 +365,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       openaiSeen.length = 0;
       anthropicSeen.length = 0;
       steps.length = 0;
+      onOpenAiRequest.length = 0;
       __resetModelCatalogForTests();
       __resetToolRegistrySingleton();
       __resetToolApprovalBroker();
@@ -423,7 +456,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ]) {
         expect(res.status, res.text).toBe(503);
         expect(res.body.error.message).toContain('"azure"');
-        expect(res.body.error.message).toContain("AZURE_OPENAI_ENDPOINT");
+        // The config loader's reason (which can name an endpoint URL or the
+        // allowed-host list) goes to the server log, not to the chat user.
+        expect(res.body.error.message).not.toContain("AZURE_OPENAI_ENDPOINT");
+        expect(res.body.error.message).toContain("server log");
       }
       expect(openaiSeen).toHaveLength(0);
       expect(anthropicSeen).toHaveLength(0);
@@ -637,6 +673,116 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       release();
       expect((await call).content).toBe("openai says hi");
       expect(events).toEqual(["queued:1", "acquired"]);
+    });
+
+    // #204 on the TOOL paths — a project-scoped session offers tools, so its turn
+    // runs through the tool loop (each model call its own slot), not the plain
+    // stream. These are the turns #204 describes.
+
+    it("#204 native tool loop — a project turn queued past the hard ceiling still answers, every call through the loop", async () => {
+      process.env.AI_STREAM_MAX_DURATION_MS = "400";
+      const release = await holdTheOnlySlot();
+      setAIProviderForTests(localProvider());
+      const session = await newSession(IDS.plain);
+      steps.push("tool", "text");
+      setTimeout(release, 900);
+      const res = await stream(session.id, "count rows");
+      expect(res.text).not.toContain("STREAM_MAX_DURATION");
+      expect(res.text).toContain("openai says hi");
+      expect(res.text).toContain("event: done");
+      // The loop really ran natively: tools on the wire, a tool call, a second call.
+      expect(openaiSeen).toHaveLength(2);
+      expect(openaiSeen[0]!.body.tools).toBeDefined();
+      expect(openaiSeen[0]!.body.stream).toBe(true);
+      expect(res.text).toContain("event: tool_call");
+      const queue = frames(res.text, "queue");
+      expect(queue[0]).toMatchObject({ state: "waiting", position: 1 });
+      expect(queue[1]).toMatchObject({ state: "acquired" });
+      expect(queue[1]!.waitedMs as number).toBeGreaterThanOrEqual(800);
+    });
+
+    it("#204 native tool loop — once the slot is acquired the ceiling bounds generation again", async () => {
+      process.env.AI_STREAM_MAX_DURATION_MS = "400";
+      process.env.AI_STREAM_IDLE_TIMEOUT_MS = "0";
+      process.env.AI_STREAM_QUEUE_MAX_WAIT_MS = "5000";
+      const release = await holdTheOnlySlot();
+      setAIProviderForTests(localProvider());
+      const session = await newSession(IDS.plain);
+      steps.push("hang");
+      setTimeout(release, 600);
+      const started = Date.now();
+      const res = await stream(session.id, "count rows");
+      const elapsed = Date.now() - started;
+      expect(openaiSeen[0]!.body.tools).toBeDefined();
+      expect(frames(res.text, "error")[0]).toMatchObject({ code: "STREAM_MAX_DURATION" });
+      expect(elapsed).toBeGreaterThanOrEqual(950);
+      expect(elapsed).toBeLessThan(4000);
+    });
+
+    it("#204 text-protocol tool loop — a queued chat() call is timed the same way", async () => {
+      process.env.AI_STREAM_MAX_DURATION_MS = "400";
+      process.env.AI_STREAM_QUEUE_MAX_WAIT_MS = "5000";
+      process.env.CHAT_CODE_SEARCH_TOOLS = "true";
+      // A local model the catalog says cannot call tools natively: the curated
+      // code tools ride the text protocol, through non-streaming chat().
+      class TextProtocolLocal extends OpenAICompatibleProvider {
+        override capabilitiesFor(model: string) {
+          return { ...super.capabilitiesFor(model), nativeToolCalls: false };
+        }
+      }
+      const release = await holdTheOnlySlot();
+      setAIProviderForTests(
+        new TextProtocolLocal({
+          baseUrl: `${openaiBase}/v1`,
+          apiKey: "ollama",
+          model: "gemma4:e4b",
+          providerKey: "local-gemma",
+          maxAttempts: 1,
+        }),
+      );
+      const session = await newSession(IDS.plain);
+      setTimeout(release, 900);
+      const res = await stream(session.id, "hello");
+      expect(res.text).not.toContain("STREAM_MAX_DURATION");
+      expect(res.text).toContain("openai says hi");
+      expect(res.text).toContain("event: done");
+      expect(openaiSeen).toHaveLength(1);
+      // Text protocol: no native tools on the wire, the schemas in the prompt.
+      expect(openaiSeen[0]!.body.tools).toBeUndefined();
+      expect(openaiSeen[0]!.body.stream).not.toBe(true);
+      expect(JSON.stringify(openaiSeen[0]!.body.messages)).toContain("search_code_graph");
+      const queue = frames(res.text, "queue");
+      expect(queue.map((q) => q.state)).toEqual(["waiting", "acquired"]);
+    });
+
+    it("#204 sub-agent — a sub-agent call queued behind the only slot does not count against the ceiling", async () => {
+      process.env.AI_STREAM_MAX_DURATION_MS = "400";
+      process.env.AI_STREAM_QUEUE_MAX_WAIT_MS = "5000";
+      process.env.LOCAL_GEMMA_MAX_CONCURRENCY = "1";
+      resetLocalConcurrencyLimitersForTests();
+      setAIProviderForTests(localProvider());
+      const session = await newSession(IDS.delegating, { policy: { medium: "auto" } });
+      // The parent's first call runs at once and delegates. While it holds the
+      // slot, other work queues for it — so the sub-agent's call waits ~900ms.
+      onOpenAiRequest.push(() => {
+        void localConcurrencyLimiter(`${openaiBase}/v1`)
+          .acquire()
+          .then((release) => setTimeout(release, 900));
+      });
+      steps.push("delegate", "text", "text");
+      const res = await stream(session.id, "count rows via the counter");
+      expect(res.text).not.toContain("STREAM_MAX_DURATION");
+      expect(res.text).toContain("event: done");
+      expect(openaiSeen).toHaveLength(3);
+      const delegated = (openaiSeen[0]!.body.tools as Array<{ function: { name: string } }>).find(
+        (t) => t.function.name.startsWith("agent_"),
+      );
+      expect(delegated).toBeDefined();
+      // The sub-agent's own request: its system prompt, not the parent's.
+      expect(JSON.stringify(openaiSeen[1]!.body.messages)).toContain("You count rows.");
+      const queue = frames(res.text, "queue");
+      expect(queue.map((q) => q.state)).toEqual(["waiting", "acquired"]);
+      expect(queue[1]!.waitedMs as number).toBeGreaterThanOrEqual(800);
     });
   },
 );

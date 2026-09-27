@@ -104,5 +104,3 @@ export interface SessionSnapshot {
   loadedSkillIds: string[];
   customAgentIds: string[];
 }
-
-export const DEFAULT_SESSION_SNAPSHOT_INTERVAL = 5;
