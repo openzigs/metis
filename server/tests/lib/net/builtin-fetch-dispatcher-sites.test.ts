@@ -10,7 +10,7 @@
  * loopback.
  */
 import http from "node:http";
-import net, { type AddressInfo } from "node:net";
+import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../src/lib/prisma.js", () => ({
@@ -94,28 +94,28 @@ async function target(reply: unknown = { ok: true }): Promise<Target> {
   return { port: (server.address() as AddressInfo).port, hits };
 }
 
-/** A loopback forward proxy (absolute-form and CONNECT) that records what it carried. */
-async function forwardProxy(): Promise<{ url: string; seen: string[] }> {
+/**
+ * A loopback forward proxy that serves ONE destination, `targetPort`. It
+ * records the absolute-form request line undici sends for an http:// target
+ * and relays the request to the fixed test target. Anything else is refused.
+ */
+async function forwardProxy(targetPort: number): Promise<{ url: string; seen: string[] }> {
   const seen: string[] = [];
+  const origin = `http://127.0.0.1:${targetPort}`;
   const proxy = http.createServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
-    const up = http.request(req.url!, { method: req.method, headers: req.headers }, (u) => {
-      res.writeHead(u.statusCode ?? 502, u.headers);
-      u.pipe(res);
-    });
+    if (!req.url?.startsWith(`${origin}/`)) {
+      res.writeHead(403).end();
+      return;
+    }
+    const up = http.request(
+      { host: "127.0.0.1", port: targetPort, path: "/", method: req.method, headers: req.headers },
+      (u) => {
+        res.writeHead(u.statusCode ?? 502, u.headers);
+        u.pipe(res);
+      },
+    );
     req.pipe(up);
-  });
-  proxy.on("connect", (req, client, head) => {
-    seen.push(`CONNECT ${req.url}`);
-    const [h, p] = (req.url ?? "").split(":");
-    const up = net.connect(Number(p), h, () => {
-      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-      up.write(head);
-      up.pipe(client);
-      client.pipe(up);
-    });
-    up.on("error", () => client.destroy());
-    client.on("error", () => up.destroy());
   });
   servers.push(proxy);
   await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", () => r()));
@@ -203,30 +203,30 @@ describe("pinned dispatchers reach a real server through the built-in fetch", ()
 describe("proxy dispatchers reach a real server through the built-in fetch", () => {
   it("connectors: resolveConnectorDispatcher through HTTPS_PROXY", async () => {
     const t = await target();
-    const p = await forwardProxy();
+    const p = await forwardProxy(t.port);
     process.env.HTTPS_PROXY = p.url;
     const d = await resolveConnectorDispatcher(pinnedLoopback("127.0.0.1"));
     const res = await globalThis.fetch(`http://127.0.0.1:${t.port}/`, { dispatcher: d } as Init);
     expect(res.status).toBe(200);
-    expect(p.seen.join("\n")).toContain(`127.0.0.1:${t.port}`);
+    expect(p.seen).toEqual([`GET http://127.0.0.1:${t.port}/`]);
     await d.close?.();
   });
 
   it("RAG embedder: createProxyFetch's default ProxyAgent", async () => {
     const t = await target({ embedded: true });
-    const p = await forwardProxy();
+    const p = await forwardProxy(t.port);
     const f = createProxyFetch({ env: { HTTP_PROXY: p.url } });
     const res = await f(`http://127.0.0.1:${t.port}/embed`, { method: "GET" });
     expect(await res.json()).toEqual({ embedded: true });
-    expect(p.seen.join("\n")).toContain(`127.0.0.1:${t.port}`);
+    expect(p.seen).toEqual([`GET http://127.0.0.1:${t.port}/embed`]);
   });
 
   it("web research: proxyFetch's ProxyAgent", async () => {
     const t = await target({ searched: true });
-    const p = await forwardProxy();
+    const p = await forwardProxy(t.port);
     process.env.HTTP_PROXY = p.url;
     const res = await proxyFetch(`http://127.0.0.1:${t.port}/search`);
     expect(await res.json()).toEqual({ searched: true });
-    expect(p.seen.join("\n")).toContain(`127.0.0.1:${t.port}`);
+    expect(p.seen).toEqual([`GET http://127.0.0.1:${t.port}/search`]);
   });
 });

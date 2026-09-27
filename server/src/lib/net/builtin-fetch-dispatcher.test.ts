@@ -8,7 +8,7 @@
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import http from "node:http";
-import net, { type AddressInfo } from "node:net";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent } from "undici";
@@ -190,26 +190,29 @@ describe("a wrapped dispatcher, driven by the built-in fetch over loopback", () 
   it("routes through a ProxyAgent to the target", async () => {
     const { port: targetPort } = await listen((_req, res) => res.end("via proxy"));
     const seen: string[] = [];
+    // A forward proxy that serves ONE destination: it records the absolute-form
+    // request line undici sends for an http:// target and relays it to the
+    // fixed test target. Anything else is refused.
     const proxy = http.createServer((req, res) => {
-      // Absolute-form forward (a proxy that is not asked to tunnel).
       seen.push(`${req.method} ${req.url}`);
-      const upstream = http.request(req.url!, { method: req.method, headers: req.headers }, (u) => {
-        res.writeHead(u.statusCode ?? 502, u.headers);
-        u.pipe(res);
-      });
+      if (req.url !== `http://127.0.0.1:${targetPort}/x`) {
+        res.writeHead(403).end();
+        return;
+      }
+      const upstream = http.request(
+        {
+          host: "127.0.0.1",
+          port: targetPort,
+          path: "/x",
+          method: req.method,
+          headers: req.headers,
+        },
+        (u) => {
+          res.writeHead(u.statusCode ?? 502, u.headers);
+          u.pipe(res);
+        },
+      );
       req.pipe(upstream);
-    });
-    proxy.on("connect", (req, clientSocket, head) => {
-      seen.push(`CONNECT ${req.url}`);
-      const [h, p] = (req.url ?? "").split(":");
-      const up = net.connect(Number(p), h, () => {
-        clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-        up.write(head);
-        up.pipe(clientSocket);
-        clientSocket.pipe(up);
-      });
-      up.on("error", () => clientSocket.destroy());
-      clientSocket.on("error", () => up.destroy());
     });
     servers.push(proxy);
     await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", () => r()));
@@ -220,8 +223,7 @@ describe("a wrapped dispatcher, driven by the built-in fetch over loopback", () 
       dispatcher: d,
     } as Init);
     expect(await res.text()).toBe("via proxy");
-    expect(seen.length).toBeGreaterThan(0);
-    expect(seen[0]).toContain(`127.0.0.1:${targetPort}`);
+    expect(seen).toEqual([`GET http://127.0.0.1:${targetPort}/x`]);
   });
 });
 
