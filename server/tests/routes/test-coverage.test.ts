@@ -119,7 +119,6 @@ import { getProject } from "../../src/lib/projects/project-service.js";
 import { testCoverageRouter } from "../../src/routes/test-coverage.js";
 import { AppError, errorHandler } from "../../src/middleware/error-handler.js";
 import { DEFAULT_BUDGET_CENTS } from "../../src/lib/testcoverage/cost-tracker.js";
-import { MAX_RUN_BUDGET_CENTS } from "@metis/shared";
 import {
   exportSuggestionsToGithub,
   exportSuggestionsToXray,
@@ -534,7 +533,9 @@ describe("POST /runs — a per-run budgetCents reaches the budget read (#249)", 
   it("stores a non-default cap and GET …/budget reports it before the run starts", async () => {
     statefulRuns();
     const app = appWithRealErrors();
-    const cap = DEFAULT_BUDGET_CENTS + 55;
+    // Below the operator's cap: a per-run cap may only lower it.
+    const cap = DEFAULT_BUDGET_CENTS - 7;
+    expect(cap).toBeGreaterThan(0);
     const post = await request(app)
       .post("/projects/proj-1/test-coverage/runs")
       .send({ budgetCents: cap });
@@ -561,7 +562,6 @@ describe("POST /runs — a per-run budgetCents reaches the budget read (#249)", 
 
   it.each([
     ["a zero cap", { budgetCents: 0 }],
-    ["a cap above the bound", { budgetCents: MAX_RUN_BUDGET_CENTS + 1 }],
     ["a fractional cap", { budgetCents: 12.5 }],
     ["a modelTag nothing reads", { modelTag: "haiku" }],
     ["importIds nothing reads", { importIds: ["imp-1"] }],
@@ -572,6 +572,63 @@ describe("POST /runs — a per-run budgetCents reaches the budget read (#249)", 
       .send(body);
     expect(res.status).toBe(400);
     expect(prisma.testCoverageRun.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /runs — a per-run cap cannot exceed the operator's (#249 review)", () => {
+  // `mockUser` is a `developer`: the lowest role holding `analysis.run`, the
+  // only permission this route requires.
+  function app(): Express {
+    const a = express();
+    a.use(express.json());
+    a.use((req, _res, next) => {
+      (req as unknown as { user: typeof mockUser }).user = mockUser;
+      next();
+    });
+    a.use(
+      "/projects/:projectId/test-coverage",
+      testCoverageRouter({ enqueueRun: vi.fn().mockResolvedValue(undefined) }),
+    );
+    a.use(errorHandler);
+    return a;
+  }
+
+  beforeEach(() => {
+    vi.mocked(prisma.testCoverageRun.findFirst).mockResolvedValue(null as never);
+    vi.mocked(prisma.testCaseDoc.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.testCoverageRun.create).mockImplementation((async ({
+      data,
+    }: {
+      data: Record<string, unknown>;
+    }) => ({ id: "run-1", ...data })) as never);
+  });
+
+  it.each([
+    ["one cent above", DEFAULT_BUDGET_CENTS + 1],
+    ["500x the default", DEFAULT_BUDGET_CENTS * 500],
+  ])("refuses a developer's cap %s the operator's, creating no run", async (_label, cap) => {
+    expect(mockUser.role).toBe("developer");
+    const res = await request(app())
+      .post("/projects/proj-1/test-coverage/runs")
+      .send({ budgetCents: cap });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({
+      code: "BUDGET_ABOVE_OPERATOR_CAP",
+      details: { maxBudgetCents: DEFAULT_BUDGET_CENTS },
+    });
+    expect(prisma.testCoverageRun.create).not.toHaveBeenCalled();
+  });
+
+  it("accepts a cap exactly equal to the operator's", async () => {
+    const res = await request(app())
+      .post("/projects/proj-1/test-coverage/runs")
+      .send({ budgetCents: DEFAULT_BUDGET_CENTS });
+    expect(res.status).toBe(202);
+    expect(prisma.testCoverageRun.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ budgetCents: DEFAULT_BUDGET_CENTS }),
+      }),
+    );
   });
 });
 

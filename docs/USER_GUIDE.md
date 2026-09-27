@@ -4501,8 +4501,11 @@ curl -X POST \
 ```
 
 The body is optional. `mode` is `"A"` (default) or `"B"`, and `budgetCents` caps
-this run's AI spend in cents (1 to 10,000; the server default applies when it is
-omitted). Any other field is rejected with a 400.
+this run's AI spend in cents (the server default applies when it is omitted). A
+per-run cap can only be lower than or equal to the operator's
+`TESTCOVERAGE_BUDGET_CENTS`; a higher value is rejected with
+`400 BUDGET_ABOVE_OPERATOR_CAP`. To allow more spend, raise the environment
+variable. Any other field is rejected with a 400.
 
 Poll the run for progress:
 

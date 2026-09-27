@@ -13,7 +13,7 @@
  */
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
-import { CoverageCostTracker } from "./cost-tracker.js";
+import { CoverageCostTracker, DEFAULT_BUDGET_CENTS } from "./cost-tracker.js";
 import { TestCoverageIndexer } from "./indexer.js";
 import { finaliseCase } from "./normaliser.js";
 import { runCoverageScoring } from "./coverage-service.js";
@@ -57,7 +57,7 @@ export interface TestCoverageRunnerDeps {
   db?: typeof prisma;
   /** LLM bridge for judge + suggestion phases. When omitted, those phases are skipped. */
   caller?: JudgeModelCaller;
-  /** Process-wide cost ceiling, defaults to {@link CoverageCostTracker.DEFAULT_BUDGET_CENTS}; a cap stored on the run (#249) wins. */
+  /** Process-wide cost ceiling, defaults to {@link CoverageCostTracker.DEFAULT_BUDGET_CENTS}; a LOWER cap stored on the run (#249) wins. */
   budgetCents?: number;
 }
 
@@ -81,9 +81,14 @@ export async function runTestCoverageJob(
   if (existing.status !== "queued") return;
 
   // #249 — a cap the client sent with POST /runs is stored on the row and wins
-  // over the process-wide default; otherwise the start-of-run write below
-  // would overwrite it with the default.
-  const budgetCents = existing.budgetCents ?? deps.budgetCents;
+  // over the process-wide default (otherwise the start-of-run write below
+  // would overwrite it with the default) — but only downward. The route
+  // already refuses a cap above the operator's; clamping here too means a row
+  // written any other way, or a cap lowered in the environment after the run
+  // was queued, still cannot run above the operator's current ceiling.
+  const processCap = deps.budgetCents ?? DEFAULT_BUDGET_CENTS;
+  const budgetCents =
+    existing.budgetCents == null ? processCap : Math.min(existing.budgetCents, processCap);
 
   // #72 — ONE tracker for the whole run. The index phase below is the largest
   // embedding consumer a run has, and it executes before `runCoverageScoring`

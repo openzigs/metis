@@ -165,12 +165,6 @@ export type SuggestionDto = z.infer<typeof SuggestionSchema>;
 // ---- Request bodies -------------------------------------------------------
 
 /**
- * #249 — the upper bound on a per-run `budgetCents` a client may request:
- * $100. The process default (`TESTCOVERAGE_BUDGET_CENTS`) is 20 cents.
- */
-export const MAX_RUN_BUDGET_CENTS = 10_000;
-
-/**
  * #249 — `.strict()`: a field the server does not act on is a 400, never
  * silently stripped into a 202 that ignored it. `importIds` and `modelTag` were
  * removed for that reason — no route or runner code ever read either.
@@ -180,7 +174,11 @@ export const CreateRunBodySchema = z
     mode: RunModeSchema.default("A"),
     /// Per-run cost cap in cents; the process default when omitted. Stored on
     /// the run, which is what the runner and the budget endpoint both read.
-    budgetCents: z.number().int().min(1).max(MAX_RUN_BUDGET_CENTS).optional(),
+    /// It may only LOWER the operator's `TESTCOVERAGE_BUDGET_CENTS` cap: the
+    /// server refuses a value above it, because the route needs only
+    /// `analysis.run`, which non-admin roles hold. The bound lives on the
+    /// server, not here, because only the server knows the operator's cap.
+    budgetCents: z.number().int().min(1).optional(),
   })
   .strict();
 export type CreateRunBody = z.infer<typeof CreateRunBodySchema>;

@@ -573,6 +573,24 @@ describe("replay/runs-service computeRunCost — cached input is priced once (#2
     expect(cost.costCents).toBe(300);
   });
 
+  it("reports the corrected token total even for a row written before the fix (#264 review)", async () => {
+    const runId = await windowedRun("sess-legacy");
+    // A pre-#248 gateway row: 1M prompt tokens that INCLUDE 1M cache reads,
+    // stored with the double-counted total (prompt + reads + output).
+    seedUsage({
+      sessionId: "sess-legacy",
+      createdAt: new Date("2026-01-01T00:10:00Z"),
+      provider: "bedrock-gateway",
+      model: GATEWAY_MODEL,
+      inputTokens: 1_000_000,
+      cacheReadTokens: 1_000_000,
+      outputTokens: 500,
+      totalTokens: 2_000_500,
+    });
+    const cost = await computeRunCost(runId);
+    expect(cost.totalTokens).toBe(1_000_500);
+  });
+
   it("leaves native Anthropic unchanged: input_tokens EXCLUDES the reads, so both are billed", async () => {
     const runId = await windowedRun("sess-native");
     seedUsage({

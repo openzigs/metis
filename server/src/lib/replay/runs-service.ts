@@ -134,7 +134,6 @@ export async function computeRunCost(runId: string): Promise<RunCost> {
       outputTokens: true,
       cacheReadTokens: true,
       cacheWriteTokens: true,
-      totalTokens: true,
     },
   });
   if (rows.length === 0) return { costCents: 0, totalTokens: 0 };
@@ -150,7 +149,6 @@ export async function computeRunCost(runId: string): Promise<RunCost> {
   const groups = new Map<string, Group>();
   let totalTokens = 0;
   for (const row of rows) {
-    totalTokens += row.totalTokens;
     const key = `${row.provider} ${row.model}`;
     const g = groups.get(key) ?? {
       provider: row.provider,
@@ -164,6 +162,9 @@ export async function computeRunCost(runId: string): Promise<RunCost> {
     // `recordUsage` prices with), so a gateway row's cache reads are not billed
     // again at the input rate, and one row's clamp cannot borrow another's.
     const c = canonicalTokenCounts(row.provider, row);
+    // The canonical total, not the stored `totalTokens`: a row written before
+    // #248 stored a gateway total that counted cache reads twice.
+    totalTokens += c.totalTokens;
     g.freshInputTokens += c.freshInputTokens;
     g.outputTokens += c.outputTokens;
     g.cacheReadTokens += c.cacheReadTokens;

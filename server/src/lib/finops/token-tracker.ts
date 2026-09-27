@@ -106,8 +106,10 @@ export interface CanonicalTokenCounts {
  * inside `prompt_tokens` and is therefore already billed, once, at the input
  * rate. No METIS OpenAI-compatible client reads a write field today (they
  * record `cacheWriteTokens: 0`). What this leaves unbilled is only a write
- * PREMIUM over the input rate (e.g. 1.25x on models that charge one); pricing
- * it needs the provider to report writes, and the fresh share to subtract them.
+ * PREMIUM over the input rate — including on the Bedrock gateway, whose Claude
+ * models charge 1.25x the input rate to write, so every gateway cache write is
+ * under-billed by 0.25x. Pricing it needs the provider to report writes, and
+ * the fresh share to subtract them.
  */
 export function canonicalTokenCounts(
   provider: string,
