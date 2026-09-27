@@ -24,3 +24,7 @@ charts/**/Chart.yaml
 # and must stay that way — a reformat would show as a spurious diff on history
 # nobody edited. Same reasoning as graphify-out/ above.
 eval-results/
+
+# #307 — recorded embedding vectors (transformers.js 3.8.1), machine-written and
+# compared value-for-value; a reflow would turn 10 rows into ~7,700 lines.
+server/tests/fixtures/embed-parity-v3-*.json
