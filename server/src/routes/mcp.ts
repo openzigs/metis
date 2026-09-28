@@ -26,7 +26,11 @@ import { Router, type Request } from "express";
 import { type ApiResponse, createMCPServerSchema, updateMCPServerSchema } from "@metis/shared";
 import { audit } from "../lib/audit/audit-service.js";
 import { getMCPRegistry, MCPRegistryService } from "../lib/mcp/index.js";
-import { MCPRegistryError } from "../lib/mcp/mcp-service.js";
+import {
+  MCPRegistryError,
+  PROJECT_REQUIRED,
+  PROJECT_REQUIRED_MESSAGE,
+} from "../lib/mcp/mcp-service.js";
 import {
   executeImport,
   buildImportPlan,
@@ -82,6 +86,10 @@ async function assertCallerProjectAccess(req: Request, projectId: string): Promi
  * name a project the caller can reach. `mcp.manage` / `mcp.write` are role
  * permissions (coordinators hold them), not a grant over every workspace's
  * projects. Runs BEFORE any vault write so a refused request leaves nothing.
+ *
+ * #335 — and it must name one at all. A project server stored with no project
+ * was offered to every project at runtime and, after #311, reachable by no
+ * non-admin to stop or delete it. Absent, null and empty all answer 400.
  */
 async function assertProjectScopedCreate(
   req: Request,
@@ -89,7 +97,9 @@ async function assertProjectScopedCreate(
   projectId: unknown,
 ): Promise<void> {
   if (scope !== "project") return;
-  if (typeof projectId !== "string" || projectId.length === 0) return;
+  if (typeof projectId !== "string" || projectId.length === 0) {
+    throw new AppError(400, PROJECT_REQUIRED, PROJECT_REQUIRED_MESSAGE);
+  }
   await assertCallerProjectAccess(req, projectId);
 }
 

@@ -28,7 +28,11 @@ import { prisma } from "../prisma.js";
 import { expandVaultRefs } from "../vault/env-manager.js";
 import { getVaultService } from "../vault/vault-service.js";
 import type { MCPLifecycleManager } from "./lifecycle-manager.js";
-import { MCPRegistryError } from "./mcp-service-error.js";
+import {
+  MCPRegistryError,
+  PROJECT_REQUIRED,
+  PROJECT_REQUIRED_MESSAGE,
+} from "./mcp-service-error.js";
 import type { MCPServerConfig } from "./types.js";
 import {
   assertCuratedSource,
@@ -40,7 +44,7 @@ import {
   type RegistrationSource,
 } from "./validation.js";
 
-export { MCPRegistryError };
+export { MCPRegistryError, PROJECT_REQUIRED, PROJECT_REQUIRED_MESSAGE };
 
 const log = createChildLogger("mcp-service");
 
@@ -210,6 +214,12 @@ export class MCPRegistryService {
     options: CreateMCPOptions = {},
   ): Promise<MCPServerView> {
     const scope = (input.scope ?? "global") as "global" | "project" | "user";
+    // #335 — never store a project server with no project: the runtime would
+    // have no project to bind it to. Every create path (routes, importer,
+    // registry/federation install) passes through here.
+    if (scope === "project" && !input.projectId) {
+      throw new MCPRegistryError(400, PROJECT_REQUIRED, PROJECT_REQUIRED_MESSAGE);
+    }
     // Sub-issue #273 — curated registration enforcement.
     assertCuratedSource(scope, options.source ?? null, actor);
     // Sub-issue #274 — vault-only env enforcement.

@@ -168,7 +168,22 @@ describe("McpSettingsPage — Registry tab", () => {
     expect(await screen.findByTestId("install-confirm")).toBeInTheDocument();
   });
 
-  it("calls install with the chosen scope", async () => {
+  // #335 — this page has no project context. Offering "Project" sent
+  // scope:"project" with no projectId, which stored a server bound to no
+  // project; the dialog installs globally only (attach per project via the
+  // project's allow-list).
+  it("does not offer Project scope: there is no project to bind it to", async () => {
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    fireEvent.mouseDown(screen.getByTestId("tab-registry"));
+    await screen.findByText("Filesystem MCP");
+    fireEvent.click(screen.getByTestId("registry-install-fs"));
+    await screen.findByTestId("install-confirm");
+    expect(screen.queryByRole("option", { name: /project/i })).toBeNull();
+    expect(screen.queryByTestId("install-scope")).toBeNull();
+    expect(screen.getByTestId("install-scope-note")).toHaveTextContent(/global/i);
+  });
+
+  it("calls install with the global scope", async () => {
     installMock.mockResolvedValue(makeServer({ id: "new" }));
     render(<McpSettingsPage />, { wrapper: makeWrapper() });
     fireEvent.mouseDown(screen.getByTestId("tab-registry"));

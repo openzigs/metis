@@ -166,7 +166,33 @@ export class MCPToolBridge {
         // SEC-6: project-scoped server may only be invoked by sessions
         // attached to the SAME project. Otherwise a session bound to project
         // B that guesses the FQ tool name could reach project A's server.
-        if (config.scope === "project" && config.projectId && ctx.projectId !== config.projectId) {
+        // #335 — a project server with NO project fails closed: it belongs to
+        // no project, so no session may invoke it (it used to skip this check
+        // and so reach every project).
+        if (config.scope === "project" && !config.projectId) {
+          audit({
+            actor: { id: ctx.userId },
+            action: "mcp.tool.invoke",
+            target: { type: "mcp_server", id: serverId },
+            metadata: {
+              tool: toolName,
+              risk,
+              projectId: ctx.projectId ?? null,
+              sessionId: ctx.sessionId,
+              isError: true,
+              decision: "denied",
+              denyReason: "project_unassigned",
+              version: config.version ?? null,
+              sha256: config.sha256 ?? null,
+              argsHash,
+              resultHash: null,
+            },
+          });
+          throw new Error(
+            `MCP server ${label} is project-scoped but has no project — invocation denied until an admin assigns or deletes it`,
+          );
+        }
+        if (config.scope === "project" && ctx.projectId !== config.projectId) {
           audit({
             actor: { id: ctx.userId },
             action: "mcp.tool.invoke",

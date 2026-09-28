@@ -240,6 +240,128 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await call("get", `/api/mcp/${id}`, ADMIN)).status).toBe(200);
     });
 
+    // ── #335 — no create path may store a project server without a project ──
+    describe("project-scoped creates require a projectId", () => {
+      // POST / already refused this through the shared schema's refine
+      // (VALIDATION_ERROR on `projectId`); the other five stored the row.
+      const createRoutes: Array<{
+        name: string;
+        url: string;
+        body: Record<string, unknown>;
+        code?: string;
+      }> = [
+        {
+          name: "POST /",
+          url: "/api/mcp",
+          body: { label: "no-project", transport: "http", url: "https://example.test/mcp" },
+          code: "VALIDATION_ERROR",
+        },
+        { name: "POST /import", url: "/api/mcp/import", body: { mcpJson: { mcpServers: {} } } },
+        {
+          name: "POST /import (dryRun)",
+          url: "/api/mcp/import",
+          body: { mcpJson: { mcpServers: {} }, dryRun: true },
+        },
+        {
+          name: "POST /registry/install",
+          url: "/api/mcp/registry/install",
+          body: { registryServerId: "fs" },
+        },
+        {
+          name: "POST /federation/install",
+          url: "/api/mcp/federation/install",
+          body: { entryId: "fed-entry" },
+        },
+        {
+          name: "POST /import-copilot",
+          url: "/api/mcp/import-copilot",
+          body: { mcpJson: { servers: {} } },
+        },
+      ];
+      describe.each(createRoutes)("$name", ({ url, body, code = "PROJECT_REQUIRED" }) => {
+        it.each([
+          ["omitted", {}],
+          ["null", { projectId: null }],
+          ["empty", { projectId: "" }],
+        ])("scope project with the projectId %s: 400, nothing stored", async (_n, extra) => {
+          for (const who of [A, ADMIN]) {
+            const before = await db.mCPServer.count();
+            const res = await call("post", url, who, { ...body, scope: "project", ...extra });
+            expect(res.status, JSON.stringify(res.body)).toBe(400);
+            expect(res.body.error.code, JSON.stringify(res.body)).toBe(code);
+            expect(await db.mCPServer.count()).toBe(before);
+          }
+        });
+      });
+
+      it("the access check still runs on the projectId that is supplied", async () => {
+        const body = { label: "x", transport: "http", url: "https://example.test/mcp" };
+        const refused = await call("post", "/api/mcp", B, {
+          ...body,
+          scope: "project",
+          projectId: PA,
+        });
+        expect(refused.status).toBe(404);
+        const created = await call("post", "/api/mcp", A, {
+          ...body,
+          label: "bound-to-a",
+          scope: "project",
+          projectId: PA,
+        });
+        expect(created.status, JSON.stringify(created.body)).toBe(201);
+        expect((await rowOf(created.body.data.id))?.projectId).toBe(PA);
+      });
+
+      it("the service refuses too, so no caller of create() can store one", async () => {
+        const svc = new MCPRegistryService(
+          new MCPLifecycleManager({
+            resolveEnv: async (e) => e,
+            transportFactory: () => {
+              throw new Error("no MCP transport in this test");
+            },
+          }),
+        );
+        const before = await db.mCPServer.count();
+        await expect(
+          svc.create(
+            {
+              scope: "project",
+              label: "svc-no-project",
+              transport: "http",
+              runtime: "native",
+              url: "https://example.test/mcp",
+              trustLevel: "untrusted",
+              defaultToolRisk: "medium",
+              healthCheckIntervalSec: 60,
+              enabled: true,
+            },
+            { id: "u-admin", role: "admin" },
+          ),
+        ).rejects.toMatchObject({ status: 400, code: "PROJECT_REQUIRED" });
+        expect(await db.mCPServer.count()).toBe(before);
+      });
+    });
+
+    // ── #335 — legacy project servers with no project: admin can find + remove ─
+    it("an admin lists and deletes a legacy project server with no project; a non-admin never sees it", async () => {
+      const id = await makeServer("project", null);
+      const listed = (who: string) =>
+        call("get", "/api/mcp", who).then((r) =>
+          (
+            r.body.data.items as Array<{ id: string; scope: string; projectId: string | null }>
+          ).find((s) => s.id === id),
+        );
+      expect(await listed(ADMIN)).toMatchObject({ id, scope: "project", projectId: null });
+      expect(await listed(A)).toBeUndefined();
+      expect(await listed(B)).toBeUndefined();
+      expect((await call("delete", `/api/mcp/${id}`, A)).status).toBe(404);
+      expect((await rowOf(id))?.deletedAt).toBeNull();
+      const del = await call("delete", `/api/mcp/${id}`, ADMIN);
+      expect(del.status, JSON.stringify(del.body)).toBeLessThan(300);
+      expect((await rowOf(id))?.deletedAt).not.toBeNull();
+      expect(await listed(ADMIN)).toBeUndefined();
+    });
+
     // ── #311 — the unfiltered lists ─────────────────────────────────────────
     describe("unfiltered lists", () => {
       let inA = "";
