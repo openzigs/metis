@@ -292,6 +292,25 @@ describe("logical manifest", () => {
     expect(parseLogicalManifest(m).rowCounts.Project).toBe(5);
   });
 
+  // #330 — zod 3 accepted these createdAt forms; keep accepting them.
+  it.each(["2026-01-01T10:00Z", "2026-01-01T10:00:00+0100", "2026-01-01T10:00+01:00"])(
+    "accepts createdAt %s (zod 3 parity)",
+    (createdAt) => {
+      const m = buildLogicalManifest({
+        provider: "sqlite",
+        schemaVersion: "0.1.0",
+        rowCounts: {},
+        includedModels: [],
+        loadOrder: [],
+        deferredFks: [],
+      });
+      expect(parseLogicalManifest({ ...m, createdAt }).createdAt).toBe(createdAt);
+      expect(() => parseLogicalManifest({ ...m, createdAt: "2026-01-01T10:00:00" })).toThrow(
+        /Invalid logical-dump manifest/,
+      );
+    },
+  );
+
   it("rejects a manifest with the wrong format tag", () => {
     expect(() => parseLogicalManifest({ format: "nope" })).toThrow(/Invalid logical-dump manifest/);
   });

@@ -120,6 +120,25 @@ describe("friendly VALIDATION_ERROR envelope (raw ZodError → 400)", () => {
       },
     ],
     [
+      "an omitted required enum field",
+      { label: "ok" },
+      {
+        message: "source is required",
+        fields: [{ field: "source", message: "source is required" }],
+      },
+    ],
+    [
+      "every required field omitted",
+      {},
+      {
+        message: "Some fields need your attention before you can continue.",
+        fields: [
+          { field: "source", message: "source is required" },
+          { field: "label", message: "label is required" },
+        ],
+      },
+    ],
+    [
       "several fields at once",
       { source: "nope" },
       {
