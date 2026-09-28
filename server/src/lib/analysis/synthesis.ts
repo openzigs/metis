@@ -10,7 +10,7 @@
 import {
   describeSupportPanel,
   type AgentFindingPayload,
-  type AnalysisAgentKey,
+  type AnalysisResultAgentKey,
   type FindingSupportPanel,
   type RequirementPriority,
   type SynthesisDegradation,
@@ -34,7 +34,8 @@ import { buildSynthesisPrompt } from "./prompts.js";
 const log = createChildLogger("analysis-synthesis");
 
 export interface FlatFinding extends AgentFindingPayload {
-  agentKey: AnalysisAgentKey;
+  /** A specialist key, or (#289) the ref of the agent-phase agent that made it. */
+  agentKey: AnalysisResultAgentKey;
 }
 
 export interface SynthesisInput {

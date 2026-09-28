@@ -96,6 +96,11 @@ export interface AgentSystemPromptInput {
   inlineSkillBlocks?: readonly string[];
   /** The native-tools note, when tools are offered. */
   toolNote?: string;
+  /**
+   * #289 — a SERVER-authored answer contract (e.g. the analysis findings
+   * schema), appended last. Absent ⇒ the prompt is byte-identical to before.
+   */
+  outputContract?: string;
 }
 
 /**
@@ -113,6 +118,7 @@ export function buildAgentSystemPrompt(input: AgentSystemPromptInput): string {
   if (catalog) parts.push("", catalog);
   for (const block of input.inlineSkillBlocks ?? []) parts.push("", block);
   if (input.toolNote) parts.push("", input.toolNote);
+  if (input.outputContract) parts.push("", input.outputContract);
   return parts.join("\n");
 }
 
@@ -141,6 +147,18 @@ export interface RunAgentInput {
   providerChatOptions?: Partial<ChatOptions>;
   /** Wraps every model call (the sub-agent token budget charges here). */
   callModel?: (messages: ChatMessage[], opts: ChatOptions) => Promise<ChatResponse>;
+  /** #289 — a server-authored answer contract, appended to the system prompt. */
+  outputContract?: string;
+  /**
+   * #289 — text-only runs: when the answer fails `isValid`, spend ONE more
+   * call (same system prompt, still no tools) with the answer and `instruction`
+   * appended, and return that reply instead. The #769 final-answer retry,
+   * for the one-call runtime. Usage is the sum of both calls.
+   */
+  finalAnswerRetry?: {
+    instruction: string;
+    isValid: (text: string) => boolean;
+  };
 }
 
 export interface RunAgentResult {
@@ -152,6 +170,8 @@ export interface RunAgentResult {
   turns: string[];
   toolCalls: ChatToolRecord[];
   finishReason?: string;
+  /** #289 — present when a `finalAnswerRetry` was configured. */
+  finalAnswerRetry?: { attempted: boolean; succeeded: boolean };
 }
 
 const ZERO: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -165,6 +185,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
     ...(withTools && input.skillCatalog ? { skillCatalog: input.skillCatalog } : {}),
     ...(input.inlineSkillBlocks ? { inlineSkillBlocks: input.inlineSkillBlocks } : {}),
     ...(withTools ? { toolNote: withTools.toolNote } : {}),
+    ...(input.outputContract ? { outputContract: input.outputContract } : {}),
   });
   const user: ChatMessage = { role: "user", content: frameInput(input.frame, input.input) };
   const turns: string[] = [];
@@ -177,22 +198,46 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
   if (!withTools) {
     // Text only — the pre-#129 `invokeCustomAgent` call shape: the prompt in
     // `systemMessage`, and tools switched off because none may be offered.
-    const response = await callModel([user], {
+    const opts: ChatOptions = {
       ...(input.providerChatOptions ?? {}),
       systemMessage: system,
       model: input.model,
       ...(definition.reasoningEffort ? { reasoningEffort: definition.reasoningEffort } : {}),
       signal: input.signal,
       disableTools: true,
-    });
+    };
+    const first = await callModel([user], opts);
+    let response = first;
+    const usage: TokenUsage = { ...(first.usage ?? ZERO) };
+    let retry: RunAgentResult["finalAnswerRetry"];
+    if (input.finalAnswerRetry) {
+      retry = { attempted: false, succeeded: false };
+      if (!input.finalAnswerRetry.isValid(first.content)) {
+        retry.attempted = true;
+        response = await callModel(
+          [
+            user,
+            { role: "assistant", content: first.content },
+            { role: "user", content: input.finalAnswerRetry.instruction },
+          ],
+          opts,
+        );
+        const u = response.usage ?? ZERO;
+        usage.promptTokens += u.promptTokens;
+        usage.completionTokens += u.completionTokens;
+        usage.totalTokens += u.totalTokens;
+        retry.succeeded = input.finalAnswerRetry.isValid(response.content);
+      }
+    }
     return {
       content: response.content,
-      usage: response.usage ?? { ...ZERO },
+      usage,
       model: response.model,
       provider: response.provider,
       turns,
       toolCalls: [],
       ...(response.finishReason ? { finishReason: response.finishReason } : {}),
+      ...(retry ? { finalAnswerRetry: retry } : {}),
     };
   }
 

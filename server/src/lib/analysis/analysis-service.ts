@@ -10,6 +10,9 @@
  * already wired via Prisma `onDelete: Cascade` on the project relation.
  */
 import {
+  isAgentPhaseResultKey,
+  type AnalysisAgentSource,
+  type AnalysisResultAgentKey,
   type AnalysisAgentKey,
   type AnalysisCapability,
   type AnalysisAffectedCode,
@@ -96,11 +99,24 @@ export interface CreateAnalysisInput {
   extraInstructions?: string;
 }
 
+/**
+ * #289 — the persisted output of a custom/library agent from the analysis agent
+ * phase: the specialists' findings answer (minus the specialist-only
+ * `agentKey`) plus the agent it came from.
+ */
+export interface AgentPhaseOutput {
+  summary: string;
+  findings: AgentFindingPayload[];
+  notes: string[];
+  source: AnalysisAgentSource;
+}
+
 export interface PersistAgentResultInput {
   analysisId: string;
-  agentKey: AnalysisAgentKey;
+  /** A built-in agent key, or (#289) an agent-phase agent's ref. */
+  agentKey: AnalysisResultAgentKey;
   status: "completed" | "failed" | "cancelled";
-  output: AgentOutput | SynthesisOutput | null;
+  output: AgentOutput | SynthesisOutput | AgentPhaseOutput | null;
   errorMessage?: string | null;
   startedAt: Date;
   completedAt: Date;
@@ -136,11 +152,13 @@ export interface PersistAgentResultInput {
 
 export interface PersistedAgentResult {
   id: string;
-  agentKey: AnalysisAgentKey;
+  agentKey: AnalysisResultAgentKey;
   findingIds: string[];
 }
 
-const isAgentOutput = (value: AgentOutput | SynthesisOutput | null): value is AgentOutput =>
+const isAgentOutput = (
+  value: AgentOutput | SynthesisOutput | AgentPhaseOutput | null,
+): value is AgentOutput | AgentPhaseOutput =>
   value !== null && Array.isArray((value as AgentOutput).findings);
 
 export async function createAnalysis(input: CreateAnalysisInput) {
@@ -1084,19 +1102,39 @@ function coerceVerdict(value: unknown): RequirementVerdict | null {
     : null;
 }
 
-function parseAgentOutputBlob(raw: string | null): { summary: string | null; notes: string[] } {
-  if (!raw) return { summary: null, notes: [] };
+function parseAgentOutputBlob(raw: string | null): {
+  summary: string | null;
+  notes: string[];
+  sourceName: string | null;
+} {
+  if (!raw) return { summary: null, notes: [], sourceName: null };
   try {
-    const obj = JSON.parse(raw) as { summary?: unknown; notes?: unknown };
+    const obj = JSON.parse(raw) as { summary?: unknown; notes?: unknown; source?: unknown };
+    const source = obj.source as { name?: unknown } | null | undefined;
     return {
       summary: typeof obj.summary === "string" ? obj.summary : null,
       notes: Array.isArray(obj.notes)
         ? obj.notes.filter((x): x is string => typeof x === "string")
         : [],
+      sourceName:
+        source && typeof source === "object" && typeof source.name === "string"
+          ? source.name
+          : null,
     };
   } catch {
-    return { summary: null, notes: [] };
+    return { summary: null, notes: [], sourceName: null };
   }
+}
+
+/**
+ * #289 — the snapshot's `source` for an agent-phase row. The kind and ref come
+ * from the row's own key (validated), never from the blob; only the display
+ * name does, falling back to the ref.
+ */
+function agentPhaseSource(agentKey: string, sourceName: string | null): AnalysisAgentSource | null {
+  if (!isAgentPhaseResultKey(agentKey)) return null;
+  const kind = agentKey.startsWith("library:") ? "library" : "custom";
+  return { kind, ref: agentKey, name: sourceName?.trim() || agentKey };
 }
 
 interface AnalysisRowWithIncludes {
@@ -1168,11 +1206,13 @@ function toSnapshot(
     }
   }
   const agents = row.agentResults
-    .filter((a) => SAFE_AGENT_KEYS.has(a.agentKey))
+    // #289 — agent-phase rows (`custom:<id>` / `library:<id>`) are shown too.
+    .filter((a) => SAFE_AGENT_KEYS.has(a.agentKey) || isAgentPhaseResultKey(a.agentKey))
     .map((a) => {
       const blob = parseAgentOutputBlob(a.output);
       return {
         agentKey: a.agentKey as AnalysisSnapshot["agents"][number]["agentKey"],
+        source: agentPhaseSource(a.agentKey, blob.sourceName),
         status: a.status as AnalysisSnapshot["agents"][number]["status"],
         startedAt: a.startedAt.toISOString(),
         completedAt: a.completedAt ? a.completedAt.toISOString() : null,
@@ -1447,7 +1487,7 @@ export async function getAnalysisDatabaseAware(
 }
 
 export interface FlatFindingFromDb extends AgentFindingPayload {
-  agentKey: AnalysisAgentKey;
+  agentKey: AnalysisResultAgentKey;
   findingId: string;
 }
 
@@ -1472,17 +1512,23 @@ export async function readFlattenedFindings(analysisId: string): Promise<FlatFin
   const rows = await prisma.agentResult.findMany({
     where: {
       analysisId,
-      agentKey: { in: [...ANALYSIS_AGENT_KEYS].filter((k) => k !== "synthesis") },
+      // #289 — the agent-phase agents' findings merge with the specialists'.
+      OR: [
+        { agentKey: { in: [...ANALYSIS_AGENT_KEYS].filter((k) => k !== "synthesis") } },
+        { agentKey: { startsWith: "custom:" } },
+        { agentKey: { startsWith: "library:" } },
+      ],
     },
     include: { findings: true },
     orderBy: { startedAt: "asc" },
   });
   const out: FlatFindingFromDb[] = [];
   for (const r of rows) {
+    if (!SAFE_AGENT_KEYS.has(r.agentKey) && !isAgentPhaseResultKey(r.agentKey)) continue;
     for (const f of r.findings) {
       const ev = parseEvidence(f.evidence);
       out.push({
-        agentKey: r.agentKey as AnalysisAgentKey,
+        agentKey: r.agentKey as AnalysisResultAgentKey,
         findingId: f.id,
         category: f.category as FindingCategory,
         severity: f.severity as FindingSeverity,

@@ -120,3 +120,79 @@ describe("loadInlineSkillBlocks", () => {
     expect(findMany).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("#289 — output contract and the bounded final-answer retry (text only)", () => {
+  const scripted = (replies: string[]) => {
+    const calls: Array<{ m: ChatMessage[]; o: ChatOptions }> = [];
+    let i = 0;
+    const provider = {
+      key: "offline-stub",
+      model: "stub",
+      chat: vi.fn(async (m: ChatMessage[], o: ChatOptions) => {
+        calls.push({ m, o });
+        const content = replies[Math.min(i++, replies.length - 1)]!;
+        return {
+          content,
+          usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+          model: "stub",
+          provider: "offline-stub",
+        };
+      }),
+    } as unknown as AIProvider;
+    return { provider, calls };
+  };
+  const retry = { instruction: "AGAIN AS JSON", isValid: (t: string) => t.startsWith("{") };
+
+  it("appends a server-authored output contract LAST in the system prompt", () => {
+    const out = buildAgentSystemPrompt({
+      definition: def,
+      frame: "user-input",
+      inlineSkillBlocks: ["SKILL"],
+      outputContract: "ANSWER FORMAT: json",
+    });
+    expect(out.startsWith("You are a helpful analyst.")).toBe(true);
+    expect(out.endsWith("SKILL\n\nANSWER FORMAT: json")).toBe(true);
+  });
+
+  it("does not retry a valid first answer", async () => {
+    const { provider, calls } = scripted(["{}"]);
+    const res = await runAgent({
+      provider,
+      definition: def,
+      input: "x",
+      frame: "user-input",
+      finalAnswerRetry: retry,
+    });
+    expect(calls).toHaveLength(1);
+    expect(res.finalAnswerRetry).toEqual({ attempted: false, succeeded: false });
+    expect(res.usage.totalTokens).toBe(5);
+  });
+
+  it("retries an invalid answer ONCE, tool-free, with the answer and the instruction, summing usage", async () => {
+    const { provider, calls } = scripted(["prose", "prose again"]);
+    const res = await runAgent({
+      provider,
+      definition: def,
+      input: "x",
+      frame: "user-input",
+      finalAnswerRetry: retry,
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.o.disableTools).toBe(true);
+    expect(calls[1]!.o.systemMessage).toBe(calls[0]!.o.systemMessage);
+    expect(calls[1]!.m.slice(1)).toEqual([
+      { role: "assistant", content: "prose" },
+      { role: "user", content: "AGAIN AS JSON" },
+    ]);
+    expect(res.content).toBe("prose again");
+    expect(res.finalAnswerRetry).toEqual({ attempted: true, succeeded: false });
+    expect(res.usage).toEqual({ promptTokens: 6, completionTokens: 4, totalTokens: 10 });
+  });
+
+  it("reports nothing about a retry when none was configured", async () => {
+    const { provider, calls } = scripted(["prose"]);
+    const res = await runAgent({ provider, definition: def, input: "x", frame: "user-input" });
+    expect(calls).toHaveLength(1);
+    expect(res.finalAnswerRetry).toBeUndefined();
+  });
+});

@@ -28,7 +28,7 @@ import {
   type AnalysisReposSkippedEvent,
   type AnalysisRetrievalHealth,
   type AnalysisSkippedRepo,
-  type AnalysisAgentKey,
+  type AnalysisResultAgentKey,
   type AnalysisSpecialistAgentKey,
   type AgentOutput,
   ANALYSIS_RETRIEVE_K,
@@ -164,7 +164,7 @@ import {
   type KnownDocument,
 } from "./findings-repair.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
-import { runEnabledCustomAgents } from "./custom-agent-phase.js";
+import { persistAgentPhaseResults, runEnabledCustomAgents } from "./custom-agent-phase.js";
 import { RequirementsExtractor } from "./requirements-extractor.js";
 import { WebResearchAugmenter, createSearchProvider } from "./web-research-augmenter.js";
 import {
@@ -1530,6 +1530,11 @@ export class AnalysisOrchestrator {
               });
             }
           }
+          // #289 — persist each agent's findings (or a visible failed row) so
+          // the snapshot shows them and synthesis, which runs below and reads
+          // the persisted findings, merges them with the specialists'. Before
+          // #289 only the usage above was kept and every answer was discarded.
+          await persistAgentPhaseResults(analysisId, customPhase.results);
         } catch (err) {
           // Phase wrapper should never throw, but never let it sink the run.
           log.warn("Custom-agent phase failed", {
@@ -3280,7 +3285,7 @@ export class AnalysisOrchestrator {
     analysisId: string;
     flatFindings: Array<{
       findingId: string;
-      agentKey: AnalysisAgentKey;
+      agentKey: AnalysisResultAgentKey;
       title: string;
       body: string;
     }>;
@@ -3569,15 +3574,13 @@ export class AnalysisOrchestrator {
       orderBy: [{ documentId: "asc" }, { ord: "asc" }],
       take: ANALYSIS_RETRIEVE_K,
     });
-    return quarantineRows.map(
-      (row): RetrievalContextChunk => ({
-        documentId: row.documentId,
-        chunkIndex: row.ord,
-        filename: row.document?.filename ?? "",
-        text: row.text,
-        score: 0,
-      }),
-    );
+    return quarantineRows.map((row): RetrievalContextChunk => ({
+      documentId: row.documentId,
+      chunkIndex: row.ord,
+      filename: row.document?.filename ?? "",
+      text: row.text,
+      score: 0,
+    }));
   }
 
   /**

@@ -4,6 +4,8 @@
 import { apiFetch, streamFetch } from "@/lib/api-client";
 import { filenameFromDisposition, parseStreamError } from "@/lib/plugins-api";
 import type {
+  AnalysisAgentSource,
+  AnalysisResultAgentKey,
   AnalysisCapability,
   AnalysisCapabilityPreview,
   AnalysisAffectedCode,
@@ -163,7 +165,13 @@ export interface AnalysisFinding {
 
 export interface AgentResultSummary {
   id: string;
-  agentKey: AnalysisAgentKey | "synthesis";
+  /** A built-in agent key, or (#289) a custom/library agent's ref. */
+  agentKey: AnalysisResultAgentKey;
+  /**
+   * #289 — the custom or library agent that produced this row in the analysis
+   * agent phase. Null/absent for the built-in specialists and synthesis.
+   */
+  source?: AnalysisAgentSource | null;
   status: AnalysisAgentStatus;
   startedAt: string | null;
   completedAt: string | null;
@@ -374,6 +382,7 @@ export const analysisApi = {
         completedAt: agent.completedAt ?? null,
         errorMessage: agent.errorMessage ?? null,
         summary: agent.summary ?? null,
+        source: agent.source ?? null,
         findings: agent.findings ?? [],
       })) as AgentResultSummary[],
       requirements: snapshot.requirements ?? [],

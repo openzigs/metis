@@ -236,7 +236,12 @@ const PROVENANCE_RULE = [
   "may claim, and anything else is discarded server-side.",
 ].join(" ");
 
-const OUTPUT_SCHEMA_HINT = `Respond ONLY with a single JSON object on one line, no markdown code fences, matching this shape:
+/**
+ * The specialists' findings answer contract. Exported for #289: the analysis
+ * agent phase asks custom and library agents for the SAME shape, so their
+ * findings validate against the same schema and merge with the specialists'.
+ */
+export const OUTPUT_SCHEMA_HINT = `Respond ONLY with a single JSON object on one line, no markdown code fences, matching this shape:
 {
   "summary": "<one paragraph>",
   "findings": [
