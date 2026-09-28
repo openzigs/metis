@@ -74,13 +74,27 @@ function sameHost(a: string | null | undefined, b: string | null | undefined): b
 }
 
 /**
- * #324 — a stored (vaulted) password is bound to the destination discovery
- * found it for. A caller without `vault.reveal` may USE it only against that
- * suggestion's own driver, host and port: otherwise a coordinator could point
- * /test or /provision at a public host they control and receive the password
- * over the wire (a Postgres server can request cleartext auth) without ever
- * seeing it in a response. `resolveAndAssertConnectorHost` blocks private
- * ranges only, so it is not this boundary. Admins can reveal the value anyway.
+ * Discovery stores a port it did not find as 0 and the wizard sends that back as
+ * `null`, so null, undefined and 0 all mean "unspecified" (the driver default).
+ */
+function effectivePort(port: number | null | undefined): number | null {
+  return port ? port : null;
+}
+
+/**
+ * #324 — the suggested-connector /test and /provision routes check that a
+ * caller without `vault.reveal` who USES the stored (vaulted) password targets
+ * the suggestion's own driver, host and port: otherwise a coordinator could
+ * point either route at a public host they control and receive the password
+ * over the wire (a Postgres server can request cleartext auth).
+ * `resolveAndAssertConnectorHost` blocks private ranges only, so it is not this
+ * boundary. Admins can reveal the value anyway.
+ *
+ * This is NOT a general binding of the secret to its destination: after
+ * provisioning, the created connector's host can be edited and re-tested, and
+ * caller-supplied driver `options` can redirect some drivers — both tracked in
+ * #344. What #324 does guarantee is that no HTTP response hands a non-admin the
+ * plaintext.
  */
 function assertStoredSecretDestination(
   req: Request,
@@ -93,7 +107,7 @@ function assertStoredSecretDestination(
   const matches =
     target.driver === rowDriver &&
     sameHost(target.host, row.host) &&
-    (target.port ?? null) === (row.port ?? null);
+    effectivePort(target.port) === effectivePort(row.port);
   if (matches) return;
   audit({
     actor: actorIdOf(req),
@@ -400,11 +414,14 @@ export function suggestedConnectorsRouter(): Router {
             select: { id: true },
           })) !== null
         : false;
+    // Same fallback as /test: an omitted port means the suggestion's own, so
+    // the port the guard checks is the port the connector is created with.
+    const targetPort = effectivePort(body.port ?? row.port);
     if (storedLive && row.passwordVaultRef) {
       assertStoredSecretDestination(
         req,
         row,
-        { driver: body.driver, host: body.host, port: body.port },
+        { driver: body.driver, host: body.host, port: targetPort },
         projectId,
       );
       // #324 — no password typed: use the live one discovery already vaulted.
@@ -452,7 +469,7 @@ export function suggestedConnectorsRouter(): Router {
           label: body.label,
           driver: body.driver,
           host: body.host ?? undefined,
-          port: body.port ?? undefined,
+          port: targetPort ?? undefined,
           databaseName: body.database ?? undefined,
           username: body.username ?? undefined,
           secretRef: vaultRef ? `\${vault:${vaultRef}}` : undefined,

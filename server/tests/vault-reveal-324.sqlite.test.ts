@@ -165,6 +165,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         },
       });
 
+      // A suggestion discovered without a port: discovery stores the missing
+      // port as 0, and the wizard sends it back as `port: null`.
+      await db.suggestedConnector.create({
+        data: {
+          id: "sug-noport",
+          projectId: "proj-1",
+          driverType: "postgresql",
+          host: "db0.invalid",
+          port: 0,
+          database: "noportdb",
+          sourceFile: ".env.development",
+          lineNumber: 3,
+          confidence: "high",
+          username: "app",
+          passwordVaultRef: DB_SECRET_ID,
+          devCredsDetected: true,
+        },
+      });
+
       // A second suggestion whose vaulted password has since been deleted.
       const goneId = (
         await vault.create("deleted-db-password", "gone-324", "project", {
@@ -416,6 +435,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(res.status).toBe(200);
       });
 
+      it("/provision: an omitted port falls back to the suggestion's own, like /test", async () => {
+        const res = await call("post", `${base}/provision`, tokens.coordinator, {
+          ...provisionBody,
+          label: "appdb-324-port-fallback",
+          port: null,
+        });
+        expect(res.status).toBe(200);
+        const conn = await db.databaseConnection.findUnique({
+          where: { id: res.body.data.connectorId as string },
+        });
+        // The connector targets the port the guard checked, not the driver default.
+        expect(conn?.port).toBe(5432);
+        expect(conn?.secretId).toBe(DB_SECRET_ID);
+      });
+
       it("/provision: an admin (vault.reveal) may use the stored password elsewhere", async () => {
         const res = await call("post", `${base}/provision`, tokens.admin, {
           ...provisionBody,
@@ -428,6 +462,69 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
         expect(conn?.secretId).toBe(DB_SECRET_ID);
       });
+    });
+
+    describe("a suggestion discovered without a port (stored as 0)", () => {
+      const base = "/api/projects/proj-1/suggested-connectors/sug-noport";
+      const noPortBody = {
+        host: "db0.invalid",
+        port: null,
+        database: "noportdb",
+        username: "app",
+      };
+      // What the wizard sends with the password field left blank: /test gets
+      // `password: null` and /provision gets `password: ""` (db-connector-wizard.tsx).
+      const blank = { test: { password: null }, provision: { password: "" } } as const;
+      const auditFor = async (action: string) => {
+        await vi.waitFor(() => expect(getAuditService().inFlight).toBe(0));
+        return db.auditLog.findMany({
+          where: { action, targetId: "sug-noport", actorId: "u-coord" },
+        });
+      };
+
+      it("/test: a coordinator sending port null with the stored password passes the guard", async () => {
+        const before = (await auditFor("suggested_connector.test")).length;
+        const res = await call("post", `${base}/test`, tokens.coordinator, {
+          ...noPortBody,
+          ...blank.test,
+        });
+        expect(res.status).toBe(200);
+        expect(JSON.stringify(res.body)).not.toContain(DB_PASSWORD);
+        // Past the guard the probe ran (and failed to resolve `.invalid`).
+        expect((await auditFor("suggested_connector.test")).length).toBe(before + 1);
+        expect(await auditFor("suggested_connector.stored_secret_refused")).toHaveLength(0);
+      });
+
+      it("/provision: a coordinator sending port null with the stored password succeeds", async () => {
+        const res = await call("post", `${base}/provision`, tokens.coordinator, {
+          ...noPortBody,
+          ...blank.provision,
+          label: "noportdb-324",
+          driver: "postgres",
+        });
+        expect(res.status).toBe(200);
+        expect(JSON.stringify(res.body)).not.toContain(DB_PASSWORD);
+        const conn = await db.databaseConnection.findUnique({
+          where: { id: res.body.data.connectorId as string },
+        });
+        expect(conn?.secretId).toBe(DB_SECRET_ID);
+        expect(conn?.port ?? null).toBeNull();
+      });
+
+      for (const route of ["test", "provision"] as const) {
+        it(`/${route}: a coordinator naming a real port 5433 is still refused 403`, async () => {
+          const label = `noportdb-324-5433-${route}`;
+          const res = await call("post", `${base}/${route}`, tokens.coordinator, {
+            ...noPortBody,
+            ...blank[route],
+            port: 5433,
+            ...(route === "provision" ? { label, driver: "postgres" } : {}),
+          });
+          expect(res.status).toBe(403);
+          expect(res.body.error.code).toBe("STORED_SECRET_DESTINATION_MISMATCH");
+          expect(await db.databaseConnection.findFirst({ where: { label } })).toBeNull();
+        });
+      }
     });
 
     describe("reveal rate limit", () => {
