@@ -189,7 +189,7 @@ export class MCPToolBridge {
             },
           });
           throw new Error(
-            `MCP server ${label} is project-scoped but has no project — invocation denied until an admin assigns or deletes it`,
+            `MCP server ${label} is project-scoped but has no project — invocation denied (an admin can delete it and re-register it with a project)`,
           );
         }
         if (config.scope === "project" && ctx.projectId !== config.projectId) {
