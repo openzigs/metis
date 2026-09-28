@@ -502,7 +502,7 @@ credentials are explicitly **not** in scope.
 |---------------------------------------------|-------------------------------------|
 | `project.allowCredentialScan.update`        | toggle flipped                      |
 | `suggested_connector.credential_discovered` | extraction recorded a credential    |
-| `suggested_connector.credential_read`       | wizard fetched a one-shot password  |
+| `suggested_connector.credential_read`       | wizard fetched the detail; `passwordWithheld` when the caller lacks `vault.reveal` (#324) |
 | `suggested_connector.credential_read.failed`| vault read failed                   |
 | `suggested_connector.test`                  | liveness probe attempted            |
 | `suggested_connector.provisioned`           | connector + vault entry created     |

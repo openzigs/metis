@@ -20,6 +20,7 @@ import { Router } from "express";
 import type { Request } from "express";
 import {
   type ApiResponse,
+  hasPermission,
   suggestedConnectorProvisionSchema,
   suggestedConnectorTestSchema,
 } from "@metis/shared";
@@ -141,8 +142,13 @@ export function suggestedConnectorsRouter(): Router {
       });
       if (!row) throw new AppError(404, "NOT_FOUND", "Suggested connector not found");
 
+      // #324 — plaintext of a vault secret goes only to `vault.reveal` holders
+      // (admins). Everyone else learns that a password is stored
+      // (`hasStoredPassword`) and provisions with it server-side by omitting
+      // `password` — never by receiving it.
+      const mayReveal = req.user ? hasPermission(req.user.role, "vault.reveal") : false;
       let password: string | null = null;
-      if (row.passwordVaultRef) {
+      if (row.passwordVaultRef && mayReveal) {
         try {
           const { plaintext } = await getVaultService().read(row.passwordVaultRef);
           password = plaintext;
@@ -163,7 +169,7 @@ export function suggestedConnectorsRouter(): Router {
         actor: actorIdOf(req),
         action: "suggested_connector.credential_read",
         target: { type: "suggested_connector", id: row.id },
-        metadata: { projectId, hasPassword: password !== null },
+        metadata: { projectId, hasPassword: password !== null, passwordWithheld: !mayReveal },
       });
 
       res.json(
@@ -335,7 +341,20 @@ export function suggestedConnectorsRouter(): Router {
     // differs, rotate. Otherwise create fresh.
     let vaultRef: string | null = null;
     let mutation: "reused" | "rotated" | "created" = "created";
-    if (body.password) {
+    const storedLive =
+      !body.password && row.passwordVaultRef
+        ? (await prisma.secret.findFirst({
+            where: { id: row.passwordVaultRef, deletedAt: null },
+            select: { id: true },
+          })) !== null
+        : false;
+    if (storedLive && row.passwordVaultRef) {
+      // #324 — no password typed: use the live one discovery already vaulted.
+      // A caller without `vault.reveal` never received it, so this is how they
+      // provision with it; the plaintext stays server-side.
+      vaultRef = row.passwordVaultRef;
+      mutation = "reused";
+    } else if (body.password) {
       if (row.passwordVaultRef) {
         let existingPlaintext: string | null = null;
         try {

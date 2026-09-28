@@ -22,7 +22,9 @@ export const ROLE_HIERARCHY: Record<RoleKey, number> = {
 /**
  * Default role → permissions map.
  *
- * - `admin` gets every permission.
+ * - `admin` gets every permission — and is the ONLY role holding
+ *   `vault.reveal` (#324): the other roles may list and use vault secrets by
+ *   reference (`vault.read`) but never receive their plaintext.
  * - `coordinator` runs project lifecycle + publishes issues.
  * - `developer` runs analyses, drafts issues, reads vault.
  * - `reader` is read-only on projects/documents/analyses.

@@ -10,7 +10,7 @@
  *   GET    /                list summaries (vault.read)
  *   POST   /                create entry  (vault.write)
  *   POST   /:id/rotate      rotate value  (vault.write)
- *   GET    /:id/reveal      decrypt one (vault.read, audited)
+ *   GET    /:id/reveal      decrypt one (vault.reveal — admin only, audited, #324)
  *   DELETE /:id             soft-delete   (vault.write)
  *   GET    /:id/audit       audit log entries for this secret (vault.read)
  *
@@ -18,7 +18,7 @@
  */
 import { Router, type Request } from "express";
 import { z } from "zod";
-import type { ApiResponse } from "@metis/shared";
+import { hasPermission, type ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -168,25 +168,40 @@ export function vaultRouter(): Router {
     res.json(ok(summaryToView(summary)));
   });
 
-  // ── Reveal (audited) ────────────────────────────────────────────────────
-  r.get("/:id/reveal", requireAuth, requirePermission("vault.read"), async (req, res) => {
+  // ── Reveal (admin-only, audited) ───────────────────────────────────────
+  // #324 — plaintext needs `vault.reveal` (admin only); `vault.read` holders may
+  // list and USE secrets by reference but never see a value. The permission is
+  // checked before the secret is looked up, so a refused caller gets one 403
+  // whether or not the id exists. Every attempt — granted, denied or not_found
+  // — writes a `vault.reveal` audit row with the actor, the requested id and the
+  // outcome; the value is never part of it.
+  r.get("/:id/reveal", requireAuth, async (req, res) => {
+    const aId = actorId(req);
+    const role = req.user?.role;
     const id = String(req.params.id);
+    const auditReveal = (
+      outcome: "granted" | "denied" | "not_found",
+      extra: Record<string, unknown> = {},
+    ) =>
+      audit({
+        actor: { id: aId },
+        action: "vault.reveal",
+        target: { type: "secret", id: id.slice(0, 128) },
+        metadata: { outcome, role, source: "vault_ui", ...extra },
+      });
+
+    if (!role || !hasPermission(role, "vault.reveal")) {
+      auditReveal("denied");
+      throw new AppError(403, "FORBIDDEN", "Requires permission vault.reveal");
+    }
     let result: { summary: SecretSummary; plaintext: string };
     try {
       result = await getVaultService().read(id);
     } catch (err) {
+      auditReveal("not_found");
       throw new AppError(404, "SECRET_NOT_FOUND", `Secret not found: ${(err as Error).message}`);
     }
-    audit({
-      actor: { id: actorId(req) },
-      action: "vault.read",
-      target: { type: "secret", id: result.summary.id },
-      metadata: {
-        label: result.summary.label,
-        scope: result.summary.scope,
-        source: "vault_ui",
-      },
-    });
+    auditReveal("granted", { label: result.summary.label, scope: result.summary.scope });
     res.json(
       ok({
         summary: summaryToView(result.summary),

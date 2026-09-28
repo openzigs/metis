@@ -23,6 +23,9 @@ export const PERMISSION_KEYS = [
   "issue.publish",
   "vault.read",
   "vault.write",
+  // #324 — decrypting a secret's plaintext to a client. Admin-only: `vault.read`
+  // lists metadata and lets a caller USE a secret by reference, never see it.
+  "vault.reveal",
   "mcp.manage",
   // Epic #162 — finer-grained MCP permissions for the v1.1.0 platform UI.
   "mcp.read",

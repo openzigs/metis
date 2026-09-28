@@ -3,7 +3,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import type { NextFunction, Request, Response } from "express";
-import type { AuthPayload } from "@metis/shared";
+import { hasPermission, type AuthPayload } from "@metis/shared";
 import { requireRole } from "../src/middleware/require-role.js";
 import { requirePermission } from "../src/middleware/require-permission.js";
 import { AppError } from "../src/middleware/error-handler.js";
@@ -93,5 +93,20 @@ describe("requirePermission", () => {
     );
     const err = (deny as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0] as AppError;
     expect(err.statusCode).toBe(403);
+  });
+});
+
+describe("vault.reveal (#324)", () => {
+  it("is held by admin and by no other role", () => {
+    const holders = (["admin", "coordinator", "developer", "reader"] as const).filter((role) =>
+      hasPermission(role, "vault.reveal"),
+    );
+    expect(holders).toEqual(["admin"]);
+  });
+
+  it("does not remove vault.read from coordinator or developer", () => {
+    expect(hasPermission("coordinator", "vault.read")).toBe(true);
+    expect(hasPermission("developer", "vault.read")).toBe(true);
+    expect(hasPermission("reader", "vault.read")).toBe(false);
   });
 });

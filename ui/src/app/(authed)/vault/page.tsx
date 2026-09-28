@@ -7,19 +7,23 @@
  *   • rotate — replace plaintext under the same id
  *   • audit — per-entry audit trail (read/write/rotate/delete)
  *
- * Permissions: requires `vault.read` (server enforces). Non-admins see a
- * forbidden notice in place of the table.
+ * Permissions: requires `vault.read` (server enforces). Roles without it see a
+ * forbidden notice in place of the table. Revealing plaintext needs
+ * `vault.reveal`, which only admins hold (#324) — other roles get no Reveal
+ * control; the server refuses them regardless.
  */
 "use client";
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { hasPermission } from "@metis/shared";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api-client";
+import { useAuth } from "@/lib/auth-context";
 import { vaultApi, type VaultEntry, type VaultAuditEntry } from "@/lib/vault-api";
 import { useTransientFlag } from "@/hooks/use-transient-toast";
 import { PageHeader } from "@/components/ui/page-header";
@@ -45,8 +49,8 @@ export default function VaultPage() {
         description={
           <>
             Encrypted secret storage. Plaintext is never displayed by default — use{" "}
-            <strong>Reveal</strong> to view a single value (audited) or <strong>Rotate</strong> to
-            replace it.
+            <strong>Reveal</strong> to view a single value (admin-only, audited) or{" "}
+            <strong>Rotate</strong> to replace it.
           </>
         }
       />
@@ -252,6 +256,8 @@ function EntryDetail({
   onChanged: () => void;
 }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const canReveal = user ? hasPermission(user.role, "vault.reveal") : false;
   const [revealed, setRevealed] = useState<string | null>(null);
   const [revealError, setRevealError] = useState<string | null>(null);
   // #1284 — the hook owns the 1.5s dismissal timer AND cancels it on unmount.
@@ -349,6 +355,11 @@ function EntryDetail({
               Hide
             </Button>
           </div>
+        ) : !canReveal ? (
+          <p className="text-xs text-muted-foreground" data-testid="vault-entry-reveal-admin-only">
+            Revealing a secret&apos;s value is limited to administrators. You can still use this
+            secret by reference.
+          </p>
         ) : (
           <Button
             size="sm"
