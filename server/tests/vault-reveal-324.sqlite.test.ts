@@ -51,6 +51,8 @@ const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { getVaultService, __resetVaultSingleton } =
   await import("../src/lib/vault/vault-service.js");
 const { getAuditService } = await import("../src/lib/audit/audit-service.js");
+const { __resetVaultRevealRateLimiter } =
+  await import("../src/middleware/vault-reveal-rate-limit.js");
 
 type Role = "admin" | "coordinator" | "developer" | "reader";
 
@@ -340,6 +342,30 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           where: { id: res.body.data.connectorId as string },
         });
         expect(conn?.secretId).toBeNull();
+      });
+    });
+
+    describe("reveal rate limit", () => {
+      it("answers 429 once one IP exceeds VAULT_REVEAL_LIMIT_MAX, before auth runs", async () => {
+        process.env.VAULT_REVEAL_LIMIT_MAX = "2";
+        __resetVaultRevealRateLimiter();
+        try {
+          const hit = (bearer?: string) => {
+            const r = request(app())
+              .get(`/api/vault/${SECRET_ID}/reveal`)
+              .set("X-Forwarded-For", "192.0.2.77");
+            return bearer ? r.set("Authorization", `Bearer ${bearer}`) : r;
+          };
+          expect((await hit(tokens.admin)).status).toBe(200);
+          expect((await hit()).status).toBe(401);
+          const limited = await hit(tokens.admin);
+          expect(limited.status).toBe(429);
+          expect(limited.body.error.code).toBe("VAULT_REVEAL_RATE_LIMITED");
+          expect(JSON.stringify(limited.body)).not.toContain(PLAINTEXT);
+        } finally {
+          delete process.env.VAULT_REVEAL_LIMIT_MAX;
+          __resetVaultRevealRateLimiter();
+        }
       });
     });
   },

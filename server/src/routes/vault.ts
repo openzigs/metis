@@ -21,6 +21,7 @@ import { z } from "zod";
 import { hasPermission, type ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { vaultRevealRateLimiter } from "../middleware/vault-reveal-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   getVaultService,
@@ -174,8 +175,8 @@ export function vaultRouter(): Router {
   // checked before the secret is looked up, so a refused caller gets one 403
   // whether or not the id exists. Every attempt — granted, denied or not_found
   // — writes a `vault.reveal` audit row with the actor, the requested id and the
-  // outcome; the value is never part of it.
-  r.get("/:id/reveal", requireAuth, async (req, res) => {
+  // outcome; the value is never part of it. Rate-limited per IP ahead of auth.
+  r.get("/:id/reveal", vaultRevealRateLimiter, requireAuth, async (req, res) => {
     const aId = actorId(req);
     const role = req.user?.role;
     const id = String(req.params.id);
