@@ -103,10 +103,8 @@ describe("DbConnectorWizard", () => {
     expect(password.type).toBe("password");
   });
 
-  it("#324 — a withheld stored password shows a hint and provisions with an empty password", async () => {
+  it("#324 — a withheld stored password leaves the field blank with a stored-password hint", async () => {
     getMock.mockResolvedValue({ ...detail, password: null });
-    testMock.mockResolvedValue({ ok: true });
-    provisionMock.mockResolvedValue({ ok: true, connectorId: "c1", suggestionId: "sug_1" });
     renderWizard();
     await clickNext(); // → configure
     const password = (await screen.findByLabelText("Password")) as HTMLInputElement;

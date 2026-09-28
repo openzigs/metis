@@ -163,6 +163,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         },
       });
 
+      // A second suggestion whose vaulted password has since been deleted.
+      const goneId = (
+        await vault.create("deleted-db-password", "gone-324", "project", {
+          createdById: "u-admin",
+        })
+      ).id;
+      await vault.delete(goneId);
+      await db.suggestedConnector.create({
+        data: {
+          id: "sug-gone",
+          projectId: "proj-1",
+          driverType: "postgresql",
+          host: "db2.example.test",
+          port: 5432,
+          database: "otherdb",
+          sourceFile: ".env.development",
+          lineNumber: 2,
+          confidence: "high",
+          passwordVaultRef: goneId,
+          devCredsDetected: true,
+        },
+      });
+
       for (const role of Object.keys(userOf) as Role[]) {
         tokens[role] = issueTokens({
           userId: userOf[role],
@@ -295,6 +318,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           where: { id: res.body.data.connectorId as string },
         });
         expect(conn?.secretId).toBe(DB_SECRET_ID);
+      });
+
+      it("a stored password that was deleted is not reused — the connector gets no secret", async () => {
+        const res = await call(
+          "post",
+          "/api/projects/proj-1/suggested-connectors/sug-gone/provision",
+          tokens.coordinator,
+          {
+            label: "otherdb-324",
+            driver: "postgres",
+            host: "db2.example.test",
+            port: 5432,
+            database: "otherdb",
+            username: null,
+            password: "",
+          },
+        );
+        expect(res.status).toBe(200);
+        const conn = await db.databaseConnection.findUnique({
+          where: { id: res.body.data.connectorId as string },
+        });
+        expect(conn?.secretId).toBeNull();
       });
     });
   },
