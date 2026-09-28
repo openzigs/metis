@@ -155,7 +155,7 @@ export class MCPToolBridge {
       ...(isObjectSchema(advertised.inputSchema) ? { parameters: advertised.inputSchema } : {}),
       // #140 — lets the tool runtime offer only servers the project may use.
       origin: { kind: "mcp", serverId, serverLabel: label },
-      schema: z.record(z.unknown()),
+      schema: z.record(z.string(), z.unknown()),
       async exec(args, ctx): Promise<ToolResult> {
         const snapshot = lifecycle.get(serverId);
         if (!snapshot || snapshot.state.status !== "ready") {

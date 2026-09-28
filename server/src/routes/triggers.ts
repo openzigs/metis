@@ -37,7 +37,7 @@ const SOURCE_VALUES = ["webhook", "github", "slack", "cron"] as const;
 const upsertSchema = z.object({
   name: z.string().min(1).max(120),
   source: z.enum(SOURCE_VALUES),
-  config: z.record(z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).default({}),
   enabled: z.boolean().default(true),
 });
 

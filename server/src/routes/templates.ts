@@ -80,9 +80,9 @@ const createSchema = z.object({
     platform: z.enum(["github", "jira", "universal"]),
     templateType: z.enum(["epic", "feature", "story", "bug", "task"]),
     sections: z.array(sectionSchema).min(1).max(50),
-    platformFields: z.record(z.record(z.string())).optional(),
+    platformFields: z.record(z.string(), z.record(z.string(), z.string())).optional(),
   }),
-  defaultValues: z.record(z.unknown()).optional(),
+  defaultValues: z.record(z.string(), z.unknown()).optional(),
 });
 
 const updateSchema = z.object({
@@ -95,10 +95,10 @@ const updateSchema = z.object({
       platform: z.enum(["github", "jira", "universal"]),
       templateType: z.enum(["epic", "feature", "story", "bug", "task"]),
       sections: z.array(sectionSchema).min(1).max(50),
-      platformFields: z.record(z.record(z.string())).optional(),
+      platformFields: z.record(z.string(), z.record(z.string(), z.string())).optional(),
     })
     .optional(),
-  defaultValues: z.record(z.unknown()).optional(),
+  defaultValues: z.record(z.string(), z.unknown()).optional(),
 });
 
 export function templatesRouter(): Router {

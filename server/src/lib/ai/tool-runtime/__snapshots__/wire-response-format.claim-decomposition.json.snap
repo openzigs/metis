@@ -1,0 +1,39 @@
+{
+  "type": "json_schema",
+  "json_schema": {
+    "name": "claim_decomposition",
+    "description": "Atomic claims decomposed from a documentation passage, each with supporting source ids.",
+    "strict": true,
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claims"
+      ],
+      "properties": {
+        "claims": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "claim",
+              "sourceIds"
+            ],
+            "properties": {
+              "claim": {
+                "type": "string"
+              },
+              "sourceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -62,7 +62,8 @@ const exportSchema = z.object({
 
 const importSchema = z.object({
   projectId: z.string().min(1),
-  envelope: z.unknown(),
+  // `.optional()`: zod 4 rejects an absent `z.unknown()` key, zod 3 admitted it (#309).
+  envelope: z.unknown().optional(),
 });
 
 function safeParseJson(raw: string): unknown {

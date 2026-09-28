@@ -36,14 +36,14 @@ const kindSchema = z.enum(SDK_HOOK_HANDLER_KINDS as unknown as [string, ...strin
 const createSchema = z.object({
   event: eventSchema,
   handlerKind: kindSchema.default("webhook"),
-  config: z.record(z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).default({}),
   enabled: z.boolean().default(true),
 });
 
 const patchSchema = z.object({
   event: eventSchema.optional(),
   handlerKind: kindSchema.optional(),
-  config: z.record(z.unknown()).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
   enabled: z.boolean().optional(),
 });
 

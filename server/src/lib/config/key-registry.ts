@@ -737,7 +737,11 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     // or a value past 2^31-1 would otherwise be stored and become a 1 ms timer.
     schema: z.preprocess(
       (v) => (typeof v === "number" ? String(v) : v),
-      z.string().trim().regex(/^\d+$/).pipe(z.coerce.number().int().min(1).max(MAX_TIMEOUT_MS)),
+      z
+        .string()
+        .trim()
+        .regex(/^\d+$/)
+        .pipe(z.coerce.number<string>().int().min(1).max(MAX_TIMEOUT_MS)),
     ),
     description:
       "How long a chat tool call waits for its owner to approve or deny it (#142), in ms. An unanswered approval EXPIRES and counts as a denial; the tool does not run. Plain digits only (write 120000, not 1.2e5); 1 to 2147453647. Default 120000.",

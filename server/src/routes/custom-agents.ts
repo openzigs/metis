@@ -248,7 +248,8 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
 
   const importSchema = z.object({
     projectId: z.string().min(1).max(64),
-    document: z.unknown(),
+    // `.optional()`: zod 4 rejects an absent `z.unknown()` key, zod 3 admitted it (#309).
+    document: z.unknown().optional(),
   });
 
   r.post("/import", requireAuth, async (req: Request, res: Response) => {

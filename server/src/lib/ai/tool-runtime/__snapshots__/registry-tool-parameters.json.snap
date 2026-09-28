@@ -1,0 +1,129 @@
+{
+  "apply_diff": {
+    "type": "object",
+    "properties": {
+      "original": {
+        "type": "string"
+      },
+      "patch": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "model": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "original",
+      "patch"
+    ]
+  },
+  "score_grounding": {
+    "type": "object",
+    "properties": {
+      "output": {
+        "type": "string"
+      },
+      "sources": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "ngramSize": {
+        "type": "integer"
+      },
+      "maxClaims": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "output",
+      "sources"
+    ]
+  },
+  "inspect_schema": {
+    "type": "object",
+    "properties": {
+      "connectorId": {
+        "type": "string",
+        "description": "Id of the project's database connector"
+      },
+      "schema": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "connectorId"
+    ]
+  },
+  "query_database": {
+    "type": "object",
+    "properties": {
+      "connectorId": {
+        "type": "string",
+        "description": "Id of the project's database connector"
+      },
+      "sql": {
+        "type": "string",
+        "description": "A single read-only SELECT statement. Writes/DDL are rejected."
+      },
+      "maxRows": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "connectorId",
+      "sql"
+    ]
+  },
+  "search-knowledge-global": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string"
+      },
+      "projectIds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "k": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "search-knowledge": {
+    "type": "object",
+    "properties": {
+      "projectId": {
+        "type": "string"
+      },
+      "query": {
+        "type": "string"
+      },
+      "k": {
+        "type": "integer"
+      },
+      "documentIds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "projectId",
+      "query"
+    ]
+  },
+  "mcp.example.echo": {
+    "type": "object"
+  }
+}

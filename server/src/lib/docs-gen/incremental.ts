@@ -12,7 +12,7 @@ export { regenerationTaskSchema, type RegenerationTask } from "./regeneration-pl
 
 export const REGENERATE_DOCUMENT_TASK = "regenerate-generated-document";
 const log = createChildLogger("docs-gen-incremental");
-const scopeFilterSchema = z.record(z.unknown());
+const scopeFilterSchema = z.record(z.string(), z.unknown());
 const repositoryFilterSchema = z.object({ repoConnectorId: z.string().trim().min(1) });
 
 /** Only after graph, source knowledge and metadata settle. Enqueue errors

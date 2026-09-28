@@ -97,7 +97,7 @@ const agentSchema = z.object({
 const hookSchema = z.object({
   event: z.enum(SDK_HOOK_EVENTS as unknown as [string, ...string[]]),
   handlerKind: z.enum(SDK_HOOK_HANDLER_KINDS as unknown as [string, ...string[]]),
-  config: z.record(z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).default({}),
 });
 
 const envelopeSchema = z.object({

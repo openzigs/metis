@@ -32,14 +32,14 @@ const submitSchema = z.object({
   projectId: z.string().min(1),
   sessionId: z.string().optional(),
   kind: z.enum(KIND_VALUES),
-  payload: z.record(z.unknown()).optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
   priority: z.number().int().min(0).max(10).optional(),
 });
 
 const groupSchema = z.object({
   projectId: z.string().min(1),
   kind: z.enum(KIND_VALUES),
-  payload: z.record(z.unknown()).optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
   n: z.number().int().min(1).max(8),
   selectionMethod: z.enum(["highest-score", "judge-llm", "manual"]).optional(),
   strategy: z.enum(["best-of-n", "parallel"]).optional(),

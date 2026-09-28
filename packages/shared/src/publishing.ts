@@ -48,7 +48,7 @@ export const createIssueDraftSchema = z.object({
   labels: z.array(z.string().min(1).max(64)).max(32).default([]),
   assignees: z.array(z.string().min(1).max(64)).max(10).default([]),
   storyPoints: z.number().int().min(0).max(100).optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type CreateIssueDraftInput = z.infer<typeof createIssueDraftSchema>;
 
@@ -59,7 +59,7 @@ export const updateIssueDraftSchema = z.object({
   assignees: z.array(z.string().min(1).max(64)).max(10).optional(),
   storyPoints: z.number().int().min(0).max(100).nullable().optional(),
   status: z.enum(ISSUE_DRAFT_STATUSES).optional(),
-  metadata: z.record(z.unknown()).nullable().optional(),
+  metadata: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 export type UpdateIssueDraftInput = z.infer<typeof updateIssueDraftSchema>;
 
@@ -106,7 +106,7 @@ export const createPublishBatchSchema = z.object({
   additionalLabels: z.array(z.string().min(1).max(64)).max(32).default([]),
   milestone: z.number().int().min(1).optional(),
   secretRef: z.string().min(1).max(256).optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type CreatePublishBatchInput = z.infer<typeof createPublishBatchSchema>;
 

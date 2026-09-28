@@ -20,7 +20,7 @@ export const inferenceProfileSchema = z.object({
   modelId: z.string().min(1).max(200),
   costCenter: z.string().max(100).optional(),
   environment: z.string().max(50).optional(),
-  tags: z.record(z.string()).optional(),
+  tags: z.record(z.string(), z.string()).optional(),
 });
 
 export type InferenceProfileInput = z.infer<typeof inferenceProfileSchema>;

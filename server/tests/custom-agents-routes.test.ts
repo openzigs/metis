@@ -395,6 +395,14 @@ describe("import / export (#82)", () => {
     expect(agents.size).toBe(before);
   });
 
+  it("#309 — an absent document reaches the import parser (400 AGENT_IMPORT_INVALID, not BAD_REQUEST)", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "admin");
+    const res = await request(createApp()).post("/custom-agents/import").send({ projectId: "p1" });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("AGENT_IMPORT_INVALID");
+  });
+
   it("rejects import with a missing projectId (400 BAD_REQUEST)", async () => {
     const res = await request(createApp())
       .post("/custom-agents/import")

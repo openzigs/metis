@@ -90,7 +90,7 @@ export function authRouter(): Router {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new AppError(400, "VALIDATION_ERROR", "Invalid login payload", {
-        issues: parsed.error.errors,
+        issues: parsed.error.issues,
       });
     }
     const { username, password } = parsed.data;

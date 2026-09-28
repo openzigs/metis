@@ -122,6 +122,17 @@ describe("POST /api/plugins/import — object-level scope (assertProjectAccess)"
   });
 });
 
+describe("POST /api/plugins/import — authorization runs before envelope parsing (#309)", () => {
+  it("404s a non-member even when the envelope is absent (never a 400 that leaks existence first)", async () => {
+    // zod 4 rejects an absent `z.unknown()` key at the schema; zod 3 did not, so
+    // the object layer ran first. `envelope: z.unknown().optional()` keeps it so.
+    projectFindUnique.mockResolvedValue({ id: "proj-victim", workspaceId: "ws-other" });
+    const res = await request(app).post("/api/plugins/import").send({ projectId: "proj-victim" });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("NOT_FOUND");
+  });
+});
+
 describe("POST /api/plugins/import — role scope (requirePermission)", () => {
   it("403s a caller who lacks mcp.manage even for a reachable project", async () => {
     // developer holds mcp.read but not mcp.manage.

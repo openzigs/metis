@@ -45,6 +45,22 @@ export interface FriendlyFieldError {
  * derive a friendly message keyed on the issue *kind* and surface only the
  * field's dotted path so the client can render an inline message beside it.
  */
+/**
+ * Did this `invalid_type` issue fire because the value was ABSENT?
+ *
+ * zod 3 said so structurally (`received: "undefined"`). zod 4 dropped
+ * `received`, and keeps the offending `input` only when a parse opts into
+ * `reportInput` — which the routes that let a raw `ZodError` escape do not.
+ * What remains is the default message, "Invalid input: expected X, received
+ * undefined" (#309). Relying on it is sound here because no schema in the tree
+ * overrides an `invalid_type` message; if one ever does, the field degrades to
+ * the generic "is invalid", never to a leak.
+ */
+function isMissingValue(issue: ZodIssue): boolean {
+  if ("input" in issue) return issue.input === undefined;
+  return /received undefined$/.test(issue.message);
+}
+
 function issueToFriendly(issue: ZodIssue): FriendlyFieldError {
   const field = issue.path.length > 0 ? issue.path.join(".") : "(form)";
   const label = issue.path.length > 0 ? String(issue.path[issue.path.length - 1]) : "This field";
@@ -55,17 +71,12 @@ function issueToFriendly(issue: ZodIssue): FriendlyFieldError {
   let message: string;
   if (issue.code === "too_small" && (issue as { minimum?: number }).minimum === 1) {
     message = `${label} is required`;
-  } else if (
-    issue.code === "invalid_type" &&
-    (issue as { received?: string }).received === "undefined"
-  ) {
+  } else if (issue.code === "invalid_type" && isMissingValue(issue)) {
     message = `${label} is required`;
   } else if (issue.code === "too_small") {
     message = `${label} is too short`;
   } else if (issue.code === "too_big") {
     message = `${label} is too long`;
-  } else if (issue.code === "invalid_enum_value" || issue.code === "invalid_type") {
-    message = `${label} is invalid`;
   } else {
     message = `${label} is invalid`;
   }

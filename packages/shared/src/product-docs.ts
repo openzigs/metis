@@ -131,7 +131,7 @@ export const productDocumentSchema = z.object({
   title: z.string(),
   content: z.string(),
   repoId: z.string().nullable().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   version: z.number().int().default(1),
   generatedAt: z.coerce.date(),
 });

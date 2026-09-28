@@ -27,7 +27,7 @@ function parse<T>(schema: z.ZodSchema<T>, body: unknown): T {
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
     throw new AppError(400, "VALIDATION_ERROR", "Invalid payload", {
-      issues: parsed.error.errors,
+      issues: parsed.error.issues,
     });
   }
   return parsed.data;
