@@ -11,6 +11,10 @@
  *   - `GET /:runId` — read the persisted PR-review record (the agent stores
  *     its result as a `pr_review` step on the AgentRun). Requires
  *     `pr.review.read`.
+ *
+ * Both routes also check the caller's access to the project involved (#334):
+ * the body's `projectId` for `POST /`, the run's own `projectId` for
+ * `GET /:runId`. Refusals answer the same 404 as an unknown project / run.
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
@@ -27,6 +31,10 @@ import {
 } from "../lib/agents/pr-reviewer/agent.js";
 import type { OctokitLike } from "../lib/agents/pr-reviewer/github-review-poster.js";
 import { recordStep, startRun, finishRun } from "../lib/replay/runs-service.js";
+import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
+
+const runNotFound = () => new AppError(404, "RUN_NOT_FOUND", "Run not found");
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -56,6 +64,12 @@ export function runReviewsRouter(deps: RunReviewsRouterDeps = {}): Router {
   r.post("/", requireAuth, requirePermission("pr.review"), async (req: Request, res: Response) => {
     const parsed = triggerSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+    if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+    // #334 — the body names the project the run is bound to and billed
+    // against. Check the caller can reach it before anything else (the budget
+    // 429 would otherwise disclose another project's spend); an unreachable
+    // project answers the same 404 as an unknown one.
+    await assertProjectAccess(req.user, parsed.data.projectId);
     const judge = deps.judge;
     const octokit = deps.octokit;
     if (!judge || !octokit) {
@@ -114,7 +128,11 @@ export function runReviewsRouter(deps: RunReviewsRouterDeps = {}): Router {
       const runId = String(req.params.runId);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const run = await (prisma as any).agentRun.findUnique({ where: { id: runId } });
-      if (!run) throw new AppError(404, "RUN_NOT_FOUND", "Run not found");
+      if (!run) throw runNotFound();
+      // #334 — mounted outside `/api/projects`: the run's own project decides
+      // access. A run in an unreachable project, or bound to no project, answers
+      // the same 404 as an unknown id for a non-admin.
+      await assertResourceProjectAccess(req.user, run.projectId, runNotFound);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const steps = await (prisma as any).agentRunStep.findMany({
         where: { runId },

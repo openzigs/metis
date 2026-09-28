@@ -25,7 +25,13 @@ vi.mock("../src/lib/prisma.js", () => ({
 
 vi.mock("../src/middleware/auth.js", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
-    (req as unknown as { user?: { userId: string } }).user = { userId: "tester" };
+    // `pr.review*` are admin-only permissions, so the caller is an admin —
+    // who bypasses the #334 project check. The cross-workspace refusals are
+    // proven in project-access-334-run-reviews.sqlite.test.ts.
+    (req as unknown as { user?: { userId: string; role: string } }).user = {
+      userId: "tester",
+      role: "admin",
+    };
     next();
   },
 }));

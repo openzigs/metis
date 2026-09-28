@@ -9,6 +9,10 @@
  *   GET  /api/baselines/:idA/compare/:idB          — added/removed/changed(field-level)/
  *                                                    unchanged sets (review.read)
  *
+ * The two `/api/baselines/...` routes resolve each baseline's project from its
+ * row and check the caller's access to it (#334); an unreachable baseline
+ * answers the same 404 as an unknown id.
+ *
  * Baselines are IMMUTABLE: there is deliberately no update or delete route,
  * and compare is read-only. The only write path is the admin-gated manual
  * create (auto-creation on review approval lives in review-service.ts, #617).
@@ -19,6 +23,8 @@ import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
+import { prisma } from "../lib/prisma.js";
+import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
 import {
   compareBaselines,
   createManualBaseline,
@@ -44,6 +50,24 @@ const createBaselineSchema = z.object({
 function parsePositiveInt(value: unknown, fallback: number): number {
   const n = Number.parseInt(String(value ?? ""), 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/** The same 404 an unknown baseline id gets from the baseline service. */
+const baselineNotFound = () => new AppError(404, "BASELINE_NOT_FOUND", "Baseline not found");
+
+/**
+ * #334 — `/api/baselines` is mounted outside `/api/projects`, so the project
+ * chokepoint never runs. Resolve the baseline's project from its row and
+ * apply the project-access rule; an unreachable baseline answers exactly as
+ * an unknown id does.
+ */
+async function assertBaselineAccess(req: Request, baselineId: string): Promise<void> {
+  const row = await prisma.baseline.findUnique({
+    where: { id: baselineId },
+    select: { projectId: true },
+  });
+  if (!row) throw baselineNotFound();
+  await assertResourceProjectAccess(req.user, row.projectId, baselineNotFound);
 }
 
 // ---- Routers ----------------------------------------------------------------
@@ -98,6 +122,10 @@ export function baselinesRouter(): Router {
     requireAuth,
     requirePermission("review.read"),
     async (req: Request, res: Response) => {
+      // #334 — BOTH baselines, before the service can answer the
+      // project-mismatch 400 that would confirm a foreign id exists.
+      await assertBaselineAccess(req, String(req.params.idA));
+      await assertBaselineAccess(req, String(req.params.idB));
       const data = await compareBaselines(String(req.params.idA), String(req.params.idB));
       res.json({ success: true, data });
     },
@@ -109,6 +137,7 @@ export function baselinesRouter(): Router {
     requireAuth,
     requirePermission("review.read"),
     async (req: Request, res: Response) => {
+      await assertBaselineAccess(req, String(req.params.baselineId));
       const data = await getBaselineContents(String(req.params.baselineId));
       res.json({ success: true, data });
     },

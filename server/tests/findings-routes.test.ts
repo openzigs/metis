@@ -8,6 +8,8 @@ interface MockFinding {
   derivation: string;
   confidence: number;
   agentResultId: string;
+  /** #334 — the review-ack route resolves the finding's project through this. */
+  agentResult?: { analysis: { projectId: string } };
 }
 
 const findings = new Map<string, MockFinding>();
@@ -29,6 +31,10 @@ vi.mock("../src/lib/prisma.js", async () => {
       finding: {
         findUnique: vi.fn(async ({ where }: any) => findings.get(where.id) ?? null),
       },
+      // #334 — a legacy (no-workspace) project, open to every authenticated
+      // caller under `assertProjectAccess`. Cross-workspace refusals are proven
+      // in project-access-334.sqlite.test.ts.
+      project: { findUnique: vi.fn(async () => ({ workspaceId: null })) },
     }),
   };
 });
@@ -111,6 +117,7 @@ describe("POST /api/findings/:id/review-ack", () => {
       derivation: "ambiguous",
       confidence: 0.42,
       agentResultId: "ar_1",
+      agentResult: { analysis: { projectId: "p_legacy" } },
     });
     const res = await request(app)
       .post("/api/findings/f_1/review-ack")
