@@ -113,8 +113,8 @@ function LibraryHitCard({
             <span
               className={
                 hit.kind === "skill"
-                  ? "rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-900"
-                  : "rounded bg-purple-100 px-2 py-0.5 text-xs text-purple-900"
+                  ? "rounded bg-info-muted px-2 py-0.5 text-xs text-info"
+                  : "rounded border border-chart-4 bg-muted px-2 py-0.5 text-xs text-foreground"
               }
             >
               {hit.kind}

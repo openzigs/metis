@@ -32,18 +32,18 @@ export function CodeCitation({ citation }: { citation: AnalysisCodeCitation }) {
   return (
     <li className="flex items-center gap-1.5">
       <span
-        className="rounded bg-sky-500/10 px-1 text-[10px] font-medium uppercase tracking-wide text-sky-300"
+        className="rounded bg-info-muted px-1 text-[10px] font-medium uppercase tracking-wide text-info"
         data-testid="code-citation-badge"
       >
         code
       </span>
-      <code className="font-mono text-zinc-300" title={citation.symbolId ?? locator}>
+      <code className="font-mono text-foreground" title={citation.symbolId ?? locator}>
         {locator}
       </code>
       <button
         type="button"
         onClick={handleCopy}
-        className="text-zinc-500 hover:text-zinc-300"
+        className="text-muted-foreground hover:text-foreground"
         aria-label={`Copy ${locator}`}
         data-testid="code-citation-copy"
       >

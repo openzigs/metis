@@ -28,6 +28,7 @@ import { JobProgress } from "@/components/realtime/job-progress";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { OverviewMarkdown } from "@/components/projects/overview-markdown";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function ProjectOverviewPage(): React.ReactElement {
   const params = useParams<{ id: string }>();
@@ -112,43 +113,42 @@ export default function ProjectOverviewPage(): React.ReactElement {
 
   return (
     <div className="space-y-6 p-6" data-testid="project-overview-page">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">
+      <PageHeader
+        title={
+          <>
             {/* #29 — "Overview" alone names the project landing page. */}
             Code Overview — {project.data?.name ?? "loading…"}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Auto-generated from the AST CodeGraph. Top symbols by in-degree, entry points, and a
-            deterministic summary.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="secondary"
-            onClick={handleCopy}
-            disabled={!markdown}
-            data-testid="overview-copy"
-          >
-            {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={handleDownload}
-            disabled={!markdown}
-            data-testid="overview-download"
-          >
-            Download
-          </Button>
-          <Button
-            onClick={() => regenerate.mutate()}
-            disabled={regenerate.isPending}
-            data-testid="overview-regenerate"
-          >
-            {regenerate.isPending ? "Regenerating…" : "Regenerate"}
-          </Button>
-        </div>
-      </header>
+          </>
+        }
+        description="Auto-generated from the AST CodeGraph. Top symbols by in-degree, entry points, and a deterministic summary."
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              onClick={handleCopy}
+              disabled={!markdown}
+              data-testid="overview-copy"
+            >
+              {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={handleDownload}
+              disabled={!markdown}
+              data-testid="overview-download"
+            >
+              Download
+            </Button>
+            <Button
+              onClick={() => regenerate.mutate()}
+              disabled={regenerate.isPending}
+              data-testid="overview-regenerate"
+            >
+              {regenerate.isPending ? "Regenerating…" : "Regenerate"}
+            </Button>
+          </div>
+        }
+      />
 
       {generatedAt ? (
         <p className="text-xs text-muted-foreground" data-testid="overview-generated-at">
@@ -166,7 +166,10 @@ export default function ProjectOverviewPage(): React.ReactElement {
       ) : null}
 
       {regenerateError ? (
-        <Card role="alert" className="border-red-700 bg-red-950/30 p-3 text-sm text-red-200">
+        <Card
+          role="alert"
+          className="border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+        >
           Failed to regenerate: {regenerateError.message}
           {regenerateError.code ? ` (${regenerateError.code})` : null}
         </Card>

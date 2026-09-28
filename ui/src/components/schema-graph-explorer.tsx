@@ -113,7 +113,7 @@ function TableNodeComponent({ data }: NodeProps<TableFlowNode>): React.ReactElem
           >
             {col.isPrimaryKey && (
               <span
-                className="rounded bg-amber-100 px-1 text-[10px] font-bold text-amber-800"
+                className="rounded bg-warning-muted px-1 text-[10px] font-bold text-warning"
                 title="Primary key"
               >
                 PK
@@ -121,7 +121,7 @@ function TableNodeComponent({ data }: NodeProps<TableFlowNode>): React.ReactElem
             )}
             {col.isForeignKey && (
               <span
-                className="rounded bg-sky-100 px-1 text-[10px] font-bold text-sky-800"
+                className="rounded bg-info-muted px-1 text-[10px] font-bold text-info"
                 title="Foreign key"
               >
                 FK
@@ -285,12 +285,12 @@ function TableDetailDrawer({
             data-testid={`schema-detail-col-${col.name}`}
           >
             {col.isPrimaryKey && (
-              <span className="rounded bg-amber-100 px-1 text-[10px] font-bold text-amber-800">
+              <span className="rounded bg-warning-muted px-1 text-[10px] font-bold text-warning">
                 PK
               </span>
             )}
             {col.isForeignKey && (
-              <span className="rounded bg-sky-100 px-1 text-[10px] font-bold text-sky-800">FK</span>
+              <span className="rounded bg-info-muted px-1 text-[10px] font-bold text-info">FK</span>
             )}
             <span className="font-mono">{col.name}</span>
             <span className="ml-auto text-xs text-muted-foreground">{col.dataType}</span>

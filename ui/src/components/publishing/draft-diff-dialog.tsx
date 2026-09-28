@@ -74,11 +74,11 @@ export function diffLines(a: string, b: string): DiffLine[] {
 function lineClass(kind: DiffLine["kind"]): string {
   switch (kind) {
     case "add":
-      return "bg-emerald-50 text-emerald-900";
+      return "bg-success-muted text-success";
     case "remove":
-      return "bg-red-50 text-red-900";
+      return "bg-destructive/10 text-destructive";
     default:
-      return "text-slate-700";
+      return "text-foreground";
   }
 }
 
@@ -119,11 +119,11 @@ export function DraftDiffDialog({
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
-        <div data-testid="draft-diff-summary" className="text-xs text-slate-500">
+        <div data-testid="draft-diff-summary" className="text-xs text-muted-foreground">
           {showDiff ? (
             <>
-              <span className="text-emerald-700">+{counts.add}</span>{" "}
-              <span className="text-red-700">−{counts.remove}</span> <span>={counts.same}</span>
+              <span className="text-success">+{counts.add}</span>{" "}
+              <span className="text-destructive">−{counts.remove}</span> <span>={counts.same}</span>
             </>
           ) : (
             <span>No previous version — showing current body.</span>
@@ -131,11 +131,11 @@ export function DraftDiffDialog({
         </div>
         <pre
           data-testid="draft-diff-body"
-          className="max-h-[60vh] overflow-auto rounded border bg-slate-50 p-3 font-mono text-xs leading-5"
+          className="max-h-[60vh] overflow-auto rounded border bg-muted p-3 font-mono text-xs leading-5"
         >
           {lines.map((l, idx) => (
             <div key={idx} className={lineClass(l.kind)}>
-              <span className="select-none pr-2 text-slate-400">{linePrefix(l.kind)}</span>
+              <span className="select-none pr-2 text-muted-foreground">{linePrefix(l.kind)}</span>
               {l.text}
             </div>
           ))}

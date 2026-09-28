@@ -263,21 +263,21 @@ describe("SLABadge", () => {
     const future = new Date(Date.now() + 72 * 3600 * 1000).toISOString();
     renderBadge(future);
     const badge = screen.getByText(/due in/i).closest("span");
-    expect(badge?.className).toContain("emerald");
+    expect(badge?.className).toContain("text-success");
   });
 
   it("shows amber for deadline ≤ 48h", () => {
     const soon = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
     renderBadge(soon);
     const badge = screen.getByText(/due in/i).closest("span");
-    expect(badge?.className).toContain("amber");
+    expect(badge?.className).toContain("text-warning");
   });
 
   it("shows red for overdue deadline", () => {
     const past = new Date(Date.now() - 3600 * 1000).toISOString();
     renderBadge(past);
     const badge = screen.getByText(/overdue/i).closest("span");
-    expect(badge?.className).toContain("red");
+    expect(badge?.className).toContain("text-destructive");
   });
 });
 

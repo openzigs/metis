@@ -2,13 +2,13 @@ import { type NextResponse } from "next/server";
 import { ACCESS_COOKIE, REFRESH_COOKIE, UPSTREAM_API_BASE } from "@/lib/config";
 
 /**
- * Edge-safe auth helpers shared by the Node route-handler proxy
- * (`auth-proxy.ts`) and the Edge middleware (`middleware.ts`). Everything here
- * uses only `fetch` + plain objects so it is safe under the Next.js Edge
- * runtime (no Node-only APIs).
+ * Auth helpers shared by the Node route-handler proxy (`auth-proxy.ts`) and
+ * the auth gate (`proxy.ts`, #274). Next 16's `proxy.ts` runs on the Node.js
+ * runtime (the `middleware.ts` convention it replaces is deprecated); everything here
+ * still uses only `fetch` + plain objects, so it has no runtime dependency.
  *
  * Single source of truth for the Next-origin cookie attributes so a token
- * rotation set from the edge carries byte-identical HttpOnly/SameSite/Secure
+ * rotation set by the auth gate carries byte-identical HttpOnly/SameSite/Secure
  * options to one set from the proxy (#409 AC).
  */
 

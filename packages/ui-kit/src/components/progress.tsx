@@ -9,11 +9,11 @@ const Progress = forwardRef<
 >(({ className, value, indicatorClassName, ...props }, ref) => (
   <ProgressPrimitive.Root
     ref={ref}
-    className={`relative h-2 w-full overflow-hidden rounded-full bg-zinc-800 ${className ?? ""}`}
+    className={`relative h-2 w-full overflow-hidden rounded-full bg-muted ${className ?? ""}`}
     {...props}
   >
     <ProgressPrimitive.Indicator
-      className={`h-full rounded-full bg-blue-500 transition-all duration-300 ease-in-out ${indicatorClassName ?? ""}`}
+      className={`h-full rounded-full bg-info transition-all duration-300 ease-in-out ${indicatorClassName ?? ""}`}
       style={{ width: `${value ?? 0}%` }}
     />
   </ProgressPrimitive.Root>

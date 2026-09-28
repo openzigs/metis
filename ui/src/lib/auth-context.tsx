@@ -30,7 +30,7 @@ export const PROACTIVE_REFRESH_MS = 50 * 60 * 1000;
 
 /**
  * Routes that render for a signed-OUT visitor. Kept in lock-step with the edge
- * gate's public list in `src/middleware.ts` — both have to agree or the page
+ * gate's public list in `src/proxy.ts` — both have to agree or the page
  * loads and is then bounced from the client (which is exactly what happened to
  * the invitation page).
  */

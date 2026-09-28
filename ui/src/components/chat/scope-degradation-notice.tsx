@@ -28,7 +28,7 @@ export function ScopeDegradationNotice({ scope }: { scope: SessionScope | null }
     <div
       role="status"
       data-testid="scope-degradation-notice"
-      className="rounded border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400"
+      className="rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
     >
       {noticeText(scope)}
     </div>

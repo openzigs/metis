@@ -15,10 +15,10 @@ export const REVIEW_STATUS_LABELS: Record<ReviewStatus, string> = {
 
 const STATUS_CLASSES: Record<ReviewStatus, string> = {
   draft: "bg-muted text-muted-foreground",
-  in_review: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
-  approved: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-  rejected: "bg-red-500/15 text-red-600 dark:text-red-400",
-  closed: "bg-zinc-500/15 text-zinc-500",
+  in_review: "bg-info-muted text-info",
+  approved: "bg-success-muted text-success",
+  rejected: "bg-destructive/10 text-destructive",
+  closed: "bg-muted text-muted-foreground",
 };
 
 export function ReviewStatusBadge({ status }: { status: ReviewStatus }) {
@@ -66,9 +66,7 @@ export function DueDateBadge({ dueAt, status }: { dueAt: string | null; status: 
       data-testid="review-due-badge"
       className={cn(
         "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-        info.overdue
-          ? "bg-red-500/15 text-red-600 dark:text-red-400"
-          : "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+        info.overdue ? "bg-destructive/10 text-destructive" : "bg-warning-muted text-warning",
       )}
     >
       {info.label}

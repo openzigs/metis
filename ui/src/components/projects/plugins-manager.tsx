@@ -270,7 +270,7 @@ export function PluginsManager({ projectId }: Props) {
 
         {importResult ? (
           <div
-            className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900"
+            className="rounded-md border border-success/40 bg-success-muted p-3 text-sm text-success"
             role="status"
             data-testid="plugin-import-success"
           >

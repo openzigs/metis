@@ -9,17 +9,16 @@
 
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth-context";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function SettingsProfilePage() {
   const { user } = useAuth();
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-profile-root">
-      <header>
-        <h1 className="text-2xl font-semibold">Profile</h1>
-        <p className="text-sm text-muted-foreground">
-          Your account information. Username and role are managed by an administrator.
-        </p>
-      </header>
+      <PageHeader
+        title="Profile"
+        description="Your account information. Username and role are managed by an administrator."
+      />
       <Card className="space-y-3 p-4" data-testid="settings-profile-card">
         <Field label="Username" value={user?.username ?? "—"} testId="settings-profile-username" />
         <Field

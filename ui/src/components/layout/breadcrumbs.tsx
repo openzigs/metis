@@ -1,16 +1,32 @@
 "use client";
 
+import { Fragment } from "react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight } from "lucide-react";
 import { projectsApi } from "@/lib/projects-api";
+import { pageCrumbs } from "@/lib/breadcrumb-trail";
+import { cn } from "@/lib/utils";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
 import { WorkspaceSwitcher } from "./workspace-switcher";
 import { ProjectSwitcher } from "./project-switcher";
 
 /**
  * N7 (#152) — consolidate the former dual header switchers into a single
- * breadcrumb hierarchy: Workspace › Project. Each crumb is itself a switcher
- * menu. Degrades to workspace-only when no project context exists.
+ * breadcrumb hierarchy: Workspace › Project. Each of those crumbs is itself a
+ * switcher menu. Degrades to workspace-only when no project context exists.
+ *
+ * #271 — the trail continues to the page: Workspace › Project › Section ›
+ * Page (`lib/breadcrumb-trail.ts`). Only the last crumb is the current page
+ * (`aria-current="page"`); the switchers never are. Below `sm` the crumbs
+ * between the switchers and the current page are hidden to fit the header.
  */
 export function Breadcrumbs() {
   const pathname = usePathname() ?? "";
@@ -23,24 +39,43 @@ export function Breadcrumbs() {
   const hasProjects = (projects.data?.items.length ?? 0) > 0;
   const onProjectPath = /^\/projects\/[^/]+/.test(pathname);
   const showProject = hasProjects || onProjectPath;
+  const crumbs = pageCrumbs(pathname);
 
   return (
-    <nav aria-label="Breadcrumb" data-testid="header-breadcrumb">
-      <ol className="flex items-center gap-1">
-        <li aria-current={showProject ? undefined : "page"}>
+    <Breadcrumb data-testid="header-breadcrumb" className="min-w-0">
+      <BreadcrumbList>
+        <BreadcrumbItem>
           <WorkspaceSwitcher />
-        </li>
+        </BreadcrumbItem>
         {showProject ? (
           <>
-            <li aria-hidden="true" className="text-muted-foreground">
-              <ChevronRight className="h-4 w-4" />
-            </li>
-            <li aria-current="page">
+            <BreadcrumbSeparator />
+            <BreadcrumbItem>
               <ProjectSwitcher />
-            </li>
+            </BreadcrumbItem>
           </>
         ) : null}
-      </ol>
-    </nav>
+        {crumbs.map((crumb, i) => {
+          const isLast = i === crumbs.length - 1;
+          const narrow = isLast ? undefined : "hidden sm:inline-flex";
+          return (
+            <Fragment key={`${i}-${crumb.label}`}>
+              <BreadcrumbSeparator className={isLast ? undefined : "hidden sm:block"} />
+              <BreadcrumbItem className={cn("max-w-[12rem]", narrow)}>
+                {isLast ? (
+                  <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
+                ) : crumb.href ? (
+                  <BreadcrumbLink asChild>
+                    <Link href={crumb.href}>{crumb.label}</Link>
+                  </BreadcrumbLink>
+                ) : (
+                  <span className="truncate">{crumb.label}</span>
+                )}
+              </BreadcrumbItem>
+            </Fragment>
+          );
+        })}
+      </BreadcrumbList>
+    </Breadcrumb>
   );
 }

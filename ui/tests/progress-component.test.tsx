@@ -11,14 +11,14 @@ describe("Progress component (#664)", () => {
 
   it("renders the indicator at specified value", () => {
     const { container } = render(<Progress value={60} />);
-    const indicator = container.querySelector(".bg-blue-500") as HTMLElement | null;
+    const indicator = container.querySelector(".bg-info") as HTMLElement | null;
     expect(indicator).toBeInTheDocument();
     expect(indicator?.style.width).toBe("60%");
   });
 
   it("renders at 100%", () => {
     const { container } = render(<Progress value={100} />);
-    const indicator = container.querySelector(".bg-blue-500") as HTMLElement | null;
+    const indicator = container.querySelector(".bg-info") as HTMLElement | null;
     expect(indicator?.style.width).toBe("100%");
   });
 

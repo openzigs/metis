@@ -62,15 +62,15 @@ function Steps({ current }: { current: Step }) {
             className={
               "rounded-full px-2 py-0.5 " +
               (i < idx
-                ? "bg-emerald-700/40 text-emerald-200"
+                ? "bg-success-muted text-success"
                 : i === idx
-                  ? "bg-sky-700/60 text-sky-100"
-                  : "bg-zinc-800 text-zinc-400")
+                  ? "bg-info text-info-foreground"
+                  : "bg-muted text-muted-foreground")
             }
           >
             {i + 1}. {s}
           </span>
-          {i < STEP_ORDER.length - 1 ? <span className="text-zinc-600">›</span> : null}
+          {i < STEP_ORDER.length - 1 ? <span className="text-muted-foreground">›</span> : null}
         </li>
       ))}
     </ol>
@@ -214,7 +214,7 @@ export function DbConnectorWizard({
         {error ? (
           <div
             role="alert"
-            className="rounded border border-red-600/40 bg-red-950/30 p-2 text-sm text-red-200"
+            className="rounded border border-destructive/40 bg-destructive/10 p-2 text-sm text-destructive"
           >
             {error}
           </div>
@@ -227,27 +227,27 @@ export function DbConnectorWizard({
               configuring.
             </p>
             <dl className="grid grid-cols-3 gap-2 font-mono text-xs">
-              <dt className="text-zinc-400">Driver</dt>
+              <dt className="text-muted-foreground">Driver</dt>
               <dd className="col-span-2">{suggestion.driverType}</dd>
-              <dt className="text-zinc-400">Host:Port</dt>
+              <dt className="text-muted-foreground">Host:Port</dt>
               <dd className="col-span-2">
                 {suggestion.host ?? "—"}
                 {suggestion.port ? `:${suggestion.port}` : ""}
               </dd>
-              <dt className="text-zinc-400">Database</dt>
+              <dt className="text-muted-foreground">Database</dt>
               <dd className="col-span-2">{suggestion.database ?? "—"}</dd>
-              <dt className="text-zinc-400">Source</dt>
+              <dt className="text-muted-foreground">Source</dt>
               <dd className="col-span-2 truncate" title={suggestion.sourceFile}>
                 {suggestion.sourceFile}:{suggestion.lineNumber}
               </dd>
-              <dt className="text-zinc-400">Confidence</dt>
+              <dt className="text-muted-foreground">Confidence</dt>
               <dd className="col-span-2">
                 <Badge variant="outline">{suggestion.confidence}</Badge>
               </dd>
               {suggestion.devCredsDetected ? (
                 <>
-                  <dt className="text-zinc-400">Credentials</dt>
-                  <dd className="col-span-2 flex items-center gap-1 text-emerald-400">
+                  <dt className="text-muted-foreground">Credentials</dt>
+                  <dd className="col-span-2 flex items-center gap-1 text-success">
                     <ShieldCheck className="h-3 w-3" /> Dev credentials found in source — pre-loaded
                     from the vault.
                   </dd>
@@ -320,7 +320,7 @@ export function DbConnectorWizard({
                   <button
                     type="button"
                     aria-label={showPassword ? "Hide password" : "Show password"}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-200"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                     onClick={() => setShowPassword((v) => !v)}
                   >
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -339,12 +339,12 @@ export function DbConnectorWizard({
             </p>
             {testResult ? (
               testResult.ok ? (
-                <div className="flex items-center gap-2 text-emerald-400">
+                <div className="flex items-center gap-2 text-success">
                   <CheckCircle2 className="h-4 w-4" /> Connection successful ({testResult.latencyMs}
                   ms).
                 </div>
               ) : (
-                <div className="flex items-center gap-2 text-red-400">
+                <div className="flex items-center gap-2 text-destructive">
                   <XCircle className="h-4 w-4" />
                   {testResult.errorMessage ?? testResult.errorCode ?? "Test failed."}
                 </div>
@@ -359,7 +359,7 @@ export function DbConnectorWizard({
               The test succeeded. Click <strong>Provision</strong> to create a vault-backed
               connector.
             </p>
-            <ul className="list-disc pl-5 text-xs text-zinc-400">
+            <ul className="list-disc pl-5 text-xs text-muted-foreground">
               <li>
                 Password will be stored in vault as{" "}
                 <code>

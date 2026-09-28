@@ -23,6 +23,7 @@ import {
 } from "@/components/impact/document-source-selector";
 import { RunImpactAnalysisButton } from "@/components/impact/run-impact-analysis-button";
 import { ApiError } from "@/lib/api-client";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function NewImpactAnalysisPage() {
   const router = useRouter();
@@ -107,20 +108,24 @@ export default function NewImpactAnalysisPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="impact-new-root">
-      <header className="space-y-1">
-        <Link
-          href="/impact-analyses"
-          className="text-xs text-muted-foreground hover:underline"
-          data-testid="impact-new-back"
-        >
-          ← Back to impact analyses
-        </Link>
-        <h1 className="text-2xl font-semibold">New impact analysis</h1>
-        <p className="text-sm text-muted-foreground">
-          Map a requirements change to the affected code across multiple projects. (To synthesize
-          requirements for a single project, use that project&apos;s Requirements Analysis tab.)
-        </p>
-      </header>
+      <PageHeader
+        eyebrow={
+          <Link
+            href="/impact-analyses"
+            className="text-xs text-muted-foreground hover:underline"
+            data-testid="impact-new-back"
+          >
+            ← Back to impact analyses
+          </Link>
+        }
+        title="New impact analysis"
+        description={
+          <>
+            Map a requirements change to the affected code across multiple projects. (To synthesize
+            requirements for a single project, use that project&apos;s Requirements Analysis tab.)
+          </>
+        }
+      />
 
       <DocumentSourceSelector
         mode={mode}

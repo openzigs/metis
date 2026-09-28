@@ -57,9 +57,9 @@ interface ModelRecommendationData {
 }
 
 const DEPTH_COLORS: Record<ReasoningDepth, string> = {
-  simple: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
-  moderate: "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30",
-  complex: "bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/30",
+  simple: "bg-success-muted text-success border-success/40",
+  moderate: "bg-warning-muted text-warning border-warning/40",
+  complex: "bg-muted text-foreground border-chart-4",
 };
 
 const DEPTH_LABELS: Record<ReasoningDepth, string> = {
@@ -172,7 +172,7 @@ export function ModelRecommendation({
       <div className="flex items-center gap-2 text-sm">
         <span className="font-mono text-foreground">{selection.modelName}</span>
         {selection.wasDowngraded && (
-          <span className="rounded border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300">
+          <span className="rounded border border-warning/40 bg-warning-muted px-1.5 py-0.5 text-xs text-warning">
             Budget downgraded
           </span>
         )}

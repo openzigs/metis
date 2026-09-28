@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE, REFRESH_COOKIE, UPSTREAM_API_BASE } from "@/lib/config";
 // Cookie attributes + upstream cookie names live in edge-auth so this proxy and
-// the Edge middleware mint byte-identical HttpOnly/SameSite/Secure cookies
-// (single source of truth — #409).
+// the `proxy.ts` auth gate (#274) mint byte-identical HttpOnly/SameSite/Secure
+// cookies (single source of truth — #409).
 import {
   ACCESS_OPTS,
   CLEAR_OPTS,

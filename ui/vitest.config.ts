@@ -113,7 +113,6 @@ export default defineConfig({
         "src/app/**/not-found.tsx",
         "src/app/api/**",
         "src/app/invites/**",
-        "src/middleware.ts",
         "src/components/ui/**",
         // Complex interactive data-visualization components that require
         // library-specific mocks (React Flow + dagre) beyond the scope of

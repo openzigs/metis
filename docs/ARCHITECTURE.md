@@ -4461,6 +4461,8 @@ The v1.2 shell ships **30+ user-facing routes** plus the auth proxy handlers. Th
 | `ThemeToggle` | Light / dark / system selector backed by `next-themes`. |
 | `LoginForm` | Validated login form, dispatches via the auth proxy. |
 | `PlaceholderPage` | Stub used by every Phase-3 route until that surface ships. |
+| `PageHeader` / `EmptyState` / `PageHeaderSkeleton` | ui-kit page shell (#270): every page's title, description and actions, the shared empty state, and the route `loading.tsx` skeleton. |
+| `Breadcrumbs` | Header trail Workspace › Project › Section › Page (#271); the page-level crumbs come from `lib/breadcrumb-trail.ts` and only the last carries `aria-current="page"`. |
 | `Providers` | Roots `ThemeProvider` → `QueryClientProvider` → `AuthProvider` (+ dev-only React Query Devtools). |
 
 shadcn/ui primitives (`button`, `card`, `dialog`, `input`, `label`, `dropdown-menu`) live under `src/components/ui/` and follow the canonical CLI templates.
@@ -4477,7 +4479,7 @@ shadcn/ui primitives (`button`, `card`, `dialog`, `input`, `label`, `dropdown-me
 
 ### 17.4 Auth Boundary
 
-`src/middleware.ts` runs at the edge for every non-asset request. If the `metis.at` cookie is missing it redirects to `/login?next=<original>`. `/api/auth/*` and `/login` are explicit pass-throughs. The `<AppShell>` performs a defence-in-depth client-side redirect for the rare case where the cookie expires mid-session.
+`src/proxy.ts` (Next 16's `proxy` file convention, formerly `middleware.ts`; it runs on the Node.js runtime, #274) runs for every non-asset, non-`/api` page request. If the `metis.at` cookie is missing it first tries a refresh with `metis.rt`, then redirects to `/login?next=<original>`. `/login` and `/invites/*` are explicit pass-throughs; the matcher skips `/api/*` so upload bodies stream unbuffered. The `<AppShell>` performs a defence-in-depth client-side redirect for the rare case where the cookie expires mid-session.
 
 ### 17.5 Theme System
 
@@ -4688,7 +4690,7 @@ not exposed to the host by default. (The opt-in `metis-copilot` sidecar was
 removed in #150.)
 
 **Services:**
-- **metis-ui** (port 3000): Next.js 15 / React 19 frontend.
+- **metis-ui** (port 3000): Next.js 16 / React 19 frontend.
 - **metis-server** (port 4000): Express + Socket.IO API server.
 - **metis-postgres** (port 5432): PostgreSQL 16 (volume `postgres_data`).
 - **metis-embeddings** (internal :5050): RAG embeddings + reranker

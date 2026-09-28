@@ -24,6 +24,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/ui/page-header";
 
 interface AuthFormState {
   // xray
@@ -147,22 +148,19 @@ export default function TestManagementConnectionsPage() {
 
   return (
     <div className="p-6 space-y-4" data-testid="tmc-page">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Test Management Connections</h1>
-          <p className="text-sm text-muted-foreground max-w-2xl">
-            Saved Xray / Zephyr / TestRail credentials used by Test Coverage pulls. Credentials are
-            stored in the vault and never displayed after creation.
-          </p>
-        </div>
-        <Link
-          href={`/projects/${projectId}/test-coverage`}
-          className="text-sm underline text-muted-foreground"
-          data-testid="tmc-back-to-coverage"
-        >
-          ← Back to Test Coverage
-        </Link>
-      </div>
+      <PageHeader
+        title="Test Management Connections"
+        description="Saved Xray / Zephyr / TestRail credentials used by Test Coverage pulls. Credentials are stored in the vault and never displayed after creation."
+        actions={
+          <Link
+            href={`/projects/${projectId}/test-coverage`}
+            className="text-sm underline text-muted-foreground"
+            data-testid="tmc-back-to-coverage"
+          >
+            ← Back to Test Coverage
+          </Link>
+        }
+      />
 
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-medium">Saved connections</h2>
@@ -274,7 +272,7 @@ export default function TestManagementConnectionsPage() {
                     {isLikelyEmail(auth.email.trim()) && suggestEmail(auth.email.trim()) ? (
                       <p
                         role="status"
-                        className="mt-1 text-xs text-amber-600"
+                        className="mt-1 text-xs text-warning"
                         data-testid="tmc-email-hint"
                       >
                         Did you mean “{suggestEmail(auth.email.trim())}”? You can still use the
@@ -390,7 +388,7 @@ export default function TestManagementConnectionsPage() {
 
               {result && (
                 <p
-                  className={`text-xs ${result.ok ? "text-emerald-600" : "text-destructive"}`}
+                  className={`text-xs ${result.ok ? "text-success" : "text-destructive"}`}
                   role="status"
                   data-testid={`tmc-test-result-${row.id}`}
                 >

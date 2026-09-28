@@ -10,6 +10,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card } from "@/components/ui/card";
 import { ResponsiveTable, type ResponsiveColumn } from "@/components/tables/responsive-table";
+import { PageHeader } from "@/components/ui/page-header";
 
 interface UsageRow {
   dayBucket: string;
@@ -87,50 +88,52 @@ export default function AdminUsagePage() {
 
   return (
     <div className="space-y-6 p-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Token Usage Dashboard</h1>
-        <div className="flex items-center gap-3">
-          <select
-            value={range}
-            onChange={(e) => setRange(e.target.value)}
-            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm dark:border-gray-700 dark:bg-gray-800"
-          >
-            <option value="7d">Last 7 days</option>
-            <option value="30d">Last 30 days</option>
-            <option value="90d">Last 90 days</option>
-          </select>
-          <select
-            value={groupBy}
-            onChange={(e) => setGroupBy(e.target.value)}
-            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm dark:border-gray-700 dark:bg-gray-800"
-          >
-            <option value="project">By Project</option>
-            <option value="day">By Day</option>
-            <option value="model">By Model</option>
-            <option value="user">By User</option>
-          </select>
-          <button
-            onClick={handleExport}
-            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700"
-          >
-            Export CSV
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title="Token Usage Dashboard"
+        actions={
+          <div className="flex items-center gap-3">
+            <select
+              value={range}
+              onChange={(e) => setRange(e.target.value)}
+              className="rounded-md border border-border bg-background px-3 py-1.5 text-sm"
+            >
+              <option value="7d">Last 7 days</option>
+              <option value="30d">Last 30 days</option>
+              <option value="90d">Last 90 days</option>
+            </select>
+            <select
+              value={groupBy}
+              onChange={(e) => setGroupBy(e.target.value)}
+              className="rounded-md border border-border bg-background px-3 py-1.5 text-sm"
+            >
+              <option value="project">By Project</option>
+              <option value="day">By Day</option>
+              <option value="model">By Model</option>
+              <option value="user">By User</option>
+            </select>
+            <button
+              onClick={handleExport}
+              className="rounded-md bg-info px-3 py-1.5 text-sm text-info-foreground hover:bg-info/90"
+            >
+              Export CSV
+            </button>
+          </div>
+        }
+      />
 
-      {isLoading && <p className="text-gray-500">Loading usage data…</p>}
-      {error && <p className="text-red-500">Error loading usage data</p>}
+      {isLoading && <p className="text-muted-foreground">Loading usage data…</p>}
+      {error && <p className="text-destructive">Error loading usage data</p>}
 
       {data && (
         <>
           {/* Summary tiles */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
             <Card className="p-4">
-              <p className="text-sm text-gray-500 dark:text-gray-400">Total Tokens</p>
+              <p className="text-sm text-muted-foreground">Total Tokens</p>
               <p className="text-2xl font-bold">{formatTokens(data.totalTokens)}</p>
             </Card>
             <Card className="p-4" data-testid="admin-usage-cost">
-              <p className="text-sm text-gray-500 dark:text-gray-400">Estimated Cost</p>
+              <p className="text-sm text-muted-foreground">Estimated Cost</p>
               <p className="text-2xl font-bold">
                 {/* PR #41 review — all-unpriced usage is not "$0.0000" of spend. */}
                 {data.totalCostUsd === 0 && data.unpriced.totalTokens > 0
@@ -139,16 +142,16 @@ export default function AdminUsagePage() {
               </p>
             </Card>
             <Card className="p-4" data-testid="admin-usage-unpriced">
-              <p className="text-sm text-gray-500 dark:text-gray-400">Unpriced Tokens</p>
+              <p className="text-sm text-muted-foreground">Unpriced Tokens</p>
               <p className="text-2xl font-bold">{formatTokens(data.unpriced.totalTokens)}</p>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
+              <p className="text-xs text-muted-foreground">
                 {formatTokens(data.unpriced.promptTokens)} in /{" "}
                 {formatTokens(data.unpriced.completionTokens)} out — not in the cost; set prices
                 with MODEL_PRICES
               </p>
             </Card>
             <Card className="p-4">
-              <p className="text-sm text-gray-500 dark:text-gray-400">Invocations</p>
+              <p className="text-sm text-muted-foreground">Invocations</p>
               <p className="text-2xl font-bold">
                 {data.rows.reduce((s, r) => s + r.count, 0).toLocaleString()}
               </p>
@@ -160,7 +163,7 @@ export default function AdminUsagePage() {
             <h2 className="mb-4 text-lg font-medium">Token Usage by {groupBy}</h2>
             <div className="flex items-end gap-1" style={{ height: 200 }}>
               {data.rows.length === 0 && (
-                <p className="text-sm text-gray-400">No usage data for this period</p>
+                <p className="text-sm text-muted-foreground">No usage data for this period</p>
               )}
               {(() => {
                 const maxTokens = Math.max(...data.rows.map((r) => r.totalTokens), 1);
@@ -177,11 +180,13 @@ export default function AdminUsagePage() {
                   return (
                     <div key={i} className="flex flex-1 flex-col items-center gap-1">
                       <div
-                        className="w-full rounded-t bg-blue-500"
+                        className="w-full rounded-t bg-info"
                         style={{ height: `${Math.max(pct, 2)}%` }}
                         title={`${formatTokens(row.totalTokens)} tokens / ${formatCost(row.estimatedCostUsd)}`}
                       />
-                      <span className="text-[10px] text-gray-500 truncate max-w-full">{label}</span>
+                      <span className="text-[10px] text-muted-foreground truncate max-w-full">
+                        {label}
+                      </span>
                     </div>
                   );
                 });

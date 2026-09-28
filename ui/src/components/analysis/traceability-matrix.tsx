@@ -91,7 +91,7 @@ export function TraceabilityMatrix({
       </div>
 
       {exportMutation.isError ? (
-        <p className="text-xs text-red-700 dark:text-red-400" role="alert">
+        <p className="text-xs text-destructive" role="alert">
           Export failed. Please try again.
         </p>
       ) : null}
@@ -99,7 +99,7 @@ export function TraceabilityMatrix({
       {query.isLoading ? (
         <p className="text-sm text-muted-foreground">Loading traceability…</p>
       ) : query.isError ? (
-        <p className="text-sm text-red-700 dark:text-red-400" role="alert">
+        <p className="text-sm text-destructive" role="alert">
           Could not load the traceability matrix.
         </p>
       ) : rows.length === 0 ? (

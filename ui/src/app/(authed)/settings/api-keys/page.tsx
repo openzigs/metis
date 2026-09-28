@@ -34,6 +34,7 @@ import { useTransientFlag } from "@/hooks/use-transient-toast";
 import { SecretRow, type SecretSource } from "./SecretRow";
 import { TunableRow } from "./TunableRow";
 import { AuditLogTab } from "./AuditLogTab";
+import { PageHeader } from "@/components/ui/page-header";
 
 const BOOTSTRAP_TOOLTIP = "Bootstrap config — set in `.env`. Restart required to change.";
 
@@ -48,17 +49,19 @@ export default function SettingsApiKeysPage({
 }: SettingsApiKeysPageProps = {}) {
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-api-keys-root">
-      <header>
-        <h1 className="text-2xl font-semibold">Configuration</h1>
-        <p className="text-sm text-muted-foreground">
-          Provider preferences, security evaluations, and runtime configuration. Plaintext
-          credentials live in the encrypted Vault — see{" "}
-          <a href="/vault" className="underline">
-            /vault
-          </a>
-          .
-        </p>
-      </header>
+      <PageHeader
+        title="Configuration"
+        description={
+          <>
+            Provider preferences, security evaluations, and runtime configuration. Plaintext
+            credentials live in the encrypted Vault — see{" "}
+            <a href="/vault" className="underline">
+              /vault
+            </a>
+            .
+          </>
+        }
+      />
       <ProviderPrefsSection />
       <SecurityEvalSection />
       <RuntimeConfigSection initialTab={initialTab} />
@@ -255,7 +258,7 @@ function ProviderPrefsSection() {
           <span
             role="status"
             aria-live="polite"
-            className="rounded bg-emerald-100 px-2 py-1 text-xs text-emerald-900"
+            className="rounded bg-success-muted px-2 py-1 text-xs text-success"
             data-testid="settings-provider-saved"
           >
             Saved
@@ -431,7 +434,7 @@ function EnvVarsSection() {
                   <code
                     className={
                       row.classification === "secret" && row.set
-                        ? "rounded bg-amber-100 px-1 text-amber-900"
+                        ? "rounded bg-warning-muted px-1 text-warning"
                         : !row.set
                           ? "text-muted-foreground"
                           : ""
@@ -444,8 +447,8 @@ function EnvVarsSection() {
                   <span
                     className={
                       row.classification === "secret"
-                        ? "rounded bg-rose-100 px-1.5 py-0.5 text-rose-900"
-                        : "rounded bg-sky-100 px-1.5 py-0.5 text-sky-900"
+                        ? "rounded bg-destructive/10 px-1.5 py-0.5 text-destructive"
+                        : "rounded bg-info-muted px-1.5 py-0.5 text-info"
                     }
                   >
                     {row.classification}

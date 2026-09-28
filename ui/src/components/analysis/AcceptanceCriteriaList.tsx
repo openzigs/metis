@@ -23,10 +23,7 @@ export function AcceptanceCriteriaList({ criteria }: { criteria: string[] }): Re
           ))}
         </ul>
       ) : (
-        <p
-          className="mt-1 text-sm italic text-amber-700 dark:text-amber-300/80"
-          data-testid="no-acceptance-criteria"
-        >
+        <p className="mt-1 text-sm italic text-warning" data-testid="no-acceptance-criteria">
           {NO_CRITERIA_MESSAGE}
         </p>
       )}

@@ -242,7 +242,7 @@ export function ClarificationDialogPanel({
     return (
       <Card className="space-y-3 p-4" data-testid="clarification-complete">
         <div className="flex items-center gap-2">
-          <span className="text-emerald-700 dark:text-emerald-400">✓</span>
+          <span className="text-success">✓</span>
           <h3 className="font-semibold">Clarification Complete</h3>
         </div>
         {/* Issue #1117 (finding A) — lead with what the USER did. The old line
@@ -253,9 +253,7 @@ export function ClarificationDialogPanel({
           {addressedCount} ambiguit{addressedCount === 1 ? "y" : "ies"} addressed across{" "}
           {state.rounds.length} round(s).
           {state.escalatedToSonnet && (
-            <span className="ml-1 text-amber-700 dark:text-amber-400">
-              (Escalated to Sonnet for complex resolution)
-            </span>
+            <span className="ml-1 text-warning">(Escalated to Sonnet for complex resolution)</span>
           )}
         </p>
         {modelConfirmedCount < addressedCount && (
@@ -300,10 +298,10 @@ export function ClarificationDialogPanel({
 
       {/* Epic #201 (#213) — addressed vs remaining, rehydrated from persisted state. */}
       <div className="flex flex-wrap gap-2 text-xs" data-testid="clarification-progress">
-        <span className="rounded bg-emerald-50 dark:bg-emerald-900/40 px-2 py-0.5 text-emerald-700 dark:text-emerald-300">
+        <span className="rounded bg-success-muted px-2 py-0.5 text-success">
           {addressedFields.size} addressed
         </span>
-        <span className="rounded bg-amber-50 dark:bg-amber-900/40 px-2 py-0.5 text-amber-700 dark:text-amber-300">
+        <span className="rounded bg-warning-muted px-2 py-0.5 text-warning">
           {remainingFields.length} remaining
         </span>
         {/* Issue #1104 (finding C) — "0 resolved" said nothing about the twelve
@@ -336,8 +334,8 @@ export function ClarificationDialogPanel({
                   <span
                     className={
                       grounded
-                        ? "inline-block rounded bg-emerald-50 dark:bg-emerald-900/40 px-2 py-0.5 text-xs text-emerald-700 dark:text-emerald-300"
-                        : "inline-block rounded bg-amber-50 dark:bg-amber-900/40 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300"
+                        ? "inline-block rounded bg-success-muted px-2 py-0.5 text-xs text-success"
+                        : "inline-block rounded bg-warning-muted px-2 py-0.5 text-xs text-warning"
                     }
                     data-testid="grounding-badge"
                   >
@@ -388,9 +386,7 @@ export function ClarificationDialogPanel({
       </div>
 
       {submitMutation.isError && (
-        <p className="text-sm text-red-700 dark:text-red-400">
-          Failed to submit answers. Please try again.
-        </p>
+        <p className="text-sm text-destructive">Failed to submit answers. Please try again.</p>
       )}
     </Card>
   );

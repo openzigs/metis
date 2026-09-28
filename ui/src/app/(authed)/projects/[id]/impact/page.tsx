@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ImpactAnalysesTable } from "@/components/impact/impact-analyses-table";
 import { useImpactAnalyses } from "@/lib/impact-analysis-hooks";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function ProjectImpactPage() {
   const params = useParams<{ id: string }>();
@@ -21,12 +22,10 @@ export default function ProjectImpactPage() {
   const analyses = (data ?? []).filter((a) => a.projectIds.includes(projectId));
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="project-impact-root">
-      <header className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Impact Analysis</h1>
-        <p className="text-sm text-muted-foreground">
-          Trace a requirement change to the code and database objects it affects in this project.
-        </p>
-      </header>
+      <PageHeader
+        title="Impact Analysis"
+        description="Trace a requirement change to the code and database objects it affects in this project."
+      />
       <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
         <p className="text-sm">
           Start from pasted text or one of this project&apos;s documents. The project is

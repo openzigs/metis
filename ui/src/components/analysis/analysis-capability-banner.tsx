@@ -34,9 +34,9 @@ export function AnalysisCapabilityBanner({
     <div
       role="status"
       data-testid="analysis-capability-banner"
-      className="rounded border border-amber-700/50 bg-amber-50 dark:bg-amber-950/20 p-3 text-sm"
+      className="rounded border border-warning/40 bg-warning-muted p-3 text-sm"
     >
-      <div className="mb-2 flex items-center gap-2 font-medium text-amber-700 dark:text-amber-300">
+      <div className="mb-2 flex items-center gap-2 font-medium text-warning">
         <svg
           className="h-4 w-4 shrink-0"
           fill="currentColor"
@@ -61,16 +61,12 @@ export function AnalysisCapabilityBanner({
             ? ` (${capability.skippedRepos.map((r) => r.label).join(", ")})`
             : "";
           return (
-            <li
-              key={reason}
-              data-testid={`capability-reason-${reason}`}
-              className="text-amber-700 dark:text-amber-100/90"
-            >
+            <li key={reason} data-testid={`capability-reason-${reason}`} className="text-warning">
               <span className="font-medium">
                 {copy.title}
                 {skipped}
               </span>{" "}
-              <span className="text-amber-700 dark:text-amber-200/70">{copy.action}</span>
+              <span className="text-warning">{copy.action}</span>
               {/* Issue #741 — offer a one-click resume of the skipped repos. */}
               {isSkippedRepos && onResumeRepos ? (
                 <div className="mt-1.5">
@@ -79,7 +75,7 @@ export function AnalysisCapabilityBanner({
                     data-testid="resume-skipped-repos"
                     onClick={onResumeRepos}
                     disabled={resuming}
-                    className="rounded border border-amber-600/60 bg-amber-50 dark:bg-amber-900/40 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-100 hover:bg-amber-100 dark:hover:bg-amber-900/60 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="rounded border border-warning/40 bg-warning-muted px-2 py-1 text-xs font-medium text-warning hover:bg-warning-muted disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {resuming
                       ? "Analyzing remaining repositories…"

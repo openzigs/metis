@@ -40,6 +40,7 @@ import { sanitizeAssistantText } from "@/lib/sanitize-assistant-text";
 import { recentTracker } from "@/lib/recent-tracker";
 import { ToolActivityList, TranscriptToolCalls } from "@/components/chat/tool-activity";
 import { useToolApprovals } from "@/hooks/use-tool-approvals";
+import { PageHeader } from "@/components/ui/page-header";
 
 /**
  * #136 — a transcript row as rendered. Rows that came from the server carry
@@ -451,41 +452,43 @@ export default function ChatPage() {
   return (
     <div className="flex h-[calc(100vh-8rem)] gap-4 p-6">
       <div className="flex flex-1 flex-col gap-4">
-        <div className="flex items-center justify-between gap-3">
-          <h1 className="text-2xl font-semibold">Chat</h1>
-          <div className="flex items-center gap-3">
-            {/* #1368 — the selector is normally hidden when a projectId is in
+        <PageHeader
+          title="Chat"
+          actions={
+            <div className="flex items-center gap-3">
+              {/* #1368 — the selector is normally hidden when a projectId is in
                 the URL, but a stale one degrades the scope and blocks the send;
                 without the picker there would be nothing on screen to pick, so
                 show it as the escape hatch. */}
-            {!effectiveProjectId || scopeBlocked ? (
-              <ProjectScopeSelector value={scope} onChange={setScope} disabled={streaming} />
-            ) : null}
-            <AgentPicker
-              value={agentKey}
-              onChange={handleAgentChange}
-              disabled={streaming}
-              projectId={pickerProjectId}
-            />
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={handleNewChat}
-              disabled={streaming}
-              data-testid="chat-new-session"
-            >
-              New chat
-            </Button>
-            {session ? (
-              <span className="text-sm text-muted-foreground">
-                {session.provider} · {session.model}
-              </span>
-            ) : (
-              <span className="text-sm text-muted-foreground">starting session…</span>
-            )}
-          </div>
-        </div>
+              {!effectiveProjectId || scopeBlocked ? (
+                <ProjectScopeSelector value={scope} onChange={setScope} disabled={streaming} />
+              ) : null}
+              <AgentPicker
+                value={agentKey}
+                onChange={handleAgentChange}
+                disabled={streaming}
+                projectId={pickerProjectId}
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={handleNewChat}
+                disabled={streaming}
+                data-testid="chat-new-session"
+              >
+                New chat
+              </Button>
+              {session ? (
+                <span className="text-sm text-muted-foreground">
+                  {session.provider} · {session.model}
+                </span>
+              ) : (
+                <span className="text-sm text-muted-foreground">starting session…</span>
+              )}
+            </div>
+          }
+        />
         <ScopeDegradationNotice scope={sessionScope} />
         {agentNotice ? (
           <p role="status" data-testid="chat-agent-fallback-notice" className="text-sm">
@@ -496,7 +499,7 @@ export default function ChatPage() {
           <div
             role="status"
             data-testid="chat-read-only-notice"
-            className="rounded border border-amber-500 p-2 text-sm"
+            className="rounded border border-warning/40 p-2 text-sm"
           >
             {readOnlyReason}
           </div>
@@ -614,7 +617,7 @@ export default function ChatPage() {
                       <p
                         role="status"
                         data-testid="incomplete-answer-notice"
-                        className="mt-1 rounded border border-amber-500/60 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-400"
+                        className="mt-1 rounded border border-warning/40 bg-warning-muted px-2 py-1 text-xs text-warning"
                       >
                         Incomplete answer — {m.incomplete}
                       </p>

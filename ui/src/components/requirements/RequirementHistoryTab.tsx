@@ -10,8 +10,10 @@
  *  • An Export dropdown downloads the FULL history as CSV or JSON.
  */
 import * as React from "react";
-import ReactDiffViewer from "react-diff-viewer-continued";
+import dynamic from "next/dynamic";
+import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,6 +25,15 @@ import { hasMinRole } from "@metis/shared";
 import { historyApi, type RequirementHistoryEntry, type ExportFormat } from "@/lib/history-api";
 import { ApiError } from "@/lib/api-client";
 import { RestoreVersionDialog } from "./RestoreVersionDialog";
+
+/**
+ * #272 — the diff viewer (and its diff engine) is fetched only when two
+ * versions are compared, not with the Analysis page that hosts this tab.
+ */
+const ReactDiffViewer = dynamic(() => import("react-diff-viewer-continued"), {
+  ssr: false,
+  loading: () => <Skeleton className="h-24 w-full" data-testid="version-diff-loading" />,
+});
 
 /** Stable field order for rendering snapshots in the diff view. */
 const FIELD_ORDER = [
@@ -59,6 +70,7 @@ export function RequirementHistoryTab({
   onRestored,
 }: RequirementHistoryTabProps): React.ReactElement {
   const { user } = useAuth();
+  const { resolvedTheme } = useTheme();
   const canRestore = user ? hasMinRole(user.role, "coordinator") : false;
 
   const [entries, setEntries] = React.useState<RequirementHistoryEntry[]>([]);
@@ -153,15 +165,15 @@ export function RequirementHistoryTab({
       </div>
 
       {error ? (
-        <p className="text-sm text-red-500" role="alert">
+        <p className="text-sm text-destructive" role="alert">
           {error}
         </p>
       ) : null}
 
       {loading ? (
-        <p className="text-sm text-zinc-500">Loading history…</p>
+        <p className="text-sm text-muted-foreground">Loading history…</p>
       ) : entries.length === 0 ? (
-        <p className="text-sm text-zinc-500">No version history yet.</p>
+        <p className="text-sm text-muted-foreground">No version history yet.</p>
       ) : (
         <ul className="space-y-2" role="list" aria-label="Version timeline">
           {entries.map((entry) => {
@@ -171,7 +183,7 @@ export function RequirementHistoryTab({
               <li key={entry.version}>
                 <div
                   className={`rounded border px-3 py-2 ${
-                    isSelected ? "border-blue-500 bg-blue-500/10" : "border-zinc-700"
+                    isSelected ? "border-info/40 bg-info-muted" : "border-border"
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -179,18 +191,20 @@ export function RequirementHistoryTab({
                       type="button"
                       onClick={() => toggleSelect(entry.version)}
                       aria-pressed={isSelected}
-                      className="flex-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                      className="flex-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-info"
                     >
                       <span className="text-sm font-medium">Version {entry.version}</span>
-                      <span className="ml-2 text-xs text-zinc-500">
+                      <span className="ml-2 text-xs text-muted-foreground">
                         {formatDate(entry.createdAt)}
                         {entry.actorId ? ` · ${entry.actorId}` : ""}
                       </span>
                       {entry.reason ? (
-                        <span className="ml-2 text-xs italic text-zinc-400">{entry.reason}</span>
+                        <span className="ml-2 text-xs italic text-muted-foreground">
+                          {entry.reason}
+                        </span>
                       ) : null}
                       {changedNames.length > 0 ? (
-                        <span className="mt-1 block text-xs text-zinc-400">
+                        <span className="mt-1 block text-xs text-muted-foreground">
                           Changed: {changedNames.join(", ")}
                         </span>
                       ) : null}
@@ -222,7 +236,7 @@ export function RequirementHistoryTab({
           >
             Previous
           </Button>
-          <span className="text-zinc-500">
+          <span className="text-muted-foreground">
             Page {page} of {totalPages}
           </span>
           <Button
@@ -238,21 +252,22 @@ export function RequirementHistoryTab({
 
       {diffPair ? (
         <div className="space-y-2" data-testid="version-diff">
-          <h4 className="text-xs font-semibold text-zinc-400">
+          <h4 className="text-xs font-semibold text-muted-foreground">
             Comparing v{diffPair.older.version} → v{diffPair.newer.version}
           </h4>
-          <div className="overflow-x-auto rounded border border-zinc-700 text-xs">
+          <div className="overflow-x-auto rounded border border-border text-xs">
             <ReactDiffViewer
               oldValue={snapshotToText(diffPair.older.snapshot)}
               newValue={snapshotToText(diffPair.newer.snapshot)}
               splitView
               leftTitle={`Version ${diffPair.older.version}`}
               rightTitle={`Version ${diffPair.newer.version}`}
+              useDarkTheme={resolvedTheme === "dark"}
             />
           </div>
         </div>
       ) : selected.length === 1 ? (
-        <p className="text-xs text-zinc-500">Select a second version to compare.</p>
+        <p className="text-xs text-muted-foreground">Select a second version to compare.</p>
       ) : null}
 
       <RestoreVersionDialog

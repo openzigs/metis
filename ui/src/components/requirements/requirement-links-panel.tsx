@@ -98,17 +98,17 @@ function LinkRow({
   return (
     <li
       data-testid="requirement-link-row"
-      className="flex items-center justify-between gap-2 rounded bg-zinc-900/40 px-2 py-1.5"
+      className="flex items-center justify-between gap-2 rounded bg-muted/40 px-2 py-1.5"
     >
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <span aria-hidden className="text-zinc-500">
+          <span aria-hidden className="text-muted-foreground">
             {arrow}
           </span>
-          <span className="text-[11px] uppercase tracking-wide text-zinc-500">
+          <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
             {linkSemantics(link.type, direction)}
           </span>
-          <span className="truncate text-xs text-zinc-200">{counterpart.title}</span>
+          <span className="truncate text-xs text-foreground">{counterpart.title}</span>
           {crossProject ? (
             <a
               href={`/projects/${counterpart.projectId}/analysis`}
@@ -202,7 +202,7 @@ function AddLinkDialog({
         </DialogHeader>
 
         {!workspaceId ? (
-          <p className="text-xs text-amber-400" role="status">
+          <p className="text-xs text-warning" role="status">
             This project is not part of a workspace, so requirement linking is unavailable.
           </p>
         ) : (
@@ -240,23 +240,23 @@ function AddLinkDialog({
             </div>
 
             {errorMessage ? (
-              <p className="text-xs text-red-400" role="alert">
+              <p className="text-xs text-destructive" role="alert">
                 {errorMessage}
               </p>
             ) : null}
 
             {search.isLoading ? (
-              <p className="text-xs text-zinc-500" role="status">
+              <p className="text-xs text-muted-foreground" role="status">
                 Searching…
               </p>
             ) : search.isError ? (
-              <p className="text-xs text-red-400" role="alert">
+              <p className="text-xs text-destructive" role="alert">
                 Failed to search requirements.
               </p>
             ) : debounced.length === 0 ? (
-              <p className="text-xs text-zinc-500">Start typing to find a requirement.</p>
+              <p className="text-xs text-muted-foreground">Start typing to find a requirement.</p>
             ) : results.length === 0 ? (
-              <p className="text-xs text-zinc-500">No matching requirements found.</p>
+              <p className="text-xs text-muted-foreground">No matching requirements found.</p>
             ) : (
               <ul className="max-h-64 space-y-1.5 overflow-y-auto" aria-label="Search results">
                 {results.map((r) => {
@@ -265,11 +265,11 @@ function AddLinkDialog({
                     <li
                       key={r.id}
                       data-testid="requirement-search-result"
-                      className="flex items-center justify-between gap-2 rounded bg-zinc-900/40 px-2 py-1.5"
+                      className="flex items-center justify-between gap-2 rounded bg-muted/40 px-2 py-1.5"
                     >
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="truncate text-xs text-zinc-200">{r.title}</span>
+                          <span className="truncate text-xs text-foreground">{r.title}</span>
                           {crossProject ? <Badge variant="outline">{r.projectName}</Badge> : null}
                         </div>
                       </div>
@@ -329,10 +329,10 @@ export function RequirementLinksPanel({
     <section
       aria-label="Linked requirements"
       data-testid="requirement-links-panel"
-      className="mt-3 rounded border border-zinc-800 bg-zinc-950/40 p-3"
+      className="mt-3 rounded border border-border bg-muted/40 p-3"
     >
       <div className="flex items-center justify-between gap-2">
-        <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Linked requirements
         </h4>
         <Button size="sm" variant="outline" onClick={() => setDialogOpen(true)}>
@@ -341,15 +341,15 @@ export function RequirementLinksPanel({
       </div>
 
       {links.isLoading ? (
-        <p className="mt-2 text-xs text-zinc-500" role="status">
+        <p className="mt-2 text-xs text-muted-foreground" role="status">
           Loading links…
         </p>
       ) : links.isError ? (
-        <p className="mt-2 text-xs text-red-400" role="alert">
+        <p className="mt-2 text-xs text-destructive" role="alert">
           Failed to load requirement links.
         </p>
       ) : total === 0 ? (
-        <p className="mt-2 text-xs text-zinc-500">No linked requirements yet.</p>
+        <p className="mt-2 text-xs text-muted-foreground">No linked requirements yet.</p>
       ) : (
         <ul className="mt-2 space-y-1.5" aria-label="Requirement links">
           {outgoing.map((link) => (

@@ -56,7 +56,7 @@ export function RebuildCacheButton({ projectId, repoId }: Props) {
 
       {!pending && result ? (
         <span
-          className="text-xs text-emerald-600"
+          className="text-xs text-success"
           role="status"
           aria-live="polite"
           data-testid={`rebuild-cache-status-${repoId}`}

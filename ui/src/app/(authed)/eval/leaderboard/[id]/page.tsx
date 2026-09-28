@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/card";
 import { BenchDiffViewer } from "@/components/eval/bench-diff-viewer";
 import { evalApi, type BenchRunDetail } from "@/lib/eval-api";
 import { queryKeys } from "@/lib/query-keys";
+import { PageHeader } from "@/components/ui/page-header";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -36,7 +37,7 @@ export default function BenchRunDetailPage(_props: PageProps) {
           Loading…
         </Card>
       ) : detail.isError ? (
-        <Card className="p-4 text-sm text-red-600" data-testid="run-error">
+        <Card className="p-4 text-sm text-destructive" data-testid="run-error">
           Failed to load benchmark run.
         </Card>
       ) : detail.data ? (
@@ -51,13 +52,15 @@ function RunBody({ data }: { data: BenchRunDetail }) {
   const failingTasks = tasks.filter((t) => !t.passed);
   return (
     <>
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">{run.benchmark}</h1>
-        <p className="text-sm text-muted-foreground">
-          {run.model} · score {(run.score * 100).toFixed(1)}% · {run.passedTasks}/{run.totalTasks}{" "}
-          tasks passed · status {run.status}
-        </p>
-      </header>
+      <PageHeader
+        title={run.benchmark}
+        description={
+          <>
+            {run.model} · score {(run.score * 100).toFixed(1)}% · {run.passedTasks}/{run.totalTasks}{" "}
+            tasks passed · status {run.status}
+          </>
+        }
+      />
       <Card className="p-4">
         <h2 className="mb-2 text-sm font-semibold">Failing tasks ({failingTasks.length})</h2>
         {failingTasks.length === 0 ? (
@@ -75,7 +78,9 @@ function RunBody({ data }: { data: BenchRunDetail }) {
                   </span>
                 </div>
                 {task.error ? (
-                  <pre className="mb-2 rounded border bg-red-50 p-2 text-xs">{task.error}</pre>
+                  <pre className="mb-2 rounded border bg-destructive/10 p-2 text-xs">
+                    {task.error}
+                  </pre>
                 ) : null}
                 <BenchDiffViewer task={task} />
               </li>

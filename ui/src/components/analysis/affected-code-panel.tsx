@@ -30,7 +30,7 @@ function symbolLocator(s: AffectedCodeSymbol): string {
 /** A blast-radius relation gets a muted badge; a direct mapper hit an accent one. */
 function relationClass(relation: AffectedCodeSymbol["relation"]): string {
   return relation === "direct"
-    ? "bg-emerald-50 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 border-emerald-700/50"
+    ? "bg-success-muted text-success border-success/40"
     : "bg-muted text-foreground border-border";
 }
 

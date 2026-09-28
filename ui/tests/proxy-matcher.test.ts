@@ -2,14 +2,14 @@
  * Regression tests for the edge auth-gate matcher.
  *
  * Guards the fix for the 10 MB upload truncation: `/api/*` must NOT be matched
- * by the middleware, otherwise Next buffers the request body up to
- * `middlewareClientMaxBodySize` (10 MB) and truncates the streaming upload
+ * by the proxy (formerly middleware), otherwise Next buffers the request body up to
+ * `proxyClientMaxBodySize` (10 MB) and truncates the streaming upload
  * proxy, making >10 MB .zip uploads fail with "Unexpected end of form".
  * Page routes MUST still be matched so the unauthenticated redirect keeps
  * working.
  */
 import { describe, it, expect } from "vitest";
-import { config } from "@/middleware";
+import { config } from "@/proxy";
 
 /** Build a JS RegExp from the (already regex-shaped) Next matcher string. */
 function matcherRegex(): RegExp {
@@ -17,7 +17,7 @@ function matcherRegex(): RegExp {
   return new RegExp(`^${config.matcher[0]}$`);
 }
 
-describe("middleware matcher", () => {
+describe("proxy matcher", () => {
   const re = matcherRegex();
 
   it("does NOT match /api/* routes (so request bodies stream un-buffered)", () => {

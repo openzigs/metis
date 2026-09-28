@@ -60,8 +60,8 @@ export function JobProgress({
         <div
           className={
             indeterminate
-              ? "h-full w-1/3 animate-pulse rounded bg-blue-500"
-              : "h-full rounded bg-blue-500 transition-all"
+              ? "h-full w-1/3 animate-pulse rounded bg-info"
+              : "h-full rounded bg-info transition-all"
           }
           style={indeterminate ? undefined : { width: `${pct ?? 0}%` }}
           data-testid={`${testId}-bar`}

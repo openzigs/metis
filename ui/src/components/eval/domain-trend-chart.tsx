@@ -68,7 +68,7 @@ export function DomainTrendChart({ runs, width = 480, height = 140 }: DomainTren
             fill={r.driftAlert ? "none" : "currentColor"}
             stroke={r.driftAlert ? "currentColor" : "none"}
             strokeWidth={r.driftAlert ? 2 : 0}
-            className={r.driftAlert ? "text-red-600" : "fill-primary text-primary"}
+            className={r.driftAlert ? "text-destructive" : "fill-primary text-primary"}
             data-testid={`domain-point-${r.runId}`}
             data-drift-alert={r.driftAlert ? "true" : "false"}
           >

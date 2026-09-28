@@ -19,6 +19,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { apiFetch } from "@/lib/api-client";
+import { PageHeader } from "@/components/ui/page-header";
 
 interface WorkspaceDetails {
   id: string;
@@ -99,9 +100,9 @@ export default function WorkspaceSettingsPage() {
   const roleIcon = (role: string) => {
     switch (role) {
       case "owner":
-        return <Crown className="h-4 w-4 text-amber-500" />;
+        return <Crown className="h-4 w-4 text-warning" />;
       case "admin":
-        return <Shield className="h-4 w-4 text-blue-500" />;
+        return <Shield className="h-4 w-4 text-info" />;
       default:
         return <User className="h-4 w-4 text-muted-foreground" />;
     }
@@ -109,10 +110,10 @@ export default function WorkspaceSettingsPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
-      <div className="flex items-center gap-3">
-        <Building2 className="h-6 w-6" />
-        <h1 className="text-2xl font-bold">Workspace Settings</h1>
-      </div>
+      <PageHeader
+        eyebrow={<Building2 className="h-6 w-6" aria-hidden />}
+        title="Workspace Settings"
+      />
 
       {/* General Settings */}
       <Card>

@@ -35,7 +35,7 @@ function UserAvatar({ username }: { username: string }) {
   const initials = username.slice(0, 2).toUpperCase();
   return (
     <div
-      className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-indigo-600 text-xs font-semibold text-white"
+      className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-info text-xs font-semibold text-info-foreground"
       aria-label={username}
     >
       {initials}

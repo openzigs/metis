@@ -46,16 +46,14 @@ export function AnalysisCapabilityHint({
   return (
     <div
       data-testid="analysis-capability-hint"
-      className="rounded border border-amber-700/40 bg-amber-50 dark:bg-amber-950/10 p-2 text-xs text-amber-700 dark:text-amber-200/80"
+      className="rounded border border-warning/40 bg-warning-muted p-2 text-xs text-warning"
     >
-      <span className="font-medium text-amber-700 dark:text-amber-300">Before you start:</span>
+      <span className="font-medium text-warning">Before you start:</span>
       <ul className="mt-1 list-disc space-y-0.5 pl-4">
         {reasons.map((reason) => (
           <li key={reason} data-testid={`capability-hint-${reason}`}>
             {CAPABILITY_REASON_COPY[reason].title}{" "}
-            <span className="text-amber-700 dark:text-amber-200/60">
-              {CAPABILITY_REASON_COPY[reason].action}
-            </span>
+            <span className="text-warning">{CAPABILITY_REASON_COPY[reason].action}</span>
           </li>
         ))}
       </ul>

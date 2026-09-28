@@ -49,7 +49,7 @@ export function ToolActivityList({ items, onDecide, deciding, sessionId }: ToolA
           <li
             key={a.callId}
             data-testid={`tool-activity-${a.callId}`}
-            className={`rounded border px-2 py-1 text-xs ${awaiting ? "border-amber-500/70 bg-amber-500/10" : "border-border"}`}
+            className={`rounded border px-2 py-1 text-xs ${awaiting ? "border-warning/40 bg-warning-muted" : "border-border"}`}
           >
             <details open={awaiting}>
               <summary className="cursor-pointer select-none">

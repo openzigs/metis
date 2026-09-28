@@ -111,7 +111,7 @@ export function AutopilotSettingsCard({ projectId, enabled, costCeilingCents }: 
       </label>
       {draftEnabled ? (
         <p
-          className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900"
+          className="rounded border border-warning/40 bg-warning-muted p-2 text-xs text-warning"
           role="alert"
           data-testid="autopilot-warning"
         >

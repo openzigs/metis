@@ -21,6 +21,7 @@ import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/ui/page-header";
 
 /**
  * #135 — the model options come from the server's model catalog (the
@@ -100,12 +101,10 @@ export default function ProjectModelSettingsPage() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-6 p-6" data-testid="model-settings-root">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Model Preferences</h1>
-        <p className="text-sm text-muted-foreground">
-          Configure how METIS selects AI models for this project.
-        </p>
-      </header>
+      <PageHeader
+        title="Model Preferences"
+        description="Configure how METIS selects AI models for this project."
+      />
 
       {/* Default model */}
       <Card className="space-y-4 p-4">
@@ -119,7 +118,7 @@ export default function ProjectModelSettingsPage() {
         <select
           id="default-model"
           data-testid="default-model-select"
-          className="w-full rounded border border-zinc-600 bg-zinc-800 px-3 py-2 text-sm text-zinc-200"
+          className="w-full rounded border border-border bg-muted px-3 py-2 text-sm text-foreground"
           value={defaultModel}
           onChange={(e) => setDefaultModel(e.target.value)}
         >
@@ -152,7 +151,7 @@ export default function ProjectModelSettingsPage() {
             value={threshold}
             onChange={(e) => setThreshold(Number(e.target.value))}
           />
-          <span className="w-32 text-right text-sm text-zinc-300">
+          <span className="w-32 text-right text-sm text-foreground">
             {threshold === 0 ? "Disabled" : `${threshold.toLocaleString()} tokens`}
           </span>
         </div>
@@ -162,7 +161,7 @@ export default function ProjectModelSettingsPage() {
       <Card className="space-y-4 p-4">
         <button
           type="button"
-          className="flex w-full items-center justify-between text-sm font-medium text-zinc-200"
+          className="flex w-full items-center justify-between text-sm font-medium text-foreground"
           onClick={() => setShowAdvanced(!showAdvanced)}
           data-testid="advanced-toggle"
         >
@@ -181,7 +180,7 @@ export default function ProjectModelSettingsPage() {
                 <Label className="w-48 text-xs">{taskType.replace(/_/g, " ")}</Label>
                 <select
                   data-testid={`override-${taskType}`}
-                  className="flex-1 rounded border border-zinc-600 bg-zinc-800 px-2 py-1 text-xs text-zinc-200"
+                  className="flex-1 rounded border border-border bg-muted px-2 py-1 text-xs text-foreground"
                   value={overrides[taskType] ?? ""}
                   onChange={(e) => {
                     const v = e.target.value;
@@ -214,7 +213,7 @@ export default function ProjectModelSettingsPage() {
         <Button onClick={handleSave} disabled={save.isPending} data-testid="save-model-prefs">
           {save.isPending ? "Saving…" : "Save Preferences"}
         </Button>
-        {save.isSuccess && <span className="text-sm text-green-400">Saved successfully.</span>}
+        {save.isSuccess && <span className="text-sm text-success">Saved successfully.</span>}
         {save.isError && (
           <span className="text-sm text-destructive">Failed to save. Please try again.</span>
         )}

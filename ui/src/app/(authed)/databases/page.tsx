@@ -15,6 +15,7 @@ import { Card } from "@/components/ui/card";
 import { projectsApi, type Project } from "@/lib/projects-api";
 import { dbConnectorsApi } from "@/lib/connectors-api";
 import { ApiError } from "@/lib/api-client";
+import { PageHeader } from "@/components/ui/page-header";
 
 interface AggregatedDb extends DatabaseConnector {
   projectName: string;
@@ -61,13 +62,15 @@ export default function DatabasesTopLevelPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="databases-top-root">
-      <header>
-        <h1 className="text-2xl font-semibold">Databases</h1>
-        <p className="text-sm text-muted-foreground">
-          Read-only catalogue of every database connection across projects. To create or edit, open
-          the project and use its <strong>Connections</strong> tab.
-        </p>
-      </header>
+      <PageHeader
+        title="Databases"
+        description={
+          <>
+            Read-only catalogue of every database connection across projects. To create or edit,
+            open the project and use its <strong>Connections</strong> tab.
+          </>
+        }
+      />
       <Card className="space-y-3 p-4" data-testid="databases-top-controls">
         <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-4">
           <label className="text-sm">

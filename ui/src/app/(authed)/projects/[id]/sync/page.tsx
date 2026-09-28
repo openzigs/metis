@@ -21,6 +21,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 export default function SyncDashboardPage() {
   const params = useParams();
@@ -75,7 +77,7 @@ export default function SyncDashboardPage() {
   if (loading && items.length === 0) {
     return (
       <div className="p-6">
-        <h1 className="text-2xl font-bold mb-4">Issue Sync</h1>
+        <PageHeader className="mb-4" title="Issue Sync" />
         <p className="text-muted-foreground">Loading drift events...</p>
       </div>
     );
@@ -83,13 +85,13 @@ export default function SyncDashboardPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Issue Sync</h1>
-        <Badge variant="secondary">{total} pending</Badge>
-      </div>
+      <PageHeader
+        title="Issue Sync"
+        titleExtra={<Badge variant="secondary">{total} pending</Badge>}
+      />
 
       {items.length === 0 ? (
-        <EmptyState />
+        <SyncedEmptyState />
       ) : (
         <>
           <div className="space-y-3">
@@ -142,16 +144,14 @@ export default function SyncDashboardPage() {
 
 // ---- Sub-components --------------------------------------------------------
 
-function EmptyState() {
+function SyncedEmptyState() {
   return (
-    <Card className="p-12 text-center">
-      <div className="text-4xl mb-4">🎉</div>
-      <h2 className="text-lg font-semibold mb-2">All synced up!</h2>
-      <p className="text-muted-foreground">
-        No drift detected between your published issues and external trackers. Changes will appear
-        here automatically when they&apos;re detected.
-      </p>
-    </Card>
+    <EmptyState
+      className="p-12"
+      titleAs="h2"
+      title="All synced up!"
+      description="No drift detected between your published issues and external trackers. Changes will appear here automatically when they're detected."
+    />
   );
 }
 

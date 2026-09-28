@@ -43,9 +43,9 @@ function formatDeadline(deadline: string): string {
 }
 
 const statusStyles: Record<Status, string> = {
-  ok: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
-  warning: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
-  overdue: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+  ok: "bg-success-muted text-success",
+  warning: "bg-warning-muted text-warning",
+  overdue: "bg-destructive/10 text-destructive",
   none: "bg-muted text-muted-foreground",
 };
 

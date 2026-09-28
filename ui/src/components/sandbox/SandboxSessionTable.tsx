@@ -59,10 +59,7 @@ export function SandboxSessionTable({
   const [open, setOpen] = React.useState(defaultOpen);
 
   return (
-    <section
-      data-testid="sandbox-session-table"
-      className="rounded border border-slate-200 dark:border-slate-700"
-    >
+    <section data-testid="sandbox-session-table" className="rounded border border-border">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -81,7 +78,7 @@ export function SandboxSessionTable({
         </span>
       </button>
       {open && (
-        <div className="border-t border-slate-200 p-3 dark:border-slate-700">
+        <div className="border-t border-border p-3">
           {sessions.length === 0 ? (
             <div
               className="text-sm text-muted-foreground"
@@ -108,7 +105,7 @@ export function SandboxSessionTable({
                       key={s.id}
                       data-testid={`sandbox-session-row-${s.id}`}
                       data-sandbox-session-id={s.id}
-                      className="border-t border-slate-100 dark:border-slate-800"
+                      className="border-t border-border"
                     >
                       <td className="px-2 py-1 font-mono">{s.provider}</td>
                       <td className="px-2 py-1 font-mono" title={s.vendorSandboxId}>

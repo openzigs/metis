@@ -16,21 +16,22 @@ import { Card } from "@/components/ui/card";
 import { runsApi, type AgentRunStep } from "@/lib/runs-api";
 import { SandboxStatusBadge } from "@/components/sandbox/SandboxStatusBadge";
 import { SandboxSessionTable } from "@/components/sandbox/SandboxSessionTable";
+import { PageHeader } from "@/components/ui/page-header";
 
 function StepCard({ step }: { step: AgentRunStep }) {
   const [open, setOpen] = useState(step.kind === "tool_call" || step.kind === "agent_phase");
   const accent = (() => {
     switch (step.kind) {
       case "agent_phase":
-        return "border-l-blue-500";
+        return "border-l-info";
       case "tool_call":
-        return "border-l-emerald-500";
+        return "border-l-success";
       case "synthesis":
-        return "border-l-purple-500";
+        return "border-l-chart-4";
       case "error":
-        return "border-l-red-500";
+        return "border-l-destructive";
       default:
-        return "border-l-slate-400";
+        return "border-l-border";
     }
   })();
 
@@ -106,27 +107,27 @@ export default function RunDetailPage() {
 
   return (
     <div className="space-y-6 p-6" data-testid="run-detail-page">
-      <div className="flex items-center justify-between">
-        <div>
-          <Link href="/runs" className="text-sm text-blue-600 hover:underline">
+      <PageHeader
+        eyebrow={
+          <Link href="/runs" className="text-sm text-info hover:underline">
             ← All runs
           </Link>
-          <h1 className="mt-1 flex items-center gap-3 text-2xl font-semibold">
-            <span>Run {id}</span>
-            {mostRecentSession && (
-              <SandboxStatusBadge
-                outcome={mostRecentSession.outcome}
-                errorMessage={mostRecentSession.errorMessage}
-              />
-            )}
-          </h1>
-        </div>
-      </div>
+        }
+        title={`Run ${id}`}
+        titleExtra={
+          mostRecentSession ? (
+            <SandboxStatusBadge
+              outcome={mostRecentSession.outcome}
+              errorMessage={mostRecentSession.errorMessage}
+            />
+          ) : undefined
+        }
+      />
 
       {detail.isLoading ? (
         <Card className="p-6 text-sm text-muted-foreground">Loading…</Card>
       ) : detail.isError ? (
-        <Card className="p-6 text-sm text-red-600">
+        <Card className="p-6 text-sm text-destructive">
           Failed to load run: {(detail.error as Error).message}
         </Card>
       ) : detail.data ? (

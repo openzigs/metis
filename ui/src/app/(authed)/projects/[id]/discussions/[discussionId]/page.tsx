@@ -14,6 +14,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
 import { listThreads, type AiResponseMode } from "@/lib/discussions-api";
 import { DiscussionThreadView } from "@/components/chat/discussion-thread-view";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function DiscussionThreadPage() {
   const params = useParams<{ id: string; discussionId: string }>();
@@ -31,17 +32,17 @@ export default function DiscussionThreadPage() {
 
   return (
     <div className="flex h-[calc(100vh-9rem)] flex-col gap-3 p-6">
-      <div className="flex items-center justify-between">
-        <div>
+      <PageHeader
+        eyebrow={
           <Link
             href={`/projects/${projectId}/discussions`}
             className="text-xs text-muted-foreground hover:underline"
           >
             ← All discussions
           </Link>
-          <h1 className="text-xl font-semibold">{thread?.title || "Discussion"}</h1>
-        </div>
-      </div>
+        }
+        title={thread?.title || "Discussion"}
+      />
       <div className="min-h-0 flex-1">
         <DiscussionThreadView
           threadId={discussionId}

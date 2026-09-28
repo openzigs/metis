@@ -47,9 +47,9 @@ export function EnhancementStatus({
             <div
               className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${
                 isCompleted
-                  ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                  ? "border-success/40 bg-success-muted text-success"
                   : isCurrent
-                    ? "border-blue-500/30 bg-blue-500/15 text-blue-700 dark:text-blue-300"
+                    ? "border-info/40 bg-info-muted text-info"
                     : "border-border bg-muted/50 text-muted-foreground"
               }`}
             >
@@ -57,7 +57,7 @@ export function EnhancementStatus({
               <span>{step.label}</span>
             </div>
             {i < visibleSteps.length - 1 && (
-              <div className={`h-px w-4 ${isCompleted ? "bg-emerald-500/50" : "bg-border"}`} />
+              <div className={`h-px w-4 ${isCompleted ? "bg-success/50" : "bg-border"}`} />
             )}
           </div>
         );

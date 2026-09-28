@@ -127,7 +127,7 @@ export function ProjectsV2SettingsCard({ projectId }: ProjectsV2SettingsCardProp
         {fetchBoards.isPending ? "Loading boards…" : "Load boards"}
       </Button>
       {fetchBoards.error && (
-        <p className="text-xs text-red-600" data-testid="pv2-error">
+        <p className="text-xs text-destructive" data-testid="pv2-error">
           {fetchBoards.error instanceof ApiError
             ? fetchBoards.error.message
             : String(fetchBoards.error)}
@@ -229,7 +229,7 @@ export function ProjectsV2SettingsCard({ projectId }: ProjectsV2SettingsCardProp
       >
         {save.isPending ? "Saving…" : "Save Projects v2 settings"}
       </Button>
-      {save.isSuccess && <span className="ml-2 text-xs text-emerald-600">Saved.</span>}
+      {save.isSuccess && <span className="ml-2 text-xs text-success">Saved.</span>}
     </Card>
   );
 }

@@ -80,12 +80,12 @@ export function BudgetForm({ workspaceId, currentBudgetCents }: Props) {
         </button>
       </div>
       {error && (
-        <p role="alert" className="text-xs text-red-500">
+        <p role="alert" className="text-xs text-destructive">
           {error}
         </p>
       )}
-      {mutation.isError && <p className="text-xs text-red-500">Failed to save budget.</p>}
-      {mutation.isSuccess && <p className="text-xs text-green-600">Budget saved.</p>}
+      {mutation.isError && <p className="text-xs text-destructive">Failed to save budget.</p>}
+      {mutation.isSuccess && <p className="text-xs text-success">Budget saved.</p>}
     </form>
   );
 }

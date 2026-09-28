@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dialog";
 import { MarkdownPreviewer } from "@/components/markdown-previewer";
 import { ArrowLeft, Plus, Trash2, RefreshCw, FileText, Network, Server, Code2 } from "lucide-react";
+import { PageHeader } from "@/components/ui/page-header";
 
 const REPO_ROLES = [
   "frontend",
@@ -152,10 +153,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
             <ArrowLeft className="h-4 w-4" aria-hidden />
           </Button>
         </Link>
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{p.name}</h1>
-          <p className="text-sm text-muted-foreground">{p.description || "No description"}</p>
-        </div>
+        <PageHeader title={p.name} description={p.description || "No description"} />
       </div>
 
       {/* Repositories section */}
@@ -306,10 +304,8 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
         </div>
 
         {analyze.isSuccess && (
-          <div className="rounded-md border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950 p-3">
-            <p className="text-sm text-green-700 dark:text-green-300">
-              Documentation generated successfully.
-            </p>
+          <div className="rounded-md border border-success/40 bg-success-muted p-3">
+            <p className="text-sm text-success">Documentation generated successfully.</p>
           </div>
         )}
 

@@ -215,7 +215,7 @@ export function DeepDiveDialog({
         <DialogHeader>
           <DialogTitle>Deep Dive → Issue</DialogTitle>
           <DialogDescription className="flex flex-wrap items-center gap-2">
-            <span className="text-zinc-400">{finding?.title ?? "Finding"}</span>
+            <span className="text-muted-foreground">{finding?.title ?? "Finding"}</span>
             {finding ? <PersonaTag persona={persona} agentKey={finding.agentKey} compact /> : null}
           </DialogDescription>
         </DialogHeader>
@@ -225,7 +225,7 @@ export function DeepDiveDialog({
             data-testid="deep-dive-loading"
             role="status"
             aria-live="polite"
-            className="py-10 text-center text-sm text-zinc-400"
+            className="py-10 text-center text-sm text-muted-foreground"
           >
             Generating issue draft…
           </div>
@@ -233,7 +233,7 @@ export function DeepDiveDialog({
 
         {phase === "idle" && error ? (
           <div className="space-y-3 py-6 text-center">
-            <p data-testid="deep-dive-error" role="alert" className="text-sm text-red-400">
+            <p data-testid="deep-dive-error" role="alert" className="text-sm text-destructive">
               {error}
             </p>
             <Button
@@ -311,7 +311,7 @@ export function DeepDiveDialog({
             </div>
 
             {phase === "editing" && error ? (
-              <p data-testid="deep-dive-error" role="alert" className="text-sm text-red-400">
+              <p data-testid="deep-dive-error" role="alert" className="text-sm text-destructive">
                 {error}
               </p>
             ) : null}
@@ -319,9 +319,9 @@ export function DeepDiveDialog({
             {links.length > 0 ? (
               <div
                 data-testid="deep-dive-links"
-                className="space-y-1 rounded border border-emerald-700/40 bg-emerald-950/20 p-3"
+                className="space-y-1 rounded border border-success/40 bg-success-muted p-3"
               >
-                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-300">
+                <p className="text-xs font-semibold uppercase tracking-wide text-success">
                   Created
                 </p>
                 <ul className="space-y-1 text-sm">
@@ -332,7 +332,7 @@ export function DeepDiveDialog({
                         target="_blank"
                         rel="noreferrer"
                         data-testid="deep-dive-link"
-                        className="text-sky-300 underline hover:text-sky-200"
+                        className="text-info underline hover:text-info"
                       >
                         {link.provider}: {link.issueKey}
                       </a>

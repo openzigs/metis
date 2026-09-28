@@ -24,9 +24,9 @@ const KIND_LABELS: Record<CrossDocFindingSummary["kind"], string> = {
 };
 
 const SEVERITY_CLASS: Record<CrossDocFindingSummary["severity"], string> = {
-  critical: "border-red-700/60 bg-red-50 dark:bg-red-950/30",
-  high: "border-red-700/50 bg-red-50 dark:bg-red-950/20",
-  medium: "border-amber-700/50 bg-amber-50 dark:bg-amber-950/20",
+  critical: "border-destructive/40 bg-destructive/10",
+  high: "border-destructive/40 bg-destructive/10",
+  medium: "border-warning/40 bg-warning-muted",
   low: "border-border/50 bg-muted/30",
   info: "border-border bg-muted/30",
 };

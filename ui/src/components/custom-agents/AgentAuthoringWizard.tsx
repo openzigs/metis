@@ -27,6 +27,7 @@ import { projectsApi } from "@/lib/projects-api";
 import { modelCatalogApi, formatModelPrice } from "@/lib/model-catalog-api";
 import { skillsApi } from "@/lib/library-api";
 import type { CustomAgentApprovalPolicy, SdkReasoningEffort } from "@metis/shared";
+import { PageHeader } from "@/components/ui/page-header";
 
 /**
  * Playground input cap — mirrors the backend's MAX_INVOKE_PAYLOAD_CHARS (20k).
@@ -212,13 +213,10 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6" data-testid="agent-wizard-root">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">New Custom Agent</h1>
-        <p className="text-sm text-muted-foreground">
-          Author a project-scoped analyst: name, prompt, tools, and model — then try it in the
-          playground.
-        </p>
-      </header>
+      <PageHeader
+        title="New Custom Agent"
+        description="Author a project-scoped analyst: name, prompt, tools, and model — then try it in the playground."
+      />
 
       <ol className="flex flex-wrap gap-2 text-xs" data-testid="wizard-steps">
         {STEPS.map((s, i) => (

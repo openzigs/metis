@@ -15,15 +15,22 @@ interface Props {
   projectId: string;
 }
 
+/**
+ * #301 — one chart token per category, so the series follow the theme (the
+ * dark values are lighter) and each clears 3:1 against the page
+ * (`ui/tests/contrast-tokens.test.ts`). These were seven fixed hex colours.
+ */
 const CATEGORY_COLORS: Record<string, string> = {
-  system_prompt: "#6366f1", // indigo
-  tool_manifests: "#f59e0b", // amber
-  tool_results: "#10b981", // emerald
-  rag_context: "#3b82f6", // blue
-  user_message: "#8b5cf6", // violet
-  history: "#ec4899", // pink
-  code_context: "#14b8a6", // teal
+  system_prompt: "hsl(var(--chart-1))",
+  tool_manifests: "hsl(var(--chart-3))",
+  tool_results: "hsl(var(--chart-6))",
+  rag_context: "hsl(var(--chart-2))",
+  user_message: "hsl(var(--chart-4))",
+  history: "hsl(var(--chart-5))",
+  code_context: "hsl(var(--chart-7))",
 };
+/** A category the server adds before the UI knows it. */
+const FALLBACK_COLOR = "hsl(var(--muted-foreground))";
 
 const CATEGORY_LABELS: Record<string, string> = {
   system_prompt: "System Prompt",
@@ -84,7 +91,7 @@ function DonutChart({ categories }: { categories: TokenBreakdownCategory[] }) {
         <path
           key={slice.category}
           d={describeArc(slice.startAngle, slice.startAngle + slice.angle, radius, innerRadius)}
-          fill={CATEGORY_COLORS[slice.category] ?? "#94a3b8"}
+          fill={CATEGORY_COLORS[slice.category] ?? FALLBACK_COLOR}
         >
           <title>
             {CATEGORY_LABELS[slice.category] ?? slice.category}:{" "}
@@ -111,7 +118,7 @@ function StackedBar({ categories }: { categories: TokenBreakdownCategory[] }) {
             className="h-full transition-all"
             style={{
               width: `${cat.percentage * 100}%`,
-              backgroundColor: CATEGORY_COLORS[cat.category] ?? "#94a3b8",
+              backgroundColor: CATEGORY_COLORS[cat.category] ?? FALLBACK_COLOR,
             }}
             title={`${CATEGORY_LABELS[cat.category] ?? cat.category}: ${(cat.percentage * 100).toFixed(1)}%`}
           />
@@ -123,7 +130,7 @@ function StackedBar({ categories }: { categories: TokenBreakdownCategory[] }) {
 function TrendIndicator({ trend }: { trend: number | null }) {
   if (trend === null) return <span className="text-muted-foreground text-xs">—</span>;
   const isUp = trend > 0;
-  const color = isUp ? "text-red-500" : "text-green-500";
+  const color = isUp ? "text-destructive" : "text-success";
   const arrow = isUp ? "↑" : "↓";
   return (
     <span className={`text-xs font-medium ${color}`}>
@@ -164,7 +171,7 @@ export function TokenBreakdownChart({ projectId }: Props) {
       </div>
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading...</p>}
-      {error && <p className="text-sm text-red-500">Failed to load breakdown</p>}
+      {error && <p className="text-sm text-destructive">Failed to load breakdown</p>}
 
       {data && (
         <>
@@ -184,7 +191,7 @@ export function TokenBreakdownChart({ projectId }: Props) {
                 <div className="flex items-center gap-2">
                   <span
                     className="inline-block h-2.5 w-2.5 rounded-full"
-                    style={{ backgroundColor: CATEGORY_COLORS[cat.category] ?? "#94a3b8" }}
+                    style={{ backgroundColor: CATEGORY_COLORS[cat.category] ?? FALLBACK_COLOR }}
                   />
                   <span>{CATEGORY_LABELS[cat.category] ?? cat.category}</span>
                 </div>
@@ -200,11 +207,9 @@ export function TokenBreakdownChart({ projectId }: Props) {
           </div>
 
           {data.suggestions.length > 0 && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/30">
-              <p className="text-xs font-medium text-amber-800 dark:text-amber-200 mb-1">
-                Optimization Suggestions
-              </p>
-              <ul className="list-disc pl-4 text-xs text-amber-700 dark:text-amber-300 space-y-0.5">
+            <div className="rounded-md border border-warning/40 bg-warning-muted p-3">
+              <p className="text-xs font-medium text-warning mb-1">Optimization Suggestions</p>
+              <ul className="list-disc pl-4 text-xs text-warning space-y-0.5">
                 {data.suggestions.map((s, i) => (
                   <li key={i}>{s}</li>
                 ))}

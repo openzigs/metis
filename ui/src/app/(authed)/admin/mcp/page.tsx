@@ -32,12 +32,13 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { PageHeader } from "@/components/ui/page-header";
 
 const STATUS_BADGE: Record<MCPServerView["status"], string> = {
   idle: "bg-muted text-muted-foreground",
-  starting: "bg-yellow-100 text-yellow-900",
-  ready: "bg-green-100 text-green-900",
-  error: "bg-red-100 text-red-900",
+  starting: "bg-warning-muted text-warning",
+  ready: "bg-success-muted text-success",
+  error: "bg-destructive/10 text-destructive",
   disabled: "bg-muted text-muted-foreground",
 };
 
@@ -53,32 +54,29 @@ export default function McpAdminPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">MCP servers</h1>
-          <p className="text-sm text-muted-foreground">
-            Register, start, and monitor Model Context Protocol servers. Secrets are vault-backed —
-            plaintext is never persisted in the registry row.
-          </p>
-        </div>
-        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogTrigger asChild>
-            <Button data-testid="new-mcp-server">Add server</Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Register MCP server</DialogTitle>
-            </DialogHeader>
-            <CreateForm
-              onCancel={() => setCreateOpen(false)}
-              onCreated={() => {
-                setCreateOpen(false);
-                invalidate();
-              }}
-            />
-          </DialogContent>
-        </Dialog>
-      </header>
+      <PageHeader
+        title="MCP servers"
+        description="Register, start, and monitor Model Context Protocol servers. Secrets are vault-backed — plaintext is never persisted in the registry row."
+        actions={
+          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+            <DialogTrigger asChild>
+              <Button data-testid="new-mcp-server">Add server</Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Register MCP server</DialogTitle>
+              </DialogHeader>
+              <CreateForm
+                onCancel={() => setCreateOpen(false)}
+                onCreated={() => {
+                  setCreateOpen(false);
+                  invalidate();
+                }}
+              />
+            </DialogContent>
+          </Dialog>
+        }
+      />
 
       <Card className="p-0">
         <table className="w-full text-left text-sm">
@@ -142,15 +140,15 @@ function ServerRow({ server, onChange }: { server: MCPServerView; onChange: () =
           {server.status}
         </span>
         {server.lastError ? (
-          <div className="mt-1 text-xs text-red-700">{server.lastError}</div>
+          <div className="mt-1 text-xs text-destructive">{server.lastError}</div>
         ) : null}
       </td>
       <td className="px-4 py-3">
         <span
           className={`rounded px-2 py-0.5 text-xs font-medium ${
             server.trustLevel === "trusted"
-              ? "bg-green-50 text-green-900"
-              : "bg-yellow-50 text-yellow-900"
+              ? "bg-success-muted text-success"
+              : "bg-warning-muted text-warning"
           }`}
         >
           {server.trustLevel}

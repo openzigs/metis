@@ -44,9 +44,9 @@ export function SecretRow({ configKey, description, source, onChanged }: SecretR
   const sourceBadge = (() => {
     switch (source) {
       case "vault":
-        return { label: "from vault", className: "bg-emerald-100 text-emerald-900" };
+        return { label: "from vault", className: "bg-success-muted text-success" };
       case "env":
-        return { label: "from env", className: "bg-sky-100 text-sky-900" };
+        return { label: "from env", className: "bg-info-muted text-info" };
       default:
         return { label: "not set", className: "bg-muted text-muted-foreground" };
     }
@@ -113,7 +113,7 @@ export function SecretRow({ configKey, description, source, onChanged }: SecretR
             <span
               role="status"
               aria-live="polite"
-              className="rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-900"
+              className="rounded bg-success-muted px-2 py-0.5 text-xs text-success"
               data-testid={`config-secret-${configKey}-toast`}
             >
               {savedToast === "saved" ? "Saved" : "Cleared"}
@@ -163,7 +163,7 @@ export function SecretRow({ configKey, description, source, onChanged }: SecretR
         </div>
       ) : (
         <div className="flex items-center gap-2">
-          <code className="rounded bg-amber-100 px-1 text-xs text-amber-900">
+          <code className="rounded bg-warning-muted px-1 text-xs text-warning">
             {source === "unset" ? "[unset]" : "[REDACTED]"}
           </code>
           <Button

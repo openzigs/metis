@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { apiFetch } from "@/lib/api-client";
 import { asyncApi, type TriggerDto } from "@/lib/async-platform-api";
+import { PageHeader } from "@/components/ui/page-header";
 
 const SOURCES: TriggerDto["source"][] = ["webhook", "github", "slack", "cron"];
 
@@ -185,7 +186,7 @@ export default function TriggersSettingsPage() {
 
   return (
     <div className="space-y-4 p-2 md:p-0">
-      <h1 className="text-xl font-semibold">Triggers</h1>
+      <PageHeader title="Triggers" />
       <Card className="space-y-3 p-4">
         <ProjectPicker value={projectId} onChange={setProjectId} />
         {projectId && (
@@ -232,14 +233,13 @@ export default function TriggersSettingsPage() {
           </>
         )}
       </Card>
-
       {projectId && (
         <Card className="p-4" data-testid="triggers-list">
           <h2 className="mb-3 text-lg font-medium">Triggers</h2>
           {list.isLoading ? (
             <SkeletonText lines={3} />
           ) : list.isError ? (
-            <div className="text-sm text-red-600" data-testid="tg-error">
+            <div className="text-sm text-destructive" data-testid="tg-error">
               Failed to load triggers: {(list.error as Error).message}
               <Button
                 size="sm"

@@ -12,6 +12,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card } from "@/components/ui/card";
 import { runsApi, type PrReviewRecord } from "@/lib/runs-api";
 import { ReviewPanel } from "@/components/run-review/review-panel";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function RunReviewPage() {
   const params = useParams<{ id: string }>();
@@ -24,17 +25,14 @@ export default function RunReviewPage() {
 
   return (
     <div className="space-y-4 p-6" data-testid="run-review-page">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold">PR Review</h1>
-          <Link href={`/runs/${id}`} className="text-xs text-muted-foreground underline">
-            ← back to run
-          </Link>
-        </div>
-      </div>
+      <PageHeader title="PR Review">
+        <Link href={`/runs/${id}`} className="text-xs text-muted-foreground underline">
+          ← back to run
+        </Link>
+      </PageHeader>
       {q.isLoading && <Card className="p-6 text-sm">Loading review…</Card>}
       {q.isError && (
-        <Card className="p-6 text-sm text-red-600" data-testid="run-review-error">
+        <Card className="p-6 text-sm text-destructive" data-testid="run-review-error">
           Failed to load review.
         </Card>
       )}

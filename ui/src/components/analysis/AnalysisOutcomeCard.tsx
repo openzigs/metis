@@ -33,11 +33,11 @@ export function AnalysisOutcomeCard({
     <section
       data-testid="analysis-outcome-card"
       aria-labelledby="analysis-outcome-heading"
-      className="rounded border border-emerald-300 dark:border-emerald-800/40 bg-emerald-50 dark:bg-emerald-950/20 p-4"
+      className="rounded border border-success/40 bg-success-muted p-4"
     >
       <h4
         id="analysis-outcome-heading"
-        className="mb-2 text-sm font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300"
+        className="mb-2 text-sm font-semibold uppercase tracking-wide text-success"
       >
         Outcome
       </h4>

@@ -17,8 +17,8 @@ import type {
 } from "@metis/shared";
 
 const LEVEL_CLASS: Record<string, string> = {
-  high: "bg-red-50 dark:bg-red-900/40 text-red-700 dark:text-red-200",
-  medium: "bg-amber-50 dark:bg-amber-900/40 text-amber-700 dark:text-amber-200",
+  high: "bg-destructive/10 text-destructive",
+  medium: "bg-warning-muted text-warning",
   low: "bg-muted text-foreground",
 };
 

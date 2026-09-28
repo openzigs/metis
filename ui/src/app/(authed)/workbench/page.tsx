@@ -40,6 +40,7 @@ import { ToolActivityList } from "@/components/chat/tool-activity";
 import { useToolApprovals } from "@/hooks/use-tool-approvals";
 import { consumeRunPayload } from "@/lib/templates";
 import { phase12QueryKeys } from "@/lib/phase12-query-keys";
+import { PageHeader } from "@/components/ui/page-header";
 
 interface DisplayMessage extends ChatMessage {
   id: string;
@@ -231,44 +232,42 @@ export default function WorkbenchPage() {
 
   return (
     <div className="flex h-[calc(100vh-8rem)] flex-col gap-3" data-testid="workbench-root">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Workbench</h1>
-          <p className="text-sm text-muted-foreground">
-            Per-project command center — tree, chat, and quick actions in one surface.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <label className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Project:</span>
-            <select
-              data-testid="workbench-project-picker"
-              aria-label="Active project"
-              className="rounded border bg-background px-2 py-1 text-sm"
-              value={activeProjectId ?? ""}
-              onChange={(e) => setActiveProjectId(e.target.value || null)}
+      <PageHeader
+        title="Workbench"
+        description="Per-project command center — tree, chat, and quick actions in one surface."
+        actions={
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Project:</span>
+              <select
+                data-testid="workbench-project-picker"
+                aria-label="Active project"
+                className="rounded border bg-background px-2 py-1 text-sm"
+                value={activeProjectId ?? ""}
+                onChange={(e) => setActiveProjectId(e.target.value || null)}
+              >
+                <option value="">— none —</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                resetLayout();
+                setLayout(loadLayout());
+              }}
+              data-testid="workbench-reset-layout"
             >
-              <option value="">— none —</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              resetLayout();
-              setLayout(loadLayout());
-            }}
-            data-testid="workbench-reset-layout"
-          >
-            Reset layout
-          </Button>
-        </div>
-      </header>
+              Reset layout
+            </Button>
+          </div>
+        }
+      />
 
       {error ? (
         <div
@@ -305,7 +304,9 @@ export default function WorkbenchPage() {
               <EmptyState
                 title="No documents yet"
                 cta="Upload one from the project page."
-                href={`/projects/${activeProjectId}`}
+                // The id comes from the project picker (DOM text): encode it so it
+                // can only ever be a path segment (CodeQL js/xss-through-dom).
+                href={`/projects/${encodeURIComponent(activeProjectId)}`}
                 hrefLabel="Open project"
               />
             ) : (

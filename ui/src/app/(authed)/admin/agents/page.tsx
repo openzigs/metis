@@ -24,6 +24,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function AdminAgentsPage() {
   const qc = useQueryClient();
@@ -48,36 +49,33 @@ export default function AdminAgentsPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <header className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Agents</h1>
-          <p className="text-sm text-muted-foreground">
-            Persona definitions that bind a system prompt + a default skill set to a chat session.
-            Tool refs are validated at save time against the live tool registry.
-          </p>
-        </div>
-        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogTrigger asChild>
-            <Button data-testid="new-agent">New agent</Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-3xl">
-            <DialogHeader>
-              <DialogTitle>Create agent</DialogTitle>
-              <DialogDescription>
-                Author an agent as <code>.agent.md</code> — YAML frontmatter plus a Markdown body
-                that becomes the system prompt.
-              </DialogDescription>
-            </DialogHeader>
-            <AgentForm
-              onCancel={() => setCreateOpen(false)}
-              onSaved={() => {
-                setCreateOpen(false);
-                invalidate();
-              }}
-            />
-          </DialogContent>
-        </Dialog>
-      </header>
+      <PageHeader
+        title="Agents"
+        description="Persona definitions that bind a system prompt + a default skill set to a chat session. Tool refs are validated at save time against the live tool registry."
+        actions={
+          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+            <DialogTrigger asChild>
+              <Button data-testid="new-agent">New agent</Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-3xl">
+              <DialogHeader>
+                <DialogTitle>Create agent</DialogTitle>
+                <DialogDescription>
+                  Author an agent as <code>.agent.md</code> — YAML frontmatter plus a Markdown body
+                  that becomes the system prompt.
+                </DialogDescription>
+              </DialogHeader>
+              <AgentForm
+                onCancel={() => setCreateOpen(false)}
+                onSaved={() => {
+                  setCreateOpen(false);
+                  invalidate();
+                }}
+              />
+            </DialogContent>
+          </Dialog>
+        }
+      />
 
       <div className="flex items-center gap-3">
         <Input
@@ -221,9 +219,9 @@ function AgentRow({
         {agent.archived ? (
           <span className="rounded bg-muted px-2 py-0.5 text-xs">archived</span>
         ) : agent.enabled ? (
-          <span className="rounded bg-green-100 px-2 py-0.5 text-xs text-green-900">enabled</span>
+          <span className="rounded bg-success-muted px-2 py-0.5 text-xs text-success">enabled</span>
         ) : (
-          <span className="rounded bg-yellow-100 px-2 py-0.5 text-xs text-yellow-900">
+          <span className="rounded bg-warning-muted px-2 py-0.5 text-xs text-warning">
             disabled
           </span>
         )}

@@ -73,7 +73,7 @@ export class JiraPage {
     this.tlsCheckbox = page.getByLabel("Verify TLS certificates");
     this.submitButton = page.getByRole("button", { name: /Add Connection|Update/ });
     this.cancelButton = page.getByRole("button", { name: "Cancel" });
-    this.formError = page.locator("span.text-red-600");
+    this.formError = page.locator("span.text-destructive");
 
     // Issue browser
     this.issueBrowserHeading = page.getByRole("heading", { name: "Issue Browser" });

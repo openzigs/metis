@@ -39,10 +39,10 @@ describe("CoverageBadge (#736)", () => {
   it("gives each state a distinct colour class (visually distinguishable)", () => {
     const classes = new Set(Object.values(COVERAGE_COPY).map((c) => c.className));
     expect(classes.size).toBe(3);
-    // Sanity: the three hues are green / amber / red.
-    expect(COVERAGE_COPY.grounded_in_code.className).toMatch(/emerald/);
-    expect(COVERAGE_COPY.grounded_in_docs_only.className).toMatch(/amber/);
-    expect(COVERAGE_COPY.no_evidence.className).toMatch(/red/);
+    // Sanity: the three states use the success / warning / destructive tokens (#301).
+    expect(COVERAGE_COPY.grounded_in_code.className).toMatch(/\bbg-success-muted\b/);
+    expect(COVERAGE_COPY.grounded_in_docs_only.className).toMatch(/\bbg-warning-muted\b/);
+    expect(COVERAGE_COPY.no_evidence.className).toMatch(/\bbg-destructive\/10\b/);
   });
 
   it("exposes an accessible name that includes the label", () => {

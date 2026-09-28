@@ -104,7 +104,7 @@ export function InferenceProfileCard({ projectId }: Props) {
           <span
             role="status"
             aria-live="polite"
-            className="rounded bg-emerald-100 px-2 py-1 text-xs text-emerald-900"
+            className="rounded bg-success-muted px-2 py-1 text-xs text-success"
             data-testid="inference-profile-saved-toast"
           >
             Saved

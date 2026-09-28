@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
+import { PageHeader } from "@/components/ui/page-header";
 
 const DENSITY_KEY = "metis.settings.density";
 type Density = "compact" | "comfortable";
@@ -36,12 +37,10 @@ export default function SettingsAppearancePage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-appearance-root">
-      <header>
-        <h1 className="text-2xl font-semibold">Appearance</h1>
-        <p className="text-sm text-muted-foreground">
-          Theme and UI density. Theme is mirrored in the header for quick access.
-        </p>
-      </header>
+      <PageHeader
+        title="Appearance"
+        description="Theme and UI density. Theme is mirrored in the header for quick access."
+      />
       <Card className="space-y-3 p-4" data-testid="settings-appearance-theme">
         <h2 className="text-sm font-semibold">Theme</h2>
         <p className="text-xs text-muted-foreground">Light, dark, or follow system.</p>
@@ -54,7 +53,7 @@ export default function SettingsAppearancePage() {
             <span
               role="status"
               aria-live="polite"
-              className="rounded bg-emerald-100 px-2 py-1 text-xs text-emerald-900"
+              className="rounded bg-success-muted px-2 py-1 text-xs text-success"
               data-testid="settings-appearance-saved"
             >
               Saved

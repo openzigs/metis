@@ -17,6 +17,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ProjectPipelineOverview } from "@/components/projects/pipeline-overview";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function ProjectDetailPage() {
   const params = useParams<{ id: string }>();
@@ -57,16 +58,17 @@ export default function ProjectDetailPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="project-overview-root">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm font-medium text-muted-foreground">Overview</p>
-          <h1 className="text-2xl font-semibold tracking-tight">{p.name}</h1>
-          <p className="text-sm text-muted-foreground">
+      <PageHeader
+        eyebrow={<span className="text-sm font-medium">Overview</span>}
+        title={p.name}
+        description={
+          <>
             <code>{p.slug}</code> · {p.status}
-          </p>
-          {p.description ? <p className="mt-2 max-w-prose">{p.description}</p> : null}
-        </div>
-      </header>
+          </>
+        }
+      >
+        {p.description ? <p className="mt-2 max-w-prose">{p.description}</p> : null}
+      </PageHeader>
 
       <ProjectPipelineOverview projectId={id} />
 

@@ -101,7 +101,7 @@ export default function InviteAcceptPage() {
       <div className="flex min-h-screen items-center justify-center p-4">
         <Card className="w-full max-w-md">
           <CardHeader className="text-center">
-            <CheckCircle2 className="mx-auto h-12 w-12 text-green-500" />
+            <CheckCircle2 className="mx-auto h-12 w-12 text-success" />
             <CardTitle className="mt-3">Welcome!</CardTitle>
             <CardDescription>
               You&apos;ve joined <strong>{invite?.workspace.name}</strong>. Redirecting…
@@ -117,7 +117,7 @@ export default function InviteAcceptPage() {
       <div className="flex min-h-screen items-center justify-center p-4">
         <Card className="w-full max-w-md">
           <CardHeader className="text-center">
-            <Clock className="mx-auto h-12 w-12 text-amber-500" />
+            <Clock className="mx-auto h-12 w-12 text-warning" />
             <CardTitle className="mt-3">
               {invite.expired ? "Invitation Expired" : "Invitation Used"}
             </CardTitle>

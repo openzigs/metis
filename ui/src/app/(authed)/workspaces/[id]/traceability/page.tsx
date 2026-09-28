@@ -11,6 +11,7 @@
  */
 import { useParams } from "next/navigation";
 import { WorkspaceTraceabilityRollup } from "@/components/traceability/workspace-traceability-rollup";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function WorkspaceTraceabilityPage() {
   const params = useParams<{ id: string }>();
@@ -20,10 +21,10 @@ export default function WorkspaceTraceabilityPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <h1 className="text-xl font-semibold">Traceability</h1>
-      <p className="text-sm text-muted-foreground">
-        Requirement coverage and cross-project links across this workspace.
-      </p>
+      <PageHeader
+        title="Traceability"
+        description="Requirement coverage and cross-project links across this workspace."
+      />
       <WorkspaceTraceabilityRollup workspaceId={workspaceId} />
     </div>
   );

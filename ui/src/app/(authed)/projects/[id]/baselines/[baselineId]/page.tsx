@@ -13,6 +13,7 @@ import { useQuery } from "@tanstack/react-query";
 import { baselinesApi } from "@/lib/baselines-api";
 import { queryKeys } from "@/lib/query-keys";
 import { BaselineItemsTable } from "@/components/baselines/BaselineItemsTable";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function BaselineDetailPage() {
   const params = useParams<{ id: string; baselineId: string }>();
@@ -45,28 +46,31 @@ export default function BaselineDetailPage() {
         </p>
       ) : (
         <>
-          <header className="space-y-1">
-            <h1 className="text-2xl font-semibold tracking-tight">{baseline.name}</h1>
-            <p className="text-sm text-muted-foreground">
-              {baseline.reviewRequest ? (
-                <>
-                  Created on approval of review{" "}
-                  <Link
-                    href={`/reviews/${baseline.reviewRequest.id}`}
-                    className="font-medium underline-offset-2 hover:underline"
-                  >
-                    {baseline.reviewRequest.title}
-                  </Link>
-                </>
-              ) : (
-                <>Created manually by {baseline.createdBy.displayName}</>
-              )}{" "}
-              · {new Date(baseline.createdAt).toLocaleString()} · immutable snapshot
-            </p>
+          <PageHeader
+            title={baseline.name}
+            description={
+              <>
+                {baseline.reviewRequest ? (
+                  <>
+                    Created on approval of review{" "}
+                    <Link
+                      href={`/reviews/${baseline.reviewRequest.id}`}
+                      className="font-medium underline-offset-2 hover:underline"
+                    >
+                      {baseline.reviewRequest.title}
+                    </Link>
+                  </>
+                ) : (
+                  <>Created manually by {baseline.createdBy.displayName}</>
+                )}{" "}
+                · {new Date(baseline.createdAt).toLocaleString()} · immutable snapshot
+              </>
+            }
+          >
             {baseline.description ? (
               <p className="text-sm text-foreground/90">{baseline.description}</p>
             ) : null}
-          </header>
+          </PageHeader>
 
           <section className="space-y-3" aria-label="Pinned requirements">
             <h2 className="text-sm font-semibold">

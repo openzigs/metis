@@ -35,6 +35,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function SchedulerPage() {
   const qc = useQueryClient();
@@ -89,36 +90,33 @@ export default function SchedulerPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0">
-      <header className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Scheduler</h1>
-          <p className="text-sm text-muted-foreground">
-            Cron-driven jobs that enqueue tasks. Pause, resume, edit, or fire a job manually. Live
-            status streams in over Socket.IO.
-          </p>
-        </div>
-        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogTrigger asChild>
-            <Button data-testid="new-job">New job</Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>Create scheduled job</DialogTitle>
-              <DialogDescription>
-                Define a cron-driven job: a key, schedule, task type, and JSON payload.
-              </DialogDescription>
-            </DialogHeader>
-            <JobForm
-              handlers={handlers.data ?? []}
-              onCancel={() => setCreateOpen(false)}
-              onSaved={() => {
-                setCreateOpen(false);
-                invalidate();
-              }}
-            />
-          </DialogContent>
-        </Dialog>
-      </header>
+      <PageHeader
+        title="Scheduler"
+        description="Cron-driven jobs that enqueue tasks. Pause, resume, edit, or fire a job manually. Live status streams in over Socket.IO."
+        actions={
+          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+            <DialogTrigger asChild>
+              <Button data-testid="new-job">New job</Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Create scheduled job</DialogTitle>
+                <DialogDescription>
+                  Define a cron-driven job: a key, schedule, task type, and JSON payload.
+                </DialogDescription>
+              </DialogHeader>
+              <JobForm
+                handlers={handlers.data ?? []}
+                onCancel={() => setCreateOpen(false)}
+                onSaved={() => {
+                  setCreateOpen(false);
+                  invalidate();
+                }}
+              />
+            </DialogContent>
+          </Dialog>
+        }
+      />
 
       <SchedulerStatsHeader jobs={jobs.data} loading={jobs.isLoading} />
 
@@ -160,9 +158,9 @@ export default function SchedulerPage() {
                   </td>
                   <td className="px-4 py-2 text-xs">
                     {job.enabled ? (
-                      <span className="text-emerald-600">enabled</span>
+                      <span className="text-success">enabled</span>
                     ) : (
-                      <span className="text-amber-600">paused</span>
+                      <span className="text-warning">paused</span>
                     )}
                   </td>
                   <td className="px-4 py-2">

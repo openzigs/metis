@@ -16,6 +16,7 @@ import { Card } from "@/components/ui/card";
 import { baselinesApi, type BaselineSummary } from "@/lib/baselines-api";
 import { queryKeys } from "@/lib/query-keys";
 import { BaselineCompareView } from "@/components/baselines/BaselineCompareView";
+import { PageHeader } from "@/components/ui/page-header";
 
 /** One-line baseline row summary. Exported for unit testing. */
 export function summarizeBaseline(baseline: BaselineSummary): string {
@@ -55,13 +56,10 @@ export default function ProjectBaselinesPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Baselines</h1>
-        <p className="text-sm text-muted-foreground">
-          Immutable snapshots of approved requirement versions. A baseline is created automatically
-          when a review is approved; compare two baselines to see what changed between sign-offs.
-        </p>
-      </header>
+      <PageHeader
+        title="Baselines"
+        description="Immutable snapshots of approved requirement versions. A baseline is created automatically when a review is approved; compare two baselines to see what changed between sign-offs."
+      />
 
       {list.isLoading ? (
         <p className="text-sm text-muted-foreground">Loading baselines…</p>

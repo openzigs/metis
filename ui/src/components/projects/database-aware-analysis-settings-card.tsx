@@ -133,7 +133,7 @@ export function DatabaseAwareAnalysisSettingsCard({ projectId }: Props) {
           <span
             role="status"
             aria-live="polite"
-            className="rounded bg-emerald-100 px-2 py-1 text-xs text-emerald-900"
+            className="rounded bg-success-muted px-2 py-1 text-xs text-success"
             data-testid="database-aware-analysis-saved-toast"
           >
             Saved
@@ -190,7 +190,7 @@ export function DatabaseAwareAnalysisSettingsCard({ projectId }: Props) {
           </p>
           {showsNoSchemaDataHint(data) ? (
             <p
-              className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900"
+              className="rounded border border-warning/40 bg-warning-muted p-2 text-xs text-warning"
               role="status"
               data-testid="database-aware-analysis-no-schema-data-hint"
             >

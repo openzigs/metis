@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { createThread, listThreads } from "@/lib/discussions-api";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function DiscussionsListPage() {
   const params = useParams<{ id: string }>();
@@ -55,14 +56,10 @@ export default function DiscussionsListPage() {
 
   return (
     <div className="flex flex-col gap-4 p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Discussions</h1>
-          <p className="text-sm text-muted-foreground">
-            Collaborate with your team and the AI participant in a shared, realtime thread.
-          </p>
-        </div>
-      </div>
+      <PageHeader
+        title="Discussions"
+        description="Collaborate with your team and the AI participant in a shared, realtime thread."
+      />
 
       <Card className="flex flex-col gap-2 p-4 sm:flex-row sm:items-end">
         <div className="flex-1">

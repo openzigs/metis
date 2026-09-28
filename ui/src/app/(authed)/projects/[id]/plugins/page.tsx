@@ -7,6 +7,7 @@
  */
 import { useParams } from "next/navigation";
 import { PluginsManager } from "@/components/projects/plugins-manager";
+import { PageHeader } from "@/components/ui/page-header";
 
 export default function ProjectPluginsPage() {
   const params = useParams<{ id: string }>();
@@ -16,13 +17,10 @@ export default function ProjectPluginsPage() {
 
   return (
     <div className="space-y-6 p-6" data-testid="plugins-page">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Plugins</h1>
-        <p className="text-sm text-muted-foreground">
-          Export skills, agents, and hooks as a portable plugin, or import an existing plugin
-          envelope into this project.
-        </p>
-      </header>
+      <PageHeader
+        title="Plugins"
+        description="Export skills, agents, and hooks as a portable plugin, or import an existing plugin envelope into this project."
+      />
       <PluginsManager projectId={id} />
     </div>
   );

@@ -37,14 +37,13 @@ interface PresenceAvatarsProps {
 
 function getColor(username: string): string {
   const colors = [
-    "bg-violet-600",
-    "bg-indigo-600",
-    "bg-sky-600",
-    "bg-emerald-600",
-    "bg-amber-600",
-    "bg-rose-600",
-    "bg-pink-600",
-    "bg-teal-600",
+    "bg-chart-1",
+    "bg-chart-2",
+    "bg-chart-3",
+    "bg-chart-4",
+    "bg-chart-5",
+    "bg-chart-6",
+    "bg-chart-7",
   ];
   let hash = 0;
   for (let i = 0; i < username.length; i++) {
@@ -118,7 +117,7 @@ export function PresenceAvatars({
           key={u.userId}
           title={u.username}
           className={cn(
-            "flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold text-white ring-2 ring-background",
+            "flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold text-background ring-2 ring-background",
             getColor(u.username),
           )}
           aria-label={u.username}

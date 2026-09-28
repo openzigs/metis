@@ -1,7 +1,7 @@
 # METIS — Claude Code Project Instructions
 
 Multi-package TypeScript monorepo: `server/` (Express + Prisma + LanceDB RAG), `ui/`
-(Next.js 14 + Tailwind + shadcn), `packages/` (shared types + ui-kit), `e2e/` (Playwright).
+(Next.js 16 + Tailwind + shadcn), `packages/` (shared types + ui-kit), `e2e/` (Playwright).
 Structural detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 **This file is reloaded into every non-Explore subagent, so each line is paid per
@@ -66,12 +66,14 @@ gh pr checks <pr>                           # RE-READ: full set present, zero pe
 gh pr merge <pr> --squash --delete-branch   # only after a clean re-read
 ```
 
-1. **`api` = `fail` usually means *cancelled*.** `api` queues on the ref-independent
-   `api-docker-build` group (deliberate — one Docker daemon), so a third run cancels an
-   already-pending job and the superseded `api` reads red having built nothing. Read the
+1. **`api` = `fail` usually means *cancelled*.** The workflow's `concurrency` group is
+   `ci-${{ github.ref }}` with `cancel-in-progress: true`, so a newer push to the same
+   branch cancels the running `api` job and `gh pr checks` prints it red. (There is no
+   `api-docker-build` group any more — it serialised `api` across refs only while the
+   runners shared one Docker daemon; see the comment on the `api` job in `ci.yml`.) Read the
    **`api-outcome`** check: it passes on a supersede, and fails only on a genuine `api`
-   failure. Confirm with `gh run view <id> --json jobs`, then **re-run the job — do not
-   "fix" anything** (#1067).
+   failure. Confirm with `gh run view <id> --json jobs`, then read the newer run — re-run
+   the job only if none exists — and **do not "fix" anything** (#1067).
 2. **`postgres-adapter` can exit 1 with every test passing** — a vitest
    `EnvironmentTeardownError: Closing rpc while "onUserConsoleLog" was pending` from
    `server/tests/lib/testcoverage/cost-tracker.test.ts`. **Discriminate on the `Test Files`

@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError } from "@/lib/api-client";
 import { acpApi, type CreatedApiToken } from "@/lib/enterprise-api";
+import { PageHeader } from "@/components/ui/page-header";
 
 const DOC_URL = "/docs/ACP.md";
 
@@ -75,15 +76,17 @@ export default function AcpSettingsPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="acp-settings-root">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">ACP — Agent Client Protocol</h1>
-        <p className="text-sm text-muted-foreground">
-          Expose METIS to external Copilot CLIs over JSON-RPC.{" "}
-          <a className="underline" href={DOC_URL}>
-            Wire format docs
-          </a>
-        </p>
-      </header>
+      <PageHeader
+        title="ACP — Agent Client Protocol"
+        description={
+          <>
+            Expose METIS to external Copilot CLIs over JSON-RPC.{" "}
+            <a className="underline" href={DOC_URL}>
+              Wire format docs
+            </a>
+          </>
+        }
+      />
 
       <Card className="p-4" data-testid="acp-create-card">
         <h2 className="text-sm font-semibold">Generate ACP token</h2>
@@ -118,7 +121,7 @@ export default function AcpSettingsPage() {
           {create.isPending ? "Generating…" : "Generate ACP token"}
         </Button>
         {create.error && (
-          <p className="mt-2 text-xs text-red-600" data-testid="acp-error">
+          <p className="mt-2 text-xs text-destructive" data-testid="acp-error">
             {create.error instanceof ApiError ? create.error.message : String(create.error)}
           </p>
         )}

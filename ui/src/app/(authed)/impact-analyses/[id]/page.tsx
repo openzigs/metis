@@ -30,6 +30,7 @@ import { ProjectImpactSectionWithUsage } from "@/components/impact/project-impac
 import { SharedTableImpactSection } from "@/components/impact/shared-table-impact-section";
 import { RequirementImpactMatrix } from "@/components/impact/requirement-impact-matrix";
 import { ImpactDriftSection } from "@/components/impact/impact-drift-section";
+import { PageHeader } from "@/components/ui/page-header";
 
 const STATUS_VARIANT: Record<string, "destructive" | "default" | "secondary" | "outline"> = {
   completed: "default",
@@ -135,27 +136,27 @@ function ImpactAnalysisDetailView({
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="impact-detail-root">
-      <header className="space-y-1">
-        <Link
-          href="/impact-analyses"
-          className="text-xs text-muted-foreground hover:underline"
-          data-testid="impact-detail-back"
-        >
-          ← Back to impact analyses
-        </Link>
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-semibold">Impact analysis</h1>
+      <PageHeader
+        eyebrow={
+          <Link
+            href="/impact-analyses"
+            className="hover:underline"
+            data-testid="impact-detail-back"
+          >
+            ← Back to impact analyses
+          </Link>
+        }
+        title="Impact analysis"
+        titleExtra={
           <Badge
             variant={STATUS_VARIANT[data.status] ?? "outline"}
             data-testid="impact-detail-status"
           >
             {data.status}
           </Badge>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          {data.projectIds.length} project(s) · {data.totalImpactedSymbols} impacted symbol(s)
-        </p>
-
+        }
+        description={`${data.projectIds.length} project(s) · ${data.totalImpactedSymbols} impacted symbol(s)`}
+      >
         {/* #963 — export + publish actions. Enabled once the run has completed
             with at least one impact item; publishing to Jira is idempotent. */}
         <div className="flex flex-wrap items-center gap-2 pt-1" data-testid="impact-detail-actions">
@@ -232,7 +233,7 @@ function ImpactAnalysisDetailView({
             {(publishMutation.error as Error).message}
           </p>
         ) : null}
-      </header>
+      </PageHeader>
 
       {/* #1004 — THE REQUIREMENT this run analysed, verbatim. The results page
           previously never stated it: the requirement text appeared nowhere on

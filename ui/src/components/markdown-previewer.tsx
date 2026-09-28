@@ -24,8 +24,11 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import mermaid from "mermaid";
+import { useTheme } from "next-themes";
+import type { MermaidConfig } from "mermaid";
 import { DiagramViewer } from "./diagram-viewer";
+import { loadMermaid, themeTokenColor } from "@/lib/mermaid";
+import { useKatexCss } from "@/lib/katex-css";
 import {
   splitMarkdownSections,
   remarkSectionSlugs,
@@ -148,40 +151,12 @@ export function MarkdownPreviewer({
     return () => observer.disconnect();
   }, [rendered, sectionCount, renderSections]);
 
-  // Detect dark mode and initialize mermaid with matching theme.
-  const isDark =
-    typeof window !== "undefined" && document.documentElement.classList.contains("dark");
-  const mermaidThemeRef = useRef<string>("");
-  const desiredTheme = isDark ? "dark" : "default";
-  if (mermaidThemeRef.current !== desiredTheme) {
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: "strict",
-      theme: desiredTheme,
-      // Render node labels as SVG <text>, NOT HTML inside <foreignObject>.
-      // The DiagramViewer sanitizes the SVG with DOMPurify (SVG profile), which
-      // empties foreignObject HTML — leaving blank flowchart nodes. SVG text
-      // survives sanitization, so labels render correctly.
-      htmlLabels: false,
-      flowchart: { htmlLabels: false },
-      // Raise parser limit — large ER diagrams (50 tables) can exceed the 50k default.
-      maxTextSize: 500000,
-      themeVariables: isDark
-        ? {
-            primaryColor: "#1e293b",
-            primaryTextColor: "#e2e8f0",
-            lineColor: "#94a3b8",
-            primaryBorderColor: "#475569",
-          }
-        : {
-            primaryColor: "#e0e7ff",
-            primaryTextColor: "#1e293b",
-            lineColor: "#334155",
-            primaryBorderColor: "#6366f1",
-          },
-    });
-    mermaidThemeRef.current = desiredTheme;
-  }
+  // #272 — mermaid loads (and is configured) only when a diagram needs
+  // drawing. #301 — its node colours come from the theme tokens, resolved at
+  // render time, instead of eight hard-coded hex values.
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === "dark";
+  useKatexCss(content);
 
   // Store rendered mermaid SVGs keyed by their original code content hash.
   // This lets us render them as part of React's tree so re-renders don't destroy them.
@@ -192,6 +167,16 @@ export function MarkdownPreviewer({
     if (!contentRef.current) return;
     const codeEls = contentRef.current.querySelectorAll<HTMLElement>("code.language-mermaid");
     if (codeEls.length === 0) return;
+
+    let mermaid: Awaited<ReturnType<typeof loadMermaid>>;
+    try {
+      mermaid = await loadMermaid();
+    } catch (e) {
+      /* eslint-disable-next-line no-console */
+      console.warn("[MarkdownPreviewer] Mermaid failed to load:", e);
+      return;
+    }
+    mermaid.initialize(previewerMermaidConfig(isDark));
 
     const newSvgs = new Map<string, string>();
     for (const codeEl of Array.from(codeEls)) {
@@ -219,7 +204,7 @@ export function MarkdownPreviewer({
         return merged;
       });
     }
-  }, []);
+  }, [isDark]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -487,6 +472,36 @@ function sanitizeMermaidCode(raw: string): string {
     );
   }
   return code.trim();
+}
+
+/**
+ * Mermaid options for the previewer. Node fill, text, line and border colours
+ * are the theme tokens of the active theme; where a token cannot be read
+ * (tests) mermaid keeps its own `default`/`dark` theme colours.
+ */
+function previewerMermaidConfig(isDark: boolean): MermaidConfig {
+  const themeVariables = Object.fromEntries(
+    Object.entries({
+      primaryColor: themeTokenColor("info-muted"),
+      primaryTextColor: themeTokenColor("foreground"),
+      lineColor: themeTokenColor("muted-foreground"),
+      primaryBorderColor: themeTokenColor("info"),
+    }).filter(([, v]) => v !== undefined),
+  );
+  return {
+    startOnLoad: false,
+    securityLevel: "strict",
+    theme: isDark ? "dark" : "default",
+    // Render node labels as SVG <text>, NOT HTML inside <foreignObject>.
+    // The DiagramViewer sanitizes the SVG with DOMPurify (SVG profile), which
+    // empties foreignObject HTML — leaving blank flowchart nodes. SVG text
+    // survives sanitization, so labels render correctly.
+    htmlLabels: false,
+    flowchart: { htmlLabels: false },
+    // Raise parser limit — large ER diagrams (50 tables) can exceed the 50k default.
+    maxTextSize: 500000,
+    themeVariables,
+  };
 }
 
 /** Derive a human-readable diagram title from the first Mermaid directive keyword. */

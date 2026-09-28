@@ -107,28 +107,28 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
   const hidden = plan.actions.length - shown.length;
 
   return (
-    <section className="mt-4 rounded border border-slate-200 p-3" data-testid="dry-run-plan">
+    <section className="mt-4 rounded border border-border p-3" data-testid="dry-run-plan">
       <h3 className="text-sm font-semibold">
         Dry-run plan — {plan.totalActions} action{plan.totalActions === 1 ? "" : "s"}
       </h3>
-      <p className="mt-1 text-xs text-slate-600">
+      <p className="mt-1 text-xs text-muted-foreground">
         Against {plan.targetOwner}/{plan.targetRepo} · estimated {estimatedDurationLabel(plan)} ·
         nothing was written to GitHub.
       </p>
 
       {warning ? (
-        <p className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-800" role="status">
+        <p className="mt-2 rounded bg-warning-muted p-2 text-xs text-warning" role="status">
           {warning}
         </p>
       ) : (
-        <p className="mt-2 text-xs text-emerald-700" role="status">
+        <p className="mt-2 text-xs text-success" role="status">
           GitHub credential resolved — a live publish would reach the network.
         </p>
       )}
 
       <ul className="mt-2 flex flex-wrap gap-2">
         {summary.map((s) => (
-          <li key={s.kind} className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
+          <li key={s.kind} className="rounded bg-muted px-2 py-0.5 text-xs text-foreground">
             {s.kind} × {s.count}
           </li>
         ))}
@@ -137,14 +137,16 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
       <ol className="mt-3 max-h-64 overflow-y-auto text-xs">
         {shown.map((action, i) => (
           <li key={`${action.kind}-${action.draftId ?? i}`} className="flex gap-2 py-0.5">
-            <span className="w-6 shrink-0 text-right text-slate-400">{i + 1}</span>
-            <span className="w-40 shrink-0 font-mono text-slate-700">{action.kind}</span>
-            <span className="truncate text-slate-600">{actionDetail(action)}</span>
+            <span className="w-6 shrink-0 text-right text-muted-foreground">{i + 1}</span>
+            <span className="w-40 shrink-0 font-mono text-foreground">{action.kind}</span>
+            <span className="truncate text-muted-foreground">{actionDetail(action)}</span>
           </li>
         ))}
       </ol>
       {hidden > 0 && (
-        <p className="mt-1 text-xs text-slate-500">…and {hidden} more action(s) not shown.</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          …and {hidden} more action(s) not shown.
+        </p>
       )}
     </section>
   );

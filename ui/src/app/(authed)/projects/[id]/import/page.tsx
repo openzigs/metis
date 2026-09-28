@@ -34,6 +34,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/ui/page-header";
 
 const SOURCE_LABELS: Record<ImportSourceKind, string> = {
   github: "GitHub",
@@ -231,12 +232,10 @@ export default function ImportPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Import Requirements</h1>
-        <p className="text-sm text-muted-foreground">
-          Pull issues from GitHub, Jira, Azure DevOps, or Linear into this project as requirements.
-        </p>
-      </div>
+      <PageHeader
+        title="Import Requirements"
+        description="Pull issues from GitHub, Jira, Azure DevOps, or Linear into this project as requirements."
+      />
 
       <Card>
         <CardHeader>
@@ -296,7 +295,11 @@ export default function ImportPage() {
                   }}
                 />
                 {fieldError ? (
-                  <p id={`${field.key}-error`} role="alert" className="mt-1 text-xs text-red-600">
+                  <p
+                    id={`${field.key}-error`}
+                    role="alert"
+                    className="mt-1 text-xs text-destructive"
+                  >
                     {fieldError}
                   </p>
                 ) : null}
@@ -323,7 +326,7 @@ export default function ImportPage() {
             </div>
           )}
 
-          {formError && <p className="text-sm text-red-600">{formError}</p>}
+          {formError && <p className="text-sm text-destructive">{formError}</p>}
 
           <div className="flex gap-2">
             <Button

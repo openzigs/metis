@@ -44,7 +44,7 @@ export function RequirementInputAccountPanel({ capability }: Props): React.React
         Requirements you supplied
       </h4>
       <p
-        className={`text-xs ${discarded ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground"}`}
+        className={`text-xs ${discarded ? "text-warning" : "text-muted-foreground"}`}
         data-testid="requirement-input-account-summary"
       >
         {analyzedCount} of {account.parsedCount} requirement
@@ -53,10 +53,7 @@ export function RequirementInputAccountPanel({ capability }: Props): React.React
       </p>
 
       {account.inputTruncated ? (
-        <p
-          className="text-xs text-amber-700 dark:text-amber-300"
-          data-testid="requirement-input-truncated"
-        >
+        <p className="text-xs text-warning" data-testid="requirement-input-truncated">
           Your text reached the input limit, so anything after it was cut before this run started —
           the end of your paste may be missing.
         </p>
@@ -85,10 +82,10 @@ export function RequirementInputAccountPanel({ capability }: Props): React.React
             <li
               key={d.id}
               data-testid={`requirement-input-dropped-${d.id}`}
-              className="text-xs text-amber-700 dark:text-amber-200"
+              className="text-xs text-warning"
             >
-              <span className="font-mono text-amber-700 dark:text-amber-400">{d.id}</span>{" "}
-              <span>“{d.excerpt}”</span> — not analyzed: {DROP_REASON_TEXT[d.reason]}.
+              <span className="font-mono text-warning">{d.id}</span> <span>“{d.excerpt}”</span> —
+              not analyzed: {DROP_REASON_TEXT[d.reason]}.
             </li>
           ))}
         </ul>

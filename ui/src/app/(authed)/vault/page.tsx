@@ -22,6 +22,7 @@ import { SkeletonText } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api-client";
 import { vaultApi, type VaultEntry, type VaultAuditEntry } from "@/lib/vault-api";
 import { useTransientFlag } from "@/hooks/use-transient-toast";
+import { PageHeader } from "@/components/ui/page-header";
 
 const VAULT_LIST_KEY = ["vault", "list"] as const;
 
@@ -39,14 +40,16 @@ export default function VaultPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="vault-root">
-      <header>
-        <h1 className="text-2xl font-semibold">Vault</h1>
-        <p className="text-sm text-muted-foreground">
-          Encrypted secret storage. Plaintext is never displayed by default — use{" "}
-          <strong>Reveal</strong> to view a single value (audited) or <strong>Rotate</strong> to
-          replace it.
-        </p>
-      </header>
+      <PageHeader
+        title="Vault"
+        description={
+          <>
+            Encrypted secret storage. Plaintext is never displayed by default — use{" "}
+            <strong>Reveal</strong> to view a single value (audited) or <strong>Rotate</strong> to
+            replace it.
+          </>
+        }
+      />
 
       {isForbidden ? (
         <Card className="p-4" data-testid="vault-forbidden">
@@ -411,7 +414,7 @@ function EntryDetail({
                 <span className="font-mono text-muted-foreground">
                   {new Date(row.createdAt).toLocaleString()}
                 </span>
-                <span className="rounded bg-sky-100 px-1.5 text-sky-900">{row.action}</span>
+                <span className="rounded bg-info-muted px-1.5 text-info">{row.action}</span>
                 <span className="text-muted-foreground">by {row.actorId ?? "system"}</span>
               </li>
             ))}

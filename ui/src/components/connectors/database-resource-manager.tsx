@@ -444,7 +444,7 @@ export function DatabaseResourceManager({
         <p
           data-testid="db-identity-no-workspace"
           role="status"
-          className="rounded border border-amber-700/40 bg-amber-950/30 p-3 text-sm text-amber-200"
+          className="rounded border border-warning/40 bg-warning-muted p-3 text-sm text-warning"
         >
           This project is not part of a workspace, so shared-database identity management is
           unavailable. Add the project to a workspace to link connections across projects.
@@ -466,7 +466,7 @@ export function DatabaseResourceManager({
                       {connectionEndpoint(conn)}
                     </div>
                   ) : null}
-                  <div data-testid="db-unlinked-reason" className="mt-1 text-xs text-amber-300">
+                  <div data-testid="db-unlinked-reason" className="mt-1 text-xs text-warning">
                     {unlinkedReason(conn, identity, workspaceId)}
                   </div>
                 </li>
@@ -590,7 +590,7 @@ export function DatabaseResourceManager({
                         {connectionEndpoint(conn)}
                       </div>
                     ) : null}
-                    <div data-testid="db-unlinked-reason" className="mt-1 text-xs text-amber-300">
+                    <div data-testid="db-unlinked-reason" className="mt-1 text-xs text-warning">
                       {unlinkedReason(conn, joined.identity, workspaceId)}
                     </div>
                   </div>

@@ -55,9 +55,9 @@ describe("<CoverageMatrix />", () => {
     const covered = screen.getByLabelText(/Requirement 0 × TestCase 0: score 0\.95/);
     const partial = screen.getByLabelText(/Requirement 0 × TestCase 1: score 0\.60/);
     const uncovered = screen.getByLabelText(/Requirement 1 × TestCase 2: score 0\.20/);
-    expect(covered.className).toContain("bg-green");
-    expect(partial.className).toContain("bg-amber");
-    expect(uncovered.className).toContain("bg-red");
+    expect(covered.className).toContain("bg-success");
+    expect(partial.className).toContain("bg-warning");
+    expect(uncovered.className).toContain("bg-destructive");
   });
 
   it("renders empty cell for missing mapping", () => {

@@ -17,18 +17,17 @@ import { recentTracker } from "@/lib/recent-tracker";
 import { asyncApi } from "@/lib/async-platform-api";
 import { Button } from "@/components/ui/button";
 import { useEffect, useState, type ReactNode } from "react";
+import { PageHeader } from "@/components/ui/page-header";
 
 const REFRESH_MS = 30_000;
 
 export default function DashboardPage() {
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="dashboard-root">
-      <header>
-        <h1 className="text-2xl font-semibold">Dashboard</h1>
-        <p className="text-sm text-muted-foreground">
-          Project health, recent activity, and quick actions.
-        </p>
-      </header>
+      <PageHeader
+        title="Dashboard"
+        description="Project health, recent activity, and quick actions."
+      />
 
       <section
         aria-label="Dashboard widgets"

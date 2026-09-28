@@ -14,7 +14,7 @@ vi.mock("@/lib/edge-auth", () => ({
   applyRotatedCookies: vi.fn(),
 }));
 
-import { middleware } from "@/middleware";
+import { proxy } from "@/proxy";
 import { NextResponse } from "next/server";
 import { refreshUpstreamTokens, applyRotatedCookies } from "@/lib/edge-auth";
 import { ACCESS_COOKIE, REFRESH_COOKIE } from "@/lib/config";
@@ -52,7 +52,7 @@ function makeReq(
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const run = (req: FakeReq) => middleware(req as any);
+const run = (req: FakeReq) => proxy(req as any);
 
 beforeEach(() => {
   nextMock.mockClear();
@@ -62,7 +62,7 @@ beforeEach(() => {
   nextMock.mockReturnValue({ kind: "next", cookies: { set: vi.fn() } } as never);
 });
 
-describe("middleware auth gate (handler)", () => {
+describe("proxy auth gate (handler)", () => {
   it("lets the public /login path through without attempting a refresh", async () => {
     await run(makeReq("/login"));
     expect(nextMock).toHaveBeenCalled();

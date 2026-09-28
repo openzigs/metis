@@ -23,6 +23,7 @@ import { SkeletonText } from "@/components/ui/skeleton";
 import { DocumentUploader } from "@/components/projects/document-uploader";
 import { UrlIngestForm } from "@/components/projects/url-ingest-form";
 import { TextIngestForm } from "@/components/projects/text-ingest-form";
+import { PageHeader } from "@/components/ui/page-header";
 
 /**
  * #69 — what one row says about itself. A quarantined document keeps
@@ -92,12 +93,14 @@ export default function ProjectDocumentsPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="project-documents-root">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Documents</h1>
-        <p className="text-sm text-muted-foreground">
-          Upload files, ingest URLs, or paste text to add to this project&apos;s knowledge base.
-        </p>
-      </header>
+      <PageHeader
+        title="Documents"
+        description={
+          <>
+            Upload files, ingest URLs, or paste text to add to this project&apos;s knowledge base.
+          </>
+        }
+      />
 
       <Card className="space-y-4 p-4">
         <h2 className="text-lg font-semibold">Add documents</h2>

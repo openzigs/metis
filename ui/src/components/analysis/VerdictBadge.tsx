@@ -7,9 +7,9 @@
  * before deciding to fund work. The three states are deliberately far apart
  * visually AND semantically:
  *
- *   - `implemented`      (emerald) — code was retrieved and cited that satisfies it.
- *   - `gap-confirmed`    (red)     — the code WAS searched and genuinely lacks it.
- *   - `could-not-verify` (violet)  — we do not know. NOT a gap. The whole point of
+ *   - `implemented`      (success) — code was retrieved and cited that satisfies it.
+ *   - `gap-confirmed`    (destructive) — the code WAS searched and genuinely lacks it.
+ *   - `could-not-verify` (neutral, dashed) — we do not know. NOT a gap. The whole point of
  *                                    #773: "we could not retrieve it" must never
  *                                    read as "it does not exist".
  *
@@ -30,21 +30,19 @@ export const VERDICT_COPY: Record<RequirementVerdict, VerdictCopy> = {
     label: "Implemented",
     tooltip:
       "The code agent retrieved and cited code that satisfies this requirement. Check the cited locations before closing it out.",
-    className:
-      "border-emerald-700/50 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300",
+    className: "border-success/40 bg-success-muted text-success",
   },
   "gap-confirmed": {
     label: "Gap confirmed",
     tooltip:
       "The code agent successfully searched the codebase and the code it inspected does NOT satisfy this requirement. This is the only state that means 'this needs building' — see the searched scope for what was actually checked.",
-    className: "border-red-700/50 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300",
+    className: "border-destructive/40 bg-destructive/10 text-destructive",
   },
   "could-not-verify": {
     label: "Could not verify",
     tooltip:
       "The analysis could NOT determine whether this requirement is implemented: its code searches failed, returned nothing usable, or never reached this requirement. This is NOT a confirmed gap — the functionality may well already exist. Re-run the analysis or check the code before planning work.",
-    className:
-      "border-violet-700/50 bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300",
+    className: "border-dashed border-muted-foreground/60 bg-muted text-foreground",
   },
 };
 

@@ -41,15 +41,15 @@ interface EvidenceReviewProps {
 const TRUST_BADGES: Record<DomainTrust, { label: string; className: string }> = {
   high: {
     label: "High Trust",
-    className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
+    className: "bg-success-muted text-success border-success/40",
   },
   medium: {
     label: "Medium Trust",
-    className: "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30",
+    className: "bg-warning-muted text-warning border-warning/40",
   },
   low: {
     label: "Low Trust",
-    className: "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30",
+    className: "bg-destructive/10 text-destructive border-destructive/40",
   },
 };
 
@@ -97,7 +97,7 @@ export function EvidenceReview({
                 Query: <span className="text-foreground">{digest.query}</span>
               </h4>
               {digest.needsHumanReview && (
-                <span className="rounded border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">
+                <span className="rounded border border-warning/40 bg-warning-muted px-2 py-0.5 text-xs text-warning">
                   Needs Review
                 </span>
               )}
@@ -117,7 +117,7 @@ export function EvidenceReview({
                           href={source.url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="truncate text-blue-700 dark:text-blue-400 hover:underline"
+                          className="truncate text-info hover:underline"
                         >
                           {source.title}
                         </a>
@@ -169,11 +169,7 @@ export function EvidenceReview({
               <p className="text-xs text-muted-foreground">
                 Status:{" "}
                 <span
-                  className={
-                    approval.status === "approved"
-                      ? "text-emerald-700 dark:text-emerald-400"
-                      : "text-red-700 dark:text-red-400"
-                  }
+                  className={approval.status === "approved" ? "text-success" : "text-destructive"}
                 >
                   {approval.status}
                 </span>

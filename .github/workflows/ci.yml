@@ -45,13 +45,6 @@ jobs:
     # container images" stuck at 2h51m and 2h01m, against ~17m for the ENTIRE job
     # normally. (Before #801 the loser failed fast instead, which hid this.)
     #
-    # Serialize across ALL refs. The workflow-level `concurrency` above is keyed on
-    # `github.ref`, so it only dedupes pushes to the SAME branch — two different PRs
-    # still collide here. This group is deliberately ref-independent: the runner can
-    # only do one of these builds at a time anyway, so queueing is honest.
-    #
-    # `cancel-in-progress: false` — QUEUE, do not cancel. A legitimate in-flight
-    # build must be allowed to finish rather than be killed by a newer PR.
     # NO `api-docker-build` concurrency group any more. It serialised this job
     # across every ref because the self-hosted runners SHARED ONE Docker daemon
     # and could only do one image build at a time — queueing was honest there.
@@ -321,8 +314,8 @@ jobs:
       # `fail`, indistinguishable from a broken test suite. Observed 6 times in
       # one session; one job was superseded after 41s having built nothing and
       # still read as a failure, costing a ~17-minute re-run to prove nothing
-      # was wrong. The serialization above is deliberate and stays — only the
-      # REPORTING is fixed.
+      # was wrong. The cross-ref serialization is gone (see the comment on this
+      # job); a newer push to the same ref still cancels it, so the REPORTING stays.
       #
       # This step covers a job cancelled while RUNNING. A job cancelled while
       # still QUEUED never starts a runner, so no step of it can ever run — the
@@ -334,15 +327,13 @@ jobs:
           {
             echo "### \`api\`: CANCELLED — superseded, not a test failure"
             echo
-            echo "The \`api\` job serializes on the ref-independent concurrency group"
-            echo "\`api-docker-build\` (\`cancel-in-progress: false\`) because the shared"
-            echo "the Docker daemon can only do one of these builds at a time."
-            echo "GitHub keeps at most **one running + one pending** job per group, so a"
-            echo "third run supersedes the pending one — that supersede is what you are"
-            echo "looking at."
+            echo "The workflow's concurrency group is \`ci-<ref>\` with"
+            echo "\`cancel-in-progress: true\`, so a newer push to this branch cancelled"
+            echo "this run — that supersede is what you are looking at."
             echo
             echo "\`gh pr checks\` renders a \`cancelled\` conclusion as **fail**. Nothing in"
-            echo "the tree needs fixing: re-run this job once the runner frees up."
+            echo "the tree needs fixing: read the newer run. Re-run this job only if no"
+            echo "newer run for the branch exists (e.g. it was cancelled by hand)."
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Issue #1067 — turns the `api` job's raw conclusion into a signal a human can
@@ -351,7 +342,7 @@ jobs:
   # a runner, so it has no steps of its own to report with).
   #
   # Contract, visible directly in `gh pr checks`:
-  #   api-outcome pass + api fail  -> `api` was CANCELLED (superseded). Re-run it.
+  #   api-outcome pass + api fail  -> `api` was CANCELLED (superseded). Read the newer run.
   #   api-outcome fail             -> `api` genuinely FAILED. Read the log.
   api-outcome:
     name: api-outcome
@@ -372,18 +363,17 @@ jobs:
               echo "- \`api\`: **success**" >> "$GITHUB_STEP_SUMMARY"
               ;;
             cancelled)
-              echo "::notice title=api superseded — NOT a test failure::The api job was CANCELLED by the api-docker-build concurrency group (or by a newer push to this ref), not by a failing test. gh pr checks shows a cancelled conclusion as 'fail'. Re-run the api job; nothing in the tree needs fixing."
+              echo "::notice title=api superseded — NOT a test failure::The api job was CANCELLED by a newer push to this ref (or by hand), not by a failing test. gh pr checks shows a cancelled conclusion as 'fail'. Nothing in the tree needs fixing; read the newer run, or re-run this job if there is none."
               {
                 echo "### \`api\`: CANCELLED — superseded, **not** a test failure"
                 echo
-                echo "The \`api\` job queues on the ref-independent \`api-docker-build\` group"
-                echo "so the shared Docker daemon only ever runs one image build. GitHub keeps"
-                echo "at most one running + one pending job per group, so a third run"
-                echo "supersedes the pending one — often before it has built anything."
+                echo "The workflow's concurrency group is \`ci-<ref>\` with"
+                echo "\`cancel-in-progress: true\`, so a newer push to this branch cancels"
+                echo "the running \`api\` job — often before it has built anything."
                 echo
                 echo "\`gh pr checks\` prints a \`cancelled\` conclusion as **fail**. That red"
-                echo "\`api\` line is infrastructure scheduling, not a defect. Re-run the"
-                echo "\`api\` job when the runner frees up."
+                echo "\`api\` line is a supersede, not a defect: read the newer run. Re-run"
+                echo "\`api\` only if no newer run for the branch exists."
               } >> "$GITHUB_STEP_SUMMARY"
               ;;
             skipped)

@@ -95,9 +95,9 @@ export function LeaderboardTable({ runs }: LeaderboardTableProps) {
 
 function StatusPill({ status }: { status: string }) {
   const palette: Record<string, string> = {
-    completed: "bg-green-100 text-green-900",
-    running: "bg-yellow-100 text-yellow-900",
-    failed: "bg-red-100 text-red-900",
+    completed: "bg-success-muted text-success",
+    running: "bg-warning-muted text-warning",
+    failed: "bg-destructive/10 text-destructive",
     disabled: "bg-muted text-muted-foreground",
   };
   return (

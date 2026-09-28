@@ -51,9 +51,7 @@ export function BaselineItemsTable({ items }: { items: BaselineItem[] }) {
                 <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium">
                   v{item.version}
                 </span>
-                {drift ? (
-                  <span className="text-xs text-amber-700 dark:text-amber-400">{drift}</span>
-                ) : null}
+                {drift ? <span className="text-xs text-warning">{drift}</span> : null}
               </div>
               {meta ? <p className="text-xs text-muted-foreground">{meta}</p> : null}
               {item.snapshot?.body ? (

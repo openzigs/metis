@@ -43,20 +43,21 @@ async function chooseTheme(page: Page, theme: Theme): Promise<void> {
 }
 
 /**
- * Relative luminance of the background a `bg-green-50 dark:bg-green-950` probe
+ * Relative luminance of the TEXT colour a `prose dark:prose-invert` probe
  * paints. Tailwind only compiles classes that appear in source, so the probe
- * must use a pair the app still ships (3 call sites at #267). #267 moved
- * `derivation-badge.tsx` — the previous probe's source, `bg-white
- * dark:bg-zinc-900` — onto semantic tokens; when the raw-palette follow-up
- * removes the last `dark:bg-green-950`, move this probe again.
+ * must use a `dark:` utility the app still ships. #301 moved every raw palette
+ * class (and with them every `dark:bg-*` twin) onto theme tokens, so the probe
+ * moved from `bg-green-50 dark:bg-green-950` to the markdown renderers'
+ * `dark:prose-invert`: dark body text on the Light theme, light on Dark.
  */
 async function probeLuminance(page: Page): Promise<number> {
   return page.evaluate(() => {
     const probe = document.createElement("div");
-    probe.className = "bg-green-50 dark:bg-green-950";
-    probe.style.cssText = "position:fixed;left:0;top:0;width:4px;height:4px";
+    probe.className = "prose dark:prose-invert";
+    probe.textContent = "probe";
+    probe.style.cssText = "position:fixed;left:0;top:0";
     document.body.appendChild(probe);
-    const color = getComputedStyle(probe).backgroundColor;
+    const color = getComputedStyle(probe).color;
     probe.remove();
     const ctx = document.createElement("canvas").getContext("2d")!;
     ctx.fillStyle = color;
@@ -170,8 +171,8 @@ for (const { os, theme } of SCENARIOS) {
 
       const luminance = await probeLuminance(page);
       if (theme === "light")
-        expect(luminance, "bg-green-50 dark:bg-green-950 probe").toBeGreaterThan(0.8);
-      else expect(luminance, "bg-green-50 dark:bg-green-950 probe").toBeLessThan(0.05);
+        expect(luminance, "prose dark:prose-invert probe text").toBeLessThan(0.15);
+      else expect(luminance, "prose dark:prose-invert probe text").toBeGreaterThan(0.4);
     });
 
     test("Templates screen text clears 4.5:1 (#266)", async ({ page }, testInfo) => {

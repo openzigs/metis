@@ -26,6 +26,8 @@ import { Card } from "@/components/ui/card";
 import { scannerApi, type Scan } from "@/lib/scanner-api";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { useTaskProgress } from "@/hooks/use-task-progress";
+import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 /** Poll fallback: socket push is primary, so this is a slow safety net (#422). */
 const SCANS_POLL_FALLBACK_MS = 30_000;
@@ -81,20 +83,18 @@ export default function ScansListPage() {
 
   return (
     <div className="space-y-6 p-6" data-testid="scans-list-root">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Bug Scans</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            AI-powered scan results for this project's connected repositories.
-          </p>
-        </div>
-        <Link
-          href={`/projects/${projectId}/rule-sets`}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-        >
-          Manage Rules
-        </Link>
-      </header>
+      <PageHeader
+        title="Bug Scans"
+        description="AI-powered scan results for this project's connected repositories."
+        actions={
+          <Link
+            href={`/projects/${projectId}/rule-sets`}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            Manage Rules
+          </Link>
+        }
+      />
 
       <Card className="p-4" data-testid="scans-list-card">
         {scansQuery.isLoading ? (
@@ -104,15 +104,18 @@ export default function ScansListPage() {
             {(scansQuery.error as Error).message}
           </p>
         ) : !scansQuery.data?.length ? (
-          <div className="space-y-2 text-center py-8">
-            <p className="text-sm text-muted-foreground">No scans yet.</p>
-            <p className="text-xs text-muted-foreground">
-              <Link href={scanCtaHref} className="underline">
-                {scanCtaCopy}
-              </Link>{" "}
-              and click <strong>Scan for bugs</strong> to start your first scan.
-            </p>
-          </div>
+          <EmptyState
+            className="border-0"
+            title="No scans yet."
+            description={
+              <>
+                <Link href={scanCtaHref} className="underline">
+                  {scanCtaCopy}
+                </Link>{" "}
+                and click <strong>Scan for bugs</strong> to start your first scan.
+              </>
+            }
+          />
         ) : (
           <table className="w-full text-sm" data-testid="scans-table">
             <thead>
@@ -254,7 +257,7 @@ function ScanProgress({
           aria-label="Scan progress"
         >
           <div
-            className="h-full bg-blue-500 transition-all"
+            className="h-full bg-info transition-all"
             style={{ width: `${computed}%` }}
             data-testid="scan-progress-bar"
           />
@@ -281,8 +284,8 @@ function humanizePhase(step: string): string {
 function StatusBadge({ status }: { status: string }) {
   const colours: Record<string, string> = {
     pending: "bg-muted text-muted-foreground",
-    running: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-    completed: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+    running: "bg-info-muted text-info",
+    completed: "bg-success-muted text-success",
     failed: "bg-destructive/15 text-destructive",
     cancelled: "bg-muted text-muted-foreground",
   };
