@@ -2765,8 +2765,8 @@ The `/vault` page is split into two panels:
      place of the button. Every attempt is audited.
    - **Rotate** — submits a new value via `POST /api/vault/:id/rotate`,
      bumps the key version, and clears any previously revealed plaintext.
-   - **Audit** — lists the recent `vault.{read,rotate,delete,write}` rows
-     for the entry.
+   - **Audit** — lists the recent `vault.{reveal,read,rotate,delete,write}`
+     rows for the entry.
    - **Delete** — soft-removes the entry (terminal — restoring requires a
      fresh `POST /api/vault`).
 

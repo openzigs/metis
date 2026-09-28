@@ -238,6 +238,11 @@ export interface SuggestedConnector {
 
 export interface SuggestedConnectorDetail extends SuggestedConnector {
   password: string | null;
+  /**
+   * #324 — true when the server withheld a stored password because the caller
+   * lacks `vault.reveal`. False for an admin whose vault read merely failed.
+   */
+  passwordWithheld?: boolean;
 }
 
 export interface SuggestedConnectorTestInput {

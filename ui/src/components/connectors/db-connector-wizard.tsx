@@ -140,9 +140,9 @@ export function DbConnectorWizard({
   }, [open]);
 
   // #324 — the server withholds a stored password from non-admins
-  // (`vault.reveal`); a blank field then provisions with the vaulted one.
-  const storedPasswordWithheld =
-    detail !== null && detail.password === null && detail.hasStoredPassword === true;
+  // (`vault.reveal`) and says so; a blank field then provisions with the
+  // vaulted one. An admin whose vault read failed gets no "admins only" hint.
+  const storedPasswordWithheld = detail?.passwordWithheld === true;
 
   const canTest = useMemo(
     () => host.trim().length > 0 && database.trim().length > 0,

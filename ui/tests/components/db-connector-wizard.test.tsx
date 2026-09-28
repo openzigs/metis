@@ -104,13 +104,22 @@ describe("DbConnectorWizard", () => {
   });
 
   it("#324 — a withheld stored password leaves the field blank with a stored-password hint", async () => {
-    getMock.mockResolvedValue({ ...detail, password: null });
+    getMock.mockResolvedValue({ ...detail, password: null, passwordWithheld: true });
     renderWizard();
     await clickNext(); // → configure
     const password = (await screen.findByLabelText("Password")) as HTMLInputElement;
     expect(password.value).toBe("");
     expect(password.placeholder).toMatch(/stored password/i);
     expect(screen.getByTestId("wizard-stored-password-hint")).toBeDefined();
+  });
+
+  it("#324 — an admin whose vault read failed is not told the password is admin-only", async () => {
+    getMock.mockResolvedValue({ ...detail, password: null, passwordWithheld: false });
+    renderWizard();
+    await clickNext(); // → configure
+    const password = (await screen.findByLabelText("Password")) as HTMLInputElement;
+    expect(password.value).toBe("");
+    expect(screen.queryByTestId("wizard-stored-password-hint")).toBeNull();
   });
 
   it("toggles password visibility via the eye button", async () => {

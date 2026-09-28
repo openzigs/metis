@@ -294,6 +294,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const res = await call("get", detail, tokens.admin);
         expect(res.status).toBe(200);
         expect(res.body.data.password).toBe(DB_PASSWORD);
+        expect(res.body.data.passwordWithheld).toBe(false);
       });
 
       it("a coordinator (connector.write) sees that a password is stored, never its value", async () => {
@@ -301,6 +302,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(res.status).toBe(200);
         expect(res.body.data.password).toBeNull();
         expect(res.body.data.hasStoredPassword).toBe(true);
+        expect(res.body.data.passwordWithheld).toBe(true);
         expect(JSON.stringify(res.body)).not.toContain(DB_PASSWORD);
       });
 
@@ -342,6 +344,89 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           where: { id: res.body.data.connectorId as string },
         });
         expect(conn?.secretId).toBeNull();
+      });
+    });
+
+    describe("a stored password stays bound to the suggestion's own destination", () => {
+      const base = "/api/projects/proj-1/suggested-connectors/sug-1";
+      const provisionBody = {
+        driver: "postgres",
+        host: "db.example.test",
+        port: 5432,
+        database: "appdb",
+        username: "app",
+        password: "",
+      };
+      const refusalAudited = async () => {
+        await vi.waitFor(() => expect(getAuditService().inFlight).toBe(0));
+        return db.auditLog.findMany({
+          where: {
+            action: "suggested_connector.stored_secret_refused",
+            targetId: "sug-1",
+            actorId: "u-coord",
+          },
+        });
+      };
+
+      for (const [what, body] of [
+        ["host", { host: "exfil.invalid" }],
+        ["port", { port: 6543 }],
+      ] as const) {
+        it(`/test: a coordinator using the stored password against a changed ${what} is refused 403`, async () => {
+          const before = (await refusalAudited()).length;
+          const res = await call("post", `${base}/test`, tokens.coordinator, {
+            host: "db.example.test",
+            port: 5432,
+            database: "appdb",
+            username: "app",
+            ...body,
+          });
+          expect(res.status).toBe(403);
+          expect(res.body.error.code).toBe("STORED_SECRET_DESTINATION_MISMATCH");
+          expect(JSON.stringify(res.body)).not.toContain(DB_PASSWORD);
+          expect((await refusalAudited()).length).toBe(before + 1);
+        });
+      }
+
+      for (const [what, body] of [
+        ["host", { host: "exfil.invalid" }],
+        ["port", { port: 6543 }],
+        ["driver", { driver: "mysql" }],
+      ] as const) {
+        it(`/provision: a coordinator reusing the stored password with a changed ${what} is refused 403`, async () => {
+          const label = `appdb-324-bound-${what}`;
+          const res = await call("post", `${base}/provision`, tokens.coordinator, {
+            ...provisionBody,
+            label,
+            ...body,
+          });
+          expect(res.status).toBe(403);
+          expect(res.body.error.code).toBe("STORED_SECRET_DESTINATION_MISMATCH");
+          const leaked = await db.databaseConnection.findFirst({ where: { label } });
+          expect(leaked).toBeNull();
+        });
+      }
+
+      it("/provision: a hostname differing only in case and whitespace is the same destination", async () => {
+        const res = await call("post", `${base}/provision`, tokens.coordinator, {
+          ...provisionBody,
+          label: "appdb-324-case",
+          host: " DB.Example.TEST ",
+        });
+        expect(res.status).toBe(200);
+      });
+
+      it("/provision: an admin (vault.reveal) may use the stored password elsewhere", async () => {
+        const res = await call("post", `${base}/provision`, tokens.admin, {
+          ...provisionBody,
+          label: "appdb-324-admin",
+          host: "elsewhere.invalid",
+        });
+        expect(res.status).toBe(200);
+        const conn = await db.databaseConnection.findUnique({
+          where: { id: res.body.data.connectorId as string },
+        });
+        expect(conn?.secretId).toBe(DB_SECRET_ID);
       });
     });
 

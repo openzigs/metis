@@ -68,6 +68,47 @@ const DRIVER_TYPE_TO_DB_DRIVER: Record<string, string> = {
   sqlite: "sqlite",
 };
 
+/** Hostnames compare trimmed and case-insensitively; blank and null are the same "unset". */
+function sameHost(a: string | null | undefined, b: string | null | undefined): boolean {
+  return (a ?? "").trim().toLowerCase() === (b ?? "").trim().toLowerCase();
+}
+
+/**
+ * #324 — a stored (vaulted) password is bound to the destination discovery
+ * found it for. A caller without `vault.reveal` may USE it only against that
+ * suggestion's own driver, host and port: otherwise a coordinator could point
+ * /test or /provision at a public host they control and receive the password
+ * over the wire (a Postgres server can request cleartext auth) without ever
+ * seeing it in a response. `resolveAndAssertConnectorHost` blocks private
+ * ranges only, so it is not this boundary. Admins can reveal the value anyway.
+ */
+function assertStoredSecretDestination(
+  req: Request,
+  row: { id: string; driverType: string; host: string | null; port: number | null },
+  target: { driver: string; host: string | null | undefined; port: number | null | undefined },
+  projectId: string,
+): void {
+  if (req.user && hasPermission(req.user.role, "vault.reveal")) return;
+  const rowDriver = DRIVER_TYPE_TO_DB_DRIVER[row.driverType] ?? row.driverType;
+  const matches =
+    target.driver === rowDriver &&
+    sameHost(target.host, row.host) &&
+    (target.port ?? null) === (row.port ?? null);
+  if (matches) return;
+  audit({
+    actor: actorIdOf(req),
+    action: "suggested_connector.stored_secret_refused",
+    target: { type: "suggested_connector", id: row.id },
+    metadata: { projectId, reason: "destination_mismatch" },
+  });
+  throw new AppError(
+    403,
+    "STORED_SECRET_DESTINATION_MISMATCH",
+    "The stored password can only be used with this suggestion's own driver, host and port. " +
+      "Enter the password to connect elsewhere.",
+  );
+}
+
 function actorIdOf(req: Request): string | null {
   // requireAuth attaches AuthPayload to req.user; the stable identifier is
   // `userId` (a cuid from the User row). Returning null when absent is safe —
@@ -177,6 +218,8 @@ export function suggestedConnectorsRouter(): Router {
           ...row,
           passwordVaultRef: undefined as string | undefined,
           hasStoredPassword: Boolean(row.passwordVaultRef),
+          // Lets the wizard tell "withheld from you" apart from "vault read failed".
+          passwordWithheld: Boolean(row.passwordVaultRef) && !mayReveal,
           password, // one-shot decrypted plaintext (may be null)
         }),
       );
@@ -245,9 +288,19 @@ export function suggestedConnectorsRouter(): Router {
     });
     if (!row) throw new AppError(404, "NOT_FOUND", "Suggested connector not found");
 
+    const driver = DRIVER_TYPE_TO_DB_DRIVER[row.driverType] ?? row.driverType;
+    const targetHost = parsed.data.host ?? row.host ?? null;
+    const targetPort = parsed.data.port ?? row.port ?? null;
+
     // Resolve password: explicit > vault-stored
     let password: string | null = parsed.data.password ?? null;
     if (password === null && row.passwordVaultRef) {
+      assertStoredSecretDestination(
+        req,
+        row,
+        { driver, host: targetHost, port: targetPort },
+        projectId,
+      );
       try {
         const { plaintext } = await getVaultService().read(row.passwordVaultRef);
         password = plaintext;
@@ -256,13 +309,12 @@ export function suggestedConnectorsRouter(): Router {
       }
     }
 
-    const driver = DRIVER_TYPE_TO_DB_DRIVER[row.driverType] ?? row.driverType;
     const started = Date.now();
     try {
       const result = await testDbWithExplicitCredentials({
         driver,
-        host: parsed.data.host ?? row.host ?? null,
-        port: parsed.data.port ?? row.port ?? null,
+        host: targetHost,
+        port: targetPort,
         database: parsed.data.database ?? row.database ?? null,
         username: parsed.data.username ?? row.username ?? null,
         password,
@@ -349,6 +401,12 @@ export function suggestedConnectorsRouter(): Router {
           })) !== null
         : false;
     if (storedLive && row.passwordVaultRef) {
+      assertStoredSecretDestination(
+        req,
+        row,
+        { driver: body.driver, host: body.host, port: body.port },
+        projectId,
+      );
       // #324 — no password typed: use the live one discovery already vaulted.
       // A caller without `vault.reveal` never received it, so this is how they
       // provision with it; the plaintext stays server-side.
