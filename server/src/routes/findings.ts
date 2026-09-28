@@ -5,7 +5,7 @@
  *
  *   POST /api/findings/:id/review-ack
  *     body: { note?: string }
- *     auth: project.read
+ *     auth: project.read + access to the finding's project (#334)
  *
  * Records an audit row noting that a human reviewed an `ambiguous`-derivation
  * finding. We keep the surface minimal: no state mutation on the finding row
@@ -20,6 +20,9 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
+import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
+
+const findingNotFound = () => new AppError(404, "FINDING_NOT_FOUND", "Finding not found");
 
 const reviewAckSchema = z.object({
   note: z.string().max(2000).optional(),
@@ -44,9 +47,24 @@ export function findingsRouter(): Router {
 
       const finding = await prisma.finding.findUnique({
         where: { id: findingId },
-        select: { id: true, derivation: true, confidence: true, agentResultId: true },
+        select: {
+          id: true,
+          derivation: true,
+          confidence: true,
+          agentResultId: true,
+          agentResult: { select: { analysis: { select: { projectId: true } } } },
+          scanFinding: { select: { scan: { select: { projectId: true } } } },
+        },
       });
-      if (!finding) throw new AppError(404, "FINDING_NOT_FOUND", "Finding not found");
+      if (!finding) throw findingNotFound();
+      // #334 — mounted outside `/api/projects`: resolve the finding's project
+      // through whichever provenance it has (analysis agent result or
+      // materialised scan finding) and check the caller can reach it. An
+      // unreachable finding answers the same 404 as an unknown id and is
+      // never audited.
+      const projectId =
+        finding.agentResult?.analysis.projectId ?? finding.scanFinding?.scan.projectId ?? null;
+      await assertResourceProjectAccess(req.user, projectId, findingNotFound);
 
       audit({
         actor: { id: req.user.userId },
