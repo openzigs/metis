@@ -17,8 +17,10 @@ import {
 } from "./holistic-synthesizer.js";
 import {
   legacyGeneratedDocVersionManifest,
+  normalizeGeneratedDocVersionRecord,
   parseGeneratedDocVersionManifest,
 } from "./generated-doc-provenance.js";
+import { recordSectionSynthesis, SECTION_SYNTHESIS_VERSION } from "./section-reuse.js";
 
 const db = vi.hoisted(() => ({
   project: { findUnique: vi.fn() },
@@ -324,6 +326,131 @@ describe("actual section synthesis reuse", () => {
     );
     expect(result.sectionSynthesis).toBeUndefined();
     expect(result.regeneration?.mode).toBe("full");
+  });
+});
+
+/**
+ * #262 — before #246/PR #252, a section whose fact-check THREW was stored in the
+ * reuse snapshot with no score and no warning, i.e. looking exactly like a clean
+ * section. Those snapshots carry contract version 2.
+ */
+function prePr252Snapshot(result: Result, version: number) {
+  const records = result.sectionSynthesis!.records.map((record, index) => {
+    if (index !== 0) return record;
+    const { markdown, metadata, evidence } = record;
+    // The silently-unverified shape: grounding threw, so no score and no warning.
+    return recordSectionSynthesis(record.sectionId, record.inputs, {
+      markdown,
+      metadata,
+      evidence,
+      score: null,
+      warnings: [],
+    });
+  });
+  return { version, complete: true as const, records };
+}
+
+describe("#262 — reuse records written under an older grounding contract", () => {
+  it("never reuses a pre-#246 (version 2) record: the section is rewritten and fact-checked again", async () => {
+    const cold = await synth();
+    const stale = prePr252Snapshot(cold, 2);
+    calls.sections = [];
+    calls.grounding = 0;
+    const result = await synthesizeFinalDocument(
+      facts,
+      meta,
+      "architecture",
+      "Architecture",
+      router(),
+      "p",
+      undefined,
+      undefined,
+      async () => context("Source facts."),
+      undefined,
+      {
+        previousManifest: {
+          ...legacyGeneratedDocVersionManifest({
+            projectId: "p",
+            generatedDocumentId: "d",
+            version: 1,
+          }),
+          sectionSynthesis: stale,
+        } as never,
+        effectiveConfigHash: "resolved-fixture-config",
+      },
+    );
+    expect(calls.sections).toHaveLength(groups.length);
+    expect(calls.grounding).toBeGreaterThan(0);
+    expect(result.regeneration?.mode).toBe("full");
+    // The fresh snapshot is stamped with the current contract, and the section
+    // that was silently unverified now carries a real score.
+    expect(result.sectionSynthesis?.version).toBe(SECTION_SYNTHESIS_VERSION);
+    expect(result.sectionSynthesis?.records[0].score).not.toBeNull();
+  });
+
+  it("still reuses a record written under the current contract (no needless cost)", async () => {
+    const cold = await synth();
+    expect(cold.sectionSynthesis?.version).toBe(SECTION_SYNTHESIS_VERSION);
+    calls.sections = [];
+    calls.grounding = 0;
+    const warm = await synth(cold);
+    expect(calls.sections).toEqual([]);
+    expect(calls.grounding).toBe(0);
+    expect(warm.regeneration).toEqual({ mode: "unchanged", changed: [] });
+  });
+
+  it.each([1, 2, SECTION_SYNTHESIS_VERSION + 1])(
+    "a manifest holding a version-%i snapshot still parses, losslessly, and is not reused",
+    async (version) => {
+      const cold = await synth();
+      const stale = prePr252Snapshot(cold, version);
+      const stored = JSON.stringify({
+        ...legacyGeneratedDocVersionManifest({
+          projectId: "p",
+          generatedDocumentId: "d",
+          version: 1,
+        }),
+        sectionSynthesis: stale,
+      });
+      const manifest = parseGeneratedDocVersionManifest(stored);
+      expect(manifest.sectionSynthesis).toEqual(JSON.parse(JSON.stringify(stale)));
+      // The read path that serves old versions re-serialises without loss.
+      const normalized = normalizeGeneratedDocVersionRecord(
+        { documentId: "d", version: 1, revisionId: null, provenanceManifest: stored },
+        { projectId: "p", generatedDocumentId: "d" },
+      );
+      expect(JSON.parse(normalized.provenanceManifest).sectionSynthesis).toEqual(
+        JSON.parse(JSON.stringify(stale)),
+      );
+      calls.sections = [];
+      const result = await synthesizeFinalDocument(
+        facts,
+        meta,
+        "architecture",
+        "Architecture",
+        router(),
+        "p",
+        undefined,
+        undefined,
+        async () => context("Source facts."),
+        undefined,
+        { previousManifest: manifest, effectiveConfigHash: "resolved-fixture-config" },
+      );
+      expect(calls.sections).toHaveLength(groups.length);
+      expect(result.regeneration?.mode).toBe("full");
+    },
+  );
+
+  it("still rejects a malformed snapshot that claims the current version", () => {
+    const stored = {
+      ...legacyGeneratedDocVersionManifest({
+        projectId: "p",
+        generatedDocumentId: "d",
+        version: 1,
+      }),
+      sectionSynthesis: { version: SECTION_SYNTHESIS_VERSION, complete: true, records: [{}] },
+    };
+    expect(() => parseGeneratedDocVersionManifest(stored)).toThrow();
   });
 });
 

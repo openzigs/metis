@@ -96,10 +96,16 @@ export type SectionSynthesisRecord = z.infer<typeof sectionRecordSchema>;
 
 /** Version the complete synthesis/grounding contract, not citation coverage.
  * Bump when prompt, refinement, cleanup, claim extraction or judging semantics change.
+ * A bump is safe: a stored manifest holding an older snapshot still parses
+ * (`storedSectionSynthesisSchema`), and only a current-version snapshot is reused.
  * 2 — #152: claim extraction is batched and a reply cut off at the output cap is
  * no longer retried or parsed, so a section left unverified by a truncated claim
- * list under version 1 must be re-checked, not reused with its stale warning. */
-export const SECTION_SYNTHESIS_VERSION = 2;
+ * list under version 1 must be re-checked, not reused with its stale warning.
+ * 3 — #246/#262: a section whose fact-check THREW was stored under version 2 with
+ * no score and no warning, indistinguishable from a verified one. A version-2
+ * snapshot cannot say whether it was written before or after that fix, so none
+ * is reused: each is written and fact-checked afresh once. */
+export const SECTION_SYNTHESIS_VERSION = 3;
 export const sectionSynthesisSchema = z
   .object({
     version: z.literal(SECTION_SYNTHESIS_VERSION),
@@ -108,6 +114,27 @@ export const sectionSynthesisSchema = z
   })
   .strict();
 export type SectionSynthesis = z.infer<typeof sectionSynthesisSchema>;
+
+/**
+ * A snapshot written under any OTHER contract version. It is kept in the
+ * manifest exactly as stored (it is part of that version's history) but is never
+ * reused: `reusableSectionRecords` accepts only `sectionSynthesisSchema`. A
+ * snapshot that claims the current version must match the current schema.
+ */
+const otherVersionSectionSynthesisSchema = z
+  .object({
+    version: z
+      .number()
+      .int()
+      .positive()
+      .refine((version) => version !== SECTION_SYNTHESIS_VERSION),
+  })
+  .passthrough();
+export const storedSectionSynthesisSchema = z.union([
+  sectionSynthesisSchema,
+  otherVersionSectionSynthesisSchema,
+]);
+export type StoredSectionSynthesis = z.infer<typeof storedSectionSynthesisSchema>;
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
