@@ -80,7 +80,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         chat: vi.fn(async (messages: ChatMessage[], opts: ChatOptions): Promise<ChatResponse> => {
           calls.push({ messages, opts });
           return {
-            content: `finding from ${String(opts.systemMessage).slice(0, 20)}`,
+            // #289 — a valid findings answer, so no final-answer retry fires.
+            content: JSON.stringify({
+              summary: `finding from ${String(opts.systemMessage).slice(0, 20)}`,
+              findings: [],
+              notes: [],
+            }),
             usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
             model: "gpt-4.1",
             provider: "openai",

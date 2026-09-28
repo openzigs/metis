@@ -27,7 +27,7 @@ import type { AIProvider, TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { customDtoDefinition, resolveAgentModel } from "../agent-runtime/definition.js";
 import { resolveSkillCatalog } from "../agent-runtime/skills.js";
-import { loadInlineSkillBlocks, runAgent } from "../agent-runtime/run-agent.js";
+import { loadInlineSkillBlocks, runAgent, type RunAgentInput } from "../agent-runtime/run-agent.js";
 
 const log = createChildLogger("custom-agent-invoke");
 
@@ -53,6 +53,8 @@ export interface InvokeCustomAgentResult {
   provider: string;
   /** Set when the agent's saved model could not be used (see `resolveAgentModel`). */
   warnings?: string[];
+  /** #289 — set when the caller asked for a final-answer retry. */
+  finalAnswerRetry?: { attempted: boolean; succeeded: boolean };
 }
 
 const DEFAULT_USAGE: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -112,6 +114,10 @@ export interface InvokeAgentDefinitionInput {
   signal?: AbortSignal;
   /** Its skill allow-list filters the agent's skills. */
   projectId: string | null;
+  /** #289 — server-authored answer contract, appended to the system prompt. */
+  outputContract?: string;
+  /** #289 — one bounded retry when the answer fails the contract. */
+  finalAnswerRetry?: RunAgentInput["finalAnswerRetry"];
 }
 
 /**
@@ -137,6 +143,8 @@ export async function invokeAgentDefinition(
     model: chosen.model,
     ...(input.signal ? { signal: input.signal } : {}),
     inlineSkillBlocks: await loadInlineSkillBlocks(catalog),
+    ...(input.outputContract ? { outputContract: input.outputContract } : {}),
+    ...(input.finalAnswerRetry ? { finalAnswerRetry: input.finalAnswerRetry } : {}),
   });
 
   return {
@@ -145,5 +153,6 @@ export async function invokeAgentDefinition(
     model: response.model,
     provider: response.provider,
     ...(chosen.warning ? { warnings: [chosen.warning] } : {}),
+    ...(response.finalAnswerRetry ? { finalAnswerRetry: response.finalAnswerRetry } : {}),
   };
 }

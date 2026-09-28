@@ -2318,7 +2318,12 @@ override, exactly as for a library agent. If the project later stops using that
 agent, the chat keeps working but without the agent's persona, any tools, or the
 skills it came with (the AI is no longer offered them, nor `load_skill`).
 Analyses also run the library agents a project has explicitly enabled, next to
-its enabled custom agents.
+its enabled custom agents. Each of these agents reports findings in the same
+format as the built-in specialists: they are saved with the analysis, feed into
+the generated requirements, and appear in the Findings list labelled with the
+agent's name ("Custom agent" or "Library agent"). An agent whose answer cannot
+be read as findings, even after one retry, is listed under Agents as failed,
+with the reason.
 
 **Agents name real tools.** Saving an agent that lists a tool METIS does not
 have is refused with the unknown names ("Unknown tools: …"). The four built-in

@@ -30,6 +30,7 @@ import type {
   RequirementVerdict,
 } from "./constants.js";
 import { dateSchema, idSchema, timestampsSchema } from "./common.js";
+import type { AgentKind, AgentRef } from "./agents.js";
 import type { CrossDocFindings } from "./cross-doc.js";
 import type { ImpactAffectedRelation } from "./impact.js";
 // Type-only, and the dependency runs the other way at runtime: the presentation
@@ -944,6 +945,31 @@ export const publishFindingSchema = z
 export type PublishFindingInput = z.infer<typeof publishFindingSchema>;
 
 /**
+ * #289 — the agent a NON-specialist analysis row came from: an enabled custom
+ * agent or an explicitly enabled library agent that ran in the analysis agent
+ * phase. `name` is the agent's name when the run happened (operator-authored
+ * text — render it as text, never as HTML).
+ */
+export interface AnalysisAgentSource {
+  kind: AgentKind;
+  ref: AgentRef;
+  name: string;
+}
+
+/**
+ * #289 — `AgentResult.agentKey` on the snapshot: a built-in agent key, or the
+ * {@link AgentRef} (`custom:<id>` / `library:<id>`) of an agent-phase agent.
+ */
+export type AnalysisResultAgentKey = (typeof ANALYSIS_AGENT_KEYS)[number] | AgentRef;
+
+const AGENT_PHASE_KEY_RE = /^(library|custom):[A-Za-z0-9_-]{1,128}$/;
+
+/** #289 — is `key` the persisted agentKey of an agent-phase (custom/library) agent? */
+export function isAgentPhaseResultKey(key: unknown): key is AgentRef {
+  return typeof key === "string" && AGENT_PHASE_KEY_RE.test(key);
+}
+
+/**
  * Snapshot of an analysis returned by `GET /api/analyses/:id` and pushed over
  * Socket.IO when the run completes.
  */
@@ -959,7 +985,13 @@ export interface AnalysisSnapshot {
   errorMessage: string | null;
   metadata: Record<string, unknown> | null;
   agents: Array<{
-    agentKey: (typeof ANALYSIS_AGENT_KEYS)[number];
+    agentKey: AnalysisResultAgentKey;
+    /**
+     * #289 — set on rows produced by a custom or library agent in the analysis
+     * agent phase, so every finding can be attributed to the agent that made
+     * it. Null for the built-in specialists and synthesis.
+     */
+    source: AnalysisAgentSource | null;
     status: (typeof AGENT_RESULT_STATUSES)[number];
     startedAt: string;
     completedAt: string | null;

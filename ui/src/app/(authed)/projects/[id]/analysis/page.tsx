@@ -40,6 +40,7 @@ import {
 import { CodeCitation } from "@/components/findings/code-citation";
 import { DerivationBadge } from "@/components/findings/derivation-badge";
 import { PersonaTag } from "@/components/findings/persona-tag";
+import { agentSourcePersonas } from "@/components/findings/agent-source-persona";
 import { DeepDiveDialog, type DeepDiveDialogFinding } from "@/components/findings/deep-dive-dialog";
 import { ModelRecommendation } from "@/components/analysis/ModelRecommendation";
 import { EnhancementStatus } from "@/components/analysis/EnhancementStatus";
@@ -418,6 +419,15 @@ export default function AnalysisPage(): React.ReactElement {
     return map;
   }, [personas.data]);
 
+  // #289 — custom/library agents from the analysis agent phase have no server
+  // persona; their chip is built from the agent's own name and kind.
+  const sourcePersonaByKey = useMemo(
+    () => agentSourcePersonas(detail.data?.agentResults ?? []),
+    [detail.data],
+  );
+  const personaFor = (agentKey: string) =>
+    sourcePersonaByKey.get(agentKey) ?? personaByKey.get(agentKey);
+
   // Epic #176 — Deep Dive → Issue. Ticket creation is gated by the approval
   // checkpoint state (`ticketStatus.allowed`); fetch it for the selected run.
   const approvals = useQuery({
@@ -714,8 +724,10 @@ export default function AnalysisPage(): React.ReactElement {
                 </h4>
                 <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
                   {detail.data.agentResults.map((agent) => {
-                    const persona = personaByKey.get(agent.agentKey);
-                    const isSpecialist = agent.agentKey !== "synthesis";
+                    const persona = personaFor(agent.agentKey);
+                    // #289 — an agent-phase agent is not a specialist: it has no
+                    // single-agent regenerate endpoint.
+                    const isSpecialist = agent.agentKey !== "synthesis" && !agent.source;
                     return (
                       <div key={agent.id} className="rounded border border-border bg-muted/30 p-3">
                         <div className="flex items-center justify-between gap-2">
@@ -1026,7 +1038,7 @@ export default function AnalysisPage(): React.ReactElement {
                                 </span>
                                 <span className="text-xs text-muted-foreground">{f.category}</span>
                                 <PersonaTag
-                                  persona={personaByKey.get(f.agentKey)}
+                                  persona={personaFor(f.agentKey)}
                                   agentKey={f.agentKey}
                                 />
                               </div>
@@ -1200,7 +1212,7 @@ export default function AnalysisPage(): React.ReactElement {
         projectId={projectId}
         analysisId={selectedAnalysisId ?? ""}
         finding={deepDiveFinding}
-        persona={deepDiveFinding ? personaByKey.get(deepDiveFinding.agentKey) : undefined}
+        persona={deepDiveFinding ? personaFor(deepDiveFinding.agentKey) : undefined}
       />
       {/* Epic #34 (AC1) — requirement comment thread panel. */}
       <CommentPanel

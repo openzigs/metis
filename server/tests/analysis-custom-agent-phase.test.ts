@@ -22,19 +22,33 @@ vi.mock("../src/lib/agent-runtime/definition.js", async (original) => ({
 
 const { runEnabledCustomAgents } = await import("../src/lib/analysis/custom-agent-phase.js");
 
-function provider(content = "custom finding"): AIProvider {
+/** #289 — a valid findings answer (the phase now asks every agent for one). */
+const VALID_ANSWER = JSON.stringify({
+  summary: "custom finding",
+  findings: [
+    {
+      category: "security",
+      severity: "high",
+      title: "No auth on admin",
+      body: "b",
+      tags: [],
+      citations: [],
+    },
+  ],
+  notes: [],
+});
+
+function provider(content = VALID_ANSWER): AIProvider {
   return {
     key: "offline-stub",
     model: "stub",
     offline: true,
-    chat: vi.fn(
-      async (): Promise<ChatResponse> => ({
-        content,
-        usage: { promptTokens: 2, completionTokens: 3, totalTokens: 5 },
-        model: "stub",
-        provider: "offline-stub" as any,
-      }),
-    ),
+    chat: vi.fn(async (): Promise<ChatResponse> => ({
+      content,
+      usage: { promptTokens: 2, completionTokens: 3, totalTokens: 5 },
+      model: "stub",
+      provider: "offline-stub" as any,
+    })),
   } as any;
 }
 
@@ -83,7 +97,7 @@ describe("runEnabledCustomAgents (#81)", () => {
     });
     expect(res.results).toHaveLength(2);
     expect(res.results.map((r) => r.agentName).sort()).toEqual(["One", "Two"]);
-    expect(res.results[0].content).toBe("custom finding");
+    expect(res.results[0].content).toBe(VALID_ANSWER);
     // 2 agents x 5 tokens
     expect(res.usage.totalTokens).toBe(10);
     expect((p.chat as any).mock.calls.length).toBe(2);
@@ -99,7 +113,7 @@ describe("runEnabledCustomAgents (#81)", () => {
         .fn()
         .mockRejectedValueOnce(new Error("boom"))
         .mockResolvedValueOnce({
-          content: "ok",
+          content: VALID_ANSWER,
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "stub",
           provider: "offline-stub",
@@ -115,7 +129,7 @@ describe("runEnabledCustomAgents (#81)", () => {
     const bad = res.results.find((r) => r.agentName === "Bad")!;
     const good = res.results.find((r) => r.agentName === "Good")!;
     expect(bad.error).toBeTruthy();
-    expect(good.content).toBe("ok");
+    expect(good.content).toBe(VALID_ANSWER);
     // only the successful agent contributes usage
     expect(res.usage.totalTokens).toBe(2);
   });
