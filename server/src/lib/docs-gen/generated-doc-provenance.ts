@@ -6,7 +6,7 @@ import type { GroundingSource } from "./grounding/grounding-context.js";
 import type { RepositoryIdentity } from "./repository-identity.js";
 import type { DocsGenTuning, Phase2Router } from "./holistic-synthesizer.js";
 import { generationInputSnapshotSchema } from "./regeneration-plan.js";
-import { sectionSynthesisSchema, type SectionSynthesis } from "./section-reuse.js";
+import { storedSectionSynthesisSchema, type SectionSynthesis } from "./section-reuse.js";
 
 export const GENERATED_DOC_PROVENANCE_SCHEMA_VERSION = 1;
 
@@ -22,15 +22,9 @@ export function generatedDocRevisionId(input: GeneratedDocRevisionKey): string {
 
 export type HistoricalCitationStatus = "available" | "unavailable" | "unknown";
 export type HistoricalCitationMode =
-  | "approved-evidence-only"
-  | "stored-evidence-pending"
-  | "not-retained"
-  | "legacy-unknown";
+  "approved-evidence-only" | "stored-evidence-pending" | "not-retained" | "legacy-unknown";
 export type LegacyHistoricalCitationState =
-  | "versioned"
-  | "pending"
-  | "not-retained"
-  | "legacy-unknown";
+  "versioned" | "pending" | "not-retained" | "legacy-unknown";
 
 const repositoryIdentitySchema = z
   .object({
@@ -169,7 +163,7 @@ const provenanceManifestSchema = z
       })
       .strict(),
     sections: z.array(sectionManifestSchema),
-    sectionSynthesis: sectionSynthesisSchema.optional(),
+    sectionSynthesis: storedSectionSynthesisSchema.optional(),
     inputSnapshot: generationInputSnapshotSchema.optional(),
     regeneration: z
       .discriminatedUnion("mode", [

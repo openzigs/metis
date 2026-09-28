@@ -31,6 +31,7 @@ import {
   type Phase2ProviderBundle,
   type Phase2Router,
 } from "./holistic-synthesizer.js";
+import { legacyGeneratedDocVersionManifest } from "./generated-doc-provenance.js";
 
 // ── Fixture ───────────────────────────────────────────────────────────────
 
@@ -212,6 +213,7 @@ async function run(
   rate?: string,
   passagesPerReply = PASSAGES_PER_REPLY,
   grounding: GroundingContext = ragGrounding(),
+  prior?: Awaited<ReturnType<typeof synthesizeFinalDocument>>,
 ) {
   if (mode !== undefined) vi.stubEnv("DOCS_GEN_GROUNDING", mode);
   if (rate !== undefined) vi.stubEnv("DOCS_GEN_GROUNDING_SAMPLE_RATE", rate);
@@ -227,7 +229,21 @@ async function run(
     undefined,
     undefined,
     undefined,
-    { effectiveConfigHash: "cfg" },
+    {
+      effectiveConfigHash: "cfg",
+      ...(prior
+        ? {
+            previousManifest: {
+              ...legacyGeneratedDocVersionManifest({
+                projectId: "p1",
+                generatedDocumentId: "d",
+                version: 1,
+              }),
+              sectionSynthesis: prior.sectionSynthesis,
+            },
+          }
+        : {}),
+    },
   );
   return { result, log: provider.log };
 }
@@ -517,4 +533,35 @@ describe("DOCS_GEN_GROUNDING under DOCS_GEN_PHASE2_CONCURRENCY (#178)", () => {
       expect(four.result.grounding).toEqual(one.result.grounding);
     });
   }
+});
+
+// ── reuse (#262) ──────────────────────────────────────────────────────────
+
+describe("#262 — a reused section keeps the verification status it was written with", () => {
+  it.each([
+    ["sample", "grounding-sampled", "only spot-checked (DOCS_GEN_GROUNDING=sample)"],
+    ["off", "grounding-skipped", "were not fact-checked (DOCS_GEN_GROUNDING=off)"],
+  ] as const)(
+    "DOCS_GEN_GROUNDING=%s: an unchanged regeneration reuses every section with its %s warning",
+    async (mode, kind, summary) => {
+      const cold = await run(mode);
+      const sectionWarnings = (r: typeof cold.result) => r.warnings.filter((w) => !w.runLevel);
+      expect(sectionWarnings(cold.result).some((w) => w.kind === kind)).toBe(true);
+      const warm = await run(mode, undefined, PASSAGES_PER_REPLY, ragGrounding(), cold.result);
+      // Reused: nothing is written or checked again...
+      expect(warm.log.streams).toEqual([]);
+      expect(warm.log.chats).toEqual([]);
+      expect(warm.result.regeneration).toEqual({ mode: "unchanged", changed: [] });
+      // ...and every section still says exactly how far it was checked.
+      expect(sectionWarnings(warm.result)).toEqual(sectionWarnings(cold.result));
+      expect(warm.result.warnings.filter((w) => w.runLevel)).toHaveLength(1);
+      expect(deriveDocStatus(warm.result.warnings)).toBe("degraded");
+      expect(summarizeWarnings(warm.result.warnings)).toBe(summarizeWarnings(cold.result.warnings));
+      expect(summarizeWarnings(warm.result.warnings)).toContain(summary);
+      // A spot-checked or unchecked section is never reported as verified.
+      expect(verifiedSectionSupport(warm.result.sections, warm.result.sectionSynthesis)).toEqual(
+        [],
+      );
+    },
+  );
 });

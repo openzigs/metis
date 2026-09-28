@@ -5,6 +5,7 @@ import {
   reusableSectionRecords,
   SECTION_SYNTHESIS_VERSION,
   sectionSynthesisSchema,
+  storedSectionSynthesisSchema,
   type SectionInputHashes,
 } from "./section-reuse.js";
 
@@ -147,5 +148,30 @@ describe("#246 — the reuse record accepts every warning kind a section can car
       ],
     });
     expect(saved.warnings[0].kind).toBe("grounding-failed");
+  });
+});
+
+describe("#262 — a stored snapshot from another contract version", () => {
+  it.each([1, 2, SECTION_SYNTHESIS_VERSION + 1])(
+    "parses a version-%i snapshot as stored but never reuses it",
+    (version) => {
+      const stored = { ...snapshot(), version };
+      expect(storedSectionSynthesisSchema.parse(stored)).toEqual(stored);
+      expect(reusableSectionRecords(stored, ["overview"], false).size).toBe(0);
+    },
+  );
+
+  it.each([
+    { ...snapshot(), records: [{}] },
+    { ...snapshot(), extra: true },
+    { ...snapshot(), version: 0 },
+    { ...snapshot(), version: 2.5 },
+    { complete: true, records: [] },
+  ])("rejects a malformed snapshot %#", (stored) => {
+    expect(storedSectionSynthesisSchema.safeParse(stored).success).toBe(false);
+  });
+
+  it("parses a current snapshot through the strict current schema", () => {
+    expect(storedSectionSynthesisSchema.parse(snapshot())).toEqual(snapshot());
   });
 });
