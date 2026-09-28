@@ -210,6 +210,12 @@ export interface IngestStats {
    * {@link schemaEdges} (table/column reads/writes) for visibility.
    */
   routineEdges: number;
+  /**
+   * #313 — unchanged files whose edges an incremental ingest re-resolved because
+   * a symbol they could bind to was added, changed or deleted. Zero on a full
+   * ingest and on an incremental one that changed nothing they reference.
+   */
+  filesRebound: number;
   languageStats: Record<string, number>;
   durationMs: number;
 }
@@ -265,10 +271,9 @@ export async function ingestCodeGraph(
   }
   const ignoreRules = compileMetisignore(ignoreContent);
 
-  // Step 3 — load existing per-file hashes for incremental skip.
-  const existingHashes = incremental
-    ? await loadExistingFileHashes(prisma, graph.id)
-    : new Map<string, string>();
+  // Step 3 — load the graph's existing files: their hashes drive the
+  // incremental skip, and a file no longer in the tree is pruned (#313).
+  const existingFiles = await loadExistingFiles(prisma, graph.id);
 
   // Step 4 — walk the tree.
   const stats: IngestStats = {
@@ -281,6 +286,7 @@ export async function ingestCodeGraph(
     rationaleFindings: 0,
     schemaEdges: 0,
     routineEdges: 0,
+    filesRebound: 0,
     languageStats: {},
     durationMs: 0,
   };
@@ -326,8 +332,13 @@ export async function ingestCodeGraph(
   // capture below); `extractEfCoreSchema` itself gates on the presence of a
   // resolvable `DbSet<T>`, so an unrelated `.cs` file yields zero edges.
   const csSources = new Map<string, string>();
+  // #313 — every path the walk saw, and the files it skipped as unchanged: pass 2
+  // resolves edges against the whole tree, not only the files re-parsed.
+  const walkedPaths = new Set<string>();
+  const unchangedFiles = new Map<string, { language: string }>();
   for await (const filePath of walkTree(rootDir, ignoreRules)) {
     stats.filesScanned += 1;
+    walkedPaths.add(path.relative(rootDir, filePath).split(path.sep).join("/"));
     const lang = detectLanguage(filePath);
     if (!lang) {
       // ORM schema files (`schema.prisma`) are not a tree-sitter language but still
@@ -366,7 +377,9 @@ export async function ingestCodeGraph(
     }
     const fileHash = sha256(source);
     const relPath = path.relative(rootDir, filePath).split(path.sep).join("/");
-    if (incremental && existingHashes.get(relPath) === fileHash) {
+    const existing = existingFiles.get(relPath);
+    if (incremental && existing?.contentHash === fileHash) {
+      unchangedFiles.set(relPath, { language: existing.language });
       stats.filesSkipped += 1;
       continue;
     }
@@ -400,7 +413,21 @@ export async function ingestCodeGraph(
 
   // Step 5 — persist. Wipe previous rows for files we re-parsed so we don't
   // accumulate stale symbols. (For unchanged files the previous rows remain.)
-  await persistParsed(prisma, graph.id, projectId, parsedFiles, stats, sourceByRelPath, maybeYield);
+  await persistParsed(
+    prisma,
+    graph.id,
+    projectId,
+    parsedFiles,
+    stats,
+    sourceByRelPath,
+    maybeYield,
+    {
+      rootDir,
+      unchangedFiles,
+      previousPaths: new Set(existingFiles.keys()),
+      deletedPaths: [...existingFiles.keys()].filter((p) => !walkedPaths.has(p)),
+    },
+  );
 
   // Step 5b — ORM schema extraction (#849). Map ORM model definitions (Prisma
   // `schema.prisma`, JPA entities) onto `table`/`column` symbols + `persists-to`
@@ -632,19 +659,33 @@ async function upsertCodeGraph(
   }) as Promise<{ id: string }>;
 }
 
-async function loadExistingFileHashes(
+async function loadExistingFiles(
   prisma: PrismaClient,
   codeGraphId: string,
-): Promise<Map<string, string>> {
+): Promise<Map<string, { contentHash: string; language: string }>> {
   // Module symbols carry the file-level hash in `contentHash` (parsers
   // populate it from the full source). Use them as the file-hash index.
   const rows = await prisma.codeSymbol.findMany({
     where: { codeGraphId, kind: "module" },
-    select: { filePath: true, contentHash: true },
+    select: { filePath: true, contentHash: true, language: true },
   });
-  const out = new Map<string, string>();
-  for (const r of rows) out.set(r.filePath, r.contentHash);
+  const out = new Map<string, { contentHash: string; language: string }>();
+  for (const r of rows) out.set(r.filePath, { contentHash: r.contentHash, language: r.language });
   return out;
+}
+
+/**
+ * #313 — what an incremental ingest knows about the rest of the tree. A full
+ * ingest passes an empty `unchangedFiles`.
+ */
+interface IngestTreeState {
+  rootDir: string;
+  /** Files skipped because their hash is unchanged, with their persisted language. */
+  unchangedFiles: ReadonlyMap<string, { language: string }>;
+  /** Every file the graph held before this run. */
+  previousPaths: ReadonlySet<string>;
+  /** Files the graph holds that the walk no longer finds. */
+  deletedPaths: string[];
 }
 
 async function persistParsed(
@@ -655,7 +696,25 @@ async function persistParsed(
   stats: IngestStats,
   sourceByRelPath: Map<string, string>,
   maybeYield: MaybeYield,
+  tree: IngestTreeState,
 ): Promise<void> {
+  // ── Pass 0 (#313): capture what the changed files used to define, then prune
+  // deleted files. Must run before pass 1: re-creating a changed file's symbols
+  // nulls every edge into them (`onDelete: SetNull`), erasing which unchanged
+  // files pointed there.
+  const changedPaths = [...parsedFiles.map((f) => f.filePath), ...tree.deletedPaths];
+  const previousTargets =
+    tree.unchangedFiles.size > 0
+      ? await loadPreviousTargets(prisma, codeGraphId, changedPaths, tree.unchangedFiles)
+      : { names: new Set<string>(), affected: new Set<string>() };
+  for (let k = 0; k < tree.deletedPaths.length; k += IN_LIST_CHUNK) {
+    const chunk = tree.deletedPaths.slice(k, k + IN_LIST_CHUNK);
+    await prisma.$transaction([
+      prisma.codeEdge.deleteMany({ where: { codeGraphId, filePath: { in: chunk } } }),
+      prisma.codeSymbol.deleteMany({ where: { codeGraphId, filePath: { in: chunk } } }),
+    ]);
+  }
+
   // ── Pass 1: persist symbols and build resolution indices. ───────────────
   // The legacy single-pass loop only resolved edges via exact `qualifiedName`
   // match, which never works for bare-identifier callees like `foo()` —
@@ -678,7 +737,6 @@ async function persistParsed(
   //
   // All lookups are in-memory after pass 1; no per-edge DB round-trips.
   const qnameToId = new Map<string, string>();
-  const fileToSymbols = new Map<string, ResolvableSymbol[]>();
   const index = createResolutionIndex();
 
   for (const file of parsedFiles) {
@@ -725,7 +783,6 @@ async function persistParsed(
       contentHash: string;
     }> = [];
 
-    const fileSyms: ResolvableSymbol[] = [];
     for (const [i, sym] of file.symbols.entries()) {
       const id = createdIds[i];
       const idx: ResolvableSymbol = {
@@ -736,7 +793,6 @@ async function persistParsed(
         kind: sym.kind,
         language: file.language,
       };
-      fileSyms.push(idx);
       // First definition of a name within a file wins (deterministic).
       indexSymbol(index, idx);
       qnameToId.set(sym.qualifiedName, id);
@@ -765,16 +821,89 @@ async function persistParsed(
     if (embeddingRows.length > 0) {
       await prisma.codeSymbolEmbedding.createMany({ data: embeddingRows });
     }
-    fileToSymbols.set(file.filePath, fileSyms);
+  }
+
+  // ── Pass 1b (#313): the unchanged files join the indices, so an edge resolves
+  // against the whole tree exactly as a full ingest would. Only parser-written
+  // symbols are loaded — a full ingest's pass 2 runs before the schema passes
+  // add theirs (`source` set, or the `sql` origin symbols of a mapper file).
+  // Ordered by id, i.e. creation order, so first-definition-wins matches the
+  // parse order a full ingest indexes in.
+  if (tree.unchangedFiles.size > 0) {
+    const rows = await prisma.codeSymbol.findMany({
+      where: { codeGraphId, source: null },
+      select: {
+        id: true,
+        name: true,
+        qualifiedName: true,
+        filePath: true,
+        kind: true,
+        language: true,
+      },
+      orderBy: { id: "asc" },
+    });
+    for (const row of rows) {
+      if (tree.unchangedFiles.get(row.filePath)?.language !== row.language) continue;
+      indexSymbol(index, row);
+      qnameToId.set(row.qualifiedName, row.id);
+    }
+  }
+
+  // ── Pass 1c (#313): unchanged files whose edges may now bind differently.
+  // An edge resolves by its target NAME (every index is keyed by it) and by the
+  // files its file imports, so an unchanged file is affected only when it
+  //   - pointed at a symbol of a changed or deleted file (captured in pass 0),
+  //   - references a name a changed or deleted file defines or defined, or
+  //   - imports a path that resolves differently now that files were added or
+  //     removed.
+  // Everything else would resolve exactly as it did, so it is left alone.
+  const allPaths = [...parsedFiles.map((f) => f.filePath), ...tree.unchangedFiles.keys()];
+  const importCtx = buildImportResolutionContext(allPaths);
+  const affectedFiles: ParsedFile[] = [];
+  if (tree.unchangedFiles.size > 0) {
+    const names = previousTargets.names;
+    for (const file of parsedFiles) {
+      for (const sym of file.symbols) {
+        names.add(sym.name);
+        names.add(sym.qualifiedName);
+      }
+    }
+    const affected = previousTargets.affected;
+    for (const fp of await filesReferencing(prisma, codeGraphId, names)) {
+      if (tree.unchangedFiles.has(fp)) affected.add(fp);
+    }
+    const added = parsedFiles.some((f) => !tree.previousPaths.has(f.filePath));
+    if (added || tree.deletedPaths.length > 0) {
+      const before = buildImportResolutionContext(tree.previousPaths);
+      const imports = await prisma.codeEdge.findMany({
+        where: { codeGraphId, kind: "imports", source: null },
+        select: { filePath: true, toQualifiedName: true },
+      });
+      for (const imp of imports) {
+        const file = tree.unchangedFiles.get(imp.filePath);
+        if (!file || affected.has(imp.filePath) || imp.toQualifiedName === null) continue;
+        const was = resolveImportTarget(imp.filePath, file.language, imp.toQualifiedName, before);
+        const now = resolveImportTarget(
+          imp.filePath,
+          file.language,
+          imp.toQualifiedName,
+          importCtx,
+        );
+        if (was !== now) affected.add(imp.filePath);
+      }
+    }
+    for (const relPath of affected) {
+      await maybeYield();
+      const reparsed = await reparseUnchanged(tree, relPath);
+      if (reparsed) affectedFiles.push(reparsed);
+    }
+    stats.filesRebound += affectedFiles.length;
   }
 
   // ── Pass 2: build import-target index and persist edges. ────────────────
-  // #160 — `COPY name` binds to the copybook file's module symbol.
-  const copybooks = buildCopybookIndex(parsedFiles.map((f) => f.filePath));
   const { importTargets, runtimeImports } = buildFileImportIndex(
-    parsedFiles,
-    fileToSymbols,
-    copybooks,
+    [...parsedFiles, ...affectedFiles],
+    importCtx,
   );
   const persistedClassNames = await loadPersistedClassNames(
     prisma,
@@ -783,48 +912,54 @@ async function persistParsed(
     index,
   );
 
-  for (const file of parsedFiles) {
+  /** One parsed edge as a full ingest would persist it; null when it has no source symbol. */
+  const resolveEdge = (file: ParsedFile, edge: ParsedFile["edges"][number]) => {
+    const fromId = qnameToId.get(edge.fromQualifiedName);
+    if (!fromId) return null; // Dropped: no source symbol — should not happen.
     const site = {
       filePath: file.filePath,
       language: file.language,
       importedFiles: importTargets.get(file.filePath) ?? [],
       runtimeImports: runtimeImports.get(file.filePath),
     };
+    let toId: string | null = qnameToId.get(edge.toQualifiedName) ?? null;
+    if (!toId && file.language === "cbl" && edge.kind === "imports") {
+      // A copybook name is a file, never a symbol: an unresolved COPY stays unbound.
+      const copybook = resolveCopybook(edge.toQualifiedName, file.filePath, importCtx.copybooks);
+      toId = copybook ? (qnameToId.get(copybook) ?? null) : null;
+    } else if (!toId) {
+      toId = resolveEdgeTarget(edge.toQualifiedName, edge.receiver, site, index);
+    }
+    // #170 — a capitalised Kotlin call is a constructor only if a class exists.
+    const { kind, metadata } = reclassifyKotlinConstructorCall(
+      edge,
+      file.language,
+      index,
+      persistedClassNames,
+    );
+    return {
+      fromSymbolId: fromId,
+      kind,
+      toSymbolId: toId,
+      metadata: metadata ? JSON.stringify(metadata) : null,
+    };
+  };
 
+  for (const file of parsedFiles) {
     // Edges carry no ids anyone needs back, so they go in multi-row inserts:
     // one statement (and one commit) per EDGE_INSERT_BATCH rows (#16).
     let batch: Prisma.CodeEdgeCreateManyInput[] = [];
     for (const edge of file.edges) {
       await maybeYield();
-      const fromId = qnameToId.get(edge.fromQualifiedName);
-      if (!fromId) continue; // Dropped: no source symbol — should not happen.
-
-      let toId: string | null = qnameToId.get(edge.toQualifiedName) ?? null;
-      if (!toId && file.language === "cbl" && edge.kind === "imports") {
-        // A copybook name is a file, never a symbol: an unresolved COPY stays unbound.
-        const copybook = resolveCopybook(edge.toQualifiedName, file.filePath, copybooks);
-        toId = copybook ? (qnameToId.get(copybook) ?? null) : null;
-      } else if (!toId) {
-        toId = resolveEdgeTarget(edge.toQualifiedName, edge.receiver, site, index);
-      }
-      // #170 — a capitalised Kotlin call is a constructor only if a class exists.
-      const { kind, metadata } = reclassifyKotlinConstructorCall(
-        edge,
-        file.language,
-        index,
-        persistedClassNames,
-      );
-
+      const resolved = resolveEdge(file, edge);
+      if (!resolved) continue;
       batch.push({
         codeGraphId,
         projectId,
-        kind,
-        fromSymbolId: fromId,
-        toSymbolId: toId,
+        ...resolved,
         toQualifiedName: edge.toQualifiedName,
         filePath: file.filePath,
         line: edge.line,
-        metadata: metadata ? JSON.stringify(metadata) : null,
       });
       if (batch.length >= EDGE_INSERT_BATCH) {
         await prisma.codeEdge.createMany({ data: batch });
@@ -837,6 +972,139 @@ async function persistParsed(
       stats.edgesUpserted += batch.length;
     }
   }
+
+  // ── Pass 3 (#313): re-bind the affected unchanged files' edges in place. Their
+  // rows are matched to the re-parsed edges by (from, target name, line), in
+  // creation order, so ids survive and nothing is duplicated. Rows another pass
+  // wrote from the same file (`source` set, or a MyBatis call-site edge whose
+  // target name no parser edge carries) match nothing and are left alone.
+  for (const file of affectedFiles) {
+    await maybeYield();
+    const wanted = new Map<string, Array<NonNullable<ReturnType<typeof resolveEdge>>>>();
+    for (const edge of file.edges) {
+      const resolved = resolveEdge(file, edge);
+      if (!resolved) continue;
+      const key = edgeRowKey(resolved.fromSymbolId, edge.toQualifiedName, edge.line);
+      const list = wanted.get(key);
+      if (list) list.push(resolved);
+      else wanted.set(key, [resolved]);
+    }
+    const rows = await prisma.codeEdge.findMany({
+      where: { codeGraphId, filePath: file.filePath, source: null },
+      select: {
+        id: true,
+        fromSymbolId: true,
+        toQualifiedName: true,
+        line: true,
+        kind: true,
+        toSymbolId: true,
+        metadata: true,
+      },
+      orderBy: { id: "asc" },
+    });
+    const updates: Prisma.PrismaPromise<unknown>[] = [];
+    for (const row of rows) {
+      const next = wanted.get(edgeRowKey(row.fromSymbolId, row.toQualifiedName, row.line))?.shift();
+      if (!next) continue;
+      if (
+        next.kind === row.kind &&
+        next.toSymbolId === row.toSymbolId &&
+        next.metadata === row.metadata
+      ) {
+        continue;
+      }
+      updates.push(
+        prisma.codeEdge.update({
+          where: { id: row.id },
+          data: { kind: next.kind, toSymbolId: next.toSymbolId, metadata: next.metadata },
+        }),
+      );
+    }
+    if (updates.length > 0) await prisma.$transaction(updates);
+  }
+}
+
+function edgeRowKey(fromSymbolId: string, toQualifiedName: string | null, line: number): string {
+  return `${fromSymbolId}\u0000${toQualifiedName ?? ""}\u0000${line}`;
+}
+
+/**
+ * #313 pass 0 — before the changed files' symbols are re-created: the names and
+ * qualified names they (and deleted files) defined, and the unchanged files
+ * holding an edge bound to one of those symbols.
+ */
+async function loadPreviousTargets(
+  prisma: PrismaClient,
+  codeGraphId: string,
+  changedPaths: string[],
+  unchangedFiles: ReadonlyMap<string, unknown>,
+): Promise<{ names: Set<string>; affected: Set<string> }> {
+  const names = new Set<string>();
+  const affected = new Set<string>();
+  for (let k = 0; k < changedPaths.length; k += IN_LIST_CHUNK) {
+    const symbols = await prisma.codeSymbol.findMany({
+      where: { codeGraphId, filePath: { in: changedPaths.slice(k, k + IN_LIST_CHUNK) } },
+      select: { id: true, name: true, qualifiedName: true },
+    });
+    for (const s of symbols) {
+      names.add(s.name);
+      names.add(s.qualifiedName);
+    }
+    const ids = symbols.map((s) => s.id);
+    for (let j = 0; j < ids.length; j += IN_LIST_CHUNK) {
+      const edges = await prisma.codeEdge.findMany({
+        where: { codeGraphId, source: null, toSymbolId: { in: ids.slice(j, j + IN_LIST_CHUNK) } },
+        select: { filePath: true },
+        distinct: ["filePath"],
+      });
+      for (const e of edges) if (unchangedFiles.has(e.filePath)) affected.add(e.filePath);
+    }
+  }
+  return { names, affected };
+}
+
+/** #313 — the files holding a parser edge whose target name is one of `names`. */
+async function filesReferencing(
+  prisma: PrismaClient,
+  codeGraphId: string,
+  names: ReadonlySet<string>,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const list = [...names];
+  for (let k = 0; k < list.length; k += IN_LIST_CHUNK) {
+    const edges = await prisma.codeEdge.findMany({
+      where: {
+        codeGraphId,
+        source: null,
+        toQualifiedName: { in: list.slice(k, k + IN_LIST_CHUNK) },
+      },
+      select: { filePath: true },
+      distinct: ["filePath"],
+    });
+    for (const e of edges) out.add(e.filePath);
+  }
+  return out;
+}
+
+/**
+ * #313 — re-parse an unchanged file to recover what its persisted edges do not
+ * keep (call receivers, runtime-imported names). Null when it can no longer be
+ * read or parsed; its edges are then left as they are.
+ */
+async function reparseUnchanged(
+  tree: IngestTreeState,
+  relPath: string,
+): Promise<ParsedFile | null> {
+  const lang = detectLanguage(relPath);
+  if (!lang) return null;
+  let source: string;
+  try {
+    source = stripNulBytes(await fs.readFile(path.join(tree.rootDir, relPath), "utf8"));
+  } catch {
+    return null;
+  }
+  const parsed = parseSource(relPath, source, lang);
+  return parsed.unparseable ? null : parsed;
 }
 
 /**
@@ -882,6 +1150,9 @@ async function loadPersistedClassNames(
 
 /** Names per `IN (...)` list in {@link loadPersistedClassNames} — under SQLite's bound-variable limit. */
 const CLASS_NAME_QUERY_CHUNK = 500;
+
+/** Values per `IN (...)` list in the #313 incremental-edge queries — same limit. */
+const IN_LIST_CHUNK = 500;
 
 /** Rows per `codeEdge.createMany` in {@link persistParsed} (#16). */
 const EDGE_INSERT_BATCH = 500;
@@ -1822,24 +2093,12 @@ export async function extractSchemaUsage(
  */
 function buildFileImportIndex(
   parsedFiles: ParsedFile[],
-  fileToSymbols: Map<string, unknown[]>,
-  copybooks: CopybookIndex,
+  ctx: ImportResolutionContext,
 ): { importTargets: Map<string, string[]>; runtimeImports: Map<string, Set<string>> } {
-  const filePaths = new Set<string>(parsedFiles.map((f) => f.filePath));
-  // `OrderService.java` → every parsed path with that basename (Java imports).
-  const javaByBasename = new Map<string, string[]>();
-  for (const fp of filePaths) {
-    if (!fp.endsWith(".java")) continue;
-    const base = fp.slice(fp.lastIndexOf("/") + 1);
-    const list = javaByBasename.get(base);
-    if (list) list.push(fp);
-    else javaByBasename.set(base, [fp]);
-  }
   const importTargets = new Map<string, string[]>();
   const runtimeImports = new Map<string, Set<string>>();
   for (const file of parsedFiles) {
     const targets: string[] = [];
-    const fromDir = parentDir(file.filePath);
     for (const edge of file.edges) {
       if (edge.kind !== "imports") continue;
       const raw = edge.toQualifiedName;
@@ -1849,37 +2108,66 @@ function buildFileImportIndex(
         for (const n of edge.importedNames) names.add(n);
         continue;
       }
-      if (file.language === "cbl") {
-        // #160 — a copied procedure copybook's paragraphs are PERFORM targets.
-        const resolved = resolveCopybook(raw, file.filePath, copybooks);
-        if (resolved && fileToSymbols.has(resolved)) targets.push(resolved);
-        continue;
-      }
-      if (file.language === "java") {
-        const resolved = resolveJavaImport(raw, javaByBasename);
-        if (resolved && fileToSymbols.has(resolved)) targets.push(resolved);
-        continue;
-      }
-      if (raw.startsWith("@/") || raw.startsWith("~/")) {
-        const resolved = resolveAliasImport(fromDir, raw.slice(2), filePaths);
-        if (resolved && fileToSymbols.has(resolved)) targets.push(resolved);
-        continue;
-      }
-      // Skip bare package imports — they don't resolve to in-project files.
-      if (!raw.startsWith(".") && !raw.startsWith("/") && !raw.includes("/")) {
-        // Python dotted module: try `a.b.c` → `a/b/c.py`.
-        if (raw.includes(".") && file.language === "py") {
-          const candidate = `${raw.replaceAll(".", "/")}.py`;
-          if (filePaths.has(candidate)) targets.push(candidate);
-        }
-        continue;
-      }
-      const resolved = resolveImportPath(fromDir, raw, filePaths);
-      if (resolved && fileToSymbols.has(resolved)) targets.push(resolved);
+      const resolved = resolveImportTarget(file.filePath, file.language, raw, ctx);
+      if (resolved) targets.push(resolved);
     }
     if (targets.length) importTargets.set(file.filePath, targets);
   }
   return { importTargets, runtimeImports };
+}
+
+/**
+ * The project files an import can resolve to. In a full ingest these are the
+ * files parsed on this run; on an incremental one (#313) they are the parsed
+ * files plus every unchanged file, so an import resolves identically either way.
+ */
+interface ImportResolutionContext {
+  filePaths: ReadonlySet<string>;
+  /** `OrderService.java` → every path with that basename (Java imports). */
+  javaByBasename: Map<string, string[]>;
+  /** #160 — COBOL files by stem, for `COPY name`. */
+  copybooks: CopybookIndex;
+}
+
+function buildImportResolutionContext(filePaths: Iterable<string>): ImportResolutionContext {
+  const paths = new Set(filePaths);
+  const javaByBasename = new Map<string, string[]>();
+  for (const fp of paths) {
+    if (!fp.endsWith(".java")) continue;
+    const base = fp.slice(fp.lastIndexOf("/") + 1);
+    const list = javaByBasename.get(base);
+    if (list) list.push(fp);
+    else javaByBasename.set(base, [fp]);
+  }
+  return { filePaths: paths, javaByBasename, copybooks: buildCopybookIndex(paths) };
+}
+
+/** The project file one import specifier of `filePath` resolves to, or null. */
+function resolveImportTarget(
+  filePath: string,
+  language: string,
+  raw: string,
+  ctx: ImportResolutionContext,
+): string | null {
+  if (language === "cbl") {
+    // #160 — a copied procedure copybook's paragraphs are PERFORM targets.
+    return resolveCopybook(raw, filePath, ctx.copybooks);
+  }
+  if (language === "java") return resolveJavaImport(raw, ctx.javaByBasename);
+  const fromDir = parentDir(filePath);
+  if (raw.startsWith("@/") || raw.startsWith("~/")) {
+    return resolveAliasImport(fromDir, raw.slice(2), ctx.filePaths);
+  }
+  // Skip bare package imports — they don't resolve to in-project files.
+  if (!raw.startsWith(".") && !raw.startsWith("/") && !raw.includes("/")) {
+    // Python dotted module: try `a.b.c` → `a/b/c.py`.
+    if (raw.includes(".") && language === "py") {
+      const candidate = `${raw.replaceAll(".", "/")}.py`;
+      if (ctx.filePaths.has(candidate)) return candidate;
+    }
+    return null;
+  }
+  return resolveImportPath(fromDir, raw, ctx.filePaths);
 }
 
 /** `org.acme.svc.OrderService` → the unique parsed `…/org/acme/svc/OrderService.java`. */
@@ -1900,7 +2188,11 @@ function resolveJavaImport(spec: string, javaByBasename: Map<string, string[]>):
 }
 
 /** `@/lib/api` from `ui/src/app/page.tsx` → `ui/src/lib/api.ts` (nearest ancestor wins). */
-function resolveAliasImport(fromDir: string, rest: string, filePaths: Set<string>): string | null {
+function resolveAliasImport(
+  fromDir: string,
+  rest: string,
+  filePaths: ReadonlySet<string>,
+): string | null {
   const segs = fromDir ? fromDir.split("/") : [];
   for (let i = segs.length; i >= 0; i -= 1) {
     const ancestor = segs.slice(0, i).join("/");
@@ -1946,7 +2238,11 @@ const RESOLVE_EXTS = [
   ".java",
 ];
 
-function resolveImportPath(fromDir: string, spec: string, filePaths: Set<string>): string | null {
+function resolveImportPath(
+  fromDir: string,
+  spec: string,
+  filePaths: ReadonlySet<string>,
+): string | null {
   // Drop `.js`/`.ts` ext if present then try our candidate extensions —
   // TS source typically writes `./foo.js` referring to `foo.ts`.
   const stripped = spec.replace(/\.(?:m?[tj]sx?|c[tj]s)$/, "");
