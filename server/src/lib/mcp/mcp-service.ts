@@ -175,12 +175,22 @@ export class MCPRegistryService {
       projectId?: string;
       /** Filter to a specific user id; only meaningful when `scope: 'user'`. */
       userId?: string;
+      /**
+       * #311 — a Prisma `where` over the server's `project` (the caller's
+       * `workspaceScopeWhere`). When non-empty, `scope: "project"` servers are
+       * kept only if their project matches it; other scopes are unaffected.
+       * Empty or absent means no narrowing (system admins).
+       */
+      projectScope?: Record<string, unknown>;
     } = {},
   ): Promise<MCPServerView[]> {
     const where: Record<string, unknown> = { deletedAt: null };
     if (opts.scope) where.scope = opts.scope;
     if (opts.projectId !== undefined) where.projectId = opts.projectId;
     if (opts.userId !== undefined) where.userId = opts.userId;
+    if (opts.projectScope && Object.keys(opts.projectScope).length > 0) {
+      where.OR = [{ scope: { not: "project" } }, { project: opts.projectScope }];
+    }
     const rows = await prisma.mCPServer.findMany({
       where,
       orderBy: { createdAt: "desc" },

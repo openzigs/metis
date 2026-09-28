@@ -10,7 +10,14 @@
  * Any route that takes a project id (the per-project allow-list routes, the
  * `?projectId=` list filter, and every create that binds a server to a
  * project) also passes `assertProjectAccess` for that id: 404 without access.
- * Routes that act on an existing server by id are not yet project-checked (#311).
+ *
+ * #311 — every route that acts on an EXISTING server by id resolves the server
+ * first (`assertServerAccess`). A `scope: "project"` server is reached only
+ * through its own project's access check, and an unreachable one answers the
+ * same 404 as an unknown id before anything is read or changed. `global` and
+ * `user` servers stay a registry-wide role permission (`mcp.manage` /
+ * `mcp.read` / `mcp.write`), as designed. The unfiltered lists (`GET /`,
+ * `GET /export`) omit project-scoped servers in projects the caller cannot reach.
  *
  * Audit + secret hygiene live inside `MCPRegistryService` — the routes are
  * thin glue.
@@ -47,6 +54,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { workspaceScopeWhere } from "../lib/auth/project-scope.js";
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -83,6 +91,38 @@ async function assertProjectScopedCreate(
   if (scope !== "project") return;
   if (typeof projectId !== "string" || projectId.length === 0) return;
   await assertCallerProjectAccess(req, projectId);
+}
+
+/**
+ * #311 — resolve an existing server by id for a route that acts on it. A
+ * `scope: "project"` server is reachable only by a caller who passes
+ * `assertProjectAccess` for the server's own project (admins bypass); a
+ * project server with no project is never reachable by a non-admin. Unknown,
+ * soft-deleted and unreachable servers all answer this one 404, so a probe
+ * cannot tell them apart. Global and user servers stay role-gated.
+ */
+async function assertServerAccess(req: Request, id: string): Promise<void> {
+  if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+  const notFound = () => new AppError(404, "NOT_FOUND", "MCP server not found");
+  const server = await svc().get(id);
+  if (!server) throw notFound();
+  if (server.scope !== "project" || req.user.role === "admin") return;
+  if (!server.projectId) throw notFound();
+  try {
+    await assertProjectAccess(req.user, server.projectId);
+  } catch (err) {
+    if (err instanceof AppError && err.statusCode === 404) throw notFound();
+    throw err;
+  }
+}
+
+/**
+ * #311 — the unfiltered lists narrow project-scoped servers to the projects
+ * the caller can reach (`workspaceScopeWhere`: empty for admins).
+ */
+function projectScopeOf(req: Request): Record<string, unknown> {
+  if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+  return workspaceScopeWhere(req.user);
 }
 
 function rethrow(err: unknown): never {
@@ -190,7 +230,7 @@ export function mcpRouter(): Router {
         : undefined;
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
     if (projectId !== undefined) await assertCallerProjectAccess(req, projectId);
-    const items = await svc().list({ scope, projectId });
+    const items = await svc().list({ scope, projectId, projectScope: projectScopeOf(req) });
     res.json(ok({ items }));
   });
 
@@ -247,6 +287,7 @@ export function mcpRouter(): Router {
       });
     }
     const actor = actorFromReq(req);
+    await assertServerAccess(req, String(req.params.id));
     try {
       const existing = await svc().get(String(req.params.id));
       if (!existing) throw new AppError(404, "NOT_FOUND", "MCP server not found");
@@ -300,6 +341,7 @@ export function mcpRouter(): Router {
 
   r.delete("/:id", requireAuth, requirePermission("mcp.manage"), async (req, res) => {
     const actor = actorFromReq(req);
+    await assertServerAccess(req, String(req.params.id));
     try {
       await svc().remove(String(req.params.id), actor);
       res.status(204).end();
@@ -311,6 +353,7 @@ export function mcpRouter(): Router {
   // ── Lifecycle ───────────────────────────────────────────────────────
   r.post("/:id/start", requireAuth, requirePermission("mcp.manage"), async (req, res) => {
     const actor = actorFromReq(req);
+    await assertServerAccess(req, String(req.params.id));
     try {
       const updated = await svc().start(String(req.params.id), actor);
       res.json(ok(updated));
@@ -321,6 +364,7 @@ export function mcpRouter(): Router {
 
   r.post("/:id/stop", requireAuth, requirePermission("mcp.manage"), async (req, res) => {
     const actor = actorFromReq(req);
+    await assertServerAccess(req, String(req.params.id));
     try {
       const updated = await svc().stop(String(req.params.id), actor);
       res.json(ok(updated));
@@ -331,6 +375,7 @@ export function mcpRouter(): Router {
 
   r.post("/:id/restart", requireAuth, requirePermission("mcp.manage"), async (req, res) => {
     const actor = actorFromReq(req);
+    await assertServerAccess(req, String(req.params.id));
     try {
       const updated = await svc().restart(String(req.params.id), actor);
       res.json(ok(updated));
@@ -341,6 +386,7 @@ export function mcpRouter(): Router {
 
   r.post("/:id/test", requireAuth, requirePermission("mcp.manage"), async (req, res) => {
     const actor = actorFromReq(req);
+    await assertServerAccess(req, String(req.params.id));
     try {
       const result = await svc().test(String(req.params.id), actor);
       res.json(ok(result));
@@ -618,6 +664,7 @@ export function mcpRouter(): Router {
 
   // ── Epic #162 — Issue #99 — inline tool tester ────────────────────────
   r.get("/servers/:id/tools", requireAuth, requirePermission("mcp.read"), async (req, res) => {
+    await assertServerAccess(req, String(req.params.id));
     const view = await svc().get(String(req.params.id));
     if (!view) throw new AppError(404, "NOT_FOUND", "MCP server not found");
     res.json(ok({ tools: view.capabilities }));
@@ -631,6 +678,7 @@ export function mcpRouter(): Router {
       const actor = actorFromReq(req);
       const id = String(req.params.id);
       const toolName = String(req.params.tool);
+      await assertServerAccess(req, id);
       const view = await svc().get(id);
       if (!view) throw new AppError(404, "NOT_FOUND", "MCP server not found");
       // Enforce per-server allowlist for the tester too — operators who lock
@@ -683,6 +731,7 @@ export function mcpRouter(): Router {
     requirePermission("mcp.read"),
     async (req, res) => {
       const id = String(req.params.id);
+      await assertServerAccess(req, id);
       const view = await svc().get(id);
       if (!view) throw new AppError(404, "NOT_FOUND", "MCP server not found");
       const approved = await svc().getApprovedSnapshot(id);
@@ -707,6 +756,7 @@ export function mcpRouter(): Router {
     async (req, res) => {
       const actor = actorFromReq(req);
       const id = String(req.params.id);
+      await assertServerAccess(req, id);
       const view = await svc().get(id);
       if (!view) throw new AppError(404, "NOT_FOUND", "MCP server not found");
       const snapshot = snapshotToolSchemas(view.capabilities);
@@ -727,6 +777,7 @@ export function mcpRouter(): Router {
     async (req, res) => {
       const actor = actorFromReq(req);
       const id = String(req.params.id);
+      await assertServerAccess(req, id);
       const body = (req.body ?? {}) as {
         toolAllowlist?: unknown;
         requireApproval?: unknown;
@@ -785,8 +836,8 @@ export function mcpRouter(): Router {
   });
 
   // ── Epic #162 — Issue #124 — Copilot mcp.json import / export ────────
-  r.get("/export", requireAuth, requirePermission("mcp.read"), async (_req, res) => {
-    const items = await svc().list();
+  r.get("/export", requireAuth, requirePermission("mcp.read"), async (req, res) => {
+    const items = await svc().list({ projectScope: projectScopeOf(req) });
     const payload = exportToCopilotMcpJson(items);
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Content-Disposition", "attachment; filename=mcp.json");
@@ -843,6 +894,7 @@ export function mcpRouter(): Router {
   // ── Single-item lookup (must come AFTER all specific-name GET routes
   //    like /search, /registry, /export to avoid /:id shadowing them) ──
   r.get("/:id", requireAuth, requirePermission("mcp.manage"), async (req, res) => {
+    await assertServerAccess(req, String(req.params.id));
     const item = await svc().get(String(req.params.id));
     if (!item) throw new AppError(404, "NOT_FOUND", "MCP server not found");
     res.json(ok(item));
