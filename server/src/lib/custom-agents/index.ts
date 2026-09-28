@@ -381,6 +381,34 @@ export async function createAgent(
   return toDto(row);
 }
 
+/**
+ * #145 — create an agent from an IMPORTED definition (another install, or an
+ * older METIS version's export). Tool names this install does not have are
+ * DROPPED and returned, instead of refusing the whole file as an authored save
+ * does (#238): METIS's first release's wizard offered names no tool carries
+ * (`knowledge_search`, `web_search`, …) and its built-ins named
+ * `search_documents`, so without this every export made then fails to import.
+ *
+ * Dropping never widens what the agent may call: the allowlist is matched
+ * EXACTLY at run time, so a name no tool carries never granted anything, and a
+ * custom agent's empty list is an allowlist of nothing. Names are never mapped
+ * to a "similar" real tool — that would grant a tool the author never chose.
+ */
+export async function importAgent(
+  input: CreateAgentInput,
+  actorId?: string,
+): Promise<{ agent: CustomAgentDto; droppedTools: string[] }> {
+  const tools = input.tools ?? [];
+  const droppedTools = unknownToolRefs(
+    tools,
+    knownToolNames(getToolRegistry()),
+    await configuredMcpServerSlugs(tools, input.projectId),
+  );
+  const drop = new Set(droppedTools);
+  const agent = await createAgent({ ...input, tools: tools.filter((t) => !drop.has(t)) }, actorId);
+  return { agent, droppedTools };
+}
+
 export async function updateAgent(
   id: string,
   patch: Partial<CustomAgentDefinition>,

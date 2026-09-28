@@ -12,6 +12,7 @@ import {
   createAgent,
   deleteAgent,
   getAgent,
+  importAgent,
   isAgentEnabledForProject,
   listAgents,
   listEnabledAgentsForProject,
@@ -273,11 +274,13 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
     await assertWorkspaceAdminForProject(req.user, parsed.data.projectId);
     try {
       const def = parseAgentImport(parsed.data.document);
-      const created = await createAgent(
+      // #145 — an older export may name tools this install does not have; they
+      // are dropped (never mapped, never widening) and reported to the caller.
+      const { agent, droppedTools } = await importAgent(
         { ...def, projectId: parsed.data.projectId },
         req.user.userId,
       );
-      res.status(201).json(ok(created));
+      res.status(201).json({ ...ok(agent), meta: { droppedTools } });
     } catch (err) {
       rethrow(err);
     }

@@ -8,13 +8,26 @@
  * and lets a workspace admin enable/disable each for the project. Toggling
  * PUTs `/api/custom-agents/:id/enablement` and refetches the enabled set so
  * the UI live-updates (AC).
+ *
+ * #145 — an agent this project OWNS can be edited here (persona, skills,
+ * tools, model, approval override) in a dialog; built-ins and agents shared
+ * from elsewhere are not editable from a project.
  */
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { sdkApi } from "@/lib/sdk-alignment-api";
 import type { CustomAgentDto } from "@metis/shared";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { CustomAgentEditForm } from "@/components/custom-agents/CustomAgentEditForm";
 
 interface Props {
   projectId: string;
@@ -25,6 +38,7 @@ const enabledKey = (projectId: string) => ["custom-agents", "enabled", projectId
 
 export function CustomAgentsEnablementCard({ projectId }: Props) {
   const qc = useQueryClient();
+  const [editing, setEditing] = useState<CustomAgentDto | null>(null);
 
   // Candidate agents: built-ins (shared) + this project's own agents.
   const candidates = useQuery({
@@ -100,22 +114,57 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
                     <div className="text-xs text-muted-foreground">{agent.description}</div>
                   )}
                 </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={on ? "outline" : "default"}
-                  aria-pressed={on}
-                  disabled={pendingThis}
-                  onClick={() => toggle.mutate({ id: agent.id, next: !on })}
-                  data-testid={`ca-enablement-toggle-${agent.id}`}
-                >
-                  {pendingThis ? "Saving…" : on ? "Disable" : "Enable"}
-                </Button>
+                <div className="flex items-center gap-2">
+                  {!agent.isBuiltIn && agent.projectId === projectId && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setEditing(agent)}
+                      data-testid={`ca-edit-open-${agent.id}`}
+                    >
+                      Edit
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={on ? "outline" : "default"}
+                    aria-pressed={on}
+                    disabled={pendingThis}
+                    onClick={() => toggle.mutate({ id: agent.id, next: !on })}
+                    data-testid={`ca-enablement-toggle-${agent.id}`}
+                  >
+                    {pendingThis ? "Saving…" : on ? "Disable" : "Enable"}
+                  </Button>
+                </div>
               </li>
             );
           })}
         </ul>
       )}
+
+      <Dialog open={editing !== null} onOpenChange={(o) => !o && setEditing(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit agent {editing?.name}</DialogTitle>
+            <DialogDescription>
+              Persona, skills, tools, model and approval — the agent&apos;s one definition.
+            </DialogDescription>
+          </DialogHeader>
+          {editing ? (
+            <CustomAgentEditForm
+              agent={editing}
+              onCancel={() => setEditing(null)}
+              onSaved={() => {
+                setEditing(null);
+                qc.invalidateQueries({ queryKey: candidatesKey(projectId) });
+                qc.invalidateQueries({ queryKey: enabledKey(projectId) });
+              }}
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

@@ -2335,6 +2335,23 @@ is stopped; a server the project does not have is still refused. Importing a
 plugin lists every agent it could not create, with the reason, under
 `rejected.agents`.
 
+**Editing a custom agent.** In the project's settings, the **Custom agents**
+card has an **Edit** button on each agent the project owns. It edits the whole
+definition in one place — description, persona, allowed tools, skills,
+preferred model, reasoning effort and approval — and every save raises the
+agent's version. Only what you change is saved, so an older agent that still
+names a tool this server does not list (shown as "not in this server's tool
+list") keeps its tool list until you change it. Built-in agents and agents
+shared from elsewhere are not editable from a project.
+
+**Importing an agent file** (`POST /api/custom-agents/import`) accepts files
+exported by any METIS version. A tool name this server does not have — for
+example the names older versions' wizard offered, such as `knowledge_search` —
+is left out of the imported agent and listed in the response under
+`meta.droppedTools`. Such a name never gave the agent anything (an agent may call
+only tools named exactly), so the imported agent can call exactly what it could
+before; a name is never swapped for a similar tool.
+
 **Skills load when they are needed.** The skills a chat has (the agent's own
 plus any you add) are listed to the AI by name and description only. When one
 fits your request, the AI opens it — you see a `load_skill` call in the tool

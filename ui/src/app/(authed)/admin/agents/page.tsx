@@ -352,12 +352,15 @@ function AgentForm({
           data-testid="agent-source"
         />
         <p className="text-xs text-muted-foreground">
-          YAML frontmatter (`name`, optional `description`/`model`/`tools`/`tags`/`handoffs`)
-          followed by the Markdown body that becomes the agent&apos;s system prompt.
+          YAML frontmatter (`name`, optional `description`/`version`/`model`/`tools`/
+          `reasoningEffort`/`approvalPolicy`/`tags`/`handoffs`) followed by the Markdown body that
+          becomes the agent&apos;s persona. `tools` is the list of tools the agent may call;
+          `approvalPolicy` (e.g. <code>{`{"high":"deny"}`}</code>) can only make approval stricter
+          than the chat&apos;s, never looser.
         </p>
       </div>
       <div className="space-y-2">
-        <Label>Default skills (auto-loaded into every session under this agent)</Label>
+        <Label>Skills (listed to the AI and loaded when it needs them)</Label>
         <div
           className="max-h-40 overflow-y-auto rounded border p-2"
           data-testid="agent-skill-picker"

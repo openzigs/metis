@@ -2576,7 +2576,8 @@ model Agent {
   model         String    @default("")
   /// System prompt / persona body (Markdown).
   systemPrompt  String    @default("")
-  /// JSON array of tool names (HINT only, not a security boundary).
+  /// JSON array of tool refs the agent may call — its tool allowlist, ENFORCED by
+  /// the approval gate (#142). Empty = no allowlist declared (see agent-runtime/definition.ts).
   tools         String    @default("[]")
   /// JSON array of free-form tags.
   tags          String    @default("[]")
