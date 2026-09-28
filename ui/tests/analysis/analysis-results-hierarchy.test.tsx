@@ -364,3 +364,30 @@ describe("Analysis results hierarchy (#1232)", () => {
     expect(screen.queryByText("Login screen")).not.toBeInTheDocument();
   });
 });
+
+// #322 — an upload returns with its document still `pending` (ingest is
+// queued). The page read the documents list once and never again, so the new
+// document stayed unselectable until a reload. It must keep re-reading the list
+// while anything is ingesting, and stop once everything has settled.
+describe("documents list while ingesting (#322)", () => {
+  it("re-reads the list until the pending document is ready", async () => {
+    const { documentsApi } = await import("@/lib/projects-api");
+    const listDocs = documentsApi.list as unknown as ReturnType<typeof vi.fn>;
+    const pending = { id: "d1", filename: "d1.md", status: "pending", indexState: null };
+    listDocs
+      .mockResolvedValueOnce({ items: [pending] })
+      .mockResolvedValue({ items: [{ ...pending, status: "ready" }] });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderPage();
+      await waitFor(() => expect(listDocs).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(3000);
+      await waitFor(() => expect(listDocs).toHaveBeenCalledTimes(2));
+      // Now settled — no further reads.
+      await vi.advanceTimersByTimeAsync(9000);
+      expect(listDocs).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
