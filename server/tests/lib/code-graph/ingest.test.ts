@@ -107,7 +107,10 @@ function makePrismaMock() {
       }),
       deleteMany: vi.fn(async ({ where }: any) => {
         for (let i = codeSymbols.length - 1; i >= 0; i -= 1) {
-          if (matchWhere(codeSymbols[i], where)) codeSymbols.splice(i, 1);
+          if (!matchWhere(codeSymbols[i], where)) continue;
+          // #313 — mirror `CodeEdge.toSymbol`'s `onDelete: SetNull`.
+          for (const e of codeEdges) if (e.toSymbolId === codeSymbols[i].id) e.toSymbolId = null;
+          codeSymbols.splice(i, 1);
         }
         return { count: 0 };
       }),
@@ -142,6 +145,12 @@ function makePrismaMock() {
         return { count: 0 };
       }),
       count: vi.fn(async ({ where }: any) => codeEdges.filter((r) => matchWhere(r, where)).length),
+      // #313 — the incremental re-bind updates an unchanged file's edges in place.
+      update: vi.fn(async ({ where, data }: any) => {
+        const row = codeEdges.find((r) => r.id === where.id);
+        if (row) Object.assign(row, data);
+        return row;
+      }),
     },
     finding: {
       findFirst: vi.fn(async ({ where }: any) => {
@@ -470,6 +479,39 @@ describe("ingestCodeGraph (#308)", () => {
     ).toEqual(["Order"]);
     expect(callsTo(store, "Order", screen)).toHaveLength(0);
     expect(callsTo(store, "Column", screen)).toHaveLength(1);
+  });
+
+  it("re-binds cross-file edges on an incremental ingest in both directions (#313)", async () => {
+    const root = await makeFixture({
+      "src/b.ts": "export function helper() { return 1; }\n",
+      "src/a.ts": 'import { helper } from "./b";\nexport function main() { return helper(); }\n',
+      "src/g.ts": "export function util() { return 2; }\n",
+      // A second `util`: only the import says which one f.ts calls.
+      "src/g2.ts": "export function util() { return 3; }\n",
+      "src/f.ts": 'import { util } from "./g";\nexport function f() { return util(); }\n',
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "proj1", rootDir: root });
+    // Callee b.ts changes (its symbols are re-created); caller f.ts changes.
+    await fs.writeFile(
+      path.join(root, "src/b.ts"),
+      "export function added() { return 0; }\nexport function helper() { return 1; }\n",
+    );
+    await fs.writeFile(
+      path.join(root, "src/f.ts"),
+      'import { util } from "./g";\n// edited\nexport function f() { return util(); }\n',
+    );
+    const stats = await ingestCodeGraph(prisma, { projectId: "proj1", rootDir: root });
+    expect(stats.filesParsed).toBe(2);
+    expect(stats.filesRebound).toBe(1); // a.ts — and nothing else
+
+    // Updated in place: still exactly one edge each, now bound.
+    const helperCalls = callsTo(store, "helper", "src/a.ts");
+    expect(helperCalls).toHaveLength(1);
+    expect(helperCalls[0].toSymbolId).toBe(symbolId(store, "src/b.ts", "helper"));
+    const utilCalls = callsTo(store, "util", "src/f.ts");
+    expect(utilCalls).toHaveLength(1);
+    expect(utilCalls[0].toSymbolId).toBe(symbolId(store, "src/g.ts", "util"));
   });
 
   it("reuses existing CodeGraph row instead of creating a duplicate", async () => {
