@@ -11,6 +11,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
+import { isoDatetime } from "../lib/validation/iso-datetime.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -60,7 +61,7 @@ const updateRequirementSchema = z.object({
 
 const assignSchema = z.object({
   assigneeId: z.string().min(1),
-  slaDeadline: z.string().datetime().nullable().optional(),
+  slaDeadline: isoDatetime().nullable().optional(),
 });
 
 // ---- Router -----------------------------------------------------------------

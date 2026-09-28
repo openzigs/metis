@@ -119,3 +119,30 @@ describe("PUT /requirements/:id with version history", () => {
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
   });
 });
+
+// #330 — zod 3 accepted a slaDeadline without seconds; zod 4 alone would 400 it.
+describe("POST /requirements/:id/assignments slaDeadline (zod 3 parity)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("accepts a slaDeadline without seconds", async () => {
+    mockPrisma.requirement.findUnique.mockResolvedValue({ id: "req-1" });
+    mockPrisma.assignment.upsert.mockResolvedValue({ id: "asg-1" });
+
+    const res = await request(createApp())
+      .post("/requirements/req-1/assignments")
+      .send({ assigneeId: "user-2", slaDeadline: "2026-01-01T10:00Z" });
+
+    expect(res.status).toBe(201);
+    const arg = mockPrisma.assignment.upsert.mock.calls[0][0];
+    expect(arg.create.slaDeadline).toEqual(new Date("2026-01-01T10:00:00Z"));
+  });
+
+  it("still rejects a slaDeadline with no zone", async () => {
+    const res = await request(createApp())
+      .post("/requirements/req-1/assignments")
+      .send({ assigneeId: "user-2", slaDeadline: "2026-01-01T10:00:00" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+  });
+});

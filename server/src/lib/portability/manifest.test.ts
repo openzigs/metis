@@ -93,6 +93,22 @@ describe("parseManifest round-trip", () => {
   });
 });
 
+// #330 — zod 3 accepted these createdAt forms; the zod 4 upgrade must not
+// turn a bundle exported by an older build into an import failure.
+describe("parseManifest createdAt (zod 3 parity)", () => {
+  it.each(["2026-01-01T10:00Z", "2026-01-01T10:00:00+0100", "2026-01-01T10:00+01:00"])(
+    "accepts %s",
+    (createdAt) => {
+      expect(parseManifest({ ...buildManifest(makeInput()), createdAt }).createdAt).toBe(createdAt);
+    },
+  );
+
+  it("still rejects a datetime with no zone", () => {
+    const bad = { ...buildManifest(makeInput()), createdAt: "2026-01-01T10:00:00" };
+    expect(() => parseManifest(bad)).toThrow(ManifestValidationError);
+  });
+});
+
 // ── parseManifest rejection ───────────────────────────────────────────────────
 
 describe("parseManifest rejects invalid input", () => {

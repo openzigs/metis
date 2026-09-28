@@ -116,6 +116,17 @@ describe("/api/acp/tokens", () => {
     expect(revoke.body.data.revokedAt).not.toBeNull();
   });
 
+  // #330 — zod 3 accepted an expiresAt without seconds; zod 4 alone would 400 it.
+  it("accepts an expiresAt without seconds, as zod 3 did", async () => {
+    const res = await auth(
+      request(makeApp())
+        .post("/api/acp/tokens")
+        .send({ name: "ci", expiresAt: "2099-01-01T10:00Z" }),
+    );
+    expect(res.status).toBe(201);
+    expect(new Date(res.body.data.expiresAt).toISOString()).toBe("2099-01-01T10:00:00.000Z");
+  });
+
   it("validates the create payload", async () => {
     const res = await auth(request(makeApp()).post("/api/acp/tokens").send({}));
     expect(res.status).toBe(400);

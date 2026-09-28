@@ -20,6 +20,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
+import { isoDatetime } from "../lib/validation/iso-datetime.js";
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, hasPermission, type RoleKey } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
@@ -58,7 +59,7 @@ const createReviewSchema = z.object({
   description: z.string().max(4000).optional(),
   policy: z.enum(["all", "quorum"]).default("all"),
   quorum: z.number().int().min(1).optional(),
-  dueAt: z.string().datetime().nullable().optional(),
+  dueAt: isoDatetime().nullable().optional(),
   reviewerIds: z.array(z.string().min(1)).min(1).max(50),
   items: z.array(reviewItemSchema).min(1).max(200),
 });

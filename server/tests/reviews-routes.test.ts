@@ -222,6 +222,19 @@ describe("POST /projects/:projectId/reviews", () => {
     );
   });
 
+  // #330 — zod 3 accepted a dueAt without seconds; zod 4 alone would 400 it.
+  it("accepts a dueAt without seconds, as zod 3 did", async () => {
+    primeCreateMocks();
+
+    const res = await request(app)
+      .post("/projects/proj-1/reviews")
+      .send({ ...VALID_CREATE_BODY, dueAt: "2026-01-01T10:00Z" });
+
+    expect(res.status).toBe(201);
+    const createArg = mockPrisma.reviewRequest.create.mock.calls[0][0];
+    expect(createArg.data.dueAt).toEqual(new Date("2026-01-01T10:00:00Z"));
+  });
+
   it("ignores privileged fields in the body (no mass assignment)", async () => {
     primeCreateMocks();
 

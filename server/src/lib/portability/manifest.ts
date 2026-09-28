@@ -7,6 +7,7 @@
  */
 
 import { z } from "zod";
+import { isoDatetime } from "../validation/iso-datetime.js";
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -27,7 +28,7 @@ export interface PortabilityManifest {
 
 const PortabilityManifestSchema = z.object({
   version: z.literal(1),
-  createdAt: z.string().datetime({ offset: true }),
+  createdAt: isoDatetime({ offset: true }),
   provider: z.enum(["sqlite", "postgresql"]),
   schemaVersion: z.string().min(1),
   secretsPresent: z.boolean(),

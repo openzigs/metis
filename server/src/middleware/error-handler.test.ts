@@ -125,6 +125,35 @@ describe("errorHandler — ZodError → friendly 400 (#426)", () => {
     expect(friendly.fields[0]).toEqual({ field: "state", message: "state is invalid" });
   });
 
+  // #330 — zod 4 raises `invalid_value`, not zod 3's `invalid_type`, for an
+  // omitted enum key; it must still read "is required", as it did on zod 3.
+  it("treats an omitted required enum / nativeEnum field as required", () => {
+    const schema = z.object({
+      state: z.enum(["open", "closed"]),
+      kind: z.nativeEnum({ A: "a", B: 1 }),
+    });
+    const friendly = zodErrorToFriendly(zodErrorFor2(schema, {}));
+    expect(friendly.fields).toEqual([
+      { field: "state", message: "state is required" },
+      { field: "kind", message: "kind is required" },
+    ]);
+  });
+
+  it("keeps an omitted literal and an explicit-null enum as invalid (zod 3 parity)", () => {
+    const schema = z.object({ version: z.literal(1), state: z.enum(["open", "closed"]) });
+    const friendly = zodErrorToFriendly(zodErrorFor2(schema, { state: null }));
+    expect(friendly.fields).toEqual([
+      { field: "version", message: "version is invalid" },
+      { field: "state", message: "state is invalid" },
+    ]);
+  });
+
+  it("an enum's own custom message degrades to invalid, never to a leak", () => {
+    const schema = z.object({ state: z.enum(["open", "closed"], { message: "pick one" }) });
+    const friendly = zodErrorToFriendly(zodErrorFor2(schema, {}));
+    expect(friendly.fields[0]).toEqual({ field: "state", message: "state is invalid" });
+  });
+
   it("labels a wrong-type field as invalid", () => {
     const typeSchema = z.object({ count: z.number() });
     const friendly = zodErrorToFriendly(zodErrorFor2(typeSchema, { count: "x" }));

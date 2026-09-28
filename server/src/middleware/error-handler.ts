@@ -7,7 +7,7 @@
  * production.
  */
 import type { ErrorRequestHandler, RequestHandler } from "express";
-import { ZodError, type ZodIssue } from "zod";
+import { z, ZodError, type ZodIssue } from "zod";
 import type { ApiResponse } from "@metis/shared";
 import { createChildLogger } from "../lib/logger.js";
 import { AIProviderRetiredError } from "../lib/ai/errors.js";
@@ -36,6 +36,50 @@ export interface FriendlyFieldError {
 }
 
 /**
+ * Did this `invalid_type` / `invalid_value` issue fire because the value was
+ * ABSENT?
+ *
+ * zod 3 said so structurally (`received: "undefined"`). zod 4 dropped
+ * `received`, and keeps the offending `input` only when a parse opts into
+ * `reportInput` — which the routes that let a raw `ZodError` escape do not.
+ * What remains is the default message, "Invalid input: expected X, received
+ * undefined" (#309). Relying on it is sound here because no schema in the tree
+ * overrides an `invalid_type` message; if one ever does, the field degrades to
+ * the generic "is invalid", never to a leak. An omitted enum key raises
+ * `invalid_value`, whose default text names no received value, so
+ * `markOmittedEnumKeys` below gives it the same suffix (#330).
+ */
+function isMissingValue(issue: ZodIssue): boolean {
+  if ("input" in issue) return issue.input === undefined;
+  return /received undefined$/.test(issue.message);
+}
+
+/**
+ * zod 3 reported an omitted `z.enum` / `z.nativeEnum` key as `invalid_type`
+ * with `received: "undefined"`, which read "X is required". zod 4 reports it as
+ * `invalid_value` and strips the input, so it read "X is invalid" (#330). The
+ * raw issue still carries `input` and the raising schema while its message is
+ * built, so this global error map appends zod's own ", received undefined"
+ * suffix to exactly that case; `isMissingValue` then treats it like an omitted
+ * string. Scoped to enums on purpose: an omitted `z.literal` also raises
+ * `invalid_value`, and zod 3 called that invalid, so it keeps the default.
+ * zod keeps its config on `globalThis`, so installing it once here covers every
+ * zod 4 copy in the process. Nothing else in the tree sets `customError`.
+ */
+function markOmittedEnumKeys(): void {
+  z.config({
+    customError: (iss) => {
+      if (iss.code !== "invalid_value" || iss.input !== undefined) return undefined;
+      if (!(iss.inst instanceof z.core.$ZodEnum)) return undefined;
+      const base = z.config().localeError?.(iss);
+      const text = typeof base === "string" ? base : base?.message;
+      return text ? `${text}, received undefined` : undefined;
+    },
+  });
+}
+markOmittedEnumKeys();
+
+/**
  * Map a raw Zod issue to a SAFE, human-readable `{ field, message }` summary.
  *
  * OWASP A09 (info-leak): we MUST NOT echo the raw `ZodError.issues` array — its
@@ -45,22 +89,6 @@ export interface FriendlyFieldError {
  * derive a friendly message keyed on the issue *kind* and surface only the
  * field's dotted path so the client can render an inline message beside it.
  */
-/**
- * Did this `invalid_type` issue fire because the value was ABSENT?
- *
- * zod 3 said so structurally (`received: "undefined"`). zod 4 dropped
- * `received`, and keeps the offending `input` only when a parse opts into
- * `reportInput` — which the routes that let a raw `ZodError` escape do not.
- * What remains is the default message, "Invalid input: expected X, received
- * undefined" (#309). Relying on it is sound here because no schema in the tree
- * overrides an `invalid_type` message; if one ever does, the field degrades to
- * the generic "is invalid", never to a leak.
- */
-function isMissingValue(issue: ZodIssue): boolean {
-  if ("input" in issue) return issue.input === undefined;
-  return /received undefined$/.test(issue.message);
-}
-
 function issueToFriendly(issue: ZodIssue): FriendlyFieldError {
   const field = issue.path.length > 0 ? issue.path.join(".") : "(form)";
   const label = issue.path.length > 0 ? String(issue.path[issue.path.length - 1]) : "This field";
@@ -71,7 +99,10 @@ function issueToFriendly(issue: ZodIssue): FriendlyFieldError {
   let message: string;
   if (issue.code === "too_small" && (issue as { minimum?: number }).minimum === 1) {
     message = `${label} is required`;
-  } else if (issue.code === "invalid_type" && isMissingValue(issue)) {
+  } else if (
+    (issue.code === "invalid_type" || issue.code === "invalid_value") &&
+    isMissingValue(issue)
+  ) {
     message = `${label} is required`;
   } else if (issue.code === "too_small") {
     message = `${label} is too short`;

@@ -26,6 +26,7 @@
  */
 
 import { z } from "zod";
+import { isoDatetime } from "../validation/iso-datetime.js";
 import type { FkEdge, ModelFkInfo } from "./schema-fk-graph.js";
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -411,7 +412,7 @@ const DeferredFkSchema = z.object({
 const LogicalManifestSchema = z.object({
   format: z.literal("metis-logical-dump"),
   version: z.literal(1),
-  createdAt: z.string().datetime({ offset: true }),
+  createdAt: isoDatetime({ offset: true }),
   provider: z.enum(["sqlite", "postgresql"]),
   schemaVersion: z.string().min(1),
   rowCounts: z.record(z.string(), z.number().int().nonnegative()),

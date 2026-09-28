@@ -11,6 +11,7 @@
  */
 import { Router, type Request } from "express";
 import { z, ZodError } from "zod";
+import { isoDatetime } from "../lib/validation/iso-datetime.js";
 import type { ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -34,7 +35,7 @@ function actor(req: Request): string {
 const createSchema = z.object({
   name: z.string().min(1).max(128),
   scopes: z.array(z.string().min(1).max(64)).max(32).optional(),
-  expiresAt: z.string().datetime().nullable().optional(),
+  expiresAt: isoDatetime().nullable().optional(),
 });
 
 function rethrow(err: unknown): never {
