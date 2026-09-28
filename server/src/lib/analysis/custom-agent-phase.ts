@@ -38,7 +38,11 @@ import { customDtoDefinition, listProjectLibraryAgents } from "../agent-runtime/
 import type { AIProvider, TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { clampAgentOutputStrings, extractJsonObject } from "./agent-runner.js";
-import { persistAgentResult, type AgentPhaseOutput } from "./analysis-service.js";
+import {
+  persistAgentResult,
+  type AgentPhaseOutput,
+  type PersistAgentResultInput,
+} from "./analysis-service.js";
 import {
   repairFindingsAnswer,
   summarizeFindingsRepairs,
@@ -164,7 +168,33 @@ export function parseAgentFindingsAnswer(text: string):
     };
   }
   const { summary, findings, notes } = result.data;
-  return { ok: true, output: { summary, findings, notes }, repairs: repaired.repairs };
+  return {
+    ok: true,
+    output: { summary, findings: findings.map(stripServerOwnedFields), notes },
+    repairs: repaired.repairs,
+  };
+}
+
+/**
+ * #289 — drop every field the SERVER owns on a specialist finding. The
+ * orchestrator overwrites or gates these for specialists (`verifyFinding`,
+ * `gateFindingVerdict`, the #734 grounding, the support panel); this phase
+ * runs none of that and gives the agent no documents or code, so any value
+ * here is fabricated. A citation would render as evidence and seed
+ * `RequirementCodeMapping` rows; a `verificationStatus` would render a
+ * "confirmed" badge. `citations` is forced empty, as the contract says.
+ * (`faithfulness` is already refused at the storage boundary.)
+ */
+function stripServerOwnedFields(finding: AgentFindingPayload): AgentFindingPayload {
+  const {
+    citations: _citations,
+    requirementId: _requirementId,
+    verificationStatus: _verificationStatus,
+    verdict: _verdict,
+    supportPanel: _supportPanel,
+    ...modelAuthored
+  } = finding;
+  return { ...modelAuthored, citations: [] };
 }
 
 /** #289 — the retry gate: does this answer validate as a findings answer? */
@@ -291,6 +321,8 @@ export async function runEnabledCustomAgents(
 
 /** Cap on the raw answer kept on an invalid row, so it is inspectable, not lost. */
 const INVALID_ANSWER_EXCERPT_CHARS = 2048;
+/** Labels the excerpt so the Agents grid never shows raw model prose as a summary. */
+export const INVALID_ANSWER_EXCERPT_LABEL = "Unparsed answer (excerpt): ";
 
 /** #289 — the operator-facing reason an invalid answer's row carries. */
 export function invalidAnswerMessage(r: CustomAgentResult): string {
@@ -323,7 +355,8 @@ export async function persistAgentPhaseResults(
       ref: r.agentRef as AgentPhaseOutput["source"]["ref"],
       name: r.agentName,
     };
-    const notes = [...(r.output?.notes ?? []), ...(r.warnings ?? [])].slice(0, 20);
+    // Server warnings (#145) first, so a model's 20 notes can never push them out.
+    const notes = [...(r.warnings ?? []), ...(r.output?.notes ?? [])].slice(0, 20);
     const base = {
       analysisId,
       agentKey: source.ref,
@@ -331,27 +364,47 @@ export async function persistAgentPhaseResults(
       completedAt: r.completedAt,
       usage: r.usage,
     };
-    if (r.output) {
-      await persistAgentResult({
-        ...base,
-        status: "completed",
-        output: { ...r.output, notes, source },
-      });
-    } else if (r.error) {
-      await persistAgentResult({
-        ...base,
-        status: r.aborted ? "cancelled" : "failed",
-        output: { summary: "", findings: [], notes, source },
-        errorMessage: r.aborted ? "cancelled" : r.error,
-      });
-    } else {
-      const excerpt = r.content.trim().slice(0, INVALID_ANSWER_EXCERPT_CHARS);
-      await persistAgentResult({
-        ...base,
-        status: "failed",
-        output: { summary: excerpt, findings: [], notes, source },
-        errorMessage: invalidAnswerMessage(r),
+    try {
+      await persistOneAgentPhaseResult(r, base, source, notes);
+    } catch (err) {
+      // One agent's failed write must not skip every later agent's row (#246).
+      log.error("Failed to persist agent-phase result", {
+        analysisId,
+        agentRef: r.agentRef,
+        error: (err as Error).message,
       });
     }
+  }
+}
+
+async function persistOneAgentPhaseResult(
+  r: CustomAgentResult,
+  base: Omit<PersistAgentResultInput, "status" | "output">,
+  source: AgentPhaseOutput["source"],
+  notes: string[],
+): Promise<void> {
+  if (r.output) {
+    await persistAgentResult({
+      ...base,
+      status: "completed",
+      output: { ...r.output, notes, source },
+    });
+  } else if (r.error) {
+    await persistAgentResult({
+      ...base,
+      status: r.aborted ? "cancelled" : "failed",
+      output: { summary: "", findings: [], notes, source },
+      errorMessage: r.aborted ? "cancelled" : r.error,
+    });
+  } else {
+    const excerpt = `${INVALID_ANSWER_EXCERPT_LABEL}${r.content
+      .trim()
+      .slice(0, INVALID_ANSWER_EXCERPT_CHARS - INVALID_ANSWER_EXCERPT_LABEL.length)}`;
+    await persistAgentResult({
+      ...base,
+      status: "failed",
+      output: { summary: excerpt, findings: [], notes, source },
+      errorMessage: invalidAnswerMessage(r),
+    });
   }
 }

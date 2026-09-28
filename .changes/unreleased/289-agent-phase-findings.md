@@ -12,3 +12,6 @@ section: Fixed
 - An agent whose answer cannot be read as findings, even after one retry, is
   now shown on the analysis as a failed agent with the reason. It no longer
   disappears without a trace.
+- These agents are given no documents or source code, so their findings never
+  carry citations, a requirement link, a verification badge or a verdict. The
+  server strips those fields from an agent's answer before saving it.

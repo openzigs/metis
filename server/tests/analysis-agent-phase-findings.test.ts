@@ -21,8 +21,11 @@ vi.mock("../src/lib/agent-runtime/definition.js", async (original) => ({
   listProjectLibraryAgents: vi.fn(async () => []),
 }));
 const persisted: Array<Record<string, any>> = [];
+/** agentKeys whose write should throw — the per-agent isolation test. */
+const failWritesFor = new Set<string>();
 vi.mock("../src/lib/analysis/analysis-service.js", () => ({
   persistAgentResult: vi.fn(async (input: Record<string, any>) => {
+    if (failWritesFor.has(input.agentKey)) throw new Error("db write failed");
     persisted.push(input);
     return { id: "ar", agentKey: input.agentKey, findingIds: [] };
   }),
@@ -31,6 +34,7 @@ vi.mock("../src/lib/analysis/analysis-service.js", () => ({
 const {
   AGENT_PHASE_OUTPUT_CONTRACT,
   AGENT_PHASE_RETRY_INSTRUCTION,
+  INVALID_ANSWER_EXCERPT_LABEL,
   invalidAnswerMessage,
   parseAgentFindingsAnswer,
   persistAgentPhaseResults,
@@ -93,6 +97,7 @@ const run = (provider: AIProvider) =>
 beforeEach(() => {
   enabledAgents.length = 0;
   persisted.length = 0;
+  failWritesFor.clear();
 });
 
 describe("#289 — the agent phase keeps each agent's findings", () => {
@@ -164,6 +169,30 @@ describe("#289 — the agent phase keeps each agent's findings", () => {
     expect(r.output?.notes.some((n) => /repair/i.test(n))).toBe(true);
   });
 
+  it("strips the fields the server owns — a model cannot claim evidence, verification or a verdict", async () => {
+    enabledAgents.push(agent());
+    const forged = {
+      ...FINDING,
+      citations: [{ filePath: "src/admin/routes.ts", startLine: 1, endLine: 9 }],
+      requirementId: "REQ-001",
+      verificationStatus: "confirmed",
+      verdict: "gap-confirmed",
+      supportPanel: null,
+      confidence: 0.7,
+      derivation: "ambiguous",
+    };
+    const { provider } = scripted([answer({ findings: [forged] })]);
+    const res = await run(provider);
+
+    const f = res.results[0]!.output!.findings[0]!;
+    expect(f.citations).toEqual([]);
+    for (const key of ["requirementId", "verificationStatus", "verdict", "supportPanel"]) {
+      expect(f).not.toHaveProperty(key);
+    }
+    // Model-assertable fields survive — the strip is a denylist, not a reset.
+    expect(f).toMatchObject({ title: FINDING.title, confidence: 0.7, derivation: "ambiguous" });
+  });
+
   it("parses a fenced answer and rejects a non-JSON one", () => {
     expect(parseAgentFindingsAnswer("```json\n" + answer() + "\n```").ok).toBe(true);
     expect(parseAgentFindingsAnswer("no json here")).toEqual({
@@ -226,8 +255,48 @@ describe("#289 — persistAgentPhaseResults", () => {
       agentKey: "library:l1",
       status: "failed",
       errorMessage: "No findings recorded: its answer contained no JSON object after one retry.",
-      output: { summary: "just prose", findings: [] },
+      output: { summary: `${INVALID_ANSWER_EXCERPT_LABEL}just prose`, findings: [] },
     });
+    expect(INVALID_ANSWER_EXCERPT_LABEL).toMatch(/unparsed answer/i);
+  });
+
+  it("keeps a failed row's labelled excerpt within the summary cap", async () => {
+    await persistAgentPhaseResults("an1", [
+      {
+        ...base,
+        agentRef: "custom:a1",
+        content: "x".repeat(5000),
+        invalid: { reason: "non-json-response", issues: [] },
+      },
+    ]);
+    expect(persisted[0]!.output.summary.length).toBe(2048);
+  });
+
+  it("keeps the server's warnings when the model returns the maximum 20 notes", async () => {
+    const notes = Array.from({ length: 20 }, (_, i) => `model note ${i}`);
+    await persistAgentPhaseResults("an1", [
+      {
+        ...base,
+        agentRef: "custom:a1",
+        content: answer(),
+        output: { summary: "s", findings: [], notes },
+        warnings: ["saved model not used"],
+      },
+    ]);
+    const kept = persisted[0]!.output.notes as string[];
+    expect(kept).toHaveLength(20);
+    expect(kept[0]).toBe("saved model not used");
+  });
+
+  it("still writes every later agent's row when one agent's write throws (#246)", async () => {
+    failWritesFor.add("custom:a1");
+    await expect(
+      persistAgentPhaseResults("an1", [
+        { ...base, agentRef: "custom:a1", content: "", error: "boom" },
+        { ...base, agentRef: "custom:a2", content: "", error: "boom" },
+      ]),
+    ).resolves.toBeUndefined();
+    expect(persisted.map((p) => p.agentKey)).toEqual(["custom:a2"]);
   });
 
   it("writes a failed row for an agent that threw, and a cancelled one on abort", async () => {
