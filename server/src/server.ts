@@ -50,6 +50,7 @@ import { registerSearchKnowledgeGlobalTool } from "./lib/rag/search-knowledge-gl
 import { registerSearchKnowledgeTool } from "./lib/rag/search-knowledge-tool.js";
 import { createChildLogger } from "./lib/logger.js";
 import { getConfigService } from "./lib/config/config-service.js";
+import { applyHttpKeepAliveTimeout } from "./lib/config/http-keep-alive.js";
 import {
   startWorker,
   type PrReviewProcessorDeps,
@@ -241,6 +242,8 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   // validated at boot inside `createApp()` (issue #782) — the same call below.
   const app = createApp(opts);
   const httpServer = http.createServer(app);
+  // #221 — `HTTP_KEEP_ALIVE_TIMEOUT_MS`; unset keeps Node's default.
+  applyHttpKeepAliveTimeout(httpServer);
   const io = createSocketServer(httpServer, opts);
   // Epic #728 — register IO in the global registry so lib code (e.g.
   // @mention fan-out, presence) can access it without DI threading.
