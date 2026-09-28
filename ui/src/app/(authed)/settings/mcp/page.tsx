@@ -501,11 +501,12 @@ function InstallDialog({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const [scope, setScope] = useState<"global" | "project">("global");
+  // #335 — Settings has no project context, so an install here is global:
+  // a "project" install with no projectId would bind the server to no project.
   const install = useMutation({
     mutationFn: () => {
       if (!entry) throw new Error("no entry");
-      return mcpPlatformApi.install({ registryServerId: entry.id, scope });
+      return mcpPlatformApi.install({ registryServerId: entry.id, scope: "global" });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.admin.mcp() });
@@ -536,18 +537,10 @@ function InstallDialog({
                 </div>
               ) : null}
             </div>
-            <div>
-              <Label>Scope</Label>
-              <select
-                value={scope}
-                onChange={(e) => setScope(e.target.value as "global" | "project")}
-                className="w-full rounded border px-2 py-1 text-sm"
-                data-testid="install-scope"
-              >
-                <option value="global">Global</option>
-                <option value="project">Project</option>
-              </select>
-            </div>
+            <p className="text-xs" data-testid="install-scope-note">
+              Installs as a <strong>global</strong> server; a project can use it once it is on that
+              project&apos;s MCP allow-list.
+            </p>
             <p className="text-xs text-muted-foreground">
               Trust level defaults to <strong>untrusted</strong>. All tools start as high-risk and
               require approval until you mark the server trusted.

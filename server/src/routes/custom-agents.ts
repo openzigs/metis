@@ -109,6 +109,13 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
     // forms must be honoured; anything else ("1"/"true"/absent) includes them.
     const includeBuiltIns =
       req.query.includeBuiltIns !== "false" && req.query.includeBuiltIns !== "0";
+    // #288 — a project's agents are listed only to a caller who can reach that
+    // project: 404 otherwise, like every other read on this router. Without a
+    // projectId the list is the built-ins alone, open to any signed-in user.
+    if (projectId !== null) {
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      await assertProjectAccess(req.user, projectId);
+    }
     try {
       const agents = await listAgents({ projectId, includeBuiltIns });
       res.json(ok(agents));

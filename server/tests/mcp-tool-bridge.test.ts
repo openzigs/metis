@@ -259,6 +259,38 @@ describe("MCPToolBridge cross-project isolation (SEC-6)", () => {
     expect(ok.isError).toBe(false);
     bridge.shutdown();
   });
+
+  // #335 — a legacy `scope: "project"` row with no project used to skip the
+  // check entirely and so reach EVERY project (and project-less sessions).
+  // It now fails closed: available to no session at all.
+  it.each([
+    ["a project-bound session", "proj-a" as string | undefined],
+    ["a project-less session", undefined],
+  ])("denies a project-scoped server with no project to %s", async (_name, projectId) => {
+    __resetToolRegistrySingleton();
+    auditEvents.length = 0;
+    const lifecycle = new MCPLifecycleManager({
+      resolveEnv: async (e) => e,
+      transportFactory: () => makeTransport(),
+    });
+    const registry = {
+      getAllowList: vi.fn(async () => ["srv1"]),
+    } as unknown as ConstructorParameters<typeof MCPToolBridge>[1];
+    const bridge = new MCPToolBridge(lifecycle, registry);
+    bridge.attach();
+    await lifecycle.start(makeConfig({ scope: "project", projectId: null, trustLevel: "trusted" }));
+    const denied = await getToolRegistry().invoke(
+      "mcp:cool-server:read_file",
+      {},
+      { sessionId: "s", userId: "u", ...(projectId ? { projectId } : {}) },
+      allowGate,
+    );
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toMatch(/has no project/);
+    const denyAudit = auditEvents.find((e) => e.metadata?.decision === "denied");
+    expect(denyAudit?.metadata?.denyReason).toBe("project_unassigned");
+    bridge.shutdown();
+  });
 });
 
 // SEC-8 / R-E5: audit metadata must include version, sha256, argsHash, resultHash, decision.

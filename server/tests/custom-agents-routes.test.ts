@@ -428,6 +428,8 @@ describe("import / export (#82)", () => {
 
 describe("CRUD routes (#112/#80)", () => {
   it("GET / lists agents", async () => {
+    // #288 — listing a project's agents needs access to that project.
+    seedProject("p1", "w1");
     seedAgent({ projectId: "p1", name: "Listed" });
     const res = await request(createApp()).get("/custom-agents?projectId=p1");
     expect(res.status).toBe(200);
@@ -440,6 +442,7 @@ describe("CRUD routes (#112/#80)", () => {
   });
 
   it("GET /?includeBuiltIns=0 and =false both exclude built-ins; 1/true/absent include", async () => {
+    seedProject("p1", "w1");
     seedAgent({ projectId: null, isBuiltIn: true, name: "BA" });
     seedAgent({ projectId: "p1", isBuiltIn: false, name: "Custom" });
 
