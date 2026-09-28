@@ -14,9 +14,11 @@
  *   AC2: a still-processing document surfaces its ingest status before it is
  *        selectable/ready.
  *
- * Harness note: the suite boots with `INGEST_QUEUE=off`, so real ingest is
- * synchronous and documents land `ready` immediately. The processing-status
- * case is therefore seeded directly into the DB (see `seedDocumentViaCli`).
+ * Harness note: ingest is queued even in the e2e stack (`INGEST_QUEUE=off` is
+ * not read — see playwright.config.ts), so an upload lands `pending` and turns
+ * `ready` moments later; the page re-reads the list until it does (#322). The
+ * processing-status case needs a document that STAYS in flight, so it is
+ * seeded directly into the DB (see `seedDocumentViaCli`).
  * A successful remote-URL ingest is not deterministically reproducible in the
  * offline, no-outbound-network harness (loopback/private IPs are always
  * SSRF-blocked), so the URL field is exercised via its wired error path.
@@ -121,7 +123,9 @@ test.describe("Analysis page — inline Add documents panel (#906 / #908)", () =
       const checkbox = analysis.docCheckbox(filename);
       await expect(analysis.docRow(filename)).toBeVisible({ timeout: 30_000 });
       await expect(checkbox).toBeChecked();
-      // Synchronous ingest → ready, so the row carries no in-flight status badge.
+      // Ingest is queued: the row may first show `pending`. It must become
+      // selectable once ingest finishes, without a reload — the page re-reads
+      // the list while a document is in flight (#322).
       await expect(checkbox).toBeEnabled();
     });
 

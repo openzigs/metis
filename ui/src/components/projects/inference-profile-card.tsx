@@ -14,7 +14,7 @@
  * Bedrock or local-gemma — the controls are Bedrock-specific and harmless
  * when another provider is active.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { inferenceProfileApi, type InferenceProfileInput } from "@/lib/inference-profile-api";
@@ -50,7 +50,20 @@ export function InferenceProfileCard({ projectId }: Props) {
   } = useTransientFlag(2000);
   const [formError, setFormError] = useState<string | null>(null);
 
+  // #328 — every edit bumps `editSeq`; `cleanSeq` is the edit count at which
+  // the form last matched the server (a sync, or a save that succeeded). A
+  // server copy is copied into the fields only while they hold no unsaved
+  // edit, so the refetch that follows a save can never wipe what the user has
+  // typed since — it used to, and a Save straight after re-sent the old value.
+  const editSeq = useRef(0);
+  const cleanSeq = useRef(0);
+  const edit = (set: (value: string) => void) => (value: string) => {
+    editSeq.current += 1;
+    set(value);
+  };
+
   useEffect(() => {
+    if (editSeq.current !== cleanSeq.current) return;
     const profile = data?.profile;
     setArn(profile?.arn ?? "");
     setModelId(profile?.modelId ?? "");
@@ -60,7 +73,11 @@ export function InferenceProfileCard({ projectId }: Props) {
 
   const save = useMutation({
     mutationFn: (body: InferenceProfileInput) => inferenceProfileApi.update(projectId, body),
-    onSuccess: () => {
+    // The edit count the saved body reflects, handed to `onSuccess`.
+    onMutate: () => editSeq.current,
+    onSuccess: (_result, _body, savedAtSeq) => {
+      // Clean only if nothing was typed while the save was in flight.
+      if (savedAtSeq === editSeq.current) cleanSeq.current = savedAtSeq;
       setFormError(null);
       showSavedToast();
       qc.invalidateQueries({ queryKey: queryKey(projectId) });
@@ -129,7 +146,7 @@ export function InferenceProfileCard({ projectId }: Props) {
               data-testid="inference-profile-arn"
               placeholder="arn:aws:bedrock:us-east-1:123456789012:inference-profile/…"
               value={arn}
-              onChange={(e) => setArn(e.target.value)}
+              onChange={(e) => edit(setArn)(e.target.value)}
             />
           </div>
           <div className="space-y-1">
@@ -139,7 +156,7 @@ export function InferenceProfileCard({ projectId }: Props) {
               data-testid="inference-profile-model"
               placeholder="us.anthropic.claude-sonnet-4-6"
               value={modelId}
-              onChange={(e) => setModelId(e.target.value)}
+              onChange={(e) => edit(setModelId)(e.target.value)}
             />
           </div>
           <div className="flex gap-3">
@@ -149,7 +166,7 @@ export function InferenceProfileCard({ projectId }: Props) {
                 id="inference-profile-cost-center"
                 data-testid="inference-profile-cost-center"
                 value={costCenter}
-                onChange={(e) => setCostCenter(e.target.value)}
+                onChange={(e) => edit(setCostCenter)(e.target.value)}
               />
             </div>
             <div className="flex-1 space-y-1">
@@ -158,7 +175,7 @@ export function InferenceProfileCard({ projectId }: Props) {
                 id="inference-profile-environment"
                 data-testid="inference-profile-environment"
                 value={environment}
-                onChange={(e) => setEnvironment(e.target.value)}
+                onChange={(e) => edit(setEnvironment)(e.target.value)}
               />
             </div>
           </div>

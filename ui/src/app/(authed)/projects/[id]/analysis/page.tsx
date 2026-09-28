@@ -11,6 +11,7 @@ import { ApiError } from "@/lib/api-client";
 import { toast } from "sonner";
 import { useAppMutation, resolveErrorMessage } from "@/lib/use-app-mutation";
 import { useJobLifecycle, useProjectJobEvents } from "@/hooks/use-job-events";
+import { useProjectDocuments } from "@/hooks/use-project-documents";
 import {
   analysisApi,
   isCodeCitation,
@@ -23,7 +24,7 @@ import {
   type FindingVerificationStatus,
   type UpdateRequirementInput,
 } from "@/lib/analysis-api";
-import { documentsApi, projectsApi } from "@/lib/projects-api";
+import { projectsApi } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -133,11 +134,9 @@ export default function AnalysisPage(): React.ReactElement {
     queryFn: () => projectsApi.get(projectId),
     enabled: Boolean(projectId),
   });
-  const docs = useQuery({
-    queryKey: queryKeys.documents.forProject(projectId),
-    queryFn: () => documentsApi.list(projectId),
-    enabled: Boolean(projectId),
-  });
+  // #322 — keeps re-reading while a document is ingesting, so one uploaded
+  // from the inline panel turns selectable when it is ready.
+  const docs = useProjectDocuments(projectId);
   const personas = useQuery({
     queryKey: ["analyses", "personas"],
     queryFn: () => analysisApi.personas(),

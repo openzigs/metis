@@ -142,8 +142,10 @@ export default defineConfig({
             CORS_ORIGIN: BASE_URL,
             UPLOAD_DIR,
             LANCEDB_PATH,
-            // Disable the background ingest queue so uploads complete
-            // synchronously and tests can assert immediately.
+            // #322 — NOT read by the server: `documentsRouter` queues ingest
+            // whenever NODE_ENV is not "test", so an upload answers 202 with its
+            // document still `pending` and it turns `ready` moments later.
+            // Assert on the rendered ready state, never on a synchronous ingest.
             INGEST_QUEUE: "off",
             // Epic #192 — closed-loop webhook secret for the e2e suite.
             GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET ?? "e2e-closed-loop-secret",

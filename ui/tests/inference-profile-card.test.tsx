@@ -132,6 +132,112 @@ describe("InferenceProfileCard", () => {
     );
   });
 
+  // #328 — the post-save refetch used to reset every field from the server
+  // copy, wiping whatever the user had typed since. In CI the refetch landed
+  // between the e2e's `fill("not-a-valid-arn")` and its Save click, so the
+  // valid ARN was re-saved and the error never rendered.
+  describe("post-save refetch vs unsaved edits (#328)", () => {
+    const SAVED = {
+      id: "ip1",
+      projectId: "p1",
+      arn: VALID_ARN,
+      modelId: "us.anthropic.claude-sonnet-4-6",
+      costCenter: null,
+      environment: null,
+      tags: {},
+      createdAt: "",
+      updatedAt: "",
+    };
+
+    function deferred<T>() {
+      let resolve!: (v: T) => void;
+      const promise = new Promise<T>((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    }
+
+    async function fillAndSave() {
+      await screen.findByTestId("inference-profile-arn");
+      fireEvent.change(screen.getByTestId("inference-profile-arn"), {
+        target: { value: VALID_ARN },
+      });
+      fireEvent.change(screen.getByTestId("inference-profile-model"), {
+        target: { value: SAVED.modelId },
+      });
+      fireEvent.click(screen.getByTestId("inference-profile-save"));
+    }
+
+    const arnValue = () => (screen.getByTestId("inference-profile-arn") as HTMLInputElement).value;
+
+    it("keeps an edit typed after the save when the refetch lands later", async () => {
+      const refetch = deferred<{ profile: typeof SAVED }>();
+      get.mockResolvedValueOnce({ profile: null }).mockReturnValueOnce(refetch.promise);
+      update.mockResolvedValue({ profile: SAVED });
+      renderCard();
+      await fillAndSave();
+      await screen.findByTestId("inference-profile-saved-toast");
+      await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+
+      fireEvent.change(screen.getByTestId("inference-profile-arn"), {
+        target: { value: "not-a-valid-arn" },
+      });
+      refetch.resolve({ profile: SAVED });
+      await refetch.promise;
+      // Let react-query deliver the refetched data and effects run.
+      await new Promise((r) => setTimeout(r, 0));
+      await waitFor(() => expect(arnValue()).toBe("not-a-valid-arn"));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(arnValue()).toBe("not-a-valid-arn");
+
+      update.mockRejectedValueOnce(new ApiError(400, "Invalid inference profile ARN"));
+      fireEvent.click(screen.getByTestId("inference-profile-save"));
+      await waitFor(() =>
+        expect(update).toHaveBeenLastCalledWith(
+          "p1",
+          expect.objectContaining({ arn: "not-a-valid-arn" }),
+        ),
+      );
+      expect(await screen.findByTestId("inference-profile-form-error")).toHaveTextContent(
+        "Invalid inference profile ARN",
+      );
+    });
+
+    it("keeps an edit typed while the save is still in flight", async () => {
+      const put = deferred<{ profile: typeof SAVED }>();
+      get.mockResolvedValueOnce({ profile: null }).mockResolvedValue({ profile: SAVED });
+      update.mockReturnValueOnce(put.promise);
+      renderCard();
+      await fillAndSave();
+      fireEvent.change(screen.getByTestId("inference-profile-environment"), {
+        target: { value: "staging" },
+      });
+      put.resolve({ profile: SAVED });
+      await screen.findByTestId("inference-profile-saved-toast");
+      await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+      await new Promise((r) => setTimeout(r, 20));
+      expect((screen.getByTestId("inference-profile-environment") as HTMLInputElement).value).toBe(
+        "staging",
+      );
+    });
+
+    it("still syncs a refetch into a form with no unsaved edits", async () => {
+      get
+        .mockResolvedValueOnce({ profile: null })
+        .mockResolvedValue({ profile: { ...SAVED, costCenter: "set-by-server" } });
+      update.mockResolvedValue({ profile: SAVED });
+      renderCard();
+      await fillAndSave();
+      await screen.findByTestId("inference-profile-saved-toast");
+      await waitFor(() =>
+        expect(
+          (screen.getByTestId("inference-profile-cost-center") as HTMLInputElement).value,
+        ).toBe("set-by-server"),
+      );
+      expect(arnValue()).toBe(VALID_ARN);
+    });
+  });
+
   it("shows an error state when the profile fails to load", async () => {
     get.mockRejectedValue(new ApiError(500, "boom"));
     renderCard();

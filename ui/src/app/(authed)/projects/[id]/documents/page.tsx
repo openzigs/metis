@@ -4,19 +4,14 @@
  * Project Documents (N3 #141) — split out of the former kitchen-sink project
  * index page. Hosts the document list, uploader, URL ingest, and text ingest.
  */
-import { useEffect } from "react";
 import Link from "next/link";
 import { notFound, useParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { documentsApi, projectsApi, type DocumentRow } from "@/lib/projects-api";
 import { ApiError } from "@/lib/api-client";
-import {
-  isDocumentAwaitingReview,
-  isDocumentIngesting,
-  quarantineHref,
-} from "@/lib/project-pipeline";
+import { isDocumentAwaitingReview, quarantineHref } from "@/lib/project-pipeline";
 import { queryKeys } from "@/lib/query-keys";
-import { useSocket } from "@/lib/socket-client";
+import { useProjectDocuments } from "@/hooks/use-project-documents";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SkeletonText } from "@/components/ui/skeleton";
@@ -39,7 +34,6 @@ export default function ProjectDocumentsPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id ?? "";
   const qc = useQueryClient();
-  const socket = useSocket();
 
   const project = useQuery({
     queryKey: queryKeys.projects.detail(id),
@@ -47,34 +41,8 @@ export default function ProjectDocumentsPage() {
     enabled: Boolean(id),
   });
 
-  const docs = useQuery({
-    queryKey: queryKeys.documents.forProject(id),
-    queryFn: () => documentsApi.list(id),
-    enabled: Boolean(id),
-    // Ingest runs in the background (issue: list showed stale "queued · 0
-    // chunks" forever). The `document:status` socket event below invalidates
-    // on push; this poll is a degraded fallback for a disconnected socket.
-    // #69 — a quarantined document is waiting for a reviewer, not ingesting.
-    // Matching on `status` alone kept this 3s poll running for ever on any
-    // project holding one (`isDocumentIngesting` excludes them, as #66 did for
-    // the Overview).
-    refetchInterval: (query) => (query.state.data?.items.some(isDocumentIngesting) ? 3000 : false),
-  });
-
-  // Live-update the list on ingest transitions instead of relying solely on
-  // the one-shot invalidation fired right after upload (#see documents page).
-  useEffect(() => {
-    if (!socket || !id) return;
-    socket.emit("subscribe:project", { projectId: id });
-    const onDocumentStatus = (data: { projectId: string }) => {
-      if (data.projectId !== id) return;
-      qc.invalidateQueries({ queryKey: queryKeys.documents.forProject(id) });
-    };
-    socket.on("document:status" as never, onDocumentStatus as never);
-    return () => {
-      socket.off("document:status" as never, onDocumentStatus as never);
-    };
-  }, [socket, qc, id]);
+  // Polls while anything is ingesting and re-reads on `document:status`.
+  const docs = useProjectDocuments(id);
 
   const removeDoc = useMutation({
     mutationFn: (documentId: string) => documentsApi.remove(id, documentId),
