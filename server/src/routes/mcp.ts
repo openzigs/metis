@@ -6,6 +6,12 @@
  * within the route handler so coordinators of a project can attach servers
  * without becoming admins.
  *
+ * #305 — role permissions are not a grant over every workspace's projects.
+ * Any route that takes a project id (the per-project allow-list routes, the
+ * `?projectId=` list filter, and every create that binds a server to a
+ * project) also passes `assertProjectAccess` for that id: 404 without access.
+ * Routes that act on an existing server by id are not yet project-checked (#311).
+ *
  * Audit + secret hygiene live inside `MCPRegistryService` — the routes are
  * thin glue.
  */
@@ -40,6 +46,7 @@ import { freshSecretLabel } from "../lib/vault/secret-rotation.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
+import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -48,6 +55,34 @@ function ok<T>(data: T): ApiResponse<T> {
 function actorFromReq(req: Request) {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
   return { id: req.user.userId, role: req.user.role };
+}
+
+/**
+ * #305 — `/api/mcp` is mounted outside `/api/projects`, so the
+ * `/projects/:id/:sub` chokepoint never reaches it. Every route here that acts
+ * on a caller-supplied project id checks it through the canonical seam
+ * (`assertProjectAccess`): admins bypass, a caller outside the project's
+ * workspace gets the same 404 as an unknown id, and nothing is read or written.
+ */
+async function assertCallerProjectAccess(req: Request, projectId: string): Promise<void> {
+  if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+  await assertProjectAccess(req.user, projectId);
+}
+
+/**
+ * #305 — a create that binds a server to a project (`scope: "project"`) must
+ * name a project the caller can reach. `mcp.manage` / `mcp.write` are role
+ * permissions (coordinators hold them), not a grant over every workspace's
+ * projects. Runs BEFORE any vault write so a refused request leaves nothing.
+ */
+async function assertProjectScopedCreate(
+  req: Request,
+  scope: unknown,
+  projectId: unknown,
+): Promise<void> {
+  if (scope !== "project") return;
+  if (typeof projectId !== "string" || projectId.length === 0) return;
+  await assertCallerProjectAccess(req, projectId);
 }
 
 function rethrow(err: unknown): never {
@@ -154,6 +189,7 @@ export function mcpRouter(): Router {
         ? req.query.scope
         : undefined;
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
+    if (projectId !== undefined) await assertCallerProjectAccess(req, projectId);
     const items = await svc().list({ scope, projectId });
     res.json(ok({ items }));
   });
@@ -166,6 +202,7 @@ export function mcpRouter(): Router {
       });
     }
     const actor = actorFromReq(req);
+    await assertProjectScopedCreate(req, parsed.data.scope, parsed.data.projectId);
     try {
       const requestedScope = parsed.data.scope ?? "global";
       // Vault has no `user` scope; user-scoped MCP secrets fold into global.
@@ -326,6 +363,7 @@ export function mcpRouter(): Router {
     if (!body.mcpJson) {
       throw new AppError(400, "VALIDATION_ERROR", "mcpJson is required");
     }
+    await assertProjectScopedCreate(req, body.scope, body.projectId);
     try {
       if (body.dryRun) {
         const plan = await buildImportPlan(body.mcpJson, {
@@ -360,6 +398,7 @@ export function mcpRouter(): Router {
     requireAuth,
     requirePermission("project.read"),
     async (req, res) => {
+      await assertCallerProjectAccess(req, String(req.params.projectId));
       const ids = await svc().getAllowList(String(req.params.projectId));
       res.json(ok({ items: ids }));
     },
@@ -371,6 +410,7 @@ export function mcpRouter(): Router {
     requirePermission("project.update"),
     async (req, res) => {
       const actor = actorFromReq(req);
+      await assertCallerProjectAccess(req, String(req.params.projectId));
       const ids = Array.isArray((req.body ?? {}).serverIds)
         ? ((req.body as { serverIds: unknown[] }).serverIds.filter(
             (v) => typeof v === "string",
@@ -386,6 +426,7 @@ export function mcpRouter(): Router {
     requireAuth,
     requirePermission("project.read"),
     async (req, res) => {
+      await assertCallerProjectAccess(req, String(req.params.projectId));
       const items = await svc().listForProject(String(req.params.projectId));
       res.json(ok({ items }));
     },
@@ -416,6 +457,7 @@ export function mcpRouter(): Router {
     if (!body.registryServerId || typeof body.registryServerId !== "string") {
       throw new AppError(400, "VALIDATION_ERROR", "registryServerId is required");
     }
+    await assertProjectScopedCreate(req, body.scope, body.projectId);
     const list = await fetchRegistry();
     const entry = list.servers.find((s) => s.id === body.registryServerId);
     if (!entry) throw new AppError(404, "NOT_FOUND", "Registry entry not found");
@@ -509,6 +551,7 @@ export function mcpRouter(): Router {
     if (!body.entryId || typeof body.entryId !== "string") {
       throw new AppError(400, "VALIDATION_ERROR", "entryId is required");
     }
+    await assertProjectScopedCreate(req, body.scope, body.projectId);
     const entry = await getEntryById(body.entryId);
     if (!entry) {
       throw new AppError(404, "NOT_FOUND", "Federation entry not found");
@@ -761,6 +804,7 @@ export function mcpRouter(): Router {
     if (!body.mcpJson) {
       throw new AppError(400, "VALIDATION_ERROR", "mcpJson is required");
     }
+    await assertProjectScopedCreate(req, body.scope, body.projectId);
     let parsed;
     try {
       parsed = parseCopilotMcpJson(body.mcpJson);

@@ -223,7 +223,16 @@ describe("resumable sessions (#122)", () => {
     const old = new Date(Date.now() - 48 * 3600 * 1000);
     seedSession("fresh", { snapshotUpdatedAt: fresh, snapshot: '{"v":1}' });
     seedSession("old", { snapshotUpdatedAt: old, snapshot: '{"v":1}' });
-    const list = await listResumable("u1");
+    // Admin: no project narrowing, so this isolates the TTL filter (#305's
+    // project narrowing is proven on a real database in
+    // project-access-305.sqlite.test.ts).
+    const list = await listResumable({
+      userId: "u1",
+      username: "u1",
+      role: "admin",
+      permissions: [],
+      workspaces: [],
+    });
     expect(list.map((s) => s.id)).toEqual(["fresh"]);
   });
 });

@@ -24,6 +24,9 @@ import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, hasPermission, type RoleKey } from "@
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
+import { prisma } from "../lib/prisma.js";
+import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { workspaceScopeWhere } from "../lib/auth/project-scope.js";
 import {
   closeReview,
   createReviewRequest,
@@ -70,6 +73,29 @@ const decisionSchema = z.object({
 function requireUser(req: Request): { userId: string; role: RoleKey } {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
   return { userId: req.user.userId, role: req.user.role as RoleKey };
+}
+
+/**
+ * #305 — `/api/reviews` is mounted outside `/api/projects`, so the
+ * `/projects/:id/:sub` chokepoint never reaches it. Every `/:reviewId` route
+ * resolves the review's project and checks it through `assertProjectAccess`
+ * (admins bypass). A review in a project the caller cannot reach answers the
+ * same 404 as an unknown id, before any read or state change.
+ */
+async function assertReviewAccess(req: Request, reviewId: string): Promise<void> {
+  if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+  const notFound = () => new AppError(404, "REVIEW_NOT_FOUND", "Review request not found");
+  const row = await prisma.reviewRequest.findUnique({
+    where: { id: reviewId },
+    select: { projectId: true },
+  });
+  if (!row) throw notFound();
+  try {
+    await assertProjectAccess(req.user, row.projectId);
+  } catch (err) {
+    if (err instanceof AppError && err.statusCode === 404) throw notFound();
+    throw err;
+  }
 }
 
 function isReviewAdmin(role: RoleKey): boolean {
@@ -143,9 +169,17 @@ export function reviewsRouter(): Router {
   const r = Router();
 
   // GET / — reviewer/requester queues.
+  // #305 — an explicit `?projectId=` must name a project the caller can reach
+  // (404 otherwise); without it the queue is narrowed to the caller's projects
+  // instead of listing every workspace's reviews.
   r.get("/", requireAuth, requirePermission("review.read"), async (req: Request, res: Response) => {
     const { userId } = requireUser(req);
-    const data = await listReviews(userId, parseListQuery(req));
+    const query = parseListQuery(req);
+    if (query.projectId) await assertProjectAccess(req.user!, query.projectId);
+    const data = await listReviews(userId, {
+      ...query,
+      projectScope: workspaceScopeWhere(req.user!),
+    });
     res.json({ success: true, data });
   });
 
@@ -155,6 +189,7 @@ export function reviewsRouter(): Router {
     requireAuth,
     requirePermission("review.read"),
     async (req: Request, res: Response) => {
+      await assertReviewAccess(req, String(req.params.reviewId));
       const data = await getReviewDetail(String(req.params.reviewId));
       res.json({ success: true, data });
     },
@@ -167,6 +202,7 @@ export function reviewsRouter(): Router {
     requirePermission("review.create"),
     async (req: Request, res: Response) => {
       const { userId, role } = requireUser(req);
+      await assertReviewAccess(req, String(req.params.reviewId));
       const review = await submitReview(userId, String(req.params.reviewId), isReviewAdmin(role));
       res.json({ success: true, data: review });
     },
@@ -179,6 +215,7 @@ export function reviewsRouter(): Router {
     requirePermission("review.decide"),
     async (req: Request, res: Response) => {
       const { userId } = requireUser(req);
+      await assertReviewAccess(req, String(req.params.reviewId));
       const parsed = decisionSchema.safeParse(req.body);
       if (!parsed.success) {
         throw new AppError(400, "VALIDATION_ERROR", "Invalid decision payload", {
@@ -202,6 +239,7 @@ export function reviewsRouter(): Router {
     requirePermission("review.create"),
     async (req: Request, res: Response) => {
       const { userId, role } = requireUser(req);
+      await assertReviewAccess(req, String(req.params.reviewId));
       const review = await withdrawReview(userId, String(req.params.reviewId), isReviewAdmin(role));
       res.json({ success: true, data: review });
     },
@@ -214,6 +252,7 @@ export function reviewsRouter(): Router {
     requirePermission("review.create"),
     async (req: Request, res: Response) => {
       const { userId, role } = requireUser(req);
+      await assertReviewAccess(req, String(req.params.reviewId));
       const review = await closeReview(userId, String(req.params.reviewId), isReviewAdmin(role));
       res.json({ success: true, data: review });
     },

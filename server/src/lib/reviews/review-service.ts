@@ -668,6 +668,12 @@ export async function closeReview(
 
 export interface ListReviewsFilters {
   projectId?: string;
+  /**
+   * #305 — a Prisma `where` fragment over the review's `project` that limits
+   * the list to projects the caller can reach (`workspaceScopeWhere`). Empty
+   * or absent means no narrowing (system admins).
+   */
+  projectScope?: Record<string, unknown>;
   status?: string;
   assignee?: string;
   requester?: string;
@@ -681,6 +687,9 @@ export async function listReviews(
 ): Promise<{ reviews: unknown[]; total: number; page: number; pageSize: number }> {
   const where: Record<string, unknown> = {};
   if (filters.projectId) where.projectId = filters.projectId;
+  if (filters.projectScope && Object.keys(filters.projectScope).length > 0) {
+    where.project = filters.projectScope;
+  }
   if (filters.status !== undefined) {
     if (!(REVIEW_STATUSES as readonly string[]).includes(filters.status)) {
       throw new AppError(

@@ -11,13 +11,18 @@ import express from "express";
 import request from "supertest";
 
 const mockPrisma = {
-  aISession: { findUnique: vi.fn() },
+  aISession: { findFirst: vi.fn() },
+  project: { findUnique: vi.fn() },
 };
 vi.mock("../lib/prisma.js", () => ({ prisma: mockPrisma }));
 
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (req: unknown, _res: unknown, next: () => void) => {
-    (req as { user: { userId: string } }).user = { userId: "user-1" };
+    (req as { user: unknown }).user = {
+      userId: "user-1",
+      role: "developer",
+      workspaces: ["ws-1"],
+    };
     next();
   },
 }));
@@ -61,14 +66,22 @@ function createApp() {
 
 describe("POST /sessions/:id/messages", () => {
   let app: ReturnType<typeof createApp>;
+  const owned = (over: Record<string, unknown> = {}) => ({
+    id: "sess-1",
+    userId: "user-1",
+    projectId: "proj-1",
+    provider: "anthropic",
+    deletedAt: null,
+    ...over,
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
     app = createApp();
-    // assertOwner lookup + handler lookup both resolve to an owned, projected session.
-    mockPrisma.aISession.findUnique
-      .mockResolvedValueOnce({ userId: "user-1", deletedAt: null })
-      .mockResolvedValueOnce({ projectId: "proj-1" });
+    // `loadAuthorizedSession` (#305): an owned session whose project is in the
+    // caller's workspace.
+    mockPrisma.aISession.findFirst.mockResolvedValue(owned());
+    mockPrisma.project.findUnique.mockResolvedValue({ workspaceId: "ws-1" });
     mockSubmit.mockResolvedValue({ id: "run-1" });
   });
 
@@ -102,30 +115,32 @@ describe("POST /sessions/:id/messages", () => {
   });
 
   it("rejects an invalid body with 400 BAD_REQUEST before any submit", async () => {
-    mockPrisma.aISession.findUnique.mockReset();
-    mockPrisma.aISession.findUnique.mockResolvedValueOnce({ userId: "user-1", deletedAt: null });
     const res = await request(app).post("/sessions/sess-1/messages").send({ content: "" });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("BAD_REQUEST");
     expect(mockSubmit).not.toHaveBeenCalled();
   });
 
-  it("returns 404 when the session is not found in the handler lookup", async () => {
-    mockPrisma.aISession.findUnique.mockReset();
-    mockPrisma.aISession.findUnique
-      .mockResolvedValueOnce({ userId: "user-1", deletedAt: null })
-      .mockResolvedValueOnce(null);
+  it("returns 404 when the caller owns no such session", async () => {
+    mockPrisma.aISession.findFirst.mockResolvedValue(null);
     const res = await request(app).post("/sessions/sess-1/messages").send({ content: "hello" });
     expect(res.status).toBe(404);
-    expect(res.body.error.code).toBe("NOT_FOUND");
+    expect(res.body.error.code).toBe("AI_SESSION_NOT_FOUND");
+    expect(mockSubmit).not.toHaveBeenCalled();
+  });
+
+  it("#305 — returns 404 and submits nothing when the session's project is out of reach", async () => {
+    // The caller still OWNS the session, but its project is now in a workspace
+    // they are not a member of: no background run may be bound to it.
+    mockPrisma.project.findUnique.mockResolvedValue({ workspaceId: "ws-other" });
+    const res = await request(app).post("/sessions/sess-1/messages").send({ content: "hello" });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("AI_SESSION_NOT_FOUND");
     expect(mockSubmit).not.toHaveBeenCalled();
   });
 
   it("returns 400 NO_PROJECT when the session has no project", async () => {
-    mockPrisma.aISession.findUnique.mockReset();
-    mockPrisma.aISession.findUnique
-      .mockResolvedValueOnce({ userId: "user-1", deletedAt: null })
-      .mockResolvedValueOnce({ projectId: null });
+    mockPrisma.aISession.findFirst.mockResolvedValue(owned({ projectId: null }));
     const res = await request(app).post("/sessions/sess-1/messages").send({ content: "hello" });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("NO_PROJECT");

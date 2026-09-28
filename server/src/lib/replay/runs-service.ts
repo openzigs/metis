@@ -206,6 +206,12 @@ export async function finishRun(opts: FinishRunOptions): Promise<void> {
 
 export interface ListRunsFilter {
   projectId?: string;
+  /**
+   * #305 — the projects the caller may reach. When set, runs outside them
+   * (including project-less system runs, admin-only like `GET /runs/:id`) are
+   * excluded. Absent means no narrowing (system admins).
+   */
+  accessibleProjectIds?: string[];
   sessionId?: string;
   from?: Date;
   to?: Date;
@@ -228,7 +234,14 @@ export async function listRuns(filter: ListRunsFilter): Promise<
   }>
 > {
   const where: Record<string, unknown> = {};
-  if (filter.projectId) where.projectId = filter.projectId;
+  if (filter.accessibleProjectIds) {
+    const allowed = filter.projectId
+      ? filter.accessibleProjectIds.filter((id) => id === filter.projectId)
+      : filter.accessibleProjectIds;
+    where.projectId = { in: allowed };
+  } else if (filter.projectId) {
+    where.projectId = filter.projectId;
+  }
   if (filter.sessionId) where.sessionId = filter.sessionId;
   if (filter.from || filter.to) {
     const startedAt: { gte?: Date; lte?: Date } = {};

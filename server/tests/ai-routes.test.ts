@@ -32,6 +32,10 @@ type Session = {
 };
 
 const sessions: Session[] = [];
+// #305 — vault secret rows the BYOK check reads (liveness; the rule is `vault.read`).
+const secretRows = vi.hoisted(
+  () => [] as Array<{ id: string; createdById: string | null; deletedAt: Date | null }>,
+);
 const tokenRows: Array<Record<string, unknown>> = [];
 const approvalRows: Array<Record<string, unknown>> = [];
 
@@ -89,6 +93,12 @@ vi.mock("../src/lib/prisma.js", async () => {
       findMany: vi.fn(async () => approvalRows),
     },
     auditLog: { create: vi.fn(async () => undefined) },
+    secret: {
+      findFirst: vi.fn(
+        async ({ where }: { where: { id: string; deletedAt: null } }) =>
+          secretRows.find((r) => r.id === where.id && r.deletedAt === null) ?? null,
+      ),
+    },
   };
   return { prisma };
 });
@@ -102,6 +112,12 @@ vi.mock("../src/lib/vault/vault-service.js", () => ({
   getVaultService: () => ({ read: vaultRead }),
   // Re-export classes used elsewhere (kept minimal — only what tests touch).
   VaultService: class {},
+}));
+
+// #305 — the per-turn BYOK check reads the session owner's durable role.
+const durableRole = vi.hoisted(() => ({ value: "developer" as string }));
+vi.mock("../src/lib/auth/durable-roles.js", () => ({
+  resolveDurableRole: vi.fn(async () => durableRole.value),
 }));
 
 import { aiRouter, setAIProviderForTests } from "../src/routes/ai.js";
@@ -133,6 +149,14 @@ beforeAll(() => {
 
 beforeEach(() => {
   sessions.length = 0;
+  secretRows.length = 0;
+  secretRows.push(
+    { id: "secret-1", createdById: "user-1", deletedAt: null },
+    { id: "missing", createdById: "user-1", deletedAt: null },
+    { id: "someone-elses", createdById: "user-2", deletedAt: null },
+    { id: "deleted", createdById: "user-1", deletedAt: new Date() },
+  );
+  durableRole.value = "developer";
   aiMessageRows.length = 0;
   tokenRows.length = 0;
   approvalRows.length = 0;
@@ -623,6 +647,94 @@ describe("BYOK provider key resolution via vault", () => {
     );
     expect(res.status).toBe(502);
     expect(res.body.error.code).toBe("AI_PROVIDER_KEY_UNAVAILABLE");
+  });
+
+  it("#305 — a vault.read holder may reference a secret another user created", async () => {
+    // The caller is a `developer` (vault.read): #305's rule is "a secret the
+    // caller may read", not "a secret the caller created".
+    const app = makeApp();
+    const res = await auth(
+      request(app).post("/api/ai/sessions").send({ providerSecretRef: "someone-elses" }),
+    );
+    expect(res.status).toBe(201);
+    expect(res.body.data.session.providerSecretRef).toBe("someone-elses");
+  });
+
+  it("#305 — a turn decrypts a readable secret another user created (no 502)", async () => {
+    const app = makeApp();
+    const created = await auth(
+      request(app).post("/api/ai/sessions").send({ providerSecretRef: "someone-elses" }),
+    );
+    const res = await auth(
+      request(app)
+        .post("/api/ai/chat")
+        .send({
+          sessionId: created.body.data.session.id,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+    );
+    expect(res.status).toBe(200);
+    expect(vaultRead).toHaveBeenCalledWith("someone-elses");
+  });
+
+  it("#305 — refuses an unknown providerSecretRef: 404, no session", async () => {
+    const app = makeApp();
+    const res = await auth(
+      request(app).post("/api/ai/sessions").send({ providerSecretRef: "no-such-secret" }),
+    );
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("SECRET_NOT_FOUND");
+    expect(sessions).toHaveLength(0);
+  });
+
+  it("#305 — refuses a soft-deleted providerSecretRef the same way", async () => {
+    const app = makeApp();
+    const res = await auth(
+      request(app).post("/api/ai/sessions").send({ providerSecretRef: "deleted" }),
+    );
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("SECRET_NOT_FOUND");
+    expect(sessions).toHaveLength(0);
+  });
+
+  it("#305 — a stored ref is never decrypted once the owner lost vault.read", async () => {
+    // The session was created while the owner could read the secret; the
+    // owner has since been demoted to `reader`. The turn must refuse it with
+    // no fallback to other credentials.
+    const app = makeApp();
+    const created = await auth(
+      request(app).post("/api/ai/sessions").send({ providerSecretRef: "someone-elses" }),
+    );
+    expect(created.status).toBe(201);
+    durableRole.value = "reader";
+    const res = await auth(
+      request(app)
+        .post("/api/ai/chat")
+        .send({
+          sessionId: created.body.data.session.id,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+    );
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe("AI_PROVIDER_KEY_UNAVAILABLE");
+    expect(vaultRead).not.toHaveBeenCalled();
+  });
+
+  it("#305 — a stored ref to a secret deleted since is never decrypted", async () => {
+    const app = makeApp();
+    const created = await auth(request(app).post("/api/ai/sessions").send({}));
+    sessions[0]!.providerSecretRef = "deleted";
+    const res = await auth(
+      request(app)
+        .post("/api/ai/chat")
+        .send({
+          sessionId: created.body.data.session.id,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+    );
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe("AI_PROVIDER_KEY_UNAVAILABLE");
+    expect(vaultRead).not.toHaveBeenCalled();
   });
 });
 

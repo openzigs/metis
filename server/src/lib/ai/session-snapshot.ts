@@ -9,7 +9,8 @@
  * client-supplied history back to a model again (#136).
  */
 import { prisma } from "../prisma.js";
-import type { ResumableSessionDto, SdkReasoningEffort } from "@metis/shared";
+import type { AuthPayload, ResumableSessionDto, SdkReasoningEffort } from "@metis/shared";
+import { workspaceScopeWhere } from "../auth/project-scope.js";
 
 const RESUMABLE_TTL_HOURS = Number(process.env.SESSION_RESUME_TTL_HOURS ?? 24);
 
@@ -41,11 +42,23 @@ function toListDto(r: SessionListRow): ResumableSessionDto {
   };
 }
 
-export async function listResumable(userId: string): Promise<ResumableSessionDto[]> {
+/**
+ * #305 — a Prisma `where` fragment keeping only sessions the user may still
+ * open: project-less chats, and chats whose project the user can still reach
+ * (the `loadAuthorizedSession` rule, as a list predicate). Admins: no narrowing.
+ */
+function reachableSessionWhere(user: AuthPayload): Record<string, unknown> {
+  const scope = workspaceScopeWhere(user);
+  if (Object.keys(scope).length === 0) return {};
+  return { OR: [{ projectId: null }, { project: scope }] };
+}
+
+export async function listResumable(user: AuthPayload): Promise<ResumableSessionDto[]> {
   const cutoff = new Date(Date.now() - RESUMABLE_TTL_HOURS * 3600 * 1000);
   const rows = await prisma.aISession.findMany({
     where: {
-      userId,
+      userId: user.userId,
+      ...reachableSessionWhere(user),
       deletedAt: null,
       status: { in: ["active", "archived"] },
       snapshotUpdatedAt: { gte: cutoff },

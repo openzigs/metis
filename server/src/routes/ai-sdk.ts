@@ -26,9 +26,12 @@ import {
 } from "../lib/ai/plan-mode.js";
 import { listResumable } from "../lib/ai/session-snapshot.js";
 import { SDK_REASONING_EFFORTS } from "@metis/shared";
-import { prisma } from "../lib/prisma.js";
+import type { AISession } from "@prisma/client";
 import { getAsyncRunner } from "../lib/async/runner.js";
-import { assertSessionAcceptsTurns } from "../lib/ai/conversation/session-access.js";
+import {
+  assertSessionAcceptsTurns,
+  loadAuthorizedSession,
+} from "../lib/ai/conversation/session-access.js";
 
 function ok<T>(data: T): { success: true; data: T } {
   return { success: true, data };
@@ -45,14 +48,14 @@ function rethrow(err: unknown): never {
   throw err;
 }
 
-async function assertOwner(req: Request, sessionId: string): Promise<void> {
-  const userId = actorId(req);
-  const row = await prisma.aISession.findUnique({
-    where: { id: sessionId },
-    select: { userId: true, deletedAt: true },
-  });
-  if (!row || row.deletedAt) throw new AppError(404, "NOT_FOUND", "Session not found");
-  if (row.userId !== userId) throw new AppError(403, "FORBIDDEN", "Not your session");
+/**
+ * #305 — the same rule as every other session route (`loadAuthorizedSession`):
+ * the caller owns the session AND, when it is bound to a project, can still
+ * reach that project. Anything else is the one 404, so a probe cannot tell
+ * "another user's session", "a project you left" and "no such id" apart.
+ */
+async function assertOwner(req: Request, sessionId: string): Promise<AISession> {
+  return loadAuthorizedSession(req.user, sessionId);
 }
 
 const switchSchema = z.object({
@@ -84,7 +87,7 @@ export function aiSdkRouter(): Router {
       res.json(ok([]));
       return;
     }
-    const sessions = await listResumable(actorId(req));
+    const sessions = await listResumable(req.user!);
     res.json(ok(sessions));
   });
 
@@ -148,16 +151,11 @@ export function aiSdkRouter(): Router {
   // with ?async=false (or ?async=0) gets a 400 pointing at /api/ai/chat instead of a
   // misleading 501 dead-end.
   r.post("/sessions/:id/messages", requireAuth, async (req: Request, res: Response) => {
-    await assertOwner(req, String(req.params.id));
+    const session = await assertOwner(req, String(req.params.id));
     const parsed = messageSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
-    const sessionId = String(req.params.id);
+    const sessionId = session.id;
     const wantsSync = req.query.async === "false" || req.query.async === "0";
-    const session = await prisma.aISession.findUnique({
-      where: { id: sessionId },
-      select: { projectId: true, provider: true },
-    });
-    if (!session) throw new AppError(404, "NOT_FOUND", "Session not found");
     // #149 — a session on a retired provider is read-only.
     assertSessionAcceptsTurns(session);
     if (!session.projectId) throw new AppError(400, "NO_PROJECT", "Session has no project");

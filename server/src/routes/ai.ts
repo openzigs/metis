@@ -133,6 +133,8 @@ import {
 } from "../lib/agent-runtime/skills.js";
 import { listBindableAgents, loadBoundCustomAgent } from "../lib/agent-runtime/session-agent.js";
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertSecretUsable, canUseSecret } from "../lib/vault/secret-access.js";
+import { resolveDurableRole } from "../lib/auth/durable-roles.js";
 import { getSubAgentRun } from "../lib/agent-runtime/subagents.js";
 import type { ChatOptions as SubAgentChatOptions } from "../lib/ai/types.js";
 import { modelCatalogRateLimiter } from "../middleware/model-catalog-rate-limit.js";
@@ -210,8 +212,9 @@ export function setAIProviderForTests(p: AIProvider | null): void {
 export async function chatProviderForSession(session: {
   provider: string;
   providerSecretRef: string | null;
+  userId: string;
 }): Promise<AIProvider> {
-  const apiKeyOverride = await resolveProviderKey(session.providerSecretRef);
+  const apiKeyOverride = await resolveProviderKey(session.providerSecretRef, session.userId);
   if (providerOverride) return providerOverride;
   let config: AIConfig;
   try {
@@ -284,8 +287,22 @@ export function estimateBreakdown(
  * "credentials unreachable" error rather than a confusing 401 from the
  * upstream provider.
  */
-async function resolveProviderKey(ref: string | null | undefined): Promise<string | undefined> {
+async function resolveProviderKey(
+  ref: string | null | undefined,
+  ownerUserId: string,
+): Promise<string | undefined> {
   if (!ref) return undefined;
+  // #305 — decrypt only a secret the session OWNER may read (`vault.read`),
+  // judged on the owner's current role. An unreadable ref answers exactly like
+  // a missing one, and never falls back to other credentials.
+  const role = await resolveDurableRole(ownerUserId);
+  if (!(await canUseSecret({ role }, ref))) {
+    log.warn("AI session BYOK key refused: secret not usable by the session owner", {
+      ref,
+      userId: ownerUserId,
+    });
+    throw new AppError(502, "AI_PROVIDER_KEY_UNAVAILABLE", "Provider credentials unreachable");
+  }
   try {
     const { plaintext } = await getVaultService().read(ref);
     return plaintext;
@@ -810,6 +827,12 @@ export function aiRouter(): Router {
         issues: parsed.error.flatten(),
       });
     }
+    // #305 — a BYOK ref must name a live vault secret the caller may read
+    // (`vault.read`, as `GET /api/vault/:id/reveal`); otherwise 404 and nothing
+    // is created.
+    if (parsed.data.providerSecretRef) {
+      await assertSecretUsable(req.user!, parsed.data.providerSecretRef);
+    }
     const cfg = loadAIConfig();
     const policy = normalizePolicy({
       ...{ low: "auto", medium: "prompt-once", high: "always-prompt" },
@@ -1188,45 +1211,61 @@ export function aiRouter(): Router {
   });
 
   // Phase 10 \u2014 list and load skills for a session.
-  r.get("/sessions/:id/skills", requireAuth, async (req: Request, res: Response) => {
-    const userId = userIdOrThrow(req);
-    try {
-      const items = await getSessionRuntime().listLoadedSkills(String(req.params.id), {
-        id: userId,
-      });
-      res.json(ok({ items }));
-    } catch (err) {
-      if (err instanceof SessionRuntimeError) {
-        throw new AppError(err.status, err.code, err.message);
+  // #305 — both skill routes authorize the session the way every other session
+  // route does (owner AND still-reachable project) before SessionRuntime runs.
+  r.get(
+    "/sessions/:id/skills",
+    conversationPreAuthRateLimiter,
+    requireAuth,
+    conversationRateLimiter,
+    async (req: Request, res: Response) => {
+      const userId = userIdOrThrow(req);
+      await loadAuthorizedSession(req.user, String(req.params.id));
+      try {
+        const items = await getSessionRuntime().listLoadedSkills(String(req.params.id), {
+          id: userId,
+        });
+        res.json(ok({ items }));
+      } catch (err) {
+        if (err instanceof SessionRuntimeError) {
+          throw new AppError(err.status, err.code, err.message);
+        }
+        throw err;
       }
-      throw err;
-    }
-  });
+    },
+  );
 
-  r.post("/sessions/:id/skills", requireAuth, async (req: Request, res: Response) => {
-    const userId = userIdOrThrow(req);
-    const parsed = z
-      .object({ skillId: z.string().min(1).optional(), skillKey: z.string().min(1).optional() })
-      .refine((v) => Boolean(v.skillId || v.skillKey), {
-        message: "skillId or skillKey required",
-      })
-      .safeParse(req.body ?? {});
-    if (!parsed.success) {
-      throw new AppError(400, "VALIDATION_ERROR", "Invalid load-skill payload");
-    }
-    try {
-      const result = await getSessionRuntime().loadSkillIntoSession(
-        { sessionId: String(req.params.id), ...parsed.data },
-        { id: userId },
-      );
-      res.status(result.alreadyLoaded ? 200 : 201).json(ok(result));
-    } catch (err) {
-      if (err instanceof SessionRuntimeError) {
-        throw new AppError(err.status, err.code, err.message);
+  r.post(
+    "/sessions/:id/skills",
+    conversationPreAuthRateLimiter,
+    requireAuth,
+    conversationRateLimiter,
+    async (req: Request, res: Response) => {
+      const userId = userIdOrThrow(req);
+      const parsed = z
+        .object({ skillId: z.string().min(1).optional(), skillKey: z.string().min(1).optional() })
+        .refine((v) => Boolean(v.skillId || v.skillKey), {
+          message: "skillId or skillKey required",
+        })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid load-skill payload");
       }
-      throw err;
-    }
-  });
+      await loadAuthorizedSession(req.user, String(req.params.id));
+      try {
+        const result = await getSessionRuntime().loadSkillIntoSession(
+          { sessionId: String(req.params.id), ...parsed.data },
+          { id: userId },
+        );
+        res.status(result.alreadyLoaded ? 200 : 201).json(ok(result));
+      } catch (err) {
+        if (err instanceof SessionRuntimeError) {
+          throw new AppError(err.status, err.code, err.message);
+        }
+        throw err;
+      }
+    },
+  );
 
   // ── Tool inspection ─────────────────────────────────────────────────────
   r.get("/tools", requireAuth, (_req: Request, res: Response) => {

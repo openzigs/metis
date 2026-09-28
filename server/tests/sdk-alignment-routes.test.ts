@@ -135,6 +135,12 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     aISession: {
+      // #305 — `loadAuthorizedSession` (owner + reachable project) reads here.
+      findFirst: vi.fn(async ({ where }: any) => {
+        const r = tables.sessions.get(where.id);
+        if (!r || r.userId !== where.userId || r.deletedAt) return null;
+        return { ...r };
+      }),
       findUnique: vi.fn(async ({ where, select }: any) => {
         const r = tables.sessions.get(where.id);
         if (!r) return null;
