@@ -43,13 +43,14 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
-// The ONE widening: `pr.review*` pass for any authenticated caller. Every other
-// permission goes through the real middleware.
+// The ONE widening: exactly `pr.review` and `pr.review.read` pass for any
+// authenticated caller. Every other permission goes through the real middleware.
+const WIDENED = new Set(["pr.review", "pr.review.read"]);
 vi.mock("../src/middleware/require-permission.js", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/middleware/require-permission.js")>();
   return {
     requirePermission: (permission: string) =>
-      permission.startsWith("pr.review")
+      WIDENED.has(permission)
         ? (req: express.Request, _res: express.Response, next: express.NextFunction) =>
             req.user ? next() : next(new Error("unauthenticated"))
         : real.requirePermission(permission as never),

@@ -11,6 +11,7 @@ import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   PluginFormatError,
@@ -25,7 +26,7 @@ import { prisma } from "../lib/prisma.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { createSubscription } from "../lib/hooks/index.js";
 import { createAgent, CustomAgentError } from "../lib/custom-agents/index.js";
-import type { CustomAgentDefinition } from "@metis/shared";
+import { hasPermission, type AuthPayload, type CustomAgentDefinition } from "@metis/shared";
 
 function ok<T>(data: T): { success: true; data: T } {
   return { success: true, data };
@@ -74,12 +75,65 @@ function safeParseJson(raw: string): unknown {
   }
 }
 
+/**
+ * #334 — keep only the rows whose project the caller can reach. A row in a
+ * project the caller cannot reach is dropped exactly as an unknown id is (the
+ * export's `findMany` silently skips ids that do not exist), so the envelope
+ * never reveals whether a foreign id exists. The rule is the canonical
+ * `assertProjectAccess` one via `assertResourceProjectAccess`: system admins
+ * keep every row; a row with no project is admin-only unless
+ * `openWhenNoProject` (built-in custom agents, readable by any caller exactly
+ * as `GET /api/custom-agents/:id` rules).
+ */
+async function keepReachable<T extends { projectId: string | null }>(
+  user: AuthPayload | undefined,
+  rows: T[],
+  openWhenNoProject: boolean,
+): Promise<T[]> {
+  const unreachable = new AppError(404, "NOT_FOUND", "Not found");
+  const verdicts = new Map<string, boolean>();
+  const kept: T[] = [];
+  for (const row of rows) {
+    if (row.projectId === null && openWhenNoProject) {
+      kept.push(row);
+      continue;
+    }
+    const key = row.projectId ?? "";
+    let ok = verdicts.get(key);
+    if (ok === undefined) {
+      try {
+        await assertResourceProjectAccess(user, row.projectId, () => unreachable);
+        ok = true;
+      } catch (err) {
+        if (err !== unreachable) throw err;
+        ok = false;
+      }
+      verdicts.set(key, ok);
+    }
+    if (ok) kept.push(row);
+  }
+  return kept;
+}
+
 export function pluginsRouter(): Router {
   const r = Router();
 
+  // SECURITY (OWASP A01 / BOLA — #334): export reads custom agents (system
+  // prompts) and hook subscriptions (handler config, which can carry webhook
+  // headers) by ids taken from the BODY, outside any `/projects/:projectId`
+  // chokepoint. Two layers:
+  //  1. Role scope — exporting hooks needs `mcp.read`, the permission the
+  //     hooks router requires to list the same config (403 otherwise; it does
+  //     not depend on the ids, so it is no existence oracle).
+  //  2. Object-level scope — every agent and hook row is kept only if the
+  //     caller can reach its project (`keepReachable`); a foreign row is
+  //     dropped exactly like an unknown id. Skills are global library rows.
   r.post("/export", requireAuth, async (req: Request, res: Response) => {
     const parsed = exportSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+    if (parsed.data.hookIds.length && !hasPermission(req.user!.role, "mcp.read")) {
+      throw new AppError(403, "FORBIDDEN", "Requires permission mcp.read");
+    }
 
     try {
       // Skills
@@ -99,9 +153,13 @@ export function pluginsRouter(): Router {
 
       // Agents
       const agentRows = parsed.data.customAgentIds.length
-        ? await prisma.customAgent.findMany({
-            where: { id: { in: parsed.data.customAgentIds } },
-          })
+        ? await keepReachable(
+            req.user,
+            await prisma.customAgent.findMany({
+              where: { id: { in: parsed.data.customAgentIds } },
+            }),
+            true,
+          )
         : [];
       const agents: CustomAgentDefinition[] = agentRows.map((a) => ({
         name: a.name,
@@ -114,7 +172,11 @@ export function pluginsRouter(): Router {
 
       // Hooks
       const hookRows = parsed.data.hookIds.length
-        ? await prisma.hookSubscription.findMany({ where: { id: { in: parsed.data.hookIds } } })
+        ? await keepReachable(
+            req.user,
+            await prisma.hookSubscription.findMany({ where: { id: { in: parsed.data.hookIds } } }),
+            false,
+          )
         : [];
       const hooks: PluginHook[] = hookRows.map((h) => ({
         event: h.event as PluginHook["event"],
