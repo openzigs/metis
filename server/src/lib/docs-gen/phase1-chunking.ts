@@ -45,6 +45,9 @@ import { mineCsRules } from "../code-graph/cs-rule-miner.js";
 import { mineKtRules } from "../code-graph/kt-rule-miner.js";
 import { mineCblRules } from "../code-graph/cbl-rule-miner.js";
 import { cobolLineFormats, type CobolFormat } from "../code-graph/cobol-source.js";
+import { mineScalaRules } from "../code-graph/scala-rule-miner.js";
+import { mineRsRules } from "../code-graph/rs-rule-miner.js";
+import { mineCRules } from "../code-graph/c-rule-miner.js";
 import { mineSqlRules } from "../code-graph/sql-rule-miner.js";
 import { detectLanguage } from "../code-graph/parsers.js";
 import { toPersistedMinedRules, type PersistedMinedRule } from "./fact-slices.js";
@@ -347,6 +350,17 @@ function mineRulesIn(
         "cbl",
         mineCblRules(text, filePath, baseLine, context, UNCAPPED, cobolFormat),
       );
+    case "scala":
+      return toPersistedMinedRules(
+        "scala",
+        mineScalaRules(text, filePath, baseLine, context, UNCAPPED),
+      );
+    case "rs":
+      return toPersistedMinedRules("rs", mineRsRules(text, filePath, baseLine, context, UNCAPPED));
+    case "c":
+      return toPersistedMinedRules("c", mineCRules(text, filePath, baseLine, context, UNCAPPED));
+    case "cpp":
+      return toPersistedMinedRules("cpp", mineCRules(text, filePath, baseLine, context, UNCAPPED));
     case "sas":
       return toPersistedMinedRules("sas", mineSasRules(text, filePath, baseLine, context));
     default:

@@ -923,3 +923,151 @@ describe("ingestCodeGraph — the event loop keeps turning (#16)", () => {
     expect(gap).toBeLessThan(500);
   });
 });
+
+describe("ingestCodeGraph — Scala, Rust, C and C++ (#161)", () => {
+  it("ingests .scala, .rs, .c, .cpp and .h files as code-graph symbols and edges", async () => {
+    const root = await makeFixture({
+      "src/main/scala/example/Orders.scala": `package example\nimport example.billing.Invoice\nobject Orders {\n  def place(total: Int): Int = {\n    require(total > 0)\n    total * 2\n  }\n}\n`,
+      "src/orders.rs": `use crate::billing::Invoice;\npub struct Order { pub total: u32 }\nimpl Order {\n    pub fn place(&self) -> u32 { self.total }\n}\n`,
+      "src/orders.c": `#include "orders.h"\nint order_total(struct order *o) { return o->total; }\n`,
+      "src/orders.h": `struct order { int total; };\nint order_total(struct order *o);\n`,
+      "src/pricing.cpp": `#include "orders.h"\nclass Pricing {\npublic:\n    int quote(int x) { return x; }\n};\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    const stats = await ingestCodeGraph(prisma, { projectId: "proj1", rootDir: root });
+
+    expect(stats.filesParsed).toBe(5);
+    for (const lang of ["scala", "rs", "c", "cpp"]) {
+      expect(stats.languageStats[lang]).toBeGreaterThan(0);
+    }
+    const rows = (file: string) =>
+      (store.codeSymbols.filter((s: any) => s.filePath === file) as any[]).map((s) => [
+        s.kind,
+        s.name,
+        s.language,
+      ]);
+    expect(rows("src/main/scala/example/Orders.scala")).toEqual(
+      expect.arrayContaining([
+        ["class", "Orders", "scala"],
+        ["method", "place", "scala"],
+      ]),
+    );
+    expect(rows("src/orders.rs")).toEqual(
+      expect.arrayContaining([
+        ["class", "Order", "rs"],
+        ["method", "place", "rs"],
+      ]),
+    );
+    expect(rows("src/orders.c")).toEqual(
+      expect.arrayContaining([["function", "order_total", "c"]]),
+    );
+    expect(rows("src/orders.h")).toEqual(expect.arrayContaining([["class", "order", "cpp"]]));
+    expect(rows("src/pricing.cpp")).toEqual(
+      expect.arrayContaining([
+        ["class", "Pricing", "cpp"],
+        ["method", "quote", "cpp"],
+      ]),
+    );
+    // A quoted include resolves against the including file's directory.
+    const include = store.codeEdges.find(
+      (e: any) => e.kind === "imports" && e.filePath === "src/orders.c",
+    ) as any;
+    expect(include.toQualifiedName).toBe("./orders.h");
+    // Every defines edge was persisted (none dropped for a missing source symbol).
+    const definesFrom = (file: string) =>
+      store.codeEdges.filter((e: any) => e.kind === "defines" && e.filePath === file).length;
+    expect(definesFrom("src/orders.rs")).toBe(2);
+  });
+
+  it("resolves a C++ call to a C function defined in a .c file (one C-family)", async () => {
+    const root = await makeFixture({
+      "src/orders.c": `int order_total(int x) { return x; }\n`,
+      "src/orders.h": `int order_total(int x);\n`,
+      "src/main.cpp": `#include "orders.h"\nint main() { return order_total(1); }\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+    const [edge] = callsTo(store, "order_total", "src/main.cpp");
+    expect(edge.toSymbolId).toBe(symbolId(store, "src/orders.c", "order_total"));
+  });
+
+  it("resolves bare calls to sibling methods in Scala and C++ as an implicit `this.`", async () => {
+    const root = await makeFixture({
+      "src/Checkout.scala": `class Checkout {\n  def submit(total: Int): Unit = validate(total)\n  private def validate(total: Int): Unit = require(total > 0)\n}\n`,
+      "src/checkout.cpp": `void Checkout::submit(int t) { validate(t); }\nvoid Checkout::validate(int t) { }\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+    expect(callsTo(store, "validate", "src/Checkout.scala")[0].toSymbolId).toBe(
+      symbolId(store, "src/Checkout.scala", "validate"),
+    );
+    expect(callsTo(store, "validate", "src/checkout.cpp")[0].toSymbolId).toBe(
+      symbolId(store, "src/checkout.cpp", "validate"),
+    );
+  });
+
+  it("resolves a Rust path call `Invoice::create()` to the impl method in another file", async () => {
+    const root = await makeFixture({
+      "src/invoice.rs": `pub struct Invoice {}\nimpl Invoice {\n    pub fn create(id: u32) -> Invoice { Invoice {} }\n}\n`,
+      "src/orders.rs": `use crate::invoice::Invoice;\nfn place() { Invoice::create(1); }\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+    const [edge] = callsTo(store, "create", "src/orders.rs");
+    expect(edge.toSymbolId).toBe(symbolId(store, "src/invoice.rs", "create"));
+  });
+
+  it("never binds a C++ `std::` call to a project method of the same name", async () => {
+    const root = await makeFixture({
+      "src/stats.cpp": `class Stats {\npublic:\n    int accumulate(int x) { return x; }\n    int total() { return std::accumulate(a, b, 0); }\n};\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+    const [edge] = callsTo(store, "accumulate", "src/stats.cpp");
+    expect(edge.toSymbolId).toBeNull();
+  });
+
+  // Panel advisory on PR #319: the receiver was the path's LAST segment, so a
+  // nested standard-library path (`std::mem::swap`) never hit the std entry.
+  it("never binds a nested Rust `std::` path call to a project method of the same name", async () => {
+    const root = await makeFixture({
+      "src/pair.rs": `pub struct Pair {}\nimpl Pair {\n    pub fn swap(&self) {}\n    pub fn flip(&self, a: &mut u32, b: &mut u32) { std::mem::swap(a, b); }\n}\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+    const [edge] = callsTo(store, "swap", "src/pair.rs");
+    expect(edge.toSymbolId).toBeNull();
+  });
+
+  it("never binds a nested C++ `std::` path call to a project method of the same name", async () => {
+    const root = await makeFixture({
+      "src/list.cpp": `class List {\npublic:\n    void sort() {}\n    void order() { std::ranges::sort(items); }\n};\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+    const [edge] = callsTo(store, "sort", "src/list.cpp");
+    expect(edge.toSymbolId).toBeNull();
+  });
+
+  it("resolves a nested C++ path call `billing::Invoice::create()` to the project method", async () => {
+    const root = await makeFixture({
+      "src/invoice.cpp": `namespace billing {\nclass Invoice {\npublic:\n    static Invoice create(int id) { return Invoice(); }\n};\n}\n`,
+      "src/orders.cpp": `void place() { billing::Invoice::create(1); }\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+    const [edge] = callsTo(store, "create", "src/orders.cpp");
+    expect(edge.toSymbolId).toBe(symbolId(store, "src/invoice.cpp", "create"));
+  });
+
+  it("still binds a project module path call whose root is not a std namespace", async () => {
+    const root = await makeFixture({
+      "src/invoice.rs": `pub struct Invoice {}\nimpl Invoice {\n    pub fn create(id: u32) -> Invoice { Invoice {} }\n}\n`,
+      "src/orders.rs": `fn place() { crate::invoice::Invoice::create(1); }\n`,
+    });
+    const { prisma, store } = makePrismaMock();
+    await ingestCodeGraph(prisma, { projectId: "p", rootDir: root });
+    const [edge] = callsTo(store, "create", "src/orders.rs");
+    expect(edge.toSymbolId).toBe(symbolId(store, "src/invoice.rs", "create"));
+  });
+});

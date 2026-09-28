@@ -93,6 +93,26 @@ describe("extractArchiveBuffer", () => {
     expect(copybook).toContain("CUSTOMER-REC");
   });
 
+  it("keeps every Scala, Rust, C and C++ source extension the code graph parses (#161)", async () => {
+    const names = [
+      "a/Orders.scala",
+      "a/orders.rs",
+      "a/orders.c",
+      "a/orders.h",
+      "a/pricing.cpp",
+      "a/pricing.cc",
+      "a/pricing.cxx",
+      "a/pricing.hpp",
+      "a/pricing.hh",
+      "a/pricing.hxx",
+    ];
+    const buf = await zipFrom(Object.fromEntries(names.map((n) => [n, "// source\n"])));
+    const result = await extractArchiveBuffer(CONNECTOR_ID, buf);
+    expect(result.filesWritten).toBe(names.length);
+    for (const n of names)
+      await expect(fs.access(path.join(result.dir, n))).resolves.toBeUndefined();
+  });
+
   it("skips macOS __MACOSX / AppleDouble junk even when it has a source extension", async () => {
     // A real Finder-created zip carries a parallel `__MACOSX/` tree of `._*`
     // resource-fork stubs. `._app.sas` would pass the `.sas` extension filter,

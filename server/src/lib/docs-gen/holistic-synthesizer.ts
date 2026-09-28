@@ -41,6 +41,9 @@ import { renderMinedSqlRules } from "../code-graph/sql-rule-miner.js";
 import { renderMinedCsRules } from "../code-graph/cs-rule-miner.js";
 import { renderMinedKtRules } from "../code-graph/kt-rule-miner.js";
 import { renderMinedCblRules } from "../code-graph/cbl-rule-miner.js";
+import { renderMinedScalaRules } from "../code-graph/scala-rule-miner.js";
+import { renderMinedRsRules } from "../code-graph/rs-rule-miner.js";
+import { renderMinedCRules } from "../code-graph/c-rule-miner.js";
 import {
   buildCodeGraphSummary,
   renderCrossModuleDeps,
@@ -1712,23 +1715,39 @@ async function loadProjectMeta(
     extCounts.set(ext, (extCounts.get(ext) ?? 0) + 1);
   }
   const topExt = Array.from(extCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
-  const language =
-    {
-      ts: "TypeScript",
-      tsx: "TypeScript",
-      js: "JavaScript",
-      jsx: "JavaScript",
-      py: "Python",
-      java: "Java",
-      go: "Go",
-    }[topExt] ??
-    (topExt || "unknown");
+  const language = projectLanguageLabel(topExt);
   return {
     name: project?.name ?? "Unknown Project",
     language,
     totalSymbols,
     totalFiles: fileGroups.length,
   };
+}
+
+const PROJECT_LANGUAGE_BY_EXT: Record<string, string> = {
+  ts: "TypeScript",
+  tsx: "TypeScript",
+  js: "JavaScript",
+  jsx: "JavaScript",
+  py: "Python",
+  java: "Java",
+  go: "Go",
+  scala: "Scala",
+  rs: "Rust",
+  c: "C",
+  // A `.h` header belongs to C or C++ projects alike (PR #319 review).
+  h: "C/C++",
+  cpp: "C++",
+  cc: "C++",
+  cxx: "C++",
+  hpp: "C++",
+  hh: "C++",
+  hxx: "C++",
+};
+
+/** The display language for a project whose most common file extension is `ext`. */
+export function projectLanguageLabel(ext: string): string {
+  return PROJECT_LANGUAGE_BY_EXT[ext] ?? (ext || "unknown");
 }
 
 export interface ModuleGroup {
@@ -2817,6 +2836,12 @@ function buildPhase1UserMessage(input: {
   const csRules = byLanguage(["cs"]);
   const ktRules = byLanguage(["kt"]);
   const cblRules = byLanguage(["cbl"]);
+  const scalaRules = byLanguage(["scala"]);
+  const rsRules = byLanguage(["rs"]);
+  // C and C++ share a miner and renderer but are rendered — and budgeted by the
+  // chunk planner — as two inventories, so neither can exceed the render cap.
+  const cRules = byLanguage(["c"]);
+  const cppRules = byLanguage(["cpp"]);
   const sqlRules = byLanguage(["sql"]);
   const sasWorkflow = input.sasSteps.length > 0 ? { steps: [...input.sasSteps] } : null;
   const sasWorkflowBlock = sasWorkflow
@@ -2879,6 +2904,14 @@ ${csRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED C# RULE INVENTORY (${csRul
 ${ktRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED KOTLIN RULE INVENTORY (${ktRules.length} rules) ===\nThese Kotlin rules (require/check preconditions, guard clauses and elvis guards, thrown exceptions, when dispatch on status/enum values, validation annotations, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(ktRules, renderMinedKtRules)}\n=== END KOTLIN MINED RULES ===\n` : ""}
 
 ${cblRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED COBOL RULE INVENTORY (${cblRules.length} rules) ===\nThese COBOL rules (level-88 condition names, IF conditions and guards, class-test and file-status validations, EVALUATE dispatch and decision-table arms, COMPUTE formulas) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES (or FORMULAS) section, paraphrased into business language. Do NOT omit any.\n\n${byFile(cblRules, renderMinedCblRules)}\n=== END COBOL MINED RULES ===\n` : ""}
+
+${scalaRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED SCALA RULE INVENTORY (${scalaRules.length} rules) ===\nThese Scala rules (require/assert/ensuring preconditions, guard clauses, thrown exceptions and sys.error, match dispatch on enum/constant values, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(scalaRules, renderMinedScalaRules)}\n=== END SCALA MINED RULES ===\n` : ""}
+
+${rsRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED RUST RULE INVENTORY (${rsRules.length} rules) ===\nThese Rust rules (assert!/ensure! preconditions, guard clauses, let-else and ok_or absence checks, Err returns and panic!/bail! failure modes, match dispatch on enum variants, validator attributes, constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(rsRules, renderMinedRsRules)}\n=== END RUST MINED RULES ===\n` : ""}
+
+${cRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED C RULE INVENTORY (${cRules.length} rules) ===\nThese C rules (assert/static_assert preconditions, guard clauses that return an error code or goto an error label, switch dispatch on constant labels, #define / const constants and constant comparisons) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(cRules, renderMinedCRules)}\n=== END C MINED RULES ===\n` : ""}
+
+${cppRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED C++ RULE INVENTORY (${cppRules.length} rules) ===\nThese C++ rules (assert/static_assert/Expects preconditions, guard clauses, thrown exceptions, switch dispatch on enum values, #define / const / constexpr constants and constant comparisons; .h headers included) were extracted by deterministic passes and are GUARANTEED present in the source. EVERY ONE below MUST appear as a bullet in your RULES section, paraphrased into business language. Do NOT omit any.\n\n${byFile(cppRules, renderMinedCRules)}\n=== END C++ MINED RULES ===\n` : ""}
 
 ${sqlRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED SQL RULE INVENTORY (${sqlRules.length} rules) ===\nThese SQL schema rules (CHECK constraints, NOT NULL, UNIQUE, PRIMARY/FOREIGN KEY referential rules, DEFAULT values, triggers, view WHERE filters, stored-proc conditionals) were extracted from the module's .sql files by deterministic passes and are GUARANTEED present. EVERY ONE below MUST appear as a bullet in your RULES (or ENTITIES) section, paraphrased into business language. Do NOT omit any.\n\n${byFile(sqlRules, renderMinedSqlRules)}\n=== END SQL MINED RULES ===\n` : ""}
 

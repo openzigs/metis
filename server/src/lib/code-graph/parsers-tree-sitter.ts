@@ -37,6 +37,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { COMPLEX_RECEIVER } from "./call-resolution.js";
 import { buildCodeQualifiedName, moduleQualifiedName } from "./qualified-name.js";
+import { walkCFamily, walkRust, walkScala } from "./parsers-tree-sitter-more.js";
 import type {
   EdgeKind,
   Language,
@@ -100,6 +101,13 @@ export async function initCodeGraphParsers(): Promise<void> {
       // Issue #159 — Kotlin. `tree-sitter-grammars` publishes the maintained
       // grammar (the unscoped `tree-sitter-kotlin` ships no prebuilt `.wasm`).
       kt: require.resolve("@tree-sitter-grammars/tree-sitter-kotlin/tree-sitter-kotlin.wasm"),
+      // Issue #161 — Scala, Rust, C, C++ (walkers in parsers-tree-sitter-more.ts).
+      // `tree-sitter-c` was pinned to 0.23.6 when web-tree-sitter 0.24 could
+      // not load ABI-15 grammars; 0.25+ can, so moving it is a routine bump.
+      scala: require.resolve("tree-sitter-scala/tree-sitter-scala.wasm"),
+      rs: require.resolve("tree-sitter-rust/tree-sitter-rust.wasm"),
+      c: require.resolve("tree-sitter-c/tree-sitter-c.wasm"),
+      cpp: require.resolve("tree-sitter-cpp/tree-sitter-cpp.wasm"),
     };
     const next = new Map<Language, LoadedParser>();
     for (const [lang, path] of Object.entries(grammarPaths) as Array<[Language, string]>) {
@@ -180,6 +188,16 @@ export function parseWithTreeSitter(
       break;
     case "kt":
       walkKotlin(tree.rootNode, source, moduleQname, symbols, edges);
+      break;
+    case "scala":
+      walkScala(tree.rootNode, source, moduleQname, symbols, edges);
+      break;
+    case "rs":
+      walkRust(tree.rootNode, source, moduleQname, symbols, edges);
+      break;
+    case "c":
+    case "cpp":
+      walkCFamily(tree.rootNode, source, moduleQname, symbols, edges);
       break;
   }
   // Rationale hints are comment-text scanning — orthogonal to grammar and
@@ -1687,7 +1705,11 @@ function collectRationaleHints(source: string, language: Language): RationaleHin
     language === "go" ||
     language === "java" ||
     language === "cs" ||
-    language === "kt"
+    language === "kt" ||
+    language === "scala" ||
+    language === "rs" ||
+    language === "c" ||
+    language === "cpp"
   ) {
     let i = 0;
     while (i < lines.length) {

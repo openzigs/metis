@@ -26,7 +26,20 @@ export type { StringLiteral } from "./parsers-tree-sitter.js";
 
 export type SymbolKind = "function" | "class" | "interface" | "type" | "module" | "method";
 export type EdgeKind = "calls" | "imports" | "defines" | "references";
-export type Language = "ts" | "js" | "py" | "go" | "java" | "sas" | "cs" | "kt" | "cbl";
+export type Language =
+  | "ts"
+  | "js"
+  | "py"
+  | "go"
+  | "java"
+  | "sas"
+  | "cs"
+  | "kt"
+  | "cbl"
+  | "scala"
+  | "rs"
+  | "c"
+  | "cpp";
 
 export interface ParsedSymbol {
   kind: SymbolKind;
@@ -121,6 +134,19 @@ export const LANGUAGE_BY_EXT: Record<string, Language> = {
   cob: "cbl",
   cobol: "cbl",
   cpy: "cbl",
+  // Issue #161 — Scala, Rust, C and C++. A `.h` header is read with the C++
+  // grammar: it parses C declarations as well, and C++ headers hold whole class
+  // bodies. C and C++ share one rule miner and one call-resolution family.
+  scala: "scala",
+  rs: "rs",
+  c: "c",
+  h: "cpp",
+  cpp: "cpp",
+  cc: "cpp",
+  cxx: "cpp",
+  hpp: "cpp",
+  hh: "cpp",
+  hxx: "cpp",
 };
 
 export function detectLanguage(filePath: string): Language | null {
@@ -1584,6 +1610,28 @@ function parseKotlin(filePath: string, source: string): ParsedFile {
   return { filePath, language: "kt", symbols, edges, fileHash: sha256(source), rationaleHints };
 }
 
+/** A file's `module` symbol and nothing else — see the `scala`/`rs`/`c`/`cpp` dispatch. */
+function moduleOnly(filePath: string, source: string, language: Language): ParsedFile {
+  const moduleQname = moduleQualifiedName(filePath);
+  return {
+    filePath,
+    language,
+    symbols: [
+      {
+        kind: "module",
+        name: filePath.split("/").pop() ?? filePath,
+        qualifiedName: moduleQname,
+        startLine: 1,
+        endLine: source.split(/\r?\n/).length,
+        contentHash: sha256(source),
+      },
+    ],
+    edges: [],
+    fileHash: sha256(source),
+    rationaleHints: [],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Top-level dispatcher.
 //
@@ -1623,6 +1671,13 @@ export function parseSource(filePath: string, source: string, language: Language
         return parseCSharp(filePath, source);
       case "kt":
         return parseKotlin(filePath, source);
+      case "scala":
+      case "rs":
+      case "c":
+      case "cpp":
+        // Issue #161 — tree-sitter only (no regex fallback): without a booted
+        // grammar the file is recorded as a module with no declarations.
+        return moduleOnly(filePath, source, language);
     }
   } catch {
     return {
