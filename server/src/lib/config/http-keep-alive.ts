@@ -15,10 +15,15 @@
  * idle socket; the client closes it) for a harness whose client cannot track
  * the hint. `0` is for a closed harness only: on a server clients reach
  * directly, idle connections would stay open until each client closes them.
- * Unset keeps Node's default, so nothing changes unless it is set.
+ * Unset keeps Node's default, so nothing changes unless it is set. Because an
+ * e2e `.env` is easy to copy, `0` under `NODE_ENV=production` still applies but
+ * warns at boot, so the choice is visible in the logs.
  */
 import type { Server } from "node:http";
+import { createChildLogger } from "../logger.js";
 import { parseStrictMs } from "./env-ms.js";
+
+const log = createChildLogger("config.http-keep-alive");
 
 export const HTTP_KEEP_ALIVE_TIMEOUT_ENV = "HTTP_KEEP_ALIVE_TIMEOUT_MS";
 
@@ -41,5 +46,11 @@ export function applyHttpKeepAliveTimeout(
       warning: `Ignoring invalid ${HTTP_KEEP_ALIVE_TIMEOUT_ENV}; keeping Node's default keep-alive timeout`,
     },
   );
+  if (server.keepAliveTimeout === 0 && env.NODE_ENV === "production") {
+    log.warn(
+      `${HTTP_KEEP_ALIVE_TIMEOUT_ENV}=0 in production: idle keep-alive connections stay open until each client closes them. Intended for a closed test harness; behind a proxy, set it above the proxy's idle timeout instead`,
+      { env: HTTP_KEEP_ALIVE_TIMEOUT_ENV },
+    );
+  }
   return server.keepAliveTimeout;
 }

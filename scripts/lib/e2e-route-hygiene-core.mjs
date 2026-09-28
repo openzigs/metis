@@ -10,75 +10,60 @@
  * playwright-core 1.59.1 and 6 of 200 on 1.63.0; 0 of 200 on either with a route
  * that stays registered and passes later requests on. This scanner finds the
  * option so the suite cannot reintroduce it.
+ *
+ * Scope: only `times`. An explicit `unroute` / `unrouteAll` can also remove the
+ * last route, but it runs at a point the test chose rather than on whichever
+ * request happens to be the Nth, and no flake has been traced to one; the
+ * remaining call sites are tracked in #327 instead of being banned
+ * here unmeasured.
+ *
+ * The source is parsed with the TypeScript compiler, not scanned by hand: a
+ * character loop that blanks strings and comments cannot tell a regex literal
+ * from a division, so one quote inside `/.../` hid every later call in the file.
  */
+import ts from "typescript";
 
 /**
- * `src` with the bodies of strings, template literals and comments replaced by
- * spaces (newlines kept), so offsets and line numbers still line up and nothing
- * inside a literal or a comment can look like code.
+ * Whether an object literal sets `times`, as `times: n`, `"times": n` or the
+ * `{ times }` shorthand.
  *
- * @param {string} src
+ * @param {ts.ObjectLiteralExpression} obj
  */
-export function blankLiterals(src) {
-  const out = src.split("");
-  const blank = (/** @type {number} */ from, /** @type {number} */ to) => {
-    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
-  };
-  for (let i = 0; i < src.length; i++) {
-    const c = src[i];
-    if (c === "/" && src[i + 1] === "/") {
-      const nl = src.indexOf("\n", i);
-      const end = nl === -1 ? src.length : nl;
-      blank(i, end);
-      i = end;
-    } else if (c === "/" && src[i + 1] === "*") {
-      const close = src.indexOf("*/", i + 2);
-      const end = close === -1 ? src.length : close + 2;
-      blank(i, end);
-      i = end - 1;
-    } else if (c === '"' || c === "'" || c === "`") {
-      let j = i + 1;
-      while (j < src.length && src[j] !== c) j += src[j] === "\\" ? 2 : 1;
-      blank(i + 1, Math.min(j, src.length));
-      i = j;
-    }
-  }
-  return out.join("");
-}
-
-/**
- * The index just past the call whose `(` is at `open` in literal-free `code`,
- * or -1 when the code ends first.
- *
- * @param {string} code
- * @param {number} open
- */
-export function callEnd(code, open) {
-  let depth = 0;
-  for (let i = open; i < code.length; i++) {
-    if (code[i] === "(") depth++;
-    else if (code[i] === ")" && --depth === 0) return i + 1;
-  }
-  return -1;
+function setsTimes(obj) {
+  return obj.properties.some(
+    (p) =>
+      (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+      (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
+      p.name.text === "times",
+  );
 }
 
 /**
  * 1-based line numbers of every `.route(` call in `src` whose arguments set a
- * `times` option.
+ * `times` option in an object literal.
  *
  * @param {string} src
+ * @param {string} [fileName] only its extension matters (`.tsx` enables JSX).
  * @returns {number[]}
  */
-export function routeCallsWithTimes(src) {
-  const code = blankLiterals(src);
+export function routeCallsWithTimes(src, fileName = "spec.ts") {
+  const kind = fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const sf = ts.createSourceFile(fileName, src, ts.ScriptTarget.Latest, true, kind);
   /** @type {number[]} */
   const lines = [];
-  const re = /\.route\s*\(/g;
-  for (let m = re.exec(code); m; m = re.exec(code)) {
-    const open = m.index + m[0].length - 1;
-    const end = callEnd(code, open);
-    const args = code.slice(open, end === -1 ? code.length : end);
-    if (/\btimes\s*:/.test(args)) lines.push(code.slice(0, m.index).split("\n").length);
-  }
+  /** @param {ts.Node} node */
+  const visit = (node) => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "route" &&
+      node.arguments.some((a) => ts.isObjectLiteralExpression(a) && setsTimes(a))
+    ) {
+      const at = node.expression.name.getStart(sf);
+      lines.push(sf.getLineAndCharacterOfPosition(at).line + 1);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
   return lines;
 }

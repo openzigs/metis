@@ -12,7 +12,21 @@ import type { AddressInfo } from "node:net";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { logWarn } = vi.hoisted(() => ({ logWarn: vi.fn() }));
+
+vi.mock("../src/lib/logger.js", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../src/lib/logger.js")>();
+  return {
+    ...orig,
+    createChildLogger: (name: string) => {
+      const real = orig.createChildLogger(name);
+      if (name !== "config.http-keep-alive") return real;
+      return { ...real, warn: logWarn };
+    },
+  };
+});
 import {
   applyHttpKeepAliveTimeout,
   HTTP_KEEP_ALIVE_TIMEOUT_ENV,
@@ -64,6 +78,35 @@ describe("applyHttpKeepAliveTimeout (#221)", () => {
       if (before === undefined) delete process.env[HTTP_KEEP_ALIVE_TIMEOUT_ENV];
       else process.env[HTTP_KEEP_ALIVE_TIMEOUT_ENV] = before;
     }
+  });
+});
+
+describe("0 in production warns at boot (review of PR #326)", () => {
+  beforeEach(() => logWarn.mockReset());
+
+  it("warns, naming the setting, and still applies 0", () => {
+    const server = http.createServer();
+    expect(
+      applyHttpKeepAliveTimeout(server, {
+        [HTTP_KEEP_ALIVE_TIMEOUT_ENV]: "0",
+        NODE_ENV: "production",
+      }),
+    ).toBe(0);
+    expect(logWarn).toHaveBeenCalledTimes(1);
+    expect(logWarn.mock.calls[0][0]).toContain(`${HTTP_KEEP_ALIVE_TIMEOUT_ENV}=0 in production`);
+  });
+
+  it.each([
+    ["0 outside production", { [HTTP_KEEP_ALIVE_TIMEOUT_ENV]: "0", NODE_ENV: "test" }],
+    ["0 with NODE_ENV unset", { [HTTP_KEEP_ALIVE_TIMEOUT_ENV]: "0" }],
+    [
+      "a non-zero value in production",
+      { [HTTP_KEEP_ALIVE_TIMEOUT_ENV]: "65000", NODE_ENV: "production" },
+    ],
+    ["unset in production", { NODE_ENV: "production" }],
+  ])("stays quiet for %s", (_label, env) => {
+    applyHttpKeepAliveTimeout(http.createServer(), env);
+    expect(logWarn).not.toHaveBeenCalled();
   });
 });
 

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { blankLiterals, callEnd, routeCallsWithTimes } from "./e2e-route-hygiene-core.mjs";
+import { routeCallsWithTimes } from "./e2e-route-hygiene-core.mjs";
 
 describe("routeCallsWithTimes (#297)", () => {
   it("flags a route call that passes { times }", () => {
@@ -49,37 +49,28 @@ describe("routeCallsWithTimes (#297)", () => {
   it("still scans an unterminated call to the end of the file", () => {
     expect(routeCallsWithTimes("page.route('**/a', h, { times: 1 }")).toEqual([1]);
   });
-});
 
-describe("callEnd", () => {
-  it("returns the index just past the matching parenthesis", () => {
-    expect(callEnd("f(a(b), c) + 1", 1)).toBe(10);
+  // Review of PR #326: a hand-written string/comment blanker read the quote in
+  // `/'/` as an opening string and hid every later call in the file.
+  it("still sees a call after a regex literal that contains a quote", () => {
+    const src = 'const r = /\'/;\nawait page.route("**/a", h, { times: 1 });';
+    expect(routeCallsWithTimes(src)).toEqual([2]);
   });
 
-  it("returns -1 for an unclosed call", () => {
-    expect(callEnd("f(a, (b)", 1)).toBe(-1);
-  });
-});
-
-describe("blankLiterals", () => {
-  it("blanks string, template and comment bodies but keeps length and newlines", () => {
-    const src = "a('x)') // c(\n/* (\n) */ `t(` + \"q)\"";
-    const out = blankLiterals(src);
-    expect(out).toHaveLength(src.length);
-    expect(out.split("\n")).toHaveLength(src.split("\n").length);
-    expect(out.replace(/[\s]/g, "")).toBe("a('')``+\"\"");
+  it("sees a call inside a template-literal substitution", () => {
+    const src = "const s = `${await page.route('**/a', h, { times: 1 })}`;";
+    expect(routeCallsWithTimes(src)).toEqual([1]);
   });
 
-  it("keeps an escaped quote inside its string", () => {
-    expect(blankLiterals("f('a\\')b')").replace(/ /g, "")).toBe("f('')");
+  it('flags the `{ times }` shorthand and a quoted `"times"` key', () => {
+    const src =
+      "await page.route('**/a', h, { times });\nawait page.route('**/b', h, { \"times\": 1 });";
+    expect(routeCallsWithTimes(src)).toEqual([1, 2]);
   });
 
-  it.each([
-    ["an unterminated string", "f('abc"],
-    ["an unterminated block comment", "f(/* abc"],
-    ["an unterminated line comment", "f(// abc"],
-  ])("blanks %s to the end of the source", (_label, src) => {
-    expect(blankLiterals(src).trimEnd()).toMatch(/^f\('?$/);
+  it("parses JSX in a .tsx file", () => {
+    const src = "const el = <div a='x' />;\nawait page.route('**/a', h, { times: 1 });";
+    expect(routeCallsWithTimes(src, "c.tsx")).toEqual([2]);
   });
 });
 
@@ -91,7 +82,7 @@ describe("the e2e suite (#297)", () => {
     fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) return entry.name === "node_modules" ? [] : tsFiles(full);
-      return entry.name.endsWith(".ts") ? [full] : [];
+      return /\.tsx?$/.test(entry.name) ? [full] : [];
     });
 
   it("scans real spec files", () => {
@@ -101,7 +92,7 @@ describe("the e2e suite (#297)", () => {
   it("has no route with a `times` option — it can strand the page's next request", () => {
     const offenders = ["tests", "pages", "fixtures"].flatMap((dir) =>
       tsFiles(path.join(e2eRoot, dir)).flatMap((file) =>
-        routeCallsWithTimes(fs.readFileSync(file, "utf8")).map(
+        routeCallsWithTimes(fs.readFileSync(file, "utf8"), file).map(
           (line) => `${path.relative(e2eRoot, file)}:${line}`,
         ),
       ),
