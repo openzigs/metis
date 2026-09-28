@@ -8,6 +8,26 @@ import VaultPage from "@/app/(authed)/vault/page";
 import { vaultApi } from "@/lib/vault-api";
 import { ApiError } from "@/lib/api-client";
 
+// #324 — the Reveal control follows the caller's role via the real
+// `hasPermission` registry; only the auth context is stubbed to pick the role.
+const { useAuthMock } = vi.hoisted(() => ({ useAuthMock: vi.fn() }));
+vi.mock("@/lib/auth-context", () => ({ useAuth: useAuthMock }));
+
+type Role = "admin" | "coordinator" | "developer" | "reader";
+function asRole(role: Role) {
+  useAuthMock.mockReturnValue({
+    user: {
+      id: `u-${role}`,
+      username: role,
+      displayName: role,
+      email: `${role}@example.test`,
+      role,
+      permissions: [],
+    },
+    isLoading: false,
+  });
+}
+
 vi.mock("@/lib/vault-api", () => ({
   vaultApi: {
     list: vi.fn(),
@@ -62,6 +82,7 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  asRole("admin");
   listMock.mockResolvedValue({ items: [entry()] });
   auditMock.mockResolvedValue({
     items: [
@@ -141,6 +162,27 @@ describe("<VaultPage />", () => {
     await waitFor(() => expect(screen.getByTestId("vault-entry-plaintext")).toBeInTheDocument());
     // Masked preview shows the first/last 4.
     expect(screen.getByTestId("vault-entry-plaintext")).toHaveTextContent("ghp_…alue");
+  });
+
+  for (const role of ["coordinator", "developer"] as const) {
+    it(`#324 — a ${role} gets no Reveal control, only an admin-only notice`, async () => {
+      asRole(role);
+      renderPage();
+      await waitFor(() => expect(screen.getByTestId("vault-list")).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId("vault-row-open-sec_1"));
+      expect(screen.getByTestId("vault-entry-detail")).toBeInTheDocument();
+      expect(screen.queryByTestId("vault-entry-reveal-btn")).not.toBeInTheDocument();
+      expect(screen.getByTestId("vault-entry-reveal-admin-only")).toBeInTheDocument();
+      expect(revealMock).not.toHaveBeenCalled();
+    });
+  }
+
+  it("#324 — an admin keeps the Reveal control", async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("vault-list")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("vault-row-open-sec_1"));
+    expect(screen.getByTestId("vault-entry-reveal-btn")).toBeInTheDocument();
+    expect(screen.queryByTestId("vault-entry-reveal-admin-only")).not.toBeInTheDocument();
   });
 
   it("rotates a secret and clears the revealed plaintext", async () => {

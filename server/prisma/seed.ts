@@ -50,6 +50,7 @@ const PERMISSIONS = [
   "issue.publish",
   "vault.read",
   "vault.write",
+  "vault.reveal",
   "mcp.manage",
   "mcp.read",
   "mcp.write",

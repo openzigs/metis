@@ -139,6 +139,11 @@ export function DbConnectorWizard({
     setShowPassword(false);
   }, [open]);
 
+  // #324 — the server withholds a stored password from non-admins
+  // (`vault.reveal`) and says so; a blank field then provisions with the
+  // vaulted one. An admin whose vault read failed gets no "admins only" hint.
+  const storedPasswordWithheld = detail?.passwordWithheld === true;
+
   const canTest = useMemo(
     () => host.trim().length > 0 && database.trim().length > 0,
     [host, database],
@@ -316,6 +321,7 @@ export function DbConnectorWizard({
                     type={showPassword ? "text" : "password"}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
+                    placeholder={storedPasswordWithheld ? "Stored password (hidden)" : undefined}
                   />
                   <button
                     type="button"
@@ -326,6 +332,15 @@ export function DbConnectorWizard({
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
                 </div>
+                {storedPasswordWithheld ? (
+                  <p
+                    className="mt-1 text-xs text-muted-foreground"
+                    data-testid="wizard-stored-password-hint"
+                  >
+                    A discovered password is stored in the vault. Leave this blank to use it — only
+                    administrators can view it.
+                  </p>
+                ) : null}
               </div>
             </div>
           </section>

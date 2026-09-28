@@ -2,15 +2,14 @@
  * #305 — who may point a chat session at a vault secret (`providerSecretRef`).
  *
  * The rule is #305's: a caller may reference a secret they may READ. Reading a
- * secret is `vault.read` (`GET /api/vault/:id/reveal`, `routes/vault.ts`), held
- * by `admin`, `coordinator` and `developer` — not `reader`. The vault has no
- * finer scoping to respect: a `Secret` row carries no project or workspace
- * column, its `global:` / `project:` name prefix is a display tag bound to no
- * project, and the reveal route returns ANY live secret to a `vault.read`
- * holder. So the readable set for such a caller is every live secret, and the
- * same predicate is used here — `hasPermission(role, "vault.read")` plus
- * liveness — so this check can never grant a secret the reveal route would
- * refuse, nor refuse one it would hand over.
+ * secret is `vault.read` (`GET /api/vault`, `routes/vault.ts`), held by
+ * `admin`, `coordinator` and `developer` — not `reader`. Seeing its PLAINTEXT
+ * is the separate, admin-only `vault.reveal` (#324); using a secret by
+ * reference never hands the caller the value, so it stays on `vault.read`. The
+ * vault has no finer scoping to respect: a `Secret` row carries no project or
+ * workspace column and its `global:` / `project:` name prefix is a display tag
+ * bound to no project. So the usable set for a `vault.read` holder is every
+ * live secret — `hasPermission(role, "vault.read")` plus liveness.
  *
  * A secret that does not exist, is soft-deleted, or is referenced by a caller
  * without `vault.read` is refused identically, so the check cannot be used to
@@ -31,7 +30,7 @@ export async function canUseSecret(
   user: Pick<AuthPayload, "role">,
   secretId: string,
 ): Promise<boolean> {
-  // The same permission the vault read/reveal routes require.
+  // The permission the vault list route requires (not `vault.reveal`, #324).
   if (!hasPermission(user.role, "vault.read")) return false;
   // The same liveness filter `VaultService.read` applies.
   const row = await prisma.secret.findFirst({

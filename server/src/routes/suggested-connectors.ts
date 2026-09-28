@@ -20,6 +20,7 @@ import { Router } from "express";
 import type { Request } from "express";
 import {
   type ApiResponse,
+  hasPermission,
   suggestedConnectorProvisionSchema,
   suggestedConnectorTestSchema,
 } from "@metis/shared";
@@ -66,6 +67,61 @@ const DRIVER_TYPE_TO_DB_DRIVER: Record<string, string> = {
   sqlserver: "sqlserver",
   sqlite: "sqlite",
 };
+
+/** Hostnames compare trimmed and case-insensitively; blank and null are the same "unset". */
+function sameHost(a: string | null | undefined, b: string | null | undefined): boolean {
+  return (a ?? "").trim().toLowerCase() === (b ?? "").trim().toLowerCase();
+}
+
+/**
+ * Discovery stores a port it did not find as 0 and the wizard sends that back as
+ * `null`, so null, undefined and 0 all mean "unspecified" (the driver default).
+ */
+function effectivePort(port: number | null | undefined): number | null {
+  return port ? port : null;
+}
+
+/**
+ * #324 — the suggested-connector /test and /provision routes check that a
+ * caller without `vault.reveal` who USES the stored (vaulted) password targets
+ * the suggestion's own driver, host and port: otherwise a coordinator could
+ * point either route at a public host they control and receive the password
+ * over the wire (a Postgres server can request cleartext auth).
+ * `resolveAndAssertConnectorHost` blocks private ranges only, so it is not this
+ * boundary. Admins can reveal the value anyway.
+ *
+ * This is NOT a general binding of the secret to its destination: after
+ * provisioning, the created connector's host can be edited and re-tested, and
+ * caller-supplied driver `options` can redirect some drivers — both tracked in
+ * #344. What #324 does guarantee is that no HTTP response hands a non-admin the
+ * plaintext.
+ */
+function assertStoredSecretDestination(
+  req: Request,
+  row: { id: string; driverType: string; host: string | null; port: number | null },
+  target: { driver: string; host: string | null | undefined; port: number | null | undefined },
+  projectId: string,
+): void {
+  if (req.user && hasPermission(req.user.role, "vault.reveal")) return;
+  const rowDriver = DRIVER_TYPE_TO_DB_DRIVER[row.driverType] ?? row.driverType;
+  const matches =
+    target.driver === rowDriver &&
+    sameHost(target.host, row.host) &&
+    effectivePort(target.port) === effectivePort(row.port);
+  if (matches) return;
+  audit({
+    actor: actorIdOf(req),
+    action: "suggested_connector.stored_secret_refused",
+    target: { type: "suggested_connector", id: row.id },
+    metadata: { projectId, reason: "destination_mismatch" },
+  });
+  throw new AppError(
+    403,
+    "STORED_SECRET_DESTINATION_MISMATCH",
+    "The stored password can only be used with this suggestion's own driver, host and port. " +
+      "Enter the password to connect elsewhere.",
+  );
+}
 
 function actorIdOf(req: Request): string | null {
   // requireAuth attaches AuthPayload to req.user; the stable identifier is
@@ -141,8 +197,13 @@ export function suggestedConnectorsRouter(): Router {
       });
       if (!row) throw new AppError(404, "NOT_FOUND", "Suggested connector not found");
 
+      // #324 — plaintext of a vault secret goes only to `vault.reveal` holders
+      // (admins). Everyone else learns that a password is stored
+      // (`hasStoredPassword`) and provisions with it server-side by omitting
+      // `password` — never by receiving it.
+      const mayReveal = req.user ? hasPermission(req.user.role, "vault.reveal") : false;
       let password: string | null = null;
-      if (row.passwordVaultRef) {
+      if (row.passwordVaultRef && mayReveal) {
         try {
           const { plaintext } = await getVaultService().read(row.passwordVaultRef);
           password = plaintext;
@@ -163,7 +224,7 @@ export function suggestedConnectorsRouter(): Router {
         actor: actorIdOf(req),
         action: "suggested_connector.credential_read",
         target: { type: "suggested_connector", id: row.id },
-        metadata: { projectId, hasPassword: password !== null },
+        metadata: { projectId, hasPassword: password !== null, passwordWithheld: !mayReveal },
       });
 
       res.json(
@@ -171,6 +232,8 @@ export function suggestedConnectorsRouter(): Router {
           ...row,
           passwordVaultRef: undefined as string | undefined,
           hasStoredPassword: Boolean(row.passwordVaultRef),
+          // Lets the wizard tell "withheld from you" apart from "vault read failed".
+          passwordWithheld: Boolean(row.passwordVaultRef) && !mayReveal,
           password, // one-shot decrypted plaintext (may be null)
         }),
       );
@@ -239,9 +302,19 @@ export function suggestedConnectorsRouter(): Router {
     });
     if (!row) throw new AppError(404, "NOT_FOUND", "Suggested connector not found");
 
+    const driver = DRIVER_TYPE_TO_DB_DRIVER[row.driverType] ?? row.driverType;
+    const targetHost = parsed.data.host ?? row.host ?? null;
+    const targetPort = parsed.data.port ?? row.port ?? null;
+
     // Resolve password: explicit > vault-stored
     let password: string | null = parsed.data.password ?? null;
     if (password === null && row.passwordVaultRef) {
+      assertStoredSecretDestination(
+        req,
+        row,
+        { driver, host: targetHost, port: targetPort },
+        projectId,
+      );
       try {
         const { plaintext } = await getVaultService().read(row.passwordVaultRef);
         password = plaintext;
@@ -250,13 +323,12 @@ export function suggestedConnectorsRouter(): Router {
       }
     }
 
-    const driver = DRIVER_TYPE_TO_DB_DRIVER[row.driverType] ?? row.driverType;
     const started = Date.now();
     try {
       const result = await testDbWithExplicitCredentials({
         driver,
-        host: parsed.data.host ?? row.host ?? null,
-        port: parsed.data.port ?? row.port ?? null,
+        host: targetHost,
+        port: targetPort,
         database: parsed.data.database ?? row.database ?? null,
         username: parsed.data.username ?? row.username ?? null,
         password,
@@ -335,7 +407,29 @@ export function suggestedConnectorsRouter(): Router {
     // differs, rotate. Otherwise create fresh.
     let vaultRef: string | null = null;
     let mutation: "reused" | "rotated" | "created" = "created";
-    if (body.password) {
+    const storedLive =
+      !body.password && row.passwordVaultRef
+        ? (await prisma.secret.findFirst({
+            where: { id: row.passwordVaultRef, deletedAt: null },
+            select: { id: true },
+          })) !== null
+        : false;
+    // Same fallback as /test: an omitted port means the suggestion's own, so
+    // the port the guard checks is the port the connector is created with.
+    const targetPort = effectivePort(body.port ?? row.port);
+    if (storedLive && row.passwordVaultRef) {
+      assertStoredSecretDestination(
+        req,
+        row,
+        { driver: body.driver, host: body.host, port: targetPort },
+        projectId,
+      );
+      // #324 — no password typed: use the live one discovery already vaulted.
+      // A caller without `vault.reveal` never received it, so this is how they
+      // provision with it; the plaintext stays server-side.
+      vaultRef = row.passwordVaultRef;
+      mutation = "reused";
+    } else if (body.password) {
       if (row.passwordVaultRef) {
         let existingPlaintext: string | null = null;
         try {
@@ -375,7 +469,7 @@ export function suggestedConnectorsRouter(): Router {
           label: body.label,
           driver: body.driver,
           host: body.host ?? undefined,
-          port: body.port ?? undefined,
+          port: targetPort ?? undefined,
           databaseName: body.database ?? undefined,
           username: body.username ?? undefined,
           secretRef: vaultRef ? `\${vault:${vaultRef}}` : undefined,

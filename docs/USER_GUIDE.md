@@ -2738,8 +2738,9 @@ If your Jira server is on a private network and METIS rejects the URL with `HOST
 > `/vault` (`#196 / #222`) — it used to be buried behind the legacy
 > Settings → Vault tab. The hub at `/settings` still cards a link out to
 > it. The new HTTP surface lives at `/api/vault` and is gated by the
-> existing `vault.read` (list / reveal / audit) and `vault.write` (create
-> / rotate / delete) permissions.
+> existing `vault.read` (list / audit) and `vault.write` (create
+> / rotate / delete) permissions. Revealing plaintext needs `vault.reveal`,
+> which only administrators hold (#324).
 
 The **Secret Vault** is a secure storage for sensitive information that METIS needs to interact with external services — things like API keys, database passwords, and access tokens.
 
@@ -2747,8 +2748,8 @@ The **Secret Vault** is a secure storage for sensitive information that METIS ne
 
 - **Encrypted at rest** — all secrets are encrypted using AES-256-GCM, a military-grade encryption algorithm
 - **Key derivation** — the encryption key is derived from a master key using PBKDF2 with 100,000 iterations, making brute-force attacks practically impossible
-- **Access controlled** — only users with `vault.read` permission can list, reveal, and view audit history; only `vault.write` can create, rotate, or delete entries
-- **Audit logged** — every list, reveal, rotate, and delete is recorded in the audit trail with `source: "vault_ui"` metadata
+- **Access controlled** — users with `vault.read` (admin, coordinator, developer) can list entries, view audit history, and use a secret by reference (chat BYOK keys, connectors, MCP servers); only `vault.reveal` — administrators only — can see a secret's plaintext; only `vault.write` can create, rotate, or delete entries
+- **Audit logged** — every reveal attempt (`vault.reveal`, with `outcome` `granted`, `denied` or `not_found` — never the value), create, rotate, and delete is recorded in the audit trail with `source: "vault_ui"` metadata
 
 ### Using the Vault
 
@@ -2760,11 +2761,12 @@ The `/vault` page is split into two panels:
 2. **Detail panel** — opens on the right and exposes:
    - **Reveal** — fetches the plaintext exactly once via
      `GET /api/vault/:id/reveal` and renders a masked preview
-     (`first4…last4`). Reveals are audited.
+     (`first4…last4`). Administrators only; other roles see a notice in
+     place of the button. Every attempt is audited.
    - **Rotate** — submits a new value via `POST /api/vault/:id/rotate`,
      bumps the key version, and clears any previously revealed plaintext.
-   - **Audit** — lists the recent `vault.{read,rotate,delete,write}` rows
-     for the entry.
+   - **Audit** — lists the recent `vault.{reveal,read,rotate,delete,write}`
+     rows for the entry.
    - **Delete** — soft-removes the entry (terminal — restoring requires a
      fresh `POST /api/vault`).
 
@@ -4456,9 +4458,11 @@ discovery** in the page header. The toggle:
    badge reads *"Dev credentials found in source — pre-loaded from the
    vault."*
 2. **Configure** — Edit the label, driver, host, port, database, username
-   and password. Click the eye icon to toggle password visibility. The
-   password is fetched one-shot from the vault and is never written to the
-   DOM as plaintext outside this dialog.
+   and password. Click the eye icon to toggle password visibility. For
+   administrators the password is fetched one-shot from the vault and is
+   never written to the DOM as plaintext outside this dialog; other roles see
+   a blank field with a *stored password* hint — leave it blank to provision
+   with the vaulted password, which they never receive (#324).
 3. **Test** — Click **Run test** to perform a credential-explicit liveness
    probe. The pool is opened, pinged, and closed in a single request — no
    row is persisted unless the test passes. A failed test displays the

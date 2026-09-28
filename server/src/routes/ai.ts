@@ -828,8 +828,8 @@ export function aiRouter(): Router {
       });
     }
     // #305 — a BYOK ref must name a live vault secret the caller may read
-    // (`vault.read`, as `GET /api/vault/:id/reveal`); otherwise 404 and nothing
-    // is created.
+    // (`vault.read`; using a secret by reference never needs `vault.reveal`,
+    // #324); otherwise 404 and nothing is created.
     if (parsed.data.providerSecretRef) {
       await assertSecretUsable(req.user!, parsed.data.providerSecretRef);
     }

@@ -164,11 +164,14 @@ describe("suggested-connectors — same-workspace caller is still served (no ove
     expect(suggestionFindMany).toHaveBeenCalledWith({ where: { projectId: "proj-1" } });
   });
 
-  it("returns the one-shot password to a same-workspace coordinator", async () => {
+  it("serves the detail to a same-workspace coordinator, withholding the password (#324)", async () => {
     suggestionFindFirst.mockResolvedValueOnce(suggestionRow());
     const res = await request(app).get("/api/projects/proj-1/suggested-connectors/sug-1");
     expect(res.status).toBe(200);
-    expect(res.body.data.password).toBe("s3cret");
+    // Plaintext is `vault.reveal` (admin-only); the coordinator learns only
+    // that a password is stored.
+    expect(res.body.data.password).toBeNull();
+    expect(res.body.data.hasStoredPassword).toBe(true);
   });
 
   it("serves a system admin regardless of workspace membership", async () => {
