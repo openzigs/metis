@@ -3013,7 +3013,7 @@ flip them on in prod via the UI:
 | `MCP_REQUIRE_VAULT_ENV` | Reject env values that aren't `${vault:...}` references. |
 | `MCP_REQUIRE_CATALOG` | Project-scope MCPs must come from the federated catalog (§27); raw `command` strings rejected with `403`. Global scope still allows admin raw-register. |
 | `MCP_IMAGE_ALLOWLIST` | CSV of segment-aware glob patterns (e.g. `ghcr.io/metis-mcps/*`); container runtimes (`docker-stdio`, `k8s-sse`) only accept matching images. `*` matches one path segment, `**` matches any number of segments (issue #304). |
-| `MCP_ALLOW_USER_SCOPE` | Enables a `scope: 'user'` on MCP rows (per-user MCPs). When off, `scope: 'user'` writes return `400 USER_SCOPE_DISABLED`. Capped per-user by `MCP_USER_MAX_CONCURRENT` and reaped after `MCP_USER_IDLE_TIMEOUT_MIN`. A user server's label is unique only among its owner's servers, and its tools are named `mcp:u.<ownerId>.<label>:<tool>`. |
+| `MCP_ALLOW_USER_SCOPE` | Enables a `scope: 'user'` on MCP rows (per-user MCPs). When off, `scope: 'user'` writes return `400 USER_SCOPE_DISABLED`. Capped per-user by `MCP_USER_MAX_CONCURRENT` and reaped after `MCP_USER_IDLE_TIMEOUT_MIN`. A user server's label is unique only among its owner's servers, and its tools are named `mcp:u.<ownerId>.<label-slug>:<tool>` (the label lowercased, each run of characters outside `[a-z0-9]` replaced by `-`, leading or trailing `-` trimmed, and cut to 32 characters). |
 
 Trust-level promotion to `trusted` is admin-only (`mcp.manage`); coordinators
 registering project servers can only set `trustLevel: 'untrusted'`.
