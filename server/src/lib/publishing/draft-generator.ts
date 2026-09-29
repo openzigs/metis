@@ -24,6 +24,7 @@ import {
   type RequirementSupportConfidence,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 import { createChildLogger } from "../logger.js";
 import { computeDedupHash } from "./dedup.js";
 import { buildEpicTitle } from "./epic-title.js";
@@ -89,10 +90,6 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
 
   // ----- Epic draft -----
   // #23 — titled from the analysed feature, not the analysis id.
-  const { title: epicTitle, hash: epicHash } = await claimEpicTitle(
-    opts,
-    buildEpicTitle(project.name, analysis),
-  );
   const epicBody = renderEpicBody({ project, analysis, requirements });
   const epicLabels = uniq([
     "epic",
@@ -100,22 +97,21 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
     `priority:${highestPriority(requirements)}`,
     ...(opts.defaultLabels ?? []),
   ]);
-  const epic = await upsertDraft({
+  const epic = await claimAndUpsertDraft(opts, buildEpicTitle(project.name, analysis), {
     projectId: opts.projectId,
     requirementId: null,
     parentDraftId: null,
     draftType: "epic",
-    title: epicTitle,
     body: epicBody,
     labels: epicLabels,
     storyPoints: estimateStoryPoints({ priority: "high", evidenceCount: requirements.length }),
-    dedupHash: epicHash,
     metadata: {
       analysisId: opts.analysisId,
       requirementIds: requirements.map((r) => r.id),
       generator: "draft-generator/v1",
     },
   });
+  const epicTitle = epic.title;
   summary.total += 1;
   summary.epics += 1;
   if (epic.created) summary.upserted += 1;
@@ -128,8 +124,9 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
 
   // ----- Feature drafts -----
   for (const req of requirements) {
+    // #369 — `[Type] <requirement title>` is shared by every analysis that
+    // found a same-titled requirement, so it is claimed like the epic's title.
     const reqTitle = `[${capitalize(req.type)}] ${req.title}`;
-    const reqHash = computeDedupHash(opts.targetOwner, opts.targetRepo, reqTitle);
     const draftType = mapReqTypeToDraftType(req.type);
     const labels = uniq([
       draftType,
@@ -145,12 +142,11 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
       parentTitle: epicTitle,
       supportConfidence: confidenceByRequirement.get(req.id) ?? null,
     });
-    const draft = await upsertDraft({
+    const draft = await claimAndUpsertDraft(opts, reqTitle, {
       projectId: opts.projectId,
       requirementId: req.id,
       parentDraftId: epic.id,
       draftType,
-      title: reqTitle,
       body,
       labels,
       storyPoints:
@@ -159,7 +155,6 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
           priority: req.priority,
           evidenceCount: parseLabels(req.labels).length,
         }),
-      dedupHash: reqHash,
       metadata: {
         requirementId: req.id,
         analysisId: opts.analysisId,
@@ -181,16 +176,17 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
 }
 
 /**
- * #23 — the epic title is its dedup key, and the publisher recomputes the hash
- * from the title, so it must be unique per analysis. A title built from the
- * requirement text is not: two analyses that open with the same line produce
- * the same one, and the second would overwrite the first's epic draft (keeping
- * its approved/published status) and then edit its GitHub epic in place.
- * An epic draft already owned by another analysis therefore pushes this one to
- * the next free `(n)` suffix; one owned by this analysis is reused, so a
- * re-run still refreshes rather than duplicates.
+ * #23 / #369 — a draft's title is its dedup key, and the publisher recomputes
+ * the hash from the title, so it must be unique per analysis. Neither an epic
+ * title built from the requirement text nor a feature's `[Type] <requirement
+ * title>` is: two analyses that share a line produce the same one, and the
+ * second would overwrite the first's draft (keeping its approved/published
+ * status) and then edit its GitHub issue in place. A draft already owned by
+ * another analysis therefore pushes this one to the next free `(n)` suffix; one
+ * owned by this analysis is reused, so a re-run still refreshes rather than
+ * duplicates.
  */
-async function claimEpicTitle(
+async function claimTitle(
   opts: GenerateDraftsOptions,
   baseTitle: string,
 ): Promise<{ title: string; hash: string }> {
@@ -201,6 +197,32 @@ async function claimEpicTitle(
       where: { projectId: opts.projectId, dedupHash: hash, deletedAt: null },
     });
     if (!holder || draftAnalysisId(holder.metadata) === opts.analysisId) return { title, hash };
+  }
+}
+
+/** Lost races tolerated before a claim gives up and surfaces the conflict. */
+const MAX_CLAIM_ATTEMPTS = 5;
+
+/**
+ * #369 — `claimTitle` is check-then-act: two concurrent generations can both
+ * see a title as free. The partial unique index on `(projectId, dedupHash)
+ * WHERE deletedAt IS NULL` makes the loser's insert fail, and the loser then
+ * claims again — landing on the winner's draft if it is the same analysis, or
+ * on the next free suffix if it is not.
+ */
+async function claimAndUpsertDraft(
+  opts: GenerateDraftsOptions,
+  baseTitle: string,
+  args: Omit<UpsertArgs, "title" | "dedupHash">,
+): Promise<{ id: string; created: boolean; title: string }> {
+  for (let attempt = 1; ; attempt++) {
+    const { title, hash } = await claimTitle(opts, baseTitle);
+    try {
+      return { ...(await upsertDraft({ ...args, title, dedupHash: hash })), title };
+    } catch (err) {
+      if (!isUniqueViolation(err) || attempt >= MAX_CLAIM_ATTEMPTS) throw err;
+      log.warn("draft title claimed concurrently; re-claiming", { title, attempt });
+    }
   }
 }
 
