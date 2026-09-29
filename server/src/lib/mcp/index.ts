@@ -6,6 +6,7 @@
  * function for graceful shutdown + tests.
  */
 import { createChildLogger } from "../logger.js";
+import { prisma } from "../prisma.js";
 import type { MetisIOServer } from "../socket/server.js";
 import { expandVaultRefs } from "../vault/env-manager.js";
 import { getVaultService } from "../vault/vault-service.js";
@@ -16,7 +17,7 @@ import { K8sColdStartReaper } from "./k8s-cold-start-reaper.js";
 import { MCPLifecycleManager } from "./lifecycle-manager.js";
 import { MCPRegistryService, getMCPRegistry, setMCPRegistry } from "./mcp-service.js";
 import { K8sSseProvisioner, defaultProvisionerRegistry } from "./provisioners/index.js";
-import { mcpStatusRooms } from "./status-rooms.js";
+import { createMcpStatusEmitter } from "./status-rooms.js";
 import { MCPToolBridge } from "./tool-bridge.js";
 import { PagerDutyProviderStatusWatcher } from "../pagerduty/provider-status-watcher.js";
 
@@ -47,15 +48,25 @@ export function bootstrapMCP(opts: BootstrapOptions = {}): MCPBootstrap {
   const k8sProvisioner = provisioners["k8s-sse"];
   const k8sSse = k8sProvisioner instanceof K8sSseProvisioner ? k8sProvisioner : null;
 
+  const statusEmitter = opts.io
+    ? createMcpStatusEmitter(
+        opts.io,
+        (projectId) =>
+          prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } }),
+        (err, event) =>
+          log.warn("mcp:status routing failed; event sent to admins only or dropped", {
+            serverId: event.serverId,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+      )
+    : null;
   const lifecycle = new MCPLifecycleManager({
     provisioners,
     resolveEnv: async (env) => expandVaultRefs(env, getVaultService()),
     // #340 — a user-scope server's events reach only its owner and admins.
-    emitStatus: (event, config) => {
-      if (opts.io) {
-        opts.io.to(mcpStatusRooms(event, config?.userId)).emit("mcp:status", event);
-      }
-    },
+    // #353 — a project-scope server's events reach only its project's
+    // workspace members and admins (`assertProjectAccess` semantics).
+    emitStatus: statusEmitter?.emit,
   });
   const registry = new MCPRegistryService(lifecycle);
   setMCPRegistry(registry);

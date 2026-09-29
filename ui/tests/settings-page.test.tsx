@@ -38,9 +38,9 @@ describe("<SettingsHubPage />", () => {
     }
   });
 
-  it("does not present Vault as a primary settings card (sidebar is canonical)", () => {
+  it("does not present Vault as a primary settings card (its own page is canonical)", () => {
     render(<SettingsHubPage />);
-    // N5 #153 — Vault/Repositories/Databases live in the sidebar, not the hub.
+    // N5 #153 — Vault/Repositories/Databases have their own pages, not hub cards.
     expect(screen.queryByTestId("settings-hub-link-vault")).not.toBeInTheDocument();
   });
 

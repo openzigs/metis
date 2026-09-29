@@ -88,6 +88,27 @@ describe("formatToolName + resolveRisk", () => {
     expect(formatToolName("Cool Server!", "read")).toBe("mcp:cool-server:read");
     expect(formatToolName("---trim---", "x")).toBe("mcp:trim:x");
   });
+  it("#351 — qualifies a user server's segment with its owner; other scopes keep the bare slug", () => {
+    expect(formatToolName("Cool Server!", "read", { scope: "user", userId: "u1" })).toBe(
+      "mcp:u.u1.cool-server:read",
+    );
+    expect(formatToolName("Cool Server!", "read", { scope: "user", userId: null })).toBe(
+      "mcp:u._.cool-server:read",
+    );
+    expect(formatToolName("Cool Server!", "read", { scope: "global", userId: "u1" })).toBe(
+      "mcp:cool-server:read",
+    );
+    expect(formatToolName("Cool Server!", "read", { scope: "project" })).toBe(
+      "mcp:cool-server:read",
+    );
+    // Two owners, one label: never the same name, and never the global name.
+    const names = new Set([
+      formatToolName("x", "t", { scope: "user", userId: "a" }),
+      formatToolName("x", "t", { scope: "user", userId: "b" }),
+      formatToolName("x", "t", { scope: "global" }),
+    ]);
+    expect(names.size).toBe(3);
+  });
   it("forces high for untrusted servers regardless of per-tool risk", () => {
     expect(resolveRisk("untrusted", "low")).toBe("high");
     expect(resolveRisk("untrusted", "medium")).toBe("high");
@@ -295,7 +316,10 @@ describe("MCPToolBridge cross-project isolation (SEC-6)", () => {
 
 // #340 — a `scope: "user"` server is its owner's alone.
 describe("MCPToolBridge user-scope ownership (#340)", () => {
+  // #351 — a user server's tools carry its owner in the server segment.
+  let userTool = "";
   async function startUserServer(userId: string | null) {
+    userTool = `mcp:u.${userId ?? "_"}.cool-server:read_file`;
     __resetToolRegistrySingleton();
     auditEvents.length = 0;
     const lifecycle = new MCPLifecycleManager({
@@ -312,7 +336,7 @@ describe("MCPToolBridge user-scope ownership (#340)", () => {
   }
   const invokeAs = (userId: string, projectId?: string) =>
     getToolRegistry().invoke(
-      "mcp:cool-server:read_file",
+      userTool,
       {},
       { sessionId: "s", userId, ...(projectId ? { projectId } : {}) },
       allowGate,
@@ -354,7 +378,7 @@ describe("MCPToolBridge user-scope ownership (#340)", () => {
 
   it("tags each registered tool with the server's scope", async () => {
     const bridge = await startUserServer("u-owner");
-    expect(getToolRegistry().describe("mcp:cool-server:read_file")?.origin).toMatchObject({
+    expect(getToolRegistry().describe(userTool)?.origin).toMatchObject({
       kind: "mcp",
       serverId: "srv1",
       serverScope: "user",

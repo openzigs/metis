@@ -64,6 +64,19 @@ describe("<AppShell />", () => {
     expect(screen.getByRole("link", { name: /skip to main content/i })).toBeInTheDocument();
   });
 
+  it("renders the hub page tabs above the page inside <main> (#27)", () => {
+    vi.mocked(usePathname).mockReturnValue("/sessions");
+    render(
+      <AppShell>
+        <p data-testid="content">hello</p>
+      </AppShell>,
+      { wrapper: makeWrapper({ initialUser: TEST_USER }) },
+    );
+    const tabs = screen.getByRole("navigation", { name: "Activity pages" });
+    expect(screen.getByRole("main")).toContainElement(tabs);
+    expect(screen.getByRole("link", { name: "Sessions" })).toHaveAttribute("aria-current", "page");
+  });
+
   it("owns the canonical page gutter on <main> (R2 #157 single source)", () => {
     render(
       <AppShell>

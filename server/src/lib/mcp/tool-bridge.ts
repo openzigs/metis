@@ -2,6 +2,7 @@
  * Bridge between the MCP lifecycle manager and the Phase 4 ToolRegistry.
  *
  * Each ready MCP server's tools are registered as `mcp:<server-label>:<tool>`
+ * (`mcp:u.<owner-id>.<server-label>:<tool>` for a `scope: "user"` server, #351)
  * with a risk level derived from the server's trust level + per-tool
  * annotations:
  *
@@ -89,7 +90,7 @@ export class MCPToolBridge {
         });
         continue;
       }
-      const fqName = formatToolName(snapshot.config.label, tool.name);
+      const fqName = formatToolName(snapshot.config.label, tool.name, snapshot.config);
       const risk = resolveRisk(snapshot.config.trustLevel, tool.risk);
       const def = this.buildToolDefinition(
         serverId,
@@ -426,14 +427,26 @@ function isObjectSchema(value: unknown): value is Record<string, unknown> {
 /**
  * Compute the canonical tool name. Server labels are slugified so the
  * resulting name passes the registry's validator.
+ *
+ * #351 — a `scope: "user"` server's label is unique only among its owner's
+ * servers, so its server segment is qualified with the owner:
+ * `mcp:u.<ownerId>.<slug>:<tool>` (`u._.<slug>` for a legacy row with no owner
+ * on record). A slug never contains `.`, so this segment can never equal a
+ * global or project server's, and a user id (a cuid) never contains `.`
+ * either, so two owners' segments never equal each other.
  */
-export function formatToolName(label: string, tool: string): string {
+export function formatToolName(
+  label: string,
+  tool: string,
+  server: { scope?: MCPServerConfig["scope"]; userId?: string | null } = {},
+): string {
   const safeLabel = label
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 32);
-  return `mcp:${safeLabel}:${tool}`.slice(0, 200);
+  const segment = server.scope === "user" ? `u.${server.userId || "_"}.${safeLabel}` : safeLabel;
+  return `mcp:${segment}:${tool}`.slice(0, 200);
 }
 
 /** Resolve effective risk based on server trust level and per-tool risk. */
