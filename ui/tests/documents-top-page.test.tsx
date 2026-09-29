@@ -7,6 +7,10 @@ import { makeWrapper } from "./test-utils";
 import DocumentsTopLevelPage from "@/app/(authed)/documents/page";
 import { documentsApi, projectsApi } from "@/lib/projects-api";
 import { ApiError } from "@/lib/api-client";
+import { repoConnectorsApi } from "@/lib/connectors-api";
+
+vi.mock("@/lib/connectors-api", () => ({ repoConnectorsApi: { list: vi.fn() } }));
+const repoListMock = vi.mocked(repoConnectorsApi.list);
 
 vi.mock("@/lib/projects-api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/projects-api")>("@/lib/projects-api");
@@ -123,5 +127,29 @@ describe("<DocumentsTopLevelPage />", () => {
       "href",
       "/projects/p1/documents",
     );
+  });
+
+  // #363 — the walkthrough found repository files listed by their internal key.
+  it("lists a repository file by path and repository name, not its internal key", async () => {
+    const key = "connector:repo:cmumwycfx002j2c9kp7kpu2tg:src/vitest.config.ts";
+    repoListMock.mockResolvedValue([
+      { id: "cmumwycfx002j2c9kp7kpu2tg", repoName: "metis", label: "Metis" },
+    ] as never);
+    documentsListMock.mockImplementation(async (projectId: string) => ({
+      items: projectId === "p1" ? [doc("d1", "p1", key)] : [doc("d3", "p2", "beta-1.md")],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    }));
+    renderPage();
+    const row = await screen.findByTestId("documents-top-row-d1");
+    await waitFor(() => expect(row).toHaveTextContent("metis"));
+    expect(row).toHaveTextContent("src/vitest.config.ts");
+    expect(row.textContent).not.toContain("connector:repo:");
+    expect(row.textContent).not.toContain("kpu2tg");
+    expect(row.querySelector(`[title="${key}"]`)).not.toBeNull();
+    // Only the project that lists a repository file pays for the lookup.
+    expect(repoListMock).toHaveBeenCalledTimes(1);
+    expect(repoListMock).toHaveBeenCalledWith("p1");
   });
 });

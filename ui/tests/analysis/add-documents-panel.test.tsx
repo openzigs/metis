@@ -130,13 +130,14 @@ describe("AddDocumentsPanel (#906)", () => {
     expect(screen.getByTestId("add-documents-status-d-proc")).toHaveTextContent("processing");
   });
 
-  it("renders connector ids as a friendly 'basename — repo' label with the raw id in the tooltip (#427)", () => {
+  it("renders a connector id as its file path and repository, raw id only in the tooltip (#427, #363)", () => {
     const rawId =
       "connector:repo:cmexample0000000000acmerp:src/main/java/com/acme/ShipmentAllocationsVO.java";
     render(<Harness docs={[makeDoc(rawId, rawId, "ready")]} />);
     const row = screen.getByTestId(`add-documents-row-${rawId}`);
-    // Friendly label is shown; the noisy connector prefix is hidden from view.
-    expect(row).toHaveTextContent("ShipmentAllocationsVO.java — acmerp");
+    // The file path and a repository label are shown; the key is not.
+    expect(row).toHaveTextContent("src/main/java/com/acme/ShipmentAllocationsVO.java");
+    expect(row).toHaveTextContent("acmerp");
     expect(row.textContent).not.toContain("connector:repo:");
     // The full raw id remains available via the title tooltip (copyable).
     const labelSpan = row.querySelector("span[title]")!;
@@ -150,7 +151,8 @@ describe("AddDocumentsPanel (#906)", () => {
     const rawId = "connector:repo:cmexample0000000000acmerp:README.md";
     render(<Harness docs={[makeDoc(rawId, rawId, "ready")]} />);
     const row = screen.getByTestId(`add-documents-row-${rawId}`);
-    await waitFor(() => expect(row).toHaveTextContent("README.md — wms-core"));
+    await waitFor(() => expect(row).toHaveTextContent("wms-core"));
+    expect(row).toHaveTextContent("README.md");
     expect(row.textContent).not.toContain("acmerp");
     expect(listRepoConnectors).toHaveBeenCalledWith("proj-1");
   });

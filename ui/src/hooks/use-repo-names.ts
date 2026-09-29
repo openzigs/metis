@@ -10,7 +10,7 @@
  * project, not one per document.
  */
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import type { RepoConnector } from "@metis/shared";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 
@@ -40,4 +40,24 @@ export function useRepoNames(projectId: string | null | undefined): RepoNameMap 
     enabled: Boolean(projectId),
   });
   return useMemo(() => repoNamesById(data), [data]);
+}
+
+/** Merge several projects' connector lists into one id → name map. */
+function mergeRepoNames(results: UseQueryResult<RepoConnector[]>[]): RepoNameMap {
+  return Object.assign({}, ...results.map((r) => repoNamesById(r.data)));
+}
+
+/**
+ * Issue #363 — the cross-project `/documents` list needs the repository names of
+ * every project it shows. Each project reads the same cache entry as
+ * `useRepoNames`, and connector ids are globally unique, so the maps merge.
+ */
+export function useRepoNamesForProjects(projectIds: readonly string[]): RepoNameMap {
+  return useQueries({
+    queries: projectIds.map((projectId) => ({
+      queryKey: ["connectors", "repos", projectId],
+      queryFn: () => repoConnectorsApi.list(projectId),
+    })),
+    combine: mergeRepoNames,
+  });
 }

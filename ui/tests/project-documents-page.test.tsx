@@ -53,16 +53,21 @@ vi.mock("@/lib/projects-api", async () => {
   };
 });
 
+vi.mock("@/lib/connectors-api", () => ({ repoConnectorsApi: { list: vi.fn() } }));
+
 import { projectsApi, documentsApi } from "@/lib/projects-api";
+import { repoConnectorsApi } from "@/lib/connectors-api";
 import { ApiError } from "@/lib/api-client";
 import ProjectDocumentsPage from "@/app/(authed)/projects/[id]/documents/page";
 
 const get = projectsApi.get as unknown as ReturnType<typeof vi.fn>;
 const list = documentsApi.list as unknown as ReturnType<typeof vi.fn>;
+const repoList = repoConnectorsApi.list as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   get.mockReset();
   list.mockReset();
+  repoList.mockReset();
   notFound.mockReset();
   socketStub.on.mockReset();
   socketStub.off.mockReset();
@@ -106,6 +111,31 @@ describe("ProjectDocumentsPage", () => {
     );
     await waitFor(() => expect(screen.getByTestId("document-row-d1")).toBeInTheDocument());
     expect(screen.getByText("spec.md")).toBeInTheDocument();
+    // #363 — no repository file listed, so no connector lookup.
+    expect(repoList).not.toHaveBeenCalled();
+  });
+
+  it("lists a repository file by path and repository name, not its internal key (#363)", async () => {
+    const key = "connector:repo:cmumwycfx002j2c9kp7kpu2tg:src/vitest.config.ts";
+    get.mockResolvedValue({ id: "p1", name: "Proj", slug: "proj", status: "active" });
+    repoList.mockResolvedValue([
+      { id: "cmumwycfx002j2c9kp7kpu2tg", repoName: "metis", label: "Metis" },
+    ]);
+    list.mockResolvedValue({
+      items: [{ id: "d1", filename: key, status: "ready", chunkCount: 3, sizeBytes: 2048 }],
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <ProjectDocumentsPage />
+      </Wrapper>,
+    );
+    const row = await screen.findByTestId("document-row-d1");
+    await waitFor(() => expect(row).toHaveTextContent("metis"));
+    expect(row).toHaveTextContent("src/vitest.config.ts");
+    expect(row.textContent).not.toContain("connector:repo:");
+    expect(row.textContent).not.toContain("kpu2tg");
+    expect(repoList).toHaveBeenCalledWith("p1");
   });
 
   it("disables uploads for archived projects", async () => {

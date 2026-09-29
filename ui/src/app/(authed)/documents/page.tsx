@@ -21,6 +21,8 @@ import {
 import { documentsApi, projectsApi, type DocumentRow, type Project } from "@/lib/projects-api";
 import { ApiError } from "@/lib/api-client";
 import { PageHeader } from "@/components/ui/page-header";
+import { DocumentName } from "@/components/projects/document-name";
+import { useRepoNamesForProjects } from "@/hooks/use-repo-names";
 
 interface AggregatedRow extends DocumentRow {
   projectId: string;
@@ -61,6 +63,18 @@ export default function DocumentsTopLevelPage() {
     return rows;
   }, [docQueries, projects]);
 
+  // Issue #363 — resolve repository names only for projects that list a
+  // repository file, so a project with uploads alone costs no extra request.
+  const repoProjectIds = useMemo(
+    () => [
+      ...new Set(
+        aggregated.filter((r) => r.filename.startsWith("connector:repo:")).map((r) => r.projectId),
+      ),
+    ],
+    [aggregated],
+  );
+  const repoNames = useRepoNamesForProjects(repoProjectIds);
+
   const filtered = useMemo(() => {
     if (!filter) return aggregated;
     return aggregated.filter((r) => r.projectId === filter);
@@ -73,9 +87,8 @@ export default function DocumentsTopLevelPage() {
     () => [
       {
         key: "filename",
-        header: "Filename",
-        cell: (row) => row.filename,
-        cellClassName: "font-mono",
+        header: "Document",
+        cell: (row) => <DocumentName filename={row.filename} repoNames={repoNames} />,
       },
       { key: "project", header: "Project", cell: (row) => row.projectName },
       { key: "status", header: "Status", cell: (row) => row.status },
@@ -114,7 +127,7 @@ export default function DocumentsTopLevelPage() {
         ),
       },
     ],
-    [qc],
+    [qc, repoNames],
   );
 
   return (
