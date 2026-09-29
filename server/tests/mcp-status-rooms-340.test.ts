@@ -1,6 +1,9 @@
 /**
  * #340 — a `scope: "user"` MCP server's `mcp:status` events reach ONLY its
  * owner and system admins.
+ * #353 — a `scope: "project"` server's events reach ONLY users who can access
+ * the project (`assertProjectAccess`): its workspace's members and admins, or
+ * everyone when the project has no workspace.
  *
  * Real Socket.IO server, real clients, and the real `bootstrapMCP` emit path:
  * a server is started with `enabled: false`, which makes the lifecycle manager
@@ -18,7 +21,17 @@ vi.mock("../src/lib/prisma.js", () => ({
     user: { upsert: vi.fn() },
     userRole: { findFirst: vi.fn(async () => null) },
     auditLog: { create: vi.fn(async () => ({})) },
-    project: { findMany: vi.fn(async () => []) },
+    project: {
+      findMany: vi.fn(async () => []),
+      // #353 fixtures: p-ws1 lives in ws1, p-legacy has no workspace, anything
+      // else does not exist, and p-boom's lookup throws.
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+        if (where.id === "p-boom") throw new Error("db down");
+        if (where.id === "p-ws1") return { workspaceId: "ws1" };
+        if (where.id === "p-legacy") return { workspaceId: null };
+        return null;
+      }),
+    },
   },
 }));
 
@@ -29,9 +42,11 @@ import type { MCPServerConfig } from "../src/lib/mcp/types.js";
 import {
   MCP_STATUS_ADMIN_ROOM,
   MCP_STATUS_ROOM,
+  createMcpStatusEmitter,
   mcpStatusOwnerRoom,
   mcpStatusRooms,
   mcpStatusRoomsFor,
+  mcpStatusWorkspaceRoom,
 } from "../src/lib/mcp/status-rooms.js";
 
 let httpServer: http.Server;
@@ -75,8 +90,18 @@ afterEach(() => {
 const roomHas = (room: string, sid: string) =>
   io.sockets.adapter.rooms.get(room)?.has(sid) ?? false;
 
-async function subscribe(userId: string, role: "admin" | "coordinator"): Promise<Subscriber> {
-  const { accessToken } = issueTokens({ userId, username: userId, role, permissions: [] });
+async function subscribe(
+  userId: string,
+  role: "admin" | "coordinator",
+  workspaces: string[] = [],
+): Promise<Subscriber> {
+  const { accessToken } = issueTokens({
+    userId,
+    username: userId,
+    role,
+    permissions: [],
+    workspaces,
+  });
   const socket = ioClient(`http://127.0.0.1:${port}`, {
     auth: { token: accessToken },
     transports: ["websocket"],
@@ -130,7 +155,7 @@ describe("#340 mcp:status — user-scope events reach only the owner and admins"
 
     await mcp.lifecycle.start(config({ id: "g", label: "global-srv" }));
     await mcp.lifecycle.start(
-      config({ id: "p", label: "project-srv", scope: "project", projectId: "p1" }),
+      config({ id: "p", label: "project-srv", scope: "project", projectId: "p-legacy" }),
     );
     await mcp.lifecycle.start(
       config({ id: "u", label: "owner-srv", scope: "user", userId: "u-owner" }),
@@ -145,7 +170,7 @@ describe("#340 mcp:status — user-scope events reach only the owner and admins"
       for (const s of [owner, peer, admin]) expect(s.labels).toContain("sentinel");
     });
 
-    // Global and project events are unchanged: every mcp.manage subscriber.
+    // Global events, and a no-workspace project's: every mcp.manage subscriber.
     for (const s of [owner, peer, admin]) {
       expect(s.labels).toContain("global-srv");
       expect(s.labels).toContain("project-srv");
@@ -177,13 +202,12 @@ describe("#340 mcp:status — user-scope events reach only the owner and admins"
 
 describe("#340 mcpStatusRooms / mcpStatusRoomsFor", () => {
   it("never sends a user-scope event to the shared room", () => {
-    expect(mcpStatusRooms({ scope: "global" }, null)).toEqual([MCP_STATUS_ROOM]);
-    expect(mcpStatusRooms({ scope: "project" }, null)).toEqual([MCP_STATUS_ROOM]);
-    expect(mcpStatusRooms({ scope: "user" }, "u1")).toEqual([
+    expect(mcpStatusRooms({ scope: "global" })).toEqual([MCP_STATUS_ROOM]);
+    expect(mcpStatusRooms({ scope: "user" }, { ownerId: "u1" })).toEqual([
       mcpStatusOwnerRoom("u1"),
       MCP_STATUS_ADMIN_ROOM,
     ]);
-    expect(mcpStatusRooms({ scope: "user" }, null)).toEqual([MCP_STATUS_ADMIN_ROOM]);
+    expect(mcpStatusRooms({ scope: "user" }, { ownerId: null })).toEqual([MCP_STATUS_ADMIN_ROOM]);
   });
 
   it("puts only admins in the admin room", () => {
@@ -192,5 +216,162 @@ describe("#340 mcpStatusRooms / mcpStatusRoomsFor", () => {
       mcpStatusOwnerRoom("u1"),
     ]);
     expect(mcpStatusRoomsFor({ userId: "a", role: "admin" })).toContain(MCP_STATUS_ADMIN_ROOM);
+  });
+});
+
+describe("#353 mcp:status — project-scope events reach only users who can access the project", () => {
+  it("a workspace project's events reach its members and admins, never another workspace", async () => {
+    const member = await subscribe("u-member", "coordinator", ["ws1"]);
+    const outsider = await subscribe("u-outsider", "coordinator", ["ws2"]);
+    const noWs = await subscribe("u-nows", "coordinator");
+    const admin = await subscribe("u-admin3", "admin");
+    const all = [member, outsider, noWs, admin];
+
+    await mcp.lifecycle.start(
+      config({ id: "pw", label: "ws1-srv", scope: "project", projectId: "p-ws1" }),
+    );
+    await mcp.lifecycle.start(
+      config({ id: "pl", label: "legacy-srv", scope: "project", projectId: "p-legacy" }),
+    );
+    await mcp.lifecycle.start(
+      config({ id: "pm", label: "missing-srv", scope: "project", projectId: "p-missing" }),
+    );
+    await mcp.lifecycle.start(
+      config({ id: "pb", label: "boom-srv", scope: "project", projectId: "p-boom" }),
+    );
+    await mcp.lifecycle.start(config({ id: "pn", label: "noproj-srv", scope: "project" }));
+    await mcp.lifecycle.start(config({ id: "z2", label: "sentinel-353" }));
+    await vi.waitFor(() => {
+      for (const s of all) expect(s.labels).toContain("sentinel-353");
+    });
+
+    // The workspace's member and the admin see it; nobody else does.
+    expect(member.labels).toContain("ws1-srv");
+    expect(admin.labels).toContain("ws1-srv");
+    expect(outsider.labels).not.toContain("ws1-srv");
+    expect(noWs.labels).not.toContain("ws1-srv");
+    expect(admin.labels.filter((l) => l === "ws1-srv")).toHaveLength(1);
+    // A project with no workspace is open to every authenticated user.
+    for (const s of all) expect(s.labels).toContain("legacy-srv");
+    // Unknown project, failed lookup, no project id: admins only (fail closed).
+    for (const label of ["missing-srv", "boom-srv", "noproj-srv"]) {
+      expect(admin.labels, label).toContain(label);
+      for (const s of [member, outsider, noWs]) expect(s.labels, label).not.toContain(label);
+    }
+    // Queued behind async lookups, events still arrive in emit order.
+    expect(admin.labels.slice(-6)).toEqual([
+      "ws1-srv",
+      "legacy-srv",
+      "missing-srv",
+      "boom-srv",
+      "noproj-srv",
+      "sentinel-353",
+    ]);
+  });
+
+  it("puts a subscriber in one room per JWT workspace", () => {
+    expect(
+      mcpStatusRoomsFor({ userId: "u1", role: "coordinator", workspaces: ["a", "b"] }),
+    ).toEqual([
+      MCP_STATUS_ROOM,
+      mcpStatusOwnerRoom("u1"),
+      mcpStatusWorkspaceRoom("a"),
+      mcpStatusWorkspaceRoom("b"),
+    ]);
+  });
+
+  it("routes project events by the project's workspace", () => {
+    expect(mcpStatusRooms({ scope: "project" }, { project: { workspaceId: "w" } })).toEqual([
+      mcpStatusWorkspaceRoom("w"),
+      MCP_STATUS_ADMIN_ROOM,
+    ]);
+    expect(mcpStatusRooms({ scope: "project" }, { project: { workspaceId: null } })).toEqual([
+      MCP_STATUS_ROOM,
+    ]);
+    expect(mcpStatusRooms({ scope: "project" }, { project: null })).toEqual([
+      MCP_STATUS_ADMIN_ROOM,
+    ]);
+    expect(mcpStatusRooms({ scope: "project" })).toEqual([MCP_STATUS_ADMIN_ROOM]);
+  });
+
+  it("a slow project lookup does not let a later event overtake it", async () => {
+    const emitted: string[] = [];
+    const sink = {
+      to: (rooms: string[]) => ({
+        emit: (_ev: "mcp:status", e: { label: string }) => {
+          emitted.push(`${e.label}@${rooms.join(",")}`);
+        },
+      }),
+    };
+    const { emit, drain } = createMcpStatusEmitter(sink, async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      return { workspaceId: "w" };
+    });
+    emit({
+      serverId: "p",
+      label: "p",
+      scope: "project",
+      projectId: "p1",
+      status: "ready",
+      latencyMs: null,
+      failureCount: 0,
+      lastError: null,
+      ts: 0,
+    });
+    emit({
+      serverId: "g",
+      label: "g",
+      scope: "global",
+      projectId: null,
+      status: "ready",
+      latencyMs: null,
+      failureCount: 0,
+      lastError: null,
+      ts: 0,
+    });
+    await drain();
+    await vi.waitFor(() => expect(emitted).toHaveLength(2));
+    expect(emitted).toEqual([
+      `p@${mcpStatusWorkspaceRoom("w")},${MCP_STATUS_ADMIN_ROOM}`,
+      `g@${MCP_STATUS_ROOM}`,
+    ]);
+  });
+
+  it("a throwing sink does not stall later events", async () => {
+    const emitted: string[] = [];
+    const errors: string[] = [];
+    let first = true;
+    const sink = {
+      to: (rooms: string[]) => ({
+        emit: (_ev: "mcp:status", e: { label: string }) => {
+          if (first) {
+            first = false;
+            throw new Error("sink down");
+          }
+          emitted.push(`${e.label}@${rooms.join(",")}`);
+        },
+      }),
+    };
+    const { emit, drain } = createMcpStatusEmitter(
+      sink,
+      async () => null,
+      (err) => errors.push((err as Error).message),
+    );
+    const ev = (label: string) => ({
+      serverId: label,
+      label,
+      scope: "global" as const,
+      projectId: null,
+      status: "ready" as const,
+      latencyMs: null,
+      failureCount: 0,
+      lastError: null,
+      ts: 0,
+    });
+    emit(ev("a"));
+    emit(ev("b"));
+    await drain();
+    expect(errors).toEqual(["sink down"]);
+    expect(emitted).toEqual([`b@${MCP_STATUS_ROOM}`]);
   });
 });
