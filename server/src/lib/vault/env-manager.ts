@@ -25,7 +25,8 @@ const VAULT_REF_PATTERN = /\$\{vault:([^}]+)\}/g;
  * 3. `global:<label>` and `project:<label>` fallback
  *
  * Throws if a reference cannot be resolved — fail-closed semantics so a
- * missing secret never silently runs a process with an empty value.
+ * missing secret never silently runs a process with an empty value — and
+ * (#358) if a label matches more than one live secret.
  */
 export async function expandVaultRefs(
   env: Record<string, string>,
@@ -65,9 +66,18 @@ async function resolveRef(ref: string, vault: VaultService): Promise<string | nu
 
   // 2. label lookup across scopes
   const all = await vault.list();
-  const direct = all.find((s) => s.label === ref || `${s.scope}:${s.label}` === ref);
-  if (direct) {
-    const { plaintext } = await vault.read(direct.id);
+  const matches = all.filter((s) => s.label === ref || `${s.scope}:${s.label}` === ref);
+  // #358 — fail closed on a label that reaches more than one live secret
+  // rather than taking the newest (`vault.list()` order): a colliding secret
+  // created after the reference was bound must never be the one resolved.
+  if (matches.length > 1) {
+    throw new Error(
+      `Vault reference \${vault:${ref}} is ambiguous: it matches more than one secret; ` +
+        "qualify it as global:<label> or project:<label>, or use the secret id",
+    );
+  }
+  if (matches.length === 1) {
+    const { plaintext } = await vault.read(matches[0].id);
     return plaintext;
   }
 

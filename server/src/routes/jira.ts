@@ -23,6 +23,7 @@ import {
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { assertJiraSecretBinding } from "../lib/connectors/connector-secret-binding.js";
 import { AppError } from "../middleware/error-handler.js";
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { authorizeJiraConnection } from "../lib/connectors/connection-authz.js";
@@ -157,6 +158,10 @@ export function jiraRouter(): Router {
         });
       }
       const scope = await scopeOf(req);
+      // #358 — moving a connection must not carry credentials someone else
+      // supplied to a destination this caller chose.
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      await assertJiraSecretBinding(req.user, String(req.params.id), scope, parsed.data);
       const updated = await updateJiraConnection(
         String(req.params.id),
         parsed.data,

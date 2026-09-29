@@ -32,6 +32,9 @@
  * `env-manager.ts`) while the repo service resolves by name; the check takes
  * the UNION of every row a reference could reach and requires all of them to be
  * the caller's, so no resolver can pick a row the check did not approve.
+ * Because the check runs at write time, a secret created LATER under a
+ * colliding label could otherwise win at resolution time; both resolvers
+ * therefore refuse a label that matches more than one live secret (#358).
  */
 import { hasPermission, type AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
@@ -87,14 +90,44 @@ function reaches(ref: string, row: { id: string; name: string }): boolean {
 }
 
 /**
+ * Row filters that together select a SUPERSET of the rows `reaches(ref, row)`
+ * accepts, so the table is read for the referenced ids and labels only (#358)
+ * rather than in full. A row named `<anything>:<label>` reaches `label`, and
+ * `global:<label>` also reaches a bare-named row `label` (its scope defaults to
+ * global), so both suffix and bare-name candidates are included; `reaches`
+ * then refines in memory. An over-broad filter costs rows, never correctness.
+ *
+ * The superset claim does not depend on how Prisma escapes `endsWith`: an
+ * unescaped LIKE `%` or `_` only widens the match, and the one character that
+ * could narrow it (a `\`, Postgres's default LIKE escape) cannot occur in a
+ * reachable label — vault names are `[a-zA-Z0-9_.\-/]` (`createSecretSchema`)
+ * and connector labels `[A-Za-z0-9 _.\-]`, so a ref containing `\` reaches no
+ * row by label in `reaches` either (PR #392 review).
+ */
+function candidateFilters(ref: string): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [
+    { id: ref },
+    { name: ref },
+    { name: { endsWith: `:${ref}` } },
+  ];
+  const scoped = /^(global|project):(.+)$/.exec(ref);
+  if (scoped) {
+    const label = scoped[2];
+    out.push({ name: label }, { name: { endsWith: `:${label}` } });
+  }
+  return out;
+}
+
+/**
  * Every live secret each reference body could resolve to, by id or by label —
- * one read of the secret table per write, however many references it names.
+ * one read of the secret table per write, however many references it names,
+ * filtered to the rows those references could name.
  */
 async function secretsReachableBy(refs: string[]): Promise<Map<string, SecretOwner[]>> {
   const out = new Map<string, SecretOwner[]>();
   if (refs.length === 0) return out;
   const rows = await prisma.secret.findMany({
-    where: { deletedAt: null },
+    where: { deletedAt: null, OR: refs.flatMap(candidateFilters) },
     select: { id: true, name: true, createdById: true },
   });
   for (const ref of refs) {

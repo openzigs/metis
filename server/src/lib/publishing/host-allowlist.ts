@@ -21,7 +21,7 @@ import {
 import { PublishError, type ResolvedRepoTarget } from "./types.js";
 
 /** Always allowed (public GitHub API). */
-const PUBLIC_GITHUB_HOSTS = new Set(["api.github.com"]);
+export const PUBLIC_GITHUB_HOSTS: ReadonlySet<string> = new Set(["api.github.com"]);
 
 export interface ResolveTargetInput {
   owner: string;

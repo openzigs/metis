@@ -155,7 +155,8 @@ function refId(ref: string | null | undefined): string | null {
 
 /**
  * #258 — write one credential. On update, `existingRef` is the connection's own
- * ref for the same field: its secret is rotated in place. With no live secret
+ * ref for the same field: its secret is rotated in place if this writer owns it
+ * (see below). With no live secret
  * behind it (new connection, or the secret was deleted) a new secret is created
  * under a collision-free label. Re-creating under the derived name hit
  * `Secret.name @unique` — held by the connection's own secret, or by a
@@ -167,11 +168,19 @@ async function writeSecret(
   value: string,
   label: string,
   description: string,
+  createdById: string,
 ): Promise<string> {
+  // #344/#358 — `rotateOrCreate` rewrites the existing secret in place only
+  // when `createdById` (this writer) already owns it. A secret someone else
+  // supplied — another user's, or a pre-#358 system-owned one — is left
+  // untouched and a fresh secret owned by this writer is created instead, so
+  // `createdById` always names whoever supplied the current credential. The
+  // PATCH binding check (`assertTestMgmtSecretBinding`) depends on that.
   const { id } = await rotateOrCreate(vault, refId(existingRef), value, {
     label: sanitizeLabelComponent(label),
     scope: "project",
     description,
+    createdById,
   });
   return asVaultRef(id);
 }
@@ -181,6 +190,7 @@ async function persistAuthConfig(
   projectId: string,
   label: string,
   input: CreateTestManagementConnectionInput["auth"],
+  actorId: string,
   existing: Partial<Record<string, string>> = {},
 ): Promise<TestManagementAuthConfigRefs> {
   const base = `testmgmt-${projectId}-${label}`;
@@ -192,6 +202,7 @@ async function persistAuthConfig(
         input.clientId,
         `${base}-client-id`,
         `Xray client_id for ${label}`,
+        actorId,
       );
       const clientSecretRef = await writeSecret(
         vault,
@@ -199,6 +210,7 @@ async function persistAuthConfig(
         input.clientSecret,
         `${base}-client-secret`,
         `Xray client_secret for ${label}`,
+        actorId,
       );
       return { kind: "xray", clientIdRef, clientSecretRef };
     }
@@ -209,6 +221,7 @@ async function persistAuthConfig(
         input.bearerToken,
         `${base}-bearer`,
         `Zephyr bearer token for ${label}`,
+        actorId,
       );
       return { kind: "zephyr", bearerTokenRef };
     }
@@ -219,6 +232,7 @@ async function persistAuthConfig(
         input.apiKey,
         `${base}-api-key`,
         `TestRail API key for ${label}`,
+        actorId,
       );
       return { kind: "testrail", email: input.email, apiKeyRef };
     }
@@ -230,6 +244,7 @@ async function persistTlsConfig(
   projectId: string,
   label: string,
   input: NonNullable<CreateTestManagementConnectionInput["tlsConfig"]>,
+  actorId: string,
   existingCaCertRef: string | null = null,
 ): Promise<PersistedTlsConfig | null> {
   if (!input) return null;
@@ -241,6 +256,7 @@ async function persistTlsConfig(
       input.caCert,
       `testmgmt-${projectId}-${label}-ca`,
       `TLS CA cert for ${label}`,
+      actorId,
     );
   }
   return {
@@ -401,9 +417,9 @@ export async function createTestManagementConnection(
     kind: input.kind,
   });
 
-  const refs = await persistAuthConfig(vault, projectId, input.label, input.auth);
+  const refs = await persistAuthConfig(vault, projectId, input.label, input.auth, actorId);
   const tls = input.tlsConfig
-    ? await persistTlsConfig(vault, projectId, input.label, input.tlsConfig)
+    ? await persistTlsConfig(vault, projectId, input.label, input.tlsConfig, actorId)
     : null;
 
   let row;
@@ -492,6 +508,7 @@ export async function updateTestManagementConnection(
       existing.projectId,
       (data.label as string | undefined) ?? existing.label,
       input.auth,
+      actorId,
       stored,
     );
     data.authConfigJson = JSON.stringify(refs);
@@ -511,6 +528,7 @@ export async function updateTestManagementConnection(
         existing.projectId,
         (data.label as string | undefined) ?? existing.label,
         input.tlsConfig,
+        actorId,
         parseJsonOr<PersistedTlsConfig | null>(existing.tlsConfigJson, null)?.caCertRef ?? null,
       );
       data.tlsConfigJson = tls ? JSON.stringify(tls) : null;

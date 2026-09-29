@@ -10,7 +10,12 @@
 import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { assertSecretBindingAllowed, refBodyOf } from "../vault/secret-binding.js";
-import { dbDestinationChanged, repoDestinationChanged } from "./destination.js";
+import {
+  dbDestinationChanged,
+  jiraDestinationChanged,
+  repoDestinationChanged,
+  testMgmtDestinationChanged,
+} from "./destination.js";
 
 type Caller = Pick<AuthPayload, "userId" | "role">;
 
@@ -83,5 +88,86 @@ export async function assertRepoSecretBinding(
       destinationChanged: repoDestinationChanged(existing, input),
     },
     { target: { type: "repo_connector", id }, metadata: { projectId } },
+  );
+}
+
+/**
+ * #358 — Jira and test-management connections store credentials the writer
+ * typed in (never a reference), so the question is only whether a PATCH moves
+ * credentials someone else supplied. Credentials re-supplied in the same write
+ * are the caller's own (the services create them with `createdById` = caller)
+ * and so are not checked. `projectId` is `undefined` for admins, who are
+ * exempt anyway; an unknown id is left to the service's own 404.
+ */
+export async function assertJiraSecretBinding(
+  user: Caller,
+  id: string,
+  projectId: string | undefined,
+  input: {
+    baseUrl?: string;
+    proxyUrl?: string | null;
+    tlsRejectUnauthorized?: boolean;
+    tlsCaCert?: string | null;
+    apiToken?: string;
+  },
+): Promise<void> {
+  const existing = await prisma.jiraConnection.findFirst({
+    where: { id, deletedAt: null, ...(projectId ? { projectId } : {}) },
+  });
+  if (!existing) return;
+  await assertSecretBindingAllowed(
+    user,
+    {
+      before: refs(existing.secretId),
+      after: input.apiToken ? [] : refs(existing.secretId),
+      destinationChanged: jiraDestinationChanged(existing, input),
+    },
+    { target: { type: "jira_connection", id }, metadata: { projectId: existing.projectId } },
+  );
+}
+
+/** The credential secret ids a test-management connection's `authConfigJson` holds. */
+function testMgmtCredentialIds(authConfigJson: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(authConfigJson);
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== "object") return [];
+  return refs(
+    ...Object.values(parsed as Record<string, unknown>).map((v) =>
+      typeof v === "string" ? refBodyOf(v) : null,
+    ),
+  );
+}
+
+export async function assertTestMgmtSecretBinding(
+  user: Caller,
+  id: string,
+  projectId: string | undefined,
+  input: {
+    baseUrl?: string;
+    proxyConfig?: { url: string } | null;
+    tlsConfig?: { rejectUnauthorized?: boolean; caCert?: string | null } | null;
+    auth?: unknown;
+  },
+): Promise<void> {
+  const existing = await prisma.testManagementConnection.findFirst({
+    where: { id, deletedAt: null, ...(projectId ? { projectId } : {}) },
+  });
+  if (!existing) return;
+  const held = testMgmtCredentialIds(existing.authConfigJson);
+  await assertSecretBindingAllowed(
+    user,
+    {
+      before: held,
+      after: input.auth ? [] : held,
+      destinationChanged: testMgmtDestinationChanged(existing, input),
+    },
+    {
+      target: { type: "test_management_connection", id },
+      metadata: { projectId: existing.projectId },
+    },
   );
 }

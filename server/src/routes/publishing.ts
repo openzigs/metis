@@ -23,6 +23,7 @@ import {
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { assertPublishSecretBinding } from "../lib/publishing/publish-secret-binding.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   approveDraft,
@@ -77,6 +78,9 @@ const VAULT_ERROR_MESSAGES: Record<string, string> = {
   VAULT_REF_UNRESOLVED:
     "That vault secret ref is well-formed but no matching secret exists. " +
     "Check the label against the secrets registered for this workspace.",
+  VAULT_REF_AMBIGUOUS:
+    "That vault secret label matches more than one secret. Qualify it as " +
+    '"${vault:global:label}" or "${vault:project:label}", or use the secret id.',
 };
 
 function asAppError(err: unknown): unknown {
@@ -203,6 +207,15 @@ export function publishingRouter(): Router {
       if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
       if (!hasPermission(req.user.role, requiredPerm)) {
         throw new AppError(403, "FORBIDDEN", `permission ${requiredPerm} required`);
+      }
+      // #358 — a live run sends the token to `targetBaseUrl`, which the caller
+      // chose. A dry run resolves it only locally (M1) and sends it nowhere.
+      if (!parsed.dryRun) {
+        await assertPublishSecretBinding(
+          req.user,
+          { secretRef: parsed.secretRef, baseUrl: parsed.targetBaseUrl },
+          { type: "publish_batch", id: "new" },
+        );
       }
       // F6: route-layer hint only; the service layer is the authoritative
       // enforcer of the cross-project guard.

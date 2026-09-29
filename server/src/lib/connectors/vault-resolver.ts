@@ -13,7 +13,8 @@
  * Returns `null` when the ref is empty (no credential — e.g. a public repo).
  * Throws `ConnectorError(500, "VAULT_REF_UNRESOLVED", ...)` if a non-empty ref
  * fails to resolve — fail-closed semantics so a missing secret never silently
- * connects with an empty value.
+ * connects with an empty value. Throws `ConnectorError(409, "VAULT_REF_AMBIGUOUS")`
+ * when a label matches more than one live secret (#358).
  */
 import { createChildLogger } from "../logger.js";
 import type { VaultService } from "../vault/vault-service.js";
@@ -66,18 +67,38 @@ export async function resolveVaultRef(
   }
 
   // 2. label lookup across scopes
+  let matches: Array<{ id: string }> = [];
   try {
     const all = await vault.list();
-    const direct = all.find((s) => s.label === refBody || `${s.scope}:${s.label}` === refBody);
-    if (direct) {
-      const { plaintext } = await vault.read(direct.id);
-      return plaintext;
-    }
+    matches = all.filter((s) => s.label === refBody || `${s.scope}:${s.label}` === refBody);
   } catch (err) {
     log.warn("Vault list failed during ref resolution", {
       ref: refBody,
       err: (err as Error).message,
     });
+  }
+  // #358 — a label reaching more than one live secret (`global:x` next to
+  // `project:x`) is refused rather than resolved to the newest. The #344
+  // binding check approves a reference at write time; if a colliding secret
+  // created later could win here, a reference bound to the caller's own
+  // secret would silently start sending someone else's.
+  if (matches.length > 1) {
+    throw new ConnectorError(
+      409,
+      "VAULT_REF_AMBIGUOUS",
+      `vault reference \${vault:${refBody}} matches more than one secret; qualify it as global:<label> or project:<label>, or use the secret id`,
+    );
+  }
+  if (matches.length === 1) {
+    try {
+      const { plaintext } = await vault.read(matches[0].id);
+      return plaintext;
+    } catch (err) {
+      log.warn("Vault read failed during ref resolution", {
+        ref: refBody,
+        err: (err as Error).message,
+      });
+    }
   }
 
   throw new ConnectorError(
