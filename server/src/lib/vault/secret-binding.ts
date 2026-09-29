@@ -142,7 +142,13 @@ export async function assertSecretBindingAllowed(
     for (const s of reachableBy.get(ref) ?? []) boundIds.add(s.id);
   }
 
+  const keptRefs = new Set(before);
   for (const ref of after) {
+    // A reference the resource already holds, kept verbatim, while nothing moves:
+    // nothing is attached and nothing is sent anywhere new. This also covers a
+    // reference to a since-deleted secret, which reaches no live row and would
+    // otherwise read as a foreign attach (PR #359 panel).
+    if (!change.destinationChanged && keptRefs.has(ref)) continue;
     const reachable = reachableBy.get(ref) ?? [];
     const alreadyBound = reachable.length > 0 && reachable.every((s) => boundIds.has(s.id));
     if (alreadyBound && !change.destinationChanged) continue;

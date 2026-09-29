@@ -127,6 +127,37 @@ describe("#344 secret binding — assertSecretBindingAllowed", () => {
     );
   });
 
+  // PR #359 panel (over-blocking): an admin soft-deletes a connector's secret,
+  // then a coordinator edits only its branch. The kept reference now reaches no
+  // live secret, and it must not read as a new attach: nothing is attached and
+  // nothing moves.
+  it("a kept reference to a deleted secret does not block an edit that moves nothing", async () => {
+    for (const ref of ["s-deleted", "gone-label"]) {
+      await assertSecretBindingAllowed(
+        COORD,
+        { before: [ref], after: [ref], destinationChanged: false },
+        ctx,
+      );
+    }
+    expect(audit).not.toHaveBeenCalled();
+    // Moving the destination while keeping it is still refused (fail closed).
+    await refused(
+      assertSecretBindingAllowed(
+        COORD,
+        { before: ["s-deleted"], after: ["s-deleted"], destinationChanged: true },
+        ctx,
+      ),
+    );
+    // Swapping in a different unknown reference is still a new attach.
+    await refused(
+      assertSecretBindingAllowed(
+        COORD,
+        { before: ["s-deleted"], after: ["nope"], destinationChanged: false },
+        ctx,
+      ),
+    );
+  });
+
   it("unknown references are refused as not owned", async () => {
     await refused(
       assertSecretBindingAllowed(
