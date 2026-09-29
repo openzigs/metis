@@ -42,6 +42,14 @@ const FIELD_LABELS: Record<string, string> = { name: "Name", slug: "Slug" };
 // SC 3.3.3 requires we suggest the normalized correction rather than only flag it.
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
+// #23 — a Name may run to 128 characters but a slug only to 64
+// (`projectSchema`, packages/shared/src/project.ts), so the derived slug is cut
+// to fit, without leaving a trailing hyphen at the cut.
+const SLUG_MAX = 64;
+function deriveSlug(name: string): string {
+  return normalizeSlug(name).slice(0, SLUG_MAX).replace(/-+$/, "");
+}
+
 export interface ProjectCreateFormProps {
   /** Active workspace the project should be created in (optional). */
   workspaceId?: string | null;
@@ -167,7 +175,7 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
           value={name}
           onChange={(e) => {
             setName(e.target.value);
-            if (!slugEdited) setSlug(normalizeSlug(e.target.value));
+            if (!slugEdited) setSlug(deriveSlug(e.target.value));
             setServerFieldErrors((prev) => {
               if (!prev.name) return prev;
               const { name: _omit, ...rest } = prev;
@@ -197,7 +205,12 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
             // Clearing the field hands it back to the Name-derived value.
             setSlugEdited(next !== "");
           }}
-          onBlur={() => markTouched("slug")}
+          onBlur={() => {
+            // Refilled on leaving rather than on clearing, so emptying the field
+            // to type a new slug is not fought character by character.
+            if (slug === "") setSlug(deriveSlug(name));
+            markTouched("slug");
+          }}
           pattern="[a-z0-9][a-z0-9\-]*"
           aria-invalid={slugError ? true : undefined}
           aria-describedby={slugError ? "slug-help slug-error" : "slug-help"}

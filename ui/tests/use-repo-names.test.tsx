@@ -38,6 +38,22 @@ describe("repoNamesById", () => {
   });
 });
 
+describe("repoNamesById — malformed elements", () => {
+  // #23 review — the Array.isArray guard promised "never throws", but a null
+  // element threw on `c.id`.
+  it("skips null and id-less elements instead of throwing", () => {
+    expect(
+      repoNamesById([
+        null,
+        7,
+        { label: "no id" },
+        { id: "c1", repoName: "metis", label: "x" },
+        { id: "c2" },
+      ]),
+    ).toEqual({ c1: "metis", c2: "c2" });
+  });
+});
+
 describe("useRepoNames", () => {
   it("loads the project's repo connectors and returns the id → name map", async () => {
     list.mockResolvedValue([{ id: "c1", repoName: "metis", label: "x" }]);

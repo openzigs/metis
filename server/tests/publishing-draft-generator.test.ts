@@ -195,7 +195,59 @@ describe("generateDrafts", () => {
       fakeAnalysis.metadata = saved;
     }
     const epic = [...drafts.values()].find((d) => d.draftType === "epic");
-    expect(epic?.title).toBe("[Epic] Apollo — Analysis of 2026-09-29 14:05 UTC");
+    expect(epic?.title).toBe("[Epic] Apollo — Analysis of 2026-09-29 14:05:00 UTC");
+  });
+
+  // #23 review — the epic title is also its dedup key (the publisher recomputes
+  // the hash from the title), so two analyses whose requirement text opens with
+  // the same line must not share an epic draft: B would overwrite A's body and
+  // metadata while keeping A's approved/published status, and publishing would
+  // then edit A's GitHub epic in place.
+  it("never merges the epic drafts of two analyses that share a first line", async () => {
+    const opts = { projectId: "proj_1", targetOwner: "acme", targetRepo: "metis" };
+    await generateDrafts({ ...opts, analysisId: "analysis_1" });
+    const epicA = [...drafts.values()].find((d) => d.draftType === "epic");
+    if (!epicA) throw new Error("epic A missing");
+    epicA.status = "published";
+    const snapshotA = { ...epicA };
+
+    const savedId = fakeAnalysis.id;
+    const savedStart = fakeAnalysis.startedAt;
+    fakeAnalysis.id = "analysis_2";
+    fakeAnalysis.startedAt = new Date("2026-09-29T15:00:00.000Z");
+    try {
+      const runB = await generateDrafts({ ...opts, analysisId: "analysis_2" });
+      expect(runB.epics).toBe(1);
+      // Re-running B refreshes B's epic; it does not mint a third one.
+      await generateDrafts({ ...opts, analysisId: "analysis_2" });
+    } finally {
+      fakeAnalysis.id = savedId;
+      fakeAnalysis.startedAt = savedStart;
+    }
+
+    const epics = [...drafts.values()].filter((d) => d.draftType === "epic");
+    expect(epics).toHaveLength(2);
+    expect(drafts.get(epicA.id)).toEqual(snapshotA);
+    const epicB = epics.find((d) => d.id !== epicA.id);
+    expect(epicB?.title).not.toBe(epicA.title);
+    expect(epicB?.dedupHash).not.toBe(epicA.dedupHash);
+    expect(epicB?.title).toBe("[Epic] Apollo — Self-service password reset (2)");
+    expect(JSON.parse(epicB?.metadata ?? "{}").analysisId).toBe("analysis_2");
+    expect(epicB?.status).toBe("draft");
+  });
+
+  it("treats an epic draft with unreadable metadata as another analysis's", async () => {
+    const opts = { projectId: "proj_1", targetOwner: "acme", targetRepo: "metis" };
+    await generateDrafts({ ...opts, analysisId: "analysis_1" });
+    const epic = [...drafts.values()].find((d) => d.draftType === "epic");
+    if (!epic) throw new Error("epic missing");
+    epic.metadata = "{not json";
+    await generateDrafts({ ...opts, analysisId: "analysis_1" });
+    const titles = [...drafts.values()].filter((d) => d.draftType === "epic").map((d) => d.title);
+    expect(titles).toEqual([
+      "[Epic] Apollo — Self-service password reset",
+      "[Epic] Apollo — Self-service password reset (2)",
+    ]);
   });
 
   it("rejects when project missing", async () => {

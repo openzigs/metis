@@ -12,7 +12,9 @@
  *
  * The title is also the draft's dedup key (`computeDedupHash`), so the same
  * analysis must always produce the same title — every input here is fixed once
- * the run has started.
+ * the run has started. It is not unique across analyses — two runs can share a
+ * first line — so `draft-generator.ts` (`claimEpicTitle`) adds an `(n)` suffix
+ * when another analysis already holds the title.
  */
 
 /** Maximum length of the part after `[Epic] <project> — `. */
@@ -59,8 +61,9 @@ function truncate(subject: string): string {
 
 function formatStartedAt(startedAt: Date | null | undefined): string | null {
   if (!(startedAt instanceof Date) || Number.isNaN(startedAt.getTime())) return null;
-  // "2026-09-29T14:05:33.000Z" → "2026-09-29 14:05 UTC"
-  return `${startedAt.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  // "2026-09-29T14:05:33.000Z" → "2026-09-29 14:05:33 UTC" — to the second, so
+  // runs started in the same minute stay apart.
+  return `${startedAt.toISOString().slice(0, 19).replace("T", " ")} UTC`;
 }
 
 function subjectFor(analysis: EpicTitleAnalysis): string {

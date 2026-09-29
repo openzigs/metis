@@ -16,18 +16,19 @@ import { repoConnectorsApi } from "@/lib/connectors-api";
 
 export type RepoNameMap = Readonly<Record<string, string>>;
 
-type NamedConnector = Pick<RepoConnector, "id" | "label"> & { repoName?: string | null };
+type NamedConnector = Pick<RepoConnector, "id" | "label" | "repoName">;
 
 /**
  * Connector id → repository name, falling back to the connector's label.
- * Anything other than an array yields an empty map: a label is cosmetic and
- * must never take down the page that renders it.
+ * Anything other than an array yields an empty map, and a malformed element is
+ * skipped: a label is cosmetic and must never take down the page that renders it.
  */
 export function repoNamesById(connectors: unknown): RepoNameMap {
   const out: Record<string, string> = {};
   if (!Array.isArray(connectors)) return out;
-  for (const c of connectors as NamedConnector[]) {
-    out[c.id] = c.repoName?.trim() || c.label;
+  for (const c of connectors as Array<Partial<NamedConnector> | null>) {
+    if (!c || typeof c.id !== "string") continue;
+    out[c.id] = c.repoName?.trim() || c.label || c.id;
   }
   return out;
 }

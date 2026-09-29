@@ -85,6 +85,41 @@ describe("ProjectCreateForm", () => {
     expect(slug).toHaveValue("acme-labs");
   });
 
+  // #23 review — clearing the Slug used to leave it empty ("Slug is required")
+  // until the Name changed. It refills from the current Name once focus leaves.
+  it("refills a cleared Slug from the current Name on blur (#23)", async () => {
+    const user = userEvent.setup();
+    renderForm();
+    const slug = screen.getByTestId("project-slug-input");
+    await user.type(screen.getByTestId("project-name-input"), "Acme Labs");
+    await user.clear(slug);
+    await user.type(slug, "custom");
+    await user.clear(slug);
+    // Still focused: an emptied field is left for the user to type into.
+    expect(slug).toHaveValue("");
+    await user.tab();
+    expect(slug).toHaveValue("acme-labs");
+    expect(screen.getByTestId("project-create-submit")).toBeEnabled();
+  });
+
+  // #23 review — a Name may be 128 characters but a slug only 64
+  // (packages/shared/src/project.ts), so the derived slug is capped.
+  it("caps the derived Slug at the schema's 64 characters (#23)", async () => {
+    const user = userEvent.setup();
+    renderForm();
+    // 63 × "a", then a space: an uncapped cut at 64 would end in a hyphen.
+    await user.type(
+      screen.getByTestId("project-name-input"),
+      `${"a".repeat(63)} ${"b".repeat(40)}`,
+    );
+    const value = (screen.getByTestId("project-slug-input") as HTMLInputElement).value;
+    expect(value).toBe("a".repeat(63));
+    expect(screen.getByTestId("project-create-submit")).toBeEnabled();
+    await user.clear(screen.getByTestId("project-name-input"));
+    await user.type(screen.getByTestId("project-name-input"), "c".repeat(100));
+    expect(screen.getByTestId("project-slug-input")).toHaveValue("c".repeat(64));
+  });
+
   it("explains why Create is disabled when the Name yields no Slug (#23)", async () => {
     const user = userEvent.setup();
     renderForm();

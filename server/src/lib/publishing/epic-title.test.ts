@@ -75,16 +75,16 @@ describe("buildEpicTitle", () => {
       { label: 42 },
     ]) {
       expect(buildEpicTitle("METIS", analysis(meta))).toBe(
-        "[Epic] METIS — Analysis of 2026-09-29 14:05 UTC",
+        "[Epic] METIS — Analysis of 2026-09-29 14:05:33 UTC",
       );
     }
   });
 
   it("tolerates unparseable metadata", () => {
     const a = { id: "cmubq3ls", startedAt: STARTED, metadata: "{not json" };
-    expect(buildEpicTitle("METIS", a)).toBe("[Epic] METIS — Analysis of 2026-09-29 14:05 UTC");
+    expect(buildEpicTitle("METIS", a)).toBe("[Epic] METIS — Analysis of 2026-09-29 14:05:33 UTC");
     const arr = { id: "cmubq3ls", startedAt: STARTED, metadata: "[1,2]" };
-    expect(buildEpicTitle("METIS", arr)).toBe("[Epic] METIS — Analysis of 2026-09-29 14:05 UTC");
+    expect(buildEpicTitle("METIS", arr)).toBe("[Epic] METIS — Analysis of 2026-09-29 14:05:33 UTC");
   });
 
   it("uses a plain subject when the start time is unavailable", () => {
