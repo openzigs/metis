@@ -51,7 +51,7 @@ and applies all Prisma migrations to a fresh SQLite database.
 | Server | Port | Command |
 | ------ | ---- | ------- |
 | API    | 4101 | `node scripts/prepare-e2e-stack.mjs && pnpm --filter @metis/server exec tsx src/index.ts` |
-| UI     | 3101 | `pnpm --filter @metis/ui exec next dev --webpack -p 3101` |
+| UI     | 3101 | `pnpm --filter @metis/ui exec next build --webpack && pnpm --filter @metis/ui exec next start -p 3101` |
 
 These ports are intentionally separate from the dev stack on `:4000` / `:3000`
 (see `scripts/restart.sh --detached`) so `pnpm --filter @metis/e2e test` is

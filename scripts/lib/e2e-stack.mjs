@@ -13,10 +13,15 @@
  * if the preparation step is ever dropped from the command again, the run
  * fails in `globalSetup` instead of silently booting against nothing.
  *
- * #342 — the UI web server is pinned to webpack. Turbopack panicked mid-suite
- * ("an internal panic occurred outside the per-task panic boundary") and took
- * every later spec down with ERR_CONNECTION_REFUSED; the UI package's own
- * `dev` script already runs `next dev --webpack`.
+ * #342 — the UI web server serves a production build (`next build --webpack`
+ * then `next start`), so no dev compiler runs during the suite. On Turbopack
+ * dev an internal panic ("an internal panic occurred outside the per-task
+ * panic boundary") killed the server mid-suite and every later spec failed
+ * with ERR_CONNECTION_REFUSED. Webpack *dev* was measured on CI and rejected:
+ * compiling each route on first visit doubled the suite (the first 431 specs
+ * took 2,543 s against 1,211 s on Turbopack), ran past the job's 45-minute cap,
+ * and turned a first-visit spec flaky. The build uses webpack, as
+ * ui/package.json's `build` script does.
  *
  * Imported by `e2e/playwright.config.ts`, `e2e/global-setup.ts` and the
  * runner `scripts/prepare-e2e-stack.mjs`; pure except for the file-system
@@ -108,10 +113,13 @@ export function apiServerCommand() {
 }
 
 /**
- * Command for the UI web server, pinned to webpack (#342).
+ * Command for the UI web server: build with webpack, then serve (#342).
  *
  * @param {number} port
  */
 export function uiServerCommand(port) {
-  return `pnpm --filter @metis/ui exec next dev --webpack -p ${port}`;
+  return (
+    "pnpm --filter @metis/ui exec next build --webpack && " +
+    `pnpm --filter @metis/ui exec next start -p ${port}`
+  );
 }

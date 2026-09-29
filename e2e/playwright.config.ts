@@ -186,16 +186,20 @@ export default defineConfig({
           },
         },
         {
-          // #342 — webpack, not Turbopack: a Turbopack internal panic killed
-          // this server mid-suite and every later spec failed with
-          // ERR_CONNECTION_REFUSED. Matches ui/package.json's `dev` script.
+          // #342 — a webpack production build, then `next start`: no dev
+          // compiler runs during the suite. A Turbopack dev panic killed this
+          // server mid-suite (every later spec: ERR_CONNECTION_REFUSED), and
+          // webpack dev doubled the suite's run time. See scripts/lib/e2e-stack.mjs.
           command: uiServerCommand(PORT_UI),
           url: BASE_URL,
-          timeout: 180_000,
+          // Covers the build as well as the boot.
+          timeout: 420_000,
           reuseExistingServer: false,
           cwd: REPO_ROOT,
           env: {
-            NODE_ENV: "development",
+            // `next build` / `next start` expect production; NEXT_PUBLIC_* below
+            // are inlined by the build, which runs inside this same command.
+            NODE_ENV: "production",
             // The Next.js auth proxy (ui/src/lib/auth-proxy.ts) reads
             // METIS_API_URL — point it at the test API.
             METIS_API_URL: `${API_BASE}/api`,

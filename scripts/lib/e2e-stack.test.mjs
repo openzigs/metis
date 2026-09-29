@@ -122,8 +122,14 @@ describe("web server commands", () => {
     expect(cmd).not.toMatch(/;|\|\|/);
   });
 
-  it("UI: pins next dev to webpack (#342)", () => {
-    expect(uiServerCommand(3999)).toBe("pnpm --filter @metis/ui exec next dev --webpack -p 3999");
+  it("UI: serves a webpack production build, never a dev compiler (#342)", () => {
+    const cmd = uiServerCommand(3999);
+    expect(cmd).toBe(
+      "pnpm --filter @metis/ui exec next build --webpack && " +
+        "pnpm --filter @metis/ui exec next start -p 3999",
+    );
+    // Neither Turbopack nor any `next dev` compiler runs during the suite.
+    expect(cmd).not.toMatch(/next dev|--turbo/);
   });
 
   it("the runner the API command names exists", () => {
