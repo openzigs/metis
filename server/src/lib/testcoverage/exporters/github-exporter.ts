@@ -18,6 +18,7 @@
  * `runBatch`.
  */
 import { prisma } from "../../prisma.js";
+import { isUniqueViolation } from "../../db/prisma-errors.js";
 import { createBatch, executeBatch } from "../../publishing/publishing-service.js";
 import type { CreatePublishBatchInput } from "@metis/shared";
 
@@ -64,19 +65,15 @@ export async function exportSuggestionsToGithub(
   for (let i = 0; i < suggestions.length; i += 1) {
     const s = suggestions[i];
     const preview = previews[i];
-    const draft = await prisma.issueDraft.create({
-      data: {
-        projectId: options.projectId,
+    draftIds.push(
+      await upsertExportDraft(options.projectId, s.id, {
         requirementId: s.mappedRequirementIds[0] ?? null,
         parentDraftId: null,
         draftType: "task",
         title: preview.title,
         body: preview.body,
         labels: JSON.stringify(preview.labels),
-        assignees: JSON.stringify([]),
         storyPoints: storyPointsFor(s),
-        status: "draft",
-        dedupHash: s.id, // suggestion id is already a stable dedup key
         metadata: JSON.stringify({
           source: "test-coverage-export",
           suggestionId: s.id,
@@ -84,10 +81,8 @@ export async function exportSuggestionsToGithub(
           faithfulness: s.faithfulness,
           lowConfidence: s.lowConfidence,
         }),
-      },
-      select: { id: true },
-    });
-    draftIds.push(draft.id);
+      }),
+    );
   }
 
   const batchInput: CreatePublishBatchInput = {
@@ -110,6 +105,68 @@ export async function exportSuggestionsToGithub(
   await executeBatch({ batchId: batch.id, actorId: options.actorId });
   return { batchId: batch.id, draftIds, dryRun: false, previews };
 }
+
+interface ExportDraftContent {
+  readonly requirementId: string | null;
+  readonly parentDraftId: null;
+  readonly draftType: "task";
+  readonly title: string;
+  readonly body: string;
+  readonly labels: string;
+  readonly storyPoints: number;
+  readonly metadata: string;
+}
+
+/**
+ * #369 — at most one live draft may hold a `(projectId, dedupHash)`, and the
+ * suggestion id is this exporter's dedup key, so a re-export must reuse the
+ * suggestion's live draft rather than insert a second one. That includes the
+ * drafts a previous export left behind when `createBatch` refused it (#619
+ * approval gate): the retry after approval picks them up instead of failing.
+ *
+ * Status: `approved` is kept; `draft`, `failed` and `published` go back to
+ * `draft` so the draft can join the new batch (a published one republishes,
+ * and the publisher's title-hash dedup updates its existing issue, as a
+ * second draft with the same title did before #369). `publishing` is left
+ * alone, so `createBatch` rejects the batch as DRAFT_INELIGIBLE rather than
+ * publishing one draft from two batches at once.
+ *
+ * A concurrent export can insert between the read and the create; the unique
+ * index then rejects ours (P2002) and the loop re-reads and updates theirs.
+ */
+async function upsertExportDraft(
+  projectId: string,
+  dedupHash: string,
+  content: ExportDraftContent,
+): Promise<string> {
+  for (let attempt = 1; ; attempt += 1) {
+    const existing = await prisma.issueDraft.findFirst({
+      where: { projectId, dedupHash, deletedAt: null },
+      select: { id: true, status: true },
+    });
+    if (existing) {
+      await prisma.issueDraft.update({
+        where: { id: existing.id },
+        data: {
+          ...content,
+          status: REUSABLE_AS_DRAFT.has(existing.status) ? "draft" : existing.status,
+        },
+      });
+      return existing.id;
+    }
+    try {
+      const created = await prisma.issueDraft.create({
+        data: { ...content, projectId, dedupHash, assignees: "[]", status: "draft" },
+        select: { id: true },
+      });
+      return created.id;
+    } catch (err) {
+      if (!isUniqueViolation(err) || attempt >= 2) throw err;
+    }
+  }
+}
+
+const REUSABLE_AS_DRAFT: ReadonlySet<string> = new Set(["draft", "failed", "published"]);
 
 export function renderTestCaseBody(s: ExportableSuggestion): string {
   const stepsBlock = s.steps

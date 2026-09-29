@@ -8,12 +8,18 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const draftCreate = vi.fn();
+const draftFindFirst = vi.fn();
+const draftUpdate = vi.fn();
 const createBatch = vi.fn();
 const executeBatch = vi.fn();
 
 vi.mock("../../../src/lib/prisma.js", () => ({
   prisma: {
-    issueDraft: { create: (...args: unknown[]) => draftCreate(...args) },
+    issueDraft: {
+      create: (...args: unknown[]) => draftCreate(...args),
+      findFirst: (...args: unknown[]) => draftFindFirst(...args),
+      update: (...args: unknown[]) => draftUpdate(...args),
+    },
   },
 }));
 
@@ -26,6 +32,8 @@ const importExporter = async () => import("../../../src/lib/testcoverage/index.j
 
 beforeEach(() => {
   draftCreate.mockReset();
+  draftFindFirst.mockReset().mockResolvedValue(null);
+  draftUpdate.mockReset().mockResolvedValue({});
   createBatch.mockReset();
   executeBatch.mockReset();
 });
@@ -199,5 +207,74 @@ describe("exportSuggestionsToGithub", () => {
     expect(draftCreate.mock.calls[1][0].data.storyPoints).toBe(3);
     expect(draftCreate.mock.calls[2][0].data.storyPoints).toBe(1);
     expect(draftCreate.mock.calls[3][0].data.storyPoints).toBe(2);
+  });
+
+  describe("#369 — reuses the suggestion's live draft instead of inserting a duplicate", () => {
+    const opts = { projectId: "p1", targetOwner: "o", targetRepo: "r", actorId: "u1" };
+    const p2002 = () => Object.assign(new Error("unique"), { code: "P2002" });
+
+    beforeEach(() => {
+      createBatch.mockResolvedValue({ id: "batch-r" });
+      executeBatch.mockResolvedValue({});
+    });
+
+    it("looks the draft up by project + suggestion id among live rows only", async () => {
+      draftCreate.mockResolvedValue({ id: "d-new" });
+      const { exportSuggestionsToGithub } = await importExporter();
+      await exportSuggestionsToGithub([sample({ id: "s-9" })], opts);
+      expect(draftFindFirst.mock.calls[0][0].where).toEqual({
+        projectId: "p1",
+        dedupHash: "s-9",
+        deletedAt: null,
+      });
+    });
+
+    it.each([
+      ["draft", "draft"],
+      ["failed", "draft"],
+      ["published", "draft"],
+      ["approved", "approved"],
+      ["publishing", "publishing"],
+    ])("updates an existing %s draft in place (status -> %s)", async (from, to) => {
+      draftFindFirst.mockResolvedValue({ id: "d-old", status: from });
+      const { exportSuggestionsToGithub } = await importExporter();
+      const r = await exportSuggestionsToGithub([sample({ title: "New title" })], opts);
+      expect(draftCreate).not.toHaveBeenCalled();
+      expect(r.draftIds).toEqual(["d-old"]);
+      const call = draftUpdate.mock.calls[0][0];
+      expect(call.where).toEqual({ id: "d-old" });
+      expect(call.data.status).toBe(to);
+      expect(call.data.title).toBe("New title");
+      expect(call.data).not.toHaveProperty("assignees");
+      expect(createBatch.mock.calls[0][0].input.draftIds).toEqual(["d-old"]);
+    });
+
+    it("on a lost insert race (P2002) re-reads and updates the winner's draft", async () => {
+      draftFindFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: "d-winner", status: "draft" });
+      draftCreate.mockRejectedValueOnce(p2002());
+      const { exportSuggestionsToGithub } = await importExporter();
+      const r = await exportSuggestionsToGithub([sample()], opts);
+      expect(r.draftIds).toEqual(["d-winner"]);
+      expect(draftUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it("rethrows a non-unique create error without retrying", async () => {
+      draftCreate.mockRejectedValueOnce(Object.assign(new Error("boom"), { code: "P1001" }));
+      const { exportSuggestionsToGithub } = await importExporter();
+      await expect(exportSuggestionsToGithub([sample()], opts)).rejects.toThrow("boom");
+      expect(draftFindFirst).toHaveBeenCalledTimes(1);
+      expect(createBatch).not.toHaveBeenCalled();
+    });
+
+    it("gives up after a second lost race rather than looping", async () => {
+      draftCreate.mockRejectedValue(p2002());
+      const { exportSuggestionsToGithub } = await importExporter();
+      await expect(exportSuggestionsToGithub([sample()], opts)).rejects.toMatchObject({
+        code: "P2002",
+      });
+      expect(draftCreate).toHaveBeenCalledTimes(2);
+    });
   });
 });

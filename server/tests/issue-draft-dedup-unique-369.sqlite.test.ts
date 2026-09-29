@@ -30,7 +30,13 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 
+// The exporter's batch calls are stubbed: the drafts it writes are the subject.
+const publishing = vi.hoisted(() => ({ createBatch: vi.fn(), executeBatch: vi.fn() }));
+vi.mock("../src/lib/publishing/publishing-service.js", () => publishing);
+
 const { generateDrafts } = await import("../src/lib/publishing/draft-generator.js");
+const { exportSuggestionsToGithub } =
+  await import("../src/lib/testcoverage/exporters/github-exporter.js");
 
 const MIGRATION = "20261001000000_issue369_issue_draft_dedup_unique";
 const T0 = "2026-09-01T00:00:00.000Z";
@@ -168,6 +174,57 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(featureB.dedupHash).not.toBe(afterA.dedupHash);
       expect(featureB.body).toContain("Body from an_b");
       expect(featureB.status).toBe("draft");
+    });
+
+    it("lets a test-coverage export be retried after createBatch refused the first attempt", async () => {
+      const suggestion = (id: string) => ({
+        id,
+        title: `Case ${id}`,
+        gwt: { given: ["g"], when: ["w"], then: ["t"] },
+        steps: [],
+        priority: "high" as const,
+        tags: [],
+        mappedRequirementIds: [],
+        faithfulness: 0.9,
+        lowConfidence: false,
+      });
+      const opts = { projectId: "p2", targetOwner: "acme", targetRepo: "metis", actorId: "u1" };
+      const live = () =>
+        db.issueDraft.findMany({
+          where: { projectId: "p2", dedupHash: { in: ["sg1", "sg2"] }, deletedAt: null },
+          orderBy: { dedupHash: "asc" },
+        });
+
+      // First attempt: the drafts are written, then the #619 approval gate refuses the batch.
+      publishing.createBatch.mockRejectedValueOnce(
+        Object.assign(new Error("approval required"), { status: 409, code: "APPROVAL_REQUIRED" }),
+      );
+      await expect(
+        exportSuggestionsToGithub([suggestion("sg1"), suggestion("sg2")], opts),
+      ).rejects.toMatchObject({ code: "APPROVAL_REQUIRED" });
+      const stranded = await live();
+      expect(stranded.map((d) => d.status)).toEqual(["draft", "draft"]);
+
+      // Retry after approval: the stranded drafts are reused, not duplicated.
+      publishing.createBatch.mockResolvedValueOnce({ id: "batch-1" });
+      const retry = await exportSuggestionsToGithub([suggestion("sg1"), suggestion("sg2")], opts);
+      expect(retry.draftIds).toEqual(stranded.map((d) => d.id));
+      expect(publishing.createBatch.mock.calls.at(-1)?.[0].input.draftIds).toEqual(
+        stranded.map((d) => d.id),
+      );
+
+      // A published draft re-exports as a draft again; an in-flight one is left alone.
+      await db.issueDraft.update({ where: { id: stranded[0].id }, data: { status: "published" } });
+      await db.issueDraft.update({ where: { id: stranded[1].id }, data: { status: "publishing" } });
+      publishing.createBatch.mockResolvedValueOnce({ id: "batch-2" });
+      await exportSuggestionsToGithub(
+        [{ ...suggestion("sg1"), title: "Renamed" }, suggestion("sg2")],
+        opts,
+      );
+      const after = await live();
+      expect(after.map((d) => d.id)).toEqual(stranded.map((d) => d.id));
+      expect(after.map((d) => d.status)).toEqual(["draft", "publishing"]);
+      expect(after[0].title).toBe("Renamed");
     });
   },
 );

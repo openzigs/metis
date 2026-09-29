@@ -24,6 +24,7 @@ import {
   type RequirementSupportConfidence,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 import { createChildLogger } from "../logger.js";
 import { computeDedupHash } from "./dedup.js";
 import { buildEpicTitle } from "./epic-title.js";
@@ -223,11 +224,6 @@ async function claimAndUpsertDraft(
       log.warn("draft title claimed concurrently; re-claiming", { title, attempt });
     }
   }
-}
-
-/** Prisma's unique-index violation (`P2002`), matched on its code alone. */
-function isUniqueViolation(err: unknown): boolean {
-  return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2002";
 }
 
 function draftAnalysisId(metadata: string | null): unknown {
