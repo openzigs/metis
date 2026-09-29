@@ -118,35 +118,20 @@ export default function WorkbenchPage() {
       tasksApi.list({ ...(activeProjectId ? { projectId: activeProjectId } : {}), take: 10 }),
   });
 
-  // Open a session whenever the active project or agent changes.
+  // #361 — a session is created on the first send, never on page load. Every
+  // load used to POST one per effect run (initial render, the project list
+  // resolving, StrictMode's double-invoke), leaving empty "Workbench" sessions
+  // in Recent. A change of project or agent drops the current session; the
+  // next send opens one in the new scope. `scopeRef` lets a create still in
+  // flight from the old scope see that it is stale and discard its result.
+  const scopeRef = useRef(0);
   useEffect(() => {
-    let cancelled = false;
+    scopeRef.current += 1;
     abortRef.current?.abort();
     setSession(null);
     setMessages([]);
     resetToolActivity();
-    void (async () => {
-      try {
-        const s = await createSession({
-          title: "Workbench",
-          ...(activeProjectId ? { projectId: activeProjectId } : {}),
-          ...sessionAgentInput(layout.agentKey, activeProjectId),
-        });
-        if (cancelled) return;
-        setSession(s);
-        recentTracker.touch({
-          kind: "session",
-          id: s.id,
-          label: s.title,
-          href: `/chat?session=${encodeURIComponent(s.id)}`,
-          ...(activeProjectId ? { projectId: activeProjectId } : {}),
-        });
-      } catch (err) {
-        if (!cancelled) setError((err as Error).message);
-      }
-    })();
     return () => {
-      cancelled = true;
       abortRef.current?.abort();
     };
   }, [activeProjectId, layout.agentKey, resetToolActivity]);
@@ -174,7 +159,30 @@ export default function WorkbenchPage() {
   }
 
   async function handleSend() {
-    if (!session || !input.trim() || streaming) return;
+    if (!input.trim() || streaming) return;
+    const scope = scopeRef.current;
+    setStreaming(true);
+    setError(null);
+    let active = session;
+    if (!active) {
+      try {
+        active = await createSession({
+          title: "Workbench",
+          ...(activeProjectId ? { projectId: activeProjectId } : {}),
+          ...sessionAgentInput(layout.agentKey, activeProjectId),
+        });
+      } catch (err) {
+        if (scopeRef.current === scope) setError((err as Error).message);
+        setStreaming(false);
+        return;
+      }
+      // The project or agent changed while the create was in flight.
+      if (scopeRef.current !== scope) {
+        setStreaming(false);
+        return;
+      }
+      setSession(active);
+    }
     const composed = composeWithContext(input, contextDocs);
     const userMsg: DisplayMessage = {
       id: crypto.randomUUID(),
@@ -189,13 +197,11 @@ export default function WorkbenchPage() {
     setMessages([...messages, userMsg, assistantMsg]);
     resetToolActivity();
     setInput("");
-    setStreaming(true);
-    setError(null);
     const controller = new AbortController();
     abortRef.current = controller;
     try {
       // #136 — only the new message goes up; the server holds the history.
-      for await (const ev of streamChat(session.id, composed, controller.signal)) {
+      for await (const ev of streamChat(active.id, composed, controller.signal)) {
         handleStream(ev, assistantMsg.id);
       }
     } catch (err) {
@@ -204,6 +210,16 @@ export default function WorkbenchPage() {
       setStreaming(false);
       abortRef.current = null;
     }
+    // #361 — recorded once a turn has happened (as Chat does, #1367), so an
+    // unused session never reaches Recent or the dashboard's Recent activity.
+    // Chat resumes a session from `?sessionId=`.
+    recentTracker.touch({
+      kind: "session",
+      id: active.id,
+      label: active.title,
+      href: `/chat?sessionId=${encodeURIComponent(active.id)}`,
+      ...(active.projectId ? { projectId: active.projectId } : {}),
+    });
   }
 
   function handleStream(ev: StreamEvent, assistantMsgId: string) {
@@ -365,7 +381,7 @@ export default function WorkbenchPage() {
                 disabled={streaming}
               />
               <span className="text-xs text-muted-foreground">
-                {session ? `${session.provider} · ${session.model}` : "starting…"}
+                {session ? `${session.provider} · ${session.model}` : "new session"}
               </span>
             </div>
           </div>
@@ -459,12 +475,12 @@ export default function WorkbenchPage() {
               placeholder="Ask anything… (type / for commands)"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              disabled={!session || streaming}
+              disabled={streaming}
               data-testid="workbench-input"
             />
             <Button
               type="submit"
-              disabled={!session || !input.trim() || streaming}
+              disabled={!input.trim() || streaming}
               data-testid="workbench-send"
             >
               {streaming ? "Streaming…" : "Send"}
