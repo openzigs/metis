@@ -416,13 +416,28 @@ export class VaultService {
    * delete that lands between a caller's check and this write cannot be
    * written through: a missing or soft-deleted id throws
    * {@link SecretNotFoundError} and nothing is stored.
+   *
+   * #344 — `onlyIfCreatedBy` makes the rotation conditional on the row's
+   * `createdById` (`null` = a system-written secret), in the same UPDATE. A
+   * row owned by anyone else is reported as {@link SecretNotFoundError}, so a
+   * writer never puts its plaintext into a secret another principal owns:
+   * `createdById` stays "who supplied the current value", which the
+   * by-reference binding rule (`secret-binding.ts`) depends on.
    */
-  async rotate(id: string, newPlaintext: string): Promise<SecretSummary> {
+  async rotate(
+    id: string,
+    newPlaintext: string,
+    opts: { onlyIfCreatedBy?: string | null } = {},
+  ): Promise<SecretSummary> {
     const envelope = await this.encrypt(newPlaintext);
     let row;
     try {
       row = await prisma.secret.update({
-        where: { id, deletedAt: null },
+        where: {
+          id,
+          deletedAt: null,
+          ...(opts.onlyIfCreatedBy !== undefined ? { createdById: opts.onlyIfCreatedBy } : {}),
+        },
         data: {
           ciphertext: envelope.ciphertext,
           keyVersion: envelope.keyVersion,

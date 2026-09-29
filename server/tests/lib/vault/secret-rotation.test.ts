@@ -31,7 +31,7 @@ describe("rotateOrCreate", () => {
       id: "sec_1",
       created: false,
     });
-    expect(vault.rotate).toHaveBeenCalledWith("sec_1", "v");
+    expect(vault.rotate).toHaveBeenCalledWith("sec_1", "v", { onlyIfCreatedBy: "u1" });
     expect(vault.create).not.toHaveBeenCalled();
   });
 
@@ -61,6 +61,12 @@ describe("rotateOrCreate", () => {
     expect(out.created).toBe(true);
     expect(vault.rotate).not.toHaveBeenCalled();
     expect(vault.create.mock.calls[0]![3]).toEqual({ description: "d", createdById: null });
+  });
+
+  it("a system writer (no createdById) may rotate in place only a system-owned secret (#344)", async () => {
+    const vault = vaultDouble();
+    await rotateOrCreate(vault as never, "sec_1", "v", { ...fresh, createdById: undefined });
+    expect(vault.rotate).toHaveBeenCalledWith("sec_1", "v", { onlyIfCreatedBy: null });
   });
 
   it("propagates any other vault failure instead of minting a new secret", async () => {

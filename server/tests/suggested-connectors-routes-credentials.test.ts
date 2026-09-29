@@ -10,8 +10,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 const mockSuggestedConnectors = new Map<string, Record<string, unknown>>();
 let nextId = 0;
 let suggestionUpdateOverride:
-  | null
-  | ((args: { where: { id: string }; data: Record<string, unknown> }) => Promise<unknown>) = null;
+  null | ((args: { where: { id: string }; data: Record<string, unknown> }) => Promise<unknown>) =
+  null;
 
 vi.mock("../src/lib/prisma.js", async () => {
   const { withRouteAuth } = await import("./helpers/route-auth-prisma.js");
@@ -382,7 +382,10 @@ describe("suggested-connectors routes — credentials (#704)", () => {
         .send({ ...validBody, password: "new-pw" });
 
       expect(res.status).toBe(200);
-      expect(vaultRotate).toHaveBeenCalledWith("vault_old", "new-pw");
+      // #344 — in place only if the caller owns it (the double stands in for a match).
+      expect(vaultRotate).toHaveBeenCalledWith("vault_old", "new-pw", {
+        onlyIfCreatedBy: expect.any(String),
+      });
       expect(vaultCreate).not.toHaveBeenCalled();
       expect(createDbConnectorMock).toHaveBeenCalledWith(
         "proj-1",

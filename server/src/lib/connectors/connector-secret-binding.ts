@@ -27,6 +27,7 @@ export async function assertDbSecretBinding(
     host?: string | null;
     port?: number | null;
     options?: string | null;
+    databaseName?: string | null;
     secretRef?: string | null;
   },
 ): Promise<void> {

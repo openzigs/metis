@@ -40,7 +40,7 @@ import {
 } from "../lib/connectors/db/db-service.js";
 import { ConnectorError } from "../lib/connectors/types.js";
 import { sanitizeDriverError } from "../lib/connectors/driver-error.js";
-import { hasDbDestinationOptions } from "../lib/connectors/destination.js";
+import { hasDbDestinationOptions, sameOracleService } from "../lib/connectors/destination.js";
 import { createChildLogger } from "../lib/logger.js";
 
 const log = createChildLogger("suggested-connectors-route");
@@ -94,17 +94,26 @@ function effectivePort(port: number | null | undefined): number | null {
  * #344 — caller-supplied driver `options` are part of the destination too
  * (mysql spreads them over host/port, Oracle's `tnsAlias` becomes the connect
  * string), so with the stored password they may carry only keys that never
- * choose the destination (the #882 `allowList`). The connector provisioned
+ * choose the destination (the #882 `allowList`). For Oracle the database name
+ * is the Easy Connect service name, so it must match too (`sameOracleService`).
+ * The connector provisioned
  * from here is then bound by `connector-secret-binding.ts`: its destination
  * cannot be edited afterwards by a caller who did not create the secret.
  */
 function assertStoredSecretDestination(
   req: Request,
-  row: { id: string; driverType: string; host: string | null; port: number | null },
+  row: {
+    id: string;
+    driverType: string;
+    host: string | null;
+    port: number | null;
+    database: string | null;
+  },
   target: {
     driver: string;
     host: string | null | undefined;
     port: number | null | undefined;
+    database: string | null | undefined;
     options?: unknown;
   },
   projectId: string,
@@ -115,6 +124,7 @@ function assertStoredSecretDestination(
     target.driver === rowDriver &&
     sameHost(target.host, row.host) &&
     effectivePort(target.port) === effectivePort(row.port) &&
+    sameOracleService(target.driver, target.database, row.database) &&
     !hasDbDestinationOptions(target.options);
   if (matches) return;
   audit({
@@ -321,7 +331,12 @@ export function suggestedConnectorsRouter(): Router {
       assertStoredSecretDestination(
         req,
         row,
-        { driver, host: targetHost, port: targetPort },
+        {
+          driver,
+          host: targetHost,
+          port: targetPort,
+          database: parsed.data.database ?? row.database ?? null,
+        },
         projectId,
       );
       try {
@@ -430,7 +445,13 @@ export function suggestedConnectorsRouter(): Router {
       assertStoredSecretDestination(
         req,
         row,
-        { driver: body.driver, host: body.host, port: targetPort, options: body.options },
+        {
+          driver: body.driver,
+          host: body.host,
+          port: targetPort,
+          database: body.database,
+          options: body.options,
+        },
         projectId,
       );
       // #324 — no password typed: use the live one discovery already vaulted.

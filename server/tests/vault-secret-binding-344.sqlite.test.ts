@@ -15,6 +15,9 @@
  * resource bound to a secret they did not create unless the same write clears
  * or replaces it. Admins are unrestricted.
  */
+import { promises as fs } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import express from "express";
 import request from "supertest";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
@@ -46,6 +49,8 @@ const { connectorsRouter } = await import("../src/routes/connectors.js");
 const { projectsRouter } = await import("../src/routes/projects.js");
 const { mcpRouter } = await import("../src/routes/mcp.js");
 const { suggestedConnectorsRouter } = await import("../src/routes/suggested-connectors.js");
+const { discoverAndUpsertConnections } =
+  await import("../src/lib/connectors/repo/connection-discovery.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { getVaultService, __resetVaultSingleton } =
@@ -235,6 +240,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
 
+      it("an Oracle connector's service name (databaseName) is part of its destination", async () => {
+        const id = await adminBound({ driver: "oracle", port: 1521, databaseName: "ORCL" });
+        const before = await row(id);
+        const res = await call("patch", `${dbs}/${id}`, COORD, {
+          databaseName: "ORCL?https_proxy=attacker.example.test",
+        });
+        expect(res.status, JSON.stringify(res.body)).toBe(403);
+        expect(await row(id)).toEqual(before);
+        // Not for other drivers: there it names a database on the same server.
+        const pg = await adminBound({ databaseName: "app" });
+        const renamed = await call("patch", `${dbs}/${pg}`, COORD, { databaseName: "reporting" });
+        expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+      });
+
       it("a coordinator cannot attach a foreign secret to an existing connector", async () => {
         const created = await call("post", dbs, COORD, dbBody(""));
         expect(created.status).toBe(201);
@@ -325,6 +344,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
 
+      it("an Oracle suggestion's stored password is refused for another service name", async () => {
+        const id = await suggestion();
+        await db.suggestedConnector.update({
+          where: { id },
+          data: { driverType: "oracle", port: 1521, database: "ORCL" },
+        });
+        const res = await call("post", `${sug}/${id}/provision`, COORD, {
+          label: `prov-${next()}`,
+          driver: "oracle",
+          host: "db.internal.example.test",
+          port: 1521,
+          database: "ORCL?https_proxy=attacker.example.test",
+          username: "app",
+          password: null,
+        });
+        expect(res.status, JSON.stringify(res.body)).toBe(403);
+        expect(res.body.error.code).toBe("STORED_SECRET_DESTINATION_MISMATCH");
+        const probe = await call("post", `${sug}/${id}/test`, COORD, {
+          database: "ORCL?https_proxy=attacker.example.test",
+        });
+        expect(probe.status, JSON.stringify(probe.body)).toBe(403);
+      });
+
       it("the provisioned connector stays bound: its host cannot be changed afterwards", async () => {
         const id = await suggestion();
         const res = await provision(id, { allowList: { tables: ["orders"] } });
@@ -340,6 +382,84 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await db.databaseConnection.findUnique({ where: { id: connectorId } }))?.host).toBe(
           "db.internal.example.test",
         );
+      });
+
+      // PR #359 review — `createdById` must mean "supplied the current
+      // plaintext". Discovery used to rotate the suggestion's secret in place,
+      // so a coordinator could stage their own secret on a suggestion (typed
+      // junk password, connector at their host) and have a rescan write the
+      // repo's real password into a secret they still owned, already bound to
+      // their host.
+      it("credential discovery never writes a discovered password into a caller's secret", async () => {
+        const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "344-discovery-"));
+        try {
+          await db.project.update({ where: { id: PROJ }, data: { allowCredentialScan: true } });
+          const sugId = "sug-344-discovery";
+          await db.suggestedConnector.deleteMany({ where: { id: sugId } });
+          await db.suggestedConnector.create({
+            data: {
+              id: sugId,
+              projectId: PROJ,
+              driverType: "postgresql",
+              host: "db-host",
+              port: 5432,
+              database: "appdb",
+              sourceFile: "application-dev.properties",
+              lineNumber: 1,
+              confidence: "high",
+              passwordVaultRef: null,
+            },
+          });
+          // (1) Stage: provision with a typed junk password at the caller's host.
+          const prov = await call("post", `${sug}/${sugId}/provision`, COORD, {
+            label: `prov-${next()}`,
+            driver: "postgres",
+            host: "attacker.example.test",
+            port: 5432,
+            database: "appdb",
+            username: "app",
+            password: "junk-344",
+          });
+          expect(prov.status, JSON.stringify(prov.body)).toBe(200);
+          const connectorId = prov.body.data.connectorId as string;
+          const staged = (await db.databaseConnection.findUnique({ where: { id: connectorId } }))
+            ?.secretId as string;
+          expect((await db.secret.findUnique({ where: { id: staged } }))?.createdById).toBe(
+            "u-coord",
+          );
+
+          // (2) Rescan: the repo's real password is discovered.
+          await fs.writeFile(
+            path.join(tmp, "application-dev.properties"),
+            [
+              "spring.datasource.url=jdbc:postgresql://db-host:5432/appdb",
+              "spring.datasource.username=app",
+              "spring.datasource.password=hunter2-344",
+            ].join("\n"),
+          );
+          await discoverAndUpsertConnections(PROJ, tmp);
+
+          // The caller's secret still holds only what they typed…
+          const vault = getVaultService();
+          expect((await vault.read(staged)).plaintext).toBe("junk-344");
+          // …the discovered password lives in a secret nobody owns…
+          const suggestionRef = (await db.suggestedConnector.findUnique({ where: { id: sugId } }))
+            ?.passwordVaultRef as string;
+          expect(suggestionRef).not.toBe(staged);
+          expect((await vault.read(suggestionRef)).plaintext).toBe("hunter2-344");
+          expect((await db.secret.findUnique({ where: { id: suggestionRef } }))?.createdById).toBe(
+            null,
+          );
+          // …and no secret the caller owns holds it.
+          for (const s of await db.secret.findMany({
+            where: { createdById: "u-coord", deletedAt: null },
+          })) {
+            expect((await vault.read(s.id)).plaintext).not.toBe("hunter2-344");
+          }
+        } finally {
+          await db.project.update({ where: { id: PROJ }, data: { allowCredentialScan: false } });
+          await fs.rm(tmp, { recursive: true, force: true });
+        }
       });
     });
 
@@ -471,6 +591,33 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
         expect(copilot.status, JSON.stringify(copilot.body)).toBe(403);
         expect(await db.mCPServer.count({ where: { label } })).toBe(0);
+      });
+
+      // PR #359 review — secrets auto-vaulted from the caller's own mcp.json
+      // plaintext are the caller's, as on the direct-write path.
+      it("an import auto-vaults the caller's own plaintext as theirs, so they may edit the server", async () => {
+        const label = `imported-own-${next()}`;
+        const res = await call("post", "/api/mcp/import", COORD, {
+          mcpJson: {
+            mcpServers: {
+              [label]: {
+                command: "node",
+                args: ["x.js"],
+                env: { API_TOKEN: "coord-typed-token-344" },
+                headers: { Authorization: "Bearer coord-typed-bearer-344" },
+              },
+            },
+          },
+        });
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        const server = await db.mCPServer.findFirstOrThrow({ where: { label } });
+        const vaulted = await db.secret.findMany({
+          where: { description: { contains: `import for ${label}` } },
+        });
+        expect(vaulted.length).toBeGreaterThanOrEqual(1);
+        for (const s of vaulted) expect(s.createdById).toBe("u-coord");
+        const moved = await call("patch", `/api/mcp/${server.id}`, COORD, { args: ["y.js"] });
+        expect(moved.status, JSON.stringify(moved.body)).toBe(200);
       });
     });
   },

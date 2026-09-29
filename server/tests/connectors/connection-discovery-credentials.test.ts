@@ -239,7 +239,10 @@ describe("discoverAndUpsertConnections — credential extraction (#703)", () => 
 
     await discoverAndUpsertConnections("proj-D", tmpDir);
 
-    expect(vaultRotate).toHaveBeenCalledWith("vault_old", "new-password");
+    // #344 — discovery rewrites only a system-owned (createdById null) secret.
+    expect(vaultRotate).toHaveBeenCalledWith("vault_old", "new-password", {
+      onlyIfCreatedBy: null,
+    });
     expect(vaultCreate).not.toHaveBeenCalled();
     expect(auditCalls.at(-1)?.metadata).toMatchObject({ vaultMutation: "rotated" });
   });

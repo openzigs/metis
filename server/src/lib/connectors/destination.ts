@@ -48,16 +48,45 @@ export function hasDbDestinationOptions(options: unknown): boolean {
 const blank = (v: string | null | undefined) => (v ?? "").trim().toLowerCase();
 const portOf = (v: number | null | undefined) => (v ? v : null);
 
+/**
+ * Oracle's driver builds its connect string as `host:port/<serviceName>`, and
+ * the service name falls back to the connector's free-text `databaseName`.
+ * Easy Connect Plus accepts `?param=` options there, so for Oracle the
+ * database name is part of the destination. For every other driver it names a
+ * database on the same server and is not. True when the two name the same
+ * Oracle service (or the driver is not Oracle).
+ */
+export function sameOracleService(
+  driver: string | null | undefined,
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  return driver !== "oracle" || blank(a) === blank(b);
+}
+
 export function dbDestinationChanged(
-  existing: { driver: string; host: string | null; port: number | null; options: string | null },
+  existing: {
+    driver: string;
+    host: string | null;
+    port: number | null;
+    options: string | null;
+    databaseName?: string | null;
+  },
   patch: {
     driver?: string | null;
     host?: string | null;
     port?: number | null;
     options?: string | null;
+    databaseName?: string | null;
   },
 ): boolean {
   if (patch.driver !== undefined && patch.driver !== existing.driver) return true;
+  if (
+    patch.databaseName !== undefined &&
+    !sameOracleService(existing.driver, patch.databaseName, existing.databaseName)
+  ) {
+    return true;
+  }
   if (patch.host !== undefined && blank(patch.host) !== blank(existing.host)) return true;
   if (patch.port !== undefined && portOf(patch.port) !== portOf(existing.port)) return true;
   if (
@@ -69,6 +98,15 @@ export function dbDestinationChanged(
   return false;
 }
 
+/**
+ * The token only ever goes to `apiBaseUrl` (the provider's default when
+ * unset), so `ownerOrOrg` / `repoName` are deliberately NOT a destination:
+ * changing them cannot send the secret anywhere new. They do choose WHICH repo
+ * the token reads, so a coordinator can repoint a connector holding an admin's
+ * token at another repo that token can read and ingest it (without seeing the
+ * token). That is an authorization question, not exfiltration of the secret,
+ * and is out of scope for the #344 binding (PR #359 review; tracked in #358).
+ */
 export function repoDestinationChanged(
   existing: { provider: string; apiBaseUrl: string | null },
   patch: { provider?: string | null; apiBaseUrl?: string | null },

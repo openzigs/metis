@@ -140,8 +140,9 @@ export function projectsRouter(): Router {
       const { primaryRepo, workspaceId: _workspaceId, ...projectData } = parsed.data;
       // #344 — the primary repo's secret is bound here too; refuse before the
       // project exists so a refused binding leaves nothing behind.
-      if (primaryRepo?.secretRef && req.user) {
-        await assertRepoSecretBinding(req.user, "new", null, {
+      // `actor` already threw 401 without a user, so this cannot be skipped.
+      if (primaryRepo?.secretRef) {
+        await assertRepoSecretBinding({ userId: actor.id, role: actor.role }, "new", null, {
           apiBaseUrl: primaryRepo.apiBaseUrl ?? null,
           secretRef: primaryRepo.secretRef,
         });

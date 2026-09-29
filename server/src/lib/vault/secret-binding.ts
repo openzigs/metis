@@ -14,6 +14,10 @@
  *      They supplied its plaintext, so sending it anywhere discloses nothing
  *      they did not already hold. Secrets auto-vaulted from their own input
  *      (MCP env/headers, a provisioned password they typed) are theirs.
+ *      This holds only while `createdById` names whoever supplied the CURRENT
+ *      plaintext, so `rotateOrCreate` rewrites a secret in place only for its
+ *      owner (`VaultService.rotate`'s `onlyIfCreatedBy`); credential discovery
+ *      (a system writer) never rotates a user's secret (PR #359 review).
  *   2. A secret already bound to a resource stays usable there, but only at the
  *      destination it was bound to: a write that changes the resource's
  *      destination (host, port, driver options, base URL, command, env, …)
@@ -74,20 +78,32 @@ function scopeOf(name: string): "global" | "project" {
   return name.startsWith("project:") ? "project" : "global";
 }
 
-/** Every live secret a reference body could resolve to, by id or by label. */
-async function secretsReachableBy(ref: string): Promise<SecretOwner[]> {
+/** Does a reference body resolve to this row, by id or by (scoped) label? */
+function reaches(ref: string, row: { id: string; name: string }): boolean {
+  const label = labelOf(row.name);
+  return (
+    row.id === ref || row.name === ref || label === ref || `${scopeOf(row.name)}:${label}` === ref
+  );
+}
+
+/**
+ * Every live secret each reference body could resolve to, by id or by label —
+ * one read of the secret table per write, however many references it names.
+ */
+async function secretsReachableBy(refs: string[]): Promise<Map<string, SecretOwner[]>> {
+  const out = new Map<string, SecretOwner[]>();
+  if (refs.length === 0) return out;
   const rows = await prisma.secret.findMany({
     where: { deletedAt: null },
     select: { id: true, name: true, createdById: true },
   });
-  return rows
-    .filter((r) => {
-      const label = labelOf(r.name);
-      return (
-        r.id === ref || r.name === ref || label === ref || `${scopeOf(r.name)}:${label}` === ref
-      );
-    })
-    .map(({ id, createdById }) => ({ id, createdById }));
+  for (const ref of refs) {
+    out.set(
+      ref,
+      rows.filter((r) => reaches(ref, r)).map(({ id, createdById }) => ({ id, createdById })),
+    );
+  }
+  return out;
 }
 
 export interface SecretBindingChange {
@@ -119,13 +135,15 @@ export async function assertSecretBindingAllowed(
   const after = [...new Set(change.after)];
   if (after.length === 0) return;
 
+  const before = [...new Set(change.before)];
+  const reachableBy = await secretsReachableBy([...new Set([...before, ...after])]);
   const boundIds = new Set<string>();
-  for (const ref of new Set(change.before)) {
-    for (const s of await secretsReachableBy(ref)) boundIds.add(s.id);
+  for (const ref of before) {
+    for (const s of reachableBy.get(ref) ?? []) boundIds.add(s.id);
   }
 
   for (const ref of after) {
-    const reachable = await secretsReachableBy(ref);
+    const reachable = reachableBy.get(ref) ?? [];
     const alreadyBound = reachable.length > 0 && reachable.every((s) => boundIds.has(s.id));
     if (alreadyBound && !change.destinationChanged) continue;
     const owned = reachable.length > 0 && reachable.every((s) => s.createdById === user.userId);

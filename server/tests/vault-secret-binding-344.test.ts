@@ -7,8 +7,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const rows = vi.hoisted(() => ({
   secrets: [] as Array<{ id: string; name: string; createdById: string | null }>,
 }));
+const findMany = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/prisma.js", () => ({
-  prisma: { secret: { findMany: vi.fn(async () => rows.secrets) } },
+  prisma: { secret: { findMany } },
 }));
 const audit = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit }));
@@ -20,6 +21,7 @@ const {
   dbDestinationOptions,
   hasDbDestinationOptions,
   repoDestinationChanged,
+  sameOracleService,
 } = await import("../src/lib/connectors/destination.js");
 const { mcpDestinationChanged, mcpRefs } = await import("../src/lib/mcp/secret-binding.js");
 
@@ -51,6 +53,8 @@ describe("#344 secret binding — reference parsing", () => {
 describe("#344 secret binding — assertSecretBindingAllowed", () => {
   beforeEach(() => {
     audit.mockClear();
+    findMany.mockReset();
+    findMany.mockImplementation(async () => rows.secrets);
     rows.secrets = [
       { id: "s-own", name: "global:mine", createdById: "u-coord" },
       { id: "s-foreign", name: "global:theirs", createdById: "u-admin" },
@@ -138,6 +142,19 @@ describe("#344 secret binding — assertSecretBindingAllowed", () => {
     );
   });
 
+  it("reads the secrets once per write, however many references it names (PR #359 review)", async () => {
+    await assertSecretBindingAllowed(
+      COORD,
+      {
+        before: ["s-own", "mine", "global:mine"],
+        after: ["s-own", "mine", "global:mine"],
+        destinationChanged: true,
+      },
+      ctx,
+    );
+    expect(findMany).toHaveBeenCalledTimes(1);
+  });
+
   it("nothing to bind is always allowed", async () => {
     await assertSecretBindingAllowed(
       COORD,
@@ -175,6 +192,18 @@ describe("#344 destinations", () => {
     expect(dbDestinationChanged(existing, { port: 1 })).toBe(true);
     expect(dbDestinationChanged(existing, { driver: "mysql" })).toBe(true);
     expect(dbDestinationChanged(existing, { options: '{"host":"x"}' })).toBe(true);
+  });
+
+  it("DB: an Oracle databaseName is the Easy Connect service name, so it is a destination (PR #359 review)", () => {
+    const oracle = { driver: "oracle", host: "h", port: 1521, options: null, databaseName: "ORCL" };
+    expect(dbDestinationChanged(oracle, { databaseName: " orcl " })).toBe(false);
+    expect(dbDestinationChanged(oracle, { databaseName: "ORCL?https_proxy=evil" })).toBe(true);
+    expect(dbDestinationChanged(oracle, { databaseName: null })).toBe(true);
+    const pg = { ...oracle, driver: "postgres" };
+    expect(dbDestinationChanged(pg, { databaseName: "other" })).toBe(false);
+    expect(sameOracleService("oracle", "ORCL", "orcl")).toBe(true);
+    expect(sameOracleService("oracle", "ORCL?x=y", "ORCL")).toBe(false);
+    expect(sameOracleService("mysql", "a", "b")).toBe(true);
   });
 
   it("repo: provider and base URL", () => {
