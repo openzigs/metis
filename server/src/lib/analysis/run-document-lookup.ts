@@ -41,19 +41,23 @@ export interface RunDocumentLookup {
 
 export function createRunDocumentLookup(queries: RunDocumentLookupQueries): RunDocumentLookup {
   let knownDocuments: Promise<readonly KnownDocument[]> | undefined;
-  /** Every id of the loaded list, once (and only if) the load succeeded. */
-  let loadedIds: ReadonlySet<string> | undefined;
+  /**
+   * Ids known to be live documents of the project: confirmed by an id check,
+   * or present in the loaded list. Only positives are remembered.
+   */
   const confirmed = new Set<string>();
 
   const loadKnownDocuments = (): Promise<readonly KnownDocument[]> =>
     (knownDocuments ??= queries.listDocuments().then((docs) => {
-      loadedIds = new Set(docs.map((d) => d.id));
+      for (const d of docs) confirmed.add(d.id);
       return docs;
     }));
 
+  // An id the loaded list does not know is still checked against the database:
+  // the list is a snapshot from its first load, so a document ingested later in
+  // the run would otherwise read as unknown and its valid citation be dropped
+  // (PR #397 review). Ids the list does know cost no query.
   const findKnownDocumentIds: FindKnownDocumentIds = async (ids) => {
-    const known = loadedIds;
-    if (known) return ids.filter((id) => known.has(id));
     const unconfirmed = [...new Set(ids)].filter((id) => !confirmed.has(id));
     if (unconfirmed.length > 0) {
       const found = await queries.findDocumentIds(unconfirmed.slice(0, MAX_DOCUMENT_ID_LOOKUP));

@@ -70,13 +70,42 @@ describe("createRunDocumentLookup", () => {
     expect(q.findDocumentIds).toHaveBeenCalledTimes(2);
   });
 
-  it("answers from the loaded document list without a query", async () => {
+  it("answers ids in the loaded list without a query, and checks only the ones it lacks", async () => {
     const q = queries();
     const lookup = createRunDocumentLookup(q);
     await lookup.loadKnownDocuments();
+    expect(await lookup.findKnownDocumentIds(["doc_spec_00000001"])).toEqual(["doc_spec_00000001"]);
+    expect(q.findDocumentIds).not.toHaveBeenCalled();
+
     const found = await lookup.findKnownDocumentIds(["doc_spec_00000001", "doc_unknown_00001"]);
     expect(found).toEqual(["doc_spec_00000001"]);
-    expect(q.findDocumentIds).not.toHaveBeenCalled();
+    expect(q.findDocumentIds).toHaveBeenCalledTimes(1);
+    expect(q.findDocumentIds).toHaveBeenCalledWith(["doc_unknown_00001"]);
+  });
+
+  // PR #397 review — the loaded list is a snapshot. A document ingested after it
+  // loaded must still count, or its valid citation is dropped by the repair.
+  it("keeps a citation to a document ingested after the list loaded", async () => {
+    const late = { id: "doc_ingested_late01", filename: "Late.md" };
+    const db = [...KNOWN];
+    const q = {
+      listDocuments: vi.fn(async () => [...db]),
+      findDocumentIds: vi.fn(async (ids: readonly string[]) =>
+        ids.filter((id) => db.some((d) => d.id === id)),
+      ),
+    };
+    const lookup = createRunDocumentLookup(q);
+    await lookup.loadKnownDocuments(); // snapshot without `late`
+    db.push(late); // ingested mid-run
+
+    const cited = answer([{ documentId: late.id, chunkIndex: 0 }]);
+    const { value, repairs } = await repairFindingsAnswerWithDocuments(
+      cited,
+      lookup.loadKnownDocuments,
+      lookup.findKnownDocumentIds,
+    );
+    expect(value).toEqual(cited);
+    expect(repairs).toEqual([]);
   });
 
   it("loads the document list at most once", async () => {
