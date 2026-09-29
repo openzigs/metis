@@ -94,6 +94,11 @@ import {
   ingestSourceAsKnowledge,
 } from "../lib/connectors/connector-ingest.js";
 import { ingestCodeGraph } from "../lib/code-graph/ingest.js";
+import {
+  deepIngestCompletionMessage,
+  deepIngestFailureCount,
+  type DeepIngestOutcome,
+} from "../lib/connectors/repo/deep-ingest-outcome.js";
 import { checkIncrementalRegeneration } from "../lib/docs-gen/incremental.js";
 import { discoverAndUpsertConnections } from "../lib/connectors/repo/connection-discovery.js";
 import { prisma } from "../lib/prisma.js";
@@ -183,6 +188,22 @@ function projectIdOf(req: Request): string {
  */
 export const REPO_INGEST_FAILED_MESSAGE =
   "Repository ingestion failed. The details are in the server log; run the ingest again to retry.";
+
+/**
+ * #399 — the ingest itself landed, but scheduling the automatic regeneration of
+ * generated documents failed. Saying "Repository ingestion failed" here was
+ * wrong; re-running the ingest retries the scheduling (#1356).
+ */
+export const REGENERATION_SCHEDULING_FAILED_MESSAGE =
+  "The repository was ingested, but scheduling automatic document regeneration failed. " +
+  "The details are in the server log; run the ingest again to retry.";
+
+/** Marks a failure to schedule regeneration apart from a failure of the ingest. */
+class RegenerationSchedulingError extends Error {
+  constructor(cause: unknown) {
+    super("Scheduling automatic document regeneration failed", { cause });
+  }
+}
 
 /**
  * Concurrency guard (#663 review): the per-connector ingest lease (#217), shared
@@ -304,15 +325,15 @@ async function runDeepIngest(
       boundary: source.boundary,
       lease,
     });
-    let metadataSucceeded = true;
+    const metadata = { failures: 0, fetchFailed: false };
     emitProgress("Indexing metadata", 4);
     if (source.isGit) {
       try {
         const meta = await fetchRepoMetadata(projectId, connectorId, userId);
         const summary = await ingestRepoMetadata(projectId, connectorId, userId, meta);
-        metadataSucceeded = summary.failures === 0;
+        metadata.failures = summary.failures;
       } catch (metaErr) {
-        metadataSucceeded = false;
+        metadata.fetchFailed = true;
         // Metadata is supplementary — a misconfigured apiBaseUrl (e.g. missing
         // /api/v3 suffix on GHE) or missing token should not block the ingest.
         logger.warn("fetchRepoMetadata failed — skipping metadata ingest, core ingest continues", {
@@ -324,8 +345,19 @@ async function runDeepIngest(
     }
     emitProgress("Discovering connections", 5);
     const discovery = await discoverAndUpsertConnections(projectId, source.path);
-    if (srcSummary.failures === 0 && metadataSucceeded)
-      await checkIncrementalRegeneration(projectId, connectorId);
+    const outcome: DeepIngestOutcome = {
+      codeGraph: stats,
+      source: srcSummary,
+      metadata,
+      cloneSizeBytes: source.sizeBytes,
+    };
+    if (deepIngestFailureCount(outcome) === 0) {
+      try {
+        await checkIncrementalRegeneration(projectId, connectorId);
+      } catch (scheduleErr) {
+        throw new RegenerationSchedulingError(scheduleErr);
+      }
+    }
     // Step 6: discovery notification via Socket.IO (#669)
     if (discovery.connectionsFound > 0) {
       const connector = await getRepoConnector(projectId, connectorId);
@@ -337,31 +369,40 @@ async function runDeepIngest(
       });
     }
     if (jobId)
-      jobEvents.completed(
-        "repo-ingest",
-        jobId,
-        projectId,
-        `Deep ingest complete: ${stats.filesParsed} of ${stats.filesScanned} files parsed, ` +
-          `${stats.symbolsUpserted} symbols, ${srcSummary.chunkCount} RAG chunks.`,
-      );
+      jobEvents.completed("repo-ingest", jobId, projectId, deepIngestCompletionMessage(outcome));
   } catch (err) {
+    const schedulingFailed = err instanceof RegenerationSchedulingError;
     // #114 — the raw exception (paths, git stderr, SQL) stays in the server log;
     // the progress event reaches the browser, so it carries fixed text only.
     // The callers' `.catch()` swallows the rethrow, so this is also the only
     // place the failure is logged.
-    logger.warn("Repo deep-ingest failed", { err, projectId, connectorId, jobId });
+    logger.warn(
+      schedulingFailed
+        ? "Repo deep-ingest succeeded but scheduling regeneration failed"
+        : "Repo deep-ingest failed",
+      { err: schedulingFailed ? err.cause : err, projectId, connectorId, jobId },
+    );
     // Emit error progress so the UI can show failure and dismiss the progress bar
     emitter.progress({
       connectorId,
       projectId,
       kind: "repo",
       phase: "deep-ingest",
-      step: "Ingestion failed",
+      step: schedulingFailed ? "Scheduling regeneration failed" : "Ingestion failed",
       status: "error",
-      errorMessage: REPO_INGEST_FAILED_MESSAGE,
+      errorMessage: schedulingFailed
+        ? REGENERATION_SCHEDULING_FAILED_MESSAGE
+        : REPO_INGEST_FAILED_MESSAGE,
     });
     if (jobId)
-      jobEvents.failed("repo-ingest", jobId, projectId, genericFailureMessage("repo-ingest"));
+      jobEvents.failed(
+        "repo-ingest",
+        jobId,
+        projectId,
+        schedulingFailed
+          ? REGENERATION_SCHEDULING_FAILED_MESSAGE
+          : genericFailureMessage("repo-ingest"),
+      );
     throw err;
   } finally {
     lease.release();

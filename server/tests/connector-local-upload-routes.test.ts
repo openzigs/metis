@@ -210,7 +210,10 @@ import {
   fetchRepoMetadata,
   getRepoConnectorEmitter,
 } from "../src/lib/connectors/repo/repo-service.js";
-import { REPO_INGEST_FAILED_MESSAGE } from "../src/routes/connectors.js";
+import {
+  REGENERATION_SCHEDULING_FAILED_MESSAGE,
+  REPO_INGEST_FAILED_MESSAGE,
+} from "../src/routes/connectors.js";
 import {
   acquireConnectorIngest,
   isConnectorIngestActive,
@@ -552,6 +555,40 @@ describe("asynchronous deep-ingest (#373)", () => {
     );
   });
 
+  // #399 — a run with failed source files or metadata used to read
+  // "Deep ingest complete", identical to a clean run.
+  it("reports a partly failed run as completed with its failures, not as complete", async () => {
+    vi.mocked(ingestSourceAsKnowledge).mockResolvedValueOnce({
+      documentsCreated: 3,
+      documentsUpdated: 0,
+      chunkCount: 42,
+      failures: 2,
+    });
+    vi.mocked(fetchRepoMetadata).mockRejectedValueOnce(new Error("Metadata unavailable"));
+    const token = await login("admin");
+    const res = await deepIngest(token);
+    expect(res.status).toBe(202);
+    const jobId = res.body.data.jobId as string;
+    await vi.waitFor(() => expect(getLastJobLifecycle(jobId)?.status).toBe("completed"));
+    const message = getLastJobLifecycle(jobId)!.message!;
+    expect(message).toMatch(/^Deep ingest completed with 3 failures: /);
+    expect(message).toContain("2 source files could not be ingested");
+    expect(message).toContain("repository metadata could not be fetched or ingested");
+    expect(message).toContain("42 RAG chunks");
+    expect(message).not.toContain("Metadata unavailable");
+  });
+
+  it("reports a clean run's edges, documents created and clone size", async () => {
+    const token = await login("admin");
+    const res = await deepIngest(token);
+    const jobId = res.body.data.jobId as string;
+    await vi.waitFor(() => expect(getLastJobLifecycle(jobId)?.status).toBe("completed"));
+    expect(getLastJobLifecycle(jobId)!.message).toBe(
+      "Deep ingest complete: 1 of 1 files parsed, 0 symbols, 0 edges, 1 RAG chunks, " +
+        "1 documents created, 10 B cloned.",
+    );
+  });
+
   it("a 409 from another entry point's claim carries no job id", async () => {
     const token = await login("admin");
     const lease = acquireConnectorIngest("repo_github_x", "scheduled-refresh");
@@ -874,6 +911,28 @@ describe("manual connector regeneration callers (#1356)", () => {
         vi.mocked(prisma.task.upsert).mockRejectedValueOnce(new Error("Task store unavailable"));
         const response = await ingest();
         expect(response.status).toBe(failStatus);
+        if (caller === "deep-ingest") {
+          // #399 — the 202 alone says nothing; the job itself must end failed, and
+          // say that the ingest landed and only the regeneration scheduling failed.
+          const failed = getLastJobLifecycle(response.body.data.jobId as string);
+          expect(failed).toMatchObject({ kind: "repo-ingest", status: "failed" });
+          expect(failed!.error).toBe(REGENERATION_SCHEDULING_FAILED_MESSAGE);
+          expect(failed!.error).not.toBe(genericFailureMessage("repo-ingest"));
+          expect(JSON.stringify(failed)).not.toContain("Task store unavailable");
+        }
+        if (caller !== "refresh-ingest") {
+          // The connector progress bar is told the same, not "ingestion failed".
+          const errors = vi
+            .mocked(getRepoConnectorEmitter)
+            .mock.results.flatMap((r) =>
+              vi
+                .mocked((r.value as { progress: (e: unknown) => void }).progress)
+                .mock.calls.map((c) => c[0] as { status?: string; errorMessage?: string }),
+            )
+            .filter((e) => e.status === "error");
+          expect(errors).toHaveLength(1);
+          expect(errors[0].errorMessage).toBe(REGENERATION_SCHEDULING_FAILED_MESSAGE);
+        }
         expect(prisma.task.upsert).toHaveBeenCalledTimes(1);
         expect(h.tasks.size).toBe(0);
         expect(scheduler.queue.snapshot().queueDepth).toBe(0);
