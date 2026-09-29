@@ -495,8 +495,16 @@ describe("asynchronous deep-ingest (#373)", () => {
     await vi.waitFor(() => expect(ingestSourceAsKnowledge).toHaveBeenCalledTimes(1));
     expect(isConnectorIngestActive("repo_github_x")).toBe(true);
     const running = getLastJobLifecycle(jobId);
-    expect(running).toMatchObject({ kind: "repo-ingest", projectId: "proj_1" });
-    expect(["started", "progress"]).toContain(running!.status);
+    // PR #393 panel — held inside step 3 of 5 ("Ingesting source code"), the
+    // latest transition must be a progress event at (3 - 1) / 5 = 40%, not just
+    // the `started` the route always emits first.
+    expect(running).toMatchObject({
+      kind: "repo-ingest",
+      projectId: "proj_1",
+      status: "progress",
+      progress: 40,
+      message: "Ingesting source code",
+    });
 
     open();
     await vi.waitFor(() => expect(getLastJobLifecycle(jobId)?.status).toBe("completed"));
