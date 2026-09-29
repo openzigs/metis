@@ -53,11 +53,29 @@ describe("formatDocumentName", () => {
 describe("<DocumentName />", () => {
   it("renders path and repository, with the key only in the tooltip", () => {
     const { container } = render(<DocumentName filename={KEY} repoNames={NAMES} />);
-    expect(screen.getByText("src/vitest.config.ts")).toBeInTheDocument();
+    expect(screen.getByTestId("document-name-path")).toHaveTextContent(/^src\/vitest\.config\.ts$/);
     expect(screen.getByText("metis")).toBeInTheDocument();
     expect(container.textContent).not.toContain("connector:repo:");
     expect(container.firstElementChild).toHaveAttribute("title", KEY);
     expect(container.firstElementChild).toHaveAttribute("data-kind", "repo");
+  });
+
+  // PR #386 review — in a narrow panel only the directory may be clipped; the
+  // file name is what a reader scans for (#427), so it never truncates.
+  it("truncates only the directory, never the file name", () => {
+    render(
+      <DocumentName
+        filename="connector:repo:cmumwycfx002j2c9kp7kpu2tg:server/src/lib/analysis/agent-loop.ts"
+        repoNames={NAMES}
+      />,
+    );
+    const dir = screen.getByTestId("document-name-dir");
+    const base = screen.getByTestId("document-name-base");
+    expect(dir).toHaveTextContent("server/src/lib/analysis/");
+    expect(dir).toHaveClass("truncate");
+    expect(base).toHaveTextContent(/^agent-loop\.ts$/);
+    expect(base).not.toHaveClass("truncate");
+    expect(base).toHaveClass("shrink-0");
   });
 
   it("renders a plain upload on one line", () => {

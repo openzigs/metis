@@ -173,11 +173,14 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     render(<WorkbenchPage />, { wrapper: Wrapper });
 
     // #363 — the file path, over the repository label, not the internal key.
+    // The path is split so only the directory truncates (PR #386 review); the
+    // file name sits in its own never-truncated span.
     await waitFor(() =>
-      expect(
-        screen.getByText("src/main/java/com/acme/wms/common/vo/ShipmentSourceVO.java"),
-      ).toBeInTheDocument(),
+      expect(screen.getByTestId("workbench-doc-doc-repo")).toHaveTextContent(
+        "src/main/java/com/acme/wms/common/vo/ShipmentSourceVO.java",
+      ),
     );
+    expect(screen.getByText("ShipmentSourceVO.java")).not.toHaveClass("truncate");
     // …and the noisy connector prefix never appears as visible text.
     expect(screen.queryByText(/connector:repo:/)).not.toBeInTheDocument();
     // The full original string is preserved as a hover title for traceability.

@@ -22,10 +22,30 @@ export function DocumentName({
       title={name.rawId}
       data-kind={name.kind}
     >
-      <span className="truncate">{name.primary}</span>
+      <PathLabel path={name.primary} />
       {name.secondary ? (
         <span className="truncate text-xs text-muted-foreground">{name.secondary}</span>
       ) : null}
+    </span>
+  );
+}
+
+/**
+ * PR #386 review — a full path in one `truncate` span loses its file name in a
+ * narrow panel, which is the part a reader scans for (#427). Only the directory
+ * part shrinks; the file name never truncates.
+ */
+function PathLabel({ path }: { path: string }) {
+  const cut = path.lastIndexOf("/");
+  if (cut < 0) return <span className="truncate">{path}</span>;
+  return (
+    <span className="flex min-w-0" data-testid="document-name-path">
+      <span className="truncate" data-testid="document-name-dir">
+        {path.slice(0, cut + 1)}
+      </span>
+      <span className="shrink-0" data-testid="document-name-base">
+        {path.slice(cut + 1)}
+      </span>
     </span>
   );
 }
