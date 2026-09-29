@@ -380,19 +380,22 @@ describe("import / export (#82)", () => {
     expect(res.body.error.code).toBe("AGENT_IMPORT_INVALID");
   });
 
-  it("#238 — rejects an import that names a tool METIS does not have (and creates nothing)", async () => {
+  it("#145 — an import naming a tool METIS does not have drops and reports it (never maps it to a real tool)", async () => {
+    // #238 refused the whole file, which made every export from METIS's first
+    // release (its wizard offered names no tool carries) un-importable. The
+    // name never granted anything — the allowlist is matched exactly — so it is
+    // dropped and reported; authoring (create / PATCH) still refuses it.
     seedProject("p1", "w1");
     seedMember("w1", "u1", "admin");
-    const before = agents.size;
     const res = await request(createApp())
       .post("/custom-agents/import")
       .send({
         projectId: "p1",
         document: { name: "Old", description: "", systemPrompt: "x", tools: ["search_code"] },
       });
-    expect(res.status).toBe(400);
-    expect(res.body.error.message).toContain("Unknown tools: search_code");
-    expect(agents.size).toBe(before);
+    expect(res.status).toBe(201);
+    expect(res.body.meta.droppedTools).toEqual(["search_code"]);
+    expect(res.body.data.tools).toEqual([]);
   });
 
   it("#309 — an absent document reaches the import parser (400 AGENT_IMPORT_INVALID, not BAD_REQUEST)", async () => {

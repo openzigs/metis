@@ -28,6 +28,15 @@ import { modelCatalogApi, formatModelPrice } from "@/lib/model-catalog-api";
 import { skillsApi } from "@/lib/library-api";
 import type { CustomAgentApprovalPolicy, SdkReasoningEffort } from "@metis/shared";
 import { PageHeader } from "@/components/ui/page-header";
+import {
+  APPROVAL_CHOICES,
+  DEFAULT_MODEL_OPTION,
+  REASONING_OPTIONS,
+  RISKS,
+  SUBAGENT_TOOL_REF,
+  type ApprovalChoice,
+  type RiskKey,
+} from "./definition-options";
 
 /**
  * Playground input cap — mirrors the backend's MAX_INVOKE_PAYLOAD_CHARS (20k).
@@ -61,34 +70,6 @@ const TEMPLATES: ReadonlyArray<{ id: string; label: string; description: string;
         "You are a precise document summarizer. Produce a faithful, concise summary of the supplied document. Preserve key facts, decisions, and open questions. Do not invent details.",
     },
   ] as const;
-
-/**
- * Epic #129 — step 3 lists the tools the server actually has (`GET /ai/tools`),
- * plus the one agent-level grant: calling other agents. Before #129 this was a
- * hard-coded list of names no tool carried, so a wizard-made agent's allowlist
- * could never admit a real tool.
- */
-const SUBAGENT_TOOL_REF = "agent:*";
-
-type RiskKey = keyof CustomAgentApprovalPolicy;
-type ApprovalChoice = "" | NonNullable<CustomAgentApprovalPolicy[RiskKey]>;
-const APPROVAL_CHOICES: ReadonlyArray<{ value: ApprovalChoice; label: string }> = [
-  { value: "", label: "Session default" },
-  { value: "prompt-once", label: "Ask once per session" },
-  { value: "always-prompt", label: "Ask every time" },
-  { value: "deny", label: "Never" },
-];
-const RISKS: readonly RiskKey[] = ["low", "medium", "high"];
-
-/** The "inherit" choice in step 4; the rest come from the model catalog (#135). */
-const DEFAULT_MODEL_OPTION = { value: "", label: "Default (project/workspace)" } as const;
-
-const REASONING_OPTIONS: ReadonlyArray<{ value: "" | SdkReasoningEffort; label: string }> = [
-  { value: "", label: "Default" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-] as const;
 
 const STEPS = ["name", "prompt", "tools", "model", "playground"] as const;
 type Step = (typeof STEPS)[number];
