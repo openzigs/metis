@@ -457,16 +457,36 @@ describe("#298 findings field repair on the shared validation path", () => {
     } as unknown as AIProvider;
     const load = vi.fn(async () => [{ id: "doc_loanterms_0001", filename: "Loan Terms.md" }]);
 
-    // Nothing to resolve (a valid id): the loader is never called.
+    // Nothing to resolve (a valid id the id check confirms, #303): the list
+    // loader is never called.
     const clean = JSON.stringify({
       findings: [finding([{ documentId: "doc_loanterms_0001", chunkIndex: 1 }])],
     });
+    const findIds = vi.fn(async (ids: readonly string[]) => [...ids]);
     const none = await salvageWithRepair(noRepair, clean, {
       agentKey: "code",
       loadKnownDocuments: load,
+      findKnownDocumentIds: findIds,
     });
     expect(none.findings).toHaveLength(1);
+    expect(findIds).toHaveBeenCalledWith(["doc_loanterms_0001"]);
     expect(load).not.toHaveBeenCalled();
+
+    // #303 — a valid-length id the check does NOT find loads the list and is
+    // resolved by name, so it no longer points at nothing.
+    const labelAsId = JSON.stringify({
+      findings: [finding([{ documentId: "Loan Terms.md#chunk1", chunkIndex: 1 }])],
+    });
+    const resolved = await salvageWithRepair(noRepair, labelAsId, {
+      agentKey: "code",
+      loadKnownDocuments: load,
+      findKnownDocumentIds: async () => [],
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(resolved.findings[0]!.citations).toEqual([
+      { documentId: "doc_loanterms_0001", chunkIndex: 1 },
+    ]);
+    expect(resolved.fieldRepairs.map((r) => r.kind)).toEqual(["document-id-resolved"]);
 
     // A failing load degrades to dropping the id; the finding survives.
     const bad = JSON.stringify({

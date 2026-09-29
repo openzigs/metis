@@ -18,6 +18,14 @@
  *     verdict. A citation left with no valid identity (no `documentId`, and
  *     not a complete code citation) is removed from the finding — the FINDING
  *     always survives;
+ *   - #303 — when the caller supplies the project's documents, a citation
+ *     whose `documentId` IS schema-valid but names no known document (the
+ *     `filename#chunkN` label `search_knowledge` used to print is 20-odd
+ *     characters) is resolved or dropped the same way. Only a citation that is
+ *     otherwise valid is touched, so the verdict still never depends on the
+ *     document list: kept as is (valid), resolved (valid) or dropped (the
+ *     finding survives) are all valid, and an invalid citation is left for the
+ *     schema to reject either way;
  *   - a `notes` entry over the limit is truncated with an ellipsis.
  *
  * The stored limits stay the contract: nothing here widens a schema, and the
@@ -28,7 +36,7 @@
  *
  * Pure: no provider, no database. The caller supplies the known documents.
  */
-import { codeCitationSchema, documentCitationSchema } from "@metis/shared";
+import { citationSchema, codeCitationSchema, documentCitationSchema } from "@metis/shared";
 
 /** A project document a model-authored `documentId` may be resolved against. */
 export interface KnownDocument {
@@ -37,11 +45,11 @@ export interface KnownDocument {
 }
 
 export type FindingsRepairKind =
-  /** An invalid `documentId` named exactly one known document; replaced by its id. */
+  /** An invalid or unknown (#303) `documentId` named exactly one known document; replaced by its id. */
   | "document-id-resolved"
-  /** An invalid `documentId` matched no known document; removed, the citation kept (it is a valid code citation). */
+  /** An invalid or unknown `documentId` matched no known document; removed, the citation kept (it is a valid code citation). */
   | "document-id-dropped"
-  /** An invalid `documentId` matched no known document and the citation had no other identity; the citation was removed. */
+  /** An invalid or unknown `documentId` matched no known document and the citation had no other identity; the citation was removed. */
   | "citation-dropped"
   /** A `notes` entry over the limit was truncated with an ellipsis. */
   | "note-truncated";
@@ -83,6 +91,44 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 /** True when `documentId` is a string the stored citation contract would reject. */
 function isInvalidDocumentId(value: unknown): value is string {
   return typeof value === "string" && !documentIdSchema.safeParse(value).success;
+}
+
+/** The synthetic fused-code-chunk id (#729/#734): never a `Document` row, never checked. */
+const CODE_GRAPH_PREFIX = "code-graph:";
+
+/**
+ * #303 — the `documentId` of a citation that is valid as it stands but may name
+ * no real document: a schema-valid, non-`code-graph:` id on a citation the
+ * stored contract accepts. `undefined` for anything else — an invalid citation
+ * is deliberately left for the schema to reject, with or without documents.
+ */
+function uncheckedValidDocumentId(citation: unknown): string | undefined {
+  if (!isRecord(citation)) return undefined;
+  const id = citation.documentId;
+  if (typeof id !== "string" || id.startsWith(CODE_GRAPH_PREFIX)) return undefined;
+  if (isInvalidDocumentId(id)) return undefined;
+  return citationSchema.safeParse(citation).success ? id : undefined;
+}
+
+function citationsOf(parsed: unknown): unknown[] {
+  if (!isRecord(parsed) || !Array.isArray(parsed.findings)) return [];
+  return parsed.findings.flatMap((f) =>
+    isRecord(f) && Array.isArray(f.citations) ? (f.citations as unknown[]) : [],
+  );
+}
+
+/**
+ * #303 — the schema-valid document ids this answer cites (each once), which
+ * are real only if they are the project's documents. Lets the caller check
+ * them cheaply before loading the whole document list.
+ */
+export function candidateDocumentIds(parsed: unknown): string[] {
+  const ids = new Set<string>();
+  for (const c of citationsOf(parsed)) {
+    const id = uncheckedValidDocumentId(c);
+    if (id !== undefined) ids.add(id);
+  }
+  return [...ids];
 }
 
 /**
@@ -156,25 +202,43 @@ function truncateNote(note: string, max: number): string {
 }
 
 /**
+ * Does this citation's `documentId` need resolving: schema-invalid (#298), or
+ * valid but not one of the known documents (#303, only when they are known)?
+ */
+function needsRepair(
+  citation: Record<string, unknown>,
+  knownIds: ReadonlySet<string> | undefined,
+): boolean {
+  if (isInvalidDocumentId(citation.documentId)) return true;
+  if (knownIds === undefined) return false;
+  const id = uncheckedValidDocumentId(citation);
+  return id !== undefined && !knownIds.has(id);
+}
+
+/**
  * Repair one finding's citations in place (on an already-copied finding).
  * `prefix` is the finding's path in the answer (`findings.1`).
  */
 function repairCitations(
   finding: Record<string, unknown>,
   prefix: string,
-  known: readonly KnownDocument[],
+  known: readonly KnownDocument[] | undefined,
   repairs: FindingsRepair[],
 ): void {
   if (!Array.isArray(finding.citations)) return;
+  // #303 — with no document list, "unknown" cannot be told from "real": a
+  // valid id is then left alone rather than dropped.
+  const knownIds = known ? new Set(known.map((d) => d.id)) : undefined;
   const kept: unknown[] = [];
   finding.citations.forEach((citation, j) => {
-    if (!isRecord(citation) || !isInvalidDocumentId(citation.documentId)) {
+    if (!isRecord(citation) || !needsRepair(citation, knownIds)) {
       kept.push(citation);
       return;
     }
+    const documentId = citation.documentId as string;
     const path = `${prefix}.citations.${j}`;
-    const originalLength = citation.documentId.length;
-    const resolved = resolveDocumentCitation(citation, citation.documentId, known);
+    const originalLength = documentId.length;
+    const resolved = resolveDocumentCitation(citation, documentId, known ?? []);
     if (resolved !== undefined) {
       kept.push(resolved);
       repairs.push({ kind: "document-id-resolved", path, originalLength });
@@ -203,7 +267,7 @@ export function repairFinding(
   if (!isRecord(finding)) return { value: finding, repairs: [] };
   const repairs: FindingsRepair[] = [];
   const copy = structuredClone(finding);
-  repairCitations(copy, path, opts.knownDocuments ?? [], repairs);
+  repairCitations(copy, path, opts.knownDocuments, repairs);
   return { value: copy, repairs };
 }
 
@@ -215,7 +279,7 @@ export function repairFindingsAnswer(
   if (!isRecord(parsed)) return { value: parsed, repairs: [] };
   const repairs: FindingsRepair[] = [];
   const copy = structuredClone(parsed);
-  const known = opts.knownDocuments ?? [];
+  const known = opts.knownDocuments;
 
   if (Array.isArray(copy.findings)) {
     copy.findings.forEach((finding, i) => {
@@ -235,23 +299,58 @@ export function repairFindingsAnswer(
 }
 
 /**
+ * Of `ids`, the ones that are the project's documents — a cheap, id-scoped
+ * check that saves loading the whole document list when every cited id is real.
+ */
+export type FindKnownDocumentIds = (ids: readonly string[]) => Promise<readonly string[]>;
+
+/**
+ * The known documents to repair `parsed` against, loaded lazily:
+ *   - an invalid id (#298) needs the list;
+ *   - otherwise a valid document id (#303) needs it only when it is not known —
+ *     checked first with `findKnownIds` when supplied;
+ *   - otherwise nothing is loaded.
+ * `undefined` means "not loaded": invalid ids are then dropped and valid ones
+ * left as they are. Any lookup failure degrades to that, so a database fault
+ * can neither fail the pass nor drop a real citation. Never throws.
+ */
+export async function knownDocumentsForRepair(
+  parsed: unknown,
+  loadKnownDocuments: () => Promise<readonly KnownDocument[]>,
+  findKnownIds?: FindKnownDocumentIds,
+): Promise<readonly KnownDocument[] | undefined> {
+  if (!answerNeedsDocumentResolution(parsed)) {
+    const candidates = candidateDocumentIds(parsed);
+    if (candidates.length === 0) return undefined;
+    if (findKnownIds) {
+      try {
+        const found = new Set(await findKnownIds(candidates));
+        if (candidates.every((id) => found.has(id))) return undefined;
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  try {
+    return await loadKnownDocuments();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * {@link repairFindingsAnswer}, loading the known documents only when the
- * answer actually has a `documentId` to resolve. A loader failure degrades to
- * "no known documents" (the id is dropped rather than resolved) — resolving an
- * id must never be able to fail the pass it is rescuing.
+ * answer actually has a `documentId` to resolve (see
+ * {@link knownDocumentsForRepair}). A loader failure degrades to "no known
+ * documents" (an invalid id is dropped rather than resolved; a valid one is
+ * kept) — resolving an id must never be able to fail the pass it is rescuing.
  */
 export async function repairFindingsAnswerWithDocuments(
   parsed: unknown,
   loadKnownDocuments: () => Promise<readonly KnownDocument[]>,
+  findKnownIds?: FindKnownDocumentIds,
 ): Promise<FindingsRepairResult> {
-  let knownDocuments: readonly KnownDocument[] = [];
-  if (answerNeedsDocumentResolution(parsed)) {
-    try {
-      knownDocuments = await loadKnownDocuments();
-    } catch {
-      knownDocuments = [];
-    }
-  }
+  const knownDocuments = await knownDocumentsForRepair(parsed, loadKnownDocuments, findKnownIds);
   return repairFindingsAnswer(parsed, { knownDocuments });
 }
 
@@ -272,8 +371,10 @@ export function summarizeFindingsRepairs(repairs: readonly FindingsRepair[]): st
 export function findingsRepairNote(repairs: readonly FindingsRepair[]): string | undefined {
   if (repairs.length === 0) return undefined;
   const note =
-    `REPAIRED: ${repairs.length} over-limit field(s) in the model's findings answer were ` +
-    `repaired instead of rejecting the answer (${summarizeFindingsRepairs(repairs)}).`;
+    // #303 — not only over-limit fields: a valid-length id naming no document is repaired too.
+    `REPAIRED: ${repairs.length} field(s) in the model's findings answer were repaired ` +
+    `instead of rejecting the answer or keeping a citation to no document ` +
+    `(${summarizeFindingsRepairs(repairs)}).`;
   return note.length > NOTE_MAX_LENGTH ? truncateNote(note, NOTE_MAX_LENGTH) : note;
 }
 
