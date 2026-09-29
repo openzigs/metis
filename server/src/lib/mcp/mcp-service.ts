@@ -186,15 +186,26 @@ export class MCPRegistryService {
        * Empty or absent means no narrowing (system admins).
        */
       projectScope?: Record<string, unknown>;
+      /**
+       * #340 — the caller's user id when the caller is NOT a system admin. A
+       * `scope: "user"` server is kept only when this is its owner; other
+       * scopes are unaffected. Absent means no narrowing (system admins).
+       */
+      userScopeOwner?: string;
     } = {},
   ): Promise<MCPServerView[]> {
     const where: Record<string, unknown> = { deletedAt: null };
     if (opts.scope) where.scope = opts.scope;
     if (opts.projectId !== undefined) where.projectId = opts.projectId;
     if (opts.userId !== undefined) where.userId = opts.userId;
+    const narrow: Array<Record<string, unknown>> = [];
     if (opts.projectScope && Object.keys(opts.projectScope).length > 0) {
-      where.OR = [{ scope: { not: "project" } }, { project: opts.projectScope }];
+      narrow.push({ OR: [{ scope: { not: "project" } }, { project: opts.projectScope }] });
     }
+    if (opts.userScopeOwner !== undefined) {
+      narrow.push({ OR: [{ scope: { not: "user" } }, { userId: opts.userScopeOwner }] });
+    }
+    if (narrow.length > 0) where.AND = narrow;
     const rows = await prisma.mCPServer.findMany({
       where,
       orderBy: { createdAt: "desc" },
@@ -697,6 +708,7 @@ export class MCPRegistryService {
       id: row.id,
       scope: row.scope as "global" | "project" | "user",
       projectId: row.projectId,
+      userId: (row as McpRow).userId ?? null,
       label: row.label,
       transport: row.transport as MCPTransport,
       runtime: normalizeRuntimeForConfig({

@@ -27,9 +27,29 @@ import { CHAT_CODE_TOOL_NAMES } from "../analysis/tools/chat-code-tool-names.js"
 import type { ToolRegistry } from "../ai/tool-registry.js";
 import { parseAgentRef } from "./definition.js";
 
-/** Every tool name an allowlist may name exactly: the registry plus the chat code tools. */
-export function knownToolNames(registry: Pick<ToolRegistry, "list">): Set<string> {
-  return new Set([...registry.list().map((t) => t.name), ...CHAT_CODE_TOOL_NAMES]);
+/**
+ * Every tool name an allowlist may name exactly: the registry plus the chat code tools.
+ *
+ * #340 — minus the tools of `scope: "user"` MCP servers. Such a server is one
+ * user's own: the agent runtime never offers it (sessions get only the
+ * project's servers and its allow-listed globals), and counting its tools here
+ * would confirm to any agent author that another user's server is running.
+ */
+export function knownToolNames(
+  registry: Pick<ToolRegistry, "list"> & Partial<Pick<ToolRegistry, "describeAll">>,
+): Set<string> {
+  const userScoped = new Set(
+    (registry.describeAll?.() ?? [])
+      .filter((v) => v.origin?.kind === "mcp" && v.origin.serverScope === "user")
+      .map((v) => v.name),
+  );
+  return new Set([
+    ...registry
+      .list()
+      .map((t) => t.name)
+      .filter((n) => !userScoped.has(n)),
+    ...CHAT_CODE_TOOL_NAMES,
+  ]);
 }
 
 /**

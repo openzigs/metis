@@ -293,6 +293,73 @@ describe("MCPToolBridge cross-project isolation (SEC-6)", () => {
   });
 });
 
+// #340 — a `scope: "user"` server is its owner's alone.
+describe("MCPToolBridge user-scope ownership (#340)", () => {
+  async function startUserServer(userId: string | null) {
+    __resetToolRegistrySingleton();
+    auditEvents.length = 0;
+    const lifecycle = new MCPLifecycleManager({
+      resolveEnv: async (e) => e,
+      transportFactory: () => makeTransport(),
+    });
+    const registry = {
+      getAllowList: vi.fn(async () => ["srv1"]),
+    } as unknown as ConstructorParameters<typeof MCPToolBridge>[1];
+    const bridge = new MCPToolBridge(lifecycle, registry);
+    bridge.attach();
+    await lifecycle.start(makeConfig({ scope: "user", userId, trustLevel: "trusted" }));
+    return bridge;
+  }
+  const invokeAs = (userId: string, projectId?: string) =>
+    getToolRegistry().invoke(
+      "mcp:cool-server:read_file",
+      {},
+      { sessionId: "s", userId, ...(projectId ? { projectId } : {}) },
+      allowGate,
+    );
+
+  it.each([
+    ["a project-bound session", "proj-a" as string | undefined],
+    ["a project-less session", undefined],
+  ])("refuses another user's server to %s, audited as not_owner", async (_n, projectId) => {
+    const bridge = await startUserServer("u-owner");
+    const denied = await invokeAs("u-other", projectId);
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toMatch(/belongs to another user/);
+    const denyAudit = auditEvents.find((e) => e.metadata?.decision === "denied");
+    expect(denyAudit?.metadata?.denyReason).toBe("not_owner");
+    bridge.shutdown();
+  });
+
+  it("refuses a user server with no owner on record to everyone (fail closed)", async () => {
+    const bridge = await startUserServer(null);
+    const denied = await invokeAs("u-owner");
+    expect(denied.isError).toBe(true);
+    expect(auditEvents.find((e) => e.metadata?.decision === "denied")?.metadata?.denyReason).toBe(
+      "not_owner",
+    );
+    bridge.shutdown();
+  });
+
+  it("lets the owner invoke their own server", async () => {
+    const bridge = await startUserServer("u-owner");
+    const ok = await invokeAs("u-owner");
+    expect(ok.isError).toBe(false);
+    expect(auditEvents.find((e) => e.metadata?.decision === "denied")).toBeUndefined();
+    bridge.shutdown();
+  });
+
+  it("tags each registered tool with the server's scope", async () => {
+    const bridge = await startUserServer("u-owner");
+    expect(getToolRegistry().describe("mcp:cool-server:read_file")?.origin).toMatchObject({
+      kind: "mcp",
+      serverId: "srv1",
+      serverScope: "user",
+    });
+    bridge.shutdown();
+  });
+});
+
 // SEC-8 / R-E5: audit metadata must include version, sha256, argsHash, resultHash, decision.
 describe("MCPToolBridge audit completeness (SEC-8 / R-E5)", () => {
   it("emits version, sha256, argsHash, resultHash, decision on allowed invocation", async () => {

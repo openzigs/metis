@@ -151,6 +151,46 @@ describe("#238 unknownToolRefs — one check for both kinds of agent", () => {
   });
 });
 
+describe("#340 a user-scope MCP server's tools are never valid agent refs", () => {
+  function registryWithMcp(
+    tools: Array<{ name: string; scope: "global" | "project" | "user" }>,
+  ): InstanceType<typeof ToolRegistry> {
+    const r = new ToolRegistry();
+    for (const t of tools) {
+      const [, label] = t.name.split(":");
+      r.register({
+        name: t.name,
+        description: t.name,
+        schema: z.object({}),
+        risk: "low",
+        origin: { kind: "mcp", serverId: `srv-${label}`, serverLabel: label, serverScope: t.scope },
+        exec: async () => ({ text: "" }),
+      } as never);
+    }
+    return r;
+  }
+  const registry = registryWithMcp([
+    { name: "mcp:mine:read", scope: "user" },
+    { name: "mcp:shared:read", scope: "global" },
+    { name: "mcp:team:read", scope: "project" },
+  ]);
+
+  it("drops them from the known names — a running one included — and keeps other scopes", () => {
+    const known = knownToolNames(registry);
+    expect(known.has("mcp:mine:read")).toBe(false);
+    expect(known.has("mcp:shared:read")).toBe(true);
+    expect(known.has("mcp:team:read")).toBe(true);
+  });
+
+  it("so an agent save naming one (or its server prefix) is refused as unknown", () => {
+    expect(() => assertKnownTools(["mcp:mine:read"], registry)).toThrow(
+      /Unknown tools: mcp:mine:read/,
+    );
+    expect(() => assertKnownTools(["mcp:mine:*"], registry)).toThrow(/Unknown tools: mcp:mine:\*/);
+    expect(() => assertKnownTools(["mcp:shared:read", "mcp:team:*"], registry)).not.toThrow();
+  });
+});
+
 describe("#238 the built-in custom agents", () => {
   it("name only tools the boot registry (or the chat code tools) really carries", () => {
     // The two knowledge tools `server.ts` registers before it seeds the built-ins.

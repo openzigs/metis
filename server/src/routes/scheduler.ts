@@ -82,6 +82,22 @@ export function schedulerRouter(): Router {
   r.post("/", requirePermission("scheduler.manage"), async (req, res, next) => {
     try {
       const input = createScheduledJobSchema.parse(req.body);
+      // #340 — project access FIRST, before anything reads the project: the
+      // autopilot lookup below answered 400 AUTOPILOT_DISABLED for a project
+      // the caller cannot reach, so its autopilot state leaked across
+      // workspaces. This is `createJob`'s own check (same predicate, same
+      // 404), hoisted, so an unreachable project answers exactly what an
+      // unknown one does.
+      if (input.projectId) {
+        const allowed = await actorCanAccessProject(actor(req), input.projectId, {
+          resource: "scheduled-job",
+          resourceId: input.key,
+          action: "scheduled-job.create",
+        });
+        if (!allowed) {
+          throw new AppError(404, "JOB_NOT_FOUND", `scheduled job ${input.key} not found`);
+        }
+      }
       // Epic #164 — autopilot opt-in via payload.autopilot=true on
       // rerun-analysis jobs requires the project to have autopilotEnabled.
       if (
