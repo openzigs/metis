@@ -30,8 +30,6 @@ const VARIANT_JOBS = Object.freeze({
   // grows with the suite) skip themselves there, so it
   // cannot replace the SQLite run — measured on #4.
   "postgres-adapter": ["@metis/server"],
-  // win32. Its gating steps run the scripts suite; the full suite is non-gating.
-  windows: ["@metis/scripts"],
 });
 
 /** The workspace packages, root included, from pnpm-workspace.yaml's `packages:` list. */

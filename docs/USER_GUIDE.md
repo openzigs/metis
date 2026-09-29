@@ -783,8 +783,8 @@ chat and `xenova` embeddings coexist with no config conflict on the same box.
 **Docker/Kubernetes note:** the validator accepts only `localhost` and IP
 literals, so DNS service names like `http://ollama:11434/v1` are rejected. In
 containers, use a loopback/host-network address or the Ollama pod IP (e.g.
-`http://10.0.0.12:11434/v1`). See also the Windows onboarding section in
-[docs/DEVELOPMENT.md §7.6](DEVELOPMENT.md#76-windows-11-developer-onboarding-epic-183).
+`http://10.0.0.12:11434/v1`). To develop METIS itself on Windows, see
+[docs/DEVELOPMENT.md §7.6](DEVELOPMENT.md#76-developing-on-windows-use-wsl2-354).
 
 <a id="run-gemma-locally-on-a-windows-gpu-box"></a>
 
