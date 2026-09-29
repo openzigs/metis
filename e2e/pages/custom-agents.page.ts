@@ -109,6 +109,10 @@ export class CustomAgentsEnablementSection {
   readonly heading: Locator;
   readonly empty: Locator;
   readonly error: Locator;
+  /** #405 — the link into the workspace's authoring wizard. */
+  readonly newAgentLink: Locator;
+  /** #405 — the confirm that gates a delete (an `AlertDialog`, #268). */
+  readonly confirmDialog: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -116,6 +120,8 @@ export class CustomAgentsEnablementSection {
     this.heading = page.getByRole("heading", { name: "Custom agents" });
     this.empty = page.getByTestId("custom-agents-enablement-empty");
     this.error = page.getByTestId("custom-agents-enablement-error");
+    this.newAgentLink = this.card.getByRole("link", { name: "New agent" });
+    this.confirmDialog = page.getByRole("alertdialog");
   }
 
   /** Navigate to Library → Agents scoped to the project, which hosts the enablement card. */
@@ -132,5 +138,9 @@ export class CustomAgentsEnablementSection {
 
   toggle(agentId: string): Locator {
     return this.page.getByTestId(`ca-enablement-toggle-${agentId}`);
+  }
+
+  deleteButton(agentId: string): Locator {
+    return this.row(agentId).getByRole("button", { name: "Delete" });
   }
 }

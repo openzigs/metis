@@ -6,7 +6,9 @@ metadata:
 ---
 
 Measured on the 2026-09-29 ui-vision walkthrough (commit 469ca6e):
-- Mock-auth login is `admin@metis.local` / `password`, not `admin` (`server/src/lib/auth/mock-provider.ts`). `pnpm db:seed` seeds "Sample Project".
+- Mock-auth login is username `admin` / password `password` (`server/src/lib/auth/mock-provider.ts`); `admin@metis.local` returns 401 on this build. `pnpm db:seed` seeds "Sample Project".
+- `LOCAL_SOURCE_ROOTS` is split on `path.delimiter` (`:` on macOS/Linux), not commas.
+- Deep-ingesting METIS's own `server/src` + `ui/src` with local embeddings takes ~50 min (~17k symbols, ~2.1k documents).
 - The UI `dev` script hard-codes port 3000. For another port run `next dev --webpack -p <port>` with `METIS_API_URL` set, and pass the server `PORT`/`CORS_ORIGIN` through `--env-file`.
 - Playwright MCP only uploads files from under the main checkout, so copy fixtures into the worktree first.
 - Uploaded documents land in quarantine. Approve them at project Settings → Quarantine, or the Ingest stage won't count them.
