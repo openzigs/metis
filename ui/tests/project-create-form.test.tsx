@@ -9,7 +9,7 @@
  *  - the repo-pair "both or neither" rule blocks submit + shows its message.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProjectCreateForm } from "@/components/projects/project-create-form";
 import { ApiError } from "@/lib/api-client";
@@ -83,6 +83,24 @@ describe("ProjectCreateForm", () => {
     await user.clear(slug);
     await user.type(name, "!");
     expect(slug).toHaveValue("acme-labs");
+  });
+
+  // PR #367 panel — the test above cannot tell "clearing resumes derivation"
+  // from "the blur refill filled it": typing into Name blurs Slug first. Change
+  // the Name WITHOUT moving focus, so only the onChange hand-back can refill it.
+  it("hands a cleared Slug back to the Name before any blur (#23)", async () => {
+    const user = userEvent.setup();
+    renderForm();
+    const name = screen.getByTestId("project-name-input");
+    const slug = screen.getByTestId("project-slug-input");
+    await user.type(name, "Acme");
+    await user.clear(slug);
+    await user.type(slug, "custom");
+    await user.clear(slug);
+    expect(slug).toHaveFocus();
+    fireEvent.change(name, { target: { value: "Acme Labs Two" } });
+    expect(slug).toHaveFocus();
+    expect(slug).toHaveValue("acme-labs-two");
   });
 
   // #23 review — clearing the Slug used to leave it empty ("Slug is required")

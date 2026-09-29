@@ -7,7 +7,7 @@
  * so server-side auto-RAG retrieval is scoped to that project.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "./test-utils";
 import type { StreamEvent } from "@/lib/ai-client";
@@ -207,5 +207,38 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
       ),
     );
     expect(screen.getByTestId("workbench-doc-doc-repo").textContent).not.toContain("acmerp");
+  });
+
+  // PR #367 panel — the context chip is a second render site for the label, and
+  // reverting it alone left every Workbench test green.
+  it("labels an attached context chip with the repository's name (#23)", async () => {
+    const user = userEvent.setup();
+    repoListMock.mockResolvedValueOnce([
+      { id: "cmexample0000000000acmerp", repoName: "wms-core", label: "WMS" },
+    ]);
+    documentsListMock.mockResolvedValue({
+      items: [
+        {
+          id: "doc-repo",
+          filename: "connector:repo:cmexample0000000000acmerp:README.md",
+          status: "ready",
+        },
+      ],
+    });
+
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(<WorkbenchPage />, { wrapper: Wrapper });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("workbench-doc-doc-repo")).toHaveTextContent(
+        "README.md — wms-core",
+      ),
+    );
+    await user.click(screen.getByTestId("workbench-doc-attach-doc-repo"));
+
+    const chips = await screen.findByTestId("workbench-context-chips");
+    expect(
+      within(chips).getByRole("listitem", { name: "Remove README.md — wms-core from context" }),
+    ).toBeInTheDocument();
   });
 });
