@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { projectsApi, documentsApi, type DocumentRow, type Project } from "@/lib/projects-api";
 import { formatDocLabel } from "@/lib/doc-label";
 import { formatSourceLabel } from "@/lib/format-source-label";
+import { useRepoNames } from "@/hooks/use-repo-names";
 import {
   type AISession,
   type ChatMessage,
@@ -99,6 +100,9 @@ export default function WorkbenchPage() {
     queryFn: () => documentsApi.list(activeProjectId ?? "", { limit: 50 }),
     enabled: Boolean(activeProjectId),
   });
+
+  // #23 — connector id → repository name for the document labels.
+  const repoNames = useRepoNames(activeProjectId);
 
   // Recent analyses (server-side).
   const analyses = useQuery({
@@ -317,7 +321,7 @@ export default function WorkbenchPage() {
                   // connector ids (raw id kept in the title tooltip below); the
                   // existing secondary line keeps the directory / id-fragment
                   // provenance so nothing precise is lost.
-                  const source = formatSourceLabel(d.filename);
+                  const source = formatSourceLabel(d.filename, repoNames);
                   const label = formatDocLabel(d.filename);
                   return (
                     <li
@@ -375,7 +379,7 @@ export default function WorkbenchPage() {
               {contextDocs.map((d) => {
                 // Issue #427 — friendly `basename — repo` label on the chip; the
                 // full raw id stays in the title tooltip for copy / deep-link.
-                const source = formatSourceLabel(d.filename);
+                const source = formatSourceLabel(d.filename, repoNames);
                 return (
                   <button
                     key={d.id}

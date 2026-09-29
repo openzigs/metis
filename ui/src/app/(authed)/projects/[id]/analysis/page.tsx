@@ -51,6 +51,7 @@ import { RequirementsEmptyState } from "@/components/analysis/RequirementsEmptyS
 import { SynthesisDegradedNotice } from "@/components/analysis/SynthesisDegradedNotice";
 import { AddDocumentsPanel } from "@/components/analysis/add-documents-panel";
 import { formatSourceLabel } from "@/lib/format-source-label";
+import { useRepoNames } from "@/hooks/use-repo-names";
 import { EvaluateRequirementsPanel } from "@/components/analysis/evaluate-requirements-panel";
 import { CrossDocFindingsPanel } from "@/components/analysis/CrossDocFindingsPanel";
 import { StakeholdersPanel } from "@/components/analysis/StakeholdersPanel";
@@ -127,6 +128,8 @@ function StatusBadge({ status }: { status: string }): React.ReactElement {
 export default function AnalysisPage(): React.ReactElement {
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
+  // #23 — connector id → repository name for citation labels.
+  const repoNames = useRepoNames(projectId);
   const qc = useQueryClient();
   const [selectedAnalysisId, setSelectedAnalysisId] = useState<string | null>(null);
 
@@ -1110,7 +1113,10 @@ export default function AnalysisPage(): React.ReactElement {
                                 // `basename \u2014 repo` label with the full raw id in
                                 // the title tooltip. The chunk index (#{chunkIndex})
                                 // is the file:line provenance and is preserved.
-                                const source = formatSourceLabel(c.filename ?? c.documentId);
+                                const source = formatSourceLabel(
+                                  c.filename ?? c.documentId,
+                                  repoNames,
+                                );
                                 return (
                                   <li key={`${c.documentId}-${c.chunkIndex}-${idx}`}>
                                     \u2192 <span title={source.rawId}>{source.label}</span> #

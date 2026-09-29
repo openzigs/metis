@@ -56,6 +56,44 @@ describe("formatSourceLabel (#427)", () => {
     });
   });
 
+  describe("repository names (#23)", () => {
+    const names = { cmexample0000000000acmerp: "wms-core", abc123def: "metis" };
+
+    it("shows the repository name instead of the connector-id tail", () => {
+      const r = formatSourceLabel("connector:repo:abc123def:README.md", names);
+      expect(r.repoLabel).toBe("metis");
+      expect(r.label).toBe("README.md — metis");
+      expect(r.label).not.toContain("123def");
+      expect(r.rawId).toBe("connector:repo:abc123def:README.md");
+    });
+
+    it("resolves the name per connector", () => {
+      const r = formatSourceLabel(
+        "connector:repo:cmexample0000000000acmerp:src/main/java/Foo.java",
+        names,
+      );
+      expect(r.label).toBe("Foo.java — wms-core");
+    });
+
+    it("falls back to the short token when the connector is not in the map", () => {
+      expect(formatSourceLabel("connector:repo:zzz999888:README.md", names).label).toBe(
+        "README.md — 999888",
+      );
+    });
+
+    it("ignores a blank name and falls back to the short token", () => {
+      expect(
+        formatSourceLabel("connector:repo:abc123def:README.md", { abc123def: "  " }).label,
+      ).toBe("README.md — 123def");
+    });
+
+    it("does not resolve inherited object keys as repository names", () => {
+      expect(formatSourceLabel("connector:repo:constructor:README.md", {}).label).toBe(
+        "README.md — ructor",
+      );
+    });
+  });
+
   describe("live-schema ids (#732 — Sally's schema citations)", () => {
     it("renders a 'live-schema:<projectId>' id as a friendly 'Live schema' label", () => {
       const raw = "live-schema:proj-abc123";

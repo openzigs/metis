@@ -26,6 +26,7 @@ import {
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { computeDedupHash } from "./dedup.js";
+import { buildEpicTitle } from "./epic-title.js";
 import { PublishError } from "./types.js";
 import { findTemplate } from "./template-service.js";
 import { renderToMarkdown, buildTemplatePrompt } from "./template-renderer.js";
@@ -87,8 +88,11 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   };
 
   // ----- Epic draft -----
-  const epicTitle = `[Epic] ${project.name} — Analysis ${analysis.id.slice(0, 8)}`;
-  const epicHash = computeDedupHash(opts.targetOwner, opts.targetRepo, epicTitle);
+  // #23 — titled from the analysed feature, not the analysis id.
+  const { title: epicTitle, hash: epicHash } = await claimEpicTitle(
+    opts,
+    buildEpicTitle(project.name, analysis),
+  );
   const epicBody = renderEpicBody({ project, analysis, requirements });
   const epicLabels = uniq([
     "epic",
@@ -174,6 +178,38 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
     ...summary,
   });
   return summary;
+}
+
+/**
+ * #23 — the epic title is its dedup key, and the publisher recomputes the hash
+ * from the title, so it must be unique per analysis. A title built from the
+ * requirement text is not: two analyses that open with the same line produce
+ * the same one, and the second would overwrite the first's epic draft (keeping
+ * its approved/published status) and then edit its GitHub epic in place.
+ * An epic draft already owned by another analysis therefore pushes this one to
+ * the next free `(n)` suffix; one owned by this analysis is reused, so a
+ * re-run still refreshes rather than duplicates.
+ */
+async function claimEpicTitle(
+  opts: GenerateDraftsOptions,
+  baseTitle: string,
+): Promise<{ title: string; hash: string }> {
+  for (let n = 1; ; n++) {
+    const title = n === 1 ? baseTitle : `${baseTitle} (${n})`;
+    const hash = computeDedupHash(opts.targetOwner, opts.targetRepo, title);
+    const holder = await prisma.issueDraft.findFirst({
+      where: { projectId: opts.projectId, dedupHash: hash, deletedAt: null },
+    });
+    if (!holder || draftAnalysisId(holder.metadata) === opts.analysisId) return { title, hash };
+  }
+}
+
+function draftAnalysisId(metadata: string | null): unknown {
+  try {
+    return (JSON.parse(metadata ?? "{}") as { analysisId?: unknown }).analysisId;
+  } catch {
+    return undefined;
+  }
 }
 
 interface UpsertArgs {

@@ -269,6 +269,10 @@ vi.mock("@/components/requirements/requirement-links-panel", () => ({
   RequirementLinksPanel: () => null,
 }));
 
+// #23 — citation labels resolve connector ids to repository names.
+const repoList = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/connectors-api", () => ({ repoConnectorsApi: { list: repoList } }));
+
 import AnalysisPage from "@/app/(authed)/projects/[id]/analysis/page";
 import { analysisApi } from "@/lib/analysis-api";
 
@@ -286,6 +290,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   nav.search = new URLSearchParams();
   apiMock.get.mockResolvedValue(SNAPSHOT);
+  repoList.mockResolvedValue([]);
 });
 
 describe("#289 — agent-phase findings in the results view", () => {
@@ -330,5 +335,29 @@ describe("#289 — agent-phase findings in the results view", () => {
 
     // The built-in specialist still has its Regenerate action.
     expect(screen.getAllByRole("button", { name: "Regenerate" })).toHaveLength(1);
+  });
+
+  // #23 review — nothing failed if the page stopped passing repo names to the
+  // citation label, which then fell back to the connector id's tail.
+  it("labels a repository citation with the repository's name (#23)", async () => {
+    repoList.mockResolvedValue([
+      { id: "cmexample0000000000acmerp", repoName: "wms-core", label: "WMS" },
+    ]);
+    const snapshot = structuredClone(SNAPSHOT);
+    snapshot.agentResults[0].findings[0].citations = [
+      {
+        documentId: "doc-1",
+        filename: "connector:repo:cmexample0000000000acmerp:src/README.md",
+        chunkIndex: 3,
+        snippet: null,
+      },
+    ] as never;
+    apiMock.get.mockResolvedValue(snapshot);
+    renderPage();
+    await waitForResults();
+
+    await waitFor(() => expect(screen.getByText("README.md — wms-core")).toBeInTheDocument());
+    expect(repoList).toHaveBeenCalledWith("p1");
+    expect(screen.getByTestId("findings-section").textContent).not.toContain("acmerp");
   });
 });

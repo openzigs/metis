@@ -92,10 +92,11 @@ export function VaultPicker({ id, value, onChange, placeholder, className }: Vau
           <SelectValue placeholder={placeholder ?? "${vault:select-a-key}"} />
         </SelectTrigger>
         <SelectContent>
+          {/* #23 — a plain note, not a second item: Radix mirrors every item
+              into a native <select> keyed by value, so a disabled item sharing
+              CUSTOM_KEY with the real custom row logged a duplicate-key error. */}
           {entries.length === 0 && (
-            <SelectItem value={CUSTOM_KEY} disabled>
-              No vault entries found
-            </SelectItem>
+            <div className="px-2 py-1.5 text-xs text-muted-foreground">No vault entries found</div>
           )}
           {entries.map((entry) => (
             <SelectItem key={entry.id} value={entry.label}>

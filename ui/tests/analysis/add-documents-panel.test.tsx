@@ -42,6 +42,12 @@ vi.mock("@/lib/projects-api", async () => {
   };
 });
 
+// #23 — the panel resolves connector ids to repository names.
+const listRepoConnectors = vi.fn();
+vi.mock("@/lib/connectors-api", () => ({
+  repoConnectorsApi: { list: (...args: unknown[]) => listRepoConnectors(...args) },
+}));
+
 function makeDoc(id: string, filename: string, status: DocumentRow["status"]): DocumentRow {
   return {
     id,
@@ -83,6 +89,8 @@ function Harness({ docs, onInvalidateDocs, initialSelected = [], onSelectedChang
 
 beforeEach(() => {
   createFromUrl.mockReset();
+  listRepoConnectors.mockReset();
+  listRepoConnectors.mockResolvedValue([]);
 });
 
 describe("AddDocumentsPanel (#906)", () => {
@@ -133,6 +141,18 @@ describe("AddDocumentsPanel (#906)", () => {
     // The full raw id remains available via the title tooltip (copyable).
     const labelSpan = row.querySelector("span[title]")!;
     expect(labelSpan).toHaveAttribute("title", rawId);
+  });
+
+  it("labels a repository file with the repository's name, not the connector-id tail (#23)", async () => {
+    listRepoConnectors.mockResolvedValue([
+      { id: "cmexample0000000000acmerp", repoName: "wms-core", label: "WMS" },
+    ]);
+    const rawId = "connector:repo:cmexample0000000000acmerp:README.md";
+    render(<Harness docs={[makeDoc(rawId, rawId, "ready")]} />);
+    const row = screen.getByTestId(`add-documents-row-${rawId}`);
+    await waitFor(() => expect(row).toHaveTextContent("README.md — wms-core"));
+    expect(row.textContent).not.toContain("acmerp");
+    expect(listRepoConnectors).toHaveBeenCalledWith("proj-1");
   });
 
   it("passes a plain uploaded filename through unchanged (graceful degradation) (#427)", () => {
