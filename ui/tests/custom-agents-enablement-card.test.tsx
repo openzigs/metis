@@ -5,7 +5,7 @@
  * one on/off. AC: live-updates when toggled (refetch after the PUT).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { CustomAgentsEnablementCard } from "@/components/projects/custom-agents-enablement-card";
 import { makeWrapper } from "./test-utils";
 
@@ -19,15 +19,23 @@ vi.mock("@/lib/sdk-alignment-api", async () => {
       listAgents: vi.fn(),
       listEnabledAgents: vi.fn(),
       setAgentEnablement: vi.fn(),
+      deleteAgent: vi.fn(),
     },
   };
 });
+vi.mock("@/lib/projects-api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/projects-api")>("@/lib/projects-api");
+  return { ...actual, projectsApi: { ...actual.projectsApi, get: vi.fn() } };
+});
 
 import { sdkApi } from "@/lib/sdk-alignment-api";
+import { projectsApi } from "@/lib/projects-api";
 
 const listAgents = sdkApi.listAgents as unknown as ReturnType<typeof vi.fn>;
 const listEnabledAgents = sdkApi.listEnabledAgents as unknown as ReturnType<typeof vi.fn>;
 const setAgentEnablement = sdkApi.setAgentEnablement as unknown as ReturnType<typeof vi.fn>;
+const deleteAgent = sdkApi.deleteAgent as unknown as ReturnType<typeof vi.fn>;
+const getProject = projectsApi.get as unknown as ReturnType<typeof vi.fn>;
 
 function agent(id: string, name: string, isBuiltIn = false) {
   return {
@@ -47,6 +55,10 @@ beforeEach(() => {
   listAgents.mockReset();
   listEnabledAgents.mockReset();
   setAgentEnablement.mockReset();
+  deleteAgent.mockReset();
+  getProject.mockReset();
+  getProject.mockResolvedValue({ id: "proj-1", workspaceId: "ws-1" });
+  window.localStorage.clear();
 });
 
 function renderCard(projectId = "proj-1") {
@@ -154,5 +166,97 @@ describe("<CustomAgentsEnablementCard /> (#85)", () => {
     await waitFor(() =>
       expect(screen.getByTestId("custom-agents-enablement-error")).toBeInTheDocument(),
     );
+  });
+
+  // #405 — Library → Agents is the one home for custom agents, so it must
+  // offer the two actions /settings/agents used to: start creating, and delete.
+  describe("#405 — New agent and Delete", () => {
+    it("links New agent to the authoring wizard of the project's workspace", async () => {
+      listAgents.mockResolvedValue([]);
+      listEnabledAgents.mockResolvedValue([]);
+      window.localStorage.setItem("metis.activeWorkspaceId", "ws-other");
+      renderCard();
+      const link = await screen.findByRole("link", { name: "New agent" });
+      await waitFor(() => expect(link).toHaveAttribute("href", "/workspaces/ws-1/agents/new"));
+      expect(getProject).toHaveBeenCalledWith("proj-1");
+    });
+
+    it("falls back to the active workspace when the project has none", async () => {
+      listAgents.mockResolvedValue([]);
+      listEnabledAgents.mockResolvedValue([]);
+      getProject.mockResolvedValue({ id: "proj-1", workspaceId: null });
+      window.localStorage.setItem("metis.activeWorkspaceId", "ws-active");
+      renderCard();
+      const link = await screen.findByRole("link", { name: "New agent" });
+      expect(link).toHaveAttribute("href", "/workspaces/ws-active/agents/new");
+    });
+
+    it("offers no New agent link when no workspace is known", async () => {
+      listAgents.mockResolvedValue([]);
+      listEnabledAgents.mockResolvedValue([]);
+      getProject.mockResolvedValue({ id: "proj-1", workspaceId: null });
+      renderCard();
+      await screen.findByTestId("custom-agents-enablement-empty");
+      await waitFor(() => expect(getProject).toHaveBeenCalled());
+      expect(screen.queryByRole("link", { name: "New agent" })).not.toBeInTheDocument();
+    });
+
+    it("shows Delete only on the project's own custom agents, never on built-ins", async () => {
+      const shared = { ...agent("a3", "Shared"), projectId: "proj-other" };
+      listAgents.mockResolvedValue([agent("a1", "Mine"), agent("b1", "Builtin", true), shared]);
+      listEnabledAgents.mockResolvedValue([]);
+      renderCard();
+      await screen.findByTestId("ca-enablement-row-a1");
+      expect(screen.getByTestId("ca-delete-a1")).toBeInTheDocument();
+      expect(screen.queryByTestId("ca-delete-b1")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("ca-delete-a3")).not.toBeInTheDocument();
+    });
+
+    it("deletes only after confirming, then refreshes the list", async () => {
+      listAgents.mockResolvedValueOnce([agent("a1", "Mine")]).mockResolvedValue([]);
+      listEnabledAgents.mockResolvedValue([]);
+      deleteAgent.mockResolvedValue(undefined);
+      renderCard();
+
+      fireEvent.click(await screen.findByTestId("ca-delete-a1"));
+      const dialog = await screen.findByRole("alertdialog");
+      expect(dialog).toHaveTextContent("Delete agent Mine?");
+      expect(deleteAgent).not.toHaveBeenCalled();
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+      await waitFor(() => expect(deleteAgent).toHaveBeenCalledWith("a1"));
+      await waitFor(() =>
+        expect(screen.queryByTestId("ca-enablement-row-a1")).not.toBeInTheDocument(),
+      );
+      expect(screen.getByTestId("custom-agents-enablement-empty")).toBeInTheDocument();
+      expect(listAgents).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not delete when the confirm is cancelled", async () => {
+      listAgents.mockResolvedValue([agent("a1", "Mine")]);
+      listEnabledAgents.mockResolvedValue([]);
+      renderCard();
+
+      fireEvent.click(await screen.findByTestId("ca-delete-a1"));
+      const dialog = await screen.findByRole("alertdialog");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+      expect(deleteAgent).not.toHaveBeenCalled();
+      expect(screen.getByTestId("ca-enablement-row-a1")).toBeInTheDocument();
+    });
+
+    it("surfaces the server's refusal and keeps the row", async () => {
+      listAgents.mockResolvedValue([agent("a1", "Mine")]);
+      listEnabledAgents.mockResolvedValue([]);
+      deleteAgent.mockRejectedValue(new Error("Workspace admin required"));
+      renderCard();
+
+      fireEvent.click(await screen.findByTestId("ca-delete-a1"));
+      const dialog = await screen.findByRole("alertdialog");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+      const alert = await screen.findByTestId("ca-delete-error");
+      expect(alert).toHaveTextContent("Workspace admin required");
+      expect(screen.getByTestId("ca-enablement-row-a1")).toBeInTheDocument();
+    });
   });
 });

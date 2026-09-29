@@ -12,13 +12,21 @@
  * #145 — an agent this project OWNS can be edited here (persona, skills,
  * tools, model, approval override) in a dialog; built-ins and agents shared
  * from elsewhere are not editable from a project.
+ *
+ * #405 — with /settings/agents retired (#31) this card is the one home for
+ * custom agents, so it also offers New agent (the workspace's authoring
+ * wizard) and Delete (behind a confirm) on the agents this project owns. The
+ * server's workspace-admin check on `DELETE /custom-agents/:id` still decides.
  */
 import { useState } from "react";
+import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { Card } from "@/components/ui/card";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { sdkApi } from "@/lib/sdk-alignment-api";
+import { projectsApi } from "@/lib/projects-api";
 import type { CustomAgentDto } from "@metis/shared";
 import {
   Dialog,
@@ -36,9 +44,31 @@ interface Props {
 const candidatesKey = (projectId: string) => ["custom-agents", "candidates", projectId] as const;
 const enabledKey = (projectId: string) => ["custom-agents", "enabled", projectId] as const;
 
+/** The header workspace switcher's key (`components/layout/workspace-switcher.tsx`). */
+const ACTIVE_WORKSPACE_KEY = "metis.activeWorkspaceId";
+
+function readActiveWorkspaceId(): string | null {
+  try {
+    return window.localStorage.getItem(ACTIVE_WORKSPACE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export function CustomAgentsEnablementCard({ projectId }: Props) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<CustomAgentDto | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // The wizard lists one workspace's projects, so link to this project's
+  // workspace; fall back to the switcher's active workspace.
+  const project = useQuery({
+    queryKey: ["projects", "detail", projectId],
+    queryFn: () => projectsApi.get(projectId),
+    enabled: Boolean(projectId),
+  });
+  const workspaceId =
+    project.data?.workspaceId ?? (project.isFetched ? readActiveWorkspaceId() : null);
 
   // Candidate agents: built-ins (shared) + this project's own agents.
   const candidates = useQuery({
@@ -63,6 +93,17 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
     },
   });
 
+  const remove = useMutation({
+    mutationFn: (id: string) => sdkApi.deleteAgent(id),
+    onMutate: () => setDeleteError(null),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: candidatesKey(projectId) });
+      qc.invalidateQueries({ queryKey: enabledKey(projectId) });
+    },
+    onError: (err: unknown) =>
+      setDeleteError(err instanceof Error ? err.message : "Failed to delete the agent."),
+  });
+
   const isLoading = candidates.isLoading || enabled.isLoading;
   const isError = candidates.isError || enabled.isError;
 
@@ -71,12 +112,30 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
 
   return (
     <Card className="space-y-3 p-4" data-testid="custom-agents-enablement-card">
-      <div>
-        <h3 className="text-base font-semibold">Custom agents</h3>
-        <p className="text-xs text-muted-foreground">
-          Enable analyst agents to participate in this project&apos;s analysis runs.
-        </p>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h3 className="text-base font-semibold">Custom agents</h3>
+          <p className="text-xs text-muted-foreground">
+            Enable analyst agents to participate in this project&apos;s analysis runs.
+          </p>
+        </div>
+        {workspaceId ? (
+          <Button asChild size="sm">
+            <Link
+              href={`/workspaces/${encodeURIComponent(workspaceId)}/agents/new`}
+              data-testid="ca-new-agent"
+            >
+              New agent
+            </Link>
+          </Button>
+        ) : null}
       </div>
+
+      {deleteError ? (
+        <p className="text-sm text-destructive" role="alert" data-testid="ca-delete-error">
+          {deleteError}
+        </p>
+      ) : null}
 
       {isLoading ? (
         <SkeletonText lines={3} />
@@ -116,15 +175,34 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
                 </div>
                 <div className="flex items-center gap-2">
                   {!agent.isBuiltIn && agent.projectId === projectId && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setEditing(agent)}
-                      data-testid={`ca-edit-open-${agent.id}`}
-                    >
-                      Edit
-                    </Button>
+                    <>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setEditing(agent)}
+                        data-testid={`ca-edit-open-${agent.id}`}
+                      >
+                        Edit
+                      </Button>
+                      <ConfirmDialog
+                        title={`Delete agent ${agent.name}?`}
+                        description="Its enablement in every project is removed with it. This cannot be undone."
+                        confirmLabel="Delete"
+                        onConfirm={() => remove.mutate(agent.id)}
+                        trigger={
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="destructive"
+                            disabled={remove.isPending && remove.variables === agent.id}
+                            data-testid={`ca-delete-${agent.id}`}
+                          >
+                            Delete
+                          </Button>
+                        }
+                      />
+                    </>
                   )}
                   <Button
                     type="button"
