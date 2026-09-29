@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
-import AdminAgentsPage, { rebuildAgentSource } from "@/app/(authed)/admin/agents/page";
+import {
+  AgentsLibraryPanel as AdminAgentsPage,
+  rebuildAgentSource,
+} from "@/components/library/agents-library-panel";
 import {
   agentsApi,
   skillsApi,

@@ -50,9 +50,8 @@ describe("navigation registry (#27)", () => {
       "/vault",
       "/eval/leaderboard",
       "/settings",
-      "/admin",
     ];
-    // /skills and /agents are redirect stubs into /admin/skills and /admin/agents.
+    // /admin, /skills and /agents redirect to their one home (#31, lib/legacy-routes).
     const hrefs = NAV_DESTINATIONS.map((t) => t.href);
     for (const href of former) expect(hrefs).toContain(href);
   });
@@ -139,7 +138,7 @@ describe("isNavItemActive", () => {
   it("marks the hub active on any of its tabs", () => {
     expect(isNavItemActive("/runs/42", item("Activity"))).toBe(true);
     expect(isNavItemActive("/repositories", item("Projects"))).toBe(true);
-    expect(isNavItemActive("/admin/skills", item("Settings"))).toBe(true);
+    expect(isNavItemActive("/settings/workspaces", item("Settings"))).toBe(true);
     expect(isNavItemActive("/workbench", item("Chat"))).toBe(true);
   });
 
@@ -172,10 +171,16 @@ describe("navItemCurrent (#366 review)", () => {
 });
 
 describe("PALETTE_DESTINATIONS (#366 review)", () => {
-  it("keeps the former Skills and Agents entries findable by name", () => {
+  it("finds each concept's one home by name (#31)", () => {
     const byLabel = new Map(PALETTE_DESTINATIONS.map((t) => [t.label, t.href]));
-    expect(byLabel.get("Skills")).toBe("/admin/skills");
-    expect(byLabel.get("Agents")).toBe("/admin/agents");
+    expect(byLabel.get("Skills")).toBe("/library?tab=skills");
+    expect(byLabel.get("Agents")).toBe("/library?tab=agents");
+    expect(byLabel.get("MCP servers")).toBe("/settings/mcp");
+    expect(byLabel.get("Usage & cost")).toBe("/settings/usage");
+  });
+
+  it("points no palette entry at a retired Admin route (#31)", () => {
+    for (const t of PALETTE_DESTINATIONS) expect(t.href.startsWith("/admin")).toBe(false);
   });
 
   it("includes every sidebar destination", () => {
@@ -197,7 +202,20 @@ describe("visibleTabs", () => {
   });
 
   it("shows admin-only tabs to admins", () => {
-    expect(visibleTabs(item("Settings"), true).map((t) => t.label)).toContain("Admin");
+    const hub = {
+      ...item("Settings"),
+      tabs: [...item("Settings").tabs, { href: "/x", label: "X", adminOnly: true }],
+    };
+    expect(visibleTabs(hub, true).map((t) => t.label)).toContain("X");
+    expect(visibleTabs(hub, false).map((t) => t.label)).not.toContain("X");
+  });
+
+  it("gives Settings no separate Admin tab — Admin merged into Settings (#31)", () => {
+    expect(visibleTabs(item("Settings"), true).map((t) => t.label)).toEqual([
+      "Settings",
+      "Vault",
+      "Eval",
+    ]);
   });
 });
 

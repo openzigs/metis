@@ -48,12 +48,9 @@ export default defineConfig({
         // extglob groups and never matches the literal '(authed)' segment.
         "src/app/page.tsx",
         "src/app/login/page.tsx",
-        "src/app/*/admin/page.tsx",
-        "src/app/*/admin/mcp/page.tsx",
-        "src/app/*/admin/auth/page.tsx",
-        "src/app/*/admin/usage/page.tsx",
-        "src/app/*/admin/workspaces/**/*.tsx",
-        "src/app/*/agents/page.tsx",
+        // #31 — the former Admin pages that moved into Settings unchanged.
+        "src/app/*/settings/auth/page.tsx",
+        "src/app/*/settings/workspaces/**/*.tsx",
         "src/app/*/chat/page.tsx",
         "src/app/*/dashboard/page.tsx",
         "src/app/*/products/**/*.tsx",
@@ -85,21 +82,15 @@ export default defineConfig({
         "src/app/*/projects/*/spec-kit/page.tsx",
         "src/app/*/projects/*/sync/**/*.tsx",
         "src/app/*/projects/*/test-coverage/**/*.tsx",
-        "src/app/*/projects/*/usage/page.tsx",
         "src/app/*/projects/*/pulls/**/*.tsx",
         "src/app/*/projects/*/documentation/page.tsx",
         "src/app/*/projects/*/repositories/**/*.tsx",
         "src/app/*/scheduler/page.tsx",
-        // skills/page.tsx is a one-line redirect — admin/skills/page is tested.
-        "src/app/*/skills/page.tsx",
         // Eval/runs detail pages: thin data-display wrappers not targeted by
         // issue #121. The list pages are tested; detail-view variants follow
         // the same pattern without adding coverage value.
         "src/app/*/eval/leaderboard/*/page.tsx",
         "src/app/*/runs/*/review/page.tsx",
-        // Epic #47 (#54) — workspace FinOps page is a thin data-wiring wrapper;
-        // its interactive pieces are covered by the finops component unit tests.
-        "src/app/*/workspaces/*/finops/page.tsx",
         // Epic #610 (#626) — workspace traceability page is a thin data-wiring
         // wrapper; the rollup logic lives in
         // components/traceability/workspace-traceability-rollup (measured).

@@ -20,14 +20,7 @@ export interface ProjectTabLink {
 }
 
 export type ProjectSectionId =
-  | "overview"
-  | "sources"
-  | "analyze"
-  | "requirements"
-  | "docs"
-  | "publish"
-  | "code"
-  | "settings";
+  "overview" | "sources" | "analyze" | "requirements" | "docs" | "publish" | "code" | "settings";
 
 /** One primary tab: a pipeline stage and the pages that belong to it. */
 export interface ProjectSection {
@@ -138,7 +131,11 @@ export function getProjectTabModel(projectId: string): ProjectTabModel {
           { href: `${base}/settings`, label: "General" },
           { href: `${base}/settings/models`, label: "Models" },
           { href: `${base}/plugins`, label: "Plugins" },
-          { href: `${base}/usage`, label: "Usage" },
+          // #31 — usage has one home; this is its Project scope for this project.
+          {
+            href: `/settings/usage?scope=project&projectId=${encodeURIComponent(projectId)}`,
+            label: "Usage",
+          },
         ],
       },
     ],

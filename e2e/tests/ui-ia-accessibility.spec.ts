@@ -280,7 +280,7 @@ test.describe("UI IA — accessibility affordances (#133)", () => {
       { label: "publishing", path: `/projects/${projectId}/publish`, h1: /Publishing/ },
       { label: "mcp", path: "/settings/mcp", h1: /MCP platform/ },
       { label: "settings", path: "/settings", h1: /Settings/ },
-      { label: "admin", path: "/admin", h1: /Admin/ },
+      { label: "workspaces", path: "/settings/workspaces", h1: /Workspaces/ },
       { label: "chat", path: "/chat", h1: /Chat/ },
     ];
 

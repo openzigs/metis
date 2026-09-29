@@ -142,8 +142,8 @@ describe("CommandPalette — keyboard navigation", () => {
 
   // #366 review: the palette must still find the pages that left the sidebar.
   it.each([
-    ["skills", "Skills", "/admin/skills"],
-    ["agents", "Agents", "/admin/agents"],
+    ["skills", "Skills", "/library?tab=skills"],
+    ["agents", "Agents", "/library?tab=agents"],
     ["dash", "Dashboard", "/dashboard"],
   ])("finds %s by name", async (query, label, href) => {
     await openPalette();

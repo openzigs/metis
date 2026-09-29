@@ -1,6 +1,8 @@
 "use client";
 
 /**
+ * #31 — was the /admin/usage page; now the All-projects scope of Settings → Usage.
+ *
  * Epic #594 / Issue #607 — Admin Usage Dashboard.
  *
  * Shows cross-project token usage, cost by model, top users, and time
@@ -10,7 +12,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card } from "@/components/ui/card";
 import { ResponsiveTable, type ResponsiveColumn } from "@/components/tables/responsive-table";
-import { PageHeader } from "@/components/ui/page-header";
+import { PanelHeader } from "@/components/layout/panel-header";
 
 interface UsageRow {
   dayBucket: string;
@@ -73,7 +75,7 @@ const usageColumns: ResponsiveColumn<UsageRow>[] = [
   },
 ];
 
-export default function AdminUsagePage() {
+export function PlatformUsagePanel() {
   const [range, setRange] = useState<string>("30d");
   const [groupBy, setGroupBy] = useState<string>("project");
 
@@ -87,12 +89,13 @@ export default function AdminUsagePage() {
   };
 
   return (
-    <div className="space-y-6 p-6">
-      <PageHeader
+    <div className="space-y-6">
+      <PanelHeader
         title="Token Usage Dashboard"
         actions={
           <div className="flex items-center gap-3">
             <select
+              aria-label="Time range"
               value={range}
               onChange={(e) => setRange(e.target.value)}
               className="rounded-md border border-border bg-background px-3 py-1.5 text-sm"
@@ -102,6 +105,7 @@ export default function AdminUsagePage() {
               <option value="90d">Last 90 days</option>
             </select>
             <select
+              aria-label="Group by"
               value={groupBy}
               onChange={(e) => setGroupBy(e.target.value)}
               className="rounded-md border border-border bg-background px-3 py-1.5 text-sm"

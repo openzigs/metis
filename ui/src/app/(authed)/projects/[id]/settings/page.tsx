@@ -23,7 +23,6 @@ import { AutopilotSettingsCard } from "@/components/projects/autopilot-settings-
 import { DatabaseAwareAnalysisSettingsCard } from "@/components/projects/database-aware-analysis-settings-card";
 import { SqlLineageSettingsCard } from "@/components/projects/sql-lineage-settings-card";
 import { AgentsMdCard } from "@/components/projects/agents-md-card";
-import { CustomAgentsEnablementCard } from "@/components/projects/custom-agents-enablement-card";
 import { InferenceProfileCard } from "@/components/projects/inference-profile-card";
 import { QuarantinePanel } from "@/components/projects/quarantine-panel";
 import { ChroniclePanel } from "@/components/projects/chronicle-panel";
@@ -102,7 +101,6 @@ export default function ProjectSettingsPage() {
         <DatabaseAwareAnalysisSettingsCard projectId={id} />
         <SqlLineageSettingsCard projectId={id} />
         <AgentsMdCard projectId={id} />
-        <CustomAgentsEnablementCard projectId={id} />
         <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <Link
             href={`/projects/${id}/settings/models`}
@@ -113,13 +111,21 @@ export default function ProjectSettingsPage() {
           </Link>
           {canManageSkills ? (
             <Link
-              href={`/library?projectId=${encodeURIComponent(id)}`}
+              href={`/library?tab=skills&projectId=${encodeURIComponent(id)}`}
               className="underline"
               data-testid="project-skills-link"
             >
               Manage this project&apos;s skills in Library →
             </Link>
           ) : null}
+          {/* #31 — custom agents are managed on Library → Agents, scoped to this project. */}
+          <Link
+            href={`/library?tab=agents&projectId=${encodeURIComponent(id)}`}
+            className="underline"
+            data-testid="project-agents-link"
+          >
+            Manage this project&apos;s agents in Library →
+          </Link>
         </p>
       </Card>
 

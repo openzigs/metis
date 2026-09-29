@@ -1,6 +1,8 @@
 "use client";
 
 /**
+ * #31 — was the /admin/agents page; now the Workspace scope of Library → Agents.
+ *
  * Phase 10 — admin Agents library page (issue #74 AC).
  *
  * List + search + view + create/edit/delete + version timeline + a
@@ -24,9 +26,9 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { PageHeader } from "@/components/ui/page-header";
+import { PanelHeader } from "@/components/layout/panel-header";
 
-export default function AdminAgentsPage() {
+export function AgentsLibraryPanel() {
   const qc = useQueryClient();
   const [query, setQuery] = useState("");
   const [includeArchived, setIncludeArchived] = useState(false);
@@ -48,8 +50,8 @@ export default function AdminAgentsPage() {
   const invalidate = () => qc.invalidateQueries({ queryKey: queryKeys.agents.all }).catch(() => {});
 
   return (
-    <div className="space-y-6 p-6">
-      <PageHeader
+    <div className="space-y-6">
+      <PanelHeader
         title="Agents"
         description="Persona definitions that bind a system prompt + a default skill set to a chat session. Tool refs are validated at save time against the live tool registry."
         actions={

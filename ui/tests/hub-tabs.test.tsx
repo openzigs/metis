@@ -39,9 +39,10 @@ describe("<HubTabs /> (#27)", () => {
     expect(within(nav).getByRole("link", { name: "Tasks" })).not.toHaveAttribute("aria-current");
   });
 
-  it("shows the Admin tab to admins only", () => {
-    renderAt("/vault", "admin");
-    expect(screen.getByRole("link", { name: "Admin" })).toBeInTheDocument();
+  it("shows no separate Admin tab, even to admins — Admin is part of Settings (#31)", () => {
+    renderAt("/settings/workspaces", "admin");
+    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("link", { name: "Admin" })).not.toBeInTheDocument();
   });
 
   it("hides the Admin tab from non-admins", () => {

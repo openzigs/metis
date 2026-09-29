@@ -5,7 +5,8 @@
  *   - {@link AgentWizardPage} — the multi-step authoring wizard at
  *     `/workspaces/:id/agents/new` (Issue #84).
  *   - {@link CustomAgentsEnablementSection} — the per-project enablement card
- *     embedded in the project settings page `/projects/:id` (Issue #85).
+ *     on Library → Agents scoped to a project (Issue #85; moved there from
+ *     project settings by #31).
  *
  * Both objects prefer accessible, role-based locators (heading / button /
  * textbox) and fall back to the `data-testid` hooks that ship with the UI
@@ -117,9 +118,11 @@ export class CustomAgentsEnablementSection {
     this.error = page.getByTestId("custom-agents-enablement-error");
   }
 
-  /** Navigate to the project settings page that hosts the enablement card. */
+  /** Navigate to Library → Agents scoped to the project, which hosts the enablement card. */
   async goto(projectId: string): Promise<void> {
-    await this.page.goto(`/projects/${projectId}/settings`, { waitUntil: "load" });
+    await this.page.goto(`/library?tab=agents&projectId=${encodeURIComponent(projectId)}`, {
+      waitUntil: "load",
+    });
     await expect(this.card).toBeVisible({ timeout: 15_000 });
   }
 

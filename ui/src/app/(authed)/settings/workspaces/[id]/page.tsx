@@ -67,7 +67,7 @@ export default function WorkspaceSettingsPage() {
     mutationFn: async () => {
       await apiFetch(`/workspaces/${params.id}`, { method: "DELETE" });
     },
-    onSuccess: () => router.push("/admin"),
+    onSuccess: () => router.push("/settings/workspaces"),
   });
 
   const updateRoleMutation = useMutation({

@@ -79,11 +79,11 @@ export default function EvalLeaderboardPage() {
         description={
           <>
             Nightly SWE-bench-Pro and TAU-bench results plus the BA-pipeline domain regression
-            suite.{" "}
-            <Link className="underline" href="/admin">
-              Admin
+            suite. Settings →{" "}
+            <Link className="underline" href="/settings/api-keys">
+              Configuration
             </Link>{" "}
-            settings → enable nightly runs by setting <code>EVAL_NIGHTLY_ENABLED=true</code>.
+            → enable nightly runs by setting <code>EVAL_NIGHTLY_ENABLED=true</code>.
           </>
         }
       />

@@ -1,5 +1,5 @@
 /**
- * Page Object for the project usage page (`/projects/:id/usage`).
+ * Page Object for the project usage page (Settings → Usage & cost, Project scope; was `/projects/:id/usage` before #31).
  *
  * Epic #594 / Issue #607 — Usage Dashboard UI.
  * Uses accessible locators and data-testid hooks that ship with the UI.
@@ -96,7 +96,10 @@ export class ProjectUsagePage {
   }
 
   async goto(projectId: string): Promise<void> {
-    await this.page.goto(`/projects/${projectId}/usage`, { waitUntil: "load" });
+    await this.page.goto(
+      `/settings/usage?scope=project&projectId=${encodeURIComponent(projectId)}`,
+      { waitUntil: "load" },
+    );
   }
 
   async waitForLoaded(): Promise<void> {

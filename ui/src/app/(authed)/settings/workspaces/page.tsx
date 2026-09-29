@@ -199,7 +199,7 @@ export default function WorkspacesPage() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => router.push(`/admin/workspaces/${ws.id}/settings`)}
+                  onClick={() => router.push(`/settings/workspaces/${ws.id}`)}
                   className="gap-1.5"
                 >
                   <Settings className="h-4 w-4" />

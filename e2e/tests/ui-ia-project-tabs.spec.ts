@@ -64,7 +64,7 @@ const ROUTES: ReadonlyArray<{ path: string; tab: string; landsOn?: string }> = [
   { path: "/settings", tab: "Settings" },
   { path: "/settings/models", tab: "Settings" },
   { path: "/plugins", tab: "Settings" },
-  { path: "/usage", tab: "Settings" },
+  // #31 — /usage now redirects to Settings → Usage & cost; it is no project page.
 ];
 
 test.describe("Project navigation follows the pipeline (#28, #29)", () => {

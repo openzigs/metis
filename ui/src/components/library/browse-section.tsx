@@ -20,13 +20,16 @@ import { SkeletonText } from "@/components/ui/skeleton";
 
 interface Props {
   projectId: string | null;
+  /** #31 — pin the list to one kind (the Skills or Agents tab); hides the kind filter. */
+  kind?: "skill" | "agent";
 }
 
-export function LibraryBrowseSection({ projectId }: Props) {
+export function LibraryBrowseSection({ projectId, kind: pinnedKind }: Props) {
   const { user } = useAuth();
   const canManage = user?.permissions.includes("project.update") ?? false;
   const [query, setQuery] = useState("");
-  const [kind, setKind] = useState<"all" | "skill" | "agent">("all");
+  const [chosenKind, setKind] = useState<"all" | "skill" | "agent">("all");
+  const kind = pinnedKind ?? chosenKind;
   const [tag, setTag] = useState("");
 
   const filters = useMemo(
@@ -61,19 +64,21 @@ export function LibraryBrowseSection({ projectId }: Props) {
           className="max-w-[10rem]"
           data-testid="library-filter-tag"
         />
-        <div className="flex items-center gap-1 text-sm">
-          {(["all", "skill", "agent"] as const).map((k) => (
-            <Button
-              key={k}
-              size="sm"
-              variant={kind === k ? "default" : "outline"}
-              onClick={() => setKind(k)}
-              data-testid={`library-filter-${k}`}
-            >
-              {k === "all" ? "All" : k === "skill" ? "Skills" : "Agents"}
-            </Button>
-          ))}
-        </div>
+        {pinnedKind ? null : (
+          <div className="flex items-center gap-1 text-sm">
+            {(["all", "skill", "agent"] as const).map((k) => (
+              <Button
+                key={k}
+                size="sm"
+                variant={kind === k ? "default" : "outline"}
+                onClick={() => setKind(k)}
+                data-testid={`library-filter-${k}`}
+              >
+                {k === "all" ? "All" : k === "skill" ? "Skills" : "Agents"}
+              </Button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="grid gap-3">

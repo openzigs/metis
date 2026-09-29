@@ -6,6 +6,9 @@
  * `?projectId=` from the Docs menu; that entry is gone, and this picker sets
  * the same parameter. Shown only to users holding `project.update`, the
  * server's gate on saving the allowlist (#469).
+ *
+ * #31 — this is the scope filter of the Skills and Agents tabs: the workspace
+ * library (author and version) or one project (what that project may use).
  */
 import { useQuery } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -28,7 +31,7 @@ export function LibraryProjectPicker({ projectId }: { projectId: string | null }
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Label htmlFor="library-project">Manage skills and agents for</Label>
+      <Label htmlFor="library-project">Scope</Label>
       <select
         id="library-project"
         data-testid="library-project-picker"
@@ -44,7 +47,7 @@ export function LibraryProjectPicker({ projectId }: { projectId: string | null }
           router.replace(query ? `/library?${query}` : "/library");
         }}
       >
-        <option value="">No project (browse only)</option>
+        <option value="">Workspace library</option>
         {/* The list is one page of 100; a project past it is still the selection. */}
         {projectId && projects.data && !projects.data.items.some((p) => p.id === projectId) ? (
           <option value={projectId}>Current project</option>

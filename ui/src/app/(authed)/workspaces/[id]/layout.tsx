@@ -18,7 +18,11 @@ export default function WorkspaceLayout({ children }: { children: React.ReactNod
   if (!id) return <div className="p-6">Invalid workspace id.</div>;
 
   const tabs = [
-    { href: `/workspaces/${id}/finops`, label: "FinOps" },
+    // #31 — workspace cost lives on the one Usage page, scoped to this workspace.
+    {
+      href: `/settings/usage?scope=workspace&workspaceId=${encodeURIComponent(id)}`,
+      label: "Usage & cost",
+    },
     { href: `/workspaces/${id}/traceability`, label: "Traceability" },
     { href: `/workspaces/${id}/agents/new`, label: "New Agent" },
   ];

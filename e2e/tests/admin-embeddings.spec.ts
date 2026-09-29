@@ -40,7 +40,7 @@ test.describe("Admin Embedding backends — RBAC (#930)", () => {
   });
 
   test("redirects unauthenticated UI visit away from the page", async ({ page }) => {
-    await page.goto("/admin/embeddings", { waitUntil: "load" });
+    await page.goto("/settings/embeddings", { waitUntil: "load" });
     await expect(page).toHaveURL(/\/(login|admin\/embeddings)/);
   });
 });
