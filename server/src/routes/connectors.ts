@@ -93,6 +93,10 @@ import { ingestCodeGraph } from "../lib/code-graph/ingest.js";
 import { checkIncrementalRegeneration } from "../lib/docs-gen/incremental.js";
 import { discoverAndUpsertConnections } from "../lib/connectors/repo/connection-discovery.js";
 import { prisma } from "../lib/prisma.js";
+import {
+  assertDbSecretBinding,
+  assertRepoSecretBinding,
+} from "../lib/connectors/connector-secret-binding.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
   ingestConfluenceSpace,
@@ -129,6 +133,11 @@ const linkDatabaseResourceSchema = z.object({
 function actor(req: Request): string {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
   return req.user.userId;
+}
+
+function authUser(req: Request) {
+  if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+  return req.user;
 }
 
 /**
@@ -349,6 +358,7 @@ export function connectorsRouter(): Router {
         "Create upload connectors via POST /repos/upload (multipart .zip)",
       );
     }
+    await assertRepoSecretBinding(authUser(req), projectIdOf(req), null, parsed.data);
     try {
       const projectId = projectIdOf(req);
       const a = actor(req);
@@ -473,6 +483,7 @@ export function connectorsRouter(): Router {
       });
     }
     const { id: _id, ...patch } = parsed.data;
+    await assertRepoSecretBinding(authUser(req), projectIdOf(req), String(req.params.id), patch);
     try {
       const updated = await updateRepoConnector(
         projectIdOf(req),
@@ -877,6 +888,7 @@ export function connectorsRouter(): Router {
         issues: parsed.error.flatten(),
       });
     }
+    await assertDbSecretBinding(authUser(req), projectIdOf(req), null, parsed.data);
     try {
       const created = await createDbConnector(projectIdOf(req), parsed.data, actor(req));
       res.status(201).json(ok(created));
@@ -902,6 +914,7 @@ export function connectorsRouter(): Router {
       });
     }
     const { id: _id, ...patch } = parsed.data;
+    await assertDbSecretBinding(authUser(req), projectIdOf(req), String(req.params.id), patch);
     try {
       const updated = await updateDbConnector(
         projectIdOf(req),

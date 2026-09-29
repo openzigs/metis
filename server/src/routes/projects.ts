@@ -52,6 +52,7 @@ import {
 import { summarizeUsage } from "../lib/finops/index.js";
 import { prisma } from "../lib/prisma.js";
 import { createRepoConnector } from "../lib/connectors/repo/repo-service.js";
+import { assertRepoSecretBinding } from "../lib/connectors/connector-secret-binding.js";
 import { listQuarantine } from "../lib/rag/quarantine.js";
 import { forgetEntry, getEntries, recordEntry } from "../lib/memory/chronicle.js";
 import {
@@ -137,6 +138,14 @@ export function projectsRouter(): Router {
     const actor = actorFromReq(req);
     try {
       const { primaryRepo, workspaceId: _workspaceId, ...projectData } = parsed.data;
+      // #344 — the primary repo's secret is bound here too; refuse before the
+      // project exists so a refused binding leaves nothing behind.
+      if (primaryRepo?.secretRef && req.user) {
+        await assertRepoSecretBinding(req.user, "new", null, {
+          apiBaseUrl: primaryRepo.apiBaseUrl ?? null,
+          secretRef: primaryRepo.secretRef,
+        });
+      }
       // Attach workspaceId so createProject can persist it
       const project = await createProject(
         { ...projectData, workspaceId: _workspaceId } as Parameters<typeof createProject>[0],

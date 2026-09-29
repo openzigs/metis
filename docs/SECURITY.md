@@ -507,6 +507,8 @@ credentials are explicitly **not** in scope.
 | `suggested_connector.test`                  | liveness probe attempted            |
 | `suggested_connector.provisioned`           | connector + vault entry created     |
 | `suggested_connector.provisioned.failed`    | provisioning failed (with rollback) |
+| `suggested_connector.stored_secret_refused` | stored password refused for another driver, host, port or destination-choosing `options` (#324, #344) |
+| `vault.binding_refused`                     | a non-admin tried to attach a vault secret they did not create, or to move a connector / MCP server holding one (#344) |
 
 ### 11.6 Non-goals
 

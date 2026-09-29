@@ -40,6 +40,7 @@ import {
 } from "../lib/connectors/db/db-service.js";
 import { ConnectorError } from "../lib/connectors/types.js";
 import { sanitizeDriverError } from "../lib/connectors/driver-error.js";
+import { hasDbDestinationOptions } from "../lib/connectors/destination.js";
 import { createChildLogger } from "../lib/logger.js";
 
 const log = createChildLogger("suggested-connectors-route");
@@ -90,16 +91,22 @@ function effectivePort(port: number | null | undefined): number | null {
  * `resolveAndAssertConnectorHost` blocks private ranges only, so it is not this
  * boundary. Admins can reveal the value anyway.
  *
- * This is NOT a general binding of the secret to its destination: after
- * provisioning, the created connector's host can be edited and re-tested, and
- * caller-supplied driver `options` can redirect some drivers — both tracked in
- * #344. What #324 does guarantee is that no HTTP response hands a non-admin the
- * plaintext.
+ * #344 — caller-supplied driver `options` are part of the destination too
+ * (mysql spreads them over host/port, Oracle's `tnsAlias` becomes the connect
+ * string), so with the stored password they may carry only keys that never
+ * choose the destination (the #882 `allowList`). The connector provisioned
+ * from here is then bound by `connector-secret-binding.ts`: its destination
+ * cannot be edited afterwards by a caller who did not create the secret.
  */
 function assertStoredSecretDestination(
   req: Request,
   row: { id: string; driverType: string; host: string | null; port: number | null },
-  target: { driver: string; host: string | null | undefined; port: number | null | undefined },
+  target: {
+    driver: string;
+    host: string | null | undefined;
+    port: number | null | undefined;
+    options?: unknown;
+  },
   projectId: string,
 ): void {
   if (req.user && hasPermission(req.user.role, "vault.reveal")) return;
@@ -107,7 +114,8 @@ function assertStoredSecretDestination(
   const matches =
     target.driver === rowDriver &&
     sameHost(target.host, row.host) &&
-    effectivePort(target.port) === effectivePort(row.port);
+    effectivePort(target.port) === effectivePort(row.port) &&
+    !hasDbDestinationOptions(target.options);
   if (matches) return;
   audit({
     actor: actorIdOf(req),
@@ -118,7 +126,8 @@ function assertStoredSecretDestination(
   throw new AppError(
     403,
     "STORED_SECRET_DESTINATION_MISMATCH",
-    "The stored password can only be used with this suggestion's own driver, host and port. " +
+    "The stored password can only be used with this suggestion's own driver, host and port, " +
+      "and without driver options that choose the destination. " +
       "Enter the password to connect elsewhere.",
   );
 }
@@ -421,7 +430,7 @@ export function suggestedConnectorsRouter(): Router {
       assertStoredSecretDestination(
         req,
         row,
-        { driver: body.driver, host: body.host, port: targetPort },
+        { driver: body.driver, host: body.host, port: targetPort, options: body.options },
         projectId,
       );
       // #324 — no password typed: use the live one discovery already vaulted.

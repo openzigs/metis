@@ -25,8 +25,9 @@ export const ROLE_HIERARCHY: Record<RoleKey, number> = {
  * - `admin` gets every permission — and is the ONLY role holding
  *   `vault.reveal` (#324): the other roles may list and use vault secrets by
  *   reference (`vault.read`), but no HTTP response returns them the plaintext.
- *   Using a secret by reference is not bound to a destination: a connector
- *   holding one can be pointed at another host after it is created (#344).
+ *   Using a secret by reference is bound to its destination (#344): a
+ *   non-admin may attach only secrets they created, and may not move a
+ *   connector or MCP server holding someone else's (lib/vault/secret-binding.ts).
  * - `coordinator` runs project lifecycle + publishes issues.
  * - `developer` runs analyses, drafts issues, reads vault.
  * - `reader` is read-only on projects/documents/analyses.
