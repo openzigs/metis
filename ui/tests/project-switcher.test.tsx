@@ -1,0 +1,96 @@
+/**
+ * #370 — the header ProjectSwitcher names the project in the URL even when the
+ * cached switcher list does not (yet) contain it, e.g. straight after Create
+ * navigates to a project the 30s-stale list has never seen.
+ */
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { usePathname } from "next/navigation";
+import { ProjectSwitcher } from "@/components/layout/project-switcher";
+import { Breadcrumbs } from "@/components/layout/breadcrumbs";
+import { makeWrapper, TEST_USER } from "./test-utils";
+
+const row = (id: string, name: string) => ({
+  id,
+  name,
+  slug: id,
+  status: "active",
+  createdById: "u-1",
+  createdAt: "2026-09-29T00:00:00Z",
+  updatedAt: "2026-09-29T00:00:00Z",
+});
+
+// The list the header cached before the create: it has no "p-new".
+const STALE_LIST = { items: [row("p-sample", "Sample Project")], total: 1, limit: 50, offset: 0 };
+
+function respond(data: unknown, status = 200) {
+  return Promise.resolve({
+    ok: status < 400,
+    status,
+    statusText: status < 400 ? "OK" : "Not Found",
+    text: () =>
+      Promise.resolve(
+        JSON.stringify(
+          status < 400 ? { success: true, data } : { success: false, error: { code: "NOT_FOUND" } },
+        ),
+      ),
+  });
+}
+
+let fetchMock: ReturnType<typeof vi.fn>;
+
+beforeEach(() => {
+  window.localStorage.clear();
+  window.localStorage.setItem("metis.activeProjectId", "p-sample");
+  fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (/\/projects\/p-new(\?|$)/.test(url)) return respond(row("p-new", "Fresh Project"));
+    if (/\/projects\/p-gone(\?|$)/.test(url)) return respond(null, 404);
+    if (/\/projects(\?|$)/.test(url)) return respond(STALE_LIST);
+    return respond(null, 404);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.mocked(usePathname).mockReturnValue("/");
+});
+
+describe("<ProjectSwitcher /> (#370)", () => {
+  it("shows the URL's project, not the previously active one, when the list lacks it", async () => {
+    vi.mocked(usePathname).mockReturnValue("/projects/p-new");
+    render(<ProjectSwitcher />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    expect(
+      await screen.findByRole("button", { name: /active project: fresh project/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Sample Project")).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("metis.activeProjectId")).toBe("p-new");
+  });
+
+  it("does not fetch the project on its own when the list already has it", async () => {
+    vi.mocked(usePathname).mockReturnValue("/projects/p-sample");
+    render(<ProjectSwitcher />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    await screen.findByRole("button", { name: /active project: sample project/i });
+    const urls = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(urls.some((u) => /\/projects\/p-sample(\?|$)/.test(u))).toBe(false);
+  });
+
+  it("falls back to 'No project' when the URL's project cannot be loaded", async () => {
+    vi.mocked(usePathname).mockReturnValue("/projects/p-gone");
+    render(<ProjectSwitcher />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    expect(
+      await screen.findByRole("button", { name: /active project: no project/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("names the new project in the header breadcrumb on its Overview", async () => {
+    vi.mocked(usePathname).mockReturnValue("/projects/p-new");
+    render(<Breadcrumbs />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    const trail = await screen.findByTestId("header-breadcrumb");
+    expect(
+      await screen.findByRole("button", { name: /active project: fresh project/i }),
+    ).toBeInTheDocument();
+    expect(trail).not.toHaveTextContent("Sample Project");
+  });
+});

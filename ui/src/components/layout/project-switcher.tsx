@@ -14,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { projectsApi, type Project } from "@/lib/projects-api";
+import { queryKeys } from "@/lib/query-keys";
 
 const STORAGE_KEY = "metis.activeProjectId";
 
@@ -72,7 +73,17 @@ export function ProjectSwitcher() {
   const activeId =
     pathId ??
     (storedId && items.some((p) => p.id === storedId) ? storedId : (items[0]?.id ?? null));
-  const active = items.find((p) => p.id === activeId) ?? null;
+  // #370 — the list is cached for 30s and capped at 50, so the project in the
+  // URL (e.g. one just created) may be missing from it. Load that one project
+  // rather than falling back to "No project" or a previously active name.
+  const listed = items.find((p) => p.id === activeId) ?? null;
+  const pathProject = useQuery({
+    queryKey: queryKeys.projects.detail(pathId ?? ""),
+    queryFn: () => projectsApi.get(pathId as string),
+    enabled: Boolean(pathId) && projects.isSuccess && !listed,
+    retry: false,
+  });
+  const active = listed ?? pathProject.data ?? null;
 
   // Persist whenever the resolved active project changes (URL or selection).
   useEffect(() => {
