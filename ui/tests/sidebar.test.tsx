@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Sidebar } from "@/components/layout/sidebar";
-import { NAV_ITEMS, NAV_SECTIONS } from "@/lib/navigation";
+import { NAV_ITEMS } from "@/lib/navigation";
 import { usePathname } from "next/navigation";
 
 const usePathnameMock = vi.mocked(usePathname);
@@ -17,25 +17,19 @@ describe("<Sidebar /> — desktop column", () => {
     }
   });
 
-  it("renders the four section headings as non-interactive labels", () => {
+  it("renders a single flat level of six destinations, no section headings (#27)", () => {
     usePathnameMock.mockReturnValue("/dashboard");
     render(<Sidebar mobileOpen={false} onMobileClose={() => {}} />);
-    for (const section of NAV_SECTIONS) {
-      const heading = screen.getByRole("heading", { name: section.label });
-      expect(heading).toBeInTheDocument();
-      // Heading is a label, not a link.
-      expect(heading.tagName).toBe("H2");
-    }
+    const nav = screen.getByRole("navigation", { name: "Sections" });
+    expect(within(nav).getAllByRole("link")).toHaveLength(6);
+    expect(within(nav).queryAllByRole("heading")).toHaveLength(0);
+    expect(within(nav).getAllByRole("list")).toHaveLength(1);
   });
 
-  it("wires each grouped list to its section heading via aria-labelledby", () => {
-    usePathnameMock.mockReturnValue("/dashboard");
+  it("marks the hub active on a page it absorbed", () => {
+    usePathnameMock.mockReturnValue("/repositories");
     render(<Sidebar mobileOpen={false} onMobileClose={() => {}} />);
-    for (const section of NAV_SECTIONS) {
-      const heading = screen.getByRole("heading", { name: section.label });
-      const list = document.querySelector(`ul[aria-labelledby="${heading.id}"]`);
-      expect(list).not.toBeNull();
-    }
+    expect(screen.getByRole("link", { name: "Projects" })).toHaveAttribute("aria-current", "page");
   });
 
   it("marks only the active route with aria-current=page", () => {
@@ -44,8 +38,8 @@ describe("<Sidebar /> — desktop column", () => {
     const projects = screen.getByRole("link", { name: /projects/i });
     expect(projects).toHaveAttribute("aria-current", "page");
     expect(projects).toHaveAttribute("data-active", "true");
-    const dashboard = screen.getByRole("link", { name: /dashboard/i });
-    expect(dashboard).not.toHaveAttribute("aria-current");
+    const home = screen.getByRole("link", { name: /home/i });
+    expect(home).not.toHaveAttribute("aria-current");
   });
 
   it("does not render the mobile drawer content while closed (not tabbable)", () => {

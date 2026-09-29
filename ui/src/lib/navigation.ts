@@ -1,114 +1,134 @@
 /**
  * Static navigation registry for the authenticated app shell. Single source of
- * truth for the sidebar, the route-active highlight, and middleware checks.
+ * truth for the sidebar, the hub tab bar, the route-active highlight, the
+ * command palette and the page breadcrumb.
+ *
+ * #27 — the sidebar lists six object-level destinations. Each one is a *hub*
+ * whose `tabs` are the pages it absorbed; the pages keep their URLs, so every
+ * bookmark and deep link still resolves, and the hub tab bar
+ * (`components/layout/hub-tabs`) is what makes the sibling pages reachable.
  */
 import type { LucideIcon } from "lucide-react";
 import {
-  Bot,
-  CalendarClock,
-  ClipboardCheck,
-  Clock,
-  Database,
-  FileText,
+  Activity,
   FolderKanban,
-  Gauge,
-  GitBranch,
-  History,
-  KeyRound,
-  Layers,
-  LayoutDashboard,
-  ListChecks,
+  House,
   MessageSquare,
   PanelsTopLeft,
-  Radar,
   Settings,
-  ShieldCheck,
-  Sparkles,
-  Wrench,
 } from "lucide-react";
 
+/** One page inside a hub, rendered as a tab in the hub tab bar. */
+export interface NavTab {
+  href: string;
+  label: string;
+  /** Active only on `href` itself, not below it — `/projects/<id>` has its own tabs. */
+  exact?: boolean;
+  /** Prefix that marks the tab active when it differs from `href` (e.g. `/eval`). */
+  match?: string;
+  /** Shown only to system admins. */
+  adminOnly?: boolean;
+}
+
+/** A top-level sidebar destination. */
 export interface NavItem {
   href: string;
   label: string;
   icon: LucideIcon;
+  /** The pages this destination absorbs; the first is its landing page. */
+  tabs: readonly NavTab[];
 }
 
-/** A labeled group of sidebar items. The label is a non-interactive heading. */
-export interface NavSection {
-  /** Human-readable section heading rendered above the group. */
-  label: string;
-  /** Stable id used for `aria-labelledby` wiring. */
-  id: string;
-  items: readonly NavItem[];
-}
-
-/**
- * Grouped navigation registry (N1 / #140). Items are organised into four
- * labeled sections to improve scannability and information scent. `NAV_ITEMS`
- * is derived from this so existing consumers (middleware, route-active checks)
- * keep working without change.
- */
-export const NAV_SECTIONS: readonly NavSection[] = [
+export const NAV_ITEMS: readonly NavItem[] = [
   {
-    id: "work",
-    label: "Work",
-    items: [
-      { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-      { href: "/projects", label: "Projects", icon: FolderKanban },
-      { href: "/products", label: "Products", icon: Layers },
-      { href: "/chat", label: "Chat", icon: MessageSquare },
-      { href: "/workbench", label: "Workbench", icon: Wrench },
-      { href: "/tasks", label: "Tasks", icon: ListChecks },
-      { href: "/reviews", label: "Reviews", icon: ClipboardCheck },
+    href: "/dashboard",
+    label: "Home",
+    icon: House,
+    tabs: [{ href: "/dashboard", label: "Home" }],
+  },
+  {
+    href: "/projects",
+    label: "Projects",
+    icon: FolderKanban,
+    tabs: [
+      { href: "/projects", label: "All projects", exact: true },
+      { href: "/products", label: "Products" },
+      { href: "/documents", label: "Documents" },
+      { href: "/repositories", label: "Repositories" },
+      { href: "/databases", label: "Databases" },
+      { href: "/impact-analyses", label: "Impact analyses" },
     ],
   },
   {
-    id: "knowledge",
-    label: "Knowledge",
-    items: [
-      { href: "/library", label: "Library", icon: PanelsTopLeft },
-      { href: "/documents", label: "Documents", icon: FileText },
-      { href: "/repositories", label: "Repositories", icon: GitBranch },
-      { href: "/databases", label: "Databases", icon: Database },
-      { href: "/impact-analyses", label: "Impact Analysis", icon: Radar },
+    href: "/chat",
+    label: "Chat",
+    icon: MessageSquare,
+    tabs: [
+      { href: "/chat", label: "Chat" },
+      { href: "/workbench", label: "Workbench" },
     ],
   },
   {
-    id: "automation",
-    label: "Automation",
-    items: [
-      { href: "/skills", label: "Skills", icon: Sparkles },
-      { href: "/agents", label: "Agents", icon: Bot },
-      { href: "/scheduler", label: "Scheduler", icon: CalendarClock },
-      { href: "/runs", label: "Runs", icon: History },
-      { href: "/sessions", label: "Sessions", icon: Clock },
+    href: "/tasks",
+    label: "Activity",
+    icon: Activity,
+    tabs: [
+      { href: "/tasks", label: "Tasks" },
+      { href: "/runs", label: "Runs" },
+      { href: "/sessions", label: "Sessions" },
+      { href: "/scheduler", label: "Scheduler" },
+      { href: "/reviews", label: "Reviews" },
     ],
   },
   {
-    id: "platform",
-    label: "Platform",
-    items: [
-      { href: "/vault", label: "Vault", icon: KeyRound },
-      { href: "/eval/leaderboard", label: "Eval", icon: Gauge },
-      { href: "/settings", label: "Settings", icon: Settings },
-      { href: "/admin", label: "Admin", icon: ShieldCheck },
+    href: "/library",
+    label: "Library",
+    icon: PanelsTopLeft,
+    tabs: [{ href: "/library", label: "Library" }],
+  },
+  {
+    href: "/settings",
+    label: "Settings",
+    icon: Settings,
+    tabs: [
+      { href: "/settings", label: "Settings" },
+      { href: "/vault", label: "Vault" },
+      { href: "/eval/leaderboard", label: "Eval", match: "/eval" },
+      { href: "/admin", label: "Admin", adminOnly: true },
     ],
   },
 ] as const;
 
-/**
- * Flat list of every sidebar route, derived from {@link NAV_SECTIONS}. Single
- * source of truth for middleware checks and the route-active highlight.
- */
-export const NAV_ITEMS: readonly NavItem[] = NAV_SECTIONS.flatMap((s) => s.items);
+/** Every page reachable from the sidebar, flattened — for search and breadcrumbs. */
+export const NAV_DESTINATIONS: readonly NavTab[] = NAV_ITEMS.flatMap((i) => i.tabs);
 
 export const PUBLIC_PATHS: readonly string[] = ["/login"];
 
 /**
- * True if `pathname` falls under any sidebar route — used by the active-link
- * indicator. Exact match or parent-segment match (e.g. /projects/123).
+ * True if `pathname` falls under `href`. Exact match or parent-segment match
+ * (e.g. /projects/123).
  */
 export function isActiveRoute(pathname: string, href: string): boolean {
   if (pathname === href) return true;
   return pathname.startsWith(href + "/");
+}
+
+export function isTabActive(pathname: string, tab: NavTab): boolean {
+  if (tab.exact) return pathname === tab.href;
+  return isActiveRoute(pathname, tab.match ?? tab.href);
+}
+
+/** A sidebar entry is active on its own subtree and on any of its tabs. */
+export function isNavItemActive(pathname: string, item: NavItem): boolean {
+  return isActiveRoute(pathname, item.href) || item.tabs.some((t) => isTabActive(pathname, t));
+}
+
+/** The tabs of `item` this user may see. */
+export function visibleTabs(item: NavItem, isAdmin: boolean): NavTab[] {
+  return item.tabs.filter((t) => isAdmin || !t.adminOnly);
+}
+
+/** The hub whose tab bar belongs on `pathname`, if any tab of it is active. */
+export function hubForPath(pathname: string): NavItem | undefined {
+  return NAV_ITEMS.find((item) => item.tabs.some((t) => isTabActive(pathname, t)));
 }

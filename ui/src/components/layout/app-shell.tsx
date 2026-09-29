@@ -8,6 +8,7 @@ import { useAuth } from "@/lib/auth-context";
 import { CommandPalette } from "@/components/command-palette/command-palette";
 import { ConnectionStatus } from "@/components/realtime/connection-status";
 import { SourceOfferFooter } from "./source-offer-footer";
+import { HubTabs } from "./hub-tabs";
 
 interface AppShellProps {
   children: ReactNode;
@@ -77,6 +78,8 @@ export function AppShell({ children }: AppShellProps) {
          * most `p-2 md:p-0` for fine mobile tuning — so content never double-pads.
          */}
         <main id="main-content" role="main" className="flex-1 p-4 md:p-6">
+          {/* #27 — the sibling pages of the current sidebar destination. */}
+          <HubTabs />
           {children}
         </main>
         {/*

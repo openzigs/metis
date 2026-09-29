@@ -18,7 +18,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 
 // Deterministic project list so the palette has a project option in addition to
-// the static NAV_ITEMS registry.
+// the static NAV_DESTINATIONS registry.
 const listProjects = vi.fn();
 vi.mock("@/lib/projects-api", () => ({
   projectsApi: {

@@ -2178,7 +2178,7 @@ The exhaustive transition table (`REVIEW_TRANSITIONS`) makes anything absent ill
 
 Permission keys `review.create` / `review.read` / `review.decide` / `review.admin` live in the shared RBAC registry (`packages/shared/src/constants.ts` + `rbac.ts`; seeded by `server/prisma/seed.ts`): reader gets `review.read`; developer adds `review.create` + `review.decide`; coordinator/admin add `review.admin`. **Sign-off audit trail**: every transition and decision writes an append-only `AuditLog` entry (`review.create/submit/decision/approved/rejected/withdraw/close`, `baseline.create`) whose metadata embeds the exact pinned item versions — there is no update/delete path for sign-off records. Unlike ordinary ops events (fire-and-forget `audit()` queue), these rows are written via `tx.auditLog.create` **inside the same transaction** as the change they evidence (`buildAuditLogData` in `lib/audit/audit-service.ts` reuses the standard redaction + hashing), so a sign-off can never commit without its audit row. All review status writes are guarded on the expected prior status; a concurrent change surfaces as 409 `REVIEW_STATE_CHANGED`.
 
-**Reviewer UI (Issue #618)** — top-level `/reviews` routes in the authed shell (sidebar → Work → Reviews):
+**Reviewer UI (Issue #618)** — top-level `/reviews` routes in the authed shell (sidebar → Activity → Reviews):
 
 - `ui/src/app/(authed)/reviews/page.tsx` — the queue: **Assigned to me** / **Requested by me** tabs (server-resolved `assignee=me` / `requester=me` filters), rows with status + due-date badges (overdue highlighting only while `draft`/`in_review`) and a decision-progress summary, linking to the detail view.
 - `ui/src/app/(authed)/reviews/[id]/page.tsx` — the detail: `ReviewHeader` (status/policy/due date/requester/baseline), `ReviewItemCard` per scope item rendering the requirement **at its pinned version** (snapshot reconstructed via the epic-#770 requirement-history API, `pageSize=100`) plus a field-level `VersionDiff` of the `changedFields` that pinned version introduced (spec-document items render title + pin only), `ReviewerPanel` (assignments/decisions/notes), and — only when the caller holds a *pending* assignment on an `in_review` review and is not the requester (mirrors the server's `SELF_APPROVAL_FORBIDDEN` guard) — a `DecisionBar` posting to `POST /api/reviews/:id/decision` with an **optimistic** assignment flip, rollback + inline error on failure, and the aggregate state transition applied from the response without a reload.
@@ -4448,7 +4448,7 @@ The v1.2 shell ships **30+ user-facing routes** plus the auth proxy handlers. Th
 | `/admin` | Admin | Users, roles, secrets, and platform settings. |
 | `/api/auth/{login,logout,me,refresh}` | Auth proxy | Forwards to the upstream Express API and mints HttpOnly cookies on the Next origin. |
 
-**Sidebar navigation** (16 entries): Dashboard, Projects, Chat, Workbench, Library, Skills, Agents, Documents, Repositories, Databases, Eval, Scheduler, Tasks, Vault, Settings, Admin.
+**Sidebar navigation** (6 entries, #27): Home, Projects, Chat, Activity, Library, Settings. `ui/src/lib/navigation.ts` is the single registry: each `NavItem` is a hub whose `tabs` are the pages it absorbed (Projects → `/projects`, `/products`, `/documents`, `/repositories`, `/databases`, `/impact-analyses`; Chat → `/chat`, `/workbench`; Activity → `/tasks`, `/runs`, `/sessions`, `/scheduler`, `/reviews`; Settings → `/settings`, `/vault`, `/eval/leaderboard`, `/admin` (admin-only)). No route moved, so no redirects were needed and every deep link resolves. `HubTabs` (`components/layout/hub-tabs.tsx`) renders the active hub's tabs at the top of `main`; it stays out of `/projects/<id>`, which has its own project tabs. The command palette and the page breadcrumb read the flat `NAV_DESTINATIONS` list.
 
 **Page layout**: Authenticated routes are wrapped by `AppShell`, which provides a 16 rem persistent sidebar (slide-in drawer below 768 px), a sticky header with project switcher + theme toggle + user menu, a skip-to-content link, and `role="main"` content region.
 
@@ -4457,7 +4457,8 @@ The v1.2 shell ships **30+ user-facing routes** plus the auth proxy handlers. Th
 | Component | Purpose |
 |---|---|
 | `AppShell` | Auth-gated layout for the `(authed)` route group. Redirects to `/login` if the session is gone. |
-| `Sidebar` | 10-route navigation with `aria-current="page"` active highlighting and an accessible mobile drawer. |
+| `Sidebar` | Six-entry navigation with `aria-current="page"` active highlighting (active on every page its hub groups) and an accessible mobile drawer. |
+| `HubTabs` | Link-based page tabs for the active sidebar hub (#27); admin-only tabs hidden from non-admins. |
 | `Header` | Sticky top bar with `ProjectSwitcher`, `ThemeToggle`, `UserMenu`, and a mobile menu trigger. |
 | `ProjectSwitcher` | Mock dropdown — real source comes online in Phase 4. |
 | `UserMenu` | Avatar + role display, sign-out action wired to `useAuth().logout`. |
