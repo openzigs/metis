@@ -20,3 +20,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Object ACL side channels](project_object-acl-side-channels.md) — #349: owner-only routes leaked via tool list, socket room, error text, 409
 - [Socket rooms fixed at handshake](project_socket-rooms-fixed-at-handshake.md) — JWT-claim rooms change on reconnect, not refresh (#353)
 - [Local UI walkthrough setup](project_local-ui-walkthrough-setup.md) — mock login is `password`; port overrides; Playwright upload root; quarantine
+- [Shared scratch/stash/browser](project_parallel-agents-share-scratch-and-browser.md) — unique temp names; verify closing refs
+- [Squash title closes issues](project_squash-title-closes-issues.md) — "Resolve #N" in a PR title closes N even if the body says Refs
+- [Commit before mutating](project_mutation-restore-must-not-use-git-checkout-uncommitted.md) — git checkout restore drops uncommitted edits
