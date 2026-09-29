@@ -109,7 +109,8 @@ export interface CanonicalTokenCounts {
  * PREMIUM over the input rate — including on the Bedrock gateway, whose Claude
  * models charge 1.25x the input rate to write, so every gateway cache write is
  * under-billed by 0.25x. That premium cannot be priced (#282): the gateway
- * discards Bedrock's `cacheWriteInputTokens` and returns no write field, and its
+ * (aws-samples/bedrock-access-gateway, upstream 144c4bc) discards Bedrock's
+ * `cacheWriteInputTokens` and returns no write field, and its
  * `prompt_tokens` combines fresh, read and written input, so nothing separates the
  * writes. Pricing it needs a provider that reports writes, and the fresh share
  * to subtract them.
