@@ -104,10 +104,19 @@ export function useJobToast(
       }
     };
 
+    // A reconnect (network blip, or the #414 token-refresh disconnect+connect)
+    // loses room membership on the server. Re-subscribe on every connect; the
+    // server then replays the job's last transition, so a terminal event sent
+    // while we were disconnected is not lost (PR #393 review — a ~50-minute
+    // Deep Ingest otherwise stayed on "Ingesting…" after an hourly refresh).
+    const onConnect = () => socket.emit("subscribe:job", { jobId });
+
     socket.on("job:lifecycle" as never, onLifecycle as never);
+    socket.on("connect" as never, onConnect as never);
     return () => {
       socket.emit("unsubscribe:job", { jobId });
       socket.off("job:lifecycle" as never, onLifecycle as never);
+      socket.off("connect" as never, onConnect as never);
     };
   }, [socket, jobId]);
 
