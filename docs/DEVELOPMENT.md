@@ -26,12 +26,10 @@ pnpm db:seed                           # seed dev users + sample project
 pnpm dev                               # boots server (4000) + ui (3000) in parallel
 ```
 
-> `pnpm bootstrap` (Epic #183 / #188) is the cross-platform replacement for the
-> old `cp .env.example .env` + manual secret steps. It runs identically on
-> Windows, macOS, and Linux (Node-based, no `bash`/`openssl` required). If you
-> prefer to copy the env file manually: `cp .env.example .env` (macOS/Linux) or
-> `Copy-Item .env.example .env` (Windows PowerShell) — then generate secrets
-> yourself, or just run `pnpm bootstrap` which does it for you.
+> `pnpm bootstrap` (Epic #183 / #188) replaces the old `cp .env.example .env` +
+> manual secret steps (Node-based, no `bash`/`openssl` required). If you prefer
+> to copy the env file manually, `cp .env.example .env` and generate the secrets
+> yourself. On Windows, work inside WSL2 (§7.6).
 
 Open http://localhost:3000 and log in with the seeded admin (`admin@metis.local` / `admin`).
 
@@ -365,64 +363,31 @@ Activate with `SANDBOX_PROVIDER=local_dev` in `.env`. Sessions still flow throug
 
 ---
 
-## 7.6 Windows 11 developer onboarding (Epic #183)
+## 7.6 Developing on Windows: use WSL2 (#354)
 
-METIS supports native Windows 11 development. The build/bootstrap tooling is
-cross-platform — you do **not** need WSL for the core inner loop (lint,
-typecheck, test, bootstrap, clean). macOS/Linux behavior is unchanged; the
-Windows path is purely additive.
+Native Windows development is **not supported**. On a Windows machine, develop
+inside **WSL2** (Ubuntu or any current distribution) and follow the Linux
+instructions in this guide unchanged. CI runs on Linux only; there is no
+`windows-latest` job (it was removed in #354).
 
-### 7.6.1 Prerequisites (Windows)
-- **Git for Windows** with `core.autocrlf` left at its default (`true`) — line
-  endings are governed by the repo's [`.gitattributes`](../.gitattributes)
-  (Epic #183 / #186), which pins all shell-interpreted and source files to LF so
-  `scripts/*.sh` and `.husky/*` hooks are never corrupted on checkout. You do
-  **not** need to set `autocrlf=input`; the `.gitattributes` rules win.
-- **Node.js 22** and **pnpm 10.33+** (`corepack enable`).
-- **Docker Desktop** (for the compose stack) — optional for the pure
-  lint/typecheck/test loop.
+- Clone the repository **inside the WSL2 filesystem** (for example
+  `~/src/metis`), not under `/mnt/c/...`. Files on the Windows drive are slow
+  to watch and install into, and they pick up CRLF line endings.
+- Install Node.js 22 and pnpm (`corepack enable`) inside WSL2, not on Windows.
+- Docker Desktop with the WSL2 backend, or Docker Engine installed in the
+  distribution, both work for the compose stack.
+- The `local_dev` sandbox provider works under WSL2 once `bubblewrap` is
+  installed (`sudo apt install bubblewrap`); see §7.5.
 
-### 7.6.2 Cross-platform entrypoints
-All of these run identically on Windows PowerShell, Git Bash, macOS, and Linux
-(Epic #183 / #187, #188, #189) — no POSIX shell required:
+Some tooling (`pnpm bootstrap`, `pnpm clean`, the embeddings path) still
+happens to run on native Windows because it is plain Node, but nothing
+exercises that in CI and defects there are not treated as bugs.
 
-| Command | What it does |
-|---|---|
-| `pnpm bootstrap` | Create `.env` from `.env.example` with crypto-random secrets (Node `crypto`, no `openssl`), ensure the `metis-mcp` Docker network, pull MCP wrapper images, install graphify. |
-| `pnpm bootstrap:up` | Same, plus `docker compose up -d` and wait for `/readyz`. |
-| `pnpm bootstrap:check` | Non-mutating prereq diagnostics (uses a Node TCP bind probe instead of `lsof`). |
-| `pnpm clean` | Remove `node_modules` / `dist` / `.next` / `coverage` (Node, no `rm -rf`). |
-| `pnpm verify:image-size` | Docker image-size budget gate (Node, no bash). |
-
-> **Wrapper image build fallback:** if a wrapper image pull fails, `pnpm
-> bootstrap` falls back to `images/mcp-wrappers/build.sh`, which still needs
-> `bash`. On Windows, run `pnpm bootstrap` from **Git Bash** (or WSL) for that
-> fallback, or pre-pull the wrapper images. The common path (successful pulls)
-> needs no bash.
-
-### 7.6.3 Sandbox provider on Windows (by design, not a gap)
-The `local_dev` process-isolation sandbox is **intentionally** macOS/Linux-only
-(it relies on `bubblewrap`/`sandbox-exec`). On Windows the provider throws
-`LocalDevSandboxUnavailableError` at construction (see §7.5). This is **by
-design** — Windows developers should use `SANDBOX_PROVIDER=noop` for local work,
-or wire up E2B/Daytona. This is documented as an explicit non-goal of Epic #183.
-
-### 7.6.4 Local Gemma inference on a Windows GPU box
-If you want to run a local LLM (instead of a cloud provider) on a Windows machine
-with an NVIDIA GPU, see [§4 of the User Guide → "Run Gemma locally on a Windows
-GPU box"](./USER_GUIDE.md#run-gemma-locally-on-a-windows-gpu-box). It covers
-running Ollama as a managed service, GPU-aware model selection, and the
-`LOCAL_GEMMA_*` env vars — all as per-machine overrides that do not change the
-macOS/Linux defaults.
-
-### 7.6.5 Known Windows test gaps (follow-up)
-`pnpm lint` and `pnpm typecheck` are green on Windows and gated in CI (#190). A
-small set of **pre-existing** unit tests assume POSIX semantics (hardcoded
-`/tmp` & `/models` cache paths, colon-in-filename vector-store dirs, CRLF-vs-LF
-generated-schema parity, POSIX glob separators) and currently fail on Windows.
-The Windows CI job runs the full suite **non-gating** and reports these; making
-them cross-platform is tracked as follow-up and was out of scope for Epic #183
-(which is additive-only).
+### 7.6.1 Local Gemma inference on a Windows GPU box
+Running the **model server** (Ollama) on a Windows machine with an NVIDIA GPU
+is still fine: METIS only talks to it over HTTP. See [§4 of the User Guide →
+"Run Gemma locally on a Windows GPU box"](./USER_GUIDE.md#run-gemma-locally-on-a-windows-gpu-box),
+and point `LOCAL_GEMMA_BASE_URL` at it (an IP literal, ending in `/v1`) from the METIS stack running in WSL2.
 
 ---
 
