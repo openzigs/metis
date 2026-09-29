@@ -147,8 +147,10 @@ overrides:
   # The v7 low bound widens 7.23.0 -> 7.0.0 to match the advisory's own range; the
   # tree resolves a single undici@7 copy so this moves nothing today, but a future
   # transitive pinning e.g. 7.10.0 would otherwise slip the override and re-breach.
-  undici@>=7.0.0 <7.29.0: ^7.29.0
-  undici@>=8.0.0 <8.9.0: ^8.9.0
+  # GHSA-rfgv-xxqx-mfg5 (CVSS 7.5) and GHSA-w293-vg96-wgc3 (CVSS 7.4), published
+  # 2026-09-29 (#374): fixed 7.29.1 / 8.10.2, so both floors AND upper bounds move.
+  undici@>=7.0.0 <7.29.1: ^7.29.1
+  undici@>=8.0.0 <8.10.2: ^8.10.2
   # GHSA-2m8v-j782-fhvr (CVSS 7.5): NEW override — socket.io-parser had none and
   # resolved 4.2.6 via socket.io/socket.io-client. Scoped to the 4.x band on
   # purpose: a bare `<4.2.7` selector also matches the 3.x line the advisory lists
