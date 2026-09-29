@@ -284,10 +284,16 @@ export class MCPRegistryService {
           `Per-user MCP concurrency cap reached (${active}/${cap})`,
         );
       }
+      // #351 — a user server's label is unique among its OWNER's servers only.
+      // Matching every user's servers made `LABEL_TAKEN` an oracle confirming
+      // that another user's server exists. Tool names stay collision-free
+      // because the bridge qualifies a user server's names with its owner
+      // (`formatToolName`), so a label need not be globally unique.
       const existing = await tx.mCPServer.findFirst({
         where: {
           scope: data.scope,
           projectId: data.projectId,
+          userId: data.userId,
           label: data.label,
           deletedAt: null,
         },

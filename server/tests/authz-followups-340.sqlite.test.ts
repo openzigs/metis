@@ -507,8 +507,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     // ── 5. GET /api/ai/tools (review round 2) ───────────────────────────────
     describe("5. GET /api/ai/tools lists a user server's tools only to its owner and admins", () => {
       let bridge: InstanceType<typeof MCPToolBridge> | null = null;
+      // #351 — a user server's tool names carry its owner (`u.<ownerId>.`).
       const tool = (label: string) => `mcp:${label}:echo`;
       const labels = { mine: "", theirs: "", orphan: "", glob: "", inA: "" };
+      const owners: Record<keyof typeof labels, string> = {
+        mine: "u.u-own.",
+        theirs: "u.u-b.",
+        orphan: "u._.",
+        glob: "",
+        inA: "",
+      };
 
       beforeAll(async () => {
         // The real bridge over a real lifecycle: each server row is turned into
@@ -540,7 +548,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         };
         for (const [k, id] of Object.entries(ids) as Array<[keyof typeof ids, string]>) {
           const row = await db.mCPServer.findUniqueOrThrow({ where: { id } });
-          labels[k] = row.label;
+          labels[k] = `${owners[k]}${row.label}`;
           // `command` only satisfies the native runtime's config check; the
           // injected transport factory above is what actually answers.
           const st = await lifecycle.start({ ...registry.toConfig(row), command: "in-memory" });
