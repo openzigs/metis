@@ -69,16 +69,20 @@ function defaultProvider(): AIProvider {
 const reasoningEffort = z.enum(["low", "medium", "high"]);
 const approvalAction = z.enum(["auto", "prompt-once", "always-prompt", "deny"]);
 
-const createSchema = z.object({
+/**
+ * The agent definition's fields, with NO defaults. Both schemas below derive
+ * from this one shape; only the create schema adds defaults.
+ */
+const agentFields = z.object({
   projectId: z.string().min(1),
   name: z
     .string()
     .min(2)
     .max(64)
     .regex(/^[A-Za-z][A-Za-z0-9 _-]+$/),
-  description: z.string().max(500).default(""),
+  description: z.string().max(500),
   systemPrompt: z.string().min(1).max(20_000),
-  tools: z.array(z.string()).max(64).default([]),
+  tools: z.array(z.string()).max(64),
   model: z.string().max(80).nullish(),
   reasoningEffort: reasoningEffort.nullish(),
   // Epic #129 (#145) — the rest of the one agent definition. Values are
@@ -94,7 +98,20 @@ const createSchema = z.object({
     .nullish(),
 });
 
-const patchSchema = createSchema.partial().omit({ projectId: true });
+const createSchema = agentFields.extend({
+  description: agentFields.shape.description.default(""),
+  tools: agentFields.shape.tools.default([]),
+});
+
+/**
+ * #145 review round 2 — built from the default-free shape, never from
+ * `createSchema.partial()`: under zod 4 `.partial()` still fills an inner
+ * `.default()` for an absent key, so a PATCH that sent only the persona
+ * wrote `tools: []` and `description: ""`. An absent key must stay
+ * `undefined` so the service leaves that column untouched; `null` still
+ * clears the nullable fields (model, reasoning effort, approval override).
+ */
+const patchSchema = agentFields.omit({ projectId: true }).partial();
 
 export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
   const r = Router();

@@ -160,6 +160,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.customAgent.create({
         data: { id: "ca-b", projectId: "proj-b", name: "Other", systemPrompt: "b" },
       });
+      // Review round 2 — a fully-populated agent per partial-PATCH test, so
+      // each asserts against its own known stored definition.
+      for (const id of ["ca-full-persona", "ca-full-desc", "ca-full-clear"]) {
+        await db.customAgent.create({
+          data: {
+            id,
+            projectId: "proj-a",
+            name: `Full ${id.slice(-5)}`,
+            description: "stored description",
+            systemPrompt: "stored persona",
+            tools: JSON.stringify(["count_rows", "agent:*"]),
+            model: "stored-model",
+            reasoningEffort: "medium",
+            skillKeys: JSON.stringify(["style-guide"]),
+            approvalPolicy: JSON.stringify({ high: "deny" }),
+          },
+        });
+      }
 
       ADMIN = token("u-admin", "admin", []);
       OWNER_A = token("u-a", "coordinator", ["ws-a"]);
@@ -306,6 +324,55 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const def = await loadAgentDefinition("custom:ca-edit", db);
         expect(def).toMatchObject({ model: null, reasoningEffort: null, approvalPolicy: null });
         expect(def?.version).toBe("1.0.2");
+        // Review round 2 — clearing the nullable fields touches nothing else.
+        expect(def?.toolAllowlist).toEqual(["count_rows", "agent:*"]);
+        expect(def?.description).toBe("after");
+        expect(def?.persona).toBe("You are the edited persona.");
+        expect(def?.skillKeys).toEqual(["style-guide"]);
+      });
+
+      // Review round 2 (adversarial panel, BLOCKED): the edit form sends only
+      // the fields that changed. An absent key must leave its column alone —
+      // zod 4's `.partial()` over a `.default()` used to write `tools: []` and
+      // `description: ""` for every partial save.
+      it("a persona-only PATCH leaves every other stored field unchanged", async () => {
+        const res = await call("patch", "/api/custom-agents/ca-full-persona", OWNER_A, {
+          systemPrompt: "only the persona changed",
+        });
+        expect(res.status).toBe(200);
+        const def = await loadAgentDefinition("custom:ca-full-persona", db);
+        expect(def?.persona).toBe("only the persona changed");
+        expect(def?.toolAllowlist).toEqual(["count_rows", "agent:*"]);
+        expect(def?.description).toBe("stored description");
+        expect(def?.skillKeys).toEqual(["style-guide"]);
+        expect(def?.model).toBe("stored-model");
+        expect(def?.reasoningEffort).toBe("medium");
+        expect(def?.approvalPolicy).toEqual({ high: "deny" });
+        expect(def?.version).toBe("1.0.1");
+        const row = await db.customAgent.findUnique({ where: { id: "ca-full-persona" } });
+        expect(row?.tools).toBe(JSON.stringify(["count_rows", "agent:*"]));
+        expect(row?.description).toBe("stored description");
+      });
+
+      it("a description-only PATCH keeps the tools", async () => {
+        const res = await call("patch", "/api/custom-agents/ca-full-desc", OWNER_A, {
+          description: "new description",
+        });
+        expect(res.status).toBe(200);
+        const def = await loadAgentDefinition("custom:ca-full-desc", db);
+        expect(def?.description).toBe("new description");
+        expect(def?.toolAllowlist).toEqual(["count_rows", "agent:*"]);
+        expect(def?.persona).toBe("stored persona");
+      });
+
+      it("an explicit `tools: []` PATCH still clears the tools (and only the tools)", async () => {
+        const res = await call("patch", "/api/custom-agents/ca-full-clear", OWNER_A, {
+          tools: [],
+        });
+        expect(res.status).toBe(200);
+        const def = await loadAgentDefinition("custom:ca-full-clear", db);
+        expect(def?.toolAllowlist).toEqual([]);
+        expect(def?.description).toBe("stored description");
       });
 
       it("refuses a tool this install does not have (authoring stays strict)", async () => {
