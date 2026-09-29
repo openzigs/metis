@@ -46,6 +46,7 @@ import { ModelRecommendation } from "@/components/analysis/ModelRecommendation";
 import { EnhancementStatus } from "@/components/analysis/EnhancementStatus";
 import { EnhancementResults } from "@/components/analysis/EnhancementResults";
 import { ApprovalsPanel } from "@/components/analysis/ApprovalsPanel";
+import { GenerateIssuesAction } from "@/components/analysis/GenerateIssuesAction";
 // Issue #1104 — a gated run's empty requirements list must explain itself.
 import { RequirementsEmptyState } from "@/components/analysis/RequirementsEmptyState";
 import { SynthesisDegradedNotice } from "@/components/analysis/SynthesisDegradedNotice";
@@ -961,19 +962,15 @@ export default function AnalysisPage(): React.ReactElement {
                   <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                     Findings
                   </h4>
-                  {detail.data.status === "completed" &&
-                  detail.data.agentResults.some((a) => a.findings.length > 0) ? (
-                    <a
-                      href={`/projects/${projectId}/publish?analysisId=${detail.data.id}`}
-                      className="inline-flex items-center gap-1.5 rounded border border-border bg-muted/60 px-3 py-1.5 text-xs font-medium text-foreground transition hover:border-foreground/40 hover:bg-accent/60"
-                    >
-                      <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 16 16">
-                        <path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z" />
-                        <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z" />
-                      </svg>
-                      Generate GitHub Issues
-                    </a>
-                  ) : null}
+                  {/* Issue #362 — disabled, with the reason, until requirements exist. */}
+                  <GenerateIssuesAction
+                    projectId={projectId}
+                    analysisId={detail.data.id}
+                    status={detail.data.status}
+                    requirementCount={detail.data.requirements.length}
+                    hasFindings={detail.data.agentResults.some((a) => a.findings.length > 0)}
+                    ticketStatus={approvals.data?.ticketStatus}
+                  />
                 </div>
                 {/* Epic #727 (#740) — filter findings by verification status. */}
                 <div

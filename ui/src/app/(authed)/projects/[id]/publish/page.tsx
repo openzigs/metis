@@ -73,6 +73,16 @@ function analysisLabel(a: AnalysisListItem): string {
   return `${a.status} · ${when} · ${a.id.slice(0, 8)}`;
 }
 
+/**
+ * Issue #362 — a Generate blocked by the analysis approval gate carries a link
+ * to where those approvals are resolved. Only a same-app path is followed.
+ */
+function approvalsResolveUrl(err: unknown): string | null {
+  if (!(err instanceof ApiError) || err.code !== "APPROVALS_BLOCKING") return null;
+  const url = (err.details as { resolveUrl?: unknown } | undefined)?.resolveUrl;
+  return typeof url === "string" && url.startsWith("/projects/") ? url : null;
+}
+
 export default function PublishingPage() {
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
@@ -441,8 +451,20 @@ export default function PublishingPage() {
             {generate.isPending ? "Generating…" : "Generate"}
           </Button>
           {generate.error && (
-            <span className="text-xs text-destructive">
+            <span className="text-xs text-destructive" data-testid="generate-error">
               {generate.error instanceof ApiError ? generate.error.message : String(generate.error)}
+              {approvalsResolveUrl(generate.error) ? (
+                <>
+                  {" "}
+                  <a
+                    href={approvalsResolveUrl(generate.error)!}
+                    className="font-medium underline"
+                    data-testid="generate-resolve-approvals"
+                  >
+                    Resolve approvals
+                  </a>
+                </>
+              ) : null}
             </span>
           )}
           {generate.data && (
