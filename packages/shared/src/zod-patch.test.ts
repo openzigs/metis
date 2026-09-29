@@ -102,3 +102,33 @@ describe("guard: no exported PATCH schema fills an omitted field (#346)", () => 
     expect(keysFilledWhenAbsent(schema)).toEqual([]);
   });
 });
+
+describe("patchSchemaOf fails loudly on a default it cannot strip (#346 review round 2)", () => {
+  it("throws, naming the key, for a .default() nested inside a .transform()", () => {
+    const create = z.object({
+      name: z.string(),
+      tag: z
+        .string()
+        .default("x")
+        .transform((v) => v.toUpperCase()),
+    });
+    // Demonstrates the gap the throw closes: the plain strip leaves it filled.
+    expect(keysFilledWhenAbsent(withoutDefaults(create).partial())).toEqual(["tag"]);
+    expect(() => patchSchemaOf(create)).toThrow(/tag/);
+  });
+
+  it("throws for a .default() nested inside a .pipe()", () => {
+    const create = z.object({ n: z.string().default("1").pipe(z.coerce.number()) });
+    expect(() => patchSchemaOf(create)).toThrow(/patchSchemaOf: field\(s\) n /);
+  });
+
+  it("still builds for a transform with no default inside", () => {
+    const create = z.object({
+      name: z.string().transform((v) => v.trim()),
+      enabled: z.boolean().default(true),
+    });
+    const patch = patchSchemaOf(create);
+    expect(patch.parse({})).toEqual({});
+    expect(patch.parse({ name: " a " })).toEqual({ name: "a" });
+  });
+});

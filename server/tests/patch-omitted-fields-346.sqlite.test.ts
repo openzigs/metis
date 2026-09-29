@@ -226,17 +226,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await db.alertRule.findUniqueOrThrow({ where: { id: ruleId } })).toEqual(before);
       });
 
+      // The test above is answered by `requireWorkspaceRole` (COORD_B is not a
+      // ws-a member), so it never reaches the route's own workspace-scoped
+      // lookup. Here COORD_B passes the middleware — it OWNS ws-b — and names a
+      // ws-a rule under its own workspace's URL: only the route's
+      // `findFirst({ id: ruleId, workspaceId })` stands between it and the row.
+      it("a ws-b owner naming a ws-a rule under /workspaces/ws-b gets 404 and changes nothing", async () => {
+        const before = await db.alertRule.findUniqueOrThrow({ where: { id: ruleId } });
+        const res = await call("patch", `/api/workspaces/ws-b/finops/rules/${ruleId}`, COORD_B, {
+          name: "Hijacked",
+          enabled: true,
+        });
+        expect(res.status).toBe(404);
+        expect(await db.alertRule.findUniqueOrThrow({ where: { id: ruleId } })).toEqual(before);
+      });
+
       it("create still applies its defaults", async () => {
         const res = await call("post", "/api/workspaces/ws-a/finops/rules", DEV_OWNER_A, {
           name: "Projected 100%",
           thresholdPct: 100,
         });
         expect(res.status).toBe(201);
-        expect(res.body.data.rule).toMatchObject({
-          basis: "projected",
-          cooldownSec: 3600,
-          enabled: true,
-        });
+        const expected = { basis: "projected", cooldownSec: 3600, enabled: true };
+        expect(res.body.data.rule).toMatchObject(expected);
+        const row = await db.alertRule.findUniqueOrThrow({ where: { id: res.body.data.rule.id } });
+        expect(row).toMatchObject({ workspaceId: "ws-a", thresholdPct: 100, ...expected });
       });
     });
 

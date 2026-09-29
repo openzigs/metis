@@ -53,13 +53,31 @@ export function withoutDefaults<S extends z.ZodRawShape, C extends z.core.$ZodOb
  * The PATCH counterpart of a create schema: every field optional, and an
  * omitted field stays omitted (`patchSchemaOf(s).parse({})` is `{}`), so the
  * service leaves the stored column untouched.
+ *
+ * Pass the UNREFINED object schema: `.extend()` (used to swap the fields)
+ * throws on an object that carries a `.refine()` / `.superRefine()`, so build
+ * the PATCH schema from the base object and re-apply any refinement after.
+ *
+ * Throws at schema-construction time if the result would still fill a key
+ * when it is absent — a `.default()` this function cannot strip, e.g. one
+ * nested inside a `.transform()` / `.pipe()` / `z.preprocess()`. Failing at
+ * module load beats a PATCH that silently overwrites a stored field.
  */
 export function patchSchemaOf<S extends z.ZodRawShape, C extends z.core.$ZodObjectConfig>(
   schema: z.ZodObject<S, C>,
 ) {
   // The one sanctioned `.partial()` (#346 lint rule): the defaults are gone.
   // eslint-disable-next-line no-restricted-syntax
-  return withoutDefaults(schema).partial();
+  const result = withoutDefaults(schema).partial();
+  const filled = keysFilledWhenAbsent(result);
+  if (filled.length > 0) {
+    throw new Error(
+      `patchSchemaOf: field(s) ${filled.join(", ")} still take a value when absent — ` +
+        "a .default() nested inside a transform/pipe/preprocess cannot be stripped. " +
+        "Move the default outside the transform or declare the PATCH field explicitly (#346).",
+    );
+  }
+  return result;
 }
 
 /**
