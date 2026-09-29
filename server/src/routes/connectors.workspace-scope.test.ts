@@ -34,6 +34,7 @@ vi.mock("../middleware/connector-rate-limit.js", () => ({
   connectorMetadataRateLimiter: (_r: unknown, _s: unknown, n: () => void) => n(),
   connectorQueryRateLimiter: (_r: unknown, _s: unknown, n: () => void) => n(),
   connectorTestRateLimiter: (_r: unknown, _s: unknown, n: () => void) => n(),
+  connectorWriteRateLimiter: (_r: unknown, _s: unknown, n: () => void) => n(),
 }));
 
 const projectFindUnique = vi.fn();

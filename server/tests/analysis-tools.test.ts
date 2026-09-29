@@ -359,6 +359,10 @@ describe("searchKnowledgeTool", () => {
     expect(result.content).toContain("spec.md#chunk0");
     expect(result.content).toContain("OAuth2");
     expect(result.content).toContain("requirements.md#chunk3");
+    // #303 — the real id beside each hit, so the model never has to cite the
+    // `filename#chunkN` label as a documentId.
+    expect(result.content).toContain("spec.md#chunk0 documentId=doc-1 chunk=0");
+    expect(result.content).toContain("requirements.md#chunk3 documentId=doc-2 chunk=3");
     expect(mockKnowledge.search).toHaveBeenCalledWith("proj-123", "authentication requirements", {
       k: 5,
     });
