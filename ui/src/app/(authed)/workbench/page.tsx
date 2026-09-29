@@ -125,6 +125,8 @@ export default function WorkbenchPage() {
   // next send opens one in the new scope. `scopeRef` lets a create still in
   // flight from the old scope see that it is stale and discard its result.
   const scopeRef = useRef(0);
+  const pendingCreateRef = useRef<{ scope: number; promise: Promise<AISession> } | null>(null);
+  const [startingSession, setStartingSession] = useState(false);
   useEffect(() => {
     scopeRef.current += 1;
     abortRef.current?.abort();
@@ -158,30 +160,57 @@ export default function WorkbenchPage() {
     setLayout((prev) => ({ ...prev, contextIds: [] }));
   }
 
+  /**
+   * The current session, or a new one in the current scope. Shared by the first
+   * send and the skills panel's "Start a session" button (PR #385 panel), so a
+   * click and a send in flight together create ONE session. Resolves null when
+   * the create fails (the error is shown) or the scope changed meanwhile.
+   */
+  async function ensureSession(): Promise<AISession | null> {
+    if (session) return session;
+    const scope = scopeRef.current;
+    let pending = pendingCreateRef.current;
+    if (!pending || pending.scope !== scope) {
+      const promise = createSession({
+        title: "Workbench",
+        ...(activeProjectId ? { projectId: activeProjectId } : {}),
+        ...sessionAgentInput(layout.agentKey, activeProjectId),
+      });
+      pending = { scope, promise };
+      pendingCreateRef.current = pending;
+    }
+    try {
+      const created = await pending.promise;
+      // The project or agent changed while the create was in flight.
+      if (scopeRef.current !== scope) return null;
+      setSession(created);
+      return created;
+    } catch (err) {
+      if (scopeRef.current === scope) setError((err as Error).message);
+      return null;
+    } finally {
+      if (pendingCreateRef.current === pending) pendingCreateRef.current = null;
+    }
+  }
+
+  async function startSessionForSkills() {
+    setStartingSession(true);
+    setError(null);
+    try {
+      await ensureSession();
+    } finally {
+      setStartingSession(false);
+    }
+  }
+
   async function handleSend() {
     if (!input.trim() || streaming) return;
-    const scope = scopeRef.current;
     setStreaming(true);
     setError(null);
-    let active = session;
+    const active = await ensureSession();
     if (!active) {
-      try {
-        active = await createSession({
-          title: "Workbench",
-          ...(activeProjectId ? { projectId: activeProjectId } : {}),
-          ...sessionAgentInput(layout.agentKey, activeProjectId),
-        });
-      } catch (err) {
-        if (scopeRef.current === scope) setError((err as Error).message);
-        setStreaming(false);
-        return;
-      }
-      // The project or agent changed while the create was in flight.
-      if (scopeRef.current !== scope) {
-        setStreaming(false);
-        return;
-      }
-      setSession(active);
+      setStreaming(false);
+      return;
     }
     const composed = composeWithContext(input, contextDocs);
     const userMsg: DisplayMessage = {
@@ -544,6 +573,8 @@ export default function WorkbenchPage() {
             sessionId={session?.id ?? null}
             projectId={activeProjectId}
             variant="inline"
+            onStartSession={() => void startSessionForSkills()}
+            startingSession={startingSession}
           />
         </Card>
       </div>

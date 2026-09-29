@@ -56,7 +56,24 @@ vi.mock("@/lib/recent-tracker", () => ({
   recentTracker: { touch: vi.fn(), list: () => [] },
 }));
 vi.mock("@/lib/templates", () => ({ consumeRunPayload: () => null }));
-vi.mock("@/components/chat/loaded-skills-panel", () => ({ LoadedSkillsPanel: () => null }));
+// PR #385 panel — a stub that exposes the skills panel's session contract: the
+// id it receives, and the Start-session affordance the page passes it.
+vi.mock("@/components/chat/loaded-skills-panel", () => ({
+  LoadedSkillsPanel: ({
+    sessionId,
+    onStartSession,
+  }: {
+    sessionId: string | null;
+    onStartSession?: () => void;
+  }) =>
+    sessionId ? (
+      <span data-testid="skills-session">{sessionId}</span>
+    ) : onStartSession ? (
+      <button type="button" data-testid="skills-start-session" onClick={onStartSession}>
+        start
+      </button>
+    ) : null,
+}));
 
 import { projectsApi } from "@/lib/projects-api";
 import { recentTracker } from "@/lib/recent-tracker";
@@ -238,5 +255,69 @@ describe("Workbench — no session until the first message (#361)", () => {
     expect(streamChatMock).not.toHaveBeenCalled();
     expect(touchMock).not.toHaveBeenCalled();
     expect(screen.queryByText(/bedrock-gateway ·/)).toBeNull();
+  });
+});
+
+describe("Workbench — loading skills before the first message (PR #385 panel)", () => {
+  it("Start-session opens one session for the skills panel, and the first send reuses it", async () => {
+    renderStrict();
+    await waitForProject();
+    expect(createSessionMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("skills-start-session"));
+    await waitFor(() => expect(screen.getByTestId("skills-session")).toHaveTextContent("sess-1"));
+    expect(createSessionMock).toHaveBeenCalledTimes(1);
+    // Opening a session is not a turn: nothing reaches Recent yet.
+    expect(touchMock).not.toHaveBeenCalled();
+
+    await send("hi");
+    await waitFor(() => expect(streamChatMock).toHaveBeenCalledTimes(1));
+    expect(createSessionMock).toHaveBeenCalledTimes(1);
+    expect(streamChatMock.mock.calls[0]?.[0]).toBe("sess-1");
+  });
+
+  it("a Start-session click and a send while the create is in flight share ONE create", async () => {
+    let resolveCreate: (s: aiClient.AISession) => void = () => {};
+    createSessionMock.mockImplementation(
+      () => new Promise<aiClient.AISession>((r) => (resolveCreate = r)),
+    );
+    renderStrict();
+    await waitForProject();
+
+    fireEvent.click(screen.getByTestId("skills-start-session"));
+    const user = userEvent.setup();
+    await user.type(screen.getByTestId("workbench-input"), "hi");
+    await user.click(screen.getByTestId("workbench-send"));
+    resolveCreate(session("sess-1"));
+
+    await waitFor(() => expect(streamChatMock).toHaveBeenCalledTimes(1));
+    expect(createSessionMock).toHaveBeenCalledTimes(1);
+    expect(streamChatMock.mock.calls[0]?.[0]).toBe("sess-1");
+  });
+
+  it("a create that fails after the project changed shows no error for the old scope", async () => {
+    let rejectCreate: (e: Error) => void = () => {};
+    createSessionMock.mockImplementationOnce(
+      () => new Promise<aiClient.AISession>((_, rej) => (rejectCreate = rej)),
+    );
+    renderStrict();
+    await waitForProject();
+
+    fireEvent.click(screen.getByTestId("skills-start-session"));
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByTestId("workbench-project-picker"), { target: { value: "p2" } });
+    rejectCreate(new Error("stale boom"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/stale boom/)).toBeNull();
+    expect(screen.queryByTestId("skills-session")).toBeNull();
+  });
+
+  it("a create that fails in the current scope shows its error", async () => {
+    createSessionMock.mockRejectedValueOnce(new Error("create failed"));
+    renderStrict();
+    await waitForProject();
+    fireEvent.click(screen.getByTestId("skills-start-session"));
+    await waitFor(() => expect(screen.getByText(/create failed/)).toBeInTheDocument());
+    expect(screen.queryByTestId("skills-session")).toBeNull();
   });
 });
