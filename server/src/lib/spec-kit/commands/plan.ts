@@ -5,7 +5,18 @@
 import type { SpecKitArtifactDto } from "@metis/shared";
 import { getArtifact, writeArtifact, SpecKitArtifactError } from "../artifacts.js";
 import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
-import { buildSpecKitRagContext, type SpecKitKnowledgeService } from "../rag-context.js";
+import {
+  buildSpecKitRagContext,
+  type SpecKitFusedCodeDeps,
+  type SpecKitKnowledgeService,
+} from "../rag-context.js";
+import {
+  describeGrounding,
+  extractRequirementText,
+  PINNED_REQUIREMENT_DOCUMENTS,
+  verifyPlanPaths,
+  type PlanPathLookup,
+} from "../grounding.js";
 
 /**
  * Exported for the structural-contract tests (#376) — see specify.ts.
@@ -43,6 +54,24 @@ export const PLAN_SYSTEM_PROMPT = [
   "",
   "The `## Architecture diagram` section MUST contain exactly one fenced",
   "```mermaid``` block — never omit it.",
+  "",
+  "GROUNDING IN THE EXISTING CODEBASE — REQUIRED (#20):",
+  "  - The retrieved code symbols (`path:startLine-endLine`) and project",
+  "    documents describe what ALREADY exists. Read them before designing.",
+  "  - The `# Plan` summary MUST name the existing files and modules the change",
+  "    touches, by repo-relative path in backticks (e.g.",
+  "    `server/src/lib/analysis/agent-loop.ts`), and the functions or classes",
+  "    inside them.",
+  "  - Before proposing a component, check whether the retrieved code already",
+  "    implements that behaviour. If it does, extend it and describe only the",
+  "    delta — never re-specify shipped behaviour as a new component.",
+  "  - Mark every component in `## Components` as either **Extends**",
+  "    `path/to/existing/file` (`functionName`) or **New**. Every **New**",
+  "    component MUST state why no existing module can be extended: name the",
+  "    closest existing module and the reason it does not fit.",
+  "  - Only cite file paths that appear in the retrieved context or the spec.",
+  "    Never invent a path; when the right file is unknown, say so explicitly.",
+  "    Every backticked path is checked against the project's code graph.",
 ].join("\n");
 
 const SYSTEM_PROMPT = PLAN_SYSTEM_PROMPT;
@@ -58,6 +87,10 @@ export interface PlanInput {
    * Tests pass a fake to exercise grounded vs. ungrounded paths.
    */
   knowledgeService?: SpecKitKnowledgeService;
+  /** #20 — injectable code-graph retrieval. Defaults to the production wiring. */
+  fusedCode?: SpecKitFusedCodeDeps;
+  /** #20 — injectable code-graph path lookup for the post-generation check. */
+  pathLookup?: PlanPathLookup;
 }
 
 export interface PlanResult {
@@ -77,19 +110,18 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
   }
   const project = await loadProjectContext(input.projectId);
 
-  // #375 — ground the plan on project RAG. The retrieval query combines the
-  // spec content with architecture-oriented terms so the returned chunks
-  // describe the real components/modules the plan must fit into. Empty/failed
-  // retrieval ⇒ "" (ungrounded); never throws (see buildSpecKitRagContext).
-  const ragQuery = [
-    project.name,
-    "architecture components modules services data flow dependencies integrations",
-    spec.content,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  const rag = await buildSpecKitRagContext(input.projectId, ragQuery, {
+  // #375 / #20 — ground the plan on project RAG and the code graph. The query
+  // is the spec's own requirement text: the project name and generic
+  // architecture vocabulary it used to carry drowned the ask and retrieved
+  // unrelated files. Code symbols are always retrieved here (a plan must name
+  // the files it changes), and the top requirements documents are pinned whole
+  // so no requirement below their first chunk is lost. Empty/failed retrieval
+  // ⇒ "" (ungrounded); never throws (see buildSpecKitRagContext).
+  const rag = await buildSpecKitRagContext(input.projectId, extractRequirementText(spec.content), {
     knowledgeService: input.knowledgeService,
+    fusedCode: input.fusedCode,
+    includeCode: true,
+    expandDocuments: PINNED_REQUIREMENT_DOCUMENTS,
   });
 
   const userPrompt = [
@@ -122,14 +154,16 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     actorId: input.actorId ?? null,
   });
 
-  const grounding =
-    rag.usedChunks > 0
-      ? `grounded on ${rag.usedChunks} retrieved chunk${rag.usedChunks === 1 ? "" : "s"}`
-      : "ungrounded (no project knowledge retrieved)";
+  // #20 — an invented path is reported, not trusted.
+  const paths = await verifyPlanPaths(input.projectId, run.content, input.pathLookup);
+  const pathNote =
+    paths.unverified.length > 0
+      ? ` ${paths.unverified.length} referenced path${paths.unverified.length === 1 ? " is" : "s are"} not in the project's code graph: ${paths.unverified.map((p) => `\`${p}\``).join(", ")}.`
+      : "";
 
   return {
     artifact,
     tokensUsed: run.tokensUsed,
-    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${grounding}.`,
+    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${pathNote}`,
   };
 }

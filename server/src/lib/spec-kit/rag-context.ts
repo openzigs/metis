@@ -29,6 +29,7 @@ import { createChildLogger } from "../logger.js";
 import { getConfigService } from "../config/config-service.js";
 import {
   buildFusedCodeBlock,
+  extractRepoRelPath,
   type FusedCodeSearcher,
   type FusedRagChunkRef,
   type SymbolLineLookup,
@@ -55,7 +56,7 @@ export interface SpecKitKnowledgeService {
   search(
     projectId: string,
     query: string,
-    opts: { k?: number },
+    opts: { k?: number; documentIds?: string[] },
   ): Promise<{ hits: RetrievedChunk[] }>;
 }
 
@@ -71,6 +72,19 @@ export interface SpecKitFusedCodeDeps {
   lineLookup: SymbolLineLookup;
 }
 
+/**
+ * #20 — pull the rest of a retrieved document into context. Top-k over a large
+ * corpus can return only the title chunk of a short requirements document and
+ * miss every requirement below it; pinning the document's remaining chunks lets
+ * `/specify` and `/plan` reconcile scope against the whole list.
+ */
+export interface SpecKitDocumentExpansion {
+  /** Distinct non-source documents to expand, taken in hit-rank order. */
+  maxDocuments: number;
+  /** Upper bound on chunks fetched per expanded document. */
+  maxChunksPerDocument: number;
+}
+
 export interface BuildSpecKitRagContextOptions {
   /** Top-k chunks to retrieve. Defaults to 8 (chat-surface parity). */
   k?: number;
@@ -78,6 +92,13 @@ export interface BuildSpecKitRagContextOptions {
   knowledgeService?: SpecKitKnowledgeService;
   /** Injectable fused code-graph deps. Defaults to the production wiring. */
   fusedCode?: SpecKitFusedCodeDeps;
+  /**
+   * #20 — retrieve code-graph symbols even when `CHAT_FUSED_CODE_RETRIEVAL` is
+   * off. `/plan` sets it: a plan has to name the files it changes.
+   */
+  includeCode?: boolean;
+  /** #20 — pin the remaining chunks of the top retrieved documents. Off when absent. */
+  expandDocuments?: SpecKitDocumentExpansion;
 }
 
 export interface SpecKitRagContext {
@@ -86,8 +107,10 @@ export interface SpecKitRagContext {
    * when retrieval produced no usable signal (proceed ungrounded).
    */
   context: string;
-  /** Number of chunks folded into `context` (0 when ungrounded). */
+  /** Number of document chunks folded into `context` (0 when ungrounded). */
   usedChunks: number;
+  /** #20 — number of code-graph symbols folded into `context`. */
+  usedSymbols: number;
 }
 
 /**
@@ -100,7 +123,7 @@ export async function buildSpecKitRagContext(
   query: string,
   opts: BuildSpecKitRagContextOptions = {},
 ): Promise<SpecKitRagContext> {
-  const empty: SpecKitRagContext = { context: "", usedChunks: 0 };
+  const empty: SpecKitRagContext = { context: "", usedChunks: 0, usedSymbols: 0 };
 
   const trimmedQuery = (query ?? "").trim();
   if (!projectId || trimmedQuery.length === 0) return empty;
@@ -112,7 +135,7 @@ export async function buildSpecKitRagContext(
   // #714 — fused code-graph retrieval, env-gated + OFF by default. Read once so
   // the disabled path issues no code-graph query and stays byte-identical.
   const cfg = getConfigService();
-  const fusedEnabled = cfg.getBool("CHAT_FUSED_CODE_RETRIEVAL", false);
+  const fusedEnabled = opts.includeCode === true || cfg.getBool("CHAT_FUSED_CODE_RETRIEVAL", false);
   const fusedDeps: SpecKitFusedCodeDeps = opts.fusedCode ?? {
     searcher: createDefaultCodeSearcher(),
     lineLookup: createDefaultSymbolLineLookup(),
@@ -124,13 +147,16 @@ export async function buildSpecKitRagContext(
     // Build the doc-level block (unchanged wording) when there are hits.
     let docContext = "";
     let ragChunks: FusedRagChunkRef[] = [];
+    const pinned = await expandDocuments(service, projectId, boundedQuery, hits ?? [], opts);
     if (hits && hits.length > 0) {
-      const blocks = hits
-        .map(
-          (h, i) =>
-            `[${i + 1}] ${h.filename}#${h.position} (score=${h.score.toFixed(3)})\n${h.text}`,
-        )
-        .join("\n\n---\n\n");
+      const ranked = hits.map(
+        (h, i) => `[${i + 1}] ${h.filename}#${h.position} (score=${h.score.toFixed(3)})\n${h.text}`,
+      );
+      const rest = pinned.map(
+        (h, i) =>
+          `[${hits.length + i + 1}] ${h.filename}#${h.position} (pinned: rest of a retrieved document)\n${h.text}`,
+      );
+      const blocks = [...ranked, ...rest].join("\n\n---\n\n");
 
       // The header is deliberate: it frames the excerpts as UNTRUSTED reference
       // data so the model does not treat embedded text as instructions
@@ -167,10 +193,11 @@ export async function buildSpecKitRagContext(
       return empty;
     }
 
-    const usedChunks = hits?.length ?? 0;
-    if (!fused.block) return { context: docContext, usedChunks };
-    if (!docContext) return { context: fused.block, usedChunks };
-    return { context: `${docContext}\n\n${fused.block}`, usedChunks };
+    const usedChunks = (hits?.length ?? 0) + pinned.length;
+    const usedSymbols = fused.usedSymbols;
+    if (!fused.block) return { context: docContext, usedChunks, usedSymbols };
+    if (!docContext) return { context: fused.block, usedChunks, usedSymbols };
+    return { context: `${docContext}\n\n${fused.block}`, usedChunks, usedSymbols };
   } catch (err) {
     // Retrieval failure (embedder offline, store error, hash-embedder
     // fallback, etc.) must never break generation — log and continue.
@@ -180,4 +207,53 @@ export async function buildSpecKitRagContext(
     });
     return empty;
   }
+}
+
+/**
+ * #20 — fetch the chunks of the top retrieved non-source documents that top-k
+ * did not already return, in document position order. Source-file chunks
+ * (Deep Ingest's `connector:repo:…:src/…`) are left to the code graph. A failed
+ * expansion drops only that document's extra chunks.
+ */
+async function expandDocuments(
+  service: SpecKitKnowledgeService,
+  projectId: string,
+  query: string,
+  hits: RetrievedChunk[],
+  opts: BuildSpecKitRagContextOptions,
+): Promise<RetrievedChunk[]> {
+  const expansion = opts.expandDocuments;
+  if (!expansion || expansion.maxDocuments <= 0 || hits.length === 0) return [];
+
+  const documentIds: string[] = [];
+  for (const h of hits) {
+    if (documentIds.length >= expansion.maxDocuments) break;
+    if (extractRepoRelPath(h.filename) !== null || documentIds.includes(h.documentId)) continue;
+    documentIds.push(h.documentId);
+  }
+
+  const seen = new Set(hits.map((h) => h.chunkId));
+  const pinned: RetrievedChunk[] = [];
+  for (const documentId of documentIds) {
+    try {
+      const { hits: docHits } = await service.search(projectId, query, {
+        k: expansion.maxChunksPerDocument,
+        documentIds: [documentId],
+      });
+      const extra = (docHits ?? [])
+        .filter((h) => h.documentId === documentId && !seen.has(h.chunkId))
+        .sort((a, b) => a.position - b.position);
+      for (const h of extra) {
+        seen.add(h.chunkId);
+        pinned.push(h);
+      }
+    } catch (err) {
+      log.debug("Spec Kit document expansion failed, keeping top-k only", {
+        projectId,
+        documentId,
+        error: (err as Error).message,
+      });
+    }
+  }
+  return pinned;
 }

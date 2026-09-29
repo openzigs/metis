@@ -286,6 +286,33 @@ describe("tasks SYSTEM_PROMPT contract", () => {
   });
 });
 
+describe("grounding prompt rules (#20)", () => {
+  it("/plan must name the existing files it touches and never invent paths", () => {
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/MUST name the existing files and modules/);
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/Never invent a path/);
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/never re-specify shipped behaviour/i);
+  });
+
+  it("/plan must justify every new component against an existing one", () => {
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/\*\*Extends\*\*/);
+    expect(PLAN_SYSTEM_PROMPT).toMatch(
+      /Every \*\*New\*\*\s+component MUST state why no existing module can be extended/,
+    );
+  });
+
+  it("/specify must reconcile scope with retrieved requirements", () => {
+    expect(SPECIFY_SYSTEM_PROMPT).toMatch(/SCOPE RECONCILIATION/);
+    expect(SPECIFY_SYSTEM_PROMPT).toMatch(/Every such requirement MUST appear in `## In scope`/);
+    expect(SPECIFY_SYSTEM_PROMPT).toMatch(/ONLY when the brief\s+explicitly excludes it/);
+  });
+
+  it("/tasks must order tests before or alongside their implementation", () => {
+    expect(TASKS_SYSTEM_PROMPT).toMatch(/TEST-FIRST ORDERING/);
+    expect(TASKS_SYSTEM_PROMPT).toMatch(/before or alongside the code they cover/);
+    expect(TASKS_SYSTEM_PROMPT).toMatch(/Never collect test tasks at the end/);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. ARTIFACT-CONTRACT HELPER (golden fixtures)
 // ─────────────────────────────────────────────────────────────────────────────
