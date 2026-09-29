@@ -205,15 +205,15 @@ describe("GET /api/runs/:id/sandbox-sessions (#419)", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 403 when a non-admin tries to read sandbox sessions for another tenant's run (#419 IDOR)", async () => {
+  it("answers the unknown-id 404 when a non-admin tries to read sandbox sessions for another tenant's run (#419 IDOR, #340)", async () => {
     // Developer is not the project's creator and not an admin → no access.
     sandboxSessionFindMany.mockClear();
     projectFindMany.mockResolvedValueOnce([]);
     const res = await request(makeApp())
       .get("/api/runs/run_1/sandbox-sessions")
       .set("Authorization", `Bearer ${developerToken}`);
-    expect(res.status).toBe(403);
-    expect(res.body.error.code).toBe("FORBIDDEN");
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("RUN_NOT_FOUND");
     // CRITICAL: must not have queried sandbox sessions on a denied run.
     expect(sandboxSessionFindMany).not.toHaveBeenCalled();
   });
@@ -230,13 +230,18 @@ describe("GET /api/runs/:id/sandbox-sessions (#419)", () => {
 });
 
 describe("GET /api/runs/:id RBAC (#419 IDOR)", () => {
-  it("returns 403 when a non-admin requests another tenant's run", async () => {
+  it("answers the unknown-id 404 when a non-admin requests another tenant's run (#340)", async () => {
     projectFindMany.mockResolvedValueOnce([]);
     const res = await request(makeApp())
       .get("/api/runs/run_1")
       .set("Authorization", `Bearer ${developerToken}`);
-    expect(res.status).toBe(403);
-    expect(res.body.error.code).toBe("FORBIDDEN");
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("RUN_NOT_FOUND");
+    const unknown = await request(makeApp())
+      .get("/api/runs/run_does_not_exist")
+      .set("Authorization", `Bearer ${developerToken}`);
+    expect(unknown.status).toBe(404);
+    expect(res.text).toBe(unknown.text);
   });
 
   it("/replay is also gated on project access", async () => {
@@ -244,7 +249,7 @@ describe("GET /api/runs/:id RBAC (#419 IDOR)", () => {
     const res = await request(makeApp())
       .get("/api/runs/run_1/replay")
       .set("Authorization", `Bearer ${developerToken}`);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it("system runs (projectId=null) are admin-only", async () => {
@@ -264,7 +269,8 @@ describe("GET /api/runs/:id RBAC (#419 IDOR)", () => {
     const res = await request(makeApp())
       .get("/api/runs/run_sys")
       .set("Authorization", `Bearer ${developerToken}`);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("RUN_NOT_FOUND");
   });
 });
 

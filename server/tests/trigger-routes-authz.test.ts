@@ -41,6 +41,7 @@ vi.mock("../src/middleware/auth.js", () => ({
 
 const projectFindUnique = vi.fn();
 const triggerFindMany = vi.fn();
+const triggerFindFirst = vi.fn();
 const triggerCreate = vi.fn();
 const triggerUpdate = vi.fn();
 const triggerDelete = vi.fn();
@@ -49,6 +50,7 @@ vi.mock("../src/lib/prisma.js", () => ({
     project: { findUnique: projectFindUnique },
     trigger: {
       findMany: triggerFindMany,
+      findFirst: triggerFindFirst,
       create: triggerCreate,
       update: triggerUpdate,
       delete: triggerDelete,
@@ -102,6 +104,8 @@ beforeEach(() => {
   // Default: the path project lives in a workspace the caller belongs to.
   projectFindUnique.mockResolvedValue({ workspaceId: "ws-1" });
   triggerFindMany.mockResolvedValue([triggerRow()]);
+  // #340 — the by-id routes resolve the trigger within the path's project.
+  triggerFindFirst.mockResolvedValue({ id: "trg_1" });
   triggerCreate.mockResolvedValue(triggerRow());
   triggerUpdate.mockResolvedValue(triggerRow({ enabled: false }));
   triggerDelete.mockResolvedValue(triggerRow());

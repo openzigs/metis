@@ -33,6 +33,7 @@ import { loadAuthorizedSession } from "../ai/conversation/session-access.js";
 import { getLastJobLifecycle } from "./job-events.js";
 import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import { wireDiscussionPresenceHandlers } from "./discussion-presence.js";
+import { mcpStatusRoomsFor } from "../mcp/status-rooms.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("socket");
@@ -214,10 +215,12 @@ function attachHandlers(
       });
       return;
     }
-    void socket.join("mcp:status");
+    // #340 — the shared room carries global and project events; a user-scope
+    // server's events go only to its owner's room and the admins' room.
+    void socket.join(mcpStatusRoomsFor(user));
   });
   socket.on("unsubscribe:mcp", () => {
-    void socket.leave("mcp:status");
+    for (const room of mcpStatusRoomsFor(user)) void socket.leave(room);
   });
 
   socket.on("subscribe:connector", ({ connectorId }) => {

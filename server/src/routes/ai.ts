@@ -137,6 +137,7 @@ import {
   type SkillCatalogEntry,
 } from "../lib/agent-runtime/skills.js";
 import { listBindableAgents, loadBoundCustomAgent } from "../lib/agent-runtime/session-agent.js";
+import { visibleTools } from "../lib/agent-runtime/tool-refs.js";
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { assertSecretUsable, canUseSecret } from "../lib/vault/secret-access.js";
 import { resolveDurableRole } from "../lib/auth/durable-roles.js";
@@ -1273,8 +1274,12 @@ export function aiRouter(): Router {
   );
 
   // ── Tool inspection ─────────────────────────────────────────────────────
-  r.get("/tools", requireAuth, (_req: Request, res: Response) => {
-    res.json(ok({ tools: getToolRegistry().list() }));
+  // #340 — a `scope: "user"` MCP server's tools are listed only to its owner
+  // and system admins; every other tool is listed to everyone, as before. The
+  // per-IP limiter sits BEFORE `requireAuth` (CodeQL js/missing-rate-limiting).
+  r.get("/tools", conversationPreAuthRateLimiter, requireAuth, (req: Request, res: Response) => {
+    if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+    res.json(ok({ tools: visibleTools(getToolRegistry(), req.user) }));
   });
 
   // ── Model catalog (#135) ─────────────────────────────────────────────────

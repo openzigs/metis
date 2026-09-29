@@ -469,6 +469,16 @@ export interface ToolOrigin {
   kind: "mcp";
   serverId: string;
   serverLabel: string;
+  /**
+   * #340 — the server's scope. A `user` server is its owner's alone and is
+   * never offered to an agent, so its tools are not valid agent tool refs.
+   */
+  serverScope?: "global" | "project" | "user";
+  /**
+   * #340 — the owning user of a `user` server (null/absent otherwise). Tool
+   * listings show a user server's tools only to this user and system admins.
+   */
+  serverOwnerId?: string | null;
 }
 
 export interface ToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
@@ -521,12 +531,7 @@ export interface ToolResult {
 
 /** Provider implementations live in `providers/`. */
 export type ProviderKey =
-  | "bedrock-gateway"
-  | "local-gemma"
-  | "openai"
-  | "azure"
-  | "anthropic"
-  | "offline-stub";
+  "bedrock-gateway" | "local-gemma" | "openai" | "azure" | "anthropic" | "offline-stub";
 
 /**
  * #58 — the provider an EMBEDDING usage row is recorded under: `embed:` plus the
@@ -589,12 +594,7 @@ export type LatencySLA = "interactive" | "standard" | "background";
 
 /** High-level task type classification (#598). */
 export type TaskType =
-  | "summarization"
-  | "extraction"
-  | "analysis"
-  | "synthesis"
-  | "cross-referencing"
-  | "general";
+  "summarization" | "extraction" | "analysis" | "synthesis" | "cross-referencing" | "general";
 
 /** Task profile produced by the TaskProfiler (#598). */
 export interface TaskProfile {

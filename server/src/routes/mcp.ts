@@ -14,10 +14,14 @@
  * #311 — every route that acts on an EXISTING server by id resolves the server
  * first (`assertServerAccess`). A `scope: "project"` server is reached only
  * through its own project's access check, and an unreachable one answers the
- * same 404 as an unknown id before anything is read or changed. `global` and
- * `user` servers stay a registry-wide role permission (`mcp.manage` /
- * `mcp.read` / `mcp.write`), as designed. The unfiltered lists (`GET /`,
- * `GET /export`) omit project-scoped servers in projects the caller cannot reach.
+ * same 404 as an unknown id before anything is read or changed. `global`
+ * servers stay a registry-wide role permission (`mcp.manage` / `mcp.read` /
+ * `mcp.write`), as designed. The unfiltered lists (`GET /`, `GET /export`)
+ * omit project-scoped servers in projects the caller cannot reach.
+ *
+ * #340 — a `scope: "user"` server belongs to one user (`userId`). Only that
+ * owner and system admins reach it by id; anyone else gets the unknown-id
+ * 404, and the unfiltered lists show a non-admin only their own user servers.
  *
  * Audit + secret hygiene live inside `MCPRegistryService` — the routes are
  * thin glue.
@@ -109,14 +113,22 @@ async function assertProjectScopedCreate(
  * `assertProjectAccess` for the server's own project (admins bypass); a
  * project server with no project is never reachable by a non-admin. Unknown,
  * soft-deleted and unreachable servers all answer this one 404, so a probe
- * cannot tell them apart. Global and user servers stay role-gated.
+ * cannot tell them apart. Global servers stay role-gated.
+ *
+ * #340 — a `scope: "user"` server is reachable only by its owner (admins
+ * bypass); one with no owner is never reachable by a non-admin.
  */
 async function assertServerAccess(req: Request, id: string): Promise<void> {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
   const notFound = () => new AppError(404, "NOT_FOUND", "MCP server not found");
   const server = await svc().get(id);
   if (!server) throw notFound();
-  if (server.scope !== "project" || req.user.role === "admin") return;
+  if (req.user.role === "admin") return;
+  if (server.scope === "user") {
+    if (!server.userId || server.userId !== req.user.userId) throw notFound();
+    return;
+  }
+  if (server.scope !== "project") return;
   if (!server.projectId) throw notFound();
   try {
     await assertProjectAccess(req.user, server.projectId);
@@ -133,6 +145,15 @@ async function assertServerAccess(req: Request, id: string): Promise<void> {
 function projectScopeOf(req: Request): Record<string, unknown> {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
   return workspaceScopeWhere(req.user);
+}
+
+/**
+ * #340 — the unfiltered lists narrow user-scoped servers to the caller's own
+ * (`undefined` for admins: no narrowing).
+ */
+function userScopeOwnerOf(req: Request): string | undefined {
+  if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+  return req.user.role === "admin" ? undefined : req.user.userId;
 }
 
 function rethrow(err: unknown): never {
@@ -240,7 +261,12 @@ export function mcpRouter(): Router {
         : undefined;
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
     if (projectId !== undefined) await assertCallerProjectAccess(req, projectId);
-    const items = await svc().list({ scope, projectId, projectScope: projectScopeOf(req) });
+    const items = await svc().list({
+      scope,
+      projectId,
+      projectScope: projectScopeOf(req),
+      userScopeOwner: userScopeOwnerOf(req),
+    });
     res.json(ok({ items }));
   });
 
@@ -847,7 +873,10 @@ export function mcpRouter(): Router {
 
   // ── Epic #162 — Issue #124 — Copilot mcp.json import / export ────────
   r.get("/export", requireAuth, requirePermission("mcp.read"), async (req, res) => {
-    const items = await svc().list({ projectScope: projectScopeOf(req) });
+    const items = await svc().list({
+      projectScope: projectScopeOf(req),
+      userScopeOwner: userScopeOwnerOf(req),
+    });
     const payload = exportToCopilotMcpJson(items);
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Content-Disposition", "attachment; filename=mcp.json");

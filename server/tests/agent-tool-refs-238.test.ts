@@ -58,7 +58,8 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
-const { knownToolNames, unknownToolRefs } = await import("../src/lib/agent-runtime/tool-refs.js");
+const { knownToolNames, unknownToolRefs, visibleTools } =
+  await import("../src/lib/agent-runtime/tool-refs.js");
 const { ToolRegistry, __resetToolRegistrySingleton, getToolRegistry } =
   await import("../src/lib/ai/tool-registry.js");
 const { __resetSearchKnowledgeRegistration, registerSearchKnowledgeTool } =
@@ -148,6 +149,114 @@ describe("#238 unknownToolRefs — one check for both kinds of agent", () => {
       "agent:custom:../x",
       "Count_Rows",
     ]);
+  });
+});
+
+describe("#340 a user-scope MCP server's tools are never valid agent refs", () => {
+  function registryWithMcp(
+    tools: Array<{ name: string; scope: "global" | "project" | "user" }>,
+  ): InstanceType<typeof ToolRegistry> {
+    const r = new ToolRegistry();
+    for (const t of tools) {
+      const [, label] = t.name.split(":");
+      r.register({
+        name: t.name,
+        description: t.name,
+        schema: z.object({}),
+        risk: "low",
+        origin: { kind: "mcp", serverId: `srv-${label}`, serverLabel: label, serverScope: t.scope },
+        exec: async () => ({ text: "" }),
+      } as never);
+    }
+    return r;
+  }
+  const registry = registryWithMcp([
+    { name: "mcp:mine:read", scope: "user" },
+    { name: "mcp:shared:read", scope: "global" },
+    { name: "mcp:team:read", scope: "project" },
+  ]);
+
+  it("drops them from the known names — a running one included — and keeps other scopes", () => {
+    const known = knownToolNames(registry);
+    expect(known.has("mcp:mine:read")).toBe(false);
+    expect(known.has("mcp:shared:read")).toBe(true);
+    expect(known.has("mcp:team:read")).toBe(true);
+  });
+
+  it("so an agent save naming one (or its server prefix) is refused as unknown", () => {
+    expect(() => assertKnownTools(["mcp:mine:read"], registry)).toThrow(
+      /Unknown tools: mcp:mine:read/,
+    );
+    expect(() => assertKnownTools(["mcp:mine:*"], registry)).toThrow(/Unknown tools: mcp:mine:\*/);
+    expect(() => assertKnownTools(["mcp:shared:read", "mcp:team:*"], registry)).not.toThrow();
+  });
+
+  it("fails closed on a registry without describeAll — never lists a user tool unfiltered", () => {
+    // Only `describeAll` carries a tool's origin; a registry offering just
+    // `list` cannot be filtered, so reading it must throw rather than count
+    // another user's server tool as known.
+    const listOnly = {
+      list: () => [{ name: "mcp:mine:read", description: "x", risk: "low" as const }],
+    };
+    expect(() => knownToolNames(listOnly as never)).toThrow(TypeError);
+    expect(() => assertKnownTools(["mcp:mine:read"], listOnly as never)).toThrow(TypeError);
+  });
+});
+
+describe("#340 visibleTools — the GET /api/ai/tools listing", () => {
+  const r = new ToolRegistry();
+  const add = (name: string, origin?: Record<string, unknown>) =>
+    r.register({
+      name,
+      description: name,
+      schema: z.object({}),
+      risk: "low",
+      ...(origin ? { origin } : {}),
+      exec: async () => ({ text: "" }),
+    } as never);
+  add("count_rows");
+  add("mcp:shared:read", {
+    kind: "mcp",
+    serverId: "g",
+    serverLabel: "shared",
+    serverScope: "global",
+  });
+  add("mcp:alice:read", {
+    kind: "mcp",
+    serverId: "a",
+    serverLabel: "alice",
+    serverScope: "user",
+    serverOwnerId: "u-alice",
+  });
+  add("mcp:orphan:read", {
+    kind: "mcp",
+    serverId: "o",
+    serverLabel: "orphan",
+    serverScope: "user",
+    serverOwnerId: null,
+  });
+  const names = (userId: string, role: string) =>
+    visibleTools(r, { userId, role }).map((t) => t.name);
+
+  it("lists a user server's tools to its owner, not to anyone else; an ownerless one to admins only", () => {
+    expect(names("u-alice", "coordinator")).toEqual([
+      "count_rows",
+      "mcp:shared:read",
+      "mcp:alice:read",
+    ]);
+    expect(names("u-bob", "coordinator")).toEqual(["count_rows", "mcp:shared:read"]);
+    expect(names("u-admin", "admin")).toEqual([
+      "count_rows",
+      "mcp:shared:read",
+      "mcp:alice:read",
+      "mcp:orphan:read",
+    ]);
+  });
+
+  it("returns the list() descriptor shape — no origin or schema leaves it", () => {
+    for (const t of visibleTools(r, { userId: "u-admin", role: "admin" })) {
+      expect(Object.keys(t).sort()).toEqual(["description", "name", "risk"]);
+    }
   });
 });
 

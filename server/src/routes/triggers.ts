@@ -136,6 +136,21 @@ async function spawnTriggerRun(
   return { runId: out.id };
 }
 
+/**
+ * #340 — a by-id trigger route acts only on a trigger of the PATH's project.
+ * `requireProjectAccess()` checks `:projectId`; this binds `:id` to it, so a
+ * trigger of another project answers the same 404 as an unknown id and is left
+ * unchanged. Trigger rows never move between projects (neither schema carries
+ * `projectId`), so the id resolved here stays in the path project.
+ */
+async function triggerInPathProject(req: Request): Promise<{ id: string; projectId: string }> {
+  const { projectId, id } = req.params as { projectId: string; id: string };
+  const where = { id: String(id), projectId: String(projectId) };
+  const row = await prisma.trigger.findFirst({ where, select: { id: true } });
+  if (!row) throw new AppError(404, "TRIGGER_NOT_FOUND", "Trigger not found");
+  return where;
+}
+
 export function projectTriggersRouter(): Router {
   const r = Router({ mergeParams: true });
 
@@ -198,7 +213,7 @@ export function projectTriggersRouter(): Router {
       if (parsed.data.enabled !== undefined) data.enabled = parsed.data.enabled;
       if (parsed.data.config !== undefined) data.config = JSON.stringify(parsed.data.config);
       const updated = await prisma.trigger.update({
-        where: { id: String(req.params.id) },
+        where: await triggerInPathProject(req),
         data,
         select: TRIGGER_SELECT,
       });
@@ -211,7 +226,7 @@ export function projectTriggersRouter(): Router {
     requireAuth,
     requirePermission("admin.write"),
     async (req: Request, res: Response) => {
-      await prisma.trigger.delete({ where: { id: String(req.params.id) } });
+      await prisma.trigger.delete({ where: await triggerInPathProject(req) });
       res.json(ok({ ok: true }));
     },
   );

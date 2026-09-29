@@ -131,6 +131,11 @@ vi.mock("../src/lib/prisma.js", () => ({
         });
       }),
       findUnique: vi.fn(async ({ where }: any) => tables.triggers.get(where.id) ?? null),
+      // #340 — the by-id routes resolve the trigger within the path's project.
+      findFirst: vi.fn(async ({ where }: any) => {
+        const t = tables.triggers.get(where.id);
+        return t && t.projectId === where.projectId ? t : null;
+      }),
       create: vi.fn(async ({ data }: any) => {
         seq++;
         const row = {

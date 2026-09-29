@@ -23,7 +23,7 @@ import { prisma } from "../prisma.js";
 import type { ToolDefinition, ToolResult } from "../ai/types.js";
 import type { MCPLifecycleManager } from "./lifecycle-manager.js";
 import type { MCPRegistryService } from "./mcp-service.js";
-import type { MCPStatusEvent } from "./types.js";
+import type { MCPServerConfig, MCPStatusEvent } from "./types.js";
 import { McpToolDeniedError, enforceAllowlist } from "./allowlist.js";
 import { McpApprovalDeniedError, requestApproval } from "./approval.js";
 import { diffSchemas, isDiffEmpty, snapshotToolSchemas } from "./integrity.js";
@@ -98,6 +98,8 @@ export class MCPToolBridge {
         fqName,
         risk,
         { description: tool.description, inputSchema: tool.inputSchema },
+        snapshot.config.scope,
+        snapshot.config.userId ?? null,
       );
       try {
         reg.register(def);
@@ -142,6 +144,8 @@ export class MCPToolBridge {
     fqName: string,
     risk: MCPToolRisk,
     advertised: { description?: string; inputSchema?: unknown } = {},
+    scope: MCPServerConfig["scope"] = "global",
+    ownerId: string | null = null,
   ): ToolDefinition<z.ZodRecord<z.ZodString, z.ZodUnknown>> {
     const lifecycle = this.lifecycle;
     const registry = this.registry;
@@ -154,15 +158,48 @@ export class MCPToolBridge {
       // the tool natively; `z.record` below still validates the call's shape.
       ...(isObjectSchema(advertised.inputSchema) ? { parameters: advertised.inputSchema } : {}),
       // #140 — lets the tool runtime offer only servers the project may use.
-      origin: { kind: "mcp", serverId, serverLabel: label },
+      origin: {
+        kind: "mcp",
+        serverId,
+        serverLabel: label,
+        serverScope: scope,
+        serverOwnerId: scope === "user" ? ownerId : null,
+      },
       schema: z.record(z.string(), z.unknown()),
       async exec(args, ctx): Promise<ToolResult> {
+        // The one refusal for a server this caller cannot use as-is. #340 — a
+        // non-owner gets it too, so the text never confirms that another
+        // user's server exists (the audit row still says `not_owner`).
+        const unavailable = () => new Error(`MCP server ${label} is not ready`);
         const snapshot = lifecycle.get(serverId);
         if (!snapshot || snapshot.state.status !== "ready") {
-          throw new Error(`MCP server ${label} is not ready`);
+          throw unavailable();
         }
         const config = snapshot.config;
         const argsHash = sha256OfCanonical(args);
+        // #340 — a user-scoped server is its owner's alone. Any other user's
+        // session (and one with no owner on record) is refused, fail closed.
+        if (config.scope === "user" && (!config.userId || config.userId !== ctx.userId)) {
+          audit({
+            actor: { id: ctx.userId },
+            action: "mcp.tool.invoke",
+            target: { type: "mcp_server", id: serverId },
+            metadata: {
+              tool: toolName,
+              risk,
+              projectId: ctx.projectId ?? null,
+              sessionId: ctx.sessionId,
+              isError: true,
+              decision: "denied",
+              denyReason: "not_owner",
+              version: config.version ?? null,
+              sha256: config.sha256 ?? null,
+              argsHash,
+              resultHash: null,
+            },
+          });
+          throw unavailable();
+        }
         // SEC-6: project-scoped server may only be invoked by sessions
         // attached to the SAME project. Otherwise a session bound to project
         // B that guesses the FQ tool name could reach project A's server.

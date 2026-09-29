@@ -701,10 +701,14 @@ export const fakePrisma: FakePrisma = fake;
  * spec having to register them. Wildcards `mcp:github:*` resolve via the
  * registered tool prefix derivation in AgentService.validateToolRefs.
  */
-export const stubAgentToolRegistry = () =>
-  ({
-    list: () => [
-      { name: "github", description: "stub", risk: "low" as const },
-      { name: "mcp:github:create_issue", description: "stub", risk: "low" as const },
-    ],
-  }) as unknown as import("../../src/lib/ai/tool-registry.js").ToolRegistry;
+export const stubAgentToolRegistry = () => {
+  const tools = [
+    { name: "github", description: "stub", risk: "low" as const },
+    { name: "mcp:github:create_issue", description: "stub", risk: "low" as const },
+  ];
+  // #340 — `knownToolNames` reads `describeAll` (the view that carries origin).
+  return {
+    list: () => tools,
+    describeAll: () => tools.map((t) => ({ ...t, parameters: {} })),
+  } as unknown as import("../../src/lib/ai/tool-registry.js").ToolRegistry;
+};

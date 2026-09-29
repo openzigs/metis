@@ -18,6 +18,8 @@ export interface MCPServerConfig {
   id: string;
   scope: "global" | "project" | "user";
   projectId: string | null;
+  /** #340 — owning user id of a `scope: "user"` server; null/absent otherwise. */
+  userId?: string | null;
   label: string;
   transport: MCPTransport;
   /** Epic #271 — execution runtime. `native` keeps the legacy spawn() path. */
@@ -54,7 +56,11 @@ export interface MCPRuntimeState {
   tools: MCPToolDescriptor[];
 }
 
-export type MCPStatusListener = (event: MCPStatusEvent) => void;
+/**
+ * `config` is the server the event is about (#340 — its `userId` routes a
+ * user-scope server's events to that owner only). It never goes on the wire.
+ */
+export type MCPStatusListener = (event: MCPStatusEvent, config?: MCPServerConfig) => void;
 export interface MCPStatusEvent {
   serverId: string;
   label: string;
