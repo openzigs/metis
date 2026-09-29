@@ -18,3 +18,5 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Splitter fixtures](project_splitter-fixtures-need-real-sections-and-fences.md) — test on a real dev.db section + an unclosed fence (#162)
 - [CodeQL limiter goes BEFORE requireAuth](project_codeql-rate-limit-must-precede-requireauth.md) — a per-user limiter after auth still alerts (291)
 - [Object ACL side channels](project_object-acl-side-channels.md) — #349: owner-only routes leaked via tool list, socket room, error text, 409
+- [Socket rooms fixed at handshake](project_socket-rooms-fixed-at-handshake.md) — JWT-claim rooms change on reconnect, not refresh (#353)
+- [Local UI walkthrough setup](project_local-ui-walkthrough-setup.md) — mock login is `password`; port overrides; Playwright upload root; quarantine
