@@ -733,6 +733,15 @@ jobs:
         working-directory: server
         run: pnpm test:integration transcript-fork-postgres
 
+      # Issue #402 — `postgres-migrate-deploy` replays the chain from an EMPTY
+      # database, so #369's dedupe UPDATE had never met a duplicate row. This runs
+      # the #369 and #402 Postgres migration.sql files verbatim over seeded
+      # duplicates (in a scratch schema cloned from the pushed tables) and checks
+      # which draft survives and that batch draftIds / parentDraftId are repointed.
+      - name: Prove the issue-draft dedup migrations on real Postgres duplicates
+        working-directory: server
+        run: pnpm test:integration issue-draft-dedup-postgres
+
       # Issue #543 (Epic #518) — prove the pgvector-backed RAG vector store gives
       # retrieval parity AND multi-replica read/write safety against the same real
       # Postgres: two separately-constructed store instances (= two pods) sharing
