@@ -105,7 +105,7 @@ export function dbDestinationChanged(
  * the token reads, so a coordinator can repoint a connector holding an admin's
  * token at another repo that token can read and ingest it (without seeing the
  * token). That is an authorization question, not exfiltration of the secret,
- * and is out of scope for the #344 binding (PR #359 review; tracked in #358).
+ * and is out of scope for the #344 binding (PR #359 review; tracked in #391).
  */
 export function repoDestinationChanged(
   existing: { provider: string; apiBaseUrl: string | null },
