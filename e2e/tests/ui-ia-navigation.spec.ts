@@ -45,11 +45,13 @@ test.describe("UI IA — navigation & layout (#133)", () => {
     await page.goto("/dashboard", { waitUntil: "load" });
     await shell.expectLoaded();
 
-    await expect(shell.sidebar.getByRole("link")).toHaveCount(SIDEBAR_ENTRIES.length);
+    // Scope to the "Sections" nav: the aside also holds the METIS brand link.
+    const sections = shell.sidebar.getByRole("navigation", { name: "Sections" });
+    await expect(sections.getByRole("link")).toHaveCount(SIDEBAR_ENTRIES.length);
     for (const entry of SIDEBAR_ENTRIES) {
       await expect(shell.navLink(entry)).toBeVisible();
     }
-    await expect(shell.sidebar.getByRole("heading")).toHaveCount(0);
+    await expect(sections.getByRole("heading")).toHaveCount(0);
   });
 
   // #27: each sidebar entry lands on its first page.
