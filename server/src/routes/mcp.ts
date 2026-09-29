@@ -63,6 +63,11 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { workspaceScopeWhere } from "../lib/auth/project-scope.js";
+import {
+  assertMcpCreateSecretBinding,
+  assertMcpImportSecretBinding,
+  assertMcpUpdateSecretBinding,
+} from "../lib/mcp/secret-binding.js";
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -279,6 +284,8 @@ export function mcpRouter(): Router {
     }
     const actor = actorFromReq(req);
     await assertProjectScopedCreate(req, parsed.data.scope, parsed.data.projectId);
+    // #344 — before any vault write, so a refused request leaves nothing.
+    await assertMcpCreateSecretBinding({ userId: actor.id, role: actor.role }, parsed.data);
     try {
       const requestedScope = parsed.data.scope ?? "global";
       // Vault has no `user` scope; user-scoped MCP secrets fold into global.
@@ -324,6 +331,12 @@ export function mcpRouter(): Router {
     }
     const actor = actorFromReq(req);
     await assertServerAccess(req, String(req.params.id));
+    // #344 — before any vault write, so a refused request leaves nothing.
+    await assertMcpUpdateSecretBinding(
+      { userId: actor.id, role: actor.role },
+      String(req.params.id),
+      parsed.data,
+    );
     try {
       const existing = await svc().get(String(req.params.id));
       if (!existing) throw new AppError(404, "NOT_FOUND", "MCP server not found");
@@ -462,6 +475,11 @@ export function mcpRouter(): Router {
         res.json(ok({ plan, dryRun: true, created: [], errors: [] }));
         return;
       }
+      // #344 — every secret an entry references must be the caller's.
+      await assertMcpImportSecretBinding(
+        { userId: actor.id, role: actor.role },
+        await buildImportPlan(body.mcpJson, { labelPrefix: body.labelPrefix }),
+      );
       const result = await executeImport(body.mcpJson, svc(), actor, {
         scope: body.scope,
         projectId: body.projectId ?? null,
@@ -911,6 +929,11 @@ export function mcpRouter(): Router {
         res.json(ok({ plan, dryRun: true, created: [], errors: [] }));
         return;
       }
+      // #344 — every secret an entry references must be the caller's.
+      await assertMcpImportSecretBinding(
+        { userId: actor.id, role: actor.role },
+        await buildImportPlan(wrapped),
+      );
       const result = await executeImport(wrapped, svc(), actor, {
         scope: body.scope,
         projectId: body.projectId ?? null,

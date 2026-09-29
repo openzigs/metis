@@ -193,6 +193,8 @@ export async function executeImport(
         const secretLabel = freshSecretLabel(planned);
         const summary = await vault.create(secretLabel, plaintext, vaultScope, {
           description: `Auto-vaulted from mcp.json import for ${entry.label}`,
+          // #344 — the importer supplied this plaintext, so the secret is theirs.
+          createdById: actor.id,
         });
         written.push(summary.id);
         entry.vaultedKeys[envKey] = secretLabel;
@@ -211,6 +213,8 @@ export async function executeImport(
         const secretLabel = freshSecretLabel(planned);
         const summary = await vault.create(secretLabel, plaintext, vaultScope, {
           description: `Auto-vaulted header from mcp.json import for ${entry.label}`,
+          // #344 — the importer supplied this plaintext, so the secret is theirs.
+          createdById: actor.id,
         });
         written.push(summary.id);
         entry.vaultedHeaders[hName] = secretLabel;

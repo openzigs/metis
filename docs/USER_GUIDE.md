@@ -2765,7 +2765,7 @@ The **Secret Vault** is a secure storage for sensitive information that METIS ne
 
 - **Encrypted at rest** — all secrets are encrypted using AES-256-GCM, a military-grade encryption algorithm
 - **Key derivation** — the encryption key is derived from a master key using PBKDF2 with 100,000 iterations, making brute-force attacks practically impossible
-- **Access controlled** — users with `vault.read` (admin, coordinator, developer) can list entries, view audit history, and use a secret by reference (chat BYOK keys, connectors, MCP servers); only `vault.reveal` — administrators only — can see a secret's plaintext; only `vault.write` can create, rotate, or delete entries
+- **Access controlled** — users with `vault.read` (admin, coordinator, developer) can list entries, view audit history, and use a secret by reference (chat BYOK keys, connectors, MCP servers) — but a non-administrator may attach to a connector or MCP server only secrets they created, and cannot change the host, base URL, command or env of one that holds someone else's secret (403 `SECRET_BINDING_FORBIDDEN`; ask an administrator); only `vault.reveal` — administrators only — can see a secret's plaintext; only `vault.write` can create, rotate, or delete entries
 - **Audit logged** — every reveal attempt (`vault.reveal`, with `outcome` `granted`, `denied` or `not_found` — never the value), create, rotate, and delete is recorded in the audit trail with `source: "vault_ui"` metadata
 
 ### Using the Vault
