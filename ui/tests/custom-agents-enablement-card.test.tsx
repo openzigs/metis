@@ -181,14 +181,17 @@ describe("<CustomAgentsEnablementCard /> (#85)", () => {
       expect(getProject).toHaveBeenCalledWith("proj-1");
     });
 
-    it("falls back to the active workspace when the project has none", async () => {
+    // PR #408 review — the header's workspace wizard cannot list a project that
+    // has no workspace, so no link beats a link that cannot reach it.
+    it("offers no New agent link for a project with no workspace, whatever the header says", async () => {
       listAgents.mockResolvedValue([]);
       listEnabledAgents.mockResolvedValue([]);
       getProject.mockResolvedValue({ id: "proj-1", workspaceId: null });
       window.localStorage.setItem("metis.activeWorkspaceId", "ws-active");
       renderCard();
-      const link = await screen.findByRole("link", { name: "New agent" });
-      expect(link).toHaveAttribute("href", "/workspaces/ws-active/agents/new");
+      await screen.findByTestId("custom-agents-enablement-empty");
+      await waitFor(() => expect(getProject).toHaveBeenCalled());
+      expect(screen.queryByRole("link", { name: "New agent" })).not.toBeInTheDocument();
     });
 
     it("offers no New agent link when no workspace is known", async () => {
@@ -257,6 +260,30 @@ describe("<CustomAgentsEnablementCard /> (#85)", () => {
       const alert = await screen.findByTestId("ca-delete-error");
       expect(alert).toHaveTextContent("Workspace admin required");
       expect(screen.getByTestId("ca-enablement-row-a1")).toBeInTheDocument();
+    });
+
+    // PR #408 review — the Library scope picker keeps this card mounted.
+    it("clears a delete refusal when the scoped project changes", async () => {
+      listAgents.mockResolvedValue([agent("a1", "Mine")]);
+      listEnabledAgents.mockResolvedValue([]);
+      deleteAgent.mockRejectedValue(new Error("Workspace admin required"));
+      const Wrapper = makeWrapper({});
+      const { rerender } = render(
+        <Wrapper>
+          <CustomAgentsEnablementCard projectId="proj-1" />
+        </Wrapper>,
+      );
+      fireEvent.click(await screen.findByTestId("ca-delete-a1"));
+      const dialog = await screen.findByRole("alertdialog");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+      await screen.findByTestId("ca-delete-error");
+
+      rerender(
+        <Wrapper>
+          <CustomAgentsEnablementCard projectId="proj-2" />
+        </Wrapper>,
+      );
+      await waitFor(() => expect(screen.queryByTestId("ca-delete-error")).not.toBeInTheDocument());
     });
   });
 });

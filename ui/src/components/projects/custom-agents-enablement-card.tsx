@@ -18,7 +18,7 @@
  * wizard) and Delete (behind a confirm) on the agents this project owns. The
  * server's workspace-admin check on `DELETE /custom-agents/:id` still decides.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,7 @@ import { Card } from "@/components/ui/card";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { sdkApi } from "@/lib/sdk-alignment-api";
 import { projectsApi } from "@/lib/projects-api";
+import { queryKeys } from "@/lib/query-keys";
 import type { CustomAgentDto } from "@metis/shared";
 import {
   Dialog,
@@ -44,31 +45,24 @@ interface Props {
 const candidatesKey = (projectId: string) => ["custom-agents", "candidates", projectId] as const;
 const enabledKey = (projectId: string) => ["custom-agents", "enabled", projectId] as const;
 
-/** The header workspace switcher's key (`components/layout/workspace-switcher.tsx`). */
-const ACTIVE_WORKSPACE_KEY = "metis.activeWorkspaceId";
-
-function readActiveWorkspaceId(): string | null {
-  try {
-    return window.localStorage.getItem(ACTIVE_WORKSPACE_KEY);
-  } catch {
-    return null;
-  }
-}
-
 export function CustomAgentsEnablementCard({ projectId }: Props) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<CustomAgentDto | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // The card stays mounted when the Library scope picker changes project, so a
+  // refusal on one project must not linger on the next (PR #408 review).
+  useEffect(() => setDeleteError(null), [projectId]);
 
-  // The wizard lists one workspace's projects, so link to this project's
-  // workspace; fall back to the switcher's active workspace.
+  // The wizard lists only one workspace's projects, so link to THIS project's
+  // workspace. A project with no workspace could not be picked in any wizard,
+  // so no link is offered rather than a wizard that cannot reach it (PR #408
+  // review).
   const project = useQuery({
-    queryKey: ["projects", "detail", projectId],
+    queryKey: queryKeys.projects.detail(projectId),
     queryFn: () => projectsApi.get(projectId),
     enabled: Boolean(projectId),
   });
-  const workspaceId =
-    project.data?.workspaceId ?? (project.isFetched ? readActiveWorkspaceId() : null);
+  const workspaceId = project.data?.workspaceId ?? null;
 
   // Candidate agents: built-ins (shared) + this project's own agents.
   const candidates = useQuery({
