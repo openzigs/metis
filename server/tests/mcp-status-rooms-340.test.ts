@@ -43,6 +43,7 @@ import {
   MCP_STATUS_ADMIN_ROOM,
   MCP_STATUS_ROOM,
   createMcpStatusEmitter,
+  MCP_STATUS_LOOKUP_TIMEOUT_MS,
   mcpStatusOwnerRoom,
   mcpStatusRooms,
   mcpStatusRoomsFor,
@@ -373,5 +374,80 @@ describe("#353 mcp:status — project-scope events reach only users who can acce
     await drain();
     expect(errors).toEqual(["sink down"]);
     expect(emitted).toEqual([`b@${MCP_STATUS_ROOM}`]);
+  });
+
+  describe("#360 a hung project lookup is bounded", () => {
+    afterEach(() => vi.useRealTimers());
+
+    const event = (label: string, scope: "project" | "global") => ({
+      serverId: label,
+      label,
+      scope,
+      projectId: scope === "project" ? "p1" : null,
+      status: "ready" as const,
+      latencyMs: null,
+      failureCount: 0,
+      lastError: null,
+      ts: 0,
+    });
+    const recordingSink = (emitted: string[]) => ({
+      to: (rooms: string[]) => ({
+        emit: (_ev: "mcp:status", e: { label: string }) => {
+          emitted.push(`${e.label}@${rooms.join(",")}`);
+        },
+      }),
+    });
+
+    it("a never-resolving lookup times out to admins only and a later global event is still delivered", async () => {
+      vi.useFakeTimers();
+      const emitted: string[] = [];
+      const errors: string[] = [];
+      const { emit } = createMcpStatusEmitter(
+        recordingSink(emitted),
+        () => new Promise(() => {}),
+        (err, e) => errors.push(`${e.label}:${(err as Error).message}`),
+        { lookupTimeoutMs: 50 },
+      );
+      emit(event("p", "project"));
+      emit(event("g", "global"));
+
+      await vi.advanceTimersByTimeAsync(49);
+      expect(emitted).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(emitted).toEqual([`p@${MCP_STATUS_ADMIN_ROOM}`, `g@${MCP_STATUS_ROOM}`]);
+      expect(errors).toEqual(["p:project lookup timed out after 50ms"]);
+    });
+
+    it("defaults to MCP_STATUS_LOOKUP_TIMEOUT_MS", async () => {
+      vi.useFakeTimers();
+      const emitted: string[] = [];
+      const { emit } = createMcpStatusEmitter(recordingSink(emitted), () => new Promise(() => {}));
+      emit(event("p", "project"));
+      emit(event("g", "global"));
+
+      await vi.advanceTimersByTimeAsync(MCP_STATUS_LOOKUP_TIMEOUT_MS - 1);
+      expect(emitted).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(emitted).toEqual([`p@${MCP_STATUS_ADMIN_ROOM}`, `g@${MCP_STATUS_ROOM}`]);
+    });
+
+    it("a lookup that settles in time routes normally and clears its timer", async () => {
+      vi.useFakeTimers();
+      const emitted: string[] = [];
+      const errors: unknown[] = [];
+      const { emit, drain } = createMcpStatusEmitter(
+        recordingSink(emitted),
+        async () => ({ workspaceId: "w" }),
+        (err) => errors.push(err),
+        { lookupTimeoutMs: 50 },
+      );
+      emit(event("p", "project"));
+      await drain();
+      expect(emitted).toEqual([`p@${mcpStatusWorkspaceRoom("w")},${MCP_STATUS_ADMIN_ROOM}`]);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(errors).toEqual([]);
+    });
   });
 });
