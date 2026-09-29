@@ -12,7 +12,9 @@
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
 import { test, expect, request, type APIRequestContext } from "@playwright/test";
+import { io } from "socket.io-client";
 import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user.js";
 import { LoginPage } from "../pages/login.page.js";
 import { ProjectsPage } from "../pages/project.page.js";
@@ -21,6 +23,7 @@ import { apiBase } from "../fixtures/api-base.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const SAMPLE_REPO_ZIP = path.resolve(__dirname, "..", "fixtures", "sample-repo.zip");
 
 const API_BASE = apiBase();
 
@@ -49,6 +52,142 @@ async function pollUntil<T>(
     await new Promise((resolve) => setTimeout(resolve, interval));
   }
   throw new Error(`pollUntil(${opts.label}) timed out after ${opts.timeoutMs}ms`);
+}
+
+/**
+ * Issue #400 — create an upload (.zip) repo connector on the MOUNTED connectors
+ * route. An upload rather than a GitHub URL: the suite makes no outbound network
+ * calls. A failed create fails the test; nothing downstream is left to guess.
+ */
+async function uploadSampleRepo(
+  api: APIRequestContext,
+  projectId: string,
+  label: string,
+): Promise<string> {
+  const res = await api.post(`/api/projects/${projectId}/connectors/repos/upload`, {
+    multipart: {
+      label,
+      file: {
+        name: "sample-repo.zip",
+        mimeType: "application/zip",
+        buffer: await readFile(SAMPLE_REPO_ZIP),
+      },
+    },
+  });
+  expect(res.status(), `upload connector: ${await res.text()}`).toBe(201);
+  const body = (await res.json()) as ApiEnvelope<{ id: string }>;
+  return body.data.id;
+}
+
+/**
+ * Start a Deep Ingest (#373: `202 { jobId }`). The project's first repo
+ * connector auto-ingests on creation and holds the connector's ingest lease, so
+ * the route answers 409 `INGEST_IN_PROGRESS` until that run ends — retry only
+ * that. Any other status fails the test.
+ */
+async function startDeepIngest(
+  api: APIRequestContext,
+  projectId: string,
+  repoId: string,
+): Promise<string> {
+  const url = `/api/projects/${projectId}/connectors/repos/${repoId}/deep-ingest`;
+  const deadline = Date.now() + 60_000;
+  for (;;) {
+    const res = await api.post(url);
+    if (res.status() === 202) {
+      const body = (await res.json()) as ApiEnvelope<{ jobId: string }>;
+      expect(body.data.jobId, "deep-ingest returns a jobId").toBeTruthy();
+      return body.data.jobId;
+    }
+    const text = await res.text();
+    const retryable = res.status() === 409 && text.includes("INGEST_IN_PROGRESS");
+    if (!retryable || Date.now() > deadline) {
+      throw new Error(`deep-ingest ${url} answered ${res.status()}: ${text}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+interface JobLifecycle {
+  jobId: string;
+  kind: string;
+  status: string;
+  message?: string;
+  error?: string;
+}
+
+/**
+ * Follow a job on the `job:lifecycle` bus until its terminal event. The server
+ * replays the job's last transition on `subscribe:job`, so a job that finished
+ * before we subscribed still resolves.
+ */
+function waitForJobTerminal(token: string, jobId: string, timeoutMs = 90_000) {
+  return new Promise<JobLifecycle>((resolve, reject) => {
+    const socket = io(API_BASE, { path: "/socket.io", transports: ["websocket"], auth: { token } });
+    const done = (fn: () => void) => {
+      clearTimeout(timer);
+      socket.disconnect();
+      fn();
+    };
+    const timer = setTimeout(
+      () => done(() => reject(new Error(`job ${jobId} did not finish within ${timeoutMs}ms`))),
+      timeoutMs,
+    );
+    socket.on("job:lifecycle", (event: JobLifecycle) => {
+      if (event.jobId !== jobId) return;
+      if (event.status === "completed" || event.status === "failed") done(() => resolve(event));
+    });
+    socket.once("connect", () => socket.emit("subscribe:job", { jobId }));
+    socket.once("connect_error", (err) =>
+      done(() => reject(new Error(`socket connect_error: ${err.message}`))),
+    );
+  });
+}
+
+/** Run a Deep Ingest to completion; a failed or missing job fails the test. */
+async function deepIngestToCompletion(
+  api: APIRequestContext,
+  token: string,
+  projectId: string,
+  repoId: string,
+): Promise<JobLifecycle> {
+  const jobId = await startDeepIngest(api, projectId, repoId);
+  const terminal = await waitForJobTerminal(token, jobId);
+  expect(terminal.kind).toBe("repo-ingest");
+  expect(terminal.status, `repo-ingest job: ${terminal.error ?? terminal.message}`).toBe(
+    "completed",
+  );
+  return terminal;
+}
+
+interface SymbolCoverage {
+  totalSymbols: number;
+  matchingSymbols: number;
+  symbolModelCounts: Record<string, number>;
+}
+
+/**
+ * Wait until the project has code symbols AND every one of them carries a
+ * vector at the active embedding model. Symbol embedding runs in the background
+ * after the code graph is written (#797), so it can trail the job's `completed`.
+ */
+async function waitForSymbolEmbeddings(
+  api: APIRequestContext,
+  projectId: string,
+): Promise<SymbolCoverage> {
+  let last: SymbolCoverage | null = null;
+  await expect
+    .poll(
+      async () => {
+        const res = await api.get(`/api/admin/embeddings/projects/${projectId}/coverage`);
+        expect(res.status(), `coverage: ${await res.text()}`).toBe(200);
+        last = ((await res.json()) as ApiEnvelope<SymbolCoverage>).data;
+        return last.totalSymbols > 0 && last.matchingSymbols === last.totalSymbols;
+      },
+      { timeout: 60_000, message: "symbols ingested and all embedded at the active model" },
+    )
+    .toBe(true);
+  return last!;
 }
 
 test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
@@ -95,40 +234,16 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
       }
     });
 
-    await test.step("connect a repo and trigger deep-ingest via API", async () => {
+    await test.step("connect a repo and deep-ingest it to completion", async () => {
       const api = await authedApi(accessToken);
       try {
-        // Create a repository connection pointing to a local fixture
-        const createRes = await api.post(`/api/projects/${projectId}/repos`, {
-          data: {
-            url: "https://github.com/metis-e2e/fixture-ts-repo",
-            name: "fixture-ts-repo",
-            provider: "github",
-          },
-        });
-        // The connection creation may succeed or already exist
-        if (createRes.ok()) {
-          const createBody = (await createRes.json()) as ApiEnvelope<{ id: string }>;
-          const repoId = createBody.data.id;
+        const repoId = await uploadSampleRepo(api, projectId, "fixture-ts-repo");
+        await deepIngestToCompletion(api, accessToken, projectId, repoId);
 
-          // Trigger deep-ingest (code-graph + symbol embeddings)
-          const ingestRes = await api.post(
-            `/api/projects/${projectId}/repos/${repoId}/deep-ingest`,
-          );
-          // Deep-ingest may fail if no real clone is possible in the e2e env;
-          // the test validates the pipeline wiring, not external connectivity.
-          if (ingestRes.ok()) {
-            const ingestBody = (await ingestRes.json()) as ApiEnvelope<{
-              codeGraph: {
-                filesScanned: number;
-                filesParsed: number;
-                symbolsUpserted: number;
-              };
-            }>;
-            // AC: Symbol embeddings computed during ingest
-            expect(ingestBody.data.codeGraph.symbolsUpserted).toBeGreaterThanOrEqual(0);
-          }
-        }
+        // AC #508: the ingest wrote code symbols and embedded every one of them.
+        const coverage = await waitForSymbolEmbeddings(api, projectId);
+        expect(coverage.totalSymbols).toBeGreaterThan(0);
+        expect(coverage.symbolModelCounts[""] ?? 0, "no symbol left pending").toBe(0);
       } finally {
         await api.dispose();
       }
@@ -169,36 +284,25 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
       const projBody = (await projRes.json()) as ApiEnvelope<{ id: string }>;
       const pid = projBody.data.id;
 
-      // Create a repository connection
-      const repoRes = await api.post(`/api/projects/${pid}/repos`, {
-        data: {
-          url: "https://github.com/metis-e2e/fixture-ts-repo",
-          name: "fixture-ts-repo-incr",
-          provider: "github",
-        },
-      });
+      const repoId = await uploadSampleRepo(api, pid, "fixture-ts-repo-incr");
+      await deepIngestToCompletion(api, accessToken, pid, repoId);
+      const before = await waitForSymbolEmbeddings(api, pid);
 
-      if (repoRes.ok()) {
-        const repoBody = (await repoRes.json()) as ApiEnvelope<{ id: string }>;
-        const repoId = repoBody.data.id;
+      // Refresh re-extracts the same archive: every file hashes as unchanged.
+      const refresh = await api.post(
+        `/api/projects/${pid}/connectors/repos/${repoId}/refresh-ingest`,
+      );
+      expect(refresh.status(), `refresh-ingest: ${await refresh.text()}`).toBe(200);
+      const refreshBody = (await refresh.json()) as ApiEnvelope<{
+        codeGraph: { filesParsed: number; filesSkipped: number; symbolsUpserted: number };
+      }>;
+      expect(refreshBody.data.codeGraph.filesParsed).toBe(0);
+      expect(refreshBody.data.codeGraph.symbolsUpserted).toBe(0);
+      expect(refreshBody.data.codeGraph.filesSkipped).toBeGreaterThan(0);
 
-        // First ingest
-        const first = await api.post(`/api/projects/${pid}/repos/${repoId}/deep-ingest`);
-        // Second ingest (refresh) — should be faster/skip unchanged
-        if (first.ok()) {
-          const second = await api.post(`/api/projects/${pid}/repos/${repoId}/refresh-ingest`);
-          if (second.ok()) {
-            const secondBody = (await second.json()) as ApiEnvelope<{
-              codeGraph: {
-                symbolsUpserted: number;
-                filesScanned: number;
-              };
-            }>;
-            // Incremental: on second run with no changes, fewer/zero symbols re-processed
-            expect(secondBody.data.codeGraph).toBeDefined();
-          }
-        }
-      }
+      // The unchanged symbols keep their embeddings.
+      const after = await waitForSymbolEmbeddings(api, pid);
+      expect(after.totalSymbols).toBe(before.totalSymbols);
     } finally {
       await api.dispose();
     }
@@ -291,14 +395,8 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
         const projBody = (await projRes.json()) as ApiEnvelope<{ id: string }>;
         pid = projBody.data.id;
 
-        // Connect a repo to get code graph data
-        await api.post(`/api/projects/${pid}/repos`, {
-          data: {
-            url: "https://github.com/metis-e2e/fixture-ts-repo",
-            name: "fixture-ts-repo-chat",
-            provider: "github",
-          },
-        });
+        // Connect a repo to get code graph data (auto-ingests as the first repo).
+        await uploadSampleRepo(api, pid, "fixture-ts-repo-chat");
       } finally {
         await api.dispose();
       }
