@@ -53,6 +53,52 @@ const SYMLINKS_SUPPORTED = (() => {
   }
 })();
 
+/** The runner, relative to `scripts/`. */
+const RUNNER = "verify-agent-frontmatter.mjs";
+
+/**
+ * Every file under `scripts/` the runner loads: itself plus the transitive
+ * closure of its relative imports, as `/`-separated paths relative to `scripts/`.
+ *
+ * Issue #329 — each fixture below used to `cpSync` the whole of `scripts/lib`
+ * (~90 files) and then `git add -A` it, and that I/O alone timed a `beforeAll`
+ * out on the Windows runner. The fixture only has to run the runner, so it gets
+ * exactly the modules the runner imports. The set is read from the sources rather
+ * than hard-coded, so a new import cannot silently leave a fixture broken; a
+ * missed module would fail every arm loudly with ERR_MODULE_NOT_FOUND.
+ */
+const RUNNER_FILES = (() => {
+  const importPattern = /(?:\bfrom\s*|\bimport\s*\(?\s*)["'](\.{1,2}\/[^"']+)["']/g;
+  /** @type {Set<string>} */
+  const seen = new Set();
+  const queue = [RUNNER];
+  while (queue.length > 0) {
+    const rel = /** @type {string} */ (queue.pop());
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    const source = fs.readFileSync(path.join(scriptsDir, ...rel.split("/")), "utf8");
+    for (const match of source.matchAll(importPattern)) {
+      queue.push(path.posix.normalize(path.posix.join(path.posix.dirname(rel), match[1])));
+    }
+  }
+  return [...seen].sort();
+})();
+
+/**
+ * Install the real runner, and only what it imports, under `<root>/scripts`. The
+ * runner resolves its repo root from its own location, so it has to live inside
+ * the fixture; it is the real thing rather than a stand-in, which could not regress.
+ *
+ * @param {string} root
+ */
+function installRunner(root) {
+  for (const rel of RUNNER_FILES) {
+    const target = path.join(root, "scripts", ...rel.split("/"));
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(path.join(scriptsDir, ...rel.split("/")), target);
+  }
+}
+
 /** @type {string} */
 let fixture;
 
@@ -91,17 +137,7 @@ function runGate() {
 beforeAll(() => {
   fixture = fs.mkdtempSync(path.join(os.tmpdir(), "agents-verify-runner-"));
 
-  // The runner resolves its repo root from its own location, so it has to live
-  // inside the fixture. Copy the real thing rather than a stand-in: a stand-in
-  // could not regress.
-  fs.mkdirSync(path.join(fixture, "scripts"), { recursive: true });
-  fs.copyFileSync(
-    path.join(scriptsDir, "verify-agent-frontmatter.mjs"),
-    path.join(fixture, "scripts", "verify-agent-frontmatter.mjs"),
-  );
-  fs.cpSync(path.join(scriptsDir, "lib"), path.join(fixture, "scripts", "lib"), {
-    recursive: true,
-  });
+  installRunner(fixture);
 
   write(
     `.claude/agents/${AGENT}.md`,
@@ -418,12 +454,7 @@ describe("verify-agent-frontmatter runner: memory index budget (Issue #1206)", (
 
   beforeAll(() => {
     repo = fs.mkdtempSync(path.join(os.tmpdir(), "agents-verify-budget-"));
-    fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
-    fs.copyFileSync(
-      path.join(scriptsDir, "verify-agent-frontmatter.mjs"),
-      path.join(repo, "scripts", "verify-agent-frontmatter.mjs"),
-    );
-    fs.cpSync(path.join(scriptsDir, "lib"), path.join(repo, "scripts", "lib"), { recursive: true });
+    installRunner(repo);
 
     put(
       `.claude/agents/${STORE}.md`,
@@ -869,12 +900,7 @@ describe("verify-agent-frontmatter runner: an unreadable skill body fails closed
 
   beforeAll(() => {
     repo = fs.mkdtempSync(path.join(os.tmpdir(), "agents-verify-body-"));
-    fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
-    fs.copyFileSync(
-      path.join(scriptsDir, "verify-agent-frontmatter.mjs"),
-      path.join(repo, "scripts", "verify-agent-frontmatter.mjs"),
-    );
-    fs.cpSync(path.join(scriptsDir, "lib"), path.join(repo, "scripts", "lib"), { recursive: true });
+    installRunner(repo);
 
     writeAgent(`Invoke the \`/${SKILL}\` skill for the full procedure.`);
     put(
@@ -1088,12 +1114,7 @@ describe("verify-agent-frontmatter runner: the Copilot agent surface (Issue #128
 
   beforeAll(() => {
     repo = fs.mkdtempSync(path.join(os.tmpdir(), "agents-verify-surface-"));
-    fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
-    fs.copyFileSync(
-      path.join(scriptsDir, "verify-agent-frontmatter.mjs"),
-      path.join(repo, "scripts", "verify-agent-frontmatter.mjs"),
-    );
-    fs.cpSync(path.join(scriptsDir, "lib"), path.join(repo, "scripts", "lib"), { recursive: true });
+    installRunner(repo);
 
     baseline();
     put(
