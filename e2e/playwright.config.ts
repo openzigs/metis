@@ -168,6 +168,13 @@ export default defineConfig({
             // 20 req/15 min auth limiter throttles credential stuffing, not
             // e2e flows — raise it so a full-suite run never trips RATE_LIMITED.
             RATE_LIMIT_MAX: process.env.RATE_LIMIT_MAX ?? "100000",
+            // Same reasoning for the per-user `/api/admin` and `/api/mcp`
+            // limiters (60 req / 15 min, server/src/middleware/mcp-admin-rate-limit.ts):
+            // every spec is the one admin user. The production-build UI (#342)
+            // runs the suite fast enough to put >60 admin calls in one window,
+            // which failed token-usage.spec.ts with 429s.
+            ADMIN_RATE_LIMIT_MAX: process.env.ADMIN_RATE_LIMIT_MAX ?? "100000",
+            MCP_RATE_LIMIT_MAX: process.env.MCP_RATE_LIMIT_MAX ?? "100000",
             // #221 — never close an idle keep-alive socket from the server side.
             // Each APIRequestContext pools its sockets in a keep-alive
             // http.Agent (one per context since playwright-core 1.63; one shared

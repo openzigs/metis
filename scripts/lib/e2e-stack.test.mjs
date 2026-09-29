@@ -143,6 +143,21 @@ describe("web server commands", () => {
     expect(config).not.toMatch(/exec next dev/);
   });
 
+  it("raises the per-user admin and MCP limiters, by names the server still reads", () => {
+    // Every spec is the one admin user; at production-build speed the suite put
+    // more than the default 60 admin calls in one 15-minute window (#342).
+    const config = readFileSync(path.join(REPO_ROOT, "e2e", "playwright.config.ts"), "utf8");
+    const limiter = readFileSync(
+      path.join(REPO_ROOT, "server", "src", "middleware", "mcp-admin-rate-limit.ts"),
+      "utf8",
+    );
+    for (const name of ["ADMIN_RATE_LIMIT_MAX", "MCP_RATE_LIMIT_MAX"]) {
+      expect(config).toMatch(new RegExp(`\\b${name}:\\s*process\\.env\\.${name} \\?\\? "100000"`));
+      // A setting the server does not read is #332 again.
+      expect(limiter).toContain(`intFromEnv("${name}"`);
+    }
+  });
+
   it("global-setup.ts asserts the stack was prepared and no longer resets it", () => {
     const setup = readFileSync(path.join(REPO_ROOT, "e2e", "global-setup.ts"), "utf8");
     expect(setup).toMatch(/assertStackPrepared\(/);
