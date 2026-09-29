@@ -13,6 +13,7 @@
  * describe the parsed runtime shape.
  */
 import { z } from "zod";
+import { patchSchemaOf } from "./zod-patch.js";
 
 // ---- Constants -------------------------------------------------------------
 
@@ -41,9 +42,10 @@ export const createStakeholderSchema = z.object({
 export type CreateStakeholderInput = z.infer<typeof createStakeholderSchema>;
 
 /** Partial update — every field optional, but at least one must be present. */
-export const updateStakeholderSchema = createStakeholderSchema
-  .partial()
-  .refine((v) => Object.keys(v).length > 0, { message: "at least one field is required" });
+export const updateStakeholderSchema = patchSchemaOf(createStakeholderSchema).refine(
+  (v) => Object.keys(v).length > 0,
+  { message: "at least one field is required" },
+);
 export type UpdateStakeholderInput = z.infer<typeof updateStakeholderSchema>;
 
 export const stakeholderSchema = z.object({

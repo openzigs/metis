@@ -37,4 +37,43 @@ export default tseslint.config(
       "no-console": "warn",
     },
   },
+  {
+    // #346 — under zod 4 `.partial()` still fills an inner `.default()` for an
+    // absent key, so a PATCH schema built as `createSchema.partial()` overwrote
+    // every defaulted stored field the caller left out (renaming a disabled
+    // trigger re-enabled it). `patchSchemaOf(schema)` from @metis/shared strips
+    // the defaults first and is identical on a default-free schema.
+    files: ["server/src/**/*.ts", "packages/shared/src/**/*.ts"],
+    ignores: ["**/*.test.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "CallExpression[callee.property.name='partial'][arguments.length=0]",
+          message:
+            "Use patchSchemaOf(schema) from @metis/shared instead of .partial(): under zod 4 .partial() still applies inner .default()s, so a PATCH overwrites omitted fields (#346).",
+        },
+      ],
+    },
+  },
+  {
+    // #346 review round 2 — a KEYED `.partial({ k: true })` over a defaulted
+    // key fills it just the same. Route files hold no keyed partial today, so
+    // ban every `.partial(` there. packages/shared keeps its keyed create/
+    // storage partials (none is a PATCH schema); its exported update*/patch*
+    // schemas are guarded by zod-patch.test.ts instead. This block REPLACES the
+    // one above for routes (flat config), so it must match zero-arg calls too.
+    files: ["server/src/routes/**/*.ts"],
+    ignores: ["**/*.test.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "CallExpression[callee.property.name='partial']",
+          message:
+            "Use patchSchemaOf(schema) from @metis/shared instead of .partial() / .partial({...}) in a route: under zod 4 .partial() still applies inner .default()s, so a PATCH overwrites omitted fields (#346).",
+        },
+      ],
+    },
+  },
 );

@@ -18,7 +18,12 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import type { ApiResponse, CompactionEventDto, ModelCatalogResponse } from "@metis/shared";
+import {
+  patchSchemaOf,
+  type ApiResponse,
+  type CompactionEventDto,
+  type ModelCatalogResponse,
+} from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { aiRateLimiter } from "../middleware/ai-rate-limit.js";
 import {
@@ -430,7 +435,7 @@ const createSessionSchema = z.object({
   projectId: z.string().min(1).max(120).optional(),
   projectIds: z.array(z.string().min(1).max(120)).max(50).optional(),
   model: z.string().max(120).optional(),
-  policy: policySchema.partial().optional(),
+  policy: patchSchemaOf(policySchema).optional(),
   providerSecretRef: z.string().max(200).optional(),
   /// Phase 10 — optional Agent persona to bind to this session.
   agentId: z.string().min(1).max(120).optional(),
@@ -445,7 +450,7 @@ const createSessionSchema = z.object({
 
 const updateSessionSchema = z.object({
   title: z.string().min(1).max(200).optional(),
-  policy: policySchema.partial().optional(),
+  policy: patchSchemaOf(policySchema).optional(),
   status: z.enum(["active", "archived", "terminated"]).optional(),
 });
 

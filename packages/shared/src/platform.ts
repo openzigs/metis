@@ -2,6 +2,7 @@
  * MCPServer, Skill, Agent, ScheduledJob, Task schemas.
  */
 import { z } from "zod";
+import { patchSchemaOf } from "./zod-patch.js";
 import {
   DEFAULT_MAX_TASK_ATTEMPTS,
   DEFAULT_TASK_PRIORITY,
@@ -220,7 +221,6 @@ export const mcpRegistryEntrySchema = z
         args: z.array(z.string()).optional(),
         url: z.string().url().optional(),
       })
-      .partial()
       .optional(),
   })
   .passthrough();
@@ -381,7 +381,9 @@ export const createScheduledJobSchema = z.object({
 });
 export type CreateScheduledJobInput = z.infer<typeof createScheduledJobSchema>;
 
-export const updateScheduledJobSchema = createScheduledJobSchema.partial().omit({ key: true });
+// #346 — `patchSchemaOf`, not `.partial()`: zod 4 would fill taskType, payload,
+// enabled and maxAttempts, so renaming a disabled job re-enabled it.
+export const updateScheduledJobSchema = patchSchemaOf(createScheduledJobSchema).omit({ key: true });
 export type UpdateScheduledJobInput = z.infer<typeof updateScheduledJobSchema>;
 
 // ---- Task ------------------------------------------------------------------
