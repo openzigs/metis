@@ -123,6 +123,10 @@ vi.mock("../prisma.js", () => ({
         _max: { createdAt: null },
       })),
     },
+    // #394 — the fingerprint's `lastIndexedAt` backstop; no graph is ever stamped here.
+    codeGraph: {
+      aggregate: vi.fn(async () => ({ _max: { lastIndexedAt: null } })),
+    },
     codeSymbolEmbedding: {
       findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
         embeddingRows
@@ -561,7 +565,7 @@ describe("#797 — a model flip reindexes symbol vectors (#787 phase 2)", () => 
   });
 });
 
-// ---- 6. The 5000-symbol window must not eat vector hits -------------------
+// ---- 6. A partial lexical index must not eat vector hits -----------------
 
 describe("#797 — a vector hit outside the BM25 window is not discarded", () => {
   it("hydrates a symbol the windowed lexical index never returned", async () => {

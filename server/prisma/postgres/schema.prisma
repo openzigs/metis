@@ -3493,6 +3493,8 @@ model CodeSymbol {
   @@index([projectId, kind])
   @@index([projectId, qualifiedName])
   @@index([codeGraphId, filePath])
+  /// #394 — serves the per-query symbol-cache fingerprint (count + max(createdAt)).
+  @@index([projectId, createdAt])
   @@map("code_symbols")
 }
 /// Epic #780 / Issue #797 — durable metadata for one symbol's embedding.

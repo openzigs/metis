@@ -9,12 +9,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const findMany = vi.hoisted(() => vi.fn());
 const aggregate = vi.hoisted(() => vi.fn());
+const graphAggregate = vi.hoisted(() => vi.fn());
 
 vi.mock("../prisma.js", () => ({
-  prisma: { codeSymbol: { findMany, aggregate } },
+  prisma: { codeSymbol: { findMany, aggregate }, codeGraph: { aggregate: graphAggregate } },
 }));
 
-import { BM25Index } from "./hybrid-search.js";
+import { BM25Index, type SearchableSymbol } from "./hybrid-search.js";
 import {
   __resetSymbolIndexCache,
   createDefaultCodeSearcher,
@@ -28,11 +29,20 @@ const fingerprint = (count: number, newest = 1_000) => ({
   _max: { createdAt: new Date(newest) },
 });
 
-beforeEach(() => aggregate.mockResolvedValue(fingerprint(1)));
+/** #394 — the newest `CodeGraph.lastIndexedAt`, the fingerprint's backstop. */
+const indexedAt = (at: number | null = 5_000) => ({
+  _max: { lastIndexedAt: at === null ? null : new Date(at) },
+});
+
+beforeEach(() => {
+  aggregate.mockResolvedValue(fingerprint(1));
+  graphAggregate.mockResolvedValue(indexedAt());
+});
 
 afterEach(() => {
   findMany.mockReset();
   aggregate.mockReset();
+  graphAggregate.mockReset();
   __resetSymbolIndexCache();
   vi.restoreAllMocks();
 });
@@ -149,8 +159,11 @@ describe("#372 — prismaSymbolIndex caches the full symbol set per project", ()
     findMany.mockResolvedValue([sym("s2"), sym("s1")]);
     const symbols = await prismaSymbolIndex.getSymbols("p1");
 
-    expect(() => symbols.push(toSearchableFixture("s3"))).toThrow(TypeError);
-    expect(() => symbols.sort()).toThrow(TypeError);
+    // #394: the type is `readonly` too, so this cast is the only way to reach the
+    // runtime guard — production code cannot mutate it without one.
+    const mutable = symbols as SearchableSymbol[];
+    expect(() => mutable.push(toSearchableFixture("s3"))).toThrow(TypeError);
+    expect(() => mutable.sort()).toThrow(TypeError);
     expect((await prismaSymbolIndex.getSymbols("p1")).map((s) => s.symbolId)).toEqual(["s2", "s1"]);
   });
 
@@ -173,6 +186,78 @@ describe("#372 — prismaSymbolIndex caches the full symbol set per project", ()
     const after = await prismaSymbolIndex.getSymbols("p1");
 
     expect(after.map((s) => s.symbolId)).toEqual(["s1"]);
+  });
+
+  it("#394: reloads when an ingest finishes although count and newest createdAt did not move", async () => {
+    // A delete-k/create-k re-parse whose new rows carry the old max(createdAt)
+    // (clock skew, concurrent Postgres ingests, an explicit createdAt).
+    findMany.mockResolvedValueOnce([sym("s1")]).mockResolvedValueOnce([sym("s2")]);
+    graphAggregate.mockResolvedValueOnce(indexedAt(5_000));
+    await prismaSymbolIndex.getSymbols("p1");
+    graphAggregate.mockResolvedValueOnce(indexedAt(6_000));
+    const after = await prismaSymbolIndex.getSymbols("p1");
+
+    expect(after.map((s) => s.symbolId)).toEqual(["s2"]);
+    expect(findMany).toHaveBeenCalledTimes(2);
+    expect(graphAggregate).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { projectId: "p1" } }),
+    );
+  });
+
+  it("#394: caches a project whose code graph was never stamped (no lastIndexedAt)", async () => {
+    graphAggregate.mockResolvedValue(indexedAt(null));
+    findMany.mockResolvedValue([sym("s1")]);
+    const first = await prismaSymbolIndex.getSymbols("p1");
+
+    expect(await prismaSymbolIndex.getSymbols("p1")).toBe(first);
+    expect(findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("#394: concurrent searches on a cold cache share one load", async () => {
+    const releases: Array<(rows: ReturnType<typeof sym>[]) => void> = [];
+    findMany.mockImplementation(
+      () => new Promise<ReturnType<typeof sym>[]>((resolve) => releases.push(resolve)),
+    );
+
+    const a = prismaSymbolIndex.getSymbols("p1");
+    const b = prismaSymbolIndex.getSymbols("p1");
+    // Let both reach the load before any of it resolves.
+    await vi.waitFor(() => expect(releases.length).toBeGreaterThan(0));
+    await new Promise((r) => setImmediate(r));
+    for (const release of releases) release([sym("s1")]);
+    const [first, second] = await Promise.all([a, b]);
+
+    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(second).toBe(first);
+  });
+
+  it("#394: a concurrent search that sees a changed fingerprint does not reuse the older load", async () => {
+    const releases: Array<(rows: ReturnType<typeof sym>[]) => void> = [];
+    findMany.mockImplementation(
+      () => new Promise<ReturnType<typeof sym>[]>((resolve) => releases.push(resolve)),
+    );
+    aggregate
+      .mockResolvedValueOnce(fingerprint(1, 1_000))
+      .mockResolvedValueOnce(fingerprint(1, 2_000));
+
+    const older = prismaSymbolIndex.getSymbols("p1");
+    const newer = prismaSymbolIndex.getSymbols("p1");
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    releases[0]([sym("old")]);
+    releases[1]([sym("new")]);
+
+    expect((await older).map((s) => s.symbolId)).toEqual(["old"]);
+    expect((await newer).map((s) => s.symbolId)).toEqual(["new"]);
+  });
+
+  it("#394: a failed load is not shared with the next search", async () => {
+    findMany.mockRejectedValueOnce(new Error("db down")).mockResolvedValueOnce([sym("s1")]);
+
+    await expect(prismaSymbolIndex.getSymbols("p1")).rejects.toThrow("db down");
+    const retry = await prismaSymbolIndex.getSymbols("p1");
+
+    expect(retry.map((s) => s.symbolId)).toEqual(["s1"]);
+    expect(findMany).toHaveBeenCalledTimes(2);
   });
 
   it("keeps projects apart", async () => {

@@ -149,8 +149,12 @@ export interface SymbolIndex {
    * #372: {@link HybridCodeSearch} caches the built BM25 index on the IDENTITY of
    * the returned array, so an implementation that returns the same array again
    * must not have mutated it in place — return a new array when the set changes.
+   *
+   * #394: `readonly` because the array may be shared (and frozen, as
+   * `prismaSymbolIndex`'s is) — a caller that sorts or pushes into it must fail
+   * to type-check rather than throw at runtime.
    */
-  getSymbols(projectId: string): Promise<SearchableSymbol[]>;
+  getSymbols(projectId: string): Promise<readonly SearchableSymbol[]>;
   /**
    * Issue #797 — hydrate specific symbols by id.
    *
@@ -240,7 +244,7 @@ export class BM25Index {
   /**
    * Build the index from a set of searchable symbols.
    */
-  build(symbols: SearchableSymbol[]): void {
+  build(symbols: readonly SearchableSymbol[]): void {
     this.documents = [];
     this.docFreqs = new Map();
 
@@ -530,7 +534,7 @@ export class HybridCodeSearch {
    */
   private bm25For(
     allSymbols: readonly SearchableSymbol[],
-    filteredSymbols: SearchableSymbol[],
+    filteredSymbols: readonly SearchableSymbol[],
     projectId: string,
     fileGlob?: string,
     symbolKind?: string,
@@ -571,7 +575,7 @@ export class HybridCodeSearch {
    * Rebuilds the index only when the underlying symbol set changes.
    */
   private computeBm25CacheKey(
-    symbols: SearchableSymbol[],
+    symbols: readonly SearchableSymbol[],
     fileGlob?: string,
     symbolKind?: string,
   ): string {
