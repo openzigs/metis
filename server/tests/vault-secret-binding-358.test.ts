@@ -38,6 +38,12 @@ describe("#358 jiraDestinationChanged", () => {
     expect(jiraDestinationChanged(existing, { tlsRejectUnauthorized: false })).toBe(true);
     expect(jiraDestinationChanged(existing, { tlsCaCert: "PEM" })).toBe(true);
   });
+
+  it("turning TLS verification back ON is stricter, not a new destination", () => {
+    const insecure = { ...existing, tlsRejectUnauthorized: false };
+    expect(jiraDestinationChanged(insecure, { tlsRejectUnauthorized: true })).toBe(false);
+    expect(jiraDestinationChanged(insecure, { tlsRejectUnauthorized: false })).toBe(false);
+  });
 });
 
 describe("#358 testMgmtDestinationChanged", () => {
@@ -70,6 +76,17 @@ describe("#358 testMgmtDestinationChanged", () => {
       true,
     );
     expect(testMgmtDestinationChanged(existing, { tlsConfig: { caCert: "PEM" } })).toBe(true);
+  });
+
+  it("turning TLS verification back ON is stricter, not a new destination", () => {
+    const insecure = { ...existing, tlsConfigJson: JSON.stringify({ rejectUnauthorized: false }) };
+    expect(testMgmtDestinationChanged(insecure, { tlsConfig: { rejectUnauthorized: true } })).toBe(
+      false,
+    );
+    expect(testMgmtDestinationChanged(insecure, { tlsConfig: null })).toBe(false);
+    expect(testMgmtDestinationChanged(insecure, { tlsConfig: { rejectUnauthorized: false } })).toBe(
+      false,
+    );
   });
 
   it("reads an unparseable stored proxy / TLS config as none", () => {

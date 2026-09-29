@@ -278,6 +278,36 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(state.tokensSent).toEqual([{ baseUrl: EVIL, token: OWN_VALUE }]);
       });
 
+      it("caller metadata cannot override the checked secretRef or the other reserved keys", async () => {
+        // PR #392 review: `metadata.secretRef` used to win over the top-level
+        // ref the route checked, so the admin's token reached the caller's host.
+        const body = await batchBody(ref(OWN), EVIL);
+        const smuggledDraft = await draft();
+        const res = await call("post", batches, COORD, {
+          ...body,
+          metadata: {
+            secretRef: ref(FOREIGN),
+            draftIds: [smuggledDraft],
+            additionalLabels: ["smuggled"],
+            milestone: 99,
+            note: "kept",
+          },
+        });
+        // The stubbed network makes the run itself fail; what matters is the token sent.
+        expect(res.status, JSON.stringify(res.body)).not.toBe(403);
+        expect(sent()).not.toContain(FOREIGN_VALUE);
+        expect(state.tokensSent).toEqual([{ baseUrl: EVIL, token: OWN_VALUE }]);
+        const batch = await db.publishBatch.findFirstOrThrow({
+          where: { projectId: PROJ, targetRepo: body.targetRepo },
+        });
+        const meta = JSON.parse(batch.metadata ?? "{}") as Record<string, unknown>;
+        expect(meta.secretRef).toBe(ref(OWN));
+        expect(meta.draftIds).toEqual(body.draftIds);
+        expect(meta.additionalLabels).not.toEqual(["smuggled"]);
+        expect(meta.milestone).not.toBe(99);
+        expect(meta.note).toBe("kept");
+      });
+
       it("public GitHub and dry runs send nothing anywhere new, so they are not refused", async () => {
         const pub = await call("post", batches, COORD, await batchBody(ref(FOREIGN)));
         expect(pub.status, JSON.stringify(pub.body)).not.toBe(403);

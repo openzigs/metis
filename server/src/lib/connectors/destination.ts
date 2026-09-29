@@ -122,8 +122,9 @@ export function repoDestinationChanged(
  * #358 — does a Jira connection PATCH change where its API token is sent?
  * The base URL and proxy choose the peer; turning off certificate checks or
  * supplying a new CA lets a peer on the path impersonate the host. Edition and
- * username change how the token is presented, not to whom. Removing a CA is a
- * stricter check, not a new destination.
+ * username change how the token is presented, not to whom. Removing a CA, or
+ * turning verification back ON, is a stricter check, not a new destination, so
+ * only the verify-to-skip direction counts (PR #392 review).
  */
 export function jiraDestinationChanged(
   existing: { baseUrl: string; proxyUrl: string | null; tlsRejectUnauthorized: boolean },
@@ -137,8 +138,7 @@ export function jiraDestinationChanged(
   return (
     (input.baseUrl !== undefined && input.baseUrl !== existing.baseUrl) ||
     (input.proxyUrl !== undefined && (input.proxyUrl ?? null) !== existing.proxyUrl) ||
-    (input.tlsRejectUnauthorized !== undefined &&
-      input.tlsRejectUnauthorized !== existing.tlsRejectUnauthorized) ||
+    (input.tlsRejectUnauthorized === false && existing.tlsRejectUnauthorized) ||
     Boolean(input.tlsCaCert)
   );
 }
@@ -164,7 +164,7 @@ export function testMgmtDestinationChanged(
       : null;
     const rejectBefore = before?.rejectUnauthorized ?? true;
     const rejectAfter = input.tlsConfig?.rejectUnauthorized ?? true;
-    if (rejectBefore !== rejectAfter) return true;
+    if (rejectBefore && !rejectAfter) return true;
   }
   return false;
 }

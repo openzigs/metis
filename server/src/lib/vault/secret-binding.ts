@@ -96,6 +96,13 @@ function reaches(ref: string, row: { id: string; name: string }): boolean {
  * `global:<label>` also reaches a bare-named row `label` (its scope defaults to
  * global), so both suffix and bare-name candidates are included; `reaches`
  * then refines in memory. An over-broad filter costs rows, never correctness.
+ *
+ * The superset claim does not depend on how Prisma escapes `endsWith`: an
+ * unescaped LIKE `%` or `_` only widens the match, and the one character that
+ * could narrow it (a `\`, Postgres's default LIKE escape) cannot occur in a
+ * reachable label — vault names are `[a-zA-Z0-9_.\-/]` (`createSecretSchema`)
+ * and connector labels `[A-Za-z0-9 _.\-]`, so a ref containing `\` reaches no
+ * row by label in `reaches` either (PR #392 review).
  */
 function candidateFilters(ref: string): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [

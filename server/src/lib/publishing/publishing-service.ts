@@ -242,12 +242,15 @@ export async function createBatch(opts: CreateBatchOptions): Promise<SharedPubli
       status: "pending",
       startedById: actorId,
       totalDrafts: input.draftIds.length,
+      // Caller metadata is spread FIRST so the reserved keys always win: the
+      // route checks `input.secretRef` (#358), and execute/archive read
+      // `meta.secretRef` / `meta.draftIds` back from here (PR #392 review).
       metadata: JSON.stringify({
+        ...(input.metadata ?? {}),
         draftIds: input.draftIds,
         additionalLabels: input.additionalLabels,
         milestone: input.milestone,
         secretRef: input.secretRef ?? null,
-        ...(input.metadata ?? {}),
       }),
     },
   });
