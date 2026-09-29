@@ -147,6 +147,45 @@ describe("PublishingPage — analysis picker", () => {
     );
   });
 
+  // PR #404 panel — a rejected approval is final, so the link is to a new run.
+  it("#362 — a Generate blocked by a rejected approval offers a re-run, not approvals", async () => {
+    generateMock.mockRejectedValue(
+      new ApiError(
+        400,
+        "analysis has no requirements — 1 approval(s) were rejected, so this run cannot produce requirements; re-run the analysis",
+        "APPROVALS_BLOCKING",
+        {
+          analysisId: "analysis_abcdef123456",
+          pendingCount: 0,
+          rejectedCount: 1,
+          action: "rerun",
+          resolveUrl: "/projects/proj_1/analysis",
+        },
+      ),
+    );
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <PublishingPage />
+      </Wrapper>,
+    );
+    const select = await screen.findByTestId("publish-analysis-select");
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /completed/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(select, { target: { value: "analysis_abcdef123456" } });
+    fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "acme" } });
+    fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "app" } });
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+
+    await screen.findByTestId("generate-error");
+    expect(screen.getByRole("link", { name: "Re-run analysis" })).toHaveAttribute(
+      "href",
+      "/projects/proj_1/analysis",
+    );
+    expect(screen.queryByRole("link", { name: "Resolve approvals" })).not.toBeInTheDocument();
+  });
+
   it("#362 — never follows a resolve link that is not an in-app path", async () => {
     generateMock.mockRejectedValue(
       new ApiError(400, "blocked", "APPROVALS_BLOCKING", { resolveUrl: "https://evil.example/" }),

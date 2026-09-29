@@ -71,20 +71,36 @@ async function noRequirementsError(projectId: string, analysisId: string): Promi
       "analysis has no requirements — run analysis first",
     );
   }
-  const parts: string[] = [];
-  if (gate.pendingCount > 0) parts.push(`${gate.pendingCount} pending`);
-  if (gate.rejectedCount > 0) parts.push(`${gate.rejectedCount} rejected`);
-  const resolveUrl = `/projects/${encodeURIComponent(projectId)}/analysis?analysisId=${encodeURIComponent(analysisId)}#approvals`;
+  const analysisUrl = `/projects/${encodeURIComponent(projectId)}/analysis`;
+  // A rejection is final (a reviewed approval cannot be re-reviewed, 409
+  // APPROVAL_ALREADY_REVIEWED), so a run holding one can never produce
+  // requirements: the remedy is a new run, not the approvals panel (PR #404 panel).
+  if (gate.rejectedCount > 0) {
+    return new PublishError(
+      400,
+      "APPROVALS_BLOCKING",
+      `analysis has no requirements — ${gate.rejectedCount} approval(s) were rejected, so this run cannot produce requirements; re-run the analysis`,
+      false,
+      {
+        analysisId,
+        pendingCount: gate.pendingCount,
+        rejectedCount: gate.rejectedCount,
+        action: "rerun",
+        resolveUrl: analysisUrl,
+      },
+    );
+  }
   return new PublishError(
     400,
     "APPROVALS_BLOCKING",
-    `analysis has no requirements yet — the approval gate is holding them (${parts.join(", ")} approval(s)); resolve them on the Analysis page`,
+    `analysis has no requirements yet — the approval gate is holding them (${gate.pendingCount} pending approval(s)); resolve them on the Analysis page`,
     false,
     {
       analysisId,
       pendingCount: gate.pendingCount,
       rejectedCount: gate.rejectedCount,
-      resolveUrl,
+      action: "resolve",
+      resolveUrl: `${analysisUrl}?analysisId=${encodeURIComponent(analysisId)}#approvals`,
     },
   );
 }

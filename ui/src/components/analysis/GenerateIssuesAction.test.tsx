@@ -42,11 +42,14 @@ describe("GenerateIssuesAction (#362)", () => {
     );
   });
 
-  it("names rejected approvals alongside pending ones", () => {
+  // PR #404 panel — a rejection is final, so the remedy is a new run; sending
+  // the user to the approvals panel would be a dead end.
+  it("says a run with a rejected approval must be re-run, with no approvals link", () => {
     renderAction({ ticketStatus: { allowed: false, pendingCount: 1, rejectedCount: 2 } });
     expect(screen.getByTestId("generate-issues-reason")).toHaveTextContent(
-      "1 pending, 2 rejected approval(s)",
+      "2 approval(s) were rejected, so this run can't produce requirements. Re-run the analysis",
     );
+    expect(screen.queryByRole("link", { name: "Go to approvals" })).not.toBeInTheDocument();
   });
 
   it("explains the gate even on a run with no findings", () => {

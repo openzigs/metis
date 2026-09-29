@@ -65,11 +65,10 @@ export function GenerateIssuesAction({
   const gateUnknown = approvalsState !== "ready";
   if (!gated && !gateUnknown && !hasFindings) return null;
 
-  const outstanding: string[] = [];
-  if (gated && ticketStatus.pendingCount > 0)
-    outstanding.push(`${ticketStatus.pendingCount} pending`);
-  if (gated && ticketStatus.rejectedCount > 0)
-    outstanding.push(`${ticketStatus.rejectedCount} rejected`);
+  // A rejected approval is final (it cannot be re-reviewed), so a run holding
+  // one can never produce requirements: say so, and point at a new run rather
+  // than the approvals panel (PR #404 panel).
+  const rejected = gated && ticketStatus.rejectedCount > 0;
 
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
@@ -98,10 +97,12 @@ export function GenerateIssuesAction({
           ) : (
             "Checking approvals…"
           )
+        ) : rejected ? (
+          `${ticketStatus.rejectedCount} approval(s) were rejected, so this run can't produce requirements. Re-run the analysis to generate issues.`
         ) : gated ? (
           <>
-            {outstanding.length > 0
-              ? `${outstanding.join(", ")} approval(s) must be resolved before requirements exist.`
+            {ticketStatus.pendingCount > 0
+              ? `${ticketStatus.pendingCount} pending approval(s) must be resolved before requirements exist.`
               : "Approvals must be resolved before requirements exist."}{" "}
             <a href="#approvals" className="font-medium underline">
               Go to approvals

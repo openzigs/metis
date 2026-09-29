@@ -420,6 +420,7 @@ describe("generateDrafts", () => {
           analysisId: "analysis_1",
           pendingCount: 3,
           rejectedCount: 0,
+          action: "resolve",
           resolveUrl: "/projects/proj_1/analysis?analysisId=analysis_1#approvals",
         },
       });
@@ -429,22 +430,30 @@ describe("generateDrafts", () => {
       expect(message).toContain("Analysis page");
       expect(message).not.toContain("run analysis first");
 
-      // A rejected checkpoint also holds the gate and is named alongside.
+      // PR #404 panel — a rejection is final, so any rejected checkpoint means
+      // this run can never produce requirements: point at a new run, not at the
+      // approvals panel, even while other approvals are still pending.
       approvalCounts.rejected = 1;
-      await expect(
-        generateDrafts({
-          projectId: "proj_1",
-          analysisId: "analysis_1",
-          targetOwner: "acme",
-          targetRepo: "metis",
-        }),
-      ).rejects.toMatchObject({
+      const rejected = await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      }).catch((e: unknown) => e);
+      expect(rejected).toMatchObject({
         code: "APPROVALS_BLOCKING",
-        message: expect.stringContaining("3 pending, 1 rejected"),
-        details: { pendingCount: 3, rejectedCount: 1 },
+        message: expect.stringContaining("1 approval(s) were rejected"),
+        details: {
+          pendingCount: 3,
+          rejectedCount: 1,
+          action: "rerun",
+          resolveUrl: "/projects/proj_1/analysis",
+        },
       });
+      expect((rejected as PublishError).message).toContain("re-run the analysis");
+      expect((rejected as PublishError).message).not.toContain("resolve them");
 
-      // Rejected alone still blocks.
+      // Rejected alone: the same re-run remedy.
       approvalCounts.pending = 0;
       await expect(
         generateDrafts({
@@ -455,7 +464,7 @@ describe("generateDrafts", () => {
         }),
       ).rejects.toMatchObject({
         code: "APPROVALS_BLOCKING",
-        message: expect.stringContaining("(1 rejected approval(s))"),
+        details: { action: "rerun" },
       });
     } finally {
       requirements.push(
