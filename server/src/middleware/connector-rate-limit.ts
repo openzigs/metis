@@ -132,9 +132,10 @@ export const suggestedConnectorCredentialReadRateLimiter: RequestHandler = (req,
 /**
  * #344 — connector create/update limiter. `POST`/`PATCH` on repo and DB
  * connectors now resolve vault secrets to check who may bind them, so they are
- * rate-limited per user like the other connector operations. Exported as the
- * `rateLimit()` handler itself (not wrapped) so static analysis (CodeQL
- * `js/missing-rate-limiting`) can see it; the cap is read per request
+ * rate-limited like the other connector operations. Mounted BEFORE the route's
+ * `requireAuth` — the shape CodeQL's `js/missing-rate-limiting` recognises (as
+ * `vault-reveal-rate-limit.ts`); the router-level `requireAuth` has already set
+ * `req.user`, so it is still keyed per user. The cap is read per request
  * (`CONNECTOR_WRITE_LIMIT_MAX`, default 60/window; 10,000 under NODE_ENV=test).
  */
 export const connectorWriteRateLimiter: RequestHandler = rateLimit({

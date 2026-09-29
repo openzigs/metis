@@ -337,8 +337,8 @@ export function connectorsRouter(): Router {
   });
   r.post(
     "/repos",
-    requireAuth,
     connectorWriteRateLimiter,
+    requireAuth,
     requirePermission("connector.write"),
     async (req, res) => {
       const parsed = createRepoConnectorSchema.safeParse(req.body ?? {});
@@ -481,8 +481,8 @@ export function connectorsRouter(): Router {
   });
   r.patch(
     "/repos/:id",
-    requireAuth,
     connectorWriteRateLimiter,
+    requireAuth,
     requirePermission("connector.write"),
     async (req, res) => {
       const parsed = updateRepoConnectorSchema.safeParse({
@@ -896,8 +896,8 @@ export function connectorsRouter(): Router {
   });
   r.post(
     "/dbs",
-    requireAuth,
     connectorWriteRateLimiter,
+    requireAuth,
     requirePermission("connector.write"),
     async (req, res) => {
       const parsed = createDatabaseConnectorSchema.safeParse(req.body ?? {});
@@ -924,8 +924,8 @@ export function connectorsRouter(): Router {
   });
   r.patch(
     "/dbs/:id",
-    requireAuth,
     connectorWriteRateLimiter,
+    requireAuth,
     requirePermission("connector.write"),
     async (req, res) => {
       const parsed = updateDatabaseConnectorSchema.safeParse({
