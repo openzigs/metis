@@ -526,6 +526,23 @@ describe("HybridCodeSearch", () => {
       expect(buildSpy).toHaveBeenCalledTimes(10);
       buildSpy.mockRestore();
     });
+
+    it("never lets two different filter pairs share an index ('|' may appear in a glob)", async () => {
+      // `a|b` + no kind and `a` + kind `b|` joined naively with '|' are both "a|b|".
+      symbolIndex.symbols = [
+        makeSearchableSymbol({ symbolId: "s1", name: "alpha", filePath: "a|b" }),
+        makeSearchableSymbol({ symbolId: "s2", name: "alpha", filePath: "a", kind: "b|" }),
+      ];
+      const run = (fileGlob: string, symbolKind?: string) =>
+        new HybridCodeSearch(vectorStore, symbolIndex, embedService).search("alpha", "p", {
+          ...bm25Only,
+          fileGlob,
+          symbolKind,
+        });
+
+      expect((await run("a|b")).map((r) => r.symbolId)).toEqual(["s1"]);
+      expect((await run("a", "b|")).map((r) => r.symbolId)).toEqual(["s2"]);
+    });
   });
 });
 

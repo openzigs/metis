@@ -545,7 +545,9 @@ export class HybridCodeSearch {
       byFilter = new Map();
       byArray.set(allSymbols, byFilter);
     }
-    const filterKey = `${fileGlob ?? ""}|${symbolKind ?? ""}`;
+    // JSON, not a '|' join: '|' is a legal glob character, so a join lets two
+    // different pairs ("a|b" + none, "a" + "b|") collide on one index.
+    const filterKey = JSON.stringify([fileGlob ?? "", symbolKind ?? ""]);
     const shared = byFilter.get(filterKey);
     if (shared) return shared;
 
@@ -582,8 +584,8 @@ export class HybridCodeSearch {
   }
 
   /**
-   * Issue #797 — pull vector-hit symbols the windowed lexical index did not
-   * return, and add them to `symbolMap` if they satisfy the active pre-filters.
+   * Issue #797 — pull vector-hit symbols the lexical index did not return (a
+   * partial {@link SymbolIndex}; production's has been complete since #372), and add them to `symbolMap` if they satisfy the active pre-filters.
    * No-op when the index cannot hydrate (test fixtures, the eval harness) or
    * every hit is already present.
    */
@@ -608,7 +610,7 @@ export class HybridCodeSearch {
       // side effect of a vector hit.
       symbolMap.set(sym.symbolId, sym);
     }
-    log.debug("hydrated vector hits outside the BM25 window", {
+    log.debug("hydrated vector hits missing from the lexical index", {
       projectId,
       missing: missing.length,
       hydrated: extra.length,
@@ -676,15 +678,15 @@ export class HybridCodeSearch {
             limit * 2, // fetch more to allow for filtering
           );
 
-          // Issue #797 — HYDRATE hits that fall outside the BM25 window.
+          // Issue #797 — HYDRATE hits the lexical index did not return.
           //
-          // `symbolMap` is built from the (windowed) lexical index, and the filter
-          // below drops anything missing from it. On a repo with more symbols than
-          // the window holds, that quietly threw away correct vector hits — the
-          // exact hits the semantic channel exists to find, discarded after the
-          // embed + search had already been paid for. Fetching the missing ids by
-          // primary key costs one indexed query and makes the window a property of
-          // the lexical index alone.
+          // `symbolMap` is built from the lexical index, and the filter below
+          // drops anything missing from it. When production's index was windowed
+          // to 5,000 symbols (removed in #372), that quietly threw away correct
+          // vector hits after the embed + search had already been paid for.
+          // Fetching the missing ids by primary key costs one indexed query and
+          // keeps any partial index's coverage a property of the lexical channel
+          // alone.
           await this.hydrateMissing(
             projectId,
             vectorHits.map((h) => h.metadata.symbolId),

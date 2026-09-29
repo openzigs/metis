@@ -126,6 +126,14 @@ describe("createDefaultCodeSearcher", () => {
   });
 });
 
+const toSearchableFixture = (id: string) => ({
+  symbolId: id,
+  name: id,
+  qualifiedName: id,
+  kind: "function",
+  filePath: `src/${id}.ts`,
+});
+
 describe("#372 — prismaSymbolIndex caches the full symbol set per project", () => {
   it("returns the same array without reloading while the fingerprint is unchanged", async () => {
     findMany.mockResolvedValue([sym("s1")]);
@@ -135,6 +143,15 @@ describe("#372 — prismaSymbolIndex caches the full symbol set per project", ()
     expect(second).toBe(first);
     expect(findMany).toHaveBeenCalledTimes(1);
     expect(aggregate).toHaveBeenCalledWith(expect.objectContaining({ where: { projectId: "p1" } }));
+  });
+
+  it("hands out a frozen array, so no caller can corrupt the shared caches", async () => {
+    findMany.mockResolvedValue([sym("s2"), sym("s1")]);
+    const symbols = await prismaSymbolIndex.getSymbols("p1");
+
+    expect(() => symbols.push(toSearchableFixture("s3"))).toThrow(TypeError);
+    expect(() => symbols.sort()).toThrow(TypeError);
+    expect((await prismaSymbolIndex.getSymbols("p1")).map((s) => s.symbolId)).toEqual(["s2", "s1"]);
   });
 
   it("reloads when a file is re-parsed (same count, newest createdAt moves)", async () => {

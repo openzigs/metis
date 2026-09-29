@@ -42,15 +42,17 @@ import type { EmbedService } from "./symbol-embeddings.js";
 
 /**
  * #372 — projects whose full lexical symbol set is held in memory (LRU). Each entry
- * also keeps its BM25 index alive through `HybridCodeSearch`'s weak cache; measured
- * at ~27 MB of retained heap for a 24k-symbol project, so four bound the worst case
- * near 110 MB.
+ * also keeps its BM25 indexes alive through `HybridCodeSearch`'s weak cache; the
+ * unfiltered one was measured at ~27 MB of retained heap for a 24k-symbol project,
+ * so four bound the worst case near 110 MB. That figure counts one index per
+ * project: each distinct `fileGlob`/`symbolKind` pair adds another (up to 8 per
+ * array), but no production caller passes a filter today.
  */
 const MAX_CACHED_PROJECTS = 4;
 
 interface CachedSymbols {
   fingerprint: string;
-  symbols: SearchableSymbol[];
+  symbols: readonly SearchableSymbol[];
 }
 
 /** Insertion order is recency order: the first key is the least recently used. */
@@ -123,7 +125,7 @@ export const prismaSymbolIndex: SymbolIndex = {
       // Refresh recency for the LRU.
       symbolCache.delete(projectId);
       symbolCache.set(projectId, cached);
-      return cached.symbols;
+      return cached.symbols as SearchableSymbol[];
     }
 
     const rows = await prisma.codeSymbol.findMany({
@@ -132,13 +134,15 @@ export const prismaSymbolIndex: SymbolIndex = {
       // Stable order keeps BM25 tie-breaks reproducible across queries.
       orderBy: { id: "asc" },
     });
-    const symbols = rows.map(toSearchable);
+    // Frozen: every caller shares this array, and the shared BM25 cache is keyed on
+    // its identity, so a caller that sorted or pushed into it would corrupt both.
+    const symbols = Object.freeze(rows.map(toSearchable));
     symbolCache.delete(projectId);
     if (symbolCache.size >= MAX_CACHED_PROJECTS) {
       symbolCache.delete(symbolCache.keys().next().value as string);
     }
     symbolCache.set(projectId, { fingerprint, symbols });
-    return symbols;
+    return symbols as SearchableSymbol[];
   },
 
   async getSymbolsByIds(projectId: string, symbolIds: string[]): Promise<SearchableSymbol[]> {
