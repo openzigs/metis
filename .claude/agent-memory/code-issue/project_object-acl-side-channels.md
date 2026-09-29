@@ -13,4 +13,4 @@ Making an object owner-only on its by-id and list routes is not enough. On PR #3
 
 **Why:** a registry, a broadcast room or a uniqueness index is keyed per process or per table, not per owner. So it still discloses the object after every route check passes.
 
-**How to apply:** when you scope an object to a user or project, grep for every consumer of its identifier and label: registries, `io.to(` emits, error strings and unique constraints. Give each one the same filter, or file an issue for it. Project-scope `mcp:status` events are still broadcast to every `mcp.manage` holder in every workspace (pre-existing, not fixed in #349). Links: [[change-analysis-cross-project-idor]].
+**How to apply:** when you scope an object to a user or project, grep for every consumer of its identifier and label: registries, `io.to(` emits, error strings and unique constraints. Give each one the same filter, or file an issue for it. Project-scope `mcp:status` events were fixed in #353 (PR #356): they go to per-workspace rooms. Links: [[change-analysis-cross-project-idor]].
