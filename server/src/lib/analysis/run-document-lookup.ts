@@ -77,8 +77,9 @@ export type DocumentQueryPrisma = Pick<PrismaClient, "document">;
 /**
  * #401 — the two Prisma queries behind {@link createRunDocumentLookup}, both
  * scoped to `projectId` and to live (not soft-deleted) documents. Extracted so
- * a test can assert the `where` shape: the orchestrator's integration mock
- * ignores `where`, so a dropped scope would otherwise stay green.
+ * the query shape has one owner and a direct unit test. The pipeline test
+ * (`agentic-findings-repair-pipeline.test.ts`) also asserts both `where`
+ * shapes end to end; this is a second guard, not the only one.
  */
 export function projectDocumentQueries(
   prisma: DocumentQueryPrisma,

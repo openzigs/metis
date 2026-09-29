@@ -179,9 +179,10 @@ describe("createRunDocumentLookup", () => {
 });
 
 /**
- * #401 — the orchestrator's integration Prisma mock ignores `where`, so these
- * assert the query shape directly: dropping the project scope or the
- * soft-delete filter from either query must go red here.
+ * #401 — a direct unit-level check of the query shape, alongside the
+ * end-to-end assertions in `agentic-findings-repair-pipeline.test.ts`:
+ * dropping the project scope or the soft-delete filter from either query must
+ * go red here as well as there.
  */
 describe("projectDocumentQueries", () => {
   function fakePrisma(rows: unknown[]) {
