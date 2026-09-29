@@ -449,5 +449,59 @@ describe("#353 mcp:status — project-scope events reach only users who can acce
       await vi.advanceTimersByTimeAsync(100);
       expect(errors).toEqual([]);
     });
+
+    // PR #377 review — a lookup that throws synchronously used to leave the
+    // timeout armed; it then rejected with no handler, which by default crashes
+    // Node. It must be handled like any failed lookup and leave no timer behind.
+    it("a lookup that throws synchronously leaves no timer and no unhandled rejection", async () => {
+      vi.useFakeTimers();
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        const emitted: string[] = [];
+        const errors: string[] = [];
+        const { emit, drain } = createMcpStatusEmitter(
+          recordingSink(emitted),
+          () => {
+            throw new Error("boom");
+          },
+          (err, e) => errors.push(`${e.label}:${(err as Error).message}`),
+          { lookupTimeoutMs: 50 },
+        );
+        emit(event("p", "project"));
+        await drain();
+        expect(emitted).toEqual([`p@${MCP_STATUS_ADMIN_ROOM}`]);
+        expect(errors).toEqual(["p:boom"]);
+        expect(vi.getTimerCount()).toBe(0);
+        await vi.advanceTimersByTimeAsync(100);
+        vi.useRealTimers();
+        await new Promise((r) => setImmediate(r));
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+      }
+    });
+
+    it("ignores a non-positive or non-finite lookupTimeoutMs and uses the default", async () => {
+      for (const bad of [0, -1, Number.NaN]) {
+        vi.useFakeTimers();
+        const emitted: string[] = [];
+        const { emit } = createMcpStatusEmitter(
+          recordingSink(emitted),
+          () => new Promise(() => {}),
+          undefined,
+          {
+            lookupTimeoutMs: bad,
+          },
+        );
+        emit(event("p", "project"));
+        await vi.advanceTimersByTimeAsync(10);
+        expect(emitted).toEqual([]);
+        await vi.advanceTimersByTimeAsync(MCP_STATUS_LOOKUP_TIMEOUT_MS);
+        expect(emitted).toEqual([`p@${MCP_STATUS_ADMIN_ROOM}`]);
+        vi.useRealTimers();
+      }
+    });
   });
 });

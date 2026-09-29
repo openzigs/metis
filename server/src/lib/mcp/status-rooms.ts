@@ -102,12 +102,20 @@ export function createMcpStatusEmitter(
   sink: MCPStatusSink,
   lookupProject: ProjectWorkspaceLookup,
   onLookupError: (err: unknown, event: MCPStatusEvent) => void = () => {},
-  { lookupTimeoutMs = MCP_STATUS_LOOKUP_TIMEOUT_MS }: { lookupTimeoutMs?: number } = {},
+  { lookupTimeoutMs: requestedTimeoutMs }: { lookupTimeoutMs?: number } = {},
 ): {
   emit: (event: MCPStatusEvent, config?: MCPServerConfig) => void;
   drain: () => Promise<void>;
 } {
   let tail: Promise<void> = Promise.resolve();
+  // 0, a negative or a non-finite value would fire at once and send every
+  // project event to admins only; fall back to the default instead.
+  const lookupTimeoutMs =
+    requestedTimeoutMs !== undefined &&
+    Number.isFinite(requestedTimeoutMs) &&
+    requestedTimeoutMs > 0
+      ? requestedTimeoutMs
+      : MCP_STATUS_LOOKUP_TIMEOUT_MS;
 
   const boundedLookup = (projectId: string): ReturnType<ProjectWorkspaceLookup> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -119,7 +127,11 @@ export function createMcpStatusEmitter(
       // A pending lookup must not keep the process alive on shutdown.
       timer.unref?.();
     });
-    return Promise.race([lookupProject(projectId), timeout]).finally(() => clearTimeout(timer));
+    // Deferred through .then so a lookup that throws synchronously becomes a
+    // rejection the race settles on; the timer is then cleared, not left to
+    // reject with no handler (PR #377 review).
+    const lookup = Promise.resolve().then(() => lookupProject(projectId));
+    return Promise.race([lookup, timeout]).finally(() => clearTimeout(timer));
   };
 
   const audienceFor = async (
