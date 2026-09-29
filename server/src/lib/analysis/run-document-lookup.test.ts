@@ -4,7 +4,12 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { repairFindingsAnswerWithDocuments } from "./findings-repair.js";
-import { MAX_DOCUMENT_ID_LOOKUP, createRunDocumentLookup } from "./run-document-lookup.js";
+import {
+  MAX_DOCUMENT_ID_LOOKUP,
+  createRunDocumentLookup,
+  projectDocumentQueries,
+  type DocumentQueryPrisma,
+} from "./run-document-lookup.js";
 
 const KNOWN = [
   { id: "doc_loanterms_0001", filename: "Loan Terms.md" },
@@ -170,5 +175,50 @@ describe("createRunDocumentLookup", () => {
     expect(value).toEqual(cited);
     expect(repairs).toEqual([]);
     expect(q.listDocuments).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * #401 — the orchestrator's integration Prisma mock ignores `where`, so these
+ * assert the query shape directly: dropping the project scope or the
+ * soft-delete filter from either query must go red here.
+ */
+describe("projectDocumentQueries", () => {
+  function fakePrisma(rows: unknown[]) {
+    const findMany = vi.fn(async (_args: unknown) => rows);
+    return { prisma: { document: { findMany } } as unknown as DocumentQueryPrisma, findMany };
+  }
+
+  it("lists only the project's live documents", async () => {
+    const { prisma, findMany } = fakePrisma(KNOWN);
+
+    const docs = await projectDocumentQueries(prisma, "proj_a").listDocuments();
+
+    expect(docs).toEqual(KNOWN);
+    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(findMany).toHaveBeenCalledWith({
+      where: { projectId: "proj_a", deletedAt: null },
+      select: { id: true, filename: true },
+    });
+  });
+
+  it("checks ids against the project's live documents only", async () => {
+    const { prisma, findMany } = fakePrisma([{ id: "doc_spec_00000001" }]);
+
+    const found = await projectDocumentQueries(prisma, "proj_a").findDocumentIds([
+      "doc_spec_00000001",
+      "doc_other_project",
+    ]);
+
+    expect(found).toEqual(["doc_spec_00000001"]);
+    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        projectId: "proj_a",
+        deletedAt: null,
+        id: { in: ["doc_spec_00000001", "doc_other_project"] },
+      },
+      select: { id: true },
+    });
   });
 });
