@@ -250,6 +250,127 @@ describe("generateDrafts", () => {
     ]);
   });
 
+  // #369 — a feature draft's title is its dedup key too (`[Type] <requirement
+  // title>`), so two analyses with a same-titled requirement shared one draft:
+  // B overwrote A's body, analysis id and requirement ids while keeping A's
+  // approved/published status, and publishing B then edited A's GitHub issue.
+  it("never merges the feature drafts of two analyses whose requirements share a title", async () => {
+    const opts = { projectId: "proj_1", targetOwner: "acme", targetRepo: "metis" };
+    await generateDrafts({ ...opts, analysisId: "analysis_1" });
+    const featuresA = [...drafts.values()].filter((d) => d.draftType !== "epic");
+    expect(featuresA).toHaveLength(2);
+    for (const f of featuresA) f.status = "published";
+    const snapshotsA = featuresA.map((f) => ({ ...f }));
+
+    const savedId = fakeAnalysis.id;
+    fakeAnalysis.id = "analysis_2";
+    try {
+      const runB = await generateDrafts({ ...opts, analysisId: "analysis_2" });
+      expect(runB.features).toBe(2);
+      expect(runB.upserted).toBe(3);
+      expect(runB.refreshed).toBe(0);
+      // Re-running B refreshes B's own drafts; it mints no fourth set.
+      const rerunB = await generateDrafts({ ...opts, analysisId: "analysis_2" });
+      expect(rerunB.upserted).toBe(0);
+      expect(rerunB.refreshed).toBe(3);
+    } finally {
+      fakeAnalysis.id = savedId;
+    }
+
+    expect(drafts.size).toBe(6);
+    for (const snap of snapshotsA) expect(drafts.get(snap.id)).toEqual(snap);
+    const featuresB = [...drafts.values()].filter(
+      (d) => d.draftType !== "epic" && JSON.parse(d.metadata ?? "{}").analysisId === "analysis_2",
+    );
+    expect(featuresB.map((f) => f.title).sort()).toEqual([
+      "[Feature] Login form (2)",
+      "[Task] Logout button (2)",
+    ]);
+    const hashesA = new Set(featuresA.map((f) => f.dedupHash));
+    for (const f of featuresB) {
+      expect(hashesA.has(f.dedupHash)).toBe(false);
+      expect(f.status).toBe("draft");
+    }
+  });
+
+  // #369 — `claimTitle` is check-then-act; the partial unique index on
+  // (projectId, dedupHash) is what makes the loser of a concurrent claim fail,
+  // and the generator must then re-claim rather than surface a 500.
+  describe("concurrent title claims (unique-index violation)", () => {
+    const opts = { projectId: "proj_1", targetOwner: "acme", targetRepo: "metis" };
+
+    /** Make the next create for `title` lose a race to a row owned by `winner`. */
+    async function loseRaceOn(title: string, winnerAnalysisId: string) {
+      const { prisma } = await import("../src/lib/prisma.js");
+      const create = vi.mocked(prisma.issueDraft.create);
+      const real = create.getMockImplementation()!;
+      create.mockImplementation((async (args: { data: Partial<Draft> }) => {
+        if (args.data.title !== title) return real(args as never);
+        create.mockImplementation(real);
+        // The concurrent generator's row lands first…
+        await real({
+          data: {
+            ...args.data,
+            status: "approved",
+            metadata: JSON.stringify({ analysisId: winnerAnalysisId }),
+          },
+        } as never);
+        // …so ours hits the unique index.
+        throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+      }) as never);
+    }
+
+    it("re-claims the next free title when another analysis wins the race", async () => {
+      await loseRaceOn("[Epic] Apollo — Self-service password reset", "analysis_9");
+      const run = await generateDrafts({ ...opts, analysisId: "analysis_1" });
+      expect(run.epics).toBe(1);
+      const epics = [...drafts.values()].filter((d) => d.draftType === "epic");
+      expect(epics.map((e) => e.title).sort()).toEqual([
+        "[Epic] Apollo — Self-service password reset",
+        "[Epic] Apollo — Self-service password reset (2)",
+      ]);
+      const ours = epics.find((e) => JSON.parse(e.metadata ?? "{}").analysisId === "analysis_1");
+      expect(ours?.title).toBe("[Epic] Apollo — Self-service password reset (2)");
+      // Features name the title the epic actually got, not the one it lost.
+      for (const f of [...drafts.values()].filter((d) => d.draftType !== "epic")) {
+        expect(f.body).toContain(
+          "> Parent epic: **[Epic] Apollo — Self-service password reset (2)**",
+        );
+      }
+    });
+
+    it("refreshes the winner's draft when the same analysis won the race", async () => {
+      await loseRaceOn("[Feature] Login form", "analysis_1");
+      const run = await generateDrafts({ ...opts, analysisId: "analysis_1" });
+      expect(run.refreshed).toBe(1);
+      const logins = [...drafts.values()].filter((d) => d.title.startsWith("[Feature] Login form"));
+      expect(logins).toHaveLength(1);
+      expect(logins[0].status).toBe("approved");
+    });
+
+    it("rethrows an error that is not a unique-index violation", async () => {
+      const { prisma } = await import("../src/lib/prisma.js");
+      vi.mocked(prisma.issueDraft.create).mockRejectedValueOnce(new Error("disk full"));
+      await expect(generateDrafts({ ...opts, analysisId: "analysis_1" })).rejects.toThrow(
+        "disk full",
+      );
+    });
+
+    it("gives up after a bounded number of lost races", async () => {
+      const { prisma } = await import("../src/lib/prisma.js");
+      const conflict = Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+      const create = vi.mocked(prisma.issueDraft.create);
+      const real = create.getMockImplementation()!;
+      create.mockRejectedValue(conflict);
+      try {
+        await expect(generateDrafts({ ...opts, analysisId: "analysis_1" })).rejects.toBe(conflict);
+        expect(create.mock.calls.length).toBe(5);
+      } finally {
+        create.mockImplementation(real);
+      }
+    });
+  });
+
   it("rejects when project missing", async () => {
     await expect(
       generateDrafts({

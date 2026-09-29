@@ -2318,7 +2318,7 @@ flowchart LR
 
 ### Idempotency contract
 
-1. **Title hash** — `sha256(owner/repo:normalize(title))`. Identical titles in the same repo collide on purpose.
+1. **Title hash** — `sha256(owner/repo:normalize(title))`. Identical titles in the same repo collide on purpose. Because the title is the key, the generator claims each draft title (epic and feature) per analysis: a title whose draft another analysis owns gets the next free ` (n)` suffix, while the same analysis reuses its own. A partial unique index on `issue_drafts (projectId, dedupHash) WHERE deletedAt IS NULL` closes the check-then-act race: a losing insert gets `P2002` and claims again (#369).
 2. **Marker comment** — every published issue body ends in `<!-- metis-publish: batch=X draft=Y hash=Z -->`. If the local `PublishedIssue` table is wiped, `reconcileFromRemote` repopulates it by parsing markers from `GET /issues?labels=metis-generated`.
 3. **Body hash** — SHA-256 of the user-supplied body (the marker is excluded). On re-run: identical body ⇒ skip; changed body ⇒ PATCH; absent ⇒ POST.
 

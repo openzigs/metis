@@ -6,7 +6,8 @@
 // via deletedAt where it makes sense.
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["partialIndexes"]
 }
 
 datasource db {
@@ -1584,6 +1585,7 @@ model IssueDraft {
   @@index([requirementId])
   @@index([parentDraftId])
   @@index([dedupHash])
+  @@unique([projectId, dedupHash], where: { deletedAt: null })
   @@map("issue_drafts")
 }
 
