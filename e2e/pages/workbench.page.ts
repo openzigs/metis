@@ -59,9 +59,17 @@ export class WorkbenchPage {
     await expect(this.leftPanel.getByText("Choose a project")).toBeVisible({ timeout: 10_000 });
   }
 
-  async expectSessionStarted(): Promise<void> {
-    // The chat center panel shows provider · model when a session is open.
-    // "starting…" disappears once the session resolves.
-    await expect(this.centerPanel.getByText("starting…")).not.toBeVisible({ timeout: 30_000 });
+  /**
+   * #361 — the session is now created on the first send, not on page load, so
+   * "ready" means the composer is usable: the input is enabled and the header
+   * reads "new session" (or provider · model once a session exists). The old
+   * check waited for a "starting…" label that no longer exists, so it passed
+   * without asserting anything.
+   */
+  async expectChatReady(): Promise<void> {
+    await expect(this.centerPanel.getByTestId("workbench-input")).toBeEnabled({ timeout: 30_000 });
+    await expect(this.centerPanel.getByText(/new session| · /).first()).toBeVisible({
+      timeout: 30_000,
+    });
   }
 }
