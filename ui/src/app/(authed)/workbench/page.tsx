@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { projectsApi, documentsApi, type DocumentRow, type Project } from "@/lib/projects-api";
-import { formatDocLabel } from "@/lib/doc-label";
+import { DocumentName } from "@/components/projects/document-name";
 import { formatSourceLabel } from "@/lib/format-source-label";
 import { useRepoNames } from "@/hooks/use-repo-names";
 import {
@@ -362,26 +362,19 @@ export default function WorkbenchPage() {
               <ul className="space-y-1 text-sm">
                 {(documents.data?.items ?? []).map((d) => {
                   const attached = layout.contextIds.includes(d.id);
-                  // Issue #427 — primary line shows `basename — repo` for
-                  // connector ids (raw id kept in the title tooltip below); the
-                  // existing secondary line keeps the directory / id-fragment
-                  // provenance so nothing precise is lost.
-                  const source = formatSourceLabel(d.filename, repoNames);
-                  const label = formatDocLabel(d.filename);
                   return (
                     <li
                       key={d.id}
                       className="flex items-center justify-between gap-2 rounded px-2 py-1 hover:bg-accent/50"
                       data-testid={`workbench-doc-${d.id}`}
                     >
-                      <span className="flex min-w-0 flex-1 flex-col" title={source.rawId}>
-                        <span className="truncate">{source.label}</span>
-                        {label.secondary ? (
-                          <span className="truncate text-xs text-muted-foreground">
-                            {label.secondary}
-                          </span>
-                        ) : null}
-                      </span>
+                      {/* Issue #363 — the shared list label: path over
+                          repository, internal key only in the tooltip. */}
+                      <DocumentName
+                        filename={d.filename}
+                        repoNames={repoNames}
+                        className="flex-1"
+                      />
                       <Button
                         size="sm"
                         variant={attached ? "outline" : "default"}

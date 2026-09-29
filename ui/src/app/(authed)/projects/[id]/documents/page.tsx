@@ -19,6 +19,8 @@ import { DocumentUploader } from "@/components/projects/document-uploader";
 import { UrlIngestForm } from "@/components/projects/url-ingest-form";
 import { TextIngestForm } from "@/components/projects/text-ingest-form";
 import { PageHeader } from "@/components/ui/page-header";
+import { DocumentName } from "@/components/projects/document-name";
+import { useRepoNames } from "@/hooks/use-repo-names";
 
 /**
  * #69 — what one row says about itself. A quarantined document keeps
@@ -43,6 +45,11 @@ export default function ProjectDocumentsPage() {
 
   // Polls while anything is ingesting and re-reads on `document:status`.
   const docs = useProjectDocuments(id);
+  // #363 — repository names, fetched only when a repository file is listed.
+  const hasRepoDocs = (docs.data?.items ?? []).some((d) =>
+    d.filename.startsWith("connector:repo:"),
+  );
+  const repoNames = useRepoNames(hasRepoDocs ? id : null);
 
   const removeDoc = useMutation({
     mutationFn: (documentId: string) => documentsApi.remove(id, documentId),
@@ -108,8 +115,12 @@ export default function ProjectDocumentsPage() {
                 className="flex items-center justify-between gap-3 py-2 text-sm"
                 data-testid={`document-row-${d.id}`}
               >
-                <div>
-                  <p className="font-medium">{d.filename}</p>
+                <div className="min-w-0">
+                  <DocumentName
+                    filename={d.filename}
+                    repoNames={repoNames}
+                    className="font-medium"
+                  />
                   <p className="text-xs text-muted-foreground">
                     {documentStatusLabel(d)} · {d.chunkCount} chunks ·{" "}
                     {(d.sizeBytes / 1024).toFixed(1)} KB

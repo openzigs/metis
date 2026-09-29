@@ -24,7 +24,7 @@ import { useMutation } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { urlSuggestionMessage, urlProtocolSuggestionMessage } from "@/lib/error-suggestion";
 import { documentsApi, type DocumentRow } from "@/lib/projects-api";
-import { formatSourceLabel } from "@/lib/format-source-label";
+import { DocumentName } from "@/components/projects/document-name";
 import { useRepoNames } from "@/hooks/use-repo-names";
 import { DocumentUploader } from "@/components/projects/document-uploader";
 import { TextIngestForm } from "@/components/projects/text-ingest-form";
@@ -146,11 +146,6 @@ export function AddDocumentsPanel({
         {docs.map((d) => {
           const ready = d.status === "ready";
           const checked = selectedDocs.includes(d.id);
-          // Issue #427 — render connector ids as a human-readable `basename —
-          // repo` label while keeping the full raw id in the title/tooltip so it
-          // stays copyable / deep-linkable. Non-connector filenames pass through
-          // unchanged (graceful degradation).
-          const source = formatSourceLabel(d.filename, repoNames);
           return (
             <label
               key={d.id}
@@ -169,9 +164,9 @@ export function AddDocumentsPanel({
                   );
                 }}
               />
-              <span className="truncate" title={source.rawId}>
-                {source.label}
-              </span>
+              {/* Issue #363 — path over repository label; the internal key
+                  is only the tooltip. */}
+              <DocumentName filename={d.filename} repoNames={repoNames} />
               {!ready ? (
                 <span
                   className={`ml-auto inline-block rounded border px-1.5 py-0.5 text-[10px] ${statusBadgeClass(d.status)}`}

@@ -10,7 +10,7 @@ import { makeWrapper } from "./test-utils";
 vi.mock("@/lib/connectors-api", () => ({ repoConnectorsApi: { list: vi.fn() } }));
 
 import { repoConnectorsApi } from "@/lib/connectors-api";
-import { repoNamesById, useRepoNames } from "@/hooks/use-repo-names";
+import { repoNamesById, useRepoNames, useRepoNamesForProjects } from "@/hooks/use-repo-names";
 
 const list = repoConnectorsApi.list as unknown as ReturnType<typeof vi.fn>;
 
@@ -66,6 +66,29 @@ describe("useRepoNames", () => {
 
   it("does not fetch without a project", () => {
     const { result } = renderHook(() => useRepoNames(null), {
+      wrapper: makeWrapper({ withAuth: false }),
+    });
+    expect(result.current).toEqual({});
+    expect(list).not.toHaveBeenCalled();
+  });
+});
+
+describe("useRepoNamesForProjects (#363)", () => {
+  it("merges every listed project's connectors into one map", async () => {
+    list.mockImplementation(async (projectId: string) =>
+      projectId === "p1"
+        ? [{ id: "c1", repoName: "metis", label: "x" }]
+        : [{ id: "c2", repoName: "wms", label: "y" }],
+    );
+    const { result } = renderHook(() => useRepoNamesForProjects(["p1", "p2"]), {
+      wrapper: makeWrapper({ withAuth: false }),
+    });
+    await waitFor(() => expect(result.current).toEqual({ c1: "metis", c2: "wms" }));
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it("fetches nothing for no projects", () => {
+    const { result } = renderHook(() => useRepoNamesForProjects([]), {
       wrapper: makeWrapper({ withAuth: false }),
     });
     expect(result.current).toEqual({});

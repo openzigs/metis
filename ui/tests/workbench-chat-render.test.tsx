@@ -157,7 +157,7 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     ).toBeUndefined();
   });
 
-  it("shows connector/repo documents by basename, not the raw connector path", async () => {
+  it("shows connector/repo documents by file path, not the raw connector key (#363)", async () => {
     documentsListMock.mockResolvedValue({
       items: [
         {
@@ -172,11 +172,15 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     const Wrapper = makeWrapper({ withAuth: false });
     render(<WorkbenchPage />, { wrapper: Wrapper });
 
-    // The scannable basename is shown as part of the friendly `basename — repo`
-    // label (issue #427), not the raw connector path.
+    // #363 — the file path, over the repository label, not the internal key.
+    // The path is split so only the directory truncates (PR #386 review); the
+    // file name sits in its own never-truncated span.
     await waitFor(() =>
-      expect(screen.getByText(/ShipmentSourceVO\.java — acmerp/)).toBeInTheDocument(),
+      expect(screen.getByTestId("workbench-doc-doc-repo")).toHaveTextContent(
+        "src/main/java/com/acme/wms/common/vo/ShipmentSourceVO.java",
+      ),
     );
+    expect(screen.getByText("ShipmentSourceVO.java")).not.toHaveClass("truncate");
     // …and the noisy connector prefix never appears as visible text.
     expect(screen.queryByText(/connector:repo:/)).not.toBeInTheDocument();
     // The full original string is preserved as a hover title for traceability.
@@ -202,10 +206,9 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     render(<WorkbenchPage />, { wrapper: Wrapper });
 
     await waitFor(() =>
-      expect(screen.getByTestId("workbench-doc-doc-repo")).toHaveTextContent(
-        "README.md — wms-core",
-      ),
+      expect(screen.getByTestId("workbench-doc-doc-repo")).toHaveTextContent("wms-core"),
     );
+    expect(screen.getByTestId("workbench-doc-doc-repo")).toHaveTextContent("README.md");
     expect(screen.getByTestId("workbench-doc-doc-repo").textContent).not.toContain("acmerp");
   });
 
@@ -230,9 +233,7 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     render(<WorkbenchPage />, { wrapper: Wrapper });
 
     await waitFor(() =>
-      expect(screen.getByTestId("workbench-doc-doc-repo")).toHaveTextContent(
-        "README.md — wms-core",
-      ),
+      expect(screen.getByTestId("workbench-doc-doc-repo")).toHaveTextContent("wms-core"),
     );
     await user.click(screen.getByTestId("workbench-doc-attach-doc-repo"));
 
