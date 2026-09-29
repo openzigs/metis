@@ -91,7 +91,10 @@ beforeEach(() => {
 describe("<McpServersPanel /> scope filter (#31)", () => {
   it("lists every scope by default and labels each row's scope", async () => {
     renderPanel();
-    expect(await screen.findByTestId("mcp-scope-s1")).toHaveTextContent("Workspace");
+    expect(await screen.findByTestId("mcp-scope-s1")).toHaveTextContent("Global");
+    // Global servers have no workspace — they are platform-wide (#389 review).
+    expect(screen.getByRole("option", { name: "Global" })).toHaveValue("global");
+    expect(screen.queryByRole("option", { name: "Workspace" })).not.toBeInTheDocument();
     expect(screen.getByTestId("mcp-scope-s2")).toHaveTextContent("Mine");
     expect(screen.getByTestId("mcp-scope-s3")).toHaveTextContent("Project");
     expect(api.list).toHaveBeenCalledWith(undefined);

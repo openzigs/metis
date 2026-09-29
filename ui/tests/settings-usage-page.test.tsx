@@ -109,7 +109,17 @@ describe("<SettingsUsagePage /> (#31)", () => {
 
   it("scopes to the workspace named in the query", async () => {
     renderAt("scope=workspace&workspaceId=ws-2");
-    expect(screen.getByTestId("workspace-panel")).toHaveTextContent("ws-2");
+    await waitFor(() => expect(screen.getByTestId("workspace-panel")).toHaveTextContent("ws-2"));
+    expect(screen.getByTestId("usage-workspace-picker")).toHaveValue("ws-2");
+  });
+
+  // A stale bookmark (e.g. an old /workspaces/<id>/finops link) must not make
+  // the panel show one workspace while the picker shows another.
+  it("ignores a workspace in the query that is not the caller's", async () => {
+    window.localStorage.setItem("metis.activeWorkspaceId", "ws-2");
+    renderAt("scope=workspace&workspaceId=ws-gone");
+    await waitFor(() => expect(screen.getByTestId("workspace-panel")).toHaveTextContent("ws-2"));
+    expect(screen.getByTestId("usage-workspace-picker")).toHaveValue("ws-2");
   });
 
   it("defaults the Workspace scope to the header's active workspace", async () => {

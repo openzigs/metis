@@ -5,6 +5,10 @@
  * #31 — Settings and Admin are one area. The former Admin pages are sections
  * here marked `adminOnly`: hidden from the nav, and refused by the layout, for
  * anyone who is not a system admin. The server still enforces every write.
+ *
+ * Workspaces is deliberately NOT admin-only: any signed-in user may create one
+ * and becomes its owner, and every other workspace action is gated on the
+ * workspace membership role (`requireWorkspaceRole`), not the system role.
  */
 export interface SettingsNavItem {
   href: string;
@@ -25,7 +29,7 @@ export const SETTINGS_NAV: readonly SettingsNavItem[] = [
   { href: "/settings/acp", label: "ACP tokens" },
   { href: "/settings/hooks", label: "Hooks" },
   { href: "/settings/triggers", label: "Triggers" },
-  { href: "/settings/workspaces", label: "Workspaces", adminOnly: true },
+  { href: "/settings/workspaces", label: "Workspaces" },
   { href: "/settings/auth", label: "SSO & authentication", adminOnly: true },
   { href: "/settings/embeddings", label: "Embeddings", adminOnly: true },
 ] as const;

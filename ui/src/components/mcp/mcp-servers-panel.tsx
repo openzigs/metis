@@ -45,20 +45,24 @@ const STATUS_BADGE: Record<MCPServerView["status"], string> = {
   disabled: "bg-muted text-muted-foreground",
 };
 
-/** #31 — the scope filter: every server, or only one scope's. */
+/**
+ * #31 — the scope filter: every server, or only one scope's. `global` servers
+ * are platform-wide (MCPServer has no workspaceId), so they are labelled
+ * "Global", never "Workspace".
+ */
 export type McpScopeFilter = "all" | MCPServerScope;
 
 const SCOPE_FILTERS: ReadonlyArray<{ id: McpScopeFilter; label: string }> = [
   { id: "all", label: "All scopes" },
   { id: "user", label: "Mine" },
   { id: "project", label: "Project" },
-  { id: "global", label: "Workspace" },
+  { id: "global", label: "Global" },
 ];
 
 const SCOPE_LABEL: Record<MCPServerScope, string> = {
   user: "Mine",
   project: "Project",
-  global: "Workspace",
+  global: "Global",
 };
 
 export function McpServersPanel({ initialScope = "all" }: { initialScope?: McpScopeFilter }) {

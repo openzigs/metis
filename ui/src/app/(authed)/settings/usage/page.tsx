@@ -83,9 +83,16 @@ export default function SettingsUsagePage() {
 
   const workspaceList = workspaces.data ?? [];
   const stored = scope === "workspace" ? storedWorkspaceId() : null;
-  const workspaceId =
-    workspaceParam ||
-    (stored && workspaceList.some((w) => w.id === stored) ? stored : (workspaceList[0]?.id ?? ""));
+  // Only a workspace the caller belongs to is selectable, so a stale id in the
+  // URL (an old finops bookmark) falls back rather than rendering a panel the
+  // picker cannot show.
+  const isMine = (id: string | null): id is string =>
+    !!id && workspaceList.some((w) => w.id === id);
+  const workspaceId = isMine(workspaceParam)
+    ? workspaceParam
+    : isMine(stored)
+      ? stored
+      : (workspaceList[0]?.id ?? "");
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-usage-root">

@@ -39,22 +39,30 @@ describe("isSettingsNavActive", () => {
 });
 
 describe("admin-only settings sections (#31)", () => {
-  it("lists the former Admin pages as admin-only sections", () => {
+  it("lists the system-admin pages as admin-only sections", () => {
     const admin = SETTINGS_NAV.filter((i) => i.adminOnly).map((i) => i.href);
-    expect(admin).toEqual(["/settings/workspaces", "/settings/auth", "/settings/embeddings"]);
+    expect(admin).toEqual(["/settings/auth", "/settings/embeddings"]);
   });
 
   it("hides admin-only sections from non-admins", () => {
     const hrefs = visibleSettingsNav(false).map((i) => i.href);
-    expect(hrefs).not.toContain("/settings/workspaces");
+    expect(hrefs).not.toContain("/settings/auth");
     expect(hrefs).toContain("/settings/usage");
     expect(visibleSettingsNav(true)).toHaveLength(SETTINGS_NAV.length);
   });
 
+  // Workspaces are gated by workspace membership role on the server
+  // (requireWorkspaceRole), and any signed-in user may create one — so the
+  // section is not a system-admin section.
+  it("keeps Workspaces open to users who are not system admins", () => {
+    expect(visibleSettingsNav(false).map((i) => i.href)).toContain("/settings/workspaces");
+    expect(isAdminOnlySettingsPath("/settings/workspaces")).toBe(false);
+    expect(isAdminOnlySettingsPath("/settings/workspaces/ws-1")).toBe(false);
+  });
+
   it("recognises an admin-only path, including its sub-pages", () => {
-    expect(isAdminOnlySettingsPath("/settings/workspaces")).toBe(true);
-    expect(isAdminOnlySettingsPath("/settings/workspaces/ws-1")).toBe(true);
     expect(isAdminOnlySettingsPath("/settings/auth")).toBe(true);
+    expect(isAdminOnlySettingsPath("/settings/embeddings/models")).toBe(true);
     expect(isAdminOnlySettingsPath("/settings/usage")).toBe(false);
     expect(isAdminOnlySettingsPath("/settings")).toBe(false);
   });
@@ -72,22 +80,54 @@ describe("<SettingsLayout />", () => {
       expect(screen.getByRole("link", { name: item.label })).toBeInTheDocument();
     }
     const adminList = screen.getByRole("list", { name: "Administration" });
-    expect(adminList).toHaveTextContent("Workspaces");
+    expect(adminList).toHaveTextContent("SSO & authentication");
+    expect(adminList).not.toHaveTextContent("Workspaces");
     expect(adminList).not.toHaveTextContent("Profile");
     expect(screen.getByTestId("child")).toBeInTheDocument();
   });
 
   it("hides the Administration group from a non-admin", () => {
     renderAt("/settings/profile", "reader");
-    expect(screen.queryByRole("link", { name: "Workspaces" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "SSO & authentication" })).not.toBeInTheDocument();
     expect(screen.queryByText("Administration")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Usage & cost" })).toBeInTheDocument();
   });
 
   it("refuses an admin-only section to a non-admin", () => {
-    renderAt("/settings/workspaces/ws-1", "reader");
+    renderAt("/settings/auth", "reader");
     expect(screen.getByTestId("settings-admin-required")).toBeInTheDocument();
     expect(screen.queryByTestId("child")).not.toBeInTheDocument();
+  });
+
+  // The header switcher's "Create workspace" routes here for every user.
+  it("renders workspace settings for a workspace owner who is not a system admin", () => {
+    renderAt("/settings/workspaces/ws-1", "reader");
+    expect(screen.queryByTestId("settings-admin-required")).not.toBeInTheDocument();
+    expect(screen.getByTestId("child")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Workspaces" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
+  it("renders neither an admin-only page nor the refusal while auth is loading", () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise(() => {})),
+    );
+    try {
+      usePathnameMock.mockReturnValue("/settings/auth");
+      render(
+        <SettingsLayout>
+          <div data-testid="child">content</div>
+        </SettingsLayout>,
+        { wrapper: makeWrapper({ initialUser: null }) },
+      );
+      expect(screen.queryByTestId("child")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("settings-admin-required")).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("renders an admin-only section for an admin", () => {
