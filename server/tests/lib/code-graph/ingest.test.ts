@@ -11,7 +11,7 @@
  *   - CodeGraph aggregate counts are recomputed
  *   - Rationale path is exercised when a triggeredByUserId is supplied
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -857,39 +857,52 @@ describe("ingestCodeGraph — calls need evidence, not a matching name (#17)", (
 });
 
 describe("ingestCodeGraph — the event loop keeps turning (#16)", () => {
-  /** Burn `ms` of CPU synchronously — what a better-sqlite3 statement does. */
-  function spin(ms: number): void {
-    const end = performance.now() + ms;
-    while (performance.now() < end) {
-      /* busy */
-    }
-  }
+  // #325 — these tests used to burn REAL CPU per simulated statement and time the
+  // loop with a real `setInterval`. Under the root `pnpm test` fan-out that CPU is
+  // contended, so pass 1 reached `testTimeout`. Now the cost is charged to a
+  // VIRTUAL clock (the one the yielder reads, `performance.now`) and a loop turn is
+  // observed with a `setImmediate` sentinel, which fires once per event-loop
+  // iteration however slow the machine is. The measured gap is therefore the
+  // virtual work done between two loop turns — deterministic, and still the thing
+  // #16 needs: remove a yield and the gap becomes the whole phase's cost.
+  let virtualMs = 0;
 
-  /** Charge `cost(args)` ms of synchronous work to every call of `model[op]`. */
+  beforeEach(() => {
+    virtualMs = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => virtualMs);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Charge `cost(args)` virtual ms of synchronous work to every call of `model[op]`. */
   function slow(model: any, op: string, cost: (args: any) => number): void {
     const inner = model[op];
     model[op] = async (args: any) => {
-      spin(cost(args));
+      virtualMs += cost(args);
       return inner(args);
     };
   }
 
-  /** Longest stretch, in ms, the event loop went without a turn while `run` ran. */
+  /** Most virtual ms of work done between two event-loop turns while `run` ran. */
   async function maxLoopGap(run: () => Promise<unknown>): Promise<number> {
-    let last = performance.now();
+    let last = virtualMs;
     let maxGap = 0;
-    const ticker = setInterval(() => {
-      const now = performance.now();
-      maxGap = Math.max(maxGap, now - last);
-      last = now;
-    }, 5);
+    let running = true;
+    const tick = () => {
+      maxGap = Math.max(maxGap, virtualMs - last);
+      last = virtualMs;
+      if (running) setImmediate(tick);
+    };
+    setImmediate(tick);
     try {
       await run();
     } finally {
+      running = false;
       // A loop blocked until the very end never fires its late tick — count the
       // gap that is still open, or a fully-blocked run reads as "no stall".
-      maxGap = Math.max(maxGap, performance.now() - last);
-      clearInterval(ticker);
+      maxGap = Math.max(maxGap, virtualMs - last);
     }
     return maxGap;
   }
@@ -901,9 +914,9 @@ describe("ingestCodeGraph — the event loop keeps turning (#16)", () => {
   // which is a real I/O turn whether or not it also calls `maybeYield`.
 
   it("pass 1 — symbol writes never hold the loop for more than a fraction of a second", async () => {
-    // 300 files x 4 functions. Each simulated statement costs 1 ms of synchronous
-    // work, plus 5 us per row of a multi-row insert. However the writes are
-    // batched, the total is well over a second — so this stays green only if the
+    // 300 files x 4 functions. Each simulated statement costs 1 virtual ms of
+    // synchronous work, plus 5 us per row of a multi-row insert. However the writes
+    // are batched, the total is well over a second — so this stays green only if the
     // ingest actually gives the event loop turns in between.
     const tree: Record<string, string> = {};
     for (let f = 0; f < 300; f += 1) {
