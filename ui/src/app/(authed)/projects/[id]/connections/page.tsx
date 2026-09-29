@@ -18,7 +18,6 @@ import {
   dbConnectorsApi,
   suggestedConnectorsApi,
   type ConnectorTestResult,
-  type DeepIngestSummary,
   type RefreshIngestSummary,
   type SuggestedConnector,
 } from "@/lib/connectors-api";
@@ -31,6 +30,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { useConnectorProgress, useConnectorDiscovery } from "@/hooks/use-connector-events";
+import { useDeepIngest } from "@/hooks/use-deep-ingest";
 import { DbConnectorWizard } from "@/components/connectors/db-connector-wizard";
 import { DatabaseResourceManager } from "@/components/connectors/database-resource-manager";
 import { RebuildCacheButton } from "@/components/projects/rebuild-cache-button";
@@ -332,23 +332,15 @@ export default function ConnectionsPage() {
       else toast.error(data.message ?? "Test failed");
     },
   });
-  const [deepIngestResult, setDeepIngestResult] = useState<{
-    connectorId: string;
-    summary: DeepIngestSummary;
-  } | null>(null);
-  const deepIngestRepo = useMutation({
-    mutationFn: (id: string) => repoConnectorsApi.deepIngest(projectId, id),
-    onSuccess: (data, id) => {
-      setDeepIngestResult({ connectorId: id, summary: data });
+  // #373 — Deep Ingest runs in the background: the request answers 202 with a
+  // job id and the outcome arrives on the job bus, never as a proxy timeout.
+  const deepIngest = useDeepIngest(projectId, {
+    onSettled: () => {
       setRefreshIngestResult(null);
       qc.invalidateQueries({ queryKey: repoKeys.list(projectId) });
       qc.invalidateQueries({ queryKey: suggestedKeys.list(projectId) });
-      toast.success("Deep ingest complete");
     },
-    onError: (err, id) => {
-      toast.error(err instanceof ApiError ? err.message : "Deep ingest failed");
-      clearProgress(id);
-    },
+    onError: clearProgress,
   });
   const [refreshIngestResult, setRefreshIngestResult] = useState<{
     connectorId: string;
@@ -358,7 +350,7 @@ export default function ConnectionsPage() {
     mutationFn: (id: string) => repoConnectorsApi.refreshIngest(projectId, id),
     onSuccess: (data, id) => {
       setRefreshIngestResult({ connectorId: id, summary: data });
-      setDeepIngestResult(null);
+      deepIngest.clearOutcome();
       qc.invalidateQueries({ queryKey: repoKeys.list(projectId) });
       qc.invalidateQueries({ queryKey: suggestedKeys.list(projectId) });
       toast.success("Sync complete");
@@ -368,7 +360,7 @@ export default function ConnectionsPage() {
       clearProgress(id);
     },
   });
-  const isRepoIngesting = deepIngestRepo.isPending || refreshIngestRepo.isPending;
+  const isRepoIngesting = deepIngest.runningConnectorId !== null || refreshIngestRepo.isPending;
 
   const setPrimary = useMutation({
     mutationFn: (id: string) => repoConnectorsApi.setPrimary(projectId, id),
@@ -945,13 +937,11 @@ export default function ConnectionsPage() {
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => deepIngestRepo.mutate(r.id)}
+                      onClick={() => deepIngest.start(r.id)}
                       disabled={isRepoIngesting}
                       title="Fresh clone and full re-ingest (first-time setup)"
                     >
-                      {deepIngestRepo.isPending && deepIngestRepo.variables === r.id
-                        ? "Ingesting…"
-                        : "Deep Ingest"}
+                      {deepIngest.runningConnectorId === r.id ? "Ingesting…" : "Deep Ingest"}
                     </Button>
                     <RebuildCacheButton projectId={projectId} repoId={r.id} />
                     <Button size="sm" variant="destructive" onClick={() => removeRepo.mutate(r.id)}>
@@ -982,27 +972,22 @@ export default function ConnectionsPage() {
           {!repos.isLoading && (repos.data ?? []).length === 0 ? (
             <p className="text-sm text-muted-foreground">No repo connectors yet.</p>
           ) : null}
-          {deepIngestResult ? (
-            <div className="rounded border border-success/40 bg-success-muted p-3 text-sm">
-              <div className="mb-1 font-medium text-success">Deep ingest complete</div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono text-xs text-foreground">
-                <span>Files parsed</span>
-                <span>
-                  {deepIngestResult.summary.codeGraph.filesParsed} /{" "}
-                  {deepIngestResult.summary.codeGraph.filesScanned} scanned
-                </span>
-                <span>Symbols</span>
-                <span>{deepIngestResult.summary.codeGraph.symbolsUpserted.toLocaleString()}</span>
-                <span>Edges</span>
-                <span>{deepIngestResult.summary.codeGraph.edgesUpserted.toLocaleString()}</span>
-                <span>RAG chunks</span>
-                <span>
-                  {deepIngestResult.summary.sourceKnowledge.chunkCount.toLocaleString()} (
-                  {deepIngestResult.summary.sourceKnowledge.documentsCreated} docs)
-                </span>
-                <span>Clone size</span>
-                <span>{(deepIngestResult.summary.cloneSizeBytes / 1024 / 1024).toFixed(1)} MB</span>
-              </div>
+          {deepIngest.outcome?.status === "completed" ? (
+            <div
+              className="rounded border border-success/40 bg-success-muted p-3 text-sm"
+              role="status"
+            >
+              {/* The server's line already reads "Deep ingest complete: …counts". */}
+              <div className="font-medium text-success">{deepIngest.outcome.message}</div>
+            </div>
+          ) : null}
+          {deepIngest.outcome?.status === "failed" ? (
+            <div
+              className="rounded border border-destructive/40 bg-destructive/10 p-3 text-sm"
+              role="alert"
+            >
+              <div className="mb-1 font-medium text-destructive">Deep ingest failed</div>
+              <div className="text-xs text-foreground">{deepIngest.outcome.message}</div>
             </div>
           ) : null}
           {refreshIngestResult ? (

@@ -10,6 +10,8 @@
  *   POST   /repos/:id/test              test     (connector.test)
  *   POST   /repos/:id/metadata          fetch metadata (connector.read)
  *   POST   /repos/:id/ingest            ingest into RAG (connector.write)
+ *   POST   /repos/:id/deep-ingest       clone + code graph + RAG, in the background:
+ *                                       202 { jobId } (connector.write, #373)
  *
  * Database connector:
  *   GET    /dbs                         list
@@ -22,6 +24,7 @@
  *   POST   /dbs/:id/query               SELECT-only query   (connector.query)
  *   POST   /dbs/:id/ingest              ingest schema into RAG (connector.write)
  */
+import { randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
 import multer from "multer";
 import { z } from "zod";
@@ -99,6 +102,7 @@ import {
   assertRepoSecretBinding,
 } from "../lib/connectors/connector-secret-binding.js";
 import { createChildLogger } from "../lib/logger.js";
+import { genericFailureMessage, jobEvents } from "../lib/socket/job-events.js";
 import {
   ingestConfluenceSpace,
   ingestJiraQuery,
@@ -174,11 +178,6 @@ function projectIdOf(req: Request): string {
 }
 
 /**
- * Extracted deep-ingest pipeline for reuse by the auto-ingest trigger (#667).
- * Performs: shallow clone → code-graph → RAG ingest → metadata → discovery.
- */
-
-/**
  * #114 — the only text a failed deep-ingest's progress event may carry to the
  * browser. The exception is logged server-side.
  */
@@ -216,13 +215,44 @@ async function resolveIngestSource(
   return { path: clone.path, sizeBytes: clone.sizeBytes, isGit: true };
 }
 
-async function triggerDeepIngest(projectId: string, connectorId: string, userId: string) {
-  // Concurrency guard — prevent duplicate parallel ingests on the same connector
-  const lease = tryAcquireConnectorIngest(connectorId, "auto-ingest");
-  if (!lease) return;
+/**
+ * #373 — the job id of each Deep Ingest now running, by connector, so a second
+ * click is told which run is in flight rather than getting a bare 409.
+ */
+const activeDeepIngestJobs = new Map<string, string>();
 
+/** The 409 for a busy connector; names the running Deep Ingest job when there is one. */
+function deepIngestInProgress(connectorId: string): AppError {
+  const jobId = activeDeepIngestJobs.get(connectorId);
+  if (!jobId) return ingestInProgress();
+  return new AppError(
+    409,
+    INGEST_IN_PROGRESS,
+    "A deep ingest is already running for this repository",
+    { jobId },
+  );
+}
+
+/**
+ * The deep-ingest pipeline shared by the Deep Ingest route and the auto-ingest
+ * trigger (#667): resolve source → code graph → RAG ingest → metadata →
+ * discovery. The caller holds `lease`; this releases it when the run ends.
+ *
+ * With a `jobId` (#373) the run also reports on the `job:lifecycle` bus as kind
+ * `repo-ingest`, since the route has already answered 202 and the bus is the
+ * only way the client learns the outcome.
+ */
+async function runDeepIngest(
+  projectId: string,
+  connectorId: string,
+  userId: string,
+  lease: ConnectorIngestLease,
+  opts: { jobId?: string; known?: Awaited<ReturnType<typeof getRepoConnector>> } = {},
+): Promise<void> {
+  const { jobId, known } = opts;
   const emitter = getRepoConnectorEmitter();
-  const emitProgress = (step: string, current: number) =>
+  const total = 5;
+  const emitProgress = (step: string, current: number) => {
     emitter.progress({
       connectorId,
       projectId,
@@ -230,18 +260,29 @@ async function triggerDeepIngest(projectId: string, connectorId: string, userId:
       phase: "deep-ingest",
       step,
       current,
-      total: 5,
+      total,
     });
+    // The step has started, not finished: step 1 of 5 is 0% done.
+    if (jobId)
+      jobEvents.progress(
+        "repo-ingest",
+        jobId,
+        projectId,
+        Math.round(((current - 1) / total) * 100),
+        step,
+      );
+  };
 
   try {
     emitProgress("Resolving source", 1);
     // Issue #288 — github clones; local/upload resolve a server path / archive.
-    const source = await resolveIngestSource(projectId, connectorId, userId);
+    const source = await resolveIngestSource(projectId, connectorId, userId, known);
     emitProgress("Building code graph", 2);
-    // Best-effort SQL-lineage wiring from the project's DB connector (#316/#317);
-    // never blocks ingest when no DB connector is configured.
+    // Best-effort SQL-lineage wiring from the project's DB connector (#316/#317):
+    // feeds the live schema (SELECT* expansion) + routine bodies (`calls` edges).
+    // Never blocks ingest when no DB connector is configured.
     const deepSchemaWiring = await buildCodeGraphSchemaWiring(projectId, userId);
-    await ingestCodeGraph(prisma, {
+    const stats = await ingestCodeGraph(prisma, {
       projectId,
       rootDir: source.path,
       repoConnectionId: connectorId,
@@ -255,7 +296,7 @@ async function triggerDeepIngest(projectId: string, connectorId: string, userId:
       dependencies: deepSchemaWiring.dependencies,
       sqlLineageOverride: deepSchemaWiring.sqlLineageOverride,
       // #797 — background-embed the symbols so `search_code_symbols` gets its
-      // vector half. Fire-and-forget; never blocks this request.
+      // vector half. Fire-and-forget; never blocks this run.
       embedSymbols: true,
     });
     emitProgress("Ingesting source code", 3);
@@ -285,6 +326,7 @@ async function triggerDeepIngest(projectId: string, connectorId: string, userId:
     const discovery = await discoverAndUpsertConnections(projectId, source.path);
     if (srcSummary.failures === 0 && metadataSucceeded)
       await checkIncrementalRegeneration(projectId, connectorId);
+    // Step 6: discovery notification via Socket.IO (#669)
     if (discovery.connectionsFound > 0) {
       const connector = await getRepoConnector(projectId, connectorId);
       emitter.discovery({
@@ -294,12 +336,20 @@ async function triggerDeepIngest(projectId: string, connectorId: string, userId:
         connectionsFound: discovery.connectionsFound,
       });
     }
+    if (jobId)
+      jobEvents.completed(
+        "repo-ingest",
+        jobId,
+        projectId,
+        `Deep ingest complete: ${stats.filesParsed} of ${stats.filesScanned} files parsed, ` +
+          `${stats.symbolsUpserted} symbols, ${srcSummary.chunkCount} RAG chunks.`,
+      );
   } catch (err) {
     // #114 — the raw exception (paths, git stderr, SQL) stays in the server log;
     // the progress event reaches the browser, so it carries fixed text only.
-    // The background callers' `.catch()` swallows the rethrow, so this is also
-    // the only place the failure is logged for them.
-    logger.warn("Repo deep-ingest failed", { err, projectId, connectorId });
+    // The callers' `.catch()` swallows the rethrow, so this is also the only
+    // place the failure is logged.
+    logger.warn("Repo deep-ingest failed", { err, projectId, connectorId, jobId });
     // Emit error progress so the UI can show failure and dismiss the progress bar
     emitter.progress({
       connectorId,
@@ -310,10 +360,19 @@ async function triggerDeepIngest(projectId: string, connectorId: string, userId:
       status: "error",
       errorMessage: REPO_INGEST_FAILED_MESSAGE,
     });
+    if (jobId)
+      jobEvents.failed("repo-ingest", jobId, projectId, genericFailureMessage("repo-ingest"));
     throw err;
   } finally {
     lease.release();
   }
+}
+
+async function triggerDeepIngest(projectId: string, connectorId: string, userId: string) {
+  // Concurrency guard — prevent duplicate parallel ingests on the same connector
+  const lease = tryAcquireConnectorIngest(connectorId, "auto-ingest");
+  if (!lease) return;
+  await runDeepIngest(projectId, connectorId, userId, lease);
 }
 
 export function connectorsRouter(): Router {
@@ -591,6 +650,11 @@ export function connectorsRouter(): Router {
   // Clones the repo, parses all source files into a code graph (symbols,
   // edges, rationale), then ingests file content into the RAG knowledge base
   // so the analysis pipeline can reason about the actual source code.
+  //
+  // #373 — on a large repo this runs for many minutes, far past the UI proxy's
+  // header timeout, so it answers 202 { jobId } at once and runs in the
+  // background. Progress arrives as `connector:progress` (per step) and
+  // `job:lifecycle` kind `repo-ingest` (started → progress → completed/failed).
   r.post(
     "/repos/:id/deep-ingest",
     requireAuth,
@@ -600,113 +664,23 @@ export function connectorsRouter(): Router {
         const projectId = projectIdOf(req);
         const id = String(req.params.id);
         const a = actor(req);
-        const emitter = getRepoConnectorEmitter();
-        const emitProgress = (step: string, current: number) =>
-          emitter.progress({
-            connectorId: id,
-            projectId,
-            kind: "repo",
-            phase: "deep-ingest",
-            step,
-            current,
-            total: 5,
-          });
         // Project-scoped lookup first (#217 review): another project's caller
         // gets 404, never a 409 that reveals the id exists and is ingesting.
         const conn = await getRepoConnector(projectId, id);
-        // Concurrency guard — claimed immediately before the try that releases it.
+        // Concurrency guard — held by the background run, which releases it.
         const lease = tryAcquireConnectorIngest(id, "deep-ingest");
-        if (!lease) throw ingestInProgress();
-        try {
-          // Step 1: resolve source (github clones; local/upload skip the clone)
-          emitProgress("Resolving source", 1);
-          const source = await resolveIngestSource(projectId, id, a, conn);
-          // Step 2: code graph ingest (symbols, edges, rationale). Best-effort
-          // SQL-lineage wiring from the project's DB connector (#316/#317): feeds
-          // the live schema (SELECT* expansion) + routine bodies (`calls` edges).
-          // Never blocks ingest if no DB connector / introspection fails.
-          emitProgress("Building code graph", 2);
-          const schemaWiring = await buildCodeGraphSchemaWiring(projectId, a);
-          const stats = await ingestCodeGraph(prisma, {
-            projectId,
-            rootDir: source.path,
-            repoConnectionId: id,
-            triggeredByUserId: a,
-            introspectedSchema: schemaWiring.introspectedSchema,
-            routines: schemaWiring.routines,
-            fetchRoutineBody: schemaWiring.fetchRoutineBody,
-            routineDialect: schemaWiring.routineDialect,
-            packages: schemaWiring.packages,
-            fetchPackageBody: schemaWiring.fetchPackageBody,
-            dependencies: schemaWiring.dependencies,
-            sqlLineageOverride: schemaWiring.sqlLineageOverride,
-            embedSymbols: true, // #797
+        if (!lease) throw deepIngestInProgress(id);
+        const jobId = randomUUID();
+        activeDeepIngestJobs.set(id, jobId);
+        jobEvents.started("repo-ingest", jobId, projectId, "Deep ingest started");
+        void runDeepIngest(projectId, id, a, lease, { jobId, known: conn })
+          .catch(() => {
+            // Already logged and reported on the bus by runDeepIngest.
+          })
+          .finally(() => {
+            if (activeDeepIngestJobs.get(id) === jobId) activeDeepIngestJobs.delete(id);
           });
-          // Step 3: ingest source files into RAG knowledge base
-          emitProgress("Ingesting source code", 3);
-          const srcSummary = await ingestSourceAsKnowledge(projectId, id, a, source.path, {
-            boundary: source.boundary,
-            lease,
-          });
-          // Step 4: also run metadata ingest for RAG chunks (github only)
-          emitProgress("Indexing metadata", 4);
-          let metadataSucceeded = true;
-          if (source.isGit) {
-            try {
-              const meta = await fetchRepoMetadata(projectId, id, a);
-              const summary = await ingestRepoMetadata(projectId, id, a, meta);
-              metadataSucceeded = summary.failures === 0;
-            } catch (metaErr) {
-              metadataSucceeded = false;
-              logger.warn(
-                "fetchRepoMetadata failed — skipping metadata ingest, core ingest continues",
-                { err: metaErr, projectId, connectorId: id },
-              );
-            }
-          }
-          // Step 5: scan for database connection references (epic #467)
-          emitProgress("Discovering connections", 5);
-          const discovery = await discoverAndUpsertConnections(projectId, source.path);
-          if (srcSummary.failures === 0 && metadataSucceeded)
-            await checkIncrementalRegeneration(projectId, id);
-          // Step 6: emit discovery notification via Socket.IO (#669)
-          if (discovery.connectionsFound > 0) {
-            const connector = await getRepoConnector(projectId, id);
-            emitter.discovery({
-              projectId,
-              connectorId: id,
-              repoLabel: connector.label,
-              connectionsFound: discovery.connectionsFound,
-            });
-          }
-          res.json(
-            ok({
-              codeGraph: {
-                filesScanned: stats.filesScanned,
-                filesParsed: stats.filesParsed,
-                symbolsUpserted: stats.symbolsUpserted,
-                edgesUpserted: stats.edgesUpserted,
-                rationaleFindings: stats.rationaleFindings,
-                languageStats: stats.languageStats,
-                durationMs: stats.durationMs,
-              },
-              sourceKnowledge: {
-                documentsCreated: srcSummary.documentsCreated,
-                documentsUpdated: srcSummary.documentsUpdated,
-                chunkCount: srcSummary.chunkCount,
-                failures: srcSummary.failures,
-              },
-              suggestedConnectors: {
-                filesScanned: discovery.filesScanned,
-                connectionsFound: discovery.connectionsFound,
-                suggestionsUpserted: discovery.suggestionsUpserted,
-              },
-              cloneSizeBytes: source.sizeBytes,
-            }),
-          );
-        } finally {
-          lease.release();
-        }
+        res.status(202).json(ok({ jobId, connectorId: id, status: "started" }));
       } catch (err) {
         rethrow(err);
       }

@@ -216,6 +216,7 @@ import {
   isConnectorIngestActive,
 } from "../src/lib/connectors/ingest-guard.js";
 import { discoverAndUpsertConnections } from "../src/lib/connectors/repo/connection-discovery.js";
+import { getLastJobLifecycle, genericFailureMessage } from "../src/lib/socket/job-events.js";
 import { ConnectorError } from "../src/lib/connectors/types.js";
 import {
   bootstrapScheduler,
@@ -363,7 +364,8 @@ describe("provider routing on deep-ingest", () => {
     const res = await request(app)
       .post("/api/projects/proj_1/connectors/repos/repo_github_x/deep-ingest")
       .set("Authorization", `Bearer ${token}`);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
+    await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
     expect(shallowCloneRepo).toHaveBeenCalledTimes(1);
     expect(resolveNonGitIngestRoot).not.toHaveBeenCalled();
   });
@@ -373,7 +375,8 @@ describe("provider routing on deep-ingest", () => {
     const res = await request(app)
       .post("/api/projects/proj_1/connectors/repos/repo_local_x/deep-ingest")
       .set("Authorization", `Bearer ${token}`);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
+    await vi.waitFor(() => expect(isConnectorIngestActive("repo_local_x")).toBe(false));
     expect(resolveNonGitIngestRoot).toHaveBeenCalledTimes(1);
     expect(shallowCloneRepo).not.toHaveBeenCalled();
   });
@@ -383,7 +386,8 @@ describe("provider routing on deep-ingest", () => {
     const res = await request(app)
       .post("/api/projects/proj_1/connectors/repos/repo_upload_x/deep-ingest")
       .set("Authorization", `Bearer ${token}`);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
+    await vi.waitFor(() => expect(isConnectorIngestActive("repo_upload_x")).toBe(false));
     expect(resolveNonGitIngestRoot).toHaveBeenCalledTimes(1);
     expect(shallowCloneRepo).not.toHaveBeenCalled();
   });
@@ -443,7 +447,9 @@ describe("per-connector ingest guard on the sync routes (#217)", () => {
       const res = await request(app)
         .post(`/api/projects/proj_1/connectors/repos/repo_github_x/${route}`)
         .set("Authorization", `Bearer ${token}`);
-      expect(res.status).toBe(200);
+      // #373 — deep-ingest answers 202 at once and finishes in the background.
+      expect(res.status).toBe(route === "deep-ingest" ? 202 : 200);
+      await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
       expect(leaseSeen).toMatchObject({ connectorId: "repo_github_x", held: true });
       expect(isConnectorIngestActive("repo_github_x")).toBe(false);
     });
@@ -454,6 +460,111 @@ describe("per-connector ingest guard on the sync routes (#217)", () => {
 async function settleBackground(): Promise<void> {
   for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
 }
+
+// #373 — Deep Ingest ran as one synchronous request; on a large repo the
+// Next.js proxy gave up after 5 minutes (a 500 in the UI) while the ingest went
+// on to succeed. It now answers 202 with a job id at once and reports progress
+// and the outcome on the `job:lifecycle` bus under kind `repo-ingest`.
+describe("asynchronous deep-ingest (#373)", () => {
+  const deepIngest = (token: string) =>
+    request(app)
+      .post("/api/projects/proj_1/connectors/repos/repo_github_x/deep-ingest")
+      .set("Authorization", `Bearer ${token}`);
+
+  /** Hold the run inside the source ingest until `open()` is called. */
+  function gateSourceIngest() {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    vi.mocked(ingestSourceAsKnowledge).mockImplementationOnce(async () => {
+      await gate;
+      return { documentsCreated: 3, documentsUpdated: 0, chunkCount: 42, failures: 0 };
+    });
+    return () => open();
+  }
+
+  it("answers 202 with a job id before the ingest finishes, then completes on the bus", async () => {
+    const token = await login("admin");
+    const open = gateSourceIngest();
+    const res = await deepIngest(token);
+    expect(res.status).toBe(202);
+    const jobId = res.body.data.jobId as string;
+    expect(jobId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(res.body.data).toMatchObject({ connectorId: "repo_github_x", status: "started" });
+
+    // The run is still in flight after the response was sent.
+    await vi.waitFor(() => expect(ingestSourceAsKnowledge).toHaveBeenCalledTimes(1));
+    expect(isConnectorIngestActive("repo_github_x")).toBe(true);
+    const running = getLastJobLifecycle(jobId);
+    // PR #393 panel — held inside step 3 of 5 ("Ingesting source code"), the
+    // latest transition must be a progress event at (3 - 1) / 5 = 40%, not just
+    // the `started` the route always emits first.
+    expect(running).toMatchObject({
+      kind: "repo-ingest",
+      projectId: "proj_1",
+      status: "progress",
+      progress: 40,
+      message: "Ingesting source code",
+    });
+
+    open();
+    await vi.waitFor(() => expect(getLastJobLifecycle(jobId)?.status).toBe("completed"));
+    expect(getLastJobLifecycle(jobId)!.message).toContain("42 RAG chunks");
+    expect(isConnectorIngestActive("repo_github_x")).toBe(false);
+  });
+
+  it("reports a failure on the bus with fixed text, never the exception, and frees the connector", async () => {
+    const RAW = "EACCES: permission denied, open '/srv/metis/.git/config' token=ghp_secret";
+    vi.mocked(ingestSourceAsKnowledge).mockRejectedValueOnce(new Error(RAW));
+    const token = await login("admin");
+    const res = await deepIngest(token);
+    expect(res.status).toBe(202);
+    const jobId = res.body.data.jobId as string;
+    await vi.waitFor(() => expect(getLastJobLifecycle(jobId)?.status).toBe("failed"));
+    const failed = getLastJobLifecycle(jobId)!;
+    expect(failed.error).toBe(genericFailureMessage("repo-ingest"));
+    expect(JSON.stringify(failed)).not.toContain("ghp_");
+    expect(JSON.stringify(failed)).not.toContain("/srv");
+    await vi.waitFor(() => expect(isConnectorIngestActive("repo_github_x")).toBe(false));
+  });
+
+  it("a second click while a run is in progress is told so, with the running job's id", async () => {
+    const token = await login("admin");
+    const open = gateSourceIngest();
+    const first = await deepIngest(token);
+    expect(first.status).toBe(202);
+    const jobId = first.body.data.jobId as string;
+    try {
+      const second = await deepIngest(token);
+      expect(second.status).toBe(409);
+      expect(second.body.error.code).toBe("INGEST_IN_PROGRESS");
+      expect(second.body.error.message).toMatch(/deep ingest is already running/i);
+      expect(second.body.error.details).toEqual({ jobId });
+    } finally {
+      open();
+    }
+    await vi.waitFor(() => expect(getLastJobLifecycle(jobId)?.status).toBe("completed"));
+    // Once the run is over the connector is free again, and the next click starts a new job.
+    const third = await deepIngest(token);
+    expect(third.status).toBe(202);
+    expect(third.body.data.jobId).not.toBe(jobId);
+    await vi.waitFor(() =>
+      expect(getLastJobLifecycle(third.body.data.jobId)?.status).toBe("completed"),
+    );
+  });
+
+  it("a 409 from another entry point's claim carries no job id", async () => {
+    const token = await login("admin");
+    const lease = acquireConnectorIngest("repo_github_x", "scheduled-refresh");
+    try {
+      const res = await deepIngest(token);
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("INGEST_IN_PROGRESS");
+      expect(res.body.error.details).toBeUndefined();
+    } finally {
+      lease.release();
+    }
+  });
+});
 
 // #217 — create-with-autoIngest starts the deep ingest in the background; it
 // takes the same per-connector lease, so a busy connector is not ingested twice.
@@ -626,6 +737,11 @@ describe("manual connector regeneration callers (#1356)", () => {
 
   for (const caller of ["create", "deep-ingest", "refresh-ingest"] as const) {
     describe(caller, () => {
+      // Status of a successful call, and of one whose run later fails: create and
+      // (#373) deep-ingest answer before the run, so a failure never reaches them.
+      const okStatus = caller === "create" ? 201 : caller === "deep-ingest" ? 202 : 200;
+      const failStatus = caller === "refresh-ingest" ? 500 : okStatus;
+
       async function ingest(provider = "github") {
         // Discovery/error is the last observable pipeline boundary for the
         // fire-and-forget create route; no sleeps or scheduler mocks needed.
@@ -645,7 +761,8 @@ describe("manual connector regeneration callers (#1356)", () => {
                 }
               : {},
           );
-        if (caller === "create") await finished;
+        // #373 — deep-ingest, like create, finishes after its response.
+        if (caller !== "refresh-ingest") await finished;
         return response;
       }
 
@@ -698,7 +815,7 @@ describe("manual connector regeneration callers (#1356)", () => {
 
       it("schedules only after source and metadata settle; replay reuses the durable task", async () => {
         const response = await ingest();
-        expect(response.status).toBe(caller === "create" ? 201 : 200);
+        expect(response.status).toBe(okStatus);
         expectScheduled();
         expect(ingestSourceAsKnowledge).toHaveBeenCalled();
         expect(ingestRepoMetadata).toHaveBeenCalled();
@@ -733,7 +850,7 @@ describe("manual connector regeneration callers (#1356)", () => {
             new Error("Metadata ingest unavailable"),
           );
         const response = await ingest();
-        expect(response.status).toBe(caller === "create" ? 201 : 200);
+        expect(response.status).toBe(okStatus);
         expect(discoverAndUpsertConnections).toHaveBeenCalled();
         expect(prisma.generatedDocument.findMany).not.toHaveBeenCalled();
         expect(prisma.task.upsert).not.toHaveBeenCalled();
@@ -746,21 +863,21 @@ describe("manual connector regeneration callers (#1356)", () => {
           new Error("Source ingest unavailable"),
         );
         const response = await ingest();
-        expect(response.status).toBe(caller === "create" ? 201 : 500);
+        expect(response.status).toBe(failStatus);
         expect(prisma.task.upsert).not.toHaveBeenCalled();
         expect(discoverAndUpsertConnections).not.toHaveBeenCalled();
-        expect((await ingest()).status).toBe(caller === "create" ? 201 : 200);
+        expect((await ingest()).status).toBe(okStatus);
         expectScheduled();
       });
 
       it("surfaces a durable scheduling failure and schedules successfully on replay", async () => {
         vi.mocked(prisma.task.upsert).mockRejectedValueOnce(new Error("Task store unavailable"));
         const response = await ingest();
-        expect(response.status).toBe(caller === "create" ? 201 : 500);
+        expect(response.status).toBe(failStatus);
         expect(prisma.task.upsert).toHaveBeenCalledTimes(1);
         expect(h.tasks.size).toBe(0);
         expect(scheduler.queue.snapshot().queueDepth).toBe(0);
-        expect((await ingest()).status).toBe(caller === "create" ? 201 : 200);
+        expect((await ingest()).status).toBe(okStatus);
         expectScheduled();
       });
 
@@ -768,7 +885,7 @@ describe("manual connector regeneration callers (#1356)", () => {
         it.each(["local", "upload"])(
           "schedules %s ingestion without requiring Git metadata",
           async (provider) => {
-            expect((await ingest(provider)).status).toBe(200);
+            expect((await ingest(provider)).status).toBe(okStatus);
             expect(fetchRepoMetadata).not.toHaveBeenCalled();
             expect(ingestRepoMetadata).not.toHaveBeenCalled();
             expectScheduled();

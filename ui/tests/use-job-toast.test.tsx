@@ -103,6 +103,31 @@ describe("terminalToastText", () => {
 });
 
 describe("useJobToast", () => {
+  // PR #393 review — a reconnect (network blip, or the #414 token-refresh
+  // disconnect+connect) drops room membership on the server. Re-subscribing on
+  // "connect" is what lets the server's replay deliver a terminal event the
+  // page missed; without it a long Deep Ingest stays on "Ingesting…" forever.
+  it("re-subscribes on reconnect and picks up the replayed terminal event", () => {
+    const onTerminal = vi.fn();
+    const { result, unmount } = renderHook(() => useJobToast("job-1", { onTerminal }));
+    expect(fake.emit).toHaveBeenCalledTimes(1);
+
+    act(() => fake.fire("connect", undefined));
+    expect(fake.emit).toHaveBeenLastCalledWith("subscribe:job", { jobId: "job-1" });
+    expect(fake.emit).toHaveBeenCalledTimes(2);
+
+    // The server replays the last transition to the re-subscribed socket.
+    act(() => fake.fire("job:lifecycle", ev({ status: "completed", message: "done" })));
+    expect(result.current?.status).toBe("completed");
+    expect(onTerminal).toHaveBeenCalledTimes(1);
+
+    // Unmounting removes the reconnect listener too.
+    unmount();
+    const emitsAfterUnmount = fake.emit.mock.calls.length;
+    act(() => fake.fire("connect", undefined));
+    expect(fake.emit.mock.calls.length).toBe(emitsAfterUnmount);
+  });
+
   it("subscribes to the job room and exposes the latest progress event", () => {
     const { result } = renderHook(() => useJobToast("job-1"));
     expect(fake.emit).toHaveBeenCalledWith("subscribe:job", { jobId: "job-1" });

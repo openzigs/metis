@@ -324,15 +324,16 @@ describe("genericFailureMessage (#254)", () => {
     );
   });
 
-  it("exposes JOB_KINDS containing the original 3 plus the 6 new kinds (9 total)", () => {
+  it("exposes JOB_KINDS: the original 3, the 6 from #419 and `repo-ingest` (#373) — 10 total", () => {
     expect(JOB_KINDS).toContain("analysis");
     expect(JOB_KINDS).toContain("doc-generation");
     expect(JOB_KINDS).toContain("impact-analysis");
     for (const kind of NEW_JOB_KINDS) {
       expect(JOB_KINDS).toContain(kind);
     }
+    expect(JOB_KINDS).toContain("repo-ingest");
     expect(new Set(JOB_KINDS).size).toBe(JOB_KINDS.length); // no duplicates
-    expect(JOB_KINDS).toHaveLength(9);
+    expect(JOB_KINDS).toHaveLength(10);
   });
 
   it("emits only the generic message on a failed event — never the raw error", () => {

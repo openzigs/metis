@@ -33,15 +33,14 @@ export interface ConnectorIngestSummary {
   chunks: number;
   units: number;
 }
-export interface DeepIngestSummary {
-  codeGraph: {
-    filesScanned: number;
-    filesParsed: number;
-    symbolsUpserted: number;
-    edgesUpserted: number;
-  };
-  sourceKnowledge: { documentsCreated: number; chunkCount: number };
-  cloneSizeBytes: number;
+/**
+ * #373 — Deep Ingest answers 202 at once; the run reports on the
+ * `job:lifecycle` bus (kind `repo-ingest`) under this job id.
+ */
+export interface DeepIngestStarted {
+  jobId: string;
+  connectorId: string;
+  status: "started";
 }
 export interface RefreshIngestSummary {
   pulled: boolean;
@@ -115,7 +114,7 @@ export const repoConnectorsApi = {
       method: "POST",
     }),
   deepIngest: (projectId: Id, id: Id) =>
-    apiFetch<DeepIngestSummary>(`${repoBase(projectId, id)}/deep-ingest`, {
+    apiFetch<DeepIngestStarted>(`${repoBase(projectId, id)}/deep-ingest`, {
       method: "POST",
     }),
   refreshIngest: (projectId: Id, id: Id) =>

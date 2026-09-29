@@ -130,6 +130,7 @@ const KIND_LABELS: Record<JobKind, string> = {
   "embeddings-reindex": "Embeddings reindex",
   "spec-kit": "Spec Kit",
   "overview-regenerate": "Overview regenerate",
+  "repo-ingest": "Repository deep ingest",
 };
 
 export function jobKindLabel(kind: JobKind): string {
