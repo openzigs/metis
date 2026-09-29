@@ -2,6 +2,7 @@
  * User, Role, Permission, AuditLog domain schemas.
  */
 import { z } from "zod";
+import { patchSchemaOf } from "./zod-patch.js";
 import {
   PERMISSION_KEYS,
   ROLE_KEYS,
@@ -38,7 +39,8 @@ export const createUserSchema = z.object({
 });
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 
-export const updateUserSchema = createUserSchema.partial().extend({ id: idSchema });
+// #346 — `patchSchemaOf`, not `.partial()`: zod 4 would fill `status: "active"`.
+export const updateUserSchema = patchSchemaOf(createUserSchema).extend({ id: idSchema });
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
 
 // ---- Role ------------------------------------------------------------------

@@ -56,6 +56,8 @@ export * from "./model-catalog.js";
 export * from "./conversation.js";
 // Epic #129 — one agent definition, progressive skills and sub-agents.
 export * from "./agents.js";
+// #346 — PATCH schemas whose omitted fields stay omitted under zod 4.
+export * from "./zod-patch.js";
 
 export const SHARED_PACKAGE_NAME = "@metis/shared";
 

@@ -3,7 +3,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import type { ApiResponse } from "@metis/shared";
+import { patchSchemaOf, type ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
@@ -41,7 +41,11 @@ const upsertSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
-const patchSchema = upsertSchema.partial();
+// #346 — `patchSchemaOf`, not `upsertSchema.partial()`: under zod 4 `.partial()`
+// still fills an inner `.default()` for an absent key, so a rename wrote
+// `config: {}` (dropping the signing secret) and `enabled: true` (re-enabling a
+// disabled trigger). An omitted field must stay undefined so it is not written.
+const patchSchema = patchSchemaOf(upsertSchema);
 
 function parseConfig(raw: unknown): Record<string, unknown> {
   if (raw == null) return {};

@@ -5,6 +5,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
+import { patchSchemaOf } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
@@ -111,7 +112,7 @@ const createSchema = agentFields.extend({
  * `undefined` so the service leaves that column untouched; `null` still
  * clears the nullable fields (model, reasoning effort, approval override).
  */
-const patchSchema = agentFields.omit({ projectId: true }).partial();
+const patchSchema = patchSchemaOf(agentFields.omit({ projectId: true }));
 
 export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
   const r = Router();

@@ -7,6 +7,7 @@
  * tokens by writing the secret to the vault first, then storing only the ref.
  */
 import { z } from "zod";
+import { patchSchemaOf } from "./zod-patch.js";
 import { CONNECTOR_STATUSES, DB_DRIVERS, REPO_PROVIDERS } from "./constants.js";
 import { dateSchema, idSchema, timestampsSchema } from "./common.js";
 
@@ -153,7 +154,9 @@ export const updateRepoConnectorSchema = z.object({
   ownerOrOrg: ownerOrgSchema.optional(),
   repoName: repoNameSchema.optional(),
   localPath: localPathSchema.optional(),
-  defaultBranch: repoConnectorSchema.shape.defaultBranch.optional(),
+  // #346 — `.removeDefault()`: under zod 4 an absent key still reaches the inner
+  // `.default("main")`, so every PATCH that omitted it reset the branch to main.
+  defaultBranch: repoConnectorSchema.shape.defaultBranch.removeDefault().optional(),
   apiBaseUrl: z.string().url().nullable().optional(),
   secretRef: vaultRefOrEmpty.optional(),
   autoIngest: z.boolean().optional(),
@@ -208,9 +211,9 @@ export const createDatabaseConnectorSchema = z.object({
 });
 export type CreateDatabaseConnectorInput = z.infer<typeof createDatabaseConnectorSchema>;
 
-export const updateDatabaseConnectorSchema = createDatabaseConnectorSchema
-  .partial()
-  .extend({ id: idSchema });
+export const updateDatabaseConnectorSchema = patchSchemaOf(createDatabaseConnectorSchema).extend({
+  id: idSchema,
+});
 export type UpdateDatabaseConnectorInput = z.infer<typeof updateDatabaseConnectorSchema>;
 
 // ---- Schema introspection (returned by /inspect) ---------------------------

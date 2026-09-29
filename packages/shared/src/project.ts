@@ -2,6 +2,7 @@
  * Project, Document, KnowledgeChunk, RepoConnection, DatabaseConnection schemas.
  */
 import { z } from "zod";
+import { patchSchemaOf } from "./zod-patch.js";
 import {
   DB_DRIVERS,
   DOCUMENT_STATUSES,
@@ -75,7 +76,9 @@ export const createProjectWithRepoSchema = createProjectSchema.extend({
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 export type CreateProjectWithRepoInput = z.infer<typeof createProjectWithRepoSchema>;
 
-export const updateProjectSchema = createProjectSchema.partial().extend({ id: idSchema });
+// #346 — `patchSchemaOf`, not `.partial()`: zod 4 would fill `description: ""`
+// into every PATCH that omitted it.
+export const updateProjectSchema = patchSchemaOf(createProjectSchema).extend({ id: idSchema });
 export type UpdateProjectInput = z.infer<typeof updateProjectSchema>;
 
 /** Epic #701 — toggle credential extraction during repo scans. */

@@ -8,7 +8,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import type { ApiResponse } from "@metis/shared";
+import { patchSchemaOf, type ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requireWorkspaceRole } from "../middleware/require-workspace-role.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -45,7 +45,10 @@ const ruleSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
-const ruleUpdateSchema = ruleSchema.partial();
+// #346 — `patchSchemaOf`, not `ruleSchema.partial()`: under zod 4 `.partial()`
+// still fills an inner `.default()` for an absent key, so renaming a rule reset
+// its basis and cooldown and re-enabled a disabled rule.
+const ruleUpdateSchema = patchSchemaOf(ruleSchema);
 
 // Per-type config shape (parsed from the `config` JSON blob) — validated so a
 // slack channel always carries a channel id and a pagerduty channel a routing
@@ -91,7 +94,7 @@ export const channelSchema = z
       }
     } else if (val.type === "slack") {
       // Slack needs a channel id, from either `target` or `config.channel`.
-      const cfg = slackConfigSchema.partial().safeParse(parsedConfig);
+      const cfg = patchSchemaOf(slackConfigSchema).safeParse(parsedConfig);
       const hasChannel = (cfg.success && cfg.data.channel) || val.target.trim().length > 0;
       if (!hasChannel) {
         ctx.addIssue({
