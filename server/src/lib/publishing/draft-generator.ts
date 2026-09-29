@@ -26,6 +26,7 @@ import {
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { computeDedupHash } from "./dedup.js";
+import { buildEpicTitle } from "./epic-title.js";
 import { PublishError } from "./types.js";
 import { findTemplate } from "./template-service.js";
 import { renderToMarkdown, buildTemplatePrompt } from "./template-renderer.js";
@@ -87,7 +88,8 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   };
 
   // ----- Epic draft -----
-  const epicTitle = `[Epic] ${project.name} — Analysis ${analysis.id.slice(0, 8)}`;
+  // #23 — titled from the analysed feature, not the analysis id.
+  const epicTitle = buildEpicTitle(project.name, analysis);
   const epicHash = computeDedupHash(opts.targetOwner, opts.targetRepo, epicTitle);
   const epicBody = renderEpicBody({ project, analysis, requirements });
   const epicLabels = uniq([

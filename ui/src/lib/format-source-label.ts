@@ -12,13 +12,12 @@
  * the full raw id (returned as `rawId`) so it can still be shown in a hover
  * `title`/tooltip and used for any copy / deep-link affordance.
  *
- * Repo label resolution: a connector's human repo name is NOT cheaply available
- * client-side (a `DocumentRow` only carries `filename`, which *is* the raw id
- * for connector docs; resolving the connector's name would cost an API call per
- * unique connector). So the friendly label falls back to a short form of the
- * `connectorId` as the repo token — distinct enough to disambiguate the same
- * filename across repos — and the full id stays in the tooltip. See the
- * `repoLabel` derivation below.
+ * Repo label resolution: a `DocumentRow` only carries `filename`, which *is*
+ * the raw id for connector docs. Callers that know the project's connectors
+ * pass a `repoNames` map (see `useRepoNames`, #23) and the label shows the
+ * repository's name. Without one — or for a connector no longer in the map —
+ * it falls back to a short form of the `connectorId`, distinct enough to
+ * disambiguate the same filename across repos; the full id stays in the tooltip.
  *
  * The helper is pure and side-effect-free so it is trivially unit-testable and
  * reusable across every render site. Anything that is NOT in the
@@ -75,10 +74,14 @@ function repoTokenFromConnectorId(connectorId: string): string {
 /**
  * Turn a raw document/source id into a `{ label, rawId, basename, ... }`
  * descriptor. For `connector:repo:<connectorId>:<path>` ids the `label` is
- * `"<basename> — <repoLabel>"`; for anything else the raw id is returned
+ * `"<basename> — <repoLabel>"`, where `repoLabel` is the repository name from
+ * `repoNames` when known; for anything else the raw id is returned
  * unchanged (graceful degradation — never throws).
  */
-export function formatSourceLabel(rawId: string): SourceLabel {
+export function formatSourceLabel(
+  rawId: string,
+  repoNames?: Readonly<Record<string, string>>,
+): SourceLabel {
   const raw = (rawId ?? "").trim();
 
   // Graceful degradation: empty / non-connector / malformed ids fall back to
@@ -101,7 +104,13 @@ export function formatSourceLabel(rawId: string): SourceLabel {
   const path = match[2].trim();
   const segments = path.split("/").filter(Boolean);
   const basename = segments.length ? segments[segments.length - 1] : "";
-  const repoLabel = repoTokenFromConnectorId(connectorId);
+  // #23 — own-property lookup only, so an id like "constructor" can never
+  // resolve to something inherited from Object.prototype.
+  const resolved =
+    repoNames && Object.prototype.hasOwnProperty.call(repoNames, connectorId)
+      ? repoNames[connectorId]?.trim()
+      : undefined;
+  const repoLabel = resolved || repoTokenFromConnectorId(connectorId);
 
   // A path could be degenerate (e.g. only slashes / whitespace) and yield no
   // real file segment. Rather than emit a misleading empty or slash-only label,

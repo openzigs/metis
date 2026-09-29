@@ -27,6 +27,9 @@ const fakeProject = { id: "proj_1", name: "Apollo", deletedAt: null as Date | nu
 const fakeAnalysis = {
   id: "analysis_1",
   projectId: "proj_1",
+  startedAt: new Date("2026-09-29T14:05:00.000Z"),
+  metadata: JSON.stringify({ extraInstructions: "Self-service password reset\nDetails…" }) as
+    string | null,
   deletedAt: null as Date | null,
 };
 
@@ -157,6 +160,42 @@ describe("generateDrafts", () => {
     expect(second.refreshed).toBe(3);
     // Total drafts unchanged — no duplicates.
     expect(drafts.size).toBe(3);
+  });
+
+  // #23 — the epic is titled from the analysed feature, never the analysis id.
+  it("titles the epic from the analysed feature and names it as each feature's parent", async () => {
+    await generateDrafts({
+      projectId: "proj_1",
+      analysisId: "analysis_1",
+      targetOwner: "acme",
+      targetRepo: "metis",
+    });
+    const rows = [...drafts.values()];
+    const epic = rows.find((d) => d.draftType === "epic");
+    expect(epic?.title).toBe("[Epic] Apollo — Self-service password reset");
+    expect(epic?.title).not.toContain("analysis");
+    const features = rows.filter((d) => d.draftType !== "epic");
+    expect(features.length).toBe(2);
+    for (const f of features) {
+      expect(f.body).toContain("> Parent epic: **[Epic] Apollo — Self-service password reset**");
+    }
+  });
+
+  it("falls back to the run's start time when the analysis names no feature", async () => {
+    const saved = fakeAnalysis.metadata;
+    fakeAnalysis.metadata = null;
+    try {
+      await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      });
+    } finally {
+      fakeAnalysis.metadata = saved;
+    }
+    const epic = [...drafts.values()].find((d) => d.draftType === "epic");
+    expect(epic?.title).toBe("[Epic] Apollo — Analysis of 2026-09-29 14:05 UTC");
   });
 
   it("rejects when project missing", async () => {

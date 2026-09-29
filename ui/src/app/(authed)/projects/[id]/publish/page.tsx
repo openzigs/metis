@@ -130,7 +130,13 @@ export default function PublishingPage() {
 
   const approve = useMutation({
     mutationFn: (id: string) => publishingApi.approveDraft(projectId, id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.drafts(projectId) }),
+    onSuccess: (_draft, id) => {
+      // #23 — approving a draft is a decision to publish it, so it joins the
+      // batch selection. It used to leave "0 drafts selected" and the dry-run
+      // disabled after every draft had been approved.
+      setSelectedDrafts((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+      return qc.invalidateQueries({ queryKey: keys.drafts(projectId) });
+    },
   });
 
   // ── Diff preview ───────────────────────────────────────────────────────
@@ -649,6 +655,11 @@ export default function PublishingPage() {
           <span className="text-xs text-muted-foreground">
             {selectedDrafts.size} drafts selected
           </span>
+          {selectedDrafts.size === 0 && (drafts.data?.length ?? 0) > 0 && (
+            <span className="text-xs text-muted-foreground" data-testid="publish-selection-hint">
+              Tick the drafts to include in the list above — approving a draft also selects it.
+            </span>
+          )}
           {publish.error && !publishGateBlock && (
             <span className="text-xs text-destructive" role="alert" data-testid="publish-error">
               {publish.error instanceof ApiError ? publish.error.message : String(publish.error)}

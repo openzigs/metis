@@ -1,0 +1,58 @@
+/**
+ * Issue #23 — the Analysis document picker and the Workbench labelled repo
+ * files with the last six characters of the connector id. `useRepoNames`
+ * resolves each connector id to the repository's name.
+ */
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { renderHook, waitFor } from "@testing-library/react";
+import { makeWrapper } from "./test-utils";
+
+vi.mock("@/lib/connectors-api", () => ({ repoConnectorsApi: { list: vi.fn() } }));
+
+import { repoConnectorsApi } from "@/lib/connectors-api";
+import { repoNamesById, useRepoNames } from "@/hooks/use-repo-names";
+
+const list = repoConnectorsApi.list as unknown as ReturnType<typeof vi.fn>;
+
+beforeEach(() => list.mockReset());
+
+describe("repoNamesById", () => {
+  it("maps each connector id to its repository name, else its label", () => {
+    expect(
+      repoNamesById([
+        { id: "c1", repoName: "metis", label: "Metis (main)" },
+        { id: "c2", repoName: null, label: "Local checkout" },
+        { id: "c3", repoName: "  ", label: "Upload" },
+      ]),
+    ).toEqual({ c1: "metis", c2: "Local checkout", c3: "Upload" });
+  });
+
+  it("returns an empty map for no connectors", () => {
+    expect(repoNamesById(undefined)).toEqual({});
+    expect(repoNamesById([])).toEqual({});
+  });
+
+  it("returns an empty map for a non-array payload instead of throwing", () => {
+    expect(repoNamesById({})).toEqual({});
+    expect(repoNamesById({ items: [{ id: "c1", label: "x" }] })).toEqual({});
+  });
+});
+
+describe("useRepoNames", () => {
+  it("loads the project's repo connectors and returns the id → name map", async () => {
+    list.mockResolvedValue([{ id: "c1", repoName: "metis", label: "x" }]);
+    const { result } = renderHook(() => useRepoNames("proj-1"), {
+      wrapper: makeWrapper({ withAuth: false }),
+    });
+    await waitFor(() => expect(result.current).toEqual({ c1: "metis" }));
+    expect(list).toHaveBeenCalledWith("proj-1");
+  });
+
+  it("does not fetch without a project", () => {
+    const { result } = renderHook(() => useRepoNames(null), {
+      wrapper: makeWrapper({ withAuth: false }),
+    });
+    expect(result.current).toEqual({});
+    expect(list).not.toHaveBeenCalled();
+  });
+});

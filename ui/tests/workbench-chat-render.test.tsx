@@ -43,6 +43,12 @@ vi.mock("@/lib/projects-api", () => ({
   documentsApi: { list: vi.fn() },
 }));
 
+// #23 — the Workbench resolves connector ids to repository names.
+const repoListMock = vi.fn().mockResolvedValue([]);
+vi.mock("@/lib/connectors-api", () => ({
+  repoConnectorsApi: { list: (...args: unknown[]) => repoListMock(...args) },
+}));
+
 vi.mock("@/lib/analysis-api", () => ({
   analysisApi: { listForProject: vi.fn().mockResolvedValue({ items: [] }) },
 }));
@@ -176,5 +182,30 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     // The full original string is preserved as a hover title for traceability.
     const row = screen.getByTestId("workbench-doc-doc-repo");
     expect(row.querySelector('[title^="connector:repo:"]')).not.toBeNull();
+  });
+
+  it("labels repository documents with the repository's name when it is known (#23)", async () => {
+    repoListMock.mockResolvedValueOnce([
+      { id: "cmexample0000000000acmerp", repoName: "wms-core", label: "WMS" },
+    ]);
+    documentsListMock.mockResolvedValue({
+      items: [
+        {
+          id: "doc-repo",
+          filename: "connector:repo:cmexample0000000000acmerp:README.md",
+          status: "ready",
+        },
+      ],
+    });
+
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(<WorkbenchPage />, { wrapper: Wrapper });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("workbench-doc-doc-repo")).toHaveTextContent(
+        "README.md — wms-core",
+      ),
+    );
+    expect(screen.getByTestId("workbench-doc-doc-repo").textContent).not.toContain("acmerp");
   });
 });

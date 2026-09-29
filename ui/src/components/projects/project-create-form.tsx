@@ -13,6 +13,9 @@
  *    the matching field via `mapFieldErrors`.
  *  - Friendly server errors surface through `useAppMutation`'s typed-ApiError
  *    toast; a non-field error also shows a top-level alert.
+ *  - #23 — the Slug is derived from the Name until the user edits it by hand
+ *    (clearing it resumes the derivation), and when the Name yields no slug the
+ *    reason Create is disabled is shown straight away.
  */
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -25,7 +28,7 @@ import {
   requiredFieldErrors,
   type FieldErrorMap,
 } from "@/lib/form-validation";
-import { slugSuggestionMessage } from "@/lib/error-suggestion";
+import { normalizeSlug, slugSuggestionMessage } from "@/lib/error-suggestion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -51,6 +54,8 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
 
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
+  // #23 — true once the user has typed their own slug; until then it follows Name.
+  const [slugEdited, setSlugEdited] = useState(false);
   const [description, setDescription] = useState("");
   const [showRepo, setShowRepo] = useState(false);
   const [repoOwner, setRepoOwner] = useState("");
@@ -107,6 +112,7 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
       void qc.invalidateQueries({ queryKey: queryKeys.projects.all });
       setName("");
       setSlug("");
+      setSlugEdited(false);
       setDescription("");
       setShowRepo(false);
       setRepoOwner("");
@@ -130,6 +136,11 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
 
   const errorFor = (field: string): string | undefined => {
     if (serverFieldErrors[field]) return serverFieldErrors[field];
+    // #23 — a Name that yields no slug leaves Create disabled; say why at once
+    // rather than waiting for a blur or a submit on a button that cannot fire.
+    if (field === "slug" && name.trim() !== "" && slug.trim() === "") {
+      return requiredErrors.slug;
+    }
     if (!touched[field]) return undefined;
     if (requiredErrors[field]) return requiredErrors[field];
     if (field === "slug") return slugFormatError;
@@ -156,6 +167,7 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
           value={name}
           onChange={(e) => {
             setName(e.target.value);
+            if (!slugEdited) setSlug(normalizeSlug(e.target.value));
             setServerFieldErrors((prev) => {
               if (!prev.name) return prev;
               const { name: _omit, ...rest } = prev;
@@ -179,13 +191,21 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
         <Input
           id="slug"
           value={slug}
-          onChange={(e) => setSlug(e.target.value.toLowerCase())}
+          onChange={(e) => {
+            const next = e.target.value.toLowerCase();
+            setSlug(next);
+            // Clearing the field hands it back to the Name-derived value.
+            setSlugEdited(next !== "");
+          }}
           onBlur={() => markTouched("slug")}
           pattern="[a-z0-9][a-z0-9\-]*"
           aria-invalid={slugError ? true : undefined}
-          aria-describedby={slugError ? "slug-error" : undefined}
+          aria-describedby={slugError ? "slug-help slug-error" : "slug-help"}
           data-testid="project-slug-input"
         />
+        <p id="slug-help" className="text-xs text-muted-foreground">
+          Used in URLs. Filled in from the name — edit it to choose your own.
+        </p>
         {slugError ? (
           <p id="slug-error" role="alert" className="text-xs text-destructive">
             {slugError}
