@@ -16,7 +16,8 @@ import type {
 } from "@metis/shared";
 import { ulid } from "ulid";
 import { prisma } from "../../prisma.js";
-import { getVaultService, SecretNotFoundError } from "../../vault/vault-service.js";
+import { getVaultService } from "../../vault/vault-service.js";
+import { rotateOrCreate } from "../../vault/secret-rotation.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { ConnectorError } from "../types.js";
@@ -103,31 +104,29 @@ function newJiraSecretLabel(kind: "jira" | "jira-ca", projectId: string, label: 
  * is still live; otherwise (none yet, or soft-deleted) create a new one under a
  * collision-free label. Returns the NEW secret's id, or `null` when rotated.
  *
- * The liveness check IS the rotation: `rotate` updates the one row by id and
- * refuses a soft-deleted one, so there is no list of every project secret and
- * no window between a check and the write for a delete to slip into.
+ * #358 — goes through `rotateOrCreate` with the writer as owner: a secret is
+ * rewritten in place only by the principal that created it, and anyone else
+ * gets a fresh secret they own. `createdById` then names whoever supplied the
+ * current token, which the #344 binding check on PATCH relies on.
  */
 async function rotateOrReplace(
   secretId: string | null,
   value: string,
-  fresh: { kind: "jira" | "jira-ca"; projectId: string; label: string; description: string },
+  fresh: {
+    kind: "jira" | "jira-ca";
+    projectId: string;
+    label: string;
+    description: string;
+    createdById: string;
+  },
 ): Promise<string | null> {
-  const vault = getVaultService();
-  if (secretId) {
-    try {
-      await vault.rotate(secretId, value);
-      return null;
-    } catch (err) {
-      if (!(err instanceof SecretNotFoundError)) throw err;
-    }
-  }
-  const created = await vault.create(
-    newJiraSecretLabel(fresh.kind, fresh.projectId, fresh.label),
-    value,
-    "project",
-    { description: fresh.description },
-  );
-  return created.id;
+  const written = await rotateOrCreate(getVaultService(), secretId, value, {
+    label: `${fresh.kind}-${fresh.projectId}-${fresh.label}`.replace(/[^a-zA-Z0-9_.-]/g, "-"),
+    scope: "project",
+    description: fresh.description,
+    createdById: fresh.createdById,
+  });
+  return written.created ? written.id : null;
 }
 
 /** Prisma's unique-index violation (`P2002`), matched on its code alone. */
@@ -193,6 +192,7 @@ export async function createJiraConnection(
   const secretLabel = newJiraSecretLabel("jira", projectId, input.label);
   const secret = await vault.create(secretLabel, input.apiToken, "project", {
     description: `Jira ${input.edition} API token for ${input.label}`,
+    createdById: actorId,
   });
 
   // Store TLS CA cert in vault if provided
@@ -201,6 +201,7 @@ export async function createJiraConnection(
     const caLabel = newJiraSecretLabel("jira-ca", projectId, input.label);
     const caSecret = await vault.create(caLabel, input.tlsCaCert, "project", {
       description: `TLS CA cert for Jira ${input.label}`,
+      createdById: actorId,
     });
     tlsCaSecretId = caSecret.id;
   }
@@ -288,6 +289,7 @@ export async function updateJiraConnection(
       projectId: existing.projectId,
       label,
       description: `Jira ${input.edition ?? existing.edition} API token for ${label}`,
+      createdById: actorId,
     });
     if (replaced) data.secretId = replaced;
     else rotated.push("apiToken");
@@ -301,6 +303,7 @@ export async function updateJiraConnection(
         projectId: existing.projectId,
         label,
         description: `TLS CA cert for Jira ${label}`,
+        createdById: actorId,
       });
       if (replaced) data.tlsCaSecretId = replaced;
       else rotated.push("tlsCaCert");

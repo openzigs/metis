@@ -25,12 +25,12 @@ export const ROLE_HIERARCHY: Record<RoleKey, number> = {
  * - `admin` gets every permission — and is the ONLY role holding
  *   `vault.reveal` (#324): the other roles may list and use vault secrets by
  *   reference (`vault.read`), but no HTTP response returns them the plaintext.
- *   On DB and repo connectors and MCP servers, using a secret by reference is
- *   bound to its destination (#344): a non-admin may attach only secrets they
- *   created, and may not move one of those resources while it holds someone
- *   else's (lib/vault/secret-binding.ts). Other caller-chosen destinations
- *   (test-management connections, Projects v2 boards, publishing) are NOT
- *   bound yet; see #358.
+ *   Wherever the caller also chooses where a secret is sent, using it by
+ *   reference is bound to its destination (#344, #358): a non-admin may attach
+ *   only secrets they created, and may not move a resource while it holds
+ *   someone else's (lib/vault/secret-binding.ts). That covers DB and repo
+ *   connectors, MCP servers, Jira and test-management connections, Projects v2
+ *   board listing and live publishing to a non-github.com base URL.
  * - `coordinator` runs project lifecycle + publishes issues.
  * - `developer` runs analyses, drafts issues, reads vault.
  * - `reader` is read-only on projects/documents/analyses.

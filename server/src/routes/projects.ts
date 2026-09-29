@@ -33,6 +33,7 @@ import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { seedDefaultTemplates } from "../lib/publishing/template-service.js";
+import { assertPublishSecretBinding } from "../lib/publishing/publish-secret-binding.js";
 import {
   archiveProject,
   createProject,
@@ -891,6 +892,13 @@ export function projectsRouter(): Router {
         }
         const targetRepo = typeof body.targetRepo === "string" ? body.targetRepo : undefined;
         const targetBaseUrl = typeof body.targetBaseUrl === "string" ? body.targetBaseUrl : null;
+        // #358 — the caller picks both the secret and the host it is sent to.
+        if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+        await assertPublishSecretBinding(
+          req.user,
+          { secretRef, baseUrl: targetBaseUrl },
+          { type: "github_projects_v2", id: String(req.params.id) },
+        );
         const boards = await listGitHubProjectsV2Boards({
           secretRef,
           targetOwner,

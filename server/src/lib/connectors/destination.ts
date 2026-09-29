@@ -117,3 +117,62 @@ export function repoDestinationChanged(
   }
   return false;
 }
+
+/**
+ * #358 — does a Jira connection PATCH change where its API token is sent?
+ * The base URL and proxy choose the peer; turning off certificate checks or
+ * supplying a new CA lets a peer on the path impersonate the host. Edition and
+ * username change how the token is presented, not to whom. Removing a CA is a
+ * stricter check, not a new destination.
+ */
+export function jiraDestinationChanged(
+  existing: { baseUrl: string; proxyUrl: string | null; tlsRejectUnauthorized: boolean },
+  input: {
+    baseUrl?: string;
+    proxyUrl?: string | null;
+    tlsRejectUnauthorized?: boolean;
+    tlsCaCert?: string | null;
+  },
+): boolean {
+  return (
+    (input.baseUrl !== undefined && input.baseUrl !== existing.baseUrl) ||
+    (input.proxyUrl !== undefined && (input.proxyUrl ?? null) !== existing.proxyUrl) ||
+    (input.tlsRejectUnauthorized !== undefined &&
+      input.tlsRejectUnauthorized !== existing.tlsRejectUnauthorized) ||
+    Boolean(input.tlsCaCert)
+  );
+}
+
+/** The test-management counterpart of {@link jiraDestinationChanged}. */
+export function testMgmtDestinationChanged(
+  existing: { baseUrl: string; proxyConfigJson: string | null; tlsConfigJson: string | null },
+  input: {
+    baseUrl?: string;
+    proxyConfig?: { url: string } | null;
+    tlsConfig?: { rejectUnauthorized?: boolean; caCert?: string | null } | null;
+  },
+): boolean {
+  if (input.baseUrl !== undefined && input.baseUrl !== existing.baseUrl) return true;
+  if (input.proxyConfig !== undefined) {
+    const before = existing.proxyConfigJson ? parseOrNull(existing.proxyConfigJson) : null;
+    if (!isDeepStrictEqual(input.proxyConfig ?? null, before)) return true;
+  }
+  if (input.tlsConfig !== undefined) {
+    if (input.tlsConfig?.caCert) return true;
+    const before = existing.tlsConfigJson
+      ? (parseOrNull(existing.tlsConfigJson) as { rejectUnauthorized?: boolean } | null)
+      : null;
+    const rejectBefore = before?.rejectUnauthorized ?? true;
+    const rejectAfter = input.tlsConfig?.rejectUnauthorized ?? true;
+    if (rejectBefore !== rejectAfter) return true;
+  }
+  return false;
+}
+
+function parseOrNull(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
