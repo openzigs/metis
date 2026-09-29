@@ -970,6 +970,9 @@ export default function AnalysisPage(): React.ReactElement {
                     requirementCount={detail.data.requirements.length}
                     hasFindings={detail.data.agentResults.some((a) => a.findings.length > 0)}
                     ticketStatus={approvals.data?.ticketStatus}
+                    approvalsState={
+                      approvals.isError ? "error" : approvals.data ? "ready" : "loading"
+                    }
                   />
                 </div>
                 {/* Epic #727 (#740) — filter findings by verification status. */}

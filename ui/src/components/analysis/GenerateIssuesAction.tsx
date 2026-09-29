@@ -19,6 +19,12 @@ export interface GenerateIssuesActionProps {
   hasFindings: boolean;
   /** The approval gate for this run; absent while loading or unavailable. */
   ticketStatus?: TicketStatus | null;
+  /**
+   * Where the approvals query stands. Until it is `ready` the gate is unknown,
+   * so the button must not claim "No requirements" — the very confusion #362
+   * removes (PR #404 review).
+   */
+  approvalsState?: "loading" | "error" | "ready";
 }
 
 const LABEL = "Generate GitHub Issues";
@@ -39,6 +45,7 @@ export function GenerateIssuesAction({
   requirementCount,
   hasFindings,
   ticketStatus,
+  approvalsState = "ready",
 }: GenerateIssuesActionProps): React.ReactElement | null {
   if (status !== "completed") return null;
 
@@ -55,7 +62,8 @@ export function GenerateIssuesAction({
   }
 
   const gated = ticketStatus != null && !ticketStatus.allowed;
-  if (!gated && !hasFindings) return null;
+  const gateUnknown = approvalsState !== "ready";
+  if (!gated && !gateUnknown && !hasFindings) return null;
 
   const outstanding: string[] = [];
   if (gated && ticketStatus.pendingCount > 0)
@@ -79,7 +87,18 @@ export function GenerateIssuesAction({
         data-testid="generate-issues-reason"
         className="text-xs text-muted-foreground"
       >
-        {gated ? (
+        {gateUnknown ? (
+          approvalsState === "error" ? (
+            <>
+              Couldn&apos;t check the approval gate for this run.{" "}
+              <a href="#approvals" className="font-medium underline">
+                Go to approvals
+              </a>
+            </>
+          ) : (
+            "Checking approvals…"
+          )
+        ) : gated ? (
           <>
             {outstanding.length > 0
               ? `${outstanding.join(", ")} approval(s) must be resolved before requirements exist.`

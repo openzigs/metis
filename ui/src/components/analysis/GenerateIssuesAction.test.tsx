@@ -59,6 +59,27 @@ describe("GenerateIssuesAction (#362)", () => {
     );
   });
 
+  // PR #404 review — while the gate is unknown the button must not claim
+  // "No requirements", which is exactly the confusion #362 removes.
+  it("says it is checking approvals, not 'no requirements', while the gate is loading", () => {
+    renderAction({ ticketStatus: undefined, approvalsState: "loading" });
+    expect(screen.getByRole("button", { name: "Generate GitHub Issues" })).toBeDisabled();
+    expect(screen.getByTestId("generate-issues-reason")).toHaveTextContent("Checking approvals…");
+    expect(screen.getByTestId("generate-issues-reason")).not.toHaveTextContent(/No requirements/);
+  });
+
+  it("says the gate could not be checked, and links to approvals, when the query failed", () => {
+    renderAction({ ticketStatus: undefined, approvalsState: "error", hasFindings: false });
+    expect(screen.getByRole("button", { name: "Generate GitHub Issues" })).toBeDisabled();
+    expect(screen.getByTestId("generate-issues-reason")).toHaveTextContent(
+      "Couldn't check the approval gate",
+    );
+    expect(screen.getByRole("link", { name: "Go to approvals" })).toHaveAttribute(
+      "href",
+      "#approvals",
+    );
+  });
+
   it("is disabled with a plain reason when findings exist but no requirements and no gate", () => {
     renderAction({ ticketStatus: undefined });
     expect(screen.getByRole("button", { name: "Generate GitHub Issues" })).toBeDisabled();
