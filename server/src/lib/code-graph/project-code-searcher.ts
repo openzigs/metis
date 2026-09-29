@@ -41,14 +41,25 @@ import { createSymbolVectorStore } from "./symbol-embedding-service.js";
 import type { EmbedService } from "./symbol-embeddings.js";
 
 /**
- * Cap on symbols loaded into the in-memory BM25 index per query.
- *
- * This bounds the LEXICAL index only. #797: vector hits that fall outside it are
- * hydrated by id (see {@link SymbolIndex.getSymbolsByIds}), so a semantic hit is
- * never lost to this window — which is what used to happen, silently, on any repo
- * with more than 5000 symbols (METIS has ~15k).
+ * #372 — projects whose full lexical symbol set is held in memory (LRU). Each entry
+ * also keeps its BM25 index alive through `HybridCodeSearch`'s weak cache; measured
+ * at ~27 MB of retained heap for a 24k-symbol project, so four bound the worst case
+ * near 110 MB.
  */
-const MAX_INDEXED_SYMBOLS = 5000;
+const MAX_CACHED_PROJECTS = 4;
+
+interface CachedSymbols {
+  fingerprint: string;
+  symbols: SearchableSymbol[];
+}
+
+/** Insertion order is recency order: the first key is the least recently used. */
+const symbolCache = new Map<string, CachedSymbols>();
+
+/** Test seam: drop every cached project symbol set. */
+export function __resetSymbolIndexCache(): void {
+  symbolCache.clear();
+}
 
 const SYMBOL_SELECT = {
   id: true,
@@ -80,20 +91,54 @@ function toSearchable(r: SymbolRow): SearchableSymbol {
  * Prisma-backed symbol index feeding the BM25 keyword scorer.
  *
  * Exported so the #797 tests and the `--wired` eval can drive the PRODUCTION
- * lexical channel (window and all) rather than a hand-built stand-in.
+ * lexical channel rather than a hand-built stand-in.
+ *
+ * #372: `getSymbols` returns EVERY symbol in the project. It used to take the
+ * first 5,000 by id, which on a 17k-symbol project left two thirds of the symbols
+ * (all of `ui/src`, chosen by cuid order) lexically unsearchable, so an exact
+ * name query could miss its own symbol.
+ *
+ * Loading and tokenizing every symbol on every query is what the cap was avoiding,
+ * so the full set is cached per project (see {@link symbolCache}) and returned as
+ * the SAME array while the project's symbols are unchanged; `HybridCodeSearch`
+ * keys its shared BM25 index on that identity, so the index is built once per
+ * change rather than once per query. A DB-side candidate filter was rejected:
+ * BM25's IDF and average document length need the whole corpus, so ranking a
+ * prefiltered subset would silently change the scores the fusion weights
+ * (`DEFAULT_WEIGHTS`) were tuned against.
  */
 export const prismaSymbolIndex: SymbolIndex = {
   async getSymbols(projectId: string): Promise<SearchableSymbol[]> {
+    // Every symbol write is a create or a delete (`ingest.ts`, `schema-graph.ts`
+    // — no update), so a create moves `max(createdAt)` and a pure delete moves the
+    // count: together they change whenever the project's symbol set does.
+    const agg = await prisma.codeSymbol.aggregate({
+      where: { projectId },
+      _count: { _all: true },
+      _max: { createdAt: true },
+    });
+    const fingerprint = `${agg._count._all}|${agg._max.createdAt?.getTime() ?? ""}`;
+    const cached = symbolCache.get(projectId);
+    if (cached?.fingerprint === fingerprint) {
+      // Refresh recency for the LRU.
+      symbolCache.delete(projectId);
+      symbolCache.set(projectId, cached);
+      return cached.symbols;
+    }
+
     const rows = await prisma.codeSymbol.findMany({
       where: { projectId },
       select: SYMBOL_SELECT,
-      // Deterministic window: without an order the DB may return a different
-      // arbitrary 5000 rows per query, so the BM25 cache key thrashes and the
-      // lexical ranking is not reproducible.
+      // Stable order keeps BM25 tie-breaks reproducible across queries.
       orderBy: { id: "asc" },
-      take: MAX_INDEXED_SYMBOLS,
     });
-    return rows.map(toSearchable);
+    const symbols = rows.map(toSearchable);
+    symbolCache.delete(projectId);
+    if (symbolCache.size >= MAX_CACHED_PROJECTS) {
+      symbolCache.delete(symbolCache.keys().next().value as string);
+    }
+    symbolCache.set(projectId, { fingerprint, symbols });
+    return symbols;
   },
 
   async getSymbolsByIds(projectId: string, symbolIds: string[]): Promise<SearchableSymbol[]> {

@@ -476,6 +476,57 @@ describe("HybridCodeSearch", () => {
 
     buildSpy.mockRestore();
   });
+
+  describe("#372 — BM25 index shared across instances by symbol-array identity", () => {
+    const bm25Only = { weights: { bm25Weight: 1, vectorWeight: 0 } };
+
+    it("builds once for the same array across fresh instances", async () => {
+      symbolIndex.symbols = [makeSearchableSymbol({ symbolId: "s1", name: "alpha" })];
+      const buildSpy = vi.spyOn(BM25Index.prototype, "build");
+
+      await new HybridCodeSearch(vectorStore, symbolIndex, embedService).search("alpha", "p");
+      await new HybridCodeSearch(vectorStore, symbolIndex, embedService).search("alpha", "p");
+
+      expect(buildSpy).toHaveBeenCalledTimes(1);
+      buildSpy.mockRestore();
+    });
+
+    it("a rebuild never mutates an index another instance is sharing", async () => {
+      const x = [makeSearchableSymbol({ symbolId: "x1", name: "alpha" })];
+      const y = [makeSearchableSymbol({ symbolId: "y1", name: "alpha" })];
+      const a = new HybridCodeSearch(vectorStore, symbolIndex, embedService);
+
+      symbolIndex.symbols = x;
+      await a.search("alpha", "p", bm25Only); // x's index becomes shared
+      symbolIndex.symbols = y;
+      await a.search("alpha", "p", bm25Only); // a rebuilds for y
+
+      symbolIndex.symbols = x;
+      const b = new HybridCodeSearch(vectorStore, symbolIndex, embedService);
+      const results = await b.search("alpha", "p", bm25Only);
+      expect(results.map((r) => r.symbolId)).toEqual(["x1"]);
+    });
+
+    it("keeps at most eight filter variants per array, evicting the oldest", async () => {
+      symbolIndex.symbols = Array.from({ length: 9 }, (_, i) =>
+        makeSearchableSymbol({ symbolId: `s${i}`, name: "alpha", filePath: `d${i}/a.ts` }),
+      );
+      const run = (i: number) =>
+        new HybridCodeSearch(vectorStore, symbolIndex, embedService).search("alpha", "p", {
+          ...bm25Only,
+          fileGlob: `d${i}/**`,
+        });
+      const buildSpy = vi.spyOn(BM25Index.prototype, "build");
+
+      for (let i = 0; i < 9; i++) await run(i); // d0 evicted by d8
+      expect(buildSpy).toHaveBeenCalledTimes(9);
+      await run(8);
+      expect(buildSpy).toHaveBeenCalledTimes(9);
+      expect((await run(0)).map((r) => r.symbolId)).toEqual(["s0"]);
+      expect(buildSpy).toHaveBeenCalledTimes(10);
+      buildSpy.mockRestore();
+    });
+  });
 });
 
 describe("tokenizeCode (#943 — shared query/index tokenizer)", () => {

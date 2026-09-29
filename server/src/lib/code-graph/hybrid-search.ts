@@ -145,17 +145,21 @@ export interface SymbolVectorStore {
 }
 
 export interface SymbolIndex {
+  /**
+   * #372: {@link HybridCodeSearch} caches the built BM25 index on the IDENTITY of
+   * the returned array, so an implementation that returns the same array again
+   * must not have mutated it in place — return a new array when the set changes.
+   */
   getSymbols(projectId: string): Promise<SearchableSymbol[]>;
   /**
    * Issue #797 — hydrate specific symbols by id.
    *
-   * {@link getSymbols} is WINDOWED in production (`take: MAX_INDEXED_SYMBOLS`),
-   * because building an in-memory BM25 index over every symbol of a large repo on
-   * every query is not viable. That window is a BM25 concern — but the fused
-   * ranking used to drop any VECTOR hit that fell outside it, which on a ~15k
-   * symbol repo silently discarded two thirds of correct semantic hits AFTER the
-   * vector search had already paid for them. Implement this and a vector hit is
-   * never lost to the lexical index's window.
+   * When #797 landed, production's {@link getSymbols} was WINDOWED to the first
+   * 5,000 symbols by id, and the fused ranking dropped any VECTOR hit that fell
+   * outside it. #372 removed that window (`prismaSymbolIndex` now returns every
+   * symbol), so in production this hydrates nothing in the normal case. It stays
+   * as the contract for any index whose `getSymbols` is partial: implement it and
+   * a vector hit is never lost to the lexical index's coverage.
    *
    * Optional: an index whose `getSymbols` is already complete (the eval harness,
    * unit fixtures) has nothing to hydrate.
@@ -476,8 +480,30 @@ export function reciprocalRankFusion(
 
 // ---- Hybrid Search --------------------------------------------------------
 
+/**
+ * Issue #372 — BM25 indexes shared ACROSS {@link HybridCodeSearch} instances, keyed
+ * by the IDENTITY of the symbol array a {@link SymbolIndex} returned.
+ *
+ * Production builds a fresh `HybridCodeSearch` per call (`createDefaultCodeSearcher`
+ * is invoked per tool call / per request), so the per-instance cache below never
+ * hits there, and since #372 made the lexical index cover every symbol a cold
+ * rebuild tokenizes the whole project (~24k symbols) on every query. An index that
+ * returns the SAME array while its data is unchanged — `prismaSymbolIndex` does —
+ * gets its BM25 index built once. Keys are weak, so an index dies with the symbol
+ * array its owner stops holding; an index that returns a fresh array per call
+ * simply never hits.
+ */
+const sharedBm25 = new WeakMap<
+  LexicalConfig,
+  WeakMap<readonly SearchableSymbol[], Map<string, BM25Index>>
+>();
+
+/** Distinct `fileGlob`/`symbolKind` variants kept per symbol array (oldest evicted). */
+const MAX_SHARED_FILTER_VARIANTS = 8;
+
 export class HybridCodeSearch {
-  private readonly bm25: BM25Index;
+  private readonly lexical: LexicalConfig;
+  private bm25: BM25Index;
   private bm25CacheKey = "";
 
   constructor(
@@ -492,7 +518,50 @@ export class HybridCodeSearch {
      */
     lexical: LexicalConfig = DEFAULT_LEXICAL_CONFIG,
   ) {
+    this.lexical = lexical;
     this.bm25 = new BM25Index(lexical);
+  }
+
+  /**
+   * The BM25 index for this symbol set and filter pair: the shared one when the
+   * same array was indexed before (#372), else this instance's, rebuilt only when
+   * the set changes. A rebuild makes a NEW index rather than rebuilding in place,
+   * because the old one may be shared.
+   */
+  private bm25For(
+    allSymbols: readonly SearchableSymbol[],
+    filteredSymbols: SearchableSymbol[],
+    projectId: string,
+    fileGlob?: string,
+    symbolKind?: string,
+  ): BM25Index {
+    let byArray = sharedBm25.get(this.lexical);
+    if (!byArray) {
+      byArray = new WeakMap();
+      sharedBm25.set(this.lexical, byArray);
+    }
+    let byFilter = byArray.get(allSymbols);
+    if (!byFilter) {
+      byFilter = new Map();
+      byArray.set(allSymbols, byFilter);
+    }
+    const filterKey = `${fileGlob ?? ""}|${symbolKind ?? ""}`;
+    const shared = byFilter.get(filterKey);
+    if (shared) return shared;
+
+    const cacheKey = this.computeBm25CacheKey(filteredSymbols, fileGlob, symbolKind);
+    if (cacheKey !== this.bm25CacheKey) {
+      this.bm25 = new BM25Index(this.lexical);
+      this.bm25.build(filteredSymbols);
+      this.bm25CacheKey = cacheKey;
+      log.debug("BM25 index rebuilt", { projectId, symbolCount: filteredSymbols.length });
+    }
+    if (byFilter.size >= MAX_SHARED_FILTER_VARIANTS) {
+      const oldest = byFilter.keys().next().value as string;
+      byFilter.delete(oldest);
+    }
+    byFilter.set(filterKey, this.bm25);
+    return this.bm25;
   }
 
   /**
@@ -576,13 +645,13 @@ export class HybridCodeSearch {
     }
 
     // BM25 scoring — rebuild index only when symbol set changes
-    const cacheKey = this.computeBm25CacheKey(filteredSymbols, fileGlob, symbolKind);
-    if (cacheKey !== this.bm25CacheKey) {
-      this.bm25.build(filteredSymbols);
-      this.bm25CacheKey = cacheKey;
-      log.debug("BM25 index rebuilt", { projectId, symbolCount: filteredSymbols.length });
-    }
-    const bm25Results = this.bm25.score(query);
+    const bm25Results = this.bm25For(
+      allSymbols,
+      filteredSymbols,
+      projectId,
+      fileGlob,
+      symbolKind,
+    ).score(query);
 
     // Vector search — SKIPPED ENTIRELY when the vector channel is weighted out.
     //
