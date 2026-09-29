@@ -4,7 +4,7 @@
  * navigates to a project the 30s-stale list has never seen.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { usePathname } from "next/navigation";
 import { ProjectSwitcher } from "@/components/layout/project-switcher";
 import { Breadcrumbs } from "@/components/layout/breadcrumbs";
@@ -74,6 +74,49 @@ describe("<ProjectSwitcher /> (#370)", () => {
     await screen.findByRole("button", { name: /active project: sample project/i });
     const urls = fetchMock.mock.calls.map(([u]) => String(u));
     expect(urls.some((u) => /\/projects\/p-sample(\?|$)/.test(u))).toBe(false);
+  });
+
+  // PR #409 review — right after Create the project is still loading; the
+  // header must say so rather than flash "No project".
+  it("says Loading…, never 'No project', while the URL's project is still loading", async () => {
+    let release: () => void = () => {};
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/projects\/p-new(\?|$)/.test(url))
+        return new Promise((r) => (release = () => r(respond(row("p-new", "Fresh Project")))));
+      if (/\/projects(\?|$)/.test(url)) return respond(STALE_LIST);
+      return respond(null, 404);
+    });
+    vi.mocked(usePathname).mockReturnValue("/projects/p-new");
+    render(<ProjectSwitcher />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    // Wait until the project's own request is in flight (the list has loaded
+    // and lacks it), then the label must read Loading…, not "No project".
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u]) => /\/projects\/p-new(\?|$)/.test(String(u)))).toBe(
+        true,
+      ),
+    );
+    expect(screen.getByRole("button", { name: /active project: loading/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /active project: no project/i })).toBeNull();
+    release();
+    expect(
+      await screen.findByRole("button", { name: /active project: fresh project/i }),
+    ).toBeInTheDocument();
+  });
+
+  // PR #409 review — a failed list must not hide the project the page loaded.
+  it("still names the URL's project when the project list request fails", async () => {
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/projects\/p-new(\?|$)/.test(url)) return respond(row("p-new", "Fresh Project"));
+      if (/\/projects(\?|$)/.test(url)) return respond(null, 500);
+      return respond(null, 404);
+    });
+    vi.mocked(usePathname).mockReturnValue("/projects/p-new");
+    render(<ProjectSwitcher />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    expect(
+      await screen.findByRole("button", { name: /active project: fresh project/i }),
+    ).toBeInTheDocument();
   });
 
   it("falls back to 'No project' when the URL's project cannot be loaded", async () => {
