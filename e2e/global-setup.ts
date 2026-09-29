@@ -1,13 +1,19 @@
 /**
  * Playwright global setup for the full-flow suite.
  *
- * Runs once before any test process. Responsibilities:
- *   1. Resolve test data dirs (DB file, uploads dir, vector dir) so each
- *      `pnpm --filter @metis/e2e test` invocation starts from a clean,
- *      isolated state and never touches the dev stack on :4000/:3000.
- *   2. Drop any stale SQLite file left by a previous interrupted run.
- *   3. Apply Prisma migrations against the test SQLite database so the
- *      Express server can boot without manual setup.
+ * Playwright runs this AFTER the `webServer` entries are up, not before
+ * (#323). Resetting and migrating the test database therefore cannot happen
+ * here: the API web server's command does it (`scripts/prepare-e2e-stack.mjs`)
+ * before the server process starts. Responsibilities here:
+ *   1. Check that preparation step ran for this data root, so a config change
+ *      that drops it fails the run instead of booting the API against a
+ *      database that does not exist yet.
+ *   2. Export the resolved data paths for specs that reach into the SQLite
+ *      file or the data dirs.
+ *   3. (Re)generate the record/replay LLM fixtures.
+ *
+ * With `E2E_SKIP_WEBSERVER` set the stack is someone else's: nothing here
+ * resets it, and the check is skipped.
  *
  * We deliberately do NOT seed the admin user here. The mock auth provider
  * (server/src/lib/auth/mock-provider.ts) accepts `admin / password` and the
@@ -17,49 +23,24 @@
  * the row before the test body runs.
  */
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertStackPrepared, resolveStackPaths } from "../scripts/lib/e2e-stack.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, "..");
 
-function resolveDataRoot(): string {
-  const dir = process.env.E2E_DATA_DIR ?? path.join(REPO_ROOT, "e2e", "test-results", "stack-data");
-  return path.resolve(dir);
-}
-
 export default async function globalSetup(): Promise<void> {
-  const dataRoot = resolveDataRoot();
-  const dbFile = path.join(dataRoot, "metis-e2e.db");
-  const uploadsDir = path.join(dataRoot, "uploads");
-  const lanceDir = path.join(dataRoot, "lancedb");
+  const stack = resolveStackPaths(REPO_ROOT, process.env);
+  if (!process.env.E2E_SKIP_WEBSERVER) assertStackPrepared(stack);
 
-  // Reset any state left over from a previous run.
-  rmSync(dataRoot, { recursive: true, force: true });
-  mkdirSync(uploadsDir, { recursive: true });
-  mkdirSync(lanceDir, { recursive: true });
-
-  // Export the resolved paths so the webServer block in playwright.config.ts
-  // and any test code can rely on the same canonical values.
-  const databaseUrl = `file:${dbFile}`;
-  process.env.E2E_DATABASE_URL = databaseUrl;
-  process.env.E2E_UPLOAD_DIR = uploadsDir;
-  process.env.E2E_LANCEDB_PATH = lanceDir;
-
-  // Apply Prisma migrations to the fresh SQLite file. We run from the server
-  // package so the prisma binary, schema, and migrations directory all
-  // resolve correctly. `migrate deploy` is non-interactive and idempotent.
-  execSync("pnpm --filter @metis/server exec prisma migrate deploy", {
-    cwd: REPO_ROOT,
-    env: { ...process.env, DATABASE_URL: databaseUrl, DATABASE_PROVIDER: "sqlite" },
-    stdio: "inherit",
-  });
-
-  if (!existsSync(dbFile)) {
-    throw new Error(`globalSetup: expected SQLite database at ${dbFile} after migrate deploy`);
-  }
+  // Export the resolved paths so test code can rely on the same canonical
+  // values the API web server was started with.
+  process.env.E2E_DATABASE_URL = stack.databaseUrl;
+  process.env.E2E_UPLOAD_DIR = stack.uploadsDir;
+  process.env.E2E_LANCEDB_PATH = stack.lanceDir;
 
   // Epic #209 (#235) — (re)generate the committed record/replay LLM fixtures
   // for the clarification → refinement → spec loop. The builder is deterministic

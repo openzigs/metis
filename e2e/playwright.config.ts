@@ -8,8 +8,13 @@
  * - Quarantines tests via `test.fixme()` or grep on the `@quarantine` tag.
  *   Quarantined cases are excluded from the default run; CI exposes them with
  *   `pnpm --filter @metis/e2e test --grep @quarantine`.
- * - `globalSetup` resets the dedicated SQLite test database + isolated data
- *   dirs before the webServers boot, so each run starts deterministic.
+ * - Playwright starts the `webServer` entries BEFORE it runs `globalSetup`
+ *   (#323). So the API web server's own command resets the dedicated SQLite
+ *   test database + isolated data dirs and migrates the database
+ *   (`scripts/prepare-e2e-stack.mjs`) before the server process starts, and
+ *   `globalSetup` — which runs once both servers answer — only checks that this
+ *   happened. Each run starts deterministic, and every boot-time read in the
+ *   API finds a migrated database.
  *
  * Ports: 4101 (API) / 3101 (UI). These are intentionally NOT 4100/3100
  * (older smoke config) and NOT 4000/3000 (long-running dev stack from
@@ -19,6 +24,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, devices } from "@playwright/test";
+import { apiServerCommand, resolveStackPaths, uiServerCommand } from "../scripts/lib/e2e-stack.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,12 +35,14 @@ const BASE_URL = process.env.E2E_BASE_URL ?? `http://127.0.0.1:${PORT_UI}`;
 const API_BASE = process.env.E2E_API_BASE ?? `http://127.0.0.1:${PORT_API}`;
 const isCI = Boolean(process.env.CI);
 
-// Deterministic, isolated data dirs. Mirrored in `global-setup.ts` so the
-// migration step writes to the same SQLite file the server later reads.
-const DATA_ROOT = process.env.E2E_DATA_DIR ?? path.join(__dirname, "test-results", "stack-data");
-const DB_FILE = path.join(DATA_ROOT, "metis-e2e.db");
-const UPLOAD_DIR = path.join(DATA_ROOT, "uploads");
-const LANCEDB_PATH = path.join(DATA_ROOT, "lancedb");
+// Deterministic, isolated data dirs, resolved once here (absolute) and handed
+// to the API web server as E2E_DATA_DIR, so the preparation step migrates the
+// same SQLite file the server then reads and `global-setup.ts` checks.
+const STACK = resolveStackPaths(REPO_ROOT, process.env);
+const DATA_ROOT = STACK.dataRoot;
+const DB_FILE = STACK.dbFile;
+const UPLOAD_DIR = STACK.uploadsDir;
+const LANCEDB_PATH = STACK.lanceDir;
 
 // Epic #209 (#235) — committed record/replay LLM fixtures (#234). Setting
 // `AI_REPLAY=1` + this dir makes the server install the deterministic
@@ -88,27 +96,28 @@ export default defineConfig({
     ? undefined
     : [
         {
-          // No `start` script in server/package.json — invoke tsx directly so
-          // we get one-shot execution (no `tsx watch`).
-          command: `pnpm --filter @metis/server exec tsx src/index.ts`,
+          // #323 — reset + migrate the data root, THEN boot the server (one-shot
+          // tsx, no `tsx watch`). See scripts/lib/e2e-stack.mjs.
+          command: apiServerCommand(),
           url: `${API_BASE}/healthz`,
           timeout: 120_000,
-          // Always boot fresh — `globalSetup` wipes the SQLite DB and a
+          // Always boot fresh — the preparation step wipes the SQLite DB and a
           // reused server would still hold open file handles to the
           // deleted file, causing every auth call to 401.
           reuseExistingServer: false,
           cwd: REPO_ROOT,
           env: {
             NODE_ENV: process.env.NODE_ENV ?? "development",
+            // Read by scripts/prepare-e2e-stack.mjs; absolute, so the child's
+            // cwd cannot move the data root.
+            E2E_DATA_DIR: DATA_ROOT,
             PORT: String(PORT_API),
             METIS_NO_LISTEN: "0",
             DATABASE_URL: `file:${DB_FILE}`,
             DATABASE_PROVIDER: "sqlite",
-            // `globalSetup` already runs `prisma migrate deploy`. Letting the
-            // server's boot-time migration guard run a second `migrate deploy`
-            // against the same SQLite file leaves the better-sqlite3 client
-            // connection in a state where writes fail with "attempt to write a
-            // readonly database". Skip the redundant boot migrate in e2e.
+            // The preparation step in `command` already ran `prisma migrate
+            // deploy` against this file, so the server's boot-time migration
+            // guard would only repeat it. Skip the redundant boot migrate.
             METIS_SKIP_MIGRATE: "1",
             JWT_SECRET: process.env.JWT_SECRET ?? "e2e-jwt-secret-change-me-please-32bytes-long-ok",
             VAULT_MASTER_KEY:
@@ -142,11 +151,11 @@ export default defineConfig({
             CORS_ORIGIN: BASE_URL,
             UPLOAD_DIR,
             LANCEDB_PATH,
-            // #322 — NOT read by the server: `documentsRouter` queues ingest
-            // whenever NODE_ENV is not "test", so an upload answers 202 with its
-            // document still `pending` and it turns `ready` moments later.
-            // Assert on the rendered ready state, never on a synchronous ingest.
-            INGEST_QUEUE: "off",
+            // Ingest is QUEUED in this stack, as in production (#322, #332):
+            // `documentsRouter` queues whenever NODE_ENV is not "test", so an
+            // upload answers 202 with its document `pending`, and it turns
+            // `ready` moments later. Assert on the rendered ready state, never
+            // on a synchronous ingest; there is no switch that makes it so.
             // Epic #192 — closed-loop webhook secret for the e2e suite.
             GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET ?? "e2e-closed-loop-secret",
             // Epic #739 — the drift reconciler's webhook receiver. Without a
@@ -177,7 +186,10 @@ export default defineConfig({
           },
         },
         {
-          command: `pnpm --filter @metis/ui exec next dev -p ${PORT_UI}`,
+          // #342 — webpack, not Turbopack: a Turbopack internal panic killed
+          // this server mid-suite and every later spec failed with
+          // ERR_CONNECTION_REFUSED. Matches ui/package.json's `dev` script.
+          command: uiServerCommand(PORT_UI),
           url: BASE_URL,
           timeout: 180_000,
           reuseExistingServer: false,

@@ -37,7 +37,7 @@ test.describe("Manual approval reconciliation (#1350)", () => {
     expect([201, 202], await upload.text()).toContain(upload.status());
     const document = (await upload.json()).data.document;
     documentId = document.id;
-    // Current ingest uses the durable queue even with INGEST_QUEUE=off.
+    // Ingest is queued in the e2e stack, as in production (#332).
     // Wait for the real quarantine list rather than assuming synchronous ingest.
     await expect
       .poll(async () => {
