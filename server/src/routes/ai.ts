@@ -1275,8 +1275,9 @@ export function aiRouter(): Router {
 
   // ── Tool inspection ─────────────────────────────────────────────────────
   // #340 — a `scope: "user"` MCP server's tools are listed only to its owner
-  // and system admins; every other tool is listed to everyone, as before.
-  r.get("/tools", requireAuth, (req: Request, res: Response) => {
+  // and system admins; every other tool is listed to everyone, as before. The
+  // per-IP limiter sits BEFORE `requireAuth` (CodeQL js/missing-rate-limiting).
+  r.get("/tools", conversationPreAuthRateLimiter, requireAuth, (req: Request, res: Response) => {
     if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
     res.json(ok({ tools: visibleTools(getToolRegistry(), req.user) }));
   });
