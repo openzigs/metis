@@ -349,7 +349,7 @@ test.describe("Epic #507 — Symbol-Level Code Embeddings", () => {
       await wb.projectPicker.selectOption({ label: `Chat Code ${slug}` });
 
       // Wait for session to start
-      await wb.expectSessionStarted();
+      await wb.expectChatReady();
 
       // Type a code question in the chat
       await wb.chatInput.fill("Explain the authentication handler");

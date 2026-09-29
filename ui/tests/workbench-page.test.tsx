@@ -116,40 +116,57 @@ describe("Workbench — Agent Picker (#528)", () => {
     });
   });
 
+  async function sendOne(text: string) {
+    const user = userEvent.setup();
+    await user.type(screen.getByTestId("workbench-input"), text);
+    await user.click(screen.getByTestId("workbench-send"));
+  }
+
   it("passes selected agentKey to createSession", async () => {
     // Pre-store an agent selection in workbench layout
     window.localStorage.setItem(
       "metis.workbench.layout",
       JSON.stringify({ leftPct: 22, rightPct: 26, contextIds: [], agentKey: "code-reviewer" }),
     );
-
-    const Wrapper = makeWrapper({ withAuth: false });
-    render(<WorkbenchPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(createSessionMock).toHaveBeenCalled();
+    streamChatMock.mockImplementation(async function* () {
+      yield { type: "done" } as StreamEvent;
     });
 
-    const call = createSessionMock.mock.calls.find((c) => c[0].agentKey === "code-reviewer");
-    expect(call).toBeDefined();
-  });
-
-  it("re-creates session when agent is changed", async () => {
     const Wrapper = makeWrapper({ withAuth: false });
     render(<WorkbenchPage />, { wrapper: Wrapper });
+    // #361 — the session is opened by the first send, not by the page load.
+    expect(createSessionMock).not.toHaveBeenCalled();
+    await sendOne("hi");
 
     await waitFor(() => {
       expect(createSessionMock).toHaveBeenCalledTimes(1);
     });
+    expect(createSessionMock.mock.calls[0]![0].agentKey).toBe("code-reviewer");
+  });
 
-    // Change the agent via the select element
+  it("re-creates session when agent is changed", async () => {
+    streamChatMock.mockImplementation(async function* () {
+      yield { type: "done" } as StreamEvent;
+    });
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(<WorkbenchPage />, { wrapper: Wrapper });
+
+    await sendOne("first");
+    await waitFor(() => {
+      expect(createSessionMock).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => expect(screen.getByTestId("workbench-send")).toHaveTextContent("Send"));
+
+    // Change the agent via the select element; the next send opens a new session.
     const picker = screen.getByTestId("agent-picker");
     const select = picker.querySelector("select") ?? picker;
     fireEvent.change(select, { target: { value: "architect" } });
+    await sendOne("second");
 
     await waitFor(() => {
       expect(createSessionMock).toHaveBeenCalledTimes(2);
     });
+    expect(createSessionMock.mock.calls[1]![0].agentKey).toBe("architect");
   });
 });
 
@@ -318,7 +335,13 @@ describe("Workbench — tool approvals (#142)", () => {
 
   it("joins the session room: a prompt that arrives only there can be answered too", async () => {
     decideMock.mockResolvedValue({ approvalId: "apr_1", decision: "approve" });
+    streamChatMock.mockImplementation(async function* () {
+      yield { type: "done" } as StreamEvent;
+    });
     render(<WorkbenchPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    // #361 — no session (so no room) until the first send opens one.
+    expect(socketEmit).not.toHaveBeenCalledWith("subscribe:session", expect.anything());
+    await sendMessage("hello");
     await waitFor(() =>
       expect(socketEmit).toHaveBeenCalledWith("subscribe:session", { sessionId: "sess-wb-1" }),
     );

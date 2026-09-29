@@ -1215,7 +1215,10 @@ telemetry differs by path:
 Because the gateway path surfaces **reads only**, the hit ratio computed for
 that path is **read-based** (`cacheReadTokens / promptTokens`). Cache-CREATION
 (write) cost is invisible there; if write-cost visibility is required, route
-through the native Anthropic provider, which reports both halves.
+through the native Anthropic provider, which reports both halves. The gateway
+discards Bedrock's `cacheWriteInputTokens` and folds the written tokens into
+`prompt_tokens`, so the write premium cannot be priced on this path (#282; see
+the pricing paragraph in [ARCHITECTURE.md](ARCHITECTURE.md); live recording in #376).
 
 **Cost-estimation impact (#698):** `estimateCostUsd` / `estimateUsageCostUsd`
 (`server/src/lib/ai/token-tracker.ts`) price cache reads at **0.1×** and cache

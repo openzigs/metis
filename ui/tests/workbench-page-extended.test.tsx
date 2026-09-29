@@ -232,8 +232,12 @@ describe("WorkbenchPage — template seeding", () => {
 
 describe("WorkbenchPage — error state", () => {
   it("shows error when session creation fails", async () => {
+    const user = userEvent.setup();
     createSessionMock.mockRejectedValueOnce(new Error("Session creation failed"));
     renderPage();
+    // #361 — the session is opened by the first send, so that is where it fails.
+    await user.type(screen.getByTestId("workbench-input"), "hello");
+    await user.click(screen.getByTestId("workbench-send"));
     await waitFor(() => expect(screen.getByText(/Session creation failed/i)).toBeInTheDocument());
   });
 });

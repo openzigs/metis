@@ -11,6 +11,10 @@
  *     `rotate` is itself the liveness check — it refuses a missing or
  *     soft-deleted row with `SecretNotFoundError` — and only then is a fresh
  *     secret created. Any other vault error propagates; nothing is swallowed.
+ *  3. (#344) A secret is rotated in place only by the principal that owns it
+ *     (`createdById`, `null` for system writers such as credential discovery).
+ *     Anyone else gets a fresh secret, so `createdById` always names who
+ *     supplied the current plaintext.
  */
 import { ulid } from "ulid";
 import { SecretNotFoundError, type SecretScope, type VaultService } from "./vault-service.js";
@@ -30,7 +34,8 @@ export interface FreshSecret {
 
 /**
  * Write `value` into the live secret `secretId` in place; when there is none
- * (null, missing or soft-deleted) create a new secret under a fresh label.
+ * (null, missing, soft-deleted, or owned by someone other than
+ * `fresh.createdById`) create a new secret under a fresh label.
  * Returns the id now holding `value` and whether it was newly created — a
  * created id is one the caller MUST store in place of the old reference.
  */
@@ -42,7 +47,10 @@ export async function rotateOrCreate(
 ): Promise<{ id: string; created: boolean }> {
   if (secretId) {
     try {
-      await vault.rotate(secretId, value);
+      // #344 — only a secret this writer owns is rewritten in place; one owned
+      // by anyone else (a user, or the system when a user writes) is left as it
+      // is and a fresh secret is created instead.
+      await vault.rotate(secretId, value, { onlyIfCreatedBy: fresh.createdById ?? null });
       return { id: secretId, created: false };
     } catch (err) {
       if (!(err instanceof SecretNotFoundError)) throw err;

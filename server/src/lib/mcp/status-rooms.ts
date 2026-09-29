@@ -74,6 +74,14 @@ export interface MCPStatusSink {
   to(rooms: string[]): { emit(ev: "mcp:status", event: MCPStatusEvent): unknown };
 }
 
+/**
+ * #360 — how long a project lookup may take before the event is routed as if
+ * the lookup failed (admins only). Prisma applies no query timeout, and every
+ * event is queued behind the one before it, so an unbounded lookup would stall
+ * every later event, global and user-scope ones included.
+ */
+export const MCP_STATUS_LOOKUP_TIMEOUT_MS = 5_000;
+
 /** Resolves a project's workspace; `null` when the project does not exist. */
 export type ProjectWorkspaceLookup = (
   projectId: string,
@@ -86,18 +94,45 @@ export type ProjectWorkspaceLookup = (
  * one server's `starting` → `ready` sequence stays in order.
  *
  * Returns the listener plus `drain()`, which resolves once every queued event
- * has been emitted. `onLookupError` hears a failed project lookup (the event
- * then reaches admins only) and a failed emit.
+ * has been emitted. `onLookupError` hears a failed or timed-out project lookup
+ * (the event then reaches admins only) and a failed emit. A lookup is bounded
+ * by `lookupTimeoutMs` (#360) so one hung query cannot stall the queue.
  */
 export function createMcpStatusEmitter(
   sink: MCPStatusSink,
   lookupProject: ProjectWorkspaceLookup,
   onLookupError: (err: unknown, event: MCPStatusEvent) => void = () => {},
+  { lookupTimeoutMs: requestedTimeoutMs }: { lookupTimeoutMs?: number } = {},
 ): {
   emit: (event: MCPStatusEvent, config?: MCPServerConfig) => void;
   drain: () => Promise<void>;
 } {
   let tail: Promise<void> = Promise.resolve();
+  // 0, a negative or a non-finite value would fire at once and send every
+  // project event to admins only; fall back to the default instead.
+  const lookupTimeoutMs =
+    requestedTimeoutMs !== undefined &&
+    Number.isFinite(requestedTimeoutMs) &&
+    requestedTimeoutMs > 0
+      ? requestedTimeoutMs
+      : MCP_STATUS_LOOKUP_TIMEOUT_MS;
+
+  const boundedLookup = (projectId: string): ReturnType<ProjectWorkspaceLookup> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`project lookup timed out after ${lookupTimeoutMs}ms`)),
+        lookupTimeoutMs,
+      );
+      // A pending lookup must not keep the process alive on shutdown.
+      timer.unref?.();
+    });
+    // Deferred through .then so a lookup that throws synchronously becomes a
+    // rejection the race settles on; the timer is then cleared, not left to
+    // reject with no handler (PR #377 review).
+    const lookup = Promise.resolve().then(() => lookupProject(projectId));
+    return Promise.race([lookup, timeout]).finally(() => clearTimeout(timer));
+  };
 
   const audienceFor = async (
     event: MCPStatusEvent,
@@ -108,7 +143,7 @@ export function createMcpStatusEmitter(
     const projectId = event.projectId ?? config?.projectId;
     if (!projectId) return { project: null };
     try {
-      return { project: await lookupProject(projectId) };
+      return { project: await boundedLookup(projectId) };
     } catch (err) {
       onLookupError(err, event);
       return { project: null };

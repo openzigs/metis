@@ -367,3 +367,85 @@ describe("#298 — an over-long documentId and note are repaired, not fatal", ()
     expect(lookups.some(([arg]) => arg.select?.filename === true)).toBe(false);
   });
 });
+
+describe("#303 — a valid-length documentId that names no known document", () => {
+  const FILENAME_AS_ID = "Loan Terms and Conditions.md#chunk2"; // 35 chars: schema-valid
+  const UNKNOWN_ID = "doc_of_another_project_01";
+  const ANSWER_303 = JSON.stringify({
+    summary: "One gap found.",
+    findings: [
+      finding([
+        { documentId: FILENAME_AS_ID, chunkIndex: 2 },
+        { documentId: UNKNOWN_ID, chunkIndex: 0 },
+      ]),
+    ],
+    notes: [],
+  });
+
+  beforeEach(() => {
+    // The id check returns only the ids that exist in the project.
+    documentFindMany.mockImplementation((async (arg: { where: { id?: { in: string[] } } }) => {
+      const all = [
+        { id: "doc_loanterms_0001", filename: "Loan Terms and Conditions.md" },
+        { id: "doc_other_000000001", filename: "Other.md" },
+      ];
+      const ids = arg?.where?.id?.in;
+      return ids ? all.filter((d) => ids.includes(d.id)) : all;
+    }) as never);
+  });
+
+  it("the gate accepts it as it stands, and the orchestrator resolves one id and drops the other", async () => {
+    expect(isSchemaValidFinalAnswer(ANSWER_303)).toBe(true);
+
+    const recorded = await runPipeline(ANSWER_303);
+
+    const output = persistedCodeOutput();
+    expect(retryCalls(recorded)).toHaveLength(0);
+    expect(output.findings).toHaveLength(1);
+    expect(output.findings[0]!.citations).toEqual([
+      expect.objectContaining({ documentId: KNOWN_DOC_ID, chunkIndex: 2 }),
+    ]);
+    const repairNote = output.notes.find((n) => n.startsWith("REPAIRED:"));
+    expect(repairNote).toContain("1 document-id-resolved");
+    expect(repairNote).toContain("1 citation-dropped");
+  });
+
+  it("both lookups are scoped to the run's project", async () => {
+    await runPipeline(ANSWER_303);
+
+    const lookups = documentFindMany.mock.calls as unknown as Array<
+      [{ where: Record<string, unknown>; select: Record<string, unknown> }]
+    >;
+    const idCheck = lookups.find(([arg]) => arg.where.id !== undefined);
+    expect(idCheck![0].where).toEqual({
+      projectId: PROJECT_ID,
+      deletedAt: null,
+      id: { in: [FILENAME_AS_ID, UNKNOWN_ID] },
+    });
+    const listLoad = lookups.find(([arg]) => arg.select.filename === true);
+    expect(listLoad![0].where).toEqual({ projectId: PROJECT_ID, deletedAt: null });
+  });
+
+  it("salvage resolves and drops the same way", async () => {
+    const noSummary = JSON.stringify({ ...JSON.parse(ANSWER_303), summary: undefined });
+
+    await runPipeline(noSummary);
+
+    const output = persistedCodeOutput();
+    expect(output.summary).toMatch(/^Code analysis degraded/);
+    expect(output.findings[0]!.citations).toEqual([
+      expect.objectContaining({ documentId: KNOWN_DOC_ID, chunkIndex: 2 }),
+    ]);
+    expect(output.notes.find((n) => n.startsWith("REPAIRED:"))).toContain("1 citation-dropped");
+  });
+
+  it("a failing document lookup keeps a valid-length id rather than dropping a real citation", async () => {
+    documentFindMany.mockRejectedValue(new Error("db down"));
+
+    await runPipeline(ANSWER_303);
+
+    const output = persistedCodeOutput();
+    expect(output.findings[0]!.citations).toHaveLength(2);
+    expect(output.notes.some((n) => n.startsWith("REPAIRED:"))).toBe(false);
+  });
+});

@@ -8,6 +8,7 @@ import {
   NOTE_MAX_LENGTH,
   NOTES_MAX_COUNT,
   answerNeedsDocumentResolution,
+  candidateDocumentIds,
   findingsRepairNote,
   repairFinding,
   repairFindingsAnswer,
@@ -341,7 +342,9 @@ describe("recording repairs", () => {
     const out = withFindingsRepairNote({ notes: ["mine"] }, repairs);
     expect(out.notes).toHaveLength(2);
     expect(out.notes[0]).toBe("mine");
-    expect(out.notes[1]).toMatch(/^REPAIRED: 3 over-limit field/);
+    expect(out.notes[1]).toMatch(
+      /^REPAIRED: 3 field\(s\) in the model's findings answer were repaired/,
+    );
     expect(out.notes[1]!.length).toBeLessThanOrEqual(NOTE_MAX_LENGTH);
     expect(findingsRepairNote([])).toBeUndefined();
     const untouched = { notes: ["mine"] };
@@ -360,5 +363,234 @@ describe("recording repairs", () => {
     const serialized = JSON.stringify(made) + findingsRepairNote(made);
     expect(serialized).not.toContain("xxxx");
     expect(serialized).not.toContain("secret");
+  });
+});
+
+// #303 — a `documentId` of VALID length that is not a real document id (the
+// `filename#chunkN` form `search_knowledge` printed) passed the schema and then
+// pointed at nothing. With the document list supplied it is resolved or dropped.
+describe("repairFindingsAnswer — a valid-length documentId that names no known document (#303)", () => {
+  const FILENAME_AS_ID = "Loan Terms.md#chunk3"; // 20 chars: inside the 10-64 id limit
+  const UNKNOWN_ID = "doc_not_in_this_project_1";
+  const CODE = { filePath: "src/loan.ts", startLine: 1, endLine: 9 };
+
+  it("the ids used here really are schema-valid, so #298's repair never saw them", () => {
+    for (const id of [FILENAME_AS_ID, UNKNOWN_ID]) {
+      expect(agentOutputSchema.safeParse(answer([{ documentId: id, chunkIndex: 3 }])).success).toBe(
+        true,
+      );
+    }
+  });
+
+  it("resolves a valid-length filename-as-id to the document's real id", () => {
+    const { value, repairs } = repairFindingsAnswer(
+      answer([{ documentId: FILENAME_AS_ID, chunkIndex: 3 }]),
+      { knownDocuments: KNOWN },
+    );
+    expect(agentOutputSchema.parse(value).findings[0]!.citations).toEqual([
+      { documentId: "doc_loanterms_0001", chunkIndex: 3 },
+    ]);
+    expect(repairs).toEqual([
+      {
+        kind: "document-id-resolved",
+        path: "findings.0.citations.0",
+        originalLength: FILENAME_AS_ID.length,
+      },
+    ]);
+  });
+
+  it("drops an unknown valid-length id and records it; the finding survives", () => {
+    const { value, repairs } = repairFindingsAnswer(
+      answer([
+        { documentId: UNKNOWN_ID, chunkIndex: 0 },
+        { documentId: "doc_spec_00000001", chunkIndex: 1 },
+      ]),
+      { knownDocuments: KNOWN },
+    );
+    const parsed = agentOutputSchema.parse(value);
+    expect(parsed.findings).toHaveLength(1);
+    expect(parsed.findings[0]!.citations).toEqual([
+      { documentId: "doc_spec_00000001", chunkIndex: 1 },
+    ]);
+    expect(repairs).toEqual([
+      {
+        kind: "citation-dropped",
+        path: "findings.0.citations.0",
+        originalLength: UNKNOWN_ID.length,
+      },
+    ]);
+  });
+
+  it("keeps the code citation and removes only an unknown valid-length id", () => {
+    const { value, repairs } = repairFindingsAnswer(answer([{ documentId: UNKNOWN_ID, ...CODE }]), {
+      knownDocuments: KNOWN,
+    });
+    expect(agentOutputSchema.parse(value).findings[0]!.citations).toEqual([CODE]);
+    expect(repairs.map((r) => r.kind)).toEqual(["document-id-dropped"]);
+  });
+
+  it("does not guess between two documents a valid-length name matches", () => {
+    const { repairs } = repairFindingsAnswer(
+      answer([{ documentId: "README.md#chunk0", chunkIndex: 0 }]),
+      {
+        knownDocuments: KNOWN,
+      },
+    );
+    expect(repairs.map((r) => r.kind)).toEqual(["citation-dropped"]);
+  });
+
+  it("an empty loaded document list means no id is known: dropped", () => {
+    const { repairs } = repairFindingsAnswer(answer([{ documentId: UNKNOWN_ID, chunkIndex: 0 }]), {
+      knownDocuments: [],
+    });
+    expect(repairs.map((r) => r.kind)).toEqual(["citation-dropped"]);
+  });
+
+  it("leaves known ids and code-graph ids alone even with documents supplied", () => {
+    const input = answer([
+      { documentId: "doc_loanterms_0001", chunkIndex: 0 },
+      { documentId: "code-graph:src/loan.ts#Loan", chunkIndex: 0 },
+    ]);
+    const { value, repairs } = repairFindingsAnswer(input, { knownDocuments: KNOWN });
+    expect(repairs).toEqual([]);
+    expect(value).toEqual(input);
+  });
+
+  it("without a document list, a valid-length id is left exactly as it was", () => {
+    const input = answer([{ documentId: UNKNOWN_ID, chunkIndex: 0 }]);
+    expect(repairFindingsAnswer(input)).toEqual({ value: input, repairs: [] });
+  });
+
+  it("repairFinding (salvage) with no document list leaves a valid-length id alone too", () => {
+    const input = finding([{ documentId: UNKNOWN_ID, chunkIndex: 0 }]);
+    expect(repairFinding(input, "findings.0")).toEqual({ value: input, repairs: [] });
+  });
+
+  it("repairFinding (salvage) applies the same check", () => {
+    const { value, repairs } = repairFinding(
+      finding([{ documentId: FILENAME_AS_ID, chunkIndex: 3 }]),
+      "findings.2",
+      { knownDocuments: KNOWN },
+    );
+    expect((value as { citations: unknown[] }).citations).toEqual([
+      { documentId: "doc_loanterms_0001", chunkIndex: 3 },
+    ]);
+    expect(repairs[0]!.path).toBe("findings.2.citations.0");
+  });
+
+  // The #1314 gate runs with no document list. Its verdict must equal the
+  // orchestrator's, which has one — for every shape a valid-length id can take.
+  const SHAPES: Array<[string, Record<string, unknown>]> = [
+    ["filename-as-id, chunkIndex present", { documentId: FILENAME_AS_ID, chunkIndex: 3 }],
+    ["unknown id, chunkIndex present", { documentId: UNKNOWN_ID, chunkIndex: 0 }],
+    ["unknown id, also a code citation", { documentId: UNKNOWN_ID, ...CODE }],
+    ["filename-as-id, NO chunkIndex (invalid either way)", { documentId: FILENAME_AS_ID }],
+    ["unknown id, NO chunkIndex (invalid either way)", { documentId: UNKNOWN_ID }],
+    ["unknown id, chunkIndex invalid", { documentId: UNKNOWN_ID, chunkIndex: -1 }],
+    ["known id, chunkIndex present", { documentId: "doc_spec_00000001", chunkIndex: 2 }],
+  ];
+  for (const [label, citation] of SHAPES) {
+    it(`${label}: the same verdict with and without documents`, () => {
+      const input = answer([citation]);
+      const without = agentOutputSchema.safeParse(repairFindingsAnswer(input).value).success;
+      const withDocs = agentOutputSchema.safeParse(
+        repairFindingsAnswer(input, { knownDocuments: KNOWN }).value,
+      ).success;
+      expect(withDocs).toBe(without);
+    });
+  }
+
+  it("an otherwise-invalid citation is not touched, so the schema still rejects it", () => {
+    const input = answer([{ documentId: FILENAME_AS_ID }]);
+    const { value, repairs } = repairFindingsAnswer(input, { knownDocuments: KNOWN });
+    expect(repairs).toEqual([]);
+    expect(agentOutputSchema.safeParse(value).success).toBe(false);
+  });
+});
+
+describe("repairFindingsAnswerWithDocuments — valid-length ids stay lazy (#303)", () => {
+  const UNKNOWN_ID = "doc_not_in_this_project_1";
+
+  it("checks the ids first and loads the list only when one is not known", async () => {
+    const load = vi.fn(async () => KNOWN);
+    const findKnownIds = vi.fn(async (ids: readonly string[]) =>
+      ids.filter((id) => KNOWN.some((d) => d.id === id)),
+    );
+
+    const known = await repairFindingsAnswerWithDocuments(
+      answer([{ documentId: "doc_spec_00000001", chunkIndex: 0 }]),
+      load,
+      findKnownIds,
+    );
+    expect(findKnownIds).toHaveBeenCalledWith(["doc_spec_00000001"]);
+    expect(load).not.toHaveBeenCalled();
+    expect(known.repairs).toEqual([]);
+
+    const unknown = await repairFindingsAnswerWithDocuments(
+      answer([
+        { documentId: "doc_spec_00000001", chunkIndex: 0 },
+        { documentId: UNKNOWN_ID, chunkIndex: 0 },
+      ]),
+      load,
+      findKnownIds,
+    );
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(unknown.repairs.map((r) => r.kind)).toEqual(["citation-dropped"]);
+  });
+
+  it("with no id check supplied, a valid-length id loads the list", async () => {
+    const load = vi.fn(async () => KNOWN);
+    const { repairs } = await repairFindingsAnswerWithDocuments(
+      answer([{ documentId: "Loan Terms.md#chunk3", chunkIndex: 3 }]),
+      load,
+    );
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(repairs.map((r) => r.kind)).toEqual(["document-id-resolved"]);
+  });
+
+  it("loads nothing for an answer with only code citations", async () => {
+    const load = vi.fn(async () => KNOWN);
+    const findKnownIds = vi.fn(async () => []);
+    await repairFindingsAnswerWithDocuments(
+      answer([{ filePath: "src/a.ts", startLine: 1, endLine: 2 }]),
+      load,
+      findKnownIds,
+    );
+    expect(findKnownIds).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("a failing lookup never drops a valid-length id — it cannot tell it is unknown", async () => {
+    const input = answer([{ documentId: UNKNOWN_ID, chunkIndex: 0 }]);
+    const failingIds = await repairFindingsAnswerWithDocuments(
+      input,
+      async () => KNOWN,
+      async () => {
+        throw new Error("db down");
+      },
+    );
+    expect(failingIds).toEqual({ value: input, repairs: [] });
+
+    const failingLoad = await repairFindingsAnswerWithDocuments(input, async () => {
+      throw new Error("db down");
+    });
+    expect(failingLoad).toEqual({ value: input, repairs: [] });
+  });
+
+  it("candidateDocumentIds lists each schema-valid, non-code-graph id in an otherwise-valid citation once", () => {
+    expect(
+      candidateDocumentIds(
+        answer([
+          { documentId: "doc_spec_00000001", chunkIndex: 0 },
+          { documentId: "doc_spec_00000001", chunkIndex: 1 },
+          { documentId: "code-graph:src/a.ts#A", chunkIndex: 0 },
+          { documentId: "Loan Terms.md#chunk3" }, // invalid citation: no chunkIndex
+          { documentId: "x".repeat(300), chunkIndex: 0 }, // invalid id: #298's case
+          "not a citation",
+        ]),
+      ),
+    ).toEqual(["doc_spec_00000001"]);
+    expect(candidateDocumentIds(null)).toEqual([]);
+    expect(candidateDocumentIds({ findings: [null, { citations: "x" }] })).toEqual([]);
   });
 });

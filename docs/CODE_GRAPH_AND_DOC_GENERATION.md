@@ -403,9 +403,12 @@ via reciprocal-rank fusion, currently weighted **0.95 vector / 0.05 BM25**
 ([hybrid-search.ts](../server/src/lib/code-graph/hybrid-search.ts#L130-L136)).
 That weighting was chosen empirically — see the sweep documented directly
 above `DEFAULT_WEIGHTS` in that file, run against a committed 183-symbol /
-30-requirement corpus. The lexical (BM25) index is capped at 5,000 symbols;
-vector hits outside that window are hydrated from Prisma
-([project-code-searcher.ts](../server/src/lib/code-graph/project-code-searcher.ts#L1-L51)).
+30-requirement corpus. The lexical (BM25) index covers every symbol in the
+project (#372 removed the old 5,000-symbol cap); the symbol set of up to four
+projects and its BM25 index are cached in-process and reloaded when the
+project's symbol count or newest symbol changes, and any vector hit the lexical
+index did not return is still hydrated from Prisma
+([project-code-searcher.ts](../server/src/lib/code-graph/project-code-searcher.ts)).
 Missing embeddings leave lexical search available as a fallback.
 
 ### How the vector store relates to SQL

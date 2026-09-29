@@ -128,33 +128,33 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
   });
 
   it("opens the session scoped to the active project so RAG is project-bound", async () => {
+    async function* reply(): AsyncGenerator<StreamEvent> {
+      yield { type: "done" };
+    }
+    streamChatMock.mockImplementation(() => reply());
+    const user = userEvent.setup();
     const Wrapper = makeWrapper({ withAuth: false });
     render(<WorkbenchPage />, { wrapper: Wrapper });
 
-    // The workbench auto-selects the first project on load, so the session must
-    // be (re)opened with that projectId — the server uses it to attach
-    // project-scoped RAG context to the conversation.
-    await waitFor(() =>
-      expect(
-        createSessionMock.mock.calls.some((call) => {
-          const arg = call[0] as { projectId?: string | null } | undefined;
-          return arg?.projectId === "p1";
-        }),
-      ).toBe(true),
-    );
+    // The workbench auto-selects the first project on load; the session opened
+    // by the first send (#361) carries that projectId — the server uses it to
+    // attach project-scoped RAG context to the conversation.
+    await waitFor(() => expect(screen.getByTestId("workbench-project-picker")).toHaveValue("p1"));
+    await user.type(screen.getByTestId("workbench-input"), "hi");
+    await user.click(screen.getByTestId("workbench-send"));
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledTimes(1));
+    expect((createSessionMock.mock.calls[0]![0] as { projectId?: string }).projectId).toBe("p1");
 
-    // Switching the project re-opens the session bound to the new project.
-    const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByTestId("workbench-project-picker")).toBeInTheDocument());
+    // Switching the project drops the session; the next send opens one bound to
+    // the new scope (here: no project).
+    await waitFor(() => expect(screen.getByTestId("workbench-send")).toHaveTextContent("Send"));
     await user.selectOptions(screen.getByTestId("workbench-project-picker"), "");
-    await waitFor(() =>
-      expect(
-        createSessionMock.mock.calls.some((call) => {
-          const arg = call[0] as { projectId?: string | null } | undefined;
-          return arg?.projectId === undefined;
-        }),
-      ).toBe(true),
-    );
+    await user.type(screen.getByTestId("workbench-input"), "again");
+    await user.click(screen.getByTestId("workbench-send"));
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledTimes(2));
+    expect(
+      (createSessionMock.mock.calls[1]![0] as { projectId?: string }).projectId,
+    ).toBeUndefined();
   });
 
   it("shows connector/repo documents by file path, not the raw connector key (#363)", async () => {

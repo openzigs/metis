@@ -215,8 +215,10 @@ function attachHandlers(
       });
       return;
     }
-    // #340 — the shared room carries global and project events; a user-scope
-    // server's events go only to its owner's room and the admins' room.
+    // #340 / #353 — the shared room carries global events and those of projects
+    // with no workspace; a user-scope server's events go only to its owner's
+    // room and the admins' room, and a workspace project's only to that
+    // workspace's room (joined from the JWT) and the admins' room.
     void socket.join(mcpStatusRoomsFor(user));
   });
   socket.on("unsubscribe:mcp", () => {

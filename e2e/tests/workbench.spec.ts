@@ -88,8 +88,8 @@ test.describe("Workbench project picker (#240)", () => {
       await wb.expectEmptyDocumentsState();
     });
 
-    await test.step("Verify chat session initializes", async () => {
-      await wb.expectSessionStarted();
+    await test.step("Verify the chat is ready for a first message", async () => {
+      await wb.expectChatReady();
     });
   });
 

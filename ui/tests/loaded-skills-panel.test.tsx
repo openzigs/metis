@@ -57,6 +57,48 @@ describe("<LoadedSkillsPanel />", () => {
     expect(screen.getByText(/Start a chat session/i)).toBeInTheDocument();
   });
 
+  // PR #385 panel — Workbench creates its session lazily, so the no-session
+  // state must offer a way to open one for loading skills before the first turn.
+  it("offers a Start-session button when the page supplies onStartSession", () => {
+    const onStartSession = vi.fn();
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(
+      <Wrapper>
+        <LoadedSkillsPanel sessionId={null} projectId="p-1" onStartSession={onStartSession} />
+      </Wrapper>,
+    );
+    fireEvent.click(screen.getByTestId("skills-start-session"));
+    expect(onStartSession).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Start a chat session/i)).toBeNull();
+  });
+
+  it("disables the Start-session button while a session is starting", () => {
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(
+      <Wrapper>
+        <LoadedSkillsPanel
+          sessionId={null}
+          projectId="p-1"
+          onStartSession={vi.fn()}
+          startingSession
+        />
+      </Wrapper>,
+    );
+    expect(screen.getByTestId("skills-start-session")).toBeDisabled();
+    expect(screen.getByTestId("skills-start-session")).toHaveTextContent("Starting session…");
+  });
+
+  it("keeps the plain prompt when there is no project, even with onStartSession", () => {
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(
+      <Wrapper>
+        <LoadedSkillsPanel sessionId={null} projectId={null} onStartSession={vi.fn()} />
+      </Wrapper>,
+    );
+    expect(screen.queryByTestId("skills-start-session")).toBeNull();
+    expect(screen.getByText(/Start a chat session/i)).toBeInTheDocument();
+  });
+
   it("renders the loaded skill list with order numbers", async () => {
     renderPanel();
     await waitFor(() => expect(screen.getByText("Already loaded")).toBeInTheDocument());

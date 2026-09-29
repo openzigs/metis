@@ -34,10 +34,11 @@
  *   2. **The symbol index.** `createDefaultCodeSearcher` is given a corpus-backed
  *      {@link SymbolIndex} instead of the Prisma-backed `prismaSymbolIndex`, because
  *      the latter needs a live `CodeSymbol` table. It implements the SAME contract,
- *      `getSymbolsByIds` included — but it is not windowed, so the eval does not
- *      exercise the `MAX_INDEXED_SYMBOLS` window or the hydration path #797 fixed.
- *      At 183 symbols the window is moot (production's is 5000), so this cannot move
- *      the numbers on THIS corpus — but it is a stand-in, and any residual between
+ *      `getSymbolsByIds` included, and like production's since #372 it returns every
+ *      symbol — but it is not cached, so the eval does not exercise #372's per-project
+ *      symbol cache or the shared BM25 index, and it hydrates nothing, so the #797
+ *      hydration path is not exercised either. Neither changes a ranking, so this
+ *      cannot move the numbers on THIS corpus — but it is a stand-in, and any residual between
  *      the potential and realised columns must not be explained away as if it were not.
  *
  * Report BOTH columns. A realised score materially below 0.402 is a finding about
@@ -134,7 +135,7 @@ export function createCorpusMetadataRepo(corpus: EmbedRetrievalCorpus): SymbolMe
 /**
  * The corpus as a {@link SymbolIndex} — the stand-in for `prismaSymbolIndex` (see
  * point 2 of this file's header). Implements `getSymbolsByIds` so the hydration
- * CONTRACT is honoured, but it is not windowed, so the window itself is untested here.
+ * CONTRACT is honoured; it returns a fresh array per call, so the #372 caches never hit.
  */
 export function corpusSymbolIndex(searchable: readonly SearchableSymbol[]): SymbolIndex {
   return {

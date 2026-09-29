@@ -51,9 +51,23 @@ interface Props {
   projectId: string | null;
   /** When true, render as a side panel; otherwise inline (e.g. workbench). */
   variant?: "panel" | "inline";
+  /**
+   * #361 — a page that creates its session lazily (Workbench, on first send)
+   * passes this so a user can still open a session to load skills BEFORE the
+   * first turn. Without it the no-session state is a dead end.
+   */
+  onStartSession?: () => void;
+  /** True while `onStartSession`'s create is in flight. */
+  startingSession?: boolean;
 }
 
-export function LoadedSkillsPanel({ sessionId, projectId, variant = "panel" }: Props) {
+export function LoadedSkillsPanel({
+  sessionId,
+  projectId,
+  variant = "panel",
+  onStartSession,
+  startingSession = false,
+}: Props) {
   const qc = useQueryClient();
   // The chat picker must reflect the runtime gate (default-allow all enabled
   // skills when a project has no explicit allowlist rows), NOT the raw explicit
@@ -138,6 +152,17 @@ export function LoadedSkillsPanel({ sessionId, projectId, variant = "panel" }: P
             </ol>
           )}
         </div>
+      ) : onStartSession && projectId ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={onStartSession}
+          disabled={startingSession}
+          data-testid="skills-start-session"
+        >
+          {startingSession ? "Starting session…" : "Start a session to load skills"}
+        </Button>
       ) : (
         <p className="text-xs text-muted-foreground">Start a chat session to load skills.</p>
       )}
