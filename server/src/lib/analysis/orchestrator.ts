@@ -2126,22 +2126,25 @@ export class AnalysisOrchestrator {
         const onDrop = makeCitationDropLogger(input.analysisId, agentKey, "agentic");
         // #298 — the project's documents, for resolving a citation `documentId`
         // the model wrote as a filename or path. Loaded at most once per run,
-        // and only when an answer (or a salvaged one) carries such an id.
-        // Scoped to this project.
-        // A lookup failure degrades to "no known documents": the id is then
-        // dropped rather than resolved, and the pass is never failed by it.
+        // and only when an answer (or a salvaged one) carries such an id —
+        // #303: or a schema-valid id the id check below did not find.
+        // Both lookups are scoped to this project.
+        // A lookup failure (a rejected promise, caught by the repair) degrades
+        // to "no known documents": an invalid id is dropped rather than
+        // resolved, a valid one is kept, and the pass is never failed by it.
         let knownDocuments: Promise<readonly KnownDocument[]> | undefined;
         const loadKnownDocuments = (): Promise<readonly KnownDocument[]> =>
-          (knownDocuments ??= (async () => {
-            try {
-              return await prisma.document.findMany({
-                where: { projectId: input.projectId, deletedAt: null },
-                select: { id: true, filename: true },
-              });
-            } catch {
-              return [];
-            }
-          })());
+          (knownDocuments ??= prisma.document.findMany({
+            where: { projectId: input.projectId, deletedAt: null },
+            select: { id: true, filename: true },
+          }));
+        const findKnownDocumentIds = async (ids: readonly string[]): Promise<string[]> => {
+          const rows = await prisma.document.findMany({
+            where: { projectId: input.projectId, deletedAt: null, id: { in: [...ids] } },
+            select: { id: true },
+          });
+          return rows.map((r) => r.id);
+        };
 
         /**
          * #483/#734 — run ONE agentic loop over `passRequirements` with the given
@@ -2242,7 +2245,11 @@ export class AnalysisOrchestrator {
               // #298 — repair an over-long citation `documentId` / note rather
               // than let one field reject the whole answer. The schema below
               // still rejects a genuinely malformed answer.
-              const repaired = await repairFindingsAnswerWithDocuments(parsed, loadKnownDocuments);
+              const repaired = await repairFindingsAnswerWithDocuments(
+                parsed,
+                loadKnownDocuments,
+                findKnownDocumentIds,
+              );
               validated = agentOutputSchema.parse(repaired.value);
               fieldRepairs = repaired.repairs;
             } catch {
@@ -2269,6 +2276,7 @@ export class AnalysisOrchestrator {
                 // #298 — resolve an over-long citation `documentId` here too
                 // (loaded only when a salvaged finding carries one).
                 loadKnownDocuments,
+                findKnownDocumentIds,
               },
             );
             const salvaged = salvage.findings;

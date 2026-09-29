@@ -37,9 +37,10 @@ import {
 import type { AIProvider } from "../ai/types.js";
 import { extractJsonObject, repairAgentJson } from "./agent-runner.js";
 import {
-  answerNeedsDocumentResolution,
+  knownDocumentsForRepair,
   repairFinding,
   repairFindingsAnswer,
+  type FindKnownDocumentIds,
   type FindingsRepair,
   type KnownDocument,
 } from "./findings-repair.js";
@@ -191,12 +192,14 @@ export function salvageRepairedFindings(
 }
 
 /**
- * #298 — the known documents for salvaging `raw`, loaded only when its
- * findings carry a citation `documentId` the schema would reject. Never throws.
+ * #298 / #303 — the known documents for salvaging `raw`, loaded only when its
+ * findings carry a citation `documentId` the schema would reject or one that
+ * is not a known document (see `knownDocumentsForRepair`). Never throws.
  */
 async function documentsFor(
   raw: string,
   load: (() => Promise<readonly KnownDocument[]>) | undefined,
+  findKnownIds: FindKnownDocumentIds | undefined,
 ): Promise<{ knownDocuments?: readonly KnownDocument[] }> {
   if (!load) return {};
   let parsed: unknown;
@@ -205,12 +208,8 @@ async function documentsFor(
   } catch {
     return {};
   }
-  if (!answerNeedsDocumentResolution(parsed)) return {};
-  try {
-    return { knownDocuments: await load() };
-  } catch {
-    return {};
-  }
+  const knownDocuments = await knownDocumentsForRepair(parsed, load, findKnownIds);
+  return knownDocuments ? { knownDocuments } : {};
 }
 
 /** Outcome of {@link salvageWithRepair}. */
@@ -270,11 +269,16 @@ export async function salvageWithRepair(
      * such an id; a failure degrades to "no known documents".
      */
     loadKnownDocuments?: () => Promise<readonly KnownDocument[]>;
+    /** #303 — cheap id check that spares the list load when every cited id is real. */
+    findKnownDocumentIds?: FindKnownDocumentIds;
   },
 ): Promise<SalvageResult> {
   const sourceKind = classifyFinalAnswer(source);
-  const { loadKnownDocuments, ...repairOpts } = opts;
-  const first = salvageRepairedFindings(source, await documentsFor(source, loadKnownDocuments));
+  const { loadKnownDocuments, findKnownDocumentIds, ...repairOpts } = opts;
+  const first = salvageRepairedFindings(
+    source,
+    await documentsFor(source, loadKnownDocuments, findKnownDocumentIds),
+  );
   const none = {
     sourceKind,
     repairAttempted: false,
@@ -316,7 +320,7 @@ export async function salvageWithRepair(
   const repairedText = JSON.stringify(repaired);
   const recovered = salvageRepairedFindings(
     repairedText,
-    await documentsFor(repairedText, loadKnownDocuments),
+    await documentsFor(repairedText, loadKnownDocuments, findKnownDocumentIds),
   );
   return {
     findings: recovered.findings,

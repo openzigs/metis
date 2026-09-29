@@ -70,9 +70,13 @@ export function createSearchKnowledgeTool(deps: SearchKnowledgeDeps): AgentTool 
       return { content: "No relevant documents found for the query.", resultCount: 0 };
     }
 
+    // #303 — the real `documentId` (and its chunk) beside the human label, so
+    // a citation has an id to cite: the label alone led models to cite
+    // `filename#chunkN` as the id. Same `documentId=… chunk=…` form as the
+    // pre-retrieved context block (`agent-runner.ts`).
     const formatted = result.hits.map(
       (hit, i) =>
-        `[${i + 1}] ${hit.filename}#chunk${hit.position} (score: ${hit.score?.toFixed(3) ?? "n/a"})\n${hit.text}`,
+        `[${i + 1}] ${hit.filename}#chunk${hit.position} documentId=${hit.documentId} chunk=${hit.position} (score: ${hit.score?.toFixed(3) ?? "n/a"})\n${hit.text}`,
     );
 
     return {

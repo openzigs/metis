@@ -246,7 +246,8 @@ vi.mock("../src/lib/prisma.js", () => ({
       findFirst: vi.fn(async () => null),
     },
     document: {
-      findMany: vi.fn(async () => uploadedDocs.map((id) => ({ id }))),
+      // `filename` is non-null on the real row; #303's citation-id repair reads it.
+      findMany: vi.fn(async () => uploadedDocs.map((id) => ({ id, filename: `${id}.md` }))),
       // Issue #733 — repo-source detection: a `connector:repo:*` document exists
       // only when the test toggles `repoSourceExists`.
       findFirst: vi.fn(async ({ where }: { where: { filename?: { startsWith?: string } } }) => {
@@ -1043,7 +1044,9 @@ describe("AnalysisOrchestrator.start", () => {
     __resetConfigSingleton();
     const io = makeIO();
     codeGraphExists = true; // requirements + code graph ⇒ AGENTIC
-    uploadedDocs = ["doc-1"];
+    // #303 — the cited document must be one of the project's own: a citation
+    // to an id the project does not have is now (correctly) dropped.
+    uploadedDocs = ["doc-1", "doc-1234567890"];
     const provider = makeProvider({
       docRequirements: [{ id: "REQ-001", text: "Users can reset their password" }],
       codeFindingCitations: rawCitationsForTest(),
