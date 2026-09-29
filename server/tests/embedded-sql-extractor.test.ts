@@ -106,13 +106,13 @@ describe("findEmbeddedSqlCandidates", () => {
       const notSql = "just a label";
       db.query(\`UPDATE orders SET status = 'x' WHERE id = 5\`);
     `;
-    const found = findEmbeddedSqlCandidates(src, "ts");
+    const found = findEmbeddedSqlCandidates(src, "ts", "src/repo.ts");
     expect(found.map((c) => c.sql.slice(0, 6))).toEqual(["SELECT", "UPDATE"]);
   });
 
   it("flags interpolated SQL as dynamic", () => {
     const src = "const q = `SELECT * FROM users WHERE id = ${id}`;";
-    const found = findEmbeddedSqlCandidates(src, "ts");
+    const found = findEmbeddedSqlCandidates(src, "ts", "src/repo.ts");
     expect(found).toHaveLength(1);
     expect(found[0].dynamic).toBe(true);
   });
@@ -128,7 +128,7 @@ describe("findEmbeddedSqlCandidates", () => {
         }
       }
     `;
-    const found = findEmbeddedSqlCandidates(src, "cs");
+    const found = findEmbeddedSqlCandidates(src, "cs", "src/Repo.cs");
     expect(found.map((c) => c.sql.slice(0, 6)).sort()).toEqual(["SELECT", "SELECT", "UPDATE"]);
     // Plain C# string literals (no `$` interpolation) are never dynamic.
     expect(found.every((c) => !c.dynamic)).toBe(true);
@@ -136,7 +136,7 @@ describe("findEmbeddedSqlCandidates", () => {
 
   it('flags interpolated C# SQL ($"...") as dynamic (#900)', () => {
     const src = 'class R { void M() { var q = $"SELECT * FROM users WHERE id = {id}"; } }';
-    const found = findEmbeddedSqlCandidates(src, "cs");
+    const found = findEmbeddedSqlCandidates(src, "cs", "src/Repo.cs");
     expect(found).toHaveLength(1);
     expect(found[0].dynamic).toBe(true);
   });
@@ -151,7 +151,7 @@ describe("findEmbeddedSqlCandidates", () => {
         }
       }
     `;
-    const found = findEmbeddedSqlCandidates(src, "java");
+    const found = findEmbeddedSqlCandidates(src, "java", "src/main/java/Dao.java");
     expect(found.map((c) => c.sql.slice(0, 6))).toEqual(["SELECT"]);
     // A plain Java string_literal has no interpolation grammar — never dynamic.
     expect(found[0].dynamic).toBe(false);
@@ -165,7 +165,7 @@ describe("findEmbeddedSqlCandidates", () => {
         }
       }
     `;
-    const found = findEmbeddedSqlCandidates(src, "java");
+    const found = findEmbeddedSqlCandidates(src, "java", "src/main/java/Dao.java");
     expect(found).toHaveLength(1);
     expect(found[0].sql).toBe("SELECT id FROM orders WHERE status = 'open'");
     expect(found[0].dynamic).toBe(false);
@@ -179,7 +179,7 @@ describe("findEmbeddedSqlCandidates", () => {
         }
       }
     `;
-    const found = findEmbeddedSqlCandidates(src, "java");
+    const found = findEmbeddedSqlCandidates(src, "java", "src/main/java/Dao.java");
     expect(found).toHaveLength(1);
     expect(found[0].dynamic).toBe(true);
     // The static fragments are still joined (for the SQL-shape check); the
@@ -199,7 +199,7 @@ describe("findEmbeddedSqlCandidates", () => {
         }
       }
     `;
-    const found = findEmbeddedSqlCandidates(src, "java");
+    const found = findEmbeddedSqlCandidates(src, "java", "src/main/java/Dao.java");
     expect(found).toHaveLength(1);
     expect(found[0].sql).toBe("SELECT id FROM bar WHERE y = 1");
     expect(found[0].dynamic).toBe(false);
@@ -215,7 +215,7 @@ describe("findEmbeddedSqlCandidates", () => {
         }
       }
     `;
-    const found = findEmbeddedSqlCandidates(src, "java");
+    const found = findEmbeddedSqlCandidates(src, "java", "src/main/java/Dao.java");
     expect(found).toHaveLength(1);
     expect(found[0].sql).toBe("SELECT id FROM baz WHERE z = 2");
     expect(found[0].dynamic).toBe(false);
@@ -233,7 +233,7 @@ describe("findEmbeddedSqlCandidates", () => {
         }
       }
     `;
-    const found = findEmbeddedSqlCandidates(src, "java");
+    const found = findEmbeddedSqlCandidates(src, "java", "src/main/java/Dao.java");
     expect(found).toHaveLength(1);
     expect(found[0].dynamic).toBe(true);
     expect(found[0].sql).toContain("SELECT * FROM qux WHERE a =");
@@ -249,7 +249,7 @@ describe("findEmbeddedSqlCandidates", () => {
         }
       }
     `;
-    const found = findEmbeddedSqlCandidates(src, "java");
+    const found = findEmbeddedSqlCandidates(src, "java", "src/main/java/Dao.java");
     // Only the SQL-shaped concat survives the shape filter; the numeric `+` and
     // the non-SQL path string are dropped.
     expect(found).toHaveLength(1);
@@ -267,7 +267,7 @@ describe("findEmbeddedSqlCandidates", () => {
         }
       }
     `;
-    const found = findEmbeddedSqlCandidates(src, "java");
+    const found = findEmbeddedSqlCandidates(src, "java", "src/main/java/Dao.java");
     // Exactly one candidate — the appended literal is consumed by the assembly,
     // not re-emitted as a bare literal.
     expect(found).toHaveLength(1);
@@ -290,6 +290,20 @@ describe("extractEmbeddedSql persistence", () => {
     expect(tableEdge?.source).toBe("sqlglot");
     const colEdge = recorded.edges.find((e) => e.toQualifiedName === "users.id");
     expect(colEdge?.source).toBe("sqlglot");
+  });
+
+  it("extracts SQL from a JSX-containing .tsx component (#383)", async () => {
+    const { prisma, recorded } = fakePrisma();
+    const writer = new SchemaGraphWriter(prisma, "g1", "p1");
+    const src = `export function Orders() {
+  return <p>Docs: https://example.com {run("SELECT id FROM orders")}</p>;
+}
+`;
+    const client = stubClient(() => tableResult("orders", "read"));
+    const result = await extractEmbeddedSql(writer, "ui/src/orders.tsx", src, { client });
+
+    expect(result.candidates).toBe(1);
+    expect(recorded.edges.find((e) => e.toQualifiedName === "orders")?.kind).toBe("reads");
   });
 
   it("maps INSERT to persists-to and UPDATE to writes", async () => {
@@ -344,7 +358,7 @@ describe("extractEmbeddedSql persistence", () => {
       '  db.Select(&rows, "SELECT * FROM orders")',
       "}",
     ].join("\n");
-    const candidates = findEmbeddedSqlCandidates(src, "go");
+    const candidates = findEmbeddedSqlCandidates(src, "go", "pkg/store.go");
     const sqls = candidates.map((c) => c.sql);
     expect(sqls).toContain("SELECT id FROM users WHERE age > 18");
     expect(sqls).toContain("UPDATE accounts SET balance = 0");

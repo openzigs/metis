@@ -106,10 +106,14 @@ export interface EmbeddedSqlCandidate {
   dynamic: boolean;
 }
 
-/** Locate the SQL-looking string literals in one source file. */
+/**
+ * Locate the SQL-looking string literals in one source file. `filePath` picks
+ * the grammar, so a `.tsx` file is scanned as TSX (#383).
+ */
 export function findEmbeddedSqlCandidates(
   source: string,
   language: Language,
+  filePath: string,
 ): EmbeddedSqlCandidate[] {
   // Java (#888/#889): a single scan handles lone literals, `+` concatenation of
   // string constants, and simple `StringBuilder`/`StringBuffer` append chains,
@@ -117,8 +121,8 @@ export function findEmbeddedSqlCandidates(
   // that mixes in a non-constant operand comes back `dynamic: true`.
   const literals =
     language === "java"
-      ? findJavaConcatSqlCandidates(source)
-      : findStringLiterals(source, language);
+      ? findJavaConcatSqlCandidates(source, filePath)
+      : findStringLiterals(source, language, filePath);
   const out: EmbeddedSqlCandidate[] = [];
   for (const lit of literals) {
     if (looksLikeSql(lit.text)) {
@@ -217,7 +221,7 @@ export async function extractEmbeddedSql(
   const language = detectLanguage(filePath);
   if (!language || !(language in LANGUAGE_DIALECT)) return empty;
 
-  const candidates = findEmbeddedSqlCandidates(source, language);
+  const candidates = findEmbeddedSqlCandidates(source, language, filePath);
   if (candidates.length === 0) return empty;
 
   const dialect = opts.dialect ?? LANGUAGE_DIALECT[language] ?? "";

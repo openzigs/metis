@@ -142,7 +142,7 @@ class Builder {
   });
 
   it("finds embedded SQL string literals (ADO.NET/Dapper candidates)", () => {
-    const lits = findStringLiterals(SAMPLE, "cs");
+    const lits = findStringLiterals(SAMPLE, "cs", "Repo.cs");
     expect(lits.some((l) => /SELECT \* FROM orders/i.test(l.text))).toBe(true);
   });
 
@@ -151,7 +151,7 @@ class Builder {
       var a = @"C:\\temp\\SELECT";
       var b = $"SELECT * FROM t WHERE id = {id}";
     } }`;
-    const lits = findStringLiterals(src, "cs");
+    const lits = findStringLiterals(src, "cs", "Repo.cs");
     const verbatim = lits.find((l) => l.text.startsWith("C:"));
     expect(verbatim).toBeTruthy();
     const interpolated = lits.find((l) => l.text.startsWith("SELECT * FROM t"));
