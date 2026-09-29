@@ -4,7 +4,7 @@
  * multi-repo scenarios to cover deep conditional branches.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "./test-utils";
 
@@ -57,6 +57,22 @@ vi.mock("@/hooks/use-connector-events", () => ({
   useConnectorProgress: vi.fn(() => ({ progressMap: {}, clearProgress: vi.fn() })),
   useConnectorDiscovery: vi.fn(),
 }));
+
+// #373 — Deep Ingest's outcome arrives on the job bus; a fake socket delivers it.
+const socketHandlers = new Map<string, Set<(data: unknown) => void>>();
+const fakeSocket = {
+  emit: vi.fn(),
+  on: vi.fn((name: string, fn: (data: unknown) => void) => {
+    if (!socketHandlers.has(name)) socketHandlers.set(name, new Set());
+    socketHandlers.get(name)!.add(fn);
+  }),
+  off: vi.fn((name: string, fn: (data: unknown) => void) => {
+    socketHandlers.get(name)?.delete(fn);
+  }),
+};
+const fireSocket = (name: string, data: unknown) =>
+  socketHandlers.get(name)?.forEach((fn) => fn(data));
+vi.mock("@/lib/socket-client", () => ({ useSocket: () => fakeSocket }));
 
 vi.mock("@/components/connectors/db-connector-wizard", () => ({
   DbConnectorWizard: () => <div data-testid="db-connector-wizard" />,
@@ -215,12 +231,8 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument();
   });
 
-  it("calls deepIngest when Deep Ingest is clicked and shows result summary", async () => {
-    deepIngest.mockResolvedValueOnce({
-      codeGraph: { filesScanned: 10, filesParsed: 8, symbolsUpserted: 150, edgesUpserted: 200 },
-      sourceKnowledge: { documentsCreated: 3, chunkCount: 45 },
-      cloneSizeBytes: 5242880,
-    });
+  it("runs Deep Ingest as a job: Ingesting… after the 202, then the result from the bus (#373)", async () => {
+    deepIngest.mockResolvedValueOnce({ jobId: "job-373", connectorId: "r1", status: "started" });
     repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
     renderPage();
     await waitFor(() =>
@@ -228,7 +240,58 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /Deep Ingest/i }));
     await waitFor(() => expect(deepIngest).toHaveBeenCalledWith("proj-1", "r1"));
-    await waitFor(() => expect(screen.getByText(/Deep ingest complete/i)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(fakeSocket.emit).toHaveBeenCalledWith("subscribe:job", { jobId: "job-373" }),
+    );
+    // The request answered, but the ingest is still running.
+    expect(screen.getByRole("button", { name: /Ingesting/i })).toBeDisabled();
+    expect(screen.queryByText(/Deep ingest complete/i)).not.toBeInTheDocument();
+
+    act(() =>
+      fireSocket("job:lifecycle", {
+        kind: "repo-ingest",
+        jobId: "job-373",
+        projectId: "proj-1",
+        status: "completed",
+        progress: 100,
+        message: "Deep ingest complete: 8 of 10 files parsed, 150 symbols, 45 RAG chunks.",
+        ts: 1,
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText("Deep ingest complete: 8 of 10 files parsed, 150 symbols, 45 RAG chunks."),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: /Deep Ingest/i })).toBeEnabled();
+  });
+
+  it("shows a failed Deep Ingest job's generic error (#373)", async () => {
+    deepIngest.mockResolvedValueOnce({ jobId: "job-373f", connectorId: "r1", status: "started" });
+    repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Deep Ingest/i })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Deep Ingest/i }));
+    await waitFor(() =>
+      expect(fakeSocket.emit).toHaveBeenCalledWith("subscribe:job", { jobId: "job-373f" }),
+    );
+    act(() =>
+      fireSocket("job:lifecycle", {
+        kind: "repo-ingest",
+        jobId: "job-373f",
+        projectId: "proj-1",
+        status: "failed",
+        error: "Repository ingestion failed.",
+        ts: 1,
+      }),
+    );
+    const alert = (await screen.findAllByRole("alert")).find((el) =>
+      el.textContent?.includes("Deep ingest failed"),
+    );
+    expect(alert).toBeDefined();
+    expect(alert).toHaveTextContent("Repository ingestion failed.");
   });
 
   it("calls refreshIngest when Sync is clicked and shows result summary", async () => {

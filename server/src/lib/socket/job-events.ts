@@ -62,6 +62,9 @@ const GENERIC_FAILURE_MESSAGE: Record<JobKind, string> = {
   "embeddings-reindex": "The embeddings reindex failed. Please try again.",
   "spec-kit": "The Spec Kit operation failed. Please try again.",
   "overview-regenerate": "The overview regeneration failed. Please try again.",
+  // #373 — a repository connector's Deep Ingest, run in the background.
+  "repo-ingest":
+    "Repository ingestion failed. The details are in the server log; run the ingest again to retry.",
 };
 
 /**
