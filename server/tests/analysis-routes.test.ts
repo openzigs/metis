@@ -874,6 +874,111 @@ describe("POST /api/projects/:projectId/analyses/:id/clarify (Epic #922)", () =>
     expect(meta.structuredRequirements).toBeDefined();
     expect(meta.structuredRequirements!.requirements[0]!.id).toBe("req-1");
   });
+
+  // Issue #382 — older stored requirements (and model output that omits the
+  // field) carry no `ambiguities` array. Such a requirement has no open
+  // questions; it must not turn the clarify endpoint into a 500.
+  describe("requirements with no `ambiguities` field (#382)", () => {
+    const legacyRequirement = {
+      id: "req-legacy",
+      title: "Legacy requirement",
+      description: "Stored before ambiguities were extracted",
+      type: "functional",
+      stakeholders: [],
+      priority: "must-have",
+      evidenceNeeds: [],
+      rawSource: "raw",
+    };
+
+    it("start: completes when the only requirement has no ambiguities field", async () => {
+      const aId = seedAnalysis({ agentKeys: ["document"] });
+      const res = await request(app)
+        .post(`/api/projects/proj-abcdefghij/analyses/${aId}/clarify`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({
+          requirements: {
+            requirements: [legacyRequirement],
+            totalAmbiguities: 0,
+            totalEvidenceNeeds: 0,
+          },
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.data.completed).toBe(true);
+      expect(res.body.data.rounds).toEqual([]);
+    });
+
+    it("start: still opens a round for the requirements that do carry ambiguities", async () => {
+      const aId = seedAnalysis({ agentKeys: ["document"] });
+      const res = await request(app)
+        .post(`/api/projects/proj-abcdefghij/analyses/${aId}/clarify`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({
+          requirements: {
+            requirements: [
+              legacyRequirement,
+              {
+                ...legacyRequirement,
+                id: "req-open",
+                ambiguities: [{ field: "retention", description: "how long?" }],
+              },
+            ],
+            totalAmbiguities: 1,
+            totalEvidenceNeeds: 0,
+          },
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.data.completed).toBe(false);
+      expect(res.body.data.rounds).toHaveLength(1);
+    });
+
+    it("submit: answers are processed and the refined requirements persist", async () => {
+      const aId = seedAnalysis({ agentKeys: ["document"] });
+      dialogStateStore.set(
+        aId,
+        JSON.stringify({
+          analysisId: aId,
+          currentRound: 1,
+          maxRounds: 3,
+          rounds: [
+            {
+              round: 1,
+              questions: [
+                {
+                  id: "q-1",
+                  requirementId: "req-legacy",
+                  ambiguityField: "retention",
+                  question: "How long?",
+                  context: "",
+                },
+              ],
+              answers: [],
+            },
+          ],
+          resolvedAmbiguities: [],
+          escalatedToSonnet: false,
+          completed: false,
+        }),
+      );
+
+      const res = await request(app)
+        .post(`/api/projects/proj-abcdefghij/analyses/${aId}/clarify`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({
+          requirements: {
+            requirements: [legacyRequirement],
+            totalAmbiguities: 0,
+            totalEvidenceNeeds: 0,
+          },
+          answers: [{ questionId: "q-1", answer: "30 days" }],
+        });
+      expect(res.status).toBe(200);
+      // A field that is not a real ambiguity of its requirement is not counted.
+      expect(res.body.data.state.answeredAmbiguities).toEqual([]);
+      // Nothing is left open on a requirement with no ambiguities.
+      expect(res.body.data.state.completed).toBe(true);
+      expect(res.body.data.updatedRequirements.requirements[0].ambiguities).toEqual([]);
+    });
+  });
 });
 
 // ── Clarifying-question CSV export / import (Business Analyst round-trip) ──

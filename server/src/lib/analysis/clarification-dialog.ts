@@ -27,6 +27,23 @@ import type {
 
 const log = createChildLogger("clarification-dialog");
 
+/**
+ * Issue #382 — a requirement stored before ambiguities were extracted, or
+ * emitted by a model that omitted the field, has no `ambiguities` array. It has
+ * no open questions, so default it to `[]` once at the dialog's entry points
+ * rather than letting every `r.ambiguities` read below throw into a 500.
+ */
+export function withAmbiguityDefaults(
+  requirements: StructuredRequirements,
+): StructuredRequirements {
+  return {
+    ...requirements,
+    requirements: requirements.requirements.map((r) =>
+      Array.isArray(r.ambiguities) ? r : { ...r, ambiguities: [] },
+    ),
+  };
+}
+
 export const MAX_ROUNDS = 3;
 const ESCALATION_THRESHOLD = 0.6; // >60% unresolved → escalate to Sonnet
 
@@ -164,6 +181,7 @@ export class ClarificationDialog {
     requirements: StructuredRequirements,
     signal?: AbortSignal,
   ): Promise<ClarificationState> {
+    requirements = withAmbiguityDefaults(requirements);
     let state = await readDialogState(analysisId);
 
     if (!state) {
@@ -233,6 +251,7 @@ export class ClarificationDialog {
     requirements: StructuredRequirements,
     signal?: AbortSignal,
   ): Promise<{ state: ClarificationState; updatedRequirements: StructuredRequirements }> {
+    requirements = withAmbiguityDefaults(requirements);
     const state = await readDialogState(analysisId);
     if (!state) {
       throw new Error(`No clarification dialog found for analysis ${analysisId}`);
