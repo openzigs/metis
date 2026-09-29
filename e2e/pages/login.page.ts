@@ -31,24 +31,27 @@ export class LoginPage {
   }
 
   async goto(): Promise<void> {
-    await this.page.goto("/login", { waitUntil: "load" });
-    await expect(this.title).toBeVisible();
     // Wait for the AuthProvider's initial /api/auth/me probe (fired in a
     // useEffect after hydration) to settle. Otherwise a race exists where
     // login() sets the user, then the still-in-flight /me 401 resolves
     // and clobbers the user back to null, which the (authed) AppShell
-    // then bounces to /login. We use a long timeout because Next.js dev
-    // compiles route handlers on first hit.
-    await this.page
+    // then bounces to /login.
+    //
+    // The listener is attached BEFORE navigating (#342). Attached after
+    // `goto`, it missed a /me that settled before `load` — always the case
+    // against the e2e stack's production UI build — and so every login sat
+    // out the full timeout before the swallow below let it continue.
+    const meSettled = this.page
       .waitForResponse(
         (res) => res.url().endsWith("/api/auth/me") && res.request().method() === "GET",
         { timeout: 30_000 },
       )
       .catch(() => {
-        // Swallow: if /me already settled before we attached the listener
-        // (for example with a hot Next.js cache), there is nothing to wait
-        // for and we can proceed safely.
+        // Swallow: a page that never probes /me has nothing to wait for.
       });
+    await this.page.goto("/login", { waitUntil: "load" });
+    await expect(this.title).toBeVisible();
+    await meSettled;
     // Also wait for network quiescence so any in-flight cookie writes are
     // committed before we submit the form.
     await this.page.waitForLoadState("networkidle").catch(() => undefined);

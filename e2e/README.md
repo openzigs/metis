@@ -50,8 +50,8 @@ and applies all Prisma migrations to a fresh SQLite database.
 
 | Server | Port | Command |
 | ------ | ---- | ------- |
-| API    | 4101 | `pnpm --filter @metis/server exec tsx src/index.ts` |
-| UI     | 3101 | `pnpm --filter @metis/ui exec next dev -p 3101` |
+| API    | 4101 | `node scripts/prepare-e2e-stack.mjs && pnpm --filter @metis/server exec tsx src/index.ts` |
+| UI     | 3101 | `pnpm --filter @metis/ui exec next build --webpack && pnpm --filter @metis/ui exec next start -p 3101` |
 
 These ports are intentionally separate from the dev stack on `:4000` / `:3000`
 (see `scripts/restart.sh --detached`) so `pnpm --filter @metis/e2e test` is
@@ -59,13 +59,20 @@ safe to run while a developer has the dev stack running.
 
 ### Test database + data dirs
 
-`global-setup.ts` runs once before any test:
+Playwright starts the `webServer` entries **before** it runs `globalSetup`
+(#323), so the API web server's own command prepares the data root and only
+then boots the server (`node scripts/prepare-e2e-stack.mjs && … tsx src/index.ts`):
 
 1. Wipes `e2e/test-results/stack-data/` (or `$E2E_DATA_DIR`).
 2. Creates fresh `uploads/` and `lancedb/` subdirs.
 3. Runs `prisma migrate deploy` against the fresh SQLite file.
+4. Writes `stack-data/.stack-prepared`.
 
-The Express server is then started with:
+`global-setup.ts` runs after both servers answer and fails the run if that
+marker is missing, so dropping the preparation step cannot go unnoticed. With
+`E2E_SKIP_WEBSERVER=1` nothing resets the data root — the stack is yours.
+
+The Express server is started with:
 
 - `DATABASE_URL=file:.../metis-e2e.db`
 - `UPLOAD_DIR=...` and `LANCEDB_PATH=...` pointing at the isolated dirs

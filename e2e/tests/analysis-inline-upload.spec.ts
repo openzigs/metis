@@ -14,8 +14,8 @@
  *   AC2: a still-processing document surfaces its ingest status before it is
  *        selectable/ready.
  *
- * Harness note: ingest is queued even in the e2e stack (`INGEST_QUEUE=off` is
- * not read — see playwright.config.ts), so an upload lands `pending` and turns
+ * Harness note: ingest is queued in the e2e stack, as in production (#332 —
+ * see playwright.config.ts), so an upload lands `pending` and turns
  * `ready` moments later; the page re-reads the list until it does (#322). The
  * processing-status case needs a document that STAYS in flight, so it is
  * seeded directly into the DB (see `seedDocumentViaCli`).

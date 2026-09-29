@@ -151,8 +151,8 @@ test.describe("Admin Embedding backends — coverage & reindex (#937)", () => {
   test.beforeEach(async ({ page }) => {
     // Create a project via the API, then ingest a document through the real
     // uploader so the project owns persisted KnowledgeChunks. The e2e stack
-    // runs ingest synchronously (INGEST_QUEUE=off) with the offline hash
-    // embedder, so chunks are tagged with the active backend's model.
+    // queues ingest (#332) and embeds with the offline hash embedder, so once
+    // the document is ready its chunks carry the active backend's model.
     const primed = await primeAdminUser(API_BASE);
     accessToken = primed.accessToken;
 
@@ -179,13 +179,31 @@ test.describe("Admin Embedding backends — coverage & reindex (#937)", () => {
     // Ingested chunks are parked in quarantine; approve them so they graduate
     // to persisted KnowledgeChunk rows tagged with the active embedding model.
     // Without this the project owns zero indexed chunks and coverage is empty.
-    const listRes = await api.get(`/api/projects/${projectId}/documents`);
-    expect(listRes.ok()).toBe(true);
-    const listBody = (await listRes.json()) as { data: { items: Array<{ id: string }> } };
-    expect(listBody.data.items.length).toBeGreaterThan(0);
+    // "done" above means the upload was ACCEPTED, not ingested: ingest is
+    // queued (#332), so wait until the queue has parked the document in
+    // quarantine rather than approving a document that is still pending.
+    let quarantinedIds: string[] = [];
+    await expect
+      .poll(
+        async () => {
+          const list = await api.get(`/api/projects/${projectId}/quarantine`);
+          expect(list.status(), await list.text()).toBe(200);
+          const items = (
+            (await list.json()) as {
+              data: { items: Array<{ documentId: string; indexState: string }> };
+            }
+          ).data.items;
+          quarantinedIds = items
+            .filter((item) => item.indexState === "quarantined")
+            .map((item) => item.documentId);
+          return quarantinedIds.length;
+        },
+        { timeout: 30_000 },
+      )
+      .toBeGreaterThan(0);
     let approvedChunks = 0;
-    for (const doc of listBody.data.items) {
-      const approveRes = await api.post(`/api/projects/${projectId}/documents/${doc.id}/approve`);
+    for (const docId of quarantinedIds) {
+      const approveRes = await api.post(`/api/projects/${projectId}/documents/${docId}/approve`);
       if (approveRes.ok()) {
         const approveBody = (await approveRes.json()) as { data: { chunkCount: number } };
         approvedChunks += approveBody.data.chunkCount ?? 0;

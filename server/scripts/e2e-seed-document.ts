@@ -1,10 +1,10 @@
 /**
  * Seed a single Document row directly into the e2e SQLite database.
  *
- * Why this exists: the e2e harness boots with `INGEST_QUEUE=off`, so every
- * real ingest path (multipart upload, paste-text, URL) runs synchronously and
- * the document lands in `ready` status before the test can observe an
- * in-flight state. To deterministically exercise the Analysis page's ingest
+ * Why this exists: in the e2e harness every real ingest path (multipart
+ * upload, paste-text, URL) is queued, so a document passes through `pending`
+ * and `processing` on its own schedule and reaches `ready` moments later — no
+ * spec can hold it in flight deterministically (#332). To exercise the Analysis page's ingest
  * status surfacing (issue #906 / #908) we inject a document already parked in
  * `processing` (or any requested status) here, bypassing the ingest pipeline.
  *

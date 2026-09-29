@@ -20,8 +20,17 @@ export class WorkspaceSwitcherPage {
     this.workspaceLabel = page.getByText("Workspaces");
   }
 
-  /** Open the workspace switcher dropdown. */
+  /**
+   * Open the workspace switcher dropdown.
+   *
+   * Waits for any previous menu to finish closing first. Right after a
+   * selection the old menu is still animating out: the label check below then
+   * passes against it, the trigger click is swallowed as an outside-dismiss,
+   * and the menu never reopens. The production UI build is fast enough to hit
+   * this every time (#342).
+   */
   async open(): Promise<void> {
+    await expect(this.dropdown).toBeHidden();
     await this.trigger.click();
     await expect(this.workspaceLabel).toBeVisible();
   }
@@ -40,6 +49,7 @@ export class WorkspaceSwitcherPage {
   async switchTo(name: string): Promise<void> {
     await this.open();
     await this.getWorkspaceByName(name).click();
+    await expect(this.dropdown).toBeHidden();
   }
 
   /** Assert the trigger shows a specific active workspace name. */

@@ -85,8 +85,9 @@ export function seedRequirementViaCli(opts: {
  * Insert a single Document row directly into the e2e database with an explicit
  * lifecycle `status`. Returns the new document id.
  *
- * The e2e harness runs ingest synchronously (`INGEST_QUEUE=off`), so a real
- * upload/paste/URL lands in `ready` immediately. To exercise the Analysis
+ * The e2e harness queues ingest (#332), so a real upload/paste/URL passes
+ * through `pending`/`processing` on the queue's schedule and turns `ready`
+ * moments later — too briefly to assert on. To exercise the Analysis
  * page's in-flight status surfacing (issue #906 / #908) a spec needs a document
  * parked in `processing`/`pending` — this helper provides it without driving
  * the ingest pipeline.
