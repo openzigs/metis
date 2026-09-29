@@ -925,9 +925,26 @@ reached document chunks only. It is now wired end to end:
   stub's) are ignored rather than mis-scored — the same invariant `KnowledgeService.search()`
   relies on. A model flip re-embeds symbols as **phase 2** of `KnowledgeService.reindexProject`,
   and symbol counts appear in `coverageReport` / `deploymentCoverage` / `embed-migrate status`.
-- Vector hits that fall outside the BM25 index's `MAX_INDEXED_SYMBOLS` window are **hydrated
-  by id** rather than discarded (`SymbolIndex.getSymbolsByIds`); METIS has ~15k symbols against
-  a 5000-row lexical window, so the old behaviour silently dropped correct semantic hits.
+- **The lexical (BM25) index covers every symbol in the project** (#372). It used to be
+  windowed to the first 5,000 symbols by id (`MAX_INDEXED_SYMBOLS`), which on a ~17k-symbol
+  project left two thirds of the symbols lexically unsearchable, so an exact-name query could
+  miss its own symbol. Vector hits the lexical index did not return are still **hydrated by
+  id** rather than discarded (`SymbolIndex.getSymbolsByIds`, #797) — in production that now
+  hydrates nothing in the normal case, and stays as the contract for any partial index.
+- **Two process-level caches** keep a full-coverage index from being rebuilt per query (#372):
+  - `prismaSymbolIndex` (`project-code-searcher.ts`) holds the full symbol set of up to
+    **4 projects** (LRU). An entry is reused while the project's **fingerprint** — symbol count
+    plus newest `createdAt`, one aggregate query per search — is unchanged; symbols are only
+    ever created or deleted, never updated, so a re-parse moves one or the other. The cached
+    array is frozen and returned as the same object to every caller.
+  - `HybridCodeSearch` shares BM25 indexes across instances in a `WeakMap` keyed by the
+    **identity** of that array (plus up to 8 `fileGlob`/`symbolKind` variants per array), so
+    the per-call searcher built by `createDefaultCodeSearcher` tokenizes a project once per
+    change rather than once per query. A changed fingerprint yields a new array, so a stale
+    index is never reachable and is collected with the old array.
+  - Memory: ~27 MB retained for a 24k-symbol project (one unfiltered index), so near 110 MB
+    worst case across four projects; each filter variant adds an index, but no production
+    caller passes a filter today.
 
 **`search_code_symbols` (#730, Epic #725)** — the same hybrid (BM25 + vector RRF) symbol
 tool chat got in Epic #712 (`createSearchSymbolsTool`), now offered to Winston's agentic
@@ -2782,8 +2799,8 @@ Two modes go further than the default in-memory harness (#797):
   the embedder's **potential**; `--wired` measures the feature's **realised** benefit,
   and the two are reported side by side. Two stand-ins remain and are named in the
   runner's header: Postgres (metadata rides the `SymbolMetadataRepo` seam in memory) and
-  the symbol index (the corpus supplies one; it is *not windowed*, so the eval does not
-  exercise `MAX_INDEXED_SYMBOLS`).
+  the symbol index (the corpus supplies one, complete like production's since #372, but
+  not cached, so the eval does not exercise the #372 symbol and BM25 caches).
 - **`--wired --sweep`** sweeps the RRF weight ratio and reports, per setting, nDCG@10, an
   exact-name regression suite, and the target's rank *at the tool's default limit* — the
   only number that says whether the agent actually receives the symbol. It is the

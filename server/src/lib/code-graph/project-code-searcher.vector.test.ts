@@ -53,7 +53,11 @@ import {
 } from "../rag/embed-model-config.js";
 import { DEFAULT_LIMIT } from "../analysis/tools/search-symbols.js";
 import { DEFAULT_WEIGHTS, HybridCodeSearch, type SymbolVectorStore } from "./hybrid-search.js";
-import { createDefaultCodeSearcher, prismaSymbolIndex } from "./project-code-searcher.js";
+import {
+  __resetSymbolIndexCache,
+  createDefaultCodeSearcher,
+  prismaSymbolIndex,
+} from "./project-code-searcher.js";
 import { computeSymbolHash, type EmbedService } from "./symbol-embeddings.js";
 import {
   createSymbolVectorStore,
@@ -109,6 +113,15 @@ vi.mock("../prisma.js", () => ({
           return take ? rows.slice(0, take) : rows;
         },
       ),
+      // #372 — the fingerprint `prismaSymbolIndex` caches on. The rows carry no
+      // `createdAt`, so each test also resets that cache (see `beforeEach`).
+      aggregate: vi.fn(async ({ where }: { where: Record<string, unknown> }) => ({
+        _count: {
+          _all: symbolRows.filter((r) => matchWhere(r as unknown as Record<string, unknown>, where))
+            .length,
+        },
+        _max: { createdAt: null },
+      })),
     },
     codeSymbolEmbedding: {
       findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
@@ -310,6 +323,7 @@ beforeEach(async () => {
   // `PostgresReindexLeaseBackend` to the mock and fail on `$executeRawUnsafe`.
   delete process.env.DATABASE_URL;
   __resetReindexLeaseBackend();
+  __resetSymbolIndexCache();
   seedPrisma();
   root = path.join(os.tmpdir(), `sym797-${Math.random().toString(36).slice(2)}`);
   store = new LocalVectorStore({ root });
@@ -331,8 +345,8 @@ function hybridWith(
   vectorStore: SymbolVectorStore,
   embedService: EmbedService & { model: string },
 ): HybridCodeSearch {
-  // The production Prisma symbol index — the same windowed lexical channel the
-  // server uses, not a hand-built one.
+  // The production Prisma symbol index — the same lexical channel the server
+  // uses, not a hand-built one.
   return new HybridCodeSearch(vectorStore, prismaSymbolIndex, embedService);
 }
 
@@ -553,8 +567,8 @@ describe("#797 — a vector hit outside the BM25 window is not discarded", () =>
   it("hydrates a symbol the windowed lexical index never returned", async () => {
     await embedProjectSymbols(PROJECT, deps(standInEmbedder));
 
-    // Simulate the production window: the lexical index (`take: MAX_INDEXED_SYMBOLS`,
-    // ~15k symbols in METIS vs a 5000 cap) simply does not contain the target. Before
+    // Simulate a partial lexical index (production's was capped at 5000 symbols until
+    // #372 removed the cap) that simply does not contain the target. Before
     // #797 the fused ranking filtered vector hits through THIS set, so a correct
     // vector hit outside the window was thrown away AFTER the embed + search had
     // already been paid for.
