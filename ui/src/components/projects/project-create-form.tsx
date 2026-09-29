@@ -44,13 +44,13 @@ const FIELD_LABELS: Record<string, string> = { name: "Name", slug: "Slug" };
 // Mirrors the Slug field's `pattern` (lowercase alphanumerics + hyphens, leading
 // alphanumeric). A non-empty value that fails this has a *detectable* cause, so
 // SC 3.3.3 requires we suggest the normalized correction rather than only flag it.
-const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+export const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 // #23 — a Name may run to 128 characters but a slug only to 64
 // (`projectSchema`, packages/shared/src/project.ts), so the derived slug is cut
 // to fit, without leaving a trailing hyphen at the cut.
 const SLUG_MAX = 64;
-function deriveSlug(name: string): string {
+export function deriveSlug(name: string): string {
   return normalizeSlug(name).slice(0, SLUG_MAX).replace(/-+$/, "");
 }
 

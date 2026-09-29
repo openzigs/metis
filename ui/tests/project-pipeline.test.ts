@@ -7,6 +7,7 @@ import {
   derivePipelineStages,
   isFirstRun,
   isIngestRunning,
+  isProjectRepoIngestJob,
   FIRST_RUN_STEPS,
   type PipelineFacts,
   type PipelineStage,
@@ -582,5 +583,19 @@ describe("isFirstRun", () => {
 
   it("lists the five first-run steps in order, without docs", () => {
     expect(FIRST_RUN_STEPS).toEqual(["sources", "ingest", "analyze", "review", "publish"]);
+  });
+});
+
+describe("isProjectRepoIngestJob (#273)", () => {
+  const job = (kind: string, projectId: string | null) => ({ kind, projectId });
+
+  it("is true for a repo-ingest job in this project", () => {
+    expect(isProjectRepoIngestJob(job("repo-ingest", "p1"), "p1")).toBe(true);
+  });
+
+  it("is false for another project's repo ingest, or another kind of job here", () => {
+    expect(isProjectRepoIngestJob(job("repo-ingest", "p2"), "p1")).toBe(false);
+    expect(isProjectRepoIngestJob(job("analysis", "p1"), "p1")).toBe(false);
+    expect(isProjectRepoIngestJob(job("repo-ingest", null), "p1")).toBe(false);
   });
 });

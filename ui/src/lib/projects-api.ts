@@ -41,6 +41,13 @@ export interface Project {
   updatedAt: string;
 }
 
+/**
+ * `POST /projects` answers the project plus the primary-repo connector it linked
+ * — `null` when none was requested, and also when linking it failed: the route
+ * swallows that failure so the project is still created (#273).
+ */
+export type CreatedProject = Project & { primaryRepo?: { id: string } | null };
+
 export interface ProjectListPage {
   items: Project[];
   total: number;
@@ -100,7 +107,7 @@ export const projectsApi = {
       apiBaseUrl?: string;
       secretRef?: string;
     };
-  }) => apiFetch<Project>("/projects", { method: "POST", body: input }),
+  }) => apiFetch<CreatedProject>("/projects", { method: "POST", body: input }),
   update: (
     id: string,
     input: Partial<{

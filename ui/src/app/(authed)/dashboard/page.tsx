@@ -18,6 +18,7 @@ import { asyncApi } from "@/lib/async-platform-api";
 import { Button } from "@/components/ui/button";
 import { useEffect, useState, type ReactNode } from "react";
 import { PageHeader } from "@/components/ui/page-header";
+import { NewProjectDialog } from "@/components/projects/new-project-wizard";
 
 const REFRESH_MS = 30_000;
 
@@ -52,6 +53,8 @@ interface WidgetShellProps {
   emptyCta: string;
   emptyHref?: string;
   emptyHrefLabel?: string;
+  /** A primary action shown in the empty state, ahead of the link. */
+  emptyAction?: ReactNode;
   children: ReactNode;
 }
 
@@ -64,6 +67,7 @@ function WidgetShell({
   emptyCta,
   emptyHref,
   emptyHrefLabel,
+  emptyAction,
   children,
 }: WidgetShellProps) {
   return (
@@ -82,6 +86,7 @@ function WidgetShell({
         >
           <p className="font-medium">{emptyTitle}</p>
           <p className="text-muted-foreground">{emptyCta}</p>
+          {emptyAction ? <div className="mt-1">{emptyAction}</div> : null}
           {emptyHref && emptyHrefLabel ? (
             <Link
               href={emptyHref}
@@ -116,6 +121,8 @@ function ProjectsWidget() {
       emptyCta="Create your first project to get started."
       emptyHref="/projects"
       emptyHrefLabel="Open projects"
+      // #273 — first run: create, connect and ingest without leaving Home.
+      emptyAction={<NewProjectDialog />}
     >
       <ul className="space-y-1 text-sm" data-testid="widget-projects-list">
         {items.map((p) => (

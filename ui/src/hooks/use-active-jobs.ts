@@ -168,3 +168,22 @@ export function useActiveJobs(): ActiveJob[] {
 
   return jobs;
 }
+
+/**
+ * #273 — join each job's room so the server replays its last transition. A job
+ * put into the store by the surface that started it (the New-project wizard)
+ * may have ended before this page joined any room; the replay reaches the
+ * `useActiveJobs` listener, which drops a terminal job from the store.
+ */
+export function useFollowJobs(jobIds: readonly string[]): void {
+  const socket = useSocket();
+  const key = jobIds.join(",");
+  useEffect(() => {
+    if (!socket || !key) return;
+    const ids = key.split(",");
+    for (const jobId of ids) socket.emit("subscribe:job", { jobId });
+    return () => {
+      for (const jobId of ids) socket.emit("unsubscribe:job", { jobId });
+    };
+  }, [socket, key]);
+}
