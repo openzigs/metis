@@ -88,11 +88,20 @@ export default function SettingsUsagePage() {
   // picker cannot show.
   const isMine = (id: string | null): id is string =>
     !!id && workspaceList.some((w) => w.id === id);
+  // A system admin may read any workspace's FinOps (the server's
+  // require-workspace-role lets them in), so their bookmark to a workspace they
+  // are not a member of is honoured and shown in the picker (PR #389 panel).
+  const adminOutsideWorkspace =
+    isAdmin && !!workspaceParam && !workspaces.isLoading && !isMine(workspaceParam)
+      ? workspaceParam
+      : null;
   const workspaceId = isMine(workspaceParam)
     ? workspaceParam
-    : isMine(stored)
-      ? stored
-      : (workspaceList[0]?.id ?? "");
+    : adminOutsideWorkspace
+      ? adminOutsideWorkspace
+      : isMine(stored)
+        ? stored
+        : (workspaceList[0]?.id ?? "");
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-usage-root">
@@ -154,7 +163,14 @@ export default function SettingsUsagePage() {
               disabled={workspaces.isLoading}
               onChange={(e) => setParams({ workspaceId: e.target.value })}
             >
-              {workspaceList.length === 0 ? <option value="">No workspaces</option> : null}
+              {workspaceList.length === 0 && !adminOutsideWorkspace ? (
+                <option value="">No workspaces</option>
+              ) : null}
+              {adminOutsideWorkspace ? (
+                <option value={adminOutsideWorkspace}>
+                  {adminOutsideWorkspace} (not a member)
+                </option>
+              ) : null}
               {workspaceList.map((w) => (
                 <option key={w.id} value={w.id}>
                   {w.name}

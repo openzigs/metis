@@ -122,6 +122,19 @@ describe("<SettingsUsagePage /> (#31)", () => {
     expect(screen.getByTestId("usage-workspace-picker")).toHaveValue("ws-2");
   });
 
+  // PR #389 panel — the server lets a system admin read any workspace's FinOps
+  // (require-workspace-role.ts), and /workspaces/:id/finops used to render any
+  // id. An admin's bookmark to a workspace they are not a member of must still
+  // open THAT workspace, with the picker agreeing.
+  it("keeps a non-member workspace from the query for a system admin", async () => {
+    window.localStorage.setItem("metis.activeWorkspaceId", "ws-2");
+    renderAt("scope=workspace&workspaceId=ws-other", "admin");
+    await waitFor(() =>
+      expect(screen.getByTestId("workspace-panel")).toHaveTextContent("ws-other"),
+    );
+    expect(screen.getByTestId("usage-workspace-picker")).toHaveValue("ws-other");
+  });
+
   it("defaults the Workspace scope to the header's active workspace", async () => {
     window.localStorage.setItem("metis.activeWorkspaceId", "ws-2");
     renderAt("scope=workspace");
