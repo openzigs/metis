@@ -207,20 +207,21 @@ for (const theme of ["light", "dark"] as const) {
       await expect(tablist).toBeVisible();
       await chooseTheme(page, theme);
 
-      const browse = tablist.getByRole("tab", { name: "Browse" });
-      const templates = tablist.getByRole("tab", { name: "Templates" });
+      // #31 — Skills and Agents replaced Browse as the first two Library tabs.
+      const skills = tablist.getByRole("tab", { name: "Skills" });
+      const agents = tablist.getByRole("tab", { name: "Agents" });
       const connectors = tablist.getByRole("tab", { name: "Connectors" });
-      await browse.focus();
+      await skills.focus();
       await page.keyboard.press("ArrowRight");
-      await expect(templates).toBeFocused();
-      await expect(templates).toHaveAttribute("aria-selected", "true");
-      const panelId = await templates.getAttribute("aria-controls");
+      await expect(agents).toBeFocused();
+      await expect(agents).toHaveAttribute("aria-selected", "true");
+      const panelId = await agents.getAttribute("aria-controls");
       await expect(page.locator(`[id="${panelId}"]`)).toHaveAttribute("role", "tabpanel");
       await page.keyboard.press("End");
       await expect(connectors).toBeFocused();
       await page.keyboard.press("Home");
-      await expect(browse).toBeFocused();
-      await expect(browse).toHaveAttribute("aria-selected", "true");
+      await expect(skills).toBeFocused();
+      await expect(skills).toHaveAttribute("aria-selected", "true");
 
       await expectNoAxeViolations(page, "[data-testid='library-root']");
     });

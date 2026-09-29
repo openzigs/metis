@@ -160,7 +160,8 @@ test.describe("Project navigation follows the pipeline (#28, #29)", () => {
     await expect(tabs.subnav.locator('a[href^="/library"]')).toHaveCount(0);
 
     await page.goto("/library", { waitUntil: "load" });
-    const picker = page.getByLabel("Manage skills and agents for");
+    // #31 — the picker is the Skills/Agents scope filter.
+    const picker = page.getByLabel("Scope");
     await expect(picker.locator("option", { hasText: /IA Test/ }).first()).toBeAttached();
     await picker.selectOption(projectId);
     await expect(page).toHaveURL(
