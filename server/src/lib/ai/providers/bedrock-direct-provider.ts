@@ -756,7 +756,10 @@ interface OpenAIChatResponse {
     total_tokens?: number;
     /**
      * bedrock-access-gateway surfaces Anthropic cache reads here when
-     * prompt caching is enabled.
+     * prompt caching is enabled. It reports no cache WRITES anywhere: it drops
+     * Bedrock's `cacheWriteInputTokens` and folds the written tokens into
+     * `prompt_tokens`, so this client records `cacheWriteTokens: 0` and the
+     * 1.25x write premium cannot be priced (#282, docs/ARCHITECTURE.md).
      */
     prompt_tokens_details?: { cached_tokens?: number };
   };
