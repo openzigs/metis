@@ -129,6 +129,24 @@ export const connectorMetadataRateLimiter: RequestHandler = (req, res, next) =>
 export const suggestedConnectorCredentialReadRateLimiter: RequestHandler = (req, res, next) =>
   (suggestedCredentialReadLimiter as unknown as RequestHandler)(req, res, next);
 
+/**
+ * #344 — connector create/update limiter. `POST`/`PATCH` on repo and DB
+ * connectors now resolve vault secrets to check who may bind them, so they are
+ * rate-limited per user like the other connector operations. Exported as the
+ * `rateLimit()` handler itself (not wrapped) so static analysis (CodeQL
+ * `js/missing-rate-limiting`) can see it; the cap is read per request
+ * (`CONNECTOR_WRITE_LIMIT_MAX`, default 60/window; 10,000 under NODE_ENV=test).
+ */
+export const connectorWriteRateLimiter: RequestHandler = rateLimit({
+  store: clusterRateLimitStore("connector-write"),
+  windowMs: windowMs(),
+  limit: () => envMax("CONNECTOR_WRITE_LIMIT_MAX", process.env.NODE_ENV === "test" ? 10_000 : 60),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: userOrIpKey,
+  message: limitedResponse("CONNECTOR_WRITE_RATE_LIMITED", "Too many connector changes"),
+}) as unknown as RequestHandler;
+
 /** Test seam — re-create limiters so env overrides set before this call take effect. */
 export function __resetConnectorRateLimiters(): void {
   queryLimiter = buildQuery();

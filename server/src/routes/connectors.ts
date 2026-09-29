@@ -42,6 +42,7 @@ import {
   connectorMetadataRateLimiter,
   connectorQueryRateLimiter,
   connectorTestRateLimiter,
+  connectorWriteRateLimiter,
 } from "../middleware/connector-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import { ConnectorError } from "../lib/connectors/types.js";
@@ -334,54 +335,60 @@ export function connectorsRouter(): Router {
       rethrow(err);
     }
   });
-  r.post("/repos", requireAuth, requirePermission("connector.write"), async (req, res) => {
-    const parsed = createRepoConnectorSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      throw new AppError(400, "VALIDATION_ERROR", "invalid payload", {
-        issues: parsed.error.flatten(),
-      });
-    }
-    // Issue #288 — `local` requires admin authZ (use POST /repos/local) and
-    // `upload` requires a multipart body (use POST /repos/upload). Reject them
-    // on this JSON/connector.write route so neither bypasses its stricter path.
-    if (parsed.data.provider === REPO_PROVIDER_LOCAL) {
-      throw new AppError(
-        400,
-        "USE_LOCAL_ENDPOINT",
-        "Create local connectors via POST /repos/local (requires admin)",
-      );
-    }
-    if (parsed.data.provider === REPO_PROVIDER_UPLOAD) {
-      throw new AppError(
-        400,
-        "USE_UPLOAD_ENDPOINT",
-        "Create upload connectors via POST /repos/upload (multipart .zip)",
-      );
-    }
-    await assertRepoSecretBinding(authUser(req), projectIdOf(req), null, parsed.data);
-    try {
-      const projectId = projectIdOf(req);
-      const a = actor(req);
-      const { autoIngest, ...connectorData } = parsed.data;
-      const created = await createRepoConnector(projectId, connectorData, a);
-
-      // Auto-ingest: if explicitly requested OR this is the first repo connector
-      const existingRepos = await listRepoConnectors(projectId);
-      const isFirstRepo = existingRepos.length === 1;
-      const shouldAutoIngest = autoIngest === true || isFirstRepo;
-
-      if (shouldAutoIngest) {
-        // Trigger deep-ingest in the background — don't block the creation response
-        void triggerDeepIngest(projectId, created.id, a).catch(() => {
-          /* logged internally */
+  r.post(
+    "/repos",
+    requireAuth,
+    connectorWriteRateLimiter,
+    requirePermission("connector.write"),
+    async (req, res) => {
+      const parsed = createRepoConnectorSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "invalid payload", {
+          issues: parsed.error.flatten(),
         });
       }
+      // Issue #288 — `local` requires admin authZ (use POST /repos/local) and
+      // `upload` requires a multipart body (use POST /repos/upload). Reject them
+      // on this JSON/connector.write route so neither bypasses its stricter path.
+      if (parsed.data.provider === REPO_PROVIDER_LOCAL) {
+        throw new AppError(
+          400,
+          "USE_LOCAL_ENDPOINT",
+          "Create local connectors via POST /repos/local (requires admin)",
+        );
+      }
+      if (parsed.data.provider === REPO_PROVIDER_UPLOAD) {
+        throw new AppError(
+          400,
+          "USE_UPLOAD_ENDPOINT",
+          "Create upload connectors via POST /repos/upload (multipart .zip)",
+        );
+      }
+      await assertRepoSecretBinding(authUser(req), projectIdOf(req), null, parsed.data);
+      try {
+        const projectId = projectIdOf(req);
+        const a = actor(req);
+        const { autoIngest, ...connectorData } = parsed.data;
+        const created = await createRepoConnector(projectId, connectorData, a);
 
-      res.status(201).json(ok({ ...created, autoIngestTriggered: shouldAutoIngest }));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+        // Auto-ingest: if explicitly requested OR this is the first repo connector
+        const existingRepos = await listRepoConnectors(projectId);
+        const isFirstRepo = existingRepos.length === 1;
+        const shouldAutoIngest = autoIngest === true || isFirstRepo;
+
+        if (shouldAutoIngest) {
+          // Trigger deep-ingest in the background — don't block the creation response
+          void triggerDeepIngest(projectId, created.id, a).catch(() => {
+            /* logged internally */
+          });
+        }
+
+        res.status(201).json(ok({ ...created, autoIngestTriggered: shouldAutoIngest }));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
 
   // ── Issue #288: local server-path connector (ADMIN-only) ─────────────────
   // Reading arbitrary server files is privileged, so this is gated on
@@ -472,30 +479,36 @@ export function connectorsRouter(): Router {
       rethrow(err);
     }
   });
-  r.patch("/repos/:id", requireAuth, requirePermission("connector.write"), async (req, res) => {
-    const parsed = updateRepoConnectorSchema.safeParse({
-      ...(req.body ?? {}),
-      id: String(req.params.id),
-    });
-    if (!parsed.success) {
-      throw new AppError(400, "VALIDATION_ERROR", "invalid payload", {
-        issues: parsed.error.flatten(),
+  r.patch(
+    "/repos/:id",
+    requireAuth,
+    connectorWriteRateLimiter,
+    requirePermission("connector.write"),
+    async (req, res) => {
+      const parsed = updateRepoConnectorSchema.safeParse({
+        ...(req.body ?? {}),
+        id: String(req.params.id),
       });
-    }
-    const { id: _id, ...patch } = parsed.data;
-    await assertRepoSecretBinding(authUser(req), projectIdOf(req), String(req.params.id), patch);
-    try {
-      const updated = await updateRepoConnector(
-        projectIdOf(req),
-        String(req.params.id),
-        patch,
-        actor(req),
-      );
-      res.json(ok(updated));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "invalid payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      const { id: _id, ...patch } = parsed.data;
+      await assertRepoSecretBinding(authUser(req), projectIdOf(req), String(req.params.id), patch);
+      try {
+        const updated = await updateRepoConnector(
+          projectIdOf(req),
+          String(req.params.id),
+          patch,
+          actor(req),
+        );
+        res.json(ok(updated));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
   r.delete("/repos/:id", requireAuth, requirePermission("connector.write"), async (req, res) => {
     try {
       await deleteRepoConnector(projectIdOf(req), String(req.params.id), actor(req));
@@ -881,21 +894,27 @@ export function connectorsRouter(): Router {
       rethrow(err);
     }
   });
-  r.post("/dbs", requireAuth, requirePermission("connector.write"), async (req, res) => {
-    const parsed = createDatabaseConnectorSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      throw new AppError(400, "VALIDATION_ERROR", "invalid payload", {
-        issues: parsed.error.flatten(),
-      });
-    }
-    await assertDbSecretBinding(authUser(req), projectIdOf(req), null, parsed.data);
-    try {
-      const created = await createDbConnector(projectIdOf(req), parsed.data, actor(req));
-      res.status(201).json(ok(created));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+  r.post(
+    "/dbs",
+    requireAuth,
+    connectorWriteRateLimiter,
+    requirePermission("connector.write"),
+    async (req, res) => {
+      const parsed = createDatabaseConnectorSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "invalid payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      await assertDbSecretBinding(authUser(req), projectIdOf(req), null, parsed.data);
+      try {
+        const created = await createDbConnector(projectIdOf(req), parsed.data, actor(req));
+        res.status(201).json(ok(created));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
   r.get("/dbs/:id", requireAuth, requirePermission("connector.read"), async (req, res) => {
     try {
       res.json(ok(await getDbConnector(projectIdOf(req), String(req.params.id))));
@@ -903,30 +922,36 @@ export function connectorsRouter(): Router {
       rethrow(err);
     }
   });
-  r.patch("/dbs/:id", requireAuth, requirePermission("connector.write"), async (req, res) => {
-    const parsed = updateDatabaseConnectorSchema.safeParse({
-      ...(req.body ?? {}),
-      id: String(req.params.id),
-    });
-    if (!parsed.success) {
-      throw new AppError(400, "VALIDATION_ERROR", "invalid payload", {
-        issues: parsed.error.flatten(),
+  r.patch(
+    "/dbs/:id",
+    requireAuth,
+    connectorWriteRateLimiter,
+    requirePermission("connector.write"),
+    async (req, res) => {
+      const parsed = updateDatabaseConnectorSchema.safeParse({
+        ...(req.body ?? {}),
+        id: String(req.params.id),
       });
-    }
-    const { id: _id, ...patch } = parsed.data;
-    await assertDbSecretBinding(authUser(req), projectIdOf(req), String(req.params.id), patch);
-    try {
-      const updated = await updateDbConnector(
-        projectIdOf(req),
-        String(req.params.id),
-        patch,
-        actor(req),
-      );
-      res.json(ok(updated));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "invalid payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      const { id: _id, ...patch } = parsed.data;
+      await assertDbSecretBinding(authUser(req), projectIdOf(req), String(req.params.id), patch);
+      try {
+        const updated = await updateDbConnector(
+          projectIdOf(req),
+          String(req.params.id),
+          patch,
+          actor(req),
+        );
+        res.json(ok(updated));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
   r.delete("/dbs/:id", requireAuth, requirePermission("connector.write"), async (req, res) => {
     try {
       await deleteDbConnector(projectIdOf(req), String(req.params.id), actor(req));
