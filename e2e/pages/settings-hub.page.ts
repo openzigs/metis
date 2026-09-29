@@ -3,7 +3,8 @@
  *
  * - The hub (`/settings`) cards every settings sub-surface. Platform resources
  *   (Vault / Repositories / Databases) are intentionally NOT carded here — they
- *   live only in the sidebar (N5 #153).
+ *   have their own pages: Vault is a Settings tab, Repositories and Databases
+ *   are Projects tabs (N5 #153, #27).
  * - Every `/settings/*` sub-page is wrapped by a nested layout that keeps a
  *   persistent secondary nav visible (N6 #154).
  *
@@ -22,7 +23,7 @@ export class SettingsHubPage {
     this.page = page;
     this.hubRoot = page.getByTestId("settings-hub-root");
     this.settingsLayout = page.getByTestId("settings-layout");
-    this.settingsNav = page.getByRole("navigation", { name: "Settings" });
+    this.settingsNav = page.getByRole("navigation", { name: "Settings", exact: true });
   }
 
   async goto(): Promise<void> {

@@ -1,9 +1,37 @@
 import { describe, expect, it } from "vitest";
-import { isActiveRoute, NAV_ITEMS, NAV_SECTIONS, PUBLIC_PATHS } from "@/lib/navigation";
+import {
+  hubForPath,
+  isActiveRoute,
+  isNavItemActive,
+  isTabActive,
+  NAV_DESTINATIONS,
+  NAV_ITEMS,
+  navItemCurrent,
+  PALETTE_DESTINATIONS,
+  PUBLIC_PATHS,
+  visibleTabs,
+} from "@/lib/navigation";
 
-describe("navigation registry", () => {
-  it("exposes all 21 sidebar routes derived from grouped sections", () => {
-    expect(NAV_ITEMS.map((i) => i.href)).toEqual([
+const item = (label: string) => {
+  const found = NAV_ITEMS.find((i) => i.label === label);
+  if (!found) throw new Error(`no nav item ${label}`);
+  return found;
+};
+
+describe("navigation registry (#27)", () => {
+  it("has six object-level sidebar destinations", () => {
+    expect(NAV_ITEMS.map((i) => i.label)).toEqual([
+      "Home",
+      "Projects",
+      "Chat",
+      "Activity",
+      "Library",
+      "Settings",
+    ]);
+  });
+
+  it("keeps every one of the 21 former sidebar routes reachable through a hub tab", () => {
+    const former = [
       "/dashboard",
       "/projects",
       "/products",
@@ -16,8 +44,6 @@ describe("navigation registry", () => {
       "/repositories",
       "/databases",
       "/impact-analyses",
-      "/skills",
-      "/agents",
       "/scheduler",
       "/runs",
       "/sessions",
@@ -25,42 +51,44 @@ describe("navigation registry", () => {
       "/eval/leaderboard",
       "/settings",
       "/admin",
+    ];
+    // /skills and /agents are redirect stubs into /admin/skills and /admin/agents.
+    const hrefs = NAV_DESTINATIONS.map((t) => t.href);
+    for (const href of former) expect(hrefs).toContain(href);
+  });
+
+  it("groups the cross-project lookups under Projects", () => {
+    expect(item("Projects").tabs.map((t) => t.href)).toEqual([
+      "/projects",
+      "/products",
+      "/documents",
+      "/repositories",
+      "/databases",
+      "/impact-analyses",
     ]);
   });
 
-  it("includes a Sessions entry pointing to /sessions in the Automation group", () => {
-    const automation = NAV_SECTIONS.find((s) => s.id === "automation");
-    expect(automation).toBeDefined();
-    const sessions = automation?.items.find((i) => i.href === "/sessions");
-    expect(sessions).toBeDefined();
-    expect(sessions?.label).toBe("Sessions");
-    expect(sessions?.icon).toBeTruthy();
+  it("puts Chat and Workbench behind one entry point", () => {
+    expect(item("Chat").tabs.map((t) => t.href)).toEqual(["/chat", "/workbench"]);
   });
 
-  it("groups the 21 routes into four labeled sections", () => {
-    expect(NAV_SECTIONS.map((s) => s.label)).toEqual([
-      "Work",
-      "Knowledge",
-      "Automation",
-      "Platform",
+  it("groups the activity logs under Activity", () => {
+    expect(item("Activity").tabs.map((t) => t.href)).toEqual([
+      "/tasks",
+      "/runs",
+      "/sessions",
+      "/scheduler",
+      "/reviews",
     ]);
-    expect(NAV_SECTIONS.flatMap((s) => s.items)).toEqual(NAV_ITEMS);
   });
 
-  it("places each route under the correct section", () => {
-    const byId = Object.fromEntries(NAV_SECTIONS.map((s) => [s.id, s.items.map((i) => i.href)]));
-    expect(byId.work).toContain("/dashboard");
-    expect(byId.work).toContain("/tasks");
-    expect(byId.knowledge).toContain("/repositories");
-    expect(byId.knowledge).toContain("/databases");
-    expect(byId.automation).toContain("/agents");
-    expect(byId.platform).toContain("/vault");
-    expect(byId.platform).toContain("/admin");
+  it("each hub lands on its first tab", () => {
+    for (const i of NAV_ITEMS) expect(i.href).toBe(i.tabs[0].href);
   });
 
-  it("gives every section a unique id", () => {
-    const ids = NAV_SECTIONS.map((s) => s.id);
-    expect(new Set(ids).size).toBe(ids.length);
+  it("never lists one page in two hubs", () => {
+    const hrefs = NAV_DESTINATIONS.map((t) => t.href);
+    expect(new Set(hrefs).size).toBe(hrefs.length);
   });
 
   it("exposes /login as a public path", () => {
@@ -83,5 +111,108 @@ describe("isActiveRoute", () => {
 
   it("returns false for siblings", () => {
     expect(isActiveRoute("/dashboard", "/projects")).toBe(false);
+  });
+});
+
+describe("isTabActive", () => {
+  it("honours exact: the All projects tab is not active inside a project", () => {
+    const all = item("Projects").tabs[0];
+    expect(isTabActive("/projects", all)).toBe(true);
+    expect(isTabActive("/projects/p1", all)).toBe(false);
+  });
+
+  it("uses match over href when given", () => {
+    const evalTab = item("Settings").tabs.find((t) => t.label === "Eval");
+    expect(evalTab).toBeDefined();
+    expect(isTabActive("/eval/leaderboard/run-1", evalTab!)).toBe(true);
+    expect(isTabActive("/eval/other", evalTab!)).toBe(true);
+    expect(isTabActive("/evaluate", evalTab!)).toBe(false);
+  });
+
+  it("matches a detail page below a tab", () => {
+    const runs = item("Activity").tabs[1];
+    expect(isTabActive("/runs/42", runs)).toBe(true);
+  });
+});
+
+describe("isNavItemActive", () => {
+  it("marks the hub active on any of its tabs", () => {
+    expect(isNavItemActive("/runs/42", item("Activity"))).toBe(true);
+    expect(isNavItemActive("/repositories", item("Projects"))).toBe(true);
+    expect(isNavItemActive("/admin/skills", item("Settings"))).toBe(true);
+    expect(isNavItemActive("/workbench", item("Chat"))).toBe(true);
+  });
+
+  it("marks Projects active inside a project although its tab is exact", () => {
+    expect(isNavItemActive("/projects/p1/analysis", item("Projects"))).toBe(true);
+  });
+
+  it("is false outside the hub", () => {
+    expect(isNavItemActive("/runs", item("Projects"))).toBe(false);
+    expect(isNavItemActive("/runs", item("Home"))).toBe(false);
+  });
+});
+
+describe("navItemCurrent (#366 review)", () => {
+  it("is page only where the sidebar entry is the page's sole marker", () => {
+    expect(navItemCurrent("/dashboard", item("Home"))).toBe("page");
+    expect(navItemCurrent("/library", item("Library"))).toBe("page");
+  });
+
+  it("is true (a location, not the page) where a hub tab or project tab names the page", () => {
+    expect(navItemCurrent("/repositories", item("Projects"))).toBe("true");
+    expect(navItemCurrent("/projects", item("Projects"))).toBe("true");
+    expect(navItemCurrent("/projects/p1/analysis", item("Projects"))).toBe("true");
+    expect(navItemCurrent("/settings/profile", item("Settings"))).toBe("true");
+  });
+
+  it("is absent outside the hub", () => {
+    expect(navItemCurrent("/runs", item("Projects"))).toBeUndefined();
+  });
+});
+
+describe("PALETTE_DESTINATIONS (#366 review)", () => {
+  it("keeps the former Skills and Agents entries findable by name", () => {
+    const byLabel = new Map(PALETTE_DESTINATIONS.map((t) => [t.label, t.href]));
+    expect(byLabel.get("Skills")).toBe("/admin/skills");
+    expect(byLabel.get("Agents")).toBe("/admin/agents");
+  });
+
+  it("includes every sidebar destination", () => {
+    for (const t of NAV_DESTINATIONS) expect(PALETTE_DESTINATIONS).toContain(t);
+  });
+
+  it("labels /dashboard Dashboard, matching its page heading", () => {
+    expect(PALETTE_DESTINATIONS.find((t) => t.href === "/dashboard")?.label).toBe("Dashboard");
+  });
+});
+
+describe("visibleTabs", () => {
+  it("hides admin-only tabs from non-admins", () => {
+    expect(visibleTabs(item("Settings"), false).map((t) => t.label)).toEqual([
+      "Settings",
+      "Vault",
+      "Eval",
+    ]);
+  });
+
+  it("shows admin-only tabs to admins", () => {
+    expect(visibleTabs(item("Settings"), true).map((t) => t.label)).toContain("Admin");
+  });
+});
+
+describe("hubForPath", () => {
+  it("finds the hub owning a tab route", () => {
+    expect(hubForPath("/sessions")?.label).toBe("Activity");
+    expect(hubForPath("/impact-analyses/new")?.label).toBe("Projects");
+    expect(hubForPath("/vault")?.label).toBe("Settings");
+  });
+
+  it("returns no hub inside a project, which has its own tab bar", () => {
+    expect(hubForPath("/projects/p1")).toBeUndefined();
+  });
+
+  it("returns no hub outside the navigation", () => {
+    expect(hubForPath("/somewhere-else")).toBeUndefined();
   });
 });

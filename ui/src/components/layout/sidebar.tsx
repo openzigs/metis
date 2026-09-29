@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetTitle, SheetDescription } from "@/components/ui/sheet";
-import { NAV_SECTIONS, isActiveRoute } from "@/lib/navigation";
+import { NAV_ITEMS, isNavItemActive, navItemCurrent } from "@/lib/navigation";
 
 interface SidebarProps {
   /** Controls visibility on small viewports — the parent shell owns this state. */
@@ -20,46 +20,33 @@ interface NavListProps {
 
 function NavList({ pathname, onNavigate }: NavListProps) {
   return (
-    <nav aria-label="Sections" className="flex-1 space-y-4 overflow-y-auto p-2">
-      {NAV_SECTIONS.map((section) => {
-        const headingId = `nav-section-${section.id}`;
-        return (
-          <div key={section.id} className="space-y-1">
-            <h2
-              id={headingId}
-              className="px-3 pt-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground"
-            >
-              {section.label}
-            </h2>
-            <ul aria-labelledby={headingId} className="space-y-1">
-              {section.items.map((item) => {
-                const active = isActiveRoute(pathname, item.href);
-                const Icon = item.icon;
-                return (
-                  <li key={item.href}>
-                    <Link
-                      href={item.href}
-                      onClick={onNavigate}
-                      aria-current={active ? "page" : undefined}
-                      data-active={active}
-                      className={cn(
-                        "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                        active
-                          ? "bg-accent text-accent-foreground"
-                          : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-                      )}
-                    >
-                      <Icon className="h-4 w-4 shrink-0" aria-hidden />
-                      <span>{item.label}</span>
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        );
-      })}
+    <nav aria-label="Sections" className="flex-1 overflow-y-auto p-2">
+      <ul className="space-y-1">
+        {NAV_ITEMS.map((item) => {
+          const active = isNavItemActive(pathname, item);
+          const Icon = item.icon;
+          return (
+            <li key={item.href}>
+              <Link
+                href={item.href}
+                onClick={onNavigate}
+                aria-current={navItemCurrent(pathname, item)}
+                data-active={active}
+                className={cn(
+                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  active
+                    ? "bg-accent text-accent-foreground"
+                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                )}
+              >
+                <Icon className="h-4 w-4 shrink-0" aria-hidden />
+                <span>{item.label}</span>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
     </nav>
   );
 }

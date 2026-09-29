@@ -6,7 +6,7 @@
  * The last crumb is the current page and has no `href`; every crumb before it
  * links to its landing page.
  */
-import { NAV_ITEMS, isActiveRoute } from "./navigation";
+import { NAV_DESTINATIONS, isActiveRoute } from "./navigation";
 import {
   getProjectTabModel,
   isProjectTabActive,
@@ -94,7 +94,7 @@ export function pageCrumbs(pathname: string): Crumb[] {
     return withLeaf(path, matched, trail);
   }
 
-  const nav = NAV_ITEMS.filter((n) => isActiveRoute(path, n.href)).sort(
+  const nav = NAV_DESTINATIONS.filter((n) => isActiveRoute(path, n.href)).sort(
     (a, b) => b.href.length - a.href.length,
   )[0];
   if (!nav) return [];
