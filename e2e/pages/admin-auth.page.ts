@@ -1,7 +1,7 @@
 /**
  * Admin Auth configuration page object.
  *
- * Epic #748, Issue #756: Admin UI /admin/auth configuration.
+ * Epic #748, Issue #756: Admin UI /settings/auth configuration (was /admin/auth before #31).
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 
@@ -85,7 +85,7 @@ export class AdminAuthPage {
   }
 
   async goto(): Promise<void> {
-    await this.page.goto("/admin/auth", { waitUntil: "load" });
+    await this.page.goto("/settings/auth", { waitUntil: "load" });
   }
 
   async expectPageLoaded(): Promise<void> {

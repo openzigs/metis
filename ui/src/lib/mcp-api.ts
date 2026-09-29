@@ -16,9 +16,12 @@ export interface MCPToolDescriptor {
   inputSchema?: unknown;
 }
 
+/** #340 — `user` is one caller's own server; the list narrows it to its owner. */
+export type MCPServerScope = "global" | "project" | "user";
+
 export interface MCPServerView {
   id: string;
-  scope: "global" | "project";
+  scope: MCPServerScope;
   projectId: string | null;
   label: string;
   transport: MCPTransport;
@@ -122,7 +125,7 @@ export interface MCPImportResponse {
 }
 
 export const mcpApi = {
-  list: (params?: { scope?: "global" | "project"; projectId?: string }) =>
+  list: (params?: { scope?: MCPServerScope; projectId?: string }) =>
     apiFetch<{ items: MCPServerView[] }>("/mcp", { params }),
   get: (id: string) => apiFetch<MCPServerView>(`/mcp/${id}`),
   create: (input: CreateMCPServerInput) =>

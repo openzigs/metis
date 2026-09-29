@@ -3,7 +3,22 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { useSearchParams } from "next/navigation";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import LibraryPage from "@/app/(authed)/library/page";
+import { LibraryBrowseSection } from "@/components/library/browse-section";
 import { libraryApi } from "@/lib/library-api";
+
+// #31 — the workspace-scope panels and the project custom-agents card have
+// their own suites; here they are stubs that show which one a scope renders.
+vi.mock("@/components/library/skills-library-panel", () => ({
+  SkillsLibraryPanel: () => <div data-testid="skills-library-panel" />,
+}));
+vi.mock("@/components/library/agents-library-panel", () => ({
+  AgentsLibraryPanel: () => <div data-testid="agents-library-panel" />,
+}));
+vi.mock("@/components/projects/custom-agents-enablement-card", () => ({
+  CustomAgentsEnablementCard: ({ projectId }: { projectId: string }) => (
+    <div data-testid="custom-agents-card">{projectId}</div>
+  ),
+}));
 
 // #28 — Library's project picker lists projects.
 vi.mock("@/lib/projects-api", () => ({
@@ -71,63 +86,89 @@ beforeEach(() => {
   setProjectAgentMock.mockResolvedValue(undefined);
 });
 
-describe("<LibraryPage />", () => {
-  it("renders header copy without a project context", async () => {
-    const Wrapper = authWrapper();
-    render(
-      <Wrapper>
-        <LibraryPage />
-      </Wrapper>,
-    );
+function setQuery(query: string) {
+  useSearchParamsMock.mockReturnValue(
+    new URLSearchParams(query) as ReturnType<typeof useSearchParams>,
+  );
+}
+
+function renderPage() {
+  const Wrapper = authWrapper();
+  return render(
+    <Wrapper>
+      <LibraryPage />
+    </Wrapper>,
+  );
+}
+
+describe("<LibraryPage /> — one home for skills and agents (#31)", () => {
+  it("opens on Skills, scoped to the workspace library, when no project is chosen", () => {
+    renderPage();
     expect(screen.getByText("Library")).toBeInTheDocument();
-    expect(screen.getByText(/Open a project to manage per-project access/i)).toBeInTheDocument();
-    await waitFor(() => expect(searchMock).toHaveBeenCalled());
+    expect(screen.getByText(/Showing the workspace library/i)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Skills" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("skills-library-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("library-search")).not.toBeInTheDocument();
   });
 
-  it("shows the project copy when ?projectId is set", async () => {
-    useSearchParamsMock.mockReturnValue(
-      new URLSearchParams("projectId=p-1") as ReturnType<typeof useSearchParams>,
-    );
-    const Wrapper = authWrapper();
-    render(
-      <Wrapper>
-        <LibraryPage />
-      </Wrapper>,
-    );
-    expect(screen.getByText(/Toggle skills\/agents per project/i)).toBeInTheDocument();
+  it("lands the retired ?tab=browse on Skills", () => {
+    setQuery("tab=browse");
+    renderPage();
+    expect(screen.getByRole("tab", { name: "Skills" })).toHaveAttribute("aria-selected", "true");
   });
 
+  it("shows the workspace agents library on ?tab=agents with no project", () => {
+    setQuery("tab=agents");
+    renderPage();
+    expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("agents-library-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("custom-agents-card")).not.toBeInTheDocument();
+  });
+
+  it("scopes Skills to the project: its allow-list, skills only, no kind filter", async () => {
+    setQuery("projectId=p-1");
+    renderPage();
+    expect(screen.getByText(/Showing what this project may use/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("skills-library-panel")).not.toBeInTheDocument();
+    await waitFor(() => expect(searchMock).toHaveBeenCalledWith({ kind: "skill" }));
+    expect(screen.queryByTestId("library-filter-agent")).not.toBeInTheDocument();
+  });
+
+  it("scopes Agents to the project: its custom agents and its library-agent allow-list", async () => {
+    setQuery("tab=agents&projectId=p-1");
+    renderPage();
+    expect(screen.getByTestId("custom-agents-card")).toHaveTextContent("p-1");
+    expect(screen.queryByTestId("agents-library-panel")).not.toBeInTheDocument();
+    await waitFor(() => expect(searchMock).toHaveBeenCalledWith({ kind: "agent" }));
+  });
+});
+
+function renderBrowse(projectId: string | null = null) {
+  const Wrapper = authWrapper();
+  return render(
+    <Wrapper>
+      <LibraryBrowseSection projectId={projectId} />
+    </Wrapper>,
+  );
+}
+
+describe("<LibraryBrowseSection />", () => {
   it("renders search results and tag chips", async () => {
-    const Wrapper = authWrapper();
-    render(
-      <Wrapper>
-        <LibraryPage />
-      </Wrapper>,
-    );
+    renderBrowse();
     await waitFor(() => expect(screen.getByText("Scan Deps")).toBeInTheDocument());
     expect(screen.getByText("Researcher")).toBeInTheDocument();
     expect(screen.getByText("security")).toBeInTheDocument();
   });
 
   it("filters via the search input and refires the query", async () => {
-    const Wrapper = authWrapper();
-    render(
-      <Wrapper>
-        <LibraryPage />
-      </Wrapper>,
-    );
+    renderBrowse();
     const input = screen.getByTestId("library-search") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "scan" } });
     await waitFor(() => expect(searchMock).toHaveBeenCalledWith({ q: "scan" }));
   });
 
   it("filters by kind when a kind button is clicked", async () => {
-    const Wrapper = authWrapper();
-    render(
-      <Wrapper>
-        <LibraryPage />
-      </Wrapper>,
-    );
+    renderBrowse();
     fireEvent.click(screen.getByTestId("library-filter-skill"));
     await waitFor(() => expect(searchMock).toHaveBeenCalledWith({ kind: "skill" }));
     fireEvent.click(screen.getByTestId("library-filter-agent"));
@@ -136,12 +177,7 @@ describe("<LibraryPage />", () => {
 
   it("shows the empty state when search returns no items", async () => {
     searchMock.mockResolvedValue({ items: [] });
-    const Wrapper = authWrapper();
-    render(
-      <Wrapper>
-        <LibraryPage />
-      </Wrapper>,
-    );
+    renderBrowse();
     await waitFor(() => expect(screen.getByText("No matches.")).toBeInTheDocument());
   });
 

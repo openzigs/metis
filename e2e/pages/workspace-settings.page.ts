@@ -2,7 +2,7 @@
  * Page Object for the Workspace Settings page.
  *
  * Epic #759, Issue #767.
- * Route: /admin/workspaces/[id]/settings
+ * Route: /settings/workspaces/[id] (was /admin/workspaces/[id]/settings before #31)
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 
@@ -38,7 +38,7 @@ export class WorkspaceSettingsPage {
   }
 
   async goto(workspaceId: string): Promise<void> {
-    await this.page.goto(`/admin/workspaces/${workspaceId}/settings`);
+    await this.page.goto(`/settings/workspaces/${workspaceId}`);
     await expect(this.heading).toBeVisible();
   }
 

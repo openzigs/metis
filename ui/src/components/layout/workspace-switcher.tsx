@@ -116,7 +116,7 @@ export function WorkspaceSwitcher() {
         ))}
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          onClick={() => router.push("/admin/workspaces")}
+          onClick={() => router.push("/settings/workspaces")}
           className="flex items-center gap-2 text-muted-foreground"
         >
           <Plus className="h-4 w-4" />

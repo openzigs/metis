@@ -11,6 +11,12 @@ import { expectApgTabKeyboard } from "./tab-keyboard";
 vi.mock("@/components/library/browse-section", () => ({
   LibraryBrowseSection: () => <p>browse</p>,
 }));
+vi.mock("@/components/library/skills-library-panel", () => ({
+  SkillsLibraryPanel: () => <p>skills</p>,
+}));
+vi.mock("@/components/library/agents-library-panel", () => ({
+  AgentsLibraryPanel: () => <p>agents</p>,
+}));
 vi.mock("@/components/library/templates-section", () => ({
   TemplatesSection: () => <p>templates</p>,
 }));
@@ -28,8 +34,8 @@ describe("LibraryPage tabs — keyboard (#268)", () => {
   it("arrow keys move between the Library sections (APG Tabs)", async () => {
     const user = userEvent.setup();
     render(<LibraryPage />);
-    await screen.findByText("browse");
+    await screen.findByText("skills");
     await expectApgTabKeyboard(user, "Library sections");
-    await screen.findByText("browse");
+    await screen.findByText("skills");
   });
 });

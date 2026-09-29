@@ -34,8 +34,10 @@ describe("<LibraryProjectPicker />", () => {
     render(<LibraryProjectPicker projectId="p1" />, {
       wrapper: makeWrapper({ initialUser: UPDATER }),
     });
-    const select = screen.getByLabelText("Manage skills and agents for");
+    // #31 — the picker is the Skills/Agents scope filter: workspace library or a project.
+    const select = screen.getByLabelText("Scope");
     await waitFor(() => expect(screen.getByRole("option", { name: "Beta" })).toBeInTheDocument());
+    expect(screen.getByRole("option", { name: "Workspace library" })).toHaveValue("");
     expect(select).toHaveValue("p1");
     expect(listMock).toHaveBeenCalledWith({ limit: 100 });
   });

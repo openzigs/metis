@@ -3,9 +3,9 @@
  * token counts, and never renders an unpriced model's cost as $0.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
-import AdminUsagePage from "@/app/(authed)/admin/usage/page";
+import { PlatformUsagePanel as AdminUsagePage } from "@/components/usage/platform-usage-panel";
 
 const summary = {
   totalTokens: 2_632_389,
@@ -93,5 +93,76 @@ describe("Admin usage page — unpriced usage (#22)", () => {
     const costTile = await screen.findByTestId("admin-usage-cost");
     expect(costTile).toHaveTextContent("Unpriced");
     expect(costTile).not.toHaveTextContent("$0.0000");
+  });
+});
+
+describe("Usage & cost — All projects scope (#31)", () => {
+  function renderPanel() {
+    const Wrapper = makeWrapper({ withAuth: false });
+    return render(
+      <Wrapper>
+        <AdminUsagePage />
+      </Wrapper>,
+    );
+  }
+
+  it("refetches for the chosen range and grouping, labelling each bar by that grouping", async () => {
+    const fetchMock = vi.mocked(fetch);
+    renderPanel();
+    await screen.findByTestId("admin-usage-cost");
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/usage?range=30d&groupBy=project");
+
+    fireEvent.change(screen.getByLabelText("Time range"), { target: { value: "7d" } });
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/admin/usage?range=7d&groupBy=project"),
+    );
+    for (const [groupBy, label] of [
+      ["day", "09-21"],
+      ["model", "gpt-4o"],
+      ["user", ""],
+    ] as const) {
+      fireEvent.change(screen.getByLabelText("Group by"), { target: { value: groupBy } });
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(`/api/admin/usage?range=7d&groupBy=${groupBy}`),
+      );
+      await screen.findByRole("heading", { name: `Token Usage by ${groupBy}` });
+      if (label) expect((await screen.findAllByText(label)).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("exports the current view as CSV", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    renderPanel();
+    await screen.findByTestId("admin-usage-cost");
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    expect(open).toHaveBeenCalledWith("/api/admin/usage/csv?range=30d&groupBy=project", "_blank");
+    open.mockRestore();
+  });
+
+  it("says so when there is no usage in the period", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              success: true,
+              data: { ...summary, totalTokens: 999, totalCostUsd: 0, rows: [] },
+            }),
+          ),
+      ),
+    );
+    renderPanel();
+    expect(await screen.findByText("No usage data for this period")).toBeInTheDocument();
+    expect(screen.getByText("999")).toBeInTheDocument();
+  });
+
+  it("reports a failed load", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("nope", { status: 500 })),
+    );
+    renderPanel();
+    expect(await screen.findByText("Error loading usage data")).toBeInTheDocument();
   });
 });

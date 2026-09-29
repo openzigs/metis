@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
-import AdminSkillsPage, { rebuildSource } from "@/app/(authed)/admin/skills/page";
+import {
+  SkillsLibraryPanel as AdminSkillsPage,
+  rebuildSource,
+} from "@/components/library/skills-library-panel";
 import { skillsApi, type SkillDetail, type SkillSummary } from "@/lib/library-api";
 import { ApiError } from "@/lib/api-client";
 

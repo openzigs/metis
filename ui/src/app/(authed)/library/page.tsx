@@ -1,6 +1,12 @@
 /**
  * Phase 12 — Library page.
  *
+ * #31 — the one home for skills and for agents. Their tabs carry a scope
+ * filter (the project picker): the workspace library, where skills and agents
+ * are authored and versioned (was Admin → Skills / Agents), or one project,
+ * where its allow-list and its own custom agents are managed (was the Browse
+ * tab and project Settings → Custom agents). `?tab=browse` still lands on Skills.
+ *
  * Now hosts three sections behind tabs:
  *   1. Browse  — original Phase 10 search across skills + agents (unchanged
  *                semantics; per-project allow-list toggles still work).
@@ -15,15 +21,19 @@ import { useSearchParams } from "next/navigation";
 import { TemplatesSection } from "@/components/library/templates-section";
 import { ArtifactsSection } from "@/components/library/artifacts-section";
 import { LibraryBrowseSection } from "@/components/library/browse-section";
+import { SkillsLibraryPanel } from "@/components/library/skills-library-panel";
+import { AgentsLibraryPanel } from "@/components/library/agents-library-panel";
+import { CustomAgentsEnablementCard } from "@/components/projects/custom-agents-enablement-card";
 import { ConnectorsSection } from "@/components/library/connectors-section";
 import { LibraryProjectPicker } from "@/components/library/project-picker";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/ui/page-header";
 
-type Tab = "browse" | "templates" | "artifacts" | "connectors";
+type Tab = "skills" | "agents" | "templates" | "artifacts" | "connectors";
 
 const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
-  { id: "browse", label: "Browse" },
+  { id: "skills", label: "Skills" },
+  { id: "agents", label: "Agents" },
   { id: "templates", label: "Templates" },
   { id: "artifacts", label: "Artifacts" },
   { id: "connectors", label: "Connectors" },
@@ -32,8 +42,8 @@ const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
 export default function LibraryPage() {
   const params = useSearchParams();
   const projectId = params.get("projectId") ?? null;
-  const initial = (params.get("tab") as Tab | null) ?? "browse";
-  const [tab, setTab] = useState<Tab>(TABS.some((t) => t.id === initial) ? initial : "browse");
+  const requested = params.get("tab");
+  const [tab, setTab] = useState<Tab>(TABS.find((t) => t.id === requested)?.id ?? "skills");
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="library-root">
@@ -43,8 +53,8 @@ export default function LibraryPage() {
           <>
             Skills, agents, prompt templates, and artifacts.{" "}
             {projectId
-              ? "Toggle skills/agents per project; templates and artifacts are scoped to your account."
-              : "Open a project to manage per-project access."}
+              ? "Showing what this project may use; templates and artifacts are scoped to your account."
+              : "Showing the workspace library. Pick a project as the scope to manage what it may use."}
           </>
         }
       />
@@ -68,8 +78,22 @@ export default function LibraryPage() {
             </TabsTrigger>
           ))}
         </TabsList>
-        <TabsContent value="browse">
-          <LibraryBrowseSection projectId={projectId} />
+        <TabsContent value="skills">
+          {projectId ? (
+            <LibraryBrowseSection projectId={projectId} kind="skill" />
+          ) : (
+            <SkillsLibraryPanel />
+          )}
+        </TabsContent>
+        <TabsContent value="agents" className="space-y-6">
+          {projectId ? (
+            <>
+              <CustomAgentsEnablementCard projectId={projectId} />
+              <LibraryBrowseSection projectId={projectId} kind="agent" />
+            </>
+          ) : (
+            <AgentsLibraryPanel />
+          )}
         </TabsContent>
         <TabsContent value="templates">
           <TemplatesSection />

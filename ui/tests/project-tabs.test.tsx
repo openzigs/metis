@@ -93,7 +93,7 @@ describe("getProjectTabModel — pipeline order (#28)", () => {
       ["General", `${B}/settings`],
       ["Models", `${B}/settings/models`],
       ["Plugins", `${B}/plugins`],
-      ["Usage", `${B}/usage`],
+      ["Usage", "/settings/usage?scope=project&projectId=p1"],
     ]);
   });
 
@@ -146,7 +146,6 @@ describe("getProjectTabModel — pipeline order (#28)", () => {
       "/import",
       "/publish",
       "/plugins",
-      "/usage",
     ]) {
       expect(hrefs).toContain(`${B}${suffix}`);
     }
@@ -211,7 +210,9 @@ describe("resolveActiveProjectTab", () => {
     };
     walk(root);
     expect(routes.length).toBeGreaterThan(20);
-    for (const rel of routes) {
+    // #31 — `usage` only redirects to Settings → Usage & cost; it is no project page.
+    const redirectOnly = new Set(["usage"]);
+    for (const rel of routes.filter((r) => !redirectOnly.has(r))) {
       const url = rel
         ? `${B}/${rel
             .split(path.sep)

@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { makeWrapper } from "../test-utils";
-import McpAdminPage from "@/app/(authed)/admin/mcp/page";
+import { McpServersPanel as McpAdminPage } from "@/components/mcp/mcp-servers-panel";
 import type { AuthUser } from "@/lib/auth-types";
 import { mcpApi } from "@/lib/mcp-api";
 

@@ -1,5 +1,5 @@
 /**
- * Page Object for the admin usage dashboard (`/admin/usage`).
+ * Page Object for the admin usage dashboard (`/settings/usage?scope=platform`, was `/admin/usage` before #31).
  *
  * Epic #594 / Issue #607 — Admin Usage Dashboard.
  * Uses accessible locators; raw selectors are forbidden.
@@ -61,7 +61,7 @@ export class AdminUsagePage {
   }
 
   async goto(): Promise<void> {
-    await this.page.goto("/admin/usage", { waitUntil: "load" });
+    await this.page.goto("/settings/usage?scope=platform", { waitUntil: "load" });
   }
 
   async waitForLoaded(): Promise<void> {

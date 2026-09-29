@@ -1,5 +1,5 @@
 /**
- * Page Object for the admin Embedding backends page (`/admin/embeddings`).
+ * Page Object for the admin Embedding backends page (`/settings/embeddings`, was `/admin/embeddings` before #31).
  *
  * Epic #930 — Pluggable multi-backend RAG embeddings (Issue #937 UI surface).
  * Uses accessible/role + data-testid locators; raw CSS selectors are avoided.
@@ -50,7 +50,7 @@ export class AdminEmbeddingsPage {
   }
 
   async goto(): Promise<void> {
-    await this.page.goto("/admin/embeddings", { waitUntil: "load" });
+    await this.page.goto("/settings/embeddings", { waitUntil: "load" });
   }
 
   async expectPageLoaded(): Promise<void> {

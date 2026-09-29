@@ -94,7 +94,6 @@ export const NAV_ITEMS: readonly NavItem[] = [
       { href: "/settings", label: "Settings" },
       { href: "/vault", label: "Vault" },
       { href: "/eval/leaderboard", label: "Eval", match: "/eval" },
-      { href: "/admin", label: "Admin", adminOnly: true },
     ],
   },
 ];
@@ -103,13 +102,16 @@ export const NAV_ITEMS: readonly NavItem[] = [
 export const NAV_DESTINATIONS: readonly NavTab[] = NAV_ITEMS.flatMap((i) => i.tabs);
 
 /**
- * What the ⌘K palette searches: every sidebar page, plus the Skills and Agents
- * pages that were sidebar entries before #27 and now sit under Admin.
+ * What the ⌘K palette searches: every sidebar page, plus each concept's one
+ * home (#31) — Skills and Agents in the Library, MCP servers and usage in
+ * Settings.
  */
 export const PALETTE_DESTINATIONS: readonly NavTab[] = [
   ...NAV_DESTINATIONS,
-  { href: "/admin/skills", label: "Skills" },
-  { href: "/admin/agents", label: "Agents" },
+  { href: "/library?tab=skills", label: "Skills" },
+  { href: "/library?tab=agents", label: "Agents" },
+  { href: "/settings/mcp", label: "MCP servers" },
+  { href: "/settings/usage", label: "Usage & cost" },
 ];
 
 export const PUBLIC_PATHS: readonly string[] = ["/login"];

@@ -37,7 +37,6 @@ const read = (full: string) =>
  * must itself render `<PageHeader`.
  */
 const DELEGATES: Record<string, string> = {
-  "app/(authed)/admin/page.tsx": "components/layout/placeholder-page.tsx",
   "app/(authed)/reviews/[id]/page.tsx": "components/reviews/ReviewHeader.tsx",
   "app/(authed)/settings/audit/page.tsx": "app/(authed)/settings/api-keys/page.tsx",
   "app/(authed)/workspaces/[id]/agents/new/page.tsx":
@@ -50,7 +49,11 @@ const DELEGATES: Record<string, string> = {
  * redirects only on some branch still has to render a `PageHeader`.
  */
 const REDIRECT_ONLY = new Set([
+  "app/(authed)/admin/[[...slug]]/page.tsx",
   "app/(authed)/agents/page.tsx",
+  "app/(authed)/projects/[id]/usage/page.tsx",
+  "app/(authed)/settings/agents/page.tsx",
+  "app/(authed)/workspaces/[id]/finops/page.tsx",
   "app/(authed)/projects/[id]/repositories/page.tsx",
   "app/(authed)/skills/page.tsx",
 ]);
@@ -59,7 +62,8 @@ const PAGES = walk(AUTHED, (n) => n === "page.tsx");
 
 describe("every authed page uses PageHeader (#270)", () => {
   it("finds the authed pages", () => {
-    expect(PAGES.length).toBeGreaterThanOrEqual(84);
+    // #31 folded eight Admin pages into Settings and one catch-all redirect.
+    expect(PAGES.length).toBeGreaterThanOrEqual(81);
   });
 
   for (const page of PAGES) {

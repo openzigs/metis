@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
 import { __resetTerminalToastsForTests } from "@/lib/terminal-toast";
-import AdminEmbeddingsPage from "@/app/(authed)/admin/embeddings/page";
+import AdminEmbeddingsPage from "@/app/(authed)/settings/embeddings/page";
 import {
   embeddingsApi,
   type EmbeddingsStatus,

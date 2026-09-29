@@ -2,7 +2,7 @@
  * Epic #164 — Project usage page rendering tests.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
 
 vi.mock("next/navigation", async () => {
@@ -33,23 +33,29 @@ vi.mock("@/lib/projects-api", async () => {
       getUsage: vi.fn(),
       getSafetyEvents: vi.fn(),
       getEnhancedUsage: vi.fn(),
+      getTokenBudget: vi.fn(),
+      exportUsageCsv: vi.fn(),
     },
   };
 });
 
 import { projectsApi } from "@/lib/projects-api";
-import ProjectUsagePage from "@/app/(authed)/projects/[id]/usage/page";
+import { ProjectUsagePanel } from "@/components/usage/project-usage-panel";
 
 const get = projectsApi.get as unknown as ReturnType<typeof vi.fn>;
 const getUsage = projectsApi.getUsage as unknown as ReturnType<typeof vi.fn>;
 const getSafetyEvents = projectsApi.getSafetyEvents as unknown as ReturnType<typeof vi.fn>;
 const getEnhancedUsage = projectsApi.getEnhancedUsage as unknown as ReturnType<typeof vi.fn>;
+const getTokenBudget = projectsApi.getTokenBudget as unknown as ReturnType<typeof vi.fn>;
+const exportUsageCsv = projectsApi.exportUsageCsv as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   get.mockReset();
   getUsage.mockReset();
   getSafetyEvents.mockReset();
   getEnhancedUsage.mockReset();
+  getTokenBudget.mockReset();
+  getTokenBudget.mockRejectedValue(new Error("no budget route"));
   getEnhancedUsage.mockResolvedValue({
     totalTokens: 0,
     totalCostUsd: 0,
@@ -109,7 +115,7 @@ function renderPage() {
   const Wrapper = makeWrapper({});
   return render(
     <Wrapper>
-      <ProjectUsagePage />
+      <ProjectUsagePanel projectId="p1" />
     </Wrapper>,
   );
 }
@@ -429,5 +435,127 @@ describe("Project usage page", () => {
 
     renderPage();
     await waitFor(() => expect(screen.getByTestId("morph-apply-empty")).toBeInTheDocument());
+  });
+});
+
+describe("Project usage panel — Usage & cost, Project scope (#31)", () => {
+  function ready(usage = makeUsage()) {
+    get.mockResolvedValue({ id: "p1", name: "Demo" });
+    getUsage.mockResolvedValue(usage);
+    getSafetyEvents.mockResolvedValue({ items: [] });
+  }
+
+  it("reports a failed load", async () => {
+    get.mockResolvedValue({ id: "p1", name: "Demo" });
+    getUsage.mockRejectedValue(new Error("down"));
+    getSafetyEvents.mockResolvedValue({ items: [] });
+    renderPage();
+    expect(await screen.findByTestId("usage-error")).toHaveTextContent("Failed to load usage.");
+  });
+
+  it("links to the project it is scoped to", async () => {
+    ready();
+    renderPage();
+    expect(await screen.findByTestId("usage-back-link")).toHaveAttribute("href", "/projects/p1");
+  });
+
+  it("shows the empty states when the period has no traffic", async () => {
+    ready(makeUsage({ byDay: [], byProvider: [], monthlyTokenBudget: null }));
+    renderPage();
+    expect(await screen.findByTestId("usage-by-day-empty")).toBeInTheDocument();
+    expect(screen.getByTestId("usage-by-provider-empty")).toBeInTheDocument();
+  });
+
+  it("renders the budget gauge: over the limit, with its message and limits", async () => {
+    ready();
+    getTokenBudget.mockResolvedValue({
+      status: {
+        allowed: false,
+        remainingTokens: 0,
+        percentUsed: 1.5,
+        shouldDowngrade: false,
+        message: "Monthly budget exhausted",
+      },
+      budget: { dailyTokenLimit: 1000, monthlyTokenLimit: 20000, downgradeModel: "small" },
+    });
+    renderPage();
+    const gauge = await screen.findByTestId("budget-gauge-inner");
+    expect(gauge).toHaveTextContent("100% used");
+    expect(gauge).toHaveTextContent("0 remaining");
+    expect(gauge).toHaveTextContent("Monthly budget exhausted");
+    expect(gauge).toHaveTextContent("Daily limit: 1,000");
+    expect(gauge).toHaveTextContent("Monthly limit: 20,000");
+    expect(gauge).toHaveTextContent("Downgrade model: small");
+  });
+
+  it("renders the budget gauge: downgrading, with no limit left to count", async () => {
+    ready();
+    getTokenBudget.mockResolvedValue({
+      status: {
+        allowed: true,
+        remainingTokens: Infinity,
+        percentUsed: 0.9,
+        shouldDowngrade: true,
+        message: "Near the limit",
+      },
+      budget: { dailyTokenLimit: null, monthlyTokenLimit: null, downgradeModel: null },
+    });
+    renderPage();
+    const gauge = await screen.findByTestId("budget-gauge-inner");
+    expect(gauge).toHaveTextContent("No limit");
+    expect(gauge).toHaveTextContent("Near the limit");
+    expect(gauge).not.toHaveTextContent("Daily limit");
+  });
+
+  it("says so when the project has no token budget", async () => {
+    ready();
+    getTokenBudget.mockResolvedValue({
+      status: {
+        allowed: true,
+        remainingTokens: Infinity,
+        percentUsed: 0,
+        shouldDowngrade: false,
+        message: null,
+      },
+      budget: null,
+    });
+    renderPage();
+    const card = await screen.findByTestId("token-budget-gauge");
+    expect(card).toHaveTextContent("No budget configured for this project.");
+  });
+
+  it("regroups the detailed view and exports that view as CSV", async () => {
+    ready();
+    getEnhancedUsage.mockResolvedValue({
+      totalTokens: 1000,
+      totalCostUsd: 0.25,
+      unpriced: { promptTokens: 0, completionTokens: 0, totalTokens: 0, count: 0 },
+      rows: [
+        {
+          dayBucket: "2026-04-22",
+          provider: "bedrock",
+          model: "us.anthropic.claude",
+          userId: "user-123456789",
+          promptTokens: 800,
+          completionTokens: 200,
+          totalTokens: 1000,
+          estimatedCostUsd: 0.25,
+          unpricedTokens: 0,
+          count: 1,
+        },
+      ],
+    });
+    renderPage();
+    await screen.findByTestId("enhanced-bar-chart");
+    expect(screen.getAllByText("04-22").length).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getByTestId("usage-groupby-select"), { target: { value: "model" } });
+    expect(await screen.findByText("claude")).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("usage-groupby-select"), { target: { value: "user" } });
+    expect(await screen.findByText("user-123")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId("usage-range-select"), { target: { value: "30d" } });
+    fireEvent.click(screen.getByTestId("usage-csv-export"));
+    expect(exportUsageCsv).toHaveBeenCalledWith("p1", { range: "30d", groupBy: "user" });
   });
 });

@@ -4,6 +4,7 @@ import { expectApgTabKeyboard } from "./a11y/tab-keyboard";
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { makeWrapper } from "./test-utils";
+import { useSearchParams } from "next/navigation";
 import McpSettingsPage, {
   McpApprovalPrompt,
   type ApprovalPromptData,
@@ -396,5 +397,25 @@ describe("McpSettingsPage — keyboard (#268)", () => {
     render(<McpSettingsPage />, { wrapper: makeWrapper() });
     await screen.findByText(/Filesystem/);
     await expectApgTabKeyboard(user, "MCP platform sections");
+  });
+});
+
+describe("McpSettingsPage — one home for MCP servers (#31)", () => {
+  it("opens the Servers tab (the former Admin → MCP servers) when the URL asks for it", async () => {
+    vi.mocked(useSearchParams).mockReturnValueOnce(
+      new URLSearchParams("tab=servers") as ReturnType<typeof useSearchParams>,
+    );
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    expect(screen.getByRole("tab", { name: "Servers" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByTestId("mcp-scope-filter")).toBeInTheDocument();
+    expect(screen.getByTestId("new-mcp-server")).toBeInTheDocument();
+  });
+
+  it("falls back to Connected for a tab it does not have", () => {
+    vi.mocked(useSearchParams).mockReturnValueOnce(
+      new URLSearchParams("tab=nope") as ReturnType<typeof useSearchParams>,
+    );
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    expect(screen.getByRole("tab", { name: "Connected" })).toHaveAttribute("aria-selected", "true");
   });
 });

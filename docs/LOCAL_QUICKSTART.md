@@ -116,7 +116,7 @@ Browse to <http://localhost:3000>. You should see the METIS sign-in page.
 
 ### 9. Open the admin panel
 
-Click **Settings → MCP Servers** (or navigate directly to `/settings/mcp`). Use **Add MCP server** to open the admin registration form at `/admin/mcp` when adding a local wrapper by hand.
+Click **Settings → MCP Servers** (or navigate directly to `/settings/mcp`). Open the **Servers** tab and use **Add server** to register a local wrapper by hand.
 
 ### 10. Click **Add MCP server**
 

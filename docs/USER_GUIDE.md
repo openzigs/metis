@@ -433,7 +433,7 @@ AUTH_LDAP_CONNECTION_TIMEOUT=10000
 - Group memberships (`memberOf` attribute) are mapped to METIS roles via the Admin UI
 - TLS skip verify is needed for internal/self-signed CA certificates
 
-> **Admin UI alternative:** All LDAP settings can also be configured at runtime via the Admin → SSO & Authentication → LDAP / AD tab. Admin UI settings override environment variables.
+> **Settings UI alternative:** All LDAP settings can also be configured at runtime via the Settings → SSO & authentication → LDAP / AD tab. Settings made there override environment variables.
 
 **SAML 2.0 Mode (redirect-based SSO via an Identity Provider):**
 ```dotenv
@@ -441,10 +441,10 @@ AUTH_MODE=saml
 ```
 - Users click an SSO button on the login page and are redirected to the IdP (Okta, Azure AD, etc.)
 - After authenticating at the IdP, users land back in METIS with an active session
-- Configure the SAML provider details (IdP metadata XML, SP Entity ID, ACS URL) in the Admin → SSO & Authentication → SAML 2.0 tab
+- Configure the SAML provider details (IdP metadata XML, SP Entity ID, ACS URL) in the Settings → SSO & authentication → SAML 2.0 tab
 - See `docs/auth/okta.md`, `docs/auth/azure-ad.md` for IdP-specific setup guides
 
-> **Secret handling (Admin → SSO).** For security (OWASP A09), the admin config-read API never returns stored secrets — the SP private key, certificates, and IdP metadata XML (SAML) and the client secret (OIDC) are masked as "configured" presence flags, not raw values. The corresponding form fields therefore stay **blank** when you reopen the tab. **Leave a secret field blank to keep the stored value**; type a new value only to replace it. Submitting the form blank never wipes an existing secret.
+> **Secret handling (Settings → SSO).** For security (OWASP A09), the admin config-read API never returns stored secrets — the SP private key, certificates, and IdP metadata XML (SAML) and the client secret (OIDC) are masked as "configured" presence flags, not raw values. The corresponding form fields therefore stay **blank** when you reopen the tab. **Leave a secret field blank to keep the stored value**; type a new value only to replace it. Submitting the form blank never wipes an existing secret.
 
 **OIDC Mode (OpenID Connect with PKCE):**
 ```dotenv
@@ -453,20 +453,20 @@ AUTH_MODE=oidc
 - Users click an SSO button on the login page and are redirected to the OIDC provider
 - PKCE (Proof Key for Code Exchange) is always enabled for security
 - MFA passthrough: if the IdP's token contains `amr` values indicating MFA, the session is flagged `mfaPassed=true`
-- Configure the OIDC provider details (Discovery URL, Client ID, Client Secret, Redirect URI) in the Admin → SSO & Authentication → OIDC tab
+- Configure the OIDC provider details (Discovery URL, Client ID, Client Secret, Redirect URI) in the Settings → SSO & authentication → OIDC tab
 - See `docs/auth/google-workspace.md`, `docs/auth/keycloak.md` for provider-specific guides
 
 **SCIM 2.0 Provisioning (automated user/group sync):**
 
 SCIM works alongside any auth mode to allow your IdP to automatically create, update, and deactivate users in METIS:
 - Endpoint: `https://your-metis-url/api/scim/v2/Users` and `/Groups`
-- Bearer token: generate via Admin → SSO & Authentication → SCIM tab → "Rotate SCIM Token"
+- Bearer token: generate via Settings → SSO & authentication → SCIM tab → "Rotate SCIM Token"
 - Supports: user provisioning, deprovisioning (soft-disable + session revocation), group-to-role mapping
 - Compatible with Okta, Azure AD, and any SCIM 2.0–compliant IdP
 
 **Group-to-Role Mappings:**
 
-All SSO and LDAP modes support mapping IdP group claims to METIS roles. Configure in Admin → SSO & Authentication → Role Mappings tab:
+All SSO and LDAP modes support mapping IdP group claims to METIS roles. Configure in Settings → SSO & authentication → Role Mappings tab:
 - Map IdP group names (e.g. `METIS-Admins`) to METIS roles (`admin`, `coordinator`, `developer`, `reader`)
 - The highest-privilege matching role wins when a user belongs to multiple groups
 - A default role (fallback when no mapping matches) can be set per provider
@@ -628,7 +628,7 @@ backend matrix, model ids, and air-gapped (`HF_HUB_OFFLINE`) setup.
 > search for those projects keeps returning results from the **old** model.
 
 **How to re-index:** an admin triggers it per project from
-**Admin → Embeddings**, or via the API:
+**Settings → Embeddings**, or via the API:
 
 ```bash
 curl -X POST \
@@ -907,7 +907,7 @@ When `AUTH_MODE=saml` or `AUTH_MODE=oidc` is set and a provider is configured in
 3. Authenticate with your corporate credentials (and MFA if required)
 4. You are redirected back to METIS with an active session
 
-The buttons are driven by the public `GET /api/auth/sso/providers` endpoint, which the login page calls on load. It returns the **live** list of configured, *enabled* providers — so enabling (or disabling) a provider under **Admin → SSO & Authentication** makes its button appear (or disappear) on `/login` **without a redeploy or restart**. This endpoint is intentionally pre-authentication (the login page is anonymous), so it exposes **only** the minimum each button needs — `{ id, label, type, loginUrl }` — and never returns client secrets, signing keys, certificates, IdP metadata, or any other provider configuration.
+The buttons are driven by the public `GET /api/auth/sso/providers` endpoint, which the login page calls on load. It returns the **live** list of configured, *enabled* providers — so enabling (or disabling) a provider under **Settings → SSO & authentication** makes its button appear (or disappear) on `/login` **without a redeploy or restart**. This endpoint is intentionally pre-authentication (the login page is anonymous), so it exposes **only** the minimum each button needs — `{ id, label, type, loginUrl }` — and never returns client secrets, signing keys, certificates, IdP metadata, or any other provider configuration.
 
 If no SSO providers are enabled, the endpoint returns an empty list, **no buttons appear, and no error is shown** — the page renders the standard username/password form alone (which will reject logins when `AUTH_MODE` is set to an SSO mode). The SSO buttons sit alongside the **"Your session expired"** banner (shown when you arrive at `/login?reason=expired`) without any layout collision — both can render together.
 
@@ -2297,8 +2297,9 @@ approval override) — never less.
 
 ### 14.3.1 Agents and skills
 
-**One kind of agent.** Library agents (Admin → Agents) and your project's
-custom agents (Settings → Custom agents) now carry the same things: a persona,
+**One kind of agent.** Library agents and your project's custom agents — both
+managed on **Library → Agents**, with the scope set to the workspace library or
+to your project — now carry the same things: a persona,
 the skills they use, the tools they may call, a preferred model, how much they
 ask for approval, and a version that goes up on every change. Existing agents
 of both kinds keep everything they had. An agent's preferred model is always used
@@ -2411,7 +2412,7 @@ see it with a real local model (Ollama):
 1. Pull a tool-capable model (for example `ollama pull qwen3:8b`) and start
    METIS with `AI_PROVIDER=local-gemma`, `LOCAL_GEMMA_BASE_URL=http://localhost:11434/v1`
    and `LOCAL_GEMMA_MODEL=qwen3:8b`.
-2. As an admin, add a skill (Admin → Skills) named `release-notes` whose
+2. As an admin, add a skill (Library → Skills, workspace library scope) named `release-notes` whose
    description says "Use when asked for release notes", and a library agent
    whose frontmatter lists `tools: [score_grounding]`, `approvalPolicy: {low: always-prompt}`,
    with the skill as a default skill.
@@ -4222,9 +4223,17 @@ When configured, the inference profile ARN is used instead of the raw model ID w
 > (Issues #386/#387). Use placeholder ARNs in examples — never commit real ARNs or
 > account IDs.
 
-### 32.5 Admin Usage Dashboard
+### 32.5 Usage & cost
 
-Administrators can view cross-project usage analytics at **Admin → Usage**. This dashboard shows:
+Usage has one page: **Settings → Usage & cost** (`/settings/usage`). Pick a scope:
+
+- **Project** — one project's tokens, cost and budget.
+- **Workspace** — a workspace's spend forecast, monthly budget, alert rules and
+  chargeback PDF (FinOps).
+- **All projects** — administrators only; cross-project analytics.
+
+The project's **Settings → Usage** tab and the workspace **Usage & cost** tab
+open this page on that scope. The All projects view shows:
 
 - Total tokens and estimated cost across all projects
 - Usage grouped by project, day, model, or user

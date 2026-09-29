@@ -53,9 +53,6 @@ vi.mock("@/components/projects/sql-lineage-settings-card", () => ({
   SqlLineageSettingsCard: card("sql-lineage"),
 }));
 vi.mock("@/components/projects/agents-md-card", () => ({ AgentsMdCard: card("agents-md") }));
-vi.mock("@/components/projects/custom-agents-enablement-card", () => ({
-  CustomAgentsEnablementCard: card("custom-agents"),
-}));
 vi.mock("@/components/projects/inference-profile-card", () => ({
   InferenceProfileCard: card("inference"),
 }));
@@ -91,7 +88,6 @@ const SETTINGS_CARDS = [
   "db-aware",
   "sql-lineage",
   "agents-md",
-  "custom-agents",
 ];
 
 beforeEach(() => {
@@ -126,6 +122,11 @@ describe("project Settings page (⚙)", () => {
       "href",
       "/projects/p1/settings/models",
     );
+    // #31 — custom agents have one home: Library → Agents, scoped to this project.
+    expect(screen.getByTestId("project-agents-link")).toHaveAttribute(
+      "href",
+      "/library?tab=agents&projectId=p1",
+    );
     // Not an "Overview" page: exactly one project page carries that name.
     expect(screen.queryByText(/overview/i)).toBeNull();
   });
@@ -143,7 +144,7 @@ describe("project Settings page (⚙)", () => {
     });
     expect(await screen.findByTestId("project-skills-link")).toHaveAttribute(
       "href",
-      "/library?projectId=p1",
+      "/library?tab=skills&projectId=p1",
     );
   });
 

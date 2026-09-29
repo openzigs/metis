@@ -7,14 +7,22 @@
  * (`/settings/{acp,agents,hooks,mcp,triggers}`) and the new sub-pages
  * (`/settings/{profile,appearance,notifications,api-keys}`).
  *
- * Server-rendered card grid; no client interactivity needed.
+ * #31 — Settings and Admin are one area: the former Admin sections are cards
+ * here, shown to system admins only. Skills and agents have their one home in
+ * the Library, and usage in Settings → Usage & cost; their cards link there.
  */
+"use client";
+
 import Link from "next/link";
 import {
   Bell,
+  BookOpen,
   Bot,
+  Building2,
   Cable,
+  Cpu,
   KeyRound,
+  ShieldCheck,
   Network,
   Palette,
   Plug,
@@ -25,6 +33,7 @@ import {
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
+import { useAuth } from "@/lib/auth-context";
 
 interface HubLink {
   href: string;
@@ -32,6 +41,7 @@ interface HubLink {
   description: string;
   icon: typeof UserIcon;
   testId: string;
+  adminOnly?: boolean;
 }
 
 const HUB_LINKS: HubLink[] = [
@@ -79,9 +89,16 @@ const HUB_LINKS: HubLink[] = [
     testId: "settings-hub-link-mcp",
   },
   {
-    href: "/settings/agents",
-    title: "Custom agents",
-    description: "Manage org-wide custom agents and their tool grants.",
+    href: "/library?tab=skills",
+    title: "Skills",
+    description: "Author skills and choose which ones each project may use (in the Library).",
+    icon: BookOpen,
+    testId: "settings-hub-link-skills",
+  },
+  {
+    href: "/library?tab=agents",
+    title: "Agents",
+    description: "Library agents and each project's custom agents (in the Library).",
     icon: Bot,
     testId: "settings-hub-link-agents",
   },
@@ -107,19 +124,42 @@ const HUB_LINKS: HubLink[] = [
     testId: "settings-hub-link-triggers",
   },
   {
-    // FinOps is workspace-scoped (lives at /workspaces/:id/finops). The active
-    // workspace id is only known client-side (localStorage), so this hub card —
-    // a server component — links to the workspace list, from which each
-    // workspace's FinOps surface is reachable.
-    href: "/admin/workspaces",
-    title: "FinOps",
-    description: "Track and control workspace AI spend (cost & budget tracking).",
+    href: "/settings/usage",
+    title: "Usage & cost",
+    description: "Tokens and AI spend by project or workspace, with budgets and alerts (FinOps).",
     icon: Wallet,
-    testId: "settings-hub-link-finops",
+    testId: "settings-hub-link-usage",
+  },
+  {
+    href: "/settings/workspaces",
+    title: "Workspaces",
+    description: "Create and manage workspaces, members, and project assignments.",
+    icon: Building2,
+    testId: "settings-hub-link-workspaces",
+    adminOnly: true,
+  },
+  {
+    href: "/settings/auth",
+    title: "SSO & authentication",
+    description: "SAML, OIDC, SCIM, and group-to-role mappings.",
+    icon: ShieldCheck,
+    testId: "settings-hub-link-auth",
+    adminOnly: true,
+  },
+  {
+    href: "/settings/embeddings",
+    title: "Embeddings",
+    description: "Select the RAG embedding backend and reindex projects.",
+    icon: Cpu,
+    testId: "settings-hub-link-embeddings",
+    adminOnly: true,
   },
 ];
 
 export default function SettingsHubPage() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const links = HUB_LINKS.filter((link) => isAdmin || !link.adminOnly);
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-hub-root">
       <PageHeader
@@ -135,7 +175,7 @@ export default function SettingsHubPage() {
         }
       />
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {HUB_LINKS.map((link) => (
+        {links.map((link) => (
           <Link
             key={link.href}
             href={link.href}

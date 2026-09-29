@@ -1,6 +1,8 @@
 "use client";
 
 /**
+ * #31 — was the /admin/mcp page; now the Servers tab of Settings → MCP servers.
+ *
  * Phase 6 — MCP server admin page.
  *
  * Lists registered MCP servers, exposes start/stop/restart/test controls, and
@@ -14,6 +16,7 @@ import { useAuth } from "@/lib/auth-context";
 import {
   type CreateMCPServerInput,
   type MCPRuntime,
+  type MCPServerScope,
   type MCPServerView,
   type MCPTransport,
   type MCPTrustLevel,
@@ -32,7 +35,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { PageHeader } from "@/components/ui/page-header";
+import { PanelHeader } from "@/components/layout/panel-header";
 
 const STATUS_BADGE: Record<MCPServerView["status"], string> = {
   idle: "bg-muted text-muted-foreground",
@@ -42,19 +45,40 @@ const STATUS_BADGE: Record<MCPServerView["status"], string> = {
   disabled: "bg-muted text-muted-foreground",
 };
 
-export default function McpAdminPage() {
+/**
+ * #31 — the scope filter: every server, or only one scope's. `global` servers
+ * are platform-wide (MCPServer has no workspaceId), so they are labelled
+ * "Global", never "Workspace".
+ */
+export type McpScopeFilter = "all" | MCPServerScope;
+
+const SCOPE_FILTERS: ReadonlyArray<{ id: McpScopeFilter; label: string }> = [
+  { id: "all", label: "All scopes" },
+  { id: "user", label: "Mine" },
+  { id: "project", label: "Project" },
+  { id: "global", label: "Global" },
+];
+
+const SCOPE_LABEL: Record<MCPServerScope, string> = {
+  user: "Mine",
+  project: "Project",
+  global: "Global",
+};
+
+export function McpServersPanel({ initialScope = "all" }: { initialScope?: McpScopeFilter }) {
   const qc = useQueryClient();
+  const [scope, setScope] = useState<McpScopeFilter>(initialScope);
   const list = useQuery({
-    queryKey: queryKeys.admin.mcp(),
-    queryFn: () => mcpApi.list(),
+    queryKey: [...queryKeys.admin.mcp(), "scope", scope],
+    queryFn: () => mcpApi.list(scope === "all" ? undefined : { scope }),
   });
   const [createOpen, setCreateOpen] = useState(false);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: queryKeys.admin.mcp() });
 
   return (
-    <div className="space-y-6 p-6">
-      <PageHeader
+    <div className="space-y-6">
+      <PanelHeader
         title="MCP servers"
         description="Register, start, and monitor Model Context Protocol servers. Secrets are vault-backed — plaintext is never persisted in the registry row."
         actions={
@@ -78,11 +102,29 @@ export default function McpAdminPage() {
         }
       />
 
+      <div className="flex flex-wrap items-center gap-2">
+        <Label htmlFor="mcp-scope-filter">Scope</Label>
+        <select
+          id="mcp-scope-filter"
+          data-testid="mcp-scope-filter"
+          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+          value={scope}
+          onChange={(e) => setScope(e.target.value as McpScopeFilter)}
+        >
+          {SCOPE_FILTERS.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
       <Card className="p-0">
         <table className="w-full text-left text-sm">
           <thead className="text-xs uppercase text-muted-foreground">
             <tr>
               <th className="px-4 py-3">Label</th>
+              <th className="px-4 py-3">Scope</th>
               <th className="px-4 py-3">Transport</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Trust</th>
@@ -93,14 +135,16 @@ export default function McpAdminPage() {
           <tbody>
             {list.isLoading ? (
               <tr>
-                <td className="px-4 py-6 text-muted-foreground" colSpan={6}>
+                <td className="px-4 py-6 text-muted-foreground" colSpan={7}>
                   Loading…
                 </td>
               </tr>
             ) : list.data?.items.length === 0 ? (
               <tr>
-                <td className="px-4 py-6 text-muted-foreground" colSpan={6}>
-                  No MCP servers registered yet.
+                <td className="px-4 py-6 text-muted-foreground" colSpan={7}>
+                  {scope === "all"
+                    ? "No MCP servers registered yet."
+                    : "No MCP servers in this scope."}
                 </td>
               </tr>
             ) : (
@@ -130,6 +174,9 @@ function ServerRow({ server, onChange }: { server: MCPServerView; onChange: () =
       <td className="px-4 py-3">
         <div className="font-medium">{server.label}</div>
         <div className="text-xs text-muted-foreground">{server.id}</div>
+      </td>
+      <td className="px-4 py-3" data-testid={`mcp-scope-${server.id}`}>
+        {SCOPE_LABEL[server.scope]}
       </td>
       <td className="px-4 py-3 capitalize">{server.transport}</td>
       <td className="px-4 py-3">

@@ -1,6 +1,8 @@
 "use client";
 
 /**
+ * #31 — was the /admin/skills page; now the Workspace scope of Library → Skills.
+ *
  * Phase 10 — admin Skills library page (issue #73 AC).
  *
  * List + search + view + create/edit/delete + version timeline. Source is a
@@ -26,9 +28,9 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { PageHeader } from "@/components/ui/page-header";
+import { PanelHeader } from "@/components/layout/panel-header";
 
-export default function AdminSkillsPage() {
+export function SkillsLibraryPanel() {
   const qc = useQueryClient();
   const [query, setQuery] = useState("");
   const [includeArchived, setIncludeArchived] = useState(false);
@@ -51,8 +53,8 @@ export default function AdminSkillsPage() {
   const invalidate = () => qc.invalidateQueries({ queryKey: queryKeys.skills.all }).catch(() => {});
 
   return (
-    <div className="space-y-6 p-6">
-      <PageHeader
+    <div className="space-y-6">
+      <PanelHeader
         title="Skills"
         description="Reusable instruction blocks injected into chat sessions. Each save creates an immutable version row."
         actions={

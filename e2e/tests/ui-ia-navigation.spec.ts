@@ -112,7 +112,8 @@ test.describe("UI IA — navigation & layout (#133)", () => {
       ["/scheduler", "Activity", "Scheduler"],
       ["/reviews", "Activity", "Reviews"],
       ["/vault", "Settings", "Vault"],
-      ["/admin", "Settings", "Admin"],
+      // #31 — Admin is part of Settings, not a tab of its own.
+      ["/settings/workspaces", "Settings", "Settings"],
     ];
     for (const [path, entry, tab] of cases) {
       await test.step(path, async () => {

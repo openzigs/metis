@@ -3,7 +3,10 @@
 /**
  * Epic #162 — MCP Platform settings page (v1.1.0).
  *
- * Three tabs:
+ * #31 — the one home for MCP servers: the Servers tab (register, start/stop,
+ * filter by scope) was Admin → MCP servers.
+ *
+ * Tabs:
  *   • Connected — list of registered servers with Tools / Allowlist /
  *     Approval / Integrity sub-panels.
  *   • Registry — paginated browser of the public registry with Install dialog.
@@ -12,7 +15,8 @@
  * Issue references: #98, #99, #104, #105, #124.
  */
 import { useMemo, useState } from "react";
-import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { McpServersPanel } from "@/components/mcp/mcp-servers-panel";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
@@ -34,17 +38,21 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/ui/page-header";
 
-type TabId = "connected" | "registry" | "federated" | "import-export";
+type TabId = "servers" | "connected" | "registry" | "federated" | "import-export";
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "connected", label: "Connected" },
+  // #31 — the old Admin → MCP servers page, so MCP servers have one home.
+  { id: "servers", label: "Servers" },
   { id: "registry", label: "Registry" },
   { id: "federated", label: "Federated" },
   { id: "import-export", label: "Import / Export" },
 ];
 
 export default function McpSettingsPage() {
-  const [tab, setTab] = useState<TabId>("connected");
+  const searchParams = useSearchParams();
+  const requested = searchParams?.get("tab");
+  const [tab, setTab] = useState<TabId>(TABS.find((t) => t.id === requested)?.id ?? "connected");
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="mcp-settings-page">
       <PageHeader
@@ -54,11 +62,6 @@ export default function McpSettingsPage() {
             Browse the public registry, govern per-tool access, verify server integrity, and
             round-trip Copilot CLI <code>mcp.json</code> configs.
           </>
-        }
-        actions={
-          <Button asChild>
-            <Link href="/admin/mcp">Add MCP server</Link>
-          </Button>
         }
       />
       {/* #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, aria-controls. */}
@@ -80,6 +83,9 @@ export default function McpSettingsPage() {
         </TabsList>
         <TabsContent value="connected">
           <ConnectedTab />
+        </TabsContent>
+        <TabsContent value="servers">
+          <McpServersPanel />
         </TabsContent>
         <TabsContent value="registry">
           <RegistryTab />
@@ -106,8 +112,8 @@ function ConnectedTab() {
   if (!list.data || list.data.items.length === 0) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="connected-empty">
-        No MCP servers registered yet. Install one from the Registry tab or add one manually from
-        Admin.
+        No MCP servers registered yet. Install one from the Registry tab or add one on the Servers
+        tab.
       </p>
     );
   }

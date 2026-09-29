@@ -529,7 +529,7 @@ Notes:
   not part of the Prisma schema).
 - **Backfill is a re-embed, not a data copy.** Existing LanceDB vectors are
   regenerable from the source documents. After setting `VECTOR_STORE=pgvector`,
-  reindex each project (Admin → Embedding backends) to populate pgvector.
+  reindex each project (Settings → Embeddings) to populate pgvector.
 - The index is **HNSW** (`vector_cosine_ops`), tuned for read-heavy RAG. Default
   HNSW build params are used; tune `m` / `ef_construction` only if recall/latency
   measurements demand it.
