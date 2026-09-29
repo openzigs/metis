@@ -321,17 +321,18 @@ describe("ProjectLibraryAllowlistService", () => {
 });
 
 describe("AgentService.validateToolRefs (issue #74 — save-time tool ref validation)", () => {
-  const emptyRegistry = () =>
-    ({ list: () => [] }) as unknown as import("../../src/lib/ai/tool-registry.js").ToolRegistry;
+  // #340 — `knownToolNames` reads `describeAll` (the view that carries origin).
+  const stubRegistry = (names: string[]) => {
+    const tools = names.map((name) => ({ name, description: "x", risk: "low" as const }));
+    return {
+      list: () => tools,
+      describeAll: () => tools.map((t) => ({ ...t, parameters: {} })),
+    } as unknown as import("../../src/lib/ai/tool-registry.js").ToolRegistry;
+  };
+  const emptyRegistry = () => stubRegistry([]);
 
   const registryWithGithub = () =>
-    ({
-      list: () => [
-        { name: "read_file", description: "x", risk: "low" as const },
-        { name: "mcp:github:create_issue", description: "x", risk: "low" as const },
-        { name: "mcp:github:list_issues", description: "x", risk: "low" as const },
-      ],
-    }) as unknown as import("../../src/lib/ai/tool-registry.js").ToolRegistry;
+    stubRegistry(["read_file", "mcp:github:create_issue", "mcp:github:list_issues"]);
 
   const srcWithTools = (tools: string[]) => `---
 name: tool-test

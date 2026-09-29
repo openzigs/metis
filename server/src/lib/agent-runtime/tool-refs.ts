@@ -24,8 +24,13 @@
  */
 import { LOAD_SKILL_TOOL_NAME, SUBAGENT_TOOL_PREFIX } from "@metis/shared";
 import { CHAT_CODE_TOOL_NAMES } from "../analysis/tools/chat-code-tool-names.js";
-import type { ToolRegistry } from "../ai/tool-registry.js";
+import type { ToolDescriptor, ToolRegistry, ToolRuntimeView } from "../ai/tool-registry.js";
 import { parseAgentRef } from "./definition.js";
+
+/** #340 — is this a tool of a `scope: "user"` MCP server (one user's own)? */
+export function isUserScopedMcpTool(view: Pick<ToolRuntimeView, "origin">): boolean {
+  return view.origin?.kind === "mcp" && view.origin.serverScope === "user";
+}
 
 /**
  * Every tool name an allowlist may name exactly: the registry plus the chat code tools.
@@ -34,22 +39,40 @@ import { parseAgentRef } from "./definition.js";
  * user's own: the agent runtime never offers it (sessions get only the
  * project's servers and its allow-listed globals), and counting its tools here
  * would confirm to any agent author that another user's server is running.
+ * `describeAll` is REQUIRED: it is the only view that carries a tool's origin,
+ * so a registry without it cannot be filtered and must not be read (fail closed).
  */
-export function knownToolNames(
-  registry: Pick<ToolRegistry, "list"> & Partial<Pick<ToolRegistry, "describeAll">>,
-): Set<string> {
-  const userScoped = new Set(
-    (registry.describeAll?.() ?? [])
-      .filter((v) => v.origin?.kind === "mcp" && v.origin.serverScope === "user")
-      .map((v) => v.name),
-  );
+export function knownToolNames(registry: Pick<ToolRegistry, "describeAll">): Set<string> {
   return new Set([
     ...registry
-      .list()
-      .map((t) => t.name)
-      .filter((n) => !userScoped.has(n)),
+      .describeAll()
+      .filter((v) => !isUserScopedMcpTool(v))
+      .map((v) => v.name),
     ...CHAT_CODE_TOOL_NAMES,
   ]);
+}
+
+/**
+ * #340 — the registered tools `viewer` may see listed (`GET /api/ai/tools`).
+ * A `scope: "user"` MCP server's tools appear only to its owner and to system
+ * admins; one with no owner on record appears to admins only (fail closed).
+ * Every other tool is listed to everyone, as before. The descriptor shape is
+ * `ToolRegistry.list()`'s — no origin or schema leaves this function.
+ */
+export function visibleTools(
+  registry: Pick<ToolRegistry, "describeAll">,
+  viewer: { userId: string; role: string },
+): ToolDescriptor[] {
+  const admin = viewer.role === "admin";
+  return registry
+    .describeAll()
+    .filter(
+      (v) =>
+        admin ||
+        !isUserScopedMcpTool(v) ||
+        (!!v.origin?.serverOwnerId && v.origin.serverOwnerId === viewer.userId),
+    )
+    .map((v) => ({ name: v.name, description: v.description, risk: v.risk }));
 }
 
 /**

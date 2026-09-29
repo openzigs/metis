@@ -16,6 +16,7 @@ import { K8sColdStartReaper } from "./k8s-cold-start-reaper.js";
 import { MCPLifecycleManager } from "./lifecycle-manager.js";
 import { MCPRegistryService, getMCPRegistry, setMCPRegistry } from "./mcp-service.js";
 import { K8sSseProvisioner, defaultProvisionerRegistry } from "./provisioners/index.js";
+import { mcpStatusRooms } from "./status-rooms.js";
 import { MCPToolBridge } from "./tool-bridge.js";
 import { PagerDutyProviderStatusWatcher } from "../pagerduty/provider-status-watcher.js";
 
@@ -49,9 +50,10 @@ export function bootstrapMCP(opts: BootstrapOptions = {}): MCPBootstrap {
   const lifecycle = new MCPLifecycleManager({
     provisioners,
     resolveEnv: async (env) => expandVaultRefs(env, getVaultService()),
-    emitStatus: (event) => {
+    // #340 — a user-scope server's events reach only its owner and admins.
+    emitStatus: (event, config) => {
       if (opts.io) {
-        opts.io.to("mcp:status").emit("mcp:status", event);
+        opts.io.to(mcpStatusRooms(event, config?.userId)).emit("mcp:status", event);
       }
     },
   });

@@ -57,6 +57,9 @@ const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { setMCPRegistry, MCPRegistryService } = await import("../src/lib/mcp/mcp-service.js");
 const { MCPLifecycleManager } = await import("../src/lib/mcp/lifecycle-manager.js");
 const { bootstrapScheduler, SCHEDULER_DEFAULTS } = await import("../src/lib/scheduler/index.js");
+const { aiRouter } = await import("../src/routes/ai.js");
+const { MCPToolBridge } = await import("../src/lib/mcp/tool-bridge.js");
+const { __resetToolRegistrySingleton } = await import("../src/lib/ai/tool-registry.js");
 
 type Role = "admin" | "coordinator";
 type Method = "get" | "post" | "put" | "patch" | "delete";
@@ -90,6 +93,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use("/api/runs", runsRouter());
       a.use("/api/projects/:projectId/triggers", projectTriggersRouter());
       a.use("/api/scheduler", schedulerRouter());
+      a.use("/api/ai", aiRouter());
       a.use(notFoundHandler);
       a.use(errorHandler);
       return a;
@@ -497,6 +501,96 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(off.body.error?.code).toBe("AUTOPILOT_DISABLED");
         const on = await call("post", "/api/scheduler", ADMIN, job(PA, "autopilot-340-adm-on"));
         expect(on.status, JSON.stringify(on.body)).toBe(201);
+      });
+    });
+
+    // ── 5. GET /api/ai/tools (review round 2) ───────────────────────────────
+    describe("5. GET /api/ai/tools lists a user server's tools only to its owner and admins", () => {
+      let bridge: InstanceType<typeof MCPToolBridge> | null = null;
+      const tool = (label: string) => `mcp:${label}:echo`;
+      const labels = { mine: "", theirs: "", orphan: "", glob: "", inA: "" };
+
+      beforeAll(async () => {
+        // The real bridge over a real lifecycle: each server row is turned into
+        // its runtime config by the registry and started against an in-memory
+        // transport, so the tools land in the registry exactly as in production.
+        __resetToolRegistrySingleton();
+        const lifecycle = new MCPLifecycleManager({
+          resolveEnv: async (e) => e,
+          transportFactory: () => ({
+            start: async () => undefined,
+            stop: async () => undefined,
+            notify: async () => undefined,
+            closed: () => new Promise(() => undefined),
+            request: async (m: string) => {
+              if (m === "initialize") return { protocolVersion: "2025-06-18" };
+              if (m === "tools/list") return { tools: [{ name: "echo", description: "echo" }] };
+              throw new Error(`unexpected ${m}`);
+            },
+          }),
+        });
+        bridge = new MCPToolBridge(lifecycle, registry);
+        bridge.attach();
+        const ids = {
+          mine: await makeServer("user", { userId: "u-own" }),
+          theirs: await makeServer("user", { userId: "u-b" }),
+          orphan: await makeServer("user", { userId: null }),
+          glob: await makeServer("global"),
+          inA: await makeServer("project", { projectId: PA }),
+        };
+        for (const [k, id] of Object.entries(ids) as Array<[keyof typeof ids, string]>) {
+          const row = await db.mCPServer.findUniqueOrThrow({ where: { id } });
+          labels[k] = row.label;
+          // `command` only satisfies the native runtime's config check; the
+          // injected transport factory above is what actually answers.
+          const st = await lifecycle.start({ ...registry.toConfig(row), command: "in-memory" });
+          expect(st.status, st.lastError ?? "").toBe("ready");
+        }
+      });
+      afterAll(() => {
+        bridge?.shutdown();
+        __resetToolRegistrySingleton();
+      });
+
+      const names = async (who: string) => {
+        const res = await call("get", "/api/ai/tools", who);
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        return (res.body.data.tools as Array<{ name: string }>).map((t) => t.name);
+      };
+
+      it("a non-owner — same workspace or not — never sees another user's server tools", async () => {
+        const peer = await names(PEER);
+        expect(peer).not.toContain(tool(labels.mine));
+        expect(peer).not.toContain(tool(labels.theirs));
+        expect(peer).not.toContain(tool(labels.orphan));
+        const b = await names(B);
+        expect(b).not.toContain(tool(labels.mine));
+        expect(b).toContain(tool(labels.theirs));
+      });
+
+      it("the owner sees their own; a system admin sees every user server's tools", async () => {
+        const own = await names(OWN);
+        expect(own).toContain(tool(labels.mine));
+        expect(own).not.toContain(tool(labels.theirs));
+        const admin = await names(ADMIN);
+        for (const k of ["mine", "theirs", "orphan"] as const) {
+          expect(admin).toContain(tool(labels[k]));
+        }
+      });
+
+      it("global and project server tools are listed to everyone, unchanged", async () => {
+        for (const who of [OWN, PEER, B, ADMIN]) {
+          const listed = await names(who);
+          expect(listed).toContain(tool(labels.glob));
+          expect(listed).toContain(tool(labels.inA));
+        }
+      });
+
+      it("keeps the descriptor shape — no origin (server id, owner) in the response", async () => {
+        const res = await call("get", "/api/ai/tools", ADMIN);
+        for (const t of res.body.data.tools as Array<Record<string, unknown>>) {
+          expect(Object.keys(t).sort()).toEqual(["description", "name", "risk"]);
+        }
       });
     });
   },

@@ -474,6 +474,11 @@ export interface ToolOrigin {
    * never offered to an agent, so its tools are not valid agent tool refs.
    */
   serverScope?: "global" | "project" | "user";
+  /**
+   * #340 — the owning user of a `user` server (null/absent otherwise). Tool
+   * listings show a user server's tools only to this user and system admins.
+   */
+  serverOwnerId?: string | null;
 }
 
 export interface ToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {

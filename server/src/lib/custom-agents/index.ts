@@ -149,7 +149,7 @@ async function assertSkillsExist(keys: readonly string[] | null | undefined): Pr
  */
 export function assertKnownTools(
   tools: readonly string[] | null | undefined,
-  registry: Pick<ToolRegistry, "list"> = getToolRegistry(),
+  registry: Pick<ToolRegistry, "describeAll"> = getToolRegistry(),
   configuredMcpServers: ReadonlySet<string> = new Set(),
 ): void {
   if (!tools || tools.length === 0) return;
@@ -265,7 +265,7 @@ export const BUILT_IN_AGENTS: ReadonlyArray<Readonly<CustomAgentDefinition>> = B
  * the boot-time tools are registered (`server.ts`).
  */
 export async function ensureBuiltInAgents(
-  registry: Pick<ToolRegistry, "list"> = getToolRegistry(),
+  registry: Pick<ToolRegistry, "describeAll"> = getToolRegistry(),
 ): Promise<void> {
   for (const def of BUILT_INS) {
     try {

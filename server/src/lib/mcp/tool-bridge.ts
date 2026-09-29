@@ -99,6 +99,7 @@ export class MCPToolBridge {
         risk,
         { description: tool.description, inputSchema: tool.inputSchema },
         snapshot.config.scope,
+        snapshot.config.userId ?? null,
       );
       try {
         reg.register(def);
@@ -144,6 +145,7 @@ export class MCPToolBridge {
     risk: MCPToolRisk,
     advertised: { description?: string; inputSchema?: unknown } = {},
     scope: MCPServerConfig["scope"] = "global",
+    ownerId: string | null = null,
   ): ToolDefinition<z.ZodRecord<z.ZodString, z.ZodUnknown>> {
     const lifecycle = this.lifecycle;
     const registry = this.registry;
@@ -156,12 +158,22 @@ export class MCPToolBridge {
       // the tool natively; `z.record` below still validates the call's shape.
       ...(isObjectSchema(advertised.inputSchema) ? { parameters: advertised.inputSchema } : {}),
       // #140 — lets the tool runtime offer only servers the project may use.
-      origin: { kind: "mcp", serverId, serverLabel: label, serverScope: scope },
+      origin: {
+        kind: "mcp",
+        serverId,
+        serverLabel: label,
+        serverScope: scope,
+        serverOwnerId: scope === "user" ? ownerId : null,
+      },
       schema: z.record(z.string(), z.unknown()),
       async exec(args, ctx): Promise<ToolResult> {
+        // The one refusal for a server this caller cannot use as-is. #340 — a
+        // non-owner gets it too, so the text never confirms that another
+        // user's server exists (the audit row still says `not_owner`).
+        const unavailable = () => new Error(`MCP server ${label} is not ready`);
         const snapshot = lifecycle.get(serverId);
         if (!snapshot || snapshot.state.status !== "ready") {
-          throw new Error(`MCP server ${label} is not ready`);
+          throw unavailable();
         }
         const config = snapshot.config;
         const argsHash = sha256OfCanonical(args);
@@ -186,7 +198,7 @@ export class MCPToolBridge {
               resultHash: null,
             },
           });
-          throw new Error(`MCP server ${label} belongs to another user — invocation denied`);
+          throw unavailable();
         }
         // SEC-6: project-scoped server may only be invoked by sessions
         // attached to the SAME project. Otherwise a session bound to project

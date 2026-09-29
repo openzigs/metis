@@ -325,7 +325,10 @@ describe("MCPToolBridge user-scope ownership (#340)", () => {
     const bridge = await startUserServer("u-owner");
     const denied = await invokeAs("u-other", projectId);
     expect(denied.isError).toBe(true);
-    expect(denied.text).toMatch(/belongs to another user/);
+    // The refusal is the bridge's generic "unavailable" text — the same one a
+    // stopped server answers — so it never confirms the server is someone's.
+    expect(denied.text).toBe("[Tool Error] MCP server Cool Server! is not ready");
+    expect(denied.text).not.toMatch(/another user|owner|denied/i);
     const denyAudit = auditEvents.find((e) => e.metadata?.decision === "denied");
     expect(denyAudit?.metadata?.denyReason).toBe("not_owner");
     bridge.shutdown();
@@ -355,6 +358,7 @@ describe("MCPToolBridge user-scope ownership (#340)", () => {
       kind: "mcp",
       serverId: "srv1",
       serverScope: "user",
+      serverOwnerId: "u-owner",
     });
     bridge.shutdown();
   });

@@ -402,7 +402,7 @@ export class MCPLifecycleManager {
     };
     for (const listener of this.listeners) {
       try {
-        listener(event);
+        listener(event, config);
       } catch (err) {
         log.warn("MCP status listener threw", { error: (err as Error).message });
       }
