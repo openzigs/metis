@@ -1,7 +1,8 @@
 /**
  * App-shell page object for the UI Information-Architecture overhaul (Epic #133).
  *
- * Encapsulates the authed shell chrome: the grouped sidebar (N1 #140), the
+ * Encapsulates the authed shell chrome: the six-entry sidebar and the hub page
+ * tabs under it (#27, which replaced N1 #140's grouped sections), the
  * consolidated breadcrumb header that replaced the dual workspace/project
  * switcher (N7 #152), and the icon-only header controls whose accessible names
  * are asserted by the a11y suite (A1 #149).
@@ -11,9 +12,16 @@
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 
-/** Canonical grouped sidebar sections (N1 #140 — see ui/src/lib/navigation.ts). */
-export const SIDEBAR_SECTIONS = ["Work", "Knowledge", "Automation", "Platform"] as const;
-export type SidebarSection = (typeof SIDEBAR_SECTIONS)[number];
+/** The six object-level sidebar destinations (#27 — see ui/src/lib/navigation.ts). */
+export const SIDEBAR_ENTRIES = [
+  "Home",
+  "Projects",
+  "Chat",
+  "Activity",
+  "Library",
+  "Settings",
+] as const;
+export type SidebarEntry = (typeof SIDEBAR_ENTRIES)[number];
 
 export class AppShellPage {
   readonly page: Page;
@@ -49,9 +57,14 @@ export class AppShellPage {
     this.helpButton = page.getByTestId("help-trigger");
   }
 
-  /** Heading element for a grouped sidebar section (e.g. "Knowledge"). */
-  sectionHeading(name: SidebarSection): Locator {
-    return this.sidebar.getByRole("heading", { name, exact: true });
+  /** Page tabs of the sidebar destination the user is in (#27), e.g. "Projects pages". */
+  hubTabs(entry: SidebarEntry): Locator {
+    return this.page.getByRole("navigation", { name: `${entry} pages` });
+  }
+
+  /** A page tab inside a hub's tab bar. */
+  hubTab(entry: SidebarEntry, name: string): Locator {
+    return this.hubTabs(entry).getByRole("link", { name, exact: true });
   }
 
   /** A navigation link inside the desktop sidebar, scoped so it never collides

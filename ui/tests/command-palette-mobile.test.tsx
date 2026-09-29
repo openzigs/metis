@@ -18,7 +18,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 
 // Deterministic project list so the palette has a project option in addition to
-// the static NAV_ITEMS registry.
+// the static NAV_DESTINATIONS registry.
 const listProjects = vi.fn();
 vi.mock("@/lib/projects-api", () => ({
   projectsApi: {
@@ -138,6 +138,20 @@ describe("CommandPalette — keyboard navigation", () => {
     const push = vi.mocked(useRouter)().push;
     expect(push).toHaveBeenCalledWith(href);
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  // #366 review: the palette must still find the pages that left the sidebar.
+  it.each([
+    ["skills", "Skills", "/admin/skills"],
+    ["agents", "Agents", "/admin/agents"],
+    ["dash", "Dashboard", "/dashboard"],
+  ])("finds %s by name", async (query, label, href) => {
+    await openPalette();
+    const input = screen.getByRole("combobox", { name: "Search commands" });
+    fireEvent.change(input, { target: { value: query } });
+    const first = within(screen.getByRole("listbox")).getAllByRole("option")[0];
+    expect(first).toHaveTextContent(label);
+    expect(first).toHaveAttribute("data-href", href);
   });
 
   it("dismisses on Escape", async () => {

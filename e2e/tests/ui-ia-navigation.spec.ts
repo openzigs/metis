@@ -2,9 +2,11 @@
  * UI Information-Architecture overhaul — navigation & layout (Epic #133).
  *
  * Covers:
- *   N1 #140 — grouped sidebar sections (Work / Knowledge / Automation / Platform)
- *   N5 #153 — platform resources (Vault/Repositories/Databases/MCP) live ONLY in
- *             the sidebar, not duplicated as Settings-hub management cards
+ *   #27     — six object-level sidebar entries (Home / Projects / Chat /
+ *             Activity / Library / Settings); the pages they absorbed are hub
+ *             tabs and keep their URLs (replaces N1 #140's grouped sections)
+ *   N5 #153 — platform resources (Vault/Repositories/Databases/MCP) have their
+ *             own pages, not duplicated as Settings-hub management cards
  *   N6 #154 — nested settings layout persists the secondary nav across sub-pages
  *   N7 #152 — consolidated breadcrumb hierarchy (Workspace › Project) replaces
  *             the former dual header switcher
@@ -17,7 +19,7 @@ import { apiBase } from "../fixtures/api-base.js";
 import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user.js";
 import { createProjectViaApi } from "../fixtures/project-helpers.js";
 import { LoginPage } from "../pages/login.page.js";
-import { AppShellPage, SIDEBAR_SECTIONS } from "../pages/app-shell.page.js";
+import { AppShellPage, SIDEBAR_ENTRIES } from "../pages/app-shell.page.js";
 import { SettingsHubPage } from "../pages/settings-hub.page.js";
 
 const API_BASE = apiBase();
@@ -37,28 +39,34 @@ test.describe("UI IA — navigation & layout (#133)", () => {
     await login.login(ADMIN_USER.username, ADMIN_USER.password);
   });
 
-  // N1 #140: the sidebar renders four labeled sections.
-  test("sidebar renders the four grouped sections", async ({ page }) => {
+  // #27: the sidebar is one flat level of six object-level destinations.
+  test("sidebar renders six destinations and no section headings", async ({ page }) => {
     const shell = new AppShellPage(page);
     await page.goto("/dashboard", { waitUntil: "load" });
     await shell.expectLoaded();
 
-    for (const section of SIDEBAR_SECTIONS) {
-      await expect(shell.sectionHeading(section)).toBeVisible();
+    // Scope to the "Sections" nav: the aside also holds the METIS brand link.
+    const sections = shell.sidebar.getByRole("navigation", { name: "Sections" });
+    await expect(sections.getByRole("link")).toHaveCount(SIDEBAR_ENTRIES.length);
+    for (const entry of SIDEBAR_ENTRIES) {
+      await expect(shell.navLink(entry)).toBeVisible();
     }
+    await expect(sections.getByRole("heading")).toHaveCount(0);
   });
 
-  // N1 #140: representative links in each section navigate to the right route.
+  // #27: each sidebar entry lands on its first page.
   test("sidebar links navigate to their routes", async ({ page }) => {
     const shell = new AppShellPage(page);
     await page.goto("/dashboard", { waitUntil: "load" });
     await shell.expectLoaded();
 
     const cases: Array<[string, RegExp]> = [
-      ["Projects", /\/projects$/], // Work
-      ["Library", /\/library$/], // Knowledge
-      ["Skills", /\/skills$/], // Automation
-      ["Vault", /\/vault$/], // Platform
+      ["Projects", /\/projects$/],
+      ["Chat", /\/chat$/],
+      ["Activity", /\/tasks$/],
+      ["Library", /\/library$/],
+      ["Settings", /\/settings$/],
+      ["Home", /\/dashboard$/],
     ];
 
     for (const [label, urlRe] of cases) {
@@ -69,16 +77,51 @@ test.describe("UI IA — navigation & layout (#133)", () => {
     }
   });
 
-  // N3 #141 reachability: the split-out "Documents" surface is a sidebar
-  // destination under the Knowledge section.
-  test('"Documents" is reachable from the Knowledge section', async ({ page }) => {
+  // #27: the cross-project lookups are one "All projects" view away, not three
+  // sidebar pages — and the sidebar keeps Projects highlighted on each of them.
+  test("cross-project lookups are Projects tabs", async ({ page }) => {
     const shell = new AppShellPage(page);
-    await page.goto("/dashboard", { waitUntil: "load" });
+    await page.goto("/projects", { waitUntil: "load" });
     await shell.expectLoaded();
 
-    await expect(shell.sectionHeading("Knowledge")).toBeVisible();
-    await shell.navLink("Documents").click();
-    await expect(page).toHaveURL(/\/documents$/);
+    for (const [tab, urlRe] of [
+      ["Documents", /\/documents$/],
+      ["Repositories", /\/repositories$/],
+      ["Databases", /\/databases$/],
+      ["All projects", /\/projects$/],
+    ] as const) {
+      await test.step(`open "${tab}"`, async () => {
+        await shell.hubTab("Projects", tab).click();
+        await expect(page).toHaveURL(urlRe);
+        await expect(shell.hubTab("Projects", tab)).toHaveAttribute("aria-current", "page");
+        await expect(shell.navLink("Projects")).toHaveAttribute("aria-current", "true");
+      });
+    }
+  });
+
+  // #27: routes that left the sidebar still resolve — bookmarks keep working —
+  // and land inside their new hub.
+  test("former sidebar routes still resolve inside their hub", async ({ page }) => {
+    const shell = new AppShellPage(page);
+    const cases: Array<[string, "Projects" | "Chat" | "Activity" | "Settings", string]> = [
+      ["/products", "Projects", "Products"],
+      ["/impact-analyses", "Projects", "Impact analyses"],
+      ["/workbench", "Chat", "Workbench"],
+      ["/runs", "Activity", "Runs"],
+      ["/sessions", "Activity", "Sessions"],
+      ["/scheduler", "Activity", "Scheduler"],
+      ["/reviews", "Activity", "Reviews"],
+      ["/vault", "Settings", "Vault"],
+      ["/admin", "Settings", "Admin"],
+    ];
+    for (const [path, entry, tab] of cases) {
+      await test.step(path, async () => {
+        await page.goto(path, { waitUntil: "load" });
+        await shell.expectLoaded();
+        await expect(shell.navLink(entry)).toHaveAttribute("aria-current", "true");
+        await expect(shell.hubTab(entry, tab)).toHaveAttribute("aria-current", "page");
+      });
+    }
   });
 
   // N5 #153: the Settings hub must NOT carry duplicate platform-resource
@@ -93,17 +136,17 @@ test.describe("UI IA — navigation & layout (#133)", () => {
     await expect(page.getByTestId("settings-hub-link-repositories")).toHaveCount(0);
     await expect(page.getByTestId("settings-hub-link-databases")).toHaveCount(0);
 
-    // The Integrations card explicitly points users at the sidebar instead.
+    // The Integrations card explicitly points users at their real homes.
     await expect(settings.hubLink("settings-hub-link-integrations")).toContainText(
-      /live in the sidebar/i,
+      /live under Projects/i,
     );
 
-    // …and the canonical homes really are in the sidebar.
+    // …and those homes really are one tab away (#27).
     const shell = new AppShellPage(page);
-    await expect(shell.sectionHeading("Platform")).toBeVisible();
-    await expect(shell.navLink("Vault")).toBeVisible();
-    await expect(shell.navLink("Repositories")).toBeVisible();
-    await expect(shell.navLink("Databases")).toBeVisible();
+    await expect(shell.hubTab("Settings", "Vault")).toBeVisible();
+    await page.goto("/projects", { waitUntil: "load" });
+    await expect(shell.hubTab("Projects", "Repositories")).toBeVisible();
+    await expect(shell.hubTab("Projects", "Databases")).toBeVisible();
   });
 
   // N6 #154: the nested settings layout keeps a persistent secondary nav

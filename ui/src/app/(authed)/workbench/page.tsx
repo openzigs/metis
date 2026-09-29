@@ -231,7 +231,7 @@ export default function WorkbenchPage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] flex-col gap-3" data-testid="workbench-root">
+    <div className="flex h-[calc(100vh-12rem)] flex-col gap-3" data-testid="workbench-root">
       <PageHeader
         title="Workbench"
         description="Per-project command center — tree, chat, and quick actions in one surface."
