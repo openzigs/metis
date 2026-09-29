@@ -275,6 +275,8 @@ vi.mock("../src/lib/publishing/draft-generator.js", () => ({
 
 import request from "supertest";
 import { createApp } from "../src/app.js";
+import { generateDrafts as generateDraftsMock } from "../src/lib/publishing/draft-generator.js";
+import { PublishError } from "../src/lib/publishing/types.js";
 
 let app: ReturnType<typeof createApp>;
 
@@ -367,6 +369,31 @@ describe("POST /drafts/generate", () => {
       });
     expect(res.status).toBe(201);
     expect(res.body.data.summary.total).toBe(1);
+  });
+
+  it("#362 — forwards the approval-gate precondition and its resolve link to the client", async () => {
+    vi.mocked(generateDraftsMock).mockRejectedValueOnce(
+      new PublishError(400, "APPROVALS_BLOCKING", "2 pending approval(s)", false, {
+        analysisId: "analysis_test_001",
+        pendingCount: 2,
+        rejectedCount: 0,
+        resolveUrl: "/projects/proj_test_001/analysis?analysisId=analysis_test_001#approvals",
+      }),
+    );
+    const token = await login("developer");
+    const res = await request(app)
+      .post("/api/projects/proj_test_001/publishing/drafts/generate")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ analysisId: "analysis_test_001", targetOwner: "acme", targetRepo: "metis" });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("APPROVALS_BLOCKING");
+    expect(res.body.error.message).toBe("2 pending approval(s)");
+    expect(res.body.error.details).toEqual({
+      analysisId: "analysis_test_001",
+      pendingCount: 2,
+      rejectedCount: 0,
+      resolveUrl: "/projects/proj_test_001/analysis?analysisId=analysis_test_001#approvals",
+    });
   });
 
   it("rejects invalid payload (zod 400)", async () => {

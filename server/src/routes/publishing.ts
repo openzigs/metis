@@ -85,7 +85,7 @@ const VAULT_ERROR_MESSAGES: Record<string, string> = {
 
 function asAppError(err: unknown): unknown {
   if (err instanceof PublishError) {
-    return new AppError(err.status, err.code, err.message);
+    return new AppError(err.status, err.code, err.message, err.details);
   }
   // A ConnectorError raised while resolving the publish credential. Map the
   // code to our own vetted message; the original message is discarded.

@@ -50,6 +50,7 @@ vi.mock("@/lib/connectors-api", () => ({
 }));
 
 import { analysisApi } from "@/lib/analysis-api";
+import { ApiError } from "@/lib/api-client";
 import { publishingApi } from "@/lib/publishing-api";
 import PublishingPage from "@/app/(authed)/projects/[id]/publish/page";
 
@@ -106,6 +107,106 @@ describe("PublishingPage — analysis picker", () => {
         targetRepo: "app",
       }),
     );
+  });
+
+  it("#362 — a Generate blocked by pending approvals names them and links to where they are resolved", async () => {
+    generateMock.mockRejectedValue(
+      new ApiError(
+        400,
+        "analysis has no requirements yet — the approval gate is holding them (3 pending approval(s)); resolve them on the Analysis page",
+        "APPROVALS_BLOCKING",
+        {
+          analysisId: "analysis_abcdef123456",
+          pendingCount: 3,
+          rejectedCount: 0,
+          resolveUrl: "/projects/proj_1/analysis?analysisId=analysis_abcdef123456#approvals",
+        },
+      ),
+    );
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <PublishingPage />
+      </Wrapper>,
+    );
+    const select = await screen.findByTestId("publish-analysis-select");
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /completed/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(select, { target: { value: "analysis_abcdef123456" } });
+    fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "acme" } });
+    fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "app" } });
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+
+    const error = await screen.findByTestId("generate-error");
+    expect(error).toHaveTextContent("3 pending approval(s)");
+    expect(error).not.toHaveTextContent("run analysis first");
+    expect(screen.getByRole("link", { name: "Resolve approvals" })).toHaveAttribute(
+      "href",
+      "/projects/proj_1/analysis?analysisId=analysis_abcdef123456#approvals",
+    );
+  });
+
+  // PR #404 panel — a rejected approval is final, so the link is to a new run.
+  it("#362 — a Generate blocked by a rejected approval offers a re-run, not approvals", async () => {
+    generateMock.mockRejectedValue(
+      new ApiError(
+        400,
+        "analysis has no requirements — 1 approval(s) were rejected, so this run cannot produce requirements; re-run the analysis",
+        "APPROVALS_BLOCKING",
+        {
+          analysisId: "analysis_abcdef123456",
+          pendingCount: 0,
+          rejectedCount: 1,
+          action: "rerun",
+          resolveUrl: "/projects/proj_1/analysis",
+        },
+      ),
+    );
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <PublishingPage />
+      </Wrapper>,
+    );
+    const select = await screen.findByTestId("publish-analysis-select");
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /completed/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(select, { target: { value: "analysis_abcdef123456" } });
+    fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "acme" } });
+    fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "app" } });
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+
+    await screen.findByTestId("generate-error");
+    expect(screen.getByRole("link", { name: "Re-run analysis" })).toHaveAttribute(
+      "href",
+      "/projects/proj_1/analysis",
+    );
+    expect(screen.queryByRole("link", { name: "Resolve approvals" })).not.toBeInTheDocument();
+  });
+
+  it("#362 — never follows a resolve link that is not an in-app path", async () => {
+    generateMock.mockRejectedValue(
+      new ApiError(400, "blocked", "APPROVALS_BLOCKING", { resolveUrl: "https://evil.example/" }),
+    );
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <PublishingPage />
+      </Wrapper>,
+    );
+    const select = await screen.findByTestId("publish-analysis-select");
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /completed/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(select, { target: { value: "analysis_abcdef123456" } });
+    fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "acme" } });
+    fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "app" } });
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+
+    expect(await screen.findByTestId("generate-error")).toHaveTextContent("blocked");
+    expect(screen.queryByRole("link", { name: "Resolve approvals" })).not.toBeInTheDocument();
   });
 
   it("shows an empty-state option when the project has no analyses", async () => {

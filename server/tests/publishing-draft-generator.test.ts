@@ -21,6 +21,8 @@ interface Draft {
 }
 
 const drafts = new Map<string, Draft>();
+/** #362 — approval-checkpoint counts by status for the gated-analysis cases. */
+const approvalCounts: Record<string, number> = { pending: 0, rejected: 0 };
 let nextId = 0;
 
 const fakeProject = { id: "proj_1", name: "Apollo", deletedAt: null as Date | null };
@@ -73,6 +75,11 @@ vi.mock("../src/lib/prisma.js", () => ({
     requirement: {
       findMany: vi.fn(async () => requirements),
     },
+    approvalRequest: {
+      count: vi.fn(
+        async ({ where }: { where: { status: string } }) => approvalCounts[where.status] ?? 0,
+      ),
+    },
     issueDraft: {
       findFirst: vi.fn(async ({ where }: { where: { dedupHash?: string } }) => {
         if (!where.dedupHash) return null;
@@ -120,6 +127,8 @@ import { PublishError } from "../src/lib/publishing/types.js";
 beforeEach(() => {
   drafts.clear();
   nextId = 0;
+  approvalCounts.pending = 0;
+  approvalCounts.rejected = 0;
 });
 
 afterEach(() => {
@@ -392,7 +401,71 @@ describe("generateDrafts", () => {
           targetOwner: "acme",
           targetRepo: "metis",
         }),
-      ).rejects.toMatchObject({ code: "NO_REQUIREMENTS" });
+      ).rejects.toMatchObject({ status: 400, code: "NO_REQUIREMENTS" });
+
+      // #362 — a completed analysis whose requirements the approval gate is
+      // withholding names that precondition, not "run analysis first".
+      approvalCounts.pending = 3;
+      const gated = await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      }).catch((e: unknown) => e);
+      expect(gated).toBeInstanceOf(PublishError);
+      expect(gated).toMatchObject({
+        status: 400,
+        code: "APPROVALS_BLOCKING",
+        details: {
+          analysisId: "analysis_1",
+          pendingCount: 3,
+          rejectedCount: 0,
+          action: "resolve",
+          resolveUrl: "/projects/proj_1/analysis?analysisId=analysis_1#approvals",
+        },
+      });
+      const message = (gated as PublishError).message;
+      expect(message).toContain("3 pending");
+      expect(message).not.toContain("rejected");
+      expect(message).toContain("Analysis page");
+      expect(message).not.toContain("run analysis first");
+
+      // PR #404 panel — a rejection is final, so any rejected checkpoint means
+      // this run can never produce requirements: point at a new run, not at the
+      // approvals panel, even while other approvals are still pending.
+      approvalCounts.rejected = 1;
+      const rejected = await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      }).catch((e: unknown) => e);
+      expect(rejected).toMatchObject({
+        code: "APPROVALS_BLOCKING",
+        message: expect.stringContaining("1 approval(s) were rejected"),
+        details: {
+          pendingCount: 3,
+          rejectedCount: 1,
+          action: "rerun",
+          resolveUrl: "/projects/proj_1/analysis",
+        },
+      });
+      expect((rejected as PublishError).message).toContain("re-run the analysis");
+      expect((rejected as PublishError).message).not.toContain("resolve them");
+
+      // Rejected alone: the same re-run remedy.
+      approvalCounts.pending = 0;
+      await expect(
+        generateDrafts({
+          projectId: "proj_1",
+          analysisId: "analysis_1",
+          targetOwner: "acme",
+          targetRepo: "metis",
+        }),
+      ).rejects.toMatchObject({
+        code: "APPROVALS_BLOCKING",
+        details: { action: "rerun" },
+      });
     } finally {
       requirements.push(
         {

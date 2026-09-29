@@ -73,6 +73,23 @@ function analysisLabel(a: AnalysisListItem): string {
   return `${a.status} · ${when} · ${a.id.slice(0, 8)}`;
 }
 
+/**
+ * Issue #362 — a Generate blocked by the analysis approval gate carries a link
+ * to where those approvals are resolved. Only a same-app path is followed.
+ */
+function approvalsResolveLink(err: unknown): { href: string; label: string } | null {
+  if (!(err instanceof ApiError) || err.code !== "APPROVALS_BLOCKING") return null;
+  const details = err.details as { resolveUrl?: unknown; action?: unknown } | undefined;
+  const url = details?.resolveUrl;
+  if (typeof url !== "string" || !url.startsWith("/projects/")) return null;
+  // A rejected approval is final, so the server sends `action: "rerun"` and the
+  // remedy is a new analysis run, not the approvals panel (PR #404 panel).
+  return {
+    href: url,
+    label: details?.action === "rerun" ? "Re-run analysis" : "Resolve approvals",
+  };
+}
+
 export default function PublishingPage() {
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
@@ -127,6 +144,7 @@ export default function PublishingPage() {
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.drafts(projectId) }),
   });
+  const resolveLink = approvalsResolveLink(generate.error);
 
   const approve = useMutation({
     mutationFn: (id: string) => publishingApi.approveDraft(projectId, id),
@@ -441,8 +459,20 @@ export default function PublishingPage() {
             {generate.isPending ? "Generating…" : "Generate"}
           </Button>
           {generate.error && (
-            <span className="text-xs text-destructive">
+            <span className="text-xs text-destructive" data-testid="generate-error">
               {generate.error instanceof ApiError ? generate.error.message : String(generate.error)}
+              {resolveLink ? (
+                <>
+                  {" "}
+                  <a
+                    href={resolveLink.href}
+                    className="font-medium underline"
+                    data-testid="generate-resolve-approvals"
+                  >
+                    {resolveLink.label}
+                  </a>
+                </>
+              ) : null}
             </span>
           )}
           {generate.data && (

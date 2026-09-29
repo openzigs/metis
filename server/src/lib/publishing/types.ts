@@ -16,12 +16,21 @@ export class PublishError extends Error {
   readonly status: number;
   readonly code: string;
   readonly retryable: boolean;
-  constructor(status: number, code: string, message: string, retryable = false) {
+  /** Client-safe structured context (#362) — forwarded as the error's `details`. */
+  readonly details?: Record<string, unknown>;
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    retryable = false,
+    details?: Record<string, unknown>,
+  ) {
     super(message);
     this.name = "PublishError";
     this.status = status;
     this.code = code;
     this.retryable = retryable;
+    this.details = details;
   }
 }
 
