@@ -237,7 +237,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await getVaultService().create("bare-358", "admin-shared", "global", {
           createdById: "u-admin",
         });
-        for (const secretRef of [ref("global:scoped-358"), ref("bare-358")]) {
+        // Scoped ref reaching a bare-named row (PR #392 panel): own `global:z`,
+        // admin bare-named `z`. Only the `{ name: label }` candidate fetches it.
+        await getVaultService().create("bare-scoped-358", "coord-own", "global", {
+          createdById: "u-coord",
+        });
+        await rawSecret("bare-scoped-358", "u-admin");
+        for (const secretRef of [
+          ref("global:scoped-358"),
+          ref("bare-358"),
+          ref("global:bare-scoped-358"),
+        ]) {
           const res = await call("post", boards, COORD, body(secretRef, EVIL));
           expect(res.status, `${secretRef} ${JSON.stringify(res.body)}`).toBe(403);
         }
