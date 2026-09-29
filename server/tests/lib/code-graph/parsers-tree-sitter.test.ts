@@ -590,3 +590,74 @@ describe("web-tree-sitter parse() returning null (#310)", () => {
     expect(findJavaConcatSqlCandidates(JAVA_SQL)).toEqual([]);
   });
 });
+
+// Issue #371 — `.tsx` was parsed with the plain TypeScript grammar, in which JSX
+// is invalid, so a top-level component whose body returns JSX became an ERROR
+// node and vanished while its nested handlers survived.
+describe(".tsx uses the TSX grammar (#371)", () => {
+  const TSX = `import { useState } from "react";
+
+export default function Page() {
+  const [v, setV] = useState(0);
+  const handleSend = () => {
+    setV(v + 1);
+  };
+  return (
+    <ul onClick={handleSend}>
+      {[v].map((i) => <li key={i}>{i}</li>)}
+    </ul>
+  );
+}
+
+export const Card = ({ title }: { title: string }) => <section><h2>{title}</h2></section>;
+`;
+
+  const names = (r: ReturnType<typeof parseSource>) =>
+    r.symbols.filter((s) => s.kind === "function").map((s) => s.name);
+
+  it("captures the top-level component, the arrow component and the nested handler", () => {
+    const r = parseSource("ui/src/app/page.tsx", TSX, "ts");
+    expect(r.unparseable).toBeFalsy();
+    expect(names(r)).toEqual(expect.arrayContaining(["Page", "Card", "handleSend"]));
+  });
+
+  it("keeps language `ts` and the same qualified names a .ts file would get", () => {
+    const r = parseSource("ui/src/app/page.tsx", TSX, "ts");
+    expect(r.language).toBe("ts");
+    const page = r.symbols.find((s) => s.name === "Page");
+    expect(page?.qualifiedName).toMatch(/Page$/);
+    expect(page?.startLine).toBe(3);
+    expect(page?.endLine).toBe(13);
+  });
+
+  it("matches the extension case-insensitively (.TSX)", () => {
+    expect(names(parseSource("Legacy.TSX", TSX, "ts"))).toContain("Page");
+  });
+
+  it("still parses `.ts` with the TypeScript grammar — `<T>x` assertions are not JSX", () => {
+    const src = [
+      "export function cast(x: unknown): number {",
+      "  const y = <number>x;",
+      "  const id = <T,>(v: T): T => v;",
+      "  return id(<number>y);",
+      "}",
+      "export function after(): void {}",
+      "",
+    ].join("\n");
+    const r = parseSource("cast.ts", src, "ts");
+    expect(names(r)).toEqual(["cast", "id", "after"]);
+    const cast = r.symbols.find((s) => s.name === "cast");
+    expect(cast?.endLine).toBe(5);
+  });
+
+  it("selects the TSX grammar only for language `ts` — a .tsx path with another language keeps that language's grammar", () => {
+    const r = parseSource("odd.tsx", "def handler():\n    pass\n", "py");
+    expect(names(r)).toEqual(["handler"]);
+  });
+
+  it("parses `.jsx` components with the JavaScript grammar (already JSX-aware)", () => {
+    const src = `export default function Page() {\n  const onClick = () => {};\n  return <div onClick={onClick} />;\n}\nexport const Card = () => <p />;\n`;
+    const r = parseSource("page.jsx", src, "js");
+    expect(names(r)).toEqual(expect.arrayContaining(["Page", "Card", "onClick"]));
+  });
+});

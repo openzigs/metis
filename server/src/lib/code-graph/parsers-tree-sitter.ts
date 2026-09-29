@@ -78,6 +78,14 @@ interface LoadedParser {
 }
 
 let parsers: Map<Language, LoadedParser> | null = null;
+/**
+ * Issue #371 — `.tsx` keeps `language: "ts"` (symbol ids, call-resolution
+ * family and stored rows are unchanged) but is parsed with the TSX grammar:
+ * JSX is invalid in the plain TypeScript grammar, so a component whose body
+ * holds JSX became an ERROR node and dropped out of the graph. The two grammars
+ * cannot be merged either way — `<T>x` assertions are invalid in TSX.
+ */
+let tsxParser: LoadedParser | null = null;
 let initPromise: Promise<void> | null = null;
 
 /** Idempotent — returns the existing init promise if one is in flight. */
@@ -109,13 +117,16 @@ export async function initCodeGraphParsers(): Promise<void> {
       c: require.resolve("tree-sitter-c/tree-sitter-c.wasm"),
       cpp: require.resolve("tree-sitter-cpp/tree-sitter-cpp.wasm"),
     };
+    const load = async (path: string): Promise<LoadedParser> => {
+      const p = new Parser();
+      p.setLanguage(await TsLanguage.load(path));
+      return { parser: p };
+    };
     const next = new Map<Language, LoadedParser>();
     for (const [lang, path] of Object.entries(grammarPaths) as Array<[Language, string]>) {
-      const grammar = await TsLanguage.load(path);
-      const p = new Parser();
-      p.setLanguage(grammar);
-      next.set(lang, { parser: p });
+      next.set(lang, await load(path));
     }
+    tsxParser = await load(require.resolve("tree-sitter-typescript/tree-sitter-tsx.wasm"));
     parsers = next;
   })();
   try {
@@ -132,7 +143,16 @@ export function isTreeSitterReady(): boolean {
 /** Test seam — drop the loaded parsers so a subsequent init call re-runs. */
 export function __resetCodeGraphParsersForTests(): void {
   parsers = null;
+  tsxParser = null;
   initPromise = null;
+}
+
+/** The grammar for a file: TSX for a `.tsx` path, else the language's own (#371). */
+function parserFor(filePath: string, language: Language): LoadedParser | undefined {
+  if (language === "ts" && tsxParser && filePath.toLowerCase().endsWith(".tsx")) {
+    return tsxParser;
+  }
+  return parsers?.get(language);
 }
 
 /** Synchronous parse — fails if `initCodeGraphParsers` hasn't completed. */
@@ -144,7 +164,7 @@ export function parseWithTreeSitter(
   if (!parsers) {
     throw new Error("parseWithTreeSitter called before initCodeGraphParsers()");
   }
-  const loaded = parsers.get(language);
+  const loaded = parserFor(filePath, language);
   if (!loaded) {
     throw new Error(`No tree-sitter grammar loaded for language=${language}`);
   }
