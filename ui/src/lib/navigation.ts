@@ -44,7 +44,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
     href: "/dashboard",
     label: "Home",
     icon: House,
-    tabs: [{ href: "/dashboard", label: "Home" }],
+    tabs: [{ href: "/dashboard", label: "Dashboard" }],
   },
   {
     href: "/projects",
@@ -97,10 +97,20 @@ export const NAV_ITEMS: readonly NavItem[] = [
       { href: "/admin", label: "Admin", adminOnly: true },
     ],
   },
-] as const;
+];
 
 /** Every page reachable from the sidebar, flattened — for search and breadcrumbs. */
 export const NAV_DESTINATIONS: readonly NavTab[] = NAV_ITEMS.flatMap((i) => i.tabs);
+
+/**
+ * What the ⌘K palette searches: every sidebar page, plus the Skills and Agents
+ * pages that were sidebar entries before #27 and now sit under Admin.
+ */
+export const PALETTE_DESTINATIONS: readonly NavTab[] = [
+  ...NAV_DESTINATIONS,
+  { href: "/admin/skills", label: "Skills" },
+  { href: "/admin/agents", label: "Agents" },
+];
 
 export const PUBLIC_PATHS: readonly string[] = ["/login"];
 
@@ -121,6 +131,16 @@ export function isTabActive(pathname: string, tab: NavTab): boolean {
 /** A sidebar entry is active on its own subtree and on any of its tabs. */
 export function isNavItemActive(pathname: string, item: NavItem): boolean {
   return isActiveRoute(pathname, item.href) || item.tabs.some((t) => isTabActive(pathname, t));
+}
+
+/**
+ * The sidebar entry's `aria-current`. `"page"` only for a single-page hub
+ * (Home, Library), where no tab bar names the page; elsewhere a hub tab or the
+ * project's own tabs carry `"page"`, so the entry marks the location (`"true"`).
+ */
+export function navItemCurrent(pathname: string, item: NavItem): "page" | "true" | undefined {
+  if (!isNavItemActive(pathname, item)) return undefined;
+  return item.tabs.length === 1 && pathname === item.href ? "page" : "true";
 }
 
 /** The tabs of `item` this user may see. */

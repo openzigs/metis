@@ -140,6 +140,20 @@ describe("CommandPalette — keyboard navigation", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
+  // #366 review: the palette must still find the pages that left the sidebar.
+  it.each([
+    ["skills", "Skills", "/admin/skills"],
+    ["agents", "Agents", "/admin/agents"],
+    ["dash", "Dashboard", "/dashboard"],
+  ])("finds %s by name", async (query, label, href) => {
+    await openPalette();
+    const input = screen.getByRole("combobox", { name: "Search commands" });
+    fireEvent.change(input, { target: { value: query } });
+    const first = within(screen.getByRole("listbox")).getAllByRole("option")[0];
+    expect(first).toHaveTextContent(label);
+    expect(first).toHaveAttribute("data-href", href);
+  });
+
   it("dismisses on Escape", async () => {
     const dialog = await openPalette();
     fireEvent.keyDown(dialog, { key: "Escape" });

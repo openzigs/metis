@@ -26,17 +26,24 @@ describe("<Sidebar /> — desktop column", () => {
     expect(within(nav).getAllByRole("list")).toHaveLength(1);
   });
 
-  it("marks the hub active on a page it absorbed", () => {
+  it("marks the hub as the current location, not the page, on a page it absorbed", () => {
     usePathnameMock.mockReturnValue("/repositories");
     render(<Sidebar mobileOpen={false} onMobileClose={() => {}} />);
-    expect(screen.getByRole("link", { name: "Projects" })).toHaveAttribute("aria-current", "page");
+    // The hub tab carries aria-current=page; the sidebar entry must not repeat it.
+    expect(screen.getByRole("link", { name: "Projects" })).toHaveAttribute("aria-current", "true");
   });
 
-  it("marks only the active route with aria-current=page", () => {
+  it("marks a single-page hub as the current page", () => {
+    usePathnameMock.mockReturnValue("/dashboard");
+    render(<Sidebar mobileOpen={false} onMobileClose={() => {}} />);
+    expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("marks only the active hub", () => {
     usePathnameMock.mockReturnValue("/projects/abc-123");
     render(<Sidebar mobileOpen={false} onMobileClose={() => {}} />);
     const projects = screen.getByRole("link", { name: /projects/i });
-    expect(projects).toHaveAttribute("aria-current", "page");
+    expect(projects).toHaveAttribute("aria-current", "true");
     expect(projects).toHaveAttribute("data-active", "true");
     const home = screen.getByRole("link", { name: /home/i });
     expect(home).not.toHaveAttribute("aria-current");

@@ -94,7 +94,7 @@ test.describe("UI IA — navigation & layout (#133)", () => {
         await shell.hubTab("Projects", tab).click();
         await expect(page).toHaveURL(urlRe);
         await expect(shell.hubTab("Projects", tab)).toHaveAttribute("aria-current", "page");
-        await expect(shell.navLink("Projects")).toHaveAttribute("aria-current", "page");
+        await expect(shell.navLink("Projects")).toHaveAttribute("aria-current", "true");
       });
     }
   });
@@ -118,7 +118,7 @@ test.describe("UI IA — navigation & layout (#133)", () => {
       await test.step(path, async () => {
         await page.goto(path, { waitUntil: "load" });
         await shell.expectLoaded();
-        await expect(shell.navLink(entry)).toHaveAttribute("aria-current", "page");
+        await expect(shell.navLink(entry)).toHaveAttribute("aria-current", "true");
         await expect(shell.hubTab(entry, tab)).toHaveAttribute("aria-current", "page");
       });
     }

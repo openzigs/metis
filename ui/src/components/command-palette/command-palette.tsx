@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { useMediaQuery } from "@/components/tables/responsive-table";
 import { projectsApi } from "@/lib/projects-api";
-import { NAV_DESTINATIONS } from "@/lib/navigation";
+import { PALETTE_DESTINATIONS } from "@/lib/navigation";
 
 /**
  * Below this width the palette presents as a bottom sheet instead of the
@@ -108,7 +108,7 @@ export function CommandPalette() {
   });
 
   const items = useMemo<CommandItem[]>(() => {
-    const navItems: CommandItem[] = NAV_DESTINATIONS.map((n) => ({
+    const navItems: CommandItem[] = PALETTE_DESTINATIONS.map((n) => ({
       id: `nav:${n.href}`,
       label: n.label,
       hint: "Page",

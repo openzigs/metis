@@ -6,6 +6,8 @@ import {
   isTabActive,
   NAV_DESTINATIONS,
   NAV_ITEMS,
+  navItemCurrent,
+  PALETTE_DESTINATIONS,
   PUBLIC_PATHS,
   visibleTabs,
 } from "@/lib/navigation";
@@ -148,6 +150,40 @@ describe("isNavItemActive", () => {
   it("is false outside the hub", () => {
     expect(isNavItemActive("/runs", item("Projects"))).toBe(false);
     expect(isNavItemActive("/runs", item("Home"))).toBe(false);
+  });
+});
+
+describe("navItemCurrent (#366 review)", () => {
+  it("is page only where the sidebar entry is the page's sole marker", () => {
+    expect(navItemCurrent("/dashboard", item("Home"))).toBe("page");
+    expect(navItemCurrent("/library", item("Library"))).toBe("page");
+  });
+
+  it("is true (a location, not the page) where a hub tab or project tab names the page", () => {
+    expect(navItemCurrent("/repositories", item("Projects"))).toBe("true");
+    expect(navItemCurrent("/projects", item("Projects"))).toBe("true");
+    expect(navItemCurrent("/projects/p1/analysis", item("Projects"))).toBe("true");
+    expect(navItemCurrent("/settings/profile", item("Settings"))).toBe("true");
+  });
+
+  it("is absent outside the hub", () => {
+    expect(navItemCurrent("/runs", item("Projects"))).toBeUndefined();
+  });
+});
+
+describe("PALETTE_DESTINATIONS (#366 review)", () => {
+  it("keeps the former Skills and Agents entries findable by name", () => {
+    const byLabel = new Map(PALETTE_DESTINATIONS.map((t) => [t.label, t.href]));
+    expect(byLabel.get("Skills")).toBe("/admin/skills");
+    expect(byLabel.get("Agents")).toBe("/admin/agents");
+  });
+
+  it("includes every sidebar destination", () => {
+    for (const t of NAV_DESTINATIONS) expect(PALETTE_DESTINATIONS).toContain(t);
+  });
+
+  it("labels /dashboard Dashboard, matching its page heading", () => {
+    expect(PALETTE_DESTINATIONS.find((t) => t.href === "/dashboard")?.label).toBe("Dashboard");
   });
 });
 
