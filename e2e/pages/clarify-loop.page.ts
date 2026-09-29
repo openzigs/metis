@@ -37,8 +37,9 @@ export class ClarifyLoopPage {
     private readonly token: string,
   ) {
     this.page = page;
-    // The Analysis config card renders this heading once the page loads.
-    this.heading = page.getByRole("heading", { name: "Start a new analysis" });
+    // The page's own h1. (Issue #30 — the "Start a new analysis" card is
+    // collapsed once the project has a run, which this spec seeds.)
+    this.heading = page.getByRole("heading", { name: /^Requirements Analysis —/ });
   }
 
   /** Navigate the authenticated browser to the project's Analysis page (UI path). */

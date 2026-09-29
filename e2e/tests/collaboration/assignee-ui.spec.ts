@@ -108,7 +108,7 @@ test.describe("Epic #34 — Assignee picker + SLA badge (AC4, browser)", () => {
     await login.loginAsAdmin();
 
     const analysisPage = new AnalysisPage(page);
-    await analysisPage.goto(projectId);
+    await analysisPage.goto(projectId, "requirements");
 
     const collab = new RequirementCollabPage(page, reqId);
     await collab.waitForVisible();
@@ -139,7 +139,7 @@ test.describe("Epic #34 — Assignee picker + SLA badge (AC4, browser)", () => {
     await login.loginAsAdmin();
 
     const analysisPage = new AnalysisPage(page);
-    await analysisPage.goto(projectId);
+    await analysisPage.goto(projectId, "requirements");
 
     const collab = new RequirementCollabPage(page, reqId);
     await collab.waitForVisible();

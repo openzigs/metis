@@ -274,7 +274,7 @@ test.describe("Epic #728 / Issue #738 — Concurrent edit conflict (optimistic l
     await loginPage.loginAsAdmin();
 
     const analysisPage = new AnalysisPage(page);
-    await analysisPage.goto(projectId);
+    await analysisPage.goto(projectId, "requirements");
 
     const collab = new RequirementCollabPage(page, reqId);
     await collab.waitForVisible();

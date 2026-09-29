@@ -76,6 +76,12 @@ export class AnalysisEnhancementPage {
   async goto(projectId: string): Promise<void> {
     await this.page.goto(`/projects/${projectId}/analysis`);
     await expect(this.heading).toBeVisible({ timeout: 30_000 });
+    // Issue #30 — the run form is collapsed once the project has a run; the
+    // toggle renders once the runs list has settled, so its state is final.
+    const toggle = this.page.getByTestId("start-analysis-toggle");
+    await expect(toggle).toBeVisible({ timeout: 30_000 });
+    if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
   }
 
   // ── Enhancement toggle helpers ─────────────────────────────────────

@@ -12,6 +12,7 @@
  * (`PersonaTag`, `DeepDiveDialog`). No CSS-class or XPath identification.
  */
 import { type Locator, type Page, expect } from "@playwright/test";
+import type { AnalysisTab } from "./analysis-inline.page.js";
 
 export class AnalysisFindingsPage {
   readonly page: Page;
@@ -62,8 +63,9 @@ export class AnalysisFindingsPage {
     this.linkItems = page.getByTestId("deep-dive-link");
   }
 
-  async goto(projectId: string): Promise<void> {
-    await this.page.goto(`/projects/${projectId}/analysis`, { waitUntil: "load" });
+  /** Issue #30 — findings live on their own tab; land on it by deep link. */
+  async goto(projectId: string, tab: AnalysisTab = "findings"): Promise<void> {
+    await this.page.goto(`/projects/${projectId}/analysis?tab=${tab}`, { waitUntil: "load" });
     await expect(this.heading).toBeVisible({ timeout: 30_000 });
   }
 

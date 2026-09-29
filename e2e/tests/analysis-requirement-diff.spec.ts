@@ -200,7 +200,7 @@ test.describe("Analysis current-vs-proposed diff (#743)", () => {
   }) => {
     await mockAnalysisReads(page, projectId);
     const pom = new AnalysisFindingsPage(page);
-    await pom.goto(projectId);
+    await pom.goto(projectId, "traceability");
 
     await test.step("both sides of the diff render", async () => {
       await expect(page.getByTestId("diff-current").first()).toBeVisible({ timeout: 30_000 });

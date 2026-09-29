@@ -288,7 +288,8 @@ async function waitForResults() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  nav.search = new URLSearchParams();
+  // Issue #30 — findings live on their own tab; open it by deep link.
+  nav.search = new URLSearchParams("tab=findings");
   apiMock.get.mockResolvedValue(SNAPSHOT);
   repoList.mockResolvedValue([]);
 });
@@ -316,8 +317,9 @@ describe("#289 — agent-phase findings in the results view", () => {
   });
 
   it("lists agent-phase agents by name, shows a failed one's reason, and offers no Regenerate for them", async () => {
+    nav.search = new URLSearchParams("tab=agents");
     renderPage();
-    await waitForResults();
+    await waitFor(() => expect(screen.getByText("Release Reviewer")).toBeInTheDocument());
 
     const reviewer = screen.getByText("Release Reviewer");
     const card = reviewer.closest(".rounded") as HTMLElement;

@@ -3,9 +3,13 @@
 /**
  * Analysis tab \u2014 list past runs, start a new one, view live progress with
  * persona cards, and review findings + requirements with approve/reject/edit.
+ *
+ * Issue #30 \u2014 starting a run is a collapsible form, and a run's results are
+ * split into deep-linkable tabs (`?tab=`) with paged lists, so no view grows
+ * with the size of the run.
  */
 import { useEffect, useMemo, useState } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { toast } from "sonner";
@@ -21,7 +25,6 @@ import {
   type RequirementSummary,
   type RequirementReviewStatus,
   type RequirementCoverage,
-  type FindingVerificationStatus,
   type UpdateRequirementInput,
 } from "@/lib/analysis-api";
 import { projectsApi } from "@/lib/projects-api";
@@ -101,6 +104,26 @@ import {
 import { requirementUpdateApi, assignmentApi } from "@/lib/collaboration-api";
 import { MessageSquare } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
+import { TabsContent } from "@/components/ui/tabs";
+// Issue #30 — tabbed, paged, filterable results.
+import { AnalysisResultTabs } from "@/components/analysis/AnalysisResultTabs";
+import { FindingsFilterBar } from "@/components/analysis/FindingsFilterBar";
+import { ListPager } from "@/components/analysis/ListPager";
+import {
+  FINDINGS_PAGE_SIZE,
+  NO_FINDING_FILTERS,
+  REQUIREMENTS_PAGE_SIZE,
+  analysisTabCounts,
+  analysisViewHref,
+  collectFindings,
+  filterFindings,
+  findingFacets,
+  paginate,
+  parseAnalysisTab,
+  runHasQuestionsView,
+  type AnalysisTab,
+  type FindingFilters,
+} from "@/components/analysis/analysis-views";
 
 const SPECIALIST_AGENTS: AnalysisAgentKey[] = ["document", "code", "database", "web"];
 
@@ -172,7 +195,8 @@ export default function AnalysisPage(): React.ReactElement {
   // (the Overview's and Requirements tab's deep links, #29) when it belongs to
   // THIS project's list, otherwise the most recent. Matching against the list
   // keeps a foreign id from rendering another project's run under this one.
-  const requestedAnalysisId = useSearchParams()?.get("analysisId") ?? null;
+  const searchParams = useSearchParams();
+  const requestedAnalysisId = searchParams?.get("analysisId") ?? null;
   useEffect(() => {
     const items = list.data?.items;
     if (!selectedAnalysisId && items?.[0]) {
@@ -180,6 +204,39 @@ export default function AnalysisPage(): React.ReactElement {
       setSelectedAnalysisId((requested ?? items[0]).id);
     }
   }, [list.data, selectedAnalysisId, requestedAnalysisId]);
+
+  // Issue #30 — the open run and the open tab both live in the URL, so every
+  // sub-view is deep-linkable and picking a past run is shareable. `replace`,
+  // not `push`: a tab click is not a navigation worth a Back-button stop.
+  const router = useRouter();
+  const pathname = usePathname() ?? "";
+  const requestedTab = searchParams?.get("tab") ?? null;
+  const [tab, setTab] = useState<AnalysisTab>(() => parseAnalysisTab(requestedTab));
+  useEffect(() => {
+    setTab(parseAnalysisTab(requestedTab));
+  }, [requestedTab]);
+  const updateUrl = (patch: Record<string, string | null>) =>
+    router.replace(analysisViewHref(pathname, searchParams, patch), { scroll: false });
+  // Epic #727 (#740) filtered findings by verifier verdict; #30 adds severity,
+  // category and agent. `null` in a field = no filter on it.
+  const [findingFilters, setFindingFilters] = useState<FindingFilters>(NO_FINDING_FILTERS);
+  const [findingsPage, setFindingsPage] = useState(0);
+  const [requirementsPage, setRequirementsPage] = useState(0);
+  const selectTab = (next: AnalysisTab) => {
+    setTab(next);
+    updateUrl({ tab: next });
+  };
+  const selectRun = (id: string) => {
+    setSelectedAnalysisId(id);
+    setFindingsPage(0);
+    setRequirementsPage(0);
+    updateUrl({ analysisId: id });
+  };
+  // Issue #30 — the run form is collapsed once there are runs to read, and
+  // open on a project that has none. An explicit toggle wins after that.
+  const [startFormOpen, setStartFormOpen] = useState<boolean | null>(null);
+  const hasRuns = (list.data?.items?.length ?? 0) > 0;
+  const showStartForm = startFormOpen ?? !hasRuns;
 
   const detail = useQuery({
     queryKey: queryKeys.analyses.detail(selectedAnalysisId ?? ""),
@@ -230,7 +287,7 @@ export default function AnalysisPage(): React.ReactElement {
     successMessage: "Analysis started",
     invalidateKeys: [queryKeys.analyses.forProject(projectId), ["analyses", "cost-cap"]],
     onSuccess: (res) => {
-      setSelectedAnalysisId(res.id);
+      selectRun(res.id);
     },
   });
   const cancel = useAppMutation({
@@ -283,11 +340,6 @@ export default function AnalysisPage(): React.ReactElement {
   // Epic #726 (#736) — filter the requirement list by coverage classification.
   // `null` = show all; otherwise show only requirements with that coverage.
   const [coverageFilter, setCoverageFilter] = useState<RequirementCoverage | null>(null);
-  // Epic #727 (#740) — filter the findings list by verifier verdict. `null` =
-  // show all; otherwise show only findings with that verification status.
-  const [verificationFilter, setVerificationFilter] = useState<FindingVerificationStatus | null>(
-    null,
-  );
   // Epic #34 — collaboration state.
   const { user } = useAuth();
   const [commentsReqId, setCommentsReqId] = useState<string | null>(null);
@@ -435,7 +487,10 @@ export default function AnalysisPage(): React.ReactElement {
   // Epic #176 — Deep Dive → Issue. Ticket creation is gated by the approval
   // checkpoint state (`ticketStatus.allowed`); fetch it for the selected run.
   const approvals = useQuery({
-    queryKey: ["analyses", "approvals", projectId, selectedAnalysisId ?? ""],
+    // Issue #30 — the SAME key ApprovalsPanel reads and invalidates. Under its
+    // own key this copy was never invalidated, so resolving an approval left
+    // the Deep Dive gate (and now the tab's pending count) stale until reload.
+    queryKey: ["approvals", selectedAnalysisId ?? ""],
     queryFn: () => analysisApi.listApprovals(projectId, selectedAnalysisId!),
     enabled: Boolean(projectId && selectedAnalysisId) && detail.data?.status === "completed",
   });
@@ -467,6 +522,22 @@ export default function AnalysisPage(): React.ReactElement {
     (d) => selectedDocs.includes(d.id) && d.status !== "ready",
   );
 
+  // Issue #30 — the findings and requirements the active tabs page through.
+  const allFindings = detail.data ? orderFindingsByConfidence(collectFindings(detail.data)) : [];
+  const findingsView = paginate(
+    filterFindings(allFindings, findingFilters),
+    findingsPage,
+    FINDINGS_PAGE_SIZE,
+  );
+  const requirementsView = paginate(
+    (detail.data?.requirements ?? []).filter(
+      (req) => coverageFilter === null || (req.coverage ?? null) === coverageFilter,
+    ),
+    requirementsPage,
+    REQUIREMENTS_PAGE_SIZE,
+  );
+  const tabCounts = detail.data ? analysisTabCounts(detail.data, approvals.data?.ticketStatus) : {};
+
   if (!projectId) return <p className="p-6">Missing project id.</p>;
 
   return (
@@ -482,6 +553,20 @@ export default function AnalysisPage(): React.ReactElement {
         }
         actions={
           <>
+            {/* Issue #30 — rendered once the runs list has settled, so the
+                default (open only when there are no runs) cannot flip under
+                a click. */}
+            {list.isSuccess || list.isError ? (
+              <Button
+                variant={showStartForm ? "outline" : "default"}
+                aria-expanded={showStartForm}
+                aria-controls="start-analysis-form"
+                data-testid="start-analysis-toggle"
+                onClick={() => setStartFormOpen(!showStartForm)}
+              >
+                {showStartForm ? "Hide new analysis" : "New analysis"}
+              </Button>
+            ) : null}
             {costCap.data ? (
               <div className="rounded border border-border bg-muted/40 px-3 py-2 text-xs">
                 <div className="text-muted-foreground">Monthly token usage</div>
@@ -498,142 +583,144 @@ export default function AnalysisPage(): React.ReactElement {
         }
       />
 
-      <Card className="space-y-4 p-4">
-        <div>
-          <h2 className="text-lg font-semibold">Start a new analysis</h2>
-          <p className="text-sm text-muted-foreground">
-            Pick the specialist agents and (optionally) constrain to specific documents.
-          </p>
-        </div>
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      {showStartForm ? (
+        <Card id="start-analysis-form" className="space-y-4 p-4">
           <div>
-            <Label className="mb-2 block">Agents</Label>
-            <div className="space-y-1">
-              {SPECIALIST_AGENTS.map((agent) => {
-                const p = personaByKey.get(agent);
-                const checked = selectedAgents.includes(agent);
-                return (
-                  <label key={agent} className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(e) => {
-                        setSelectedAgents((prev) =>
-                          e.target.checked
-                            ? [...new Set([...prev, agent])]
-                            : prev.filter((a) => a !== agent),
-                        );
-                      }}
-                    />
-                    <span>{p?.avatar ?? "\ud83e\udd16"}</span>
-                    <span className="font-medium">{p?.name ?? agent}</span>
-                    <span className="text-muted-foreground">— {p?.role ?? agent}</span>
-                  </label>
-                );
-              })}
+            <h2 className="text-lg font-semibold">Start a new analysis</h2>
+            <p className="text-sm text-muted-foreground">
+              Pick the specialist agents and (optionally) constrain to specific documents.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div>
+              <Label className="mb-2 block">Agents</Label>
+              <div className="space-y-1">
+                {SPECIALIST_AGENTS.map((agent) => {
+                  const p = personaByKey.get(agent);
+                  const checked = selectedAgents.includes(agent);
+                  return (
+                    <label key={agent} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          setSelectedAgents((prev) =>
+                            e.target.checked
+                              ? [...new Set([...prev, agent])]
+                              : prev.filter((a) => a !== agent),
+                          );
+                        }}
+                      />
+                      <span>{p?.avatar ?? "\ud83e\udd16"}</span>
+                      <span className="font-medium">{p?.name ?? agent}</span>
+                      <span className="text-muted-foreground">— {p?.role ?? agent}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <AddDocumentsPanel
+                projectId={projectId}
+                docs={allDocs}
+                selectedDocs={selectedDocs}
+                onSelectedDocsChange={setSelectedDocs}
+                onInvalidateDocs={invalidateDocs}
+                loading={docs.isLoading}
+              />
             </div>
           </div>
-          <div>
-            <AddDocumentsPanel
-              projectId={projectId}
-              docs={allDocs}
-              selectedDocs={selectedDocs}
-              onSelectedDocsChange={setSelectedDocs}
-              onInvalidateDocs={invalidateDocs}
-              loading={docs.isLoading}
-            />
-          </div>
-        </div>
 
-        <EvaluateRequirementsPanel value={extraInstructions} onChange={setExtraInstructions} />
+          <EvaluateRequirementsPanel value={extraInstructions} onChange={setExtraInstructions} />
 
-        <ModelRecommendation
-          projectId={projectId}
-          override={modelOverride}
-          onOverrideChange={setModelOverride}
-          // #1095 — the panel must be told what run it is sizing, or it can only
-          // ever report a constant.
-          agentKeys={selectedAgents}
-          requirementText={extraInstructions}
-        />
-
-        {/* Epic #597 — Enhancement options */}
-        <div className="rounded border border-border p-3">
-          <Label className="mb-2 block text-sm font-medium">Enhancement Options</Label>
-          <div className="flex items-center gap-6">
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={enableWebResearch}
-                onChange={(e) => setEnableWebResearch(e.target.checked)}
-              />
-              <span>Enhance with web research</span>
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={enableClarification}
-                onChange={(e) => setEnableClarification(e.target.checked)}
-              />
-              <span>Ask clarifying questions</span>
-            </label>
-          </div>
-          {(enableWebResearch || enableClarification) &&
-            !start.isPending &&
-            !selectedAnalysisId && (
-              <div className="mt-2">
-                <EnhancementStatus
-                  currentStep="extraction"
-                  stepsCompleted={[]}
-                  enableWebResearch={enableWebResearch}
-                  enableClarification={enableClarification}
-                />
-              </div>
-            )}
-        </div>
-
-        <div className="space-y-2">
-          {/* Issue #733 — warn which capabilities the run will have before starting. */}
-          <AnalysisCapabilityHint projectId={projectId} selectedAgents={selectedAgents} />
-          <AnalysisRunSummary
-            docCount={selectedDocs.length}
-            hasRequirements={extraInstructions.trim().length > 0}
+          <ModelRecommendation
+            projectId={projectId}
+            override={modelOverride}
+            onOverrideChange={setModelOverride}
+            // #1095 — the panel must be told what run it is sizing, or it can only
+            // ever report a constant.
+            agentKeys={selectedAgents}
+            requirementText={extraInstructions}
           />
-          <div className="flex items-center gap-3">
-            <Button
-              onClick={() =>
-                start.mutate({
-                  agentKeys: selectedAgents,
-                  documentIds: selectedDocs.length > 0 ? selectedDocs : undefined,
-                  model: modelOverride !== "auto" ? modelOverride : undefined,
-                  extraInstructions:
-                    extraInstructions.trim().length > 0 ? extraInstructions.trim() : undefined,
-                  enableWebResearch: enableWebResearch || undefined,
-                  enableClarification: enableClarification || undefined,
-                })
-              }
-              disabled={
-                start.isPending ||
-                selectedAgents.length === 0 ||
-                costCap.data?.exceeded ||
-                selectedHasPending
-              }
-            >
-              {start.isPending ? "Starting\u2026" : "Run analysis"}
-            </Button>
-            {selectedHasPending ? (
-              <p className="text-sm text-warning">
-                Wait for selected documents to finish ingesting.
-              </p>
-            ) : null}
-            {start.error instanceof ApiError ? (
-              <p role="alert" className="text-sm text-destructive">
-                {start.error.message}
-              </p>
-            ) : null}
+
+          {/* Epic #597 — Enhancement options */}
+          <div className="rounded border border-border p-3">
+            <Label className="mb-2 block text-sm font-medium">Enhancement Options</Label>
+            <div className="flex items-center gap-6">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={enableWebResearch}
+                  onChange={(e) => setEnableWebResearch(e.target.checked)}
+                />
+                <span>Enhance with web research</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={enableClarification}
+                  onChange={(e) => setEnableClarification(e.target.checked)}
+                />
+                <span>Ask clarifying questions</span>
+              </label>
+            </div>
+            {(enableWebResearch || enableClarification) &&
+              !start.isPending &&
+              !selectedAnalysisId && (
+                <div className="mt-2">
+                  <EnhancementStatus
+                    currentStep="extraction"
+                    stepsCompleted={[]}
+                    enableWebResearch={enableWebResearch}
+                    enableClarification={enableClarification}
+                  />
+                </div>
+              )}
           </div>
-        </div>
-      </Card>
+
+          <div className="space-y-2">
+            {/* Issue #733 — warn which capabilities the run will have before starting. */}
+            <AnalysisCapabilityHint projectId={projectId} selectedAgents={selectedAgents} />
+            <AnalysisRunSummary
+              docCount={selectedDocs.length}
+              hasRequirements={extraInstructions.trim().length > 0}
+            />
+            <div className="flex items-center gap-3">
+              <Button
+                onClick={() =>
+                  start.mutate({
+                    agentKeys: selectedAgents,
+                    documentIds: selectedDocs.length > 0 ? selectedDocs : undefined,
+                    model: modelOverride !== "auto" ? modelOverride : undefined,
+                    extraInstructions:
+                      extraInstructions.trim().length > 0 ? extraInstructions.trim() : undefined,
+                    enableWebResearch: enableWebResearch || undefined,
+                    enableClarification: enableClarification || undefined,
+                  })
+                }
+                disabled={
+                  start.isPending ||
+                  selectedAgents.length === 0 ||
+                  costCap.data?.exceeded ||
+                  selectedHasPending
+                }
+              >
+                {start.isPending ? "Starting\u2026" : "Run analysis"}
+              </Button>
+              {selectedHasPending ? (
+                <p className="text-sm text-warning">
+                  Wait for selected documents to finish ingesting.
+                </p>
+              ) : null}
+              {start.error instanceof ApiError ? (
+                <p role="alert" className="text-sm text-destructive">
+                  {start.error.message}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </Card>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
         <Card className="md:col-span-1 p-4">
@@ -647,7 +734,7 @@ export default function AnalysisPage(): React.ReactElement {
               <li key={item.id}>
                 <button
                   type="button"
-                  onClick={() => setSelectedAnalysisId(item.id)}
+                  onClick={() => selectRun(item.id)}
                   className={`w-full rounded border px-2 py-2 text-left text-sm transition ${
                     selectedAnalysisId === item.id
                       ? "border-info/50 bg-info/10"
@@ -696,508 +783,531 @@ export default function AnalysisPage(): React.ReactElement {
                 ) : null}
               </div>
 
-              {/* Issue #859 (Epic #852) — whether database-aware schema analysis ran
-                  for this run, and why. Renders nothing on pre-#855 runs. */}
-              <AnalysisDatabaseAwareIndicator
-                databaseAware={detail.data.databaseAware}
-                projectId={projectId}
-              />
-
-              {/* Issue #733 — explain degraded capabilities for this run (not silence). */}
-              {/* Issue #741 — offer a resume of budget-skipped repos from the banner. */}
-              <AnalysisCapabilityBanner
-                capability={detail.data.capability}
-                onResumeRepos={() => resumeRepos.mutate(undefined)}
-                resuming={resumeRepos.isPending}
-              />
-
-              {/* Issue #1112 (Epic #1107) — account for every requirement the user
-                  typed: analyzed, merged into another, or dropped with a reason.
-                  Renders nothing on runs with no free-text requirements. */}
-              <RequirementInputAccountPanel capability={detail.data.capability} />
-
-              {/* Issue #735 — deterministic requirement→code mapping for new requirements. */}
-              <AffectedCodePanel affectedCode={detail.data.affectedCode} />
-
-              {/* Issue #739 — per-requirement analysis-depth indicator (escalation policy). */}
-              <AnalysisDepthPanel escalation={detail.data.escalation} />
-
-              <div>
-                <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                  Agents
-                </h4>
-                <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                  {detail.data.agentResults.map((agent) => {
-                    const persona = personaFor(agent.agentKey);
-                    // #289 — an agent-phase agent is not a specialist: it has no
-                    // single-agent regenerate endpoint.
-                    const isSpecialist = agent.agentKey !== "synthesis" && !agent.source;
-                    return (
-                      <div key={agent.id} className="rounded border border-border bg-muted/30 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2">
-                            <span className="text-lg">{persona?.avatar ?? "\ud83e\udd16"}</span>
-                            <div>
-                              <div className="text-sm font-medium">
-                                {persona?.name ?? agent.agentKey}
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                {persona?.role ?? agent.agentKey} · {agent.findings.length} finding
-                                {agent.findings.length === 1 ? "" : "s"}
-                              </div>
-                            </div>
-                          </div>
-                          <StatusBadge status={agent.status} />
-                        </div>
-                        {isSpecialist && detail.data.status === "completed" ? (
-                          <div className="mt-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => regenerate.mutate(agent.agentKey as AnalysisAgentKey)}
-                              disabled={regenerate.isPending}
-                            >
-                              Regenerate
-                            </Button>
-                          </div>
-                        ) : null}
-                        {agent.errorMessage ? (
-                          <p className="mt-2 text-xs text-destructive">{agent.errorMessage}</p>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <EnhancementResults
-                projectId={projectId}
-                analysisId={detail.data.id}
-                metadata={detail.data.metadata}
-              />
-
-              {/* Epic #202 (#217) — human-in-the-loop approval checkpoints. */}
-              <ApprovalsPanel
-                projectId={projectId}
-                analysisId={detail.data.id}
-                metadata={detail.data.metadata}
-              />
-
-              {/* Issue #1232 — the run's outcome, in the synthesis agent's own
+              <AnalysisResultTabs value={tab} onValueChange={selectTab} counts={tabCounts}>
+                <TabsContent value="summary" className="space-y-4">
+                  {/* Issue #1232 — the run's outcome, in the synthesis agent's own
                   words, above everything it is a conclusion about. Renders
                   nothing when synthesis produced no summary. */}
-              <AnalysisOutcomeCard
-                status={detail.data.status}
-                agentResults={detail.data.agentResults}
-              />
+                  <AnalysisOutcomeCard
+                    status={detail.data.status}
+                    agentResults={detail.data.agentResults}
+                  />
 
-              {/* Issue #1232 — requirements are the actionable output, so they
+                  {/* Issue #859 (Epic #852) — whether database-aware schema analysis ran
+                  for this run, and why. Renders nothing on pre-#855 runs. */}
+                  <AnalysisDatabaseAwareIndicator
+                    databaseAware={detail.data.databaseAware}
+                    projectId={projectId}
+                  />
+
+                  {/* Issue #733 — explain degraded capabilities for this run (not silence). */}
+                  {/* Issue #741 — offer a resume of budget-skipped repos from the banner. */}
+                  <AnalysisCapabilityBanner
+                    capability={detail.data.capability}
+                    onResumeRepos={() => resumeRepos.mutate(undefined)}
+                    resuming={resumeRepos.isPending}
+                  />
+
+                  {/* Issue #1112 (Epic #1107) — account for every requirement the user
+                  typed: analyzed, merged into another, or dropped with a reason.
+                  Renders nothing on runs with no free-text requirements. */}
+                  <RequirementInputAccountPanel capability={detail.data.capability} />
+
+                  {/* Issue #735 — deterministic requirement→code mapping for new requirements. */}
+                  <AffectedCodePanel affectedCode={detail.data.affectedCode} />
+
+                  {/* Issue #739 — per-requirement analysis-depth indicator (escalation policy). */}
+                  <AnalysisDepthPanel escalation={detail.data.escalation} />
+
+                  {/* Epic #208 (#233) — stakeholders + project context surface. */}
+                  <StakeholdersPanel
+                    stakeholders={stakeholders.data ?? []}
+                    context={projectContext.data ?? null}
+                  />
+                </TabsContent>
+
+                <TabsContent value="requirements" className="space-y-4">
+                  {/* Issue #1232 — requirements are the actionable output, so they
                   are read before the findings they were derived from. */}
-              <div data-testid="requirements-section">
-                <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                  Requirements
-                </h4>
-                {/* Epic #726 (#736) — filter the list by coverage classification. */}
-                <div
-                  className="mb-2 flex flex-wrap items-center gap-1"
-                  data-testid="coverage-filter"
-                  role="group"
-                  aria-label="Filter requirements by coverage"
-                >
-                  <span className="mr-1 text-xs text-muted-foreground">Coverage:</span>
-                  {(
-                    [
-                      [null, "All"],
-                      ["grounded_in_code", "Grounded in code"],
-                      ["grounded_in_docs_only", "Docs only"],
-                      ["no_evidence", "No evidence"],
-                    ] as Array<[RequirementCoverage | null, string]>
-                  ).map(([value, label]) => (
-                    <Button
-                      key={label}
-                      size="sm"
-                      variant={coverageFilter === value ? "default" : "outline"}
-                      aria-pressed={coverageFilter === value}
-                      data-testid={`coverage-filter-${value ?? "all"}`}
-                      onClick={() => setCoverageFilter(value)}
+                  <div data-testid="requirements-section">
+                    <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                      Requirements
+                    </h4>
+                    {/* Epic #726 (#736) — filter the list by coverage classification. */}
+                    <div
+                      className="mb-2 flex flex-wrap items-center gap-1"
+                      data-testid="coverage-filter"
+                      role="group"
+                      aria-label="Filter requirements by coverage"
                     >
-                      {label}
-                    </Button>
-                  ))}
-                </div>
-                <div className="space-y-2">
-                  {/* Issue #1117 (findings B + C) — when synthesis degraded,
+                      <span className="mr-1 text-xs text-muted-foreground">Coverage:</span>
+                      {(
+                        [
+                          [null, "All"],
+                          ["grounded_in_code", "Grounded in code"],
+                          ["grounded_in_docs_only", "Docs only"],
+                          ["no_evidence", "No evidence"],
+                        ] as Array<[RequirementCoverage | null, string]>
+                      ).map(([value, label]) => (
+                        <Button
+                          key={label}
+                          size="sm"
+                          variant={coverageFilter === value ? "default" : "outline"}
+                          aria-pressed={coverageFilter === value}
+                          data-testid={`coverage-filter-${value ?? "all"}`}
+                          onClick={() => {
+                            setCoverageFilter(value);
+                            setRequirementsPage(0);
+                          }}
+                        >
+                          {label}
+                        </Button>
+                      ))}
+                    </div>
+                    <div className="space-y-2">
+                      {/* Issue #1117 (findings B + C) — when synthesis degraded,
                       every requirement below is typed "feature" and has no
                       acceptance criteria because the fallback cannot classify.
                       Rendered above the list so it is read before them. */}
-                  <SynthesisDegradedNotice metadata={detail.data.metadata} />
-                  {detail.data.requirements.length === 0 ? (
-                    /* Issue #1104 (finding B) — distinguish "produced nothing"
+                      <SynthesisDegradedNotice metadata={detail.data.metadata} />
+                      {detail.data.requirements.length === 0 ? (
+                        /* Issue #1104 (finding B) — distinguish "produced nothing"
                        from "produced N and the approval gate is holding them". */
-                    <RequirementsEmptyState metadata={detail.data.metadata} />
-                  ) : null}
-                  {detail.data.requirements
-                    .filter(
-                      (req) => coverageFilter === null || (req.coverage ?? null) === coverageFilter,
-                    )
-                    .map((req) => (
-                      <div key={req.id} className="rounded border border-border bg-muted/30 p-3">
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <div className="text-sm font-medium">{req.title}</div>
-                              {/* Epic #726 (#736) — coverage classification badge. */}
-                              <CoverageBadge coverage={req.coverage} />
+                        <RequirementsEmptyState metadata={detail.data.metadata} />
+                      ) : null}
+                      {requirementsView.items.map((req) => (
+                        <div key={req.id} className="rounded border border-border bg-muted/30 p-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <div className="text-sm font-medium">{req.title}</div>
+                                {/* Epic #726 (#736) — coverage classification badge. */}
+                                <CoverageBadge coverage={req.coverage} />
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {req.type} · {req.priority} · {req.reviewStatus}
+                              </div>
                             </div>
-                            <div className="text-xs text-muted-foreground">
-                              {req.type} · {req.priority} · {req.reviewStatus}
+                            <div className="flex gap-1">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setEditingReq(req)}
+                                disabled={editMutation.isPending}
+                              >
+                                Edit
+                              </Button>
+                              {/* Epic #34 (AC1) — open comments for this requirement. */}
+                              <Button
+                                size="sm"
+                                variant={commentsReqId === req.id ? "default" : "outline"}
+                                onClick={() => setCommentsReqId(req.id)}
+                                aria-label={`Comments for ${req.title}`}
+                                data-testid={`req-comments-${req.id}`}
+                              >
+                                <MessageSquare className="mr-1 h-3.5 w-3.5" aria-hidden />
+                                Comments
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant={historyReqId === req.id ? "default" : "outline"}
+                                onClick={() =>
+                                  setHistoryReqId((cur) => (cur === req.id ? null : req.id))
+                                }
+                                aria-expanded={historyReqId === req.id}
+                              >
+                                History
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant={req.reviewStatus === "approved" ? "default" : "outline"}
+                                onClick={() =>
+                                  review.mutate({
+                                    reqId: req.id,
+                                    reviewStatus: "approved",
+                                    version: req.version,
+                                  })
+                                }
+                                disabled={review.isPending}
+                              >
+                                Approve
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant={req.reviewStatus === "rejected" ? "default" : "outline"}
+                                onClick={() =>
+                                  review.mutate({
+                                    reqId: req.id,
+                                    reviewStatus: "rejected",
+                                    version: req.version,
+                                  })
+                                }
+                                disabled={review.isPending}
+                              >
+                                Reject
+                              </Button>
                             </div>
                           </div>
-                          <div className="flex gap-1">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => setEditingReq(req)}
-                              disabled={editMutation.isPending}
-                            >
-                              Edit
-                            </Button>
-                            {/* Epic #34 (AC1) — open comments for this requirement. */}
-                            <Button
-                              size="sm"
-                              variant={commentsReqId === req.id ? "default" : "outline"}
-                              onClick={() => setCommentsReqId(req.id)}
-                              aria-label={`Comments for ${req.title}`}
-                              data-testid={`req-comments-${req.id}`}
-                            >
-                              <MessageSquare className="mr-1 h-3.5 w-3.5" aria-hidden />
-                              Comments
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant={historyReqId === req.id ? "default" : "outline"}
-                              onClick={() =>
-                                setHistoryReqId((cur) => (cur === req.id ? null : req.id))
-                              }
-                              aria-expanded={historyReqId === req.id}
-                            >
-                              History
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant={req.reviewStatus === "approved" ? "default" : "outline"}
-                              onClick={() =>
-                                review.mutate({
-                                  reqId: req.id,
-                                  reviewStatus: "approved",
-                                  version: req.version,
-                                })
-                              }
-                              disabled={review.isPending}
-                            >
-                              Approve
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant={req.reviewStatus === "rejected" ? "default" : "outline"}
-                              onClick={() =>
-                                review.mutate({
-                                  reqId: req.id,
-                                  reviewStatus: "rejected",
-                                  version: req.version,
-                                })
-                              }
-                              disabled={review.isPending}
-                            >
-                              Reject
-                            </Button>
-                          </div>
-                        </div>
-                        {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
-                        <RequirementCollabRow requirementId={req.id} />
-                        <p className="mt-1 max-w-prose text-sm leading-relaxed text-foreground">
-                          {req.body}
-                        </p>
-                        {/* Epic #1107 (#1110) — the panel's rolled-up confidence
+                          {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
+                          <RequirementCollabRow requirementId={req.id} />
+                          <p className="mt-1 max-w-prose text-sm leading-relaxed text-foreground">
+                            {req.body}
+                          </p>
+                          {/* Epic #1107 (#1110) — the panel's rolled-up confidence
                             for this requirement's evidence, with each dissenting
                             lens's reason. Rendered ABOVE the acceptance criteria
                             so the caution arrives before the work does. */}
-                        <RequirementConfidenceNote confidence={req.supportConfidence} />
-                        {/* #1096 — the real criteria, or an explicit note that
+                          <RequirementConfidenceNote confidence={req.supportConfidence} />
+                          {/* #1096 — the real criteria, or an explicit note that
                             none were derived. Never a placeholder. */}
-                        <AcceptanceCriteriaList criteria={req.acceptanceCriteria ?? []} />
-                        {req.labels.length > 0 ? (
-                          <div className="mt-2 flex flex-wrap gap-1">
-                            {req.labels.map((l) => (
-                              <span
-                                key={l}
-                                className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
-                              >
-                                {l}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                        <DataMappingsPanel projectId={projectId} requirementId={req.id} />
-                        <RequirementLinksPanel
-                          projectId={projectId}
-                          requirementId={req.id}
-                          workspaceId={project.data?.workspaceId ?? null}
-                        />
-                        <div className="mt-3 border-t border-border pt-3">
-                          <TraceabilityView projectId={projectId} requirementId={req.id} />
-                        </div>
-                        {historyReqId === req.id ? (
-                          <div className="mt-3 border-t border-border pt-3">
-                            <RequirementHistoryTab requirementId={req.id} />
-                          </div>
-                        ) : null}
-                      </div>
-                    ))}
-                </div>
-              </div>
-
-              <div data-testid="findings-section">
-                <div className="mb-2 flex items-center justify-between">
-                  <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                    Findings
-                  </h4>
-                  {/* Issue #362 — disabled, with the reason, until requirements exist. */}
-                  <GenerateIssuesAction
-                    projectId={projectId}
-                    analysisId={detail.data.id}
-                    status={detail.data.status}
-                    requirementCount={detail.data.requirements.length}
-                    hasFindings={detail.data.agentResults.some((a) => a.findings.length > 0)}
-                    ticketStatus={approvals.data?.ticketStatus}
-                    approvalsState={
-                      approvals.isError ? "error" : approvals.data ? "ready" : "loading"
-                    }
-                  />
-                </div>
-                {/* Epic #727 (#740) — filter findings by verification status. */}
-                <div
-                  className="mb-2 flex flex-wrap items-center gap-1"
-                  data-testid="verification-filter"
-                  role="group"
-                  aria-label="Filter findings by verification status"
-                >
-                  <span className="mr-1 text-xs text-muted-foreground">Verification:</span>
-                  {(
-                    [
-                      [null, "All"],
-                      ["confirmed", "Confirmed"],
-                      ["unverified", "Unverified"],
-                    ] as Array<[FindingVerificationStatus | null, string]>
-                  ).map(([value, label]) => (
-                    <Button
-                      key={label}
-                      size="sm"
-                      variant={verificationFilter === value ? "default" : "outline"}
-                      aria-pressed={verificationFilter === value}
-                      data-testid={`verification-filter-${value ?? "all"}`}
-                      onClick={() => setVerificationFilter(value)}
-                    >
-                      {label}
-                    </Button>
-                  ))}
-                </div>
-                <div className="space-y-2">
-                  {orderFindingsByConfidence(
-                    detail.data.agentResults
-                      .filter((a) => a.agentKey !== "synthesis")
-                      .flatMap((a) => a.findings.map((f) => ({ ...f, agentKey: a.agentKey }))),
-                  )
-                    .filter(
-                      (f) =>
-                        verificationFilter === null ||
-                        (f.verificationStatus ?? null) === verificationFilter,
-                    )
-                    .map((f) => {
-                      const isGap = f.severity === "info" && f.tags?.includes("requirement-gap");
-                      return (
-                        <div
-                          key={f.id}
-                          // Epic #1107 (#1110) — a low-confidence finding is dimmed
-                          // and dashed, ranked last, and STILL RENDERED. There is
-                          // deliberately no confidence filter: the panel grades,
-                          // it never gates.
-                          data-confidence={f.supportPanel?.confidence ?? "none"}
-                          className={`rounded border p-3 ${
-                            isGap
-                              ? "border-warning/50 bg-warning-muted"
-                              : "border-border bg-muted/30"
-                          } ${findingConfidenceClasses(f.supportPanel)}`}
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-sm font-medium">{f.title}</div>
-                              <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <AcceptanceCriteriaList criteria={req.acceptanceCriteria ?? []} />
+                          {req.labels.length > 0 ? (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {req.labels.map((l) => (
                                 <span
-                                  data-testid="finding-severity"
-                                  className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-foreground"
+                                  key={l}
+                                  className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
                                 >
-                                  {f.severity}
+                                  {l}
                                 </span>
-                                <span className="text-xs text-muted-foreground">{f.category}</span>
-                                <PersonaTag
-                                  persona={personaFor(f.agentKey)}
-                                  agentKey={f.agentKey}
-                                />
-                              </div>
-                              {f.requirementId ? (
-                                <span
-                                  className={`mt-1 inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${
-                                    isGap
-                                      ? "bg-warning-muted text-warning"
-                                      : "bg-info-muted text-info"
-                                  }`}
-                                >
-                                  {isGap ? "Gap for " : "Grounded in "}
-                                  {f.requirementId}
-                                </span>
-                              ) : null}
+                              ))}
                             </div>
-                            {/* Issue #1232 — secondary signals: each badge below
+                          ) : null}
+                          <DataMappingsPanel projectId={projectId} requirementId={req.id} />
+                          <RequirementLinksPanel
+                            projectId={projectId}
+                            requirementId={req.id}
+                            workspaceId={project.data?.workspaceId ?? null}
+                          />
+                          <div className="mt-3 border-t border-border pt-3">
+                            <TraceabilityView projectId={projectId} requirementId={req.id} />
+                          </div>
+                          {historyReqId === req.id ? (
+                            <div className="mt-3 border-t border-border pt-3">
+                              <RequirementHistoryTab requirementId={req.id} />
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                      <ListPager
+                        page={requirementsView}
+                        noun="requirements"
+                        onPageChange={setRequirementsPage}
+                        testId="requirements-pager"
+                      />
+                    </div>
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="findings" className="space-y-4">
+                  <div data-testid="findings-section">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                        Findings
+                      </h4>
+                      {/* Issue #362 — disabled, with the reason, until requirements exist. */}
+                      <GenerateIssuesAction
+                        projectId={projectId}
+                        analysisId={detail.data.id}
+                        status={detail.data.status}
+                        requirementCount={detail.data.requirements.length}
+                        hasFindings={detail.data.agentResults.some((a) => a.findings.length > 0)}
+                        ticketStatus={approvals.data?.ticketStatus}
+                        approvalsState={
+                          approvals.isError ? "error" : approvals.data ? "ready" : "loading"
+                        }
+                      />
+                    </div>
+                    {/* Issue #30 — severity, category and agent join #740's verification filter. */}
+                    <FindingsFilterBar
+                      facets={findingFacets(allFindings)}
+                      filters={findingFilters}
+                      onChange={(next) => {
+                        setFindingFilters(next);
+                        setFindingsPage(0);
+                      }}
+                      agentLabel={(key) => personaFor(key)?.name ?? key}
+                    />
+                    <div className="space-y-2">
+                      {findingsView.items.map((f) => {
+                        const isGap = f.severity === "info" && f.tags?.includes("requirement-gap");
+                        return (
+                          <div
+                            key={f.id}
+                            // Epic #1107 (#1110) — a low-confidence finding is dimmed
+                            // and dashed, ranked last, and STILL RENDERED. There is
+                            // deliberately no confidence filter: the panel grades,
+                            // it never gates.
+                            data-confidence={f.supportPanel?.confidence ?? "none"}
+                            className={`rounded border p-3 ${
+                              isGap
+                                ? "border-warning/50 bg-warning-muted"
+                                : "border-border bg-muted/30"
+                            } ${findingConfidenceClasses(f.supportPanel)}`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="text-sm font-medium">{f.title}</div>
+                                <div className="mt-1 flex flex-wrap items-center gap-2">
+                                  <span
+                                    data-testid="finding-severity"
+                                    className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-foreground"
+                                  >
+                                    {f.severity}
+                                  </span>
+                                  <span className="text-xs text-muted-foreground">
+                                    {f.category}
+                                  </span>
+                                  <PersonaTag
+                                    persona={personaFor(f.agentKey)}
+                                    agentKey={f.agentKey}
+                                  />
+                                </div>
+                                {f.requirementId ? (
+                                  <span
+                                    className={`mt-1 inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                                      isGap
+                                        ? "bg-warning-muted text-warning"
+                                        : "bg-info-muted text-info"
+                                    }`}
+                                  >
+                                    {isGap ? "Gap for " : "Grounded in "}
+                                    {f.requirementId}
+                                  </span>
+                                ) : null}
+                              </div>
+                              {/* Issue #1232 — secondary signals: each badge below
                                 already renders nothing when its value is absent,
                                 so this column collapses instead of holding empty
                                 placeholders. Muted until hovered so severity and
                                 agent stay the first things read. */}
-                            <div className="flex shrink-0 flex-wrap items-start justify-end gap-1 opacity-70 transition-opacity hover:opacity-100 focus-within:opacity-100">
-                              {/* Epic #727 (#740) — verifier verdict badge. */}
-                              <VerificationBadge status={f.verificationStatus} />
-                              {/* Epic #1107 (#1110) — the panel's confidence.
+                              <div className="flex shrink-0 flex-wrap items-start justify-end gap-1 opacity-70 transition-opacity hover:opacity-100 focus-within:opacity-100">
+                                {/* Epic #727 (#740) — verifier verdict badge. */}
+                                <VerificationBadge status={f.verificationStatus} />
+                                {/* Epic #1107 (#1110) — the panel's confidence.
                                   Stacks with the verifier badge: one asks "was
                                   the file retrieved?", the other "does it back
                                   the claim?". */}
-                              <SupportPanelBadge panel={f.supportPanel} />
-                              {/* Epic #1107 (#1111) — the ABSENCE verdict, on
+                                <SupportPanelBadge panel={f.supportPanel} />
+                                {/* Epic #1107 (#1111) — the ABSENCE verdict, on
                                   findings that claim something is missing.
                                   "Absence unexamined" (amber) and "Absence
                                   checked" (emerald) are the two states #773
                                   rendered identically. */}
-                              <AbsenceVerdictBadge panel={f.supportPanel} />
-                              <DerivationBadge
-                                derivation={f.derivation}
-                                confidence={f.confidence}
-                                agentResultId={f.agentResultId}
-                                onReview={
-                                  f.derivation === "ambiguous"
-                                    ? async () => {
-                                        await findingsApi.acknowledgeReview(f.id);
-                                      }
-                                    : undefined
-                                }
-                              />
+                                <AbsenceVerdictBadge panel={f.supportPanel} />
+                                <DerivationBadge
+                                  derivation={f.derivation}
+                                  confidence={f.confidence}
+                                  agentResultId={f.agentResultId}
+                                  onReview={
+                                    f.derivation === "ambiguous"
+                                      ? async () => {
+                                          await findingsApi.acknowledgeReview(f.id);
+                                        }
+                                      : undefined
+                                  }
+                                />
+                              </div>
                             </div>
-                          </div>
-                          {/* Issue #1232 — bodies arrive as ~1000-char single
+                            {/* Issue #1232 — bodies arrive as ~1000-char single
                               paragraphs with no newlines; clamp + expand is what
                               makes the list scannable. */}
-                          <FindingBody body={f.body} />
-                          {f.citations.length > 0 ? (
-                            <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-                              {f.citations.map((c, idx) => {
-                                // #734 \u2014 a code citation renders as its
-                                // `filePath:startLine-endLine` locator, visually
-                                // distinct from document citations.
-                                if (isCodeCitation(c)) {
-                                  return (
-                                    <CodeCitation
-                                      key={`code-${c.filePath}-${c.startLine}-${idx}`}
-                                      citation={c}
-                                    />
+                            <FindingBody body={f.body} />
+                            {f.citations.length > 0 ? (
+                              <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                                {f.citations.map((c, idx) => {
+                                  // #734 \u2014 a code citation renders as its
+                                  // `filePath:startLine-endLine` locator, visually
+                                  // distinct from document citations.
+                                  if (isCodeCitation(c)) {
+                                    return (
+                                      <CodeCitation
+                                        key={`code-${c.filePath}-${c.startLine}-${idx}`}
+                                        citation={c}
+                                      />
+                                    );
+                                  }
+                                  // Issue #427 \u2014 render connector ids as a friendly
+                                  // `basename \u2014 repo` label with the full raw id in
+                                  // the title tooltip. The chunk index (#{chunkIndex})
+                                  // is the file:line provenance and is preserved.
+                                  const source = formatSourceLabel(
+                                    c.filename ?? c.documentId,
+                                    repoNames,
                                   );
-                                }
-                                // Issue #427 \u2014 render connector ids as a friendly
-                                // `basename \u2014 repo` label with the full raw id in
-                                // the title tooltip. The chunk index (#{chunkIndex})
-                                // is the file:line provenance and is preserved.
-                                const source = formatSourceLabel(
-                                  c.filename ?? c.documentId,
-                                  repoNames,
-                                );
-                                return (
-                                  <li key={`${c.documentId}-${c.chunkIndex}-${idx}`}>
-                                    \u2192 <span title={source.rawId}>{source.label}</span> #
-                                    {c.chunkIndex}
-                                    {c.snippet ? <em className="ml-2">"{c.snippet}"</em> : null}
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                          ) : isGap ? (
-                            <p className="mt-2 text-xs text-warning">
-                              No supporting evidence retrieved from the selected documents.
-                            </p>
-                          ) : null}
-                          {/* Epic #1107 (#1110) — every lens's verdict, its own
+                                  return (
+                                    <li key={`${c.documentId}-${c.chunkIndex}-${idx}`}>
+                                      \u2192 <span title={source.rawId}>{source.label}</span> #
+                                      {c.chunkIndex}
+                                      {c.snippet ? <em className="ml-2">"{c.snippet}"</em> : null}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            ) : isGap ? (
+                              <p className="mt-2 text-xs text-warning">
+                                No supporting evidence retrieved from the selected documents.
+                              </p>
+                            ) : null}
+                            {/* Epic #1107 (#1110) — every lens's verdict, its own
                               words and its file:line, from the snapshot already
                               loaded: "why is this low-confidence?" is one click,
                               not another request. */}
-                          <SupportPanelDetails panel={f.supportPanel} />
-                          <div className="mt-3 flex justify-end">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              data-testid="deep-dive-action"
-                              disabled={!ticketsAllowed}
-                              title={
-                                ticketsAllowed
-                                  ? "Expand this finding into a publishable issue draft"
-                                  : "Ticket creation is blocked until pending approvals are resolved"
-                              }
-                              onClick={() => {
-                                setDeepDiveFinding({
-                                  id: f.id,
-                                  title: f.title,
-                                  agentKey: f.agentKey,
-                                });
-                                setDeepDiveOpen(true);
-                              }}
-                            >
-                              Deep Dive → Issue
-                            </Button>
+                            <SupportPanelDetails panel={f.supportPanel} />
+                            <div className="mt-3 flex justify-end">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                data-testid="deep-dive-action"
+                                disabled={!ticketsAllowed}
+                                title={
+                                  ticketsAllowed
+                                    ? "Expand this finding into a publishable issue draft"
+                                    : "Ticket creation is blocked until pending approvals are resolved"
+                                }
+                                onClick={() => {
+                                  setDeepDiveFinding({
+                                    id: f.id,
+                                    title: f.title,
+                                    agentKey: f.agentKey,
+                                  });
+                                  setDeepDiveOpen(true);
+                                }}
+                              >
+                                Deep Dive → Issue
+                              </Button>
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
-                  {detail.data.agentResults.every((a) => a.findings.length === 0) ? (
-                    <p className="text-sm text-muted-foreground">No findings yet.</p>
+                        );
+                      })}
+                      {allFindings.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">No findings yet.</p>
+                      ) : findingsView.total === 0 ? (
+                        <p
+                          className="text-sm text-muted-foreground"
+                          data-testid="findings-no-match"
+                        >
+                          No findings match these filters.
+                        </p>
+                      ) : null}
+                      <ListPager
+                        page={findingsView}
+                        noun="findings"
+                        onPageChange={setFindingsPage}
+                        testId="findings-pager"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Epic #203 (#221) — first-class cross-document findings. */}
+                  <CrossDocFindingsPanel crossDocFindings={detail.data.crossDocFindings} />
+                </TabsContent>
+
+                <TabsContent value="questions" className="space-y-4">
+                  {/* Clarifying questions (and the web-research evidence that
+                    feeds them) for this run. */}
+                  <EnhancementResults
+                    projectId={projectId}
+                    analysisId={detail.data.id}
+                    metadata={detail.data.metadata}
+                  />
+
+                  {!runHasQuestionsView(detail.data.metadata) ? (
+                    <p className="text-sm text-muted-foreground" data-testid="questions-none">
+                      This run did not ask clarifying questions.
+                    </p>
                   ) : null}
-                </div>
-              </div>
+                </TabsContent>
 
-              {/* Epic #203 (#221) — first-class cross-document findings. */}
-              <CrossDocFindingsPanel crossDocFindings={detail.data.crossDocFindings} />
+                <TabsContent value="approvals" className="space-y-4">
+                  {/* Epic #202 (#217) — human-in-the-loop approval checkpoints. */}
+                  <ApprovalsPanel
+                    projectId={projectId}
+                    analysisId={detail.data.id}
+                    metadata={detail.data.metadata}
+                  />
+                </TabsContent>
 
-              {/* Epic #208 (#233) — stakeholders + project context surface. */}
-              <StakeholdersPanel
-                stakeholders={stakeholders.data ?? []}
-                context={projectContext.data ?? null}
-              />
+                <TabsContent value="agents" className="space-y-4">
+                  <div>
+                    <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                      Agents
+                    </h4>
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                      {detail.data.agentResults.map((agent) => {
+                        const persona = personaFor(agent.agentKey);
+                        // #289 — an agent-phase agent is not a specialist: it has no
+                        // single-agent regenerate endpoint.
+                        const isSpecialist = agent.agentKey !== "synthesis" && !agent.source;
+                        return (
+                          <div
+                            key={agent.id}
+                            className="rounded border border-border bg-muted/30 p-3"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2">
+                                <span className="text-lg">{persona?.avatar ?? "\ud83e\udd16"}</span>
+                                <div>
+                                  <div className="text-sm font-medium">
+                                    {persona?.name ?? agent.agentKey}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {persona?.role ?? agent.agentKey} · {agent.findings.length}{" "}
+                                    finding
+                                    {agent.findings.length === 1 ? "" : "s"}
+                                  </div>
+                                </div>
+                              </div>
+                              <StatusBadge status={agent.status} />
+                            </div>
+                            {isSpecialist && detail.data.status === "completed" ? (
+                              <div className="mt-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
+                                    regenerate.mutate(agent.agentKey as AnalysisAgentKey)
+                                  }
+                                  disabled={regenerate.isPending}
+                                >
+                                  Regenerate
+                                </Button>
+                              </div>
+                            ) : null}
+                            {agent.errorMessage ? (
+                              <p className="mt-2 text-xs text-destructive">{agent.errorMessage}</p>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </TabsContent>
 
-              {/* Issue #737 — requirement→findings→code→tests traceability matrix. */}
-              <TraceabilityMatrix
-                projectId={projectId}
-                analysisId={detail.data.id}
-                enabled={detail.data.status === "completed"}
-              />
+                <TabsContent value="traceability" className="space-y-4">
+                  {/* Issue #737 — requirement→findings→code→tests traceability matrix. */}
+                  <TraceabilityMatrix
+                    projectId={projectId}
+                    analysisId={detail.data.id}
+                    enabled={detail.data.status === "completed"}
+                  />
 
-              {/* Issue #742 — per-requirement gap report (current impl + gap + effort). */}
-              <GapReport
-                projectId={projectId}
-                analysisId={detail.data.id}
-                enabled={detail.data.status === "completed"}
-              />
+                  {/* Issue #742 — per-requirement gap report (current impl + gap + effort). */}
+                  <GapReport
+                    projectId={projectId}
+                    analysisId={detail.data.id}
+                    enabled={detail.data.status === "completed"}
+                  />
 
-              {/* Issue #743 — diff-style current-vs-proposed view for changed requirements. */}
-              <RequirementDiff
-                projectId={projectId}
-                analysisId={detail.data.id}
-                analyses={list.data?.items ?? []}
-                enabled={detail.data.status === "completed"}
-              />
+                  {/* Issue #743 — diff-style current-vs-proposed view for changed requirements. */}
+                  <RequirementDiff
+                    projectId={projectId}
+                    analysisId={detail.data.id}
+                    analyses={list.data?.items ?? []}
+                    enabled={detail.data.status === "completed"}
+                  />
+                </TabsContent>
+              </AnalysisResultTabs>
             </div>
           )}
         </Card>
