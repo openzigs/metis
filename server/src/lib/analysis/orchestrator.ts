@@ -161,8 +161,8 @@ import {
   summarizeFindingsRepairs,
   withFindingsRepairNote,
   type FindingsRepair,
-  type KnownDocument,
 } from "./findings-repair.js";
+import { createRunDocumentLookup } from "./run-document-lookup.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import { persistAgentPhaseResults, runEnabledCustomAgents } from "./custom-agent-phase.js";
 import { RequirementsExtractor } from "./requirements-extractor.js";
@@ -2132,19 +2132,25 @@ export class AnalysisOrchestrator {
         // A lookup failure (a rejected promise, caught by the repair) degrades
         // to "no known documents": an invalid id is dropped rather than
         // resolved, a valid one is kept, and the pass is never failed by it.
-        let knownDocuments: Promise<readonly KnownDocument[]> | undefined;
-        const loadKnownDocuments = (): Promise<readonly KnownDocument[]> =>
-          (knownDocuments ??= prisma.document.findMany({
-            where: { projectId: input.projectId, deletedAt: null },
-            select: { id: true, filename: true },
-          }));
-        const findKnownDocumentIds = async (ids: readonly string[]): Promise<string[]> => {
-          const rows = await prisma.document.findMany({
-            where: { projectId: input.projectId, deletedAt: null, id: { in: [...ids] } },
-            select: { id: true },
-          });
-          return rows.map((r) => r.id);
-        };
+        // A failed list load is memoized for the rest of the run: every later
+        // repair sees the same rejection and degrades the same way.
+        // #384 — ids already confirmed in this run, or present in the loaded
+        // list, are answered without a query; the id check's `in` list is
+        // capped (see `createRunDocumentLookup`).
+        const { loadKnownDocuments, findKnownDocumentIds } = createRunDocumentLookup({
+          listDocuments: () =>
+            prisma.document.findMany({
+              where: { projectId: input.projectId, deletedAt: null },
+              select: { id: true, filename: true },
+            }),
+          findDocumentIds: async (ids) => {
+            const rows = await prisma.document.findMany({
+              where: { projectId: input.projectId, deletedAt: null, id: { in: [...ids] } },
+              select: { id: true },
+            });
+            return rows.map((r) => r.id);
+          },
+        });
 
         /**
          * #483/#734 — run ONE agentic loop over `passRequirements` with the given
