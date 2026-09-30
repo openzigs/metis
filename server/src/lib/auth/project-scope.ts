@@ -60,7 +60,11 @@ export interface ProjectScopeActor {
  */
 export type WorkspaceScopeWhere =
   | Record<string, never>
-  | { OR: Array<{ workspaceId: null } | { workspaceId: { in: string[] } }> };
+  | {
+      OR: Array<
+        { workspaceId: null } | { workspaceId: { in: string[] }; workspace: { deletedAt: null } }
+      >;
+    };
 
 /**
  * Build the workspace-visibility fragment for `actor`.
@@ -77,5 +81,12 @@ export function workspaceScopeWhere(actor: ProjectScopeActor): WorkspaceScopeWhe
   if (actor.role === "admin") return {};
 
   const workspaces = actor.workspaces ?? [];
-  return { OR: [{ workspaceId: null }, { workspaceId: { in: workspaces } }] };
+  // #549 — the claim can outlive a workspace's soft delete (it is carried across
+  // token refresh), so a deleted workspace is excluded here, not only at login.
+  return {
+    OR: [
+      { workspaceId: null },
+      { workspaceId: { in: workspaces }, workspace: { deletedAt: null } },
+    ],
+  };
 }

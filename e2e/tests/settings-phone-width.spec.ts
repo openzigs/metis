@@ -97,9 +97,7 @@ test.describe("Settings at phone width (#508)", () => {
     await page.goto("/settings/mcp", { waitUntil: "load" });
     const crumbs = page.getByTestId("header-breadcrumb");
     await expect(crumbs.getByTestId("workspace-switcher")).toBeVisible();
-    // The trail humanizes the segment ("Mcp") rather than using the settings
-    // nav's "MCP servers" label; that naming is not what this spec measures.
-    await expectReadableCrumb(crumbs.locator('[aria-current="page"]'), /^(Mcp|MCP servers)$/);
+    await expectReadableCrumb(crumbs.locator('[aria-current="page"]'), /^MCP servers$/);
     expect(await documentScrollWidth(page)).toBe(PHONE.width);
   });
 });

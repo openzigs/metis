@@ -273,7 +273,7 @@ describe("/api/analyses top-level router — cross-tenant scope (#1099)", () => 
 
         expect(projectFindUnique).toHaveBeenCalledWith({
           where: { id: "proj-a" },
-          select: { workspaceId: true },
+          select: { workspaceId: true, workspace: { select: { deletedAt: true } } },
         });
       });
     });

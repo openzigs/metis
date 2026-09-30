@@ -46,6 +46,8 @@ export function requireWorkspaceRole(minRole: WorkspaceRole): RequestHandler {
             workspaceId,
             userId: req.user.userId,
           },
+          // #549 — DELETE is a soft delete; its memberships must stop authorizing.
+          workspace: { deletedAt: null },
         },
       });
 

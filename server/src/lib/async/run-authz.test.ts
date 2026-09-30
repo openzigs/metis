@@ -77,7 +77,9 @@ describe("runProjectScope", () => {
   it("falls back to an empty workspace list when the token carries none", () => {
     const noWorkspaces: AuthPayload = { ...member, workspaces: undefined };
     expect(runProjectScope(noWorkspaces)).toEqual({
-      project: { OR: [{ workspaceId: null }, { workspaceId: { in: [] } }] },
+      project: {
+        OR: [{ workspaceId: null }, { workspaceId: { in: [] }, workspace: { deletedAt: null } }],
+      },
     });
   });
 
