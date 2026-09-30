@@ -221,9 +221,16 @@ export default function AnalysisPage(): React.ReactElement {
   // `#approvals` (the Publish page's link) or one a tab switch intercepted.
   // The browser's fragment scroll runs before the panel's queries resolve.
   const [pendingAnchor, setPendingAnchor] = useState<string | null>(null);
+  // PR #434 review: a fragment with no `?tab=` (an old `?analysisId=…#approvals`
+  // bookmark) opens the tab that holds the anchor, rather than arming a scroll
+  // that would fire only when the user later opened that tab.
   useEffect(() => {
     const hash = window.location.hash;
-    if (tabForAnchor(hash)) setPendingAnchor(hash);
+    const anchorTab = tabForAnchor(hash);
+    if (!anchorTab) return;
+    setPendingAnchor(hash);
+    if (!requestedTab) setTab(anchorTab);
+    // Mount only: the fragment is read once, like the browser's own scroll.
   }, []);
   const clearPendingAnchor = useCallback(() => setPendingAnchor(null), []);
   useScrollToAnchor(pendingAnchor, clearPendingAnchor);
@@ -235,6 +242,10 @@ export default function AnalysisPage(): React.ReactElement {
   const [findingsPage, setFindingsPage] = useState(0);
   const [requirementsPage, setRequirementsPage] = useState(0);
   const selectTab = (next: AnalysisTab) => {
+    // PR #434 review: a tab switch cancels a scroll still waiting for its target,
+    // or it fires later as a surprise. An anchor the tab bar intercepts is set
+    // after this (onValueChange runs before onAnchor), so it survives.
+    setPendingAnchor(null);
     setTab(next);
     updateUrl({ tab: next });
   };

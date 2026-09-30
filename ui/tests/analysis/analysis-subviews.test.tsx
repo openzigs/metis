@@ -446,6 +446,26 @@ describe("the #approvals deep link", () => {
     await waitFor(() => expect(scrolled).toEqual([panel]));
   });
 
+  it("opens the Approvals tab for a fragment-only link with no ?tab=", async () => {
+    window.history.replaceState(null, "", "#approvals");
+    nav.search = new URLSearchParams("analysisId=an-1");
+    renderPage();
+    const panel = await screen.findByTestId("approvals-panel-stub");
+    await waitFor(() => expect(scrolled).toEqual([panel]));
+  });
+
+  it("a tab switch cancels a scroll still waiting for its target", async () => {
+    // ?tab=summary wins over the fragment, so #approvals is pending, not mounted.
+    window.history.replaceState(null, "", "#approvals");
+    nav.search = new URLSearchParams("analysisId=an-1&tab=summary");
+    renderPage();
+    await userEvent.click(await screen.findByRole("tab", { name: /Findings/ }));
+    await userEvent.click(screen.getByRole("tab", { name: /Approvals/ }));
+    await screen.findByTestId("approvals-panel-stub");
+    await screen.findByTestId("approvals-none");
+    expect(scrolled).toEqual([]);
+  });
+
   it("does not scroll without the fragment", async () => {
     nav.search = new URLSearchParams("analysisId=an-1&tab=approvals");
     renderPage();
