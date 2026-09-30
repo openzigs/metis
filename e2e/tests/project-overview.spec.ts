@@ -62,7 +62,9 @@ test.describe("Project Overview viewer (#313)", () => {
 
     await test.step("a never-generated project shows the empty state", async () => {
       await expect(page.getByTestId("overview-empty-state")).toBeVisible({ timeout: 20_000 });
-      await expect(page.getByRole("heading", { name: "No overview yet" })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "No overview yet", exact: true }),
+      ).toBeVisible();
     });
 
     guard.assertClean();

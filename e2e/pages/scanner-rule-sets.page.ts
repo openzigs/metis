@@ -19,7 +19,7 @@ export class ScannerRuleSetsPage {
   constructor(page: Page) {
     this.page = page;
     this.root = page.getByTestId("scanner-rule-sets-root");
-    this.heading = page.getByRole("heading", { name: "Bug-scanner rule sets" });
+    this.heading = page.getByRole("heading", { name: "Bug-scanner rule sets", exact: true });
     this.createCard = page.getByTestId("scanner-create-set-card");
     this.newSetName = page.getByTestId("scanner-new-set-name");
     this.newSetSubmit = page.getByTestId("scanner-new-set-submit");

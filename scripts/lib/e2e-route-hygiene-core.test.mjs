@@ -4,7 +4,11 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { routeCallsWithTimes, unrouteCalls } from "./e2e-route-hygiene-core.mjs";
+import {
+  nonExactHeadingNames,
+  routeCallsWithTimes,
+  unrouteCalls,
+} from "./e2e-route-hygiene-core.mjs";
 
 describe("routeCallsWithTimes (#297)", () => {
   it("flags a route call that passes { times }", () => {
@@ -110,7 +114,70 @@ describe("unrouteCalls (#327)", () => {
   });
 });
 
-describe("the e2e suite (#297, #327)", () => {
+describe("nonExactHeadingNames (#539)", () => {
+  it("flags a literal heading name without exact: true", () => {
+    const src = [
+      "await expect(page.getByRole('heading', { name: 'Connections' })).toBeVisible();",
+      'const h = panel.getByRole("heading", { level: 2, name: "Details" });',
+      "const t = page.getByRole('heading', { name: `Hooks` });",
+    ].join("\n");
+    expect(nonExactHeadingNames(src)).toEqual([1, 2, 3]);
+  });
+
+  it("flags exact: false and a multi-line options object", () => {
+    const src = [
+      "page.getByRole('heading', { name: 'A', exact: false });",
+      "page.getByRole(",
+      '  "heading",',
+      "  {",
+      '    name: "Generate drafts",',
+      "  },",
+      ");",
+    ].join("\n");
+    expect(nonExactHeadingNames(src)).toEqual([1, 2]);
+  });
+
+  it("passes exact: true in any position, and the quoted keys", () => {
+    const src = [
+      "page.getByRole('heading', { name: 'A', exact: true });",
+      "page.getByRole('heading', { exact: true, level: 1, name: 'B' });",
+      "page.getByRole('heading', { \"name\": 'C', \"exact\": true });",
+    ].join("\n");
+    expect(nonExactHeadingNames(src)).toEqual([]);
+  });
+
+  it("flags a quoted name key without exact", () => {
+    expect(nonExactHeadingNames("page.getByRole('heading', { 'name': 'C' });")).toEqual([1]);
+  });
+
+  it("passes a regex name, a computed name, and no name at all", () => {
+    const src = [
+      "page.getByRole('heading', { name: /^Run / });",
+      "page.getByRole('heading', { name: workspaceName });",
+      "page.getByRole('heading', { name: `Project ${id}` });",
+      "page.getByRole('heading', { level: 1 });",
+      "page.getByRole('heading');",
+    ].join("\n");
+    expect(nonExactHeadingNames(src)).toEqual([]);
+  });
+
+  it("ignores other roles and look-alikes in strings and comments", () => {
+    const src = [
+      "page.getByRole('button', { name: 'Save' });",
+      "// page.getByRole('heading', { name: 'X' })",
+      "const s = \"page.getByRole('heading', { name: 'X' })\";",
+      "getByRole('heading', { name: 'bare call is not a locator method' });",
+    ].join("\n");
+    expect(nonExactHeadingNames(src)).toEqual([]);
+  });
+
+  it("parses JSX in a .tsx file", () => {
+    const src = "const el = <div a='x' />;\npage.getByRole('heading', { name: 'X' });";
+    expect(nonExactHeadingNames(src, "c.tsx")).toEqual([2]);
+  });
+});
+
+describe("the e2e suite (#297, #327, #539)", () => {
   const e2eRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "e2e");
 
   /** @param {string} dir @returns {string[]} */
@@ -151,6 +218,18 @@ describe("the e2e suite (#297, #327)", () => {
   it("has no unroute / unrouteAll — removing the last route can strand the page's next request", () => {
     const offenders = scannedFiles().flatMap((file) =>
       unrouteCalls(fs.readFileSync(file, "utf8"), file).map(
+        (line) => `${path.relative(e2eRoot, file)}:${line}`,
+      ),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  // #539 — a substring heading match turns timing-dependent the moment the page
+  // also renders a heading containing that literal (`Connections` vs
+  // `Unlinked connections`, #306).
+  it("has no literal heading name without exact: true — a substring match can hit another heading", () => {
+    const offenders = scannedFiles().flatMap((file) =>
+      nonExactHeadingNames(fs.readFileSync(file, "utf8"), file).map(
         (line) => `${path.relative(e2eRoot, file)}:${line}`,
       ),
     );

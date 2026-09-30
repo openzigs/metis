@@ -41,7 +41,7 @@ export class TemplateSettingsPage {
     this.page = page;
 
     // List view
-    this.heading = page.getByRole("heading", { name: "Issue Templates" });
+    this.heading = page.getByRole("heading", { name: "Issue Templates", exact: true });
     this.newTemplateButton = page.getByRole("button", { name: /New Template/ });
     this.loadingIndicator = page.getByText("Loading templates…");
     this.emptyState = page.getByText("No templates yet");
@@ -50,7 +50,7 @@ export class TemplateSettingsPage {
       .filter({ has: page.getByRole("button", { name: "Edit" }) });
 
     // Create/Edit form
-    this.formHeadingCreate = page.getByRole("heading", { name: "Create Template" });
+    this.formHeadingCreate = page.getByRole("heading", { name: "Create Template", exact: true });
     this.templateNameInput = page.getByLabel("Template name");
     // `getByRole("combobox")` (a native <select>) disambiguates from the
     // sidebar's "Platform" nav section, which `getByLabel` also matched.

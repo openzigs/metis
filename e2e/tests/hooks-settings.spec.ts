@@ -45,7 +45,7 @@ test.describe("Settings → Hooks — no /api/api/ double prefix (#114)", () => 
 
     await page.goto("/settings/hooks", { waitUntil: "load" });
     await expect(page.getByTestId("hooks-root")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Hooks" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Hooks", exact: true })).toBeVisible();
 
     // Arm the response listener BEFORE typing the id so we never miss the
     // hooks query that the project-id input enables.

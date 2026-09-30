@@ -55,7 +55,7 @@ test.describe("Product Documentation Viewer (#554)", () => {
   test("should show documentation section on product detail page", async ({ page }) => {
     await page.goto(`/products/${productId}`);
 
-    await expect(page.getByRole("heading", { name: "Documentation" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Documentation", exact: true })).toBeVisible();
     // Without generated docs, empty state should display
     await expect(page.getByText("No documentation generated yet")).toBeVisible();
   });
@@ -65,7 +65,7 @@ test.describe("Product Documentation Viewer (#554)", () => {
     await page.goto(`/products/${productId}`);
 
     // Documentation section exists but shows empty/placeholder state
-    await expect(page.getByRole("heading", { name: "Documentation" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Documentation", exact: true })).toBeVisible();
     await expect(page.getByText("No documentation generated yet")).toBeVisible();
   });
 
@@ -75,7 +75,7 @@ test.describe("Product Documentation Viewer (#554)", () => {
 
     // The documentation section should have some way to trigger generation
     // In initial state, this is the empty state CTA
-    const docsSection = page.getByRole("heading", { name: "Documentation" });
+    const docsSection = page.getByRole("heading", { name: "Documentation", exact: true });
     await expect(docsSection).toBeVisible();
   });
 });

@@ -45,7 +45,7 @@ export class AdminAuthPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Authentication Configuration" });
+    this.heading = page.getByRole("heading", { name: "Authentication Configuration", exact: true });
     this.description = page.getByText(
       "Manage SSO providers, SCIM provisioning, and role mappings.",
     );

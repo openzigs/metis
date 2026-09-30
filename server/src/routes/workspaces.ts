@@ -65,7 +65,8 @@ export function workspacesRouter(): Router {
   r.get("/", requireAuth, async (req: Req, res: Response) => {
     const userId = actorId(req);
     const memberships = await prisma.workspaceMember.findMany({
-      where: { userId },
+      // #539 — DELETE is a soft delete; a deleted workspace must leave the list.
+      where: { userId, workspace: { deletedAt: null } },
       include: {
         workspace: {
           select: { id: true, name: true, slug: true, logoUrl: true, createdAt: true },

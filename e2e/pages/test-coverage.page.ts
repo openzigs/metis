@@ -67,7 +67,7 @@ export class TestCoveragePage {
     this.heading = page.getByRole("heading", { name: "Test Coverage", exact: true });
     this.description = page.getByText(/Import existing tests, run gap analysis/);
 
-    this.importHeading = page.getByRole("heading", { name: "Import test cases" });
+    this.importHeading = page.getByRole("heading", { name: "Import test cases", exact: true });
     this.uploadInput = page.getByLabel("Upload test cases");
     this.pasteButton = page.getByRole("button", { name: "Paste text" });
     this.importsEmptyState = page.getByText(/No imports yet/);
@@ -78,13 +78,13 @@ export class TestCoveragePage {
     this.pasteTextarea = page.getByTestId("tc-paste-textarea");
     this.pasteSubmit = this.pasteDialog.getByRole("button", { name: /^Import|^Importing/ });
 
-    this.runsHeading = page.getByRole("heading", { name: "Coverage runs" });
+    this.runsHeading = page.getByRole("heading", { name: "Coverage runs", exact: true });
     this.newRunButton = page.getByRole("button", { name: /Start new run|Starting…/ });
     this.runsEmptyState = page.getByText(/No runs yet/);
     this.coverageSummary = page.getByTestId("tc-summary");
     this.coveragePct = page.getByTestId("tc-coverage-pct");
 
-    this.matrixHeading = page.getByRole("heading", { name: "Coverage matrix" });
+    this.matrixHeading = page.getByRole("heading", { name: "Coverage matrix", exact: true });
     this.matrixGrid = page.getByRole("grid");
 
     this.suggestionsHeading = page.getByRole("heading", { name: /Suggested tests/ });
