@@ -186,7 +186,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ]);
     });
 
-    it("a later entry's failure does not withdraw an earlier landed entry's secret", async () => {
+    it("a failed entry's withdrawal is audited, and the ok entry's secret survives as the one its row names", async () => {
       const ok = uniq("imp");
       const bad = uniq("imp");
       await executeImport(blob(bad), registry, { id: ADMIN, role: "admin" });
@@ -205,6 +205,46 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(r.live).toHaveLength(1);
       expect(r.withdrawn).toHaveLength(1);
       expect(vaultDeleteAudits().map((e) => e.target.id)).toEqual(r.withdrawn);
+      // The surviving secret is the one the ok row's env names.
+      const okRow = await db.mCPServer.findFirstOrThrow({ where: { label: ok } });
+      const kept = r.live[0]!;
+      const keptLabel = kept.name.slice(kept.name.indexOf(":") + 1);
+      expect(JSON.parse(okRow.envJson!)).toEqual({ API_KEY: `\${vault:${keptLabel}}` });
+    });
+
+    it("a failure after the row landed keeps an auto-vaulted header secret, the one the row's headers name", async () => {
+      const spy = registry as unknown as { toView: (row: unknown) => unknown };
+      vi.spyOn(spy, "toView").mockImplementationOnce(() => {
+        throw new Error("view failed");
+      });
+      const label = uniq("imp-hdr");
+
+      const r = await madeDuring(() =>
+        executeImport(
+          {
+            mcpServers: {
+              [label]: {
+                url: "https://mcp.example.test/sse",
+                headers: { Authorization: "Bearer plaintext-header-592" },
+              },
+            },
+          },
+          registry,
+          { id: ADMIN, role: "admin" },
+        ),
+      );
+
+      expect(r.value.created).toEqual([]);
+      expect(r.value.errors).toEqual([{ label, message: "view failed" }]);
+      const rows = await db.mCPServer.findMany({ where: { label } });
+      expect(rows).toHaveLength(1);
+      expect(r.withdrawn).toEqual([]);
+      expect(r.live).toHaveLength(1);
+      // The surviving secret is the one the landed row's headers name.
+      const kept = r.live[0]!;
+      const keptLabel = kept.name.slice(kept.name.indexOf(":") + 1);
+      expect(JSON.parse(rows[0]!.headers!)).toEqual({ Authorization: `\${vault:${keptLabel}}` });
+      expect(vaultDeleteAudits()).toEqual([]);
     });
   },
 );

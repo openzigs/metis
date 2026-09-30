@@ -358,6 +358,9 @@ export function mcpRouter(): Router {
         await withdrawCreatedSecrets(getVaultService(), created, {
           actorId: actor.id,
           resource: { type: "mcp_server" },
+          // #592 review — a project-scope create's withdrawals carry its
+          // project, as the importer's do.
+          projectId: parsed.data.scope === "project" ? (parsed.data.projectId ?? null) : null,
           cause: err,
         });
       }
