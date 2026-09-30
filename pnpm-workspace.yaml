@@ -120,7 +120,15 @@ overrides:
   # api.osv.dev — a fix version is a bet that no later advisory covers it, and
   # that bet has lost at #1240/#1273/#1291/#1324/#1345.
   sharp@<0.35.4: ^0.35.4
-  axios@<1.18.0: ^1.18.0
+  # axios, FIVE Highs published 2026-09-30 15:01-15:03Z, all fixed in 1.20.0 (#554):
+  #   GHSA-3pq3-5fj3-cg6v  CVSS 7.0  HTTP/2 adapter bypasses DNS lookup/proxy
+  #   GHSA-542g-h47m-68v8  CVSS 8.2  DoS via unhandled HTTP/2 'error' event
+  #   GHSA-c29m-xwm3-cm6r  CVSS 8.2  ReDoS in the fromDataURI data: URL parser
+  #   GHSA-mghh-pgcx-3jjj  CVSS 8.2  ReDoS in shouldBypassProxy normalisation
+  #   GHSA-x97p-jq2g-jp4f  CVSS 8.3  prototype-pollution gadget in toFormData
+  # Bound and floor move together (#1208). 1.20.0 was published 2026-08-26, well
+  # clear of minimumReleaseAge; api.osv.dev returns zero vulns for it (2026-09-30).
+  axios@<1.20.0: ^1.20.0
   tmp@<0.2.6: ^0.2.6
   esbuild@<0.28.1: ^0.28.1
   vite: ^8.0.16
@@ -451,7 +459,13 @@ overrides:
   # minimumReleaseAge window); verified 2026-09-20 that 16.3.3, 16.3.4 AND 16.3.5
   # each return ZERO vulns on api.osv.dev. Stays inside 16.x: 16.3 is a patch
   # line off the major the UI already runs.
-  next@<16.3.3: ^16.3.3
+  #
+  # 2026-09-30: a third CRITICAL, GHSA-vcvr-r3jv-pc5j (CVSS 9.5, RCE in
+  # next/og ImageResponse), published 14:48Z for `>=16.2.0 <16.3.6`, fixed in
+  # 16.3.6. METIS does not import next/og, but the CI audit gate fails on it.
+  # Bound and floor move to 16.3.6 with `ui/package.json`. 16.3.6 was published
+  # 2026-09-22, clear of the 7-day minimumReleaseAge window; 16.3.7 (09-29) is not.
+  next@<16.3.6: ^16.3.6
 
   # @xmldom/xmldom, NINETEEN High advisories across two lines, all published
   # 2026-09-08 (#1363) — DOM-clobbering and parser-confusion bugs that let
