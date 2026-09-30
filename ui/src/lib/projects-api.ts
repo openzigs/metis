@@ -9,6 +9,7 @@ import { API_BASE } from "@/lib/config";
 import type {
   AnalysisDatabaseAwareReason,
   DatabaseAwareAnalysisSetting,
+  DocumentSource,
   SqlLineageReason,
   SqlLineageSetting,
 } from "@metis/shared";
@@ -64,7 +65,8 @@ export interface ProjectListPage {
  * `server/src/lib/documents/document-source.ts`). Classify on this, never on
  * the filename: an upload may be named `jira:ABC-1`.
  */
-export type DocumentSource = "upload" | "generated" | "repo" | "db" | "confluence" | "jira";
+// #547 — the closed set is defined once, in `@metis/shared`.
+export type { DocumentSource };
 
 export interface DocumentRow {
   id: string;
@@ -113,6 +115,8 @@ export interface RetrievedChunk {
   text: string;
   score: number;
   embeddingModel: string;
+  /** #547 — the hit's stored `documents.source`; classify on this, not the filename. */
+  source: DocumentSource;
 }
 
 export const projectsApi = {

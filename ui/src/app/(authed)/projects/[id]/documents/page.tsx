@@ -46,9 +46,8 @@ export default function ProjectDocumentsPage() {
   // Polls while anything is ingesting and re-reads on `document:status`.
   const docs = useProjectDocuments(id);
   // #363 — repository names, fetched only when a repository file is listed.
-  const hasRepoDocs = (docs.data?.items ?? []).some((d) =>
-    d.filename.startsWith("connector:repo:"),
-  );
+  // #547 — classified by stored source, not by a filename an upload can mimic.
+  const hasRepoDocs = (docs.data?.items ?? []).some((d) => d.source === "repo");
   const repoNames = useRepoNames(hasRepoDocs ? id : null);
 
   const removeDoc = useMutation({
@@ -118,6 +117,7 @@ export default function ProjectDocumentsPage() {
                 <div className="min-w-0">
                   <DocumentName
                     filename={d.filename}
+                    source={d.source}
                     repoNames={repoNames}
                     className="font-medium"
                   />

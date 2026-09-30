@@ -25,10 +25,17 @@ function fakeProvider(jsonByCall: string[] | string): AIProvider {
   return { chat } as unknown as AIProvider;
 }
 
-function fakeKnowledge(hits: { filename: string; text: string; score?: number }[]) {
+function fakeKnowledge(
+  hits: { filename: string; text: string; score?: number; source?: string }[],
+) {
   return {
     search: vi.fn(async () => ({
-      hits: hits.map((h) => ({ filename: h.filename, text: h.text, score: h.score ?? 0.9 })),
+      hits: hits.map((h) => ({
+        filename: h.filename,
+        text: h.text,
+        score: h.score ?? 0.9,
+        source: h.source ?? (h.filename.startsWith("connector:db:") ? "db" : "upload"),
+      })),
     })),
   };
 }
@@ -266,6 +273,24 @@ describe("suggestMappings", () => {
 
     expect(result.candidates).toEqual([]);
     expect(result.note).toMatch(/no ingested database schema/i);
+  });
+
+  // #547 — an upload stored before #540 under a schema-doc name is not a
+  // database table: the hit's source says so, whatever its filename.
+  it("ignores a connector-shaped upload: only a db-sourced hit is a table", async () => {
+    const provider = fakeProvider(JSON.stringify({ candidates: [] }));
+    const result = await suggestMappings("proj-1", "req-1", {
+      prisma: fakePrisma({ requirement: REQUIREMENT }),
+      knowledge: fakeKnowledge([
+        { filename: "connector:db:db-1:public.users.md", text: "an upload", source: "upload" },
+      ]),
+      provider,
+      env: {},
+    });
+
+    expect(result.candidates).toEqual([]);
+    expect(result.note).toMatch(/no ingested database schema/i);
+    expect(provider.chat).not.toHaveBeenCalled();
   });
 
   it("returns a note when the requirement is not in the project", async () => {

@@ -14,8 +14,17 @@ const policy: EvidencePolicy = {
   sharedDocumentIds: ["reference"],
   allowWebResearch: false,
 };
-function fixture() {
-  const records = [
+type FixtureRecord = {
+  id: string;
+  documentId: string;
+  filename: string;
+  acl: string;
+  source?: string;
+};
+function fixture(extra: FixtureRecord[] = []) {
+  // Extra records lead, so they fall inside the default top-k.
+  const records: FixtureRecord[] = [
+    ...extra,
     { id: "allowed", documentId: "allowed", filename: "connector:repo:a:src/same.ts", acl: "[]" },
     { id: "foreign", documentId: "foreign", filename: "connector:repo:b:src/same.ts", acl: "[]" },
     {
@@ -41,7 +50,7 @@ function fixture() {
     aclSubjects: "[]",
     document: {
       filename: r.filename,
-      source: r.filename.startsWith("connector:repo:") ? "repo" : "upload",
+      source: r.source ?? (r.filename.startsWith("connector:repo:") ? "repo" : "upload"),
       storagePath: "blob",
       aclSubjects: r.acl,
     },
@@ -104,6 +113,42 @@ describe("KnowledgeService primary evidence before reranking #1353", () => {
         { chunkId: "reference", text: "LIVE-reference", score: expect.any(Number) },
       ]);
       expect(result.hits[1].filename).toBe("glossary.md");
+    },
+  );
+
+  // #547 — every hit carries its row's `documents.source`, read in SQL: the
+  // vector store's copy of the filename (connector-shaped for every record
+  // here) is not what a reader may classify on.
+  it.each(["dense", "hybrid"] as const)(
+    "%s hits carry the document row's source, not a filename-derived kind",
+    async (mode) => {
+      const { service } = fixture();
+      const result = await service.search("p1", "query", { mode, evidencePolicy: policy });
+      expect(result.hits.map((h) => [h.chunkId, h.source])).toEqual([
+        ["allowed", "repo"],
+        ["reference", "upload"],
+      ]);
+    },
+  );
+
+  // #547 — an upload stored under a repo-shaped name keeps its stored source:
+  // a hit classified by filename prefix would read "repo" here.
+  it.each(["dense", "hybrid"] as const)(
+    "%s hit for an upload named like a repo file carries source upload",
+    async (mode) => {
+      const { service } = fixture([
+        {
+          id: "impostor",
+          documentId: "impostor",
+          filename: "connector:repo:a:src/x.ts",
+          acl: "[]",
+          source: "upload",
+        },
+      ]);
+      const result = await service.search("p1", "query", { mode });
+      const hit = result.hits.find((h) => h.chunkId === "impostor");
+      expect(hit?.filename).toBe("connector:repo:a:src/same.ts");
+      expect(hit?.source).toBe("upload");
     },
   );
 

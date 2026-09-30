@@ -166,7 +166,7 @@ export function AddDocumentsPanel({
               />
               {/* Issue #363 — path over repository label; the internal key
                   is only the tooltip. */}
-              <DocumentName filename={d.filename} repoNames={repoNames} />
+              <DocumentName filename={d.filename} source={d.source} repoNames={repoNames} />
               {!ready ? (
                 <span
                   className={`ml-auto inline-block rounded border px-1.5 py-0.5 text-[10px] ${statusBadgeClass(d.status)}`}

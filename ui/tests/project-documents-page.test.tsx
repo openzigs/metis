@@ -122,7 +122,16 @@ describe("ProjectDocumentsPage", () => {
       { id: "cmumwycfx002j2c9kp7kpu2tg", repoName: "metis", label: "Metis" },
     ]);
     list.mockResolvedValue({
-      items: [{ id: "d1", filename: key, status: "ready", chunkCount: 3, sizeBytes: 2048 }],
+      items: [
+        {
+          id: "d1",
+          filename: key,
+          source: "repo",
+          status: "ready",
+          chunkCount: 3,
+          sizeBytes: 2048,
+        },
+      ],
     });
     const Wrapper = makeWrapper({});
     render(
@@ -136,6 +145,33 @@ describe("ProjectDocumentsPage", () => {
     expect(row.textContent).not.toContain("connector:repo:");
     expect(row.textContent).not.toContain("kpu2tg");
     expect(repoList).toHaveBeenCalledWith("p1");
+  });
+
+  // #547 — classify by stored source, never by filename prefix.
+  it("fetches no repository names for a legacy upload named connector:repo:", async () => {
+    const key = "connector:repo:cmumwycfx002j2c9kp7kpu2tg:src/vitest.config.ts";
+    get.mockResolvedValue({ id: "p1", name: "Proj", slug: "proj", status: "active" });
+    list.mockResolvedValue({
+      items: [
+        {
+          id: "d1",
+          filename: key,
+          source: "upload",
+          status: "ready",
+          chunkCount: 3,
+          sizeBytes: 2048,
+        },
+      ],
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <ProjectDocumentsPage />
+      </Wrapper>,
+    );
+    const row = await screen.findByTestId("document-row-d1");
+    expect(row).toHaveTextContent(key);
+    expect(repoList).not.toHaveBeenCalled();
   });
 
   it("disables uploads for archived projects", async () => {

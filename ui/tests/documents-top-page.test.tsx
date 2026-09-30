@@ -153,4 +153,21 @@ describe("<DocumentsTopLevelPage />", () => {
     expect(repoListMock).toHaveBeenCalledTimes(1);
     expect(repoListMock).toHaveBeenCalledWith("p1");
   });
+  // #547 — classify by stored source, never by filename prefix.
+  it("fetches no repository names for a legacy upload named connector:repo:", async () => {
+    const key = "connector:repo:cmumwycfx002j2c9kp7kpu2tg:src/vitest.config.ts";
+    documentsListMock.mockImplementation(async (projectId: string) => ({
+      items:
+        projectId === "p1"
+          ? [{ ...doc("d1", "p1", key), source: "upload" as const }]
+          : [doc("d3", "p2", "beta-1.md")],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    }));
+    renderPage();
+    const row = await screen.findByTestId("documents-top-row-d1");
+    expect(row).toHaveTextContent(key);
+    expect(repoListMock).not.toHaveBeenCalled();
+  });
 });

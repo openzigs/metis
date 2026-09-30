@@ -5,17 +5,21 @@
  */
 import { formatDocumentName } from "@/lib/document-name";
 import type { RepoNameMap } from "@/hooks/use-repo-names";
+import type { DocumentSource } from "@/lib/projects-api";
 
 export function DocumentName({
   filename,
+  source,
   repoNames,
   className,
 }: {
   filename: string;
+  /** #547 — the row's `documents.source`; the label classifies on it. */
+  source: DocumentSource;
   repoNames?: RepoNameMap;
   className?: string;
 }) {
-  const name = formatDocumentName(filename, repoNames);
+  const name = formatDocumentName(filename, source, repoNames);
   return (
     <span
       className={`flex min-w-0 flex-col ${className ?? ""}`.trim()}

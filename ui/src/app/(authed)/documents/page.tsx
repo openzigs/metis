@@ -68,7 +68,8 @@ export default function DocumentsTopLevelPage() {
   const repoProjectIds = useMemo(
     () => [
       ...new Set(
-        aggregated.filter((r) => r.filename.startsWith("connector:repo:")).map((r) => r.projectId),
+        // #547 — classified by stored source, not by a filename an upload can mimic.
+        aggregated.filter((r) => r.source === "repo").map((r) => r.projectId),
       ),
     ],
     [aggregated],
@@ -88,7 +89,9 @@ export default function DocumentsTopLevelPage() {
       {
         key: "filename",
         header: "Document",
-        cell: (row) => <DocumentName filename={row.filename} repoNames={repoNames} />,
+        cell: (row) => (
+          <DocumentName filename={row.filename} source={row.source} repoNames={repoNames} />
+        ),
       },
       { key: "project", header: "Project", cell: (row) => row.projectName },
       { key: "status", header: "Status", cell: (row) => row.status },

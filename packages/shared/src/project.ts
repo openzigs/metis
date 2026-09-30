@@ -140,6 +140,21 @@ export const retrieveQuerySchema = z.object({
 });
 export type RetrieveQuery = z.infer<typeof retrieveQuerySchema>;
 
+/**
+ * #474/#547 — which path wrote a document (`documents.source`). A closed set:
+ * the server's `DocumentSource` and the UI's re-export both resolve to this.
+ */
+export const DOCUMENT_SOURCES = [
+  "upload",
+  "generated",
+  "repo",
+  "db",
+  "confluence",
+  "jira",
+] as const;
+export const documentSourceSchema = z.enum(DOCUMENT_SOURCES);
+export type DocumentSource = z.infer<typeof documentSourceSchema>;
+
 export const retrievedChunkSchema = z.object({
   chunkId: idSchema,
   documentId: idSchema,
@@ -148,6 +163,12 @@ export const retrievedChunkSchema = z.object({
   text: z.string(),
   score: z.number(),
   embeddingModel: z.string(),
+  /**
+   * #547 — the hit's `documents.source` (`upload`, `generated`, `repo`, `db`,
+   * `confluence`, `jira`). Classify a hit on this, never on its filename
+   * prefix: an upload may be named `connector:repo:…` or `jira:ABC-1`.
+   */
+  source: documentSourceSchema,
 });
 export type RetrievedChunk = z.infer<typeof retrievedChunkSchema>;
 

@@ -46,6 +46,7 @@ const docHit: RetrievedChunk = {
   text: "public class Doc {}",
   score: 0.9,
   embeddingModel: "test",
+  source: "repo",
 };
 
 describe("buildSpecKitRagContext — flag OFF", () => {
@@ -92,6 +93,21 @@ describe("buildSpecKitRagContext — flag ON", () => {
     expect(res.context).toContain("## Retrieved Code Symbols (project-scoped code graph)");
     expect(res.context).toContain("src/Validator.java:20-55");
     expect(res.context).not.toContain("[1] Doc (class)");
+  });
+
+  it("#547 — an upload sharing a repo path does not suppress the code symbol", async () => {
+    const deps = fused([{ symbolId: "s1", filePath: "x", name: "Doc", kind: "class", score: 2 }], {
+      s1: { filePath: "main/java/Doc.java", startLine: 1, endLine: 9 },
+    });
+    const upload: RetrievedChunk = { ...docHit, chunkId: "u1", documentId: "u1", source: "upload" };
+    const res = await buildSpecKitRagContext("p1", "doc", {
+      knowledgeService: knowledgeService([upload]),
+      fusedCode: deps,
+    });
+
+    expect(res.context).toContain("## Retrieved Code Symbols (project-scoped code graph)");
+    expect(res.context).toContain("main/java/Doc.java:1-9");
+    expect(res.usedSymbols).toBe(1);
   });
 
   it("returns a code-only block when doc RAG is empty", async () => {
@@ -156,6 +172,7 @@ function reqChunk(id: string, position: number, documentId = "req"): RetrievedCh
     text: `${documentId} body ${position}`,
     score: 0.5,
     embeddingModel: "test",
+    source: "upload",
   };
 }
 
@@ -208,6 +225,19 @@ describe("buildSpecKitRagContext — expandDocuments (#20)", () => {
     expect(res.context).toContain("a.md#1 (pinned");
     expect(res.context).not.toContain("c.md#1");
     expect(res.usedChunks).toBe(6);
+  });
+
+  // #547 — an upload stored before #540 under a source-file name is a
+  // document like any other; its source, not its filename, says so.
+  it("expands a connector-shaped upload: only a repo-sourced chunk is source code", async () => {
+    const legacy = { ...docHit, documentId: "legacy", chunkId: "l0", source: "upload" };
+    const ks = pinningService([legacy], { legacy: [{ ...legacy, chunkId: "l1", position: 1 }] });
+    await buildSpecKitRagContext("p1", "q", {
+      knowledgeService: ks,
+      fusedCode: fused([], {}),
+      expandDocuments: expansion,
+    });
+    expect(ks.search).toHaveBeenCalledWith("p1", "q", { k: 10, documentIds: ["legacy"] });
   });
 
   it("ignores chunks from another document and keeps top-k when expansion fails", async () => {

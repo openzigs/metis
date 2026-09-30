@@ -49,6 +49,7 @@ import {
   type VectorStore,
 } from "./vector-store.js";
 import { CONTENT_TYPE_MISMATCH, parseDocument } from "../documents/parsers.js";
+import { asDocumentSource, type DocumentSource } from "../documents/document-source.js";
 import { embedInBoundedBatches } from "./embed-batched.js";
 import { getDocumentStorage, type StorageBackend } from "../documents/storage.js";
 import { onArchive } from "../projects/project-service.js";
@@ -715,13 +716,17 @@ export class KnowledgeService {
       .map((o) => meta.get(o.chunkId))
       .filter((m): m is NonNullable<typeof m> => Boolean(m));
 
+    // #547 — the same live-row read carries each hit's `documents.source`, so
+    // a reader classifies on the row rather than on the vector store's filename.
+    const sourceByChunk = new Map<string, DocumentSource>();
     if (chosen.length > 0) {
       const liveChunkRows = await prisma.knowledgeChunk.findMany({
         where: { id: { in: chosen.map((c) => c.chunkId) }, projectId },
-        select: { id: true },
+        select: { id: true, document: { select: { source: true } } },
       });
-      const liveChunkIds = new Set(liveChunkRows.map((row) => row.id));
-      chosen = chosen.filter((chunk) => liveChunkIds.has(chunk.chunkId));
+      for (const row of liveChunkRows)
+        sourceByChunk.set(row.id, asDocumentSource(row.document.source));
+      chosen = chosen.filter((chunk) => sourceByChunk.has(chunk.chunkId));
     }
 
     if (opts.evidencePolicy) chosen = await filterPrimaryEvidence(chosen, opts.evidencePolicy);
@@ -789,6 +794,9 @@ export class KnowledgeService {
       text: m.text,
       score: m.score,
       embeddingModel: m.embeddingModel,
+      // Every chosen chunk passed the live-row read above; "upload" (never a
+      // connector kind) only satisfies the Map's type.
+      source: sourceByChunk.get(m.chunkId) ?? "upload",
     }));
 
     const coverage = await this.store.modelCoverage(projectId);

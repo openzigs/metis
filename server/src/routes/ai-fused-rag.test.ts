@@ -80,6 +80,7 @@ const docHit = {
   text: "public class Doc {}",
   score: 0.9,
   embeddingModel: "test",
+  source: "repo" as const,
 };
 
 describe("buildAutoRagContext — flag OFF (byte-identical, no code-graph query)", () => {
@@ -143,6 +144,21 @@ describe("buildAutoRagContext — flag ON (fused merge)", () => {
     expect(deps.searcher.search).toHaveBeenCalledWith("How does the tag validator work?", "p1", {
       limit: 12,
     });
+  });
+
+  it("#547 — an upload sharing a repo path does not suppress the code symbol", async () => {
+    // Same filename as the repo chunk above, but stored as an upload: only a
+    // repo-sourced hit may stand in for a code-graph symbol.
+    search.mockResolvedValue({ hits: [{ ...docHit, source: "upload" as const }] });
+    const deps = fusedDeps(
+      [{ symbolId: "s1", filePath: "x", name: "Doc", kind: "class", score: 2 }],
+      { s1: { filePath: "main/java/Doc.java", startLine: 1, endLine: 9 } },
+    );
+
+    const out = await buildAutoRagContext("p1", [userTurn], deps);
+
+    expect(out).toContain("## Retrieved Code Symbols (project-scoped code graph)");
+    expect(out).toContain("main/java/Doc.java:1-9");
   });
 
   it("surfaces a code-only block when doc RAG returns zero hits", async () => {

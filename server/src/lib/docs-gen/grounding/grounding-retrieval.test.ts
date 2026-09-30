@@ -22,7 +22,9 @@ const policy: EvidencePolicy = {
 const searchPolicy = { actor: policy.actor, evidencePolicy: policy };
 
 function knowledge(
-  hits: Array<Partial<{ documentId: string; chunkId: string; filename: string; text: string }>>,
+  hits: Array<
+    Partial<{ documentId: string; chunkId: string; filename: string; text: string; source: string }>
+  >,
 ): KnowledgeSearchLike {
   return {
     search: vi.fn().mockResolvedValue({
@@ -31,6 +33,7 @@ function knowledge(
         chunkId: h.chunkId ?? "c1",
         filename: h.filename ?? "F.ts",
         text: h.text ?? "chunk text",
+        source: h.source ?? "upload",
       })),
     }),
   };
@@ -340,7 +343,7 @@ describe("required evidence boundary #1353", () => {
       { projectId: "p1", policy, query: "q" },
       {
         knowledge: knowledge([
-          { documentId: "repo", filename: "connector:repo:a:src/a.ts" },
+          { documentId: "repo", filename: "connector:repo:a:src/a.ts", source: "repo" },
           { documentId: "reference", filename: "glossary.md" },
         ]),
         readWebResearch: vi.fn().mockResolvedValue(null),
@@ -350,5 +353,25 @@ describe("required evidence boundary #1353", () => {
       "repository-source",
       "project-reference",
     ]);
+  });
+
+  // #547 — an upload stored before #540 may carry a connector-shaped name.
+  // Its `documents.source` says what it is; the filename prefix does not.
+  it("classifies a connector-shaped upload on its source, not its filename", async () => {
+    const ctx = await buildProjectGroundingContext(
+      { projectId: "p1", policy: { ...policy, codeGraphId: "graph-1" }, query: "q" },
+      {
+        knowledge: knowledge([
+          { documentId: "real", filename: "connector:repo:a:src/a.ts", source: "repo" },
+          { documentId: "upload", filename: "connector:repo:a:src/b.ts", source: "upload" },
+        ]),
+        readWebResearch: vi.fn().mockResolvedValue(null),
+      },
+    );
+    const byId = new Map(ctx.sources.map((s) => [s.documentId, s]));
+    expect(byId.get("real")?.evidenceClass).toBe("repository-source");
+    expect(byId.get("real")?.repository).toEqual({ repoConnectorId: "a", codeGraphId: "graph-1" });
+    expect(byId.get("upload")?.evidenceClass).toBe("project-reference");
+    expect(byId.get("upload")?.repository).toBeUndefined();
   });
 });

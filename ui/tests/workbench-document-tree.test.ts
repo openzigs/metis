@@ -269,6 +269,16 @@ describe("classification by stored source (#474)", () => {
     expect(groups.sources).toEqual([]);
   });
 
+  // #547 — and labels it by its own name: a connector- or generated-shaped
+  // upload is neither a repository file nor a generated document.
+  it("labels a connector- or generated-shaped upload by its own name", () => {
+    const names = [`connector:repo:${CONN}:src/a.ts`, "generated-doc-cmqpizckr017z8ewh2unm1418.md"];
+    const entries = toPanelEntries(names.map((n, i) => doc(`u${i}`, n)));
+    expect(entries.map((e) => [e.kind, e.name, e.secondary])).toEqual(
+      names.map((n) => ["upload", n, undefined]),
+    );
+  });
+
   it("falls back to an upload label when a connector row's filename does not parse", () => {
     const entries = toPanelEntries([
       from("repo", "r1", "README.md"),

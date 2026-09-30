@@ -34,7 +34,14 @@ export interface KnowledgeSearchLike {
     query: string,
     opts?: SearchOptions,
   ): Promise<{
-    hits: Array<{ documentId: string; chunkId: string; filename: string; text: string }>;
+    hits: Array<{
+      documentId: string;
+      chunkId: string;
+      filename: string;
+      text: string;
+      /** #547 — `documents.source`; a hit is repository evidence only when `repo`. */
+      source: string;
+    }>;
   }>;
 }
 
@@ -252,10 +259,13 @@ async function retrieveRagChunks(
       evidencePolicy: input.policy,
     });
     const scope = input.pathPrefixes;
+    // #547 — classify on the row's `source`: an upload stored before #540 may
+    // be named `connector:repo:…`, and it is still a reference document.
+    const isRepo = (h: { source: string }) => h.source === "repo";
     return result.hits
       .filter((h) => !isJunkSourcePath(h.filename))
       .filter((h) => {
-        if (!scope) return true;
+        if (!scope || !isRepo(h)) return true;
         const rel = extractRepoRelPath(h.filename);
         return rel === null || isInPathScope(rel, scope);
       })
@@ -264,10 +274,11 @@ async function retrieveRagChunks(
         chunkId: h.chunkId,
         filename: h.filename,
         text: h.text,
-        evidenceClass: h.filename.startsWith("connector:repo:")
-          ? ("repository-source" as const)
-          : ("project-reference" as const),
-        ...resolveRepositoryIdentity(h.filename, input.policy),
+        evidenceClass:
+          isRepo(h) && h.filename.startsWith("connector:repo:")
+            ? ("repository-source" as const)
+            : ("project-reference" as const),
+        ...(isRepo(h) ? resolveRepositoryIdentity(h.filename, input.policy) : {}),
       }));
   } catch {
     log.warn("RAG retrieval for grounding failed (continuing ungrounded)", {

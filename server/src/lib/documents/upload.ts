@@ -81,9 +81,10 @@ export function validateUpload(input: UploadCandidate): UploadValidation {
 
 /**
  * Issue #525 — filename prefixes that connector and generated-document writers
- * use. Readers that only have a search hit's filename (grounding, evidence
- * labels, schema mappings, the UI's source labels) classify on these, so an
- * upload may not carry one. Each prefix is matched the way its readers match
+ * use. Chat and Spec Kit code-symbol dedup, grounding and the document lists
+ * classify on `documents.source` (#547); analysis citations and analysis
+ * code-symbol dedup still read these prefixes until #573, so an upload may not
+ * carry one. Each prefix is matched the way its readers match
  * it: case-sensitively, except `generated-doc-`, which `doc-label.ts` matches
  * with `/i` (see {@link CASE_INSENSITIVE_RESERVED_PREFIXES}). A pasted title
  * such as `Jira: sprint 12 retro.md` reaches no reader's pattern, so it stays
