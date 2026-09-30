@@ -479,5 +479,54 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await row.written(fixture, res)).toBe(true);
       },
     );
+
+    // #552 x #574 — the window check runs inside the create's try, so a refusal
+    // that comes AFTER the request auto-vaulted a plaintext secret still
+    // withdraws it: the row never landed, so nothing will ever name it.
+    it("mcp.ts POST / — a window refusal after auto-vaulting withdraws the vaulted secret", async () => {
+      const label = `mcp-552-autovault-${next()}`;
+      const vault = getVaultService();
+      const realCreate = vault.create.bind(vault);
+      let until: Date | null = null;
+      const vaulted: string[] = [];
+      state.onStamp = (u) => {
+        until = u;
+      };
+      // The seam: each auto-vault really lands, THEN the clock reaches `until`.
+      const spy = vi
+        .spyOn(vault, "create")
+        .mockImplementation(async (...args: Parameters<typeof vault.create>) => {
+          const summary = await realCreate(...args);
+          vaulted.push(summary.id);
+          if (until) vi.setSystemTime(until.getTime());
+          return summary;
+        });
+      vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+      let res: request.Response;
+      try {
+        res = await call("post", "/api/mcp", {
+          scope: "global",
+          label,
+          transport: "stdio",
+          command: "node",
+          args: ["server.js"],
+          // A bound ref (so the check stamps) plus a plaintext secret (auto-vaulted).
+          env: { API_KEY: ref(OWN_LABEL), UPSTREAM_TOKEN: "plaintext-autovault-value-552" },
+        });
+      } finally {
+        spy.mockRestore();
+        state.onStamp = null;
+        vi.useRealTimers();
+      }
+      expect(until).not.toBeNull();
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.error.code).toBe(SECRET_BINDING_WINDOW_EXPIRED);
+      expect(await db.mCPServer.count({ where: { label } })).toBe(0);
+      // The request did auto-vault the plaintext: the refusal came after it.
+      expect(vaulted).toHaveLength(1);
+      const secret = await db.secret.findUniqueOrThrow({ where: { id: vaulted[0] } });
+      // ...and withdrew it, because the row never landed.
+      expect(secret.deletedAt).not.toBeNull();
+    });
   },
 );
