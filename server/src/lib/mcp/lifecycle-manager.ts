@@ -54,7 +54,7 @@ export function redactErrorMessage(input: string | null | undefined): string | n
 
 export interface LifecycleOptions {
   /**
-   * Resolves vault refs (`${vault:...}`) inside env values. Provided by the
+   * Resolves vault refs (`${vault:...}`) inside env and header values. Provided by the
    * caller so tests can inject a fake vault.
    */
   /**
@@ -249,9 +249,25 @@ export class MCPLifecycleManager {
     this.emit(entry.config, entry.state);
 
     let env: Record<string, string> = {};
+    // #504 — header values carry `${vault:x}` references too (the importer
+    // vaults an `Authorization` header, and #480 binds them), so they are
+    // expanded through the same bindings as the env instead of being sent
+    // literally. Only the transport sees the expanded copy; `entry.config`
+    // keeps the references.
+    let config = entry.config;
     try {
       const raw = entry.config.env ?? {};
       env = await this.opts.resolveEnv(raw, entry.config.secretBindings ?? null);
+      const headers = entry.config.headers;
+      if (
+        headers &&
+        Object.values(headers).some((v) => typeof v === "string" && v.includes("${vault:"))
+      ) {
+        config = {
+          ...entry.config,
+          headers: await this.opts.resolveEnv(headers, entry.config.secretBindings ?? null),
+        };
+      }
     } catch (err) {
       const message = redactErrorMessage(`env resolution failed: ${(err as Error).message}`);
       entry.state.status = "error";
@@ -287,10 +303,7 @@ export class MCPLifecycleManager {
     }
     entry.cleanup = provisioned.cleanup ?? null;
 
-    const transport = (this.opts.transportFactory ?? defaultTransportFactory)(
-      entry.config,
-      provisioned,
-    );
+    const transport = (this.opts.transportFactory ?? defaultTransportFactory)(config, provisioned);
     const client = new MCPClient(transport, entry.config.defaultToolRisk);
     entry.transport = transport;
     entry.client = client;

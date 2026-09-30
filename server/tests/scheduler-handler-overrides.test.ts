@@ -363,7 +363,9 @@ describe("buildSchedulerHandlerOverrides", () => {
     expect(mocks.startAnalysis).toHaveBeenCalledWith({ projectId: "p-x", startedById: "system" });
   });
 
-  it("publish-batch invokes runBatch with non-dry-run defaults", async () => {
+  // #504 — exact arguments: a scheduled republish passes NO credential, so it
+  // never uses the secret bound by whoever created the batch.
+  it("publish-batch invokes runBatch with non-dry-run defaults and no credential", async () => {
     const overrides = buildSchedulerHandlerOverrides();
     const out = await overrides.publishBatch!("batch-99", new AbortController().signal);
     expect(out).toEqual({ batchId: "batch-99", status: "completed" });

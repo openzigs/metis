@@ -378,7 +378,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await bindings(id)).toEqual({ [label]: own, [hdr]: ownHdr });
 
         await call("post", `/api/mcp/${id}/start`, COORD);
-        expect(state.sent).toEqual(["coord-mcp-480"]);
+        // #504 — header references are expanded through the bindings too.
+        expect(state.sent).toEqual(["coord-mcp-480", "coord-hdr-480"]);
 
         state.sent.length = 0;
         await reCreateInOtherScope(own, label);

@@ -1,0 +1,345 @@
+/**
+ * #504 — the follow-ups #480 (PR #499) deferred.
+ *
+ *   1. MCP servers and live publish batches saved before #480 carry no
+ *      binding; `backfillSecretBindings` binds each reference with the #344
+ *      matching rule, and flags — never guesses — one that is ambiguous or
+ *      reaches nothing, leaving it unable to resolve by label.
+ *   2. Jira and test-management connections read their stored secret id and
+ *      nothing else: a secret created with a LABEL equal to that id, after the
+ *      bound one is deleted, is never picked up.
+ *
+ * Real vault, real audit, real SQLite built from the migration chain. The
+ * Jira client factory is the only stub, and it records the token it is handed.
+ */
+import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { PrismaClient } from "@prisma/client";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
+import {
+  createMigratedSqlite,
+  type MigratedSqlite,
+  MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
+} from "./helpers/sqlite-migrated-db.js";
+
+const state = vi.hoisted(() => ({ db: null as unknown, sent: [] as string[] }));
+vi.mock("../src/lib/prisma.js", async () => {
+  const { Prisma } = await import("@prisma/client");
+  return {
+    get prisma() {
+      return state.db;
+    },
+    Prisma,
+  };
+});
+vi.mock("../src/lib/connectors/network-allowlist.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  assertConnectorHostAllowed: async () => undefined,
+}));
+vi.mock("../src/lib/connectors/jira/jira-client.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  createJiraClient: (cfg: { apiToken: string }) => {
+    state.sent.push(cfg.apiToken);
+    return {};
+  },
+}));
+
+const { getVaultService, __resetVaultSingleton } =
+  await import("../src/lib/vault/vault-service.js");
+const { getAuditService } = await import("../src/lib/audit/audit-service.js");
+const { backfillSecretBindings, BACKFILL_FLAGGED_ACTION } =
+  await import("../src/lib/vault/secret-binding-backfill.js");
+const { parseSecretBindings } = await import("../src/lib/vault/bound-secret.js");
+const { expandVaultRefs } = await import("../src/lib/vault/env-manager.js");
+const { batchTokenSource } = await import("../src/lib/publishing/publishing-service.js");
+const { buildJiraClientForConnection } = await import("../src/lib/connectors/jira/jira-service.js");
+const { loadResolvedTestManagementConnection } =
+  await import("../src/lib/connectors/testmgmt/connection-service.js");
+
+const PROJ = "proj-504-backfill";
+const ADMIN_VALUE = "admin-value-504";
+const ref = (body: string) => `\${vault:${body}}`;
+
+describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
+  "#504 — pre-#480 references are bound or flagged; stored ids never resolve by label",
+  () => {
+    let sqlite: MigratedSqlite;
+    let db: PrismaClient;
+    let seq = 0;
+    const next = () => (seq += 1);
+
+    const secret = async (label: string, value: string, scope: "global" | "project" = "global") =>
+      (await getVaultService().create(label, value, scope, { createdById: "u-coord" })).id;
+    /** Delete the bound secret, then create a secret whose LABEL is its id. */
+    const squatOnId = async (id: string) => {
+      await getVaultService().delete(id);
+      await getVaultService().create(id, ADMIN_VALUE, "global", { createdById: "u-admin" });
+    };
+
+    /** An MCP server row as saved before #480: `secretBindings` NULL. */
+    const legacyMcp = async (env: Record<string, string>, headers?: Record<string, string>) =>
+      (
+        await db.mCPServer.create({
+          data: {
+            label: `mcp-504-${next()}`,
+            transport: headers ? "http" : "stdio",
+            command: headers ? null : "node",
+            url: headers ? "https://mcp.example.test" : null,
+            headers: headers ? JSON.stringify(headers) : null,
+            envJson: JSON.stringify(env),
+            createdById: "u-coord",
+          },
+        })
+      ).id;
+    const bindingsOf = async (id: string) =>
+      parseSecretBindings((await db.mCPServer.findUniqueOrThrow({ where: { id } })).secretBindings);
+
+    /** A publish batch as created before #480: `metadata` with no `secretId`. */
+    const legacyBatch = async (metadata: Record<string, unknown>, dryRun = false) =>
+      (
+        await db.publishBatch.create({
+          data: {
+            projectId: PROJ,
+            targetOwner: "o",
+            targetRepo: "r",
+            dryRun,
+            startedById: "u-coord",
+            metadata: JSON.stringify(metadata),
+          },
+        })
+      ).id;
+    const metaOf = async (id: string) =>
+      JSON.parse((await db.publishBatch.findUniqueOrThrow({ where: { id } })).metadata!) as Record<
+        string,
+        unknown
+      >;
+
+    const flagsFor = async (id: string) => {
+      await vi.waitFor(() => expect(getAuditService().inFlight).toBe(0));
+      const rows = await db.auditLog.findMany({
+        where: { action: BACKFILL_FLAGGED_ACTION, targetId: id },
+      });
+      return rows.map((r) => JSON.parse(r.metadata ?? "{}").flagged);
+    };
+
+    beforeAll(async () => {
+      sqlite = createMigratedSqlite("504-secret-binding-backfill");
+      db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
+      state.db = db;
+      __resetVaultSingleton();
+      for (const id of ["u-admin", "u-coord"]) {
+        await db.user.create({
+          data: { id, username: id, displayName: id, email: `${id}@example.test` },
+        });
+      }
+      await db.project.create({
+        data: { id: PROJ, name: PROJ, slug: PROJ, createdById: "u-admin" },
+      });
+    }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
+
+    beforeEach(() => {
+      state.sent.length = 0;
+    });
+
+    afterAll(async () => {
+      await vi.waitFor(() => expect(getAuditService().inFlight).toBe(0));
+      __resetVaultSingleton();
+      await db?.$disconnect();
+      sqlite?.cleanup();
+    });
+
+    // ── 1. MCP servers ──────────────────────────────────────────────────────
+    describe("MCP servers saved before #480", () => {
+      it("binds env and header references to the ids they resolve to now", async () => {
+        const envLabel = `mcp-env-504-${next()}`;
+        const hdrLabel = `mcp-hdr-504-${next()}`;
+        const envId = await secret(envLabel, "env-value");
+        const hdrId = await secret(hdrLabel, "hdr-value");
+        const id = await legacyMcp(
+          { TOKEN: ref(envLabel) },
+          { Authorization: `Bearer ${ref(`global:${hdrLabel}`)}` },
+        );
+
+        await backfillSecretBindings();
+
+        expect(await bindingsOf(id)).toEqual({ [envLabel]: envId, [`global:${hdrLabel}`]: hdrId });
+        expect(await flagsFor(id)).toEqual([]);
+      });
+
+      it("closes the re-bind: once bound, a re-created label is never read", async () => {
+        const label = `mcp-rebind-504-${next()}`;
+        const own = await secret(label, "coord-value");
+        const id = await legacyMcp({ TOKEN: ref(label) });
+        await backfillSecretBindings();
+
+        await getVaultService().delete(own);
+        await secret(label, ADMIN_VALUE, "project");
+        await expect(
+          expandVaultRefs({ TOKEN: ref(label) }, getVaultService(), await bindingsOf(id)),
+        ).rejects.toThrow(/has been deleted/);
+      });
+
+      it("flags an ambiguous label instead of guessing, and it no longer resolves", async () => {
+        const label = `mcp-amb-504-${next()}`;
+        await secret(label, "one", "global");
+        await secret(label, "two", "project");
+        const id = await legacyMcp({ TOKEN: ref(label) });
+
+        await backfillSecretBindings();
+
+        expect(await bindingsOf(id)).toEqual({});
+        expect(await flagsFor(id)).toEqual([[{ ref: label, reason: "ambiguous" }]]);
+        await expect(
+          expandVaultRefs({ TOKEN: ref(label) }, getVaultService(), await bindingsOf(id)),
+        ).rejects.toThrow(/not bound to a secret/);
+      });
+
+      it("flags an unresolved label and keeps the ones that did bind", async () => {
+        const good = `mcp-good-504-${next()}`;
+        const missing = `mcp-missing-504-${next()}`;
+        const goodId = await secret(good, "good-value");
+        const id = await legacyMcp({ A: ref(good), B: ref(missing) });
+
+        await backfillSecretBindings();
+
+        expect(await bindingsOf(id)).toEqual({ [good]: goodId });
+        expect(await flagsFor(id)).toEqual([[{ ref: missing, reason: "unresolved" }]]);
+        // A secret created under the missing label later is not picked up.
+        await secret(missing, ADMIN_VALUE);
+        await expect(
+          expandVaultRefs({ B: ref(missing) }, getVaultService(), await bindingsOf(id)),
+        ).rejects.toThrow(/not bound to a secret/);
+      });
+
+      it("gives a server with no references an empty binding", async () => {
+        const id = await legacyMcp({ PLAIN: "value" });
+        await backfillSecretBindings();
+        expect(await bindingsOf(id)).toEqual({});
+      });
+
+      it("leaves a server already bound untouched, and a second run writes nothing", async () => {
+        const label = `mcp-bound-504-${next()}`;
+        await secret(label, "v");
+        const id = (
+          await db.mCPServer.create({
+            data: {
+              label: `mcp-504-${next()}`,
+              transport: "stdio",
+              command: "node",
+              envJson: JSON.stringify({ T: ref(label) }),
+              secretBindings: JSON.stringify({ [label]: "kept-id" }),
+              createdById: "u-coord",
+            },
+          })
+        ).id;
+
+        await backfillSecretBindings();
+        expect(await bindingsOf(id)).toEqual({ [label]: "kept-id" });
+        expect(await backfillSecretBindings()).toEqual({
+          mcpServersBound: 0,
+          mcpServersFlagged: 0,
+          batchesBound: 0,
+          batchesFlagged: 0,
+        });
+      });
+    });
+
+    // ── 1b. Publish batches ─────────────────────────────────────────────────
+    describe("publish batches created before #480", () => {
+      it("binds a live batch's reference to the id it resolves to now", async () => {
+        const label = `batch-504-${next()}`;
+        const own = await secret(label, "gh-token");
+        const id = await legacyBatch({ secretRef: ref(label), draftIds: ["d1"] });
+
+        await backfillSecretBindings();
+
+        const meta = await metaOf(id);
+        expect(meta).toMatchObject({ secretRef: ref(label), secretId: own, draftIds: ["d1"] });
+        expect(batchTokenSource(meta)).toEqual({ secretRef: ref(label), boundSecretId: own });
+      });
+
+      it("flags an ambiguous batch reference and strips its label path", async () => {
+        const label = `batch-amb-504-${next()}`;
+        await secret(label, "one", "global");
+        await secret(label, "two", "project");
+        const id = await legacyBatch({ secretRef: ref(label) });
+
+        await backfillSecretBindings();
+
+        const meta = await metaOf(id);
+        expect(meta).toMatchObject({ secretId: null, secretBindingFlag: "ambiguous" });
+        expect(await flagsFor(id)).toEqual([[{ ref: label, reason: "ambiguous" }]]);
+        expect(batchTokenSource(meta)).toEqual({ secretRef: null, boundSecretId: null });
+      });
+
+      it("flags an unresolved batch reference", async () => {
+        const label = `batch-missing-504-${next()}`;
+        const id = await legacyBatch({ secretRef: ref(label) });
+        await backfillSecretBindings();
+        expect(await metaOf(id)).toMatchObject({ secretId: null, secretBindingFlag: "unresolved" });
+        expect(await flagsFor(id)).toEqual([[{ ref: label, reason: "unresolved" }]]);
+      });
+
+      it("leaves dry runs, already-bound batches and malformed refs alone", async () => {
+        const label = `batch-skip-504-${next()}`;
+        await secret(label, "v");
+        const dry = await legacyBatch({ secretRef: ref(label) }, true);
+        const bound = await legacyBatch({ secretRef: ref(label), secretId: null });
+        const malformed = await legacyBatch({ secretRef: "not-a-ref" });
+
+        await backfillSecretBindings();
+
+        expect(await metaOf(dry)).toEqual({ secretRef: ref(label) });
+        expect(await metaOf(bound)).toEqual({ secretRef: ref(label), secretId: null });
+        expect(await metaOf(malformed)).toEqual({ secretRef: "not-a-ref" });
+      });
+    });
+
+    // ── 2. Jira and test-management read the stored id only ─────────────────
+    describe("stored secret ids are never re-resolved by label", () => {
+      it("Jira: a secret labelled with the deleted secret's id is never used", async () => {
+        const own = await secret(`jira-504-${next()}`, "jira-token");
+        const conn = await db.jiraConnection.create({
+          data: {
+            projectId: PROJ,
+            label: `jira-504-${next()}`,
+            edition: "cloud",
+            baseUrl: "https://jira.example.test",
+            username: "u",
+            secretId: own,
+            createdById: "u-coord",
+          },
+        });
+        await buildJiraClientForConnection(conn.id);
+        expect(state.sent).toEqual(["jira-token"]);
+
+        state.sent.length = 0;
+        await squatOnId(own);
+        await expect(buildJiraClientForConnection(conn.id)).rejects.toThrow(/not found/);
+        expect(state.sent).toEqual([]);
+      });
+
+      it("test management: a secret labelled with the deleted secret's id is never used", async () => {
+        const own = await secret(`tm-504-${next()}`, "tm-token");
+        const conn = await db.testManagementConnection.create({
+          data: {
+            projectId: PROJ,
+            label: `tm-504-${next()}`,
+            kind: "zephyr",
+            baseUrl: "https://zephyr.example.test",
+            authConfigJson: JSON.stringify({ kind: "zephyr", bearerTokenRef: ref(own) }),
+            createdById: "u-coord",
+          },
+        });
+        const deps = { assertHost: async () => undefined };
+        const ok = await loadResolvedTestManagementConnection(conn.id, PROJ, deps);
+        expect(ok.auth).toEqual({ kind: "zephyr", bearerToken: "tm-token" });
+
+        await squatOnId(own);
+        await expect(
+          loadResolvedTestManagementConnection(conn.id, PROJ, deps),
+        ).rejects.toMatchObject({ code: "VAULT_BINDING_STALE" });
+      });
+    });
+  },
+);
