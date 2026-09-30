@@ -1,9 +1,10 @@
 /**
  * #482 — rotating a vault secret someone else owns needs an explicit confirm.
  *
- * `POST /api/vault/:id/rotate` keeps `createdById`, and a secret's owner may
- * already have bound it to a destination they chose (`secret-binding.ts`). An
- * admin who rotates a real value into it sends that value to the owner's host.
+ * A secret's owner may already have bound it to a destination they chose
+ * (`secret-binding.ts`), so an admin who rotates a real value into it sends
+ * that value to the owner's host. (Since #502 a confirmed rotation also moves
+ * `createdById` to the admin; see below.)
  * So the route refuses with 409 {@link VAULT_ROTATE_FOREIGN_OWNER} unless the
  * request sets `confirmForeignOwner: true`, and the refusal names the owner and
  * every resource the secret is bound to so the admin can decide.
