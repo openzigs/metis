@@ -158,6 +158,8 @@ export function describeConditionalBindingUpdates(opts: {
 
     let seq = 0;
     const next = () => (seq += 1);
+    /** Every MCP server this run created, for `purgeRunRows`. */
+    const mcpServerIds: string[] = [];
 
     type Model = "jiraConnection" | "testManagementConnection" | "mCPServer";
     /**
@@ -278,12 +280,13 @@ export function describeConditionalBindingUpdates(opts: {
     /**
      * Every row this run wrote, children first. Most hang off the project and
      * go with it (`onDelete: Cascade`); MCP servers, secrets and audit rows do
-     * not, and are found by the run's users and label suffix.
+     * not: secrets and audit rows are found by the run's users, MCP servers
+     * (which carry no creator, and are renamed by the tests) by the ids created.
      */
     const purgeRunRows = async () => {
       const users = [ADMIN_ID, COORD_ID];
       await db.auditLog.deleteMany({ where: { actorId: { in: users } } });
-      await db.mCPServer.deleteMany({ where: { label: { startsWith: `mcp-${suffix}-` } } });
+      await db.mCPServer.deleteMany({ where: { id: { in: mcpServerIds } } });
       await db.project.deleteMany({ where: { id: PROJ } });
       await db.workspaceMember.deleteMany({ where: { workspaceId: WS } });
       await db.workspace.deleteMany({ where: { id: WS } });
@@ -618,6 +621,7 @@ export function describeConditionalBindingUpdates(opts: {
           env: { API_KEY: ref(FOREIGN) },
         });
         expect(res.status, JSON.stringify(res.body)).toBe(201);
+        mcpServerIds.push(res.body.data.id as string);
         return res.body.data.id as string;
       };
       const row = (id: string) => db.mCPServer.findUniqueOrThrow({ where: { id } });
