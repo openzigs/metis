@@ -1,0 +1,15 @@
+-- Issue #552 — a confirmed foreign-owner vault rotation must not interleave
+-- with a write that binds the same secret somewhere new.
+--
+-- `bindingWriteUntil` is stamped by every such binding write BEFORE its
+-- ownership check runs (`lib/vault/binding-write-mark.ts`), and the rotation's
+-- UPDATE is conditional on the value it read before listing the bindings. A
+-- binding write that starts after that read moves the column, so the rotation
+-- is refused; one that started earlier and is still inside its window refuses
+-- the rotation up front.
+--
+-- Additive only: NULLABLE, not backfilled (NULL = no binding write in flight).
+--
+-- Rollback (documentation): `ALTER TABLE "secrets" DROP COLUMN "bindingWriteUntil";`
+-- (SQLite 3.35+). Lossless: the column holds only a short-lived window end.
+ALTER TABLE "secrets" ADD COLUMN "bindingWriteUntil" DATETIME;

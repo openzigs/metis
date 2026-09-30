@@ -54,6 +54,10 @@ import { summarizeUsage } from "../lib/finops/index.js";
 import { prisma } from "../lib/prisma.js";
 import { createRepoConnector } from "../lib/connectors/repo/repo-service.js";
 import { assertRepoSecretBinding } from "../lib/connectors/connector-secret-binding.js";
+import {
+  assertBindingWriteWindowOpen,
+  SECRET_BINDING_WINDOW_EXPIRED,
+} from "../lib/vault/binding-write-mark.js";
 import { ConnectorError } from "../lib/connectors/types.js";
 import { isDriverDetailCode, sanitizeDriverError } from "../lib/connectors/driver-error.js";
 import { createChildLogger } from "../lib/logger.js";
@@ -113,6 +117,9 @@ function primaryRepoLinkError(err: unknown, projectId: string): PrimaryRepoLinkE
       ? sanitizeDriverError(err.code, err.message).errorMessage
       : err.message;
     return { code: err.code, message };
+  }
+  if (err instanceof AppError && err.code === SECRET_BINDING_WINDOW_EXPIRED) {
+    return { code: err.code, message: err.message };
   }
   logger.warn("primary repo link failed on project create", {
     projectId,
@@ -191,11 +198,15 @@ export function projectsRouter(): Router {
       // #344 — the primary repo's secret is bound here too; refuse before the
       // project exists so a refused binding leaves nothing behind.
       // `actor` already threw 401 without a user, so this cannot be skipped.
+      let bindingUntil: Date | null = null;
       if (primaryRepo?.secretRef) {
-        await assertRepoSecretBinding({ userId: actor.id, role: actor.role }, "new", null, {
-          apiBaseUrl: primaryRepo.apiBaseUrl ?? null,
-          secretRef: primaryRepo.secretRef,
-        });
+        const check = await assertRepoSecretBinding(
+          { userId: actor.id, role: actor.role },
+          "new",
+          null,
+          { apiBaseUrl: primaryRepo.apiBaseUrl ?? null, secretRef: primaryRepo.secretRef },
+        );
+        bindingUntil = check.until;
       }
       // Attach workspaceId so createProject can persist it
       const project = await createProject(
@@ -211,6 +222,9 @@ export function projectsRouter(): Router {
       let primaryRepoError: PrimaryRepoLinkError | null = null;
       if (primaryRepo) {
         try {
+          // #552 — the repo binding must land inside its check's window; a
+          // refusal is reported in `primaryRepoError` like any failed link.
+          assertBindingWriteWindowOpen(bindingUntil);
           primaryRepoConnector = await createRepoConnector(
             project.id,
             {
@@ -941,11 +955,12 @@ export function projectsRouter(): Router {
         const targetBaseUrl = typeof body.targetBaseUrl === "string" ? body.targetBaseUrl : null;
         // #358 — the caller picks both the secret and the host it is sent to.
         if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-        await assertPublishSecretBinding(
+        const until = await assertPublishSecretBinding(
           req.user,
           { secretRef, baseUrl: targetBaseUrl },
           { type: "github_projects_v2", id: String(req.params.id) },
         );
+        assertBindingWriteWindowOpen(until); // #552
         const boards = await listGitHubProjectsV2Boards({
           secretRef,
           targetOwner,

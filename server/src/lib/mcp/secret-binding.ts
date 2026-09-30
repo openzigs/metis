@@ -24,6 +24,7 @@ import { assertSecretBindingAllowed, refBodiesIn } from "../vault/secret-binding
 import {
   authorizeAndBindSecretRefs,
   parseSecretBindings,
+  type AuthorizedSecretBindings,
   VAULT_REF_AMBIGUOUS,
   VAULT_REF_UNRESOLVED,
   type SecretBindings,
@@ -100,12 +101,13 @@ export function mcpDestinationChanged(row: McpDestinationRow, patch: McpDestinat
 
 /**
  * A new server: every secret its env/headers reference must be the caller's.
- * Returns the ids those references were checked against, to bind (#577).
+ * Returns the ids those references were checked against, to bind (#577), and
+ * the #552 window the write must land in (`assertBindingWriteWindowOpen`).
  */
 export async function assertMcpCreateSecretBinding(
   user: Caller,
   input: { env?: StringMap; headers?: StringMap; label: string },
-): Promise<SecretBindings> {
+): Promise<AuthorizedSecretBindings> {
   return authorizeAndBindSecretRefs(
     user,
     { before: [], after: mcpRefs(input.env, input.headers), destinationChanged: true },
@@ -139,6 +141,11 @@ export interface McpBindingCheck {
    * `null` when the write binds nothing (a PATCH without env or headers).
    */
   bindings: SecretBindings | null;
+  /**
+   * #552 — the binding-write stamp's window end, or `null` when nothing was
+   * stamped; the write must land before it (`assertBindingWriteWindowOpen`).
+   */
+  until: Date | null;
 }
 
 /**
@@ -171,18 +178,18 @@ export async function assertMcpUpdateSecretBinding(
   };
   const ctx = { target: { type: "mcp_server", id }, metadata: { label: row.label } };
   if (!rebinds) {
-    await assertSecretBindingAllowed(user, change, ctx);
-    return { checkedAt: row.updatedAt, bindings: null };
+    const until = await assertSecretBindingAllowed(user, change, ctx);
+    return { checkedAt: row.updatedAt, bindings: null, until };
   }
   // A reference the server keeps stays bound to its stored id, exactly as the
   // write would keep it (`MCPRegistryService.update`).
-  const bindings = await authorizeAndBindSecretRefs(
+  const { bindings, until } = await authorizeAndBindSecretRefs(
     user,
     change,
     ctx,
     parseSecretBindings(row.secretBindings),
   );
-  return { checkedAt: row.updatedAt, bindings };
+  return { checkedAt: row.updatedAt, bindings, until };
 }
 
 /**
@@ -197,13 +204,13 @@ export async function assertMcpRebindSecretBinding(
 ): Promise<McpBindingCheck | null> {
   const row = await prisma.mCPServer.findFirst({ where: { id, deletedAt: null } });
   if (!row) return null;
-  const bindings = await authorizeAndBindSecretRefs(
+  const { bindings, until } = await authorizeAndBindSecretRefs(
     user,
     { before: [], after: unboundMcpRefs(row), destinationChanged: true },
     { target: { type: "mcp_server", id }, metadata: { label: row.label, rebind: true } },
     parseSecretBindings(row.secretBindings),
   );
-  return { checkedAt: row.updatedAt, bindings };
+  return { checkedAt: row.updatedAt, bindings, until };
 }
 
 /** An import entry that cannot be bound: it fails alone, with this code (#577 review). */
@@ -217,6 +224,13 @@ export interface McpImportEntryFailure {
 export interface McpImportBindingCheck {
   /** Each bindable entry's checked ids, keyed by entry label (#577). */
   bindings: Map<string, SecretBindings>;
+  /**
+   * #552 — each bindable entry's binding-write window end, keyed by entry
+   * label. `executeImport` refuses an entry whose window has closed before its
+   * row is written (`assertBindingWriteWindowOpen`): an import writes entries
+   * one after another, so a late entry is the long check-to-write span.
+   */
+  until: Map<string, Date | null>;
   /**
    * Entries with a reference that reaches no live secret (400
    * `VAULT_REF_UNRESOLVED`) or more than one (409 `VAULT_REF_AMBIGUOUS`),
@@ -248,7 +262,11 @@ export async function assertMcpImportSecretBinding(
   user: Caller,
   plan: ImportPlan,
 ): Promise<McpImportBindingCheck> {
-  const out: McpImportBindingCheck = { bindings: new Map(), failures: new Map() };
+  const out: McpImportBindingCheck = {
+    bindings: new Map(),
+    until: new Map(),
+    failures: new Map(),
+  };
   for (const entry of plan.entries) {
     const env = Object.fromEntries(
       Object.entries(entry.env).filter(([k]) => !(k in entry.vaultedKeys)),
@@ -259,10 +277,13 @@ export async function assertMcpImportSecretBinding(
         )
       : null;
     try {
-      out.bindings.set(
-        entry.label,
-        await assertMcpCreateSecretBinding(user, { env, headers, label: entry.label }),
-      );
+      const checked = await assertMcpCreateSecretBinding(user, {
+        env,
+        headers,
+        label: entry.label,
+      });
+      out.bindings.set(entry.label, checked.bindings);
+      out.until.set(entry.label, checked.until);
     } catch (err) {
       if (!failsOnlyItsEntry(err)) throw err;
       out.failures.set(entry.label, {

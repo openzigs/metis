@@ -498,7 +498,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           { before: [], after: [id], destinationChanged: true },
           ctx,
         ),
-      ).resolves.toBeUndefined();
+      ).resolves.toBeInstanceOf(Date);
+      // #552 — that check stamped the secret; let its window close before rotating.
+      await db.secret.update({ where: { id }, data: { bindingWriteUntil: new Date(0) } });
 
       const res = await rotate(id, {
         value: ADMIN_VALUE,
@@ -532,7 +534,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           { before: [id], after: [id], destinationChanged: false },
           ctx,
         ),
-      ).resolves.toBeUndefined();
+      ).resolves.toBeNull();
     });
 
     it("#502: rejects a malformed confirmedBindings as an invalid body", async () => {

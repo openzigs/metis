@@ -47,8 +47,11 @@ import { hasPermission, type AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { AppError } from "../../middleware/error-handler.js";
+import { markBindingWrite, stampedFor } from "./binding-write-mark.js";
 
 export const SECRET_BINDING_FORBIDDEN = "SECRET_BINDING_FORBIDDEN";
+/** #552 — the referenced secrets changed between the stamp and the check. */
+export const SECRET_BINDING_CHANGED = "SECRET_BINDING_CHANGED";
 
 const WHOLE_REF = /^\$\{vault:([^}]+)\}$/;
 const EMBEDDED_REF = /\$\{vault:([^}]+)\}/g;
@@ -78,6 +81,8 @@ export function refBodiesIn(record: Record<string, unknown> | null | undefined):
 interface SecretOwner {
   id: string;
   createdById: string | null;
+  /** #552 — the binding-write stamp (`binding-write-mark.ts`). */
+  bindingWriteUntil: Date | null;
 }
 
 function labelOf(name: string): string {
@@ -130,6 +135,8 @@ export interface CandidateSecret {
   id: string;
   name: string;
   createdById: string | null;
+  /** #552 — the binding-write stamp (`binding-write-mark.ts`). */
+  bindingWriteUntil: Date | null;
 }
 
 /**
@@ -142,7 +149,7 @@ export async function readCandidateSecrets(refs: string[]): Promise<CandidateSec
   if (refs.length === 0) return [];
   return prisma.secret.findMany({
     where: { deletedAt: null, OR: refs.flatMap(candidateFilters) },
-    select: { id: true, name: true, createdById: true },
+    select: { id: true, name: true, createdById: true, bindingWriteUntil: true },
   });
 }
 
@@ -152,7 +159,9 @@ function reachableIn(refs: string[], rows: CandidateSecret[]): Map<string, Secre
   for (const ref of refs) {
     out.set(
       ref,
-      rows.filter((r) => reaches(ref, r)).map(({ id, createdById }) => ({ id, createdById })),
+      rows
+        .filter((r) => reaches(ref, r))
+        .map(({ id, createdById, bindingWriteUntil }) => ({ id, createdById, bindingWriteUntil })),
     );
   }
   return out;
@@ -202,38 +211,78 @@ export interface SecretBindingContext {
 }
 
 /**
+ * #552 — stamp every secret `change` may bind somewhere new, BEFORE the
+ * ownership read that judges it, so a confirmed foreign-owner rotation of it
+ * cannot land between that check and the caller's write
+ * (`binding-write-mark.ts`). A reference kept verbatim while nothing moves
+ * binds nothing new. A caller without `vault.reveal` stamps only secrets they
+ * created. Returns the window end, before which the caller must write
+ * (`assertBindingWriteWindowOpen`); `null` when nothing was stamped.
+ *
+ * Every binding check runs this first — {@link assertSecretBindingAllowed} and
+ * `authorizeAndBindSecretRefs` (#577) — and {@link judgeSecretBinding} takes
+ * its result, so a check cannot judge rows it did not stamp first.
+ */
+export async function stampBindingWrite(
+  user: Pick<AuthPayload, "userId" | "role">,
+  change: SecretBindingChange,
+): Promise<Date | null> {
+  const before = new Set(change.before);
+  const moving = [...new Set(change.after)].filter(
+    (ref) => change.destinationChanged || !before.has(ref),
+  );
+  return markBindingWrite(
+    moving.flatMap(candidateFilters),
+    hasPermission(user.role, "vault.reveal") ? null : user.userId,
+  );
+}
+
+/**
+ * #552 — before the check, every secret the write may bind somewhere new is
+ * stamped ({@link stampBindingWrite}), for admins too, so a confirmed
+ * foreign-owner rotation cannot interleave with the caller's write. Returns the
+ * stamp's window end; the caller passes it to `assertBindingWriteWindowOpen`
+ * immediately before its write.
+ *
  * @throws AppError 403 SECRET_BINDING_FORBIDDEN when a caller without
  *   `vault.reveal` would attach a secret they did not create, or move a
  *   resource holding one to a new destination. The refusal is audited.
+ * @throws AppError 409 SECRET_BINDING_CHANGED when a reference reaches an
+ *   owned secret that was not there when the secrets were stamped.
  */
 export async function assertSecretBindingAllowed(
   user: Pick<AuthPayload, "userId" | "role">,
   change: SecretBindingChange,
   ctx: SecretBindingContext,
-): Promise<void> {
-  if (hasPermission(user.role, "vault.reveal")) return;
-  if (change.after.length === 0) return;
+): Promise<Date | null> {
+  if (change.after.length === 0) return null;
+  const until = await stampBindingWrite(user, change);
+  if (hasPermission(user.role, "vault.reveal")) return until;
   const refs = [...new Set([...change.before, ...change.after])];
-  judgeSecretBinding(user, change, ctx, await readCandidateSecrets(refs));
+  judgeSecretBinding(user, change, ctx, await readCandidateSecrets(refs), until);
+  return until;
 }
 
 /**
  * The #344 rule of {@link assertSecretBindingAllowed}, judged against rows the
  * caller has already read ({@link readCandidateSecrets} over `before` ∪
  * `after`), so the same rows can then be bound (#577). The `vault.reveal`
- * exemption is the caller's to apply.
+ * exemption is the caller's to apply. `until` is what
+ * {@link stampBindingWrite} returned for this change, BEFORE `rows` were read
+ * (#552).
  *
  * @throws AppError 403 SECRET_BINDING_FORBIDDEN, audited.
+ * @throws AppError 409 SECRET_BINDING_CHANGED when an owned row was not stamped.
  */
 export function judgeSecretBinding(
   user: Pick<AuthPayload, "userId">,
   change: SecretBindingChange,
   ctx: SecretBindingContext,
   rows: CandidateSecret[],
+  until: Date | null,
 ): void {
   const after = [...new Set(change.after)];
   if (after.length === 0) return;
-
   const before = [...new Set(change.before)];
   const reachableBy = reachableIn([...new Set([...before, ...after])], rows);
   const boundIds = new Set<string>();
@@ -251,7 +300,16 @@ export function judgeSecretBinding(
     const reachable = reachableBy.get(ref) ?? [];
     const alreadyBound = reachable.length > 0 && reachable.every((s) => boundIds.has(s.id));
     if (alreadyBound && !change.destinationChanged) continue;
-    if (ownedBy(reachable, user.userId)) continue;
+    if (ownedBy(reachable, user.userId)) {
+      // A secret that appeared under this label after the stamp was not
+      // stamped, so a rotation of it would not see this write (#552).
+      if (reachable.every((s) => stampedFor(s.bindingWriteUntil, until))) continue;
+      throw new AppError(
+        409,
+        SECRET_BINDING_CHANGED,
+        "The vault secrets this write references changed while it was being checked. Retry.",
+      );
+    }
     audit({
       actor: { id: user.userId },
       action: "vault.binding_refused",

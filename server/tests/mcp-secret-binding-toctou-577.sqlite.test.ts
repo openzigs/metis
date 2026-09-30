@@ -400,7 +400,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       };
       state.rewrite = (name, result) => {
         if (name === "assertMcpCreateSecretBinding") {
-          return without(result as Record<string, string>);
+          const check = result as { bindings: Record<string, string> };
+          return { ...check, bindings: without(check.bindings) };
         }
         if (name === "assertMcpImportSecretBinding") {
           const check = result as { bindings: Map<string, Record<string, string>> };

@@ -795,6 +795,14 @@ jobs:
         working-directory: server
         run: pnpm test:integration vault-secret-binding-479-postgres
 
+      # Issue #552 — `markBindingWrite` stamps `bindingWriteUntil` with raw SQL and a
+      # confirmed foreign-owner rotation compares it as a typed Date in its
+      # conditional UPDATE. Prove the two agree on TIMESTAMP(3), or such a
+      # rotation would be refused forever.
+      - name: Prove raw binding-write stamps match the rotation's compare-and-set on real Postgres
+        working-directory: server
+        run: pnpm test:integration vault-rotate-binding-race-552-postgres
+
       # Issue #543 (Epic #518) — prove the pgvector-backed RAG vector store gives
       # retrieval parity AND multi-replica read/write safety against the same real
       # Postgres: two separately-constructed store instances (= two pods) sharing

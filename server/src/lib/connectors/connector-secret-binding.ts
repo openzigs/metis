@@ -24,6 +24,18 @@ import {
 
 type Caller = Pick<AuthPayload, "userId" | "role">;
 
+/** What a passed connector binding check hands to the route. */
+export interface ConnectorBindingCheck {
+  /** #479 — the checked row's `updatedAt`; `null` for a create or an unknown id. */
+  checkedAt: Date | null;
+  /**
+   * #552 — the binding-write stamp's window end, or `null` when nothing was
+   * stamped; the route calls `assertBindingWriteWindowOpen` with it
+   * immediately before the service write.
+   */
+  until: Date | null;
+}
+
 const refs = (...bodies: Array<string | null | undefined>): string[] =>
   bodies.filter((b): b is string => Boolean(b));
 
@@ -40,20 +52,20 @@ export async function assertDbSecretBinding(
     databaseName?: string | null;
     secretRef?: string | null;
   },
-): Promise<Date | null> {
+): Promise<ConnectorBindingCheck> {
   if (id === null) {
-    await assertSecretBindingAllowed(
+    const until = await assertSecretBindingAllowed(
       user,
       { before: [], after: refs(refBodyOf(input.secretRef)), destinationChanged: true },
       { target: { type: "db_connector", id: "new" }, metadata: { projectId } },
     );
-    return null;
+    return { checkedAt: null, until };
   }
   const existing = await prisma.databaseConnection.findFirst({
     where: { id, projectId, deletedAt: null },
   });
-  if (!existing) return null;
-  await assertSecretBindingAllowed(
+  if (!existing) return { checkedAt: null, until: null };
+  const until = await assertSecretBindingAllowed(
     user,
     {
       before: refs(existing.secretId),
@@ -63,7 +75,7 @@ export async function assertDbSecretBinding(
     },
     { target: { type: "db_connector", id }, metadata: { projectId } },
   );
-  return existing.updatedAt;
+  return { checkedAt: existing.updatedAt, until };
 }
 
 /** The repo-connector counterpart of `assertDbSecretBinding`. */
@@ -72,20 +84,20 @@ export async function assertRepoSecretBinding(
   projectId: string,
   id: string | null,
   input: { provider?: string | null; apiBaseUrl?: string | null; secretRef?: string | null },
-): Promise<Date | null> {
+): Promise<ConnectorBindingCheck> {
   if (id === null) {
-    await assertSecretBindingAllowed(
+    const until = await assertSecretBindingAllowed(
       user,
       { before: [], after: refs(refBodyOf(input.secretRef)), destinationChanged: true },
       { target: { type: "repo_connector", id: "new" }, metadata: { projectId } },
     );
-    return null;
+    return { checkedAt: null, until };
   }
   const existing = await prisma.repoConnection.findFirst({
     where: { id, projectId, deletedAt: null },
   });
-  if (!existing) return null;
-  await assertSecretBindingAllowed(
+  if (!existing) return { checkedAt: null, until: null };
+  const until = await assertSecretBindingAllowed(
     user,
     {
       before: refs(existing.secretId),
@@ -95,7 +107,7 @@ export async function assertRepoSecretBinding(
     },
     { target: { type: "repo_connector", id }, metadata: { projectId } },
   );
-  return existing.updatedAt;
+  return { checkedAt: existing.updatedAt, until };
 }
 
 /**
@@ -117,12 +129,12 @@ export async function assertJiraSecretBinding(
     tlsCaCert?: string | null;
     apiToken?: string;
   },
-): Promise<Date | null> {
+): Promise<ConnectorBindingCheck> {
   const existing = await prisma.jiraConnection.findFirst({
     where: { id, deletedAt: null, ...(projectId ? { projectId } : {}) },
   });
-  if (!existing) return null;
-  await assertSecretBindingAllowed(
+  if (!existing) return { checkedAt: null, until: null };
+  const until = await assertSecretBindingAllowed(
     user,
     {
       before: refs(existing.secretId),
@@ -131,7 +143,7 @@ export async function assertJiraSecretBinding(
     },
     { target: { type: "jira_connection", id }, metadata: { projectId: existing.projectId } },
   );
-  return existing.updatedAt;
+  return { checkedAt: existing.updatedAt, until };
 }
 
 /** The credential secret ids a test-management connection's `authConfigJson` holds. */
@@ -160,13 +172,13 @@ export async function assertTestMgmtSecretBinding(
     tlsConfig?: { rejectUnauthorized?: boolean; caCert?: string | null } | null;
     auth?: unknown;
   },
-): Promise<Date | null> {
+): Promise<ConnectorBindingCheck> {
   const existing = await prisma.testManagementConnection.findFirst({
     where: { id, deletedAt: null, ...(projectId ? { projectId } : {}) },
   });
-  if (!existing) return null;
+  if (!existing) return { checkedAt: null, until: null };
   const held = testMgmtCredentialIds(existing.authConfigJson);
-  await assertSecretBindingAllowed(
+  const until = await assertSecretBindingAllowed(
     user,
     {
       before: held,
@@ -178,5 +190,5 @@ export async function assertTestMgmtSecretBinding(
       metadata: { projectId: existing.projectId },
     },
   );
-  return existing.updatedAt;
+  return { checkedAt: existing.updatedAt, until };
 }

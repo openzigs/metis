@@ -24,6 +24,7 @@ import {
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { assertPublishSecretBinding } from "../lib/publishing/publish-secret-binding.js";
+import { assertBindingWriteWindowOpen } from "../lib/vault/binding-write-mark.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   approveDraft,
@@ -216,17 +217,18 @@ export function publishingRouter(): Router {
       }
       // #358 — a live run sends the token to `targetBaseUrl`, which the caller
       // chose. A dry run resolves it only locally (M1) and sends it nowhere.
-      if (!parsed.dryRun) {
-        await assertPublishSecretBinding(
-          req.user,
-          { secretRef: parsed.secretRef, baseUrl: parsed.targetBaseUrl },
-          { type: "publish_batch", id: "new" },
-        );
-      }
+      const until = parsed.dryRun
+        ? null
+        : await assertPublishSecretBinding(
+            req.user,
+            { secretRef: parsed.secretRef, baseUrl: parsed.targetBaseUrl },
+            { type: "publish_batch", id: "new" },
+          );
       // F6: route-layer hint only; the service layer is the authoritative
       // enforcer of the cross-project guard.
       const meta = parsed.metadata as Record<string, unknown> | undefined;
       const confirmCrossProject = meta?.confirmCrossProject === true;
+      assertBindingWriteWindowOpen(until); // #552
       const batch = await createBatch({
         input: parsed,
         actorId: actor(req),

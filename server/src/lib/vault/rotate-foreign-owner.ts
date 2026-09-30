@@ -39,6 +39,8 @@ import { reaches, refBodiesIn } from "./secret-binding.js";
 
 export const VAULT_ROTATE_FOREIGN_OWNER = "VAULT_ROTATE_FOREIGN_OWNER";
 export const VAULT_ROTATE_BINDINGS_CHANGED = "VAULT_ROTATE_BINDINGS_CHANGED";
+/** #552 — the owner is binding the secret somewhere right now. */
+export const VAULT_ROTATE_BINDING_IN_PROGRESS = "VAULT_ROTATE_BINDING_IN_PROGRESS";
 
 export interface SecretOwnerView {
   id: string;
@@ -61,13 +63,20 @@ export interface ForeignOwnerDetails {
   bindings: SecretBindingView[];
 }
 
-/** The live secret's owner, or null for an unknown / deleted id. */
-export async function secretOwnerOf(
-  id: string,
-): Promise<{ id: string; name: string; createdById: string | null } | null> {
+/**
+ * The live secret's owner, or null for an unknown / deleted id. #552 — with
+ * the binding-write stamp (`binding-write-mark.ts`), read BEFORE the bindings
+ * are listed so the rotation can be made conditional on it.
+ */
+export async function secretOwnerOf(id: string): Promise<{
+  id: string;
+  name: string;
+  createdById: string | null;
+  bindingWriteUntil: Date | null;
+} | null> {
   return prisma.secret.findFirst({
     where: { id, deletedAt: null },
-    select: { id: true, name: true, createdById: true },
+    select: { id: true, name: true, createdById: true, bindingWriteUntil: true },
   });
 }
 
@@ -235,6 +244,16 @@ export function bindingsChangedMessage(details: ForeignOwnerDetails): string {
   return (
     `The bindings of this secret, owned by ${whoOwns(details)}, changed since you confirmed. ` +
     `${whereBound(details)} Review them and confirm again. ${TO_CONFIRM}`
+  );
+}
+
+/** #552 — the refusal while a binding write on the secret may still be landing. */
+export function bindingInProgressMessage(details: ForeignOwnerDetails): string {
+  return (
+    `${whoOwns(details)} is changing where this secret is bound, so its bindings cannot be ` +
+    `confirmed yet. Retry in a minute and review the bindings again. If this keeps ` +
+    `happening, the owner is still binding it: disable their account first, then rotate ` +
+    `once their current session has expired.`
   );
 }
 

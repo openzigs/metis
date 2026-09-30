@@ -37,15 +37,17 @@ export function isCallerChosenPublishHost(baseUrl: string | null | undefined): b
  * @throws AppError 403 SECRET_BINDING_FORBIDDEN when a caller without
  *   `vault.reveal` would send a secret they did not create to a base URL they
  *   chose. The refusal is audited as `vault.binding_refused`.
+ * @returns the #552 binding-write window end (`null` when nothing was
+ *   stamped), for `assertBindingWriteWindowOpen` before the write.
  */
 export async function assertPublishSecretBinding(
   user: Pick<AuthPayload, "userId" | "role">,
   input: { secretRef: string | null | undefined; baseUrl: string | null | undefined },
   target: { type: string; id: string },
-): Promise<void> {
-  if (!isCallerChosenPublishHost(input.baseUrl)) return;
+): Promise<Date | null> {
+  if (!isCallerChosenPublishHost(input.baseUrl)) return null;
   const body = refBodyOf(input.secretRef);
-  await assertSecretBindingAllowed(
+  return assertSecretBindingAllowed(
     user,
     { before: [], after: body ? [body] : [], destinationChanged: true },
     { target },
