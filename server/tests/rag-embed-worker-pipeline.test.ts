@@ -60,6 +60,29 @@ function busyEmbedder(
   return embedder;
 }
 
+type PipelineFn = (...args: unknown[]) => Promise<unknown>;
+
+/**
+ * #450 — wrap the embedder's loaded pipeline so a test controls what happens around
+ * each model call. Resolves once the first call has been handed to the real pipeline.
+ */
+function interceptPipeline(
+  embedder: XenovaEmbedder,
+  around: (real: PipelineFn, args: unknown[]) => Promise<unknown>,
+): Promise<void> {
+  const holder = embedder as unknown as { pipeline: PipelineFn & Record<string, unknown> };
+  const real = holder.pipeline;
+  let signal!: () => void;
+  const called = new Promise<void>((resolve) => (signal = resolve));
+  const wrapped = (...args: unknown[]) => {
+    const result = around(real, args);
+    signal();
+    return result;
+  };
+  holder.pipeline = Object.assign(wrapped, { close: real.close }) as typeof holder.pipeline;
+  return called;
+}
+
 const texts = Array.from({ length: 40 }, (_, i) => `chunk number ${i}`);
 /** A document with one over-long row: one blocking model call of LONG_ROW_MS. */
 const documentTexts = [...texts.slice(0, 10), "__long__ row", ...texts.slice(10, 20)];
@@ -164,13 +187,54 @@ describe("XenovaEmbedder worker runtime", () => {
   it("rejects in-flight work when the worker is stopped, then loads a fresh one", async () => {
     const embedder = busyEmbedder("worker");
     await embedder.warm();
+    // #450 — stop the worker once a model call is genuinely in flight, not after a sleep.
+    const firstCall = interceptPipeline(embedder, async (real, args) => real(...args));
     const inflight = embedder.embed(texts);
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    // Either clear error is correct: the stop kills the running call, or its result
+    // wins the race and the loop refuses the next one. Never a TypeError.
+    const rejected = expect(inflight).rejects.toThrow(
+      /embed worker exited|xenova embedder was closed while embedding/,
+    );
+    await firstCall;
     await embedder.close();
-    await expect(inflight).rejects.toThrow();
+    await rejected;
     await expect(embedder.embed(["again"])).resolves.toMatchObject({
       vectors: [[5, MAX_EMBED_SEQUENCE_TOKENS, 0, 1]],
     });
+  });
+
+  it("#450 — a stop between two model calls rejects cleanly instead of calling a cleared pipeline", async () => {
+    const embedder = busyEmbedder("worker");
+    await embedder.warm();
+    let calls = 0;
+    // The ordering the fan-out produced by chance: a batch's result lands, then the
+    // worker is stopped, then the embed loop reaches its next model call.
+    interceptPipeline(embedder, async (real, args) => {
+      calls++;
+      const tensor = await real(...args);
+      await embedder.close();
+      return tensor;
+    });
+    const inflight = embedder.embed(texts);
+    await expect(inflight).rejects.toThrow(/xenova embedder was closed while embedding/);
+    expect(calls).toBe(1);
+    await expect(embedder.embed(["again"])).resolves.toMatchObject({
+      vectors: [[5, MAX_EMBED_SEQUENCE_TOKENS, 0, 1]],
+    });
+  });
+
+  it("#450 — an embed never continues on a pipeline loaded after it started", async () => {
+    const embedder = busyEmbedder("inline");
+    await embedder.warm();
+    interceptPipeline(embedder, async (real, args) => {
+      const tensor = await real(...args);
+      await embedder.close();
+      await embedder.warm();
+      return tensor;
+    });
+    await expect(embedder.embed(texts)).rejects.toThrow(
+      /xenova embedder was closed while embedding/,
+    );
   });
 });
 

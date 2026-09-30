@@ -325,7 +325,8 @@ export class XenovaEmbedder implements EmbedBackend {
       return { vectors: [], model: this.model, dimension: this.dimension };
     }
     await this.warm();
-    if (!this.pipeline) {
+    const pipeline = this.pipeline;
+    if (!pipeline) {
       throw new Error("xenova pipeline failed to load");
     }
     // #807 — the model forward is bounded by `forwardBatches`, NOT by `texts`.
@@ -336,7 +337,12 @@ export class XenovaEmbedder implements EmbedBackend {
     // which #787/#792's model-tagged reuse guard already assumes it is.
     let vectors: number[][] = [];
     for (const batch of this.modelCalls(texts)) {
-      const tensor = await this.pipeline(batch, { pooling: this.pooling, normalize: true });
+      // #450 — `close()` may land between two model calls. Refuse to call a cleared
+      // pipeline (a TypeError), or a fresh one loaded since, and reject clearly instead.
+      if (this.pipeline !== pipeline) {
+        throw new Error(`${this.key} embedder was closed while embedding`);
+      }
+      const tensor = await pipeline(batch, { pooling: this.pooling, normalize: true });
       vectors.push(...tensorToVectors(tensor, batch.length, this.nativeDimension));
     }
     if (this.matryoshka && this.dimension < this.nativeDimension) {
