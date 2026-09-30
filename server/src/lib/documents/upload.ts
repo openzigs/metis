@@ -83,8 +83,11 @@ export function validateUpload(input: UploadCandidate): UploadValidation {
  * Issue #525 — filename prefixes that connector and generated-document writers
  * use. Readers that only have a search hit's filename (grounding, evidence
  * labels, schema mappings, the UI's source labels) classify on these, so an
- * upload may not carry one. Matched case-insensitively: a reader's pattern may
- * be (`doc-label.ts` matches `generated-doc-` with `/i`).
+ * upload may not carry one. Each prefix is matched the way its readers match
+ * it: case-sensitively, except `generated-doc-`, which `doc-label.ts` matches
+ * with `/i` (see {@link CASE_INSENSITIVE_RESERVED_PREFIXES}). A pasted title
+ * such as `Jira: sprint 12 retro.md` reaches no reader's pattern, so it stays
+ * an ordinary upload.
  *
  * - `connector:`     repository and database connectors (`connector-ingest.ts`)
  * - `repo:`          the legacy repository shape (`fused-code-context.ts`)
@@ -102,10 +105,19 @@ export const RESERVED_FILENAME_PREFIXES = [
   "live-schema:",
 ] as const;
 
+/** Reserved prefixes some reader matches case-insensitively. */
+const CASE_INSENSITIVE_RESERVED_PREFIXES: ReadonlySet<string> = new Set(["generated-doc-"]);
+
 /** The reserved prefix `filename` starts with, or null. */
 export function reservedFilenamePrefix(filename: string): string | null {
   const lower = filename.toLowerCase();
-  return RESERVED_FILENAME_PREFIXES.find((prefix) => lower.startsWith(prefix)) ?? null;
+  return (
+    RESERVED_FILENAME_PREFIXES.find((prefix) =>
+      CASE_INSENSITIVE_RESERVED_PREFIXES.has(prefix)
+        ? lower.startsWith(prefix)
+        : filename.startsWith(prefix),
+    ) ?? null
+  );
 }
 
 /**

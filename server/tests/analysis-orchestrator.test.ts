@@ -299,7 +299,11 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({
 import type { AIProvider, ChatMessage, ChatResponse } from "../src/lib/ai/types.js";
 import { runAgent } from "../src/lib/analysis/agent-runner.js";
 import { persistAgentResult } from "../src/lib/analysis/analysis-service.js";
-import { AnalysisOrchestrator } from "../src/lib/analysis/orchestrator.js";
+import {
+  AnalysisOrchestrator,
+  defaultAnalysisDocumentIds,
+} from "../src/lib/analysis/orchestrator.js";
+import { prisma } from "../src/lib/prisma.js";
 import { RETRIEVAL_QUERIES } from "../src/lib/analysis/retrieval.js";
 import { __resetConfigSingleton } from "../src/lib/config/config-service.js";
 import { genericFailureMessage } from "../src/lib/socket/job-events.js";
@@ -3426,5 +3430,82 @@ describe("AnalysisOrchestrator requirement extraction routes the code agent (#75
       { id: "REQ-001", text: "Users can reset their password" },
       { id: "REQ-002", text: "Admins can export an audit log" },
     ]);
+  });
+});
+
+// #525 — both orchestrator call sites that fall back to "every ready document"
+// must go through `defaultAnalysisDocumentIds`, which classifies on the stored
+// `source`. Reverting either to the old inline
+// `filename: { not: { startsWith: "connector:" } }` query must fail here.
+describe("#525 default analysis document set at each call site", () => {
+  const findMany = () => vi.mocked(prisma.document.findMany);
+
+  /** The `where` the helper sends, captured from the helper itself. */
+  async function helperWhere(): Promise<unknown> {
+    findMany().mockClear();
+    await defaultAnalysisDocumentIds("proj-abcdefghij");
+    const where = (findMany().mock.calls[0]![0] as { where: unknown }).where;
+    findMany().mockClear();
+    return where;
+  }
+
+  const defaultSetQueries = () =>
+    findMany()
+      .mock.calls.map((c) => (c[0] as { where?: Record<string, unknown> }).where)
+      .filter((w): w is Record<string, unknown> => !!w && w.status === "ready");
+
+  async function waitFor(analysisId: string): Promise<void> {
+    for (let i = 0; i < 400 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  }
+
+  it("the requirement-grounded code agent reads the default set via the helper", async () => {
+    const expected = await helperWhere();
+    codeGraphExists = false; // requirements + no code graph => REQUIREMENT-GROUNDED
+    uploadedDocs = ["doc-1"];
+    const provider = makeProvider({
+      docRequirements: [{ id: "REQ-001", text: "Users can reset their password" }],
+    });
+    const orch = new AnalysisOrchestrator({
+      provider,
+      knowledge: { search: async () => ({ hits: [] }) } as unknown as KnowledgeService,
+      // An override short-circuits retrieveContext, so only the grounded site queries.
+      retrieve: async () => [
+        { documentId: "doc-1", chunkIndex: 0, filename: "s.md", text: "c", score: 0.5 },
+      ],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document", "code"],
+    });
+    await waitFor(analysisId);
+    expect(systemMessagesOf(provider).some((m) => m.includes("MODE: REQUIREMENT-GROUNDED"))).toBe(
+      true,
+    );
+    const queries = defaultSetQueries();
+    expect(queries.length).toBeGreaterThan(0);
+    for (const where of queries) expect(where).toEqual(expected);
+  });
+
+  it("retrieveContext for the code agent reads the default set via the helper", async () => {
+    const expected = await helperWhere();
+    const knowledge = {
+      search: vi.fn(async () => ({ hits: [], embeddingModel: "stub", elapsedMs: 1 })),
+    };
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider({}),
+      knowledge: knowledge as unknown as KnowledgeService,
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["code"],
+    });
+    await waitFor(analysisId);
+    const queries = defaultSetQueries();
+    expect(queries.length).toBeGreaterThan(0);
+    for (const where of queries) expect(where).toEqual(expected);
   });
 });

@@ -218,8 +218,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "repo:c1:README.md",
         "generated-doc-abc.md",
         "live-schema:proj-1",
-        "Live-Schema:proj-1.md",
-        "JIRA:ABC-1",
+        "live-schema:x",
+        "connector:repo:x",
+        // `doc-label.ts` matches `generated-doc-` with `/i`, so every case is reserved.
+        "Generated-Doc-x.md",
+        "GENERATED-DOC-abc.md",
         "  jira:ABC-1",
       ])("the text upload refuses the reserved filename %j with a 400", async (filename) => {
         const res = await request(app())
@@ -242,6 +245,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(res.status).toBe(400);
         expect(res.body.error.code).toBe("RESERVED_FILENAME");
         expect(await db.document.count()).toBe(0);
+      });
+
+      // Every reader of these prefixes matches case-sensitively, so a pasted
+      // title that only looks like one is an ordinary upload.
+      it.each([
+        "Jira: sprint 12 retro.md",
+        "Confluence: onboarding.md",
+        "Repo: notes.md",
+        "Live-Schema:proj-1.md",
+        "JIRA:ABC-1",
+        "Connector:repo:c1:README.md",
+      ])("the text upload accepts the non-reserved-case filename %j", async (filename) => {
+        const res = await request(app())
+          .post(`/api/projects/${PROJ}/documents/text`)
+          .set("Authorization", `Bearer ${token}`)
+          .send({ filename, content: "hello", mimeType: "text/markdown" });
+        expect(res.status).toBe(201);
+        const rows = await db.document.findMany({ select: { filename: true, source: true } });
+        expect(rows).toEqual([{ filename, source: "upload" }]);
       });
 
       it("an ordinary filename that merely mentions a prefix is still accepted", async () => {
