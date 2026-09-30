@@ -59,7 +59,7 @@ vi.mock("puppeteer", () => ({
   },
 }));
 
-const { exportDocument, MERMAID_RENDER_SECURITY, chromeLaunchArgs } =
+const { exportDocument, MERMAID_RENDER_SECURITY, chromeLaunchArgs, mermaidInitScript } =
   await import("../../src/lib/docs-gen/exporters.js");
 
 const PAYLOAD = "<img src=x onerror=alert(1)>";
@@ -76,6 +76,32 @@ const MALICIOUS = [
 /** The mermaid.initialize(...) call among the scripts evaluated in the page. */
 function mermaidInitScripts(): string[] {
   return rec.scripts.filter((s) => s.includes("mermaid.initialize("));
+}
+
+interface MermaidInitConfig {
+  securityLevel?: string;
+  htmlLabels?: boolean;
+  startOnLoad?: boolean;
+  theme?: string;
+  flowchart?: { htmlLabels?: boolean; useMaxWidth?: boolean };
+}
+
+/**
+ * The config object passed to every mermaid.initialize(...) call in `source`,
+ * parsed rather than string-matched so a key order or quoting change cannot
+ * hide a dropped `htmlLabels` (#447).
+ */
+function initConfigs(source: string): MermaidInitConfig[] {
+  return [...source.matchAll(/mermaid\.initialize\((\{[^;]*\})\);/g)].map(
+    (m) => JSON.parse(m[1]) as MermaidInitConfig,
+  );
+}
+
+/** Asserts `config` carries the full #686 posture: strict, HTML labels off everywhere. */
+function expectStrictPosture(config: MermaidInitConfig): void {
+  expect(config.securityLevel).toBe("strict");
+  expect(config.htmlLabels).toBe(false);
+  expect(config.flowchart?.htmlLabels).toBe(false);
 }
 
 beforeEach(() => {
@@ -113,9 +139,10 @@ describe("mermaid render security (#686)", () => {
 
       const init = mermaidInitScripts();
       expect(init).toHaveLength(1);
-      expect(init[0]).toContain("securityLevel: 'strict'");
-      expect(init[0]).toContain("htmlLabels: false");
-      expect(init[0]).not.toMatch(/securityLevel: 'loose'|htmlLabels: true/);
+      const configs = initConfigs(init[0]);
+      expect(configs).toHaveLength(1);
+      expectStrictPosture(configs[0]);
+      expect(configs[0].startOnLoad).toBe(false);
     });
 
     it("launches the renderer with the #686 Chrome args and always closes it", async () => {
@@ -157,6 +184,21 @@ describe("mermaid render security (#686)", () => {
         warn.mockRestore();
       }
     });
+
+    it("initialises mermaid in the fallback HTML under the strict posture too (#447)", async () => {
+      launchBehaviour.fail = true;
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = await exportDocument(MALICIOUS, "xss-probe", "pdf");
+
+        const configs = initConfigs(result.buffer.toString("utf-8"));
+        expect(configs).toHaveLength(1);
+        expectStrictPosture(configs[0]);
+        expect(configs[0].startOnLoad).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 
   describe("DOCX export (diagram rasterised in Chrome)", () => {
@@ -172,8 +214,28 @@ describe("mermaid render security (#686)", () => {
 
       const init = mermaidInitScripts();
       expect(init).toHaveLength(1);
-      expect(init[0]).toContain("securityLevel: 'strict'");
+      const configs = initConfigs(init[0]);
+      expect(configs).toHaveLength(1);
+      // #447 — the DOCX rasteriser used to set only securityLevel, leaving HTML labels on.
+      expectStrictPosture(configs[0]);
       expect(rec.closed).toBe(1);
+    });
+  });
+
+  describe("mermaidInitScript (#447)", () => {
+    it("keeps the security posture when a layout supplies its own flowchart options", () => {
+      const configs = initConfigs(
+        mermaidInitScript({
+          startOnLoad: false,
+          theme: "neutral",
+          flowchart: { useMaxWidth: true },
+        }),
+      );
+
+      expect(configs).toHaveLength(1);
+      expectStrictPosture(configs[0]);
+      expect(configs[0].flowchart?.useMaxWidth).toBe(true);
+      expect(configs[0].theme).toBe("neutral");
     });
   });
 
@@ -203,5 +265,42 @@ describe("mermaid render security (#686)", () => {
         else process.env.PDF_EXPORT_CHROME_SANDBOX = prev;
       }
     });
+  });
+});
+
+// #447 — moved from exporters.test.ts, where they launched a real Chromium under
+// the fan-out. Each asserts on OUR side of the puppeteer boundary: the result we
+// build from what the page hands back, and the filename we derive from the title.
+describe("exportDocument through the puppeteer recorder (#447)", () => {
+  it("exports to PDF: the page's bytes come back as an application/pdf result", async () => {
+    const result = await exportDocument("# Test Document\n\nHello world.\n", "test-doc", "pdf");
+
+    expect(result.mimeType).toBe("application/pdf");
+    expect(result.filename).toBe("test-doc.pdf");
+    expect(result.buffer.subarray(0, 4).toString()).toBe("%PDF");
+    expect(rec.launches).toHaveLength(1);
+    expect(rec.closed).toBe(1);
+  });
+
+  it("sanitizes the title of a PDF export", async () => {
+    const result = await exportDocument("# Hi", "../../../etc/passwd", "pdf");
+
+    expect(result.mimeType).toBe("application/pdf");
+    expect(result.filename).not.toContain("/");
+    expect(result.filename).not.toContain("..");
+    expect(result.filename).toMatch(/\.pdf$/);
+  });
+
+  it("truncates an extremely long title to 100 characters", async () => {
+    const result = await exportDocument("# Hi", "A".repeat(200), "pdf");
+
+    expect(result.filename).toBe(`${"A".repeat(100)}.pdf`);
+  });
+
+  it("does not launch Chromium for a DOCX export with no mermaid diagram", async () => {
+    const result = await exportDocument("# Plain\n\nNo diagrams.\n", "plain", "docx");
+
+    expect(result.filename).toBe("plain.docx");
+    expect(rec.launches).toHaveLength(0);
   });
 });

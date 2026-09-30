@@ -1,8 +1,32 @@
 /**
  * Tests for Epic #486 / Issue #491 — Document Exporters.
+ *
+ * #447 — nothing in this file may launch a real Chromium: under the `pnpm test`
+ * fan-out that spawn contends for CPU and times out (#388). Every test that
+ * reaches the puppeteer boundary lives in exporters-render-security.test.ts,
+ * against a recorder; the ones that need a real PDF/DOCX binary live in
+ * tests/exporters-real-chromium.integration.test.ts, outside the fan-out.
+ * puppeteer is mocked here only to PROVE no test reaches it.
  */
-import { describe, it, expect } from "vitest";
-import { exportDocument } from "../../src/lib/docs-gen/exporters.js";
+import { describe, it, expect, vi, afterEach } from "vitest";
+
+const launches = vi.hoisted(() => ({ count: 0 }));
+vi.mock("puppeteer", () => ({
+  default: {
+    launch: async () => {
+      launches.count++;
+      throw new Error("a unit test reached puppeteer.launch() (#447)");
+    },
+  },
+}));
+
+const { exportDocument } = await import("../../src/lib/docs-gen/exporters.js");
+
+afterEach(() => {
+  const launched = launches.count;
+  launches.count = 0; // reset first, so one offender does not fail every later test
+  expect(launched, "no unit test may launch Chromium (#447)").toBe(0);
+});
 
 describe("exportDocument", () => {
   const sampleMarkdown = `# Test Document
@@ -17,13 +41,6 @@ Hello world paragraph.
 |----------|----------|
 | Row 1    | Data 1   |
 `;
-
-  it("exports to PDF format (or falls back to html)", async () => {
-    const result = await exportDocument(sampleMarkdown, "test-doc", "pdf");
-    expect(result.buffer).toBeInstanceOf(Buffer);
-    expect(result.filename).toMatch(/^test-doc\.(pdf|html)$/);
-    expect(["application/pdf", "text/html"]).toContain(result.mimeType);
-  }, 30_000);
 
   it("exports to DOCX format (or falls back to markdown)", async () => {
     const result = await exportDocument(sampleMarkdown, "test-doc", "docx");
@@ -49,72 +66,4 @@ Hello world paragraph.
     expect(result.filename).not.toContain("..");
     expect(result.filename).toMatch(/\.md$/);
   });
-
-  it("sanitizes title to remove unsafe characters", async () => {
-    const result = await exportDocument("# Hi", "../../../etc/passwd", "pdf");
-    expect(result.filename).not.toContain("/");
-    expect(result.filename).not.toContain("..");
-  }, 30_000);
-
-  it("truncates extremely long titles", async () => {
-    const longTitle = "A".repeat(200);
-    const result = await exportDocument("# Hi", longTitle, "pdf");
-    // filename should be title (max 100 chars) + extension (.pdf or .html fallback)
-    expect(result.filename.length).toBeLessThanOrEqual(105); // 100 + ".html"
-  }, 30_000);
-
-  it("generates actual PDF with Mermaid diagrams", async () => {
-    const mdWithMermaid = `# Architecture
-
-## System Overview
-
-\`\`\`mermaid
-graph TD
-    A[Client] --> B[API Gateway]
-    B --> C[Service]
-    C --> D[Database]
-\`\`\`
-
-Some text after the diagram.
-`;
-    const result = await exportDocument(mdWithMermaid, "mermaid-test", "pdf");
-    expect(result.buffer).toBeInstanceOf(Buffer);
-    // If Chrome is available, should be real PDF (starts with %PDF)
-    if (result.mimeType === "application/pdf") {
-      expect(result.buffer.subarray(0, 4).toString()).toBe("%PDF");
-      expect(result.filename).toBe("mermaid-test.pdf");
-    }
-  }, 60_000);
-
-  it("generates DOCX with Mermaid diagrams as images", async () => {
-    const mdWithMermaid = `# Architecture
-
-\`\`\`mermaid
-graph LR
-    A --> B
-\`\`\`
-
-## Tables
-
-| Name | Value |
-|------|-------|
-| foo  | bar   |
-`;
-    const result = await exportDocument(mdWithMermaid, "docx-mermaid", "docx");
-    expect(result.buffer).toBeInstanceOf(Buffer);
-    if (
-      result.mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ) {
-      // DOCX files start with PK (zip signature)
-      expect(result.buffer.subarray(0, 2).toString()).toBe("PK");
-      expect(result.filename).toBe("docx-mermaid.docx");
-      // Should be larger than a simple doc (has image data)
-      expect(result.buffer.length).toBeGreaterThan(5000);
-    }
-  }, 60_000);
 });
-
-// The #686 mermaid render-security tests live in exporters-render-security.test.ts,
-// which stubs puppeteer so they never spawn a real Chromium under the fan-out (#388).
-// The pdf/docx tests ABOVE still launch a real Chromium, the same contended
-// resource; moving them off the fan-out is #447.

@@ -150,8 +150,33 @@ const PDF_CSS = `
 // (SSXSS -> SSRF). Render under the STRICT security level (mermaid runs the
 // label through DOMPurify) with HTML labels DISABLED (labels become inert SVG
 // <text>). Exported as the single source of truth so the posture is regression-
-// tested and the two render sites cannot silently drift back to loose.
+// tested and the render sites cannot silently drift back to loose.
 export const MERMAID_RENDER_SECURITY = { securityLevel: "strict", htmlLabels: false } as const;
+
+/** Per-site layout for a mermaid render; everything except the security posture. */
+export interface MermaidLayout {
+  startOnLoad: boolean;
+  theme: "neutral" | "default";
+  maxTextSize?: number;
+  flowchart?: { useMaxWidth: boolean };
+  sequence?: { useMaxWidth: boolean };
+}
+
+// #447 — the ONE place a `mermaid.initialize(...)` call is built. The PDF page,
+// the DOCX rasteriser and the fallback HTML all take their security posture from
+// MERMAID_RENDER_SECURITY here, so a site cannot drop `htmlLabels: false` (as the
+// DOCX path once did) or omit the security level (as the fallback once did). The
+// posture is applied AFTER the layout, so a layout cannot override it; htmlLabels
+// is set both top-level (mermaid >= 10) and under `flowchart` (the older key).
+export function mermaidInitScript(layout: MermaidLayout): string {
+  const config = {
+    ...layout,
+    securityLevel: MERMAID_RENDER_SECURITY.securityLevel,
+    htmlLabels: MERMAID_RENDER_SECURITY.htmlLabels,
+    flowchart: { ...layout.flowchart, htmlLabels: MERMAID_RENDER_SECURITY.htmlLabels },
+  };
+  return `mermaid.initialize(${JSON.stringify(config)});`;
+}
 
 // #686 — Chromium launch args for the export renderer. --no-sandbox is required
 // in most container runtimes (no user namespaces), but it weakens isolation, so
@@ -197,7 +222,7 @@ async function exportToPdf(markdown: string, title: string): Promise<ExportResul
     // Render diagrams now that mermaid is loaded, with per-diagram error handling
     await page.evaluate(`
       (async () => {
-        mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: '${MERMAID_RENDER_SECURITY.securityLevel}', maxTextSize: 500000, flowchart: { useMaxWidth: true, htmlLabels: ${MERMAID_RENDER_SECURITY.htmlLabels} }, sequence: { useMaxWidth: true } });
+        ${mermaidInitScript({ startOnLoad: false, theme: "neutral", maxTextSize: 500000, flowchart: { useMaxWidth: true }, sequence: { useMaxWidth: true } })}
         const elements = document.querySelectorAll('pre.mermaid');
         for (let i = 0; i < elements.length; i++) {
           const el = elements[i];
@@ -404,7 +429,7 @@ function fallbackHtmlExport(markdown: string, title: string): ExportResult {
 <hr>
 ${markdown.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>")}
 <script>
-mermaid.initialize({ startOnLoad: true, theme: 'default' });
+${mermaidInitScript({ startOnLoad: true, theme: "default" })}
 document.addEventListener('DOMContentLoaded', function() {
   if (typeof renderMathInElement !== 'undefined') {
     renderMathInElement(document.body, {
@@ -601,7 +626,7 @@ async function renderMermaidDiagrams(markdown: string): Promise<Map<number, Buff
         // Render the single diagram manually
         await page.evaluate(`
           (async () => {
-            mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: '${MERMAID_RENDER_SECURITY.securityLevel}', maxTextSize: 500000 });
+            ${mermaidInitScript({ startOnLoad: false, theme: "neutral", maxTextSize: 500000 })}
             const el = document.querySelector('pre.mermaid');
             if (el) {
               try {
@@ -688,8 +713,7 @@ function markdownToDocxElements(
   } = deps;
   const lines = markdown.split("\n");
   const elements: (
-    | InstanceType<typeof import("docx").Paragraph>
-    | InstanceType<typeof import("docx").Table>
+    InstanceType<typeof import("docx").Paragraph> | InstanceType<typeof import("docx").Table>
   )[] = [];
 
   let i = 0;
