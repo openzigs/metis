@@ -18,7 +18,9 @@
  *   AI_FIXTURE_DIR=/abs/path tsx server/scripts/e2e-build-clarify-fixtures.ts
  */
 /* eslint-disable no-console -- CLI script: progress to stdout, errors to stderr */
-import { HAIKU_MODEL_ID } from "../src/lib/ai/model-router.js";
+import { HAIKU_MODEL_ID, tierModelFor } from "../src/lib/ai/model-router.js";
+import { maybeWrapProviderForFixtures } from "../src/lib/ai/fixtures/install.js";
+import { OfflineStubProvider } from "../src/lib/ai/providers/offline-stub-provider.js";
 import {
   buildQuestionMessages,
   buildResolutionMessages,
@@ -78,9 +80,20 @@ export async function main(): Promise<void> {
   const dir = resolveFixtureDir();
   const store = new FixtureStore(dir);
 
+  // #532 — the dialog sends its Haiku tier id only to a provider that serves
+  // it, otherwise the provider's configured model. Ask the provider the e2e
+  // server runs (the offline stub, replay-wrapped) rather than restate either.
+  const dialogModel = tierModelFor(
+    maybeWrapProviderForFixtures(new OfflineStubProvider(), {
+      env: { AI_REPLAY: "1" },
+      fixtureDir: dir,
+    }),
+    HAIKU_MODEL_ID,
+  );
+
   // 1) Question-generation call (round 1, nothing resolved yet).
   const questionMessages = buildQuestionMessages([AMBIGUOUS_REQUIREMENT], 1, []);
-  const questionOpts = { model: HAIKU_MODEL_ID, disableTools: true };
+  const questionOpts = { model: dialogModel, disableTools: true };
   const questionKey = fixtureKey(questionMessages, questionOpts);
   await store.write(questionKey, questionMessages, questionOpts, response(QUESTIONS_RESPONSE_JSON));
 
@@ -91,7 +104,7 @@ export async function main(): Promise<void> {
     { title: AMBIGUOUS_REQUIREMENT.title, description: AMBIGUOUS_REQUIREMENT.description },
     qaBlock,
   );
-  const resolutionOpts = { model: HAIKU_MODEL_ID, disableTools: true };
+  const resolutionOpts = { model: dialogModel, disableTools: true };
   const resolutionKey = fixtureKey(resolutionMessages, resolutionOpts);
   await store.write(
     resolutionKey,
