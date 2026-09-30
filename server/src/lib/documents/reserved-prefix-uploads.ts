@@ -87,7 +87,7 @@ export function formatReservedPrefixUploads(rows: ReservedPrefixUpload[]): strin
     lines.push(`  ${project}: ${t(r.documentId)} [${r.reservedPrefix}] ${t(r.filename)}`);
   }
   lines.push(
-    "Searches and document lists classify these by their stored source; a citation that shows only the name may still label one by its prefix. Re-upload each under a new name and delete the old one to remove the ambiguity.",
+    "Chat and Spec Kit code-symbol dedup, grounding and the document lists classify these by their stored source; analysis citations and analysis code-symbol dedup still read the prefix until #573. Re-upload each under a new name and delete the old one to remove the ambiguity.",
   );
   return lines.join("\n");
 }

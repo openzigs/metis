@@ -858,8 +858,10 @@ model Document {
   /// Issue #474 — which path wrote this row: `upload` (file, URL or text
   /// ingest), `generated`, `repo`, `db`, `confluence` or `jira`. Classify on
   /// this, not the filename: an upload may be named `jira:ABC-1`
-  /// (`lib/documents/document-source.ts`). Search hits carry it too (#547),
-  /// so a reader classifies a hit on this rather than on its filename.
+  /// (`lib/documents/document-source.ts`). Search hits carry it too (#547):
+  /// chat and Spec Kit code-symbol dedup, grounding and the document lists
+  /// classify on it; analysis citations and analysis code-symbol dedup still
+  /// read the filename prefix until #573.
   source             String    @default("upload")
   /// Issue #474 — a display title the source supplied (a Confluence page's
   /// title). Null when the source has none; the filename is the fallback.
