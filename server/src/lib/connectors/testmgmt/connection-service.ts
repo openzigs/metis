@@ -23,6 +23,7 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../../prisma.js";
 import { getVaultService, type VaultService } from "../../vault/vault-service.js";
 import { rotateOrCreate } from "../../vault/secret-rotation.js";
+import { retireReplacedSecret } from "../../vault/secret-retirement.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { ConnectorError } from "../types.js";
@@ -60,6 +61,8 @@ export interface TestManagementServiceDeps {
   fetchFn?: FetchLike;
   /** SSRF guard — defaults to network-allowlist's `assertConnectorHostAllowed`. */
   assertHost?: (hostname: string, kind: ConnectorKind) => Promise<void>;
+  /** #481 — retires a replaced secret; defaults to `retireReplacedSecret`. */
+  retireSecret?: typeof retireReplacedSecret;
 }
 
 function pickPrisma(deps?: TestManagementServiceDeps): TestManagementServiceDeps["prisma"] {
@@ -75,6 +78,25 @@ function pickAssertHost(
   deps?: TestManagementServiceDeps,
 ): (host: string, kind: ConnectorKind) => Promise<void> {
   return deps?.assertHost ?? assertConnectorHostAllowed;
+}
+
+/**
+ * #481 — secret ids the update stopped referencing because a DIFFERENT secret
+ * now holds the same credential (a non-owner's write got a fresh one, #358).
+ * A credential cleared rather than replaced is not reported.
+ */
+function supersededSecretIds(
+  before: Partial<Record<string, unknown>>,
+  after: Partial<Record<string, unknown>>,
+): string[] {
+  const out: string[] = [];
+  for (const [field, ref] of Object.entries(before)) {
+    const oldId = typeof ref === "string" ? refId(ref) : null;
+    const next = after[field];
+    const newId = typeof next === "string" ? refId(next) : null;
+    if (oldId && newId && oldId !== newId) out.push(oldId);
+  }
+  return out;
 }
 
 // ---- Small helpers --------------------------------------------------------
@@ -473,6 +495,7 @@ export async function updateTestManagementConnection(
   const data: Record<string, unknown> = {};
   let baseUrlChanged = false;
   let authChanged = false;
+  const superseded: string[] = [];
 
   if (input.baseUrl !== undefined && input.baseUrl !== existing.baseUrl) {
     const { hostname } = new URL(input.baseUrl);
@@ -513,6 +536,7 @@ export async function updateTestManagementConnection(
     );
     data.authConfigJson = JSON.stringify(refs);
     authChanged = true;
+    superseded.push(...supersededSecretIds(stored, { ...refs }));
   }
 
   if (input.proxyConfig !== undefined) {
@@ -523,15 +547,20 @@ export async function updateTestManagementConnection(
     if (input.tlsConfig === null) {
       data.tlsConfigJson = null;
     } else {
+      const oldCaCertRef =
+        parseJsonOr<PersistedTlsConfig | null>(existing.tlsConfigJson, null)?.caCertRef ?? null;
       const tls = await persistTlsConfig(
         vault,
         existing.projectId,
         (data.label as string | undefined) ?? existing.label,
         input.tlsConfig,
         actorId,
-        parseJsonOr<PersistedTlsConfig | null>(existing.tlsConfigJson, null)?.caCertRef ?? null,
+        oldCaCertRef,
       );
       data.tlsConfigJson = tls ? JSON.stringify(tls) : null;
+      superseded.push(
+        ...supersededSecretIds({ caCertRef: oldCaCertRef }, { caCertRef: tls?.caCertRef }),
+      );
     }
   }
 
@@ -549,6 +578,17 @@ export async function updateTestManagementConnection(
       throw labelTaken(data.label);
     }
     throw err;
+  }
+
+  // #481 — the row now points at the replacements; retire each old secret
+  // unless something else still references it.
+  const retire = deps?.retireSecret ?? retireReplacedSecret;
+  for (const oldId of superseded) {
+    await retire(vault, oldId, {
+      actorId,
+      target: { type: "test_management_connection", id },
+      projectId: existing.projectId,
+    });
   }
 
   audit({

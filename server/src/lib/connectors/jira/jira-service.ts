@@ -18,6 +18,7 @@ import { ulid } from "ulid";
 import { prisma } from "../../prisma.js";
 import { getVaultService } from "../../vault/vault-service.js";
 import { rotateOrCreate } from "../../vault/secret-rotation.js";
+import { retireReplacedSecret } from "../../vault/secret-retirement.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { ConnectorError } from "../types.js";
@@ -282,6 +283,8 @@ export async function updateJiraConnection(
   // instead, since rotating a soft-deleted row would leave it unreadable.
   // Secrets rotated in place leave no key in `data`, so the audit names them here.
   const rotated: string[] = [];
+  // #481 — secrets a fresh one replaced (another principal's, since #358).
+  const superseded: string[] = [];
   const label = input.label ?? existing.label;
   if (input.apiToken) {
     const replaced = await rotateOrReplace(existing.secretId, input.apiToken, {
@@ -291,8 +294,10 @@ export async function updateJiraConnection(
       description: `Jira ${input.edition ?? existing.edition} API token for ${label}`,
       createdById: actorId,
     });
-    if (replaced) data.secretId = replaced;
-    else rotated.push("apiToken");
+    if (replaced) {
+      data.secretId = replaced;
+      superseded.push(existing.secretId);
+    } else rotated.push("apiToken");
   }
 
   // Rotate TLS CA cert if provided
@@ -305,8 +310,10 @@ export async function updateJiraConnection(
         description: `TLS CA cert for Jira ${label}`,
         createdById: actorId,
       });
-      if (replaced) data.tlsCaSecretId = replaced;
-      else rotated.push("tlsCaCert");
+      if (replaced) {
+        data.tlsCaSecretId = replaced;
+        if (existing.tlsCaSecretId) superseded.push(existing.tlsCaSecretId);
+      } else rotated.push("tlsCaCert");
     } else {
       data.tlsCaSecretId = null;
     }
@@ -332,6 +339,16 @@ export async function updateJiraConnection(
       throw labelTaken(data.label);
     }
     throw err;
+  }
+
+  // #481 — the row now points at the replacements; retire each old secret
+  // unless something else still references it.
+  for (const oldId of superseded) {
+    await retireReplacedSecret(getVaultService(), oldId, {
+      actorId,
+      target: { type: "jira_connection", id },
+      projectId: existing.projectId,
+    });
   }
 
   audit({
