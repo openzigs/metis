@@ -157,7 +157,8 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     ).toBeUndefined();
   });
 
-  it("shows connector/repo documents by file path, not the raw connector key (#363)", async () => {
+  it("shows a repository file by name in its folder, never by the raw connector key (#363, #32)", async () => {
+    const user = userEvent.setup();
     documentsListMock.mockResolvedValue({
       items: [
         {
@@ -172,23 +173,21 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     const Wrapper = makeWrapper({ withAuth: false });
     render(<WorkbenchPage />, { wrapper: Wrapper });
 
-    // #363 — the file path, over the repository label, not the internal key.
-    // The path is split so only the directory truncates (PR #386 review); the
-    // file name sits in its own never-truncated span.
-    await waitFor(() =>
-      expect(screen.getByTestId("workbench-doc-doc-repo")).toHaveTextContent(
-        "src/main/java/com/acme/wms/common/vo/ShipmentSourceVO.java",
-      ),
-    );
-    expect(screen.getByText("ShipmentSourceVO.java")).not.toHaveClass("truncate");
-    // …and the noisy connector prefix never appears as visible text.
+    // #32 — repository files start collapsed under their repository; filtering
+    // opens every folder on a match's path.
+    await user.type(await screen.findByTestId("workbench-doc-filter"), "ShipmentSource");
+    const row = await screen.findByTestId("workbench-doc-doc-repo");
+    expect(row).toHaveTextContent("ShipmentSourceVO.java");
+    // The noisy connector prefix appears nowhere, not even in the tooltip.
     expect(screen.queryByText(/connector:repo:/)).not.toBeInTheDocument();
-    // The full original string is preserved as a hover title for traceability.
-    const row = screen.getByTestId("workbench-doc-doc-repo");
-    expect(row.querySelector('[title^="connector:repo:"]')).not.toBeNull();
+    expect(row.querySelector('[title*="connector:repo:"]')).toBeNull();
+    // The full path is on hover.
+    expect(
+      row.querySelector('[title$="src/main/java/com/acme/wms/common/vo/ShipmentSourceVO.java"]'),
+    ).not.toBeNull();
   });
 
-  it("labels repository documents with the repository's name when it is known (#23)", async () => {
+  it("names the repository folder with the repository's name when it is known (#23, #32)", async () => {
     repoListMock.mockResolvedValueOnce([
       { id: "cmexample0000000000acmerp", repoName: "wms-core", label: "WMS" },
     ]);
@@ -205,11 +204,33 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     const Wrapper = makeWrapper({ withAuth: false });
     render(<WorkbenchPage />, { wrapper: Wrapper });
 
-    await waitFor(() =>
-      expect(screen.getByTestId("workbench-doc-doc-repo")).toHaveTextContent("wms-core"),
+    const repos = await screen.findByTestId("workbench-repos");
+    await waitFor(() => expect(repos).toHaveTextContent("wms-core"));
+    expect(repos.textContent).not.toContain("acmerp");
+  });
+
+  it("reaches a document past the first page — the panel is no longer capped at 50 (#32)", async () => {
+    const user = userEvent.setup();
+    const all = Array.from({ length: 150 }, (_, i) => ({
+      id: `d${i}`,
+      filename: `upload-${i}.md`,
+      status: "ready",
+    }));
+    documentsListMock.mockImplementation(
+      async (_p: string, params?: { limit?: number; offset?: number }) => {
+        const limit = params?.limit ?? 25;
+        const offset = params?.offset ?? 0;
+        return { items: all.slice(offset, offset + limit), total: all.length, limit, offset };
+      },
     );
-    expect(screen.getByTestId("workbench-doc-doc-repo")).toHaveTextContent("README.md");
-    expect(screen.getByTestId("workbench-doc-doc-repo").textContent).not.toContain("acmerp");
+
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(<WorkbenchPage />, { wrapper: Wrapper });
+
+    await user.type(await screen.findByTestId("workbench-doc-filter"), "upload-149");
+    await user.click(await screen.findByTestId("workbench-doc-attach-d149"));
+    const chips = await screen.findByTestId("workbench-context-chips");
+    expect(within(chips).getByText(/upload-149\.md/)).toBeInTheDocument();
   });
 
   // PR #367 panel — the context chip is a second render site for the label, and
@@ -233,8 +254,9 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     render(<WorkbenchPage />, { wrapper: Wrapper });
 
     await waitFor(() =>
-      expect(screen.getByTestId("workbench-doc-doc-repo")).toHaveTextContent("wms-core"),
+      expect(screen.getByTestId("workbench-repos")).toHaveTextContent("wms-core"),
     );
+    await user.click(screen.getByRole("button", { name: /wms-core/ }));
     await user.click(screen.getByTestId("workbench-doc-attach-doc-repo"));
 
     const chips = await screen.findByTestId("workbench-context-chips");

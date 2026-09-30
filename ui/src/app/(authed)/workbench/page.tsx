@@ -17,8 +17,9 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { projectsApi, documentsApi, type DocumentRow, type Project } from "@/lib/projects-api";
-import { DocumentName } from "@/components/projects/document-name";
+import { projectsApi, type DocumentRow, type Project } from "@/lib/projects-api";
+import { listAllDocuments } from "@/lib/list-all-documents";
+import { DocumentPanel } from "@/components/workbench/document-panel";
 import { formatSourceLabel } from "@/lib/format-source-label";
 import { useRepoNames } from "@/hooks/use-repo-names";
 import {
@@ -97,7 +98,8 @@ export default function WorkbenchPage() {
   // Documents for the left panel.
   const documents = useQuery({
     queryKey: ["workbench", "documents", activeProjectId ?? "_none"],
-    queryFn: () => documentsApi.list(activeProjectId ?? "", { limit: 50 }),
+    // #32 — every document, not the first 50: a capped list left uploads unreachable.
+    queryFn: () => listAllDocuments(activeProjectId ?? ""),
     enabled: Boolean(activeProjectId),
   });
 
@@ -365,7 +367,7 @@ export default function WorkbenchPage() {
               onChange={(v) => setLayout((prev) => ({ ...prev, leftPct: v }))}
             />
           </div>
-          <div className="flex-1 min-h-0 overflow-y-auto">
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
             {!activeProjectId ? (
               <EmptyState
                 title="Choose a project"
@@ -383,34 +385,16 @@ export default function WorkbenchPage() {
                 hrefLabel="Open project"
               />
             ) : (
-              <ul className="space-y-1 text-sm">
-                {(documents.data?.items ?? []).map((d) => {
-                  const attached = layout.contextIds.includes(d.id);
-                  return (
-                    <li
-                      key={d.id}
-                      className="flex items-center justify-between gap-2 rounded px-2 py-1 hover:bg-accent/50"
-                      data-testid={`workbench-doc-${d.id}`}
-                    >
-                      {/* Issue #363 — the shared list label: path over
-                          repository, internal key only in the tooltip. */}
-                      <DocumentName
-                        filename={d.filename}
-                        repoNames={repoNames}
-                        className="flex-1"
-                      />
-                      <Button
-                        size="sm"
-                        variant={attached ? "outline" : "default"}
-                        onClick={() => (attached ? detachFromContext(d.id) : attachToContext(d.id))}
-                        data-testid={`workbench-doc-attach-${d.id}`}
-                      >
-                        {attached ? "Attached" : "Attach"}
-                      </Button>
-                    </li>
-                  );
-                })}
-              </ul>
+              <DocumentPanel
+                // A new project starts with every folder collapsed and no filter.
+                key={activeProjectId}
+                documents={documents.data?.items ?? []}
+                total={documents.data?.total}
+                repoNames={repoNames}
+                attachedIds={layout.contextIds}
+                onAttach={attachToContext}
+                onDetach={detachFromContext}
+              />
             )}
           </div>
         </Card>
