@@ -124,6 +124,7 @@ import {
   parseAnalysisTab,
   parseFindingFilters,
   requirementPage,
+  sameFindingFilters,
   runHasQuestionsView,
   tabForAnchor,
   traceabilityPendingMessage,
@@ -248,6 +249,21 @@ export default function AnalysisPage(): React.ReactElement {
   );
   const [findingsPage, setFindingsPage] = useState(0);
   const [requirementsPage, setRequirementsPage] = useState(0);
+  // Issue #476 — resync from the URL on a soft navigation (a second shared link,
+  // Back/Forward), as `tab` does. Keyed on the filter params' values, not the
+  // params object, and applied only when they differ from what is shown: the
+  // page's own `router.replace` echoes back equal filters, which must neither
+  // loop nor send a reader who has paged on back to page 1.
+  const urlFilters = parseFindingFilters(searchParams);
+  const urlFiltersKey = JSON.stringify(findingFiltersParams(urlFilters));
+  const [syncedFiltersKey, setSyncedFiltersKey] = useState(urlFiltersKey);
+  if (urlFiltersKey !== syncedFiltersKey) {
+    setSyncedFiltersKey(urlFiltersKey);
+    if (!sameFindingFilters(urlFilters, findingFilters)) {
+      setFindingFilters(urlFilters);
+      setFindingsPage(0);
+    }
+  }
   const selectTab = (next: AnalysisTab) => {
     // PR #434 review: a tab switch cancels a scroll still waiting for its target,
     // or it fires later as a surprise. An anchor the tab bar intercepts is set

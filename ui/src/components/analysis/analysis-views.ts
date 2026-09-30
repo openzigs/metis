@@ -110,6 +110,20 @@ export function findingFiltersParams(f: FindingFilters): Record<string, string |
 }
 
 /**
+ * Issue #476 — whether two filter sets select the same findings. The page
+ * compares the URL's filters with the shown ones, so its own write echoing
+ * back through the router is not taken for a navigation.
+ */
+export function sameFindingFilters(a: FindingFilters, b: FindingFilters): boolean {
+  return (
+    a.severity === b.severity &&
+    a.category === b.category &&
+    a.agentKey === b.agentKey &&
+    a.verification === b.verification
+  );
+}
+
+/**
  * Read the findings filters back from the query string. An empty value is no
  * filter; a verification value the filter bar has no button for is dropped,
  * since no control could show it as selected or clear it.
