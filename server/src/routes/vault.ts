@@ -79,12 +79,14 @@ export const SECRET_VALUE_MAX = 64 * 1024;
 export const CONFIRMED_BINDING_ID_MAX = 200;
 export const CONFIRMED_BINDING_DESTINATION_MAX = 8192;
 /**
- * #557 — the most bindings a foreign-owner confirm may echo back. Sized so the
- * largest body the schema accepts fits the 10 MiB JSON limit (`JSON_LIMIT_BYTES`)
- * even when every character JSON-escapes to six bytes (~8 MB at this cap), so a
- * valid confirm is never refused as an opaque 413.
+ * #502 — the most bindings a foreign-owner confirm may echo back. The 409 lists
+ * every live binding and the UI echoes all of them, so lowering this strands a
+ * secret with more bindings than the cap: an admin could never rotate it.
+ * A realistic confirm at this cap is well under the 10 MiB JSON limit
+ * (`JSON_LIMIT_BYTES`); a pathological one (max-length, all-escaped fields)
+ * can exceed it and gets the structured `413 PAYLOAD_TOO_LARGE`.
  */
-export const MAX_CONFIRMED_BINDINGS = 150;
+export const MAX_CONFIRMED_BINDINGS = 1000;
 
 const rotateSchema = z.object({
   value: z.string().min(1).max(SECRET_VALUE_MAX),

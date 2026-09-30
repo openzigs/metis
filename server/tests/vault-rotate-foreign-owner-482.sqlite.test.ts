@@ -10,6 +10,7 @@
  * owner's). With the flag the rotation lands and its audit row records the
  * confirmation. Rotating your own secret, or one no user owns, is unchanged.
  */
+import { createHash } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
@@ -666,13 +667,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // #557 — the routing digest is required, and never empty.
         [{ type: "db_connector", id: "db-1", destination: null }],
         [{ type: "db_connector", id: "db-1", destination: null, routing: "" }],
-        // Over the cap — kept small per entry so the body stays under the JSON limit.
-        Array.from({ length: MAX_CONFIRMED_BINDINGS + 1 }, () => ({
-          type: "db_connector",
-          id: "x",
-          destination: null,
-          routing: HEX64,
-        })),
+        // Over the cap is asserted against the real JSON limit in the #557 size test.
       ]) {
         const res = await rotate(id, {
           value: ADMIN_VALUE,
@@ -708,47 +703,99 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await plaintextOf(id)).toBe(OWNER_VALUE);
     });
 
-    it("#557: the largest confirm the schema accepts parses under the real JSON limit, not 413", async () => {
+    /** The route behind the app's real 10 MiB parser limit and real error handler. */
+    const realLimitRotate = (id: string, payload: unknown) => {
+      const a = express();
+      a.use(express.json({ limit: JSON_LIMIT_BYTES }));
+      a.use("/api/vault", vaultRouter());
+      a.use(notFoundHandler);
+      a.use(errorHandler);
+      return request(a)
+        .post(`/api/vault/${id}/rotate`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send(payload as object);
+    };
+
+    it("#557: a realistic 1000-binding confirm is parsed and judged on the merits, not refused by size", async () => {
       const id = await newSecret("u-coord");
-      // Worst case per field: every character JSON-escapes to six bytes (\u0001).
-      const worst = (len: number) => "\u0001".repeat(len);
-      const entry = {
-        type: "jira_connection",
-        id: worst(CONFIRMED_BINDING_ID_MAX),
-        destination: worst(CONFIRMED_BINDING_DESTINATION_MAX),
-        routing: HEX64,
+      // Typical field shapes as describeForeignOwner lists them: cuid ids,
+      // driver://host:port or URL destinations, and real 64-hex routing digests.
+      const types = [
+        "db_connector",
+        "repo_connector",
+        "import_source",
+        "mcp_server",
+        "jira_connection",
+      ] as const;
+      const destinationFor = (type: (typeof types)[number], host: string) => {
+        switch (type) {
+          case "db_connector":
+            return `postgresql://${host}:5432`;
+          case "mcp_server":
+            return `https://${host}:8443/mcp`;
+          default:
+            return `https://${host}/api/v3`;
+        }
       };
+      const entries = (count: number) =>
+        Array.from({ length: count }, (_, i) => {
+          const type = types[i % types.length]!;
+          const host = `svc-${String(i).padStart(4, "0")}.prod.internal.example.com`;
+          return {
+            type,
+            id: `cm${i.toString(36).padStart(6, "0")}k2x9q0000vq8z3h7t`,
+            destination: destinationFor(type, host),
+            routing: createHash("sha256").update(`binding-${i}`).digest("hex"),
+          };
+        });
+      // A long plain secret (the schema's max value length, no escaping).
       const body = (count: number) => ({
-        value: worst(SECRET_VALUE_MAX),
+        value: "k".repeat(SECRET_VALUE_MAX),
         confirmForeignOwner: true,
-        confirmedBindings: Array.from({ length: count }, () => entry),
+        confirmedBindings: entries(count),
       });
-      const bytes = Buffer.byteLength(JSON.stringify(body(MAX_CONFIRMED_BINDINGS)));
-      // Comfortably inside the limit, with room to spare — not scraping it.
-      expect(bytes).toBeLessThan(JSON_LIMIT_BYTES * 0.8);
+      expect(Buffer.byteLength(JSON.stringify(body(1000)))).toBeLessThan(JSON_LIMIT_BYTES);
 
-      const realLimitRotate = (payload: unknown) => {
-        const a = express();
-        a.use(express.json({ limit: JSON_LIMIT_BYTES }));
-        a.use("/api/vault", vaultRouter());
-        a.use(notFoundHandler);
-        a.use(errorHandler);
-        return request(a)
-          .post(`/api/vault/${id}/rotate`)
-          .set("Authorization", `Bearer ${adminToken}`)
-          .send(payload as object);
-      };
-
-      // At the cap: parsed and validated, so the route answers on the merits —
-      // the bindings do not match the (empty) live set.
-      const atCap = await realLimitRotate(body(MAX_CONFIRMED_BINDINGS));
+      // 1000 is a literal, not MAX_CONFIRMED_BINDINGS: a secret's live list may
+      // legitimately reach it, and a lower cap would strand that secret (400).
+      // Parsed and validated, the route answers on the merits — the bindings do
+      // not match the (empty) live set.
+      const atCap = await realLimitRotate(id, body(1000));
       expect(atCap.status).toBe(409);
       expect(atCap.body.error.code).toBe("VAULT_ROTATE_BINDINGS_CHANGED");
 
-      // One over the cap is still a 400 from the schema, never a 413 from the parser.
-      const overCap = await realLimitRotate(body(MAX_CONFIRMED_BINDINGS + 1));
+      // One more is a 400 from the schema, never a 413 from the parser.
+      const overCap = await realLimitRotate(id, body(1001));
       expect(overCap.status).toBe(400);
       expect(overCap.body.error.code).toBe("INVALID_BODY");
+      expect(await plaintextOf(id)).toBe(OWNER_VALUE);
+    });
+
+    it("#557: a schema-valid confirm over the JSON limit gets the structured 413 envelope", async () => {
+      const id = await newSecret("u-coord");
+      // Every field within its schema max, but each character JSON-escapes to six
+      // bytes (\u0001), so a full list of bindings exceeds the 10 MiB limit.
+      const escaped = (len: number) => "\u0001".repeat(len);
+      const destinationLen = 2000;
+      expect(destinationLen).toBeLessThanOrEqual(CONFIRMED_BINDING_DESTINATION_MAX);
+      const payload = {
+        value: ADMIN_VALUE,
+        confirmForeignOwner: true,
+        confirmedBindings: Array.from({ length: MAX_CONFIRMED_BINDINGS }, () => ({
+          type: "jira_connection",
+          id: escaped(CONFIRMED_BINDING_ID_MAX),
+          destination: escaped(destinationLen),
+          routing: HEX64,
+        })),
+      };
+      expect(Buffer.byteLength(JSON.stringify(payload))).toBeGreaterThan(JSON_LIMIT_BYTES);
+
+      const res = await realLimitRotate(id, payload);
+      expect(res.status).toBe(413);
+      expect(res.body).toMatchObject({
+        success: false,
+        error: { code: "PAYLOAD_TOO_LARGE", message: "Request body is too large" },
+      });
       expect(await plaintextOf(id)).toBe(OWNER_VALUE);
     });
 
