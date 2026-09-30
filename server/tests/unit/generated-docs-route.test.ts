@@ -1247,39 +1247,44 @@ describe("generated-docs routes", () => {
       expect(res.body.data.indexing.errorMessage).toBe(INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE);
     });
 
-    it("#232 — a cancelled publication reads as cancelled, not as an indexing failure", async () => {
-      vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
-        id: "doc-1",
-        content: "",
-        versions: [
-          {
-            id: "v1",
-            documentId: "doc-1",
-            version: 1,
-            revisionId: null,
-            provenanceManifest: null,
-            createdAt: new Date(0),
-          },
-        ],
-      } as never);
-      vi.mocked(prisma.document.findFirst).mockResolvedValue({
-        indexState: "pending",
-        status: "failed",
-        chunkCount: 0,
-        errorMessage: `${GENERATED_DOC_PUBLICATION_CANCELLED}: cancelled by user /srv/metis`,
-        processedAt: null,
-      } as never);
+    // PR #497 panel: the cancelled write reaches pending AND quarantined rows
+    // (writePublicationOutcome filters indexState in [pending, quarantined]).
+    it.each(["pending", "quarantined"])(
+      "#232/#489 — a cancelled publication on a %s row reads as cancelled",
+      async (indexState) => {
+        vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
+          id: "doc-1",
+          content: "",
+          versions: [
+            {
+              id: "v1",
+              documentId: "doc-1",
+              version: 1,
+              revisionId: null,
+              provenanceManifest: null,
+              createdAt: new Date(0),
+            },
+          ],
+        } as never);
+        vi.mocked(prisma.document.findFirst).mockResolvedValue({
+          indexState,
+          status: "failed",
+          chunkCount: 0,
+          errorMessage: `${GENERATED_DOC_PUBLICATION_CANCELLED}: cancelled by user /srv/metis`,
+          processedAt: null,
+        } as never);
 
-      const res = await request(app).get("/projects/proj-1/docs/doc-1");
+        const res = await request(app).get("/projects/proj-1/docs/doc-1");
 
-      expect(res.status).toBe(200);
-      // #489 — the row's `indexState` is still `pending`; the badge must not say so.
-      expect(res.body.data.indexing.state).toBe("cancelled");
-      expect(res.body.data.indexing.status).toBe("cancelled");
-      expect(res.body.data.indexing.errorMessage).toBe(INDEXING_PUBLICATION_CANCELLED_MESSAGE);
-      expect(JSON.stringify(res.body)).not.toContain("cancelled by user");
-      expectNoIndexingLeak(JSON.stringify(res.body));
-    });
+        expect(res.status).toBe(200);
+        // #489 — the row's `indexState` is still `pending`; the badge must not say so.
+        expect(res.body.data.indexing.state).toBe("cancelled");
+        expect(res.body.data.indexing.status).toBe("cancelled");
+        expect(res.body.data.indexing.errorMessage).toBe(INDEXING_PUBLICATION_CANCELLED_MESSAGE);
+        expect(JSON.stringify(res.body)).not.toContain("cancelled by user");
+        expectNoIndexingLeak(JSON.stringify(res.body));
+      },
+    );
 
     it("#489 — a stale cancellation prefix on an indexed row does not relabel it cancelled", async () => {
       vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
