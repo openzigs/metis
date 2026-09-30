@@ -584,8 +584,8 @@ describe("asynchronous deep-ingest (#373)", () => {
     const jobId = res.body.data.jobId as string;
     await vi.waitFor(() => expect(getLastJobLifecycle(jobId)?.status).toBe("completed"));
     expect(getLastJobLifecycle(jobId)!.message).toBe(
-      "Deep ingest complete: 1 of 1 files parsed, 0 symbols, 0 edges, 1 RAG chunks, " +
-        "1 documents created, 10 B cloned.",
+      "Deep ingest complete: 1 of 1 files parsed, 0 symbols, 0 edges, 1 RAG chunk, " +
+        "1 document created, 10 B cloned.",
     );
   });
 
@@ -919,6 +919,15 @@ describe("manual connector regeneration callers (#1356)", () => {
           expect(failed!.error).toBe(REGENERATION_SCHEDULING_FAILED_MESSAGE);
           expect(failed!.error).not.toBe(genericFailureMessage("repo-ingest"));
           expect(JSON.stringify(failed)).not.toContain("Task store unavailable");
+          // PR #418 review — discovery already ran, so its notification is sent
+          // even though scheduling then failed.
+          const discoveries = vi
+            .mocked(getRepoConnectorEmitter)
+            .mock.results.flatMap(
+              (r) =>
+                vi.mocked((r.value as { discovery: (e: unknown) => void }).discovery).mock.calls,
+            );
+          expect(discoveries).toHaveLength(1);
         }
         if (caller !== "refresh-ingest") {
           // The connector progress bar is told the same, not "ingestion failed".

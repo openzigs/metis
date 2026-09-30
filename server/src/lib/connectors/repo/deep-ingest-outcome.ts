@@ -43,10 +43,10 @@ export function deepIngestCompletionMessage(outcome: DeepIngestOutcome): string 
   const { codeGraph, source, metadata, cloneSizeBytes } = outcome;
   const totals = [
     `${codeGraph.filesParsed} of ${codeGraph.filesScanned} files parsed`,
-    `${codeGraph.symbolsUpserted} symbols`,
-    `${codeGraph.edgesUpserted} edges`,
-    `${source.chunkCount} RAG chunks`,
-    `${source.documentsCreated} documents created`,
+    plural(codeGraph.symbolsUpserted, "symbol"),
+    plural(codeGraph.edgesUpserted, "edge"),
+    plural(source.chunkCount, "RAG chunk"),
+    `${plural(source.documentsCreated, "document")} created`,
   ];
   if (cloneSizeBytes > 0) totals.push(`${formatBytes(cloneSizeBytes)} cloned`);
 

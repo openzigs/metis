@@ -351,14 +351,10 @@ async function runDeepIngest(
       metadata,
       cloneSizeBytes: source.sizeBytes,
     };
-    if (deepIngestFailureCount(outcome) === 0) {
-      try {
-        await checkIncrementalRegeneration(projectId, connectorId);
-      } catch (scheduleErr) {
-        throw new RegenerationSchedulingError(scheduleErr);
-      }
-    }
-    // Step 6: discovery notification via Socket.IO (#669)
+    // Step 6: discovery notification via Socket.IO (#669). Sent before
+    // regeneration is scheduled: discovery has already run, so a scheduling
+    // failure (which the job reports as "ingested, scheduling failed") must not
+    // swallow it (PR #418 review).
     if (discovery.connectionsFound > 0) {
       const connector = await getRepoConnector(projectId, connectorId);
       emitter.discovery({
@@ -367,6 +363,13 @@ async function runDeepIngest(
         repoLabel: connector.label,
         connectionsFound: discovery.connectionsFound,
       });
+    }
+    if (deepIngestFailureCount(outcome) === 0) {
+      try {
+        await checkIncrementalRegeneration(projectId, connectorId);
+      } catch (scheduleErr) {
+        throw new RegenerationSchedulingError(scheduleErr);
+      }
     }
     if (jobId)
       jobEvents.completed("repo-ingest", jobId, projectId, deepIngestCompletionMessage(outcome));
