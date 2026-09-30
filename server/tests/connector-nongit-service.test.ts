@@ -330,6 +330,31 @@ describe("createUploadRepoConnector + resolveNonGitIngestRoot", () => {
     expect(repoLog.warn.mock.calls[0]?.[0]).toMatch(/Failed to remove/);
   });
 
+  it("#527 — a failed extraction cleanup on delete is logged at warn, not swallowed", async () => {
+    const created = await createUploadRepoConnector("proj_1", "stuck2", await zipBuf(), "user_1");
+    const extractionDir = path.join(process.env.UPLOAD_EXTRACT_DIR!, created.id);
+    const realRm = fs.rm.bind(fs);
+    const rmSpy = vi.spyOn(fs, "rm").mockImplementation(async (target, opts) => {
+      if (target === extractionDir) {
+        throw Object.assign(new Error("EBUSY: resource busy"), { code: "EBUSY" });
+      }
+      return realRm(target, opts);
+    });
+    try {
+      await expect(deleteRepoConnector("proj_1", created.id, "user_1")).resolves.toBeUndefined();
+    } finally {
+      rmSpy.mockRestore();
+    }
+
+    expect(rows.get(created.id)?.deletedAt).toBeInstanceOf(Date);
+    expect(repoLog.warn).toHaveBeenCalledTimes(1);
+    expect(repoLog.warn.mock.calls[0]?.[0]).toMatch(/Failed to remove .* extraction/);
+    expect(repoLog.warn.mock.calls[0]?.[1]).toEqual({
+      connectorId: created.id,
+      error: "EBUSY: resource busy",
+    });
+  });
+
   it("resolveNonGitIngestRoot for a local connector returns realpath + boundary", async () => {
     const created = await createRepoConnector(
       "proj_1",

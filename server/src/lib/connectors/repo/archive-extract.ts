@@ -35,6 +35,9 @@ import {
 } from "@metis/shared";
 import { ConnectorError } from "../types.js";
 import { SOURCE_EXTENSIONS } from "../connector-ingest.js";
+import { uploadArchiveRoot, uploadExtractionRoot } from "./upload-roots.js";
+
+export { uploadArchiveRoot, uploadExtractionRoot };
 
 /** Best-effort recursive remove that never throws (used on cleanup paths). */
 async function rmSilent(target: string): Promise<void> {
@@ -44,36 +47,6 @@ async function rmSilent(target: string): Promise<void> {
   } catch {
     /* swallow — cleanup is best-effort */
   }
-}
-
-/**
- * Root under which all per-connector extraction directories live.
- *
- * Issue #329 — DEFAULT is a PERSISTENT app-data dir (`<cwd>/data/repo-extracts`),
- * mirroring the other on-disk stores (`data/uploads`, `data/repo-clones`,
- * `data/lancedb`). The previous default of `os.tmpdir()` was purged by macOS
- * (`/var/folders/.../T`) and many container runtimes, which silently wiped an
- * upload connector's working copy between ingests. `UPLOAD_EXTRACT_DIR` still
- * overrides it (e.g. to a mounted volume in production).
- */
-export function uploadExtractionRoot(): string {
-  return path.resolve(
-    process.env.UPLOAD_EXTRACT_DIR || path.join(process.cwd(), "data", "repo-extracts"),
-  );
-}
-
-/**
- * Directory where uploaded .zip archives are persisted for re-ingest.
- *
- * Issue #329 — see {@link uploadExtractionRoot}. The DEFAULT is now
- * `<cwd>/data/repo-archives` (persistent) instead of `os.tmpdir()`, so a stored
- * archive survives OS temp purges and re-ingest can re-extract without requiring
- * the user to re-upload (the intent of #289). `UPLOAD_ARCHIVE_DIR` overrides it.
- */
-export function uploadArchiveRoot(): string {
-  return path.resolve(
-    process.env.UPLOAD_ARCHIVE_DIR || path.join(process.cwd(), "data", "repo-archives"),
-  );
 }
 
 /**
@@ -334,9 +307,13 @@ export async function extractArchiveBuffer(
   return { dir: realDir, filesWritten, bytesWritten };
 }
 
-/** Remove a connector's extraction directory (best-effort). */
+/**
+ * Remove a connector's extraction directory. A directory that is already gone
+ * is a no-op; any other failure is thrown so the caller can log it (#527) —
+ * a cleanup that fails silently leaves a working copy nobody knows about.
+ */
 export async function cleanupExtraction(connectorId: string): Promise<void> {
   const dir = path.join(uploadExtractionRoot(), connectorId);
   // nosemgrep: javascript.lang.security.audit.detect-non-literal-fs-filename.detect-non-literal-fs-filename -- `dir` is root + server-generated cuid or lowercase ULID; no user-controlled segment.
-  await rmSilent(dir);
+  await fs.rm(dir, { recursive: true, force: true });
 }
