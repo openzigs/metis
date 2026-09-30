@@ -2,7 +2,8 @@
  * #396 — read-only report of what the #369 issue-draft dedup migration left
  * behind: retired drafts that still have a published issue, and live drafts
  * whose parent was retired. Changes nothing; run it against a database that
- * applied #369 before deciding whether to close duplicate issues.
+ * applied #369 before deciding whether to close a separate issue (one the
+ * kept draft shares is not a duplicate).
  *
  *   pnpm --filter @metis/server publishing:dedup-leftovers
  *   pnpm --filter @metis/server publishing:dedup-leftovers -- --json

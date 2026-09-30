@@ -5,12 +5,18 @@
  * duplicate of a (projectId, dedupHash) group, and #402 repointed the
  * references it could. Two leftovers need an operator, not a migration:
  *
- *   1. A retired draft that had been PUBLISHED: its remote issue still exists
- *      and duplicates the survivor's. Its published_issues rows keep their
- *      draftId on purpose — re-linking them to the survivor would attribute the
- *      issue to a body it was never published from (AC traceability and
- *      requirement sync read the draft through that row). Closing the
- *      duplicate on GitHub/Jira is the operator's call; this report names it.
+ *   1. A retired draft that had been PUBLISHED. Its published_issues rows
+ *      keep their draftId on purpose — re-linking them to the survivor would
+ *      attribute the issue to a body it was never published from (AC
+ *      traceability and requirement sync read the draft through that row).
+ *      Such a row is NOT necessarily a duplicate issue. A draft's dedupHash is
+ *      the key the GitHub publisher dedups on, so publishing the survivor (or
+ *      its twin in the same batch) usually UPDATED the retiree's issue and
+ *      wrote a row with the same issue number: both drafts point at one
+ *      issue, and closing it would close the survivor's. So each retiree
+ *      issue is compared with the survivor's live issues and reported either
+ *      as shared (nothing to close) or as a separate issue that may duplicate
+ *      the survivor's — closing that one is the operator's call.
  *   2. A live draft whose parent is a retired draft. After #402 only the case
  *      where the child is itself its group's survivor remains ("self"), since
  *      repointing would make it its own parent. Every reader already treats it
@@ -54,7 +60,15 @@ export interface PublishedRetiree {
      * when more than half the batch failed.
      */
     status: string;
+    /**
+     * The survivor has a live published row for this same remote issue: same
+     * non-empty htmlUrl, or same destination, target repository and
+     * issueNumber (> 0). Not a duplicate — closing it closes the survivor's.
+     */
+    sharedWithSurvivor: boolean;
   }>;
+  /** Live published rows the survivor has; 0 means the retiree's issue may be the only one. */
+  survivorIssueCount: number;
 }
 
 export interface OrphanedChild {
@@ -84,6 +98,30 @@ const EMPTY: DedupLeftovers = {
 };
 
 const key = (projectId: string, dedupHash: string) => `${projectId}\u0000${dedupHash}`;
+
+interface IssueRow {
+  destination: string;
+  issueNumber: number;
+  htmlUrl: string;
+  batch: { targetBaseUrl: string | null; targetOwner: string; targetRepo: string };
+}
+
+/**
+ * One remote issue: the same non-empty htmlUrl, or the same destination,
+ * target repository and issue number. Jira rows store issueNumber 0, so they
+ * match on the URL alone; a number is only unique within one repository.
+ */
+function sameRemoteIssue(a: IssueRow, b: IssueRow): boolean {
+  if (a.htmlUrl !== "" && a.htmlUrl === b.htmlUrl) return true;
+  return (
+    a.issueNumber > 0 &&
+    a.issueNumber === b.issueNumber &&
+    a.destination === b.destination &&
+    (a.batch.targetBaseUrl ?? "") === (b.batch.targetBaseUrl ?? "") &&
+    a.batch.targetOwner === b.batch.targetOwner &&
+    a.batch.targetRepo === b.batch.targetRepo
+  );
+}
 
 export async function findDedupLeftovers(prisma: DedupLeftoversPrisma): Promise<DedupLeftovers> {
   const deleted = await prisma.issueDraft.findMany({
@@ -135,10 +173,12 @@ export async function findDedupLeftovers(prisma: DedupLeftoversPrisma): Promise<
 
   // A failed row counts only if it still points at a real remote issue
   // (#1091). A failure before the remote write stores 0/"" (Jira stores an
-  // empty key and URL), so those stay out.
-  const issues = await prisma.publishedIssue.findMany({
+  // empty key and URL), so those stay out. The survivors' rows are read with
+  // the same filter, to tell a shared issue from a separate one.
+  const survivorIds = [...new Set([...retirees.values()].map((r) => r.survivorId))];
+  const rows = await prisma.publishedIssue.findMany({
     where: {
-      draftId: { in: retireeIds },
+      draftId: { in: [...retireeIds, ...survivorIds] },
       OR: [
         { status: { in: ["created", "updated"] } },
         { status: "failed", OR: [{ issueNumber: { gt: 0 } }, { htmlUrl: { not: "" } }] },
@@ -151,12 +191,20 @@ export async function findDedupLeftovers(prisma: DedupLeftoversPrisma): Promise<
       htmlUrl: true,
       batchId: true,
       status: true,
+      batch: { select: { targetBaseUrl: true, targetOwner: true, targetRepo: true } },
     },
     orderBy: [{ draftId: "asc" }, { issueNumber: "asc" }],
   });
+  const survivorIssues = new Map<string, typeof rows>();
+  for (const row of rows) {
+    if (retirees.has(row.draftId)) continue;
+    survivorIssues.set(row.draftId, [...(survivorIssues.get(row.draftId) ?? []), row]);
+  }
   const publishedRetirees: PublishedRetiree[] = [];
-  for (const issue of issues) {
-    const r = retirees.get(issue.draftId)!;
+  for (const issue of rows) {
+    const r = retirees.get(issue.draftId);
+    if (!r) continue;
+    const kept = survivorIssues.get(r.survivorId) ?? [];
     let entry = publishedRetirees.at(-1);
     if (entry?.retiredDraftId !== issue.draftId) {
       entry = {
@@ -166,6 +214,7 @@ export async function findDedupLeftovers(prisma: DedupLeftoversPrisma): Promise<
         title: r.title,
         projectArchived: r.projectArchived,
         issues: [],
+        survivorIssueCount: kept.length,
       };
       publishedRetirees.push(entry);
     }
@@ -175,6 +224,7 @@ export async function findDedupLeftovers(prisma: DedupLeftoversPrisma): Promise<
       htmlUrl: issue.htmlUrl,
       batchId: issue.batchId,
       status: issue.status,
+      sharedWithSurvivor: kept.some((k) => sameRemoteIssue(issue, k)),
     });
   }
 
@@ -222,20 +272,42 @@ export function formatDedupLeftovers(report: DedupLeftovers): string {
         : "."),
   ];
   for (const g of report.retiredByDeletedAt) lines.push(`  ${t(g.deletedAt)}: ${t(g.count)}`);
+  const pick = (shared: boolean) =>
+    report.publishedRetirees
+      .map((r) => ({ ...r, issues: r.issues.filter((i) => i.sharedWithSurvivor === shared) }))
+      .filter((r) => r.issues.length > 0);
+  const separate = pick(false);
+  const shared = pick(true);
+  const count = (rs: PublishedRetiree[]) => rs.reduce((n, r) => n + r.issues.length, 0);
   lines.push(
     `${report.publishedRetirees.length} retired draft(s) still have a published issue` +
-      (report.publishedRetirees.length ? " (close the duplicate if it is unwanted):" : "."),
+      (report.publishedRetirees.length
+        ? `: ${count(separate)} separate issue(s) to review, ${count(shared)} the same issue as the kept draft.`
+        : "."),
   );
-  for (const r of report.publishedRetirees) {
-    lines.push(
-      `  ${project(r.projectId, r.projectArchived)}: draft ${t(r.retiredDraftId)} (kept: ${t(r.survivorDraftId)}) "${t(r.title)}"`,
-    );
-    for (const i of r.issues) {
-      const note = i.status === "failed" ? " (publish marked failed; remote issue exists)" : "";
+  const list = (rs: PublishedRetiree[]) => {
+    for (const r of rs) {
+      const alone = r.survivorIssueCount === 0 ? " (the kept draft has no published issue)" : "";
       lines.push(
-        `    ${t(i.destination)} #${t(i.issueNumber)} ${t(i.htmlUrl)} [${t(i.status)}]${note}`,
+        `  ${project(r.projectId, r.projectArchived)}: draft ${t(r.retiredDraftId)} (kept: ${t(r.survivorDraftId)}) "${t(r.title)}"${alone}`,
       );
+      for (const i of r.issues) {
+        const note = i.status === "failed" ? " (publish marked failed; remote issue exists)" : "";
+        lines.push(
+          `    ${t(i.destination)} #${t(i.issueNumber)} ${t(i.htmlUrl)} [${t(i.status)}]${note}`,
+        );
+      }
     }
+  };
+  if (separate.length) {
+    lines.push(
+      "Separate issue(s), possibly duplicating the kept draft's (close one if unwanted; check first when the kept draft has none):",
+    );
+    list(separate);
+  }
+  if (shared.length) {
+    lines.push("Same issue as the kept draft, not a duplicate (leave it open; no action):");
+    list(shared);
   }
   lines.push(
     `${report.orphanedChildren.length} live draft(s) name a retired parent` +

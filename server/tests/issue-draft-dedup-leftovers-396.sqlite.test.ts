@@ -27,16 +27,24 @@ import {
   MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
 } from "./helpers/sqlite-migrated-db.js";
 
-// published_issues rows: [id, batchId, draftId, issueNumber, status, destination]
-const ISSUES: Array<[string, string, string, number, string, string]> = [
+// published_issues rows: [id, batchId, draftId, issueNumber, status, destination, htmlUrl?]
+// htmlUrl defaults to https://gh/<issueNumber>, or "" when the number is 0.
+const ISSUES: Array<[string, string, string, number, string, string, string?]> = [
   // The two published drafts of group h3: d_p1 is kept, d_p2 retired.
   ["pi_p1", "b1", "d_p1", 10, "created", "github"],
   ["pi_p2", "b1", "d_p2", 11, "created", "github"],
   ["pi_p2j", "b2", "d_p2", 7, "updated", "jira"],
+  // The survivor holds number 11 too, but in ANOTHER destination (and URL):
+  // a different issue, so d_p2's github #11 stays a separate one.
+  ["pi_p1j", "b2", "d_p1", 11, "created", "jira", "https://jira/APO-11"],
   // A retiree of p1/h1 (kept: d_c). p2 has a live h1 draft too (d_other),
   // which must never be named as its survivor (pinned deterministically by the
   // edge-case suite below, which does not depend on row order).
   ["pi_b", "b2", "d_b", 12, "updated", "github"],
+  // The publisher dedups on the draft's dedupHash, so publishing the survivor
+  // d_c updated the retiree's issue: one issue, #13, on both drafts' rows. It
+  // is the survivor's own issue, not a duplicate to close.
+  ["pi_b2", "b1", "d_b", 13, "updated", "github"],
   // A publish that failed before the remote write stored 0 and an empty URL:
   // no remote issue exists, so it is not a leftover.
   ["pi_a", "b2", "d_a", 0, "failed", "github"],
@@ -44,9 +52,22 @@ const ISSUES: Array<[string, string, string, number, string, string]> = [
   // "failed" but carries the real issue, which still exists (rollback closes
   // it only when more than half the batch failed). It IS a leftover.
   ["pi_e", "b1", "d_e", 14, "failed", "github"],
+  // Jira rows store issueNumber 0: d_e and its survivor d_d share one Jira
+  // issue, which only the URL can tell.
+  ["pi_ej", "b2", "d_e", 0, "created", "jira", "https://jira/APO-1"],
+  ["pi_dj", "b2", "d_d", 0, "created", "jira", "https://jira/APO-1"],
   // A live draft's issue is not a leftover.
   ["pi_c", "b1", "d_c", 13, "created", "github"],
 ];
+
+const issue = (
+  destination: string,
+  issueNumber: number,
+  batchId: string,
+  status: string,
+  sharedWithSurvivor: boolean,
+  htmlUrl = `https://gh/${issueNumber}`,
+) => ({ destination, issueNumber, htmlUrl, batchId, status, sharedWithSurvivor });
 
 const EXPECTED_PUBLISHED: DedupLeftovers["publishedRetirees"] = [
   {
@@ -56,14 +77,10 @@ const EXPECTED_PUBLISHED: DedupLeftovers["publishedRetirees"] = [
     title: "T",
     projectArchived: false,
     issues: [
-      {
-        destination: "github",
-        issueNumber: 12,
-        htmlUrl: "https://gh/12",
-        batchId: "b2",
-        status: "updated",
-      },
+      issue("github", 12, "b2", "updated", false),
+      issue("github", 13, "b1", "updated", true),
     ],
+    survivorIssueCount: 1,
   },
   {
     projectId: "p1",
@@ -72,14 +89,10 @@ const EXPECTED_PUBLISHED: DedupLeftovers["publishedRetirees"] = [
     title: "T",
     projectArchived: false,
     issues: [
-      {
-        destination: "github",
-        issueNumber: 14,
-        htmlUrl: "https://gh/14",
-        batchId: "b1",
-        status: "failed",
-      },
+      issue("jira", 0, "b2", "created", true, "https://jira/APO-1"),
+      issue("github", 14, "b1", "failed", false),
     ],
+    survivorIssueCount: 1,
   },
   {
     projectId: "p1",
@@ -87,22 +100,8 @@ const EXPECTED_PUBLISHED: DedupLeftovers["publishedRetirees"] = [
     survivorDraftId: "d_p1",
     title: "T",
     projectArchived: false,
-    issues: [
-      {
-        destination: "jira",
-        issueNumber: 7,
-        htmlUrl: "https://gh/7",
-        batchId: "b2",
-        status: "updated",
-      },
-      {
-        destination: "github",
-        issueNumber: 11,
-        htmlUrl: "https://gh/11",
-        batchId: "b1",
-        status: "created",
-      },
-    ],
+    issues: [issue("jira", 7, "b2", "updated", false), issue("github", 11, "b1", "created", false)],
+    survivorIssueCount: 2,
   },
 ];
 
@@ -153,7 +152,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           [b, USER_ID, SEED_TIME, SEED_TIME],
         );
       }
-      for (const [id, batchId, draftId, n, status, destination] of ISSUES) {
+      for (const [id, batchId, draftId, n, status, destination, url] of ISSUES) {
         x(
           `INSERT INTO published_issues
              (id, batchId, draftId, issueNumber, issueId, htmlUrl, status, destination, publishedAt)
@@ -164,7 +163,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             draftId,
             n,
             `node_${id}`,
-            n > 0 ? `https://gh/${n}` : "",
+            url ?? (n > 0 ? `https://gh/${n}` : ""),
             status,
             destination,
             SEED_TIME,
@@ -212,6 +211,38 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           projectArchived: false,
         },
       ]);
+    });
+
+    it("never tells the operator to close an issue the survivor shares", async () => {
+      const r = await report();
+      const shared = r.publishedRetirees.flatMap((p) =>
+        p.issues.filter((i) => i.sharedWithSurvivor).map((i) => i.htmlUrl),
+      );
+      // Same number and destination as the survivor's created row; same URL alone.
+      expect(shared).toEqual(["https://gh/13", "https://jira/APO-1"]);
+      const lines = formatDedupLeftovers(r).split("\n");
+      expect(lines).toContain(
+        "3 retired draft(s) still have a published issue: 4 separate issue(s) to review, 2 the same issue as the kept draft.",
+      );
+      // Each shared issue appears once, under a heading that never says close.
+      for (const url of shared) {
+        const at = lines.findIndex((l) => l.includes(` ${url} `));
+        expect(lines.filter((l) => l.includes(` ${url} `))).toHaveLength(1);
+        expect(lines[at]).not.toMatch(/close/i);
+        const heading = lines.slice(0, at).findLast((l) => !l.startsWith(" "));
+        expect(heading).toBe(
+          "Same issue as the kept draft, not a duplicate (leave it open; no action):",
+        );
+      }
+      // A different number (#12), a different destination (#11) and a Jira
+      // issue the survivor lacks (#7) remain separate issues to review.
+      const separateHeading = lines.findIndex((l) => l.startsWith("Separate issue(s)"));
+      const sharedHeading = lines.findIndex((l) => l.startsWith("Same issue as the kept draft"));
+      expect(lines[separateHeading]).toMatch(/close one if unwanted/);
+      const separate = lines.slice(separateHeading, sharedHeading).join("\n");
+      for (const url of ["https://gh/12", "https://gh/11", "https://gh/7", "https://gh/14"]) {
+        expect(separate).toContain(` ${url} `);
+      }
     });
 
     it("after #402: only the self-parent case is left, and the published retirees stay", async () => {
@@ -276,6 +307,7 @@ describe("#396 — findDedupLeftovers edge cases", () => {
   it("marks leftovers whose project is archived (soft-deleted)", async () => {
     const at = new Date("2026-09-03T00:00:00.000Z");
     const archived = { deletedAt: new Date("2026-09-04T00:00:00.000Z") };
+    const batch = { targetBaseUrl: null, targetOwner: "o", targetRepo: "r" };
     const prisma = {
       issueDraft: {
         findMany: async (args: { where: { deletedAt: unknown; parentDraftId?: unknown } }) => {
@@ -313,8 +345,22 @@ describe("#396 — findDedupLeftovers edge cases", () => {
       },
       publishedIssue: {
         findMany: async () => [
-          { draftId: "r1", destination: "github", issueNumber: 1, htmlUrl: "u1", batchId: "b" },
-          { draftId: "r2", destination: "github", issueNumber: 2, htmlUrl: "u2", batchId: "b" },
+          {
+            draftId: "r1",
+            destination: "github",
+            issueNumber: 1,
+            htmlUrl: "u1",
+            batchId: "b",
+            batch,
+          },
+          {
+            draftId: "r2",
+            destination: "github",
+            issueNumber: 2,
+            htmlUrl: "u2",
+            batchId: "b",
+            batch,
+          },
         ],
       },
     } as unknown as DedupLeftoversPrisma;
@@ -328,12 +374,93 @@ describe("#396 — findDedupLeftovers edge cases", () => {
       ["k2", false],
     ]);
     const text = formatDedupLeftovers(r).split("\n");
-    expect(text).toContain('  project pa (archived): draft r1 (kept: s1) "A"');
-    expect(text).toContain('  project pl: draft r2 (kept: s2) "L"');
+    expect(text).toContain(
+      '  project pa (archived): draft r1 (kept: s1) "A" (the kept draft has no published issue)',
+    );
+    expect(text).toContain(
+      '  project pl: draft r2 (kept: s2) "L" (the kept draft has no published issue)',
+    );
     expect(text).toContain(
       "  project pa (archived): draft k1 -> r1 (apply migration #402 to repoint to s1)",
     );
     expect(text).toContain("  project pl: draft k2 -> r2 (apply migration #402 to repoint to s2)");
+  });
+
+  describe("tells a shared remote issue from a separate one", () => {
+    const at = new Date("2026-09-03T00:00:00.000Z");
+    const gh = { targetBaseUrl: null, targetOwner: "acme", targetRepo: "metis" };
+    const run = async (retiree: object, survivor: object) => {
+      const prisma = {
+        issueDraft: {
+          findMany: async (args: { where: { deletedAt: unknown; parentDraftId?: unknown } }) => {
+            if (args.where.parentDraftId) return [];
+            if (args.where.deletedAt === null) return [{ id: "s", projectId: "p", dedupHash: "h" }];
+            return [
+              {
+                id: "r",
+                projectId: "p",
+                dedupHash: "h",
+                title: "T",
+                deletedAt: at,
+                project: { deletedAt: null },
+              },
+            ];
+          },
+        },
+        publishedIssue: {
+          findMany: async () => [
+            { draftId: "r", batchId: "b1", status: "created", ...retiree },
+            { draftId: "s", batchId: "b2", status: "updated", ...survivor },
+          ],
+        },
+      } as unknown as DedupLeftoversPrisma;
+      const r = await findDedupLeftovers(prisma);
+      expect(r.publishedRetirees).toHaveLength(1);
+      expect(r.publishedRetirees[0].survivorIssueCount).toBe(1);
+      return r.publishedRetirees[0].issues[0].sharedWithSurvivor;
+    };
+
+    it("matches on the same non-empty htmlUrl alone, whatever the numbers", async () => {
+      expect(
+        await run(
+          { destination: "github", issueNumber: 5, htmlUrl: "https://gh/x", batch: gh },
+          { destination: "github", issueNumber: 6, htmlUrl: "https://gh/x", batch: gh },
+        ),
+      ).toBe(true);
+    });
+
+    it("never matches on two empty URLs and a zero number", async () => {
+      expect(
+        await run(
+          { destination: "jira", issueNumber: 0, htmlUrl: "", batch: gh },
+          { destination: "jira", issueNumber: 0, htmlUrl: "", batch: gh },
+        ),
+      ).toBe(false);
+    });
+
+    it("matches on destination, repository and number when the URLs differ", async () => {
+      expect(
+        await run(
+          { destination: "github", issueNumber: 5, htmlUrl: "https://a/5", batch: gh },
+          { destination: "github", issueNumber: 5, htmlUrl: "https://b/5", batch: gh },
+        ),
+      ).toBe(true);
+    });
+
+    it("keeps the same number in another repository or host a separate issue", async () => {
+      for (const other of [
+        { ...gh, targetRepo: "other" },
+        { ...gh, targetOwner: "other" },
+        { ...gh, targetBaseUrl: "https://ghe.example" },
+      ]) {
+        expect(
+          await run(
+            { destination: "github", issueNumber: 5, htmlUrl: "https://a/5", batch: gh },
+            { destination: "github", issueNumber: 5, htmlUrl: "https://b/5", batch: other },
+          ),
+        ).toBe(false);
+      }
+    });
   });
 
   it("does not count a soft-deleted draft with no live twin as a retiree", async () => {
@@ -395,12 +522,16 @@ describe("#396 — formatDedupLeftovers", () => {
       "3 soft-deleted draft(s) have a live twin, by deletedAt (#369 retired its duplicates at one timestamp; any other is a separate soft-delete):",
       "  2026-09-01T00:00:00.000Z: 1",
       "  2026-10-01T12:00:00.000Z: 2",
-      "2 retired draft(s) still have a published issue (close the duplicate if it is unwanted):",
+      "2 retired draft(s) still have a published issue: 3 separate issue(s) to review, 1 the same issue as the kept draft.",
+      "Separate issue(s), possibly duplicating the kept draft's (close one if unwanted; check first when the kept draft has none):",
       '  project p1: draft d_e (kept: d_d) "T"',
       "    github #14 https://gh/14 [failed] (publish marked failed; remote issue exists)",
       '  project p1: draft d_p2 (kept: d_p1) "T"',
       "    jira #7 https://gh/7 [updated]",
       "    github #11 https://gh/11 [created]",
+      "Same issue as the kept draft, not a duplicate (leave it open; no action):",
+      '  project p1: draft d_e (kept: d_d) "T"',
+      "    jira #0 https://jira/APO-1 [created]",
       "2 live draft(s) name a retired parent:",
       "  project p1: draft c_live -> d_e (apply migration #402 to repoint to d_d)",
       "  project p1: draft d_s2 -> d_s1 (it is the kept draft; shown as parentless)",
@@ -427,8 +558,10 @@ describe("#396 — formatDedupLeftovers never passes control characters to the t
             htmlUrl: `https://x/\r\nINJECTED`,
             batchId: "b",
             status: `created\u001b[2J`,
+            sharedWithSurvivor: false,
           },
         ],
+        survivorIssueCount: 1,
       },
     ],
     orphanedChildren: [
@@ -449,9 +582,9 @@ describe("#396 — formatDedupLeftovers never passes control characters to the t
 
   it("cannot add a line: the hostile report has exactly the lines a clean one would", () => {
     const lines = text.split("\n");
-    expect(lines).toHaveLength(7);
+    expect(lines).toHaveLength(8);
     expect(lines.some((l) => l.startsWith("FAKE LINE") || l.startsWith("second"))).toBe(false);
     expect(lines.some((l) => l.startsWith("INJECTED"))).toBe(false);
-    expect(lines[3]).toContain('"evil?[2K?FAKE LINE?second?31m??"');
+    expect(lines[4]).toContain('"evil?[2K?FAKE LINE?second?31m??"');
   });
 });
