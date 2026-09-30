@@ -283,13 +283,18 @@ describe("Socket.IO server", () => {
 
     createJobEventEmitter(io).completed("analysis", "foreign-job", "p-other", "secret progress");
 
-    const received: unknown[] = [];
-    socket.on("job:lifecycle", (e: unknown) => received.push(e));
+    createJobEventEmitter(io).completed("analysis", "allowed-job", "p1", "visible");
+
+    const received: Array<{ jobId: string }> = [];
+    socket.on("job:lifecycle", (e: { jobId: string }) => received.push(e));
     socket.emit("subscribe:job", { jobId: "foreign-job" });
-    // The authz check is async; give it more time than it needs, then assert
-    // silence. A bare `await nextTick` would pass even if the gate were absent.
-    await new Promise((r) => setTimeout(r, 300));
-    expect(received).toEqual([]);
+    // The authz check is async, so a fixed sleep fails open against a slow
+    // replay. Barrier instead: a later subscribe to an allowed job on the same
+    // socket must replay first, and only then is silence for the foreign job
+    // meaningful.
+    socket.emit("subscribe:job", { jobId: "allowed-job" });
+    await vi.waitFor(() => expect(received.map((e) => e.jobId)).toContain("allowed-job"));
+    expect(received.map((e) => e.jobId)).toEqual(["allowed-job"]);
 
     socket.close();
   });
@@ -350,11 +355,20 @@ describe("Socket.IO server", () => {
       section: "Secret section",
       status: "done",
     });
-    const received: unknown[] = [];
-    socket.on("job:doc-section", (e: unknown) => received.push(e));
+    createJobEventEmitter(io).docSection({
+      jobId: "allowed-doc",
+      projectId: "p1",
+      section: "Visible section",
+      status: "done",
+    });
+    const received: Array<{ jobId: string }> = [];
+    socket.on("job:doc-section", (e: { jobId: string }) => received.push(e));
     socket.emit("subscribe:job", { jobId: "foreign-doc" });
-    await new Promise((r) => setTimeout(r, 300));
-    expect(received).toEqual([]);
+    // Barrier rather than a fixed sleep (which fails open on a slow replay):
+    // wait for an allowed job's replay on the same socket, then assert.
+    socket.emit("subscribe:job", { jobId: "allowed-doc" });
+    await vi.waitFor(() => expect(received.map((e) => e.jobId)).toContain("allowed-doc"));
+    expect(received.map((e) => e.jobId)).toEqual(["allowed-doc"]);
     socket.close();
   });
 

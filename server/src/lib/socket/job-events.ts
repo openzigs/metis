@@ -150,6 +150,8 @@ export function getLastJobLifecycle(jobId: string): JobLifecycleEvent | undefine
  * #510 — latest `job:doc-section` event per section, per job, so a subscriber
  * that was away while a section moved (a reconnect drops the socket's rooms)
  * can be brought up to date on `subscribe:job`, not only on the lifecycle.
+ * A `started` lifecycle event for the job clears it, so a new run on a reused
+ * job id does not inherit the last run's sections.
  * Bounded by job on the same cap and eviction order as the lifecycle memory;
  * a document has a handful of sections, so each job's inner map stays small.
  */
@@ -185,6 +187,10 @@ export function _resetJobLifecycleMemory(): void {
 export function createJobEventEmitter(io: MetisIOServer | null): JobEventEmitter {
   const emitLifecycle = (event: JobLifecycleInput): void => {
     const payload: JobLifecycleEvent = { ...event, ts: Date.now() };
+    // A new run can reuse a job id (regenerating a document keys the job by
+    // the doc id), so its sections start fresh rather than replaying the
+    // previous run's terminal states (#510 review).
+    if (payload.status === "started") lastDocSectionsByJob.delete(payload.jobId);
     // Remember BEFORE the transport check: a late subscriber must be able to
     // catch up even on a server whose emit failed or that had no io at the time.
     rememberLifecycle(payload);

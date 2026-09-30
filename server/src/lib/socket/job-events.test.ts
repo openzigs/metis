@@ -418,7 +418,7 @@ describe("last doc-section memory for re-subscribers (#510)", () => {
     _resetJobLifecycleMemory();
   });
 
-  const section = (jobId: string, name: string, status: "generating" | "done") => ({
+  const section = (jobId: string, name: string, status: "generating" | "done" | "failed") => ({
     jobId,
     projectId: "proj-1",
     section: name,
@@ -471,6 +471,40 @@ describe("last doc-section memory for re-subscribers (#510)", () => {
     expect(getLastDocSections("bounded-11")).toEqual([]);
     expect(getLastDocSections("bounded-10").map((s) => s.section)).toEqual(["Overview", "Risks"]);
     expect(getLastDocSections("bounded-519")).toHaveLength(1);
+  });
+
+  /**
+   * Regenerating a document reuses its id as the job id, so a new run must not
+   * inherit the previous run's section states: the UI counts `done`/`failed`
+   * as terminal and would start the new run's counter part-way through.
+   */
+  it("forgets a job's sections when a new run of the same job id starts", () => {
+    const { io } = makeFakeIo();
+    const emitter = createJobEventEmitter(io);
+    emitter.started("doc-generation", "doc-rerun", "proj-1");
+    emitter.docSection(section("doc-rerun", "Overview", "done"));
+    emitter.docSection(section("doc-rerun", "Risks", "failed"));
+    emitter.failed("doc-generation", "doc-rerun", "proj-1", "boom");
+    // Terminal transitions keep the sections: a late subscriber to the ended
+    // run still learns how each section finished.
+    expect(getLastDocSections("doc-rerun")).toHaveLength(2);
+
+    emitter.started("doc-generation", "doc-rerun", "proj-1");
+    expect(getLastDocSections("doc-rerun")).toEqual([]);
+
+    emitter.docSection(section("doc-rerun", "Risks", "generating"));
+    expect(getLastDocSections("doc-rerun").map((s) => [s.section, s.status])).toEqual([
+      ["Risks", "generating"],
+    ]);
+  });
+
+  it("keeps sections across progress events within one run", () => {
+    const { io } = makeFakeIo();
+    const emitter = createJobEventEmitter(io);
+    emitter.started("doc-generation", "doc-progress", "proj-1");
+    emitter.docSection(section("doc-progress", "Overview", "done"));
+    emitter.progress("doc-generation", "doc-progress", "proj-1", 50);
+    expect(getLastDocSections("doc-progress").map((s) => s.section)).toEqual(["Overview"]);
   });
 
   it("clears with the lifecycle memory", () => {
