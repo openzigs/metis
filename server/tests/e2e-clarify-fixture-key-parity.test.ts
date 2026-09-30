@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AMBIGUOUS_REQUIREMENT,
+  ANSWER_TEXT,
   LOOP_MODEL_ID,
   PROJECT_DESCRIPTION,
   PROJECT_NAME,
@@ -37,6 +38,21 @@ import type { AIProvider, ChatMessage, ChatOptions } from "../src/lib/ai/types.j
 import { runAgent } from "../src/lib/analysis/agent-runner.js";
 import { runSynthesis, type FlatFinding } from "../src/lib/analysis/synthesis.js";
 import { main as buildClarifyFixtures } from "../scripts/e2e-build-clarify-fixtures.js";
+import { maybeWrapProviderForFixtures } from "../src/lib/ai/fixtures/install.js";
+import { OfflineStubProvider } from "../src/lib/ai/providers/offline-stub-provider.js";
+import { ClarificationDialog } from "../src/lib/analysis/clarification-dialog.js";
+
+// #532 — the dialog persists its state; keep it in memory for this test.
+const dialogStore = new Map<string, unknown>();
+vi.mock("../src/lib/analysis/clarification-dialog-store.js", () => ({
+  readDialogState: vi.fn(async (id: string) => structuredClone(dialogStore.get(id))),
+  writeDialogState: vi.fn(async (id: string, state: unknown) => {
+    dialogStore.set(id, structuredClone(state));
+  }),
+  deleteDialogState: vi.fn(async (id: string) => {
+    dialogStore.delete(id);
+  }),
+}));
 
 describe("generative-e2e clarify fixtures", () => {
   let dir: string;
@@ -155,5 +171,45 @@ describe("generative-e2e clarify fixtures", () => {
       `No built fixture for the key runSynthesis produces (${key}). ` +
         "The builder and the runtime disagree — generative-e2e will replay the offline stub.",
     ).toBe(true);
+  });
+
+  // #532 — the dialog's model is no longer a hard-coded Claude tier id: it is
+  // whatever `tierModelFor` picks on the active provider. Drive the REAL dialog
+  // on the provider the e2e server builds (the offline stub, replay-wrapped) and
+  // require both of its calls to hit a built fixture.
+  it("keys the clarification question and resolution fixtures exactly as the dialog's real requests", async () => {
+    await buildClarifyFixtures();
+    dialogStore.clear();
+
+    const provider = maybeWrapProviderForFixtures(new OfflineStubProvider(), {
+      env: { AI_REPLAY: "1" },
+      fixtureDir: dir,
+    });
+    const chat = vi.spyOn(provider, "chat");
+    const dialog = new ClarificationDialog({ provider });
+
+    const state = await dialog.startOrContinue("parity-532", {
+      requirements: [AMBIGUOUS_REQUIREMENT],
+      totalAmbiguities: AMBIGUOUS_REQUIREMENT.ambiguities.length,
+      totalEvidenceNeeds: 0,
+    });
+    const question = state.rounds[0]?.questions[0];
+    expect(question, "the questions call did not replay its fixture").toBeDefined();
+    await dialog.submitAnswers("parity-532", [{ questionId: question!.id, answer: ANSWER_TEXT }], {
+      requirements: [AMBIGUOUS_REQUIREMENT],
+      totalAmbiguities: AMBIGUOUS_REQUIREMENT.ambiguities.length,
+      totalEvidenceNeeds: 0,
+    });
+
+    expect(chat).toHaveBeenCalledTimes(2);
+    const store = new FixtureStore(dir);
+    for (const [messages, opts] of chat.mock.calls) {
+      const key = fixtureKey(messages, opts);
+      expect(
+        await store.has(key),
+        `No built fixture for the key the clarification dialog produces (${key}, model ${opts?.model}). ` +
+          "The builder and the runtime disagree — generative-e2e will replay the offline stub.",
+      ).toBe(true);
+    }
   });
 });

@@ -8,6 +8,7 @@ import {
   HAIKU_MODEL_ID,
   OPUS_MODEL_ID,
   SONNET_MODEL_ID,
+  tierModelFor,
 } from "../src/lib/ai/model-router.js";
 import type { TaskProfile } from "../src/lib/ai/types.js";
 
@@ -311,5 +312,40 @@ describe("ModelRouter.resolveRunModel (#512)", () => {
     expect(router.resolveRunModel(undefined)).toBeUndefined();
     // An inherited Object property is not an override.
     expect(router.resolveRunModel("toString")).toBe("toString");
+  });
+});
+
+/**
+ * #532 — call sites that hard-code a Claude tier id (deep-dive, grounding,
+ * clarification, scanner) resolve it against the active provider the same way
+ * the router does.
+ */
+describe("tierModelFor (#532)", () => {
+  it("keeps the tier id on a provider that serves it", () => {
+    const bedrock = {
+      key: "bedrock-gateway",
+      model: SONNET_MODEL_ID,
+      servesRouterModel: () => true,
+    };
+    expect(tierModelFor(bedrock, HAIKU_MODEL_ID)).toBe(HAIKU_MODEL_ID);
+  });
+
+  it("uses the provider's configured model when it cannot serve the tier id", () => {
+    const deepSeek = { key: "anthropic", model: "deepseek-chat", servesRouterModel: () => false };
+    expect(tierModelFor(deepSeek, HAIKU_MODEL_ID)).toBe("deepseek-chat");
+  });
+
+  it("asks about the exact tier id it was given", () => {
+    const partial = {
+      key: "stub",
+      model: "stub-model",
+      servesRouterModel: (id: string) => id === HAIKU_MODEL_ID,
+    };
+    expect(tierModelFor(partial, HAIKU_MODEL_ID)).toBe(HAIKU_MODEL_ID);
+    expect(tierModelFor(partial, SONNET_MODEL_ID)).toBe("stub-model");
+  });
+
+  it("treats a provider that cannot answer (no servesRouterModel) as non-Claude", () => {
+    expect(tierModelFor({ key: "openai", model: "gpt-4.1" }, HAIKU_MODEL_ID)).toBe("gpt-4.1");
   });
 });

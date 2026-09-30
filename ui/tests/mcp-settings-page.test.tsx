@@ -419,3 +419,176 @@ describe("McpSettingsPage — one home for MCP servers (#31)", () => {
     expect(screen.getByRole("tab", { name: "Connected" })).toHaveAttribute("aria-selected", "true");
   });
 });
+
+// #529 — the paths #508 left untested, lifting settings/mcp/page.tsx past the
+// 80% lines floor. Each asserts the behaviour a user sees, not just a render.
+describe("McpSettingsPage — Connected tab edge paths (#529)", () => {
+  it("says so when no servers are registered", async () => {
+    listMock.mockResolvedValue({ items: [] });
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByTestId("connected-empty")).toHaveTextContent(
+      /No MCP servers registered yet/,
+    );
+    expect(screen.queryByTestId("connected-list")).toBeNull();
+  });
+
+  it("tells the user to start a server that advertises no tools, with no tester", async () => {
+    listMock.mockResolvedValue({ items: [makeServer({ capabilities: [] })] });
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    expect(
+      await screen.findByText("No tools advertised. Start the server first."),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("tool-run-s1")).toBeNull();
+  });
+
+  it("rejects malformed JSON args without calling the tool", async () => {
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    await screen.findByText(/Filesystem/);
+    fireEvent.change(screen.getByTestId("tool-args-s1"), { target: { value: "{nope" } });
+    fireEvent.click(screen.getByTestId("tool-run-s1"));
+    const result = await screen.findByTestId("tool-result-s1");
+    expect(result).toHaveTextContent(/Error · 0 ms/);
+    expect(result).toHaveTextContent(/Invalid JSON args/);
+    expect(testToolMock).not.toHaveBeenCalled();
+  });
+
+  it("runs the tool the user picked and shows a failed call as an error", async () => {
+    testToolMock.mockRejectedValue(new Error("tool exploded"));
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    await screen.findByText(/Filesystem/);
+    fireEvent.change(screen.getByTestId("tool-select-s1"), { target: { value: "write_file" } });
+    fireEvent.change(screen.getByTestId("tool-args-s1"), { target: { value: "" } });
+    fireEvent.click(screen.getByTestId("tool-run-s1"));
+    const result = await screen.findByTestId("tool-result-s1");
+    expect(testToolMock).toHaveBeenCalledExactlyOnceWith("s1", "write_file", {});
+    expect(result).toHaveTextContent(/Error/);
+    expect(result).toHaveTextContent("tool exploded");
+  });
+
+  it("turns per-call approval on for the server", async () => {
+    setGovernanceMock.mockResolvedValue(makeServer({ requireApproval: true }));
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    await screen.findByText(/Filesystem/);
+    fireEvent.click(screen.getByTestId("require-approval-s1"));
+    await waitFor(() =>
+      expect(setGovernanceMock).toHaveBeenCalledExactlyOnceWith("s1", { requireApproval: true }),
+    );
+  });
+
+  it("lists schema drift by kind and approves the current snapshot", async () => {
+    integrityDiffMock.mockResolvedValue({
+      diff: { added: ["new_tool"], removed: ["old_tool"], changed: ["read_file"] },
+      approvedAt: "2026-04-20T00:00:00Z",
+      hasBaseline: true,
+      version: "1.0.0",
+      sha256: "a".repeat(64),
+    });
+    const approveMock = vi.mocked(mcpPlatformApi.approveSnapshot);
+    approveMock.mockResolvedValue(undefined as never);
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    const drift = await screen.findByTestId("diff-changes");
+    expect(drift).toHaveTextContent("added: new_tool");
+    expect(drift).toHaveTextContent("removed: old_tool");
+    expect(drift).toHaveTextContent("changed: read_file");
+    expect(screen.getByTestId("integrity-s1")).toHaveTextContent(/approved /);
+    fireEvent.click(screen.getByTestId("approve-snapshot-s1"));
+    await waitFor(() => expect(approveMock).toHaveBeenCalledExactlyOnceWith("s1"));
+  });
+
+  it("omits a drift kind that has no entries", async () => {
+    integrityDiffMock.mockResolvedValue({
+      diff: { added: ["new_tool"], removed: [], changed: [] },
+      approvedAt: null,
+      hasBaseline: true,
+      version: "1.0.0",
+      sha256: "a".repeat(64),
+    });
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    const drift = await screen.findByTestId("diff-changes");
+    expect(drift).toHaveTextContent("added: new_tool");
+    expect(drift).not.toHaveTextContent("removed:");
+    expect(drift).not.toHaveTextContent("changed:");
+  });
+});
+
+describe("McpSettingsPage — Registry paging and search (#529)", () => {
+  it("pages forward and back, and a new search returns to page 1", async () => {
+    registryMock.mockResolvedValue({
+      fetchedAt: "2026-04-25T00:00:00Z",
+      stale: false,
+      fromCache: false,
+      total: 60,
+      servers: [{ id: "fs", name: "Filesystem MCP", description: "x" }],
+    });
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    fireEvent.mouseDown(screen.getByTestId("tab-registry"));
+    expect(await screen.findByText(/Page 1 · 60 total/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(await screen.findByText(/Page 2 · 60 total/)).toBeInTheDocument();
+    expect(registryMock).toHaveBeenLastCalledWith({ q: undefined, page: 2, pageSize: 25 });
+    fireEvent.click(screen.getByRole("button", { name: "Prev" }));
+    expect(await screen.findByText(/Page 1 · 60 total/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await screen.findByText(/Page 2 · 60 total/);
+    fireEvent.change(screen.getByTestId("registry-search"), { target: { value: "git" } });
+    expect(await screen.findByText(/Page 1 · 60 total/)).toBeInTheDocument();
+    expect(registryMock).toHaveBeenLastCalledWith({ q: "git", page: 1, pageSize: 25 });
+  });
+});
+
+describe("McpSettingsPage — Import / Export edge paths (#529)", () => {
+  it("downloads the exported config as mcp.json", async () => {
+    const exportMock = vi.mocked(mcpPlatformApi.exportJson);
+    exportMock.mockResolvedValue({ servers: { fs: { command: "npx" } } } as never);
+    const createUrl = vi.fn((_blob: Blob) => "blob:mcp");
+    const revokeUrl = vi.fn();
+    // jsdom has no object URLs; install stubs and put the originals back after.
+    const { createObjectURL, revokeObjectURL } = URL;
+    Object.assign(URL, { createObjectURL: createUrl, revokeObjectURL: revokeUrl });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      render(<McpSettingsPage />, { wrapper: makeWrapper() });
+      fireEvent.mouseDown(screen.getByTestId("tab-import-export"));
+      fireEvent.click(screen.getByTestId("export-download"));
+      await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+      const anchor = click.mock.instances[0] as unknown as HTMLAnchorElement;
+      expect(anchor.download).toBe("mcp.json");
+      expect(anchor.href).toBe("blob:mcp");
+      const blob = createUrl.mock.calls[0]![0];
+      expect(JSON.parse(await blob.text())).toEqual({ servers: { fs: { command: "npx" } } });
+      expect(revokeUrl).toHaveBeenCalledWith("blob:mcp");
+    } finally {
+      click.mockRestore();
+      Object.assign(URL, { createObjectURL, revokeObjectURL });
+    }
+  });
+
+  it("does not download anything when the export fails", async () => {
+    vi.mocked(mcpPlatformApi.exportJson).mockRejectedValue(new Error("boom"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      render(<McpSettingsPage />, { wrapper: makeWrapper() });
+      fireEvent.mouseDown(screen.getByTestId("tab-import-export"));
+      fireEvent.click(screen.getByTestId("export-download"));
+      await waitFor(() => expect(error).toHaveBeenCalledWith("export failed", expect.any(Error)));
+      expect(click).not.toHaveBeenCalled();
+    } finally {
+      click.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it("rejects a JSON file with no top-level servers object", async () => {
+    render(<McpSettingsPage />, { wrapper: makeWrapper() });
+    fireEvent.mouseDown(screen.getByTestId("tab-import-export"));
+    const content = JSON.stringify({ mcpServers: {} });
+    const file = new File([content], "mcp.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: () => Promise.resolve(content) });
+    fireEvent.change(screen.getByTestId("import-file"), { target: { files: [file] } });
+    expect(await screen.findByTestId("import-error")).toHaveTextContent(
+      "Missing top-level `servers` object",
+    );
+    expect(screen.getByTestId("import-confirm")).toBeDisabled();
+  });
+});

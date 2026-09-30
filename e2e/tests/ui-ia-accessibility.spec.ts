@@ -45,6 +45,72 @@ async function openCommandPalette(page: Page): Promise<void> {
   }).toPass({ timeout: 30_000 });
 }
 
+/**
+ * #662 — the root `scroll-padding-top` must be at least the sticky header's
+ * rendered height, or a control the browser scrolls into view (a same-page
+ * anchor jump, the skip link, Shift+Tab back up the page) comes to rest
+ * underneath the header. #529 — below `sm` the header wraps to two rows, so
+ * this is checked at every width the spec runs.
+ */
+async function expectScrollPaddingClearsHeader(page: Page, where: string): Promise<void> {
+  // The header's height settles once the switchers have their data.
+  await expect(page.getByTestId("header-breadcrumb")).toBeVisible();
+  const { padding, header } = await page.evaluate(() => ({
+    padding: parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop),
+    header: document.querySelector('[role="banner"]')!.getBoundingClientRect().height,
+  }));
+  expect(
+    padding,
+    `scroll-padding-top ${padding}px does not clear the ${header}px header on ${where}`,
+  ).toBeGreaterThanOrEqual(header);
+}
+
+/**
+ * #662 — walk the tab order. After each stop, if a real control holds focus,
+ * assert a visible slice of it paints on top somewhere on screen.
+ */
+async function expectFocusNeverObscured(page: Page, path: string): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    await page.keyboard.press("Tab");
+    const focused = page.locator(":focus");
+    if ((await focused.count()) === 0) continue;
+
+    const info = await focused.evaluate((el) => {
+      const tag = el.tagName;
+      if (tag === "BODY" || tag === "HTML") return { skip: true, visible: true, name: "" };
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) {
+        return { skip: true, visible: true, name: "" };
+      }
+      // Sample a grid across the element; if any in-viewport point hits
+      // the element (or a descendant), part of it paints on top and is
+      // therefore not fully obscured by the sticky header / an overlay.
+      const xs = [rect.left + 2, rect.left + rect.width / 2, rect.right - 2];
+      const ys = [rect.top + 2, rect.top + rect.height / 2, rect.bottom - 2];
+      let visible = false;
+      for (const x of xs) {
+        for (const y of ys) {
+          if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) continue;
+          const hit = document.elementFromPoint(x, y);
+          if (hit && (hit === el || el.contains(hit))) {
+            visible = true;
+            break;
+          }
+        }
+        if (visible) break;
+      }
+      const name = el.getAttribute("aria-label") ?? (el.textContent ?? "").trim().slice(0, 40);
+      return { skip: false, visible, name };
+    });
+
+    if (info.skip) continue;
+    expect(
+      info.visible,
+      `focused control "${info.name}" on ${path} is fully obscured (SC 2.4.11)`,
+    ).toBe(true);
+  }
+}
+
 test.describe("UI IA — accessibility affordances (#133)", () => {
   test.describe.configure({ timeout: 120_000 });
 
@@ -191,14 +257,15 @@ test.describe("UI IA — accessibility affordances (#133)", () => {
 
   // Issue #662 — WCAG 2.2 SC 2.4.11 Focus Not Obscured (Minimum, AA). A
   // keyboard-focused control must never be ENTIRELY hidden behind the sticky
-  // header (`sticky top-0 h-16`, header.tsx) or any other overlay. We walk the
-  // tab order on each major scrollable/sticky page and, at every stop, assert
-  // that some part of the focused control actually paints on top (i.e. is
-  // visible), using `document.elementFromPoint` so the check honours real
-  // stacking order rather than a naive geometry test. The global
-  // `scroll-padding-top` (globals.css) is what keeps focus clear of the header
-  // when the browser scrolls a control into view; remove it and the deep
-  // controls on a scrolled page fail this assertion.
+  // header (header.tsx) or any other overlay. We walk the tab order on each
+  // major scrollable/sticky page and, at every stop, assert that some part of
+  // the focused control actually paints on top (i.e. is visible), using
+  // `document.elementFromPoint` so the check honours real stacking order rather
+  // than a naive geometry test. The global `scroll-padding-top` (globals.css) is
+  // what keeps focus clear of the header when the browser scrolls a control
+  // into view, so each page also checks that padding covers the header's real
+  // height. #529 made the header two rows tall below `sm`, so both run at
+  // desktop width and at phone width (390px).
   test("keyboard focus is never fully obscured by the sticky header (#662)", async ({ page }) => {
     const routes: Array<{ label: string; path: string }> = [
       { label: "dashboard", path: "/dashboard" },
@@ -209,54 +276,17 @@ test.describe("UI IA — accessibility affordances (#133)", () => {
       { label: "chat", path: "/chat" },
     ];
 
-    for (const route of routes) {
-      await test.step(`${route.label} (${route.path})`, async () => {
-        await page.goto(route.path, { waitUntil: "load" });
-        await expect(page.getByRole("banner")).toBeVisible();
-
-        // Walk the tab order. After each stop, if a real control holds focus,
-        // assert a visible slice of it paints on top somewhere on screen.
-        for (let i = 0; i < 20; i++) {
-          await page.keyboard.press("Tab");
-          const focused = page.locator(":focus");
-          if ((await focused.count()) === 0) continue;
-
-          const info = await focused.evaluate((el) => {
-            const tag = el.tagName;
-            if (tag === "BODY" || tag === "HTML") return { skip: true, visible: true, name: "" };
-            const rect = el.getBoundingClientRect();
-            if (rect.width === 0 || rect.height === 0) {
-              return { skip: true, visible: true, name: "" };
-            }
-            // Sample a grid across the element; if any in-viewport point hits
-            // the element (or a descendant), part of it paints on top and is
-            // therefore not fully obscured by the sticky header / an overlay.
-            const xs = [rect.left + 2, rect.left + rect.width / 2, rect.right - 2];
-            const ys = [rect.top + 2, rect.top + rect.height / 2, rect.bottom - 2];
-            let visible = false;
-            for (const x of xs) {
-              for (const y of ys) {
-                if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) continue;
-                const hit = document.elementFromPoint(x, y);
-                if (hit && (hit === el || el.contains(hit))) {
-                  visible = true;
-                  break;
-                }
-              }
-              if (visible) break;
-            }
-            const name =
-              el.getAttribute("aria-label") ?? (el.textContent ?? "").trim().slice(0, 40);
-            return { skip: false, visible, name };
-          });
-
-          if (info.skip) continue;
-          expect(
-            info.visible,
-            `focused control "${info.name}" on ${route.path} is fully obscured (SC 2.4.11)`,
-          ).toBe(true);
-        }
-      });
+    for (const viewport of [null, { width: 390, height: 844 }]) {
+      const width = viewport ? `${viewport.width}px` : "default viewport";
+      if (viewport) await page.setViewportSize(viewport);
+      for (const route of routes) {
+        await test.step(`${route.label} (${route.path}) at ${width}`, async () => {
+          await page.goto(route.path, { waitUntil: "load" });
+          await expect(page.getByRole("banner")).toBeVisible();
+          await expectScrollPaddingClearsHeader(page, `${route.path} at ${width}`);
+          await expectFocusNeverObscured(page, route.path);
+        });
+      }
     }
   });
 

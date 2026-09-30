@@ -21,7 +21,7 @@ import {
   type FindingIssueDraft,
 } from "@metis/shared";
 import type { AIProvider, ChatMessage, TokenUsage } from "../ai/types.js";
-import { HAIKU_MODEL_ID } from "../ai/model-router.js";
+import { HAIKU_MODEL_ID, tierModelFor } from "../ai/model-router.js";
 import { createChildLogger } from "../logger.js";
 import { extractJsonObject } from "./agent-runner.js";
 import { getPersona } from "./personas.js";
@@ -48,7 +48,10 @@ export interface DeepDiveEngineInput {
   };
   /** Optional user steering — bounded + escaped upstream and here. */
   instructions?: string;
-  /** Model override; defaults to Haiku to keep the deep-dive cheap. */
+  /**
+   * Model override; defaults to Haiku to keep the deep-dive cheap, or the
+   * provider's configured model when it cannot serve Claude tier ids (#532).
+   */
   model?: string;
   signal?: AbortSignal;
 }
@@ -102,7 +105,7 @@ export async function deepDiveFinding(
 
   const response = await provider.chat(messages, {
     systemMessage,
-    model: input.model ?? HAIKU_MODEL_ID,
+    model: input.model ?? tierModelFor(provider, HAIKU_MODEL_ID),
     signal: input.signal,
   });
 

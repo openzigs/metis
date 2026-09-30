@@ -2817,12 +2817,19 @@ The `/vault` page is split into two panels:
      in its environment or headers resolves to the secret by id or label;
      test-management auth and notification-channel references are not
      checked); it rotates only after **Rotate anyway**, because the owner's
-     resources will send your value to the hosts they chose, and the owner
-     can still bind it elsewhere afterwards. Through the API the
-     request is refused with `409 VAULT_ROTATE_FOREIGN_OWNER` (owner and
-     bindings in `error.details`) unless it sets `confirmForeignOwner: true`;
-     the `vault.rotate` audit row then records `foreignOwnerConfirmed` and
-     `ownerId`.
+     resources will send your value to the hosts they chose. The secret then
+     becomes yours: the previous owner's existing bindings keep working where
+     they are, but they can no longer bind it anywhere new. If the owner
+     changed its bindings after you were shown them, the page shows the new
+     list and asks you to confirm again. Through the API the request is
+     refused with `409 VAULT_ROTATE_FOREIGN_OWNER` (owner and bindings in
+     `error.details`) unless it sets `confirmForeignOwner: true` and
+     `confirmedBindings` (the `type`, `id` and `destination` of every
+     binding listed); if those no longer match the live bindings — including
+     a binding re-pointed at a new host under the same id — it is refused with
+     `409 VAULT_ROTATE_BINDINGS_CHANGED` and the current list. The
+     `vault.rotate` audit row records `foreignOwnerConfirmed`, `ownerId`,
+     `confirmedBindings` and `ownershipTransferredTo`.
    - **Audit** — lists the recent `vault.{reveal,read,rotate,delete,write}`
      rows for the entry.
    - **Delete** — soft-removes the entry (terminal — restoring requires a

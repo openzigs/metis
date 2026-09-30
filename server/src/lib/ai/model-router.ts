@@ -94,6 +94,16 @@ export interface ModelPreferences {
  */
 export type RouterProvider = Pick<AIProvider, "key" | "model" | "servesRouterModel">;
 
+/**
+ * #532 — the model to send for a call site that wants Claude tier `tierId`:
+ * the tier id when the provider serves it, otherwise the provider's configured
+ * model (the same fallback {@link ModelRouter} applies). An adapter that cannot
+ * answer is treated as unable.
+ */
+export function tierModelFor(provider: RouterProvider, tierId: string): string {
+  return provider.servesRouterModel?.(tierId) === true ? tierId : provider.model;
+}
+
 export interface ModelRouterOptions {
   /** Per-project model preferences. */
   preferences?: ModelPreferences;

@@ -15,9 +15,11 @@ interface HeaderProps {
 
 export function Header({ onMenuClick }: HeaderProps) {
   return (
+    // #529 — below `sm` the header wraps: the breadcrumb takes a full-width
+    // second row (see Breadcrumbs), because one row left it ~100px at 390px.
     <header
       role="banner"
-      className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60"
+      className="sticky top-0 z-20 flex min-h-16 flex-wrap items-center gap-x-3 gap-y-1 border-b bg-background/80 px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/60 sm:h-16 sm:flex-nowrap sm:py-0"
     >
       <Button
         variant="ghost"

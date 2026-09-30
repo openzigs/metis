@@ -263,7 +263,7 @@ import {
   __resetPublishOctokitCache,
   __setPublishOctokitFactory,
 } from "../src/lib/publishing/octokit-factory.js";
-import { runBatch, archiveBatch } from "../src/lib/publishing/publisher.js";
+import { runBatch, archiveBatch, previewBatchPlan } from "../src/lib/publishing/publisher.js";
 import { audit } from "../src/lib/audit/audit-service.js";
 import { prisma } from "../src/lib/prisma.js";
 import { resolveVaultRef } from "../src/lib/connectors/vault-resolver.js";
@@ -1404,5 +1404,162 @@ describe("host-allowlist URL validation (defence in depth)", () => {
     await expect(
       resolvePublishTarget({ owner: "acme", repo: "metis", baseUrl: "not-a-url" }),
     ).rejects.toMatchObject({ code: "INVALID_BASE_URL" });
+  });
+});
+
+describe("#528 — loadExistingByHash is deterministic when rows share a dedupHash", () => {
+  const HASH = computeDedupHash("acme", "metis", "Login");
+
+  function sharedRow(
+    id: string,
+    draftId: string,
+    issueNumber: number,
+    publishedAt: string,
+    batchId = "batch_old",
+  ): PublishedIssueRow {
+    return {
+      id,
+      batchId,
+      draftId,
+      issueNumber,
+      issueId: `node_${issueNumber}`,
+      htmlUrl: `https://github.com/acme/metis/issues/${issueNumber}`,
+      status: "created",
+      parentIssueNumber: null,
+      dedupHash: HASH,
+      bodyHash: `b-${issueNumber}`,
+      errorMessage: null,
+      publishedAt: new Date(publishedAt),
+    };
+  }
+
+  /** Seed the rows in `order`, so a row-order-dependent pick shows up. */
+  function seedIssues(rows: PublishedIssueRow[]): void {
+    issues.clear();
+    for (const r of rows) issues.set(pubIssueKey(r.batchId, r.draftId), r);
+  }
+
+  const load = (prefer?: string[]) =>
+    publisherTesting.loadExistingByHash("proj_1", "acme", "metis", prefer);
+
+  beforeEach(() => {
+    seedBatch({ id: "batch_old", status: "completed" });
+  });
+
+  it("prefers the row of a draft being published, whatever the row order", async () => {
+    const mine = sharedRow("pi_a", "d_mine", 11, "2026-01-01T00:00:00Z");
+    const other = sharedRow("pi_b", "d_other", 12, "2026-06-01T00:00:00Z");
+    for (const order of [
+      [mine, other],
+      [other, mine],
+    ]) {
+      seedIssues(order);
+      // d_other's row is newer, so only the draft preference picks #11.
+      expect((await load(["d_mine"])).get(HASH)?.issueNumber).toBe(11);
+    }
+  });
+
+  it("with no preferred row, picks the most recent publishedAt, whatever the row order", async () => {
+    const older = sharedRow("pi_z", "d_1", 21, "2026-01-01T00:00:00Z");
+    const newer = sharedRow("pi_a", "d_2", 22, "2026-06-01T00:00:00Z");
+    for (const order of [
+      [older, newer],
+      [newer, older],
+    ]) {
+      seedIssues(order);
+      // pi_z > pi_a, so an id tiebreak alone would pick the wrong one.
+      expect((await load(["d_unrelated"])).get(HASH)?.issueNumber).toBe(22);
+      expect((await load()).get(HASH)?.issueNumber).toBe(22);
+    }
+  });
+
+  it("among preferred rows, the most recent wins", async () => {
+    const older = sharedRow("pi_z", "d_1", 31, "2026-01-01T00:00:00Z");
+    const newer = sharedRow("pi_a", "d_2", 32, "2026-06-01T00:00:00Z", "batch_other");
+    for (const order of [
+      [older, newer],
+      [newer, older],
+    ]) {
+      seedIssues(order);
+      expect((await load(["d_1", "d_2"])).get(HASH)?.issueNumber).toBe(32);
+    }
+  });
+
+  it("settles an exact publishedAt tie on the row id, whatever the row order", async () => {
+    const low = sharedRow("pi_a", "d_1", 41, "2026-01-01T00:00:00Z");
+    const high = sharedRow("pi_b", "d_2", 42, "2026-01-01T00:00:00Z");
+    for (const order of [
+      [low, high],
+      [high, low],
+    ]) {
+      seedIssues(order);
+      expect((await load()).get(HASH)?.issueNumber).toBe(42);
+    }
+  });
+
+  it("a live publish updates the issue of the draft being published, not its twin's", async () => {
+    seedDraft({ id: "d_mine", title: "Login", body: "new body" });
+    const mine = sharedRow("pi_a", "d_mine", 11, "2026-01-01T00:00:00Z");
+    // A newer duplicate for another draft — the one the old last-wins map
+    // could land on, overwriting that issue's body.
+    const other = sharedRow("pi_b", "d_other", 12, "2026-06-01T00:00:00Z");
+    seedBatch({
+      id: "batch_new",
+      metadata: JSON.stringify({
+        draftIds: ["d_mine"],
+        additionalLabels: [],
+        secretRef: "${vault:gh}",
+      }),
+    });
+    seedIssues([mine, other]);
+    const patched: number[] = [];
+    const base = makeFakeOctokit();
+    __setPublishOctokitFactory(async () => ({
+      request: async (args) => {
+        if (args.method === "PATCH" && /\/issues\/\d+$/.test(args.url ?? "")) {
+          patched.push(Number((args.url ?? "").split("/").pop()));
+        }
+        return base.request(args);
+      },
+    }));
+    const result = await runBatch({
+      batchId: "batch_new",
+      dryRun: false,
+      secretRef: "${vault:gh}",
+      sleep: noopSleep,
+    });
+    expect(result.status).toBe("completed");
+    expect(patched).toEqual([11]);
+    expect(issues.get(pubIssueKey("batch_new", "d_mine"))?.issueNumber).toBe(11);
+  });
+
+  it("the dry run and the pre-publish preview name the same issue the live run updates", async () => {
+    seedDraft({ id: "d_mine", title: "Login", body: "new body" });
+    seedBatch({
+      id: "batch_new",
+      dryRun: true,
+      metadata: JSON.stringify({ draftIds: ["d_mine"], additionalLabels: [], secretRef: null }),
+    });
+    seedIssues([
+      sharedRow("pi_a", "d_mine", 11, "2026-01-01T00:00:00Z"),
+      sharedRow("pi_b", "d_other", 12, "2026-06-01T00:00:00Z"),
+    ]);
+    const updateOf = (plan: { actions: Array<{ kind: string; existingIssueNumber?: number }> }) =>
+      plan.actions.filter((a) => a.kind === "issue.update").map((a) => a.existingIssueNumber);
+
+    await runBatch({ batchId: "batch_new", dryRun: true, secretRef: null, sleep: noopSleep });
+    expect(updateOf(JSON.parse(batches.get("batch_new")!.dryRunPlan!))).toEqual([11]);
+
+    const preview = await previewBatchPlan({
+      projectId: "proj_1",
+      draftIds: ["d_mine"],
+      targetOwner: "acme",
+      targetRepo: "metis",
+      targetBaseUrl: null,
+      provider: "github",
+      additionalLabels: [],
+      secretRef: null,
+    });
+    expect(updateOf(preview)).toEqual([11]);
   });
 });

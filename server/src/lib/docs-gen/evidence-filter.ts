@@ -29,7 +29,9 @@ export async function filterPrimaryEvidence<T extends EvidenceCandidate>(
       metadata: true,
       chunkerIdentity: true,
       aclSubjects: true,
-      document: { select: { filename: true, storagePath: true, aclSubjects: true } },
+      document: {
+        select: { filename: true, source: true, storagePath: true, aclSubjects: true },
+      },
     },
   });
   const byId = new Map(rows.map((r) => [r.id, r]));
@@ -58,9 +60,12 @@ export async function filterPrimaryEvidence<T extends EvidenceCandidate>(
       continue;
     const filename = row.document.filename;
     const repoPrefix = "connector:repo:";
-    const repoId = filename.startsWith(repoPrefix)
-      ? filename.slice(repoPrefix.length).split(":")[0]
-      : undefined;
+    // #525: only the repository connector's rows carry a connector id; an
+    // upload named `connector:repo:<id>:…` is scoped like any other upload.
+    const repoId =
+      row.document.source === "repo" && filename.startsWith(repoPrefix)
+        ? filename.slice(repoPrefix.length).split(":")[0]
+        : undefined;
     if (policy.repoConnectorId) {
       if (
         repoId
