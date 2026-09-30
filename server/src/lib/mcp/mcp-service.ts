@@ -26,7 +26,11 @@ import { auditMcpEvent } from "../audit/mcp-audit.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { expandVaultRefs, type VaultRefMapKind } from "../vault/env-manager.js";
-import { bindSecretRefs, parseSecretBindings, type SecretBindings } from "../vault/bound-secret.js";
+import {
+  bindCheckedSecretRefs,
+  parseSecretBindings,
+  type SecretBindings,
+} from "../vault/bound-secret.js";
 import { mcpRefs, unboundMcpRefs } from "./secret-binding.js";
 import { getVaultService } from "../vault/vault-service.js";
 import type { MCPLifecycleManager } from "./lifecycle-manager.js";
@@ -273,12 +277,14 @@ export class MCPRegistryService {
     //   2. DB-side `$transaction` so the count + create commit together —
     //      on Postgres/MySQL this also serializes against other replicas
     //      (sqlite already serializes writes globally).
-    // #480 — bind every env/header vault reference to the secret id it
-    // resolves to now; the server is started from those ids only.
+    // #480 — bind every env/header vault reference to a secret id; the server
+    // is started from those ids only. #577 — the ids are the ones the route's
+    // binding check approved (`options.secretBindings`); a reference it does
+    // not cover is refused, never resolved by label again here.
     const secretBindings = JSON.stringify(
-      await bindSecretRefs(
+      bindCheckedSecretRefs(
         mcpRefs(input.env ?? null, input.headers ?? null),
-        options.secretBindings ?? null,
+        options.secretBindings,
       ),
     );
     if (scope === "user") {
@@ -453,13 +459,14 @@ export class MCPRegistryService {
     const data = this.buildUpdatePayload(input);
     // #480 — rebind only when the env or headers change. A reference the
     // server already holds keeps the id it was bound to, even when that secret
-    // has since been deleted; only a new reference is resolved now.
+    // has since been deleted. #577 — a new reference binds the id the route's
+    // check approved (`checkedBindings`); one it does not cover is refused.
     if (input.env !== undefined || input.headers !== undefined) {
       const nextEnv = input.env !== undefined ? input.env : parseObject(existing.envJson);
       const nextHeaders =
         input.headers !== undefined ? input.headers : parseObject(existing.headers);
       data.secretBindings = JSON.stringify(
-        await bindSecretRefs(
+        bindCheckedSecretRefs(
           mcpRefs(
             nextEnv as Record<string, string> | null,
             nextHeaders as Record<string, string> | null,
@@ -503,8 +510,10 @@ export class MCPRegistryService {
    * resolve to now, keeping every existing binding, without changing anything
    * else about the server. The caller's right to attach them is the route's
    * `assertMcpRebindSecretBinding`, whose `updatedAt` makes this write
-   * conditional (a miss is a 409). An ambiguous or unresolved reference still
-   * throws (409 / 400), so it must be edited instead.
+   * conditional (a miss is a 409). An ambiguous or unresolved reference is
+   * refused by that check (409 / 400), so it must be edited instead; #577 — a
+   * flagged reference the check's ids do not cover is refused here (500
+   * `SECRET_BINDING_UNCHECKED`), not resolved again.
    */
   async rebindSecrets(
     id: string,
@@ -519,8 +528,15 @@ export class MCPRegistryService {
     }
     const unbound = unboundMcpRefs(existing);
     if (unbound.length === 0) return this.toView(existing);
-    if (expectedUpdatedAt === null) throw mcpConcurrentUpdateError();
-    const bindings = await bindSecretRefs(
+    // A stale check is a 409 before anything else about the write is judged;
+    // the write below stays conditional on it as well.
+    if (
+      expectedUpdatedAt === null ||
+      existing.updatedAt.getTime() !== expectedUpdatedAt.getTime()
+    ) {
+      throw mcpConcurrentUpdateError();
+    }
+    const bindings = bindCheckedSecretRefs(
       mcpRefs(
         parseObject<Record<string, string>>(existing.envJson),
         parseObject<Record<string, string>>(existing.headers),

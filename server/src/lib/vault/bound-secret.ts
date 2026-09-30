@@ -34,6 +34,8 @@ import {
 
 export const VAULT_REF_UNRESOLVED = "VAULT_REF_UNRESOLVED";
 export const VAULT_REF_AMBIGUOUS = "VAULT_REF_AMBIGUOUS";
+/** #577 — a write reached with a reference its binding check never approved. */
+export const SECRET_BINDING_UNCHECKED = "SECRET_BINDING_UNCHECKED";
 
 /** Reference body → the secret id it is bound to. */
 export type SecretBindings = Record<string, string>;
@@ -146,6 +148,41 @@ export async function authorizeAndBindSecretRefs(
   const rows = await readCandidateSecrets([...new Set([...change.before, ...after])]);
   judgeSecretBinding(user, change, ctx, rows);
   return bindFromRows(after, kept, rows);
+}
+
+/**
+ * #577 — bind `refs` from the ids a write was handed, and nothing else: no read
+ * of the secret table. `covered` is what the route's binding check approved
+ * (plus any secret the request itself vaulted, and on an existing server the
+ * bindings it already holds). A reference outside it is refused, never resolved
+ * by label here — resolving it again is the TOCTOU the check-and-bind read
+ * closes, so a route that forgot to pass the checked ids fails closed.
+ *
+ * A write with no references binds nothing and needs no `covered` set (registry
+ * and federation installs).
+ *
+ * @throws AppError 500 SECRET_BINDING_UNCHECKED
+ */
+export function bindCheckedSecretRefs(
+  refs: string[],
+  covered: SecretBindings | null | undefined,
+): SecretBindings {
+  const out: SecretBindings = Object.create(null) as SecretBindings;
+  const unchecked: string[] = [];
+  for (const ref of new Set(refs)) {
+    const id = keptIdOf(covered ?? null, ref);
+    if (id === undefined) unchecked.push(ref);
+    else out[ref] = id;
+  }
+  if (unchecked.length > 0) {
+    throw new AppError(
+      500,
+      SECRET_BINDING_UNCHECKED,
+      `internal error: ${unchecked.length} vault reference(s) reached the write without ` +
+        "passing the binding check; refusing to resolve them by label",
+    );
+  }
+  return out;
 }
 
 /** The single-reference form of {@link bindSecretRefs}. */

@@ -30,7 +30,8 @@ vi.mock("../src/lib/prisma.js", () => ({
 const audit = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit }));
 
-const { authorizeAndBindSecretRefs } = await import("../src/lib/vault/bound-secret.js");
+const { authorizeAndBindSecretRefs, bindCheckedSecretRefs, SECRET_BINDING_UNCHECKED } =
+  await import("../src/lib/vault/bound-secret.js");
 
 const COORD = { userId: "u-coord", role: "coordinator" as const };
 const ADMIN = { userId: "u-admin", role: "admin" as const };
@@ -108,5 +109,34 @@ describe("authorizeAndBindSecretRefs", () => {
   it("binds nothing and reads nothing when the write references no secret", async () => {
     expect(await authorizeAndBindSecretRefs(COORD, attach([]), ctx)).toEqual({});
     expect(state.findManyCalls).toBe(0);
+  });
+});
+
+describe("bindCheckedSecretRefs (PR #585 review) — binds only what was checked", () => {
+  it("binds each reference to its checked id without reading the secret table", () => {
+    secret("s1", "global:a", "u-coord");
+    expect(bindCheckedSecretRefs(["a", "a", "b"], { a: "s1", b: "s2", extra: "s3" })).toEqual({
+      a: "s1",
+      b: "s2",
+    });
+    expect(state.findManyCalls).toBe(0);
+  });
+
+  it("refuses a reference the checked set does not cover (500), even when its label resolves", () => {
+    secret("s1", "global:a", "u-coord");
+    for (const covered of [undefined, null, {}, { other: "s9" }, { a: "" }]) {
+      expect(() => bindCheckedSecretRefs(["a"], covered)).toThrow(
+        expect.objectContaining({ statusCode: 500, code: SECRET_BINDING_UNCHECKED }),
+      );
+    }
+    expect(state.findManyCalls).toBe(0);
+  });
+
+  it("a write with no references needs no checked set", () => {
+    expect(bindCheckedSecretRefs([], undefined)).toEqual({});
+  });
+
+  it("does not take a label named like an Object.prototype member from the prototype", () => {
+    expect(() => bindCheckedSecretRefs(["constructor"], {})).toThrow(/binding check/);
   });
 });

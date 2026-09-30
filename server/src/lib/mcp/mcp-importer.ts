@@ -22,6 +22,7 @@ import { getVaultService } from "../vault/vault-service.js";
 import { freshSecretLabel } from "../vault/secret-rotation.js";
 import type { SecretBindings } from "../vault/bound-secret.js";
 import type { MCPRegistryService } from "./mcp-service.js";
+import type { McpImportBindingCheck } from "./secret-binding.js";
 
 const log = createChildLogger("mcp-importer");
 
@@ -88,7 +89,8 @@ export interface ImportPlan {
 export interface ImportResult {
   plan: ImportPlan;
   created: Array<{ id: string; label: string }>;
-  errors: Array<{ label: string; message: string }>;
+  /** `code` is the failure's error code when it has one (e.g. `VAULT_REF_UNRESOLVED`). */
+  errors: Array<{ label: string; message: string; code?: string }>;
   dryRun: boolean;
 }
 
@@ -100,11 +102,13 @@ interface ImportOptions {
   /** When non-null, prepended to the synthesised secret label so multiple imports don't collide. */
   labelPrefix?: string;
   /**
-   * #577 — each entry's secret ids as the caller's binding check approved them
-   * (`assertMcpImportSecretBinding`), keyed by entry label. The entry is bound
-   * to exactly these, not to a second resolution of its labels.
+   * #577 — the caller's binding check (`assertMcpImportSecretBinding`): each
+   * entry's approved secret ids, keyed by entry label, and the entries it could
+   * not bind. An entry is bound to exactly its ids plus the secrets it vaults;
+   * a reference outside them fails the entry (`SECRET_BINDING_UNCHECKED`), it is
+   * never resolved again. Without a check, only auto-vaulted refs can bind.
    */
-  secretBindings?: Map<string, SecretBindings>;
+  secretBindings?: McpImportBindingCheck;
 }
 
 export async function buildImportPlan(raw: unknown, opts: ImportOptions = {}): Promise<ImportPlan> {
@@ -189,11 +193,18 @@ export async function executeImport(
     // success, and the server kept resolving the OLD secret. A vault failure
     // now fails the entry, and the secrets it already wrote are withdrawn.
     const written: string[] = [];
+    // #577 review — an entry the check could not bind (unresolved or
+    // ambiguous reference) fails alone, before it vaults anything.
+    const failure = opts.secretBindings?.failures.get(entry.label);
+    if (failure) {
+      result.errors.push({ label: entry.label, message: failure.message, code: failure.code });
+      continue;
+    }
     /** #577 — the checked ids, plus each secret this entry vaults. */
-    const checked = opts.secretBindings?.get(entry.label);
-    const bound: SecretBindings | undefined = checked
-      ? Object.assign(Object.create(null) as SecretBindings, checked)
-      : undefined;
+    const bound: SecretBindings = Object.assign(
+      Object.create(null) as SecretBindings,
+      opts.secretBindings?.bindings.get(entry.label),
+    );
     try {
       // 1. Create vault secrets for any auto-routed env keys.
       for (const [envKey, planned] of Object.entries(entry.vaultedKeys)) {
@@ -209,7 +220,7 @@ export async function executeImport(
           createdById: actor.id,
         });
         written.push(summary.id);
-        if (bound) bound[secretLabel] = summary.id;
+        bound[secretLabel] = summary.id;
         entry.vaultedKeys[envKey] = secretLabel;
         entry.env[envKey] = `\${vault:${secretLabel}}`;
         audit({
@@ -230,7 +241,7 @@ export async function executeImport(
           createdById: actor.id,
         });
         written.push(summary.id);
-        if (bound) bound[secretLabel] = summary.id;
+        bound[secretLabel] = summary.id;
         entry.vaultedHeaders[hName] = secretLabel;
         if (entry.headers) entry.headers[hName] = `\${vault:${secretLabel}}`;
         audit({
@@ -272,7 +283,12 @@ export async function executeImport(
           }),
         );
       }
-      result.errors.push({ label: entry.label, message: (err as Error).message });
+      const code = (err as { code?: unknown }).code;
+      result.errors.push({
+        label: entry.label,
+        message: (err as Error).message,
+        ...(typeof code === "string" ? { code } : {}),
+      });
     }
   }
   audit({

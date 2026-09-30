@@ -24,8 +24,11 @@ import { assertSecretBindingAllowed, refBodiesIn } from "../vault/secret-binding
 import {
   authorizeAndBindSecretRefs,
   parseSecretBindings,
+  VAULT_REF_AMBIGUOUS,
+  VAULT_REF_UNRESOLVED,
   type SecretBindings,
 } from "../vault/bound-secret.js";
+import { AppError } from "../../middleware/error-handler.js";
 import type { ImportPlan } from "./mcp-importer.js";
 
 type Caller = Pick<AuthPayload, "userId" | "role">;
@@ -203,16 +206,49 @@ export async function assertMcpRebindSecretBinding(
   return { checkedAt: row.updatedAt, bindings };
 }
 
+/** An import entry that cannot be bound: it fails alone, with this code (#577 review). */
+export interface McpImportEntryFailure {
+  status: number;
+  code: string;
+  message: string;
+}
+
+/** What a passed mcp.json import check hands to `executeImport`. */
+export interface McpImportBindingCheck {
+  /** Each bindable entry's checked ids, keyed by entry label (#577). */
+  bindings: Map<string, SecretBindings>;
+  /**
+   * Entries with a reference that reaches no live secret (400
+   * `VAULT_REF_UNRESOLVED`) or more than one (409 `VAULT_REF_AMBIGUOUS`),
+   * keyed by entry label. Such an entry is not written; the others still are.
+   */
+  failures: Map<string, McpImportEntryFailure>;
+}
+
+/** The binding failures that fail one import entry rather than the whole import. */
+function failsOnlyItsEntry(err: unknown): err is AppError {
+  return (
+    err instanceof AppError &&
+    (err.code === VAULT_REF_UNRESOLVED || err.code === VAULT_REF_AMBIGUOUS)
+  );
+}
+
 /**
  * An mcp.json import: every secret an entry references must be the caller's.
  * Refs the import itself creates (auto-vaulted plaintext) are not in the input.
  * Returns each entry's checked ids, keyed by the entry's label (#577).
+ *
+ * The ownership refusal (403 `SECRET_BINDING_FORBIDDEN`) on ANY entry still
+ * refuses the whole import, before anything is written: it is judged before an
+ * entry's references are bound, so an entry that is both foreign and
+ * unresolvable is refused, not skipped. An unresolved or ambiguous reference
+ * fails only its own entry, as it did before #577 moved the bind into the check.
  */
 export async function assertMcpImportSecretBinding(
   user: Caller,
   plan: ImportPlan,
-): Promise<Map<string, SecretBindings>> {
-  const out = new Map<string, SecretBindings>();
+): Promise<McpImportBindingCheck> {
+  const out: McpImportBindingCheck = { bindings: new Map(), failures: new Map() };
   for (const entry of plan.entries) {
     const env = Object.fromEntries(
       Object.entries(entry.env).filter(([k]) => !(k in entry.vaultedKeys)),
@@ -222,10 +258,19 @@ export async function assertMcpImportSecretBinding(
           Object.entries(entry.headers).filter(([k]) => !(k in entry.vaultedHeaders)),
         )
       : null;
-    out.set(
-      entry.label,
-      await assertMcpCreateSecretBinding(user, { env, headers, label: entry.label }),
-    );
+    try {
+      out.bindings.set(
+        entry.label,
+        await assertMcpCreateSecretBinding(user, { env, headers, label: entry.label }),
+      );
+    } catch (err) {
+      if (!failsOnlyItsEntry(err)) throw err;
+      out.failures.set(entry.label, {
+        status: err.statusCode,
+        code: err.code,
+        message: err.message,
+      });
+    }
   }
   return out;
 }

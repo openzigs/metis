@@ -61,6 +61,7 @@ interface Row {
   updatedAt: Date;
   deletedAt: Date | null;
   createdById: string | null;
+  secretBindings?: string | null;
 }
 
 const servers = new Map<string, Row>();
@@ -225,6 +226,8 @@ describe("MCPRegistryService", () => {
         env: { FOO: "plain", TOKEN: "${vault:t}" },
       },
       { id: "u1" },
+      // #577 — the ids the route's binding check approved.
+      { secretBindings: { t: "sec-t" } },
     );
     expect(created.env).toEqual({ FOO: "***", TOKEN: "${vault:t}" });
     const list = await svc.list();
@@ -248,6 +251,76 @@ describe("MCPRegistryService", () => {
     expect(u.enabled).toBe(false);
     await svc.remove(c.id, { id: "u1" });
     expect(await svc.get(c.id)).toBeNull();
+  });
+
+  // PR #585 review — the write binds only the ids the route's check approved.
+  // The mocked secret table resolves `t` to `sec_t`, so a fallback that
+  // re-resolved the label would succeed here; the write must refuse instead.
+  describe("#577 — a reference outside the checked set is refused, never re-resolved", () => {
+    it("create without a checked set: 500 SECRET_BINDING_UNCHECKED, no row", async () => {
+      const svc = makeService();
+      for (const secretBindings of [undefined, { other: "sec_o" }]) {
+        await expect(
+          svc.create(
+            { label: "unchecked", transport: "stdio", command: "node", env: { T: "${vault:t}" } },
+            { id: "u1" },
+            { secretBindings },
+          ),
+        ).rejects.toMatchObject({ statusCode: 500, code: "SECRET_BINDING_UNCHECKED" });
+      }
+      expect(servers.size).toBe(0);
+    });
+
+    it("create with no references needs no checked set (registry / federation installs)", async () => {
+      const svc = makeService();
+      const c = await svc.create(
+        { label: "catalog", transport: "http", url: "https://example.test/mcp" },
+        { id: "u1" },
+        { source: { kind: "catalog", catalogId: "x" } },
+      );
+      expect(servers.get(c.id)?.secretBindings).toBe("{}");
+    });
+
+    it("update adding an unchecked reference is refused; the row is unchanged", async () => {
+      const svc = makeService();
+      const c = await svc.create(
+        { label: "u", transport: "stdio", command: "node", env: { K: "${vault:k}" } },
+        { id: "u1" },
+        { secretBindings: { k: "sec_k" } },
+      );
+      const before = { ...servers.get(c.id)! };
+      await expect(
+        svc.update(c.id, { env: { K: "${vault:k}", T: "${vault:t}" } }, { id: "u1" }),
+      ).rejects.toMatchObject({ statusCode: 500, code: "SECRET_BINDING_UNCHECKED" });
+      expect(servers.get(c.id)).toEqual(before);
+      // With the checked id it binds exactly that id; the kept one stays.
+      await svc.update(
+        c.id,
+        { env: { K: "${vault:k}", T: "${vault:t}" } },
+        { id: "u1" },
+        undefined,
+        undefined,
+        {
+          t: "sec_checked",
+        },
+      );
+      expect(JSON.parse(servers.get(c.id)!.secretBindings!)).toEqual({
+        k: "sec_k",
+        t: "sec_checked",
+      });
+    });
+
+    it("update without env or headers binds nothing and keeps the stored bindings", async () => {
+      const svc = makeService();
+      const c = await svc.create(
+        { label: "keep", transport: "stdio", command: "node", env: { K: "${vault:k}" } },
+        { id: "u1" },
+        { secretBindings: { k: "sec_k" } },
+      );
+      const u = await svc.update(c.id, { enabled: false }, { id: "u1" });
+      expect(u.enabled).toBe(false);
+      expect(servers.get(c.id)?.secretBindings).toBe(JSON.stringify({ k: "sec_k" }));
+    });
   });
 
   it("update returns 404 for unknown", async () => {
