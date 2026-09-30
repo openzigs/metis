@@ -43,6 +43,10 @@ describe("codeSearchRateLimiter", () => {
 
   it("falls back to the default cap on a malformed override", async () => {
     process.env.CODE_SEARCH_RATE_LIMIT_MAX = "not-a-number";
-    expect((await request(app("cs-user-3")).get("/")).status).toBe(200);
+    const res = await request(app("cs-user-3")).get("/");
+    expect(res.status).toBe(200);
+    // The advertised cap is the production default, not NaN or a guess — a
+    // bare 200 could not tell a working fallback from none (PR #454 panel).
+    expect(res.headers["ratelimit-limit"]).toBe("300");
   });
 });
