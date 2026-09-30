@@ -124,8 +124,19 @@ export default function WorkbenchPage() {
   // in Recent. A change of project or agent drops the current session; the
   // next send opens one in the new scope. `scopeRef` lets a create still in
   // flight from the old scope see that it is stale and discard its result.
+  //
+  // #390 — the effect cleanup (every scope change, and unmount) also ABORTS
+  // that create, so a send waiting on it stops "Streaming…" at once instead of
+  // when the orphaned request settles.
+  // A create the server already committed stays as an empty session row; it
+  // is harmless and never listed — it has no turn, so it is not in Recent and
+  // has no snapshot, so it is not among the resumable sessions.
   const scopeRef = useRef(0);
-  const pendingCreateRef = useRef<{ scope: number; promise: Promise<AISession> } | null>(null);
+  const pendingCreateRef = useRef<{
+    scope: number;
+    promise: Promise<AISession>;
+    controller: AbortController;
+  } | null>(null);
   const [startingSession, setStartingSession] = useState(false);
   useEffect(() => {
     scopeRef.current += 1;
@@ -134,6 +145,7 @@ export default function WorkbenchPage() {
     setMessages([]);
     resetToolActivity();
     return () => {
+      pendingCreateRef.current?.controller.abort();
       abortRef.current?.abort();
     };
   }, [activeProjectId, layout.agentKey, resetToolActivity]);
@@ -171,12 +183,16 @@ export default function WorkbenchPage() {
     const scope = scopeRef.current;
     let pending = pendingCreateRef.current;
     if (!pending || pending.scope !== scope) {
-      const promise = createSession({
-        title: "Workbench",
-        ...(activeProjectId ? { projectId: activeProjectId } : {}),
-        ...sessionAgentInput(layout.agentKey, activeProjectId),
-      });
-      pending = { scope, promise };
+      const controller = new AbortController();
+      const promise = createSession(
+        {
+          title: "Workbench",
+          ...(activeProjectId ? { projectId: activeProjectId } : {}),
+          ...sessionAgentInput(layout.agentKey, activeProjectId),
+        },
+        { signal: controller.signal },
+      );
+      pending = { scope, promise, controller };
       pendingCreateRef.current = pending;
     }
     try {
@@ -228,13 +244,20 @@ export default function WorkbenchPage() {
     setInput("");
     const controller = new AbortController();
     abortRef.current = controller;
+    // #390 — whether the server answered at all. A send refused before any
+    // frame (a 4xx on the first send) stored no turn.
+    let answered = false;
     try {
       // #136 — only the new message goes up; the server holds the history.
       for await (const ev of streamChat(active.id, composed, controller.signal)) {
+        answered = true;
         handleStream(ev, assistantMsg.id);
       }
     } catch (err) {
-      setError((err as Error).message);
+      // #390 — a scope change aborts the stream on purpose; as in Chat, that
+      // is a cancellation, not an error to show.
+      const aborted = controller.signal.aborted || (err as Error)?.name === "AbortError";
+      if (!aborted) setError((err as Error).message);
     } finally {
       setStreaming(false);
       abortRef.current = null;
@@ -242,6 +265,7 @@ export default function WorkbenchPage() {
     // #361 — recorded once a turn has happened (as Chat does, #1367), so an
     // unused session never reaches Recent or the dashboard's Recent activity.
     // Chat resumes a session from `?sessionId=`.
+    if (!answered) return;
     recentTracker.touch({
       kind: "session",
       id: active.id,

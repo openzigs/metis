@@ -16,8 +16,12 @@
  *  - #23 — the Slug is derived from the Name until the user edits it by hand
  *    (clearing it resumes the derivation), and when the Name yields no slug the
  *    reason Create is disabled is shown straight away.
+ *  - #370 — a successful Create navigates to the new project's Overview, so the
+ *    new project (read from the URL) becomes the active one in the breadcrumb
+ *    and switcher instead of leaving the user on the list.
  */
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { projectsApi, type Project } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
@@ -59,6 +63,7 @@ export interface ProjectCreateFormProps {
 
 export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormProps) {
   const qc = useQueryClient();
+  const router = useRouter();
 
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
@@ -131,6 +136,7 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
       setServerFieldErrors({});
       setFormError(null);
       onCreated?.(project);
+      router.push(`/projects/${project.id}`);
     },
     onError: (err) => {
       const fieldErrors = mapFieldErrors(err);

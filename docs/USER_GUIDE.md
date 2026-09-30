@@ -967,6 +967,8 @@ Each widget shows a skeleton while loading, an actionable empty state with a dee
 
 The Workbench is your hands-on artifact editor. The right rail's **Recent** panel mirrors your most recently touched chat sessions and analyses for quick re-entry. Recent entries are stored client-side and validated against a same-origin allow-list — links are only honoured when they begin with a single `/`, so a poisoned `localStorage` value can never redirect you to an external URL.
 
+A Workbench chat session is opened by your first message, not by opening the page, and it is added to **Recent** only once the server has answered that message. Switching project or agent while the first message is still opening a session cancels it. Older builds opened an empty "Workbench" session on every page load; those entries need no cleanup. **Recent** keeps the 10 newest sessions per browser, so newer sessions push the old entries out. The empty sessions themselves have no messages, so they never appear under **Activity → Sessions**. [#361, #390]
+
 ---
 
 ## 8.3 Library
