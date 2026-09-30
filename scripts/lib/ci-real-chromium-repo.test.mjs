@@ -39,6 +39,23 @@ const runsSuite = (/** @type {{ dir: string, command: string }} */ c) =>
 const installsChrome = (/** @type {{ command: string }} */ c) =>
   /\bpuppeteer\s+browsers\s+install\s+chrome\b/.test(c.command);
 
+/**
+ * The step block (its lines) that runs the suite, split at `      - ` step starts.
+ * `extractPnpmCommands` sees only command text, so a step `if:` or an `|| true`
+ * on the run line is invisible to it (PR #458 review).
+ */
+function suiteStep(/** @type {string[]} */ lines) {
+  /** @type {string[][]} */
+  const steps = [];
+  for (const line of lines) {
+    if (/^ {6}- /.test(line)) steps.push([line]);
+    else if (steps.length > 0 && /^ {8}/.test(line)) steps[steps.length - 1].push(line);
+  }
+  return steps.find((step) =>
+    step.some((l) => /\btest:integration\b/.test(l) && l.includes(SUITE)),
+  );
+}
+
 /** Every job whose steps run the suite, with that job's pnpm commands in step order. */
 function jobsRunningSuite() {
   return [...jobs]
@@ -63,6 +80,27 @@ describe("CI runs the real-Chromium exporter suite (#456)", () => {
         job,
         install: true,
         before: true,
+      });
+    }
+  });
+
+  it("runs on every event, with no `if:` on the job or the step (PR #458 review)", () => {
+    for (const { job, lines } of jobsRunningSuite()) {
+      const step = suiteStep(lines) ?? [];
+      expect({
+        job,
+        jobIf: lines.filter((l) => /^ {4}if:/.test(l)),
+        stepIf: step.filter((l) => /^ {6}- if:|^ {8}if:/.test(l)),
+      }).toEqual({ job, jobIf: [], stepIf: [] });
+    }
+  });
+
+  it("does not swallow the suite's exit code (`|| true`, `|| :`) (PR #458 review)", () => {
+    for (const { job, lines } of jobsRunningSuite()) {
+      const step = suiteStep(lines) ?? [];
+      expect({ job, swallowed: step.filter((l) => /\|\|/.test(l)) }).toEqual({
+        job,
+        swallowed: [],
       });
     }
   });
