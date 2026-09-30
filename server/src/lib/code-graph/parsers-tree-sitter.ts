@@ -462,6 +462,11 @@ function markJavaConsumed(node: SyntaxNode, consumed: Set<number>): void {
  *
  * Returns `[]` (never throws) when tree-sitter isn't initialized, the Java
  * grammar is missing, or the file fails to parse — callers degrade gracefully.
+ *
+ * `filePath` does not change the grammar today (`parserFor` only switches a
+ * `ts` file to TSX). It is required anyway so every grammar lookup goes through
+ * `parserFor` (#383): a future per-file grammar rule then applies here too,
+ * rather than being missed at one of several lookup sites.
  */
 export function findJavaConcatSqlCandidates(source: string, filePath: string): StringLiteral[] {
   if (!parsers) return [];

@@ -704,6 +704,8 @@ describe("string-literal scans select the grammar per file (#383)", () => {
   });
 
   it("still scans a .ts path with the TypeScript grammar", () => {
+    // Keep the `<number>x` assertion: it is valid TypeScript but not TSX, so it
+    // is what makes this test fail if `.ts` were ever parsed with TSX.
     const src = 'const n = <number>x;\nconst q = "SELECT id FROM orders";\n';
     expect(findStringLiterals(src, "ts", "src/repo.ts").map((l) => l.text)).toEqual([
       "SELECT id FROM orders",
