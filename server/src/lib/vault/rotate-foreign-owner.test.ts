@@ -21,6 +21,8 @@ const {
   canonicalBindings,
   describeForeignOwner,
   foreignOwnerMessage,
+  routingDigest,
+  routingFields,
   UNBOUND_NOTE,
 } = await import("./rotate-foreign-owner.js");
 
@@ -192,6 +194,7 @@ describe("#502 — bindingsDiffer / bindingsChangedMessage", () => {
     label: id.toUpperCase(),
     projectId: "p",
     destination: `pg://${id}`,
+    routing: `r-${id}`,
   });
   const details = (...ids: string[]) => ({
     secretId: "s",
@@ -201,7 +204,12 @@ describe("#502 — bindingsDiffer / bindingsChangedMessage", () => {
 
   // What the 409 showed: type, id and destination of each binding.
   const shown = (...ids: string[]) =>
-    ids.map((id) => ({ type: "db_connector" as const, id, destination: `pg://${id}` }));
+    ids.map((id) => ({
+      type: "db_connector" as const,
+      id,
+      destination: `pg://${id}`,
+      routing: `r-${id}`,
+    }));
 
   it("is false only for the same set of bindings, in any order and with duplicates", () => {
     expect(bindingsDiffer(details(), [])).toBe(false);
@@ -224,8 +232,19 @@ describe("#502 — bindingsDiffer / bindingsChangedMessage", () => {
     expect(bindingsDiffer(details("a"), [{ ...a!, type: "mcp_server" }])).toBe(true);
   });
 
-  it("canonicalBindings dedupes, orders and drops anything but type, id, destination", () => {
-    const extra = { type: "db_connector" as const, id: "a", destination: "pg://a", label: "x" };
+  it("#557: is true when only the routing digest differs, under the same destination", () => {
+    const [a] = shown("a");
+    expect(bindingsDiffer(details("a"), [{ ...a!, routing: "r-other" }])).toBe(true);
+  });
+
+  it("canonicalBindings dedupes, orders and drops anything but type, id, destination, routing", () => {
+    const extra = {
+      type: "db_connector" as const,
+      id: "a",
+      destination: "pg://a",
+      routing: "r-a",
+      label: "x",
+    };
     expect(canonicalBindings([...shown("b"), extra, ...shown("a")])).toEqual(shown("a", "b"));
   });
 
@@ -238,3 +257,108 @@ describe("#502 — bindingsDiffer / bindingsChangedMessage", () => {
     expect(bindingsChangedMessage(details())).toContain(UNBOUND_NOTE);
   });
 });
+
+describe("#557 — routing digest over the full routing fields", () => {
+  const stdio = {
+    transport: "stdio",
+    runtime: "native",
+    command: "npx srv",
+    args: JSON.stringify(["--port", "1"]),
+    url: null,
+    headers: null,
+    envJson: null,
+    envSecretId: "sec-1",
+    egressAllowlist: null,
+  };
+  const pg = {
+    driver: "postgres",
+    host: "h",
+    port: 5432,
+    databaseName: "app",
+    options: null,
+  };
+
+  it("describeForeignOwner shows the same destination but a different routing for new MCP args", async () => {
+    db.mCPServer.findMany.mockResolvedValueOnce([
+      { id: "m", label: "M", projectId: "p", ...stdio },
+    ]);
+    const before = (await describeForeignOwner(SECRET)).bindings[0]!;
+    db.mCPServer.findMany.mockResolvedValueOnce([
+      { id: "m", label: "M", projectId: "p", ...stdio, args: JSON.stringify(["--to", "evil"]) },
+    ]);
+    const after = (await describeForeignOwner(SECRET)).bindings[0]!;
+    expect(after.destination).toBe(before.destination);
+    expect(after.routing).not.toBe(before.routing);
+    expect(
+      bindingsDiffer({ ...{ secretId: "s", owner: SECRET_OWNER }, bindings: [after] }, [before]),
+    ).toBe(true);
+  });
+
+  it("describeForeignOwner shows the same destination but a different routing for a new database", async () => {
+    db.databaseConnection.findMany.mockResolvedValueOnce([
+      { id: "d", label: "D", projectId: "p", ...pg },
+    ]);
+    const before = (await describeForeignOwner(SECRET)).bindings[0]!;
+    db.databaseConnection.findMany.mockResolvedValueOnce([
+      { id: "d", label: "D", projectId: "p", ...pg, databaseName: "other" },
+    ]);
+    const after = (await describeForeignOwner(SECRET)).bindings[0]!;
+    expect(after.destination).toBe("postgres://h:5432");
+    expect(after.destination).toBe(before.destination);
+    expect(after.routing).not.toBe(before.routing);
+  });
+
+  it("covers every routing field of every kind, and is stable for the same row", () => {
+    const cases: Array<[Parameters<typeof routingDigest>[0], Record<string, unknown>]> = [
+      ["db_connector", pg],
+      ["repo_connector", { provider: "github", apiBaseUrl: "https://ghe" }],
+      [
+        "import_source",
+        { source: "jira", baseUrl: "https://j", jiraConnectionId: "jc", filter: "{}" },
+      ],
+      ["mcp_server", stdio],
+      [
+        "jira_connection",
+        { baseUrl: "https://j", proxyUrl: null, tlsRejectUnauthorized: true, tlsCaSecretId: null },
+      ],
+    ];
+    for (const [type, row] of cases) {
+      const fields = routingFields[type] as (r: Record<string, unknown>) => unknown[];
+      const base = routingDigest(type, "x", fields(row));
+      expect(routingDigest(type, "x", fields({ ...row }))).toBe(base);
+      expect(base).toMatch(/^[0-9a-f]{64}$/);
+      for (const key of Object.keys(row)) {
+        const changed = { ...row, [key]: row[key] === true ? false : `${String(row[key])}-x` };
+        expect(routingDigest(type, "x", fields(changed)), `${type}.${key}`).not.toBe(base);
+      }
+    }
+  });
+
+  it("ignores the DB allow-list, which never chooses the destination", () => {
+    const f = routingFields.db_connector;
+    expect(routingDigest("db_connector", "d", f({ ...pg, options: '{"allowList":["t"]}' }))).toBe(
+      routingDigest("db_connector", "d", f(pg)),
+    );
+  });
+
+  it("is keyed: not a plain hash of the fields, and changes with the server secret", async () => {
+    const { createHash } = await import("node:crypto");
+    const fields = routingFields.mcp_server(stdio);
+    const digest = routingDigest("mcp_server", "m", fields);
+    expect(digest).not.toBe(
+      createHash("sha256")
+        .update(JSON.stringify(["mcp_server", "m", ...fields]))
+        .digest("hex"),
+    );
+    const prev = process.env.JWT_SECRET;
+    process.env.JWT_SECRET = "a-different-test-signing-secret-of-enough-length-557";
+    try {
+      expect(routingDigest("mcp_server", "m", fields)).not.toBe(digest);
+    } finally {
+      if (prev === undefined) delete process.env.JWT_SECRET;
+      else process.env.JWT_SECRET = prev;
+    }
+  });
+});
+
+const SECRET_OWNER = { id: "u-1", username: null, displayName: null };

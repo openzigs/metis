@@ -43,13 +43,15 @@ export interface VaultForeignOwner {
     label: string;
     projectId: string | null;
     destination: string | null;
+    /** #557 — server-issued digest of every field that routes the secret; echo it back. */
+    routing: string;
   }>;
 }
 
-/** #502 — a binding as the admin confirmed it: what it is and where it sends. */
+/** #502 — a binding as the admin confirmed it: what it is and where it sends (#557: and its routing digest). */
 export type VaultConfirmedBinding = Pick<
   VaultForeignOwner["bindings"][number],
-  "type" | "id" | "destination"
+  "type" | "id" | "destination" | "routing"
 >;
 
 export interface CreateVaultEntryInput {
@@ -66,7 +68,7 @@ export const vaultApi = {
   /**
    * #482 — `confirmForeignOwner` is required to rotate a secret another user
    * owns; #502 — with `confirmedBindings`, the type, id and destination of
-   * every binding the 409 showed.
+   * every binding the 409 showed (#557 — and its `routing` digest).
    */
   rotate: (
     id: string,

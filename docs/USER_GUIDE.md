@@ -2826,9 +2826,12 @@ The `/vault` page is split into two panels:
      list and asks you to confirm again. Through the API the request is
      refused with `409 VAULT_ROTATE_FOREIGN_OWNER` (owner and bindings in
      `error.details`) unless it sets `confirmForeignOwner: true` and
-     `confirmedBindings` (the `type`, `id` and `destination` of every
-     binding listed); if those no longer match the live bindings — including
-     a binding re-pointed at a new host under the same id — it is refused with
+     `confirmedBindings` (the `type`, `id`, `destination` and `routing` of
+     every binding listed; `routing` is an opaque digest of every field that
+     decides where that resource sends the secret, such as MCP args and env or
+     a connector's database name); if those no longer match the live bindings —
+     including a binding re-pointed under the same id, whether at a new host or
+     at new args or a new database behind the same destination — it is refused with
      `409 VAULT_ROTATE_BINDINGS_CHANGED` and the current list. While the
      owner is binding the secret somewhere new — from the moment their change
      is checked until it is saved, and for at most a minute — the rotation is

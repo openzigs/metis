@@ -62,8 +62,8 @@ describe("vaultApi", () => {
 
   it("#502 — a confirmed rotate() sends the bindings it was shown", async () => {
     const confirmedBindings = [
-      { type: "db_connector", id: "db1", destination: "postgres://h" },
-      { type: "mcp_server", id: "m1", destination: null },
+      { type: "db_connector", id: "db1", destination: "postgres://h", routing: "rt-db1" },
+      { type: "mcp_server", id: "m1", destination: null, routing: "rt-m1" },
     ];
     await vaultApi.rotate("sec_1", "fresh", { confirmForeignOwner: true, confirmedBindings });
     expect(apiFetchMock).toHaveBeenLastCalledWith("/vault/sec_1/rotate", {

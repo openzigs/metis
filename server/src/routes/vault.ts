@@ -84,6 +84,8 @@ const rotateSchema = z.object({
   /**
    * #502 — the `{type, id, destination}` of every binding the 409 listed; must
    * match the live set, destinations included, so a same-id re-point refuses.
+   * #557 — and its `routing` digest, so a re-point the destination string does
+   * not show (new args, env or database) refuses too.
    */
   confirmedBindings: z
     .array(
@@ -98,6 +100,7 @@ const rotateSchema = z.object({
           ]),
           id: z.string().min(1).max(200),
           destination: z.string().max(8192).nullable(),
+          routing: z.string().min(1).max(128),
         })
         .strict(),
     )

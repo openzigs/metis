@@ -42,6 +42,7 @@ const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { getVaultService, __resetVaultSingleton } =
   await import("../src/lib/vault/vault-service.js");
 const { getAuditService } = await import("../src/lib/audit/audit-service.js");
+const { routingDigest, routingFields } = await import("../src/lib/vault/rotate-foreign-owner.js");
 
 const OWNER_VALUE = "coordinator-own-token-482";
 const ADMIN_VALUE = "admin-real-token-482";
@@ -231,6 +232,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
               label: "Coord DB",
               projectId: "proj-1",
               destination: "postgres://db.coord.example:5432",
+              routing: expect.stringMatching(/^[0-9a-f]{64}$/),
             },
             {
               type: "repo_connector",
@@ -238,6 +240,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
               label: "Coord Repo",
               projectId: "proj-1",
               destination: "https://ghe.coord.example/api/v3",
+              routing: expect.stringMatching(/^[0-9a-f]{64}$/),
             },
             {
               type: "import_source",
@@ -245,6 +248,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
               label: "Coord Linear",
               projectId: "proj-1",
               destination: "https://linear.coord.example",
+              routing: expect.stringMatching(/^[0-9a-f]{64}$/),
             },
             {
               type: "mcp_server",
@@ -252,6 +256,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
               label: "Coord MCP",
               projectId: "proj-1",
               destination: "coord-mcp",
+              routing: expect.stringMatching(/^[0-9a-f]{64}$/),
             },
             {
               type: "mcp_server",
@@ -259,6 +264,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
               label: "Coord MCP HTTP",
               projectId: "proj-1",
               destination: "https://mcp.coord.example",
+              routing: expect.stringMatching(/^[0-9a-f]{64}$/),
             },
             {
               type: "jira_connection",
@@ -266,6 +272,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
               label: "Coord Jira",
               projectId: "proj-1",
               destination: "https://coord.atlassian.example",
+              routing: expect.stringMatching(/^[0-9a-f]{64}$/),
             },
           ]),
         );
@@ -302,6 +309,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           label: "Only MCP",
           projectId: "proj-1",
           destination: "only-mcp",
+          routing: expect.stringMatching(/^[0-9a-f]{64}$/),
         },
       ]);
       expect(res.body.error.message).toContain("bound to Only MCP (only-mcp)");
@@ -352,18 +360,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       db.databaseConnection.create({
         data: { id, projectId: "proj-1", label: id, driver: "postgres", host, secretId },
       });
-    type Shown = { type: string; id: string; destination: string | null };
-    /** What the admin echoes back: the type, id and destination of each binding shown. */
+    type Shown = { type: string; id: string; destination: string | null; routing: string };
+    /** What the admin echoes back: the type, id, destination and routing of each binding shown. */
     const shownIn = (res: request.Response): Shown[] =>
-      (res.body.error.details.bindings as Shown[]).map(({ type, id, destination }) => ({
+      (res.body.error.details.bindings as Shown[]).map(({ type, id, destination, routing }) => ({
         type,
         id,
         destination,
+        routing,
       }));
-    const pg = (id: string, host: string): Shown => ({
+    /** #557 — a DB binding as the 409 shows it, digest computed the way the server does. */
+    const pg = (id: string, host: string, databaseName: string | null = null): Shown => ({
       type: "db_connector",
       id,
       destination: `postgres://${host}`,
+      routing: routingDigest(
+        "db_connector",
+        id,
+        routingFields.db_connector({
+          driver: "postgres",
+          host,
+          port: null,
+          databaseName,
+          options: null,
+        }),
+      ),
     });
 
     it("#502: a confirm without the bindings it was shown is refused and writes nothing", async () => {
@@ -405,6 +426,93 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await rotateAudit(id)).toHaveLength(0);
       const row = await db.secret.findUniqueOrThrow({ where: { id } });
       expect(row.createdById).toBe("u-coord");
+    });
+
+    it("#557: the same DB host with a changed database refuses the confirm", async () => {
+      const id = await newSecret("u-coord");
+      await db.databaseConnection.create({
+        data: {
+          id: "db-557",
+          projectId: "proj-1",
+          label: "db-557",
+          driver: "postgres",
+          host: "h557.coord.example",
+          databaseName: "app",
+          secretId: id,
+        },
+      });
+      const first = await rotate(id, { value: ADMIN_VALUE });
+      expect(first.status).toBe(409);
+      const shown = shownIn(first);
+      expect(shown).toEqual([pg("db-557", "h557.coord.example", "app")]);
+
+      // Same host, same displayed destination — a different database.
+      await db.databaseConnection.update({
+        where: { id: "db-557" },
+        data: { databaseName: "exfil" },
+      });
+      const res = await rotate(id, {
+        value: ADMIN_VALUE,
+        confirmForeignOwner: true,
+        confirmedBindings: shown,
+      });
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("VAULT_ROTATE_BINDINGS_CHANGED");
+      const fresh = shownIn(res);
+      expect(fresh.map((b) => b.destination)).toEqual(shown.map((b) => b.destination));
+      expect(fresh[0]!.routing).not.toBe(shown[0]!.routing);
+      expect(await plaintextOf(id)).toBe(OWNER_VALUE);
+      expect(await rotateAudit(id)).toHaveLength(0);
+      expect((await db.secret.findUniqueOrThrow({ where: { id } })).createdById).toBe("u-coord");
+
+      // Confirming the fresh list rotates, and the audit row keeps the digest.
+      const ok = await rotate(id, {
+        value: ADMIN_VALUE,
+        confirmForeignOwner: true,
+        confirmedBindings: fresh,
+      });
+      expect(ok.status).toBe(200);
+      const meta = JSON.parse((await rotateAudit(id))[0]!.metadata ?? "{}") as Record<
+        string,
+        unknown
+      >;
+      expect(meta.confirmedBindings).toEqual(fresh);
+    });
+
+    it("#557: the same MCP command with changed args refuses the confirm", async () => {
+      const id = await newSecret("u-coord");
+      await db.mCPServer.create({
+        data: {
+          id: "mcp-557",
+          scope: "project",
+          projectId: "proj-1",
+          label: "MCP 557",
+          transport: "stdio",
+          command: "npx mcp-557",
+          args: JSON.stringify(["--safe"]),
+          envJson: JSON.stringify({ TOKEN: `\${vault:global:${lastLabel}}` }),
+        },
+      });
+      const first = await rotate(id, { value: ADMIN_VALUE });
+      expect(first.status).toBe(409);
+      const shown = shownIn(first);
+      expect(shown.map((b) => [b.id, b.destination])).toEqual([["mcp-557", "npx mcp-557"]]);
+
+      await db.mCPServer.update({
+        where: { id: "mcp-557" },
+        data: { args: JSON.stringify(["--forward-to", "https://evil.example"]) },
+      });
+      const res = await rotate(id, {
+        value: ADMIN_VALUE,
+        confirmForeignOwner: true,
+        confirmedBindings: shown,
+      });
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("VAULT_ROTATE_BINDINGS_CHANGED");
+      expect(shownIn(res).map((b) => b.destination)).toEqual(["npx mcp-557"]);
+      expect(await plaintextOf(id)).toBe(OWNER_VALUE);
+      expect(await rotateAudit(id)).toHaveLength(0);
+      expect((await db.secret.findUniqueOrThrow({ where: { id } })).createdById).toBe("u-coord");
     });
 
     it("#502: a binding added after the 409 refuses the confirm with the live list", async () => {
@@ -545,8 +653,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         [{ type: "db_connector", id: "db-1" }],
         [{ type: "nope", id: "db-1", destination: null }],
         [{ type: "db_connector", id: "", destination: null }],
-        [{ type: "db_connector", id: "db-1", destination: null, extra: 1 }],
-        Array.from({ length: 1001 }, () => pg("x", "h")),
+        [{ type: "db_connector", id: "db-1", destination: null, routing: "r", extra: 1 }],
+        // #557 — the routing digest is required, and never empty.
+        [{ type: "db_connector", id: "db-1", destination: null }],
+        [{ type: "db_connector", id: "db-1", destination: null, routing: "" }],
+        // Over the cap — kept small per entry so the body stays under the JSON limit.
+        Array.from({ length: 1001 }, () => ({
+          type: "db_connector",
+          id: "x",
+          destination: null,
+          routing: "r",
+        })),
       ]) {
         const res = await rotate(id, {
           value: ADMIN_VALUE,
