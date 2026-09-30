@@ -157,13 +157,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       parseSecretBindings((await db.mCPServer.findUniqueOrThrow({ where: { id } })).secretBindings);
 
     /** A publish batch as created before #480: `metadata` with no `secretId`. */
-    const legacyBatch = async (metadata: Record<string, unknown>, dryRun = false) =>
+    const legacyBatch = async (
+      metadata: Record<string, unknown>,
+      dryRun = false,
+      targetBaseUrl: string | null = null,
+    ) =>
       (
         await db.publishBatch.create({
           data: {
             projectId: PROJ,
             targetOwner: "o",
             targetRepo: "r",
+            targetBaseUrl,
             dryRun,
             startedById: "u-coord",
             metadata: JSON.stringify(metadata),
@@ -397,6 +402,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ]),
         );
         expect(flags).toHaveLength(2);
+        // The audit row carries enough to act on: the server, its creator (whose
+        // ownership was judged) and the repair.
+        const [row] = await db.auditLog.findMany({
+          where: { action: BACKFILL_FLAGGED_ACTION, targetId: id },
+        });
+        const server = await db.mCPServer.findUniqueOrThrow({ where: { id } });
+        expect(JSON.parse(row.metadata ?? "{}")).toMatchObject({
+          serverId: id,
+          serverLabel: server.label,
+          judgedOwnerId: "u-coord",
+          remedy: expect.stringMatching(/save the MCP server again/i),
+        });
         await expect(
           expandVaultRefs(
             { Authorization: `Bearer ${ref(hdr)}` },
@@ -444,6 +461,38 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await bindingsOf(id)).toEqual({ [label]: foreign });
         expect(await flagsFor(id)).toEqual([]);
       });
+
+      it.each([
+        ["deactivated", { status: "disabled" }],
+        ["soft-deleted", { deletedAt: new Date() }],
+      ] as const)(
+        "gives an admin owner who is now %s no vault.reveal exemption",
+        async (_state, change) => {
+          const ownerId = `u-admin-gone-504-${next()}`;
+          await db.user.create({
+            data: {
+              id: ownerId,
+              username: ownerId,
+              displayName: ownerId,
+              email: `${ownerId}@example.test`,
+            },
+          });
+          const adminRole = await db.role.findUniqueOrThrow({ where: { key: "admin" } });
+          await db.userRole.create({
+            data: { userId: ownerId, roleId: adminRole.id, source: "local" },
+          });
+          await db.user.update({ where: { id: ownerId }, data: change });
+          const label = `mcp-gone-admin-504-${next()}`;
+          await foreignSecret(label);
+          const id = await legacyMcp({ TOKEN: ref(label) });
+          await db.mCPServer.update({ where: { id }, data: { createdById: ownerId } });
+
+          await backfillSecretBindings();
+
+          expect(await bindingsOf(id)).toEqual({});
+          expect(await flagsFor(id)).toEqual([[{ ref: label, reason: "not_owned" }]]);
+        },
+      );
 
       it("flags every reference of a server with no owner", async () => {
         const label = `mcp-orphan-504-${next()}`;
@@ -540,10 +589,32 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(report).toMatchObject({ batchesBound: 0, batchesFlagged: 0 });
       });
 
-      it("flags a batch whose reference reaches a secret its starter did not create", async () => {
-        const label = `batch-foreign-504-${next()}`;
+      it("binds another user's secret for a batch bound for the public GitHub API, as #358 does", async () => {
+        // #358 exempts api.github.com: the token goes to the service that
+        // issued it. Flagging it here would strip a coordinator's team token
+        // and leave the batch unarchivable with closeIssues (TOKEN_REQUIRED).
+        for (const baseUrl of [null, "https://api.github.com"]) {
+          const label = `batch-foreign-public-504-${next()}`;
+          const foreign = await foreignSecret(label);
+          const id = await legacyBatch({ secretRef: ref(label) }, false, baseUrl);
+
+          await backfillSecretBindings();
+
+          const meta = await metaOf(id);
+          expect(meta).toMatchObject({ secretRef: ref(label), secretId: foreign });
+          expect(meta).not.toHaveProperty("secretBindingFlag");
+          expect(await flagsFor(id)).toEqual([]);
+        }
+      });
+
+      it("flags a batch whose caller-chosen host would receive a secret its starter did not create", async () => {
+        const label = `batch-foreign-ghe-504-${next()}`;
         await foreignSecret(label);
-        const id = await legacyBatch({ secretRef: ref(label) });
+        const id = await legacyBatch(
+          { secretRef: ref(label) },
+          false,
+          "https://ghe.example.test/api/v3",
+        );
 
         await backfillSecretBindings();
 

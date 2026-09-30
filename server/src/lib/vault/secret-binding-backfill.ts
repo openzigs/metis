@@ -15,7 +15,12 @@
  * an id match wins, otherwise the reference must reach exactly one live secret
  * by label) AND the #344 ownership rule: the resource's owner (an MCP server's
  * `createdById`, a batch's `startedById`) must have created every secret the
- * reference can reach, unless they hold `vault.reveal` now. Rows saved before
+ * reference can reach, unless they hold `vault.reveal` now. As in #358, a batch
+ * is held to that only when its `targetBaseUrl` is caller-chosen
+ * (`isCallerChosenPublishHost`); the public GitHub API is exempt. An MCP server
+ * is judged against its CREATOR, where #344 judges whoever saved it — a
+ * reference a later editor attached may be flagged, and re-saving the server
+ * repairs it. Rows saved before
  * #344 were never checked, and binding a foreign secret here would send its
  * plaintext to a destination the owner chose (an MCP header, since #504, goes
  * to the server's URL). A reference that is ambiguous, reaches nothing, or is
@@ -39,6 +44,7 @@ import { hasPermission } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { resolveEffectiveRoleFromRows } from "../auth/durable-roles.js";
 import { refBodiesIn, refBodyOf, refsOwnedBy } from "./secret-binding.js";
+import { isCallerChosenPublishHost } from "../publishing/publish-secret-binding.js";
 import {
   bindSecretRefs,
   VAULT_REF_AMBIGUOUS,
@@ -104,13 +110,15 @@ async function mayBindForeign(
 }
 
 /**
- * Bind every reference with {@link bindOne}, then drop — as `not_owned` — any
- * the owner could not have attached at save time under #344.
+ * Bind every reference with {@link bindOne}, then — when `enforceOwnership` —
+ * drop as `not_owned` any the owner could not have attached at save time under
+ * #344.
  */
 async function bindForOwner(
   refs: string[],
   ownerId: string | null,
   cache: Map<string, boolean>,
+  enforceOwnership = true,
 ): Promise<{ bindings: SecretBindings; flagged: FlaggedRef[] }> {
   const bindings: SecretBindings = Object.create(null) as SecretBindings;
   const flagged: FlaggedRef[] = [];
@@ -120,7 +128,7 @@ async function bindForOwner(
     else flagged.push({ ref, reason: r.flag });
   }
   const bound = Object.keys(bindings);
-  if (bound.length > 0 && !(await mayBindForeign(ownerId, cache))) {
+  if (enforceOwnership && bound.length > 0 && !(await mayBindForeign(ownerId, cache))) {
     const owned = await refsOwnedBy(ownerId, bound);
     for (const ref of bound) {
       if (owned.has(ref)) continue;
@@ -143,17 +151,23 @@ function parseMap(raw: string | null): Record<string, unknown> | null {
   }
 }
 
-function flagAudit(type: string, id: string, flagged: FlaggedRef[]): void {
+function flagAudit(
+  type: string,
+  id: string,
+  flagged: FlaggedRef[],
+  extra: Record<string, unknown> = {},
+): void {
   log.warn("Vault reference could not be bound; it will not resolve until re-saved", {
     type,
     id,
     flagged,
+    ...extra,
   });
   audit({
     actor: null,
     action: BACKFILL_FLAGGED_ACTION,
     target: { type, id },
-    metadata: { flagged },
+    metadata: { flagged, ...extra },
   });
 }
 
@@ -164,7 +178,7 @@ async function backfillMcpServers(
   // A soft-deleted server never connects again; leave it unbound and unflagged.
   const rows = await prisma.mCPServer.findMany({
     where: { secretBindings: null, deletedAt: null },
-    select: { id: true, envJson: true, headers: true, createdById: true },
+    select: { id: true, label: true, envJson: true, headers: true, createdById: true },
   });
   for (const row of rows) {
     const refs = [
@@ -178,7 +192,14 @@ async function backfillMcpServers(
     if (count === 0) continue; // saved (and so bound) since we read it
     if (flagged.length > 0) {
       report.mcpServersFlagged += 1;
-      flagAudit("mcp_server", row.id, flagged);
+      // Enough to act on without a join: which server, which refs, whose
+      // ownership was judged (the creator, not a later editor), and the repair.
+      flagAudit("mcp_server", row.id, flagged, {
+        serverId: row.id,
+        serverLabel: row.label,
+        judgedOwnerId: row.createdById,
+        remedy: "Save the MCP server again to re-bind its vault references.",
+      });
     } else {
       report.mcpServersBound += 1;
     }
@@ -191,14 +212,22 @@ async function backfillPublishBatches(
 ): Promise<void> {
   const rows = await prisma.publishBatch.findMany({
     where: { dryRun: false, archived: false, metadata: { contains: "secretRef" } },
-    select: { id: true, metadata: true, startedById: true },
+    select: { id: true, metadata: true, startedById: true, targetBaseUrl: true },
   });
   for (const row of rows) {
     const meta = parseMap(row.metadata);
     if (!meta || Object.hasOwn(meta, "secretId")) continue;
     const ref = refBodyOf(typeof meta.secretRef === "string" ? meta.secretRef : null);
     if (!ref) continue;
-    const { bindings, flagged } = await bindForOwner([ref], row.startedById, cache);
+    // #358 enforces ownership only for a caller-chosen host: a token sent to the
+    // public GitHub API goes to the service that issued it. Same predicate as
+    // `assertPublishSecretBinding`, so the backfill and createBatch cannot drift.
+    const { bindings, flagged } = await bindForOwner(
+      [ref],
+      row.startedById,
+      cache,
+      isCallerChosenPublishHost(row.targetBaseUrl),
+    );
     const r: { id: string } | { flag: BindingFlagReason } =
       flagged.length > 0 ? { flag: flagged[0].reason } : { id: bindings[ref] };
     const next =

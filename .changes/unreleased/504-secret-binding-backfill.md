@@ -6,7 +6,9 @@ section: Security
 - MCP servers and live publish batches saved before #480 are bound to their vault secret at server
   start. A reference that is ambiguous, missing, or to a secret the owner did not create (#344;
   `vault.reveal` holders exempt) is flagged (`vault.binding_backfill_flagged`), not bound: the
-  server will not start until re-saved, and the batch cannot publish or close issues.
+  server will not start until re-saved, and the batch cannot publish or close issues. Batches
+  for `api.github.com` are exempt from the ownership check, as in #358. MCP ownership is judged
+  against the server's creator; a flagged server is repaired by re-saving it.
 - Test-management connections read their stored secret by id only (409 `VAULT_BINDING_STALE` when
   it is gone — re-enter the credential); other vault failures surface unchanged.
 - MCP header values that reference a vault secret, such as an imported `Authorization` header, are
