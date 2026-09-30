@@ -15,6 +15,7 @@
  * Drafts are upserted by `dedupHash` so re-running the generator does NOT
  * create duplicates — instead the body/labels are refreshed.
  */
+import crypto from "node:crypto";
 import {
   findingSupportPanelSchema,
   parseAcceptanceCriteria,
@@ -167,6 +168,9 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   // low-confidence one publishes its caution rather than losing the signal at
   // the GitHub boundary. One query for the whole batch; empty on flag-off runs.
   const confidenceByRequirement = await loadSupportConfidence(requirements);
+  // #490 — every requirement's content key, so a same-titled sibling never
+  // falls back onto a draft whose text an exact match in this run will claim.
+  const reservedKeys = new Set(requirements.map(requirementKey));
 
   // ----- Feature drafts -----
   for (const req of requirements) {
@@ -188,25 +192,32 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
       parentTitle: epicTitle,
       supportConfidence: confidenceByRequirement.get(req.id) ?? null,
     });
-    const draft = await claimAndUpsertDraft(opts, reqTitle, {
-      projectId: opts.projectId,
-      requirementId: req.id,
-      parentDraftId: epic.id,
-      draftType,
-      body,
-      labels,
-      storyPoints:
-        req.storyPoints ??
-        estimateStoryPoints({
-          priority: req.priority,
-          evidenceCount: parseLabels(req.labels).length,
-        }),
-      metadata: {
+    const key = requirementKey(req);
+    const draft = await claimAndUpsertDraft(
+      opts,
+      reqTitle,
+      {
+        projectId: opts.projectId,
         requirementId: req.id,
-        analysisId: opts.analysisId,
-        type: req.type,
+        parentDraftId: epic.id,
+        draftType,
+        body,
+        labels,
+        storyPoints:
+          req.storyPoints ??
+          estimateStoryPoints({
+            priority: req.priority,
+            evidenceCount: parseLabels(req.labels).length,
+          }),
+        metadata: {
+          requirementId: req.id,
+          analysisId: opts.analysisId,
+          type: req.type,
+          requirementKey: key,
+        },
       },
-    });
+      { requirementKey: key, reservedKeys },
+    );
     summary.total += 1;
     summary.features += 1;
     if (draft.created) summary.upserted += 1;
@@ -238,24 +249,61 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
  * requirement rows and the FK's ON DELETE SET NULL unlinks the old drafts; the
  * upsert re-links each one it refreshes, so a same-titled sibling later in the
  * same generation no longer qualifies and moves on to the next suffix.
+ *
+ * #490 — which unlinked draft a requirement takes must not depend on the order
+ * the re-run's synthesis emitted the twins in, or the twins swap drafts (and a
+ * published issue takes its sibling's text). An unlinked draft whose recorded
+ * `requirementKey` matches this requirement's content wins outright; failing
+ * that, the first unlinked draft whose key no requirement of this run holds.
+ * Requirement bodies come from LLM synthesis, so a real re-run rarely
+ * reproduces a key exactly and that order-dependent fallback is the usual path;
+ * what keeps a signed-off body safe then is the hold in `upsertDraft`.
  */
 async function claimTitle(
   opts: GenerateDraftsOptions,
   baseTitle: string,
   requirementId: string | null,
+  match: DraftMatch,
 ): Promise<{ title: string; hash: string }> {
+  let fallback: { title: string; hash: string } | null = null;
   for (let n = 1; ; n++) {
     const title = n === 1 ? baseTitle : `${baseTitle} (${n})`;
     const hash = computeDedupHash(opts.targetOwner, opts.targetRepo, title);
     const holder = await prisma.issueDraft.findFirst({
       where: { projectId: opts.projectId, dedupHash: hash, deletedAt: null },
     });
-    if (!holder) return { title, hash };
-    const ours =
-      draftAnalysisId(holder.metadata) === opts.analysisId &&
-      (holder.requirementId === null || holder.requirementId === requirementId);
-    if (ours) return { title, hash };
+    if (!holder) return fallback ?? { title, hash };
+    if (draftAnalysisId(holder.metadata) !== opts.analysisId) continue;
+    if (holder.requirementId === requirementId) return { title, hash };
+    if (holder.requirementId !== null) continue;
+    const key = draftRequirementKey(holder.metadata);
+    if (match.requirementKey !== undefined && key === match.requirementKey) {
+      return { title, hash };
+    }
+    if (!fallback && !(key !== undefined && match.reservedKeys?.has(key))) {
+      fallback = { title, hash };
+    }
   }
+}
+
+/** #490 — how a feature requirement recognises the draft generated from it. */
+interface DraftMatch {
+  /** This requirement's content key; absent for the epic. */
+  requirementKey?: string;
+  /** Every requirement key in this generation — not free for a fallback claim. */
+  reservedKeys?: ReadonlySet<string>;
+}
+
+/**
+ * #490 — a requirement's identity across re-runs. `persistRequirements`
+ * re-creates the rows with fresh ids, so the id cannot match a draft back to
+ * its requirement; the content it was rendered from can.
+ */
+function requirementKey(req: { type: string; title: string; body: string }): string {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify([req.type, req.title, req.body]))
+    .digest("hex");
 }
 
 /** Lost races tolerated before a claim gives up and surfaces the conflict. */
@@ -272,9 +320,10 @@ async function claimAndUpsertDraft(
   opts: GenerateDraftsOptions,
   baseTitle: string,
   args: Omit<UpsertArgs, "title" | "dedupHash">,
+  match: DraftMatch = {},
 ): Promise<{ id: string; created: boolean; title: string }> {
   for (let attempt = 1; ; attempt++) {
-    const { title, hash } = await claimTitle(opts, baseTitle, args.requirementId);
+    const { title, hash } = await claimTitle(opts, baseTitle, args.requirementId, match);
     try {
       return { ...(await upsertDraft({ ...args, title, dedupHash: hash })), title };
     } catch (err) {
@@ -285,12 +334,25 @@ async function claimAndUpsertDraft(
 }
 
 function draftAnalysisId(metadata: string | null): unknown {
+  return parseMetadata(metadata).analysisId;
+}
+
+function draftRequirementKey(metadata: string | null): string | undefined {
+  const key = parseMetadata(metadata).requirementKey;
+  return typeof key === "string" ? key : undefined;
+}
+
+function parseMetadata(metadata: string | null): Record<string, unknown> {
   try {
-    return (JSON.parse(metadata ?? "{}") as { analysisId?: unknown }).analysisId;
+    const parsed = JSON.parse(metadata ?? "{}") as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
   } catch {
-    return undefined;
+    return {};
   }
 }
+
+/** Statuses whose body a human has signed off on or GitHub already carries. */
+const FROZEN_ON_RELINK = new Set(["approved", "publishing", "published"]);
 
 interface UpsertArgs {
   projectId: string;
@@ -310,6 +372,40 @@ async function upsertDraft(args: UpsertArgs): Promise<{ id: string; created: boo
     where: { projectId: args.projectId, dedupHash: args.dedupHash, deletedAt: null },
   });
   if (existing) {
+    // #490 — a re-run unlinked this signed-off draft and it is being re-linked
+    // to a requirement whose content is not the one its body was rendered from.
+    // Its text stays; only the link moves, and it is logged for review. The
+    // hold is recorded as `bodyHeld` so it outlasts the re-link: once linked,
+    // the draft would otherwise take the new text on the next (repeatable)
+    // Generate. It is released only when the requirement's content matches the
+    // stored key again, or the draft leaves the signed-off statuses.
+    const existingMeta = parseMetadata(existing.metadata);
+    const storedKey = draftRequirementKey(existing.metadata);
+    if (
+      (existing.requirementId === null || existingMeta.bodyHeld === true) &&
+      args.requirementId !== null &&
+      FROZEN_ON_RELINK.has(existing.status) &&
+      storedKey !== args.metadata.requirementKey
+    ) {
+      await prisma.issueDraft.update({
+        where: { id: existing.id },
+        data: {
+          requirementId: args.requirementId,
+          parentDraftId: args.parentDraftId,
+          metadata: JSON.stringify({
+            ...args.metadata,
+            requirementKey: storedKey,
+            bodyHeld: true,
+          }),
+        },
+      });
+      log.warn("re-linked a signed-off draft to changed requirement content; body kept", {
+        draftId: existing.id,
+        requirementId: args.requirementId,
+        status: existing.status,
+      });
+      return { id: existing.id, created: false };
+    }
     await prisma.issueDraft.update({
       where: { id: existing.id },
       data: {
