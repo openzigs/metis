@@ -767,6 +767,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration repo-primary-postgres
 
+      # Issue #474 — the same empty-database blind spot for the documents.source
+      # backfill: runs the Postgres migration.sql verbatim over seeded connector
+      # and upload rows (scratch schema) and checks each row's classification.
+      - name: Prove the document source backfill on real Postgres
+        working-directory: server
+        run: pnpm test:integration document-source-postgres
+
       # Issue #543 (Epic #518) — prove the pgvector-backed RAG vector store gives
       # retrieval parity AND multi-replica read/write safety against the same real
       # Postgres: two separately-constructed store instances (= two pods) sharing

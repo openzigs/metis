@@ -157,6 +157,17 @@ export default function WorkbenchPage() {
     return all.filter((d) => layout.contextIds.includes(d.id));
   }, [documents.data, layout.contextIds]);
 
+  // #474 — chips are parsed from the WHOLE document list, as the panel is, so a
+  // chip from the second unnamed repository reads "Unnamed repository 2" like
+  // its panel group, whatever else is attached.
+  const contextEntries = useMemo(
+    () =>
+      toPanelEntries(documents.data?.items ?? [], repoNames).filter((e) =>
+        layout.contextIds.includes(e.doc.id),
+      ),
+    [documents.data, repoNames, layout.contextIds],
+  );
+
   function attachToContext(docId: string) {
     setLayout((prev) =>
       prev.contextIds.includes(docId) ? prev : { ...prev, contextIds: [...prev.contextIds, docId] },
@@ -434,7 +445,7 @@ export default function WorkbenchPage() {
               role="list"
               aria-label="Context attachments"
             >
-              {toPanelEntries(contextDocs, repoNames).map((entry) => {
+              {contextEntries.map((entry) => {
                 // #440 — the chip is labelled like the panel row it came from
                 // (`basename — repository`), never with an internal id fragment;
                 // the tooltip is the panel's too: repository plus path.

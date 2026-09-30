@@ -236,6 +236,7 @@ function makeDoc(id: string, filename: string, status: DocumentRow["status"]): D
     id,
     projectId: "proj-1",
     filename,
+    source: "upload",
     mimeType: "text/markdown",
     sizeBytes: 10,
     status,

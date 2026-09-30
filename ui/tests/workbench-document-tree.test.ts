@@ -17,20 +17,26 @@ import {
 const CONN = "cmexample0000000000acmerp";
 const OTHER = "cmexample0000000000zzzzzz";
 
-function doc(id: string, filename: string, uploadedAt = "2026-09-01T10:00:00Z"): DocumentRow {
+function doc(id: string, filename: string, over: Partial<DocumentRow> = {}): DocumentRow {
   return {
     id,
     projectId: "p1",
     filename,
+    source: "upload",
     mimeType: "text/plain",
     sizeBytes: 1,
     status: "ready",
     chunkCount: 1,
-    uploadedAt,
+    uploadedAt: "2026-09-01T10:00:00Z",
+    ...over,
   };
 }
 
-const repo = (id: string, path: string, conn = CONN) => doc(id, `connector:repo:${conn}:${path}`);
+/** A row as its connector writes it: the filename pattern AND the stored source (#474). */
+const from = (source: DocumentRow["source"], id: string, filename: string, title?: string) =>
+  doc(id, filename, { source, ...(title !== undefined ? { title } : {}) });
+const repo = (id: string, path: string, conn = CONN) =>
+  from("repo", id, `connector:repo:${conn}:${path}`);
 
 describe("toPanelEntries", () => {
   it("names a repository file by its basename, with repo name and path on hover", () => {
@@ -63,14 +69,18 @@ describe("toPanelEntries", () => {
   });
 
   it("tells generated documents apart by date, not by a cuid fragment", () => {
-    const [e] = toPanelEntries([doc("g1", "generated-doc-cmqpizckr017z8ewh2unm1418.md")]);
+    const [e] = toPanelEntries([
+      from("generated", "g1", "generated-doc-cmqpizckr017z8ewh2unm1418.md"),
+    ]);
     expect(e.name).toBe("Generated document");
     expect(e.secondary).toBe(new Date("2026-09-01T10:00:00Z").toLocaleDateString());
     expect(`${e.name} ${e.secondary} ${e.title}`).not.toContain("m1418");
   });
 
   it("omits the date line when a generated document's date is unreadable", () => {
-    const [e] = toPanelEntries([doc("g1", "generated-doc-abc123.md", "not a date")]);
+    const [e] = toPanelEntries([
+      doc("g1", "generated-doc-abc123.md", { source: "generated", uploadedAt: "not a date" }),
+    ]);
     expect(e.secondary).toBeUndefined();
   });
 });
@@ -168,10 +178,10 @@ describe("groupEntries", () => {
 describe("documents from other connectors", () => {
   const DB = "cmexampledbconn0000dbzz99";
   const others = [
-    doc("d0", `connector:db:${DB}:OVERVIEW.md`),
-    doc("d1", `connector:db:${DB}:public.orders.md`),
-    doc("c1", "confluence:ENG:123456"),
-    doc("j1", "jira:WMS-42"),
+    from("db", "d0", `connector:db:${DB}:OVERVIEW.md`),
+    from("db", "d1", `connector:db:${DB}:public.orders.md`),
+    from("confluence", "c1", "confluence:ENG:123456"),
+    from("jira", "j1", "jira:WMS-42"),
     doc("u1", "Spec.docx"),
   ];
 
@@ -232,12 +242,118 @@ describe("entryLabel (#440 — the attached-document chips)", () => {
   });
 
   it("names another source's document with its source", () => {
-    const [e] = toPanelEntries([doc("j1", "jira:WMS-12")]);
+    const [e] = toPanelEntries([from("jira", "j1", "jira:WMS-12")]);
     expect(entryLabel(e)).toBe("Jira: WMS-12");
   });
 
   it("names an upload by its own name", () => {
     const [e] = toPanelEntries([doc("u1", "notes.md")]);
     expect(entryLabel(e)).toBe("notes.md");
+  });
+});
+
+// #474 — classification reads the stored `source`, never the filename.
+describe("classification by stored source (#474)", () => {
+  it("keeps an upload named like a connector's document under Uploaded", () => {
+    const uploads = [
+      doc("u1", "jira:ABC-1"),
+      doc("u2", "confluence:ENG:42"),
+      doc("u3", `connector:repo:${CONN}:README.md`),
+      doc("u4", `connector:db:${CONN}:public.orders.md`),
+    ];
+    const entries = toPanelEntries(uploads, { [CONN]: "wms-core" });
+    expect(entries.map((e) => e.kind)).toEqual(["upload", "upload", "upload", "upload"]);
+    const groups = groupEntries(entries);
+    expect(groups.uploads.map((e) => e.doc.id)).toEqual(["u1", "u2", "u3", "u4"]);
+    expect(groups.repos).toEqual([]);
+    expect(groups.sources).toEqual([]);
+  });
+
+  it("falls back to an upload label when a connector row's filename does not parse", () => {
+    const entries = toPanelEntries([
+      from("repo", "r1", "README.md"),
+      from("db", "d1", "orders.md"),
+      from("confluence", "c1", "page.md"),
+      from("jira", "j1", "WMS-1"),
+    ]);
+    expect(entries.map((e) => [e.kind, e.name])).toEqual([
+      ["upload", "README.md"],
+      ["upload", "orders.md"],
+      ["upload", "page.md"],
+      ["upload", "WMS-1"],
+    ]);
+  });
+
+  it("names a Confluence page by its stored title", () => {
+    const [e] = toPanelEntries([
+      from("confluence", "c1", "confluence:ENG:123456", "Release checklist"),
+    ]);
+    expect(e).toMatchObject({ kind: "source", name: "Release checklist" });
+    expect(entryLabel(e)).toBe("Confluence ENG: Release checklist");
+    expect(filterEntries([e], "checklist")).toHaveLength(1);
+  });
+
+  it("falls back to the page id when a Confluence page has no title", () => {
+    const entries = toPanelEntries([
+      from("confluence", "c1", "confluence:ENG:1", "   "),
+      from("confluence", "c2", "confluence:ENG:2", null as unknown as string),
+    ]);
+    expect(entries.map((e) => e.name)).toEqual(["Page 1", "Page 2"]);
+  });
+});
+
+// #474 — a chip names the same group its file sits in, in the panel.
+describe("chip labels carry the panel's group ordinal (#474)", () => {
+  const all = [repo("a", "README.md"), repo("b", "README.md", OTHER), repo("c", "src/x.ts", OTHER)];
+
+  it("labels the second unnamed repository's files with its ordinal", () => {
+    const entries = toPanelEntries(all, {});
+    expect(entries.map(entryLabel)).toEqual([
+      `README.md — ${UNNAMED_REPOSITORY}`,
+      `README.md — ${UNNAMED_REPOSITORY} 2`,
+      `x.ts — ${UNNAMED_REPOSITORY} 2`,
+    ]);
+    expect(entries[2].title).toBe(`${UNNAMED_REPOSITORY} 2/src/x.ts`);
+    // The panel groups by the same names.
+    const groups = groupEntries(entries);
+    const groupOf = (id: string) =>
+      groups.repos.find((r) => r.connectorId === entries.find((e) => e.doc.id === id)?.connectorId)
+        ?.name;
+    for (const e of entries) expect(entryLabel(e)).toContain(` — ${groupOf(e.doc.id)}`);
+  });
+
+  it("keeps the ordinal when only that repository's file is attached or matches the filter", () => {
+    const entries = toPanelEntries(all, {});
+    const attached = entries.filter((e) => e.doc.id === "b");
+    expect(attached.map(entryLabel)).toEqual([`README.md — ${UNNAMED_REPOSITORY} 2`]);
+    const filtered = groupEntries(filterEntries(entries, "x.ts"));
+    expect(filtered.repos.map((r) => r.name)).toEqual([`${UNNAMED_REPOSITORY} 2`]);
+  });
+
+  it("does not number a repository whose name is unique", () => {
+    const entries = toPanelEntries(all, { [OTHER]: "api-gateway" });
+    expect(entries.map(entryLabel)).toEqual([
+      `README.md — ${UNNAMED_REPOSITORY}`,
+      "README.md — api-gateway",
+      "x.ts — api-gateway",
+    ]);
+  });
+
+  it("numbers two unnamed databases the same way, apart from repositories", () => {
+    const entries = toPanelEntries([
+      repo("a", "README.md"),
+      from("db", "d1", `connector:db:${CONN}:public.a.md`),
+      from("db", "d2", `connector:db:${OTHER}:public.b.md`),
+    ]);
+    expect(entries.map(entryLabel)).toEqual([
+      `README.md — ${UNNAMED_REPOSITORY}`,
+      `${UNNAMED_DATABASE}: public.a`,
+      `${UNNAMED_DATABASE} 2: public.b`,
+    ]);
+    expect(filterEntries(entries, `${UNNAMED_DATABASE} 2`.toLowerCase())).toHaveLength(1);
+    expect(groupEntries(entries).sources.map((s) => s.name)).toEqual([
+      UNNAMED_DATABASE,
+      `${UNNAMED_DATABASE} 2`,
+    ]);
   });
 });

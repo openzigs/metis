@@ -41,6 +41,7 @@ function doc(id: string, projectId: string, filename: string) {
     id,
     projectId,
     filename,
+    source: filename.startsWith("connector:repo:") ? ("repo" as const) : ("upload" as const),
     mimeType: "text/markdown",
     sizeBytes: 100,
     status: "ready" as const,

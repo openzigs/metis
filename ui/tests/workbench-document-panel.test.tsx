@@ -17,6 +17,14 @@ function doc(id: string, filename: string): DocumentRow {
     id,
     projectId: "p1",
     filename,
+    // #474 — as the writer stores it: the panel classifies on this, not the filename.
+    source: filename.startsWith("connector:repo:")
+      ? "repo"
+      : filename.startsWith("connector:db:")
+        ? "db"
+        : filename.startsWith("jira:")
+          ? "jira"
+          : "upload",
     mimeType: "text/plain",
     sizeBytes: 1,
     status: "ready",
