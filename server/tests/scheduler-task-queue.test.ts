@@ -8,6 +8,7 @@ vi.mock("../src/lib/prisma.js", () => ({ prisma: {} }));
 import { TaskQueue, type TaskStore } from "../src/lib/scheduler/task-queue.js";
 import { InMemoryTaskHandlerRegistry } from "../src/lib/scheduler/task-handlers.js";
 import { taskAbortSource } from "../src/lib/scheduler/task-abort.js";
+import { TASK_RETRY_WINDOW_MS } from "../src/lib/scheduler/task-retry-window.js";
 import {
   SchedulerError,
   type EnqueueTaskInput,
@@ -953,6 +954,44 @@ describe("TaskQueue retry()", () => {
     const t = await queue.enqueue({ type: "ok" });
     rows.get(t.id)!.status = "running";
     await expect(queue.retry(t.id, rows.get(t.id)!)).rejects.toBeInstanceOf(SchedulerError);
+  });
+
+  it.each(["failed", "cancelled"] as const)(
+    "#574 — refuses a %s task that ended before the retry window, and enqueues nothing",
+    async (status) => {
+      const { store, rows } = makeStore();
+      const registry = new InMemoryTaskHandlerRegistry();
+      registry.register({ type: "ok", description: "", handler: async () => ({}) });
+      const { emitter } = makeEmitter();
+      const queue = new TaskQueue(store, registry, emitter, baseConfig);
+      const t = await queue.enqueue({ type: "ok" });
+      await new Promise((r) => setImmediate(r));
+      const row = rows.get(t.id)!;
+      row.status = status;
+      row.updatedAt = new Date(Date.now() - TASK_RETRY_WINDOW_MS - 60_000);
+      const before = rows.size;
+      await expect(queue.retry(t.id, row)).rejects.toMatchObject({
+        status: 409,
+        code: "TASK_RETRY_EXPIRED",
+      });
+      expect(rows.size).toBe(before);
+    },
+  );
+
+  it("#574 — still retries a task that ended just inside the retry window", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    registry.register({ type: "ok", description: "", handler: async () => ({}) });
+    const { emitter } = makeEmitter();
+    const queue = new TaskQueue(store, registry, emitter, baseConfig);
+    const t = await queue.enqueue({ type: "ok" });
+    await new Promise((r) => setImmediate(r));
+    const row = rows.get(t.id)!;
+    row.status = "failed";
+    row.updatedAt = new Date(Date.now() - TASK_RETRY_WINDOW_MS + 60_000);
+    const retry = await queue.retry(t.id, row);
+    expect(retry.trigger).toBe("retry");
+    expect(rows.get(retry.id)).toBeDefined();
   });
 });
 

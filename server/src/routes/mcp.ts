@@ -300,6 +300,10 @@ export function mcpRouter(): Router {
       { userId: actor.id, role: actor.role },
       parsed.data,
     );
+    /** #574 — secrets this request vaults; withdrawn if the row is never written. */
+    const created: string[] = [];
+    /** #574 — set the moment the row is written: from then on it names the new secrets. */
+    let landed = false;
     try {
       const requestedScope = parsed.data.scope ?? "global";
       // Vault has no `user` scope; user-scoped MCP secrets fold into global.
@@ -310,6 +314,7 @@ export function mcpRouter(): Router {
         actorId: actor.id,
         scope,
         bound,
+        created,
         isSecretFn: (k, v) => SECRET_KEY_PATTERN.test(k) || isSecretValue(v),
       });
       const headerResult = await vaultPlaintextSecrets(parsed.data.headers, {
@@ -318,9 +323,10 @@ export function mcpRouter(): Router {
         actorId: actor.id,
         scope,
         bound,
+        created,
         isSecretFn: (k, v) => isSecretHeaderName(k) || isSecretValue(v),
       });
-      const created = await svc().create(
+      const server = await svc().create(
         {
           ...parsed.data,
           env: envResult.rewritten ?? parsed.data.env,
@@ -331,10 +337,25 @@ export function mcpRouter(): Router {
           headers: headerResult.rewritten ?? parsed.data.headers,
         },
         actor,
-        { secretBindings: bound },
+        {
+          secretBindings: bound,
+          onLanded: () => {
+            landed = true;
+          },
+        },
       );
-      res.status(201).json(ok(created));
+      res.status(201).json(ok(server));
     } catch (err) {
+      // #574 — a create refused after auto-vaulting (label taken, image
+      // denied, quota reached, a later header failing to vault) leaves the
+      // vaulted values belonging to no server, so they are withdrawn.
+      if (!landed) {
+        await withdrawCreatedSecrets(getVaultService(), created, {
+          actorId: actor.id,
+          resource: { type: "mcp_server" },
+          cause: err,
+        });
+      }
       rethrow(err);
     }
   });
