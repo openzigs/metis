@@ -19,10 +19,13 @@
  *  - #370 — a successful Create navigates to the new project's Overview, so the
  *    new project (read from the URL) becomes the active one in the breadcrumb
  *    and switcher instead of leaving the user on the list.
+ *  - #428 — when the project was created but its repository was not linked
+ *    (`primaryRepoError`), a warning says why and points to Connections.
  */
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { projectsApi, type Project } from "@/lib/projects-api";
+import { toast } from "sonner";
+import { projectsApi, type CreatedProject, type Project } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
 import { useAppMutation } from "@/lib/use-app-mutation";
 import {
@@ -100,7 +103,7 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
   const slugValid = slug.trim() === "" || SLUG_PATTERN.test(slug.trim());
   const canSubmit = hasRequiredValues({ name, slug }, REQUIRED_FIELDS) && slugValid && repoValid;
 
-  const create = useAppMutation<Project, void>({
+  const create = useAppMutation<CreatedProject, void>({
     mutationFn: () =>
       projectsApi.create({
         name: name.trim(),
@@ -117,9 +120,21 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
               }
             : undefined,
       }),
-    successMessage: "Project created",
+    // #428 — a project whose repository was not linked gets a warning instead.
+    successMessage: false,
     invalidateKeys: [queryKeys.projects.all],
     onSuccess: (project) => {
+      if (project.primaryRepoError) {
+        toast.warning("Project created, but the repository was not linked", {
+          description: `${project.primaryRepoError.message} Add it from Connections.`,
+          action: {
+            label: "Open Connections",
+            onClick: () => router.push(`/projects/${project.id}/connections`),
+          },
+        });
+      } else {
+        toast.success("Project created");
+      }
       setName("");
       setSlug("");
       setSlugEdited(false);
