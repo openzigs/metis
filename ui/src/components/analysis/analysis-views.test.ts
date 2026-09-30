@@ -9,9 +9,13 @@ import {
   collectFindings,
   filterFindings,
   findingFacets,
+  findingFiltersParams,
   NO_FINDING_FILTERS,
   paginate,
   parseAnalysisTab,
+  parseFindingFilters,
+  requirementPage,
+  traceabilityPendingMessage,
   runHasQuestionsView,
   tabCountLabel,
   tabForAnchor,
@@ -247,5 +251,103 @@ describe("runHasQuestionsView / tabCountLabel", () => {
     expect(tabCountLabel("questions", 3)).toBe("3 open");
     expect(tabCountLabel("approvals", 2)).toBe("2 pending");
     expect(tabCountLabel("findings", 29)).toBe("29");
+  });
+});
+
+// Issue #424 — the findings filters live in the URL so a filtered view can be shared.
+describe("parseFindingFilters / findingFiltersParams", () => {
+  it("reads every facet from the query string", () => {
+    expect(
+      parseFindingFilters(
+        new URLSearchParams(
+          "tab=findings&severity=high&category=security&agent=code&verification=confirmed",
+        ),
+      ),
+    ).toEqual({
+      severity: "high",
+      category: "security",
+      agentKey: "code",
+      verification: "confirmed",
+    });
+  });
+
+  it("is no filter at all for an empty or missing query string", () => {
+    expect(parseFindingFilters(new URLSearchParams())).toEqual(NO_FINDING_FILTERS);
+    expect(parseFindingFilters(null)).toEqual(NO_FINDING_FILTERS);
+  });
+
+  it("treats an empty value as no filter", () => {
+    expect(parseFindingFilters(new URLSearchParams("severity=&agent="))).toEqual(
+      NO_FINDING_FILTERS,
+    );
+  });
+
+  it("ignores a verification value the filter bar cannot show", () => {
+    expect(parseFindingFilters(new URLSearchParams("verification=bogus")).verification).toBeNull();
+    expect(parseFindingFilters(new URLSearchParams("verification=unverified")).verification).toBe(
+      "unverified",
+    );
+  });
+
+  it("writes a set facet and removes an unset one", () => {
+    expect(
+      findingFiltersParams({ ...NO_FINDING_FILTERS, severity: "low", agentKey: "document" }),
+    ).toEqual({ severity: "low", category: null, agent: "document", verification: null });
+  });
+
+  it("round-trips through analysisViewHref", () => {
+    const f = {
+      severity: "critical",
+      category: "a b&c",
+      agentKey: "web",
+      verification: "confirmed" as const,
+    };
+    const href = analysisViewHref(
+      "/p",
+      new URLSearchParams("tab=findings"),
+      findingFiltersParams(f),
+    );
+    expect(parseFindingFilters(new URLSearchParams(href.split("?")[1]))).toEqual(f);
+    expect(
+      analysisViewHref(
+        "/p",
+        new URLSearchParams(href.split("?")[1]),
+        findingFiltersParams(NO_FINDING_FILTERS),
+      ),
+    ).toBe("/p?tab=findings");
+  });
+});
+
+// Issue #424 — a deep link to a requirement opens the page that holds it.
+describe("requirementPage", () => {
+  const reqs = Array.from({ length: 12 }, (_, i) => ({ id: `r-${i}` }));
+
+  it("is the zero-based page holding the requirement", () => {
+    expect(requirementPage(reqs, "r-0", 5)).toBe(0);
+    expect(requirementPage(reqs, "r-4", 5)).toBe(0);
+    expect(requirementPage(reqs, "r-5", 5)).toBe(1);
+    expect(requirementPage(reqs, "r-11", 5)).toBe(2);
+  });
+
+  it("is null for a requirement the list does not hold", () => {
+    expect(requirementPage(reqs, "elsewhere", 5)).toBeNull();
+    expect(requirementPage([], "r-0", 5)).toBeNull();
+  });
+});
+
+// Issue #424 — the Traceability tab says why it is empty instead of rendering nothing.
+describe("traceabilityPendingMessage", () => {
+  it("is null once the run completed", () => {
+    expect(traceabilityPendingMessage("completed")).toBeNull();
+  });
+
+  it("says a running or queued run has no traceability yet", () => {
+    expect(traceabilityPendingMessage("running")).toMatch(/when the run completes/);
+    expect(traceabilityPendingMessage("pending")).toMatch(/when the run completes/);
+  });
+
+  it("says a run that did not complete has none", () => {
+    expect(traceabilityPendingMessage("failed")).toMatch(/did not complete/);
+    expect(traceabilityPendingMessage("cancelled")).toMatch(/did not complete/);
   });
 });

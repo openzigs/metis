@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient } from "@tanstack/react-query";
 import { makeWrapper, TEST_USER } from "../test-utils";
 
 const nav = vi.hoisted(() => ({ search: new URLSearchParams(), replace: vi.fn() }));
@@ -721,5 +722,141 @@ describe("starting a run is separate from reading one", () => {
       "true",
     );
     expect(screen.getByRole("heading", { name: "Start a new analysis" })).toBeInTheDocument();
+  });
+});
+
+// Issue #424 — the findings filters live in the URL so a filtered view can be shared.
+describe("findings filters in the URL", () => {
+  beforeEach(() => {
+    apiMock.get.mockResolvedValue(manyFindings());
+  });
+
+  it("opens a shared link already filtered", async () => {
+    nav.search = new URLSearchParams(
+      "analysisId=an-1&tab=findings&severity=critical&category=security&agent=document",
+    );
+    renderPage();
+    await screen.findByTestId("findings-section");
+    await waitFor(() =>
+      expect(findingTitles()).toEqual(["Finding 60", "Finding 75", "Finding 90"]),
+    );
+    expect(screen.getByTestId("finding-filter-severity")).toHaveValue("critical");
+    expect(screen.getByTestId("finding-filter-agent")).toHaveValue("document");
+  });
+
+  it("opens a shared link filtered by verification", async () => {
+    nav.search = new URLSearchParams("tab=findings&verification=confirmed");
+    renderPage();
+    expect(await screen.findByTestId("findings-no-match")).toBeInTheDocument();
+    expect(screen.getByTestId("verification-filter-confirmed")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("writes each filter change into the URL, pinned to the run, and clears it", async () => {
+    nav.search = new URLSearchParams("tab=findings");
+    renderPage();
+    await screen.findByTestId("findings-section");
+    await waitFor(() => expect(findingTitles()).toHaveLength(20));
+    await userEvent.selectOptions(screen.getByTestId("finding-filter-severity"), "critical");
+    expect(lastReplace()).toBe(
+      "/projects/p1/analysis?tab=findings&analysisId=an-1&severity=critical",
+    );
+    expect(nav.replace.mock.calls.at(-1)?.[1]).toEqual({ scroll: false });
+    await userEvent.click(screen.getByTestId("finding-filter-clear"));
+    expect(lastReplace()).toBe("/projects/p1/analysis?tab=findings&analysisId=an-1");
+  });
+
+  it("drops the filters from the URL when another run is picked", async () => {
+    apiMock.listForProject.mockResolvedValue({
+      items: [
+        { id: "an-new", status: "completed", startedAt: new Date().toISOString(), totalTokens: 1 },
+        { id: "an-old", status: "completed", startedAt: new Date().toISOString(), totalTokens: 1 },
+      ],
+    });
+    nav.search = new URLSearchParams("tab=findings&severity=critical");
+    renderPage();
+    await screen.findByTestId("findings-section");
+    await userEvent.click(await screen.findByRole("button", { name: /an-old/ }));
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith("an-old"));
+    expect(lastReplace()).toBe("/projects/p1/analysis?tab=findings&analysisId=an-old");
+    await waitFor(() => expect(screen.getByTestId("finding-filter-severity")).toHaveValue(""));
+    apiMock.listForProject.mockResolvedValue(DEFAULT_RUNS);
+  });
+});
+
+// Issue #424 — `?requirementId=` (the promote dialog's link) opens the page holding it.
+describe("the requirement deep link", () => {
+  beforeEach(() => {
+    apiMock.get.mockResolvedValue(manyFindings());
+  });
+
+  it("opens the page holding the requirement and scrolls to it", async () => {
+    nav.search = new URLSearchParams("analysisId=an-1&tab=requirements&requirementId=req-7");
+    renderPage();
+    const title = await screen.findByText("Requirement 7");
+    expect(screen.queryByText("Requirement 0")).not.toBeInTheDocument();
+    expect(screen.getByTestId("requirements-pager")).toHaveTextContent("Page 2 of 3");
+    const card = document.getElementById("requirement-req-7");
+    expect(card).toContainElement(title);
+    expect(card).toHaveAttribute("data-deep-linked", "true");
+    await waitFor(() => expect(scrolled).toEqual([card]));
+  });
+
+  it("opens the Requirements tab for a link with no ?tab=", async () => {
+    nav.search = new URLSearchParams("requirementId=req-11");
+    renderPage();
+    expect(await screen.findByText("Requirement 11")).toBeInTheDocument();
+    expect(screen.getByTestId("requirements-pager")).toHaveTextContent("Page 3 of 3");
+    await waitFor(() => expect(scrolled).toEqual([document.getElementById("requirement-req-11")]));
+  });
+
+  it("leaves page 1 alone when the run does not hold the requirement", async () => {
+    nav.search = new URLSearchParams("tab=requirements&requirementId=req-elsewhere");
+    renderPage();
+    expect(await screen.findByText("Requirement 0")).toBeInTheDocument();
+    expect(screen.getByTestId("requirements-pager")).toHaveTextContent("Page 1 of 3");
+    expect(scrolled).toEqual([]);
+  });
+
+  it("does not pull the reader back once they page away", async () => {
+    nav.search = new URLSearchParams("tab=requirements&requirementId=req-7");
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: TEST_USER, queryClient }) });
+    await screen.findByText("Requirement 7");
+    await userEvent.click(
+      within(screen.getByTestId("requirements-pager")).getByRole("button", { name: "Previous" }),
+    );
+    expect(screen.getByText("Requirement 0")).toBeInTheDocument();
+    // A refetch of the run (a socket event, #240) that brings changed data — a
+    // requirement edited elsewhere — must not re-apply the link.
+    const changed = manyFindings();
+    changed.requirements[0] = { ...changed.requirements[0], title: "Requirement 0 (edited)" };
+    apiMock.get.mockResolvedValue(changed);
+    await queryClient.invalidateQueries();
+    expect(await screen.findByText("Requirement 0 (edited)")).toBeInTheDocument();
+    expect(screen.queryByText("Requirement 7")).not.toBeInTheDocument();
+  });
+});
+
+// Issue #424 — Traceability says why it is empty while a run is in progress.
+describe("the Traceability tab before a run completes", () => {
+  it("shows an empty state while the run is in progress", async () => {
+    apiMock.get.mockResolvedValue({ ...SNAPSHOT, status: "running", completedAt: null });
+    nav.search = new URLSearchParams("tab=traceability");
+    renderPage();
+    expect(await screen.findByTestId("traceability-pending")).toHaveTextContent(
+      /when the run completes/,
+    );
+  });
+
+  it("shows no empty state once the run completed", async () => {
+    nav.search = new URLSearchParams("tab=traceability");
+    renderPage();
+    await screen.findByRole("tab", { name: /Traceability/, selected: true });
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalled());
+    await screen.findByTestId("analysis-result-tabs");
+    expect(screen.queryByTestId("traceability-pending")).not.toBeInTheDocument();
   });
 });

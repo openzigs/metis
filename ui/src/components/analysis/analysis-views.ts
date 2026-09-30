@@ -12,6 +12,7 @@
 import type {
   AnalysisFinding,
   AnalysisSnapshot,
+  AnalysisStatus,
   EnhancementMetadata,
   FindingVerificationStatus,
   TicketStatus,
@@ -92,6 +93,41 @@ export const NO_FINDING_FILTERS: FindingFilters = {
   agentKey: null,
   verification: null,
 };
+
+const VERIFICATION_VALUES: readonly FindingVerificationStatus[] = ["confirmed", "unverified"];
+
+/**
+ * Issue #424 — the findings filters as query-string keys, so a filtered view
+ * can be shared. `agentKey` is written as `agent`.
+ */
+export function findingFiltersParams(f: FindingFilters): Record<string, string | null> {
+  return {
+    severity: f.severity,
+    category: f.category,
+    agent: f.agentKey,
+    verification: f.verification,
+  };
+}
+
+/**
+ * Read the findings filters back from the query string. An empty value is no
+ * filter; a verification value the filter bar has no button for is dropped,
+ * since no control could show it as selected or clear it.
+ */
+export function parseFindingFilters(
+  params: URLSearchParams | { get(key: string): string | null } | null | undefined,
+): FindingFilters {
+  const read = (key: string) => params?.get(key) || null;
+  const verification = read("verification");
+  return {
+    severity: read("severity"),
+    category: read("category"),
+    agentKey: read("agent"),
+    verification: VERIFICATION_VALUES.includes(verification as FindingVerificationStatus)
+      ? (verification as FindingVerificationStatus)
+      : null,
+  };
+}
 
 /** Every non-synthesis finding, tagged with the agent that produced it. */
 export function collectFindings(snapshot: Pick<AnalysisSnapshot, "agentResults">): AgentFinding[] {
@@ -176,6 +212,31 @@ export function paginate<T>(items: readonly T[], page: number, pageSize: number)
     from: slice.length > 0 ? start + 1 : 0,
     to: start + slice.length,
   };
+}
+
+/**
+ * Issue #424 — the zero-based page of `items` that holds `id`, so a deep link
+ * to a requirement opens the page it is on. `null` when the list lacks it.
+ */
+export function requirementPage(
+  items: readonly { id: string }[],
+  id: string,
+  pageSize: number,
+): number | null {
+  const index = items.findIndex((item) => item.id === id);
+  return index < 0 ? null : Math.floor(index / pageSize);
+}
+
+/**
+ * Issue #424 — why the Traceability tab is empty. Its panels are built from a
+ * completed run, so anything else would render a blank pane. `null` = the run
+ * completed and the panels speak for themselves.
+ */
+export function traceabilityPendingMessage(status: AnalysisStatus): string | null {
+  if (status === "completed") return null;
+  if (status === "pending" || status === "running")
+    return "Traceability is built when the run completes. Check back once it finishes.";
+  return "This run did not complete, so there is no traceability to show.";
 }
 
 // ── Tab counts ──────────────────────────────────────────────────────────────

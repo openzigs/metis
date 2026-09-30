@@ -149,9 +149,11 @@ export function PromoteToRequirementDialog({
               recorded in the audit trail.
             </p>
             <Link
-              href={`/projects/${projectId}/analysis?tab=requirements&requirementId=${encodeURIComponent(
-                result.requirementId,
-              )}`}
+              href={`/projects/${projectId}/analysis?${new URLSearchParams({
+                analysisId: result.analysisId,
+                tab: "requirements",
+                requirementId: result.requirementId,
+              }).toString()}`}
               className="inline-flex items-center text-sm font-medium text-primary hover:underline"
               data-testid="promote-requirement-link"
             >

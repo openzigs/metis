@@ -8,7 +8,7 @@
  * split into deep-linkable tabs (`?tab=`) with paged lists, so no view grows
  * with the size of the run.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
@@ -119,10 +119,14 @@ import {
   collectFindings,
   filterFindings,
   findingFacets,
+  findingFiltersParams,
   paginate,
   parseAnalysisTab,
+  parseFindingFilters,
+  requirementPage,
   runHasQuestionsView,
   tabForAnchor,
+  traceabilityPendingMessage,
   type AnalysisTab,
   type FindingFilters,
 } from "@/components/analysis/analysis-views";
@@ -237,8 +241,11 @@ export default function AnalysisPage(): React.ReactElement {
   const updateUrl = (patch: Record<string, string | null>) =>
     router.replace(analysisViewHref(pathname, searchParams, patch), { scroll: false });
   // Epic #727 (#740) filtered findings by verifier verdict; #30 adds severity,
-  // category and agent. `null` in a field = no filter on it.
-  const [findingFilters, setFindingFilters] = useState<FindingFilters>(NO_FINDING_FILTERS);
+  // category and agent. `null` in a field = no filter on it. Issue #424 — they
+  // are read from and written to the URL, so a filtered view can be shared.
+  const [findingFilters, setFindingFilters] = useState<FindingFilters>(() =>
+    parseFindingFilters(searchParams),
+  );
   const [findingsPage, setFindingsPage] = useState(0);
   const [requirementsPage, setRequirementsPage] = useState(0);
   const selectTab = (next: AnalysisTab) => {
@@ -257,7 +264,13 @@ export default function AnalysisPage(): React.ReactElement {
     // showed "No findings match" under a select that read "All".
     setFindingFilters(NO_FINDING_FILTERS);
     setCoverageFilter(null);
-    updateUrl({ analysisId: id });
+    updateUrl({ analysisId: id, ...findingFiltersParams(NO_FINDING_FILTERS) });
+  };
+  const changeFindingFilters = (next: FindingFilters) => {
+    setFindingFilters(next);
+    setFindingsPage(0);
+    // Pin the run too: a shared link without it would open the latest run.
+    updateUrl({ analysisId: selectedAnalysisId, ...findingFiltersParams(next) });
   };
   // Issue #30 — the run form is collapsed once there are runs to read, and
   // open on a project that has none. An explicit toggle wins after that.
@@ -566,6 +579,31 @@ export default function AnalysisPage(): React.ReactElement {
     REQUIREMENTS_PAGE_SIZE,
   );
   const tabCounts = detail.data ? analysisTabCounts(detail.data, approvals.data?.ticketStatus) : {};
+
+  // Issue #424 — `?requirementId=` (the promote dialog's "View requirement")
+  // opens the page that holds it and scrolls to its card. Applied once per run,
+  // so a refetch never pulls a reader back after they page away. With no
+  // `?tab=`, the link opens the Requirements tab, as `#approvals` does.
+  const requestedRequirementId = searchParams?.get("requirementId") ?? null;
+  const appliedRequirementLink = useRef<string | null>(null);
+  const snapshot = detail.data;
+  useEffect(() => {
+    if (!requestedRequirementId || !snapshot) return;
+    const key = `${snapshot.id}:${requestedRequirementId}`;
+    if (appliedRequirementLink.current === key) return;
+    appliedRequirementLink.current = key;
+    const page = requirementPage(
+      snapshot.requirements,
+      requestedRequirementId,
+      REQUIREMENTS_PAGE_SIZE,
+    );
+    if (page === null) return;
+    setCoverageFilter(null);
+    setRequirementsPage(page);
+    if (!requestedTab) setTab("requirements");
+    if (!requestedTab || parseAnalysisTab(requestedTab) === "requirements")
+      setPendingAnchor(`#requirement-${requestedRequirementId}`);
+  }, [snapshot, requestedRequirementId, requestedTab]);
 
   if (!projectId) return <p className="p-6">Missing project id.</p>;
 
@@ -910,7 +948,14 @@ export default function AnalysisPage(): React.ReactElement {
                         <RequirementsEmptyState metadata={detail.data.metadata} />
                       ) : null}
                       {requirementsView.items.map((req) => (
-                        <div key={req.id} className="rounded border border-border bg-muted/30 p-3">
+                        <div
+                          key={req.id}
+                          id={`requirement-${req.id}`}
+                          data-deep-linked={req.id === requestedRequirementId ? "true" : undefined}
+                          className={`scroll-mt-4 rounded border border-border bg-muted/30 p-3 ${
+                            req.id === requestedRequirementId ? "ring-2 ring-primary" : ""
+                          }`}
+                        >
                           <div className="flex items-start justify-between gap-2">
                             <div>
                               <div className="flex items-center gap-2">
@@ -1056,10 +1101,7 @@ export default function AnalysisPage(): React.ReactElement {
                     <FindingsFilterBar
                       facets={findingFacets(allFindings)}
                       filters={findingFilters}
-                      onChange={(next) => {
-                        setFindingFilters(next);
-                        setFindingsPage(0);
-                      }}
+                      onChange={changeFindingFilters}
                       agentLabel={(key) => personaFor(key)?.name ?? key}
                     />
                     <div className="space-y-2">
@@ -1324,6 +1366,16 @@ export default function AnalysisPage(): React.ReactElement {
                 </TabsContent>
 
                 <TabsContent value="traceability" className="space-y-4">
+                  {/* Issue #424 — the panels below render nothing until the run
+                  completes; say why rather than leave an empty pane. */}
+                  {traceabilityPendingMessage(detail.data.status) ? (
+                    <p
+                      className="rounded border border-dashed border-border p-4 text-sm text-muted-foreground"
+                      data-testid="traceability-pending"
+                    >
+                      {traceabilityPendingMessage(detail.data.status)}
+                    </p>
+                  ) : null}
                   {/* Issue #737 — requirement→findings→code→tests traceability matrix. */}
                   <TraceabilityMatrix
                     projectId={projectId}

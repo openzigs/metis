@@ -183,6 +183,8 @@ describe("PromoteToRequirementDialog", () => {
     expect(link).toHaveAttribute("href", expect.stringContaining("requirementId=req-9"));
     // PR #416 review — the Analysis page opens on Summary, which shows no requirements.
     expect(link).toHaveAttribute("href", expect.stringContaining("tab=requirements"));
+    // Issue #424 — and the run that holds it: without it the page opens the latest run.
+    expect(link).toHaveAttribute("href", expect.stringContaining("analysisId=a1"));
     expect(toastSuccess).toHaveBeenCalled();
   });
 
