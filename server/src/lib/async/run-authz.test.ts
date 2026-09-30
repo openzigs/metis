@@ -78,7 +78,13 @@ describe("runProjectScope", () => {
     const noWorkspaces: AuthPayload = { ...member, workspaces: undefined };
     expect(runProjectScope(noWorkspaces)).toEqual({
       project: {
-        OR: [{ workspaceId: null }, { workspaceId: { in: [] }, workspace: { deletedAt: null } }],
+        OR: [
+          { workspaceId: null },
+          {
+            workspaceId: { in: [] },
+            workspace: { deletedAt: null, members: { some: { userId: "user_1" } } },
+          },
+        ],
       },
     });
   });

@@ -82,7 +82,10 @@ describe("connectors — database identity routes (#821)", () => {
     vi.clearAllMocks();
     currentUser = { userId: "user-1", username: "u1", role: "coordinator", workspaces: ["ws-a"] };
     app = createApp();
-    projectFindUnique.mockResolvedValue({ workspaceId: "ws-a" });
+    projectFindUnique.mockResolvedValue({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
   });
 
   describe("GET /dbs/identities", () => {
@@ -110,7 +113,10 @@ describe("connectors — database identity routes (#821)", () => {
     });
 
     it("404s a caller whose workspace excludes the project — no oracle", async () => {
-      projectFindUnique.mockResolvedValue({ workspaceId: "ws-other" });
+      projectFindUnique.mockResolvedValue({
+        workspaceId: "ws-other",
+        workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+      });
       const res = await request(app).get(`${BASE}/dbs/identities`);
       expect(res.status).toBe(404);
       expect(resolveProjectDatabaseIdentities).not.toHaveBeenCalled();
@@ -216,7 +222,10 @@ describe("connectors — database identity routes (#821)", () => {
     });
 
     it("404s a caller outside the project's workspace before the service runs", async () => {
-      projectFindUnique.mockResolvedValue({ workspaceId: "ws-other" });
+      projectFindUnique.mockResolvedValue({
+        workspaceId: "ws-other",
+        workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+      });
       const res = await request(app).post(`${BASE}/dbs/c1/reresolve`).send({});
       expect(res.status).toBe(404);
       expect(reresolveConnectionResource).not.toHaveBeenCalled();

@@ -98,8 +98,16 @@ const mockPrisma = {
   },
   project: {
     findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
-      if (where.id === "proj-mine") return { workspaceId: "ws-mine" };
-      if (where.id === "proj-foreign") return { workspaceId: "ws-foreign" };
+      if (where.id === "proj-mine")
+        return {
+          workspaceId: "ws-mine",
+          workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+        };
+      if (where.id === "proj-foreign")
+        return {
+          workspaceId: "ws-foreign",
+          workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+        };
       return null;
     }),
     // listAccessibleProjectIds: admin → all; non-admin → ownership (createdById).

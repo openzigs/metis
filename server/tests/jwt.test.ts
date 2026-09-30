@@ -34,6 +34,9 @@ interface Backing {
   cutoffs: Map<string, Date>;
 }
 
+/** #561 — refresh re-reads memberships; these tests are about rotation. */
+const noMemberships = async (): Promise<string[]> => [];
+
 class InMemoryRevocationStore implements RevocationStore {
   constructor(private readonly db: Backing) {}
 
@@ -149,12 +152,52 @@ describe("jwt", () => {
       role: "reader",
       permissions: [],
     });
-    const newPair = await refreshAccessToken(refreshToken);
+    const newPair = await refreshAccessToken(refreshToken, noMemberships);
     expect(newPair.accessToken).toBeTypeOf("string");
     // The original refresh token should now be revoked.
     await expect(verifyRefreshToken(refreshToken)).rejects.toThrow(/revoked/);
     // The freshly-minted refresh token still verifies.
     await expect(verifyRefreshToken(newPair.refreshToken)).resolves.toBeTruthy();
+  });
+
+  describe("#561 — refresh re-reads workspace memberships", () => {
+    const withClaim = () =>
+      issueTokens({
+        userId: "u1",
+        username: "alice",
+        role: "reader",
+        permissions: [],
+        workspaces: ["ws-removed", "ws-kept"],
+      }).refreshToken;
+
+    it("replaces the old claim with the memberships read for the token's user", async () => {
+      const seen: string[] = [];
+      const pair = await refreshAccessToken(withClaim(), async (userId) => {
+        seen.push(userId);
+        return ["ws-kept", "ws-joined"];
+      });
+      expect(seen).toEqual(["u1"]);
+      expect(verifyAccessToken(pair.accessToken).workspaces).toEqual(["ws-kept", "ws-joined"]);
+      expect((await verifyRefreshToken(pair.refreshToken)).workspaces).toEqual([
+        "ws-kept",
+        "ws-joined",
+      ]);
+    });
+
+    it("drops the claim entirely when no membership remains", async () => {
+      const pair = await refreshAccessToken(withClaim(), noMemberships);
+      expect(verifyAccessToken(pair.accessToken).workspaces).toBeUndefined();
+    });
+
+    it("a failed membership read fails the refresh and leaves the token usable", async () => {
+      const token = withClaim();
+      await expect(
+        refreshAccessToken(token, async () => {
+          throw new Error("db down");
+        }),
+      ).rejects.toThrow("db down");
+      await expect(verifyRefreshToken(token)).resolves.toBeTruthy();
+    });
   });
 
   it("revokeRefreshToken makes subsequent verification fail", async () => {
@@ -193,14 +236,14 @@ describe("jwt", () => {
         role: "reader",
         permissions: [],
       });
-      const rotated = await refreshAccessToken(refreshToken);
+      const rotated = await refreshAccessToken(refreshToken, noMemberships);
 
       restart();
 
       // Old (rotated-away) token stays dead.
       await expect(verifyRefreshToken(refreshToken)).rejects.toThrow(/revoked/);
       // New token issued before the restart still rotates correctly after it.
-      const rotatedAgain = await refreshAccessToken(rotated.refreshToken);
+      const rotatedAgain = await refreshAccessToken(rotated.refreshToken, noMemberships);
       expect(rotatedAgain.refreshToken).toBeTypeOf("string");
       await expect(verifyRefreshToken(rotated.refreshToken)).rejects.toThrow(/revoked/);
     });

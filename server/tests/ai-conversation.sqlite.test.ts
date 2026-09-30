@@ -212,6 +212,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           workspaceId: ids.otherWs,
         },
       });
+      // #561 — access checks read the membership row, not only the claim.
+      await db.workspaceMember.create({ data: { workspaceId: ids.ws, userId: ids.alice } });
+      await db.workspaceMember.create({ data: { workspaceId: ids.otherWs, userId: ids.bob } });
       alice = token(ids.alice, [ids.ws]);
       bob = token(ids.bob, [ids.otherWs]);
       aliceLeft = token(ids.alice, []); // Alice after leaving the workspace

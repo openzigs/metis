@@ -102,7 +102,10 @@ beforeEach(() => {
   // Lowest tier that carries `project.read` — the exact attacker profile.
   currentUser = { userId: "user-1", role: "reader", workspaces: ["ws-1"] };
   // Default: the path project lives in a workspace the caller belongs to.
-  projectFindUnique.mockResolvedValue({ workspaceId: "ws-1" });
+  projectFindUnique.mockResolvedValue({
+    workspaceId: "ws-1",
+    workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+  });
   triggerFindMany.mockResolvedValue([triggerRow()]);
   // #340 — the by-id routes resolve the trigger within the path's project.
   triggerFindFirst.mockResolvedValue({ id: "trg_1" });
@@ -113,7 +116,10 @@ beforeEach(() => {
 
 describe("triggers — cross-tenant read is refused and the HMAC secret stays unreachable", () => {
   it("404s a `reader` listing another tenant's triggers and leaks no secret", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(buildApp()).get("/api/projects/proj-victim/triggers");
     expect(res.status).toBe(404);
     // The handler body must never run — no query, so there is no row to leak.
@@ -124,7 +130,10 @@ describe("triggers — cross-tenant read is refused and the HMAC secret stays un
 
   it("404s a coordinator too — object scope is not a role-tier concession", async () => {
     currentUser = { userId: "user-3", role: "coordinator", workspaces: ["ws-1"] };
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(buildApp()).get("/api/projects/proj-victim/triggers");
     expect(res.status).toBe(404);
     expect(triggerFindMany).not.toHaveBeenCalled();
@@ -154,7 +163,10 @@ describe("triggers — write routes run object scope BEFORE the role check", () 
   // vary with the caller's role.
   it("404s (not 403) a coordinator creating a trigger in another tenant's project", async () => {
     currentUser = { userId: "user-3", role: "coordinator", workspaces: ["ws-1"] };
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(buildApp())
       .post("/api/projects/proj-victim/triggers")
       .send(createBody);
@@ -164,7 +176,10 @@ describe("triggers — write routes run object scope BEFORE the role check", () 
 
   it("404s (not 403) a coordinator patching a trigger in another tenant's project", async () => {
     currentUser = { userId: "user-3", role: "coordinator", workspaces: ["ws-1"] };
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(buildApp())
       .patch("/api/projects/proj-victim/triggers/trg_1")
       .send({ enabled: false });
@@ -175,7 +190,10 @@ describe("triggers — write routes run object scope BEFORE the role check", () 
 
   it("404s (not 403) a coordinator deleting a trigger in another tenant's project", async () => {
     currentUser = { userId: "user-3", role: "coordinator", workspaces: ["ws-1"] };
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(buildApp()).delete("/api/projects/proj-victim/triggers/trg_1");
     expect(res.status).toBe(404);
     expect(triggerDelete).not.toHaveBeenCalled();

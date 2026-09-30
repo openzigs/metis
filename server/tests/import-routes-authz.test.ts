@@ -58,12 +58,18 @@ beforeEach(() => {
   vi.clearAllMocks();
   currentUser = { userId: "user-1", role: "coordinator", workspaces: ["ws-1"] };
   // Default: the path project lives in a workspace the caller belongs to.
-  projectFindUnique.mockResolvedValue({ workspaceId: "ws-1" });
+  projectFindUnique.mockResolvedValue({
+    workspaceId: "ws-1",
+    workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+  });
 });
 
 describe("imports — object-level scope (requireProjectAccess) → 404 cross-tenant", () => {
   it("404s a non-member listing another tenant's import sources (read route)", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const service = { listSources: vi.fn(async () => []) };
     const res = await request(buildApp(service)).get("/api/projects/proj-victim/imports/sources");
     expect(res.status).toBe(404);
@@ -71,7 +77,10 @@ describe("imports — object-level scope (requireProjectAccess) → 404 cross-te
   });
 
   it("404s a non-member creating an import source on another tenant's project (write route)", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const service = { createSource: vi.fn(async () => ({ source: {}, run: {} })) };
     const res = await request(buildApp(service))
       .post("/api/projects/proj-victim/imports/sources")
@@ -81,7 +90,10 @@ describe("imports — object-level scope (requireProjectAccess) → 404 cross-te
   });
 
   it("404s a non-member previewing a filter against another tenant's project", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const service = { preview: vi.fn(async () => ({ source: "github", count: 0, sample: [] })) };
     const res = await request(buildApp(service))
       .post("/api/projects/proj-victim/imports/preview")
@@ -91,7 +103,10 @@ describe("imports — object-level scope (requireProjectAccess) → 404 cross-te
   });
 
   it("404s a non-member triggering a run in another tenant's project", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const service = {
       getSource: vi.fn(async () => ({ id: "src_1" })),
       enqueueRun: vi.fn(async () => ({ id: "run_1" })),
@@ -105,7 +120,10 @@ describe("imports — object-level scope (requireProjectAccess) → 404 cross-te
   });
 
   it("404s a non-member deleting a source in another tenant's project", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const service = { deleteSource: vi.fn(async () => undefined) };
     const res = await request(buildApp(service)).delete(
       "/api/projects/proj-victim/imports/sources/src_1",
@@ -115,7 +133,10 @@ describe("imports — object-level scope (requireProjectAccess) → 404 cross-te
   });
 
   it("404s a non-member reading run history for another tenant's project", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const service = { listRuns: vi.fn(async () => []) };
     const res = await request(buildApp(service)).get("/api/projects/proj-victim/imports/runs");
     expect(res.status).toBe(404);

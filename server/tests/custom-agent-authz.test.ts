@@ -93,19 +93,28 @@ describe("assertProjectAccess (#80)", () => {
   });
 
   it("allows a member of the project's workspace", async () => {
-    mockPrisma.project.findUnique.mockResolvedValue({ workspaceId: "w1" });
+    mockPrisma.project.findUnique.mockResolvedValue({
+      workspaceId: "w1",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const inWs = { ...member, workspaces: ["w1"] };
     await expect(assertProjectAccess(inWs, "p1")).resolves.toBeUndefined();
   });
 
   it("returns 404 for a caller not in the project's workspace (no existence leak)", async () => {
-    mockPrisma.project.findUnique.mockResolvedValue({ workspaceId: "w1" });
+    mockPrisma.project.findUnique.mockResolvedValue({
+      workspaceId: "w1",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const otherWs = { ...member, workspaces: ["w-other"] };
     await expect(assertProjectAccess(otherWs, "p1")).rejects.toMatchObject({ statusCode: 404 });
   });
 
   it("returns 404 when the caller has no workspaces array at all", async () => {
-    mockPrisma.project.findUnique.mockResolvedValue({ workspaceId: "w1" });
+    mockPrisma.project.findUnique.mockResolvedValue({
+      workspaceId: "w1",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     await expect(assertProjectAccess(member, "p1")).rejects.toMatchObject({ statusCode: 404 });
   });
 });

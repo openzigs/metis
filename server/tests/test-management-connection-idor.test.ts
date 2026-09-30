@@ -11,7 +11,11 @@ const { prismaMock } = vi.hoisted(() => ({
   prismaMock: {
     $queryRawUnsafe: vi.fn(async () => 1),
     // The caller belongs to workspace B.
-    workspaceMember: { findMany: vi.fn(async () => [{ workspaceId: "ws_b" }]) },
+    workspaceMember: {
+      findMany: vi.fn(async () => [
+        { workspaceId: "ws_b", workspace: { deletedAt: null, members: [{ id: "member-row" }] } },
+      ]),
+    },
     user: {
       upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => ({
         id: "user_1",
@@ -23,7 +27,11 @@ const { prismaMock } = vi.hoisted(() => ({
     // The connection under test is owned by a workspace-A project.
     project: {
       findUnique: vi.fn(
-        async () => ({ workspaceId: "ws_a" }) as { workspaceId: string | null } | null,
+        async () =>
+          ({
+            workspaceId: "ws_a",
+            workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+          }) as { workspaceId: string | null } | null,
       ),
     },
     testManagementConnection: {
@@ -146,8 +154,13 @@ beforeAll(() => {
 beforeEach(() => {
   app = createApp();
   vi.clearAllMocks();
-  prismaMock.workspaceMember.findMany.mockResolvedValue([{ workspaceId: "ws_b" }]);
-  prismaMock.project.findUnique.mockResolvedValue({ workspaceId: "ws_a" });
+  prismaMock.workspaceMember.findMany.mockResolvedValue([
+    { workspaceId: "ws_b", workspace: { deletedAt: null, members: [{ id: "member-row" }] } },
+  ]);
+  prismaMock.project.findUnique.mockResolvedValue({
+    workspaceId: "ws_a",
+    workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+  });
   prismaMock.testManagementConnection.findFirst.mockResolvedValue({ projectId: "proj_a" });
 });
 
@@ -186,7 +199,10 @@ describe("cross-tenant access to a test-management connection by id", () => {
 
 describe("same-workspace access still works", () => {
   beforeEach(() => {
-    prismaMock.project.findUnique.mockResolvedValue({ workspaceId: "ws_b" });
+    prismaMock.project.findUnique.mockResolvedValue({
+      workspaceId: "ws_b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
   });
 
   for (const route of idRoutes) {
@@ -244,7 +260,10 @@ describe("caller-supplied projectId routes", () => {
   });
 
   it("allows create + list for a project in the caller's own workspace", async () => {
-    prismaMock.project.findUnique.mockResolvedValue({ workspaceId: "ws_b" });
+    prismaMock.project.findUnique.mockResolvedValue({
+      workspaceId: "ws_b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const token = await login("coordinator");
 
     const created = await request(app)

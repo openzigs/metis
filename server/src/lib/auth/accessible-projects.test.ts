@@ -64,7 +64,10 @@ describe("getUserAccessibleProjects", () => {
         status: { not: "archived" },
         OR: [
           { workspaceId: null },
-          { workspaceId: { in: ["ws-b"] }, workspace: { deletedAt: null } },
+          {
+            workspaceId: { in: ["ws-b"] },
+            workspace: { deletedAt: null, members: { some: { userId: "user-b" } } },
+          },
         ],
       },
       select: { id: true, name: true },
@@ -82,7 +85,13 @@ describe("getUserAccessibleProjects", () => {
     expect(mockFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [{ workspaceId: null }, { workspaceId: { in: [] }, workspace: { deletedAt: null } }],
+          OR: [
+            { workspaceId: null },
+            {
+              workspaceId: { in: [] },
+              workspace: { deletedAt: null, members: { some: { userId: "user-none" } } },
+            },
+          ],
         }),
       }),
     );
@@ -118,7 +127,10 @@ describe("getUserAccessibleProjects", () => {
         where: expect.objectContaining({
           OR: [
             { workspaceId: null },
-            { workspaceId: { in: ["ws-b"] }, workspace: { deletedAt: null } },
+            {
+              workspaceId: { in: ["ws-b"] },
+              workspace: { deletedAt: null, members: { some: { userId: "user-unassigned" } } },
+            },
           ],
         }),
       }),

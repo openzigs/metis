@@ -32,7 +32,10 @@ vi.mock("../lib/prisma.js", () => ({
       findMany: vi.fn(async () => prismaState.memberships),
     },
     project: {
-      findUnique: vi.fn(async () => ({ workspaceId: "w1" })),
+      findUnique: vi.fn(async () => ({
+        workspaceId: "w1",
+        workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+      })),
       findFirst: vi.fn(async () => ({ id: "proj-1", deletedAt: null })),
     },
     codeGraph: { findFirst: vi.fn(async () => null) },

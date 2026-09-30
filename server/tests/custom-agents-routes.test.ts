@@ -47,7 +47,15 @@ vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     auditLog: { create: vi.fn(async ({ data }: any) => (auditRows.push(data), data)) },
     project: {
-      findUnique: vi.fn(async ({ where }: any) => projects.get(where.id) ?? null),
+      // #561 — answers the membership-row select from the `members` map.
+      findUnique: vi.fn(async ({ where, select }: any) => {
+        const row = projects.get(where.id);
+        if (!row) return null;
+        const userId = select?.workspace?.select?.members?.where?.userId;
+        if (userId === undefined || !row.workspaceId) return row;
+        const member = members.get(`${row.workspaceId}:${userId}`);
+        return { ...row, workspace: { deletedAt: null, members: member ? [member] : [] } };
+      }),
     },
     workspaceMember: {
       findUnique: vi.fn(async ({ where }: any) => {
@@ -244,6 +252,7 @@ describe("POST /custom-agents (create RBAC #80)", () => {
 describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
   it("invokes an agent owned by the caller's project and writes an audit row", async () => {
     seedProject("p1", "w1");
+    seedMember("w1", "u1", "member");
     const agent = seedAgent({ projectId: "p1" });
     const res = await request(createApp())
       .post(`/custom-agents/${agent.id}/invoke`)
@@ -268,8 +277,19 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
     expect(chatMock).not.toHaveBeenCalled();
   });
 
+  it("#561 — 404s a caller whose claim still names the workspace after removal", async () => {
+    seedProject("p1", "w1"); // claim says w1; no membership row remains
+    const agent = seedAgent({ projectId: "p1" });
+    const res = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(res.status).toBe(404);
+    expect(chatMock).not.toHaveBeenCalled();
+  });
+
   it("writes a custom_agent.invoke_denied audit row before the 404", async () => {
     seedProject("p1", "w1");
+    seedMember("w1", "u1", "member");
     const agent = seedAgent({ projectId: "other" }); // not enabled for p1
     const res = await request(createApp())
       .post(`/custom-agents/${agent.id}/invoke`)
@@ -433,6 +453,7 @@ describe("CRUD routes (#112/#80)", () => {
   it("GET / lists agents", async () => {
     // #288 — listing a project's agents needs access to that project.
     seedProject("p1", "w1");
+    seedMember("w1", "u1", "member");
     seedAgent({ projectId: "p1", name: "Listed" });
     const res = await request(createApp()).get("/custom-agents?projectId=p1");
     expect(res.status).toBe(200);
@@ -446,6 +467,7 @@ describe("CRUD routes (#112/#80)", () => {
 
   it("GET /?includeBuiltIns=0 and =false both exclude built-ins; 1/true/absent include", async () => {
     seedProject("p1", "w1");
+    seedMember("w1", "u1", "member");
     seedAgent({ projectId: null, isBuiltIn: true, name: "BA" });
     seedAgent({ projectId: "p1", isBuiltIn: false, name: "Custom" });
 
@@ -628,6 +650,7 @@ describe("by-id route authorization (IDOR hardening)", () => {
 describe("invoke failure path (#83)", () => {
   it("audits an error outcome when the provider throws", async () => {
     seedProject("p1", "w1");
+    seedMember("w1", "u1", "member");
     const agent = seedAgent({ projectId: "p1" });
     chatMock.mockRejectedValueOnce(new Error("provider exploded"));
     const res = await request(createApp())
@@ -651,6 +674,7 @@ describe("invoke failure path (#83)", () => {
 
   it("audits an error outcome when the provider throws a non-Error value", async () => {
     seedProject("p1", "w1");
+    seedMember("w1", "u1", "member");
     const agent = seedAgent({ projectId: "p1" });
     chatMock.mockRejectedValueOnce("string failure"); // non-Error throw
     const res = await request(createApp())

@@ -28,9 +28,15 @@ import request from "supertest";
 // ── Fixtures ───────────────────────────────────────────────────────────────
 // Workspace A owns proj-a / ana-a. Workspace B (the caller's) owns proj-b / ana-b.
 // proj-legacy is a pre-migration, null-workspace project (open to any authed user).
-const PROJECTS: Record<string, { id: string; workspaceId: string | null; deletedAt: null }> = {
-  "proj-a": { id: "proj-a", workspaceId: "ws-a", deletedAt: null },
-  "proj-b": { id: "proj-b", workspaceId: "ws-b", deletedAt: null },
+// `workspace.members` is the caller's own membership row (#561); the claim still
+// decides which workspace that is, so proj-a stays out of reach for user-b.
+const MEMBER_ROW = { deletedAt: null, members: [{ id: "member-row" }] };
+const PROJECTS: Record<
+  string,
+  { id: string; workspaceId: string | null; deletedAt: null; workspace?: typeof MEMBER_ROW }
+> = {
+  "proj-a": { id: "proj-a", workspaceId: "ws-a", deletedAt: null, workspace: MEMBER_ROW },
+  "proj-b": { id: "proj-b", workspaceId: "ws-b", deletedAt: null, workspace: MEMBER_ROW },
   "proj-legacy": { id: "proj-legacy", workspaceId: null, deletedAt: null },
 };
 const ANALYSES: Record<string, { id: string; projectId: string; deletedAt: null }> = {

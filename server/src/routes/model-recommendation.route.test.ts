@@ -139,7 +139,10 @@ describe("POST /projects/:projectId/analyses/model-recommendation (#1095)", () =
     activeProvider = claudeGateway;
     projectFindFirst.mockResolvedValue({ id: "proj-1" });
     // Default: the path project lives in a workspace the caller belongs to.
-    projectFindUnique.mockResolvedValue({ workspaceId: "ws-1" });
+    projectFindUnique.mockResolvedValue({
+      workspaceId: "ws-1",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     modelPreferenceFindUnique.mockResolvedValue(null);
     // Two calls hit `analysis.findMany`: prior-run history, then this month's
     // project usage. Both are satisfied by the same rows here.
@@ -255,7 +258,10 @@ describe("POST /projects/:projectId/analyses/model-recommendation (#1095)", () =
 
   describe("object-level scope (requireProjectAccess, #674)", () => {
     it("404s a non-member POSTing against another tenant's project", async () => {
-      projectFindUnique.mockResolvedValue({ workspaceId: "ws-other" });
+      projectFindUnique.mockResolvedValue({
+        workspaceId: "ws-other",
+        workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+      });
       const res = await request(buildApp())
         .post("/projects/proj-victim/analyses/model-recommendation")
         .send({ agentKeys: ["code"] });
@@ -266,7 +272,10 @@ describe("POST /projects/:projectId/analyses/model-recommendation (#1095)", () =
     });
 
     it("404s a non-member GETting another tenant's project", async () => {
-      projectFindUnique.mockResolvedValue({ workspaceId: "ws-other" });
+      projectFindUnique.mockResolvedValue({
+        workspaceId: "ws-other",
+        workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+      });
       const res = await request(buildApp()).get(
         "/projects/proj-victim/analyses/model-recommendation",
       );
@@ -276,7 +285,10 @@ describe("POST /projects/:projectId/analyses/model-recommendation (#1095)", () =
     });
 
     it("admits a member of the project's workspace", async () => {
-      projectFindUnique.mockResolvedValue({ workspaceId: "ws-1" });
+      projectFindUnique.mockResolvedValue({
+        workspaceId: "ws-1",
+        workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+      });
       const res = await request(buildApp())
         .post("/projects/proj-1/analyses/model-recommendation")
         .send({ agentKeys: ["code"] });

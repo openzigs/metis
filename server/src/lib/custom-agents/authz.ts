@@ -86,7 +86,16 @@ export async function assertProjectAccess(
 
   const project = await db.project.findUnique({
     where: { id: projectId },
-    select: { workspaceId: true, workspace: { select: { deletedAt: true } } },
+    select: {
+      workspaceId: true,
+      workspace: {
+        select: {
+          deletedAt: true,
+          // #561 — the caller's own membership row, if it still exists.
+          members: { where: { userId: user.userId }, select: { id: true }, take: 1 },
+        },
+      },
+    },
   });
   if (!project) {
     throw new AppError(404, "NOT_FOUND", "Project not found");
@@ -99,10 +108,15 @@ export async function assertProjectAccess(
   // reachable by id until the workspace backfill runs.
   if (!project.workspaceId) return;
 
-  // #549 — the workspace claim is minted at login and carried across refresh,
-  // so it can still name a workspace deleted since. Check the row, not the claim.
+  // The workspace claim is minted at login and lives as long as the access
+  // token, so it can still name a workspace deleted since (#549) or one the
+  // caller has been removed from (#561). The claim AND the row must agree.
   const workspaces = user.workspaces ?? [];
-  if (project.workspace?.deletedAt || !workspaces.includes(project.workspaceId)) {
+  if (
+    project.workspace?.deletedAt ||
+    !project.workspace?.members?.length ||
+    !workspaces.includes(project.workspaceId)
+  ) {
     throw new AppError(404, "NOT_FOUND", "Project not found");
   }
 }

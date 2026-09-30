@@ -90,21 +90,30 @@ beforeEach(() => {
   vi.clearAllMocks();
   currentUser = { userId: "user-1", role: "coordinator", workspaces: ["ws-1"] };
   // Default: the path project lives in a workspace the caller belongs to.
-  projectFindUnique.mockResolvedValue({ workspaceId: "ws-1" });
+  projectFindUnique.mockResolvedValue({
+    workspaceId: "ws-1",
+    workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+  });
   vaultRead.mockResolvedValue({ plaintext: "s3cret" });
   app = buildApp();
 });
 
 describe("suggested-connectors — object-level scope (requireProjectAccess) → 404 cross-tenant", () => {
   it("404s a non-member listing another tenant's suggestions (read route)", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app).get("/api/projects/proj-victim/suggested-connectors");
     expect(res.status).toBe(404);
     expect(suggestionFindMany).not.toHaveBeenCalled();
   });
 
   it("404s a non-member reading the one-shot decrypted password — vault is never touched", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app).get("/api/projects/proj-victim/suggested-connectors/sug-1");
     expect(res.status).toBe(404);
     expect(suggestionFindFirst).not.toHaveBeenCalled();
@@ -113,7 +122,10 @@ describe("suggested-connectors — object-level scope (requireProjectAccess) →
   });
 
   it("404s a non-member PATCHing a suggestion in another tenant's project (write route)", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app)
       .patch("/api/projects/proj-victim/suggested-connectors/sug-1")
       .send({ status: "dismissed" });
@@ -122,14 +134,20 @@ describe("suggested-connectors — object-level scope (requireProjectAccess) →
   });
 
   it("404s a non-member deleting a suggestion in another tenant's project", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app).delete("/api/projects/proj-victim/suggested-connectors/sug-1");
     expect(res.status).toBe(404);
     expect(suggestionDelete).not.toHaveBeenCalled();
   });
 
   it("404s a non-member probing another tenant's database via /test", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app)
       .post("/api/projects/proj-victim/suggested-connectors/sug-1/test")
       .send({});
@@ -139,7 +157,10 @@ describe("suggested-connectors — object-level scope (requireProjectAccess) →
   });
 
   it("404s a non-member provisioning a connector into another tenant's project", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app)
       .post("/api/projects/proj-victim/suggested-connectors/sug-1/provision")
       .send({ label: "stolen", driver: "postgres", host: "db.internal", database: "app" });

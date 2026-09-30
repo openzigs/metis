@@ -58,7 +58,11 @@ vi.mock("../src/lib/prisma.js", () => {
     // proj-1 lives in workspace ws-1 (object-level scope, requireProjectAccess).
     project: {
       findFirst: vi.fn(),
-      findUnique: vi.fn(async () => ({ name: "P", workspaceId: "ws-1" })),
+      findUnique: vi.fn(async () => ({
+        name: "P",
+        workspaceId: "ws-1",
+        workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+      })),
     },
     generatedDocument: {
       findFirst: vi.fn(

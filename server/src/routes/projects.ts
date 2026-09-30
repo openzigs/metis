@@ -149,14 +149,17 @@ export function projectsRouter(): Router {
     // Admins see all projects unless they scope via query param.
     // Non-admins are always scoped to their workspace memberships from the JWT.
     let workspaceIds: string[] | undefined;
+    let memberUserId: string | undefined;
     if (req.user?.role === "admin") {
       // Allow admin to voluntarily scope to a single workspace via ?workspaceId=
       const qWorkspace = toScalar(req.query.workspaceId);
       workspaceIds = qWorkspace ? [qWorkspace] : undefined;
     } else {
       workspaceIds = req.user?.workspaces ?? [];
+      // #561 — the claim can outlive a removal; the membership row must agree.
+      memberUserId = req.user?.userId ?? "";
     }
-    const result = await listProjects({ status, limit, offset, workspaceIds });
+    const result = await listProjects({ status, limit, offset, workspaceIds, memberUserId });
     res.json(ok(result));
   });
 

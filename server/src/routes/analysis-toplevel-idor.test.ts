@@ -67,7 +67,10 @@ vi.mock("../middleware/analysis-deepdive-rate-limit.js", () => ({
 
 const analysisFindFirst = vi.fn();
 /** `assertProjectAccess` resolves the owning project's workspace through this. */
-const projectFindUnique = vi.fn(async () => ({ workspaceId: "ws-a" }));
+const projectFindUnique = vi.fn(async () => ({
+  workspaceId: "ws-a",
+  workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+}));
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     analysis: { findFirst: analysisFindFirst },
@@ -206,7 +209,10 @@ describe("/api/analyses top-level router — cross-tenant scope (#1099)", () => 
   beforeEach(() => {
     vi.clearAllMocks();
     analysisFindFirst.mockResolvedValue({ ...ANALYSIS });
-    projectFindUnique.mockResolvedValue({ workspaceId: "ws-a" });
+    projectFindUnique.mockResolvedValue({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     getAnalysisSnapshot.mockResolvedValue({ id: "an-1", status: "completed" });
     assertCanResumeRepos.mockResolvedValue({ skippedRepos: [{ connectorId: "c1" }] });
     updateRequirementRow.mockResolvedValue({ id: "req-1" });
@@ -273,7 +279,7 @@ describe("/api/analyses top-level router — cross-tenant scope (#1099)", () => 
 
         expect(projectFindUnique).toHaveBeenCalledWith({
           where: { id: "proj-a" },
-          select: { workspaceId: true, workspace: { select: { deletedAt: true } } },
+          select: expect.objectContaining({ workspaceId: true }),
         });
       });
     });
