@@ -382,7 +382,7 @@ export function workspacesRouter(): Router {
     const invite = await prisma.workspaceInvite.findUnique({
       where: { token },
       include: {
-        workspace: { select: { id: true, name: true, slug: true } },
+        workspace: { select: { id: true, name: true, slug: true, deletedAt: true } },
         invitedBy: { select: { displayName: true } },
       },
     });
@@ -395,6 +395,10 @@ export function workspacesRouter(): Router {
     }
     if (invite.expiresAt < new Date()) {
       throw new AppError(410, "GONE", "Invitation has expired");
+    }
+    // Workspace DELETE is a soft delete that leaves outstanding invites in place (#563).
+    if (invite.workspace.deletedAt) {
+      throw new AppError(410, "GONE", "This workspace no longer exists");
     }
 
     // Find user by email (must be registered)
@@ -437,7 +441,8 @@ export function workspacesRouter(): Router {
       metadata: { email: invite.email },
     });
 
-    res.json(ok({ workspace: invite.workspace, role: invite.role }));
+    const { deletedAt: _deletedAt, ...workspace } = invite.workspace;
+    res.json(ok({ workspace, role: invite.role }));
   });
 
   // ── Validate invite token (public — for the accept page UI) ───────────────
