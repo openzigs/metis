@@ -1885,6 +1885,17 @@ export function aiRouter(): Router {
 
     req.on("aborted", () => ac.abort());
     res.on("close", () => ac.abort());
+    // #521 — defence in depth behind the `writableEnded` guards: an `error`
+    // emitted on the response (a write after end, a socket reset) with no
+    // listener is an uncaught exception that takes the process down. An errored
+    // response is destroyed and emits `close`, which already aborts the turn.
+    res.on("error", (err: Error) => {
+      log.warn("AI stream response emitted an error", {
+        sessionId: session.id,
+        userId,
+        error: err.message,
+      });
+    });
 
     // #506 — once the response has ended (the hard ceiling or the queue limit
     // wrote its own error frame and ended it), the aborted turn's `catch` still

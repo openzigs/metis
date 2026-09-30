@@ -593,6 +593,211 @@ describe("POST /api/ai/stream — slowloris protections", () => {
   });
 });
 
+// ── #521 — no SSE write after the response has ended ──────────────────────
+//
+// PR #511 guards three writes with `res.writableEnded`: the heartbeat ping, the
+// hard-ceiling error frame and `send()`. A write after `res.end()` is not
+// thrown — Node emits ERR_STREAM_WRITE_AFTER_END as an `'error'` on the
+// response a tick later, which with no listener is an uncaught exception. These
+// tests reach each site after the response ended (the socket-idle timeout ends
+// it while the provider is still unwinding) and assert on the response itself:
+// no write once ended, no `'error'` event.
+describe("POST /api/ai/stream — no write after the response ended (#521)", () => {
+  type Probe = {
+    res: import("express").Response | null;
+    /** Every chunk written while `res.writableEnded` was already true. */
+    writesAfterEnd: string[];
+    /** Every chunk written at all, in order. */
+    writes: string[];
+    errors: Error[];
+  };
+
+  const deferred = (): { promise: Promise<void>; resolve: () => void } => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => (resolve = r));
+    return { promise, resolve };
+  };
+
+  /** Records every write on the /stream response and every `'error'` it emits. */
+  function makeProbedApp(probe: Probe, opts: { listenForErrors: boolean }) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, res, next) => {
+      if (req.path === "/api/ai/stream") {
+        probe.res = res;
+        const write = res.write.bind(res) as (...args: unknown[]) => boolean;
+        res.write = ((chunk: unknown, ...rest: unknown[]) => {
+          const text = String(chunk);
+          probe.writes.push(text);
+          if (res.writableEnded) probe.writesAfterEnd.push(text);
+          return write(chunk, ...rest);
+        }) as typeof res.write;
+        if (opts.listenForErrors) res.on("error", (e: Error) => probe.errors.push(e));
+      }
+      next();
+    });
+    app.use("/api/ai", aiRouter());
+    app.use(notFoundHandler);
+    app.use(errorHandler);
+    return app;
+  }
+
+  /**
+   * A provider that starts streaming, then — once aborted — keeps the turn
+   * unwinding until `release` resolves: the window in which the response has
+   * ended but the route's timers are still live.
+   */
+  function stallingProvider(started: () => void, release: Promise<void>): AIProviderForTest {
+    return {
+      key: "offline-stub",
+      model: "stub",
+      offline: true,
+      async chat() {
+        throw new Error("unused");
+      },
+      async *stream(_messages, opts) {
+        yield { type: "delta", content: "partial" } as ChatChunk;
+        started();
+        await new Promise<void>((resolve) => {
+          if (opts?.signal?.aborted) return resolve();
+          opts?.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        await release;
+        throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      },
+      async embed() {
+        return { vectors: [], dimension: 0, model: "stub" };
+      },
+      async models() {
+        return ["stub"];
+      },
+      async ping() {
+        return true;
+      },
+    };
+  }
+
+  const ENV_KEYS = ["AI_STREAM_HEARTBEAT_MS", "AI_STREAM_MAX_DURATION_MS"] as const;
+  const prevEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
+
+  beforeEach(() => {
+    for (const k of ENV_KEYS) prevEnv[k] = process.env[k];
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    for (const k of ENV_KEYS) {
+      if (prevEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = prevEnv[k];
+    }
+  });
+
+  /**
+   * Opens a stalled turn and ends its response the way the socket-idle timeout
+   * does (the route's own `res.setTimeout` handler: abort + end). Returns once
+   * the response has ended, with the provider still holding the turn open.
+   */
+  async function openAndEnd(opts: { listenForErrors: boolean }) {
+    const probe: Probe = { res: null, writesAfterEnd: [], writes: [], errors: [] };
+    const started = deferred();
+    const release = deferred();
+    setAIProviderForTests(stallingProvider(started.resolve, release.promise));
+    const app = makeProbedApp(probe, opts);
+    const sessionId = (await auth(request(app).post("/api/ai/sessions").send({}))).body.data.session
+      .id;
+    const response = auth(
+      request(app)
+        .post("/api/ai/stream")
+        .send({ sessionId, messages: [{ role: "user", content: "hi" }] }),
+    ).then((r) => r);
+    await started.promise;
+    return { probe, release, response, sessionId };
+  }
+
+  /** Ends the response through the route's real socket-timeout handler. */
+  function socketTimeout(probe: Probe): void {
+    probe.res!.emit("timeout");
+    expect(probe.res!.writableEnded).toBe(true);
+  }
+
+  /** The turn has finished unwinding once its failed reply is recorded. */
+  async function turnRecorded(sessionId: string): Promise<FakeAiMessageRow> {
+    await vi.waitFor(() => {
+      expect(aiMessageRows.some((r) => r.sessionId === sessionId && r.role === "assistant")).toBe(
+        true,
+      );
+    });
+    // Node emits a write-after-end error on the next tick; let it land.
+    await new Promise((r) => setImmediate(r));
+    return aiMessageRows.find((r) => r.sessionId === sessionId && r.role === "assistant")!;
+  }
+
+  it("the heartbeat does not ping once the response has ended", async () => {
+    process.env.AI_STREAM_HEARTBEAT_MS = "1000";
+    const { probe, release, response, sessionId } = await openAndEnd({ listenForErrors: true });
+
+    // The fake interval drives the real heartbeat: one tick, one ping.
+    vi.advanceTimersByTime(1000);
+    expect(probe.writes).toContain(": ping\n\n");
+
+    socketTimeout(probe);
+    await response;
+    // Several heartbeat periods pass while the turn is still unwinding.
+    vi.advanceTimersByTime(3000);
+    await new Promise((r) => setImmediate(r));
+    expect(probe.writesAfterEnd).toEqual([]);
+    expect(probe.errors).toEqual([]);
+
+    release.resolve();
+    await turnRecorded(sessionId);
+  });
+
+  it("the hard ceiling firing after the response ended writes no error frame", async () => {
+    process.env.AI_STREAM_MAX_DURATION_MS = "10000";
+    const { probe, release, response, sessionId } = await openAndEnd({ listenForErrors: true });
+
+    socketTimeout(probe);
+    await response;
+    // The ceiling was armed for the answer and nothing cleared it.
+    vi.advanceTimersByTime(10_000);
+    await new Promise((r) => setImmediate(r));
+    expect(probe.writesAfterEnd).toEqual([]);
+    expect(probe.errors).toEqual([]);
+
+    release.resolve();
+    const reply = await turnRecorded(sessionId);
+    // Proof the ceiling really fired (it is what stopped the turn), so the
+    // assertions above covered its write.
+    expect(reply.meta ?? "").toContain("STREAM_MAX_DURATION");
+  });
+
+  it("send() drops the aborted turn's error frame once the response has ended", async () => {
+    const { probe, release, response, sessionId } = await openAndEnd({ listenForErrors: true });
+
+    socketTimeout(probe);
+    await response;
+    release.resolve();
+    const reply = await turnRecorded(sessionId);
+
+    // The catch path ran (it recorded the turn as aborted) and still wrote nothing.
+    expect(reply.meta ?? "").toContain("ABORTED");
+    expect(probe.writesAfterEnd).toEqual([]);
+    expect(probe.errors).toEqual([]);
+  });
+
+  it("listens for 'error' on the SSE response, so a socket error cannot crash the process", async () => {
+    const { probe, release, sessionId } = await openAndEnd({ listenForErrors: false });
+
+    // With no listener, EventEmitter throws an unhandled 'error' synchronously.
+    expect(() => probe.res!.emit("error", new Error("socket reset"))).not.toThrow();
+
+    socketTimeout(probe);
+    release.resolve();
+    await turnRecorded(sessionId);
+  });
+});
+
 // ── M2 — vault-resolved BYOK keys ─────────────────────────────────────────
 describe("BYOK provider key resolution via vault", () => {
   it("resolves providerSecretRef through the vault on chat", async () => {
