@@ -236,12 +236,13 @@ describe.runIf(enabled)(
         } finally {
           state.db = db;
         }
-        expect(labels).not.toContain("bad");
+        // #475 — the row state first: it is what shows the pre-#463 defect.
         const rows = await db.repoConnection.findMany({ where: { projectId: projects.race } });
         expect(rows.map((r) => [r.label, r.isPrimary])).toEqual([["good", true]]);
+        expect(labels).not.toContain("bad");
       });
 
-      it("a label held by a soft-deleted row fails once, without a non-primary retry", async () => {
+      it("#475 — a label held by a soft-deleted row is a 409, after one insert and no retry", async () => {
         await db.repoConnection.create({
           data: { projectId: projects.clash, label: "old", deletedAt: new Date() },
         });
@@ -260,7 +261,7 @@ describe.runIf(enabled)(
               { label: "old", ownerOrOrg: "o", repoName: "old" },
               userId,
             ),
-          ).rejects.toMatchObject({ code: "P2002" });
+          ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
         } finally {
           state.db = db;
         }
