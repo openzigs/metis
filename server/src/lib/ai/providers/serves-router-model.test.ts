@@ -3,12 +3,12 @@
  * The Model card and auto-mode agent selection route on this answer, so a
  * non-Claude endpoint must say "no" and a Claude-serving one "yes".
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AnthropicProvider } from "./anthropic-provider.js";
 import { BedrockDirectProvider } from "./bedrock-direct-provider.js";
 import { HAIKU_MODEL_ID, ModelRouter, SONNET_MODEL_ID } from "../model-router.js";
 import type { TaskProfile } from "../types.js";
-import { ConfigService } from "../../config/config-service.js";
+import { ConfigService, __resetConfigSingleton } from "../../config/config-service.js";
 
 /** A ConfigService reading only the given env — no DB, no vault, no process.env. */
 const configWith = (env: Record<string, string>) => new ConfigService({ env, vault: {} as never });
@@ -77,6 +77,29 @@ describe("servesRouterModel (#512)", () => {
         config,
       });
       expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(false);
+    });
+
+    // Panel round 3 on PR #523 — production (factory.ts) never injects a
+    // config, so the opt-in must work through the process-wide ConfigService.
+    describe("without an injected config (as the factory builds it)", () => {
+      afterEach(() => {
+        vi.unstubAllEnvs();
+        __resetConfigSingleton();
+      });
+
+      it("honours the opt-in from the environment", () => {
+        vi.stubEnv("ANTHROPIC_BASE_URL_BILLS_AS", "anthropic");
+        __resetConfigSingleton();
+        const p = new AnthropicProvider({ apiKey: "k", baseUrl: proxy });
+        expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(true);
+      });
+
+      it("does not serve without it", () => {
+        vi.stubEnv("ANTHROPIC_BASE_URL_BILLS_AS", "auto");
+        __resetConfigSingleton();
+        const p = new AnthropicProvider({ apiKey: "k", baseUrl: proxy });
+        expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(false);
+      });
     });
 
     it("reads the setting per call, so a tunable change applies without a restart", () => {
