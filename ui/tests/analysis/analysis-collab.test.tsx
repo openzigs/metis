@@ -15,6 +15,9 @@ import { makeWrapper, TEST_USER } from "../test-utils";
 
 // ---- next/navigation -------------------------------------------------------
 
+// Issue #30 — requirements live on their own tab; open it by deep link.
+const nav = vi.hoisted(() => ({ search: new URLSearchParams("tab=requirements") }));
+
 vi.mock("next/navigation", async () => {
   const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
   return {
@@ -29,7 +32,7 @@ vi.mock("next/navigation", async () => {
       prefetch: vi.fn(),
       refresh: vi.fn(),
     }),
-    useSearchParams: () => new URLSearchParams(),
+    useSearchParams: () => nav.search,
   };
 });
 
@@ -263,6 +266,8 @@ describe("AnalysisPage — screen-reader affordances (#58)", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: /Requirements Analysis/i }),
     ).toBeInTheDocument();
+    // Issue #30 — with runs on the project the start form is collapsed; open it.
+    fireEvent.click(await screen.findByRole("button", { name: "New analysis" }));
     expect(
       screen.getByRole("heading", { level: 2, name: "Start a new analysis" }),
     ).toBeInTheDocument();

@@ -72,9 +72,12 @@ export class DataMappingsPage {
     this.candidates = this.suggestionsRegion.getByTestId("data-mapping-candidate");
   }
 
-  /** Navigate to the analysis tab; the most recent run auto-selects. */
+  /**
+   * Navigate to the analysis page's Requirements tab (#30); the most recent
+   * run auto-selects.
+   */
   async goto(projectId: string): Promise<void> {
-    await this.page.goto(`/projects/${projectId}/analysis`);
+    await this.page.goto(`/projects/${projectId}/analysis?tab=requirements`);
     await expect(this.panel).toBeVisible({ timeout: 30_000 });
   }
 

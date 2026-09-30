@@ -149,7 +149,7 @@ export function PromoteToRequirementDialog({
               recorded in the audit trail.
             </p>
             <Link
-              href={`/projects/${projectId}/analysis?requirementId=${encodeURIComponent(
+              href={`/projects/${projectId}/analysis?tab=requirements&requirementId=${encodeURIComponent(
                 result.requirementId,
               )}`}
               className="inline-flex items-center text-sm font-medium text-primary hover:underline"

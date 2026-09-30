@@ -29,8 +29,25 @@ export class RequirementCollabPage {
     this.card = this.collabRow.locator("xpath=ancestor::div[contains(@class,'rounded')][1]");
   }
 
-  /** Wait until this requirement's collaboration row is on screen. */
+  /**
+   * Wait until this requirement's collaboration row is on screen. Issue #30 —
+   * the Requirements tab pages its list, so step through the pages until the
+   * row appears (or there is no next page).
+   */
   async waitForVisible(): Promise<void> {
+    const section = this.page.getByTestId("requirements-section");
+    await expect(section).toBeVisible({ timeout: 30_000 });
+    // The list is fetched with the run; wait for a card or the empty state.
+    await expect(section.locator('[data-testid^="req-collab-"]').first()).toBeVisible({
+      timeout: 30_000,
+    });
+    const next = this.page.getByTestId("requirements-pager").getByRole("button", { name: "Next" });
+    while (
+      !(await this.collabRow.isVisible()) &&
+      (await next.isEnabled({ timeout: 1_000 }).catch(() => false))
+    ) {
+      await next.click();
+    }
     await expect(this.collabRow).toBeVisible({ timeout: 30_000 });
   }
 

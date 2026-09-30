@@ -9,6 +9,10 @@
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 
+/** Issue #30 — the Analysis page's results sub-views (`?tab=`). */
+export type AnalysisTab =
+  "summary" | "requirements" | "findings" | "questions" | "approvals" | "agents" | "traceability";
+
 export class AnalysisPage {
   readonly page: Page;
 
@@ -84,12 +88,32 @@ export class AnalysisPage {
     this.databaseAwareConnectionsLink = page.getByTestId("database-aware-connections-link");
   }
 
-  async goto(projectId: string): Promise<void> {
-    await this.page.goto(`/projects/${projectId}/analysis`, { waitUntil: "load" });
+  /**
+   * Open the Analysis page. Issue #30 — a run's results are split into tabs
+   * (`?tab=`), and the run form is collapsed once the project has runs:
+   *   - with `tab`, land on that results sub-view;
+   *   - without it, make sure the "Start a new analysis" form is open.
+   */
+  async goto(projectId: string, tab?: AnalysisTab): Promise<void> {
+    const query = tab ? `?tab=${tab}` : "";
+    await this.page.goto(`/projects/${projectId}/analysis${query}`, { waitUntil: "load" });
     await expect(this.page.getByRole("heading", { name: /^Requirements Analysis —/ })).toBeVisible({
       timeout: 30_000,
     });
+    if (tab) return;
+    await this.openStartForm();
     await expect(this.addDocsPanel).toBeVisible();
+  }
+
+  /**
+   * Issue #30 — expand the run form if it is collapsed. The toggle renders only
+   * once the runs list has settled, so its `aria-expanded` is final when read.
+   */
+  async openStartForm(): Promise<void> {
+    const toggle = this.page.getByTestId("start-analysis-toggle");
+    await expect(toggle).toBeVisible({ timeout: 30_000 });
+    if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
   }
 
   /** Expand the collapsible "Add documents" panel if it is collapsed. */

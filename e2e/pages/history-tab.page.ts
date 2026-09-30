@@ -38,9 +38,12 @@ export class HistoryTabPage {
     this.restoreButtons = this.panel.getByRole("button", { name: "Restore" });
   }
 
-  /** Navigate to the analysis tab; the most recent run auto-selects. */
+  /**
+   * Navigate to the analysis page's Requirements tab (#30); the most recent
+   * run auto-selects.
+   */
   async goto(projectId: string): Promise<void> {
-    await this.page.goto(`/projects/${projectId}/analysis`);
+    await this.page.goto(`/projects/${projectId}/analysis?tab=requirements`);
     await expect(this.historyToggle).toBeVisible({ timeout: 30_000 });
   }
 

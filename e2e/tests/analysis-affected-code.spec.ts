@@ -188,7 +188,7 @@ test.describe("Analysis affected-code mapping (#735)", () => {
   }) => {
     await mockAnalysisReads(page, projectId);
     const pom = new AnalysisFindingsPage(page);
-    await pom.goto(projectId);
+    await pom.goto(projectId, "summary");
 
     const panel = page.getByTestId("affected-code-panel");
     await expect(panel).toBeVisible({ timeout: 30_000 });

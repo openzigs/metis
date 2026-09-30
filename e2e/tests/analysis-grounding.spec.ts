@@ -96,7 +96,7 @@ test.describe("Analysis page — requirement-grounding transparency (#912 / #920
   // AC (#920): the seeded completed run auto-selects and renders its findings.
   test("the completed run renders its findings", async ({ page }) => {
     const analysis = new AnalysisPage(page);
-    await analysis.goto(projectId);
+    await analysis.goto(projectId, "findings");
 
     await expect(analysis.findingsHeading).toBeVisible({ timeout: 30_000 });
     await expect(analysis.findingTitle(GROUNDING_FIXTURE.grounded.title)).toBeVisible();
@@ -109,7 +109,7 @@ test.describe("Analysis page — requirement-grounding transparency (#912 / #920
   // (not a raw documentId).
   test("a grounded finding shows filename, excerpt and the Grounded badge", async ({ page }) => {
     const analysis = new AnalysisPage(page);
-    await analysis.goto(projectId);
+    await analysis.goto(projectId, "findings");
     await expect(analysis.findingsHeading).toBeVisible({ timeout: 30_000 });
 
     await test.step("the requirement-grounded badge is shown", async () => {
@@ -133,7 +133,7 @@ test.describe("Analysis page — requirement-grounding transparency (#912 / #920
     page,
   }) => {
     const analysis = new AnalysisPage(page);
-    await analysis.goto(projectId);
+    await analysis.goto(projectId, "findings");
     await expect(analysis.findingsHeading).toBeVisible({ timeout: 30_000 });
 
     await test.step("the gap badge is shown", async () => {
@@ -151,7 +151,7 @@ test.describe("Analysis page — requirement-grounding transparency (#912 / #920
     page,
   }) => {
     const analysis = new AnalysisPage(page);
-    await analysis.goto(projectId);
+    await analysis.goto(projectId, "findings");
     await expect(analysis.findingsHeading).toBeVisible({ timeout: 30_000 });
 
     await test.step("the plain finding's filename citation is shown", async () => {

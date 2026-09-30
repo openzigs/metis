@@ -146,7 +146,7 @@ test.describe("Analysis requirement coverage badges + filter (#736)", () => {
   }) => {
     await mockAnalysisReads(page, projectId);
     const pom = new AnalysisFindingsPage(page);
-    await pom.goto(projectId);
+    await pom.goto(projectId, "requirements");
 
     await test.step("all three coverage badges render", async () => {
       await expect(page.getByTestId("coverage-badge-grounded_in_code")).toBeVisible({

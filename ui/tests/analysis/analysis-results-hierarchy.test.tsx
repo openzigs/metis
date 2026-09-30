@@ -245,7 +245,8 @@ async function waitForResults() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  nav.search = new URLSearchParams();
+  // Issue #30 — most of these read the Findings tab; open it by deep link.
+  nav.search = new URLSearchParams("tab=findings");
   apiMock.get.mockResolvedValue(SNAPSHOT);
 });
 
@@ -279,28 +280,31 @@ describe("?analysisId deep link (#29)", () => {
   });
 });
 
+// Issue #30 split the results into tabs; #1232's hierarchy (outcome, then
+// requirements, then findings) is now the order of the tabs, with the outcome
+// on the Summary tab a run opens on.
 describe("Analysis results hierarchy (#1232)", () => {
-  it("renders the synthesis summary above both requirements and findings", async () => {
+  it("opens on the Summary tab, which states the synthesis outcome", async () => {
+    nav.search = new URLSearchParams();
     renderPage();
-    await waitForResults();
-
-    const outcome = screen.getByTestId("analysis-outcome-card");
+    const outcome = await screen.findByTestId("analysis-outcome-card");
     expect(outcome).toHaveTextContent(/blocking context gap/i);
-
-    const requirements = screen.getByTestId("requirements-section");
-    expect(outcome.compareDocumentPosition(requirements)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.getByRole("tab", { name: /^Summary/ })).toHaveAttribute("aria-selected", "true");
   });
 
-  it("renders requirements before findings in DOM order", async () => {
+  it("orders the tabs outcome → requirements → findings", async () => {
+    nav.search = new URLSearchParams();
     renderPage();
-    await waitForResults();
-
-    const requirements = screen.getByTestId("requirements-section");
-    const findings = screen.getByTestId("findings-section");
-    expect(requirements.compareDocumentPosition(findings)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    await screen.findByTestId("analysis-outcome-card");
+    const names = screen.getAllByRole("tab").map((t) => t.textContent ?? "");
+    const at = (label: string) => names.findIndex((n) => n.startsWith(label));
+    expect(at("Summary")).toBe(0);
+    expect(at("Requirements")).toBeGreaterThan(at("Summary"));
+    expect(at("Findings")).toBeGreaterThan(at("Requirements"));
   });
 
   it("renders no outcome card when synthesis produced no summary", async () => {
+    nav.search = new URLSearchParams();
     apiMock.get.mockResolvedValue({
       ...SNAPSHOT,
       agentResults: SNAPSHOT.agentResults.map((a) =>
@@ -308,7 +312,7 @@ describe("Analysis results hierarchy (#1232)", () => {
       ),
     });
     renderPage();
-    await waitForResults();
+    await screen.findByRole("tab", { name: /^Summary/ });
 
     expect(screen.queryByTestId("analysis-outcome-card")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /^outcome$/i })).not.toBeInTheDocument();
@@ -349,7 +353,6 @@ describe("Analysis results hierarchy (#1232)", () => {
     await waitForResults();
 
     expect(screen.getByTestId("verification-filter")).toBeInTheDocument();
-    expect(screen.getByTestId("coverage-filter")).toBeInTheDocument();
     expect(screen.getByTestId("deep-dive-action")).toBeEnabled();
 
     // Filtering to "confirmed" drops the null-status finding.
@@ -360,6 +363,7 @@ describe("Analysis results hierarchy (#1232)", () => {
     expect(screen.getByTestId("finding-body")).toBeInTheDocument();
 
     // Coverage filtering still drives the requirements list.
+    await user.click(screen.getByRole("tab", { name: /^Requirements/ }));
     await user.click(screen.getByTestId("coverage-filter-no_evidence"));
     expect(screen.queryByText("Login screen")).not.toBeInTheDocument();
   });
