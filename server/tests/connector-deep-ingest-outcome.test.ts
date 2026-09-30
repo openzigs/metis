@@ -14,7 +14,7 @@ import {
 const clean: DeepIngestOutcome = {
   codeGraph: { filesScanned: 12, filesParsed: 10, symbolsUpserted: 40, edgesUpserted: 25 },
   source: { documentsCreated: 7, chunkCount: 42, failures: 0 },
-  metadata: { failures: 0, fetchFailed: false },
+  metadata: { failures: 0, stepFailed: false },
   cloneSizeBytes: 3 * 1024 * 1024,
 };
 
@@ -66,7 +66,7 @@ describe("deepIngestCompletionMessage (#399)", () => {
     const msg = deepIngestCompletionMessage({
       ...clean,
       source: { ...clean.source, failures: 2 },
-      metadata: { failures: 1, fetchFailed: false },
+      metadata: { failures: 1, stepFailed: false },
     });
     expect(msg).toMatch(/^Deep ingest completed with 3 failures: /);
     expect(msg).toContain("2 source files could not be ingested");
@@ -76,7 +76,7 @@ describe("deepIngestCompletionMessage (#399)", () => {
   it("reports a metadata fetch or ingest that threw as one failure", () => {
     const msg = deepIngestCompletionMessage({
       ...clean,
-      metadata: { failures: 0, fetchFailed: true },
+      metadata: { failures: 0, stepFailed: true },
     });
     expect(msg).toMatch(/^Deep ingest completed with 1 failure: /);
     expect(msg).toContain("repository metadata could not be fetched or ingested");

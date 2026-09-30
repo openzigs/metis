@@ -99,7 +99,11 @@ import {
   deepIngestFailureCount,
   type DeepIngestOutcome,
 } from "../lib/connectors/repo/deep-ingest-outcome.js";
-import { checkIncrementalRegeneration } from "../lib/docs-gen/incremental.js";
+import {
+  REGENERATION_SCHEDULING_FAILED_MESSAGE,
+  RegenerationSchedulingError,
+  scheduleIncrementalRegeneration,
+} from "../lib/docs-gen/regeneration-scheduling.js";
 import { discoverAndUpsertConnections } from "../lib/connectors/repo/connection-discovery.js";
 import { prisma } from "../lib/prisma.js";
 import {
@@ -192,18 +196,13 @@ export const REPO_INGEST_FAILED_MESSAGE =
 /**
  * #399 — the ingest itself landed, but scheduling the automatic regeneration of
  * generated documents failed. Saying "Repository ingestion failed" here was
- * wrong; re-running the ingest retries the scheduling (#1356).
+ * wrong; re-running the ingest retries the scheduling (#1356). The text and the
+ * error class are shared with the scheduled refresh (#432).
  */
-export const REGENERATION_SCHEDULING_FAILED_MESSAGE =
-  "The repository was ingested, but scheduling automatic document regeneration failed. " +
-  "The details are in the server log; run the ingest again to retry.";
+export { REGENERATION_SCHEDULING_FAILED_MESSAGE };
 
-/** Marks a failure to schedule regeneration apart from a failure of the ingest. */
-class RegenerationSchedulingError extends Error {
-  constructor(cause: unknown) {
-    super("Scheduling automatic document regeneration failed", { cause });
-  }
-}
+/** #432 — the refresh-ingest route's error code for that case. */
+export const REGENERATION_SCHEDULING_FAILED = "REGENERATION_SCHEDULING_FAILED";
 
 /**
  * Concurrency guard (#663 review): the per-connector ingest lease (#217), shared
@@ -325,7 +324,7 @@ async function runDeepIngest(
       boundary: source.boundary,
       lease,
     });
-    const metadata = { failures: 0, fetchFailed: false };
+    const metadata = { failures: 0, stepFailed: false };
     emitProgress("Indexing metadata", 4);
     if (source.isGit) {
       try {
@@ -333,7 +332,7 @@ async function runDeepIngest(
         const summary = await ingestRepoMetadata(projectId, connectorId, userId, meta);
         metadata.failures = summary.failures;
       } catch (metaErr) {
-        metadata.fetchFailed = true;
+        metadata.stepFailed = true;
         // Metadata is supplementary — a misconfigured apiBaseUrl (e.g. missing
         // /api/v3 suffix on GHE) or missing token should not block the ingest.
         logger.warn("fetchRepoMetadata failed — skipping metadata ingest, core ingest continues", {
@@ -364,15 +363,19 @@ async function runDeepIngest(
         connectionsFound: discovery.connectionsFound,
       });
     }
-    if (deepIngestFailureCount(outcome) === 0) {
-      try {
-        await checkIncrementalRegeneration(projectId, connectorId);
-      } catch (scheduleErr) {
-        throw new RegenerationSchedulingError(scheduleErr);
-      }
-    }
+    if (deepIngestFailureCount(outcome) === 0)
+      await scheduleIncrementalRegeneration(projectId, connectorId);
     if (jobId)
-      jobEvents.completed("repo-ingest", jobId, projectId, deepIngestCompletionMessage(outcome));
+      jobEvents.lifecycle({
+        kind: "repo-ingest",
+        jobId,
+        projectId,
+        status: "completed",
+        progress: 100,
+        message: deepIngestCompletionMessage(outcome),
+        // #432 — so the page can style a partial run as a warning.
+        failureCount: deepIngestFailureCount(outcome),
+      });
   } catch (err) {
     const schedulingFailed = err instanceof RegenerationSchedulingError;
     // #114 — the raw exception (paths, git stderr, SQL) stays in the server log;
@@ -804,9 +807,8 @@ export function connectorsRouter(): Router {
         }
         // Step 5: re-scan for database connection references (epic #467)
         const discovery = await discoverAndUpsertConnections(projectId, clone.path);
-        if (srcSummary.failures === 0 && metadataSucceeded)
-          await checkIncrementalRegeneration(projectId, id);
-        // Step 6: emit discovery notification via Socket.IO (#669)
+        // Step 6: emit discovery notification via Socket.IO (#669). Sent before
+        // regeneration is scheduled, so a scheduling failure cannot swallow it (#432).
         if (discovery.connectionsFound > 0) {
           const connector = await getRepoConnector(projectId, id);
           getRepoConnectorEmitter().discovery({
@@ -816,6 +818,8 @@ export function connectorsRouter(): Router {
             connectionsFound: discovery.connectionsFound,
           });
         }
+        if (srcSummary.failures === 0 && metadataSucceeded)
+          await scheduleIncrementalRegeneration(projectId, id);
         res.json(
           ok({
             pulled: clone.pulled,
@@ -842,6 +846,16 @@ export function connectorsRouter(): Router {
           }),
         );
       } catch (err) {
+        if (err instanceof RegenerationSchedulingError) {
+          // #432 — the refresh landed; only scheduling failed. Say so, and keep
+          // the raw exception in the server log (#114).
+          logger.warn("Repo refresh-ingest succeeded but scheduling regeneration failed", {
+            err: err.cause,
+            projectId: req.params.projectId,
+            connectorId: req.params.id,
+          });
+          throw new AppError(500, REGENERATION_SCHEDULING_FAILED, err.message);
+        }
         rethrow(err);
       } finally {
         lease?.release();

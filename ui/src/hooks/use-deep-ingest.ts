@@ -27,6 +27,8 @@ export interface DeepIngestOutcome {
   connectorId: string;
   status: "completed" | "failed";
   message: string;
+  /** #432 — parts of a completed run that failed; non-zero is a partial run. */
+  failureCount: number;
 }
 
 export interface UseDeepIngestOptions {
@@ -76,6 +78,7 @@ export function useDeepIngest(projectId: string, options: UseDeepIngestOptions =
         message: failed
           ? (event.error ?? "Deep ingest failed")
           : (event.message ?? "Deep ingest complete"),
+        failureCount: event.failureCount ?? 0,
       });
       setJob(null);
       options.onSettled?.(job.connectorId);

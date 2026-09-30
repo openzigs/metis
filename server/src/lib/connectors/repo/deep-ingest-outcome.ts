@@ -15,8 +15,13 @@ export interface DeepIngestOutcome {
     edgesUpserted: number;
   };
   source: { documentsCreated: number; chunkCount: number; failures: number };
-  /** `fetchFailed`: fetching or ingesting the metadata threw (counted as one failure). */
-  metadata: { failures: number; fetchFailed: boolean };
+  /**
+   * `failures`: metadata documents that could not be ingested.
+   * `stepFailed`: the metadata step as a whole threw — the fetch *or* the ingest —
+   * so there is no per-document count; it counts as one failure. (Named
+   * `fetchFailed` until #432, which undersold it: an ingest throw sets it too.)
+   */
+  metadata: { failures: number; stepFailed: boolean };
   /** Size of the clone; 0 for local and upload sources, which clone nothing. */
   cloneSizeBytes: number;
 }
@@ -35,7 +40,7 @@ function formatBytes(bytes: number): string {
 /** The number of failures a run had; non-zero means regeneration was skipped. */
 export function deepIngestFailureCount(outcome: DeepIngestOutcome): number {
   return (
-    outcome.source.failures + outcome.metadata.failures + (outcome.metadata.fetchFailed ? 1 : 0)
+    outcome.source.failures + outcome.metadata.failures + (outcome.metadata.stepFailed ? 1 : 0)
   );
 }
 
@@ -60,7 +65,7 @@ export function deepIngestCompletionMessage(outcome: DeepIngestOutcome): string 
     failures.push(
       `${plural(metadata.failures, "repository metadata document")} could not be ingested`,
     );
-  if (metadata.fetchFailed) failures.push("repository metadata could not be fetched or ingested");
+  if (metadata.stepFailed) failures.push("repository metadata could not be fetched or ingested");
 
   return (
     `Deep ingest completed with ${plural(failureCount, "failure")}: ${failures.join("; ")}. ` +

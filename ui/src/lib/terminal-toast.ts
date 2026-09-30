@@ -52,18 +52,22 @@ export function isTerminalJobStatus(status: JobLifecycleEvent["status"]): boolea
  *
  * `completed` → the server's human `message` (the grounded-completion line for
  * Spec Kit, the symbol count for overview, the reindexed-chunk summary for
- * embeddings), falling back to a generic success label when absent.
+ * embeddings), falling back to a generic success label when absent; a warning
+ * rather than a success when the event reports a non-zero `failureCount` (#432).
  * `failed` → the event's `error`, already a generic, user-safe string (#254),
  * falling back to a generic failure label. Exported for unit testing.
  */
 export function terminalToastText(event: JobLifecycleEvent): {
-  kind: "success" | "error";
+  kind: "success" | "warning" | "error";
   text: string;
 } {
   if (event.status === "failed") {
     return { kind: "error", text: event.error || GENERIC_FAILURE_TOAST };
   }
-  return { kind: "success", text: event.message || GENERIC_SUCCESS_TOAST };
+  // #432 — a job that completed with failures (e.g. a partial Deep Ingest) is
+  // not a success; it reports the count so this never parses the message.
+  const kind = (event.failureCount ?? 0) > 0 ? "warning" : "success";
+  return { kind, text: event.message || GENERIC_SUCCESS_TOAST };
 }
 
 /**
@@ -83,6 +87,7 @@ export function fireTerminalToast(event: JobLifecycleEvent | null | undefined): 
   toastedJobIds.add(event.jobId);
   const { kind, text } = terminalToastText(event);
   if (kind === "success") toast.success(text);
+  else if (kind === "warning") toast.warning(text);
   else toast.error(text);
   return true;
 }
