@@ -477,6 +477,23 @@ jobs:
         working-directory: server
         run: pnpm test
 
+      # #456 — the exporter tests that need a REAL headless Chromium to render a
+      # PDF / DOCX (moved out of the unit fan-out by #447 / PR #451, which ran them
+      # nowhere). Install the Chrome build puppeteer pins, explicitly rather than
+      # trusting its postinstall download, then run the suite on its own, after the
+      # unit suite, so the Chromium spawn does not contend with vitest workers
+      # (#388). The suite asserts the PDF / DOCX unconditionally, so a Chromium that
+      # cannot launch (the exporter degrades to HTML) fails this step. The runner
+      # image already carries Chrome's system libraries. Guarded by
+      # scripts/lib/ci-real-chromium-repo.test.mjs.
+      - name: Install puppeteer's Chrome
+        working-directory: server
+        run: pnpm exec puppeteer browsers install chrome
+
+      - name: Test exporters against a real Chromium
+        working-directory: server
+        run: pnpm test:integration exporters-real-chromium
+
   # Epic #294 (#303) — metis-sql-lineage Python sidecar checks.
   #
   # Issue #1191 — a PR that changes source must add ONE changelog fragment under
