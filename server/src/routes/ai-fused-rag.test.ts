@@ -251,10 +251,11 @@ describe("buildAutoRagContext — #1321 context capture", () => {
     search.mockResolvedValue({
       hits: [docHit, { ...docHit, chunkId: "c2", filename: "B.java", position: 1, score: 0.8 }],
     });
-    const capture = { contexts: [] as string[] };
+    const capture = { contexts: [] as string[], sources: 0 };
     const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}), capture);
 
     expect(capture.contexts).toHaveLength(2);
+    expect(capture.sources).toBe(2);
     expect(capture.contexts[0]).toContain("public class Doc {}");
     expect(capture.contexts[0]).not.toContain("## Retrieved Knowledge");
     expect(capture.contexts[1]).toContain("[2] B.java#1");
@@ -267,7 +268,7 @@ describe("buildAutoRagContext — #1321 context capture", () => {
     // sequence the block separator uses.
     const ruled = { ...docHit, text: "before the rule\n\n---\n\nafter the rule" };
     search.mockResolvedValue({ hits: [ruled] });
-    const capture = { contexts: [] as string[] };
+    const capture = { contexts: [] as string[], sources: 0 };
     await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}), capture);
 
     expect(capture.contexts).toHaveLength(1);
@@ -283,7 +284,7 @@ describe("buildAutoRagContext — #1321 context capture", () => {
       [{ symbolId: "s2", filePath: "y", name: "Validator", kind: "class", score: 1 }],
       { s2: { filePath: "src/main/java/Validator.java", startLine: 3, endLine: 40 } },
     );
-    const capture = { contexts: [] as string[] };
+    const capture = { contexts: [] as string[], sources: 0 };
     await buildAutoRagContext("p1", [userTurn], deps, capture);
 
     expect(capture.contexts).toHaveLength(2);
@@ -292,20 +293,45 @@ describe("buildAutoRagContext — #1321 context capture", () => {
     expect(capture.contexts[1]).toContain("Retrieved Code Symbols");
   });
 
+  it("#439 — counts each fused code symbol as a source, not the block as one", async () => {
+    process.env.CHAT_FUSED_CODE_RETRIEVAL = "true";
+    __resetConfigSingleton();
+    search.mockResolvedValue({ hits: [docHit] });
+    const deps = fusedDeps(
+      [
+        { symbolId: "s2", filePath: "y", name: "Validator", kind: "class", score: 1 },
+        { symbolId: "s3", filePath: "z", name: "Parser", kind: "class", score: 0.9 },
+        { symbolId: "s4", filePath: "w", name: "Lexer", kind: "class", score: 0.8 },
+      ],
+      {
+        s2: { filePath: "src/Validator.java", startLine: 3, endLine: 40 },
+        s3: { filePath: "src/Parser.java", startLine: 1, endLine: 20 },
+        s4: { filePath: "src/Lexer.java", startLine: 1, endLine: 10 },
+      },
+    );
+    const capture = { contexts: [] as string[], sources: 0 };
+    await buildAutoRagContext("p1", [userTurn], deps, capture);
+
+    // One doc chunk + one fused block holding three symbols = four sources.
+    expect(capture.contexts).toHaveLength(2);
+    expect(capture.sources).toBe(4);
+  });
+
   it("leaves the capture empty when retrieval throws mid-way", async () => {
     __resetConfigSingleton();
     search.mockRejectedValue(new Error("lancedb down"));
-    const capture = { contexts: ["stale"] };
+    const capture = { contexts: ["stale"], sources: 3 };
     const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}), capture);
 
     expect(out).toBe("");
     expect(capture.contexts).toEqual([]);
+    expect(capture.sources).toBe(0);
   });
 
   it("captures nothing when there are no hits", async () => {
     __resetConfigSingleton();
     search.mockResolvedValue({ hits: [] });
-    const capture = { contexts: [] as string[] };
+    const capture = { contexts: [] as string[], sources: 0 };
     expect(await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}), capture)).toBe("");
     expect(capture.contexts).toEqual([]);
   });

@@ -13,6 +13,16 @@ describe("groundingText (#18)", () => {
     ).toBe("Grounded in Payments · 1 source");
   });
 
+  it("#439 — counts the code lookups that read the project, with or without excerpts", () => {
+    const g = { status: "grounded", projectId: "p", projectName: "Payments" } as const;
+    expect(groundingText({ ...g, sources: 3, toolReads: 2 })).toBe(
+      "Grounded in Payments · 3 sources · 2 code lookups",
+    );
+    expect(groundingText({ ...g, sources: 0, toolReads: 1 })).toBe(
+      "Grounded in Payments · 1 code lookup",
+    );
+  });
+
   it("says plainly when an answer is not grounded, and why", () => {
     expect(groundingText({ status: "unscoped" })).toMatch(/^Not grounded — no project selected/);
     expect(

@@ -141,4 +141,59 @@ describe("chat page — grounding (#18)", () => {
     const question = screen.getByText("q").closest("li")!;
     expect(within(question).queryByTestId("chat-grounding")).toBeNull();
   });
+
+  describe("#439 — no grounding badge under a reply that did not finish", () => {
+    it("hides the live badge when the stream fails after part of the answer", async () => {
+      state.projectId = "p1";
+      state.events = [
+        { type: "grounding", grounding: GROUNDED },
+        { type: "delta", content: "partial answer" },
+        { type: "error", code: "AI_PROVIDER_ERROR", message: "the provider dropped it" },
+      ];
+      getTranscriptSince.mockReturnValue(new Promise(() => undefined));
+      render(<ChatPage />);
+      await send("q");
+      const reply = (await screen.findByText("partial answer")).closest("li")!;
+      await within(reply).findByTestId("incomplete-answer-notice");
+      expect(within(reply).queryByTestId("chat-grounding")).toBeNull();
+    });
+
+    it("hides the live badge when the stream fails before any answer", async () => {
+      state.projectId = "p1";
+      state.events = [
+        { type: "grounding", grounding: GROUNDED },
+        { type: "error", code: "AI_PROVIDER_ERROR", message: "the provider refused" },
+      ];
+      getTranscriptSince.mockReturnValue(new Promise(() => undefined));
+      render(<ChatPage />);
+      await send("q");
+      // The reply renders the error as "⚠ <message>"; the page banner repeats it.
+      const reply = (await screen.findByText("⚠ the provider refused")).closest("li")!;
+      expect(within(reply).queryByTestId("chat-grounding")).toBeNull();
+    });
+
+    it("hides the badge on an incomplete reply read back from the transcript", async () => {
+      state.events = [{ type: "delta", content: "answer" }, { type: "done" }];
+      getTranscriptSince.mockResolvedValue({
+        afterOrdinal: 0,
+        rows: [
+          { role: "user", content: "q", ordinal: 1, compacted: false },
+          {
+            role: "assistant",
+            content: "cut short",
+            ordinal: 2,
+            compacted: false,
+            incomplete: "The response was stopped before it finished.",
+            grounding: GROUNDED,
+          },
+        ],
+        compactionUpdates: [],
+      });
+      render(<ChatPage />);
+      await send("q");
+      const reply = (await screen.findByText("cut short")).closest("li")!;
+      expect(within(reply).getByTestId("incomplete-answer-notice")).toBeTruthy();
+      expect(within(reply).queryByTestId("chat-grounding")).toBeNull();
+    });
+  });
 });

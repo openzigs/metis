@@ -636,7 +636,10 @@ export default function ChatPage() {
                         {m.content || (streaming ? "…" : "")}
                       </span>
                     )}
-                    {m.role === "assistant" ? <GroundingBadge grounding={m.grounding} /> : null}
+                    {/* #439 — no grounding claim under a reply that failed or stopped early. */}
+                    {m.role === "assistant" && !m.incomplete && !m.isError ? (
+                      <GroundingBadge grounding={m.grounding} />
+                    ) : null}
                     {m.role === "assistant" && m.toolCalls ? (
                       <TranscriptToolCalls calls={m.toolCalls} sessionId={session?.id ?? null} />
                     ) : null}

@@ -18,7 +18,7 @@ import { withInvokeAgentSpan } from "../../otel/genai-spans.js";
 import type { ApprovalGateService } from "../approval-policy.js";
 import type { RuntimeToolset } from "./toolset.js";
 import { executeToolCall, type ExecutedToolCall } from "./executor.js";
-import type { RuntimeToolContext, ToolEvent } from "./types.js";
+import type { RuntimeToolContext, ToolEvent, ToolSource } from "./types.js";
 
 /** Model turns per chat turn: a few rounds of tool calls plus the answer. */
 export const CHAT_TOOL_MAX_TURNS = 6;
@@ -38,6 +38,10 @@ export interface ChatToolRecord {
   executed: boolean;
   /** #147 — the sub-agent run this call started (its stored transcript). */
   subAgentRunId?: string;
+  /** #439 — where the tool comes from (`code`, `mcp`, …), when it resolved. */
+  source?: ToolSource;
+  /** #439 — code tools: how many results came back (`0` = found nothing). */
+  resultCount?: number;
 }
 
 export interface ChatToolTurnResult {
@@ -185,6 +189,9 @@ export async function runChatToolTurn(
             ...(executed.errorCode ? { errorCode: executed.errorCode } : {}),
             ...(executed.subAgentRunId ? { subAgentRunId: executed.subAgentRunId } : {}),
           };
+          const source = input.toolset.resolve(executed.tool)?.source;
+          if (source) record.source = source;
+          if (typeof executed.resultCount === "number") record.resultCount = executed.resultCount;
           const modelCopy = capForModel(executed.text, options.toolResultMaxChars);
           if (modelCopy !== executed.text) record.truncated = true;
           records.push(record);
