@@ -142,6 +142,38 @@ describe("chat page — grounding (#18)", () => {
     expect(within(question).queryByTestId("chat-grounding")).toBeNull();
   });
 
+  it("#464 — a later grounding frame replaces the earlier one on the live reply", async () => {
+    state.projectId = "p1";
+    const noContext = { status: "no-context", projectId: "p1", projectName: "Payments" };
+    state.events = [
+      // First what auto-retrieval supplied (nothing) …
+      { type: "grounding", grounding: noContext },
+      { type: "tool_call", name: "search-knowledge", arguments: { query: "dns" } },
+      { type: "delta", content: "answer" },
+      // … then, after the tool loop, what the tools read of the project.
+      {
+        type: "grounding",
+        grounding: { ...noContext, status: "grounded", sources: 0, toolReads: 2 },
+      },
+      { type: "done" },
+    ];
+    getTranscriptSince.mockReturnValue(new Promise(() => undefined)); // never lands
+    render(<ChatPage />);
+    await send("q");
+    const reply = (await screen.findByText("answer")).closest("li")!;
+    await waitFor(() =>
+      expect(within(reply).getByTestId("chat-grounding")).toHaveAttribute(
+        "data-grounding",
+        "grounded",
+      ),
+    );
+    // Exactly one badge: the second frame replaced the first, it did not add one.
+    expect(within(reply).getAllByTestId("chat-grounding")).toHaveLength(1);
+    expect(within(reply).getByTestId("chat-grounding").textContent).toBe(
+      "Grounded in Payments · 2 project lookups",
+    );
+  });
+
   describe("#439 — no grounding badge under a reply that did not finish", () => {
     it("hides the live badge when the stream fails after part of the answer", async () => {
       state.projectId = "p1";

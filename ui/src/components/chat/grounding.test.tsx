@@ -13,13 +13,15 @@ describe("groundingText (#18)", () => {
     ).toBe("Grounded in Payments · 1 source");
   });
 
-  it("#439 — counts the code lookups that read the project, with or without excerpts", () => {
+  it("#439 — counts the tool lookups that read the project, with or without excerpts", () => {
     const g = { status: "grounded", projectId: "p", projectName: "Payments" } as const;
+    // #464 — a knowledge-base search counts too, so the label says "project
+    // lookup", not "code lookup".
     expect(groundingText({ ...g, sources: 3, toolReads: 2 })).toBe(
-      "Grounded in Payments · 3 sources · 2 code lookups",
+      "Grounded in Payments · 3 sources · 2 project lookups",
     );
     expect(groundingText({ ...g, sources: 0, toolReads: 1 })).toBe(
-      "Grounded in Payments · 1 code lookup",
+      "Grounded in Payments · 1 project lookup",
     );
   });
 

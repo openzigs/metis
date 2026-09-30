@@ -176,6 +176,24 @@ describe("buildSessionToolset", () => {
     );
   });
 
+  it("#464 — registry execution forwards the tool's result count", async () => {
+    const set = await buildSessionToolset({
+      ctx: CTX,
+      registry: registryWith(
+        def("search-knowledge", { exec: async () => ({ text: "hits", resultCount: 4 }) }),
+        def("found-nothing", { exec: async () => ({ text: "(none)", resultCount: 0 }) }),
+      ),
+    });
+    await expect(set.resolve("search-knowledge")!.execute({ q: "x" }, CTX)).resolves.toEqual({
+      text: "hits",
+      resultCount: 4,
+    });
+    await expect(set.resolve("found-nothing")!.execute({ q: "x" }, CTX)).resolves.toEqual({
+      text: "(none)",
+      resultCount: 0,
+    });
+  });
+
   it("a tool's raw exception text is turned into a failure, never returned as a result", async () => {
     const set = await buildSessionToolset({
       ctx: CTX,

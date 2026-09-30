@@ -40,7 +40,7 @@ vi.mock("@/components/chat/agent-picker", () => ({
 
 vi.mock("@/lib/projects-api", () => ({
   projectsApi: { list: vi.fn() },
-  documentsApi: { list: vi.fn() },
+  documentsApi: { list: vi.fn(), listAfter: vi.fn() },
 }));
 
 // #23 — the Workbench resolves connector ids to repository names.
@@ -75,6 +75,7 @@ import { projectsApi, documentsApi } from "@/lib/projects-api";
 
 const projectsListMock = projectsApi.list as unknown as ReturnType<typeof vi.fn>;
 const documentsListMock = documentsApi.list as unknown as ReturnType<typeof vi.fn>;
+const documentsListAfterMock = documentsApi.listAfter as unknown as ReturnType<typeof vi.fn>;
 const createSessionMock = vi.mocked(aiClient.createSession);
 const streamChatMock = vi.mocked(aiClient.streamChat);
 
@@ -216,12 +217,20 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
       filename: `upload-${i}.md`,
       status: "ready",
     }));
-    documentsListMock.mockImplementation(
-      async (_p: string, params?: { limit?: number; offset?: number }) => {
-        const limit = params?.limit ?? 25;
-        const offset = params?.offset ?? 0;
-        return { items: all.slice(offset, offset + limit), total: all.length, limit, offset };
-      },
+    // #440 — the panel follows the server's cursor; here the cursor is the offset.
+    const pageAt = (offset: number, limit: number) => ({
+      items: all.slice(offset, offset + limit),
+      limit,
+      nextCursor: offset + limit < all.length ? String(offset + limit) : null,
+    });
+    documentsListMock.mockImplementation(async (_p: string, params?: { limit?: number }) => ({
+      ...pageAt(0, params?.limit ?? 25),
+      total: all.length,
+      offset: 0,
+    }));
+    documentsListAfterMock.mockImplementation(
+      async (_p: string, cursor: string, params?: { limit?: number }) =>
+        pageAt(Number(cursor), params?.limit ?? 25),
     );
 
     const Wrapper = makeWrapper({ withAuth: false });
@@ -271,5 +280,32 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     expect(
       within(chips).getByRole("listitem", { name: "Remove README.md — wms-core from context" }),
     ).toBeInTheDocument();
+  });
+
+  it("labels a chip for an unnamed repository without an id fragment (#440)", async () => {
+    const user = userEvent.setup();
+    repoListMock.mockResolvedValueOnce([]);
+    documentsListMock.mockResolvedValue({
+      items: [
+        {
+          id: "doc-repo",
+          filename: "connector:repo:cmexample0000000000acmerp:README.md",
+          status: "ready",
+        },
+      ],
+    });
+
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(<WorkbenchPage />, { wrapper: Wrapper });
+
+    await user.click(await screen.findByRole("button", { name: /Unnamed repository/ }));
+    await user.click(screen.getByTestId("workbench-doc-attach-doc-repo"));
+
+    const chips = await screen.findByTestId("workbench-context-chips");
+    const chip = within(chips).getByRole("listitem", {
+      name: "Remove README.md — Unnamed repository from context",
+    });
+    expect(chips.textContent).not.toContain("acmerp");
+    expect(chip.getAttribute("title")).not.toContain("acmerp");
   });
 });

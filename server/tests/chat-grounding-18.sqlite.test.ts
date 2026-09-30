@@ -26,6 +26,9 @@ const state = vi.hoisted(() => {
     db: null as unknown,
     hits: [] as Array<{ filename: string; position: number; score: number; text: string }>,
     searched: [] as string[],
+    /** #464 — hits for one query only (what the search-knowledge tool asks). */
+    toolQuery: null as string | null,
+    toolHits: [] as Array<{ filename: string; position: number; score: number; text: string }>,
   };
 });
 
@@ -42,9 +45,9 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("../src/lib/rag/knowledge-service.js", async (original) => ({
   ...(await original<typeof import("../src/lib/rag/knowledge-service.js")>()),
   getKnowledgeService: () => ({
-    search: async (projectId: string) => {
+    search: async (projectId: string, query: string) => {
       state.searched.push(projectId);
-      return { hits: state.hits };
+      return { hits: query === state.toolQuery ? state.toolHits : state.hits };
     },
   }),
 }));
@@ -53,6 +56,8 @@ const { aiRouter, setAIProviderForTests } = await import("../src/routes/ai.js");
 const { aiConversationRouter } = await import("../src/routes/ai-conversation.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
+const { registerSearchKnowledgeTool, __resetSearchKnowledgeRegistration } =
+  await import("../src/lib/rag/search-knowledge-tool.js");
 
 /** A scripted `chat()` reply that throws instead of answering. */
 const THROW = "__throw__";
@@ -91,6 +96,48 @@ class ScriptedProvider implements AIProvider {
   }
   async ping() {
     return true;
+  }
+}
+
+/**
+ * #464 — a tool-capable model. METIS registry tools (`search-knowledge`) are
+ * offered only as NATIVE tool definitions, so this stub answers its first model
+ * call with a native tool call and the next with text.
+ */
+class NativeToolProvider extends ScriptedProvider {
+  readonly capabilities = { responseFormat: false, nativeToolCalls: true };
+  /** Native tool calls to make, one per model call, before answering. */
+  toolCalls: Array<{ name: string; args: unknown }> = [];
+  private next(): { id: string; name: string; args: unknown } | null {
+    const call = this.toolCalls.shift();
+    return call ? { id: `call-${this.prompts.length}`, ...call } : null;
+  }
+  override async chat(messages: ChatMessage[]) {
+    this.prompts.push(messages);
+    const call = this.next();
+    return {
+      content: call ? "" : "chat answer",
+      ...(call ? { toolCalls: [call] } : {}),
+      usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+      model: "stub-model",
+      provider: this.key,
+    };
+  }
+  override async *stream(messages: ChatMessage[]): AsyncGenerator<ChatChunk> {
+    this.prompts.push(messages);
+    const call = this.next();
+    if (call) {
+      yield {
+        type: "tool_call",
+        name: call.name,
+        arguments: call.args,
+        toolCallId: call.id,
+        native: true,
+      };
+    } else {
+      yield { type: "delta", content: "stream answer" };
+    }
+    yield { type: "done", finishReason: call ? "tool_use" : "stop" };
   }
 }
 
@@ -186,6 +233,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       setAIProviderForTests(model);
       state.hits = [];
       state.searched = [];
+      state.toolQuery = null;
+      state.toolHits = [];
     });
 
     it("an 'All projects' (unscoped) reply is marked unscoped, live and on reload, and runs no retrieval", async () => {
@@ -342,6 +391,77 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         };
         expect(res.body.data.grounding).toEqual(expected);
         expect(await replyGroundings(sessionId)).toEqual([expected]);
+      });
+    });
+
+    describe("#464 — the project-scoped search-knowledge tool counts as grounding", () => {
+      const QUERY = "rebinding defence";
+      let native: NativeToolProvider;
+      const searchKnowledge = (projectId: string) => ({
+        name: "search-knowledge",
+        args: { projectId, query: QUERY },
+      });
+      beforeAll(() => registerSearchKnowledgeTool());
+      afterAll(() => __resetSearchKnowledgeRegistration());
+      beforeEach(() => {
+        native = new NativeToolProvider();
+        setAIProviderForTests(native);
+        state.toolQuery = QUERY;
+        state.toolHits = [
+          { filename: "ssrf.md", position: 0, score: 0.9, text: "resolveAndPin() pins the IP" },
+        ];
+      });
+      const grounded = {
+        status: "grounded",
+        projectId: PROJECT,
+        projectName: "Payments",
+        sources: 0,
+        toolReads: 1,
+      };
+      const noContext = { status: "no-context", projectId: PROJECT, projectName: "Payments" };
+
+      it("a scoped streamed reply grounded only by search-knowledge is labelled grounded, live and on reload", async () => {
+        native.toolCalls = [searchKnowledge(PROJECT)];
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "How is DNS handled?" });
+        expect(res.text).toContain("event: done");
+        // Auto-retrieval found nothing; the tool's read is what grounds it.
+        expect(groundingFrames(res.text)).toEqual([noContext, grounded]);
+        // The knowledge base's excerpt really reached the model.
+        expect(JSON.stringify(native.prompts[1])).toContain("resolveAndPin() pins the IP");
+        expect(await replyGroundings(sessionId)).toEqual([grounded]);
+      });
+
+      it("the /chat turn counts it too", async () => {
+        native.toolCalls = [searchKnowledge(PROJECT)];
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/chat", { sessionId, message: "How is DNS handled?" });
+        expect(res.status, res.text).toBe(200);
+        expect(JSON.stringify(native.prompts[1])).toContain("resolveAndPin() pins the IP");
+        expect(res.body.data.grounding).toEqual(grounded);
+        expect(await replyGroundings(sessionId)).toEqual([grounded]);
+      });
+
+      it("a search of another project is refused and leaves the turn no-context", async () => {
+        native.toolCalls = [searchKnowledge("p-other")];
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "How is DNS handled?" });
+        expect(res.text).toContain("event: done");
+        expect(groundingFrames(res.text)).toEqual([noContext]);
+        expect(state.searched).not.toContain("p-other");
+        expect(await replyGroundings(sessionId)).toEqual([noContext]);
+      });
+
+      it("a search that found nothing leaves the turn no-context", async () => {
+        state.toolHits = [];
+        native.toolCalls = [searchKnowledge(PROJECT)];
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "How is DNS handled?" });
+        expect(res.text).toContain("event: done");
+        // The tool did run (a second project search after auto-retrieval's).
+        expect(state.searched).toEqual([PROJECT, PROJECT]);
+        expect(groundingFrames(res.text)).toEqual([noContext]);
+        expect(await replyGroundings(sessionId)).toEqual([noContext]);
       });
     });
   },

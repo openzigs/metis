@@ -163,6 +163,18 @@ export function toPanelEntries(
   });
 }
 
+/**
+ * #440 — one line naming an entry outside the tree (the attached-document chips
+ * above the chat): a repository file as `<basename> — <repository>`, another
+ * source as `<source>: <name>`, an upload by its name. Built from the panel's
+ * entry, so it never carries an internal id fragment either.
+ */
+export function entryLabel(entry: PanelEntry): string {
+  if (entry.kind === "repo") return `${entry.name} — ${entry.repoName}`;
+  if (entry.kind === "source") return entry.title;
+  return entry.name;
+}
+
 /** `connector:repo:<connectorId>:<path>` → `<connectorId>`. */
 function connectorIdOf(rawId: string): string | undefined {
   return /^connector:repo:([^:]+):/.exec(rawId)?.[1];
