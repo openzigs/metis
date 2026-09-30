@@ -679,6 +679,9 @@ describe("POST /api/ai/stream — no write after the response ended (#521)", () 
 
   const ENV_KEYS = ["AI_STREAM_HEARTBEAT_MS", "AI_STREAM_MAX_DURATION_MS"] as const;
   const prevEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
+  // Released in afterEach too, so a failed assertion cannot leave the stalled
+  // provider turn hanging until the worker exits (PR #536 review).
+  let pendingRelease: (() => void) | null = null;
 
   beforeEach(() => {
     for (const k of ENV_KEYS) prevEnv[k] = process.env[k];
@@ -686,6 +689,8 @@ describe("POST /api/ai/stream — no write after the response ended (#521)", () 
   });
 
   afterEach(() => {
+    pendingRelease?.();
+    pendingRelease = null;
     vi.useRealTimers();
     for (const k of ENV_KEYS) {
       if (prevEnv[k] === undefined) delete process.env[k];
@@ -702,6 +707,7 @@ describe("POST /api/ai/stream — no write after the response ended (#521)", () 
     const probe: Probe = { res: null, writesAfterEnd: [], writes: [], errors: [] };
     const started = deferred();
     const release = deferred();
+    pendingRelease = release.resolve;
     setAIProviderForTests(stallingProvider(started.resolve, release.promise));
     const app = makeProbedApp(probe, opts);
     const sessionId = (await auth(request(app).post("/api/ai/sessions").send({}))).body.data.session
@@ -787,12 +793,13 @@ describe("POST /api/ai/stream — no write after the response ended (#521)", () 
   });
 
   it("listens for 'error' on the SSE response, so a socket error cannot crash the process", async () => {
-    const { probe, release, sessionId } = await openAndEnd({ listenForErrors: false });
+    const { probe, release, response, sessionId } = await openAndEnd({ listenForErrors: false });
 
     // With no listener, EventEmitter throws an unhandled 'error' synchronously.
     expect(() => probe.res!.emit("error", new Error("socket reset"))).not.toThrow();
 
     socketTimeout(probe);
+    await response;
     release.resolve();
     await turnRecorded(sessionId);
   });
