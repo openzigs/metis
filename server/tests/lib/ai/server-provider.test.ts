@@ -4,7 +4,13 @@
  * GIVEN (not `process.env`), including the record/replay flags, on both of its
  * construction paths.
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FixtureStore } from "../../../src/lib/ai/fixtures/fixture-store.js";
+import { fixtureKey } from "../../../src/lib/ai/fixtures/fixture-key.js";
+import type { ChatMessage } from "../../../src/lib/ai/types.js";
 import { buildServerProvider } from "../../../src/lib/ai/server-provider.js";
 import { OfflineStubProvider } from "../../../src/lib/ai/providers/offline-stub-provider.js";
 import { BedrockDirectProvider } from "../../../src/lib/ai/providers/bedrock-direct-provider.js";
@@ -26,7 +32,7 @@ beforeEach(() => {
   // The flags must come from the env argument; keep the process's out of it.
   vi.stubEnv("AI_REPLAY", undefined);
   vi.stubEnv("AI_RECORD", undefined);
-  vi.stubEnv("AI_FIXTURE_DIR", "/tmp/metis-558-fixtures");
+  vi.stubEnv("AI_FIXTURE_DIR", undefined);
 });
 
 afterEach(() => {
@@ -67,5 +73,47 @@ describe("buildServerProvider (#558)", () => {
     vi.stubEnv("AI_REPLAY", "1");
     expect(buildServerProvider({ ...OPENAI, AI_REPLAY: "0" })).not.toBeInstanceOf(ReplayProvider);
     expect(buildServerProvider({ ...LOCAL, AI_REPLAY: "0" })).not.toBeInstanceOf(ReplayProvider);
+  });
+
+  describe("fixture directory", () => {
+    const dirs: string[] = [];
+    const tempDir = (label: string): string => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), `metis-558-${label}-`));
+      dirs.push(dir);
+      return dir;
+    };
+    afterEach(() => {
+      for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    });
+
+    const messages: ChatMessage[] = [{ role: "user", content: "which fixture dir? (#558)" }];
+    const seed = (dir: string, content: string) =>
+      new FixtureStore(dir).write(
+        fixtureKey(messages),
+        messages,
+        {},
+        {
+          content,
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "fixture",
+          provider: "openai",
+        },
+      );
+
+    it.each([
+      ["the factory path", OPENAI],
+      ["the Bedrock-direct path", LOCAL],
+    ])("replays from the GIVEN env's AI_FIXTURE_DIR, not process.env's, on %s", async (_l, env) => {
+      const processDir = tempDir("process");
+      const givenDir = tempDir("given");
+      await seed(processDir, "from process.env");
+      await seed(givenDir, "from the given env");
+      vi.stubEnv("AI_FIXTURE_DIR", processDir);
+
+      const p = buildServerProvider({ ...env, AI_REPLAY: "1", AI_FIXTURE_DIR: givenDir });
+
+      expect(p).toBeInstanceOf(ReplayProvider);
+      expect((await p.chat(messages)).content).toBe("from the given env");
+    });
   });
 });

@@ -36,9 +36,12 @@ export function resolveFixtureMode(env: NodeJS.ProcessEnv = process.env): Fixtur
 }
 
 export interface InstallFixturesOptions {
-  /** Override the environment used to resolve the mode (tests inject this). */
+  /**
+   * Override the environment used to resolve the mode AND the fixture
+   * directory — both come from the same env, never one from `process.env` (#558).
+   */
   env?: NodeJS.ProcessEnv;
-  /** Override the fixture directory (defaults to {@link resolveFixtureDir}). */
+  /** Override the fixture directory (defaults to {@link resolveFixtureDir} over `env`). */
   fixtureDir?: string;
   /** Fallback provider used by replay for `embed()` / fixture misses. */
   fallbackProvider?: AIProvider;
@@ -61,7 +64,7 @@ export function maybeWrapProviderForFixtures(
   const mode = resolveFixtureMode(env);
   if (mode === "off") return provider;
 
-  const dir = opts.fixtureDir ?? resolveFixtureDir();
+  const dir = opts.fixtureDir ?? resolveFixtureDir(process.cwd(), env);
   const store = new FixtureStore(dir);
 
   if (mode === "replay") {

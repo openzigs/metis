@@ -100,7 +100,7 @@ describe("createProviderJudgeCaller", () => {
         model: "claude-sonnet-4-5",
         servesRouterModel: (id: string) => id === HAIKU_MODEL_ID,
       });
-      expect(createProviderJudgeCaller(provider).modelFor?.(HAIKU_MODEL_ID)).toBe(HAIKU_MODEL_ID);
+      expect(createProviderJudgeCaller(provider).modelFor(HAIKU_MODEL_ID)).toBe(HAIKU_MODEL_ID);
     });
 
     it("sends a non-Claude provider its configured model", () => {
@@ -109,13 +109,13 @@ describe("createProviderJudgeCaller", () => {
         model: "gpt-4o-mini",
         servesRouterModel: () => false,
       });
-      expect(createProviderJudgeCaller(provider).modelFor?.(HAIKU_MODEL_ID)).toBe("gpt-4o-mini");
+      expect(createProviderJudgeCaller(provider).modelFor(HAIKU_MODEL_ID)).toBe("gpt-4o-mini");
     });
 
     it("treats a provider that cannot answer as unable", () => {
       // makeProvider defines no servesRouterModel.
       const provider = makeProvider({ model: "stub-model" });
-      expect(createProviderJudgeCaller(provider).modelFor?.(HAIKU_MODEL_ID)).toBe("stub-model");
+      expect(createProviderJudgeCaller(provider).modelFor(HAIKU_MODEL_ID)).toBe("stub-model");
     });
   });
 });

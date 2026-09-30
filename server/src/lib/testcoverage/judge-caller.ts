@@ -10,14 +10,14 @@
  */
 import { tierModelFor } from "../ai/model-router.js";
 import type { AIProvider } from "../ai/types.js";
-import type { JudgeModelCaller } from "./judge.js";
+import type { ProviderJudgeModelCaller } from "./judge.js";
 
 /**
- * Build a {@link JudgeModelCaller} backed by a concrete {@link AIProvider}.
+ * Build a {@link ProviderJudgeModelCaller} backed by a concrete {@link AIProvider}.
  * Tools are disabled for these calls — the judge expects a pure JSON text
  * response and must not be tempted into tool use.
  */
-export function createProviderJudgeCaller(provider: AIProvider): JudgeModelCaller {
+export function createProviderJudgeCaller(provider: AIProvider): ProviderJudgeModelCaller {
   return {
     // #558 — a Claude tier id only on a provider that serves it (#532).
     modelFor: (tierId) => tierModelFor(provider, tierId),

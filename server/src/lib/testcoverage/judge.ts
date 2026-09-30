@@ -61,6 +61,7 @@ export interface JudgeModelCaller {
    * #558 — the model to send for Claude tier `tierId` on the provider behind
    * this caller (`tierModelFor`). The judge sends it and keys its LLM cache on
    * it. Omitted (a test stub with no provider behind it): the tier id as-is.
+   * Production wiring requires it — see {@link ProviderJudgeModelCaller}.
    */
   modelFor?(tierId: string): string;
   /**
@@ -72,6 +73,16 @@ export interface JudgeModelCaller {
     systemPrompt: string;
     userPrompt: string;
   }): Promise<JudgeCallResult>;
+}
+
+/**
+ * #558 — the caller production wires (`createProviderJudgeCaller`, required by
+ * `configureTestCoverageRuntime`). `modelFor` is REQUIRED here: a production
+ * caller that omitted it would silently send the Claude tier id to a provider
+ * that may not serve it. Only test stubs use the optional form above.
+ */
+export interface ProviderJudgeModelCaller extends JudgeModelCaller {
+  modelFor(tierId: string): string;
 }
 
 /** One model call's output, usage, and what served it. */

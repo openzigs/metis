@@ -541,6 +541,7 @@ describe("configureTestCoverageRuntime (#886)", () => {
     const { db, reqFindMany } = makeScoringDb();
     const events: TestCoverageEvent[] = [];
     const caller = {
+      modelFor: (tierId: string) => tierId,
       call: vi.fn().mockResolvedValue({
         raw: JSON.stringify({ suggestions: [] }),
         promptTokens: 0,
