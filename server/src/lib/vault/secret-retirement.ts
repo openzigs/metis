@@ -11,8 +11,10 @@
  *
  * "Could still resolve" is judged by every column a caller can point at an
  * EXISTING secret of their choosing: repo / DB connector `secretId`, MCP server
- * env / headers / env-secret pointer, a publish batch's `secretRef`, and the
- * Jira and test-management connections themselves. Stores that only ever hold
+ * env / headers / env-secret pointer, a publish batch's `secretRef`, a chat
+ * session's BYOK `providerSecretRef` (#305), a scheduled job's payload (the
+ * http-webhook `authHeader`, resolved with `vault.read`), and the Jira and
+ * test-management connections themselves. Stores that only ever hold
  * a secret they created under their own system label (Slack, Teams, PagerDuty,
  * import sources, suggested-connector passwords) cannot name a connector's
  * secret and are not consulted.
@@ -57,6 +59,8 @@ export async function isSecretReferenced(id: string, name: string): Promise<bool
       },
     }),
     prisma.publishBatch.count({ where: { OR: containsAny("metadata") } }),
+    prisma.aISession.count({ where: { OR: containsAny("providerSecretRef") } }),
+    prisma.scheduledJob.count({ where: { OR: containsAny("payload") } }),
   ]);
   return counts.some((n) => n > 0);
 }

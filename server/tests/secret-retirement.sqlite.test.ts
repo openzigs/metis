@@ -150,6 +150,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await isLive(before.secretId)).toBe(true);
     });
 
+    it("Jira: an old secret the owner's BYOK chat session uses is left alone", async () => {
+      const before = await ownerJira();
+      await db.aISession.create({
+        data: {
+          userId: OWNER,
+          provider: "anthropic",
+          model: "m",
+          providerSecretRef: before.secretId,
+        },
+      });
+
+      await jira.updateJiraConnection(before.id, { apiToken: "coord-token" }, COORD);
+
+      const after = await db.jiraConnection.findUniqueOrThrow({ where: { id: before.id } });
+      expect(after.secretId).not.toBe(before.secretId);
+      expect(await isLive(before.secretId)).toBe(true);
+      expect((await vault.read(before.secretId)).plaintext).toBe("owner-token");
+    });
+
     // ---- Test management ----------------------------------------------------
 
     const tmDeps = () => ({ prisma: db, vault, assertHost: async () => undefined });
@@ -340,6 +359,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
               targetRepo: "r",
               startedById: OWNER,
               metadata: JSON.stringify({ secretRef: `\${vault:${id}}` }),
+            },
+          }),
+      ],
+      [
+        "AI session providerSecretRef (BYOK)",
+        (id) =>
+          db.aISession.create({
+            data: { userId: OWNER, provider: "anthropic", model: "m", providerSecretRef: id },
+          }),
+      ],
+      [
+        "scheduled http-webhook authHeader",
+        (id) =>
+          db.scheduledJob.create({
+            data: {
+              key: uniq("job"),
+              name: "hook",
+              cron: "0 * * * *",
+              taskType: "http-webhook",
+              payload: JSON.stringify({
+                url: "https://hook.example.test",
+                authHeader: `\${vault:${id}}`,
+              }),
             },
           }),
       ],
