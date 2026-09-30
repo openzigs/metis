@@ -45,6 +45,9 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Import pass 1 commits](project_logical-import-pass1-commits-early.md) — sanitise untrusted fields before batch.push (#531)
 - [Workspace delete is soft](project_workspace-delete-is-soft.md) — filter deletedAt in membership scope and at sinks (#549, #561)
 - [Dependency audit flips](project_dependency-audit-flips-on-new-advisories.md) — new advisories redden all PRs; fix once, update-branch (#555)
-- [Section splitter cost](project_markdown-sections-cost-and-harness.md) — cache covered lines; bound on chars parsed; mixed-CRLF rows
+- [Section splitter cost](project_markdown-sections-cost-and-harness.md) — cache lines; bound on chars; mixed-CRLF rows; divergent def first
 - [Env helpers](project_env-helpers-read-everything-from-env.md) — read AI_FIXTURE_DIR etc. from the passed env, not process.env (#565)
 - [Stale PR deferrals](project_stale-blocked-on-pr-deferrals.md) — re-check the blocking PR's state before a deferral (#559)
+- [SQLite tests skip on Postgres](project_sqlite-tests-skip-on-postgres-adapter.md) — mocked sibling asserts controls; run a PG twin for raw SQL
+- [Parallel PR semantic conflicts](project_parallel-prs-semantic-conflicts.md) — clean merge can bypass a guard; updateMany bumps @updatedAt
+- [Time-bounded refs need recheck](project_time-dependent-refs-need-recheck.md) — one-shot retirement; test fakes miss new methods
