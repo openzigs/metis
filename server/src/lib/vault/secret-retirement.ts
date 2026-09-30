@@ -37,7 +37,7 @@ import {
   retryWindowCutoff,
   VAULT_REFERENCING_TASK_TYPE,
 } from "../scheduler/task-retry-window.js";
-import type { VaultService } from "./vault-service.js";
+import type { RotationUndo, VaultService } from "./vault-service.js";
 
 const log = createChildLogger("secret-retirement");
 
@@ -194,6 +194,56 @@ export async function withdrawCreatedSecrets(
     } catch (err) {
       log.warn(`Could not withdraw a secret created by a ${write} that did not land`, {
         secretId,
+        resource: ctx.resource,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
+/**
+ * #593 — restore the previous value of every secret an update rotated in place
+ * when that update did not land, and record each as `vault.rotate` against the
+ * secret — the counterpart of the rotation, as `vault.delete` is of a create in
+ * {@link withdrawCreatedSecrets}. Call ONLY when the row was not written. Undone
+ * in reverse order, and each only while this request's value is still the
+ * stored one, so a later writer's value is never overwritten.
+ *
+ * Never throws, for the same reason as {@link withdrawCreatedSecrets}. A
+ * rotation that cannot be undone is logged and keeps the new value.
+ */
+export async function undoRotations(
+  vault: Pick<VaultService, "undoRotation">,
+  undos: readonly RotationUndo[],
+  ctx: WithdrawContext,
+): Promise<void> {
+  const code = (ctx.cause as { code?: unknown } | null)?.code;
+  const reason = code === CONCURRENT_UPDATE ? "concurrent_update" : "update_failed";
+  for (const undo of [...undos].reverse()) {
+    try {
+      if (!(await vault.undoRotation(undo))) {
+        log.warn("Did not undo a rotation: the secret has been written since", {
+          secretId: undo.id,
+          resource: ctx.resource,
+        });
+        continue;
+      }
+      audit({
+        actor: { id: ctx.actorId },
+        action: "vault.rotate",
+        target: { type: "secret", id: undo.id },
+        metadata: {
+          source: "update_not_applied",
+          reason,
+          restored: "previous_value",
+          resourceType: ctx.resource.type,
+          ...(ctx.resource.id ? { resourceId: ctx.resource.id } : {}),
+          ...(ctx.projectId ? { projectId: ctx.projectId } : {}),
+        },
+      });
+    } catch (err) {
+      log.warn("Could not undo a rotation by an update that did not land", {
+        secretId: undo.id,
         resource: ctx.resource,
         error: err instanceof Error ? err.message : String(err),
       });

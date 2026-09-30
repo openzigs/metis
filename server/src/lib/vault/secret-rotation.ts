@@ -15,9 +15,18 @@
  *     (`createdById`, `null` for system writers such as credential discovery).
  *     Anyone else gets a fresh secret, so `createdById` always names who
  *     supplied the current plaintext.
+ *  4. (#593) A caller that writes a row AFTER the secret passes `undos`: an
+ *     in-place rotation is then made undoable and its {@link RotationUndo} is
+ *     collected, so the caller can restore the previous value if the row write
+ *     fails ({@link undoRotations} in `secret-retirement.ts`).
  */
 import { ulid } from "ulid";
-import { SecretNotFoundError, type SecretScope, type VaultService } from "./vault-service.js";
+import {
+  type RotationUndo,
+  SecretNotFoundError,
+  type SecretScope,
+  type VaultService,
+} from "./vault-service.js";
 
 /** `base` plus a per-secret suffix, so a create cannot collide with any earlier row. */
 export function freshSecretLabel(base: string): string {
@@ -45,12 +54,41 @@ export async function rotateOrCreate(
   value: string,
   fresh: FreshSecret,
 ): Promise<{ id: string; created: boolean }> {
+  return writeOwnSecret(vault, secretId, value, fresh, async (id, owner) => {
+    await vault.rotate(id, value, { onlyIfCreatedBy: owner });
+  });
+}
+
+/**
+ * #593 — {@link rotateOrCreate} for a caller that writes its row afterwards: an
+ * in-place rotation goes through `rotateUndoable` and its undo is pushed onto
+ * `undos`, for the caller to replay if the row write does not land.
+ */
+export async function rotateOrCreateUndoable(
+  vault: Pick<VaultService, "rotateUndoable" | "create">,
+  secretId: string | null | undefined,
+  value: string,
+  fresh: FreshSecret,
+  undos: RotationUndo[],
+): Promise<{ id: string; created: boolean }> {
+  return writeOwnSecret(vault, secretId, value, fresh, async (id, owner) => {
+    undos.push(await vault.rotateUndoable(id, value, { onlyIfCreatedBy: owner }));
+  });
+}
+
+async function writeOwnSecret(
+  vault: Pick<VaultService, "create">,
+  secretId: string | null | undefined,
+  value: string,
+  fresh: FreshSecret,
+  rotate: (id: string, owner: string | null) => Promise<void>,
+): Promise<{ id: string; created: boolean }> {
   if (secretId) {
     try {
       // #344 — only a secret this writer owns is rewritten in place; one owned
       // by anyone else (a user, or the system when a user writes) is left as it
       // is and a fresh secret is created instead.
-      await vault.rotate(secretId, value, { onlyIfCreatedBy: fresh.createdById ?? null });
+      await rotate(secretId, fresh.createdById ?? null);
       return { id: secretId, created: false };
     } catch (err) {
       if (!(err instanceof SecretNotFoundError)) throw err;

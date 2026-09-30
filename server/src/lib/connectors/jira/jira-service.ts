@@ -17,8 +17,13 @@ import type {
 import { ulid } from "ulid";
 import { prisma } from "../../prisma.js";
 import { getVaultService } from "../../vault/vault-service.js";
-import { rotateOrCreate } from "../../vault/secret-rotation.js";
-import { retireReplacedSecret, withdrawCreatedSecrets } from "../../vault/secret-retirement.js";
+import { rotateOrCreateUndoable } from "../../vault/secret-rotation.js";
+import {
+  retireReplacedSecret,
+  undoRotations,
+  withdrawCreatedSecrets,
+} from "../../vault/secret-retirement.js";
+import type { RotationUndo } from "../../vault/vault-service.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { ConnectorError, concurrentUpdateError, rowUnchangedSince } from "../types.js";
@@ -110,6 +115,9 @@ function newJiraSecretLabel(kind: "jira" | "jira-ca", projectId: string, label: 
  * rewritten in place only by the principal that created it, and anyone else
  * gets a fresh secret they own. `createdById` then names whoever supplied the
  * current token, which the #344 binding check on PATCH relies on.
+ *
+ * #593 — a rotation in place is recorded in `undos`, so an update that then
+ * fails can put the previous value back.
  */
 async function rotateOrReplace(
   secretId: string | null,
@@ -121,13 +129,20 @@ async function rotateOrReplace(
     description: string;
     createdById: string;
   },
+  undos: RotationUndo[],
 ): Promise<string | null> {
-  const written = await rotateOrCreate(getVaultService(), secretId, value, {
-    label: `${fresh.kind}-${fresh.projectId}-${fresh.label}`.replace(/[^a-zA-Z0-9_.-]/g, "-"),
-    scope: "project",
-    description: fresh.description,
-    createdById: fresh.createdById,
-  });
+  const written = await rotateOrCreateUndoable(
+    getVaultService(),
+    secretId,
+    value,
+    {
+      label: `${fresh.kind}-${fresh.projectId}-${fresh.label}`.replace(/[^a-zA-Z0-9_.-]/g, "-"),
+      scope: "project",
+      description: fresh.description,
+      createdById: fresh.createdById,
+    },
+    undos,
+  );
   return written.created ? written.id : null;
 }
 
@@ -297,15 +312,33 @@ export async function updateJiraConnection(
   const label = input.label ?? existing.label;
   /** #495/#574 — secrets this request created, withdrawn if the write does not land. */
   const created: string[] = [];
+  /** #593 — secrets this request rotated in place, restored if the write does not land. */
+  const undos: RotationUndo[] = [];
+  /** #574/#593 — put the vault back as it was: nothing this request wrote is kept. */
+  const revertVault = async (cause: unknown) => {
+    const ctx = {
+      actorId,
+      resource: { type: "jira_connection", id },
+      projectId: existing.projectId,
+      cause,
+    };
+    await withdrawCreatedSecrets(getVaultService(), created, ctx);
+    await undoRotations(getVaultService(), undos, ctx);
+  };
   try {
     if (input.apiToken) {
-      const replaced = await rotateOrReplace(existing.secretId, input.apiToken, {
-        kind: "jira",
-        projectId: existing.projectId,
-        label,
-        description: `Jira ${input.edition ?? existing.edition} API token for ${label}`,
-        createdById: actorId,
-      });
+      const replaced = await rotateOrReplace(
+        existing.secretId,
+        input.apiToken,
+        {
+          kind: "jira",
+          projectId: existing.projectId,
+          label,
+          description: `Jira ${input.edition ?? existing.edition} API token for ${label}`,
+          createdById: actorId,
+        },
+        undos,
+      );
       if (replaced) {
         created.push(replaced);
         data.secretId = replaced;
@@ -316,13 +349,18 @@ export async function updateJiraConnection(
     // Rotate TLS CA cert if provided
     if (input.tlsCaCert !== undefined) {
       if (input.tlsCaCert) {
-        const replaced = await rotateOrReplace(existing.tlsCaSecretId, input.tlsCaCert, {
-          kind: "jira-ca",
-          projectId: existing.projectId,
-          label,
-          description: `TLS CA cert for Jira ${label}`,
-          createdById: actorId,
-        });
+        const replaced = await rotateOrReplace(
+          existing.tlsCaSecretId,
+          input.tlsCaCert,
+          {
+            kind: "jira-ca",
+            projectId: existing.projectId,
+            label,
+            description: `TLS CA cert for Jira ${label}`,
+            createdById: actorId,
+          },
+          undos,
+        );
         if (replaced) {
           created.push(replaced);
           data.tlsCaSecretId = replaced;
@@ -334,13 +372,9 @@ export async function updateJiraConnection(
     }
   } catch (err) {
     // #574 — a later secret write failed (e.g. the TLS CA cert after the token):
-    // nothing was written to the row, so every secret created so far is withdrawn.
-    await withdrawCreatedSecrets(getVaultService(), created, {
-      actorId,
-      resource: { type: "jira_connection", id },
-      projectId: existing.projectId,
-      cause: err,
-    });
+    // nothing was written to the row, so every secret created so far is
+    // withdrawn, and (#593) every one rotated so far gets its old value back.
+    await revertVault(err);
     throw err;
   }
 
@@ -376,16 +410,11 @@ export async function updateJiraConnection(
   } catch (err) {
     // #495 — a write that did not land leaves the secrets this request created
     // belonging to no connection, so they are withdrawn (as the create path
-    // does). One rotated in place is the row's own and stays. Once the write
-    // has landed the row names them, and withdrawing would leave it unreadable.
-    if (!landed) {
-      await withdrawCreatedSecrets(getVaultService(), created, {
-        actorId,
-        resource: { type: "jira_connection", id },
-        projectId: existing.projectId,
-        cause: err,
-      });
-    }
+    // does). #593 — one rotated in place is the row's own and stays, with its
+    // previous value restored: the request failed, so its credential must not
+    // have changed. Once the write has landed the row names the new secrets,
+    // and withdrawing would leave it unreadable.
+    if (!landed) await revertVault(err);
     if (isUniqueViolation(err) && typeof data.label === "string") {
       throw labelTaken(data.label);
     }

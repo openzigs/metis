@@ -574,10 +574,11 @@ export function describeConditionalBindingUpdates(opts: {
         await expectConcurrentWithdrawals(added(secretsEvery, await everyCoordSecret()));
       });
 
-      it("#495 — a PATCH that rotated the row's own secret in place and then lost the race does not withdraw it", async () => {
+      it("#495/#593 — a PATCH that rotated the row's own secret in place and then lost the race does not withdraw it, and restores its value", async () => {
         // Seeded and PATCHed by the same owner, so `rotateOrCreate` rotates the
         // row's existing secret instead of creating one: the id is the one the
         // row already names, and withdrawing it would leave the row unreadable.
+        // #593 — the request failed, so the value it rotated in is taken back out.
         const id = await create();
         const before = await row(id);
         const ownId = (JSON.parse(before.authConfigJson ?? "{}") as { bearerTokenRef?: string })
@@ -585,10 +586,10 @@ export function describeConditionalBindingUpdates(opts: {
         expect(ownId, "the seeded row names no bearer-token secret").toBeTruthy();
         const secretId = ownId!.replace(/^\$\{vault:(.+)\}$/, "$1");
         const vault = getVaultService();
-        const realRotate = vault.rotate.bind(vault);
+        const realRotate = vault.rotateUndoable.bind(vault);
         let a: request.Response | undefined;
         let rotated = 0;
-        vi.spyOn(vault, "rotate").mockImplementation(async (...args) => {
+        vi.spyOn(vault, "rotateUndoable").mockImplementation(async (...args) => {
           const result = await realRotate(...args);
           rotated += 1;
           if (!a) a = await call("patch", url(id), ADMIN, { label: `a-${next()}` });
@@ -609,7 +610,7 @@ export function describeConditionalBindingUpdates(opts: {
         expect(after.authConfigJson).toBe(before.authConfigJson);
         const secret = await db.secret.findUniqueOrThrow({ where: { id: secretId } });
         expect(secret.deletedAt).toBeNull();
-        await expect(vault.read(secretId)).resolves.toBeTruthy();
+        expect((await vault.read(secretId)).plaintext).toBe("zephyr-token-479");
         expect(await withdrawalAudits([secretId])).toEqual([]);
       });
 
