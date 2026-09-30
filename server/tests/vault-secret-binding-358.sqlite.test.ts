@@ -387,6 +387,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       it("a coordinator may edit what does not move the token, or move it with their own token", async () => {
         const id = await create(ADMIN);
         const adminSecret = (await row(id))!.secretId;
+        const adminCiphertext = (await db.secret.findUniqueOrThrow({ where: { id: adminSecret } }))
+          .ciphertext;
         const renamed = await call("patch", `/api/jira/connections/${id}`, COORD, {
           label: `renamed-${next()}`,
           baseUrl: "https://jira.internal.example.test",
@@ -403,8 +405,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // The admin's secret is not rewritten with the coordinator's value: the
         // connection now points at a fresh secret the coordinator owns.
         expect(after?.secretId).not.toBe(adminSecret);
-        const vault = getVaultService();
-        expect((await vault.read(adminSecret)).plaintext).toBe("jira-token-358");
+        // #481 — and the admin's secret, now unreferenced, is retired untouched.
+        const old = await db.secret.findUniqueOrThrow({ where: { id: adminSecret } });
+        expect(old.ciphertext).toBe(adminCiphertext);
+        expect(old.deletedAt).not.toBeNull();
+        expect((await getVaultService().read(after!.secretId)).plaintext).toBe("coord-jira-token");
         expect((await db.secret.findUnique({ where: { id: after!.secretId } }))?.createdById).toBe(
           "u-coord",
         );
@@ -471,6 +476,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       it("a coordinator may edit what does not move the credentials, or move them with their own", async () => {
         const id = await create(ADMIN);
         const adminSecret = await tokenId(id);
+        const adminCiphertext = (await db.secret.findUniqueOrThrow({ where: { id: adminSecret } }))
+          .ciphertext;
         const renamed = await call("patch", `/api/test-management/connections/${id}`, COORD, {
           label: `renamed-${next()}`,
           baseUrl: "https://zephyr.internal.example.test",
@@ -484,7 +491,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(moved.status, JSON.stringify(moved.body)).toBe(200);
         expect((await row(id))?.baseUrl).toBe("https://mine.example.test");
         expect(await tokenId(id)).not.toBe(adminSecret);
-        expect((await getVaultService().read(adminSecret)).plaintext).toBe("zephyr-token-358");
+        // #481 — the admin's secret is not overwritten, and is retired once unreferenced.
+        const old = await db.secret.findUniqueOrThrow({ where: { id: adminSecret } });
+        expect(old.ciphertext).toBe(adminCiphertext);
+        expect(old.deletedAt).not.toBeNull();
+        expect((await getVaultService().read(await tokenId(id))).plaintext).toBe(
+          "coord-zephyr-token",
+        );
       });
 
       it("a coordinator may move their own connection; an admin may move any", async () => {
