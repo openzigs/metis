@@ -1051,6 +1051,8 @@ JWT auth at handshake gates room subscription so only authenticated users see pr
 
 Beyond the analysis-specific events above, every long-running flow shares a single, kind-tagged job-lifecycle channel so the UI can handle them uniformly. The emitter (`server/src/lib/socket/job-events.ts`) resolves the live IO server via the `getSocketServer()` registry (no DI threading) and broadcasts on both a per-job room (`job:{jobId}`, joined via `subscribe:job`) and, for single-project jobs, the `project:{projectId}` room. Emission is best-effort: a missing IO server or transport error is swallowed, never thrown into the job's critical path.
 
+**Replay on `subscribe:job`.** A room only delivers what is emitted while the socket is in it, so the emitter remembers each job's last `job:lifecycle` event and the latest `job:doc-section` event per section (both in-process, bounded to the 500 most recently touched jobs). `subscribe:job` replays them to the subscribing socket: a late subscriber learns where a short job got to, and a socket re-joining after a reconnect (`ui/src/lib/job-rooms.ts`) catches up on sections that finished while it was down (#510). The replay is a read of stored job state, so anything naming a project is sent only after the same `actorCanAccessProject` check `subscribe:project` uses; a lifecycle event with `projectId: null` replays unchecked.
+
 **`JobKind` catalogue** (the single union chokepoint, `packages/shared/src/socket.ts`):
 
 | Kind | Flow | Added |

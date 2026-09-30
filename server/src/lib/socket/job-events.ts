@@ -146,9 +146,39 @@ export function getLastJobLifecycle(jobId: string): JobLifecycleEvent | undefine
   return lastLifecycleByJob.get(jobId);
 }
 
+/**
+ * #510 — latest `job:doc-section` event per section, per job, so a subscriber
+ * that was away while a section moved (a reconnect drops the socket's rooms)
+ * can be brought up to date on `subscribe:job`, not only on the lifecycle.
+ * Bounded by job on the same cap and eviction order as the lifecycle memory;
+ * a document has a handful of sections, so each job's inner map stays small.
+ */
+const lastDocSectionsByJob = new Map<string, Map<string, DocSectionProgressEvent>>();
+
+function rememberDocSection(event: DocSectionProgressEvent): void {
+  const sections = lastDocSectionsByJob.get(event.jobId) ?? new Map();
+  sections.set(event.section, event);
+  lastDocSectionsByJob.delete(event.jobId);
+  lastDocSectionsByJob.set(event.jobId, sections);
+  while (lastDocSectionsByJob.size > LAST_EVENT_CAP) {
+    const oldest = lastDocSectionsByJob.keys().next();
+    if (oldest.done) break;
+    lastDocSectionsByJob.delete(oldest.value);
+  }
+}
+
+/**
+ * The latest doc-section event for each section of a job, in the order the
+ * sections first reported, or an empty array when the job is unknown.
+ */
+export function getLastDocSections(jobId: string): DocSectionProgressEvent[] {
+  return [...(lastDocSectionsByJob.get(jobId)?.values() ?? [])];
+}
+
 /** Test seam — drop the remembered events. */
 export function _resetJobLifecycleMemory(): void {
   lastLifecycleByJob.clear();
+  lastDocSectionsByJob.clear();
 }
 
 /** Build an emitter bound to a specific IO server (used in server bootstrap / tests). */
@@ -170,8 +200,10 @@ export function createJobEventEmitter(io: MetisIOServer | null): JobEventEmitter
   };
 
   const emitDocSection = (event: DocSectionProgressInput): void => {
-    if (!io) return;
     const payload: DocSectionProgressEvent = { ...event, ts: Date.now() };
+    // Remember before the transport check, as the lifecycle does (#510).
+    rememberDocSection(payload);
+    if (!io) return;
     try {
       io.to(`job:${payload.jobId}`).emit("job:doc-section", payload);
       io.to(`project:${payload.projectId}`).emit("job:doc-section", payload);
