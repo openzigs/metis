@@ -233,7 +233,9 @@ describe("#609 — describeForeignOwner lists test-management connections", () =
     const before = (await describeForeignOwner(SECRET)).bindings[0]!;
     for (const change of [
       { proxyConfigJson: JSON.stringify({ url: "http://evil-proxy:8080" }) },
-      { tlsConfigJson: JSON.stringify({ rejectUnauthorized: false, caCertRef: null }) },
+      {
+        tlsConfigJson: JSON.stringify({ rejectUnauthorized: true, caCertRef: "${vault:owner-ca}" }),
+      },
       { kind: "xray" },
     ]) {
       db.testManagementConnection.findMany.mockResolvedValueOnce([{ ...row, ...change }]);
