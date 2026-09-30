@@ -670,6 +670,109 @@ describe("discussions routes", () => {
     });
   });
 
+  // #541 — the /api/ai/stream write-after-end guards (#506/#521) applied to the
+  // other SSE route. A write after `res.end()` is not thrown: Node emits
+  // ERR_STREAM_WRITE_AFTER_END as an `'error'` on the response a tick later,
+  // which with no listener is an uncaught exception. These tests assert on the
+  // response itself, as ai-routes.test.ts's #521 block does.
+  describe("POST /threads/:id/ai-respond — no write after the response ended (#541)", () => {
+    type Probe = {
+      res: import("express").Response | null;
+      /** Every chunk written while `res.writableEnded` was already true. */
+      writesAfterEnd: string[];
+      errors: Error[];
+    };
+
+    function makeProbedApp(probe: Probe, opts: { listenForErrors: boolean }) {
+      const probed = express();
+      probed.use(express.json());
+      probed.use((req, res, next) => {
+        probe.res = res;
+        const write = res.write.bind(res) as (...args: unknown[]) => boolean;
+        res.write = ((chunk: unknown, ...rest: unknown[]) => {
+          if (res.writableEnded) probe.writesAfterEnd.push(String(chunk));
+          return write(chunk, ...rest);
+        }) as typeof res.write;
+        if (opts.listenForErrors) res.on("error", (e: Error) => probe.errors.push(e));
+        next();
+      });
+      probed.use("/discussions", discussionsRouter());
+      probed.use(errorHandler);
+      return probed;
+    }
+
+    function armTriggerable() {
+      canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
+      threadFindFirst.mockResolvedValue({
+        id: "t1",
+        projectId: "p1",
+        aiResponseMode: "on_mention",
+      });
+      messageFindFirst.mockResolvedValue({ id: "m1", body: "@AI help", authorKind: "human" });
+      messageFindMany.mockResolvedValue([]);
+    }
+
+    const reply = {
+      message: {
+        id: "ai-1",
+        body: "hello",
+        aiModel: "offline-stub",
+        aiProvider: "offline-stub",
+        aiSessionId: "sess-1",
+      },
+      usage: { totalTokens: 3 },
+    };
+
+    it("drops a chunk that arrives after the response has ended", async () => {
+      armTriggerable();
+      let lateChunk: ((c: unknown) => void) | undefined;
+      streamAIReply.mockImplementation(async (input: { onChunk?: (c: unknown) => void }) => {
+        input.onChunk?.({ type: "delta", content: "hello" });
+        // A provider callback that outlives the turn keeps its `onChunk`.
+        lateChunk = input.onChunk;
+        return reply;
+      });
+      const probe: Probe = { res: null, writesAfterEnd: [], errors: [] };
+
+      const res = await request(makeProbedApp(probe, { listenForErrors: true }))
+        .post("/discussions/threads/t1/ai-respond")
+        .send({ messageId: "m1" });
+      expect(res.text).toContain("event: done");
+      expect(probe.res!.writableEnded).toBe(true);
+
+      lateChunk!({ type: "delta", content: "late" });
+      // Node emits a write-after-end error on the next tick; let it land.
+      await new Promise((r) => setImmediate(r));
+      expect(probe.writesAfterEnd).toEqual([]);
+      expect(probe.errors).toEqual([]);
+    });
+
+    it("an `error` on the response is handled rather than thrown", async () => {
+      armTriggerable();
+      const probe: Probe = { res: null, writesAfterEnd: [], errors: [] };
+      let thrown: unknown;
+      streamAIReply.mockImplementation(async (input: { onChunk?: (c: unknown) => void }) => {
+        input.onChunk?.({ type: "delta", content: "hello" });
+        // With no listener, EventEmitter throws an emitted `error` — in
+        // production that is an uncaught exception that ends the process.
+        try {
+          probe.res!.emit("error", new Error("socket reset"));
+        } catch (err) {
+          thrown = err;
+        }
+        return reply;
+      });
+
+      const res = await request(makeProbedApp(probe, { listenForErrors: false }))
+        .post("/discussions/threads/t1/ai-respond")
+        .send({ messageId: "m1" });
+
+      expect(res.status).toBe(200);
+      expect(thrown).toBeUndefined();
+      expect(res.text).toContain("event: done");
+    });
+  });
+
   describe("POST /threads/:id/ai-respond rate limiting (#485)", () => {
     function armTriggerable() {
       canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
