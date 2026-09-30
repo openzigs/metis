@@ -140,6 +140,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     beforeEach(() => {
       vi.restoreAllMocks();
+      vi.unstubAllEnvs();
     });
 
     // ---- Jira ---------------------------------------------------------------
@@ -398,6 +399,33 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await db.mCPServer.count({ where: { label } })).toBe(1);
       expect(r.live).toHaveLength(1);
       expect(r.withdrawn).toEqual([]);
+    });
+
+    it("MCP create (user scope): a failure after the row landed keeps the secret the row now names", async () => {
+      // The user-scoped create commits inside its own `$transaction`
+      // (`createUserScopedAtomic`), a separate path from the global create above.
+      vi.stubEnv("MCP_ALLOW_USER_SCOPE", "true");
+      const registry = getMCPRegistry() as unknown as { toView: (row: unknown) => unknown };
+      vi.spyOn(registry, "toView").mockImplementationOnce(() => {
+        throw new Error("view failed");
+      });
+      const label = uniq("mcp-574-user");
+
+      let res: request.Response | undefined;
+      const r = await madeDuring(ADMIN, async () => {
+        res = await post({ ...mcpBody(label), scope: "user" });
+      });
+
+      expect(res!.status, JSON.stringify(res!.body)).toBe(500);
+      const rows = await db.mCPServer.findMany({ where: { label } });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.scope).toBe("user");
+      expect(r.live).toHaveLength(1);
+      expect(r.withdrawn).toEqual([]);
+      // The surviving secret is the one the landed row names.
+      const kept = await db.secret.findUniqueOrThrow({ where: { id: r.live[0]! } });
+      const keptLabel = kept.name.slice(kept.name.indexOf(":") + 1);
+      expect(rows[0]!.envJson).toContain(`\${vault:${keptLabel}}`);
     });
 
     it("MCP create: a successful create keeps its vaulted value", async () => {

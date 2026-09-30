@@ -1,5 +1,5 @@
 /**
- * #574 — how long a failed or cancelled Task stays retryable.
+ * #574 — how long a failed or cancelled `http-webhook` Task stays retryable.
  *
  * `POST /tasks/:id/retry` re-enqueues a failed or cancelled Task from its own
  * stored payload. Nothing deletes Task rows, so without a limit every such Task
@@ -17,6 +17,18 @@
  * row written without `completedAt`, so that row is still bounded.
  */
 export const TASK_RETRY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * The one Task type whose payload names a vault secret (`authHeader`). The
+ * retry window applies to it alone: refusing to retry any other type frees no
+ * secret, so every other type stays retryable however long ago it ended.
+ */
+export const VAULT_REFERENCING_TASK_TYPE = "http-webhook";
+
+/** Is a Task of this type subject to the retry window? */
+export function isRetryWindowBounded(type: string): boolean {
+  return type === VAULT_REFERENCING_TASK_TYPE;
+}
 
 /** Statuses a Task can still run from without a retry. */
 export const LIVE_TASK_STATUSES = ["pending", "running"] as const;

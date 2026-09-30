@@ -2893,12 +2893,14 @@ and progress percentage. From the row you can:
 - **Cancel** a `pending` or `running` task. The handler's `AbortSignal` fires
   immediately and the task transitions to `cancelled`.
 - **Retry** a `failed` or `cancelled` task. The platform re-enqueues it with
-  `trigger=retry` and a fresh attempt counter. A task can be retried for
-  **7 days** after it ended (its `completedAt`; a later edit to the row does not
-  restart the clock). After that, `POST /api/tasks/:id/retry` answers
-  **409 `TASK_RETRY_EXPIRED`** and the page shows that message — enqueue a new
-  task instead. Past the window, an `http-webhook` task's payload also stops
-  keeping a replaced vault credential alive.
+  `trigger=retry` and a fresh attempt counter. An **`http-webhook`** task can be
+  retried for **7 days** after it ended (its `completedAt`; a later edit to the
+  row does not restart the clock). After that, `POST /api/tasks/:id/retry`
+  answers **409 `TASK_RETRY_EXPIRED`** and the page shows that message — enqueue
+  a new task instead. Past the window, the task's payload also stops keeping a
+  replaced vault credential alive. The window applies to webhook tasks only,
+  because theirs is the only payload that names a vault credential; every other
+  task type stays retryable however long ago it ended.
 
 `task.read` is required to view; `task.cancel` and `task.retry` gate the
 respective actions.

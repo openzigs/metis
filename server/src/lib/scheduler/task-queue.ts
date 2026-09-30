@@ -24,7 +24,11 @@
 import { createChildLogger } from "../logger.js";
 import { isDurableTask } from "./durable-task-types.js";
 import { TaskAbortError } from "./task-abort.js";
-import { isWithinRetryWindow, TASK_RETRY_WINDOW_MS } from "./task-retry-window.js";
+import {
+  isRetryWindowBounded,
+  isWithinRetryWindow,
+  TASK_RETRY_WINDOW_MS,
+} from "./task-retry-window.js";
 import {
   type EnqueueTaskInput,
   type SchedulerConfig,
@@ -170,12 +174,14 @@ export class TaskQueue {
         `task ${taskId} is in status ${original.status}; only failed/cancelled tasks may be retried`,
       );
     }
-    // #574 — bounded, so a terminal Task's payload does not pin a vault secret for ever.
-    if (!isWithinRetryWindow(original)) {
+    // #574 — bounded, so a terminal Task's payload does not pin a vault secret
+    // for ever. Only a type whose payload names a secret is bounded: refusing
+    // any other type would free nothing.
+    if (isRetryWindowBounded(original.type) && !isWithinRetryWindow(original)) {
       throw new SchedulerError(
         409,
         "TASK_RETRY_EXPIRED",
-        `task ${taskId} ended more than ${TASK_RETRY_WINDOW_MS / 86_400_000} days ago and can no longer be retried; enqueue a new task instead`,
+        `${original.type} task ${taskId} ended more than ${TASK_RETRY_WINDOW_MS / 86_400_000} days ago and can no longer be retried; enqueue a new task instead`,
       );
     }
     return this.enqueue({

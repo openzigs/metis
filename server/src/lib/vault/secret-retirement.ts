@@ -35,13 +35,11 @@ import {
   LIVE_TASK_STATUSES,
   RETRYABLE_TASK_STATUSES,
   retryWindowCutoff,
+  VAULT_REFERENCING_TASK_TYPE,
 } from "../scheduler/task-retry-window.js";
 import type { VaultService } from "./vault-service.js";
 
 const log = createChildLogger("secret-retirement");
-
-/** #574 — the one Task type whose payload names a vault secret (`authHeader`). */
-const VAULT_REFERENCING_TASK_TYPE = "http-webhook";
 
 /** The bare label of a stored secret name (`project:x` → `x`). */
 function labelOf(name: string): string {

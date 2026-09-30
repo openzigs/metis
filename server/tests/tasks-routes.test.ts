@@ -219,16 +219,6 @@ describe("POST /api/tasks/:id/retry", () => {
     expect(queue.retry).toHaveBeenCalled();
   });
 
-  it("#574 — a task past the retry window is refused with 409 TASK_RETRY_EXPIRED", async () => {
-    const { SchedulerError } = await import("../src/lib/scheduler/types.js");
-    seedTask({ id: "task_old", status: "failed" });
-    queue.retry.mockRejectedValueOnce(
-      new SchedulerError(409, "TASK_RETRY_EXPIRED", "task task_old can no longer be retried"),
-    );
-    const res = await request(app)
-      .post("/api/tasks/task_old/retry")
-      .set("Authorization", `Bearer ${token}`);
-    expect(res.status).toBe(409);
-    expect(res.body.error.code).toBe("TASK_RETRY_EXPIRED");
-  });
+  // #574 — the retry window is exercised through the real `TaskQueue.retry` in
+  // tasks-retry-window-574.sqlite.test.ts; stubbing `queue.retry` here could not fail.
 });

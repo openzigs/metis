@@ -8,7 +8,10 @@ vi.mock("../src/lib/prisma.js", () => ({ prisma: {} }));
 import { TaskQueue, type TaskStore } from "../src/lib/scheduler/task-queue.js";
 import { InMemoryTaskHandlerRegistry } from "../src/lib/scheduler/task-handlers.js";
 import { taskAbortSource } from "../src/lib/scheduler/task-abort.js";
-import { TASK_RETRY_WINDOW_MS } from "../src/lib/scheduler/task-retry-window.js";
+import {
+  TASK_RETRY_WINDOW_MS,
+  VAULT_REFERENCING_TASK_TYPE as WEBHOOK,
+} from "../src/lib/scheduler/task-retry-window.js";
 import {
   SchedulerError,
   type EnqueueTaskInput,
@@ -957,14 +960,14 @@ describe("TaskQueue retry()", () => {
   });
 
   it.each(["failed", "cancelled"] as const)(
-    "#574 — refuses a %s task that ended before the retry window, and enqueues nothing",
+    "#574 — refuses a %s http-webhook task that ended before the retry window, and enqueues nothing",
     async (status) => {
       const { store, rows } = makeStore();
       const registry = new InMemoryTaskHandlerRegistry();
-      registry.register({ type: "ok", description: "", handler: async () => ({}) });
+      registry.register({ type: WEBHOOK, description: "", handler: async () => ({}) });
       const { emitter } = makeEmitter();
       const queue = new TaskQueue(store, registry, emitter, baseConfig);
-      const t = await queue.enqueue({ type: "ok" });
+      const t = await queue.enqueue({ type: WEBHOOK });
       await new Promise((r) => setImmediate(r));
       const row = rows.get(t.id)!;
       row.status = status;
@@ -979,13 +982,13 @@ describe("TaskQueue retry()", () => {
     },
   );
 
-  it("#574 — still retries a task that ended just inside the retry window", async () => {
+  it("#574 — still retries an http-webhook task that ended just inside the retry window", async () => {
     const { store, rows } = makeStore();
     const registry = new InMemoryTaskHandlerRegistry();
-    registry.register({ type: "ok", description: "", handler: async () => ({}) });
+    registry.register({ type: WEBHOOK, description: "", handler: async () => ({}) });
     const { emitter } = makeEmitter();
     const queue = new TaskQueue(store, registry, emitter, baseConfig);
-    const t = await queue.enqueue({ type: "ok" });
+    const t = await queue.enqueue({ type: WEBHOOK });
     await new Promise((r) => setImmediate(r));
     const row = rows.get(t.id)!;
     row.status = "failed";
@@ -999,10 +1002,10 @@ describe("TaskQueue retry()", () => {
   it("#574 — an unrelated write after the task ended does not extend the retry window", async () => {
     const { store, rows } = makeStore();
     const registry = new InMemoryTaskHandlerRegistry();
-    registry.register({ type: "ok", description: "", handler: async () => ({}) });
+    registry.register({ type: WEBHOOK, description: "", handler: async () => ({}) });
     const { emitter } = makeEmitter();
     const queue = new TaskQueue(store, registry, emitter, baseConfig);
-    const t = await queue.enqueue({ type: "ok" });
+    const t = await queue.enqueue({ type: WEBHOOK });
     await new Promise((r) => setImmediate(r));
     const row = rows.get(t.id)!;
     row.status = "failed";
@@ -1020,10 +1023,10 @@ describe("TaskQueue retry()", () => {
   it("#574 — a terminal task with no completedAt is measured from updatedAt", async () => {
     const { store, rows } = makeStore();
     const registry = new InMemoryTaskHandlerRegistry();
-    registry.register({ type: "ok", description: "", handler: async () => ({}) });
+    registry.register({ type: WEBHOOK, description: "", handler: async () => ({}) });
     const { emitter } = makeEmitter();
     const queue = new TaskQueue(store, registry, emitter, baseConfig);
-    const t = await queue.enqueue({ type: "ok" });
+    const t = await queue.enqueue({ type: WEBHOOK });
     await new Promise((r) => setImmediate(r));
     const row = rows.get(t.id)!;
     row.status = "cancelled";
@@ -1031,6 +1034,27 @@ describe("TaskQueue retry()", () => {
     row.updatedAt = new Date(Date.now() - TASK_RETRY_WINDOW_MS - 60_000);
     await expect(queue.retry(t.id, row)).rejects.toMatchObject({ code: "TASK_RETRY_EXPIRED" });
   });
+
+  it.each(["rerun-analysis", "publish-batch", "refresh-repo-connector", "scanner.run-scan"])(
+    "#574 — still retries a %s task that ended long before the window: only webhooks are bounded",
+    async (type) => {
+      const { store, rows } = makeStore();
+      const registry = new InMemoryTaskHandlerRegistry();
+      registry.register({ type, description: "", handler: async () => ({}) });
+      const { emitter } = makeEmitter();
+      const queue = new TaskQueue(store, registry, emitter, baseConfig);
+      const t = await queue.enqueue({ type });
+      await new Promise((r) => setImmediate(r));
+      const row = rows.get(t.id)!;
+      row.status = "failed";
+      row.completedAt = new Date(Date.now() - 10 * TASK_RETRY_WINDOW_MS);
+      row.updatedAt = row.completedAt;
+      const retry = await queue.retry(t.id, row);
+      expect(retry.trigger).toBe("retry");
+      expect(retry.type).toBe(type);
+      expect(rows.get(retry.id)).toBeDefined();
+    },
+  );
 });
 
 describe("TaskQueue progress + shutdown", () => {
