@@ -57,7 +57,7 @@ export class JiraPage {
     );
 
     // Connection management
-    this.connectionsHeading = page.getByRole("heading", { name: "Connections" });
+    this.connectionsHeading = page.getByRole("heading", { name: "Connections", exact: true });
     this.addConnectionButton = page.getByTestId("add-jira-connection");
     this.connectionForm = page.getByTestId("jira-connection-form");
     this.connectionList = page.getByTestId("jira-connection-list");

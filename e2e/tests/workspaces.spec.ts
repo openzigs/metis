@@ -27,6 +27,12 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
   let _adminUserId: string;
   let workspaceAId: string;
   let workspaceBId: string;
+  // Unique per beforeAll run (#306). A retry starts a new worker, which runs
+  // beforeAll again and seeds two MORE workspaces. With fixed names the retry
+  // then sees two "Workspace Beta" menu items — a strict-mode violation — so a
+  // retry could never pass. Suffixing the run stamp makes a retry a real retry.
+  let alphaName: string;
+  let betaName: string;
   let apiCtx: APIRequestContext;
 
   test.beforeAll(async () => {
@@ -40,15 +46,18 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
     });
 
     // Create two workspaces for multi-tenancy testing
+    const stamp = Date.now();
+    alphaName = `Workspace Alpha ${stamp}`;
+    betaName = `Workspace Beta ${stamp}`;
     const resA = await apiCtx.post("/api/workspaces", {
-      data: { name: "Workspace Alpha", slug: `ws-alpha-${Date.now()}` },
+      data: { name: alphaName, slug: `ws-alpha-${stamp}` },
     });
     expect(resA.status()).toBe(201);
     const bodyA = await resA.json();
     workspaceAId = bodyA.data.id;
 
     const resB = await apiCtx.post("/api/workspaces", {
-      data: { name: "Workspace Beta", slug: `ws-beta-${Date.now()}` },
+      data: { name: betaName, slug: `ws-beta-${stamp}` },
     });
     expect(resB.status()).toBe(201);
     const bodyB = await resB.json();
@@ -83,8 +92,8 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
 
       await test.step("Opening shows all user workspaces", async () => {
         await switcher.open();
-        await expect(switcher.getWorkspaceByName("Workspace Alpha")).toBeVisible();
-        await expect(switcher.getWorkspaceByName("Workspace Beta")).toBeVisible();
+        await expect(switcher.getWorkspaceByName(alphaName)).toBeVisible();
+        await expect(switcher.getWorkspaceByName(betaName)).toBeVisible();
       });
     });
 
@@ -93,19 +102,19 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
       const switcher = new WorkspaceSwitcherPage(page);
 
       await test.step("Switch to Workspace Beta", async () => {
-        await switcher.switchTo("Workspace Beta");
+        await switcher.switchTo(betaName);
       });
 
       await test.step("Switcher now shows Beta as active", async () => {
-        await switcher.expectActiveWorkspace("Workspace Beta");
+        await switcher.expectActiveWorkspace(betaName);
       });
 
       await test.step("Switch back to Workspace Alpha", async () => {
-        await switcher.switchTo("Workspace Alpha");
+        await switcher.switchTo(alphaName);
       });
 
       await test.step("Switcher shows Alpha as active", async () => {
-        await switcher.expectActiveWorkspace("Workspace Alpha");
+        await switcher.expectActiveWorkspace(alphaName);
       });
     });
 
@@ -141,7 +150,7 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
       });
 
       await test.step("Verify initial workspace name is displayed", async () => {
-        await expect(settings.nameInput).toHaveValue("Workspace Alpha");
+        await expect(settings.nameInput).toHaveValue(alphaName);
       });
 
       await test.step("Save button is disabled when name unchanged", async () => {
@@ -149,18 +158,18 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
       });
 
       await test.step("Update name and save", async () => {
-        await settings.updateName("Workspace Alpha Renamed");
+        await settings.updateName(`${alphaName} Renamed`);
       });
 
       await test.step("Reload and verify name persisted", async () => {
         await page.reload();
         await expect(settings.heading).toBeVisible();
-        await expect(settings.nameInput).toHaveValue("Workspace Alpha Renamed");
+        await expect(settings.nameInput).toHaveValue(`${alphaName} Renamed`);
       });
 
       // Restore the original name
       await test.step("Restore original name", async () => {
-        await settings.updateName("Workspace Alpha");
+        await settings.updateName(alphaName);
       });
     });
 
@@ -263,7 +272,7 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
       });
 
       await test.step("Workspace name is displayed", async () => {
-        await expect(invitePage.workspaceName).toContainText("Workspace Alpha");
+        await expect(invitePage.workspaceName).toContainText(alphaName);
       });
 
       await test.step("Inviter name is shown", async () => {

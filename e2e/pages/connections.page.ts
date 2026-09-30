@@ -38,7 +38,7 @@ export class ConnectionsPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Connections" });
+    this.heading = page.getByRole("heading", { name: "Connections", exact: true });
     this.suggestionsBadge = page.getByText(/\d+ suggestion/);
     this.suggestedSection = page.getByRole("heading", {
       name: "Suggested Database Connectors",
