@@ -123,6 +123,51 @@ describe("MarkdownPreviewer — progressive rendering (#190)", () => {
     expect(scrollIntoView.mock.contexts[0]).toBe(target);
   });
 
+  // #524 — the target section is already rendered, so revealing it changes no
+  // rendered state; the click must still scroll, every time it is clicked.
+  it("a TOC click on an already-rendered heading scrolls to it", async () => {
+    const { container } = render(<MarkdownPreviewer content={doc} />);
+    const target = container.querySelector("#rule-1")!;
+    expect(target.closest("[data-section-rendered]")).not.toBeNull();
+    const link = container.querySelector('[data-testid="markdown-toc"] a[href="#rule-1"]')!;
+    await act(async () => {
+      fireEvent.click(link);
+    });
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView.mock.contexts[0]).toBe(target);
+    await act(async () => {
+      fireEvent.click(link);
+    });
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(rendered(container)).toHaveLength(INITIAL_RENDERED_SECTIONS);
+  });
+
+  // #524 — a reveal is consumed once handled, so a later unrelated render
+  // (a section scrolling into range) never fires a stale scroll.
+  it("a later render after a TOC click does not scroll again", async () => {
+    const { container } = render(<MarkdownPreviewer content={doc} />);
+    const link = container.querySelector('[data-testid="markdown-toc"] a[href="#rule-1"]')!;
+    await act(async () => {
+      fireEvent.click(link);
+    });
+    scrollIntoView.mockClear();
+    intersect(pending(container)[0]);
+    expect(rendered(container)).toHaveLength(INITIAL_RENDERED_SECTIONS + 1);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("a later render after a TOC jump to an unrendered section does not scroll again", async () => {
+    const { container } = render(<MarkdownPreviewer content={doc} />);
+    const link = container.querySelector('[data-testid="markdown-toc"] a[href="#rule-240"]')!;
+    await act(async () => {
+      fireEvent.click(link);
+    });
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    scrollIntoView.mockClear();
+    intersect(pending(container)[0]);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
   it("every TOC anchor and every heading id is unique once all sections render", () => {
     // A smaller document with the same duplicate-heading shape: rendering all
     // 251 sections of the big one is slow on a contended CI runner (#1379).
