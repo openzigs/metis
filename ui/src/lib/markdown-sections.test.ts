@@ -2,7 +2,7 @@
  * #190 — splitting a large document into renderable sections without losing
  * code fences or heading anchors.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
@@ -136,6 +136,24 @@ describe("splitMarkdownSections", () => {
   it("closes a fence only with the same character and at least its length", () => {
     const { sections } = splitMarkdownSections("## A\n````\n```\n## Inside\n````\n## B");
     expect(sections.map((s) => s.heading?.text)).toEqual(["A", "B"]);
+  });
+
+  // #548 review: a definition-shaped line that is not a definition, at a
+  // block start in a run with no blank lines, must not reparse the rest of the
+  // run each time, or sectioning goes quadratic and freezes the main thread.
+  // Counts the source handed to the parser, so the bound is deterministic.
+  it("parses a run of non-definition `[x]:` lines in linear, not quadratic, source", () => {
+    const markdown = Array.from({ length: 400 }, (_, n) => `### h${n}\n[x]:`).join("\n");
+    const parse = vi.spyOn(Object.getPrototypeOf(unified()), "parse");
+    try {
+      splitMarkdownSections(markdown);
+      // PR #556 review: a spy that never fires would read 0 and pass vacuously.
+      expect(parse).toHaveBeenCalled();
+      const parsed = parse.mock.calls.reduce((sum, [file]) => sum + String(file).length, 0);
+      expect(parsed).toBeLessThan(10 * markdown.length);
+    } finally {
+      parse.mockRestore();
+    }
   });
 });
 
@@ -569,6 +587,56 @@ describe("reference links and footnotes in the body across sections (#228)", () 
         "[^2]: Two.",
       ].join("\n"),
     ],
+    // #548 — pre-existing section-render mismatches found reviewing #542.
+    [
+      "a link definition whose title spans several lines",
+      [
+        "## A",
+        "See [x].",
+        "## B",
+        "[x]:",
+        "https://example.com/x",
+        '"A title',
+        "that goes on",
+        'for three lines"',
+      ].join("\n"),
+    ],
+    [
+      "a preamble that starts with indented code, after a prepended footnote definition",
+      ["    [^1] in code", "", "Cited.[^1]", "## A", "", "[^1]: One."].join("\n"),
+    ],
+    [
+      "a run of consecutive definitions, one with a multi-line title",
+      [
+        "## A",
+        "See [a], [b] and [c].",
+        "## B",
+        "[a]: https://example.com/a",
+        "[b]:",
+        "https://example.com/b",
+        "'B,",
+        "titled'",
+        "[c]: https://example.com/c (C",
+        "title)",
+      ].join("\n"),
+    ],
+    [
+      "a document that spells the label closing the prepended definitions",
+      [
+        "## A",
+        "See [x], [metis-definitions-end] and [METIS-DEFINITIONS-END-].",
+        "## B",
+        "[x]: https://example.com/x",
+      ].join("\n"),
+    ],
+    [
+      // PR #556 panel: only a differently-cased spelling, so a label check that
+      // skipped case-folding would pick a colliding label.
+      "a document that spells the closing label in another case only",
+      ["## A", "See [x] and [Metis-Definitions-End].", "## B", "[x]: https://example.com/x"].join(
+        "\n",
+      ),
+    ],
   ];
 
   it.each(DOCUMENTS)("%s renders exactly as a whole-document render", (_, markdown) => {
@@ -596,8 +664,26 @@ describe("reference links and footnotes in the body across sections (#228)", () 
     expect(withDefinitions("plain text", definitions)).toBe("plain text");
     // A footnote's own references are supplied too (to a fixed point).
     expect(withDefinitions("x[^n]", definitions)).toBe(
-      "[^n]: Note [a].\n\n[a]: https://example.com/a\n\nx[^n]",
+      "[^n]: Note [a].\n\n[a]: https://example.com/a\n\n[metis-definitions-end]: #\n\nx[^n]",
     );
+  });
+
+  it("picks a closing label longer than any dash run the text already spells", () => {
+    // PR #556 panel: the label is found in one scan, not by growing it a dash at
+    // a time and rescanning (quadratic in a long hostile dash run).
+    const { definitions } = splitMarkdownSections("## A\n[x]: https://example.com/x");
+    const run = "-".repeat(5000);
+    // Every label normalisation lower-cases; the one-scan picker normalises a
+    // constant number of times, the grow-and-rescan loop once per dash.
+    const lower = vi.spyOn(String.prototype, "toLowerCase");
+    try {
+      const out = withDefinitions(`[x] metis-definitions-end${run}`, definitions);
+      expect(out).toContain(`[metis-definitions-end${run}-]: #`);
+      expect(lower).toHaveBeenCalled();
+      expect(lower.mock.calls.length).toBeLessThan(50);
+    } finally {
+      lower.mockRestore();
+    }
   });
 
   it("a footnote reference whose href is not percent-decodable keeps its own number", () => {
