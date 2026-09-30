@@ -6,14 +6,12 @@
  * approval checkpoints (#626).
  */
 
+import type { DocumentSource } from "../../documents/document-source.js";
+
 // ── Structured Requirements (#622) ─────────────────────────────────────
 
 export type RequirementEnhancementType =
-  | "functional"
-  | "non-functional"
-  | "constraint"
-  | "assumption"
-  | "dependency";
+  "functional" | "non-functional" | "constraint" | "assumption" | "dependency";
 
 export type RequirementEnhancementPriority = "must-have" | "should-have" | "nice-to-have";
 
@@ -95,7 +93,14 @@ export interface WebSearchHit {
  * question's suggested answer (self-resolution pass).
  */
 export interface GroundingCitation {
+  /** The cited document's name — a display label, not its classification. */
   source: string;
+  /**
+   * #573 — the cited document's `documents.source`, stamped when grounding ran.
+   * The UI parses a `connector:repo:` name only when this is `repo`. Absent on
+   * dialog state written before #573.
+   */
+  documentSource?: DocumentSource;
   snippet: string;
   documentId?: string;
   chunkId?: string;
@@ -242,11 +247,7 @@ export interface ApprovalReview {
 // ── Enhancement Pipeline ───────────────────────────────────────────────
 
 export type EnhancementStep =
-  | "extraction"
-  | "web-research"
-  | "clarification"
-  | "approval"
-  | "complete";
+  "extraction" | "web-research" | "clarification" | "approval" | "complete";
 
 export interface EnhancementConfig {
   enableWebResearch: boolean;

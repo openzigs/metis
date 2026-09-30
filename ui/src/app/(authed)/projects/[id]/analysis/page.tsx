@@ -1257,9 +1257,12 @@ export default function AnalysisPage(): React.ReactElement {
                                   // `basename \u2014 repo` label with the full raw id in
                                   // the title tooltip. The chunk index (#{chunkIndex})
                                   // is the file:line provenance and is preserved.
+                                  // #573 — classified on the cited row's
+                                  // stored source, not the filename prefix.
                                   const source = formatSourceLabel(
                                     c.filename ?? c.documentId,
                                     repoNames,
+                                    c.source,
                                   );
                                   return (
                                     <li key={`${c.documentId}-${c.chunkIndex}-${idx}`}>

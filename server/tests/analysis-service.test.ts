@@ -71,7 +71,10 @@ const analyses = new Map<string, AnalysisRow>();
 const agentResults = new Map<string, AgentResultRow>();
 const requirements = new Map<string, RequirementRow>();
 const crossDocFindings = new Map<string, CrossDocRow>();
-const documents = new Map<string, { id: string; filename: string }>();
+const documents = new Map<
+  string,
+  { id: string; filename: string; source: string; projectId: string }
+>();
 let id = 0;
 const nid = (p: string) => `${p}_${++id}`;
 
@@ -257,11 +260,16 @@ vi.mock("../src/lib/prisma.js", () => ({
     },
     // Issue #448 — documentId → filename resolution for citations that carry a
     // documentId but no inline filename.
+    // #573 — the same read carries `source`; a `projectId` scope is honoured so
+    // a test can prove another project's row never resolves.
     document: {
-      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] }; projectId?: string } }) =>
         where.id.in
           .map((docId) => documents.get(docId))
-          .filter((d): d is { id: string; filename: string } => d !== undefined),
+          .filter(
+            (d): d is { id: string; filename: string; source: string; projectId: string } =>
+              d !== undefined && (where.projectId === undefined || d.projectId === where.projectId),
+          ),
       ),
     },
   },
@@ -672,6 +680,81 @@ describe("finalizeAnalysisDelta", () => {
 });
 
 describe("getAnalysisSnapshot rendering", () => {
+  // #573 — citation labels are classified on the cited row's stored source. A
+  // legacy upload stored as `connector:repo:…` (before the #540 guard) reads as
+  // an upload; a real repo row reads as repo; another project's row, a missing
+  // row and a code-graph id resolve to nothing.
+  it("#573 stamps each document citation with its row's documents.source, project-scoped", async () => {
+    seedDocument("doc-legacyup1", "connector:repo:c1:src/a.ts", "upload");
+    seedDocument("doc-realrepo1", "connector:repo:c1:src/b.ts", "repo");
+    seedDocument("doc-otherproj", "connector:repo:c9:src/c.ts", "repo", "proj-otherxxxxx");
+    const a = await createAnalysis({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document"],
+    });
+    await persistAgentResult({
+      analysisId: a.id,
+      agentKey: "document",
+      status: "completed",
+      output: {
+        agentKey: "document",
+        summary: "s",
+        findings: [
+          {
+            category: "compliance",
+            severity: "high",
+            title: "t",
+            body: "b",
+            tags: [],
+            citations: [
+              {
+                documentId: "doc-legacyup1",
+                chunkIndex: 0,
+                filename: "connector:repo:c1:src/a.ts",
+              },
+              {
+                documentId: "doc-realrepo1",
+                chunkIndex: 1,
+                filename: "connector:repo:c1:src/b.ts",
+              },
+              { documentId: "doc-otherproj", chunkIndex: 2 },
+              { documentId: "doc-missing12", chunkIndex: 3 },
+              { documentId: "code-graph:sym-1", chunkIndex: 0, filename: "src/x.ts" },
+              { filePath: "src/y.ts", startLine: 1, endLine: 2 },
+            ],
+          },
+        ],
+        notes: [],
+      },
+      startedAt: new Date(),
+      completedAt: new Date(),
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    });
+
+    const { prisma } = await import("../src/lib/prisma.js");
+    const docFind = prisma.document.findMany as unknown as { mock: { calls: unknown[][] } };
+    docFind.mock.calls.length = 0;
+
+    const snap = await getAnalysisSnapshot(a.id);
+    const citations = snap!.agents[0]!.findings[0]!.citations as Array<{ source?: string }>;
+    expect(citations.map((c) => c.source)).toEqual([
+      "upload",
+      "repo",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    // One batched, project-scoped read; the code-graph id is never queried.
+    expect(docFind.mock.calls).toHaveLength(1);
+    const where = (
+      docFind.mock.calls[0]![0] as { where: { id: { in: string[] }; projectId: string } }
+    ).where;
+    expect(where.projectId).toBe("proj-abcdefghij");
+    expect(where.id.in).not.toContain("code-graph:sym-1");
+  });
+
   it("renders agent results, findings (with citations + tags), and requirements", async () => {
     const a = await createAnalysis({
       projectId: "proj-abcdefghij",
@@ -1076,8 +1159,13 @@ function seedCrossDoc(analysisId: string, evidenceIds: string[], createdAtMs: nu
 }
 
 /** Seed a `Document` row so `documentId → filename` resolution can find it. */
-function seedDocument(docId: string, filename: string) {
-  documents.set(docId, { id: docId, filename });
+function seedDocument(
+  docId: string,
+  filename: string,
+  source = "upload",
+  projectId = "proj-abcdefghij",
+) {
+  documents.set(docId, { id: docId, filename, source, projectId });
 }
 
 describe("toResolvedEvidenceRef (#448) — pure mapper", () => {
@@ -1193,8 +1281,48 @@ describe("readCrossDocFindings (#448) — batched enrichment", () => {
         sourceLabel: "D100 - UC101 Regional Hubs WMS_OMS Data Exchange_v0.8.docx",
         sourceId: "doc-x",
         line: 6,
+        source: "upload",
       },
     ]);
+  });
+
+  // #573 — a legacy upload stored under a reserved `connector:repo:` name keeps
+  // its stored source on the evidence ref, so the chip is not parsed as a repo
+  // file; the lookup is scoped to the analysis's project.
+  it("#573 carries each cited document's stored source onto the evidence ref, project-scoped", async () => {
+    seedFinding(
+      "fnd-legacy",
+      JSON.stringify({
+        citations: [
+          { documentId: "doc-legacy", chunkIndex: 2, filename: "connector:repo:c1:src/a.ts" },
+        ],
+      }),
+    );
+    seedFinding(
+      "fnd-repo",
+      JSON.stringify({
+        citations: [
+          { documentId: "doc-repo", chunkIndex: 0, filename: "connector:repo:c1:src/b.ts" },
+        ],
+      }),
+    );
+    seedDocument("doc-legacy", "connector:repo:c1:src/a.ts", "upload");
+    seedDocument("doc-repo", "connector:repo:c1:src/b.ts", "repo");
+    seedCrossDoc("ana-src", ["fnd-legacy", "fnd-repo"], 1000);
+
+    const { prisma } = await import("../src/lib/prisma.js");
+    const docFind = prisma.document.findMany as unknown as { mock: { calls: unknown[][] } };
+    docFind.mock.calls.length = 0;
+
+    const bundle = await readCrossDocFindings("ana-src");
+    const bySource = Object.fromEntries(
+      bundle!.findings[0]!.evidence!.map((e) => [e.chunkId, e.source]),
+    );
+    expect(bySource).toEqual({ "fnd-legacy": "upload", "fnd-repo": "repo" });
+    expect(docFind.mock.calls).toHaveLength(1);
+    expect(docFind.mock.calls[0]![0]).toMatchObject({
+      where: { project: { analyses: { some: { id: "ana-src" } } } },
+    });
   });
 
   it("#448 degrades to the raw id (no doc-cuid label) when the document is unresolvable", async () => {

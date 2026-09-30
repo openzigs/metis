@@ -204,3 +204,33 @@ describe("formatSourceLabel (#427)", () => {
     });
   });
 });
+
+// #573 — classified on the row's stored `documents.source` when the caller has
+// it; the name is parsed only for a repo row, or when the source is unknown.
+describe("formatSourceLabel — source classification (#573)", () => {
+  const name = "connector:repo:c1:src/NOTES.md";
+
+  it.each(["upload", "generated", "db", "confluence", "jira"] as const)(
+    "keeps a connector-shaped name as-is for a %s row",
+    (source) => {
+      const r = formatSourceLabel(name, { c1: "wms" }, source);
+      expect(r).toEqual({ label: name, rawId: name, basename: name, isConnector: false });
+    },
+  );
+
+  it("parses it for a repo row", () => {
+    expect(formatSourceLabel(name, { c1: "wms" }, "repo").label).toBe("NOTES.md — wms");
+  });
+
+  it("parses it when the source is unknown (the name is the only evidence)", () => {
+    expect(formatSourceLabel(name, { c1: "wms" }).label).toBe("NOTES.md — wms");
+  });
+
+  it("labels the synthetic live-schema id, which has no row and so no source", () => {
+    expect(formatSourceLabel("live-schema:p1").label).toBe("Live schema");
+  });
+
+  it("does not label a stored upload named live-schema: as the live schema", () => {
+    expect(formatSourceLabel("live-schema:p1", undefined, "upload").label).toBe("live-schema:p1");
+  });
+});

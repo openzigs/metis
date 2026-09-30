@@ -14,6 +14,7 @@ import {
 } from "./ambiguity-grounding.js";
 import type { AIProvider, ChatMessage, ChatResponse } from "../ai/types.js";
 import { HAIKU_MODEL_ID } from "../ai/model-router.js";
+import type { DocumentSource } from "../documents/document-source.js";
 import type { ClarifyingQuestion } from "./types/requirements.js";
 
 const QUESTION: ClarifyingQuestion = {
@@ -24,13 +25,14 @@ const QUESTION: ClarifyingQuestion = {
   context: "The requirement does not specify an auth scheme.",
 };
 
-function makeHit(filename: string, text: string, score = 0.9) {
+function makeHit(filename: string, text: string, score = 0.9, source: DocumentSource = "upload") {
   return {
     chunkId: `chunk-${filename}`,
     documentId: `doc-${filename}`,
     filename,
     text,
     score,
+    source,
   };
 }
 
@@ -66,6 +68,23 @@ function makeRetriever(hits: ReturnType<typeof makeHit>[]): {
 }
 
 describe("AmbiguityGrounding.groundQuestion", () => {
+  // #573 — a legacy upload stored under a reserved `connector:repo:` name keeps
+  // its stored source on the citation, so the UI does not label it a repo file.
+  it("#573 carries each hit's documents.source onto its citation", async () => {
+    const { provider } = makeProvider({
+      content: JSON.stringify({ status: "grounded", answer: "OAuth2.", citationIndexes: [1, 2] }),
+    });
+    const { retriever } = makeRetriever([
+      makeHit("connector:repo:c1:src/auth.ts", "legacy upload text", 0.9, "upload"),
+      makeHit("connector:repo:c1:src/session.ts", "repo text", 0.8, "repo"),
+    ]);
+    const result = await new AmbiguityGrounding({ provider, retriever }).groundQuestion(
+      "proj-1",
+      QUESTION,
+    );
+    expect(result.groundingCitations?.map((c) => c.documentSource)).toEqual(["upload", "repo"]);
+  });
+
   it("marks a question grounded with a suggested answer + citation", async () => {
     const { provider, chat } = makeProvider({
       content: JSON.stringify({

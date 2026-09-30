@@ -19,6 +19,7 @@
  *     `connector-ingest.ts` `ingestSourceAsKnowledge`) and are whole-file
  *     ingestions (their `position` is a chunk index, not a line range). A symbol
  *     hit whose file (optionally, whose lines) is already covered by such a chunk
+ *     — one whose `documents.source` is `repo` (#573), never the name alone —
  *     is dropped — no double-injection of the same source from both indices.
  *   - **Token-budgeted.** The rendered symbol block (header + entries) never
  *     exceeds the configured budget; on overflow the ranked TAIL of symbol hits
@@ -36,6 +37,7 @@
  * interpolated into shell/SQL, and the header instructs the model to treat them
  * as reference material that must not override system instructions.
  */
+import type { DocumentSource } from "../documents/document-source.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("fused-code-context");
@@ -46,9 +48,15 @@ const log = createChildLogger("fused-code-context");
  * source-as-RAG chunks: `connector:repo:<connectorId>:src/<relPath>`). The
  * optional line range is honoured when present; source-as-RAG chunks omit it
  * (whole-file coverage) since their `position` is a chunk index, not lines.
+ *
+ * #573 — `source` is the chunk's `documents.source`. Only a `repo` chunk can
+ * cover a code symbol: an upload stored as `connector:repo:<id>:src/X.ts`
+ * (before the #540 guard) has the right name and the wrong content, so it must
+ * never suppress the real code hit. Undefined reads as "not repo".
  */
 export interface FusedRagChunkRef {
   filename: string;
+  source: DocumentSource | undefined;
   lineStart?: number;
   lineEnd?: number;
 }
@@ -146,6 +154,7 @@ function rangesOverlap(aStart: number, aEnd: number, bStart: number, bEnd: numbe
 function isCoveredByRag(hit: FusedSymbolHit, ragChunks: FusedRagChunkRef[]): boolean {
   const hitPath = normalizePath(hit.filePath);
   for (const chunk of ragChunks) {
+    if (chunk.source !== "repo") continue;
     const rel = extractRepoRelPath(chunk.filename);
     if (rel === null) continue;
     if (normalizePath(rel) !== hitPath) continue;

@@ -24,7 +24,7 @@ import {
   type AgentFindingPayload,
   type AgentOutput,
   type Citation,
-  type DocumentCitation,
+  type SnapshotCitation,
   isCodeCitation,
   isDocumentCitation,
   formatCodeCitationLocator,
@@ -62,7 +62,9 @@ import {
   parseAcceptanceCriteria,
   type SynthesisDegradation,
 } from "@metis/shared";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
+import { asDocumentSource, type DocumentSource } from "../documents/document-source.js";
 import type { TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { isServerAuthored } from "./server-authored.js";
@@ -720,6 +722,7 @@ export function toResolvedEvidenceRef(
   evidenceId: string,
   citation?: Citation,
   docNameById?: ReadonlyMap<string, string>,
+  docSourceById?: ReadonlyMap<string, DocumentSource>,
 ): ResolvedEvidenceRef | undefined {
   if (!citation) return undefined;
   // #734 — a CODE citation resolves directly to its `filePath:startLine-endLine`
@@ -746,10 +749,56 @@ export function toResolvedEvidenceRef(
   if (!sourceLabel) return undefined;
   const ref: ResolvedEvidenceRef = { chunkId: evidenceId, sourceLabel };
   if (citation.documentId) ref.sourceId = citation.documentId;
+  // #573 — the cited row's stored source, so the label is classified on it.
+  const source = citation.documentId ? docSourceById?.get(citation.documentId) : undefined;
+  if (source) ref.source = source;
   if (typeof citation.chunkIndex === "number" && citation.chunkIndex >= 0) {
     ref.line = citation.chunkIndex;
   }
   return ref;
+}
+
+/**
+ * #573 — the `Document` rows behind a set of document citations, read in ONE
+ * batched query restricted by `scope` (the caller's project), so a citation can
+ * only ever resolve against its own project's documents. Code citations and
+ * synthetic `code-graph:` ids are not rows and are never queried. Soft-deleted
+ * rows still resolve: their stored source is still true of what was cited.
+ */
+async function readCitedDocuments(
+  citations: ReadonlyArray<Citation | undefined>,
+  scope: Prisma.DocumentWhereInput,
+): Promise<Map<string, { filename: string; source: DocumentSource }>> {
+  const ids = new Set<string>();
+  for (const c of citations) {
+    if (!c || !isDocumentCitation(c)) continue;
+    const id = c.documentId?.trim();
+    // #734 — a synthetic `code-graph:<symbolId>` id is NOT a Document row.
+    if (id && !id.startsWith(CODE_GRAPH_DOCUMENT_PREFIX)) ids.add(id);
+  }
+  const out = new Map<string, { filename: string; source: DocumentSource }>();
+  if (ids.size === 0) return out;
+  const docs = await prisma.document.findMany({
+    where: { ...scope, id: { in: [...ids] } },
+    select: { id: true, filename: true, source: true },
+  });
+  for (const d of docs) {
+    out.set(d.id, { filename: d.filename, source: asDocumentSource(d.source) });
+  }
+  return out;
+}
+
+/**
+ * #573 — a stored citation as the snapshot returns it: a document citation
+ * gains its row's `documents.source` when the row resolved.
+ */
+function withDocumentSource(
+  citation: Citation,
+  sourceById: ReadonlyMap<string, DocumentSource>,
+): SnapshotCitation {
+  if (!isDocumentCitation(citation)) return citation;
+  const source = sourceById.get(citation.documentId?.trim());
+  return source ? { ...citation, source } : citation;
 }
 
 /**
@@ -785,35 +834,21 @@ export async function readCrossDocFindings(analysisId: string): Promise<CrossDoc
       select: { id: true, title: true, evidence: true },
     });
     const firstCitations = findingRows.map((f) => parseEvidence(f.evidence).citations[0]);
-    // #448 — resolve documentId → filename in ONE batched query for the
-    // citations that carry a documentId but NO inline filename, so an evidence
-    // chip shows the document's real name instead of a raw document cuid.
-    const docIds = [
-      ...new Set(
-        firstCitations
-          .filter(
-            (c): c is DocumentCitation =>
-              !!c &&
-              isDocumentCitation(c) &&
-              !c.filename?.trim() &&
-              !!c.documentId?.trim() &&
-              // #734 — a synthetic `code-graph:<symbolId>` id is NOT a Document
-              // row; never chase it through `document.findMany`.
-              !c.documentId.startsWith(CODE_GRAPH_DOCUMENT_PREFIX),
-          )
-          .map((c) => c.documentId.trim()),
-      ),
-    ];
+    // #448 — resolve documentId → filename in ONE batched query, so an evidence
+    // chip whose citation carries no inline filename shows the document's real
+    // name instead of a raw document cuid. #573 — the same read carries every
+    // cited row's `documents.source`, scoped to this analysis's project.
+    const docs = await readCitedDocuments(firstCitations, {
+      project: { analyses: { some: { id: analysisId } } },
+    });
     const docNameById = new Map<string, string>();
-    if (docIds.length > 0) {
-      const docs = await prisma.document.findMany({
-        where: { id: { in: docIds } },
-        select: { id: true, filename: true },
-      });
-      for (const d of docs) if (d.filename?.trim()) docNameById.set(d.id, d.filename);
+    const docSourceById = new Map<string, DocumentSource>();
+    for (const [id, d] of docs) {
+      if (d.filename?.trim()) docNameById.set(id, d.filename);
+      docSourceById.set(id, d.source);
     }
     findingRows.forEach((f, idx) => {
-      const ref = toResolvedEvidenceRef(f.id, firstCitations[idx], docNameById);
+      const ref = toResolvedEvidenceRef(f.id, firstCitations[idx], docNameById, docSourceById);
       if (ref) refById.set(f.id, ref);
     });
   }
@@ -891,7 +926,14 @@ export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot 
   });
   if (!row) return null;
   const crossDocFindings = await readCrossDocFindings(id);
-  return toSnapshot(row, crossDocFindings);
+  // #573 — each document citation's stored source, so the UI labels it by
+  // `documents.source` rather than by a `connector:repo:` filename prefix.
+  const cited = await readCitedDocuments(
+    row.agentResults.flatMap((a) => a.findings.flatMap((f) => parseEvidence(f.evidence).citations)),
+    { projectId: row.projectId },
+  );
+  const sourceById = new Map([...cited].map(([docId, d]) => [docId, d.source]));
+  return toSnapshot(row, crossDocFindings, sourceById);
 }
 
 export async function updateRequirementRow(input: {
@@ -1196,6 +1238,7 @@ interface AnalysisRowWithIncludes {
 function toSnapshot(
   row: AnalysisRowWithIncludes,
   crossDocFindings: CrossDocFindings | null = null,
+  documentSourceById: ReadonlyMap<string, DocumentSource> = new Map(),
 ): AnalysisSnapshot {
   let metadata: Record<string, unknown> | null = null;
   if (row.metadata) {
@@ -1228,7 +1271,7 @@ function toSnapshot(
             title: f.title,
             body: f.body,
             tags: ev.tags,
-            citations: ev.citations,
+            citations: ev.citations.map((c) => withDocumentSource(c, documentSourceById)),
             // Epic #298 / #312 — provenance fields surface on the snapshot
             // so the UI can render the DerivationBadge and link the
             // INFERRED tooltip back to the originating agent run.

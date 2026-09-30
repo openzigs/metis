@@ -576,9 +576,9 @@ export async function buildAutoRagContext(
         `any question about "the project" or "this project" — that phrase always means "${projectName}", ` +
         `never METIS (the platform this chat runs on) and never any other topic raised earlier in this ` +
         `conversation. Prefer these excerpts over your own background knowledge or earlier chat history:\n\n${chunks}`;
-      // #547 — only a repo-sourced chunk can stand in for a code symbol. An
-      // upload named `connector:repo:…` must not suppress the real code hit.
-      ragChunks = hits.filter((h) => h.source === "repo").map((h) => ({ filename: h.filename }));
+      // #547/#573 — only a repo-sourced chunk can stand in for a code symbol;
+      // `fuseCodeContext` enforces that on the `source` carried here.
+      ragChunks = hits.map((h) => ({ filename: h.filename, source: h.source }));
     }
 
     // #714 — passively merge deduped, budgeted code-graph symbol hits. A no-op

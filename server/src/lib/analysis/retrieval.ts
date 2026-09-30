@@ -25,6 +25,7 @@ import {
   REQUIREMENT_RETRIEVAL_CONCURRENCY,
 } from "@metis/shared";
 import type { AIProvider } from "../ai/types.js";
+import type { DocumentSource } from "../documents/document-source.js";
 import { reciprocalRankFusion } from "../rag/bm25-index.js";
 import type { KnowledgeService } from "../rag/knowledge-service.js";
 import { getReranker, isRerankEnabled, type Reranker } from "../rag/reranker.js";
@@ -126,6 +127,7 @@ interface HydratedChunk {
   position: number;
   text: string;
   score: number;
+  source: DocumentSource;
 }
 
 const toContextChunk = (m: HydratedChunk): RetrievalContextChunk => ({
@@ -134,6 +136,7 @@ const toContextChunk = (m: HydratedChunk): RetrievalContextChunk => ({
   filename: m.filename,
   text: m.text,
   score: m.score,
+  source: m.source,
 });
 
 export interface GroundedRetrievalOptions {
@@ -287,6 +290,7 @@ export async function retrievePerRequirement(
           filename: h.filename,
           text: h.text,
           score: h.score,
+          source: h.source,
         })),
       };
     }

@@ -38,6 +38,7 @@ import { ConfigValidationError } from "../config/errors.js";
 // cap fired". Imported rather than re-listed: a second copy would drift, and
 // the module is a dependency-free leaf despite living under `docs-gen/`.
 import { isTruncationFinishReason } from "../docs-gen/truncation.js";
+import type { DocumentSource } from "../documents/document-source.js";
 import { createChildLogger } from "../logger.js";
 import { DEFAULT_FINAL_ANSWER_MAX_OUTPUT_TOKENS } from "./agent-loop.js";
 import { buildSpecialistPrompt } from "./prompts.js";
@@ -56,8 +57,12 @@ export interface RetrievalContextChunk {
    * symbol chunks (`source === "code-graph"`, synthetic `documentId` prefixed
    * `code-graph:`); document-RAG chunks leave all of these unset. Epic #726
    * citations rely on `filePath:startLine-endLine`.
+   *
+   * #573 — a document-RAG chunk carries its row's `documents.source` here
+   * instead, so fused-code dedup classifies on the stored source, never the
+   * filename prefix. The two value sets are disjoint.
    */
-  source?: "code-graph";
+  source?: "code-graph" | DocumentSource;
   symbolId?: string;
   filePath?: string;
   startLine?: number;

@@ -30,6 +30,7 @@ import type {
   RequirementVerdict,
 } from "./constants.js";
 import { dateSchema, idSchema, timestampsSchema } from "./common.js";
+import type { DocumentSource } from "./project.js";
 import type { AgentKind, AgentRef } from "./agents.js";
 import type { CrossDocFindings } from "./cross-doc.js";
 import type { ImpactAffectedRelation } from "./impact.js";
@@ -315,6 +316,17 @@ export type CodeCitation = z.infer<typeof codeCitationSchema>;
  */
 export const citationSchema = z.union([documentCitationSchema, codeCitationSchema]);
 export type Citation = z.infer<typeof citationSchema>;
+
+/**
+ * #573 — a document citation as the analysis snapshot returns it: the stored
+ * citation plus the cited row's `documents.source`, read at read time so it is
+ * right for findings persisted before it existed. Absent when the document row
+ * did not resolve. Never part of {@link documentCitationSchema}, so a model
+ * cannot assert it.
+ */
+export type SnapshotDocumentCitation = DocumentCitation & { source?: DocumentSource };
+/** #573 — a finding citation on the analysis snapshot. */
+export type SnapshotCitation = SnapshotDocumentCitation | CodeCitation;
 
 /** Narrow a {@link Citation} to a {@link CodeCitation} (has a `filePath`). */
 export function isCodeCitation(c: Citation): c is CodeCitation {
@@ -1004,7 +1016,7 @@ export interface AnalysisSnapshot {
       title: string;
       body: string;
       tags: string[];
-      citations: Citation[];
+      citations: SnapshotCitation[];
       /** Epic #298 / #312 — provenance of the finding. */
       derivation: FindingDerivation;
       /** Epic #298 / #312 — agent's self-reported probability in [0,1]. */

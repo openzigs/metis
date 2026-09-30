@@ -45,7 +45,7 @@ import {
 import { audit } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
-import { CONNECTOR_CODE_SOURCES } from "../documents/document-source.js";
+import { asDocumentSource, CONNECTOR_CODE_SOURCES } from "../documents/document-source.js";
 import type { AIProvider, TokenUsage } from "../ai/types.js";
 import { getKnowledgeService, type KnowledgeService } from "../rag/knowledge-service.js";
 import type { MetisIOServer } from "../socket/server.js";
@@ -191,6 +191,7 @@ import {
 import {
   retrieveFusedCodeChunks,
   retrieveFusedCodeContext,
+  toFusedRagChunkRef,
   type AnalysisFusedCodeDeps,
 } from "./fused-code-chunks.js";
 import {
@@ -2727,7 +2728,7 @@ export class AnalysisOrchestrator {
           projectDescription: input.projectDescription,
           extraInstructions: input.extraInstructions,
           requirements: input.requirements,
-          ragChunks: perRequirement.flatMap((r) => r.chunks).map((c) => ({ filename: c.filename })),
+          ragChunks: perRequirement.flatMap((r) => r.chunks).map(toFusedRagChunkRef),
           deps: this.deps.fusedCode,
         });
 
@@ -3488,7 +3489,7 @@ export class AnalysisOrchestrator {
           extraInstructions: input.extraInstructions,
           fallback: RETRIEVAL_QUERIES.code,
         }),
-        ragChunks: combined.map((c) => ({ filename: c.filename })),
+        ragChunks: combined.map(toFusedRagChunkRef),
         deps: this.deps.fusedCode,
       });
       return fusedChunks.length > 0 ? [...combined, ...fusedChunks] : combined;
@@ -3569,7 +3570,7 @@ export class AnalysisOrchestrator {
         documentId: true,
         ord: true,
         text: true,
-        document: { select: { filename: true } },
+        document: { select: { filename: true, source: true } },
       },
       orderBy: [{ documentId: "asc" }, { ord: "asc" }],
       take: ANALYSIS_RETRIEVE_K,
@@ -3580,6 +3581,9 @@ export class AnalysisOrchestrator {
       filename: row.document?.filename ?? "",
       text: row.text,
       score: 0,
+      // #573 — the fused-code dedup classifies on `documents.source`; without it a
+      // repo chunk reached through this fallback would never cover its symbol.
+      source: row.document ? asDocumentSource(row.document.source) : undefined,
     }));
   }
 

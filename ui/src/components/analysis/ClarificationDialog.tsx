@@ -316,8 +316,18 @@ export function ClarificationDialogPanel({
           const grounded = q.groundingStatus === "grounded";
           const partial = q.groundingStatus === "partial";
           const isSelfResolved = grounded || partial;
+          // #573 — one entry per (cited name, stored source), labelled on that
+          // source: a legacy upload and a repo row sharing a name are two
+          // different documents and must not collapse into one label.
           const sources = [
-            ...new Set((q.groundingCitations ?? []).map((c) => c.source).filter(Boolean)),
+            ...new Map(
+              (q.groundingCitations ?? [])
+                .filter((c) => c.source)
+                .map((c) => [
+                  `${c.documentSource ?? ""}\u0000${c.source}`,
+                  formatSourceLabel(c.source, undefined, c.documentSource),
+                ]),
+            ).values(),
           ];
 
           return (
@@ -350,10 +360,9 @@ export function ClarificationDialogPanel({
                     <p
                       className="text-xs text-muted-foreground"
                       data-testid="suggested-answer-source"
-                      title={sources.join(", ")}
+                      title={sources.map((s) => s.rawId).join(", ")}
                     >
-                      Suggested answer (from{" "}
-                      {sources.map((s) => formatSourceLabel(s).label).join(", ")})
+                      Suggested answer (from {sources.map((s) => s.label).join(", ")})
                     </p>
                   )}
                 </div>

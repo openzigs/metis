@@ -35,9 +35,11 @@ export interface EvidenceRefLabel {
 /**
  * Format a resolved evidence ref (or a bare raw id) into chip text.
  *
- * - Resolved (has `sourceLabel`): `label` is `formatSourceLabel(sourceLabel).label`
- *   with ` #<line>` appended when a line is present; `rawId` / `title` are the
- *   raw `chunkId`.
+ * - Resolved (has `sourceLabel`): `label` is
+ *   `formatSourceLabel(sourceLabel, undefined, ref.source).label` — classified on
+ *   the cited row's stored `documents.source` (`ref.source`, #573), so a legacy
+ *   upload named `connector:repo:…` keeps its name — with ` #<line>` appended
+ *   when a line is present; `rawId` / `title` are the raw `chunkId`.
  * - Unresolved ref or bare string: `label` and `title` are the raw id
  *   (graceful degradation == the prior raw-chip behaviour).
  */
@@ -55,7 +57,8 @@ export function formatEvidenceRef(refOrRawId: ResolvedEvidenceRef | string): Evi
     return { label: rawId, rawId, title: rawId };
   }
 
-  const { label } = formatSourceLabel(ref.sourceLabel);
+  // #573 — classified on the cited row's stored source, not the name alone.
+  const { label } = formatSourceLabel(ref.sourceLabel, undefined, ref.source);
   const base = label || rawId;
   const withLine = typeof ref.line === "number" ? `${base} #${ref.line}` : base;
   return { label: withLine, rawId, title: rawId };
