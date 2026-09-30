@@ -21,6 +21,7 @@ import { createChildLogger } from "../logger.js";
 import { getVaultService } from "../vault/vault-service.js";
 import { freshSecretLabel } from "../vault/secret-rotation.js";
 import type { SecretBindings } from "../vault/bound-secret.js";
+import { assertBindingWriteWindowOpen } from "../vault/binding-write-mark.js";
 import type { MCPRegistryService } from "./mcp-service.js";
 import type { McpImportBindingCheck } from "./secret-binding.js";
 
@@ -251,7 +252,12 @@ export async function executeImport(
           metadata: { label: secretLabel, source: "mcp_import", field: "header", header: hName },
         });
       }
-      // 2. Persist the MCPServer row with vault refs in env.
+      // 2. Persist the MCPServer row with vault refs in env. #552 — only while
+      // the entry's binding check still holds off a foreign-owner rotation of
+      // the secrets it binds: entries are written one after another, so a late
+      // one can outlast its window. A refusal fails this entry alone and
+      // withdraws the secrets it vaulted (the catch below).
+      assertBindingWriteWindowOpen(opts.secretBindings?.until.get(entry.label) ?? null);
       const created = await registry.create(
         {
           scope: opts.scope ?? "global",

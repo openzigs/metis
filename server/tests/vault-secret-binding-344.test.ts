@@ -8,8 +8,10 @@ const rows = vi.hoisted(() => ({
   secrets: [] as Array<{ id: string; name: string; createdById: string | null }>,
 }));
 const findMany = vi.hoisted(() => vi.fn());
+// #552 — the guard stamps (raw UPDATE) the secrets it is about to bind before reading them.
+const $executeRaw = vi.hoisted(() => vi.fn(async () => 1));
 vi.mock("../src/lib/prisma.js", () => ({
-  prisma: { secret: { findMany } },
+  prisma: { secret: { findMany }, $executeRaw },
 }));
 const audit = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit }));
@@ -54,7 +56,10 @@ describe("#344 secret binding — assertSecretBindingAllowed", () => {
   beforeEach(() => {
     audit.mockClear();
     findMany.mockReset();
-    findMany.mockImplementation(async () => rows.secrets);
+    // Every row reads back as stamped by this write (#552).
+    findMany.mockImplementation(async () =>
+      rows.secrets.map((r) => ({ ...r, bindingWriteUntil: new Date(8.64e15) })),
+    );
     rows.secrets = [
       { id: "s-own", name: "global:mine", createdById: "u-coord" },
       { id: "s-foreign", name: "global:theirs", createdById: "u-admin" },
@@ -64,7 +69,7 @@ describe("#344 secret binding — assertSecretBindingAllowed", () => {
     ];
   });
 
-  const refused = (p: Promise<void>) =>
+  const refused = (p: Promise<unknown>) =>
     expect(p).rejects.toMatchObject({ statusCode: 403, code: SECRET_BINDING_FORBIDDEN });
 
   it("admins (vault.reveal) are never refused", async () => {
@@ -183,7 +188,8 @@ describe("#344 secret binding — assertSecretBindingAllowed", () => {
       },
       ctx,
     );
-    expect(findMany).toHaveBeenCalledTimes(1);
+    // One candidate read (it selects `name`); the #552 stamp looks up ids only.
+    expect(findMany.mock.calls.filter(([a]) => a?.select?.name)).toHaveLength(1);
   });
 
   it("nothing to bind is always allowed", async () => {

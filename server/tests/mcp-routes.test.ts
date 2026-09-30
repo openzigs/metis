@@ -56,6 +56,8 @@ vi.mock("../src/lib/prisma.js", async () => {
     },
     userRole: {},
     auditLog: { create: vi.fn(async () => ({})) },
+    // #552 — the binding guard stamps (raw UPDATE) the secrets a write binds anew.
+    $executeRaw: vi.fn(async () => 1),
     secret: {
       // #480 — create/update bind each `${vault:x}` to a live secret id. A
       // superset is enough: the binder refines the rows by reachability. The

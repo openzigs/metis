@@ -61,6 +61,7 @@ import { getVaultService } from "../lib/vault/vault-service.js";
 import { freshSecretLabel } from "../lib/vault/secret-rotation.js";
 import { withdrawCreatedSecrets } from "../lib/vault/secret-retirement.js";
 import type { SecretBindings } from "../lib/vault/bound-secret.js";
+import { assertBindingWriteWindowOpen } from "../lib/vault/binding-write-mark.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -296,7 +297,7 @@ export function mcpRouter(): Router {
     await assertProjectScopedCreate(req, parsed.data.scope, parsed.data.projectId);
     // #344 — before any vault write, so a refused request leaves nothing.
     // #577 — and the write binds exactly the ids this check approved.
-    const bound = await assertMcpCreateSecretBinding(
+    const { bindings: bound, until } = await assertMcpCreateSecretBinding(
       { userId: actor.id, role: actor.role },
       parsed.data,
     );
@@ -326,6 +327,10 @@ export function mcpRouter(): Router {
         created,
         isSecretFn: (k, v) => isSecretHeaderName(k) || isSecretValue(v),
       });
+      // #552 — the write must land inside the binding check's window. A
+      // refusal here is inside the try with `landed` still false, so #574
+      // withdraws whatever this request already auto-vaulted.
+      assertBindingWriteWindowOpen(until);
       const server = await svc().create(
         {
           ...parsed.data,
@@ -423,6 +428,8 @@ export function mcpRouter(): Router {
         ...(parsed.data.envSecretRefs ?? {}),
         ...envResult.refs,
       };
+      // #552 — the write must land inside the binding check's window.
+      assertBindingWriteWindowOpen(check?.until ?? null);
       const updated = await svc().update(
         String(req.params.id),
         {
@@ -466,6 +473,8 @@ export function mcpRouter(): Router {
     await assertServerAccess(req, id);
     const check = await assertMcpRebindSecretBinding({ userId: actor.id, role: actor.role }, id);
     try {
+      // #552 — the write must land inside the binding check's window.
+      assertBindingWriteWindowOpen(check?.until ?? null);
       res.json(ok(await svc().rebindSecrets(id, actor, check?.checkedAt ?? null, check?.bindings)));
     } catch (err) {
       rethrow(err);

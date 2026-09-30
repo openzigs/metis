@@ -29,11 +29,14 @@ import { AppError } from "../middleware/error-handler.js";
 import {
   getVaultService,
   SecretNameTakenError,
+  SecretNotFoundError,
   type SecretSummary,
 } from "../lib/vault/vault-service.js";
+import { bindingWriteInProgress } from "../lib/vault/binding-write-mark.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
 import {
+  bindingInProgressMessage,
   bindingsChangedMessage,
   bindingsDiffer,
   canonicalBindings,
@@ -41,6 +44,7 @@ import {
   describeForeignOwner,
   foreignOwnerMessage,
   secretOwnerOf,
+  VAULT_ROTATE_BINDING_IN_PROGRESS,
   VAULT_ROTATE_BINDINGS_CHANGED,
   VAULT_ROTATE_FOREIGN_OWNER,
 } from "../lib/vault/rotate-foreign-owner.js";
@@ -123,6 +127,38 @@ function summaryToView(s: SecretSummary): {
   };
 }
 
+/**
+ * #552 — a confirmed foreign-owner rotation whose conditional UPDATE missed
+ * because a binding write stamped the secret after the bindings were listed:
+ * a 409 with the live bindings, not the 404 a gone secret gets. When the live
+ * bindings already differ from the ones the admin confirmed, that write has
+ * landed (VAULT_ROTATE_BINDINGS_CHANGED); when they still match, it has not
+ * landed yet, so the list cannot be confirmed (VAULT_ROTATE_BINDING_IN_PROGRESS).
+ */
+async function refuseIfBindingsMoved(
+  id: string,
+  seen: { bindingWriteUntil: Date | null },
+  ownerId: string,
+  confirmed: ConfirmedBinding[],
+): Promise<void> {
+  const fresh = await secretOwnerOf(id);
+  if (
+    !fresh ||
+    fresh.createdById !== ownerId ||
+    fresh.bindingWriteUntil?.getTime() === seen.bindingWriteUntil?.getTime()
+  ) {
+    return;
+  }
+  const details = await describeForeignOwner({ id, name: fresh.name, createdById: ownerId });
+  const changed = bindingsDiffer(details, confirmed);
+  throw new AppError(
+    409,
+    changed ? VAULT_ROTATE_BINDINGS_CHANGED : VAULT_ROTATE_BINDING_IN_PROGRESS,
+    changed ? bindingsChangedMessage(details) : bindingInProgressMessage(details),
+    details as unknown as Record<string, unknown>,
+  );
+}
+
 export function vaultRouter(): Router {
   const r = Router();
 
@@ -201,6 +237,16 @@ export function vaultRouter(): Router {
           details as unknown as Record<string, unknown>,
         );
       }
+      // #552 — a binding write stamped this secret and may still be landing,
+      // so the list above may already be stale.
+      if (bindingWriteInProgress(secret.bindingWriteUntil)) {
+        throw new AppError(
+          409,
+          VAULT_ROTATE_BINDING_IN_PROGRESS,
+          bindingInProgressMessage(details),
+          details as unknown as Record<string, unknown>,
+        );
+      }
       if (bindingsDiffer(details, confirmed)) {
         throw new AppError(
           409,
@@ -214,12 +260,19 @@ export function vaultRouter(): Router {
     let summary: SecretSummary;
     try {
       // The owner seen above is the owner written against (compare-and-swap),
-      // so the check and the rotate cannot straddle an ownership change.
+      // so the check and the rotate cannot straddle an ownership change. #552 —
+      // likewise the binding-write stamp read before the bindings were listed,
+      // so a binding write that started since refuses the rotation.
       summary = await getVaultService().rotate(id, parsed.data.value, {
         ...(secret ? { onlyIfCreatedBy: secret.createdById } : {}),
-        ...(foreignOwnerId ? { transferOwnerTo: aId } : {}),
+        ...(secret && foreignOwnerId
+          ? { transferOwnerTo: aId, onlyIfBindingWriteUntil: secret.bindingWriteUntil }
+          : {}),
       });
     } catch (err) {
+      if (secret && foreignOwnerId && confirmedBindings && err instanceof SecretNotFoundError) {
+        await refuseIfBindingsMoved(id, secret, foreignOwnerId, confirmedBindings);
+      }
       // Issue #580 — a key rotation FAILURE is a sev-1 operational event. Fire a
       // best-effort PagerDuty incident to the designated ops workspace (env
       // PAGERDUTY_OPS_WORKSPACE_ID) before surfacing the HTTP error. Vault secrets

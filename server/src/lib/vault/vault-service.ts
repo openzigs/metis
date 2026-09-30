@@ -425,11 +425,21 @@ export class VaultService {
    * `transferOwnerTo`, which rewrites `createdById` to the rotating admin in
    * the same UPDATE, so the invariant still holds: the new owner is whoever
    * supplied the new value, and the previous owner loses rule 1 on it.
+   *
+   * #552 — `onlyIfBindingWriteUntil` makes the UPDATE conditional on the
+   * `bindingWriteUntil` stamp the caller read before listing the bindings, so
+   * a binding write that starts in between refuses the rotation
+   * (`binding-write-mark.ts`). Like the other conditions, a miss is reported
+   * as {@link SecretNotFoundError}; the caller tells the cases apart.
    */
   async rotate(
     id: string,
     newPlaintext: string,
-    opts: { onlyIfCreatedBy?: string | null; transferOwnerTo?: string } = {},
+    opts: {
+      onlyIfCreatedBy?: string | null;
+      transferOwnerTo?: string;
+      onlyIfBindingWriteUntil?: Date | null;
+    } = {},
   ): Promise<SecretSummary> {
     const envelope = await this.encrypt(newPlaintext);
     let row;
@@ -439,6 +449,9 @@ export class VaultService {
           id,
           deletedAt: null,
           ...(opts.onlyIfCreatedBy !== undefined ? { createdById: opts.onlyIfCreatedBy } : {}),
+          ...(opts.onlyIfBindingWriteUntil !== undefined
+            ? { bindingWriteUntil: opts.onlyIfBindingWriteUntil }
+            : {}),
         },
         data: {
           ciphertext: envelope.ciphertext,

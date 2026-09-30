@@ -2829,7 +2829,20 @@ The `/vault` page is split into two panels:
      `confirmedBindings` (the `type`, `id` and `destination` of every
      binding listed); if those no longer match the live bindings — including
      a binding re-pointed at a new host under the same id — it is refused with
-     `409 VAULT_ROTATE_BINDINGS_CHANGED` and the current list. The
+     `409 VAULT_ROTATE_BINDINGS_CHANGED` and the current list. While the
+     owner is binding the secret somewhere new — from the moment their change
+     is checked until it is saved, and for at most a minute — the rotation is
+     refused with `409 VAULT_ROTATE_BINDING_IN_PROGRESS` instead; retry, and
+     review the bindings again. An owner who keeps making such changes keeps
+     that minute open, so the rotation cannot land while they do: **disable
+     their account first** (SCIM `active: false`, which revokes their
+     sessions), wait for the access token they already hold to expire
+     (`JWT_ACCESS_EXPIRY`, 1 hour by default), then rotate. On the other side,
+     a connector, MCP server or publish change that takes longer than that
+     minute between checking its vault secrets and saving is not saved
+     (`409 SECRET_BINDING_WINDOW_EXPIRED`; for an mcp.json import, only the
+     late entry fails) — retry it. Checking a binding does not change the
+     secret's **Updated** time. The
      `vault.rotate` audit row records `foreignOwnerConfirmed`, `ownerId`,
      `confirmedBindings` and `ownershipTransferredTo`.
    - **Audit** — lists the recent `vault.{reveal,read,rotate,delete,write}`

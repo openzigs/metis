@@ -28,6 +28,7 @@ import {
   judgeSecretBinding,
   reaches,
   readCandidateSecrets,
+  stampBindingWrite,
   type SecretBindingChange,
   type SecretBindingContext,
 } from "./secret-binding.js";
@@ -128,26 +129,44 @@ function bindFromRows(
  * were judged. Checking and binding in separate reads let a secret deleted and
  * re-created under the same label between them be bound unchecked.
  *
- * Pass the returned bindings to the write as its pre-resolved ids; `kept` is
- * as for {@link bindSecretRefs}.
+ * #552 — like `assertSecretBindingAllowed`, it stamps every secret the write
+ * binds anew BEFORE that read (`stampBindingWrite`), admins included, so a
+ * confirmed foreign-owner rotation cannot interleave with the write.
+ *
+ * Pass the returned bindings to the write as its pre-resolved ids, and the
+ * returned `until` to `assertBindingWriteWindowOpen` immediately before the
+ * write; `kept` is as for {@link bindSecretRefs}.
  *
  * @throws AppError 403 SECRET_BINDING_FORBIDDEN (audited), 409
- *   VAULT_REF_AMBIGUOUS, 400 VAULT_REF_UNRESOLVED.
+ *   VAULT_REF_AMBIGUOUS, 409 SECRET_BINDING_CHANGED, 400 VAULT_REF_UNRESOLVED.
  */
 export async function authorizeAndBindSecretRefs(
   user: Pick<AuthPayload, "userId" | "role">,
   change: SecretBindingChange,
   ctx: SecretBindingContext,
   kept: SecretBindings | null = null,
-): Promise<SecretBindings> {
+): Promise<AuthorizedSecretBindings> {
   const after = [...new Set(change.after)];
-  if (after.length === 0) return Object.create(null) as SecretBindings;
+  if (after.length === 0) return { bindings: Object.create(null) as SecretBindings, until: null };
+  const until = await stampBindingWrite(user, change);
   if (hasPermission(user.role, "vault.reveal")) {
-    return bindFromRows(after, kept, await readCandidateSecrets(unkeptRefs(after, kept)));
+    const rows = await readCandidateSecrets(unkeptRefs(after, kept));
+    return { bindings: bindFromRows(after, kept, rows), until };
   }
   const rows = await readCandidateSecrets([...new Set([...change.before, ...after])]);
-  judgeSecretBinding(user, change, ctx, rows);
-  return bindFromRows(after, kept, rows);
+  judgeSecretBinding(user, change, ctx, rows, until);
+  return { bindings: bindFromRows(after, kept, rows), until };
+}
+
+/** What {@link authorizeAndBindSecretRefs} approved. */
+export interface AuthorizedSecretBindings {
+  /** Reference body → the id the check approved, for the write to bind. */
+  bindings: SecretBindings;
+  /**
+   * #552 — the binding-write stamp's window end, or `null` when nothing was
+   * stamped; the write must land before it (`assertBindingWriteWindowOpen`).
+   */
+  until: Date | null;
 }
 
 /**

@@ -108,6 +108,7 @@ import {
   assertDbSecretBinding,
   assertRepoSecretBinding,
 } from "../lib/connectors/connector-secret-binding.js";
+import { assertBindingWriteWindowOpen } from "../lib/vault/binding-write-mark.js";
 import { createChildLogger } from "../lib/logger.js";
 import { genericFailureMessage, jobEvents } from "../lib/socket/job-events.js";
 import {
@@ -444,11 +445,17 @@ export function connectorsRouter(): Router {
           "Create upload connectors via POST /repos/upload (multipart .zip)",
         );
       }
-      await assertRepoSecretBinding(authUser(req), projectIdOf(req), null, parsed.data);
+      const { until } = await assertRepoSecretBinding(
+        authUser(req),
+        projectIdOf(req),
+        null,
+        parsed.data,
+      );
       try {
         const projectId = projectIdOf(req);
         const a = actor(req);
         const { autoIngest, ...connectorData } = parsed.data;
+        assertBindingWriteWindowOpen(until); // #552
         const created = await createRepoConnector(projectId, connectorData, a);
 
         // Auto-ingest: if explicitly requested OR this is the first repo connector
@@ -575,13 +582,14 @@ export function connectorsRouter(): Router {
         });
       }
       const { id: _id, ...patch } = parsed.data;
-      const checkedAt = await assertRepoSecretBinding(
+      const { checkedAt, until } = await assertRepoSecretBinding(
         authUser(req),
         projectIdOf(req),
         String(req.params.id),
         patch,
       );
       try {
+        assertBindingWriteWindowOpen(until); // #552
         const updated = await updateRepoConnector(
           projectIdOf(req),
           String(req.params.id),
@@ -923,8 +931,14 @@ export function connectorsRouter(): Router {
           issues: parsed.error.flatten(),
         });
       }
-      await assertDbSecretBinding(authUser(req), projectIdOf(req), null, parsed.data);
+      const { until } = await assertDbSecretBinding(
+        authUser(req),
+        projectIdOf(req),
+        null,
+        parsed.data,
+      );
       try {
+        assertBindingWriteWindowOpen(until); // #552
         const created = await createDbConnector(projectIdOf(req), parsed.data, actor(req));
         res.status(201).json(ok(created));
       } catch (err) {
@@ -955,13 +969,14 @@ export function connectorsRouter(): Router {
         });
       }
       const { id: _id, ...patch } = parsed.data;
-      const checkedAt = await assertDbSecretBinding(
+      const { checkedAt, until } = await assertDbSecretBinding(
         authUser(req),
         projectIdOf(req),
         String(req.params.id),
         patch,
       );
       try {
+        assertBindingWriteWindowOpen(until); // #552
         const updated = await updateDbConnector(
           projectIdOf(req),
           String(req.params.id),
