@@ -25,7 +25,7 @@ import { getVaultService, type VaultService } from "../../vault/vault-service.js
 import { rotateOrCreate } from "../../vault/secret-rotation.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
-import { ConnectorError } from "../types.js";
+import { ConnectorError, concurrentUpdateError } from "../types.js";
 import { assertConnectorHostAllowed, type ConnectorKind } from "../network-allowlist.js";
 import { asVaultRef, resolveVaultRef } from "../vault-resolver.js";
 import { authenticateXray, buildBasicAuthHeader, buildBearerHeader } from "./auth.js";
@@ -36,6 +36,7 @@ import type {
   ResolvedTlsConfig,
   TestManagementAuthConfigRefs,
 } from "./types.js";
+import { isUniqueViolation } from "../../db/prisma-errors.js";
 
 const log = createChildLogger("testmgmt-service");
 
@@ -265,11 +266,6 @@ async function persistTlsConfig(
   };
 }
 
-/** Prisma's unique-index violation (`P2002`), matched on its code alone. */
-function isUniqueConstraintError(err: unknown): boolean {
-  return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2002";
-}
-
 function labelTaken(label: string): ConnectorError {
   return new ConnectorError(
     409,
@@ -440,7 +436,7 @@ export async function createTestManagementConnection(
   } catch (err) {
     // A concurrent create took the label after the check above: 409, and the
     // secrets just written belong to no connection, so they are withdrawn.
-    if (!isUniqueConstraintError(err)) throw err;
+    if (!isUniqueViolation(err)) throw err;
     const written = [...Object.values(refs), tls?.caCertRef].map((r) =>
       typeof r === "string" ? refId(r) : null,
     );
@@ -464,6 +460,8 @@ export async function updateTestManagementConnection(
   actorId: string,
   projectId?: string,
   deps?: TestManagementServiceDeps,
+  /** #479 — the `updatedAt` the binding guard read; the write is conditional on it. */
+  expectedUpdatedAt?: Date | null,
 ): Promise<TestManagementConnectionDetail> {
   const db = pickPrisma(deps)!;
   const vault = pickVault(deps);
@@ -543,9 +541,19 @@ export async function updateTestManagementConnection(
 
   let row;
   try {
-    row = await db.testManagementConnection.update({ where: { id }, data });
+    if (expectedUpdatedAt === undefined) {
+      row = await db.testManagementConnection.update({ where: { id }, data });
+    } else {
+      if (expectedUpdatedAt === null) throw concurrentUpdateError();
+      const { count } = await db.testManagementConnection.updateMany({
+        where: { id, updatedAt: expectedUpdatedAt },
+        data,
+      });
+      if (count === 0) throw concurrentUpdateError();
+      row = await db.testManagementConnection.findUniqueOrThrow({ where: { id } });
+    }
   } catch (err) {
-    if (isUniqueConstraintError(err) && typeof data.label === "string") {
+    if (isUniqueViolation(err) && typeof data.label === "string") {
       throw labelTaken(data.label);
     }
     throw err;

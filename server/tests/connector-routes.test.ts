@@ -125,7 +125,27 @@ vi.mock("../src/lib/prisma.js", async () => {
         repos.set(where.id, next);
         return next;
       }),
-      updateMany: vi.fn(async () => ({ count: 0 })),
+      // #479 — the conditional write a binding-guarded PATCH makes.
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id?: string; updatedAt?: Date };
+          data: Partial<RepoRow>;
+        }) => {
+          if (!where.updatedAt) return { count: 0 };
+          const r = where.id ? repos.get(where.id) : undefined;
+          if (!r || r.updatedAt.getTime() !== where.updatedAt.getTime()) return { count: 0 };
+          repos.set(r.id, { ...r, ...data, updatedAt: new Date() } as RepoRow);
+          return { count: 1 };
+        },
+      ),
+      findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const r = repos.get(where.id);
+        if (!r) throw new Error("not found");
+        return r;
+      }),
     },
     databaseConnection: {
       findMany: vi.fn(async ({ where }: { where: { projectId: string } }) =>
@@ -172,6 +192,27 @@ vi.mock("../src/lib/prisma.js", async () => {
         const next = { ...r, ...data, updatedAt: new Date() } as DbRow;
         dbs.set(where.id, next);
         return next;
+      }),
+      // #479 — the conditional write a binding-guarded PATCH makes.
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id?: string; updatedAt?: Date };
+          data: Partial<DbRow>;
+        }) => {
+          if (!where.updatedAt) return { count: 0 };
+          const r = where.id ? dbs.get(where.id) : undefined;
+          if (!r || r.updatedAt.getTime() !== where.updatedAt.getTime()) return { count: 0 };
+          dbs.set(r.id, { ...r, ...data, updatedAt: new Date() } as DbRow);
+          return { count: 1 };
+        },
+      ),
+      findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const r = dbs.get(where.id);
+        if (!r) throw new Error("not found");
+        return r;
       }),
     },
   });

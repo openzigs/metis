@@ -11,6 +11,7 @@
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { SpecKitArtifactError } from "./artifacts.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 
 export const SPECKIT_FEATURE_SLUG_RE = /^\d{3}-[a-z0-9-]{1,80}$/;
 
@@ -161,8 +162,7 @@ export async function createFeature(input: CreateFeatureInput): Promise<SpecKitF
       return toDto(row);
     } catch (err) {
       // Concurrent create raced us — try the next NNN.
-      const code = (err as { code?: string }).code;
-      if (code !== "P2002") throw err;
+      if (!isUniqueViolation(err)) throw err;
     }
   }
   throw new SpecKitArtifactError(

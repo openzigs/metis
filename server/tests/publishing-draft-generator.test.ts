@@ -302,6 +302,106 @@ describe("generateDrafts", () => {
     }
   });
 
+  // #395 — two requirements with the same `[Type] <title>` in ONE analysis used
+  // to share a draft: the second upsert overwrote the first's body while the
+  // draft kept the first's requirementId, leaving one requirement draftless.
+  describe("same-titled requirements within one analysis (#395)", () => {
+    const opts = {
+      projectId: "proj_1",
+      analysisId: "analysis_1",
+      targetOwner: "acme",
+      targetRepo: "metis",
+    };
+    const twin = {
+      ...requirements[0],
+      id: "req_twin",
+      body: "Given a returning visitor\nWhen they use a passkey\nThen a session is created",
+    };
+
+    beforeEach(() => {
+      requirements.push(twin);
+    });
+    afterEach(() => {
+      requirements.splice(requirements.indexOf(twin), 1);
+    });
+
+    function featureFor(requirementId: string): Draft {
+      const found = [...drafts.values()].filter(
+        (d) => d.draftType !== "epic" && d.requirementId === requirementId,
+      );
+      expect(found).toHaveLength(1);
+      return found[0];
+    }
+
+    it("gives each same-titled requirement its own draft, id and body", async () => {
+      const run = await generateDrafts(opts);
+      expect(run.features).toBe(3);
+      expect(run.upserted).toBe(4);
+      expect(drafts.size).toBe(4);
+
+      const first = featureFor("req_1");
+      const second = featureFor("req_twin");
+      expect(first.id).not.toBe(second.id);
+      expect(first.title).toBe("[Feature] Login form");
+      expect(second.title).toBe("[Feature] Login form (2)");
+      expect(first.body).toContain("they submit credentials");
+      expect(first.body).not.toContain("passkey");
+      expect(second.body).toContain("passkey");
+      expect(JSON.parse(second.metadata ?? "{}").requirementId).toBe("req_twin");
+    });
+
+    it("refreshes both drafts on a re-run without duplicating either", async () => {
+      await generateDrafts(opts);
+      const before = [...drafts.values()].map((d) => ({ id: d.id, req: d.requirementId }));
+
+      const rerun = await generateDrafts(opts);
+      expect(rerun.upserted).toBe(0);
+      expect(rerun.refreshed).toBe(4);
+      expect([...drafts.values()].map((d) => ({ id: d.id, req: d.requirementId }))).toEqual(before);
+      expect(featureFor("req_twin").body).toContain("passkey");
+      expect(featureFor("req_1").body).not.toContain("passkey");
+    });
+
+    it("re-links the drafts when a re-run of the analysis replaces the requirement rows", async () => {
+      await generateDrafts(opts);
+      const ids = [...drafts.values()].map((d) => d.id).sort();
+      // persistRequirements hard-deletes and re-creates the rows; the FK is
+      // ON DELETE SET NULL, so every feature draft loses its requirementId.
+      for (const d of drafts.values()) d.requirementId = null;
+      const saved = requirements.map((r) => r.id);
+      requirements.forEach((r) => (r.id = `${r.id}_v2`));
+      try {
+        const rerun = await generateDrafts(opts);
+        expect(rerun.upserted).toBe(0);
+        expect(rerun.refreshed).toBe(4);
+        expect([...drafts.values()].map((d) => d.id).sort()).toEqual(ids);
+        expect(featureFor("req_1_v2").body).not.toContain("passkey");
+        expect(featureFor("req_twin_v2").body).toContain("passkey");
+        expect(featureFor("req_2_v2").title).toBe("[Task] Logout button");
+      } finally {
+        requirements.forEach((r, i) => (r.id = saved[i]));
+      }
+    });
+
+    it("never hands a draft linked to another requirement of the same analysis to this one", async () => {
+      await generateDrafts(opts);
+      const firstId = featureFor("req_1").id;
+      // The twin now sorts ahead of req_1; it must still land on its own draft.
+      requirements.splice(requirements.indexOf(twin), 1);
+      requirements.unshift(twin);
+      try {
+        await generateDrafts(opts);
+      } finally {
+        requirements.splice(requirements.indexOf(twin), 1);
+        requirements.push(twin);
+      }
+      expect(featureFor("req_1").id).toBe(firstId);
+      expect(featureFor("req_1").body).not.toContain("passkey");
+      expect(featureFor("req_twin").body).toContain("passkey");
+      expect(drafts.size).toBe(4);
+    });
+  });
+
   // #369 — `claimTitle` is check-then-act; the partial unique index on
   // (projectId, dedupHash) is what makes the loser of a concurrent claim fail,
   // and the generator must then re-claim rather than surface a 500.

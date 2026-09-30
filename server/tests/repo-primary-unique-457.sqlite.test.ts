@@ -210,9 +210,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       } finally {
         state.db = db;
       }
-      expect(insertedLabels).not.toContain("bad");
+      // #475 — the row state first: it is what shows the pre-#463 defect.
       const rows = await db.repoConnection.findMany({ where: { projectId: "p6" } });
       expect(rows.map((r) => [r.label, r.isPrimary])).toEqual([["good", true]]);
+      expect(insertedLabels).not.toContain("bad");
     });
 
     it("#463 — writes an upload's row once, with uploadPath, and never updates it", async () => {
@@ -245,7 +246,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(row.isPrimary).toBe(true);
     });
 
-    it("#463 — a label clash with a soft-deleted row is not retried as non-primary", async () => {
+    it("#463/#475 — a label clash with a soft-deleted row is a 409, not retried as non-primary", async () => {
       await db.repoConnection.create({
         data: { projectId: "p8", label: "old", deletedAt: new Date() },
       });
@@ -260,7 +261,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       try {
         await expect(
           createRepoConnector("p8", { label: "old", ownerOrOrg: "o", repoName: "old" }, "u1"),
-        ).rejects.toMatchObject({ code: "P2002" });
+        ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
       } finally {
         state.db = db;
       }

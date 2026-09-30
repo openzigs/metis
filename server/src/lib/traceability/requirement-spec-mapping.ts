@@ -23,6 +23,7 @@ import type {
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 
 export interface RequirementSpecMappingDeps {
   prisma?: Pick<PrismaClient, "requirementSpecMapping" | "requirement" | "generatedDocument">;
@@ -90,11 +91,6 @@ async function assertSpecInProject(
   if (!row) {
     throw new AppError(404, "SPEC_NOT_FOUND", "spec document not found in this project");
   }
-}
-
-/** Prisma's unique-constraint violation code. */
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as { code?: string }).code === "P2002";
 }
 
 /** List the spec links for a single requirement (scoped to the project). */

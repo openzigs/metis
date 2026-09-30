@@ -96,6 +96,19 @@ vi.mock("../src/lib/prisma.js", () => ({
 
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
+const repoLog = vi.hoisted(() => ({ debug: vi.fn(), warn: vi.fn() }));
+vi.mock("../src/lib/logger.js", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../src/lib/logger.js")>();
+  return {
+    ...orig,
+    createChildLogger: (name: string) => {
+      const real = orig.createChildLogger(name);
+      if (name !== "repo-service") return real;
+      return { ...real, ...repoLog, info: vi.fn(), error: vi.fn() };
+    },
+  };
+});
+
 vi.mock("../src/lib/connectors/network-allowlist.js", () => ({
   assertConnectorHostAllowed: vi.fn(async () => undefined),
   resolveAndAssertConnectorHost: vi.fn(async () => ({
@@ -405,7 +418,9 @@ describe("Repo connector service — CRUD", () => {
     }
   });
 
-  it("#457 — a unique violation on a non-primary insert reaches the caller", async () => {
+  it("#457/#475 — a unique violation on a non-primary insert reaches the caller as a 409", async () => {
+    // e.g. a racing duplicate label, or one held by a soft-deleted row: the
+    // label is the only caller-chosen unique key.
     await createRepoConnector("proj_1", { label: "a", ownerOrOrg: "o", repoName: "r" }, "user_1");
     const { prisma } = await import("../src/lib/prisma.js");
     const create = vi.mocked(prisma.repoConnection.create);
@@ -416,11 +431,88 @@ describe("Repo connector service — CRUD", () => {
     try {
       await expect(
         createRepoConnector("proj_1", { label: "b", ownerOrOrg: "o", repoName: "r" }, "user_1"),
-      ).rejects.toMatchObject({ code: "P2002" });
+      ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
       expect(create).toHaveBeenCalledTimes(2); // the first create above, then one attempt
     } finally {
       create.mockImplementation(insert);
     }
+  });
+
+  describe("#475 — which P2002 is a label clash", () => {
+    const p2002 = (meta?: Record<string, unknown>) =>
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002", meta });
+    const failFirstInsert = async (err: Error) => {
+      const { prisma } = await import("../src/lib/prisma.js");
+      const create = vi.mocked(prisma.repoConnection.create);
+      const insert = create.getMockImplementation()!;
+      create.mockImplementation((async (args: { data: Partial<RepoRow> }) => {
+        if (args.data.isPrimary) throw err;
+        return insert(args as never);
+      }) as never);
+      return () => create.mockImplementation(insert);
+    };
+    const create = (label: string) =>
+      createRepoConnector("proj_1", { label, ownerOrOrg: "o", repoName: "r" }, "user_1");
+
+    it("the SQLite adapter's (projectId, label) fields shape is a 409", async () => {
+      const restore = await failFirstInsert(
+        p2002({
+          driverAdapterError: { cause: { constraint: { fields: ["projectId", "label"] } } },
+        }),
+      );
+      try {
+        await expect(create("old")).rejects.toMatchObject({ code: "REPO_LABEL_TAKEN" });
+      } finally {
+        restore();
+      }
+      expect(repoLog.debug).not.toHaveBeenCalled();
+    });
+
+    it("a P2002 on another constraint is rethrown as it is", async () => {
+      const restore = await failFirstInsert(p2002({ target: "repo_connections_pkey" }));
+      try {
+        await expect(create("x")).rejects.toMatchObject({ code: "P2002" });
+      } finally {
+        restore();
+      }
+    });
+
+    it("a P2002 naming other columns is rethrown as it is", async () => {
+      const restore = await failFirstInsert(p2002({ target: ["id"] }));
+      try {
+        await expect(create("x")).rejects.toMatchObject({ code: "P2002" });
+      } finally {
+        restore();
+      }
+    });
+
+    it("a P2002 naming no constraint is retried as non-primary, and says so", async () => {
+      const restore = await failFirstInsert(p2002());
+      let created;
+      try {
+        created = await create("shapeless");
+      } finally {
+        restore();
+      }
+      expect(created.isPrimary).toBe(false);
+      expect(rows.get(created.id)?.isPrimary).toBe(false);
+      expect(repoLog.debug).toHaveBeenCalledTimes(1);
+      expect(repoLog.debug.mock.calls[0]?.[0]).toMatch(/names no constraint/);
+    });
+
+    it("a P2002 naming the primary index is retried without the drift log", async () => {
+      const restore = await failFirstInsert(
+        p2002({ target: "repo_connections_projectId_primary_key" }),
+      );
+      let created;
+      try {
+        created = await create("raced");
+      } finally {
+        restore();
+      }
+      expect(created.isPrimary).toBe(false);
+      expect(repoLog.debug).not.toHaveBeenCalled();
+    });
   });
 
   it("project isolation enforced", async () => {

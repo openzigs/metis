@@ -176,6 +176,64 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(featureB.status).toBe("draft");
     });
 
+    // #395 — two same-titled requirements in ONE analysis, and a re-run of that
+    // analysis, which hard-deletes and re-creates its requirement rows.
+    it("keeps one draft per same-titled requirement across a re-run of the analysis", async () => {
+      await db.analysis.create({ data: { id: "an_twin", projectId: "p1", startedById: "u1" } });
+      const createRequirements = async (suffix: string) => {
+        for (const [key, body] of [
+          ["one", "Password body"],
+          ["two", "Passkey body"],
+        ]) {
+          await db.requirement.create({
+            data: {
+              id: `req_${key}${suffix}`,
+              projectId: "p1",
+              analysisId: "an_twin",
+              title: "Sign in",
+              body,
+              createdAt: new Date(key === "one" ? T0 : T1),
+            },
+          });
+        }
+      };
+      const features = () =>
+        db.issueDraft.findMany({
+          where: { projectId: "p1", title: { startsWith: "[Feature] Sign in" }, deletedAt: null },
+          orderBy: { title: "asc" },
+        });
+      const opts = {
+        projectId: "p1",
+        analysisId: "an_twin",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      };
+
+      await createRequirements("");
+      await generateDrafts(opts);
+      const first = await features();
+      expect(first.map((d) => [d.title, d.requirementId])).toEqual([
+        ["[Feature] Sign in", "req_one"],
+        ["[Feature] Sign in (2)", "req_two"],
+      ]);
+      expect(first[0].body).toContain("Password body");
+      expect(first[1].body).toContain("Passkey body");
+
+      // What persistRequirements does on a re-run: the FK nulls the drafts' link.
+      await db.requirement.deleteMany({ where: { analysisId: "an_twin" } });
+      expect((await features()).map((d) => d.requirementId)).toEqual([null, null]);
+      await createRequirements("_v2");
+      const rerun = await generateDrafts(opts);
+      expect(rerun.upserted).toBe(0);
+      expect(rerun.refreshed).toBe(3);
+
+      const after = await features();
+      expect(after.map((d) => d.id)).toEqual(first.map((d) => d.id));
+      expect(after.map((d) => d.requirementId)).toEqual(["req_one_v2", "req_two_v2"]);
+      expect(after[0].body).toContain("Password body");
+      expect(after[1].body).toContain("Passkey body");
+    });
+
     it("lets a test-coverage export be retried after createBatch refused the first attempt", async () => {
       const suggestion = (id: string) => ({
         id,

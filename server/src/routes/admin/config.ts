@@ -27,6 +27,7 @@ import {
   type ConfigService,
 } from "../../lib/config/index.js";
 import { createChildLogger } from "../../lib/logger.js";
+import { isUniqueViolation } from "../../lib/db/prisma-errors.js";
 
 const log = createChildLogger("admin-config-routes");
 
@@ -283,7 +284,7 @@ function translateError(err: unknown): unknown {
       error: err.message,
       stack: err.stack,
     });
-    if (code === "P2002") {
+    if (isUniqueViolation(err)) {
       return new AppError(
         409,
         "CONFIG_WRITE_CONFLICT",

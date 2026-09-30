@@ -231,10 +231,18 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
  * another analysis therefore pushes this one to the next free `(n)` suffix; one
  * owned by this analysis is reused, so a re-run still refreshes rather than
  * duplicates.
+ *
+ * #395 — one analysis can hold two requirements with the same title, so owning
+ * analysis alone does not make a draft ours: it is reused only if it is linked
+ * to this requirement or to none. A re-run of the analysis re-creates its
+ * requirement rows and the FK's ON DELETE SET NULL unlinks the old drafts; the
+ * upsert re-links each one it refreshes, so a same-titled sibling later in the
+ * same generation no longer qualifies and moves on to the next suffix.
  */
 async function claimTitle(
   opts: GenerateDraftsOptions,
   baseTitle: string,
+  requirementId: string | null,
 ): Promise<{ title: string; hash: string }> {
   for (let n = 1; ; n++) {
     const title = n === 1 ? baseTitle : `${baseTitle} (${n})`;
@@ -242,7 +250,11 @@ async function claimTitle(
     const holder = await prisma.issueDraft.findFirst({
       where: { projectId: opts.projectId, dedupHash: hash, deletedAt: null },
     });
-    if (!holder || draftAnalysisId(holder.metadata) === opts.analysisId) return { title, hash };
+    if (!holder) return { title, hash };
+    const ours =
+      draftAnalysisId(holder.metadata) === opts.analysisId &&
+      (holder.requirementId === null || holder.requirementId === requirementId);
+    if (ours) return { title, hash };
   }
 }
 
@@ -262,7 +274,7 @@ async function claimAndUpsertDraft(
   args: Omit<UpsertArgs, "title" | "dedupHash">,
 ): Promise<{ id: string; created: boolean; title: string }> {
   for (let attempt = 1; ; attempt++) {
-    const { title, hash } = await claimTitle(opts, baseTitle);
+    const { title, hash } = await claimTitle(opts, baseTitle, args.requirementId);
     try {
       return { ...(await upsertDraft({ ...args, title, dedupHash: hash })), title };
     } catch (err) {
@@ -301,6 +313,8 @@ async function upsertDraft(args: UpsertArgs): Promise<{ id: string; created: boo
     await prisma.issueDraft.update({
       where: { id: existing.id },
       data: {
+        // #395 — re-link: a re-run of the analysis replaced the requirement rows.
+        requirementId: args.requirementId,
         title: args.title,
         body: args.body,
         labels: JSON.stringify(args.labels),

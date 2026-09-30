@@ -97,6 +97,8 @@ const idRoutes: ReadonlyArray<{
   kind: "read" | "write";
   send: (token: string) => Test;
   service: ReturnType<typeof vi.fn>;
+  /** Where the owning projectId sits; the last argument unless named. */
+  projectIdArg?: number;
 }> = [
   {
     name: "GET /connections/:id",
@@ -114,6 +116,8 @@ const idRoutes: ReadonlyArray<{
         .set("Authorization", `Bearer ${t}`)
         .send({ label: "renamed" }),
     service: mockUpdate,
+    // (id, input, actor, projectId, …) — #479 appends the guard-read `updatedAt`.
+    projectIdArg: 3,
   },
   {
     name: "DELETE /connections/:id",
@@ -192,7 +196,7 @@ describe("same-workspace access still works", () => {
       expect(res.status).toBeLessThan(400);
       expect(route.service).toHaveBeenCalled();
       const args = route.service.mock.calls[0];
-      expect(args[args.length - 1]).toBe("proj_a");
+      expect(args[route.projectIdArg ?? args.length - 1]).toBe("proj_a");
     });
   }
 

@@ -38,7 +38,12 @@ import { isUniqueViolation, uniqueViolationTarget } from "../../db/prisma-errors
 import { getVaultService } from "../../vault/vault-service.js";
 import { resolveRepoCloneRoot, resolveRepoClonePath } from "./clone-path.js";
 import { assertConnectorHostAllowed, resolveAndAssertConnectorHost } from "../network-allowlist.js";
-import { ConnectorError, NOOP_EMITTER, type ConnectorEmitter } from "../types.js";
+import {
+  ConnectorError,
+  concurrentUpdateError,
+  NOOP_EMITTER,
+  type ConnectorEmitter,
+} from "../types.js";
 import { isDriverDetailCode, sanitizeDriverError } from "../driver-error.js";
 import { readBoundSecret } from "../vault-resolver.js";
 import { bindSecretRef, VAULT_REF_UNRESOLVED } from "../../vault/bound-secret.js";
@@ -311,7 +316,7 @@ export async function createRepoConnector(
   // that reaches exactly one live secret); the use path reads that id only.
   const secretRefBody = input.secretRef ? extractRefBody(input.secretRef) : null;
   const secretId = secretRefBody ? await bindRepoSecret(secretRefBody) : null;
-  const row = await insertRepoConnection({
+  const row = await insertRepoConnectionOrLabelTaken({
     projectId,
     label: input.label,
     provider,
@@ -365,7 +370,43 @@ async function insertRepoConnection(
   }
 }
 
+/**
+ * #475 — `insertRepoConnection`, with a label clash answered as the 409 a live
+ * clash gets. The label pre-checks only see live rows, but
+ * `@@unique([projectId, label])` also covers soft-deleted ones, so reusing a
+ * deleted connector's label (or losing a race for a live one) surfaces here as
+ * a P2002.
+ */
+async function insertRepoConnectionOrLabelTaken(
+  data: Omit<Prisma.RepoConnectionUncheckedCreateInput, "isPrimary">,
+) {
+  try {
+    return await insertRepoConnection(data);
+  } catch (err) {
+    if (!isLabelIndexViolation(err)) throw err;
+    throw new ConnectorError(
+      409,
+      "REPO_LABEL_TAKEN",
+      `label '${data.label}' is already used by a current or deleted repository in this project`,
+    );
+  }
+}
+
 const PRIMARY_INDEX = "repo_connections_projectId_primary_key";
+const LABEL_INDEX = "repo_connections_projectId_label_key";
+
+/**
+ * #475 — is `err` the `(projectId, label)` unique index rejecting the insert?
+ * One that names no constraint counts: the label is the only caller-chosen
+ * unique key, and the primary index is retried before a P2002 gets here.
+ */
+function isLabelIndexViolation(err: unknown): boolean {
+  if (!isUniqueViolation(err)) return false;
+  const target = uniqueViolationTarget(err);
+  if (!target) return true;
+  if (target.index !== undefined) return target.index === LABEL_INDEX;
+  return target.fields?.includes("label") === true;
+}
 
 /**
  * #463 — is `err` the one-live-primary index rejecting the insert? A P2002 that
@@ -375,7 +416,14 @@ const PRIMARY_INDEX = "repo_connections_projectId_primary_key";
 function isPrimaryIndexViolation(err: unknown): boolean {
   if (!isUniqueViolation(err)) return false;
   const target = uniqueViolationTarget(err);
-  if (!target) return true;
+  if (!target) {
+    // #475 — say so: a Prisma upgrade that moves the constraint field again
+    // would otherwise bring back a wasted retry on every label clash silently.
+    log.debug("repo insert P2002 names no constraint; retrying as non-primary", {
+      code: "P2002",
+    });
+    return true;
+  }
   if (target.index !== undefined) return target.index === PRIMARY_INDEX;
   return target.fields?.length === 1 && target.fields[0] === "projectId";
 }
@@ -413,7 +461,7 @@ export async function createUploadRepoConnector(
   try {
     await extractArchiveBuffer(id, archive);
     const uploadPath = await storeUploadedArchive(id, archive);
-    row = await insertRepoConnection({
+    row = await insertRepoConnectionOrLabelTaken({
       id,
       projectId,
       label,
@@ -497,6 +545,8 @@ export async function updateRepoConnector(
   id: string,
   patch: Omit<UpdateRepoConnectorInput, "id">,
   actorId: string,
+  /** #479 — the `updatedAt` the binding guard read; the write is conditional on it. */
+  expectedUpdatedAt?: Date | null,
 ) {
   const existing = await prisma.repoConnection.findFirst({
     where: { id, projectId, deletedAt: null },
@@ -523,7 +573,18 @@ export async function updateRepoConnector(
           ? patchRefBody
           : await bindRepoSecret(patchRefBody);
   }
-  const row = await prisma.repoConnection.update({ where: { id }, data });
+  let row;
+  if (expectedUpdatedAt === undefined) {
+    row = await prisma.repoConnection.update({ where: { id }, data });
+  } else {
+    if (expectedUpdatedAt === null) throw concurrentUpdateError();
+    const { count } = await prisma.repoConnection.updateMany({
+      where: { id, updatedAt: expectedUpdatedAt },
+      data,
+    });
+    if (count === 0) throw concurrentUpdateError();
+    row = await prisma.repoConnection.findUniqueOrThrow({ where: { id } });
+  }
   audit({
     actor: { id: actorId },
     action: "connector.repo.update",
@@ -542,6 +603,16 @@ export async function deleteRepoConnector(projectId: string, id: string, actorId
     where: { id },
     data: { deletedAt: new Date(), status: "disabled" },
   });
+  // #475 — an upload connector's stored archive goes with it. The row is
+  // already deleted, so a failed removal is logged rather than surfaced.
+  if (existing.uploadPath) {
+    await removeUploadedArchive(id).catch((err: unknown) => {
+      log.warn("Failed to remove a deleted upload connector's archive", {
+        connectorId: id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
   audit({
     actor: { id: actorId },
     action: "connector.repo.delete",
