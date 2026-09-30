@@ -14,13 +14,17 @@ interface WrapperOpts {
    * timers instead of waiting ~50 minutes.
    */
   refreshIntervalMs?: number;
+  /** A pre-seeded client, for specs that need cached data before mount. */
+  queryClient?: QueryClient;
 }
 
 export function makeWrapper(opts: WrapperOpts = {}) {
   const { initialUser = null, withAuth = true, withTheme = false, refreshIntervalMs } = opts;
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
+  const queryClient =
+    opts.queryClient ??
+    new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
 
   return function Wrapper({ children }: { children: ReactNode }) {
     const tree = withAuth ? (

@@ -9,6 +9,8 @@ import userEvent from "@testing-library/user-event";
 import { usePathname, useRouter } from "next/navigation";
 import { ProjectSwitcher } from "@/components/layout/project-switcher";
 import { Breadcrumbs } from "@/components/layout/breadcrumbs";
+import { QueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/query-keys";
 import { makeWrapper, TEST_USER } from "./test-utils";
 
 const row = (id: string, name: string) => ({
@@ -160,6 +162,21 @@ describe("<ProjectSwitcher /> (#370)", () => {
   it("does not persist the URL's project id when that project returns 404", async () => {
     vi.mocked(usePathname).mockReturnValue("/projects/p-gone");
     render(<ProjectSwitcher />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    await screen.findByRole("button", { name: /active project: no project/i });
+    expect(window.localStorage.getItem("metis.activeProjectId")).toBe("p-sample");
+  });
+
+  it("does not persist a project cached earlier whose refetch now 404s (PR #443 review)", async () => {
+    // Overview shares this detail cache: the project loaded once, was deleted,
+    // and TanStack keeps the stale data when the refetch fails.
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.projects.detail("p-gone"), row("p-gone", "Deleted"), {
+      updatedAt: 0,
+    });
+    vi.mocked(usePathname).mockReturnValue("/projects/p-gone");
+    render(<ProjectSwitcher />, {
+      wrapper: makeWrapper({ initialUser: TEST_USER, queryClient }),
+    });
     await screen.findByRole("button", { name: /active project: no project/i });
     expect(window.localStorage.getItem("metis.activeProjectId")).toBe("p-sample");
   });
