@@ -213,6 +213,35 @@ describe("the #1363 advisory set is closed in the resolved tree", () => {
     });
   });
 
+  describe("axios — five Highs published 2026-09-30, all fixed in 1.20.0 (#554)", () => {
+    const FIXED = /** @type {[number, number, number]} */ ([1, 20, 0]);
+
+    it("bounds and targets the override at 1.20.0", () => {
+      const entries = overridesFor("axios");
+      expect(entries, "no override governs axios").not.toHaveLength(0);
+      for (const [key, target] of entries) {
+        const ceiling = /<\s*(\d+\.\d+\.\d+)/.exec(key)?.[1];
+        expect(ceiling, `override key "${key}" does not bound at 1.20.0 (#1208)`).toBe(
+          FIXED.join("."),
+        );
+        const floor = /(\d+)\.(\d+)\.(\d+)/.exec(target);
+        expect(floor, `override "${key}" target "${target}" carries no version`).not.toBeNull();
+        expect(
+          resolvedVersionMeetsFloor(`${floor[1]}.${floor[2]}.${floor[3]}`, FIXED),
+          `override "${key}" targets "${target}": GHSA-3pq3-5fj3-cg6v, GHSA-542g-h47m-68v8, ` +
+            "GHSA-c29m-xwm3-cm6r, GHSA-mghh-pgcx-3jjj and GHSA-x97p-jq2g-jp4f are fixed in 1.20.0.",
+        ).toBe(true);
+      }
+    });
+
+    it("resolves NO axios copy below 1.20.0", () => {
+      const resolved = resolvedVersions("axios");
+      expect(resolved.length, "expected at least one axios copy in the tree").toBeGreaterThan(0);
+      const breaching = resolved.filter((v) => !resolvedVersionMeetsFloor(v, FIXED));
+      expect(breaching, `lockfile resolves axios ${breaching.join(", ")} below 1.20.0`).toEqual([]);
+    });
+  });
+
   describe("@xmldom/xmldom — 19 High advisories across TWO separate affected bands", () => {
     // Per-line `fixed` events. 0.8.14 / 0.9.11 are the fix of three of the nineteen and
     // are covered by the other sixteen; these are the widest per line.
