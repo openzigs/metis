@@ -4,9 +4,9 @@ section: Added
 ---
 
 - Every chat reply now says what it was based on: "Grounded in _Project_ · N
-  sources", "Not grounded — nothing relevant was found in _Project_", or "Not
-  grounded — no project selected". The label is stored with the reply, so it is
-  still there after a reload.
+  sources", "No excerpts from _Project_ were retrieved automatically — check any
+  file or code it names", or "Not grounded — no project selected". The label is
+  stored with the reply, so it is still there after a reload.
 - A chat scoped to "All projects" now says plainly, before you send anything,
   that it does not search your projects and answers come from the model's
   general knowledge. Previously it looked grounded and was not.
