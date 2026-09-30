@@ -242,7 +242,7 @@ describe.runIf(enabled)(
         expect(labels).not.toContain("bad");
       });
 
-      it("#475 — a label held by a soft-deleted row is a 409, after one insert and no retry", async () => {
+      it("#492 — a label held by a soft-deleted row is free: one insert, no retry", async () => {
         await db.repoConnection.create({
           data: { projectId: projects.clash, label: "old", deletedAt: new Date() },
         });
@@ -261,7 +261,7 @@ describe.runIf(enabled)(
               { label: "old", ownerOrOrg: "o", repoName: "old" },
               userId,
             ),
-          ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
+          ).resolves.toMatchObject({ label: "old" });
         } finally {
           state.db = db;
         }

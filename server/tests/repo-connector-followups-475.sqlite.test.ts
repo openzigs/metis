@@ -2,9 +2,9 @@
  * #475 — repo connector follow-ups to #463, proven through the REAL connectors
  * router against a REAL SQLite database built from the migration chain.
  *
- *   1. `@@unique([projectId, label])` covers soft-deleted rows too, so creating
- *      a connector under a deleted one's label used to escape as a raw P2002
- *      (a 500). It is the same `409 REPO_LABEL_TAKEN` a live clash gets.
+ *   1. A live label clash is `409 REPO_LABEL_TAKEN`. (#492 made the label index
+ *      partial, so a soft-deleted connector's label is free again: see
+ *      repo-connector-followups-492.sqlite.test.ts.)
  *   2. Deleting an upload connector removes its stored `.zip` from the upload
  *      archive root.
  */
@@ -54,7 +54,7 @@ async function zipBuf(): Promise<Buffer> {
 }
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
-  "#475 — repo connector label clash with a deleted row; archive removed on delete (real SQLite)",
+  "#475 — repo connector live label clash; archive removed on delete (real SQLite)",
   () => {
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
@@ -106,36 +106,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await fs.rm(tmp, { recursive: true, force: true });
       delete process.env.UPLOAD_EXTRACT_DIR;
       delete process.env.UPLOAD_ARCHIVE_DIR;
-    });
-
-    it("answers 409 REPO_LABEL_TAKEN for a label held by a soft-deleted repository", async () => {
-      await db.repoConnection.create({
-        data: { projectId: PROJECT, label: "retired", deletedAt: new Date(), createdById: USER },
-      });
-      const res = await request(app())
-        .post(`${base}/repos`)
-        .set("Authorization", `Bearer ${ADMIN}`)
-        .send({ label: "retired", ownerOrOrg: "octocat", repoName: "demo" });
-      expect(res.status).toBe(409);
-      expect(res.body.error).toMatchObject({ code: "REPO_LABEL_TAKEN" });
-      const live = await db.repoConnection.findMany({
-        where: { projectId: PROJECT, label: "retired", deletedAt: null },
-      });
-      expect(live).toEqual([]);
-    });
-
-    it("answers 409 for an upload whose label a soft-deleted repository holds, keeping no archive", async () => {
-      await db.repoConnection.create({
-        data: { projectId: PROJECT, label: "old-drop", deletedAt: new Date(), createdById: USER },
-      });
-      const res = await request(app())
-        .post(`${base}/repos/upload`)
-        .set("Authorization", `Bearer ${ADMIN}`)
-        .field("label", "old-drop")
-        .attach("file", await zipBuf(), { filename: "code.zip", contentType: "application/zip" });
-      expect(res.status).toBe(409);
-      expect(res.body.error).toMatchObject({ code: "REPO_LABEL_TAKEN" });
-      expect(await fs.readdir(archiveDir).catch(() => [])).toEqual([]);
     });
 
     it("still answers 409 for a live label clash", async () => {

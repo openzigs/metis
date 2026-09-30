@@ -1004,7 +1004,8 @@ model RepoConnection {
   /// Epic #708 — AI Bug Scanner runs against this repo.
   scans              Scan[]
 
-  @@unique([projectId, label])
+  /// #492 — partial: a soft-deleted connector frees its label for reuse.
+  @@unique([projectId, label], where: { deletedAt: null }, map: "repo_connections_projectId_label_key")
   /// #457 — at most one live primary repository per project.
   @@unique([projectId], where: { isPrimary: true, deletedAt: null }, map: "repo_connections_projectId_primary_key")
   @@index([secretId])
