@@ -255,6 +255,9 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
  * published issue takes its sibling's text). An unlinked draft whose recorded
  * `requirementKey` matches this requirement's content wins outright; failing
  * that, the first unlinked draft whose key no requirement of this run holds.
+ * Requirement bodies come from LLM synthesis, so a real re-run rarely
+ * reproduces a key exactly and that order-dependent fallback is the usual path;
+ * what keeps a signed-off body safe then is the hold in `upsertDraft`.
  */
 async function claimTitle(
   opts: GenerateDraftsOptions,
@@ -369,12 +372,17 @@ async function upsertDraft(args: UpsertArgs): Promise<{ id: string; created: boo
     where: { projectId: args.projectId, dedupHash: args.dedupHash, deletedAt: null },
   });
   if (existing) {
-    // #490 — a re-run unlinked this draft and it is being re-linked to a
-    // requirement whose content is not the one its signed-off body was rendered
-    // from. Its text stays; only the link moves, and it is logged for review.
+    // #490 — a re-run unlinked this signed-off draft and it is being re-linked
+    // to a requirement whose content is not the one its body was rendered from.
+    // Its text stays; only the link moves, and it is logged for review. The
+    // hold is recorded as `bodyHeld` so it outlasts the re-link: once linked,
+    // the draft would otherwise take the new text on the next (repeatable)
+    // Generate. It is released only when the requirement's content matches the
+    // stored key again, or the draft leaves the signed-off statuses.
+    const existingMeta = parseMetadata(existing.metadata);
     const storedKey = draftRequirementKey(existing.metadata);
     if (
-      existing.requirementId === null &&
+      (existing.requirementId === null || existingMeta.bodyHeld === true) &&
       args.requirementId !== null &&
       FROZEN_ON_RELINK.has(existing.status) &&
       storedKey !== args.metadata.requirementKey
@@ -384,7 +392,11 @@ async function upsertDraft(args: UpsertArgs): Promise<{ id: string; created: boo
         data: {
           requirementId: args.requirementId,
           parentDraftId: args.parentDraftId,
-          metadata: JSON.stringify({ ...args.metadata, requirementKey: storedKey }),
+          metadata: JSON.stringify({
+            ...args.metadata,
+            requirementKey: storedKey,
+            bodyHeld: true,
+          }),
         },
       });
       log.warn("re-linked a signed-off draft to changed requirement content; body kept", {

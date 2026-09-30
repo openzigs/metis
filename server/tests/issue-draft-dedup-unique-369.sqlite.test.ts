@@ -315,8 +315,47 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const after = await features();
         expect(after.map((d) => d.id)).toEqual(first.map((d) => d.id));
         expect(after.map((d) => d.body)).toEqual(first.map((d) => d.body));
-        expect(after.every((d) => d.requirementId !== null)).toBe(true);
-        expect(new Set(after.map((d) => d.requirementId)).size).toBe(2);
+        // No key matches, so the links follow the re-run's order (best-effort,
+        // see the #490 note on claimTitle): each draft is linked, to a distinct
+        // requirement of the re-run.
+        expect([...after.map((d) => d.requirementId)].sort()).toEqual([
+          "an_edit_one_v2",
+          "an_edit_two_v2",
+        ]);
+
+        // Generate is repeatable (POST /drafts/generate). The drafts are linked
+        // now, so the hold must outlast the re-link: a second and third run
+        // still leave each published body with its own text.
+        for (let run = 0; run < 2; run++) {
+          await generateDrafts({ ...opts, analysisId: "an_edit" });
+          const again = await features();
+          expect(again.map((d) => d.body)).toEqual(first.map((d) => d.body));
+          expect(again[0].body).not.toContain("Passkey");
+          expect(again[1].body).not.toContain("Password");
+          expect(again.map((d) => d.status)).toEqual(["published", "published"]);
+        }
+      });
+
+      it("releases the hold once the requirement's text matches the draft again", async () => {
+        const { first, features, createRequirements } = await setUp("an_back", "Reset");
+        await createRequirements("_v2", [
+          { key: "one", body: "Password body, reworded", at: T0 },
+          { key: "two", body: "Passkey body, reworded", at: T1 },
+        ]);
+        await generateDrafts({ ...opts, analysisId: "an_back" });
+        expect((await features()).map((d) => d.body)).toEqual(first.map((d) => d.body));
+
+        // A third run whose synthesis restores the original text.
+        await db.requirement.deleteMany({ where: { analysisId: "an_back" } });
+        await createRequirements("_v3", [
+          { key: "one", body: "Password body", at: T0 },
+          { key: "two", body: "Passkey body", at: T1 },
+        ]);
+        await generateDrafts({ ...opts, analysisId: "an_back" });
+        const after = await features();
+        expect(after.map((d) => d.requirementId)).toEqual(["an_back_one_v3", "an_back_two_v3"]);
+        const meta = after.map((d) => JSON.parse(d.metadata ?? "{}") as Record<string, unknown>);
+        expect(meta.map((m) => m.bodyHeld)).toEqual([undefined, undefined]);
       });
     });
 

@@ -384,7 +384,10 @@ describe("generateDrafts", () => {
     });
 
     // #490 — a re-run: fresh ids, every feature draft unlinked, twin sorted first.
-    async function rerunSwapped(edit: (r: (typeof requirements)[number]) => void = () => {}) {
+    async function rerunSwapped(
+      edit: (r: (typeof requirements)[number]) => void = () => {},
+      thenRegenerate = 0,
+    ) {
       for (const d of drafts.values()) d.requirementId = null;
       const order = [...requirements];
       const saved = requirements.map((r) => [r, r.id, r.body] as const);
@@ -396,6 +399,8 @@ describe("generateDrafts", () => {
       });
       try {
         await generateDrafts(opts);
+        // POST /drafts/generate is repeatable: later runs see the drafts linked.
+        for (let i = 0; i < thenRegenerate; i++) await generateDrafts(opts);
       } finally {
         for (const [r, id, body] of saved) Object.assign(r, { id, body });
         requirements.splice(0, requirements.length, ...order);
@@ -455,6 +460,42 @@ describe("generateDrafts", () => {
       expect(JSON.parse(drafts.get(signedOff[2].id)!.metadata ?? "{}").requirementKey).toBe(
         undefined,
       );
+    });
+
+    it("keeps holding a signed-off body on every later Generate after the re-link (#490)", async () => {
+      await generateDrafts(opts);
+      const signedOff = [...drafts.values()].filter((d) => d.draftType !== "epic");
+      const before = new Map(signedOff.map((d) => [d.id, d.body]));
+      signedOff[0].status = "approved";
+      signedOff[1].status = "published";
+      signedOff[2].status = "publishing";
+      signedOff[2].metadata = JSON.stringify({ analysisId: "analysis_1" });
+      await rerunSwapped((r) => {
+        r.body = `${r.body} — reworded`;
+      }, 2);
+      for (const d of signedOff) {
+        const now = drafts.get(d.id)!;
+        expect(now.body).toBe(before.get(d.id));
+        expect(now.requirementId).toMatch(/_v2$/);
+        expect(JSON.parse(now.metadata ?? "{}").bodyHeld).toBe(true);
+      }
+    });
+
+    it("still refreshes a linked, never-held published draft when its requirement is edited (#490)", async () => {
+      await generateDrafts(opts);
+      const published = featureFor("req_1");
+      published.status = "published";
+      const saved = requirements[0].body;
+      requirements[0].body = `${saved} — clarified`;
+      try {
+        await generateDrafts(opts);
+      } finally {
+        requirements[0].body = saved;
+      }
+      const now = drafts.get(published.id)!;
+      expect(now.body).toContain("clarified");
+      expect(now.status).toBe("published");
+      expect(JSON.parse(now.metadata ?? "{}").bodyHeld).toBeUndefined();
     });
 
     it("never hands a draft linked to another requirement of the same analysis to this one", async () => {
