@@ -10,8 +10,10 @@ interface InviteInfo {
   valid: boolean;
   expired: boolean;
   consumed: boolean;
-  workspace: { id: string; name: string; slug: string };
-  invitedBy: string;
+  /** The workspace was deleted; `workspace` and `invitedBy` are withheld (#579). */
+  workspaceDeleted?: boolean;
+  workspace: { id: string; name: string; slug: string } | null;
+  invitedBy: string | null;
   email: string;
   role: string;
   expiresAt: string;
@@ -104,9 +106,30 @@ export default function InviteAcceptPage() {
             <CheckCircle2 className="mx-auto h-12 w-12 text-success" />
             <CardTitle className="mt-3">Welcome!</CardTitle>
             <CardDescription>
-              You&apos;ve joined <strong>{invite?.workspace.name}</strong>. Redirecting…
+              You&apos;ve joined <strong>{invite?.workspace?.name}</strong>. Redirecting…
             </CardDescription>
           </CardHeader>
+        </Card>
+      </div>
+    );
+  }
+
+  if (invite?.workspaceDeleted) {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-4">
+        <Card className="w-full max-w-md">
+          <CardHeader className="text-center">
+            <XCircle className="mx-auto h-12 w-12 text-destructive" />
+            <CardTitle className="mt-3">Workspace No Longer Exists</CardTitle>
+            <CardDescription>
+              The workspace this invitation was for has been deleted, so it can no longer be joined.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="text-center">
+            <Button variant="outline" onClick={() => router.push("/")}>
+              Go to homepage
+            </Button>
+          </CardContent>
         </Card>
       </div>
     );
@@ -149,7 +172,7 @@ export default function InviteAcceptPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="rounded-lg border bg-muted/50 p-4 text-center">
-            <p className="text-lg font-semibold">{invite?.workspace.name}</p>
+            <p className="text-lg font-semibold">{invite?.workspace?.name}</p>
             <p className="text-sm text-muted-foreground">
               Role: <span className="capitalize">{invite?.role}</span>
             </p>

@@ -604,6 +604,8 @@ describe("Workspace Routes", () => {
 
       const res = await request(app).get("/workspaces/invites/valid-token");
       expect(res.status).toBe(200);
+      // #579 — the SQLite live control is skipped on postgres-adapter; pin validity here too.
+      expect(res.body.data).toMatchObject({ valid: true, workspaceDeleted: false });
       expect(res.body.data.workspace.name).toBe("Test");
     });
 
@@ -635,6 +637,38 @@ describe("Workspace Routes", () => {
       expect(res.status).toBe(200);
       expect(res.body.data.valid).toBe(false);
       expect(res.body.data.expired).toBe(true);
+    });
+
+    // #579 — a soft-deleted workspace keeps its invites; validation must not call them valid
+    // nor disclose the workspace name or inviter.
+    it("reports an invite to a soft-deleted workspace as not valid, withholding name and inviter", async () => {
+      const app = createApp();
+      vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue({
+        id: "inv-1",
+        workspaceId: "ws-1",
+        email: "user@test.com",
+        role: "member",
+        token: "deleted-ws-token",
+        consumedAt: null,
+        expiresAt: new Date(Date.now() + 86400000),
+        invitedById: "inviter-1",
+        workspace: { id: "ws-1", name: "Secret Name", slug: "test", deletedAt: new Date() },
+        invitedBy: { displayName: "Ottoline Inviter-579" },
+        createdAt: new Date(),
+      } as never);
+
+      const res = await request(app).get("/workspaces/invites/deleted-ws-token");
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({
+        valid: false,
+        workspaceDeleted: true,
+        expired: false,
+        consumed: false,
+        workspace: null,
+        invitedBy: null,
+      });
+      expect(JSON.stringify(res.body)).not.toContain("Secret Name");
+      expect(JSON.stringify(res.body)).not.toContain("Ottoline Inviter-579");
     });
   });
 
