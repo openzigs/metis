@@ -19,6 +19,11 @@ interface ProvidersProps {
  * toggle resolved to — "system" is resolved by next-themes, so toasts track the
  * same `.dark` class the `dark:` utilities do (#429). Before next-themes has
  * resolved (SSR), fall back to sonner's own `system` handling.
+ *
+ * Keep that fallback server-only (PR #445 review): sonner 2.x adds a matchMedia
+ * listener for theme="system" and never removes it, so if it ever reached the
+ * client it would later override an explicit Light/Dark choice whenever the OS
+ * scheme changed.
  */
 function ThemedToaster() {
   const { resolvedTheme } = useTheme();

@@ -126,6 +126,8 @@ for (const { os, theme } of SCENARIOS) {
       await expect(toast).toBeVisible({ timeout: 10_000 });
       await page.screenshot({ path: testInfo.outputPath(`toast-${theme}.png`) });
 
+      // Only the Dark run fails without the #429 fix: sonner already defaults to
+      // light, so the Light run is a regression guard, not a red-first check.
       await expect(page.locator("[data-sonner-toaster]")).toHaveAttribute(
         "data-sonner-theme",
         theme,
