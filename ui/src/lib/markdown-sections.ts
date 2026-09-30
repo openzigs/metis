@@ -98,16 +98,19 @@ export interface SplitDocument {
  */
 export type Definitions = ReadonlyMap<string, string>;
 
-const HEADING = /^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/;
-const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+// Lines are split on LF alone, so a line from a CRLF ending carries its CR:
+// part of the line ending, not content, and `.` does not match it (#576).
+const HEADING = /^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*\r?$/;
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)\r?$/;
 /** A link-reference (`[label]: url`) or footnote (`[^label]: text`) definition line. */
-const DEFINITION = /^ {0,3}\[((?:[^\\[\]]|\\.)+)\]:(?:[ \t]|$)/;
+const DEFINITION = /^ {0,3}\[((?:[^\\[\]]|\\.)+)\]:(?:[ \t]|\r?$)/;
 /** A bracketed run: a candidate reference or footnote label. */
 const BRACKETED = /\[([^[\]]+)\]/g;
 /** Content indented into a footnote definition. */
 const INDENTED = /^(?: {4}|\t)/;
 /** A line that starts a block, so it cannot continue a footnote's paragraph. */
-const BLOCK_START = /^ {0,3}(?:>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|(?:[-*_][ \t]*){3,}$|<)/;
+const BLOCK_START =
+  /^ {0,3}(?:>|[-*+](?:[ \t]|\r?$)|\d{1,9}[.)](?:[ \t]|$)|(?:[-*_][ \t]*){3,}\r?$|<)/;
 
 /**
  * A blank line as CommonMark reads one: nothing but spaces and tabs, before a
