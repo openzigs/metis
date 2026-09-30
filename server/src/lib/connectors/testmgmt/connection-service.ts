@@ -100,25 +100,6 @@ function supersededSecretIds(
   return out;
 }
 
-/**
- * #495 — the secret ids `after` holds that `before` did not: the ones a write
- * created rather than rotated in place.
- */
-function createdSecretIds(
-  before: Partial<Record<string, unknown>>,
-  after: Partial<Record<string, unknown>>,
-): string[] {
-  const held = new Set(
-    Object.values(before).map((ref) => (typeof ref === "string" ? refId(ref) : null)),
-  );
-  const out: string[] = [];
-  for (const ref of Object.values(after)) {
-    const newId = typeof ref === "string" ? refId(ref) : null;
-    if (newId && !held.has(newId)) out.push(newId);
-  }
-  return out;
-}
-
 // ---- Small helpers --------------------------------------------------------
 
 function sanitizeLabelComponent(s: string): string {
@@ -211,6 +192,8 @@ async function writeSecret(
   label: string,
   description: string,
   createdById: string,
+  /** #574 — receives the id of a secret this call created (not one rotated in place). */
+  created: string[],
 ): Promise<string> {
   // #344/#358 — `rotateOrCreate` rewrites the existing secret in place only
   // when `createdById` (this writer) already owns it. A secret someone else
@@ -218,13 +201,14 @@ async function writeSecret(
   // untouched and a fresh secret owned by this writer is created instead, so
   // `createdById` always names whoever supplied the current credential. The
   // PATCH binding check (`assertTestMgmtSecretBinding`) depends on that.
-  const { id } = await rotateOrCreate(vault, refId(existingRef), value, {
+  const written = await rotateOrCreate(vault, refId(existingRef), value, {
     label: sanitizeLabelComponent(label),
     scope: "project",
     description,
     createdById,
   });
-  return asVaultRef(id);
+  if (written.created) created.push(written.id);
+  return asVaultRef(written.id);
 }
 
 async function persistAuthConfig(
@@ -233,6 +217,7 @@ async function persistAuthConfig(
   label: string,
   input: CreateTestManagementConnectionInput["auth"],
   actorId: string,
+  created: string[],
   existing: Partial<Record<string, string>> = {},
 ): Promise<TestManagementAuthConfigRefs> {
   const base = `testmgmt-${projectId}-${label}`;
@@ -245,6 +230,7 @@ async function persistAuthConfig(
         `${base}-client-id`,
         `Xray client_id for ${label}`,
         actorId,
+        created,
       );
       const clientSecretRef = await writeSecret(
         vault,
@@ -253,6 +239,7 @@ async function persistAuthConfig(
         `${base}-client-secret`,
         `Xray client_secret for ${label}`,
         actorId,
+        created,
       );
       return { kind: "xray", clientIdRef, clientSecretRef };
     }
@@ -264,6 +251,7 @@ async function persistAuthConfig(
         `${base}-bearer`,
         `Zephyr bearer token for ${label}`,
         actorId,
+        created,
       );
       return { kind: "zephyr", bearerTokenRef };
     }
@@ -275,6 +263,7 @@ async function persistAuthConfig(
         `${base}-api-key`,
         `TestRail API key for ${label}`,
         actorId,
+        created,
       );
       return { kind: "testrail", email: input.email, apiKeyRef };
     }
@@ -287,6 +276,7 @@ async function persistTlsConfig(
   label: string,
   input: NonNullable<CreateTestManagementConnectionInput["tlsConfig"]>,
   actorId: string,
+  created: string[],
   existingCaCertRef: string | null = null,
 ): Promise<PersistedTlsConfig | null> {
   if (!input) return null;
@@ -299,6 +289,7 @@ async function persistTlsConfig(
       `testmgmt-${projectId}-${label}-ca`,
       `TLS CA cert for ${label}`,
       actorId,
+      created,
     );
   }
   return {
@@ -471,13 +462,25 @@ export async function createTestManagementConnection(
     kind: input.kind,
   });
 
-  const refs = await persistAuthConfig(vault, projectId, input.label, input.auth, actorId);
-  const tls = input.tlsConfig
-    ? await persistTlsConfig(vault, projectId, input.label, input.tlsConfig, actorId)
-    : null;
-
+  /** #574 — secrets this request created, withdrawn if the row is never written. */
+  const created: string[] = [];
+  /** Set once the vault writes are done: a unique violation after it is the label. */
+  let writingRow = false;
   let row;
   try {
+    const refs = await persistAuthConfig(
+      vault,
+      projectId,
+      input.label,
+      input.auth,
+      actorId,
+      created,
+    );
+    const tls = input.tlsConfig
+      ? await persistTlsConfig(vault, projectId, input.label, input.tlsConfig, actorId, created)
+      : null;
+
+    writingRow = true;
     row = await db.testManagementConnection.create({
       data: {
         projectId,
@@ -492,14 +495,18 @@ export async function createTestManagementConnection(
       },
     });
   } catch (err) {
-    // A concurrent create took the label after the check above: 409, and the
-    // secrets just written belong to no connection, so they are withdrawn.
-    if (!isUniqueViolation(err)) throw err;
-    const written = [...Object.values(refs), tls?.caCertRef].map((r) =>
-      typeof r === "string" ? refId(r) : null,
-    );
-    for (const id of written) if (id) await vault.delete(id).catch(() => undefined);
-    throw labelTaken(input.label);
+    // #574 — whichever step failed (a second xray credential, the TLS CA cert,
+    // or the row itself), the secrets already written belong to no connection,
+    // so they are withdrawn.
+    await withdrawCreatedSecrets(vault, created, {
+      actorId,
+      resource: { type: "test_management_connection" },
+      projectId,
+      cause: err,
+    });
+    // A concurrent create took the label after the check above: 409.
+    if (writingRow && isUniqueViolation(err)) throw labelTaken(input.label);
+    throw err;
   }
 
   audit({
@@ -531,7 +538,7 @@ export async function updateTestManagementConnection(
   let baseUrlChanged = false;
   let authChanged = false;
   const superseded: string[] = [];
-  /** #495 — secrets this request created, withdrawn if the write does not land. */
+  /** #495/#574 — secrets this request created, withdrawn if the write does not land. */
   const created: string[] = [];
 
   if (input.baseUrl !== undefined && input.baseUrl !== existing.baseUrl) {
@@ -554,53 +561,66 @@ export async function updateTestManagementConnection(
     data.label = input.label;
   }
 
-  if (input.auth) {
-    if (input.auth.kind !== existing.kind) {
-      throw new ConnectorError(
-        400,
-        "TESTMGMT_KIND_MISMATCH",
-        `cannot change connection kind from '${existing.kind}' to '${input.auth.kind}'`,
-      );
-    }
-    const stored = parseJsonOr<Partial<Record<string, string>>>(existing.authConfigJson, {});
-    const refs = await persistAuthConfig(
-      vault,
-      existing.projectId,
-      (data.label as string | undefined) ?? existing.label,
-      input.auth,
-      actorId,
-      stored,
-    );
-    data.authConfigJson = JSON.stringify(refs);
-    authChanged = true;
-    superseded.push(...supersededSecretIds(stored, { ...refs }));
-    created.push(...createdSecretIds(stored, { ...refs }));
-  }
-
-  if (input.proxyConfig !== undefined) {
-    data.proxyConfigJson = input.proxyConfig ? JSON.stringify(input.proxyConfig) : null;
-  }
-
-  if (input.tlsConfig !== undefined) {
-    if (input.tlsConfig === null) {
-      data.tlsConfigJson = null;
-    } else {
-      const oldCaCertRef =
-        parseJsonOr<PersistedTlsConfig | null>(existing.tlsConfigJson, null)?.caCertRef ?? null;
-      const tls = await persistTlsConfig(
+  try {
+    if (input.auth) {
+      if (input.auth.kind !== existing.kind) {
+        throw new ConnectorError(
+          400,
+          "TESTMGMT_KIND_MISMATCH",
+          `cannot change connection kind from '${existing.kind}' to '${input.auth.kind}'`,
+        );
+      }
+      const stored = parseJsonOr<Partial<Record<string, string>>>(existing.authConfigJson, {});
+      const refs = await persistAuthConfig(
         vault,
         existing.projectId,
         (data.label as string | undefined) ?? existing.label,
-        input.tlsConfig,
+        input.auth,
         actorId,
-        oldCaCertRef,
+        created,
+        stored,
       );
-      data.tlsConfigJson = tls ? JSON.stringify(tls) : null;
-      superseded.push(
-        ...supersededSecretIds({ caCertRef: oldCaCertRef }, { caCertRef: tls?.caCertRef }),
-      );
-      created.push(...createdSecretIds({ caCertRef: oldCaCertRef }, { caCertRef: tls?.caCertRef }));
+      data.authConfigJson = JSON.stringify(refs);
+      authChanged = true;
+      superseded.push(...supersededSecretIds(stored, { ...refs }));
     }
+
+    if (input.proxyConfig !== undefined) {
+      data.proxyConfigJson = input.proxyConfig ? JSON.stringify(input.proxyConfig) : null;
+    }
+
+    if (input.tlsConfig !== undefined) {
+      if (input.tlsConfig === null) {
+        data.tlsConfigJson = null;
+      } else {
+        const oldCaCertRef =
+          parseJsonOr<PersistedTlsConfig | null>(existing.tlsConfigJson, null)?.caCertRef ?? null;
+        const tls = await persistTlsConfig(
+          vault,
+          existing.projectId,
+          (data.label as string | undefined) ?? existing.label,
+          input.tlsConfig,
+          actorId,
+          created,
+          oldCaCertRef,
+        );
+        data.tlsConfigJson = tls ? JSON.stringify(tls) : null;
+        superseded.push(
+          ...supersededSecretIds({ caCertRef: oldCaCertRef }, { caCertRef: tls?.caCertRef }),
+        );
+      }
+    }
+  } catch (err) {
+    // #574 — a later secret write failed (the second xray credential, or the
+    // TLS CA cert after the auth config): nothing was written to the row, so
+    // every secret created so far is withdrawn.
+    await withdrawCreatedSecrets(vault, created, {
+      actorId,
+      resource: { type: "test_management_connection", id },
+      projectId: existing.projectId,
+      cause: err,
+    });
+    throw err;
   }
 
   // Any connection-shape change invalidates a previous "ok" status.

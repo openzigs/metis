@@ -218,4 +218,7 @@ describe("POST /api/tasks/:id/retry", () => {
     expect(res.body.data.taskId).toBe("task_retry_retry");
     expect(queue.retry).toHaveBeenCalled();
   });
+
+  // #574 — the retry window is exercised through the real `TaskQueue.retry` in
+  // tasks-retry-window-574.sqlite.test.ts; stubbing `queue.retry` here could not fail.
 });

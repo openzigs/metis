@@ -184,27 +184,33 @@ export async function createJiraConnection(
   if (existing) throw labelTaken(input.label);
   await releaseDeletedLabel(projectId, input.label);
 
-  // Store the API token in vault
+  // Store the API token (and TLS CA cert, if provided) in vault.
   const vault = getVaultService();
-  const secretLabel = newJiraSecretLabel("jira", projectId, input.label);
-  const secret = await vault.create(secretLabel, input.apiToken, "project", {
-    description: `Jira ${input.edition} API token for ${input.label}`,
-    createdById: actorId,
-  });
-
-  // Store TLS CA cert in vault if provided
-  let tlsCaSecretId: string | null = null;
-  if (input.tlsCaCert) {
-    const caLabel = newJiraSecretLabel("jira-ca", projectId, input.label);
-    const caSecret = await vault.create(caLabel, input.tlsCaCert, "project", {
-      description: `TLS CA cert for Jira ${input.label}`,
-      createdById: actorId,
-    });
-    tlsCaSecretId = caSecret.id;
-  }
-
+  /** #574 — secrets this request created, withdrawn if the row is never written. */
+  const created: string[] = [];
+  /** Set once the vault writes are done: a unique violation after it is the label. */
+  let writingRow = false;
   let row;
   try {
+    const secretLabel = newJiraSecretLabel("jira", projectId, input.label);
+    const secret = await vault.create(secretLabel, input.apiToken, "project", {
+      description: `Jira ${input.edition} API token for ${input.label}`,
+      createdById: actorId,
+    });
+    created.push(secret.id);
+
+    let tlsCaSecretId: string | null = null;
+    if (input.tlsCaCert) {
+      const caLabel = newJiraSecretLabel("jira-ca", projectId, input.label);
+      const caSecret = await vault.create(caLabel, input.tlsCaCert, "project", {
+        description: `TLS CA cert for Jira ${input.label}`,
+        createdById: actorId,
+      });
+      created.push(caSecret.id);
+      tlsCaSecretId = caSecret.id;
+    }
+
+    writingRow = true;
     row = await prisma.jiraConnection.create({
       data: {
         projectId,
@@ -221,13 +227,17 @@ export async function createJiraConnection(
       },
     });
   } catch (err) {
-    // A concurrent create took the label after the check above: 409, and the
-    // secrets just written belong to no connection, so they are withdrawn.
-    if (!isUniqueViolation(err)) throw err;
-    for (const id of [secret.id, tlsCaSecretId]) {
-      if (id) await vault.delete(id).catch(() => undefined);
-    }
-    throw labelTaken(input.label);
+    // #574 — whichever step failed (the CA cert write, or the row itself), the
+    // secrets already written belong to no connection, so they are withdrawn.
+    await withdrawCreatedSecrets(vault, created, {
+      actorId,
+      resource: { type: "jira_connection" },
+      projectId,
+      cause: err,
+    });
+    // A concurrent create took the label after the check above: 409.
+    if (writingRow && isUniqueViolation(err)) throw labelTaken(input.label);
+    throw err;
   }
 
   audit({
@@ -285,37 +295,53 @@ export async function updateJiraConnection(
   // #481 — secrets a fresh one replaced (another principal's, since #358).
   const superseded: string[] = [];
   const label = input.label ?? existing.label;
-  if (input.apiToken) {
-    const replaced = await rotateOrReplace(existing.secretId, input.apiToken, {
-      kind: "jira",
-      projectId: existing.projectId,
-      label,
-      description: `Jira ${input.edition ?? existing.edition} API token for ${label}`,
-      createdById: actorId,
-    });
-    if (replaced) {
-      data.secretId = replaced;
-      superseded.push(existing.secretId);
-    } else rotated.push("apiToken");
-  }
-
-  // Rotate TLS CA cert if provided
-  if (input.tlsCaCert !== undefined) {
-    if (input.tlsCaCert) {
-      const replaced = await rotateOrReplace(existing.tlsCaSecretId, input.tlsCaCert, {
-        kind: "jira-ca",
+  /** #495/#574 — secrets this request created, withdrawn if the write does not land. */
+  const created: string[] = [];
+  try {
+    if (input.apiToken) {
+      const replaced = await rotateOrReplace(existing.secretId, input.apiToken, {
+        kind: "jira",
         projectId: existing.projectId,
         label,
-        description: `TLS CA cert for Jira ${label}`,
+        description: `Jira ${input.edition ?? existing.edition} API token for ${label}`,
         createdById: actorId,
       });
       if (replaced) {
-        data.tlsCaSecretId = replaced;
-        if (existing.tlsCaSecretId) superseded.push(existing.tlsCaSecretId);
-      } else rotated.push("tlsCaCert");
-    } else {
-      data.tlsCaSecretId = null;
+        created.push(replaced);
+        data.secretId = replaced;
+        superseded.push(existing.secretId);
+      } else rotated.push("apiToken");
     }
+
+    // Rotate TLS CA cert if provided
+    if (input.tlsCaCert !== undefined) {
+      if (input.tlsCaCert) {
+        const replaced = await rotateOrReplace(existing.tlsCaSecretId, input.tlsCaCert, {
+          kind: "jira-ca",
+          projectId: existing.projectId,
+          label,
+          description: `TLS CA cert for Jira ${label}`,
+          createdById: actorId,
+        });
+        if (replaced) {
+          created.push(replaced);
+          data.tlsCaSecretId = replaced;
+          if (existing.tlsCaSecretId) superseded.push(existing.tlsCaSecretId);
+        } else rotated.push("tlsCaCert");
+      } else {
+        data.tlsCaSecretId = null;
+      }
+    }
+  } catch (err) {
+    // #574 — a later secret write failed (e.g. the TLS CA cert after the token):
+    // nothing was written to the row, so every secret created so far is withdrawn.
+    await withdrawCreatedSecrets(getVaultService(), created, {
+      actorId,
+      resource: { type: "jira_connection", id },
+      projectId: existing.projectId,
+      cause: err,
+    });
+    throw err;
   }
 
   // Reset status on connection-altering changes
@@ -353,16 +379,12 @@ export async function updateJiraConnection(
     // does). One rotated in place is the row's own and stays. Once the write
     // has landed the row names them, and withdrawing would leave it unreadable.
     if (!landed) {
-      await withdrawCreatedSecrets(
-        getVaultService(),
-        [data.secretId, data.tlsCaSecretId].filter((s): s is string => typeof s === "string"),
-        {
-          actorId,
-          resource: { type: "jira_connection", id },
-          projectId: existing.projectId,
-          cause: err,
-        },
-      );
+      await withdrawCreatedSecrets(getVaultService(), created, {
+        actorId,
+        resource: { type: "jira_connection", id },
+        projectId: existing.projectId,
+        cause: err,
+      });
     }
     if (isUniqueViolation(err) && typeof data.label === "string") {
       throw labelTaken(data.label);

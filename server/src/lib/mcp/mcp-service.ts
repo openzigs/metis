@@ -128,6 +128,12 @@ export interface CreateMCPOptions {
    * resolved again.
    */
   secretBindings?: SecretBindings;
+  /**
+   * #574 — called the moment the row is written, before anything that can
+   * still throw, so a caller undoing its own pre-write work (auto-vaulted
+   * secrets) knows the row now depends on it.
+   */
+  onLanded?: () => void;
 }
 
 export function normalizeRuntimeForConfig(input: {
@@ -341,6 +347,7 @@ export class MCPRegistryService {
         data: { ...data, createdById: actor.id },
       });
     });
+    options.onLanded?.();
     auditMcpEvent("mcp.registered", {
       mcpId: row.id,
       name: row.label,
@@ -389,6 +396,7 @@ export class MCPRegistryService {
         createdById: actor.id,
       },
     });
+    options.onLanded?.();
     auditMcpEvent("mcp.registered", {
       mcpId: row.id,
       name: row.label,

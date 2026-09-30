@@ -7,6 +7,7 @@
  */
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
+import Database from "better-sqlite3";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
@@ -33,6 +34,7 @@ const { isSecretReferenced, retireReplacedSecret, withdrawCreatedSecrets } =
 const { audit } = await import("../src/lib/audit/audit-service.js");
 const jira = await import("../src/lib/connectors/jira/jira-service.js");
 const testmgmt = await import("../src/lib/connectors/testmgmt/connection-service.js");
+const { TASK_RETRY_WINDOW_MS } = await import("../src/lib/scheduler/task-retry-window.js");
 
 const MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
 const OWNER = "owner";
@@ -47,6 +49,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const prevKey = process.env.VAULT_MASTER_KEY;
     let seq = 0;
     const uniq = (p: string) => `${p}-${++seq}`;
+    /** Every SQL statement the client sent, for the #574 query-plan check. */
+    const captured: string[] = [];
 
     const isLive = async (id: string) =>
       (await db.secret.findUniqueOrThrow({ where: { id } })).deletedAt === null;
@@ -57,7 +61,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     beforeAll(async () => {
       sqlite = createMigratedSqlite("481-secret-retirement");
-      db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
+      db = new PrismaClient({
+        adapter: new PrismaBetterSqlite3({ url: sqlite.url }),
+        log: [{ emit: "event", level: "query" }],
+      });
+      db.$on("query", (e) => captured.push(e.query));
       state.db = db;
       process.env.VAULT_MASTER_KEY = MASTER_KEY;
       __resetVaultSingleton();
@@ -388,17 +396,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     ];
 
     /** #495 — a Task's materialised copy of an http-webhook payload. */
-    const webhookTask = (id: string, status: string) =>
+    const webhookTask = (
+      id: string,
+      status: string,
+      opts: { updatedAt?: Date; completedAt?: Date; type?: string } = {},
+    ) =>
       db.task.create({
         data: {
-          type: "http-webhook",
+          type: opts.type ?? "http-webhook",
           status,
           payload: JSON.stringify({
             url: "https://hook.example.test",
             authHeader: `\${vault:${id}}`,
           }),
+          ...(opts.updatedAt ? { updatedAt: opts.updatedAt } : {}),
+          ...(opts.completedAt ? { completedAt: opts.completedAt } : {}),
         },
       });
+    const DAY = 86_400_000;
+    /** Just past the retry window: a terminal Task this old can no longer be retried. */
+    const expired = () => new Date(Date.now() - TASK_RETRY_WINDOW_MS - DAY);
+    /** Just inside it. */
+    const recent = () => new Date(Date.now() - TASK_RETRY_WINDOW_MS + DAY);
 
     it.each(["pending", "running", "failed", "cancelled"])(
       "#495 — a %s http-webhook Task's payload counts (a retry re-runs it)",
@@ -408,6 +427,86 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await isSecretReferenced(s.id, s.name)).toBe(true);
       },
     );
+
+    it.each(["failed", "cancelled"])(
+      "#574 — a %s Task past the retry window no longer pins the secret",
+      async (status) => {
+        const s = await freshSecret();
+        const t = await webhookTask(s.id, status, { updatedAt: expired() });
+        // The row really is that old: the check is not passing on a fresh row.
+        expect((await db.task.findUniqueOrThrow({ where: { id: t.id } })).updatedAt.getTime()).toBe(
+          t.updatedAt.getTime(),
+        );
+        expect(await isSecretReferenced(s.id, s.name)).toBe(false);
+      },
+    );
+
+    it.each(["failed", "cancelled"])(
+      "#574 — a %s Task that ended past the window stays unpinned after an unrelated later write",
+      async (status) => {
+        const s = await freshSecret();
+        const t = await webhookTask(s.id, status, { completedAt: expired(), updatedAt: expired() });
+        // Any write to the row resets `updatedAt` (@updatedAt); it must not reopen the window.
+        await db.task.update({ where: { id: t.id }, data: { progress: 50 } });
+        const after = await db.task.findUniqueOrThrow({ where: { id: t.id } });
+        expect(after.updatedAt.getTime()).toBeGreaterThan(recent().getTime());
+        expect(await isSecretReferenced(s.id, s.name)).toBe(false);
+      },
+    );
+
+    it.each(["failed", "cancelled"])(
+      "#574 — a %s Task that ended inside the window pins the secret",
+      async (status) => {
+        const s = await freshSecret();
+        await webhookTask(s.id, status, { completedAt: recent(), updatedAt: recent() });
+        expect(await isSecretReferenced(s.id, s.name)).toBe(true);
+      },
+    );
+
+    it.each(["failed", "cancelled"])(
+      "#574 — a %s Task still inside the retry window pins the secret",
+      async (status) => {
+        const s = await freshSecret();
+        await webhookTask(s.id, status, { updatedAt: recent() });
+        expect(await isSecretReferenced(s.id, s.name)).toBe(true);
+      },
+    );
+
+    it.each(["pending", "running"])(
+      "#574 — a %s Task pins the secret however old it is (it can still run)",
+      async (status) => {
+        const s = await freshSecret();
+        await webhookTask(s.id, status, { updatedAt: expired() });
+        expect(await isSecretReferenced(s.id, s.name)).toBe(true);
+      },
+    );
+
+    it("#574 — only an http-webhook Task's payload counts (no other handler reads the vault)", async () => {
+      const s = await freshSecret();
+      await webhookTask(s.id, "pending", { type: "rerun-analysis" });
+      expect(await isSecretReferenced(s.id, s.name)).toBe(false);
+    });
+
+    it("#574 — the Task reference check is answered from an index, not a table scan", async () => {
+      const s = await freshSecret();
+      captured.length = 0;
+      await isSecretReferenced(s.id, s.name);
+      const sql = captured.find((q) => /FROM [`"]?main[`"]?\.[`"]?tasks[`"]?/i.test(q));
+      expect(sql, captured.join("\n")).toBeDefined();
+      const raw = new Database(sqlite.dbFile, { readonly: true });
+      try {
+        const params = Array.from(sql!.matchAll(/\?/g), () => null);
+        const plan = raw
+          .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+          .all(...params)
+          .map((r) => (r as { detail: string }).detail)
+          .join("\n");
+        expect(plan).toMatch(/SEARCH .*tasks USING INDEX tasks_type_status_idx/);
+        expect(plan).not.toMatch(/SCAN .*tasks/);
+      } finally {
+        raw.close();
+      }
+    });
 
     it("#495 — a completed Task's payload does not count (it can never run again)", async () => {
       const s = await freshSecret();
@@ -468,6 +567,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             reason: "update_failed",
             resourceType: "t",
             resourceId: "x",
+          },
+        },
+      ]);
+    });
+
+    it("#574 — a withdrawal after a failed create (no resource id) is audited as a create", async () => {
+      vi.mocked(audit).mockClear();
+      await withdrawCreatedSecrets({ delete: vi.fn(async () => {}) }, ["orphan"], {
+        actorId: COORD,
+        resource: { type: "jira_connection" },
+        projectId: "p1",
+        cause: new Error("CA write failed"),
+      });
+      expect(vi.mocked(audit).mock.calls.map(([e]) => e)).toEqual([
+        {
+          actor: { id: COORD },
+          action: "vault.delete",
+          target: { type: "secret", id: "orphan" },
+          metadata: {
+            source: "create_not_applied",
+            reason: "create_failed",
+            resourceType: "jira_connection",
+            projectId: "p1",
           },
         },
       ]);
