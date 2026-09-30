@@ -633,10 +633,16 @@ export function knowledgeRouter(deps: KnowledgeRouterDeps = {}): Router {
  * #440 — an opaque list cursor: the last row's `uploadedAt` and `id`, the two
  * keys of the list's order. Base64url JSON, so a client never builds one.
  */
+// Ids are not all cuids: a generated document's published row is
+// `gendoc-<cuid>:gendoc:<projectId>:<cuid>:v<n>` (~94 chars), and a cursor the
+// server issued for such a row must decode (PR #469 panel). 512 bounds it.
+const MAX_CURSOR_ID_CHARS = 512;
 const documentCursorSchema = z.object({
   t: z.string().datetime(),
-  id: z.string().min(1).max(64),
+  id: z.string().min(1).max(MAX_CURSOR_ID_CHARS),
 });
+/** base64url of the JSON above: ~4/3 of (id + timestamp + keys), rounded up. */
+const MAX_CURSOR_CHARS = 1024;
 
 function encodeDocumentCursor(row: { uploadedAt: Date; id: string }): string {
   return Buffer.from(JSON.stringify({ t: row.uploadedAt.toISOString(), id: row.id })).toString(
@@ -647,7 +653,8 @@ function encodeDocumentCursor(row: { uploadedAt: Date; id: string }): string {
 function decodeDocumentCursor(raw: unknown): { uploadedAt: Date; id: string } {
   let parsed: unknown;
   try {
-    if (typeof raw !== "string" || raw.length === 0 || raw.length > 256) throw new Error("shape");
+    if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_CURSOR_CHARS)
+      throw new Error("shape");
     parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
   } catch {
     parsed = undefined;

@@ -236,11 +236,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "a cursor with a bad date",
         Buffer.from(JSON.stringify({ t: "yesterday", id: "x" })).toString("base64url"),
       ],
-      ["an over-long cursor", "a".repeat(300)],
+      ["an over-long cursor", "a".repeat(1100)],
     ])("rejects %s with 400 INVALID_CURSOR", async (_label, cursor) => {
       const res = await list({ cursor });
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe("INVALID_CURSOR");
+    });
+
+    it("pages past a generated document's long synthetic id (PR #469 panel)", async () => {
+      // generated-doc-publication writes live rows with ids like this (~94 chars);
+      // the server must accept the cursor it issues when one ends a page.
+      const longId = `gendoc-${"g".repeat(25)}:gendoc:${PROJ}:${"g".repeat(25)}:v12`;
+      await addDoc(PROJ, new Date(SAME_TIME.getTime() + 60_000), longId);
+      await seed();
+      const first = await list({ limit: 1 });
+      expect(first.body.data.items.map((d: { id: string }) => d.id)).toEqual([longId]);
+      const second = await list({ limit: 5, cursor: first.body.data.nextCursor });
+      expect(second.status, JSON.stringify(second.body)).toBe(200);
+      expect(second.body.data.items).toHaveLength(5);
+      expect(second.body.data.items.map((d: { id: string }) => d.id)).not.toContain(longId);
     });
 
     it("offset paging keeps working and now orders ties by id too", async () => {
