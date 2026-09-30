@@ -411,6 +411,14 @@ index did not return is still hydrated from Prisma
 ([project-code-searcher.ts](../server/src/lib/code-graph/project-code-searcher.ts)).
 Missing embeddings leave lexical search available as a fallback.
 
+The same searcher is reachable three ways: the `search_code_symbols` chat
+tool, passive fused retrieval into chat context, and directly over HTTP as
+`POST /api/projects/:id/code-search` with `{ query, limit? }` (`limit` 1–30,
+default 20). The endpoint is workspace-scoped like every project sub-resource
+and answers `{ results: [{ symbolId, filePath, name, kind, score, snippet? }] }`
+ranked by fused score; a project with no code graph answers an empty list
+(#423).
+
 ### How the vector store relates to SQL
 
 SQL is the source of structured identity, relationships, source locations, and
