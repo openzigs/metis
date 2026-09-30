@@ -10,8 +10,10 @@ import {
   UNNAMED_REPOSITORY,
   entryLabel,
   filterEntries,
+  flattenGroups,
   groupEntries,
   toPanelEntries,
+  type PanelRow,
 } from "@/lib/workbench-document-tree";
 
 const CONN = "cmexample0000000000acmerp";
@@ -355,5 +357,71 @@ describe("chip labels carry the panel's group ordinal (#474)", () => {
       UNNAMED_DATABASE,
       `${UNNAMED_DATABASE} 2`,
     ]);
+  });
+});
+
+// #526 — the flat row list the panel virtualises.
+describe("flattenGroups", () => {
+  const summary = (rows: PanelRow[]) =>
+    rows.map((r) =>
+      r.type === "heading"
+        ? `# ${r.label}`
+        : r.type === "folder"
+          ? `${"  ".repeat(r.depth)}${r.folder.name}/ [${r.group}]`
+          : `${"  ".repeat(r.depth)}${r.entry.name} [${r.group}]`,
+    );
+  const entries = toPanelEntries(
+    [
+      repo("r1", "src/a.ts"),
+      repo("r2", "README.md"),
+      from("jira", "j1", "jira:WMS-1"),
+      doc("u1", "Spec.docx"),
+    ],
+    { [CONN]: "wms-core" },
+  );
+  const groups = groupEntries(entries);
+
+  it("lists each group's heading, then its rows, with every folder collapsed", () => {
+    expect(summary(flattenGroups(groups, () => false))).toEqual([
+      "# Uploaded",
+      "Spec.docx [uploads]",
+      "# Repositories",
+      "wms-core/ [repos]",
+      "# Other sources",
+      "Jira/ [sources]",
+    ]);
+  });
+
+  it("follows an open folder with its folders, then its files, one level deeper", () => {
+    const open = new Set([`repo:${CONN}`, `repo:${CONN}/src`]);
+    expect(summary(flattenGroups(groups, (k) => open.has(k)))).toEqual([
+      "# Uploaded",
+      "Spec.docx [uploads]",
+      "# Repositories",
+      "wms-core/ [repos]",
+      "  src/ [repos]",
+      "    a.ts [repos]",
+      "  README.md [repos]",
+      "# Other sources",
+      "Jira/ [sources]",
+    ]);
+  });
+
+  it("hides a closed folder's children even when its parent is open", () => {
+    const open = new Set([`repo:${CONN}`]);
+    const rows = flattenGroups(groups, (k) => open.has(k));
+    expect(summary(rows)).not.toContain("    a.ts [repos]");
+    expect(summary(rows)).toContain("  src/ [repos]");
+  });
+
+  it("gives every row a unique key, and omits the headings of empty groups", () => {
+    const rows = flattenGroups(groups, () => true);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(rows.length);
+    expect(flattenGroups(groupEntries([]), () => true)).toEqual([]);
+    const onlyUploads = flattenGroups(
+      groupEntries(toPanelEntries([doc("u1", "x.md")])),
+      () => true,
+    );
+    expect(summary(onlyUploads)).toEqual(["# Uploaded", "x.md [uploads]"]);
   });
 });

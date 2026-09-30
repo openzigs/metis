@@ -1,7 +1,8 @@
 /**
  * Issue #32 — the Workbench Documents panel's model: uploads in their own
  * group, repository files as a folder tree per repository, and a filter over
- * name and path.
+ * name and path. #526 — {@link flattenGroups} turns the tree into the flat row
+ * list the panel virtualises.
  *
  * Every step is pure and linear in the number of documents, so a project with
  * thousands of ingested files costs one pass to parse (memoised on the list),
@@ -322,4 +323,57 @@ export function groupEntries(entries: readonly PanelEntry[]): DocumentGroups {
   sourceList.sort(byName);
   for (const group of [...repoList, ...sourceList]) sortFolder(group);
   return { uploads, repos: repoList, sources: sourceList };
+}
+
+export type PanelGroup = "uploads" | "repos" | "sources";
+
+/** #526 — one row of the virtualised panel: a group heading, a folder, or a file. */
+export type PanelRow =
+  | { type: "heading"; key: string; group: PanelGroup; label: string }
+  | { type: "folder"; key: string; group: PanelGroup; depth: number; folder: FolderNode }
+  | { type: "file"; key: string; group: PanelGroup; depth: number; entry: PanelEntry };
+
+const GROUP_LABELS: Record<PanelGroup, string> = {
+  uploads: "Uploaded",
+  repos: "Repositories",
+  sources: "Other sources",
+};
+
+/**
+ * #526 — the rows the panel shows, in order: each non-empty group's heading,
+ * then its rows. A folder's children follow it only when `isOpen(folder.key)`,
+ * so a collapsed repository of thousands of files is one row. Linear in the
+ * rows returned plus the folders walked.
+ */
+export function flattenGroups(
+  groups: DocumentGroups,
+  isOpen: (key: string) => boolean,
+): PanelRow[] {
+  const rows: PanelRow[] = [];
+  const file = (group: PanelGroup, entry: PanelEntry, depth: number): PanelRow => ({
+    type: "file",
+    key: `file:${entry.doc.id}`,
+    group,
+    depth,
+    entry,
+  });
+  const walk = (group: PanelGroup, folder: FolderNode, depth: number) => {
+    rows.push({ type: "folder", key: folder.key, group, depth, folder });
+    if (!isOpen(folder.key)) return;
+    for (const child of folder.folders) walk(group, child, depth + 1);
+    for (const entry of folder.files) rows.push(file(group, entry, depth + 1));
+  };
+  const heading = (group: PanelGroup) =>
+    rows.push({ type: "heading", key: `heading:${group}`, group, label: GROUP_LABELS[group] });
+
+  if (groups.uploads.length > 0) {
+    heading("uploads");
+    for (const entry of groups.uploads) rows.push(file("uploads", entry, 0));
+  }
+  for (const group of ["repos", "sources"] as const) {
+    if (groups[group].length === 0) continue;
+    heading(group);
+    for (const root of groups[group]) walk(group, root, 0);
+  }
+  return rows;
 }

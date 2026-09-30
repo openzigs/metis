@@ -26,8 +26,9 @@ export const DEFAULT_LAYOUT: WorkbenchLayout = {
   agentKey: null,
 };
 
-const MIN_PCT = 12;
-const MAX_PCT = 50;
+/** #526 — a side pane's width bounds, shared with the pane separators. */
+export const MIN_PCT = 12;
+export const MAX_PCT = 50;
 
 function clamp(n: number): number {
   if (Number.isNaN(n) || !Number.isFinite(n)) return MIN_PCT;
