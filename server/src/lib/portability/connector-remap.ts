@@ -26,6 +26,7 @@
  *   RuntimeConfig       → only keys classified `env-specific-tunable`
  */
 
+import path from "node:path";
 import { z } from "zod";
 import { classifyConfigKey } from "./env-config-classifier.js";
 
@@ -248,6 +249,41 @@ export function computeRemap(
   }
 
   return { models, runtimeConfig };
+}
+
+// ── #527: anchor imported upload archives under the importing server's root ──
+
+/** A server-generated connector id: a cuid or lowercase ULID (#463). */
+const SERVER_GENERATED_ID = /^[a-z0-9]+$/;
+
+/**
+ * #527 — compute the `uploadPath` rewrites that pin every imported upload
+ * connector's archive to `<archiveRoot>/<id>.zip` on the importing server.
+ *
+ * A logical-import bundle keeps row ids and may carry (or `--remap`) any
+ * `uploadPath`, and a later DELETE removes the file that column names. So an
+ * imported path is never trusted: anything other than exactly
+ * `<archiveRoot>/<id>.zip` is re-anchored there, which is also where the
+ * operator copies the source host's archives. A row whose id is not
+ * server-generated could steer that join out of the root, so the whole import
+ * is refused rather than guessed at. Pure: returns the changes, writes nothing.
+ */
+export function computeUploadPathAnchoring(rows: RemapRow[], archiveRoot: string): FieldChange[] {
+  const root = path.resolve(archiveRoot);
+  const changes: FieldChange[] = [];
+  for (const row of rows) {
+    const before = row.uploadPath;
+    if (before === null || before === undefined) continue;
+    if (!SERVER_GENERATED_ID.test(row.id)) {
+      throw new RemapValidationError(
+        `RepoConnection "${row.id}" has an uploadPath but its id is not a server-generated id; ` +
+          `refusing to place its archive.`,
+      );
+    }
+    const after = path.join(root, `${row.id}.zip`);
+    if (before !== after) changes.push({ rowId: row.id, field: "uploadPath", before, after });
+  }
+  return changes;
 }
 
 function valuesEqual(a: unknown, b: unknown): boolean {

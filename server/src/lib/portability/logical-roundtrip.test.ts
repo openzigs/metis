@@ -71,10 +71,20 @@ function clientFor(dbFile: string): PrismaClient {
   return new PrismaClient({ adapter });
 }
 
-function runCli(scriptPath: string, args: string[], dbFile: string): string {
+function runCli(
+  scriptPath: string,
+  args: string[],
+  dbFile: string,
+  extraEnv: Record<string, string> = {},
+): string {
   return execFileSync("npx", ["tsx", scriptPath, ...args], {
     cwd: SERVER_ROOT,
-    env: { ...process.env, DATABASE_URL: `file:${dbFile}`, DATABASE_PROVIDER: "sqlite" },
+    env: {
+      ...process.env,
+      DATABASE_URL: `file:${dbFile}`,
+      DATABASE_PROVIDER: "sqlite",
+      ...extraEnv,
+    },
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -108,6 +118,8 @@ describeOnSqliteClient("logical export/import round-trip (SQLite → SQLite)", (
   let parentReqId: string;
   let childReqId: string;
   let repoId: string;
+  let uploadRepoId: string;
+  let archiveRoot: string; // the importing server's UPLOAD_ARCHIVE_DIR (#527)
 
   let remapDb: string; // third DB exercising --remap
   const OLD_API = "https://source-host.internal/api";
@@ -188,13 +200,25 @@ describeOnSqliteClient("logical export/import round-trip (SQLite → SQLite)", (
         data: { projectId, label: "RT Repo", apiBaseUrl: OLD_API },
       });
       repoId = repo.id;
+
+      // #527 — an upload connector whose bundle row points its archive OUTSIDE
+      // any archive root; a later DELETE would remove whatever it names.
+      const upload = await src.repoConnection.create({
+        data: { projectId, label: "RT Upload", provider: "upload" },
+      });
+      uploadRepoId = upload.id;
+      await src.repoConnection.update({
+        where: { id: uploadRepoId },
+        data: { uploadPath: `/anywhere/${uploadRepoId}.zip` },
+      });
     } finally {
       await src.$disconnect();
     }
 
     // Export from src, import into dst (no remap).
+    archiveRoot = path.join(tmpDir, "target-archives");
     runCli(EXPORT_CLI, [dumpDir], srcDb);
-    runCli(IMPORT_CLI, [dumpDir], dstDb);
+    runCli(IMPORT_CLI, [dumpDir], dstDb, { UPLOAD_ARCHIVE_DIR: archiveRoot });
 
     // Third import into a fresh DB WITH a --remap spec, to exercise the
     // connector/env remap apply path end-to-end.
@@ -205,15 +229,16 @@ describeOnSqliteClient("logical export/import round-trip (SQLite → SQLite)", (
       remapFile,
       JSON.stringify({
         version: 1,
-        RepoConnection: { valueMap: { apiBaseUrl: { [OLD_API]: NEW_API } } },
+        RepoConnection: {
+          valueMap: { apiBaseUrl: { [OLD_API]: NEW_API } },
+          // #527 — a remap cannot move the archive out of the root either.
+          byId: { [uploadRepoId]: { uploadPath: `/elsewhere/${uploadRepoId}.zip` } },
+        },
       }),
       "utf8",
     );
-    execFileSync("npx", ["tsx", IMPORT_CLI, dumpDir, "--remap", remapFile], {
-      cwd: SERVER_ROOT,
-      env: { ...process.env, DATABASE_URL: `file:${remapDb}`, DATABASE_PROVIDER: "sqlite" },
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
+    runCli(IMPORT_CLI, [dumpDir, "--remap", remapFile], remapDb, {
+      UPLOAD_ARCHIVE_DIR: archiveRoot,
     });
   }, SUITE_TIMEOUT);
 
@@ -303,8 +328,29 @@ describeOnSqliteClient("logical export/import round-trip (SQLite → SQLite)", (
     try {
       const repo = await dst.repoConnection.findUniqueOrThrow({ where: { id: repoId } });
       expect(repo.apiBaseUrl).toBe(OLD_API);
+      expect(repo.uploadPath).toBeNull();
     } finally {
       await dst.$disconnect();
+    }
+  });
+
+  it("#527 — re-anchors an imported uploadPath under the importing server's archive root", async () => {
+    const dst = clientFor(dstDb);
+    try {
+      const repo = await dst.repoConnection.findUniqueOrThrow({ where: { id: uploadRepoId } });
+      expect(repo.uploadPath).toBe(path.join(archiveRoot, `${uploadRepoId}.zip`));
+    } finally {
+      await dst.$disconnect();
+    }
+  });
+
+  it("#527 — a --remap cannot point uploadPath outside the archive root", async () => {
+    const remap = clientFor(remapDb);
+    try {
+      const repo = await remap.repoConnection.findUniqueOrThrow({ where: { id: uploadRepoId } });
+      expect(repo.uploadPath).toBe(path.join(archiveRoot, `${uploadRepoId}.zip`));
+    } finally {
+      await remap.$disconnect();
     }
   });
 

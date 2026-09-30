@@ -1,6 +1,8 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   computeModelRemap,
+  computeUploadPathAnchoring,
   computeRemap,
   computeRuntimeConfigRemap,
   parseRemapSpec,
@@ -158,5 +160,65 @@ describe("computeRemap", () => {
     const spec = parseRemapSpec({ version: 1, MCPServer: { byId: { m1: { url: "same" } } } });
     const plan = computeRemap(spec, { MCPServer: [{ id: "m1", url: "same" }] });
     expect(plan.models).toHaveLength(0);
+  });
+});
+
+// ── #527: imported uploadPath is anchored under the importing server's root ──
+
+describe("computeUploadPathAnchoring", () => {
+  const ROOT = path.resolve("/srv/metis/data/repo-archives");
+
+  it("re-anchors an uploadPath that points outside the archive root", () => {
+    const changes = computeUploadPathAnchoring(
+      [{ id: "abc123", uploadPath: "/anywhere/abc123.zip" }],
+      ROOT,
+    );
+    expect(changes).toEqual([
+      {
+        rowId: "abc123",
+        field: "uploadPath",
+        before: "/anywhere/abc123.zip",
+        after: path.join(ROOT, "abc123.zip"),
+      },
+    ]);
+  });
+
+  it("re-anchors a path that climbs out of the root or names another file", () => {
+    const changes = computeUploadPathAnchoring(
+      [
+        { id: "a1", uploadPath: path.join(ROOT, "..", "a1.zip") },
+        { id: "b2", uploadPath: path.join(ROOT, "other.zip") },
+        { id: "c3", uploadPath: path.join(ROOT, "nested", "c3.zip") },
+        { id: "d4", uploadPath: "d4.zip" },
+      ],
+      ROOT,
+    );
+    expect(changes.map((c) => [c.rowId, c.after])).toEqual([
+      ["a1", path.join(ROOT, "a1.zip")],
+      ["b2", path.join(ROOT, "b2.zip")],
+      ["c3", path.join(ROOT, "c3.zip")],
+      ["d4", path.join(ROOT, "d4.zip")],
+    ]);
+  });
+
+  it("leaves a path already at <root>/<id>.zip, and rows with no uploadPath, alone", () => {
+    const changes = computeUploadPathAnchoring(
+      [
+        { id: "ok1", uploadPath: path.join(ROOT, "ok1.zip") },
+        { id: "none1", uploadPath: null },
+        { id: "none2" },
+      ],
+      ROOT,
+    );
+    expect(changes).toEqual([]);
+  });
+
+  it("refuses a row whose id could steer the path out of the root", () => {
+    expect(() =>
+      computeUploadPathAnchoring([{ id: "../../etc/x", uploadPath: "/tmp/x.zip" }], ROOT),
+    ).toThrow(RemapValidationError);
+    expect(() =>
+      computeUploadPathAnchoring([{ id: "Abc", uploadPath: "/tmp/Abc.zip" }], ROOT),
+    ).toThrow(/not a server-generated id/);
   });
 });

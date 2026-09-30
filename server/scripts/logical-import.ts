@@ -28,6 +28,10 @@
  *     manifest at the end, failing LOUDLY (non-zero exit) on any mismatch.
  *   - The optional `--remap <file.json>` applies env-specific connector/config
  *     rewrites AFTER load, inside a transaction (see connector-remap.ts).
+ *   - #527 — last of all, every upload connector's `uploadPath` is re-anchored
+ *     to `<uploadArchiveRoot()>/<id>.zip` on THIS server (UPLOAD_ARCHIVE_DIR, or
+ *     `<cwd>/data/repo-archives`), whatever the bundle or the remap said: a
+ *     later DELETE removes the file that column names.
  *
  * Usage:
  *   tsx scripts/logical-import.ts <inDir> [--remap <file.json>] [--help]
@@ -57,9 +61,11 @@ import {
 } from "../src/lib/portability/logical-dump.js";
 import {
   computeRemap,
+  computeUploadPathAnchoring,
   parseRemapSpec,
   type RemapRow,
 } from "../src/lib/portability/connector-remap.js";
+import { uploadArchiveRoot } from "../src/lib/connectors/repo/upload-roots.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_ROOT = path.resolve(__dirname, "..");
@@ -325,6 +331,9 @@ async function main(): Promise<void> {
       printFixupChecklist();
     }
 
+    // ── #527: anchor upload archives under THIS server's archive root ───────
+    await anchorUploadPaths(prisma);
+
     log(`=== IMPORT COMPLETE ===`);
   } finally {
     await prisma.$disconnect();
@@ -419,11 +428,37 @@ async function applyRemap(
   log(`  RuntimeConfig: ${plan.runtimeConfig.length} key change(s)`);
 }
 
+/**
+ * #527 — rewrite every imported upload connector's `uploadPath` to
+ * `<uploadArchiveRoot()>/<id>.zip`, so neither the bundle nor a remap can point
+ * a connector (and so a later DELETE) at a file outside this server's root.
+ */
+async function anchorUploadPaths(prisma: PrismaClient): Promise<void> {
+  const root = uploadArchiveRoot();
+  const rows = (await (client(prisma, "repoConnection") as unknown as FindManyDelegate).findMany({
+    where: { uploadPath: { not: null } },
+    select: { id: true, uploadPath: true },
+  })) as RemapRow[];
+  const changes = computeUploadPathAnchoring(rows, root);
+  await prisma.$transaction(async (tx) => {
+    const delegate = client(tx, "repoConnection") as unknown as UpdateDelegate;
+    for (const c of changes) {
+      await delegate.update({ where: { id: c.rowId }, data: { uploadPath: c.after } });
+    }
+  });
+  log(`upload archive root: ${root}`);
+  log(`  RepoConnection.uploadPath: ${changes.length} re-anchored under it`);
+  if (rows.length > 0) {
+    log(`  copy each upload connector's <id>.zip from the source host's archive root here`);
+  }
+}
+
 function printFixupChecklist(): void {
   console.log("");
   console.log("=== POST-IMPORT FIX-UP CHECKLIST (no --remap supplied) ===");
   console.log("Review and override env-specific values for THIS host:");
-  console.log("  RepoConnection:     apiBaseUrl, localPath, uploadPath   (all --remap-able)");
+  console.log("  RepoConnection:     apiBaseUrl, localPath               (all --remap-able)");
+  console.log("                      uploadPath is re-anchored to this server's archive root");
   console.log("  DatabaseConnection: host, port, databaseName            (all --remap-able)");
   console.log(
     "  MCPServer:          url (--remap-able); command, runtime (manual DB/UI edit only)",
