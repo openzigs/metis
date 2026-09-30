@@ -96,7 +96,13 @@ export function countProjectToolReads(calls: readonly GroundingToolCall[]): numb
 /**
  * #439 — fold a turn's project tool reads into its grounding. A `no-context`
  * turn whose tools read the project becomes `grounded` (with `sources: 0`); an
- * unscoped turn stays unscoped (its tools cannot reach a project).
+ * unscoped turn stays unscoped.
+ *
+ * #464 / PR #471 review — that unscoped guard is load-bearing, not cosmetic:
+ * `search-knowledge` refuses another project only when the session HAS a
+ * project (search-knowledge-tool.ts), so in an unscoped chat it can search any
+ * project. Counting those reads would label an answer grounded in a project the
+ * chat is not scoped to. Pinned by "keeps an unscoped turn unscoped".
  */
 export function withToolReads(grounding: ChatGrounding, toolReads: number): ChatGrounding {
   if (toolReads <= 0 || grounding.status === "unscoped") return grounding;

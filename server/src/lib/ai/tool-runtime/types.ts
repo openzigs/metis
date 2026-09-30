@@ -18,7 +18,7 @@ export type ToolSource = "metis" | "mcp" | "code" | "agent";
 export interface RuntimeToolResult {
   text: string;
   isError?: boolean;
-  /** Code tools: how many results came back (`0` = a well-formed empty result). */
+  /** Code tools and `search-knowledge` (#464): how many results came back (`0` = a well-formed empty result). */
   resultCount?: number;
   truncated?: boolean;
   /** #147 — the sub-agent run this call started, when the tool ran an agent. */

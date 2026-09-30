@@ -40,7 +40,7 @@ export interface ChatToolRecord {
   subAgentRunId?: string;
   /** #439 — where the tool comes from (`code`, `mcp`, …), when it resolved. */
   source?: ToolSource;
-  /** #439 — code tools: how many results came back (`0` = found nothing). */
+  /** #439 / #464 — code tools and `search-knowledge`: how many results came back (`0` = found nothing). */
   resultCount?: number;
 }
 
