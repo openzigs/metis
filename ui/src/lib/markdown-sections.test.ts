@@ -673,8 +673,17 @@ describe("reference links and footnotes in the body across sections (#228)", () 
     // a time and rescanning (quadratic in a long hostile dash run).
     const { definitions } = splitMarkdownSections("## A\n[x]: https://example.com/x");
     const run = "-".repeat(5000);
-    const out = withDefinitions(`[x] metis-definitions-end${run}`, definitions);
-    expect(out).toContain(`[metis-definitions-end${run}-]: #`);
+    // Every label normalisation lower-cases; the one-scan picker normalises a
+    // constant number of times, the grow-and-rescan loop once per dash.
+    const lower = vi.spyOn(String.prototype, "toLowerCase");
+    try {
+      const out = withDefinitions(`[x] metis-definitions-end${run}`, definitions);
+      expect(out).toContain(`[metis-definitions-end${run}-]: #`);
+      expect(lower).toHaveBeenCalled();
+      expect(lower.mock.calls.length).toBeLessThan(50);
+    } finally {
+      lower.mockRestore();
+    }
   });
 
   it("a footnote reference whose href is not percent-decodable keeps its own number", () => {
