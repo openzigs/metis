@@ -104,7 +104,11 @@ export async function resolveEvidencePolicy(
     where: { id: stored.principal.userId, status: "active", deletedAt: null },
     include: {
       roles: { include: { role: true } },
-      workspaceMemberships: { select: { workspaceId: true } },
+      // #549 — a soft-deleted workspace grants no scope.
+      workspaceMemberships: {
+        where: { workspace: { deletedAt: null } },
+        select: { workspaceId: true },
+      },
     },
   });
   if (!user) throw deny();

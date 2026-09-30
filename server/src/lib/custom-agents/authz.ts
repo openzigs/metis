@@ -44,6 +44,8 @@ export async function assertWorkspaceAdminForProject(
   const membership = await prisma.workspaceMember.findUnique({
     where: {
       workspaceId_userId: { workspaceId: project.workspaceId, userId: user.userId },
+      // #549 — a soft-deleted workspace's memberships grant nothing.
+      workspace: { deletedAt: null },
     },
     select: { role: true },
   });
@@ -84,7 +86,7 @@ export async function assertProjectAccess(
 
   const project = await db.project.findUnique({
     where: { id: projectId },
-    select: { workspaceId: true },
+    select: { workspaceId: true, workspace: { select: { deletedAt: true } } },
   });
   if (!project) {
     throw new AppError(404, "NOT_FOUND", "Project not found");
@@ -97,8 +99,10 @@ export async function assertProjectAccess(
   // reachable by id until the workspace backfill runs.
   if (!project.workspaceId) return;
 
+  // #549 — the workspace claim is minted at login and carried across refresh,
+  // so it can still name a workspace deleted since. Check the row, not the claim.
   const workspaces = user.workspaces ?? [];
-  if (!workspaces.includes(project.workspaceId)) {
+  if (project.workspace?.deletedAt || !workspaces.includes(project.workspaceId)) {
     throw new AppError(404, "NOT_FOUND", "Project not found");
   }
 }

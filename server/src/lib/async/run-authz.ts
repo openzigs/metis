@@ -22,11 +22,10 @@ import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { assertProjectAccess } from "../custom-agents/authz.js";
+import { workspaceScopeWhere, type WorkspaceScopeWhere } from "../auth/project-scope.js";
 
 /** Prisma `where` fragment narrowing runs/groups to the caller's projects. */
-export type RunProjectScope =
-  | Record<string, never>
-  | { project: { OR: Array<{ workspaceId: null } | { workspaceId: { in: string[] } }> } };
+export type RunProjectScope = Record<string, never> | { project: WorkspaceScopeWhere };
 
 async function authorizeRow(
   user: AuthPayload | undefined,
@@ -114,6 +113,6 @@ export function runProjectScope(user: AuthPayload | undefined): RunProjectScope 
   if (!user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
   if (user.role === "admin") return {};
   return {
-    project: { OR: [{ workspaceId: null }, { workspaceId: { in: user.workspaces ?? [] } }] },
+    project: workspaceScopeWhere(user),
   };
 }

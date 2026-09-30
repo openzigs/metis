@@ -264,7 +264,10 @@ describe("caller-supplied projectId routes", () => {
     expect(res.status).toBe(200);
     const where = prismaMock.backgroundRun.findMany.mock.calls[0][0].where;
     expect(where.project).toEqual({
-      OR: [{ workspaceId: null }, { workspaceId: { in: ["ws_b"] } }],
+      OR: [
+        { workspaceId: null },
+        { workspaceId: { in: ["ws_b"] }, workspace: { deletedAt: null } },
+      ],
     });
   });
 });

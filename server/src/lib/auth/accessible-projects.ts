@@ -25,6 +25,7 @@
 import type { AuthPayload, RoleKey } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { accessibleProjectWhere } from "../acp/authz.js";
+import { readLiveWorkspaceIds } from "./live-workspace-ids.js";
 
 export interface AccessibleProject {
   id: string;
@@ -43,9 +44,9 @@ export interface AccessibleProject {
  * row can never confer the admin bypass.
  */
 async function resolveActor(userId: string): Promise<AuthPayload> {
-  const [userRole, memberships] = await Promise.all([
+  const [userRole, workspaces] = await Promise.all([
     prisma.userRole.findFirst({ where: { userId }, include: { role: true } }),
-    prisma.workspaceMember.findMany({ where: { userId }, select: { workspaceId: true } }),
+    readLiveWorkspaceIds(userId),
   ]);
   return {
     userId,
@@ -53,7 +54,7 @@ async function resolveActor(userId: string): Promise<AuthPayload> {
     role: (userRole?.role.key as RoleKey | undefined) ?? "reader",
     // Only `role` + `workspaces` are read by the scope rule.
     permissions: [],
-    workspaces: memberships.map((m) => m.workspaceId),
+    workspaces,
   };
 }
 

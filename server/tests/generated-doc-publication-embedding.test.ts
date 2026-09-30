@@ -204,6 +204,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       });
       state.db = db;
       const tables = [
+        `CREATE TABLE workspaces (id TEXT PRIMARY KEY, deletedAt DATETIME)`,
         `CREATE TABLE projects (id TEXT PRIMARY KEY, workspaceId TEXT, deletedAt DATETIME,
       autoApproveTrustedSources BOOLEAN DEFAULT true)`,
         `CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, displayName TEXT, email TEXT,
@@ -245,6 +246,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP)`,
       ];
       for (const sql of tables) await db.$executeRawUnsafe(sql);
+      await db.$executeRaw`INSERT INTO workspaces (id) VALUES ('workspace')`;
     });
 
     afterAll(async () => {

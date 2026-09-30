@@ -147,6 +147,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       state.db = db;
       // Minimal real schema, including SQL constraints and defaults used by Prisma.
       for (const sql of [
+        `CREATE TABLE workspaces (id TEXT PRIMARY KEY, deletedAt DATETIME)`,
         `CREATE TABLE projects (id TEXT PRIMARY KEY, workspaceId TEXT NOT NULL)`,
         `CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL, status TEXT DEFAULT 'active', deletedAt DATETIME, authRolesInitializedAt DATETIME DEFAULT CURRENT_TIMESTAMP, authRoleAuthority TEXT DEFAULT 'explicit')`,
         `CREATE TABLE roles (id TEXT PRIMARY KEY, key TEXT UNIQUE NOT NULL, name TEXT NOT NULL, description TEXT DEFAULT '', isSystem BOOLEAN DEFAULT true, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP)`,
@@ -162,6 +163,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         `CREATE TABLE knowledge_chunks (id TEXT PRIMARY KEY, documentId TEXT, projectId TEXT)`,
       ])
         await db.$executeRawUnsafe(sql);
+      await db.$executeRaw`INSERT INTO workspaces (id) VALUES ('workspace'), ('other-workspace')`;
       await db.$executeRaw`INSERT INTO projects (id, workspaceId) VALUES ('project', 'workspace')`;
       await db.$executeRaw`INSERT INTO roles (id, key, name) VALUES ('coordinator', 'coordinator', 'Coordinator'), ('reader', 'reader', 'Reader')`;
       for (const [userId, role, workspaceId] of [

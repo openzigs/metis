@@ -51,11 +51,14 @@ export async function listAccessibleWorkspaceIds(
     // workspace with no projects is irrelevant to cross-project reads.)
     const [projects, memberships] = await Promise.all([
       db.project.findMany({
-        where: { deletedAt: null, workspaceId: { not: null } },
+        where: { deletedAt: null, workspaceId: { not: null }, workspace: { deletedAt: null } },
         select: { workspaceId: true },
         distinct: ["workspaceId"],
       }),
-      db.workspaceMember.findMany({ where: { userId: actor.id }, select: { workspaceId: true } }),
+      db.workspaceMember.findMany({
+        where: { userId: actor.id, workspace: { deletedAt: null } },
+        select: { workspaceId: true },
+      }),
     ]);
     const ids = new Set<string>();
     for (const p of projects) if (p.workspaceId) ids.add(p.workspaceId);
@@ -63,7 +66,8 @@ export async function listAccessibleWorkspaceIds(
     return [...ids];
   }
   const memberships = await db.workspaceMember.findMany({
-    where: { userId: actor.id },
+    // #549 — a soft-deleted workspace is not accessible.
+    where: { userId: actor.id, workspace: { deletedAt: null } },
     select: { workspaceId: true },
   });
   return [...new Set(memberships.map((m) => m.workspaceId))];
@@ -78,7 +82,10 @@ export async function actorIsWorkspaceMember(
   if (isAdminActor(actor)) return true;
   const db = resolvePrisma(prisma);
   const membership = await db.workspaceMember.findUnique({
-    where: { workspaceId_userId: { workspaceId, userId: actor.id } },
+    where: {
+      workspaceId_userId: { workspaceId, userId: actor.id },
+      workspace: { deletedAt: null },
+    },
     select: { id: true },
   });
   return membership != null;

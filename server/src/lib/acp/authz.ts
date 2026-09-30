@@ -21,6 +21,7 @@
 import type { AuthPayload, RoleKey } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { workspaceScopeWhere } from "../auth/project-scope.js";
+import { readLiveWorkspaceIds } from "../auth/live-workspace-ids.js";
 import type { VerifiedToken } from "./api-tokens.js";
 
 // ---- Token scopes (BFLA — method-level authorization) ----------------------
@@ -93,15 +94,12 @@ export function clampAcpScopes(requested: readonly string[] | undefined): string
  * token never gains admin bypass), and workspaces from `WorkspaceMember`.
  */
 export async function resolveAcpActor(auth: VerifiedToken): Promise<AuthPayload> {
-  const [userRole, memberships] = await Promise.all([
+  const [userRole, workspaces] = await Promise.all([
     prisma.userRole.findFirst({
       where: { userId: auth.userId },
       include: { role: true },
     }),
-    prisma.workspaceMember.findMany({
-      where: { userId: auth.userId },
-      select: { workspaceId: true },
-    }),
+    readLiveWorkspaceIds(auth.userId),
   ]);
   const role = (userRole?.role.key as RoleKey | undefined) ?? "reader";
   return {
@@ -111,7 +109,7 @@ export async function resolveAcpActor(auth: VerifiedToken): Promise<AuthPayload>
     // Permissions are not consulted by any ACP tenant check (role + workspaces
     // are what `assertProjectAccess` reads); keep the payload minimal.
     permissions: [],
-    workspaces: memberships.map((m) => m.workspaceId),
+    workspaces,
   };
 }
 

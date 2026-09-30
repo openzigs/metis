@@ -27,6 +27,7 @@ import {
 import { generateAuthorizationUrl, exchangeCodeForTokens } from "../lib/auth/oidc-provider.js";
 import { reconcileTrustedLoginRole } from "../lib/auth/durable-roles.js";
 import { issueTokens } from "../lib/auth/jwt.js";
+import { LIVE_WORKSPACE_MEMBERSHIP } from "../lib/auth/live-workspace-ids.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -66,7 +67,7 @@ function cookieOptions(): CookieOptions {
 async function readWorkspaceIds(userId: string): Promise<string[]> {
   const workspaceMemberModel = prisma.workspaceMember as unknown as {
     findMany?: (args: {
-      where: { userId: string };
+      where: { userId: string; workspace: { deletedAt: null } };
       select: { workspaceId: true };
     }) => Promise<Array<{ workspaceId: string }> | undefined>;
   };
@@ -74,7 +75,8 @@ async function readWorkspaceIds(userId: string): Promise<string[]> {
     return [];
   }
   const memberships = await workspaceMemberModel.findMany({
-    where: { userId },
+    // #549 — a soft-deleted workspace must not reach the token's scope claim.
+    where: { userId, ...LIVE_WORKSPACE_MEMBERSHIP },
     select: { workspaceId: true },
   });
   return Array.isArray(memberships) ? memberships.map((membership) => membership.workspaceId) : [];
