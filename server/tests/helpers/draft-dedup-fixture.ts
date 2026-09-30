@@ -103,11 +103,21 @@ export const BATCHES: BatchSeed[] = [
     metadata: meta(["d_e", "c_kept", "d_a", "d_d", "nope"]),
   },
   { id: "b_running", projectId: "p1", status: "running", archived: false, metadata: meta(["d_b"]) },
-  // Settled or archived batches keep the ids they ran with.
+  // PR #414 panel — runBatch refuses only archived and cancelled batches, and the
+  // scheduler's publish-batch task can re-run a completed or failed one, so
+  // those are repointed too; cancelled and archived keep the ids they ran with.
   {
     id: "b_completed",
     projectId: "p1",
     status: "completed",
+    archived: false,
+    metadata: meta(["d_a"]),
+  },
+  { id: "b_failed", projectId: "p1", status: "failed", archived: false, metadata: meta(["d_b"]) },
+  {
+    id: "b_cancelled",
+    projectId: "p1",
+    status: "cancelled",
     archived: false,
     metadata: meta(["d_a"]),
   },
@@ -122,6 +132,8 @@ export const BATCHES: BatchSeed[] = [
 export const DRAFT_IDS_AFTER_402: Record<string, string[]> = {
   b_pending: ["d_d", "c_kept", "d_c", "nope"],
   b_running: ["d_c"],
+  b_completed: ["d_c"],
+  b_failed: ["d_c"],
 };
 
 export const USER_ID = "u1";

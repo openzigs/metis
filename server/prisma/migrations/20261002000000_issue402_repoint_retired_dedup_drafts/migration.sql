@@ -10,9 +10,11 @@
 --      deletedAt IS NULL, so the retired draft would be skipped silently, and
 --      re-creating a batch from those ids fails createBatch's count check with
 --      DRAFT_MISMATCH. Repointed to the survivor, keeping first-seen order and
---      dropping the id if the survivor is already listed. "Unfinished" is what
---      cancelBatch calls unfinished: pending or running, not archived. Settled
---      batches keep the ids they ran with, as history.
+--      dropping the id if the survivor is already listed. Every batch runBatch
+--      can still run is repointed: runBatch refuses only archived and cancelled
+--      batches, and the scheduler's `publish-batch` task can re-run a completed
+--      or failed one (PR #414 panel). Archived and cancelled batches keep the
+--      ids they ran with, as history.
 --
 -- "Soft-deleted with a live row of the same (projectId, dedupHash)" names
 -- exactly #369's retirees: no application path soft-deletes an issue draft,
@@ -90,7 +92,7 @@ SET "metadata" = json_set(
     )
   ))
 )
-WHERE "status" IN ('pending', 'running')
+WHERE "status" <> 'cancelled'
   AND "archived" = 0
   AND EXISTS (
     SELECT 1
