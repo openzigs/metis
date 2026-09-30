@@ -859,6 +859,12 @@ describe("manual connector regeneration callers (#1356)", () => {
         const response = await ingest();
         expect(response.status).toBe(okStatus);
         expectScheduled();
+        if (caller === "refresh-ingest") {
+          // #449 / PR #491 panel: a clean Sync says regeneration was scheduled and
+          // carries no warning — the success half of the new response contract.
+          expect(response.body.data).toMatchObject({ regenerationScheduled: true });
+          expect(response.body.data).not.toHaveProperty("warning");
+        }
         expect(ingestSourceAsKnowledge).toHaveBeenCalled();
         expect(ingestRepoMetadata).toHaveBeenCalled();
         const scheduledAt = vi.mocked(prisma.task.upsert).mock.invocationCallOrder[0];

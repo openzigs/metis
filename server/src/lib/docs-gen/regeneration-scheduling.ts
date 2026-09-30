@@ -27,7 +27,8 @@ export const SCHEDULE_REGENERATION_MAX_ATTEMPTS = 5;
  */
 export const REGENERATION_SCHEDULING_FAILED_MESSAGE =
   "The repository was ingested, but scheduling automatic document regeneration failed. " +
-  "The details are in the server log; scheduling is retried automatically, without ingesting again.";
+  "The details are in the server log; scheduling is retried automatically (up to " +
+  `${SCHEDULE_REGENERATION_MAX_ATTEMPTS} times), without ingesting again.`;
 
 /** The warning when the retry could not be queued either. */
 export const REGENERATION_SCHEDULING_RETRY_UNAVAILABLE_MESSAGE =
@@ -39,6 +40,15 @@ export type RegenerationSchedulingOutcome =
   | { regenerationScheduled: true }
   | { regenerationScheduled: false; retryQueued: boolean; warning: string };
 
+/**
+ * A NEW scheduling failure re-arms the connector's retry row from any finished
+ * state, including `cancelled`. That is not a resurrection of the cancelled
+ * work (the `regenerate-generated-document` convention, ARCHITECTURE.md §34):
+ * a cancel stops the attempt in flight, and a later ingest's failure is new
+ * work. Leaving the row cancelled for good would make every later scheduled
+ * refresh fall back to a full re-ingest, the outcome #449 removes (PR #491
+ * panel).
+ */
 const TERMINAL_STATUSES = ["completed", "failed", "cancelled"];
 
 function retryTaskId(projectId: string, repoConnectorId: string): string {
