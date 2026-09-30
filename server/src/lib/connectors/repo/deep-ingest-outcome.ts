@@ -24,6 +24,12 @@ export interface DeepIngestOutcome {
   metadata: { failures: number; stepFailed: boolean };
   /** Size of the clone; 0 for local and upload sources, which clone nothing. */
   cloneSizeBytes: number;
+  /**
+   * #449 — the ingest landed but scheduling regeneration failed: the warning to
+   * report. The run still completes; it counts as one failure so the client
+   * styles it as a warning.
+   */
+  schedulingWarning?: string;
 }
 
 function plural(n: number, singular: string, pluralForm = `${singular}s`): string {
@@ -37,11 +43,16 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-/** The number of failures a run had; non-zero means regeneration was skipped. */
+/** The ingest failures a run had; non-zero means regeneration was skipped. */
 export function deepIngestFailureCount(outcome: DeepIngestOutcome): number {
   return (
     outcome.source.failures + outcome.metadata.failures + (outcome.metadata.stepFailed ? 1 : 0)
   );
+}
+
+/** What the run reports as its `failureCount`: ingest failures plus a scheduling warning. */
+export function deepIngestReportedFailureCount(outcome: DeepIngestOutcome): number {
+  return deepIngestFailureCount(outcome) + (outcome.schedulingWarning ? 1 : 0);
 }
 
 export function deepIngestCompletionMessage(outcome: DeepIngestOutcome): string {
@@ -56,6 +67,8 @@ export function deepIngestCompletionMessage(outcome: DeepIngestOutcome): string 
   if (cloneSizeBytes > 0) totals.push(`${formatBytes(cloneSizeBytes)} cloned`);
 
   const failureCount = deepIngestFailureCount(outcome);
+  if (failureCount === 0 && outcome.schedulingWarning)
+    return `Deep ingest completed with a warning: ${outcome.schedulingWarning} ${totals.join(", ")}.`;
   if (failureCount === 0) return `Deep ingest complete: ${totals.join(", ")}.`;
 
   const failures: string[] = [];

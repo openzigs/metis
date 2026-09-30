@@ -7,6 +7,7 @@
  *   - rerun-analysis
  *   - publish-batch
  *   - publish-generated-document
+ *   - schedule-regeneration
  *   - http-webhook
  *
  * Each built-in handler is implemented as a thin wrapper that calls into the
@@ -45,6 +46,7 @@ export const BUILT_IN_TASK_TYPES = [
   "publish-batch",
   "publish-generated-document",
   "regenerate-generated-document",
+  "schedule-regeneration",
   "http-webhook",
 ] as const;
 
@@ -58,6 +60,8 @@ export interface GeneratedDocPublishOptions {
 
 export interface BuiltInHandlerDeps {
   regenerateGeneratedDocument?(payload: RegenerationTask, signal: AbortSignal): Promise<void>;
+  /** #449 — retry only the regeneration scheduling step of a landed ingest. */
+  retryRegenerationScheduling?(projectId: string, repoConnectorId: string): Promise<void>;
   /** Webhook handler — injected separately because it needs network policy. */
   httpWebhookHandler: TaskHandlerFn;
   /** Refresh a repo connector by id. */
@@ -118,6 +122,21 @@ export function registerBuiltInHandlers(
         throw new Error("regenerate-generated-document handler not wired");
       await deps.regenerateGeneratedDocument(payload, ctx.signal);
       return { generatedDocumentId: payload.generatedDocumentId };
+    },
+  });
+  registry.register({
+    type: "schedule-regeneration",
+    description: "Retry scheduling document regeneration for an ingest that already landed.",
+    handler: async (ctx) => {
+      const projectId = String(ctx.task.payload.projectId ?? "");
+      const repoConnectorId = String(ctx.task.payload.repoConnectorId ?? "");
+      if (!projectId) throw new Error("payload.projectId is required");
+      if (!repoConnectorId) throw new Error("payload.repoConnectorId is required");
+      if (ctx.task.projectId !== projectId) throw new Error("Scheduling retry project mismatch");
+      if (!deps.retryRegenerationScheduling)
+        throw new Error("schedule-regeneration handler not wired");
+      await deps.retryRegenerationScheduling(projectId, repoConnectorId);
+      return { projectId, repoConnectorId };
     },
   });
   registry.register({

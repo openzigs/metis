@@ -354,7 +354,9 @@ export default function ConnectionsPage() {
       deepIngest.clearOutcome();
       qc.invalidateQueries({ queryKey: repoKeys.list(projectId) });
       qc.invalidateQueries({ queryKey: suggestedKeys.list(projectId) });
-      toast.success("Sync complete");
+      // #449 — the sync landed but scheduling regeneration failed: a 200 with a warning.
+      if (data.warning) toast.warning(data.warning);
+      else toast.success("Sync complete");
     },
     onError: (err, id) => {
       toast.error(err instanceof ApiError ? err.message : "Sync failed");
@@ -982,6 +984,11 @@ export default function ConnectionsPage() {
                   ? `pulled ${refreshIngestResult.summary.filesChanged} changed file${refreshIngestResult.summary.filesChanged === 1 ? "" : "s"}`
                   : "fresh clone (pull failed)"}
               </div>
+              {refreshIngestResult.summary.warning ? (
+                <p role="alert" className="mb-1 text-warning">
+                  {refreshIngestResult.summary.warning}
+                </p>
+              ) : null}
               <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono text-xs text-foreground">
                 <span>Files re-parsed</span>
                 <span>

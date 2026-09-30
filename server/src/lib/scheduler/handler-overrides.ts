@@ -43,12 +43,9 @@ import { runAutopilot } from "../autopilot/index.js";
 import type { BuiltInHandlerDeps } from "./task-handlers.js";
 import { runRegenerationTask } from "../docs-gen/incremental.js";
 import {
-  RegenerationSchedulingError,
+  retryRegenerationScheduling,
   scheduleIncrementalRegeneration,
 } from "../docs-gen/regeneration-scheduling.js";
-import { createChildLogger } from "../logger.js";
-
-const log = createChildLogger("scheduler-handler-overrides");
 
 async function fetchRepoConnectorProjectId(connectorId: string): Promise<string> {
   const row = await prisma.repoConnection.findUnique({ where: { id: connectorId } });
@@ -99,6 +96,7 @@ export function buildSchedulerHandlerOverrides(
 ): Partial<BuiltInHandlerDeps> {
   return {
     regenerateGeneratedDocument: runRegenerationTask,
+    retryRegenerationScheduling,
     refreshRepoConnector:
       opts.refreshRepoConnector ??
       (async (connectorId, signal) => {
@@ -145,24 +143,16 @@ export function buildSchedulerHandlerOverrides(
           const metadataSummary = await ingestRepoMetadata(projectId, connectorId, "system", meta);
           abortGuard(signal);
           const test = await testRepoConnector(projectId, connectorId, "system");
-          if (srcSummary.failures === 0 && metadataSummary.failures === 0) {
-            // #432 — a scheduling failure still fails the task (so it retries),
-            // but as a RegenerationSchedulingError: the refresh itself landed.
-            // The task queue stores only the message, so log the cause here or
-            // it is lost (#114 keeps it out of the task record).
-            try {
-              await scheduleIncrementalRegeneration(projectId, connectorId);
-            } catch (err) {
-              if (err instanceof RegenerationSchedulingError) {
-                log.warn("Scheduled repo refresh succeeded but scheduling regeneration failed", {
-                  err: err.cause,
-                  projectId,
-                  connectorId,
-                });
-              }
-              throw err;
-            }
-          }
+          // #449 — a scheduling failure no longer fails the refresh: the ingest
+          // landed, and a `schedule-regeneration` task retries the scheduling
+          // alone. Only when that retry could not be queued does the refresh
+          // fail, so the task queue's own retry is the fallback.
+          const scheduling =
+            srcSummary.failures === 0 && metadataSummary.failures === 0
+              ? await scheduleIncrementalRegeneration(projectId, connectorId)
+              : null;
+          if (scheduling && !scheduling.regenerationScheduled && !scheduling.retryQueued)
+            throw new Error(scheduling.warning);
           return {
             repo: meta.repo.full_name,
             headSha: meta.headSha,
@@ -172,6 +162,9 @@ export function buildSchedulerHandlerOverrides(
             filesParsed: graphStats.filesParsed,
             symbolsUpserted: graphStats.symbolsUpserted,
             chunksIngested: srcSummary.chunkCount,
+            ...(scheduling && !scheduling.regenerationScheduled
+              ? { regenerationScheduled: false, warning: scheduling.warning }
+              : {}),
           };
         } finally {
           lease.release();

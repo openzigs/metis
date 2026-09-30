@@ -83,6 +83,7 @@ export function bootstrapScheduler(opts: BootstrapSchedulerOptions = {}): Schedu
     settleCancelledGeneratedDocPublication:
       opts.handlerOverrides?.settleCancelledGeneratedDocPublication,
     regenerateGeneratedDocument: opts.handlerOverrides?.regenerateGeneratedDocument,
+    retryRegenerationScheduling: opts.handlerOverrides?.retryRegenerationScheduling,
     runScannerScan:
       opts.handlerOverrides?.runScannerScan ??
       (async (scanId, signal) => {

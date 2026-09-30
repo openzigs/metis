@@ -8,6 +8,8 @@
 import { describe, expect, it } from "vitest";
 import {
   deepIngestCompletionMessage,
+  deepIngestFailureCount,
+  deepIngestReportedFailureCount,
   type DeepIngestOutcome,
 } from "../src/lib/connectors/repo/deep-ingest-outcome.js";
 
@@ -81,5 +83,23 @@ describe("deepIngestCompletionMessage (#399)", () => {
     expect(msg).toMatch(/^Deep ingest completed with 1 failure: /);
     expect(msg).toContain("repository metadata could not be fetched or ingested");
     expect(msg).not.toContain("source file");
+  });
+});
+
+describe("a scheduling warning (#449)", () => {
+  const warning = "Scheduling regeneration failed; it is retried automatically.";
+
+  it("completes with the warning and the totals, not as a clean run", () => {
+    expect(deepIngestCompletionMessage({ ...clean, schedulingWarning: warning })).toBe(
+      `Deep ingest completed with a warning: ${warning} 10 of 12 files parsed, 40 symbols, ` +
+        "25 edges, 42 RAG chunks, 7 documents created, 3.0 MB cloned.",
+    );
+  });
+
+  it("is reported as one failure, so the page styles it as a warning, but is not an ingest failure", () => {
+    const outcome = { ...clean, schedulingWarning: warning };
+    expect(deepIngestFailureCount(outcome)).toBe(0);
+    expect(deepIngestReportedFailureCount(outcome)).toBe(1);
+    expect(deepIngestReportedFailureCount(clean)).toBe(0);
   });
 });

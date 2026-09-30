@@ -59,7 +59,10 @@ vi.mock("../src/lib/prisma.js", () => {
           : null,
       ),
     },
-    repoConnection: { findUnique: vi.fn(async ({ where }) => ({ id: where.id, projectId: "p" })) },
+    repoConnection: {
+      findUnique: vi.fn(async ({ where }) => ({ id: where.id, projectId: "p" })),
+      findFirst: vi.fn(async ({ where }) => (where.projectId === "p" ? { id: where.id } : null)),
+    },
     codeGraph: {
       findFirst: vi.fn(async ({ where }) => ({ id: `g-${where.repoConnectionId}` })),
       findMany: vi.fn(async () => [
@@ -271,7 +274,6 @@ import { buildSchedulerHandlerOverrides } from "../src/lib/scheduler/handler-ove
 import { SCHEDULER_DEFAULTS } from "../src/lib/scheduler/config.js";
 import { createPrismaTaskStore } from "../src/lib/scheduler/task-store.js";
 import { runRegenerationTask } from "../src/lib/docs-gen/incremental.js";
-import { RegenerationSchedulingError } from "../src/lib/docs-gen/regeneration-scheduling.js";
 import { generateDocumentAsync } from "../src/routes/generated-docs.js";
 import { prisma } from "../src/lib/prisma.js";
 import { jobEvents } from "../src/lib/socket/job-events.js";
@@ -532,20 +534,22 @@ describe("successful ingest regeneration (#1356)", () => {
     expect([...state.tasks.values()][0]).toMatchObject({ status: "completed", attempts: 2 });
     expect(state.versions).toHaveLength(1);
   });
-  it("replays ingestion after an outbox failure without duplicate jobs", async () => {
+  it("retries a failed scheduling step without repeating the pull and ingest (#449)", async () => {
     state.failTask = true;
-    // #432 — the ingest landed; the refresh fails as a scheduling failure, with
-    // the outbox error kept as its cause.
-    const rejection = await ingest().then(
-      () => null,
-      (err: unknown) => err,
-    );
-    expect(rejection).toBeInstanceOf(RegenerationSchedulingError);
-    expect((rejection as Error).cause).toMatchObject({ message: "outbox unavailable" });
+    // The refresh landed, so the scheduled refresh completes rather than failing
+    // (a failed refresh task would be retried by re-running the whole ingest).
     await ingest();
-    await ingest();
-    expect(state.tasks.size).toBe(2);
+    const retry = state.tasks.get("docs-regen-schedule:p:r");
+    expect(retry).toMatchObject({ type: "schedule-regeneration", status: "completed" });
+    // The retry task scheduled the regeneration, which produced the version…
     expect(state.versions).toHaveLength(1);
+    expect(
+      [...state.tasks.values()].filter((t) => t.type === "regenerate-generated-document"),
+    ).toHaveLength(1);
+    // …while the pull and every ingest step ran exactly once.
+    expect(state.graphIngest).toHaveBeenCalledTimes(1);
+    expect(state.sourceIngest).toHaveBeenCalledTimes(1);
+    expect(state.metadataIngest).toHaveBeenCalledTimes(1);
   });
   it("revalidates the initiating user before any generation", async () => {
     state.activeUser = false;

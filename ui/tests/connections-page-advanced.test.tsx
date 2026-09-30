@@ -83,11 +83,12 @@ vi.mock("@/components/projects/rebuild-cache-button", () => ({
 }));
 
 vi.mock("sonner", () => ({
-  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
+  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn() }),
 }));
 
 import { repoConnectorsApi, dbConnectorsApi, suggestedConnectorsApi } from "@/lib/connectors-api";
 import { projectsApi } from "@/lib/projects-api";
+import { toast } from "sonner";
 import ConnectionsPage from "@/app/(authed)/projects/[id]/connections/page";
 
 const repoList = repoConnectorsApi.list as unknown as ReturnType<typeof vi.fn>;
@@ -315,6 +316,34 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
     await waitFor(() => expect(refreshIngest).toHaveBeenCalledWith("proj-1", "r1"));
     await waitFor(() => expect(screen.getByText(/Sync complete/i)).toBeInTheDocument());
+  });
+
+  it("warns instead of reporting success when the sync landed but scheduling failed (#449)", async () => {
+    const warning =
+      "The repository was ingested, but scheduling automatic document regeneration failed.";
+    refreshIngest.mockResolvedValueOnce({
+      pulled: true,
+      filesChanged: 0,
+      codeGraph: {
+        filesScanned: 1,
+        filesParsed: 1,
+        filesSkipped: 0,
+        symbolsUpserted: 1,
+        edgesUpserted: 0,
+        durationMs: 1,
+      },
+      sourceKnowledge: { documentsCreated: 0, documentsUpdated: 1, chunkCount: 1 },
+      cloneSizeBytes: 0,
+      regenerationScheduled: false,
+      warning,
+    });
+    repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
+    renderPage();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
+    expect(await screen.findByText(warning)).toHaveAttribute("role", "alert");
+    expect(toast.warning).toHaveBeenCalledWith(warning);
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });
 

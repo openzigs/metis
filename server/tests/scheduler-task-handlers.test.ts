@@ -123,6 +123,54 @@ describe("regenerate-generated-document (#1356)", () => {
   });
 });
 
+describe("schedule-regeneration (#449)", () => {
+  const payload = { projectId: "p1", repoConnectorId: "rc1" };
+
+  it("retries only the scheduling step for the payload's connector", async () => {
+    const retryRegenerationScheduling = vi.fn(async () => {});
+    const reg = new InMemoryTaskHandlerRegistry();
+    registerBuiltInHandlers(reg, { httpWebhookHandler: vi.fn(), retryRegenerationScheduling });
+    await expect(
+      reg.get("schedule-regeneration")!.handler(makeCtx(payload, "p1")),
+    ).resolves.toEqual(payload);
+    expect(retryRegenerationScheduling).toHaveBeenCalledExactlyOnceWith("p1", "rc1");
+  });
+
+  it("refuses a payload whose project is not the task's, and a missing field or dep", async () => {
+    const retryRegenerationScheduling = vi.fn(async () => {});
+    const reg = new InMemoryTaskHandlerRegistry();
+    registerBuiltInHandlers(reg, { httpWebhookHandler: vi.fn(), retryRegenerationScheduling });
+    const handler = reg.get("schedule-regeneration")!.handler;
+    await expect(handler(makeCtx(payload, "p2"))).rejects.toThrow("project mismatch");
+    await expect(handler(makeCtx({ repoConnectorId: "rc1" }, "p1"))).rejects.toThrow(
+      "payload.projectId is required",
+    );
+    await expect(handler(makeCtx({ projectId: "p1" }, "p1"))).rejects.toThrow(
+      "payload.repoConnectorId is required",
+    );
+    expect(retryRegenerationScheduling).not.toHaveBeenCalled();
+    const unwired = new InMemoryTaskHandlerRegistry();
+    registerBuiltInHandlers(unwired, { httpWebhookHandler: vi.fn() });
+    await expect(
+      unwired.get("schedule-regeneration")!.handler(makeCtx(payload, "p1")),
+    ).rejects.toThrow("not wired");
+  });
+
+  it("propagates a scheduling failure so the queue retries it", async () => {
+    const error = new Error("outbox unavailable");
+    const reg = new InMemoryTaskHandlerRegistry();
+    registerBuiltInHandlers(reg, {
+      httpWebhookHandler: vi.fn(),
+      retryRegenerationScheduling: vi.fn(async () => {
+        throw error;
+      }),
+    });
+    await expect(reg.get("schedule-regeneration")!.handler(makeCtx(payload, "p1"))).rejects.toBe(
+      error,
+    );
+  });
+});
+
 describe("registerBuiltInHandlers", () => {
   it("registers all v1 task types", () => {
     const reg = new InMemoryTaskHandlerRegistry();
