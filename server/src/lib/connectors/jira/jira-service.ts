@@ -111,10 +111,11 @@ function newJiraSecretLabel(kind: "jira" | "jira-ca", projectId: string, label: 
  * is still live; otherwise (none yet, or soft-deleted) create a new one under a
  * collision-free label. Returns the NEW secret's id, or `null` when rotated.
  *
- * #358 — goes through `rotateOrCreate` with the writer as owner: a secret is
- * rewritten in place only by the principal that created it, and anyone else
- * gets a fresh secret they own. `createdById` then names whoever supplied the
- * current token, which the #344 binding check on PATCH relies on.
+ * #358 — goes through `rotateOrCreateUndoable` (#593) with the writer as
+ * owner: a secret is rewritten in place only by the principal that created it,
+ * and anyone else gets a fresh secret they own. `createdById` then names
+ * whoever supplied the current token, which the #344 binding check on PATCH
+ * relies on.
  *
  * #593 — a rotation in place is recorded in `undos`, so an update that then
  * fails can put the previous value back.

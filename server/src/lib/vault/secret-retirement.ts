@@ -209,6 +209,15 @@ export async function withdrawCreatedSecrets(
  * in reverse order, and each only while this request's value is still the
  * stored one, so a later writer's value is never overwritten.
  *
+ * Known limit: the undo is per request, and it restores the value THIS request
+ * replaced, whoever wrote it. When two requests by the same owner both rotate
+ * the same secret and both fail, the second one's undo can put back the first
+ * one's value — a value from a request that failed — if the first undo ran
+ * before the second rotation was undone (the first undo then finds its value
+ * already overwritten and does nothing). The row-level concurrency guard
+ * (`expectedUpdatedAt`) refuses the second request in most such races, so this
+ * is rare, but a restore is not guaranteed to leave a successful value.
+ *
  * Never throws, for the same reason as {@link withdrawCreatedSecrets}. A
  * rotation that cannot be undone is logged and keeps the new value.
  */

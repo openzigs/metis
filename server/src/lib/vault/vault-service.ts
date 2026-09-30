@@ -22,6 +22,7 @@ import { ulid } from "ulid";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { isUniqueViolation } from "../db/prisma-errors.js";
+import { concurrentUpdateError } from "../connectors/types.js";
 
 const log = createChildLogger("vault");
 
@@ -492,7 +493,9 @@ export class VaultService {
    * envelope carries a random salt and IV). The returned {@link RotationUndo}
    * therefore names exactly the value this rotation replaced. A concurrent
    * write between the read and the swap makes it re-read and retry; one that
-   * keeps winning makes it give up rather than overwrite what it never read.
+   * keeps winning makes it give up rather than overwrite what it never read,
+   * with the connectors' 409 `CONCURRENT_UPDATE` error: the caller's request
+   * lost a race, so it is reported (and its earlier rotations undone) as one.
    */
   async rotateUndoable(
     id: string,
@@ -528,17 +531,20 @@ export class VaultService {
         };
       }
     }
-    throw new Error(`Secret ${id} kept changing during rotation; not rotated`);
+    log.warn("Secret kept changing during rotation; not rotated", { id });
+    throw concurrentUpdateError();
   }
 
   /**
    * #593 — put back the value an {@link rotateUndoable} replaced. Conditional on
    * the rotation's own ciphertext still being stored, so a later write by
-   * anyone else is never overwritten. Returns whether the value was restored.
+   * anyone else is never overwritten, and on the secret still being live, as
+   * {@link rotateUndoable} requires: a soft-deleted row is never written into.
+   * Returns whether the value was restored.
    */
   async undoRotation(undo: RotationUndo): Promise<boolean> {
     const { count } = await prisma.secret.updateMany({
-      where: { id: undo.id, ciphertext: undo.written },
+      where: { id: undo.id, deletedAt: null, ciphertext: undo.written },
       data: {
         ciphertext: undo.previous.ciphertext,
         keyVersion: undo.previous.keyVersion,

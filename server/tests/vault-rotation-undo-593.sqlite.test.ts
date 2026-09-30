@@ -39,6 +39,7 @@ const jira = await import("../src/lib/connectors/jira/jira-service.js");
 const testmgmt = await import("../src/lib/connectors/testmgmt/connection-service.js");
 const { undoRotations } = await import("../src/lib/vault/secret-retirement.js");
 const { getAuditService } = await import("../src/lib/audit/audit-service.js");
+const { mapStatusCarryingError } = await import("../src/middleware/http-status-errors.js");
 
 const MASTER_KEY = Buffer.alloc(32, 5).toString("base64");
 const OWNER = "owner-593";
@@ -194,6 +195,41 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
+    it("Jira update: a rotation that keeps losing its race is a 409, and the token rotated before it is restored as concurrent_update", async () => {
+      const before = await ownerJira();
+      const caId = before.tlsCaSecretId!;
+      // Every swap on the CA cert misses, as if another writer won each time;
+      // the token's rotation, and every undo, go through for real.
+      const realUpdateMany = db.secret.updateMany.bind(db.secret);
+      vi.spyOn(db.secret, "updateMany").mockImplementation((async (args: {
+        where: { id?: string };
+      }) => {
+        if (args.where.id === caId) return { count: 0 };
+        return realUpdateMany(args as never);
+      }) as never);
+
+      const err = await jira
+        .updateJiraConnection(before.id, { apiToken: "new-token", tlsCaCert: "new-ca" }, OWNER)
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+
+      expect(err).toMatchObject({ status: 409, code: "CONCURRENT_UPDATE" });
+      expect(mapStatusCarryingError(err)).toMatchObject({
+        statusCode: 409,
+        code: "CONCURRENT_UPDATE",
+      });
+      expect(await plaintext(before.secretId)).toBe("owner-token");
+      expect(await plaintext(caId)).toBe("owner-ca");
+      const audits = await rotationAudits([before.secretId, caId]);
+      expect(audits.map((a) => a.targetId)).toEqual([before.secretId]);
+      expect(JSON.parse(audits[0]!.metadata ?? "{}")).toMatchObject({
+        source: "update_not_applied",
+        reason: "concurrent_update",
+      });
+    });
+
     it("Jira update: a successful update keeps the rotated values", async () => {
       const before = await ownerJira();
 
@@ -344,6 +380,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await plaintext(s.id)).toBe("v2");
     });
 
+    it("undoRotation never writes into a secret soft-deleted after the rotation", async () => {
+      const s = await ownerSecret();
+      const undo = await vault().rotateUndoable(s.id, "v1");
+      await vault().delete(s.id);
+      const deleted = await db.secret.findUniqueOrThrow({ where: { id: s.id } });
+      expect(deleted.deletedAt).not.toBeNull();
+
+      expect(await vault().undoRotation(undo)).toBe(false);
+      const after = await db.secret.findUniqueOrThrow({ where: { id: s.id } });
+      expect(after.ciphertext).toBe(deleted.ciphertext);
+      expect(after.ciphertext).toBe(undo.written);
+    });
+
     it("rotateUndoable retries when a write interleaves between its read and its swap", async () => {
       const s = await ownerSecret();
       const realUpdateMany = db.secret.updateMany.bind(db.secret);
@@ -368,7 +417,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const s = await ownerSecret();
       vi.spyOn(db.secret, "updateMany").mockResolvedValue({ count: 0 } as never);
 
-      await expect(vault().rotateUndoable(s.id, "v1")).rejects.toThrow(/kept changing/);
+      await expect(vault().rotateUndoable(s.id, "v1")).rejects.toMatchObject({
+        status: 409,
+        code: "CONCURRENT_UPDATE",
+      });
       expect(db.secret.updateMany).toHaveBeenCalledTimes(3);
       vi.restoreAllMocks();
       expect(await plaintext(s.id)).toBe("v0");

@@ -208,8 +208,8 @@ async function writeSecret(
   /** #574/#593 — receives what this call wrote: a created id, or a rotation's undo. */
   writes: VaultWrites,
 ): Promise<string> {
-  // #344/#358 — `rotateOrCreate` rewrites the existing secret in place only
-  // when `createdById` (this writer) already owns it. A secret someone else
+  // #344/#358 — `rotateOrCreateUndoable` (#593) rewrites the existing secret
+  // in place only when `createdById` (this writer) already owns it. A secret someone else
   // supplied — another user's, or a pre-#358 system-owned one — is left
   // untouched and a fresh secret owned by this writer is created instead, so
   // `createdById` always names whoever supplied the current credential. The
