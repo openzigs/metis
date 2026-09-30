@@ -63,8 +63,18 @@ import {
 } from "../lib/publishing/github-projects-v2-service.js";
 import { PublishError } from "../lib/publishing/types.js";
 import { generateOverview, OverviewError } from "../lib/code-graph/overview.js";
+import { createDefaultCodeSearcher } from "../lib/code-graph/project-code-searcher.js";
+import { codeSearchRateLimiter } from "../middleware/code-search-rate-limit.js";
 import { jobEvents, genericFailureMessage } from "../lib/socket/job-events.js";
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
+
+/** #423 — `POST /:id/code-search` body. `limit` mirrors `search_code_symbols`' cap. */
+export const CODE_SEARCH_MAX_LIMIT = 30;
+const codeSearchSchema = z.object({
+  query: z.string().trim().min(1).max(500),
+  limit: z.number().int().min(1).max(CODE_SEARCH_MAX_LIMIT).optional(),
+});
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -946,6 +956,36 @@ export function projectsRouter(): Router {
             : null,
         }),
       );
+    },
+  );
+
+  // ── Hybrid code search (#423, Epic #507 / AC #509) ─────────────────────
+  // POST /api/projects/:id/code-search  { query, limit? }
+  // The same BM25 + vector RRF searcher `search_code_symbols` calls
+  // (`createDefaultCodeSearcher`), exposed standalone. Workspace scope is the
+  // `/:id/:sub` chokepoint above; a project with no code graph returns `[]`.
+  r.post(
+    "/:id/code-search",
+    codeSearchRateLimiter,
+    requireAuth,
+    requirePermission("project.read"),
+    async (req: Request, res: Response) => {
+      const parsed = codeSearchSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid code-search payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      const projectId = String(req.params.id);
+      const project = await prisma.project.findFirst({
+        where: { id: projectId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
+      const results = await createDefaultCodeSearcher().search(parsed.data.query, projectId, {
+        limit: parsed.data.limit,
+      });
+      res.json(ok({ results }));
     },
   );
 
