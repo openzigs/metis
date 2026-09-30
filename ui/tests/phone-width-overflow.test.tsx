@@ -151,7 +151,7 @@ describe("#529 the current-page crumb keeps a readable width", () => {
     );
   });
 
-  it("the current-page crumb does not shrink; it truncates only past its max width", async () => {
+  it("below sm the current-page crumb does not shrink; it truncates only past its max width", async () => {
     render(<Breadcrumbs />, { wrapper: makeWrapper({ initialUser: ADMIN }) });
     await screen.findByRole("button", { name: /active project: demo project/i });
     const current = screen
@@ -160,14 +160,17 @@ describe("#529 the current-page crumb keeps a readable width", () => {
     expect(current).toHaveTextContent("Review");
     expect(classesOf(current)).toContain("truncate");
     const item = current.closest("li") as HTMLElement;
-    expect(classesOf(item)).toEqual(expect.arrayContaining(["shrink-0", "max-w-[12rem]"]));
+    expect(classesOf(item)).toEqual(expect.arrayContaining(["max-sm:shrink-0", "max-w-[12rem]"]));
+    // Only below sm, where the crumb has a row of its own: from sm it shares the
+    // header row again and must not take all the width from the switchers.
+    expect(classesOf(item)).not.toContain("shrink-0");
     // The switchers' items are the ones that give way (separators are fixed-size).
     const items = screen
       .getByTestId("header-breadcrumb")
       .querySelectorAll('[data-slot="breadcrumb-item"]');
     expect(items.length).toBeGreaterThan(2);
     for (const li of items) {
-      if (li !== item) expect(classesOf(li)).not.toContain("shrink-0");
+      if (li !== item) expect(classesOf(li)).not.toContain("max-sm:shrink-0");
     }
   });
 });

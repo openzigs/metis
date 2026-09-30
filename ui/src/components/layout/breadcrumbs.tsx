@@ -64,10 +64,12 @@ export function Breadcrumbs() {
         ) : null}
         {crumbs.map((crumb, i) => {
           const isLast = i === crumbs.length - 1;
-          const narrow = isLast ? "shrink-0" : "hidden sm:inline-flex";
+          // Below sm the crumb has its own row, so it may keep its width; from
+          // sm it shares the row with the switchers and shrinks like them.
+          const narrow = isLast ? "max-sm:shrink-0" : "hidden sm:inline-flex";
           return (
             <Fragment key={`${i}-${crumb.label}`}>
-              <BreadcrumbSeparator className={isLast ? "shrink-0" : "hidden sm:block"} />
+              <BreadcrumbSeparator className={isLast ? "max-sm:shrink-0" : "hidden sm:block"} />
               <BreadcrumbItem className={cn("max-w-[12rem]", narrow)}>
                 {isLast ? (
                   <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
