@@ -84,6 +84,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 import {
   buildImportPlan,
   executeImport,
+  importStatus,
   SECRET_KEY_PATTERN,
   isSecretValue,
   isSecretHeaderName,
@@ -341,5 +342,26 @@ describe("executeImport", () => {
     expect(r.errors[0].message).toBe("dup");
     expect(created).toHaveLength(1);
     expect(created[0].deletedAt).not.toBeNull();
+  });
+});
+
+describe("importStatus (#608)", () => {
+  const base = { plan: { entries: [], totalSecrets: 0 }, dryRun: false };
+  it("is 200 only when every entry was created cleanly", () => {
+    expect(importStatus({ ...base, created: [{ id: "a", label: "a" }], errors: [] })).toBe(200);
+  });
+  it("is 207 when an entry failed", () => {
+    expect(importStatus({ ...base, created: [], errors: [{ label: "a", message: "x" }] })).toBe(
+      207,
+    );
+  });
+  it("is 207 when an entry landed with a warning", () => {
+    expect(
+      importStatus({
+        ...base,
+        created: [{ id: "a", label: "a", warning: { message: "x" } }],
+        errors: [],
+      }),
+    ).toBe(207);
   });
 });

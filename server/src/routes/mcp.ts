@@ -38,6 +38,7 @@ import {
 } from "../lib/mcp/mcp-service.js";
 import {
   executeImport,
+  importStatus,
   buildImportPlan,
   isSecretHeaderName,
   isSecretValue,
@@ -584,7 +585,7 @@ export function mcpRouter(): Router {
         trustLevel: body.trustLevel,
         labelPrefix: body.labelPrefix,
       });
-      res.status(result.errors.length > 0 ? 207 : 200).json(ok(result));
+      res.status(importStatus(result)).json(ok(result));
     } catch (err) {
       rethrow(err);
     }
@@ -1038,7 +1039,7 @@ export function mcpRouter(): Router {
         scope: body.scope,
         projectId: body.projectId ?? null,
       });
-      res.status(result.errors.length > 0 ? 207 : 200).json(ok(result));
+      res.status(importStatus(result)).json(ok(result));
     } catch (err) {
       rethrow(err);
     }
