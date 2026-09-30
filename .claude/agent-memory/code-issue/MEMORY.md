@@ -23,3 +23,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Shared scratch/stash/browser](project_parallel-agents-share-scratch-and-browser.md) — unique temp names; verify closing refs
 - [Squash title closes issues](project_squash-title-closes-issues.md) — "Resolve #N" in a PR title closes N even if the body says Refs
 - [Commit before mutating](project_mutation-restore-must-not-use-git-checkout-uncommitted.md) — git checkout restore drops uncommitted edits
+- [Late-mount scroll must cancel](project_late-mount-scroll-must-cancel.md) — wait-for-element effects need a cancel per never-mounts path (#434)
+- [Grounding misses tools](project_grounding-from-auto-rag-misses-tools.md) — auto-RAG capture never sees tool retrieval (#437)
+- [Verify the issue premise](project_verify-issue-premise-before-copy.md) — grep the write path and tests before copy or "no test" issues
+- [Split advisory fixes deadlock](project_split-advisory-fixes-deadlock-audit.md) — fix all new HIGHs on one branch (#431)

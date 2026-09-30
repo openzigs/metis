@@ -85,12 +85,22 @@ export function ProjectSwitcher() {
     queryFn: () => projectsApi.get(pathId as string),
     enabled: Boolean(pathId) && !projects.isLoading && !listed,
   });
-  const active = listed ?? pathProject.data ?? null;
+  // PR #443 review: TanStack keeps the last good data when a refetch fails, so a
+  // project cached earlier (this entry is shared with Overview) and since
+  // deleted would still resolve here. A failed fetch means it did not resolve.
+  const active = listed ?? (pathProject.isError ? null : pathProject.data) ?? null;
 
-  // Persist whenever the resolved active project changes (URL or selection).
+  // Persist only a project that actually resolved (#411): a URL id that 404s
+  // (deleted or foreign) must not be stored as the active project. Cached
+  // detail data is shown while it refetches, but is persisted only once a fetch
+  // since mount has succeeded (PR #443 review): the first render would otherwise
+  // store a stale, since-deleted project before its refetch failed.
+  const pathConfirmed =
+    pathProject.isFetchedAfterMount && pathProject.isSuccess && !pathProject.isFetching;
+  const resolvedId = listed?.id ?? (pathConfirmed ? (pathProject.data?.id ?? null) : null);
   useEffect(() => {
-    if (activeId) writeStoredActiveId(activeId);
-  }, [activeId]);
+    if (resolvedId) writeStoredActiveId(resolvedId);
+  }, [resolvedId]);
 
   // While the URL's project is still loading, say so — not "No project", which
   // is the flash #370 set out to remove (PR #409 review).
@@ -115,6 +125,21 @@ export function ProjectSwitcher() {
       <DropdownMenuContent align="start" className="w-56">
         <DropdownMenuLabel>Switch project</DropdownMenuLabel>
         <DropdownMenuSeparator />
+        {/* #411 — the list is capped at 50, so the active project may be
+            missing from it; pin it first so it still has an entry. */}
+        {active && !listed ? (
+          <DropdownMenuItem
+            key={active.id}
+            onSelect={() => {
+              // Same order as the list items below (PR #443 review).
+              writeStoredActiveId(active.id);
+              router.push(`/projects/${active.id}`);
+            }}
+            aria-current
+          >
+            {active.name}
+          </DropdownMenuItem>
+        ) : null}
         {items.length === 0 ? (
           <DropdownMenuItem disabled>No projects available</DropdownMenuItem>
         ) : (

@@ -2,11 +2,7 @@
  * Tests for Epic #486 / Issue #491 — Document Exporters.
  */
 import { describe, it, expect } from "vitest";
-import {
-  exportDocument,
-  MERMAID_RENDER_SECURITY,
-  chromeLaunchArgs,
-} from "../../src/lib/docs-gen/exporters.js";
+import { exportDocument } from "../../src/lib/docs-gen/exporters.js";
 
 describe("exportDocument", () => {
   const sampleMarkdown = `# Test Document
@@ -118,54 +114,7 @@ graph LR
   }, 60_000);
 });
 
-describe("mermaid render security (#686)", () => {
-  it("renders diagrams under the STRICT security level with HTML labels disabled", () => {
-    expect(MERMAID_RENDER_SECURITY.securityLevel).toBe("strict");
-    expect(MERMAID_RENDER_SECURITY.htmlLabels).toBe(false);
-  });
-
-  it("does not let an injected HTML/JS node label execute in the export", async () => {
-    // A crafted mermaid node label with an <img onerror> handler. Under the
-    // strict security level with htmlLabels disabled the label renders as inert
-    // SVG text; the HTML fallback escapes all markup. Either way the injected
-    // element can never become live and fire onerror (SSXSS -> SSRF).
-    const malicious = [
-      "# Diagram",
-      "",
-      "```mermaid",
-      "graph TD",
-      '  A["<img src=x onerror=alert(1)>"] --> B[ok]',
-      "```",
-      "",
-    ].join("\\n");
-    const result = await exportDocument(malicious, "xss-probe", "pdf");
-    expect(result.buffer).toBeInstanceOf(Buffer);
-    expect(["application/pdf", "text/html"]).toContain(result.mimeType);
-    if (result.mimeType === "text/html") {
-      const html = result.buffer.toString("utf-8");
-      // The injected markup is escaped, so it is inert text, not a live element.
-      expect(html).not.toContain("<img src=x onerror");
-      expect(html).toContain("&lt;img");
-    }
-  }, 30_000);
-
-  it("uses --no-sandbox by default so the renderer still launches in containers", () => {
-    delete process.env.PDF_EXPORT_CHROME_SANDBOX;
-    const args = chromeLaunchArgs();
-    expect(args).toContain("--no-sandbox");
-    expect(args).toContain("--disable-setuid-sandbox");
-  });
-
-  it("re-enables the Chrome sandbox when PDF_EXPORT_CHROME_SANDBOX=true", () => {
-    const prev = process.env.PDF_EXPORT_CHROME_SANDBOX;
-    process.env.PDF_EXPORT_CHROME_SANDBOX = "true";
-    try {
-      const args = chromeLaunchArgs();
-      expect(args).not.toContain("--no-sandbox");
-      expect(args).not.toContain("--disable-setuid-sandbox");
-    } finally {
-      if (prev === undefined) delete process.env.PDF_EXPORT_CHROME_SANDBOX;
-      else process.env.PDF_EXPORT_CHROME_SANDBOX = prev;
-    }
-  });
-});
+// The #686 mermaid render-security tests live in exporters-render-security.test.ts,
+// which stubs puppeteer so they never spawn a real Chromium under the fan-out (#388).
+// The pdf/docx tests ABOVE still launch a real Chromium, the same contended
+// resource; moving them off the fan-out is #447.

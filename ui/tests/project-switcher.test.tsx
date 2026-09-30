@@ -5,9 +5,12 @@
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import { usePathname } from "next/navigation";
+import userEvent from "@testing-library/user-event";
+import { usePathname, useRouter } from "next/navigation";
 import { ProjectSwitcher } from "@/components/layout/project-switcher";
 import { Breadcrumbs } from "@/components/layout/breadcrumbs";
+import { QueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/query-keys";
 import { makeWrapper, TEST_USER } from "./test-utils";
 
 const row = (id: string, name: string) => ({
@@ -125,6 +128,57 @@ describe("<ProjectSwitcher /> (#370)", () => {
     expect(
       await screen.findByRole("button", { name: /active project: no project/i }),
     ).toBeInTheDocument();
+  });
+
+  // #411 — the list is capped at 50, so the active project may not be in it.
+  // It must still have a menu entry, pinned first, marked as current.
+  it("pins the active project at the top of the menu when the capped list lacks it", async () => {
+    const user = userEvent.setup();
+    vi.mocked(usePathname).mockReturnValue("/projects/p-new");
+    render(<ProjectSwitcher />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    await user.click(await screen.findByRole("button", { name: /active project: fresh project/i }));
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((i) => i.textContent)).toEqual(["Fresh Project", "Sample Project"]);
+    expect(items[0]).toHaveAttribute("aria-current", "true");
+    expect(items[1]).toHaveAttribute("aria-current", "false");
+    vi.mocked(useRouter().push).mockClear();
+    await user.click(items[0]);
+    await waitFor(() => expect(useRouter().push).toHaveBeenCalledWith("/projects/p-new"));
+  });
+
+  it("does not pin a duplicate entry when the list already has the active project", async () => {
+    const user = userEvent.setup();
+    vi.mocked(usePathname).mockReturnValue("/projects/p-sample");
+    render(<ProjectSwitcher />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    await user.click(
+      await screen.findByRole("button", { name: /active project: sample project/i }),
+    );
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((i) => i.textContent)).toEqual(["Sample Project"]);
+    expect(items[0]).toHaveAttribute("aria-current", "true");
+  });
+
+  // #411 — a 404 (deleted or foreign) id must never be stored as active.
+  it("does not persist the URL's project id when that project returns 404", async () => {
+    vi.mocked(usePathname).mockReturnValue("/projects/p-gone");
+    render(<ProjectSwitcher />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    await screen.findByRole("button", { name: /active project: no project/i });
+    expect(window.localStorage.getItem("metis.activeProjectId")).toBe("p-sample");
+  });
+
+  it("does not persist a project cached earlier whose refetch now 404s (PR #443 review)", async () => {
+    // Overview shares this detail cache: the project loaded once, was deleted,
+    // and TanStack keeps the stale data when the refetch fails.
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.projects.detail("p-gone"), row("p-gone", "Deleted"), {
+      updatedAt: 0,
+    });
+    vi.mocked(usePathname).mockReturnValue("/projects/p-gone");
+    render(<ProjectSwitcher />, {
+      wrapper: makeWrapper({ initialUser: TEST_USER, queryClient }),
+    });
+    await screen.findByRole("button", { name: /active project: no project/i });
+    expect(window.localStorage.getItem("metis.activeProjectId")).toBe("p-sample");
   });
 
   it("names the new project in the header breadcrumb on its Overview", async () => {

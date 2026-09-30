@@ -24,7 +24,6 @@
  */
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { projectsApi, type CreatedProject, type Project } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
@@ -65,7 +64,6 @@ export interface ProjectCreateFormProps {
 }
 
 export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormProps) {
-  const qc = useQueryClient();
   const router = useRouter();
 
   const [name, setName] = useState("");
@@ -126,7 +124,6 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
     successMessage: false,
     invalidateKeys: [queryKeys.projects.all],
     onSuccess: (project) => {
-      void qc.invalidateQueries({ queryKey: queryKeys.projects.all });
       if (project.primaryRepoError) {
         toast.warning("Project created, but the repository was not linked", {
           description: `${project.primaryRepoError.message} Add it from Connections.`,
