@@ -1880,7 +1880,13 @@ export function aiRouter(): Router {
     req.on("aborted", () => ac.abort());
     res.on("close", () => ac.abort());
 
+    // #506 — once the response has ended (the hard ceiling or the queue limit
+    // wrote its own error frame and ended it), the aborted turn's `catch` still
+    // sends one. A write after end is not thrown — Node EMITS it as an `error`
+    // on the response a tick later, which nothing listens for, so it surfaced
+    // as an uncaught exception whenever the socket was still open.
     const send = (event: string, data: unknown): void => {
+      if (res.writableEnded) return;
       res.write(`event: ${event}\n`);
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };

@@ -384,6 +384,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     afterEach(() => {
+      vi.useRealTimers();
       setAIProviderForTests(null);
       for (const res of hanging.splice(0)) res.destroy();
       for (const k of ENV_KEYS) {
@@ -629,13 +630,56 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .filter((f) => f.startsWith(`event: ${event}\n`))
         .map((f) => JSON.parse(f.slice(f.indexOf("data: ") + 6)) as Body);
 
+    // #506 — these tests drive the route's timers (the hard ceiling, the queue
+    // limit) and its clock on a FAKE clock, so what they assert is the queue's
+    // behaviour, never how long the machine took. They used to release the slot
+    // on a real `setTimeout(release, 900)` scheduled BEFORE the request, and
+    // assert `waitedMs >= 800`: under full-suite load the route's own setup ate
+    // into those 900ms and the wait measured 691ms. Only the ceiling/queue
+    // timers and `Date` are faked; sockets, SQLite and `setImmediate` stay real.
+    const fakeTheClock = () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const limiter = () => localConcurrencyLimiter(`${openaiBase}/v1`);
+    /**
+     * Yield to real I/O until `cond` holds. `setImmediate` is not faked, so this
+     * never advances the fake clock; the real-time bound only stops a broken
+     * test hanging — nothing is asserted about how long the wait took.
+     */
+    async function until(cond: () => boolean, what: string): Promise<void> {
+      const giveUpAt = performance.now() + 15_000;
+      while (!cond()) {
+        if (performance.now() > giveUpAt) throw new Error(`never saw: ${what}`);
+        await new Promise((r) => setImmediate(r));
+      }
+    }
+    /** Start a `/stream` turn without awaiting it, and track whether it ended. */
+    function startStream(sessionId: string, message: string) {
+      const turn = { settled: false, res: undefined as unknown as Promise<request.Response> };
+      turn.res = stream(sessionId, message).then((r) => {
+        turn.settled = true;
+        return r;
+      });
+      return turn;
+    }
+    /** A few real event-loop turns, so anything the fake clock just fired can land. */
+    async function drain(): Promise<void> {
+      for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    }
+
     it("#204 — a turn queued behind the only local slot for longer than the hard ceiling still answers", async () => {
       process.env.AI_STREAM_MAX_DURATION_MS = "400";
       const release = await holdTheOnlySlot();
       setAIProviderForTests(localProvider());
       const session = await newSession();
-      setTimeout(release, 900);
-      const res = await stream(session.id, "hello");
+      fakeTheClock();
+      const turn = startStream(session.id, "hello");
+      await until(() => limiter().queued === 1, "the turn queue behind the held slot");
+      // Queued for more than twice the ceiling: a ceiling that kept running
+      // while the turn waited would fire here.
+      vi.advanceTimersByTime(900);
+      await drain();
+      expect(turn.settled).toBe(false);
+      release();
+      const res = await turn.res;
       expect(res.text).not.toContain("STREAM_MAX_DURATION");
       expect(res.text).toContain("openai says hi");
       expect(res.text).toContain("event: done");
@@ -643,7 +687,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(queue[0]).toMatchObject({ type: "queue", state: "waiting", position: 1 });
       expect(queue[0]!.maxWaitMs).toBe(600_000);
       expect(queue[1]).toMatchObject({ type: "queue", state: "acquired" });
-      expect(queue[1]!.waitedMs as number).toBeGreaterThanOrEqual(800);
+      expect(queue[1]!.waitedMs).toBe(900);
       expect(openaiSeen).toHaveLength(1);
     });
 
@@ -654,13 +698,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       setAIProviderForTests(localProvider());
       const session = await newSession();
       steps.push("hang");
-      setTimeout(release, 600);
-      const started = Date.now();
-      const res = await stream(session.id, "hello");
-      const elapsed = Date.now() - started;
+      fakeTheClock();
+      const turn = startStream(session.id, "hello");
+      await until(() => limiter().queued === 1, "the turn queue behind the held slot");
+      vi.advanceTimersByTime(600);
+      release();
+      await until(() => openaiSeen.length === 1, "the model call reach the upstream");
+      // Generation has its full 400ms budget back — not a millisecond less...
+      vi.advanceTimersByTime(399);
+      await drain();
+      expect(turn.settled).toBe(false);
+      // ...and not a millisecond more.
+      vi.advanceTimersByTime(1);
+      const res = await turn.res;
+      expect(frames(res.text, "queue").map((q) => q.state)).toEqual(["waiting", "acquired"]);
       expect(frames(res.text, "error")[0]).toMatchObject({ code: "STREAM_MAX_DURATION" });
-      // Queued ~600ms, then generation ran out its ~400ms budget.
-      expect(elapsed).toBeGreaterThanOrEqual(950);
       expect(openaiSeen).toHaveLength(1);
     });
 
@@ -710,8 +762,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       setAIProviderForTests(localProvider());
       const session = await newSession(IDS.plain);
       steps.push("tool", "text");
-      setTimeout(release, 900);
-      const res = await stream(session.id, "count rows");
+      fakeTheClock();
+      const turn = startStream(session.id, "count rows");
+      await until(() => limiter().queued === 1, "the turn queue behind the held slot");
+      vi.advanceTimersByTime(900);
+      await drain();
+      expect(turn.settled).toBe(false);
+      release();
+      const res = await turn.res;
       expect(res.text).not.toContain("STREAM_MAX_DURATION");
       expect(res.text).toContain("openai says hi");
       expect(res.text).toContain("event: done");
@@ -723,7 +781,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const queue = frames(res.text, "queue");
       expect(queue[0]).toMatchObject({ state: "waiting", position: 1 });
       expect(queue[1]).toMatchObject({ state: "acquired" });
-      expect(queue[1]!.waitedMs as number).toBeGreaterThanOrEqual(800);
+      expect(queue[1]!.waitedMs).toBe(900);
     });
 
     it("#204 native tool loop — once the slot is acquired the ceiling bounds generation again", async () => {
@@ -734,14 +792,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       setAIProviderForTests(localProvider());
       const session = await newSession(IDS.plain);
       steps.push("hang");
-      setTimeout(release, 600);
-      const started = Date.now();
-      const res = await stream(session.id, "count rows");
-      const elapsed = Date.now() - started;
+      fakeTheClock();
+      const turn = startStream(session.id, "count rows");
+      await until(() => limiter().queued === 1, "the turn queue behind the held slot");
+      vi.advanceTimersByTime(600);
+      release();
+      await until(() => openaiSeen.length === 1, "the model call reach the upstream");
+      vi.advanceTimersByTime(399);
+      await drain();
+      expect(turn.settled).toBe(false);
+      vi.advanceTimersByTime(1);
+      const res = await turn.res;
       expect(openaiSeen[0]!.body.tools).toBeDefined();
+      expect(frames(res.text, "queue").map((q) => q.state)).toEqual(["waiting", "acquired"]);
       expect(frames(res.text, "error")[0]).toMatchObject({ code: "STREAM_MAX_DURATION" });
-      expect(elapsed).toBeGreaterThanOrEqual(950);
-      expect(elapsed).toBeLessThan(4000);
     });
 
     it("#204 text-protocol tool loop — a queued chat() call is timed the same way", async () => {
@@ -766,8 +830,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }),
       );
       const session = await newSession(IDS.plain);
-      setTimeout(release, 900);
-      const res = await stream(session.id, "hello");
+      fakeTheClock();
+      const turn = startStream(session.id, "hello");
+      await until(() => limiter().queued === 1, "the turn queue behind the held slot");
+      vi.advanceTimersByTime(900);
+      await drain();
+      expect(turn.settled).toBe(false);
+      release();
+      const res = await turn.res;
       expect(res.text).not.toContain("STREAM_MAX_DURATION");
       expect(res.text).toContain("openai says hi");
       expect(res.text).toContain("event: done");
@@ -778,6 +848,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(JSON.stringify(openaiSeen[0]!.body.messages)).toContain("search_code_graph");
       const queue = frames(res.text, "queue");
       expect(queue.map((q) => q.state)).toEqual(["waiting", "acquired"]);
+      expect(queue[1]!.waitedMs).toBe(900);
     });
 
     it("#204 sub-agent — a sub-agent call queued behind the only slot does not count against the ceiling", async () => {
@@ -788,14 +859,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       setAIProviderForTests(localProvider());
       const session = await newSession(IDS.delegating, { policy: { medium: "auto" } });
       // The parent's first call runs at once and delegates. While it holds the
-      // slot, other work queues for it — so the sub-agent's call waits ~900ms.
+      // slot, other work queues for it — so the sub-agent's call waits behind it.
+      let otherWork: (() => void) | undefined;
       onOpenAiRequest.push(() => {
-        void localConcurrencyLimiter(`${openaiBase}/v1`)
+        void limiter()
           .acquire()
-          .then((release) => setTimeout(release, 900));
+          .then((release) => (otherWork = release));
       });
       steps.push("delegate", "text", "text");
-      const res = await stream(session.id, "count rows via the counter");
+      fakeTheClock();
+      const turn = startStream(session.id, "count rows via the counter");
+      await until(
+        () => otherWork !== undefined && limiter().queued === 1,
+        "the sub-agent's call queue behind the other work",
+      );
+      vi.advanceTimersByTime(900);
+      await drain();
+      expect(turn.settled).toBe(false);
+      otherWork!();
+      const res = await turn.res;
       expect(res.text).not.toContain("STREAM_MAX_DURATION");
       expect(res.text).toContain("event: done");
       expect(openaiSeen).toHaveLength(3);
@@ -807,7 +889,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(JSON.stringify(openaiSeen[1]!.body.messages)).toContain("You count rows.");
       const queue = frames(res.text, "queue");
       expect(queue.map((q) => q.state)).toEqual(["waiting", "acquired"]);
-      expect(queue[1]!.waitedMs as number).toBeGreaterThanOrEqual(800);
+      expect(queue[1]!.waitedMs).toBe(900);
     });
   },
 );
