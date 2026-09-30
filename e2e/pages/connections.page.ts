@@ -42,13 +42,16 @@ export class ConnectionsPage {
     this.suggestionsBadge = page.getByText(/\d+ suggestion/);
     this.suggestedSection = page.getByRole("heading", {
       name: "Suggested Database Connectors",
+      exact: true,
     });
     // The shadcn Card renders utility classes only — there is no "Card" in the
     // class attribute to match on. Scope to the suggestions section and take
     // the grid's children, each of which owns a Configure button.
     this.suggestedCards = page
       .locator("section")
-      .filter({ has: page.getByRole("heading", { name: "Suggested Database Connectors" }) })
+      .filter({
+        has: page.getByRole("heading", { name: "Suggested Database Connectors", exact: true }),
+      })
       .locator(":scope > div > div")
       .filter({ has: page.getByRole("button", { name: "Configure" }) });
 

@@ -40,7 +40,7 @@ export class DomainEvalPage {
     this.domainTab = page.getByRole("tab", { name: "Domain Eval" });
 
     this.panel = page.getByTestId("domain-eval-panel");
-    this.heading = page.getByRole("heading", { name: "BA Pipeline Domain Eval" });
+    this.heading = page.getByRole("heading", { name: "BA Pipeline Domain Eval", exact: true });
     this.daysFilter = page.getByLabel("Domain eval time window");
 
     this.trendCard = page.getByTestId("domain-trend-card");

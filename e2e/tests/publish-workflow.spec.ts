@@ -51,12 +51,12 @@ test.describe("Publishing tab (#publishing) — generate / batch / recent", () =
     await page.goto(`/projects/${projectId}/publish`, { waitUntil: "load" });
 
     await test.step("Publishing header renders", async () => {
-      await expect(page.getByRole("heading", { name: "Publishing" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Publishing", exact: true })).toBeVisible();
     });
 
     await test.step("Generate-drafts form exposes its inputs", async () => {
       await expect(
-        page.getByRole("heading", { name: "Generate drafts from analysis" }),
+        page.getByRole("heading", { name: "Generate drafts from analysis", exact: true }),
       ).toBeVisible();
       // The opaque "Analysis ID" text box became a picker over the project's
       // own analyses; the label is now just "Analysis".
@@ -68,7 +68,9 @@ test.describe("Publishing tab (#publishing) — generate / batch / recent", () =
     });
 
     await test.step("New publish batch dry-run controls render", async () => {
-      await expect(page.getByRole("heading", { name: "New publish batch" })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "New publish batch", exact: true }),
+      ).toBeVisible();
       const dryRun = page.getByLabel("Dry run (no GitHub writes)");
       await expect(dryRun).toBeVisible();
       // Defaults to dry-run, so the primary CTA reads "Run dry-run".
@@ -85,7 +87,9 @@ test.describe("Publishing tab (#publishing) — generate / batch / recent", () =
     });
 
     await test.step("Recent batches table renders with the empty state", async () => {
-      await expect(page.getByRole("heading", { name: "Recent batches" })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "Recent batches", exact: true }),
+      ).toBeVisible();
       await expect(page.getByText("No batches yet.", { exact: true })).toBeVisible();
     });
 

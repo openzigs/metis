@@ -32,7 +32,7 @@ export class AdminUsagePage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Token Usage Dashboard" });
+    this.heading = page.getByRole("heading", { name: "Token Usage Dashboard", exact: true });
 
     // Controls — no data-testid on the admin page, use accessible locators.
     // The selects are native <select> elements. We locate by their current
@@ -51,7 +51,7 @@ export class AdminUsagePage {
 
     // Details table
     this.detailsTable = page
-      .getByRole("heading", { name: "Details" })
+      .getByRole("heading", { name: "Details", exact: true })
       .locator("..")
       .locator("table");
 

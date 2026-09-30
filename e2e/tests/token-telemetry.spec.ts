@@ -346,7 +346,10 @@ test.describe("Epic #511 — Token Telemetry & Budgeting", () => {
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible({ timeout: 30_000 });
 
     // Check if the Token Usage by Category heading is present (component mounted)
-    const tokenHeading = page.getByRole("heading", { name: "Token Usage by Category" });
+    const tokenHeading = page.getByRole("heading", {
+      name: "Token Usage by Category",
+      exact: true,
+    });
     const isMounted = await tokenHeading.isVisible().catch(() => false);
 
     if (isMounted) {
@@ -380,7 +383,10 @@ test.describe("Epic #511 — Token Telemetry & Budgeting", () => {
 
     await page.goto(`/projects/${projectId}/usage`, { waitUntil: "networkidle" });
 
-    const tokenHeading = page.getByRole("heading", { name: "Token Usage by Category" });
+    const tokenHeading = page.getByRole("heading", {
+      name: "Token Usage by Category",
+      exact: true,
+    });
     const isMounted = await tokenHeading.isVisible().catch(() => false);
 
     if (!isMounted) {

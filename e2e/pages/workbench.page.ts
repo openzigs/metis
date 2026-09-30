@@ -21,7 +21,7 @@ export class WorkbenchPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Workbench" });
+    this.heading = page.getByRole("heading", { name: "Workbench", exact: true });
     // `exact` matters: the header ProjectSwitcher is labelled
     // "Active project: <name>", which a substring match also selects.
     this.projectPicker = page.getByLabel("Active project", { exact: true });

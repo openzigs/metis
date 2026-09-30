@@ -49,7 +49,9 @@ test.describe("Impact analyses list (#166) + new entry point (#164)", () => {
 
     await test.step("the list scaffold renders the table or the empty state", async () => {
       await expect(page.getByTestId("impact-list-root")).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Impact analysis" })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "Impact analysis", exact: true }),
+      ).toBeVisible();
       const table = page.getByTestId("impact-list-table");
       const empty = page.getByTestId("impact-list-empty");
       await expect
@@ -61,7 +63,9 @@ test.describe("Impact analyses list (#166) + new entry point (#164)", () => {
       await page.getByTestId("impact-list-new").click();
       await expect(page).toHaveURL(/\/impact-analyses\/new$/);
       await expect(page.getByTestId("impact-new-root")).toBeVisible();
-      await expect(page.getByRole("heading", { name: "New impact analysis" })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "New impact analysis", exact: true }),
+      ).toBeVisible();
       // The schema-impact toggle is part of the working create form.
       await expect(page.getByTestId("impact-new-schema-toggle")).toBeVisible();
     });

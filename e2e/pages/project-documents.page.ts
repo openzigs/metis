@@ -17,7 +17,7 @@ export class ProjectDocumentsPage {
     this.page = page;
     this.root = page.getByTestId("project-documents-root");
     this.heading = page.getByRole("heading", { name: "Documents", exact: true });
-    this.addHeading = page.getByRole("heading", { name: "Add documents" });
+    this.addHeading = page.getByRole("heading", { name: "Add documents", exact: true });
   }
 
   async goto(projectId: string): Promise<void> {

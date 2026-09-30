@@ -30,10 +30,10 @@ export class SyncPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Issue Sync" });
+    this.heading = page.getByRole("heading", { name: "Issue Sync", exact: true });
     this.pendingBadge = page.getByText(/\d+ pending/);
     this.emptyStateCard = page.getByText("All synced up!");
-    this.emptyStateHeading = page.getByRole("heading", { name: "All synced up!" });
+    this.emptyStateHeading = page.getByRole("heading", { name: "All synced up!", exact: true });
     this.emptyStateMessage = page.getByText("No drift detected between your published issues");
 
     // Drift rows — card elements that are clickable
@@ -48,7 +48,7 @@ export class SyncPage {
 
     // Diff modal — a Radix Dialog since #268, so address it by role and name.
     this.diffModal = page.getByRole("dialog", { name: "Drift Details" });
-    this.diffModalTitle = page.getByRole("heading", { name: "Drift Details" });
+    this.diffModalTitle = page.getByRole("heading", { name: "Drift Details", exact: true });
     this.diffModalClose = this.diffModal.getByRole("button", { name: "Close" });
     this.adoptExternalButton = page.getByRole("button", { name: "← Adopt External" });
     this.pushMetisButton = page.getByRole("button", { name: "Push METIS →" });

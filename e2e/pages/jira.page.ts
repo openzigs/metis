@@ -51,7 +51,7 @@ export class JiraPage {
     this.page = page;
 
     // Page-level
-    this.heading = page.getByRole("heading", { name: "Jira Integration" });
+    this.heading = page.getByRole("heading", { name: "Jira Integration", exact: true });
     this.subtitle = page.getByText(
       "Connect to Jira Cloud or Data Center instances to browse and analyze issues.",
     );
@@ -76,7 +76,7 @@ export class JiraPage {
     this.formError = page.locator("span.text-destructive");
 
     // Issue browser
-    this.issueBrowserHeading = page.getByRole("heading", { name: "Issue Browser" });
+    this.issueBrowserHeading = page.getByRole("heading", { name: "Issue Browser", exact: true });
     this.jiraProjectSelect = page.locator("#jira-project-select");
     this.jqlFilterInput = page.getByLabel("JQL Filter");
     this.searchButton = page.getByRole("button", { name: /Search|Searching/ });
