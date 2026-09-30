@@ -21,10 +21,19 @@ vi.mock("../middleware/auth.js", () => ({
     next();
   },
 }));
+// Records the permission each route asks for, and refuses the ones in
+// `deniedPermissions`, so the role gate's wiring is testable (PR #454 review).
+const deniedPermissions = new Set<string>();
 vi.mock("../middleware/require-permission.js", () => ({
   requirePermission:
-    () => (_req: express.Request, _res: express.Response, next: express.NextFunction) =>
-      next(),
+    (permission: string) =>
+    (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+      if (deniedPermissions.has(permission)) {
+        res.status(403).json({ success: false, error: { code: "FORBIDDEN", message: "no" } });
+        return;
+      }
+      next();
+    },
 }));
 
 const projectFindUnique = vi.fn();
@@ -89,11 +98,41 @@ describe("POST /api/projects/:id/code-search (#423)", () => {
   let app: ReturnType<typeof createApp>;
   beforeEach(() => {
     vi.clearAllMocks();
+    deniedPermissions.clear();
     currentUser = { userId: "user-1", username: "u1", role: "coordinator", workspaces: ["ws-a"] };
     projectFindUnique.mockResolvedValue({ workspaceId: "ws-a" }); // chokepoint
     projectFindFirst.mockResolvedValue({ id: "project-a01" });
     search.mockResolvedValue([HIT]);
     app = createApp();
+  });
+
+  it("refuses a role without project.read before searching (PR #454 review)", async () => {
+    deniedPermissions.add("project.read");
+    const res = await request(app)
+      .post("/api/projects/project-a01/code-search")
+      .send({ query: "add" });
+    expect(res.status).toBe(403);
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it("is rate-limited per user (PR #454 review)", async () => {
+    // The limiter reads its cap per request; a user of its own keeps this test's
+    // counter apart from every other test's.
+    const prev = process.env.CODE_SEARCH_RATE_LIMIT_MAX;
+    process.env.CODE_SEARCH_RATE_LIMIT_MAX = "1";
+    currentUser = { ...currentUser, userId: "user-rate-limit" };
+    try {
+      const send = () =>
+        request(app).post("/api/projects/project-a01/code-search").send({ query: "add" });
+      expect((await send()).status).toBe(200);
+      const second = await send();
+      expect(second.status).toBe(429);
+      expect(second.body.error.code).toBe("CODE_SEARCH_RATE_LIMITED");
+      expect(search).toHaveBeenCalledTimes(1);
+    } finally {
+      if (prev === undefined) delete process.env.CODE_SEARCH_RATE_LIMIT_MAX;
+      else process.env.CODE_SEARCH_RATE_LIMIT_MAX = prev;
+    }
   });
 
   it("returns the hybrid searcher's hits for the project", async () => {

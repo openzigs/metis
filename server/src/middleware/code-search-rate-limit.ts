@@ -3,7 +3,9 @@
  *
  * Each call embeds the query with the local embedder and scores the project's
  * whole symbol set, so it is bounded like the other compute-backed routes.
- * Keyed by userId when authenticated, IP otherwise; 300 req / 15 min by default.
+ * Keyed by userId; 300 req / 15 min by default. The IP fallback is defensive
+ * only: the router's `/:id/:sub` chokepoint authenticates first, so every
+ * request that reaches this limiter carries a user (PR #454 review).
  */
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { clusterRateLimitStore } from "./cluster-rate-limit-store.js";
