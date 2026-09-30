@@ -4,7 +4,7 @@
  * Selects the optimal model (Haiku vs Sonnet) based on task profile,
  * project preferences, budget constraints, and user overrides.
  */
-import type { ModelOverride, ModelSelection, TaskProfile } from "./types.js";
+import type { AIProvider, ModelOverride, ModelSelection, TaskProfile } from "./types.js";
 
 /** Bedrock model identifiers. */
 export const HAIKU_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
@@ -86,11 +86,25 @@ export interface ModelPreferences {
   budgetDowngradeThreshold?: number | null;
 }
 
+/**
+ * #512 — the provider the selected model will run on. The router's ids are
+ * Claude tier ids, so it asks the provider whether it can run each one as sent
+ * (`AIProvider.servesRouterModel`); an adapter that cannot answer is treated as
+ * unable.
+ */
+export type RouterProvider = Pick<AIProvider, "key" | "model" | "servesRouterModel">;
+
 export interface ModelRouterOptions {
   /** Per-project model preferences. */
   preferences?: ModelPreferences;
   /** Current month's token spend for budget-aware routing. */
   currentMonthTokens?: number;
+  /**
+   * #512 — the active provider. When set and it cannot serve the selected tier
+   * id, the selection is the provider's configured model instead. Omitted:
+   * tier routing is reported unchanged.
+   */
+  provider?: RouterProvider;
 }
 
 /**
@@ -100,10 +114,12 @@ export interface ModelRouterOptions {
 export class ModelRouter {
   private readonly preferences: ModelPreferences;
   private readonly currentMonthTokens: number;
+  private readonly provider: RouterProvider | undefined;
 
   constructor(opts: ModelRouterOptions = {}) {
     this.preferences = opts.preferences ?? {};
     this.currentMonthTokens = opts.currentMonthTokens ?? 0;
+    this.provider = opts.provider;
   }
 
   /**
@@ -182,6 +198,21 @@ export class ModelRouter {
     rationale: string,
     wasDowngraded: boolean,
   ): ModelSelection {
+    // #512 — a tier id the active provider cannot run is not what the run
+    // uses: DeepSeek maps `claude-*` onto its own models, and an OpenAI-
+    // compatible endpoint receives the id verbatim. Report (and run) the
+    // provider's configured model, with no Claude rate quoted against it.
+    const provider = this.provider;
+    if (provider && provider.servesRouterModel?.(modelId) !== true) {
+      return {
+        modelId: provider.model,
+        modelName: provider.model,
+        rationale: `The ${provider.key} provider does not serve Claude tier models: using its configured model (${provider.model})`,
+        estimatedCost: null,
+        wasDowngraded: false,
+      };
+    }
+
     const costPer1K = COST_PER_1K[modelId] ?? 0.003;
     // #1095 — an unknown token estimate yields an unknown cost. Coercing null to
     // 0 here is what produced the authoritative-looking "~$0.0000" in the UI.

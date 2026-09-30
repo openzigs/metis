@@ -3969,7 +3969,13 @@ export class AnalysisOrchestrator {
           }
         : undefined;
 
-      const router = new ModelRouter({ preferences, currentMonthTokens });
+      // #512 — tier ids only on a provider that serves them; elsewhere the
+      // selection is the provider's own configured model.
+      const router = new ModelRouter({
+        preferences,
+        currentMonthTokens,
+        provider: this.deps.provider,
+      });
 
       const selection = router.select(profile);
       log.info("Model selected for agent", {

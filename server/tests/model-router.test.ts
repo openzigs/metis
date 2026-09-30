@@ -196,3 +196,74 @@ describe("ModelRouter", () => {
     });
   });
 });
+
+/**
+ * #512 — tier routing assumes a Claude provider. The router's ids are Claude
+ * tier ids (`us.anthropic.claude-*`); on a provider that cannot serve them the
+ * selection must be the provider's configured model, so the Model card and the
+ * auto-mode specialist agents name the model the run really uses.
+ */
+describe("ModelRouter — active provider (#512)", () => {
+  const claudeProvider = {
+    key: "bedrock-gateway",
+    model: SONNET_MODEL_ID,
+    servesRouterModel: () => true,
+  };
+  const deepSeek = { key: "anthropic", model: "deepseek-chat", servesRouterModel: () => false };
+
+  it("keeps tier routing on a provider that serves Claude tier ids", () => {
+    const router = new ModelRouter({ provider: claudeProvider });
+    expect(router.select(simpleProfile).modelId).toBe(HAIKU_MODEL_ID);
+    const complex = router.select(complexProfile);
+    expect(complex.modelId).toBe(SONNET_MODEL_ID);
+    expect(complex.modelName).toBe("Claude Sonnet 5");
+    expect(complex.estimatedCost).not.toBeNull();
+  });
+
+  it("falls back to the provider's configured model when it cannot serve tier ids", () => {
+    const router = new ModelRouter({ provider: deepSeek });
+    for (const profile of [simpleProfile, moderateProfile, complexProfile]) {
+      const result = router.select(profile);
+      expect(result.modelId).toBe("deepseek-chat");
+      expect(result.modelName).toBe("deepseek-chat");
+      expect(result.rationale).toContain("anthropic");
+      expect(result.rationale).toContain("deepseek-chat");
+      // No Claude rate is quoted for a model that is not Claude.
+      expect(result.estimatedCost).toBeNull();
+      expect(result.wasDowngraded).toBe(false);
+    }
+  });
+
+  it("a forced tier on a non-Claude provider still runs the configured model", () => {
+    const router = new ModelRouter({ provider: deepSeek });
+    const result = router.select(complexProfile, "force-opus");
+    expect(result.modelId).toBe("deepseek-chat");
+  });
+
+  it("a budget downgrade on a non-Claude provider is not reported as a downgrade", () => {
+    const router = new ModelRouter({
+      provider: deepSeek,
+      preferences: { budgetDowngradeThreshold: 1000 },
+      currentMonthTokens: 2000,
+    });
+    const result = router.select(complexProfile);
+    expect(result.modelId).toBe("deepseek-chat");
+    expect(result.wasDowngraded).toBe(false);
+  });
+
+  it("asks the provider per model id: a mapped tier id is kept, an unmapped one falls back", () => {
+    const partial = {
+      key: "openai",
+      model: "gpt-4.1",
+      servesRouterModel: (id: string) => id === HAIKU_MODEL_ID,
+    };
+    const router = new ModelRouter({ provider: partial });
+    expect(router.select(simpleProfile).modelId).toBe(HAIKU_MODEL_ID);
+    expect(router.select(complexProfile).modelId).toBe("gpt-4.1");
+  });
+
+  it("treats a provider that cannot answer (no servesRouterModel) as non-Claude", () => {
+    const router = new ModelRouter({ provider: { key: "offline-stub", model: "stub" } });
+    expect(router.select(complexProfile).modelId).toBe("stub");
+  });
+});

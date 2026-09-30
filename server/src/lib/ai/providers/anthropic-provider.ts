@@ -249,6 +249,15 @@ export class AnthropicProvider implements AIProvider {
   }
 
   /**
+   * #512 — Anthropic's API serves the router's tier ids (normalized to their
+   * bare form at the provider boundary); DeepSeek's endpoint maps `claude-*`
+   * names onto its own models, so a tier id there is not the model that runs.
+   */
+  servesRouterModel(_modelId: string): boolean {
+    return !this.deepSeekEndpoint;
+  }
+
+  /**
    * #131 — per-model capabilities from the model catalog (#135), with the
    * endpoint's limits applied: DeepSeek's endpoint never honours
    * `output_config.format`.

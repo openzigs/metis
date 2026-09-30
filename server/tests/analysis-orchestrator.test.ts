@@ -131,6 +131,9 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
       findMany: vi.fn(async () => [...analyses.values()].filter((a) => a.deletedAt === null)),
     },
+    // #512 — auto-mode model selection reads the project's preferences. No
+    // preference row: the router's own tier routing applies.
+    modelPreference: { findUnique: vi.fn(async () => null) },
     agentResult: {
       findFirst: vi.fn(
         // Issue #763 — mirror real Prisma: when the caller scopes the query by
@@ -1971,6 +1974,68 @@ describe("AnalysisOrchestrator misc branches", () => {
     }
     expect(analyses.get(analysisId)!.status).toBe("completed");
     expect(knowledge.search).toHaveBeenCalled();
+  });
+});
+
+/**
+ * #512 — auto-mode specialist agents are routed to the router's Claude tier ids
+ * ONLY on a provider that serves them; elsewhere they run on the provider's
+ * configured model (a Claude id sent to DeepSeek/OpenAI is not what runs).
+ */
+describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
+  async function modelsSentBy(overrides: Partial<AIProvider>): Promise<Array<string | undefined>> {
+    const base = makeProvider({});
+    const sent: Array<string | undefined> = [];
+    const provider = {
+      ...base,
+      ...overrides,
+      async chat(messages: ChatMessage[], opts?: { model?: string }) {
+        sent.push(opts?.model);
+        return base.chat(messages, opts);
+      },
+    } as unknown as AIProvider;
+    const orch = new AnalysisOrchestrator({
+      provider,
+      retrieve: async () => [
+        {
+          documentId: "doc-1234567890",
+          chunkIndex: 0,
+          filename: "spec.md",
+          text: "context",
+          score: 0.8,
+        },
+      ],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+    return sent;
+  }
+
+  it("routes specialists to Claude tier ids on a Claude-serving provider", async () => {
+    const { HAIKU_MODEL_ID } = await import("../src/lib/ai/model-router.js");
+    const sent = await modelsSentBy({
+      key: "bedrock-gateway",
+      model: "us.anthropic.claude-sonnet-5",
+      servesRouterModel: () => true,
+    });
+    // The retrieved context is one word — a simple task — so Haiku is chosen.
+    expect(sent).toContain(HAIKU_MODEL_ID);
+  });
+
+  it("runs specialists on the provider's configured model on a non-Claude provider", async () => {
+    const sent = await modelsSentBy({
+      key: "anthropic",
+      model: "deepseek-chat",
+      servesRouterModel: () => false,
+    });
+    expect(sent).toContain("deepseek-chat");
+    expect(sent.filter((m) => m?.startsWith("us.anthropic."))).toEqual([]);
   });
 });
 

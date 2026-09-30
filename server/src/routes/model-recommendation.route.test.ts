@@ -56,6 +56,34 @@ vi.mock("../lib/prisma.js", () => ({
   },
 }));
 
+/**
+ * #512 — the recommendation reports the model the ACTIVE provider will run.
+ * Default: a Claude-serving provider (the Bedrock gateway), so the tier routing
+ * the #1095 tests exercise is in force; the #512 block swaps in DeepSeek.
+ */
+interface FakeProvider {
+  key: string;
+  model: string;
+  servesRouterModel?: (id: string) => boolean;
+}
+const claudeGateway: FakeProvider = {
+  key: "bedrock-gateway",
+  model: "us.anthropic.claude-sonnet-5",
+  servesRouterModel: () => true,
+};
+let activeProvider: FakeProvider = claudeGateway;
+const buildProviderMock = vi.fn(() => activeProvider);
+const loadAIConfigMock = vi.fn(() => ({ provider: activeProvider.key }));
+
+vi.mock("../lib/ai/providers/factory.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/ai/providers/factory.js")>()),
+  buildProvider: (...a: unknown[]) => buildProviderMock(...(a as [])),
+}));
+vi.mock("../lib/ai/config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/ai/config.js")>()),
+  loadAIConfig: (...a: unknown[]) => loadAIConfigMock(...(a as [])),
+}));
+
 const { initModelRecommendationRouter } = await import("./model-preferences.js");
 const { errorHandler } = await import("../middleware/error-handler.js");
 
@@ -86,7 +114,12 @@ interface RecommendationBody {
       latencySLA: string;
       taskType: string;
     };
-    selection: { modelId: string; estimatedCost: number | null; rationale: string };
+    selection: {
+      modelId: string;
+      modelName: string;
+      estimatedCost: number | null;
+      rationale: string;
+    };
     estimate: { tokens: number | null; basis: string; sampleSize: number };
   };
 }
@@ -103,6 +136,7 @@ describe("POST /projects/:projectId/analyses/model-recommendation (#1095)", () =
   beforeEach(() => {
     vi.clearAllMocks();
     currentUser = { userId: "user-1", role: "coordinator", workspaces: ["ws-1"] };
+    activeProvider = claudeGateway;
     projectFindFirst.mockResolvedValue({ id: "proj-1" });
     // Default: the path project lives in a workspace the caller belongs to.
     projectFindUnique.mockResolvedValue({ workspaceId: "ws-1" });
@@ -258,5 +292,45 @@ describe("POST /projects/:projectId/analyses/model-recommendation (#1095)", () =
     const body = res.body as RecommendationBody;
     // 2 of 4 agents against the reported history.
     expect(body.data.profile.tokenEstimate).toBe(92_584);
+  });
+
+  describe("the model the run will actually use (#512)", () => {
+    const deepSeek: FakeProvider = {
+      key: "anthropic",
+      model: "deepseek-v4-pro",
+      servesRouterModel: () => false,
+    };
+
+    it("names a Claude tier model on a provider that serves Claude tier ids", async () => {
+      const body = await post({ agentKeys: ["document", "code", "database", "web"] });
+      expect(body.data.selection.modelId).toBe("us.anthropic.claude-sonnet-5");
+      expect(body.data.selection.modelName).toBe("Claude Sonnet 5");
+      expect(buildProviderMock).toHaveBeenCalledWith({
+        config: loadAIConfigMock.mock.results[0]?.value,
+      });
+    });
+
+    it("names the provider's configured model on a non-Claude provider", async () => {
+      activeProvider = deepSeek;
+      const body = await post({ agentKeys: ["document", "code", "database", "web"] });
+      expect(body.data.selection.modelId).toBe("deepseek-v4-pro");
+      expect(body.data.selection.modelName).toBe("deepseek-v4-pro");
+      expect(body.data.selection.modelName).not.toContain("Claude");
+      expect(body.data.selection.estimatedCost).toBeNull();
+    });
+
+    it("names the configured model even when a Claude tier is forced", async () => {
+      activeProvider = deepSeek;
+      const body = await post({ agentKeys: ["document"], override: "force-opus" });
+      expect(body.data.selection.modelId).toBe("deepseek-v4-pro");
+    });
+
+    it("still answers (with tier routing) when the AI config cannot be loaded", async () => {
+      loadAIConfigMock.mockImplementationOnce(() => {
+        throw new Error("Invalid AI configuration");
+      });
+      const body = await post({ agentKeys: ["document", "code", "database", "web"] });
+      expect(body.data.selection.modelId).toBe("us.anthropic.claude-sonnet-5");
+    });
   });
 });

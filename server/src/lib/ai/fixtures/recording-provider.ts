@@ -71,6 +71,11 @@ export class RecordingProvider implements AIProvider {
     return this.inner.capabilities;
   }
 
+  /** #512 — transparent, like {@link capabilities}: the inner adapter's answer. */
+  servesRouterModel(modelId: string): boolean {
+    return this.inner.servesRouterModel?.(modelId) === true;
+  }
+
   async chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResponse> {
     const response = await this.inner.chat(messages, opts);
     const key = fixtureKey(messages, opts);
