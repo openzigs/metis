@@ -676,6 +676,9 @@ describe("search-knowledge tool", () => {
     expect(result.text).toMatch(/score=/);
     expect(result.data).toHaveProperty("hits");
     expect(Array.isArray((result.data as { hits: unknown[] }).hits)).toBe(true);
+    // #464 — the hit count is what chat grounding counts as a project read.
+    expect(result.resultCount).toBe((result.data as { hits: unknown[] }).hits.length);
+    expect(result.resultCount).toBeGreaterThan(0);
   });
 
   it("refuses cross-project access when ctx.projectId is bound", async () => {
@@ -686,6 +689,7 @@ describe("search-knowledge tool", () => {
     );
     expect(result.isError).toBe(true);
     expect(result.text).toContain("cross-project");
+    expect(result.resultCount).toBeUndefined();
   });
 
   it("returns '(no matches)' when the project has no chunks", async () => {
@@ -695,6 +699,7 @@ describe("search-knowledge tool", () => {
       { sessionId: "s1", userId: "u1" },
     );
     expect(result.text).toBe("(no matches)");
+    expect(result.resultCount).toBe(0);
   });
 });
 
