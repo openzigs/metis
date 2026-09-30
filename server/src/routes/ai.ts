@@ -1827,6 +1827,11 @@ export function aiRouter(): Router {
       safeEnd();
     });
     const heartbeat = setInterval(() => {
+      // A write after end is an 'error' event, not a throw (PR #511 review).
+      if (res.writableEnded) {
+        clearInterval(heartbeat);
+        return;
+      }
       try {
         res.write(": ping\n\n");
       } catch {
@@ -1859,12 +1864,13 @@ export function aiRouter(): Router {
           hardCeilingMs: limits.hardCeilingMs,
         });
         try {
-          res.write(
-            `event: error\ndata: ${JSON.stringify({
-              code: "STREAM_MAX_DURATION",
-              message: `The response was stopped after ${Math.round(limits.hardCeilingMs / 1000)}s. Any partial answer above is incomplete.`,
-            })}\n\n`,
-          );
+          if (!res.writableEnded)
+            res.write(
+              `event: error\ndata: ${JSON.stringify({
+                code: "STREAM_MAX_DURATION",
+                message: `The response was stopped after ${Math.round(limits.hardCeilingMs / 1000)}s. Any partial answer above is incomplete.`,
+              })}\n\n`,
+            );
         } catch {
           /* nothing left to write */
         }
