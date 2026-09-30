@@ -29,6 +29,7 @@ import { mapFieldErrors, type FieldErrorMap } from "@/lib/form-validation";
 import { isHttpUrl, slugSuggestionMessage, urlSuggestionMessage } from "@/lib/error-suggestion";
 import { resolveErrorMessage } from "@/lib/use-app-mutation";
 import { deriveSlug, SLUG_PATTERN } from "@/components/projects/project-create-form";
+import { warnPrimaryRepoNotLinked } from "@/components/projects/primary-repo-warning";
 import { VaultPicker } from "@/components/connectors/vault-picker";
 import { Button } from "@/components/ui/button";
 import {
@@ -129,9 +130,8 @@ export function NewProjectWizard({ workspaceId, onDone }: NewProjectWizardProps)
       } else if (ingest.kind === "skipped") {
         toast.success("Project created");
       } else if (ingest.kind === "not-connected") {
-        toast.warning(
-          "Project created, but the repository could not be connected. Add it from Connections.",
-        );
+        // #448 — name the reason `POST /projects` gave (#428), as the Create form does.
+        warnPrimaryRepoNotLinked(project, (path) => router.push(path));
       } else {
         toast.error(`Project created, but the ingest did not start: ${ingest.message}`);
       }

@@ -26,6 +26,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { projectsApi, type CreatedProject, type Project } from "@/lib/projects-api";
+import { warnPrimaryRepoNotLinked } from "@/components/projects/primary-repo-warning";
 import { queryKeys } from "@/lib/query-keys";
 import { useAppMutation } from "@/lib/use-app-mutation";
 import {
@@ -125,13 +126,7 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
     invalidateKeys: [queryKeys.projects.all],
     onSuccess: (project) => {
       if (project.primaryRepoError) {
-        toast.warning("Project created, but the repository was not linked", {
-          description: `${project.primaryRepoError.message} Add it from Connections.`,
-          action: {
-            label: "Open Connections",
-            onClick: () => router.push(`/projects/${project.id}/connections`),
-          },
-        });
+        warnPrimaryRepoNotLinked(project, (path) => router.push(path));
       } else {
         toast.success("Project created");
       }

@@ -190,7 +190,8 @@ export function projectsRouter(): Router {
         actor,
       );
 
-      // Epic #640 — auto-create a primary repo connector if provided.
+      // Epic #640 — auto-create a primary repo connector if provided;
+      // createRepoConnector marks a project's first repository primary (#448).
       // #428 — a failed link still leaves the project created, but the answer
       // says why in `primaryRepoError` instead of a bare `primaryRepo: null`.
       let primaryRepoConnector: Awaited<ReturnType<typeof createRepoConnector>> | null = null;
@@ -211,23 +212,6 @@ export function projectsRouter(): Router {
           );
         } catch (err) {
           primaryRepoError = primaryRepoLinkError(err, project.id);
-        }
-      }
-      if (primaryRepoConnector) {
-        // Mark it as primary. The connector already exists, so a failure here
-        // does not un-link it — it stays in Connections and is reported as linked.
-        try {
-          await prisma.repoConnection.update({
-            where: { id: primaryRepoConnector.id },
-            data: { isPrimary: true },
-          });
-          primaryRepoConnector = { ...primaryRepoConnector, isPrimary: true };
-        } catch (err) {
-          logger.warn("primary repo linked but marking it primary failed", {
-            projectId: project.id,
-            connectorId: primaryRepoConnector.id,
-            error: err instanceof Error ? err.message : String(err),
-          });
         }
       }
 

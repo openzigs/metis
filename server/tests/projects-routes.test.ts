@@ -217,7 +217,8 @@ vi.mock("../src/lib/prisma.js", async () => {
         deletedAt: null,
         ...data,
       })),
-      count: vi.fn(async () => 1),
+      // A new project has no repositories yet.
+      count: vi.fn(async () => 0),
       update: vi.fn(async () => ({})),
     },
     knowledgeChunk: {
@@ -357,17 +358,16 @@ describe("/api/projects", () => {
     expect(res.body.data.primaryRepoError.message).not.toMatch(/10\.0\.0\.5/);
   });
 
-  it("POST reports the connector as linked when only the isPrimary update throws (#428)", async () => {
-    vi.mocked(prisma.repoConnection.update)
-      .mockResolvedValueOnce({} as never) // repo-service's own first-repo isPrimary
-      .mockRejectedValueOnce(new Error("deadlock")); // the route's isPrimary update
+  // #448 — createRepoConnector marks a project's first repository primary in
+  // the insert itself, so the route no longer spends a second round-trip on it.
+  it("POST links the primary repo without an isPrimary update of its own (#448)", async () => {
     const res = await request(app)
       .post("/api/projects")
       .set("Authorization", `Bearer ${token}`)
-      .send({ name: "Half", slug: "half", primaryRepo: { ownerOrOrg: "acme", repoName: "app" } });
+      .send({ name: "One", slug: "one", primaryRepo: { ownerOrOrg: "acme", repoName: "app" } });
     expect(res.status).toBe(201);
-    expect(res.body.data.primaryRepo).toMatchObject({ id: "repo_1" });
-    expect(res.body.data.primaryRepoError).toBeNull();
+    expect(res.body.data.primaryRepo).toMatchObject({ id: "repo_1", isPrimary: true });
+    expect(prisma.repoConnection.update).not.toHaveBeenCalled();
   });
 
   it("POST omits a link error when no primary repo was requested (#428)", async () => {

@@ -325,11 +325,15 @@ describe("ProjectCreateForm", () => {
     expect(toast.success).not.toHaveBeenCalled();
     const [title, opts] = vi.mocked(toast.warning).mock.calls[0] as [
       string,
-      { description: string; action: { label: string; onClick: () => void } },
+      { description: string; duration: number; action: { label: string; onClick: () => void } },
     ];
     expect(title).toMatch(/repository was not linked/i);
-    expect(opts.description).toContain("apiBaseUrl must use HTTPS: http://ghe.example.com");
-    expect(opts.description).toMatch(/Connections/);
+    // #448 — the reason alone: the "Open Connections" action is the hint, so the
+    // description no longer appends a second "Add it from Connections."
+    expect(opts.description).toBe("apiBaseUrl must use HTTPS: http://ghe.example.com");
+    expect(opts.action.label).toBe("Open Connections");
+    // #448 — it carries a reason and an action, so it outlasts sonner's ~4 s.
+    expect(opts.duration).toBeGreaterThanOrEqual(10_000);
     // The action points at the new project's Connections page.
     vi.mocked(useRouter()).push.mockClear();
     opts.action.onClick();

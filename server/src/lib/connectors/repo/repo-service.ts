@@ -324,11 +324,19 @@ export async function createRepoConnector(
     }
     secretId = secret.id;
   }
+  // Epic #640 — a project's first repository is its primary one. #448 — decided
+  // before the insert and written with it: a separate update after the row
+  // exists could fail and leave a connector behind while the caller is told the
+  // create failed.
+  const liveRepoCount = await prisma.repoConnection.count({
+    where: { projectId, deletedAt: null },
+  });
   const row = await prisma.repoConnection.create({
     data: {
       projectId,
       label: input.label,
       provider,
+      isPrimary: liveRepoCount === 0,
       ownerOrOrg: input.ownerOrOrg ?? null,
       repoName: input.repoName ?? null,
       localPath,
@@ -339,18 +347,6 @@ export async function createRepoConnector(
       createdById: actorId,
     },
   });
-
-  // Epic #640 — auto-set isPrimary if this is the first repo for the project.
-  const repoCount = await prisma.repoConnection.count({
-    where: { projectId, deletedAt: null },
-  });
-  if (repoCount === 1) {
-    await prisma.repoConnection.update({
-      where: { id: row.id },
-      data: { isPrimary: true },
-    });
-    row.isPrimary = true;
-  }
 
   audit({
     actor: { id: actorId },
