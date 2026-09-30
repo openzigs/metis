@@ -22,7 +22,7 @@ import { buildProvider, loadAIConfig } from "../ai/index.js";
 import { HAIKU_MODEL_ID, SONNET_MODEL_ID } from "../ai/model-router.js";
 import type { AIProvider } from "../ai/types.js";
 import { pullOrCloneRepo } from "../connectors/repo/repo-service.js";
-import { resolveVaultRef } from "../connectors/vault-resolver.js";
+import { readBoundSecret } from "../connectors/vault-resolver.js";
 import { getVaultService } from "../vault/vault-service.js";
 import { assertConnectorHostAllowed } from "../connectors/network-allowlist.js";
 import { createJiraClient } from "../connectors/jira/jira-client.js";
@@ -572,8 +572,8 @@ export function buildPublisherPorts(): PublisherPorts {
         // publish GitHub issues.
         throw new Error("repo connection is not a GitHub repo (missing owner/repo)");
       }
-      const secretRef = conn.secretId ? `\${vault:${conn.secretId}}` : "";
-      const token = await resolveVaultRef(secretRef, getVaultService());
+      // #480 — the connector's bound secret by id, never re-resolved by label.
+      const token = conn.secretId ? await readBoundSecret(conn.secretId, getVaultService()) : null;
       if (!token) {
         throw new Error("repo connection missing vault-resolved token");
       }

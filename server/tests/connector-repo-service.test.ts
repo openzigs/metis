@@ -91,14 +91,6 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     auditLog: { create: vi.fn(async () => ({})) },
-    secret: {
-      findFirst: vi.fn(
-        async ({ where }: { where: { OR: Array<{ name: string }>; deletedAt: null } }) => {
-          const label = where.OR[0]?.name;
-          return label ? { id: label, name: label } : null;
-        },
-      ),
-    },
   },
 }));
 
@@ -129,6 +121,15 @@ vi.mock("../src/lib/connectors/network-allowlist.js", () => ({
 
 vi.mock("../src/lib/connectors/vault-resolver.js", () => ({
   resolveVaultRef: vi.fn(async (ref: string | null) => (ref ? `pat_${ref}` : null)),
+  readBoundSecret: vi.fn(async (id: string) => `pat_${id}`),
+}));
+
+// #480 — binding a reference to its secret id is exercised against a real
+// database in vault-secret-binding-480.sqlite.test.ts; here every reference
+// binds to an id equal to its body.
+vi.mock("../src/lib/vault/bound-secret.js", () => ({
+  VAULT_REF_UNRESOLVED: "VAULT_REF_UNRESOLVED",
+  bindSecretRef: vi.fn(async (ref: string) => ref),
 }));
 
 vi.mock("../src/lib/vault/vault-service.js", () => ({
@@ -650,6 +651,28 @@ describe("Repo connector service — update + auth/clone", () => {
     expect(updated.defaultBranch).toBe("develop");
     expect(updated.apiBaseUrl).toBe("https://github.example.com/api/v3");
     expect(updated.secretRef).toBe("${vault:fresh}");
+  });
+});
+
+describe("Repo connector service — #480 keep a re-sent bound reference", () => {
+  it("does not re-bind a re-sent ${vault:<bound id>} (PR #499 panel)", async () => {
+    const { bindSecretRef } = await import("../src/lib/vault/bound-secret.js");
+    const c = await createRepoConnector(
+      "proj_1",
+      { label: "keep", ownerOrOrg: "o", repoName: "r", secretRef: "${vault:sec-bound}" },
+      "user_1",
+    );
+    vi.mocked(bindSecretRef).mockClear();
+    // The UI re-sends the connector's own ref on an unrelated edit. Re-binding it
+    // would re-resolve the id (or a label) — exactly the re-bind #480 closes.
+    const updated = await updateRepoConnector(
+      "proj_1",
+      c.id,
+      { defaultBranch: "develop", secretRef: "${vault:sec-bound}" },
+      "user_1",
+    );
+    expect(bindSecretRef).not.toHaveBeenCalled();
+    expect(updated.secretRef).toBe("${vault:sec-bound}");
   });
 });
 

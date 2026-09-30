@@ -57,6 +57,14 @@ vi.mock("../src/lib/prisma.js", async () => {
     userRole: {},
     auditLog: { create: vi.fn(async () => ({})) },
     secret: {
+      // #480 — create/update bind each `${vault:x}` to a live secret id. A
+      // superset is enough: the binder refines the rows by reachability. The
+      // fixed rows are the secrets these tests reference without creating.
+      findMany: vi.fn(async () => [
+        ...secretRows,
+        { id: "sec_fixture_t", name: "global:t" },
+        { id: "sec_fixture_pre", name: "global:my-pre-existing-token" },
+      ]),
       // #258 — like the real table: `name` is UNIQUE, soft-deleted rows included.
       create: vi.fn(async ({ data }: { data: { name: string; ciphertext: string } }) => {
         if (secretRows.some((r) => r.name === data.name)) {

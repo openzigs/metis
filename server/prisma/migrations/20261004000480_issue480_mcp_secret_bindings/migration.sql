@@ -1,0 +1,20 @@
+-- Issue #480 — an MCP server's vault references are bound to secret ids.
+--
+-- `envJson` / `headers` hold `${vault:<label>}` references that used to be
+-- looked up by label every time the server started. After the bound secret was
+-- soft-deleted and another secret created under the same label in the other
+-- scope, the label resolved — uniquely — to the new secret. `secretBindings`
+-- stores a JSON object mapping each reference body to the secret id it resolved
+-- to when the server was saved; the env is expanded from those ids only, and a
+-- server whose bound secret is gone refuses to start.
+--
+-- DB and repo connectors already store an id in their `secretId` foreign key,
+-- and a publish batch records its id in `metadata`, so neither needs a column.
+--
+-- Additive only: NULLABLE, not backfilled. A row written before #480 reads NULL
+-- and resolves its references by label as before, until the next save that
+-- touches its env or headers binds them.
+--
+-- Rollback (documentation): `ALTER TABLE "mcp_servers" DROP COLUMN "secretBindings";`
+-- (SQLite 3.35+). Lossy: every server falls back to label resolution.
+ALTER TABLE "mcp_servers" ADD COLUMN "secretBindings" TEXT;

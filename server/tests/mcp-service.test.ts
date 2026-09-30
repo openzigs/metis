@@ -70,6 +70,8 @@ let next = 0;
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     auditLog: { create: vi.fn(async () => ({})) },
+    // #480 — create binds `${vault:t}` to a live secret id.
+    secret: { findMany: vi.fn(async () => [{ id: "sec_t", name: "global:t" }]) },
     /**
      * Issue #315 — `MCPRegistryService.createUserScopedAtomic` wraps the
      * count + create in `$transaction`. The mock implements an interactive

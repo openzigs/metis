@@ -45,7 +45,9 @@ import {
   type ConnectorEmitter,
 } from "../types.js";
 import { isDriverDetailCode, sanitizeDriverError } from "../driver-error.js";
-import { resolveVaultRef } from "../vault-resolver.js";
+import { readBoundSecret } from "../vault-resolver.js";
+import { bindSecretRef, VAULT_REF_UNRESOLVED } from "../../vault/bound-secret.js";
+import { AppError } from "../../../middleware/error-handler.js";
 import type { RepoFetcher } from "../../library/import.js";
 import { validateLocalSourcePath } from "./local-source.js";
 import { sourceIngestSummary } from "../source-ingest-state.js";
@@ -310,29 +312,10 @@ export async function createRepoConnector(
     localPath = validated.realPath;
   }
 
-  const secretLabel = input.secretRef ? extractRefBody(input.secretRef) : null;
-  let secretId: string | null = null;
-  if (secretLabel) {
-    // Vault names are scoped as "global:<label>" or "project:<label>"
-    const secret = await prisma.secret.findFirst({
-      where: {
-        OR: [
-          { name: secretLabel },
-          { name: `global:${secretLabel}` },
-          { name: `project:${secretLabel}` },
-        ],
-        deletedAt: null,
-      },
-    });
-    if (!secret) {
-      throw new ConnectorError(
-        404,
-        "VAULT_SECRET_NOT_FOUND",
-        `vault secret '${secretLabel}' not found`,
-      );
-    }
-    secretId = secret.id;
-  }
+  // #480 — bind the id the reference resolves to now (by id, or by a label
+  // that reaches exactly one live secret); the use path reads that id only.
+  const secretRefBody = input.secretRef ? extractRefBody(input.secretRef) : null;
+  const secretId = secretRefBody ? await bindRepoSecret(secretRefBody) : null;
   const row = await insertRepoConnectionOrLabelTaken({
     projectId,
     label: input.label,
@@ -580,29 +563,15 @@ export async function updateRepoConnector(
     data.apiBaseUrl = patch.apiBaseUrl;
   }
   if (patch.secretRef !== undefined) {
-    const patchLabel = patch.secretRef ? extractRefBody(patch.secretRef) : null;
-    if (patchLabel) {
-      const secret = await prisma.secret.findFirst({
-        where: {
-          OR: [
-            { name: patchLabel },
-            { name: `global:${patchLabel}` },
-            { name: `project:${patchLabel}` },
-          ],
-          deletedAt: null,
-        },
-      });
-      if (!secret) {
-        throw new ConnectorError(
-          404,
-          "VAULT_SECRET_NOT_FOUND",
-          `vault secret '${patchLabel}' not found`,
-        );
-      }
-      data.secretId = secret.id;
-    } else {
-      data.secretId = null;
-    }
+    // #480 — a re-sent `${vault:<bound id>}` keeps the binding as it is,
+    // even when that secret has since been deleted.
+    const patchRefBody = patch.secretRef ? extractRefBody(patch.secretRef) : null;
+    data.secretId =
+      patchRefBody === null
+        ? null
+        : patchRefBody === existing.secretId
+          ? patchRefBody
+          : await bindRepoSecret(patchRefBody);
   }
   let row;
   if (expectedUpdatedAt === undefined) {
@@ -1234,10 +1203,31 @@ async function acquireOctokit(apiBaseUrl: string | null, secretRef: string): Pro
   return octokitFactoryOverride ? octokitFactoryOverride(args) : await defaultOctokit(args);
 }
 
+/** #480 — the connector's bound secret, by id only (`secretRef` is `${vault:<secretId>}`). */
 async function resolveSecret(secretRef: string): Promise<string | null> {
-  if (!secretRef) return null;
-  const vault = getVaultService();
-  return resolveVaultRef(secretRef, vault);
+  const secretId = secretRef ? extractRefBody(secretRef) : null;
+  if (!secretId) return null;
+  return readBoundSecret(secretId, getVaultService());
+}
+
+/**
+ * Bind a reference body to one live secret id. Kept as a 404
+ * `VAULT_SECRET_NOT_FOUND` for an unknown reference, which is what this
+ * service has always answered; an ambiguous label is a 409.
+ */
+async function bindRepoSecret(refBody: string): Promise<string> {
+  try {
+    return await bindSecretRef(refBody);
+  } catch (err) {
+    if (err instanceof AppError && err.code === VAULT_REF_UNRESOLVED) {
+      throw new ConnectorError(
+        404,
+        "VAULT_SECRET_NOT_FOUND",
+        `vault secret '${refBody}' not found`,
+      );
+    }
+    throw err;
+  }
 }
 
 async function assertHostFromBaseUrl(apiBaseUrl: string | null): Promise<void> {

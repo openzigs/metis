@@ -24,6 +24,9 @@ import { canCreateTickets } from "../analysis/approval-checkpoint.js";
 import { assertDraftsPublishable } from "../reviews/approval-gate.js";
 import { PublishError } from "./types.js";
 import { isVaultRef } from "../connectors/vault-resolver.js";
+import { bindSecretRef } from "../vault/bound-secret.js";
+import { AppError } from "../../middleware/error-handler.js";
+import { refBodyOf } from "../vault/secret-binding.js";
 import { publishBatchToJira } from "./jira-publisher.js";
 import { createChildLogger } from "../logger.js";
 
@@ -231,6 +234,20 @@ export async function createBatch(opts: CreateBatchOptions): Promise<SharedPubli
       actorId,
     });
   }
+  // #480 — bind the token reference to the secret id it resolves to now, so
+  // executing, retrying or rolling back this batch later can never pick up a
+  // different secret re-created under the same label. A live batch whose
+  // reference does not resolve is refused here, before any row exists; a dry
+  // run keeps its preview and reports the credential as unresolved (#1093).
+  const secretRefBody = refBodyOf(input.secretRef);
+  let secretId: string | null = null;
+  if (secretRefBody) {
+    try {
+      secretId = await bindSecretRef(secretRefBody);
+    } catch (err) {
+      if (!input.dryRun || !(err instanceof AppError)) throw err;
+    }
+  }
   const batch = await prisma.publishBatch.create({
     data: {
       projectId: input.projectId,
@@ -244,13 +261,15 @@ export async function createBatch(opts: CreateBatchOptions): Promise<SharedPubli
       totalDrafts: input.draftIds.length,
       // Caller metadata is spread FIRST so the reserved keys always win: the
       // route checks `input.secretRef` (#358), and execute/archive read
-      // `meta.secretRef` / `meta.draftIds` back from here (PR #392 review).
+      // `meta.secretRef` / `meta.secretId` (#480) / `meta.draftIds` back from
+      // here (PR #392 review).
       metadata: JSON.stringify({
         ...(input.metadata ?? {}),
         draftIds: input.draftIds,
         additionalLabels: input.additionalLabels,
         milestone: input.milestone,
         secretRef: input.secretRef ?? null,
+        secretId,
       }),
     },
   });
@@ -382,7 +401,11 @@ async function executeBatchInner(opts: {
     return { status: batch.status };
   }
   const meta = batch.metadata
-    ? (JSON.parse(batch.metadata) as { secretRef?: string; draftIds?: string[] })
+    ? (JSON.parse(batch.metadata) as {
+        secretRef?: string;
+        secretId?: string | null;
+        draftIds?: string[];
+      })
     : {};
   const secretRef = meta.secretRef ?? null;
 
@@ -446,6 +469,7 @@ async function executeBatchInner(opts: {
       batchId: opts.batchId,
       dryRun: batch.dryRun,
       secretRef,
+      boundSecretId: meta.secretId ?? null,
     });
   }
 
@@ -547,13 +571,16 @@ export async function archiveBatch(opts: {
       "only the batch owner or an admin may archive/rollback this batch",
     );
   }
-  const meta = batch.metadata ? (JSON.parse(batch.metadata) as { secretRef?: string }) : {};
+  const meta = batch.metadata
+    ? (JSON.parse(batch.metadata) as { secretRef?: string; secretId?: string | null })
+    : {};
   await archiveBatchImpl({
     batchId: opts.batchId,
     reason: opts.input.reason,
     closeIssues: opts.input.closeIssues,
     actorId: opts.actorId,
     secretRef: meta.secretRef ?? null,
+    boundSecretId: meta.secretId ?? null,
   });
   const refreshed = await prisma.publishBatch.findUnique({ where: { id: opts.batchId } });
   return toBatchApi(refreshed!);

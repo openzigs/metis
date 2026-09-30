@@ -35,6 +35,9 @@
  * Because the check runs at write time, a secret created LATER under a
  * colliding label could otherwise win at resolution time; both resolvers
  * therefore refuse a label that matches more than one live secret (#358).
+ * A reference is also bound to the secret id it resolved to when it was saved
+ * (#480, `bound-secret.ts`), so a later delete + re-create under the same label
+ * cannot re-bind it.
  */
 import { hasPermission, type AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
@@ -104,7 +107,7 @@ export function reaches(ref: string, row: { id: string; name: string }): boolean
  * and connector labels `[A-Za-z0-9 _.\-]`, so a ref containing `\` reaches no
  * row by label in `reaches` either (PR #392 review).
  */
-function candidateFilters(ref: string): Array<Record<string, unknown>> {
+export function candidateFilters(ref: string): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [
     { id: ref },
     { name: ref },

@@ -136,6 +136,13 @@ vi.mock("../src/lib/prisma.js", () => ({
 
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
+// #480 — binding the token ref to its secret id is exercised against a real
+// database in vault-secret-binding-480.sqlite.test.ts; here every reference
+// binds to an id equal to its body.
+vi.mock("../src/lib/vault/bound-secret.js", () => ({
+  bindSecretRef: vi.fn(async (ref: string) => ref),
+}));
+
 import { audit } from "../src/lib/audit/audit-service.js";
 import { approveDraft, createBatch } from "../src/lib/publishing/publishing-service.js";
 import { PublishError } from "../src/lib/publishing/types.js";

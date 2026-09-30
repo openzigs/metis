@@ -27,32 +27,70 @@ const VAULT_REF_PATTERN = /\$\{vault:([^}]+)\}/g;
  * Throws if a reference cannot be resolved — fail-closed semantics so a
  * missing secret never silently runs a process with an empty value — and
  * (#358) if a label matches more than one live secret.
+ *
+ * #480 — `secretBindings` (ref body → secret id, stored when the owning
+ * resource was saved) replaces the lookup above: each reference is read by its
+ * bound id only, and one that is unbound, or whose bound secret is no longer
+ * live, throws instead of re-resolving the label. Omitted or `null` only for a
+ * resource saved before #480.
  */
 export async function expandVaultRefs(
   env: Record<string, string>,
   vault: VaultService,
+  secretBindings?: Record<string, string> | null,
 ): Promise<Record<string, string>> {
   const expanded: Record<string, string> = {};
   for (const [key, raw] of Object.entries(env)) {
-    expanded[key] = await expandValue(key, raw, vault);
+    expanded[key] = await expandValue(key, raw, vault, secretBindings ?? null);
   }
   return expanded;
 }
 
-async function expandValue(envKey: string, value: string, vault: VaultService): Promise<string> {
+async function expandValue(
+  envKey: string,
+  value: string,
+  vault: VaultService,
+  secretBindings: Record<string, string> | null,
+): Promise<string> {
   if (!value.includes("${vault:")) return value;
 
   const matches = [...value.matchAll(VAULT_REF_PATTERN)];
   let result = value;
   for (const match of matches) {
     const ref = match[1].trim();
-    const plaintext = await resolveRef(ref, vault);
+    const plaintext = secretBindings
+      ? await readBound(envKey, ref, secretBindings, vault)
+      : await resolveRef(ref, vault);
     if (plaintext == null) {
       throw new Error(`Vault reference \${vault:${ref}} (env ${envKey}) could not be resolved`);
     }
     result = result.replace(match[0], plaintext);
   }
   return result;
+}
+
+/** #480 — a bound reference, by its stored id only; never by label. */
+async function readBound(
+  envKey: string,
+  ref: string,
+  secretBindings: Record<string, string>,
+  vault: VaultService,
+): Promise<string> {
+  const secretId = Object.hasOwn(secretBindings, ref) ? secretBindings[ref] : undefined;
+  if (!secretId) {
+    throw new Error(
+      `Vault reference \${vault:${ref}} (env ${envKey}) is not bound to a secret; save the server again`,
+    );
+  }
+  try {
+    const { plaintext } = await vault.read(secretId);
+    return plaintext;
+  } catch {
+    log.warn("Bound vault secret not live", { ref, secretId });
+    throw new Error(
+      `Vault reference \${vault:${ref}} (env ${envKey}): the secret it was bound to has been deleted; select a secret again`,
+    );
+  }
 }
 
 async function resolveRef(ref: string, vault: VaultService): Promise<string | null> {
