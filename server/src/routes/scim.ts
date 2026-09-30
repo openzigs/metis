@@ -13,6 +13,7 @@ import { prisma } from "../lib/prisma.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { AppError } from "../middleware/error-handler.js";
 import { revokeAllUserSessions } from "../lib/auth/jwt.js";
+import { disconnectUserSockets } from "../lib/socket/user-disconnect.js";
 import type {
   SCIMUser,
   SCIMGroup,
@@ -321,8 +322,10 @@ export function scimRouter(): Router {
       return;
     }
 
-    // Revoke all sessions when user is deactivated (Epic #748 AC #4)
+    // Revoke all sessions when user is deactivated (Epic #748 AC #4), and close
+    // their open sockets, which keep every room they joined (#612).
     if (update.status === "disabled") {
+      disconnectUserSockets(updated.id);
       await revokeAllUserSessions(updated.id);
     }
 
@@ -361,7 +364,9 @@ export function scimRouter(): Router {
       { isolationLevel: "Serializable" },
     );
 
-    // Revoke all sessions when user is deprovisioned (Epic #748 AC #4)
+    // Revoke all sessions when user is deprovisioned (Epic #748 AC #4), and
+    // close their open sockets, which keep every room they joined (#612).
+    disconnectUserSockets(user.id);
     await revokeAllUserSessions(param(req.params.id));
 
     audit({

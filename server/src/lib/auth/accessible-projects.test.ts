@@ -56,7 +56,14 @@ describe("getUserAccessibleProjects", () => {
       expect.objectContaining({ where: { userId: "user-b" } }),
     );
     expect(mockMemberships).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { userId: "user-b", workspace: { deletedAt: null } } }),
+      expect.objectContaining({
+        where: {
+          userId: "user-b",
+          workspace: { deletedAt: null },
+          // #612 — a deprovisioned user's surviving membership rows do not count.
+          user: { deletedAt: null, status: "active" },
+        },
+      }),
     );
     expect(mockFindMany).toHaveBeenCalledWith({
       where: {

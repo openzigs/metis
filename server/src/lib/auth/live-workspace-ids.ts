@@ -16,10 +16,20 @@ import { prisma } from "../prisma.js";
 /** Membership `where` fragment that drops soft-deleted workspaces. */
 export const LIVE_WORKSPACE_MEMBERSHIP = { workspace: { deletedAt: null } } as const;
 
-/** Workspace ids the user is a member of, excluding soft-deleted workspaces. */
+/**
+ * #612 — a SCIM deprovision soft-deletes (or disables) the user but keeps their
+ * membership rows, so the user must be live too, or a still-valid access token
+ * would re-join the workspace's rooms on reconnect.
+ */
+const LIVE_MEMBER_USER = { user: { deletedAt: null, status: "active" } } as const;
+
+/**
+ * Workspace ids the user is a member of, excluding soft-deleted workspaces —
+ * and none at all for a soft-deleted or disabled user (#612).
+ */
 export async function readLiveWorkspaceIds(userId: string): Promise<string[]> {
   const memberships = await prisma.workspaceMember.findMany({
-    where: { userId, ...LIVE_WORKSPACE_MEMBERSHIP },
+    where: { userId, ...LIVE_WORKSPACE_MEMBERSHIP, ...LIVE_MEMBER_USER },
     select: { workspaceId: true },
   });
   return memberships.map((membership) => membership.workspaceId);
