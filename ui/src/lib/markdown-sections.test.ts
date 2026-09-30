@@ -2,7 +2,7 @@
  * #190 — splitting a large document into renderable sections without losing
  * code fences or heading anchors.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
@@ -136,6 +136,22 @@ describe("splitMarkdownSections", () => {
   it("closes a fence only with the same character and at least its length", () => {
     const { sections } = splitMarkdownSections("## A\n````\n```\n## Inside\n````\n## B");
     expect(sections.map((s) => s.heading?.text)).toEqual(["A", "B"]);
+  });
+
+  // #548 review: a definition-shaped line that is not a definition, at a
+  // block start in a run with no blank lines, must not reparse the rest of the
+  // run each time, or sectioning goes quadratic and freezes the main thread.
+  // Counts the source handed to the parser, so the bound is deterministic.
+  it("parses a run of non-definition `[x]:` lines in linear, not quadratic, source", () => {
+    const markdown = Array.from({ length: 400 }, (_, n) => `### h${n}\n[x]:`).join("\n");
+    const parse = vi.spyOn(Object.getPrototypeOf(unified()), "parse");
+    try {
+      splitMarkdownSections(markdown);
+      const parsed = parse.mock.calls.reduce((sum, [file]) => sum + String(file).length, 0);
+      expect(parsed).toBeLessThan(10 * markdown.length);
+    } finally {
+      parse.mockRestore();
+    }
   });
 });
 

@@ -179,14 +179,16 @@ function footnoteEnd(lines: string[], fenced: boolean[], start: number): number 
  * definition: a bare `[label]:` whose next line is no destination is a
  * paragraph (#522). No part of a definition may contain a blank line, but its
  * label, destination and title can each span several lines (#548), so it is
- * parsed through the next blank line. That run is parsed once: every
- * definition that starts a block in it is recorded in `ends` (line → end), so
- * a run of consecutive definitions costs one parse, not one per definition.
+ * parsed through the next blank line. That run is parsed once: every line in
+ * it is recorded in `ends`, mapped to its definition's end when a definition
+ * starts a block there and to `undefined` otherwise, so the run costs one
+ * parse however many definition-shaped lines it holds, whether or not they
+ * are definitions.
  */
 function linkDefinitionEnd(
   lines: string[],
   start: number,
-  ends: Map<number, number>,
+  ends: Map<number, number | undefined>,
 ): number | undefined {
   if (!ends.has(start)) {
     let stop = start + 1;
@@ -197,6 +199,7 @@ function linkDefinitionEnd(
         ends.set(start + node.position.start.line - 1, start + node.position.end.line);
       }
     }
+    for (let i = start; i < stop; i++) if (!ends.has(i)) ends.set(i, undefined);
   }
   return ends.get(start);
 }
@@ -213,7 +216,7 @@ function collectDefinitions(lines: string[]): Definitions {
   const definitions = new Map<string, string>();
   const inFence = fenceTracker();
   const fenced = lines.map((line) => inFence(line));
-  const linkEnds = new Map<number, number>();
+  const linkEnds = new Map<number, number | undefined>();
   let atBlock = true;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -263,8 +266,8 @@ export function withDefinitions(markdown: string, definitions: Definitions): str
   // Blank-line separated, so no definition reads as continuing another, and
   // closed by one more that nothing references, so `markdown` opening with
   // indented code cannot continue a footnote definition (#548).
-  const text = [...supplied, markdown].join("\n\n");
-  return `${[...supplied].join("\n\n")}\n\n${unreferencedDefinition(text)}\n\n${markdown}`;
+  const sources = [...supplied].join("\n\n");
+  return `${sources}\n\n${unreferencedDefinition(`${sources}\n\n${markdown}`)}\n\n${markdown}`;
 }
 
 /**
