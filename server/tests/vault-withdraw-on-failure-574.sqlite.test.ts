@@ -34,7 +34,12 @@ vi.mock("../src/lib/prisma.js", async () => {
     Prisma,
   };
 });
+vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/lib/audit/audit-service.js")>();
+  return { ...real, audit: vi.fn(real.audit) };
+});
 
+const { audit } = await import("../src/lib/audit/audit-service.js");
 const { getVaultService, __resetVaultSingleton } =
   await import("../src/lib/vault/vault-service.js");
 const jira = await import("../src/lib/connectors/jira/jira-service.js");
@@ -362,6 +367,45 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res!.status).toBe(409);
       expect(r.live).toEqual([]);
       expect(r.withdrawn).toHaveLength(1);
+    });
+
+    it("MCP create (project scope): the withdrawal of a refused create is audited with its project", async () => {
+      // The create schema wants a full-length id, which `p1` is not.
+      const projectId = "proj-574-mcp";
+      await db.project.create({
+        data: { id: projectId, name: "P", slug: projectId, createdById: OWNER },
+      });
+      const label = uniq("mcp-574-proj");
+      const body = { ...mcpBody(label), scope: "project", projectId };
+      const first = await post(body);
+      expect(first.status, JSON.stringify(first.body)).toBe(201);
+      vi.mocked(audit).mockClear();
+
+      let res: request.Response | undefined;
+      const r = await madeDuring(ADMIN, async () => {
+        res = await post(body);
+      });
+
+      expect(res!.status, JSON.stringify(res!.body)).toBe(409);
+      expect(r.live).toEqual([]);
+      expect(r.withdrawn).toHaveLength(1);
+      const deletes = vi
+        .mocked(audit)
+        .mock.calls.map(([e]) => e)
+        .filter((e) => e.action === "vault.delete");
+      expect(deletes).toEqual([
+        {
+          actor: { id: ADMIN },
+          action: "vault.delete",
+          target: { type: "secret", id: r.withdrawn[0] },
+          metadata: {
+            source: "create_not_applied",
+            reason: "create_failed",
+            resourceType: "mcp_server",
+            projectId,
+          },
+        },
+      ]);
     });
 
     it("MCP create: a header failing to vault withdraws the env secret vaulted before it", async () => {
