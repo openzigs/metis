@@ -1,6 +1,6 @@
 ---
 name: vitest-once-mocks-and-retries-hide-leaks
-description: An unused mockRejectedValueOnce survives clearAllMocks and fails a later test; server retry:2 hides it. Check new tests with --retry=0.
+description: server retry:2 hides once-mock leaks, races and wrong-reason passes; check new tests with --retry=0 and assert the reason, not just the status.
 metadata:
   type: project
 ---
@@ -10,3 +10,7 @@ On PR #452 (#448), a test queued `update.mockRejectedValueOnce(...)`. The fixed 
 **Why:** retries mask both order-dependent leaks and races, and clearAllMocks resets only call history.
 
 **How to apply:** for "this must not be called", assert `not.toHaveBeenCalled()` instead of queueing a rejection. Verify every new or changed test with `vitest run <file> --retry=0`. When a PR claims a test was red before the fix, check that the output has no `(retry x2)` pass.
+
+Two more shapes (2026-09-30):
+- **Right status, wrong reason.** On #571 (#563), the workspace invite accept route returns 410 for three reasons: expired, used and workspace deleted. With the fix reverted, attempt 1 consumed the invite, and the retry got 410 "already been used", so a status-only assertion passed. Assert the error message or code as well.
+- **One-shot deferreds.** On #583 (#562), the race test gated a module-scoped `vi.hoisted` deferred that resolved once. A retry ran with the lookup already resolved and no longer exercised the race. Create the deferred per attempt, and use a barrier on the same connection: Socket.IO orders packets per connection only.
