@@ -120,6 +120,21 @@ describe("Workspace Routes", () => {
       expect(res.body.data).toHaveLength(1);
       expect(res.body.data[0].name).toBe("Test");
     });
+
+    // #539 — DELETE soft-deletes (sets deletedAt), so a list that reads every
+    // membership kept showing a deleted workspace in the header switcher.
+    it("leaves out soft-deleted workspaces", async () => {
+      const app = createApp(mockUser);
+      vi.mocked(prisma.workspaceMember.findMany).mockResolvedValue([] as never);
+
+      await request(app).get("/workspaces");
+
+      expect(prisma.workspaceMember.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: "user-1", workspace: { deletedAt: null } },
+        }),
+      );
+    });
   });
 
   describe("POST /workspaces", () => {

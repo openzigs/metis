@@ -21,14 +21,21 @@ import {
   FABLE_MODEL_ID,
   OPUS_MODEL_ID,
   LEGACY_SONNET_MODEL_ID,
+  type RouterProvider,
 } from "../lib/ai/model-router.js";
 import { routerCatalog } from "../lib/ai/model-catalog.js";
+import { loadAIConfig } from "../lib/ai/config.js";
+import { buildProvider } from "../lib/ai/providers/factory.js";
+import { createChildLogger } from "../lib/logger.js";
 import {
   estimateAnalysisRunTokens,
   profileAnalysisRun,
   readAgentCountFromMetadata,
 } from "../lib/ai/analysis-run-estimate.js";
 import { getProjectMonthlyAnalysisTokens } from "../lib/analysis/cost-cap.js";
+import { getOrchestrator } from "../lib/analysis/orchestrator.js";
+
+const log = createChildLogger("model-preferences");
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -228,6 +235,7 @@ export function initModelRecommendationRouter(): Router {
           }
         : undefined,
       currentMonthTokens,
+      provider: activeRouterProvider(),
     });
 
     const selection = modelRouter.select(profile, override);
@@ -244,6 +252,32 @@ export function initModelRecommendationRouter(): Router {
   router.post("/", requireAuth, requireProjectAccess(), requirePermission("analysis.read"), handle);
 
   return router;
+}
+
+/**
+ * #512 — the provider an analysis run uses, so the Model card names the model
+ * the run will actually use. The booted analysis orchestrator's own provider
+ * when there is one (it is built once at boot, so a config built per request
+ * could disagree with it after a runtime change); otherwise one built from the
+ * same configuration the orchestrator is lazily booted from, which makes no
+ * network call. A configuration that cannot be loaded leaves the
+ * recommendation on tier routing (the run itself will surface that error)
+ * rather than failing the form.
+ */
+function activeRouterProvider(): RouterProvider | undefined {
+  try {
+    return getOrchestrator().provider;
+  } catch {
+    // Not booted yet — fall through to the configuration.
+  }
+  try {
+    return buildProvider({ config: loadAIConfig() });
+  } catch (err) {
+    log.warn("Could not resolve the active AI provider for the model recommendation", {
+      error: (err as Error).message,
+    });
+    return undefined;
+  }
 }
 
 async function ensureProjectExists(projectId: string): Promise<void> {

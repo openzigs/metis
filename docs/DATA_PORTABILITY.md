@@ -306,10 +306,12 @@ A logical dump carries the **source** host's connector endpoints and topology-co
 
 | Model | Remappable fields |
 |-------|-------------------|
-| `RepoConnection` | `apiBaseUrl`, `localPath`, `uploadPath` |
+| `RepoConnection` | `apiBaseUrl`, `localPath` (`uploadPath` is accepted for older specs but ignored, with a warning — see below) |
 | `DatabaseConnection` | `host`, `port`, `databaseName` |
 | `MCPServer` | `url` |
 | `RuntimeConfig` | only keys classified `env-specific-tunable` by `env-config-classifier` |
+
+**`uploadPath` is always re-anchored (#527).** As each row is loaded (before it is written, so even a failed import never stores the bundle's path) and again after any `--remap`, every upload connector's `uploadPath` is rewritten to `<UPLOAD_ARCHIVE_DIR>/<id>.zip` on the importing server (default `<cwd>/data/repo-archives`), whatever the bundle or the remap said — deleting a connector removes the file that column names, so an imported row may not point outside the archive root. Copy each `<id>.zip` from A's archive directory into B's. A row with an `uploadPath` whose id is not server-generated (`[a-z0-9]+`) fails the import.
 
 Each model supports two mechanisms: a `valueMap` (old-value → new-value substitution) and `byId` per-row overrides (which take priority). The spec is **Zod-validated**; unknown top-level keys, non-allowlisted fields, and `RuntimeConfig` keys that are not env-specific tunables are rejected before the database is touched.
 
@@ -424,7 +426,7 @@ PUBLISH_GITHUB_ALLOWED_HOSTS  # GitHub Enterprise publish hostname allowlist for
 
 | Model | Fields requiring review |
 |---|---|
-| `RepoConnection` | `localPath`, `uploadPath`, `apiBaseUrl` |
+| `RepoConnection` | `localPath`, `apiBaseUrl` (`uploadPath` is re-anchored automatically — copy the archives, see 5.1) |
 | `DatabaseConnection` | `host`, `port`, `databaseName` |
 | `MCPServer` | `url`, `command`, `args`, `runtime`, k8s limits, `egressAllowlist` |
 | `JiraConnection` | `baseUrl`, `proxyUrl` |

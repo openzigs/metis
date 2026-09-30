@@ -19,7 +19,7 @@ export class ScanTriagePage {
   constructor(page: Page) {
     this.page = page;
     this.root = page.getByTestId("scanner-triage-root");
-    this.heading = page.getByRole("heading", { name: "Scan triage" });
+    this.heading = page.getByRole("heading", { name: "Scan triage", exact: true });
     this.card = page.getByTestId("scanner-triage-card");
     this.backLink = page.getByRole("link", { name: "← Back to project" });
   }

@@ -51,7 +51,7 @@ export class AgentWizardPage {
   constructor(page: Page) {
     this.page = page;
     this.root = page.getByTestId("agent-wizard-root");
-    this.heading = page.getByRole("heading", { name: "New Custom Agent" });
+    this.heading = page.getByRole("heading", { name: "New Custom Agent", exact: true });
     this.nextButton = page.getByTestId("wizard-next");
     this.backButton = page.getByTestId("wizard-back");
 
@@ -117,7 +117,7 @@ export class CustomAgentsEnablementSection {
   constructor(page: Page) {
     this.page = page;
     this.card = page.getByTestId("custom-agents-enablement-card");
-    this.heading = page.getByRole("heading", { name: "Custom agents" });
+    this.heading = page.getByRole("heading", { name: "Custom agents", exact: true });
     this.empty = page.getByTestId("custom-agents-enablement-empty");
     this.error = page.getByTestId("custom-agents-enablement-error");
     this.newAgentLink = this.card.getByRole("link", { name: "New agent" });

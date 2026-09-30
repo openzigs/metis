@@ -127,6 +127,10 @@ export class UsageCountingProvider implements AIProvider {
   get capabilities(): AIProvider["capabilities"] {
     return this.inner.capabilities;
   }
+  /** #512 — the inner adapter's answer; one that cannot answer cannot serve. */
+  servesRouterModel(modelId: string): boolean {
+    return this.inner.servesRouterModel?.(modelId) === true;
+  }
 
   async chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResponse> {
     const res = await this.inner.chat(messages, opts);

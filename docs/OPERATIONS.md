@@ -289,6 +289,7 @@ psql "$DATABASE_URL" -c "DELETE FROM \"prReviewWebhookDelivery\" WHERE \"receive
 | Per release | Re-run `pnpm test:coverage` and confirm gates still pass |
 | Per release | Re-run `pnpm verify:image-size` after rebuilding the Docker images |
 | After any embedding-model / pooling / dtype change | `pnpm embeddings:migrate status`, then follow the runbook (below) |
+| Once, after upgrading past the issue-draft dedup migration (#369) | `pnpm --filter @metis/server publishing:dedup-leftovers` — read-only; lists retired duplicate drafts that still have a published GitHub/Jira issue, split into issues shared with the kept draft (leave open) and separate issues (close one if unwanted) and live drafts whose parent was retired (#396) |
 
 ### 6.1 Embedding-model migration
 
