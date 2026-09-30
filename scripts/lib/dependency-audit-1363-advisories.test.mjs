@@ -421,15 +421,10 @@ describe("the #1363 advisory set is closed in the resolved tree", () => {
       ).toBe(true);
     });
 
-    it("stays inside the 9.x major — 10.x is a separate change", () => {
-      const range = declaredRange("server/package.json", "nodemailer");
-      expect(
-        /(\d+)\.\d+\.\d+/.exec(range)?.[1],
-        `nodemailer is pinned to "${range}". This arm holds the range inside 9.x: 10.x is a ` +
-          "major bump with its own breaking changes and belongs in its own PR, not smuggled " +
-          "in under an advisory fix.",
-      ).toBe("9");
-    });
+    // The "stays inside the 9.x major" arm was retired by #426: GHSA-v53p-9fqp-m79j
+    // (CVSS 7.5) covers every nodemailer <= 10.0.5 with no 9.x fix, so the 10.x bump
+    // landed as its own PR, as that arm required. Its floor now lives in
+    // dependency-audit-426-nodemailer.test.mjs.
 
     it("resolves NO nodemailer copy below 9.1.1", () => {
       const resolved = resolvedVersions("nodemailer");

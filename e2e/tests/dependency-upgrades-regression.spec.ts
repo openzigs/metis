@@ -121,7 +121,9 @@ test.describe("Dependency Upgrades Regression (#633)", () => {
     const slug = `e2e-dep-upgrade-${Date.now()}`;
     await projectsPage.createProject(`Dep Upgrade Test ${slug}`, slug);
 
-    // Project appears in the list — exercises Prisma 7 SELECT
+    // Project appears in the list — exercises Prisma 7 SELECT. Create lands on
+    // the new project's Overview (#370), so return to the list first.
+    await projectsPage.goto();
     await expect(projectsPage.list.getByText(slug).first()).toBeVisible();
   });
 
