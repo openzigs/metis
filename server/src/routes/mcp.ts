@@ -332,7 +332,7 @@ export function mcpRouter(): Router {
     const actor = actorFromReq(req);
     await assertServerAccess(req, String(req.params.id));
     // #344 — before any vault write, so a refused request leaves nothing.
-    await assertMcpUpdateSecretBinding(
+    const checkedAt = await assertMcpUpdateSecretBinding(
       { userId: actor.id, role: actor.role },
       String(req.params.id),
       parsed.data,
@@ -381,6 +381,7 @@ export function mcpRouter(): Router {
           headers: parsed.data.headers === undefined ? undefined : headerResult.rewritten,
         },
         actor,
+        checkedAt,
       );
       res.json(ok(updated));
     } catch (err) {

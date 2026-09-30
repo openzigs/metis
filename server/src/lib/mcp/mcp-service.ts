@@ -30,6 +30,7 @@ import { getVaultService } from "../vault/vault-service.js";
 import type { MCPLifecycleManager } from "./lifecycle-manager.js";
 import {
   MCPRegistryError,
+  mcpConcurrentUpdateError,
   PROJECT_REQUIRED,
   PROJECT_REQUIRED_MESSAGE,
 } from "./mcp-service-error.js";
@@ -375,7 +376,16 @@ export class MCPRegistryService {
     return this.toView(row);
   }
 
-  async update(id: string, input: UpdateMCPServerInput, actor: ActorLite): Promise<MCPServerView> {
+  /**
+   * `expectedUpdatedAt` (#479) is the `updatedAt` the route's binding guard
+   * read; when given, the write is conditional on it and a miss is a 409.
+   */
+  async update(
+    id: string,
+    input: UpdateMCPServerInput,
+    actor: ActorLite,
+    expectedUpdatedAt?: Date | null,
+  ): Promise<MCPServerView> {
     const existing = await prisma.mCPServer.findFirst({ where: { id, deletedAt: null } });
     if (!existing) {
       throw new MCPRegistryError(404, "NOT_FOUND", `MCP server ${id} not found`);
@@ -403,7 +413,18 @@ export class MCPRegistryService {
     // Sub-issue #276 — admin-only trust promotion on updates.
     assertTrustPromotionAllowed(input.trustLevel, actor);
     const data = this.buildUpdatePayload(input);
-    const row = await prisma.mCPServer.update({ where: { id }, data });
+    let row;
+    if (expectedUpdatedAt === undefined) {
+      row = await prisma.mCPServer.update({ where: { id }, data });
+    } else {
+      if (expectedUpdatedAt === null) throw mcpConcurrentUpdateError();
+      const { count } = await prisma.mCPServer.updateMany({
+        where: { id, updatedAt: expectedUpdatedAt },
+        data,
+      });
+      if (count === 0) throw mcpConcurrentUpdateError();
+      row = await prisma.mCPServer.findUniqueOrThrow({ where: { id } });
+    }
     auditMcpEvent("mcp.updated", {
       mcpId: row.id,
       name: row.label,

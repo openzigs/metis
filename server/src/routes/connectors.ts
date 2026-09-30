@@ -601,13 +601,19 @@ export function connectorsRouter(): Router {
         });
       }
       const { id: _id, ...patch } = parsed.data;
-      await assertRepoSecretBinding(authUser(req), projectIdOf(req), String(req.params.id), patch);
+      const checkedAt = await assertRepoSecretBinding(
+        authUser(req),
+        projectIdOf(req),
+        String(req.params.id),
+        patch,
+      );
       try {
         const updated = await updateRepoConnector(
           projectIdOf(req),
           String(req.params.id),
           patch,
           actor(req),
+          checkedAt,
         );
         res.json(ok(updated));
       } catch (err) {
@@ -970,13 +976,19 @@ export function connectorsRouter(): Router {
         });
       }
       const { id: _id, ...patch } = parsed.data;
-      await assertDbSecretBinding(authUser(req), projectIdOf(req), String(req.params.id), patch);
+      const checkedAt = await assertDbSecretBinding(
+        authUser(req),
+        projectIdOf(req),
+        String(req.params.id),
+        patch,
+      );
       try {
         const updated = await updateDbConnector(
           projectIdOf(req),
           String(req.params.id),
           patch,
           actor(req),
+          checkedAt,
         );
         res.json(ok(updated));
       } catch (err) {

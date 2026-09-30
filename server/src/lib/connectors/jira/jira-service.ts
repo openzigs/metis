@@ -20,7 +20,7 @@ import { getVaultService } from "../../vault/vault-service.js";
 import { rotateOrCreate } from "../../vault/secret-rotation.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
-import { ConnectorError } from "../types.js";
+import { ConnectorError, concurrentUpdateError } from "../types.js";
 import { assertConnectorHostAllowed } from "../network-allowlist.js";
 import { createJiraClient, type JiraClient } from "./jira-client.js";
 import type { JiraRawResource } from "./raw-fetch.js";
@@ -244,6 +244,8 @@ export async function updateJiraConnection(
   input: UpdateJiraConnectionInput,
   actorId: string,
   projectId?: string,
+  /** #479 — the `updatedAt` the binding guard read; the write is conditional on it. */
+  expectedUpdatedAt?: Date | null,
 ): Promise<JiraConnectionDetail> {
   const existing = await findOrThrow(id, projectId);
   const data: Record<string, unknown> = {};
@@ -322,7 +324,17 @@ export async function updateJiraConnection(
 
   let row;
   try {
-    row = await prisma.jiraConnection.update({ where: { id }, data });
+    if (expectedUpdatedAt === undefined) {
+      row = await prisma.jiraConnection.update({ where: { id }, data });
+    } else {
+      if (expectedUpdatedAt === null) throw concurrentUpdateError();
+      const { count } = await prisma.jiraConnection.updateMany({
+        where: { id, updatedAt: expectedUpdatedAt },
+        data,
+      });
+      if (count === 0) throw concurrentUpdateError();
+      row = await prisma.jiraConnection.findUniqueOrThrow({ where: { id } });
+    }
   } catch (err) {
     if (isUniqueViolation(err) && typeof data.label === "string") {
       throw labelTaken(data.label);

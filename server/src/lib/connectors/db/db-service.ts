@@ -40,7 +40,12 @@ import { getVaultService } from "../../vault/vault-service.js";
 import { resolveAndAssertConnectorHost } from "../network-allowlist.js";
 import { isDriverDetailCode, sanitizeDriverError } from "../driver-error.js";
 import { redactRows } from "../pii-redactor.js";
-import { ConnectorError, NOOP_EMITTER, type ConnectorEmitter } from "../types.js";
+import {
+  ConnectorError,
+  concurrentUpdateError,
+  NOOP_EMITTER,
+  type ConnectorEmitter,
+} from "../types.js";
 import { resolveVaultRef } from "../vault-resolver.js";
 import { getDriverFactory, hasDriver, type DbDriverAdapter } from "./driver.js";
 import { registerBuiltInDrivers } from "./register-drivers.js";
@@ -162,6 +167,8 @@ export async function updateDbConnector(
   id: string,
   patch: Omit<UpdateDatabaseConnectorInput, "id">,
   actorId: string | null,
+  /** #479 — the `updatedAt` the binding guard read; the write is conditional on it. */
+  expectedUpdatedAt?: Date | null,
 ) {
   const existing = await prisma.databaseConnection.findFirst({
     where: { id, projectId, deletedAt: null },
@@ -193,7 +200,18 @@ export async function updateDbConnector(
   }
   // Mutating connection params invalidates the cached adapter.
   await closeAdapter(id);
-  const row = await prisma.databaseConnection.update({ where: { id }, data });
+  let row;
+  if (expectedUpdatedAt === undefined) {
+    row = await prisma.databaseConnection.update({ where: { id }, data });
+  } else {
+    if (expectedUpdatedAt === null) throw concurrentUpdateError();
+    const { count } = await prisma.databaseConnection.updateMany({
+      where: { id, updatedAt: expectedUpdatedAt },
+      data,
+    });
+    if (count === 0) throw concurrentUpdateError();
+    row = await prisma.databaseConnection.findUniqueOrThrow({ where: { id } });
+  }
   audit({
     actor: { id: actorId },
     action: "connector.db.update",
