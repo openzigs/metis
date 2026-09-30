@@ -259,6 +259,26 @@ export interface MdastNode {
 }
 
 /**
+ * The labels (`1`, `Note`) of the footnote references `markdown` renders in
+ * its body, in document order, as the renderer parses it: beside the
+ * definitions it names ({@link withDefinitions}). A footnote definition's own
+ * references are left out; the footnote list numbers them after the body's, as
+ * a whole-document render does.
+ */
+function footnoteReferences(markdown: string, definitions: Definitions): string[] {
+  // Every reference starts `[^`: a section without one needs no parse.
+  if (!markdown.includes("[^")) return [];
+  const labels: string[] = [];
+  const visit = (node: MdastNode) => {
+    if (node.type === "footnoteDefinition") return;
+    if (node.type === "footnoteReference" && node.label !== undefined) labels.push(node.label);
+    node.children?.forEach(visit);
+  };
+  visit(headingParser.parse(withDefinitions(markdown, definitions)) as MdastNode);
+  return labels;
+}
+
+/**
  * The text a heading's id is slugged from: what the reader sees, with
  * emphasis, code, link and entity syntax resolved. Image alt text and raw
  * inline HTML are excluded, because neither renders as heading text (the
@@ -287,26 +307,6 @@ function parseHeading(source: string): MdastNode | undefined {
  * whether or not the definition was in the parse that produced `heading`. The
  * ONLY way either side computes a heading's text.
  */
-/**
- * The labels (`1`, `Note`) of the footnote references `markdown` renders in
- * its body, in document order, as the renderer parses it: beside the
- * definitions it names ({@link withDefinitions}). A footnote definition's own
- * references are left out; the footnote list numbers them after the body's, as
- * a whole-document render does.
- */
-function footnoteReferences(markdown: string, definitions: Definitions): string[] {
-  // Every reference starts `[^`: a section without one needs no parse.
-  if (!markdown.includes("[^")) return [];
-  const labels: string[] = [];
-  const visit = (node: MdastNode) => {
-    if (node.type === "footnoteDefinition") return;
-    if (node.type === "footnoteReference" && node.label !== undefined) labels.push(node.label);
-    node.children?.forEach(visit);
-  };
-  visit(headingParser.parse(withDefinitions(markdown, definitions)) as MdastNode);
-  return labels;
-}
-
 export function headingText(heading: MdastNode, source: string, definitions: Definitions): string {
   const named = new Set<string>();
   for (const [, label] of source.matchAll(BRACKETED)) {
