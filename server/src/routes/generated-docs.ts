@@ -93,7 +93,10 @@ import {
   publicDocWarnings,
   publicGenerationErrorMessage,
 } from "../lib/docs-gen/generation-failure-message.js";
-import { publicIndexingErrorMessage } from "../lib/rag/indexing-failure-message.js";
+import {
+  INDEXING_PUBLICATION_CANCELLED_MESSAGE,
+  publicIndexingErrorMessage,
+} from "../lib/rag/indexing-failure-message.js";
 
 const log = createChildLogger("generated-docs");
 
@@ -134,7 +137,13 @@ function unpublishedIndex(outbox?: PublicationState | null) {
     status: failed ? "failed" : outbox?.status === "running" ? "processing" : "pending",
     chunkCount: 0,
     // #98 — the outbox task's error is the publication's own exception text.
-    errorMessage: failed ? publicIndexingErrorMessage(outbox.errorMessage) : null,
+    // #232 — a cancelled task's is the cancellation reason: say "cancelled".
+    errorMessage:
+      outbox?.status === "cancelled"
+        ? INDEXING_PUBLICATION_CANCELLED_MESSAGE
+        : failed
+          ? publicIndexingErrorMessage(outbox.errorMessage)
+          : null,
     processedAt: null,
   };
 }
@@ -1049,11 +1058,7 @@ export async function generateDocumentAsync(
     }> = [];
     let synthesizedProvenanceManifest: string | null = null;
     let fallbackGenerationPipeline:
-      | "holistic"
-      | "incremental-discovery"
-      | "discovery-agent"
-      | "database-schema"
-      | undefined;
+      "holistic" | "incremental-discovery" | "discovery-agent" | "database-schema" | undefined;
     let fallbackGenerationModels:
       | {
           phase1: string;

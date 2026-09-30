@@ -5,6 +5,7 @@ import { getDocumentStorage, type StorageBackend } from "../documents/storage.js
 import { getEmbedder, type Embedder } from "../rag/embedder.js";
 import type { AclSubject } from "@metis/shared";
 import { writeQuarantine, approveDocument, shouldAutoApprove } from "../rag/quarantine.js";
+import { GENERATED_DOC_PUBLICATION_CANCELLED } from "../rag/indexing-failure-message.js";
 import { getSchedulerBootstrap } from "../scheduler/index.js";
 import { taskAbortSource } from "../scheduler/task-abort.js";
 import { getVectorStore } from "../rag/vector-store.js";
@@ -56,8 +57,8 @@ export const GENERATED_DOC_EVIDENCE_CLASS = "derived-generated-doc";
 /** Texts per embed call during publication (#189): bounded, never the whole document. */
 export const PUBLICATION_EMBED_BATCH_SIZE = 32;
 export const GENERATED_DOC_PUBLICATION_TASK_TYPE = "publish-generated-document";
-/** #201 — `errorMessage` prefix of a publication a user cancelled. */
-export const GENERATED_DOC_PUBLICATION_CANCELLED = "generated-doc publication cancelled";
+/** #201 — `errorMessage` prefix of a publication a user cancelled (#232: read-side mapping). */
+export { GENERATED_DOC_PUBLICATION_CANCELLED };
 
 export interface GeneratedDocPublicationRequest extends GeneratedDocRevisionKey {
   markdown: string;
