@@ -154,6 +154,7 @@ export async function previewBatchPlan(input: PreviewBatchPlanInput): Promise<Dr
     input.projectId,
     input.targetOwner,
     input.targetRepo,
+    drafts.map((d) => d.id),
   );
   const credential = await preflightCredential(input.secretRef);
   return buildDryRunPlan({
@@ -256,6 +257,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
       batch.projectId,
       dryTarget.owner,
       dryTarget.repo,
+      drafts.map((d) => d.id),
     );
     // #1093 — pre-flight the credential. This is the one thing an operator
     // most wants a preview to predict, and previously the dry run reported
@@ -358,7 +360,12 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     phase: "dedup-scan",
     step: "loading-existing-issues",
   });
-  const existingByHash = await loadExistingByHash(batch.projectId, target.owner, target.repo);
+  const existingByHash = await loadExistingByHash(
+    batch.projectId,
+    target.owner,
+    target.repo,
+    drafts.map((d) => d.id),
+  );
 
   // Recover lost PublishedIssue rows by parsing marker comments on remote issues.
   await reconcileFromRemote({
@@ -1117,12 +1124,25 @@ interface ExistingMatch {
   parentIssueNumber: number | null;
 }
 
+/**
+ * The published issue a draft's title dedup-matches, keyed on `dedupHash`.
+ *
+ * #528 — more than one row can share a hash (two published drafts of one
+ * group before #369's unique index, or any older duplicate publish). The pick
+ * must not depend on the database's row order, or a later publish updates —
+ * and overwrites — whichever issue happened to come back last. So, per hash:
+ * a row whose `draftId` is one of `preferDraftIds` (the drafts being
+ * published) beats one that is not; then the most recent `publishedAt`; then
+ * the greater row `id`, so even an exact timestamp tie is settled the same way
+ * on every run.
+ */
 async function loadExistingByHash(
   projectId: string,
   owner: string,
   repo: string,
+  preferDraftIds: ReadonlyArray<string> = [],
 ): Promise<Map<string, ExistingMatch>> {
-  const out = new Map<string, ExistingMatch>();
+  const preferred = new Set(preferDraftIds);
   const rows = await prisma.publishedIssue.findMany({
     where: {
       batch: { projectId, targetOwner: owner, targetRepo: repo, archived: false },
@@ -1130,9 +1150,15 @@ async function loadExistingByHash(
       dedupHash: { not: null },
     },
   });
+  const best = new Map<string, (typeof rows)[number]>();
   for (const row of rows) {
     if (!row.dedupHash) continue;
-    out.set(row.dedupHash, {
+    const current = best.get(row.dedupHash);
+    if (!current || outranks(row, current, preferred)) best.set(row.dedupHash, row);
+  }
+  const out = new Map<string, ExistingMatch>();
+  for (const [hash, row] of best) {
+    out.set(hash, {
       issueNumber: row.issueNumber,
       issueId: row.issueId,
       htmlUrl: row.htmlUrl,
@@ -1141,6 +1167,19 @@ async function loadExistingByHash(
     });
   }
   return out;
+}
+
+/** #528 — a total order over rows sharing a hash; see `loadExistingByHash`. */
+function outranks(
+  a: { id: string; draftId: string; publishedAt: Date },
+  b: { id: string; draftId: string; publishedAt: Date },
+  preferred: ReadonlySet<string>,
+): boolean {
+  const aPreferred = preferred.has(a.draftId);
+  if (aPreferred !== preferred.has(b.draftId)) return aPreferred;
+  const dt = a.publishedAt.getTime() - b.publishedAt.getTime();
+  if (dt !== 0) return dt > 0;
+  return a.id > b.id;
 }
 
 interface ReconcileArgs {
