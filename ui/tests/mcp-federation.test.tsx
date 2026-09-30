@@ -80,6 +80,7 @@ const FAKE_INSTALLED: MCPServerView = {
   headers: null,
   env: null,
   envSecretRefs: null,
+  unboundSecretRefs: [],
   enabled: true,
   trustLevel: "untrusted",
   defaultToolRisk: "medium",

@@ -27,7 +27,7 @@ import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { expandVaultRefs, type VaultRefMapKind } from "../vault/env-manager.js";
 import { bindSecretRefs, parseSecretBindings } from "../vault/bound-secret.js";
-import { mcpRefs } from "./secret-binding.js";
+import { mcpRefs, unboundMcpRefs } from "./secret-binding.js";
 import { getVaultService } from "../vault/vault-service.js";
 import type { MCPLifecycleManager } from "./lifecycle-manager.js";
 import {
@@ -74,6 +74,12 @@ export interface MCPServerView {
   /** env values are NEVER plaintext — `${vault:...}` refs returned, plain values masked. */
   env: Record<string, string> | null;
   envSecretRefs: Record<string, string> | null;
+  /**
+   * #537 — env/header vault references the server holds but is not bound to
+   * (flagged by the #504 backfill). The server will not start until they are
+   * re-bound (`POST /api/mcp/:id/rebind-secrets`) or replaced.
+   */
+  unboundSecretRefs: string[];
   trustLevel: MCPTrustLevel;
   defaultToolRisk: "low" | "medium" | "high";
   version: string | null;
@@ -467,6 +473,51 @@ export class MCPRegistryService {
       extra: { changed: Object.keys(input) },
     });
     return this.toView(row);
+  }
+
+  /**
+   * #537 — bind the references the #504 backfill flagged to the secrets they
+   * resolve to now, keeping every existing binding, without changing anything
+   * else about the server. The caller's right to attach them is the route's
+   * `assertMcpRebindSecretBinding`, whose `updatedAt` makes this write
+   * conditional (a miss is a 409). An ambiguous or unresolved reference still
+   * throws (409 / 400), so it must be edited instead.
+   */
+  async rebindSecrets(
+    id: string,
+    actor: ActorLite,
+    expectedUpdatedAt: Date | null,
+  ): Promise<MCPServerView> {
+    const existing = await prisma.mCPServer.findFirst({ where: { id, deletedAt: null } });
+    if (!existing) {
+      throw new MCPRegistryError(404, "NOT_FOUND", `MCP server ${id} not found`);
+    }
+    const unbound = unboundMcpRefs(existing);
+    if (unbound.length === 0) return this.toView(existing);
+    if (expectedUpdatedAt === null) throw mcpConcurrentUpdateError();
+    const bindings = await bindSecretRefs(
+      mcpRefs(
+        parseObject<Record<string, string>>(existing.envJson),
+        parseObject<Record<string, string>>(existing.headers),
+      ),
+      parseSecretBindings(existing.secretBindings),
+    );
+    const { count } = await prisma.mCPServer.updateMany({
+      where: { id, updatedAt: expectedUpdatedAt },
+      data: { secretBindings: JSON.stringify(bindings) },
+    });
+    if (count === 0) throw mcpConcurrentUpdateError();
+    audit({
+      actor: { id: actor.id },
+      action: "vault.binding_rebound",
+      target: { type: "mcp_server", id },
+      metadata: {
+        serverLabel: existing.label,
+        // `boundId`, not `secretId`: the audit sink redacts any key matching /secret/i.
+        rebound: unbound.map((ref) => ({ ref, boundId: bindings[ref] })),
+      },
+    });
+    return this.toView(await prisma.mCPServer.findUniqueOrThrow({ where: { id } }));
   }
 
   async remove(id: string, actor: ActorLite): Promise<void> {
@@ -917,6 +968,7 @@ export class MCPRegistryService {
       headers: maskedHeaders,
       env: maskedEnv,
       envSecretRefs: parseObject(row.envSecretRefs),
+      unboundSecretRefs: unboundMcpRefs(row),
       trustLevel: row.trustLevel as MCPTrustLevel,
       defaultToolRisk: row.defaultToolRisk as "low" | "medium" | "high",
       version: row.version,

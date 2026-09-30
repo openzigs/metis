@@ -231,7 +231,9 @@ async function backfillMcpServer(
       serverId: row.id,
       serverLabel: row.label,
       judgedOwnerId: row.createdById,
-      remedy: "Save the MCP server again to re-bind its vault references.",
+      remedy:
+        "Re-bind the server's secrets in Settings → MCP servers as the user who created them or an admin, " +
+        "or save the MCP server again to re-bind its vault references.",
     });
   } else {
     report.mcpServersBound += 1;
