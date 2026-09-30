@@ -49,6 +49,7 @@ const EXPECTED_PUBLISHED: DedupLeftovers["publishedRetirees"] = [
     retiredDraftId: "d_b",
     survivorDraftId: "d_c",
     title: "T",
+    projectArchived: false,
     issues: [{ destination: "github", issueNumber: 12, htmlUrl: "https://gh/12", batchId: "b2" }],
   },
   {
@@ -56,6 +57,7 @@ const EXPECTED_PUBLISHED: DedupLeftovers["publishedRetirees"] = [
     retiredDraftId: "d_p2",
     survivorDraftId: "d_p1",
     title: "T",
+    projectArchived: false,
     issues: [
       { destination: "jira", issueNumber: 7, htmlUrl: "https://gh/7", batchId: "b2" },
       { destination: "github", issueNumber: 11, htmlUrl: "https://gh/11", batchId: "b1" },
@@ -139,10 +141,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("after #369 alone: names published retirees, and children #402 would repoint", async () => {
       const r = await report();
-      // Retired by #369: d_a, d_b, d_e, d_f, d_p2, d_s1. The fixture's d_gone
-      // was soft-deleted beforehand, which no application path does, so the
-      // "soft-deleted with a live twin" rule counts it as well.
+      // Retired by #369, all at the migration's one CURRENT_TIMESTAMP: d_a,
+      // d_b, d_e, d_f, d_p2, d_s1. The fixture's d_gone was soft-deleted
+      // beforehand (at T0) and also has a live twin: it is counted, but in its
+      // own deletedAt group, so the report never attributes it to #369.
       expect(r.retiredCount).toBe(7);
+      expect(r.retiredByDeletedAt).toHaveLength(2);
+      expect(r.retiredByDeletedAt[0]).toEqual({ deletedAt: "2026-09-01T00:00:00.000Z", count: 1 });
+      expect(r.retiredByDeletedAt[1].count).toBe(6);
+      expect(r.retiredByDeletedAt[1].deletedAt > r.retiredByDeletedAt[0].deletedAt).toBe(true);
       expect(r.publishedRetirees).toEqual(EXPECTED_PUBLISHED);
       expect(r.orphanedChildren).toEqual([
         {
@@ -151,6 +158,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           retiredParentId: "d_e",
           repair: "survivor",
           survivorDraftId: "d_d",
+          projectArchived: false,
         },
         {
           projectId: "p1",
@@ -158,6 +166,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           retiredParentId: "d_s1",
           repair: "self",
           survivorDraftId: "d_s2",
+          projectArchived: false,
         },
       ]);
     });
@@ -173,6 +182,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           retiredParentId: "d_s1",
           repair: "self",
           survivorDraftId: "d_s2",
+          projectArchived: false,
         },
       ]);
     });
@@ -213,10 +223,74 @@ describe("#396 — findDedupLeftovers edge cases", () => {
     const { prisma, calls } = fake([], []);
     expect(await findDedupLeftovers(prisma)).toEqual({
       retiredCount: 0,
+      retiredByDeletedAt: [],
       publishedRetirees: [],
       orphanedChildren: [],
     });
     expect(calls).toEqual(["issueDraft"]);
+  });
+
+  it("marks leftovers whose project is archived (soft-deleted)", async () => {
+    const at = new Date("2026-09-03T00:00:00.000Z");
+    const archived = { deletedAt: new Date("2026-09-04T00:00:00.000Z") };
+    const prisma = {
+      issueDraft: {
+        findMany: async (args: { where: { deletedAt: unknown; parentDraftId?: unknown } }) => {
+          if (args.where.parentDraftId) {
+            return [
+              { id: "k1", projectId: "pa", parentDraftId: "r1", project: archived },
+              { id: "k2", projectId: "pl", parentDraftId: "r2", project: { deletedAt: null } },
+            ];
+          }
+          if (args.where.deletedAt === null) {
+            return [
+              { id: "s1", projectId: "pa", dedupHash: "h" },
+              { id: "s2", projectId: "pl", dedupHash: "h" },
+            ];
+          }
+          return [
+            {
+              id: "r1",
+              projectId: "pa",
+              dedupHash: "h",
+              title: "A",
+              deletedAt: at,
+              project: archived,
+            },
+            {
+              id: "r2",
+              projectId: "pl",
+              dedupHash: "h",
+              title: "L",
+              deletedAt: at,
+              project: { deletedAt: null },
+            },
+          ];
+        },
+      },
+      publishedIssue: {
+        findMany: async () => [
+          { draftId: "r1", destination: "github", issueNumber: 1, htmlUrl: "u1", batchId: "b" },
+          { draftId: "r2", destination: "github", issueNumber: 2, htmlUrl: "u2", batchId: "b" },
+        ],
+      },
+    } as unknown as DedupLeftoversPrisma;
+    const r = await findDedupLeftovers(prisma);
+    expect(r.publishedRetirees.map((p) => [p.retiredDraftId, p.projectArchived])).toEqual([
+      ["r1", true],
+      ["r2", false],
+    ]);
+    expect(r.orphanedChildren.map((c) => [c.draftId, c.projectArchived])).toEqual([
+      ["k1", true],
+      ["k2", false],
+    ]);
+    const text = formatDedupLeftovers(r).split("\n");
+    expect(text).toContain('  project pa (archived): draft r1 (kept: s1) "A"');
+    expect(text).toContain('  project pl: draft r2 (kept: s2) "L"');
+    expect(text).toContain(
+      "  project pa (archived): draft k1 -> r1 (apply migration #402 to repoint to s1)",
+    );
+    expect(text).toContain("  project pl: draft k2 -> r2 (apply migration #402 to repoint to s2)");
   });
 
   it("does not count a soft-deleted draft with no live twin as a retiree", async () => {
@@ -232,10 +306,15 @@ describe("#396 — findDedupLeftovers edge cases", () => {
 describe("#396 — formatDedupLeftovers", () => {
   it("says there is nothing to do on a clean database", () => {
     expect(
-      formatDedupLeftovers({ retiredCount: 0, publishedRetirees: [], orphanedChildren: [] }),
+      formatDedupLeftovers({
+        retiredCount: 0,
+        retiredByDeletedAt: [],
+        publishedRetirees: [],
+        orphanedChildren: [],
+      }),
     ).toBe(
       [
-        "0 draft(s) retired by the #369 dedup migration.",
+        "0 soft-deleted draft(s) have a live twin.",
         "0 retired draft(s) still have a published issue.",
         "0 live draft(s) name a retired parent.",
       ].join("\n"),
@@ -245,6 +324,10 @@ describe("#396 — formatDedupLeftovers", () => {
   it("lists each duplicate issue and each orphaned child", () => {
     const text = formatDedupLeftovers({
       retiredCount: 3,
+      retiredByDeletedAt: [
+        { deletedAt: "2026-09-01T00:00:00.000Z", count: 1 },
+        { deletedAt: "2026-10-01T12:00:00.000Z", count: 2 },
+      ],
       publishedRetirees: [EXPECTED_PUBLISHED[1]],
       orphanedChildren: [
         {
@@ -253,6 +336,7 @@ describe("#396 — formatDedupLeftovers", () => {
           retiredParentId: "d_e",
           repair: "survivor",
           survivorDraftId: "d_d",
+          projectArchived: false,
         },
         {
           projectId: "p1",
@@ -260,11 +344,14 @@ describe("#396 — formatDedupLeftovers", () => {
           retiredParentId: "d_s1",
           repair: "self",
           survivorDraftId: "d_s2",
+          projectArchived: false,
         },
       ],
     });
     expect(text.split("\n")).toEqual([
-      "3 draft(s) retired by the #369 dedup migration.",
+      "3 soft-deleted draft(s) have a live twin, by deletedAt (#369 retired its duplicates at one timestamp; any other is a separate soft-delete):",
+      "  2026-09-01T00:00:00.000Z: 1",
+      "  2026-10-01T12:00:00.000Z: 2",
       "1 retired draft(s) still have a published issue (close the duplicate if it is unwanted):",
       '  project p1: draft d_p2 (kept: d_p1) "T"',
       "    jira #7 https://gh/7",
@@ -273,5 +360,52 @@ describe("#396 — formatDedupLeftovers", () => {
       "  project p1: draft c_live -> d_e (apply migration #402 to repoint to d_d)",
       "  project p1: draft d_s2 -> d_s1 (it is the kept draft; shown as parentless)",
     ]);
+  });
+});
+
+describe("#396 — formatDedupLeftovers never passes control characters to the terminal", () => {
+  const hostile = "evil\u001b[2K\rFAKE LINE\nsecond\u009b31m\u0007\u007f";
+  const text = formatDedupLeftovers({
+    retiredCount: 1,
+    retiredByDeletedAt: [{ deletedAt: `2026\u001b[1m`, count: 1 }],
+    publishedRetirees: [
+      {
+        projectId: `p\u001b]0;x\u0007`,
+        retiredDraftId: `d\r`,
+        survivorDraftId: `s\n`,
+        title: hostile,
+        projectArchived: false,
+        issues: [
+          {
+            destination: `gh\u001b[A`,
+            issueNumber: 1,
+            htmlUrl: `https://x/\r\nINJECTED`,
+            batchId: "b",
+          },
+        ],
+      },
+    ],
+    orphanedChildren: [
+      {
+        projectId: `p\u009b`,
+        draftId: `c\n`,
+        retiredParentId: `r\u001b`,
+        repair: "survivor",
+        survivorDraftId: `s\r`,
+        projectArchived: false,
+      },
+    ],
+  });
+
+  it("contains no C0 or C1 control character other than the line separators it adds", () => {
+    expect(text.replace(/\n/g, "")).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+  });
+
+  it("cannot add a line: the hostile report has exactly the lines a clean one would", () => {
+    const lines = text.split("\n");
+    expect(lines).toHaveLength(7);
+    expect(lines.some((l) => l.startsWith("FAKE LINE") || l.startsWith("second"))).toBe(false);
+    expect(lines.some((l) => l.startsWith("INJECTED"))).toBe(false);
+    expect(lines[3]).toContain('"evil?[2K?FAKE LINE?second?31m??"');
   });
 });

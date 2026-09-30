@@ -15,7 +15,8 @@ import {
 } from "../src/lib/publishing/dedup-leftovers.js";
 
 async function main(): Promise<void> {
-  const report = await findDedupLeftovers(prisma as unknown as DedupLeftoversPrisma);
+  const client: DedupLeftoversPrisma = prisma;
+  const report = await findDedupLeftovers(client);
   const json = process.argv.slice(2).includes("--json");
   process.stdout.write(
     `${json ? JSON.stringify(report, null, 2) : formatDedupLeftovers(report)}\n`,
