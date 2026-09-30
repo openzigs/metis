@@ -31,6 +31,8 @@ export interface VaultAuditEntry {
  * secret and where it is bound. Mirrors `server/src/lib/vault/rotate-foreign-owner.ts`.
  */
 export const VAULT_ROTATE_FOREIGN_OWNER = "VAULT_ROTATE_FOREIGN_OWNER";
+/** #502 — the confirmed binding ids no longer match; `details` is the live list. */
+export const VAULT_ROTATE_BINDINGS_CHANGED = "VAULT_ROTATE_BINDINGS_CHANGED";
 
 export interface VaultForeignOwner {
   secretId: string;
@@ -55,11 +57,24 @@ export const vaultApi = {
   list: (scope?: "global" | "project") =>
     apiFetch<{ items: VaultEntry[] }>(`/vault${scope ? `?scope=${scope}` : ""}`),
   create: (body: CreateVaultEntryInput) => apiFetch<VaultEntry>(`/vault`, { method: "POST", body }),
-  /** #482 — `confirmForeignOwner` is required to rotate a secret another user owns. */
-  rotate: (id: string, value: string, opts: { confirmForeignOwner?: boolean } = {}) =>
+  /**
+   * #482 — `confirmForeignOwner` is required to rotate a secret another user
+   * owns; #502 — with `confirmedBindingIds`, the binding ids the 409 showed.
+   */
+  rotate: (
+    id: string,
+    value: string,
+    opts: { confirmForeignOwner?: boolean; confirmedBindingIds?: string[] } = {},
+  ) =>
     apiFetch<VaultEntry>(`/vault/${id}/rotate`, {
       method: "POST",
-      body: opts.confirmForeignOwner ? { value, confirmForeignOwner: true } : { value },
+      body: opts.confirmForeignOwner
+        ? {
+            value,
+            confirmForeignOwner: true,
+            ...(opts.confirmedBindingIds ? { confirmedBindingIds: opts.confirmedBindingIds } : {}),
+          }
+        : { value },
     }),
   reveal: (id: string) =>
     apiFetch<{ summary: VaultEntry; plaintext: string }>(`/vault/${id}/reveal`),

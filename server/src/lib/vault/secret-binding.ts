@@ -18,6 +18,10 @@
  *      plaintext, so `rotateOrCreate` rewrites a secret in place only for its
  *      owner (`VaultService.rotate`'s `onlyIfCreatedBy`); credential discovery
  *      (a system writer) never rotates a user's secret (PR #359 review).
+ *      The one exception, an admin's confirmed "Rotate anyway" on another
+ *      user's secret (`routes/vault.ts`, #482), moves `createdById` to that
+ *      admin in the same write (#502), so it still names who supplied the
+ *      current value and the previous owner loses rule 1 on it.
  *   2. A secret already bound to a resource stays usable there, but only at the
  *      destination it was bound to: a write that changes the resource's
  *      destination (host, port, driver options, base URL, command, env, …)

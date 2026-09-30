@@ -419,11 +419,17 @@ export class VaultService {
    * writer never puts its plaintext into a secret another principal owns:
    * `createdById` stays "who supplied the current value", which the
    * by-reference binding rule (`secret-binding.ts`) depends on.
+   *
+   * #502 — the one sanctioned exception is an admin's confirmed rotation of
+   * another user's secret (`POST /api/vault/:id/rotate`). It passes
+   * `transferOwnerTo`, which rewrites `createdById` to the rotating admin in
+   * the same UPDATE, so the invariant still holds: the new owner is whoever
+   * supplied the new value, and the previous owner loses rule 1 on it.
    */
   async rotate(
     id: string,
     newPlaintext: string,
-    opts: { onlyIfCreatedBy?: string | null } = {},
+    opts: { onlyIfCreatedBy?: string | null; transferOwnerTo?: string } = {},
   ): Promise<SecretSummary> {
     const envelope = await this.encrypt(newPlaintext);
     let row;
@@ -438,6 +444,7 @@ export class VaultService {
           ciphertext: envelope.ciphertext,
           keyVersion: envelope.keyVersion,
           algorithm: envelope.algorithm,
+          ...(opts.transferOwnerTo !== undefined ? { createdById: opts.transferOwnerTo } : {}),
         },
       });
     } catch (err) {

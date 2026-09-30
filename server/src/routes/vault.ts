@@ -10,7 +10,9 @@
  *   GET    /                list summaries (vault.read)
  *   POST   /                create entry  (vault.write)
  *   POST   /:id/rotate      rotate value  (vault.write; another user's secret
- *                            needs `confirmForeignOwner: true`, else 409 — #482)
+ *                            needs `confirmForeignOwner: true` and the
+ *                            `confirmedBindingIds` it was shown, else 409 —
+ *                            #482/#502; the admin then owns it)
  *   GET    /:id/reveal      decrypt one (vault.reveal — admin only, audited, #324)
  *   DELETE /:id             soft-delete   (vault.write)
  *   GET    /:id/audit       audit log entries for this secret (vault.read)
@@ -32,9 +34,12 @@ import {
 import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
 import {
+  bindingsChangedMessage,
+  bindingsDiffer,
   describeForeignOwner,
   foreignOwnerMessage,
   secretOwnerOf,
+  VAULT_ROTATE_BINDINGS_CHANGED,
   VAULT_ROTATE_FOREIGN_OWNER,
 } from "../lib/vault/rotate-foreign-owner.js";
 import { pagerDutyVaultRotationFailure } from "../lib/pagerduty/alerting-hooks.js";
@@ -70,6 +75,8 @@ const rotateSchema = z.object({
     .max(64 * 1024),
   /** #482 — required to rotate a secret another user owns. */
   confirmForeignOwner: z.boolean().optional(),
+  /** #502 — the binding ids the 409 listed; must match the live set. */
+  confirmedBindingIds: z.array(z.string().min(1).max(200)).max(1000).optional(),
 });
 
 function summaryToView(s: SecretSummary): {
@@ -150,33 +157,46 @@ export function vaultRouter(): Router {
     const id = String(req.params.id);
     const aId = actorId(req);
     // #482 — the owner may have bound this secret to a destination they chose,
-    // and rotation keeps `createdById`, so another user's secret is rotated
-    // only on an explicit confirm. The refusal names the owner and bindings.
+    // so another user's secret is rotated only on an explicit confirm. The
+    // refusal names the owner and bindings. #502 — the confirm must name the
+    // bindings it was shown, and a confirmed rotation makes the admin the owner.
     const secret = await secretOwnerOf(id);
     const foreignOwnerId =
       secret?.createdById && secret.createdById !== aId ? secret.createdById : null;
-    if (secret && foreignOwnerId && parsed.data.confirmForeignOwner !== true) {
+    let confirmedBindingIds: string[] | null = null;
+    if (secret && foreignOwnerId) {
       const details = await describeForeignOwner({
         id,
         name: secret.name,
         createdById: foreignOwnerId,
       });
-      throw new AppError(
-        409,
-        VAULT_ROTATE_FOREIGN_OWNER,
-        foreignOwnerMessage(details),
-        details as unknown as Record<string, unknown>,
-      );
+      const confirmed = parsed.data.confirmedBindingIds;
+      if (parsed.data.confirmForeignOwner !== true || confirmed === undefined) {
+        throw new AppError(
+          409,
+          VAULT_ROTATE_FOREIGN_OWNER,
+          foreignOwnerMessage(details),
+          details as unknown as Record<string, unknown>,
+        );
+      }
+      if (bindingsDiffer(details, confirmed)) {
+        throw new AppError(
+          409,
+          VAULT_ROTATE_BINDINGS_CHANGED,
+          bindingsChangedMessage(details),
+          details as unknown as Record<string, unknown>,
+        );
+      }
+      confirmedBindingIds = [...new Set(confirmed)].sort();
     }
     let summary: SecretSummary;
     try {
       // The owner seen above is the owner written against (compare-and-swap),
       // so the check and the rotate cannot straddle an ownership change.
-      summary = await getVaultService().rotate(
-        id,
-        parsed.data.value,
-        secret ? { onlyIfCreatedBy: secret.createdById } : {},
-      );
+      summary = await getVaultService().rotate(id, parsed.data.value, {
+        ...(secret ? { onlyIfCreatedBy: secret.createdById } : {}),
+        ...(foreignOwnerId ? { transferOwnerTo: aId } : {}),
+      });
     } catch (err) {
       // Issue #580 — a key rotation FAILURE is a sev-1 operational event. Fire a
       // best-effort PagerDuty incident to the designated ops workspace (env
@@ -203,7 +223,14 @@ export function vaultRouter(): Router {
         label: summary.label,
         scope: summary.scope,
         source: "vault_ui",
-        ...(foreignOwnerId ? { foreignOwnerConfirmed: true, ownerId: foreignOwnerId } : {}),
+        ...(foreignOwnerId
+          ? {
+              foreignOwnerConfirmed: true,
+              ownerId: foreignOwnerId,
+              confirmedBindingIds,
+              ownershipTransferredTo: aId,
+            }
+          : {}),
       },
     });
     res.json(ok(summaryToView(summary)));

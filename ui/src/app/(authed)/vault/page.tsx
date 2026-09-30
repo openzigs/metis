@@ -5,7 +5,8 @@
  *   • list — entries with label, scope, last-rotated, key-version
  *   • create — new entry; plaintext sent over TLS, never stored client-side
  *   • rotate — replace plaintext under the same id; another user's secret
- *     shows its owner and bindings and needs an explicit "Rotate anyway" (#482)
+ *     shows its owner and bindings and needs an explicit "Rotate anyway" (#482),
+ *     which is tied to the bindings shown and makes the admin the owner (#502)
  *   • audit — per-entry audit trail (read/write/rotate/delete)
  *
  * Permissions: requires `vault.read` (server enforces). Roles without it see a
@@ -28,6 +29,7 @@ import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 import {
   vaultApi,
+  VAULT_ROTATE_BINDINGS_CHANGED,
   VAULT_ROTATE_FOREIGN_OWNER,
   type VaultEntry,
   type VaultAuditEntry,
@@ -289,6 +291,7 @@ function EntryDetail({
   const [rotateValue, setRotateValue] = useState("");
   const [rotateError, setRotateError] = useState<string | null>(null);
   const [foreignOwner, setForeignOwner] = useState<VaultForeignOwner | null>(null);
+  const [bindingsChanged, setBindingsChanged] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const auditQuery = useQuery({
@@ -308,14 +311,16 @@ function EntryDetail({
   });
 
   const rotate = useMutation({
-    mutationFn: (confirmForeignOwner: boolean) =>
-      confirmForeignOwner
-        ? vaultApi.rotate(entry.id, rotateValue, { confirmForeignOwner: true })
+    // #502 — a confirm carries the binding ids the admin was shown.
+    mutationFn: (confirmedBindingIds: string[] | null) =>
+      confirmedBindingIds
+        ? vaultApi.rotate(entry.id, rotateValue, { confirmForeignOwner: true, confirmedBindingIds })
         : vaultApi.rotate(entry.id, rotateValue),
     onSuccess: () => {
       setRotateValue("");
       setRotateError(null);
       setForeignOwner(null);
+      setBindingsChanged(false);
       setRevealed(null);
       onChanged();
       void qc.invalidateQueries({ queryKey: ["vault", "audit", entry.id] });
@@ -323,12 +328,16 @@ function EntryDetail({
     onError: (err: ApiError) => {
       // #482 — another user's secret: show who owns it and where it is bound,
       // and let the admin confirm rather than failing outright.
-      if (err.code === VAULT_ROTATE_FOREIGN_OWNER && err.details) {
+      // #502 — if the bindings changed since, show the live list to confirm again.
+      const changed = err.code === VAULT_ROTATE_BINDINGS_CHANGED;
+      if ((err.code === VAULT_ROTATE_FOREIGN_OWNER || changed) && err.details) {
         setRotateError(null);
         setForeignOwner(err.details as VaultForeignOwner);
+        setBindingsChanged(changed);
         return;
       }
       setForeignOwner(null);
+      setBindingsChanged(false);
       setRotateError(err.message);
     },
   });
@@ -425,6 +434,7 @@ function EntryDetail({
             onChange={(e) => {
               setRotateValue(e.target.value);
               setForeignOwner(null);
+              setBindingsChanged(false);
             }}
             placeholder="New plaintext value"
             autoComplete="off"
@@ -432,7 +442,7 @@ function EntryDetail({
           />
           <Button
             size="sm"
-            onClick={() => rotate.mutate(false)}
+            onClick={() => rotate.mutate(null)}
             disabled={rotate.isPending || rotateValue.length === 0 || foreignOwner !== null}
             data-testid="vault-entry-rotate-submit"
           >
@@ -452,9 +462,16 @@ function EntryDetail({
                   foreignOwner.owner.username ??
                   foreignOwner.owner.id}
               </strong>
-              . Rotating it sends your value wherever they have bound it, and they stay its owner,
-              so they can bind it elsewhere afterwards.
+              . Rotating it sends your value wherever they have bound it. The secret then becomes
+              yours, so they can no longer bind it anywhere new; their existing bindings keep
+              working.
             </p>
+            {bindingsChanged ? (
+              <p className="font-semibold" data-testid="vault-entry-rotate-bindings-changed">
+                Its bindings changed since you were shown them. Review the list below and confirm
+                again.
+              </p>
+            ) : null}
             {foreignOwner.bindings.length === 0 ? (
               <p>
                 No DB or repo connector, import source, MCP server or Jira connection uses it; other
@@ -476,7 +493,7 @@ function EntryDetail({
               <Button
                 size="sm"
                 variant="destructive"
-                onClick={() => rotate.mutate(true)}
+                onClick={() => rotate.mutate(foreignOwner.bindings.map((b) => b.id))}
                 disabled={rotate.isPending}
                 data-testid="vault-entry-rotate-confirm"
               >
@@ -485,7 +502,10 @@ function EntryDetail({
               <Button
                 size="sm"
                 variant="ghost"
-                onClick={() => setForeignOwner(null)}
+                onClick={() => {
+                  setForeignOwner(null);
+                  setBindingsChanged(false);
+                }}
                 data-testid="vault-entry-rotate-cancel"
               >
                 Cancel

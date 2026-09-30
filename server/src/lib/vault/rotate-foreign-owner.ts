@@ -20,11 +20,22 @@
  * or the `envSecretId` column. Other embedded references (test-management
  * auth config, notification-channel refs, BYOK) are not enumerated, and the
  * refusal says so rather than claiming the secret is unbound (PR #494 review).
+ *
+ * #502 — the confirm is tied to what the admin was shown. The request must
+ * carry `confirmedBindingIds`, the ids listed in the 409; if the live set
+ * differs (the owner re-pointed, added or removed a binding in between) the
+ * route refuses with 409 {@link VAULT_ROTATE_BINDINGS_CHANGED} and the fresh
+ * list, and the `vault.rotate` audit row records the ids that were confirmed.
+ * A confirmed rotation also transfers ownership (`createdById`) to the admin,
+ * so the previous owner can no longer bind the secret, now holding the
+ * admin's value, to a new destination (rule 1 of `secret-binding.ts`); their
+ * existing bindings keep working where they are (rule 2).
  */
 import { prisma } from "../prisma.js";
 import { reaches, refBodiesIn } from "./secret-binding.js";
 
 export const VAULT_ROTATE_FOREIGN_OWNER = "VAULT_ROTATE_FOREIGN_OWNER";
+export const VAULT_ROTATE_BINDINGS_CHANGED = "VAULT_ROTATE_BINDINGS_CHANGED";
 
 export interface SecretOwnerView {
   id: string;
@@ -191,17 +202,42 @@ export const UNBOUND_NOTE =
   "No DB or repo connector, import source, MCP server or Jira connection uses it; " +
   "other references (test-management auth, notification channels) were not checked.";
 
+function whoOwns(details: ForeignOwnerDetails): string {
+  return details.owner.displayName ?? details.owner.username ?? `user ${details.owner.id}`;
+}
+
+function whereBound(details: ForeignOwnerDetails): string {
+  return details.bindings.length === 0
+    ? UNBOUND_NOTE
+    : `It is bound to ${details.bindings
+        .map((b) => `${b.label}${b.destination ? ` (${b.destination})` : ""}`)
+        .join(", ")}.`;
+}
+
+const TO_CONFIRM =
+  "To rotate it anyway, set confirmForeignOwner and send the ids of the bindings listed " +
+  "here as confirmedBindingIds; the secret then becomes yours, so they can no longer " +
+  "bind it anywhere new.";
+
 /** A one-line, human-readable refusal naming the owner and where the secret is bound. */
 export function foreignOwnerMessage(details: ForeignOwnerDetails): string {
-  const who = details.owner.displayName ?? details.owner.username ?? `user ${details.owner.id}`;
-  const where =
-    details.bindings.length === 0
-      ? UNBOUND_NOTE
-      : `It is bound to ${details.bindings
-          .map((b) => `${b.label}${b.destination ? ` (${b.destination})` : ""}`)
-          .join(", ")}.`;
   return (
-    `This secret belongs to ${who}. ${where} Rotating it sends your value wherever ` +
-    `they have bound it. Set confirmForeignOwner to rotate it anyway.`
+    `This secret belongs to ${whoOwns(details)}. ${whereBound(details)} Rotating it sends ` +
+    `your value wherever they have bound it. ${TO_CONFIRM}`
   );
+}
+
+/** #502 — the refusal when the live bindings differ from the confirmed ids. */
+export function bindingsChangedMessage(details: ForeignOwnerDetails): string {
+  return (
+    `The bindings of this secret, owned by ${whoOwns(details)}, changed since you confirmed. ` +
+    `${whereBound(details)} Review them and confirm again. ${TO_CONFIRM}`
+  );
+}
+
+/** #502 — do the live bindings differ from the ids the admin confirmed? */
+export function bindingsDiffer(details: ForeignOwnerDetails, confirmedIds: string[]): boolean {
+  const live = new Set(details.bindings.map((b) => b.id));
+  const confirmed = new Set(confirmedIds);
+  return live.size !== confirmed.size || [...live].some((id) => !confirmed.has(id));
 }

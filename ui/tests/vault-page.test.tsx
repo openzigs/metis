@@ -30,6 +30,7 @@ function asRole(role: Role) {
 
 vi.mock("@/lib/vault-api", () => ({
   VAULT_ROTATE_FOREIGN_OWNER: "VAULT_ROTATE_FOREIGN_OWNER",
+  VAULT_ROTATE_BINDINGS_CHANGED: "VAULT_ROTATE_BINDINGS_CHANGED",
   vaultApi: {
     list: vi.fn(),
     create: vi.fn(),
@@ -244,6 +245,7 @@ describe("<VaultPage />", () => {
       await waitFor(() =>
         expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
           confirmForeignOwner: true,
+          confirmedBindingIds: ["db1", "m1"],
         }),
       );
       await waitFor(() =>
@@ -278,6 +280,56 @@ describe("<VaultPage />", () => {
       await submitRotate();
       const panel = await screen.findByTestId("vault-entry-rotate-foreign-owner");
       expect(within(panel).getByText("cora")).toBeInTheDocument();
+    });
+
+    it("#502 — says the owner loses the secret, not that they keep it", async () => {
+      rotateMock.mockRejectedValueOnce(refuse());
+      await submitRotate();
+      const panel = await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      expect(panel).toHaveTextContent("becomes yours");
+      expect(panel).not.toHaveTextContent("they stay its owner");
+    });
+
+    it("#502 — when the bindings changed, shows the live list and confirms against it", async () => {
+      const changed = {
+        ...foreign,
+        bindings: [
+          ...foreign.bindings,
+          {
+            type: "db_connector",
+            id: "db2",
+            label: "New DB",
+            projectId: "p1",
+            destination: "postgres://evil.example",
+          },
+        ],
+      };
+      rotateMock
+        .mockRejectedValueOnce(refuse())
+        .mockRejectedValueOnce(
+          new ApiError(409, "changed", "VAULT_ROTATE_BINDINGS_CHANGED", changed),
+        )
+        .mockResolvedValueOnce(entry({ keyVersion: 2 }));
+      await submitRotate();
+      await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      expect(screen.queryByTestId("vault-entry-rotate-bindings-changed")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      expect(await screen.findByTestId("vault-entry-rotate-bindings-changed")).toBeInTheDocument();
+      expect(screen.getByTestId("vault-entry-rotate-bindings")).toHaveTextContent(
+        "New DB — postgres://evil.example",
+      );
+
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() =>
+        expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
+          confirmForeignOwner: true,
+          confirmedBindingIds: ["db1", "m1", "db2"],
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument(),
+      );
     });
 
     it("any other rotate error is shown as a plain message", async () => {

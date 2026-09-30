@@ -15,8 +15,13 @@ const db = vi.hoisted(() => ({
 }));
 vi.mock("../prisma.js", () => ({ prisma: db }));
 
-const { describeForeignOwner, foreignOwnerMessage, UNBOUND_NOTE } =
-  await import("./rotate-foreign-owner.js");
+const {
+  bindingsChangedMessage,
+  bindingsDiffer,
+  describeForeignOwner,
+  foreignOwnerMessage,
+  UNBOUND_NOTE,
+} = await import("./rotate-foreign-owner.js");
 
 beforeEach(() => {
   for (const model of Object.values(db)) {
@@ -173,5 +178,46 @@ describe("foreignOwnerMessage", () => {
     });
     expect(msg).toContain("bound to DB (pg://h), MCP.");
     expect(msg).toContain("confirmForeignOwner");
+    // #502 — the API text says what a confirm needs and what it does.
+    expect(msg).toContain("confirmedBindingIds");
+    expect(msg).toContain("becomes yours");
+  });
+});
+
+describe("#502 — bindingsDiffer / bindingsChangedMessage", () => {
+  const binding = (id: string) => ({
+    type: "db_connector" as const,
+    id,
+    label: id.toUpperCase(),
+    projectId: "p",
+    destination: `pg://${id}`,
+  });
+  const details = (...ids: string[]) => ({
+    secretId: "s",
+    owner: { id: "u", username: "cora", displayName: null },
+    bindings: ids.map(binding),
+  });
+
+  it("is false only for the same set of ids, in any order and with duplicates", () => {
+    expect(bindingsDiffer(details(), [])).toBe(false);
+    expect(bindingsDiffer(details("a", "b"), ["b", "a"])).toBe(false);
+    expect(bindingsDiffer(details("a", "b"), ["a", "b", "a"])).toBe(false);
+  });
+
+  it("is true when a binding was added, removed or swapped", () => {
+    expect(bindingsDiffer(details("a", "b"), ["a"])).toBe(true);
+    expect(bindingsDiffer(details("a"), ["a", "b"])).toBe(true);
+    expect(bindingsDiffer(details("a", "c"), ["a", "b"])).toBe(true);
+    expect(bindingsDiffer(details("a"), [])).toBe(true);
+    expect(bindingsDiffer(details(), ["a"])).toBe(true);
+  });
+
+  it("says the bindings changed and lists the live ones", () => {
+    const msg = bindingsChangedMessage(details("a", "b"));
+    expect(msg).toContain("owned by cora");
+    expect(msg).toContain("changed since you confirmed");
+    expect(msg).toContain("bound to A (pg://a), B (pg://b).");
+    expect(msg).toContain("confirmedBindingIds");
+    expect(bindingsChangedMessage(details())).toContain(UNBOUND_NOTE);
   });
 });
