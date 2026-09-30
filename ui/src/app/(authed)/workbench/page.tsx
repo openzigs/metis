@@ -20,7 +20,7 @@ import { Input } from "@/components/ui/input";
 import { projectsApi, type DocumentRow, type Project } from "@/lib/projects-api";
 import { listAllDocuments } from "@/lib/list-all-documents";
 import { DocumentPanel } from "@/components/workbench/document-panel";
-import { formatSourceLabel } from "@/lib/format-source-label";
+import { entryLabel, toPanelEntries } from "@/lib/workbench-document-tree";
 import { useRepoNames } from "@/hooks/use-repo-names";
 import {
   type AISession,
@@ -434,21 +434,22 @@ export default function WorkbenchPage() {
               role="list"
               aria-label="Context attachments"
             >
-              {contextDocs.map((d) => {
-                // Issue #427 — friendly `basename — repo` label on the chip; the
-                // full raw id stays in the title tooltip for copy / deep-link.
-                const source = formatSourceLabel(d.filename, repoNames);
+              {toPanelEntries(contextDocs, repoNames).map((entry) => {
+                // #440 — the chip is labelled like the panel row it came from
+                // (`basename — repository`), never with an internal id fragment;
+                // the tooltip is the panel's too: repository plus path.
+                const label = entryLabel(entry);
                 return (
                   <button
-                    key={d.id}
+                    key={entry.doc.id}
                     type="button"
                     role="listitem"
-                    onClick={() => detachFromContext(d.id)}
-                    title={source.rawId}
+                    onClick={() => detachFromContext(entry.doc.id)}
+                    title={entry.title}
                     className="max-w-[14rem] truncate rounded-full bg-accent px-2 py-0.5 text-xs text-accent-foreground hover:bg-accent/80"
-                    aria-label={`Remove ${source.label} from context`}
+                    aria-label={`Remove ${label} from context`}
                   >
-                    📎 {source.label} ✕
+                    📎 {label} ✕
                   </button>
                 );
               })}

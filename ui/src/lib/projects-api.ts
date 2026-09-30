@@ -84,6 +84,15 @@ export interface DocumentListPage {
   total: number;
   limit: number;
   offset: number;
+  /** #440 — the cursor for the next page; `null` on the last page. */
+  nextCursor?: string | null;
+}
+
+/** #440 — a page read by cursor: no `offset`, and no `total` (no `count(*)`). */
+export interface DocumentCursorPage {
+  items: DocumentRow[];
+  limit: number;
+  nextCursor: string | null;
 }
 
 export interface RetrievedChunk {
@@ -353,6 +362,11 @@ export interface EnhancedUsageSummary {
 export const documentsApi = {
   list: (projectId: string, params?: { limit?: number; offset?: number }) =>
     apiFetch<DocumentListPage>(`/projects/${projectId}/documents`, { params }),
+  /** #440 — the page after `cursor`, which a previous page's `nextCursor` names. */
+  listAfter: (projectId: string, cursor: string, params?: { limit?: number }) =>
+    apiFetch<DocumentCursorPage>(`/projects/${projectId}/documents`, {
+      params: { ...params, cursor },
+    }),
   get: (projectId: string, documentId: string) =>
     apiFetch<DocumentRow>(`/projects/${projectId}/documents/${documentId}`),
   remove: (projectId: string, documentId: string) =>

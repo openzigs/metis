@@ -338,18 +338,54 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
     const project = await getProject(projectId);
     if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
     const limit = clampInt(req.query.limit, 25, 1, 100);
-    const offset = clampInt(req.query.offset, 0, 0, 1_000_000);
     const where = { projectId, deletedAt: null };
-    const [items, total] = await Promise.all([
-      prisma.document.findMany({
-        where,
-        orderBy: { uploadedAt: "desc" },
-        take: limit,
-        skip: offset,
-      }),
+    // #440 — newest first, with the id breaking a tie in `uploadedAt`, so the
+    // order is total and a cursor names one exact position in it.
+    const orderBy = [{ uploadedAt: "desc" as const }, { id: "desc" as const }];
+
+    // Cursor paging: the next page starts strictly after the last row the
+    // client saw, so a row inserted or deleted mid-read cannot shift a later
+    // page (offset paging over a changing list skips a row). A cursor page does
+    // not re-run `count(*)` — the first page already reported the total.
+    if (req.query.cursor !== undefined) {
+      const after = decodeDocumentCursor(req.query.cursor);
+      const rows = await prisma.document.findMany({
+        where: {
+          ...where,
+          OR: [
+            { uploadedAt: { lt: after.uploadedAt } },
+            { uploadedAt: after.uploadedAt, id: { lt: after.id } },
+          ],
+        },
+        orderBy,
+        take: limit + 1,
+      });
+      const page = rows.slice(0, limit);
+      res.json(
+        ok({
+          items: page.map((item) => publicDocumentRow(item)),
+          limit,
+          nextCursor: rows.length > limit ? encodeDocumentCursor(page[page.length - 1]) : null,
+        }),
+      );
+      return;
+    }
+
+    const offset = clampInt(req.query.offset, 0, 0, 1_000_000);
+    const [rows, total] = await Promise.all([
+      prisma.document.findMany({ where, orderBy, take: limit + 1, skip: offset }),
       prisma.document.count({ where }),
     ]);
-    res.json(ok({ items: items.map((item) => publicDocumentRow(item)), total, limit, offset }));
+    const items = rows.slice(0, limit);
+    res.json(
+      ok({
+        items: items.map((item) => publicDocumentRow(item)),
+        total,
+        limit,
+        offset,
+        nextCursor: rows.length > limit ? encodeDocumentCursor(items[items.length - 1]) : null,
+      }),
+    );
   });
 
   // ── Get one ─────────────────────────────────────────────────────────────
@@ -591,6 +627,41 @@ export function knowledgeRouter(deps: KnowledgeRouterDeps = {}): Router {
   );
 
   return r;
+}
+
+/**
+ * #440 — an opaque list cursor: the last row's `uploadedAt` and `id`, the two
+ * keys of the list's order. Base64url JSON, so a client never builds one.
+ */
+// Ids are not all cuids: a generated document's published row is
+// `gendoc-<cuid>:gendoc:<projectId>:<cuid>:v<n>` (~94 chars), and a cursor the
+// server issued for such a row must decode (PR #469 panel). 512 bounds it.
+const MAX_CURSOR_ID_CHARS = 512;
+const documentCursorSchema = z.object({
+  t: z.string().datetime(),
+  id: z.string().min(1).max(MAX_CURSOR_ID_CHARS),
+});
+/** base64url of the JSON above: ~4/3 of (id + timestamp + keys), rounded up. */
+const MAX_CURSOR_CHARS = 1024;
+
+function encodeDocumentCursor(row: { uploadedAt: Date; id: string }): string {
+  return Buffer.from(JSON.stringify({ t: row.uploadedAt.toISOString(), id: row.id })).toString(
+    "base64url",
+  );
+}
+
+function decodeDocumentCursor(raw: unknown): { uploadedAt: Date; id: string } {
+  let parsed: unknown;
+  try {
+    if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_CURSOR_CHARS)
+      throw new Error("shape");
+    parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  } catch {
+    parsed = undefined;
+  }
+  const cursor = documentCursorSchema.safeParse(parsed);
+  if (!cursor.success) throw new AppError(400, "INVALID_CURSOR", "Invalid document list cursor");
+  return { uploadedAt: new Date(cursor.data.t), id: cursor.data.id };
 }
 
 function clampInt(raw: unknown, fallback: number, min: number, max: number): number {

@@ -8,6 +8,7 @@ import type { DocumentRow } from "@/lib/projects-api";
 import {
   UNNAMED_DATABASE,
   UNNAMED_REPOSITORY,
+  entryLabel,
   filterEntries,
   groupEntries,
   toPanelEntries,
@@ -214,5 +215,29 @@ describe("unknown connectors", () => {
       [CONN, UNNAMED_REPOSITORY],
       [OTHER, `${UNNAMED_REPOSITORY} 2`],
     ]);
+  });
+});
+
+describe("entryLabel (#440 — the attached-document chips)", () => {
+  it("names a repository file by basename and repository name", () => {
+    const [e] = toPanelEntries([repo("r1", "src/lib/a.ts")], { [CONN]: "wms-core" });
+    expect(entryLabel(e)).toBe("a.ts — wms-core");
+  });
+
+  it("shows no connector-id fragment for an unnamed repository", () => {
+    const [e] = toPanelEntries([repo("r1", "src/lib/a.ts")]);
+    const label = entryLabel(e);
+    expect(label).toBe(`a.ts — ${UNNAMED_REPOSITORY}`);
+    expect(label).not.toContain(CONN.slice(-6));
+  });
+
+  it("names another source's document with its source", () => {
+    const [e] = toPanelEntries([doc("j1", "jira:WMS-12")]);
+    expect(entryLabel(e)).toBe("Jira: WMS-12");
+  });
+
+  it("names an upload by its own name", () => {
+    const [e] = toPanelEntries([doc("u1", "notes.md")]);
+    expect(entryLabel(e)).toBe("notes.md");
   });
 });
