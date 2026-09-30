@@ -25,6 +25,7 @@
 import type { PrismaClient } from "@prisma/client";
 
 import { prisma as defaultPrisma } from "../prisma.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 
 export interface ChannelLinkInput {
   workspaceId: string;
@@ -64,17 +65,6 @@ export class TeamsLinkError extends Error {
     super(message);
     this.name = "TeamsLinkError";
   }
-}
-
-/** Prisma unique-constraint violation code. */
-const PRISMA_UNIQUE_VIOLATION = "P2002";
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: string }).code === PRISMA_UNIQUE_VIOLATION
-  );
 }
 
 export class TeamsChannelLinkStore {

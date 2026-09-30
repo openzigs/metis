@@ -30,6 +30,7 @@ import { Prisma, prisma as defaultPrisma, resolveDatabaseProvider } from "../pri
 import { audit } from "../audit/audit-service.js";
 import { actorCanAccessProject, type SchedulerActor } from "../scheduler/project-access.js";
 import { listAccessibleProjectsInWorkspace } from "../cross-project/cross-project-access.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 
 /**
  * Minimal Prisma surface the link service needs. Kept narrow so unit tests can
@@ -92,9 +93,7 @@ function toContext(r: RequirementWithProject): LinkedRequirementContext {
  * and a raw sqlite/pg error surfaces the phrase in its message.
  */
 function isUniqueConstraintError(err: unknown): boolean {
-  if (typeof err === "object" && err !== null && "code" in err) {
-    if ((err as { code?: unknown }).code === "P2002") return true;
-  }
+  if (isUniqueViolation(err)) return true;
   const message = err instanceof Error ? err.message : String(err);
   return /unique constraint/i.test(message);
 }

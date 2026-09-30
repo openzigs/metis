@@ -25,6 +25,7 @@ import {
   type RuleStatus,
   type Severity,
 } from "../lib/scanner/types.js";
+import { isUniqueViolation } from "../lib/db/prisma-errors.js";
 
 let cachedProvider: AIProvider | null = null;
 function getProvider(): AIProvider {
@@ -121,7 +122,7 @@ export function rulesRouter(): Router {
         });
         res.status(201).json({ success: true, data: row });
       } catch (err) {
-        if ((err as { code?: string }).code === "P2002") {
+        if (isUniqueViolation(err)) {
           throw new AppError(409, "RULE_SET_EXISTS", "A rule set with this name already exists");
         }
         throw err;

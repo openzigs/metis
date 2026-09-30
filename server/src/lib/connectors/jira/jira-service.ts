@@ -24,6 +24,7 @@ import { ConnectorError } from "../types.js";
 import { assertConnectorHostAllowed } from "../network-allowlist.js";
 import { createJiraClient, type JiraClient } from "./jira-client.js";
 import type { JiraRawResource } from "./raw-fetch.js";
+import { isUniqueViolation } from "../../db/prisma-errors.js";
 
 const log = createChildLogger("jira-service");
 
@@ -129,11 +130,6 @@ async function rotateOrReplace(
   return written.created ? written.id : null;
 }
 
-/** Prisma's unique-index violation (`P2002`), matched on its code alone. */
-function isUniqueConstraintError(err: unknown): boolean {
-  return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2002";
-}
-
 /**
  * #258 — `@@unique([projectId, label])` also covers SOFT-DELETED connections,
  * so a deleted connection kept its label and creating (or renaming to) that
@@ -226,7 +222,7 @@ export async function createJiraConnection(
   } catch (err) {
     // A concurrent create took the label after the check above: 409, and the
     // secrets just written belong to no connection, so they are withdrawn.
-    if (!isUniqueConstraintError(err)) throw err;
+    if (!isUniqueViolation(err)) throw err;
     for (const id of [secret.id, tlsCaSecretId]) {
       if (id) await vault.delete(id).catch(() => undefined);
     }
@@ -328,7 +324,7 @@ export async function updateJiraConnection(
   try {
     row = await prisma.jiraConnection.update({ where: { id }, data });
   } catch (err) {
-    if (isUniqueConstraintError(err) && typeof data.label === "string") {
+    if (isUniqueViolation(err) && typeof data.label === "string") {
       throw labelTaken(data.label);
     }
     throw err;

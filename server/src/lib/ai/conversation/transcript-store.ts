@@ -20,6 +20,7 @@ import type {
 } from "@metis/shared";
 import { prisma } from "../../prisma.js";
 import { readGrounding } from "../chat-grounding.js";
+import { isUniqueViolation } from "../../db/prisma-errors.js";
 
 export type { TranscriptPart };
 
@@ -71,10 +72,6 @@ export interface AppendMessageInput {
 const MAX_ORDINAL_ATTEMPTS = 5;
 
 type Db = Pick<Prisma.TransactionClient, "aIMessage">;
-
-function isUniqueViolation(err: unknown): boolean {
-  return (err as { code?: unknown } | null)?.code === "P2002";
-}
 
 function parseParts(raw: string): TranscriptPart[] {
   try {

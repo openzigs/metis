@@ -11,6 +11,7 @@
  * successful insert to keep it bounded without a background sweeper.
  */
 import { prisma } from "../../prisma.js";
+import { isUniqueViolation } from "../../db/prisma-errors.js";
 
 export interface DeliveryRecord {
   deliveryId: string;
@@ -35,8 +36,8 @@ function table(): any {
 
 function isUniqueConstraintError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
-  const e = err as { code?: string; message?: string };
-  if (e.code === "P2002") return true;
+  if (isUniqueViolation(err)) return true;
+  const e = err as { message?: string };
   if (typeof e.message === "string" && /UNIQUE constraint failed|duplicate key/i.test(e.message)) {
     return true;
   }

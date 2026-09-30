@@ -28,6 +28,7 @@ import {
   type RequirementSnapshot,
   type VersionRow,
 } from "../requirements/requirement-version-service.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 
 // ---------------------------------------------------------------------------
 // Shared shapes
@@ -447,7 +448,7 @@ export async function createManualBaseline(
     });
   } catch (err) {
     // Unique (projectId, name) violation → friendly conflict.
-    if ((err as { code?: string }).code === "P2002") {
+    if (isUniqueViolation(err)) {
       throw new AppError(
         409,
         "BASELINE_NAME_TAKEN",

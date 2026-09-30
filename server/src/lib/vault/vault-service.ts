@@ -21,13 +21,9 @@ import crypto from "node:crypto";
 import { ulid } from "ulid";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 
 const log = createChildLogger("vault");
-
-/** Prisma's unique-index violation (`P2002`), matched on its code alone. */
-function isUniqueConstraintError(err: unknown): boolean {
-  return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2002";
-}
 
 /** Prisma's "record to update not found" (`P2025`), matched on its code alone. */
 function isRecordNotFoundError(err: unknown): boolean {
@@ -306,7 +302,7 @@ export class VaultService {
         },
       })
       .catch((err: unknown) => {
-        if (isUniqueConstraintError(err)) throw new SecretNameTakenError(name);
+        if (isUniqueViolation(err)) throw new SecretNameTakenError(name);
         throw err;
       });
     log.info("Secret created", { id: row.id, scope, label });
@@ -360,7 +356,7 @@ export class VaultService {
     try {
       row = await write();
     } catch (err) {
-      if (!isUniqueConstraintError(err)) throw err;
+      if (!isUniqueViolation(err)) throw err;
       row = await write();
     }
     log.info("Secret upserted", { id: row.id, scope, label });
