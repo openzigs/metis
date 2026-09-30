@@ -317,6 +317,48 @@ describe("Repo connector service — CRUD", () => {
     ).rejects.toMatchObject({ code: "INSECURE_BASE_URL" });
   });
 
+  it("#448 — marks a project's first repository primary and later ones not", async () => {
+    const first = await createRepoConnector(
+      "proj_1",
+      { label: "first", ownerOrOrg: "o", repoName: "r1" },
+      "user_1",
+    );
+    const second = await createRepoConnector(
+      "proj_1",
+      { label: "second", ownerOrOrg: "o", repoName: "r2" },
+      "user_1",
+    );
+    const other = await createRepoConnector(
+      "proj_2",
+      { label: "first", ownerOrOrg: "o", repoName: "r3" },
+      "user_1",
+    );
+    expect(first.isPrimary).toBe(true);
+    expect(second.isPrimary).toBe(false);
+    expect(other.isPrimary).toBe(true);
+    // Read back through the store, not the returned object.
+    expect(rows.get(first.id)?.isPrimary).toBe(true);
+    expect(rows.get(second.id)?.isPrimary).toBe(false);
+    expect(rows.get(other.id)?.isPrimary).toBe(true);
+  });
+
+  it("#448 — marking the first repository primary cannot fail after its row exists", async () => {
+    // A separate isPrimary update after the insert could throw and leave a
+    // connector behind while the caller is told the create failed. Asserting
+    // no update runs (rather than queuing a once-rejection) keeps the mock
+    // clean: clearAllMocks does not drain an unconsumed once-implementation,
+    // which would then fail the next test's update.
+    const { prisma } = await import("../src/lib/prisma.js");
+    const created = await createRepoConnector(
+      "proj_1",
+      { label: "only", ownerOrOrg: "o", repoName: "r" },
+      "user_1",
+    );
+    expect(prisma.repoConnection.update).not.toHaveBeenCalled();
+    expect(created.isPrimary).toBe(true);
+    expect(rows.get(created.id)?.isPrimary).toBe(true);
+  });
+
   it("project isolation enforced", async () => {
     const c = await createRepoConnector(
       "proj_a",

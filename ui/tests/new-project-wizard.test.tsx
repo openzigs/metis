@@ -159,10 +159,18 @@ describe("NewProjectWizard", () => {
     expect(toast.success).toHaveBeenCalledWith("Project created");
   });
 
-  it("says so, and starts nothing, when the server could not link the repository", async () => {
-    // POST /projects swallows a failed primary-repo link and answers primaryRepo: null.
+  // #448 — the wizard used to show a generic "could not be connected" and drop
+  // the reason the server now returns in `primaryRepoError` (#428).
+  it("names the reason, and starts nothing, when the server could not link the repository", async () => {
     const user = userEvent.setup();
-    create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
+    create.mockResolvedValue({
+      ...PROJECT,
+      primaryRepo: null,
+      primaryRepoError: {
+        code: "VAULT_SECRET_NOT_FOUND",
+        message: "vault secret 'gh-pat' not found",
+      },
+    } as never);
     renderWizard();
     await fillName(user);
     await fillRepo(user);
@@ -171,8 +179,35 @@ describe("NewProjectWizard", () => {
     await waitFor(() => expect(push()).toHaveBeenCalledWith("/projects/p-new"));
     expect(deepIngest).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalled();
-    expect(toast.warning).toHaveBeenCalledWith(
-      expect.stringMatching(/repository could not be connected/),
+    expect(toast.warning).toHaveBeenCalledTimes(1);
+    const [title, opts] = vi.mocked(toast.warning).mock.calls[0] as unknown as [
+      string,
+      { description: string; duration: number; action: { label: string; onClick: () => void } },
+    ];
+    expect(title).toMatch(/repository was not linked/i);
+    expect(opts.description).toBe("vault secret 'gh-pat' not found");
+    expect(opts.duration).toBeGreaterThanOrEqual(10_000);
+    push().mockClear();
+    opts.action.onClick();
+    expect(push()).toHaveBeenCalledWith("/projects/p-new/connections");
+  });
+
+  it("falls back to a generic reason when the server names none", async () => {
+    // An answer without `primaryRepoError` (a server from before #428).
+    const user = userEvent.setup();
+    create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
+    renderWizard();
+    await fillName(user);
+    await fillRepo(user);
+    await user.click(screen.getByRole("button", { name: "Create and start ingest" }));
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledTimes(1));
+    const [, opts] = vi.mocked(toast.warning).mock.calls[0] as unknown as [
+      string,
+      { description: string },
+    ];
+    expect(opts.description).toBe(
+      "The repository could not be linked. Add it from the project's Connections page.",
     );
   });
 
