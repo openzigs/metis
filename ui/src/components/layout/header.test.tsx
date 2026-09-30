@@ -75,3 +75,17 @@ describe("Header control order (#661)", () => {
     );
   });
 });
+
+// #529 — at phone width one row left the breadcrumb ~100px. Below `sm` the
+// header wraps (the breadcrumb takes a second row: tests/phone-width-overflow)
+// and so must not be a fixed height; from `sm` it is the one 64px row again.
+describe("Header wraps below sm (#529)", () => {
+  it("wraps onto a second row below sm and is a single fixed-height row from sm", () => {
+    render(<Header onMenuClick={() => {}} />);
+    const cls = (screen.getByRole("banner").getAttribute("class") ?? "").split(/\s+/);
+    expect(cls).toEqual(
+      expect.arrayContaining(["flex-wrap", "min-h-16", "sm:h-16", "sm:flex-nowrap"]),
+    );
+    expect(cls).not.toContain("h-16");
+  });
+});

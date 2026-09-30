@@ -216,15 +216,21 @@
     color-scheme: light dark;
     /*
      * #662 — WCAG 2.2 SC 2.4.11 Focus Not Obscured (Minimum, AA). The app
-     * header is `sticky top-0 h-16` (4rem/64px). Without scroll padding, when
-     * the browser scrolls a focusable control deep in the page into view it can
-     * land fully underneath the sticky header and be ENTIRELY obscured.
-     * Reserving scroll padding equal to the header height (+ a little breathing
-     * room for the focus ring) on the root scroll container keeps keyboard
-     * focus — and same-page anchor jumps like the "Skip to main content" link —
-     * clear of the header.
+     * header (header.tsx) is sticky at the top: `h-16` (4rem/64px) from `sm`
+     * up, and — since #529 — two rows below `sm`, where the breadcrumb wraps
+     * onto a line of its own (~6rem). Without scroll padding, when the browser
+     * scrolls a focusable control deep in the page into view it can land fully
+     * underneath the sticky header and be ENTIRELY obscured. Reserving scroll
+     * padding equal to the header height (+ a little breathing room for the
+     * focus ring) on the root scroll container keeps keyboard focus — and
+     * same-page anchor jumps like the "Skip to main content" link — clear of
+     * the header. Keep both values in step with the header's height;
+     * e2e/tests/ui-ia-accessibility.spec.ts checks them at 1280px and 390px.
      */
     scroll-padding-top: 4.5rem;
+    @media (width < 40rem) {
+      scroll-padding-top: 7rem;
+    }
   }
   body {
     background: hsl(var(--background));
