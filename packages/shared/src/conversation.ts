@@ -36,8 +36,10 @@ export type TranscriptRole = "user" | "assistant" | "system";
  * #18 — what a chat reply was grounded in. Retrieval runs only for a session
  * bound to one project, so a reply is either:
  * - `grounded`: excerpts from that project's knowledge base were in the prompt;
- * - `no-context`: the session is bound to a project, but nothing relevant was
- *   retrieved (or retrieval failed) — the model answered from its own knowledge;
+ * - `no-context`: the session is bound to a project, but automatic retrieval
+ *   supplied no excerpts (nothing ingested, or retrieval failed). This does NOT
+ *   mean the answer came from general knowledge: the model may still have read
+ *   the project through its tools (PR #437 review);
  * - `unscoped`: the session has no project ("All projects") and no retrieval ran.
  *
  * Recorded on the assistant row as the turn is answered and streamed to the

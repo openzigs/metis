@@ -15,7 +15,11 @@ export function groundingText(g: ChatGrounding): string {
     case "grounded":
       return `Grounded in ${g.projectName} · ${g.sources} ${g.sources === 1 ? "source" : "sources"}`;
     case "no-context":
-      return `Not grounded — nothing relevant was found in ${g.projectName}; answered from the model's general knowledge`;
+      // PR #437 review: say only what is known. Auto-retrieval supplied no
+      // excerpts, but the model may still have read the project through its
+      // tools (code search, tree, MCP), so "answered from general knowledge"
+      // would be false on screen.
+      return `No excerpts from ${g.projectName} were retrieved automatically — check any file or code it names`;
     case "unscoped":
       return "Not grounded — no project selected; answered from the model's general knowledge";
   }

@@ -17,7 +17,12 @@ describe("groundingText (#18)", () => {
     expect(groundingText({ status: "unscoped" })).toMatch(/^Not grounded — no project selected/);
     expect(
       groundingText({ status: "no-context", projectId: "p", projectName: "Payments" }),
-    ).toMatch(/^Not grounded — nothing relevant was found in Payments/);
+    ).toMatch(/^No excerpts from Payments were retrieved automatically/);
+    // Tools may have read the project, so the no-context label must not claim
+    // the answer came from general knowledge (PR #437 review).
+    expect(
+      groundingText({ status: "no-context", projectId: "p", projectName: "Payments" }),
+    ).not.toMatch(/general knowledge/);
   });
 });
 
