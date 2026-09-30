@@ -21,6 +21,7 @@ vi.mock("../src/lib/prisma.js", () => ({
       findMany: vi.fn(),
       findUnique: vi.fn(),
       create: vi.fn(),
+      upsert: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
       count: vi.fn(),
@@ -284,6 +285,13 @@ describe("Workspace Routes", () => {
   });
 
   describe("POST /workspaces/invites/:token/accept", () => {
+    // The accept route consumes the invite in an interactive transaction (#580):
+    // run the callback against the same mocked client.
+    beforeEach(() => {
+      vi.mocked(prisma.$transaction).mockImplementation(((fn: (tx: unknown) => unknown) =>
+        fn(prisma)) as never);
+    });
+
     it("accepts a valid invite and creates membership", async () => {
       const app = createApp(); // No auth required for accept
       vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue({
@@ -303,15 +311,29 @@ describe("Workspace Routes", () => {
         id: "user-2",
         email: "user@test.com",
       } as never);
-      vi.mocked(prisma.workspaceMember.findUnique).mockResolvedValue(null);
-      vi.mocked(prisma.workspaceMember.create).mockResolvedValue({} as never);
-      vi.mocked(prisma.workspaceInvite.update).mockResolvedValue({} as never);
+      vi.mocked(prisma.workspaceInvite.updateMany).mockResolvedValue({ count: 1 } as never);
+      vi.mocked(prisma.workspaceMember.upsert).mockResolvedValue({} as never);
 
       const res = await request(app).post("/workspaces/invites/valid-token/accept");
 
       expect(res.status).toBe(200);
       expect(res.body.data.workspace.name).toBe("Test");
       expect(res.body.data.role).toBe("member");
+      // The consume re-applies every check at write time (#580).
+      expect(prisma.workspaceInvite.updateMany).toHaveBeenCalledWith({
+        where: expect.objectContaining({
+          id: "inv-1",
+          consumedAt: null,
+          workspace: { deletedAt: null },
+        }),
+        data: { consumedAt: expect.any(Date) },
+      });
+      expect(prisma.workspaceMember.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: { workspaceId: "ws-1", userId: "user-2", role: "member" },
+          update: {},
+        }),
+      );
     });
 
     it("rejects expired invite", async () => {
@@ -379,8 +401,8 @@ describe("Workspace Routes", () => {
       expect(res.status).toBe(410);
       // 410 also means expired or used; pin the reason (server vitest retries twice).
       expect(res.body.error.message).toBe("This workspace no longer exists");
-      expect(prisma.workspaceMember.create).not.toHaveBeenCalled();
-      expect(prisma.workspaceInvite.update).not.toHaveBeenCalled();
+      expect(prisma.workspaceMember.upsert).not.toHaveBeenCalled();
+      expect(prisma.workspaceInvite.updateMany).not.toHaveBeenCalled();
     });
 
     it("rejects invalid token", async () => {
