@@ -34,6 +34,7 @@ vi.mock("../../src/lib/logger.js", () => ({
 
 import {
   REGENERATION_SCHEDULING_FAILED_MESSAGE,
+  REGENERATION_SCHEDULING_RETRY_CANCELLED_MESSAGE,
   REGENERATION_SCHEDULING_RETRY_UNAVAILABLE_MESSAGE,
   SCHEDULE_REGENERATION_MAX_ATTEMPTS,
   SCHEDULE_REGENERATION_TASK,
@@ -93,7 +94,20 @@ describe("scheduleIncrementalRegeneration (#449)", () => {
     );
   });
 
-  it.each(["completed", "failed", "cancelled"])(
+  it("does not resurrect a retry a user cancelled, and says so (PR #491 review)", async () => {
+    failScheduling();
+    h.upsert.mockResolvedValueOnce({ id: ID, status: "cancelled" });
+    h.bootstrap.mockReturnValue({ queue: { resume: h.resume } });
+    await expect(scheduleIncrementalRegeneration("p1", "rc1")).resolves.toEqual({
+      regenerationScheduled: false,
+      retryQueued: false,
+      warning: REGENERATION_SCHEDULING_RETRY_CANCELLED_MESSAGE,
+    });
+    expect(h.updateMany).not.toHaveBeenCalled();
+    expect(h.resume).not.toHaveBeenCalled();
+  });
+
+  it.each(["completed", "failed"])(
     "re-arms a %s retry row with compare-and-set",
     async (status) => {
       failScheduling();

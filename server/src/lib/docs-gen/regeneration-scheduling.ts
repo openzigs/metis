@@ -27,7 +27,8 @@ export const SCHEDULE_REGENERATION_MAX_ATTEMPTS = 5;
  */
 export const REGENERATION_SCHEDULING_FAILED_MESSAGE =
   "The repository was ingested, but scheduling automatic document regeneration failed. " +
-  "The details are in the server log; scheduling is retried automatically, without ingesting again.";
+  "The details are in the server log; scheduling is retried automatically (up to " +
+  `${SCHEDULE_REGENERATION_MAX_ATTEMPTS} times), without ingesting again.`;
 
 /** The warning when the retry could not be queued either. */
 export const REGENERATION_SCHEDULING_RETRY_UNAVAILABLE_MESSAGE =
@@ -35,11 +36,22 @@ export const REGENERATION_SCHEDULING_RETRY_UNAVAILABLE_MESSAGE =
   "and its retry could not be queued. The details are in the server log; " +
   "the next ingest of this repository retries it.";
 
+/**
+ * The warning when this connector's retry task was cancelled by a user: it is
+ * not resurrected (PR #491 review; the same convention as
+ * `regenerate-generated-document`, ARCHITECTURE.md §34).
+ */
+export const REGENERATION_SCHEDULING_RETRY_CANCELLED_MESSAGE =
+  "The repository was ingested, but scheduling automatic document regeneration failed. " +
+  "Its automatic retry was cancelled, so it is not retried; the next ingest of this " +
+  "repository retries it.";
+
 export type RegenerationSchedulingOutcome =
   | { regenerationScheduled: true }
   | { regenerationScheduled: false; retryQueued: boolean; warning: string };
 
-const TERMINAL_STATUSES = ["completed", "failed", "cancelled"];
+/** Re-armed by a new failure. `cancelled` is deliberately absent: a user's cancel sticks. */
+const REARMABLE_STATUSES = ["completed", "failed"];
 
 function retryTaskId(projectId: string, repoConnectorId: string): string {
   return `docs-regen-schedule:${projectId}:${repoConnectorId}`;
@@ -50,7 +62,10 @@ function retryTaskId(projectId: string, repoConnectorId: string): string {
  * queue. The row is the outbox: if the queue is not running in this process, the
  * scheduler's durable-task recovery picks the pending row up.
  */
-async function queueSchedulingRetry(projectId: string, repoConnectorId: string): Promise<void> {
+async function queueSchedulingRetry(
+  projectId: string,
+  repoConnectorId: string,
+): Promise<"queued" | "cancelled"> {
   const id = retryTaskId(projectId, repoConnectorId);
   const task = await prisma.task.upsert({
     where: { id },
@@ -65,7 +80,8 @@ async function queueSchedulingRetry(projectId: string, repoConnectorId: string):
   });
   // A finished retry is re-armed by a new failure. Compare-and-set leaves a
   // pending or running retry alone.
-  if (TERMINAL_STATUSES.includes(task.status)) {
+  if (task.status === "cancelled") return "cancelled";
+  if (REARMABLE_STATUSES.includes(task.status)) {
     await prisma.task.updateMany({
       where: { id, status: task.status },
       data: {
@@ -80,7 +96,7 @@ async function queueSchedulingRetry(projectId: string, repoConnectorId: string):
     });
   }
   const record = await readTaskRecord(id);
-  if (record?.status !== "pending") return;
+  if (record?.status !== "pending") return "queued";
   try {
     getSchedulerBootstrap().queue.resume(record);
   } catch (err) {
@@ -90,6 +106,7 @@ async function queueSchedulingRetry(projectId: string, repoConnectorId: string):
       taskId: id,
     });
   }
+  return "queued";
 }
 
 /**
@@ -112,7 +129,13 @@ export async function scheduleIncrementalRegeneration(
     });
   }
   try {
-    await queueSchedulingRetry(projectId, repoConnectorId);
+    if ((await queueSchedulingRetry(projectId, repoConnectorId)) === "cancelled") {
+      return {
+        regenerationScheduled: false,
+        retryQueued: false,
+        warning: REGENERATION_SCHEDULING_RETRY_CANCELLED_MESSAGE,
+      };
+    }
     return {
       regenerationScheduled: false,
       retryQueued: true,
