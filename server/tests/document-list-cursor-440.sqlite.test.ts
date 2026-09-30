@@ -236,7 +236,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "a cursor with a bad date",
         Buffer.from(JSON.stringify({ t: "yesterday", id: "x" })).toString("base64url"),
       ],
-      ["an over-long cursor", "a".repeat(1100)],
+      [
+        // Valid base64url JSON with a valid t and id — only its length (padded by
+        // a key the schema strips) is wrong, so only the length cap rejects it
+        // (PR #469 panel: "a".repeat(…) failed JSON.parse at any length).
+        "an over-long but otherwise valid cursor",
+        Buffer.from(
+          JSON.stringify({ t: SAME_TIME.toISOString(), id: "doc-x", pad: "y".repeat(900) }),
+        ).toString("base64url"),
+      ],
     ])("rejects %s with 400 INVALID_CURSOR", async (_label, cursor) => {
       const res = await list({ cursor });
       expect(res.status).toBe(400);
