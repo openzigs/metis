@@ -15,11 +15,13 @@ import type { JobLifecycleEvent } from "@metis/shared";
 const toastInfo = vi.fn();
 const toastError = vi.fn();
 const toastSuccess = vi.fn();
+const toastWarning = vi.fn();
 vi.mock("sonner", () => ({
   toast: {
     info: (msg: string) => toastInfo(msg),
     error: (msg: string) => toastError(msg),
     success: (msg: string) => toastSuccess(msg),
+    warning: (msg: string) => toastWarning(msg),
   },
 }));
 
@@ -72,6 +74,7 @@ beforeEach(() => {
   toastInfo.mockReset();
   toastError.mockReset();
   toastSuccess.mockReset();
+  toastWarning.mockReset();
   __resetTerminalToastsForTests();
 });
 
@@ -102,9 +105,29 @@ describe("useDeepIngest (#373)", () => {
       connectorId: "r1",
       status: "completed",
       message: "Deep ingest complete: 42",
+      failureCount: 0,
     });
     expect(toastSuccess).toHaveBeenCalledWith("Deep ingest complete: 42");
     expect(onSettled).toHaveBeenCalledWith("r1");
+  });
+
+  it("#432 — carries the failure count of a run that completed with failures", async () => {
+    deepIngest.mockResolvedValue({ jobId: "job-1", connectorId: "r1", status: "started" });
+    const { result } = renderHook(() => useDeepIngest("p1"), { wrapper });
+    act(() => result.current.start("r1"));
+    await waitFor(() =>
+      expect(fake.emit).toHaveBeenCalledWith("subscribe:job", { jobId: "job-1" }),
+    );
+    const message = "Deep ingest completed with 3 failures: 3 source files could not be ingested.";
+    act(() => fake.fire("job:lifecycle", ev({ status: "completed", message, failureCount: 3 })));
+    expect(result.current.outcome).toEqual({
+      connectorId: "r1",
+      status: "completed",
+      message,
+      failureCount: 3,
+    });
+    expect(toastSuccess).not.toHaveBeenCalled();
+    expect(toastWarning).toHaveBeenCalledWith(message);
   });
 
   it("reports a failed run with the server's generic error", async () => {
@@ -121,6 +144,7 @@ describe("useDeepIngest (#373)", () => {
       connectorId: "r1",
       status: "failed",
       message: "Repository ingestion failed.",
+      failureCount: 0,
     });
     expect(result.current.runningConnectorId).toBeNull();
   });

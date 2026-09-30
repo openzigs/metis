@@ -36,8 +36,18 @@ const mocks = vi.hoisted(() => {
     ingestRepoMetadata: vi.fn(async () => ({ failures: 0 })),
     ingestSourceAsKnowledge: vi.fn(async () => ({ chunkCount: 5, failures: 0 })),
     ingestCodeGraph: vi.fn(async () => ({ filesParsed: 2, symbolsUpserted: 10 })),
+    logWarn: vi.fn(),
   };
 });
+
+vi.mock("../src/lib/logger.js", () => ({
+  createChildLogger: () => ({
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    warn: mocks.logWarn,
+  }),
+}));
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
@@ -113,6 +123,10 @@ vi.mock("../src/lib/docs-gen/incremental.js", () => ({
 }));
 
 import { buildSchedulerHandlerOverrides } from "../src/lib/scheduler/handler-overrides.js";
+import {
+  REGENERATION_SCHEDULING_FAILED_MESSAGE,
+  RegenerationSchedulingError,
+} from "../src/lib/docs-gen/regeneration-scheduling.js";
 import {
   INGEST_IN_PROGRESS,
   acquireConnectorIngest,
@@ -254,13 +268,29 @@ describe("buildSchedulerHandlerOverrides", () => {
     expect(mocks.checkIncrementalRegeneration).not.toHaveBeenCalled();
   });
 
-  it("propagates regeneration scheduling failures for retry (#1356)", async () => {
+  it("propagates a regeneration scheduling failure for retry, classified as scheduling (#1356, #432)", async () => {
     repoConnections.set("rc1", { id: "rc1", projectId: "p-alpha" });
     const error = new Error("outbox unavailable");
     mocks.checkIncrementalRegeneration.mockRejectedValueOnce(error);
-    await expect(
-      buildSchedulerHandlerOverrides().refreshRepoConnector!("rc1", new AbortController().signal),
-    ).rejects.toBe(error);
+    const rejection = await buildSchedulerHandlerOverrides().refreshRepoConnector!(
+      "rc1",
+      new AbortController().signal,
+    ).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    // #432 — the ingest landed; only the scheduling failed. The failed task must
+    // say so rather than read as a failed refresh, and keep the cause for the log.
+    expect(rejection).toBeInstanceOf(RegenerationSchedulingError);
+    expect((rejection as Error).message).toBe(REGENERATION_SCHEDULING_FAILED_MESSAGE);
+    expect((rejection as Error).cause).toBe(error);
+    expect((rejection as Error).message).not.toContain("outbox unavailable");
+    // #432 review — the task queue stores only the message, so the cause must be
+    // logged here or it is lost for good.
+    expect(mocks.logWarn).toHaveBeenCalledWith(
+      expect.stringContaining("scheduling regeneration failed"),
+      expect.objectContaining({ err: error, projectId: "p-alpha", connectorId: "rc1" }),
+    );
   });
 
   it("refresh-repo-connector resolves projectId and calls metadata + test", async () => {

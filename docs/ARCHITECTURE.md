@@ -1070,7 +1070,7 @@ Beyond the analysis-specific events above, every long-running flow shares a sing
 
 | Event | Payload | When |
 |---|---|---|
-| `job:lifecycle` | `{kind, jobId, projectId, status, progress?, message?, error?, ts}` — `kind` ∈ the catalogue above, `status` ∈ `started`/`progress`/`completed`/`failed` | Each job state transition |
+| `job:lifecycle` | `{kind, jobId, projectId, status, progress?, message?, error?, failureCount?, ts}` — `kind` ∈ the catalogue above, `status` ∈ `started`/`progress`/`completed`/`failed`; `failureCount` (#432) is set on a `repo-ingest` `completed` event, and a value above 0 means the run finished with failures | Each job state transition |
 | `job:doc-section` | `{jobId, projectId, section, status, index?, total?, warning?, ts}` — `status` ∈ `queued`/`generating`/`done`/`degraded`/`failed` | Per-section doc-generation progress + degraded/failed-section warnings (#243) |
 
 **The emit seam** (one place each op wires into — #420–#424 call this, no new API needed). Import `jobEvents` (registry-backed module singleton) and `genericFailureMessage` from `server/src/lib/socket/job-events.ts`:
@@ -6354,6 +6354,8 @@ When a repo connector is created (`POST /repos`), auto-ingest triggers if:
 2. It is the first repo connector in the project.
 
 The deep-ingest pipeline runs as a fire-and-forget background task (5 steps: clone → code-graph → RAG ingest → metadata → discovery). On failure, a `status: "error"` progress event is emitted so the UI can dismiss the progress bar and show an error toast.
+
+When the ingest lands but scheduling automatic document regeneration fails (`RegenerationSchedulingError`, `server/src/lib/docs-gen/regeneration-scheduling.ts`, #432), no entry point reports it as a failed ingest. Deep Ingest fails the job with the shared scheduling message. `POST …/repos/:id/refresh-ingest` answers `500 REGENERATION_SCHEDULING_FAILED` with that message. The scheduled `refresh-repo-connector` fails the task with it, so the queue retries. Every path logs the underlying cause server-side, and none sends it to the client or the task record.
 
 ### 34.3 Concurrency Guard
 

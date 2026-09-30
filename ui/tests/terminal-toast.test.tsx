@@ -28,7 +28,7 @@ import {
 } from "@/lib/terminal-toast";
 
 vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
 
 const lifecycle = (over: Partial<JobLifecycleEvent>): JobLifecycleEvent => ({
@@ -76,6 +76,19 @@ describe("terminalToastText", () => {
     });
   });
 
+  it("#432 — a completion that reports failures is a warning, not a success", () => {
+    const partial = "Deep ingest completed with 2 failures: 2 source files could not be ingested.";
+    expect(
+      terminalToastText(lifecycle({ status: "completed", message: partial, failureCount: 2 })),
+    ).toEqual({ kind: "warning", text: partial });
+  });
+
+  it("#432 — a completion that reports zero failures stays a success", () => {
+    expect(
+      terminalToastText(lifecycle({ status: "completed", message: "Done.", failureCount: 0 })),
+    ).toEqual({ kind: "success", text: "Done." });
+  });
+
   it("falls back to a generic failure label when error is absent (no raw leak)", () => {
     expect(terminalToastText(lifecycle({ status: "failed", error: undefined }))).toEqual({
       kind: "error",
@@ -90,6 +103,14 @@ describe("fireTerminalToast", () => {
     expect(fired).toBe(true);
     expect(toast.success).toHaveBeenCalledWith("All done.");
     expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("#432 — fires a warning toast for a completion with failures", () => {
+    fireTerminalToast(
+      lifecycle({ jobId: "j-partial", status: "completed", message: "Partly.", failureCount: 1 }),
+    );
+    expect(toast.warning).toHaveBeenCalledWith("Partly.");
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
   it("fires an error toast on failure with the generic server message", () => {

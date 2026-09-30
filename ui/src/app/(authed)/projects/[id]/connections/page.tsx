@@ -31,6 +31,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { useConnectorProgress, useConnectorDiscovery } from "@/hooks/use-connector-events";
 import { useDeepIngest } from "@/hooks/use-deep-ingest";
+import { DeepIngestOutcomeBanner } from "@/components/connectors/deep-ingest-outcome-banner";
 import { DbConnectorWizard } from "@/components/connectors/db-connector-wizard";
 import { DatabaseResourceManager } from "@/components/connectors/database-resource-manager";
 import { RebuildCacheButton } from "@/components/projects/rebuild-cache-button";
@@ -972,24 +973,7 @@ export default function ConnectionsPage() {
           {!repos.isLoading && (repos.data ?? []).length === 0 ? (
             <p className="text-sm text-muted-foreground">No repo connectors yet.</p>
           ) : null}
-          {deepIngest.outcome?.status === "completed" ? (
-            <div
-              className="rounded border border-success/40 bg-success-muted p-3 text-sm"
-              role="status"
-            >
-              {/* The server's line already reads "Deep ingest complete: …counts". */}
-              <div className="font-medium text-success">{deepIngest.outcome.message}</div>
-            </div>
-          ) : null}
-          {deepIngest.outcome?.status === "failed" ? (
-            <div
-              className="rounded border border-destructive/40 bg-destructive/10 p-3 text-sm"
-              role="alert"
-            >
-              <div className="mb-1 font-medium text-destructive">Deep ingest failed</div>
-              <div className="text-xs text-foreground">{deepIngest.outcome.message}</div>
-            </div>
-          ) : null}
+          <DeepIngestOutcomeBanner outcome={deepIngest.outcome} />
           {refreshIngestResult ? (
             <div className="rounded border border-info/40 bg-info-muted p-3 text-sm">
               <div className="mb-1 font-medium text-info">

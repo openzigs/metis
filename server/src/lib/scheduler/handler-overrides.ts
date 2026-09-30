@@ -41,7 +41,14 @@ import { buildProvider, loadAIConfig } from "../ai/index.js";
 import { prisma } from "../prisma.js";
 import { runAutopilot } from "../autopilot/index.js";
 import type { BuiltInHandlerDeps } from "./task-handlers.js";
-import { checkIncrementalRegeneration, runRegenerationTask } from "../docs-gen/incremental.js";
+import { runRegenerationTask } from "../docs-gen/incremental.js";
+import {
+  RegenerationSchedulingError,
+  scheduleIncrementalRegeneration,
+} from "../docs-gen/regeneration-scheduling.js";
+import { createChildLogger } from "../logger.js";
+
+const log = createChildLogger("scheduler-handler-overrides");
 
 async function fetchRepoConnectorProjectId(connectorId: string): Promise<string> {
   const row = await prisma.repoConnection.findUnique({ where: { id: connectorId } });
@@ -139,7 +146,22 @@ export function buildSchedulerHandlerOverrides(
           abortGuard(signal);
           const test = await testRepoConnector(projectId, connectorId, "system");
           if (srcSummary.failures === 0 && metadataSummary.failures === 0) {
-            await checkIncrementalRegeneration(projectId, connectorId);
+            // #432 — a scheduling failure still fails the task (so it retries),
+            // but as a RegenerationSchedulingError: the refresh itself landed.
+            // The task queue stores only the message, so log the cause here or
+            // it is lost (#114 keeps it out of the task record).
+            try {
+              await scheduleIncrementalRegeneration(projectId, connectorId);
+            } catch (err) {
+              if (err instanceof RegenerationSchedulingError) {
+                log.warn("Scheduled repo refresh succeeded but scheduling regeneration failed", {
+                  err: err.cause,
+                  projectId,
+                  connectorId,
+                });
+              }
+              throw err;
+            }
           }
           return {
             repo: meta.repo.full_name,

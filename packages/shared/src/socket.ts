@@ -140,6 +140,12 @@ export interface JobLifecycleEvent {
   message?: string;
   /** Error text on `failed`. */
   error?: string;
+  /**
+   * On `completed`, for jobs that can finish partly (#432): how many parts of
+   * the run failed. Non-zero means "completed with failures", which a client
+   * should present as a warning, not a success. Absent means not reported.
+   */
+  failureCount?: number;
   ts: number;
 }
 

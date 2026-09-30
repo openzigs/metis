@@ -211,6 +211,7 @@ import {
   getRepoConnectorEmitter,
 } from "../src/lib/connectors/repo/repo-service.js";
 import {
+  REGENERATION_SCHEDULING_FAILED,
   REGENERATION_SCHEDULING_FAILED_MESSAGE,
   REPO_INGEST_FAILED_MESSAGE,
 } from "../src/routes/connectors.js";
@@ -576,6 +577,9 @@ describe("asynchronous deep-ingest (#373)", () => {
     expect(message).toContain("repository metadata could not be fetched or ingested");
     expect(message).toContain("42 RAG chunks");
     expect(message).not.toContain("Metadata unavailable");
+    // #432 — the count travels as data, so the page can style the result as a
+    // warning without parsing the sentence.
+    expect(getLastJobLifecycle(jobId)!.failureCount).toBe(3);
   });
 
   it("reports a clean run's edges, documents created and clone size", async () => {
@@ -587,6 +591,7 @@ describe("asynchronous deep-ingest (#373)", () => {
       "Deep ingest complete: 1 of 1 files parsed, 0 symbols, 0 edges, 1 RAG chunk, " +
         "1 document created, 10 B cloned.",
     );
+    expect(getLastJobLifecycle(jobId)!.failureCount).toBe(0);
   });
 
   it("a 409 from another entry point's claim carries no job id", async () => {
@@ -919,8 +924,19 @@ describe("manual connector regeneration callers (#1356)", () => {
           expect(failed!.error).toBe(REGENERATION_SCHEDULING_FAILED_MESSAGE);
           expect(failed!.error).not.toBe(genericFailureMessage("repo-ingest"));
           expect(JSON.stringify(failed)).not.toContain("Task store unavailable");
-          // PR #418 review — discovery already ran, so its notification is sent
-          // even though scheduling then failed.
+        }
+        if (caller === "refresh-ingest") {
+          // #432 — the refresh landed; the response says scheduling failed, not
+          // that the refresh did, and carries no raw exception text.
+          expect(response.body.error).toMatchObject({
+            code: REGENERATION_SCHEDULING_FAILED,
+            message: REGENERATION_SCHEDULING_FAILED_MESSAGE,
+          });
+          expect(JSON.stringify(response.body)).not.toContain("Task store unavailable");
+        }
+        if (caller !== "create") {
+          // PR #418 review / #432 — discovery already ran, so its notification is
+          // sent even though scheduling then failed.
           const discoveries = vi
             .mocked(getRepoConnectorEmitter)
             .mock.results.flatMap(

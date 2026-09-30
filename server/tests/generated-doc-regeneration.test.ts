@@ -271,6 +271,7 @@ import { buildSchedulerHandlerOverrides } from "../src/lib/scheduler/handler-ove
 import { SCHEDULER_DEFAULTS } from "../src/lib/scheduler/config.js";
 import { createPrismaTaskStore } from "../src/lib/scheduler/task-store.js";
 import { runRegenerationTask } from "../src/lib/docs-gen/incremental.js";
+import { RegenerationSchedulingError } from "../src/lib/docs-gen/regeneration-scheduling.js";
 import { generateDocumentAsync } from "../src/routes/generated-docs.js";
 import { prisma } from "../src/lib/prisma.js";
 import { jobEvents } from "../src/lib/socket/job-events.js";
@@ -533,7 +534,14 @@ describe("successful ingest regeneration (#1356)", () => {
   });
   it("replays ingestion after an outbox failure without duplicate jobs", async () => {
     state.failTask = true;
-    await expect(ingest()).rejects.toThrow("outbox unavailable");
+    // #432 — the ingest landed; the refresh fails as a scheduling failure, with
+    // the outbox error kept as its cause.
+    const rejection = await ingest().then(
+      () => null,
+      (err: unknown) => err,
+    );
+    expect(rejection).toBeInstanceOf(RegenerationSchedulingError);
+    expect((rejection as Error).cause).toMatchObject({ message: "outbox unavailable" });
     await ingest();
     await ingest();
     expect(state.tasks.size).toBe(2);
