@@ -305,8 +305,10 @@ describe("#588 already-subscribed sockets leave workspace rooms they no longer b
       expect(roomHas(mcpStatusWorkspaceRoom("ws-f"), r.sid)).toBe(true);
     });
 
-    // The membership goes away without passing through the route (another
-    // process, a SCIM deprovision): only the re-subscribe can notice.
+    // The membership row goes away without passing through the route (another
+    // process, a direct DB change): only the re-subscribe can notice. A SCIM
+    // deprovision does NOT take this path — it keeps the WorkspaceMember rows,
+    // so neither this prune nor readLiveWorkspaceIds covers it (tracked separately).
     db.members.delete("ws-e:u-r");
     r.socket.emit("subscribe:mcp");
     await vi.waitFor(() => expect(roomHas(mcpStatusWorkspaceRoom("ws-e"), r.sid)).toBe(false));
