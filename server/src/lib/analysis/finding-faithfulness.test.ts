@@ -28,12 +28,10 @@ function makeProvider(reply = "{}"): AIProvider {
     model: "test-model",
     offline: false,
     capabilities: { streaming: true, tools: true, embeddings: false, vision: false },
-    chat: vi.fn(
-      async (): Promise<ChatResponse> => ({
-        content: reply,
-        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
-      }),
-    ),
+    chat: vi.fn(async (): Promise<ChatResponse> => ({
+      content: reply,
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+    })),
     stream: vi.fn(),
     embed: vi.fn(),
     models: vi.fn(async () => ["test-model"]),
@@ -167,6 +165,15 @@ describe("UsageCountingProvider", () => {
     // Neither path may be counted as a judged round-trip.
     expect(counting.llmCalls).toBe(0);
     expect(counting.usage).toEqual({ promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+  });
+
+  // Review of PR #523 (#512) — a pass-through keeps the inner adapter's answer,
+  // and an inner adapter that cannot answer stays "cannot serve".
+  it("forwards servesRouterModel from the inner provider", () => {
+    const serving = { ...makeProvider(), servesRouterModel: vi.fn(() => true) } as AIProvider;
+    expect(new UsageCountingProvider(serving).servesRouterModel("tier-id")).toBe(true);
+    expect(serving.servesRouterModel).toHaveBeenCalledWith("tier-id");
+    expect(new UsageCountingProvider(makeProvider()).servesRouterModel("tier-id")).toBe(false);
   });
 });
 

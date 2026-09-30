@@ -27,6 +27,12 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
   let _adminUserId: string;
   let workspaceAId: string;
   let workspaceBId: string;
+  // Unique per beforeAll run (#306). A retry starts a new worker, which runs
+  // beforeAll again and seeds two MORE workspaces. With fixed names the retry
+  // then sees two "Workspace Beta" menu items — a strict-mode violation — so a
+  // retry could never pass. Suffixing the run stamp makes a retry a real retry.
+  let alphaName: string;
+  let betaName: string;
   let apiCtx: APIRequestContext;
 
   test.beforeAll(async () => {
@@ -40,22 +46,43 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
     });
 
     // Create two workspaces for multi-tenancy testing
+    const stamp = Date.now();
+    alphaName = `Workspace Alpha ${stamp}`;
+    betaName = `Workspace Beta ${stamp}`;
     const resA = await apiCtx.post("/api/workspaces", {
-      data: { name: "Workspace Alpha", slug: `ws-alpha-${Date.now()}` },
+      data: { name: alphaName, slug: `ws-alpha-${stamp}` },
     });
     expect(resA.status()).toBe(201);
     const bodyA = await resA.json();
     workspaceAId = bodyA.data.id;
 
     const resB = await apiCtx.post("/api/workspaces", {
-      data: { name: "Workspace Beta", slug: `ws-beta-${Date.now()}` },
+      data: { name: betaName, slug: `ws-beta-${stamp}` },
     });
     expect(resB.status()).toBe(201);
     const bodyB = await resB.json();
     workspaceBId = bodyB.data.id;
   });
 
-  test.afterAll(async () => {
+  // #539 — every beforeAll run (and so every retry) seeds two workspaces with
+  // run-stamped names; without this, each run grew the admin's switcher menu by
+  // two on a long-lived local DB. Best-effort: a failed delete must not turn a
+  // passing run red, so it is annotated on the report instead; and a beforeAll
+  // that failed part-way seeded fewer, hence the id guard.
+  test.afterAll(async ({}, testInfo) => {
+    for (const id of [workspaceAId, workspaceBId]) {
+      if (!id) continue;
+      const outcome = await apiCtx
+        ?.delete(`/api/workspaces/${id}`)
+        .then((res) => (res.ok() ? null : `HTTP ${res.status()}`))
+        .catch((err: unknown) => String(err));
+      if (outcome) {
+        testInfo.annotations.push({
+          type: "cleanup",
+          description: `workspace ${id} was not deleted: ${outcome}`,
+        });
+      }
+    }
     await apiCtx?.dispose();
   });
 
@@ -83,8 +110,8 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
 
       await test.step("Opening shows all user workspaces", async () => {
         await switcher.open();
-        await expect(switcher.getWorkspaceByName("Workspace Alpha")).toBeVisible();
-        await expect(switcher.getWorkspaceByName("Workspace Beta")).toBeVisible();
+        await expect(switcher.getWorkspaceByName(alphaName)).toBeVisible();
+        await expect(switcher.getWorkspaceByName(betaName)).toBeVisible();
       });
     });
 
@@ -92,20 +119,20 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
     test("should switch active workspace and refresh context", async ({ page }) => {
       const switcher = new WorkspaceSwitcherPage(page);
 
-      await test.step("Switch to Workspace Beta", async () => {
-        await switcher.switchTo("Workspace Beta");
+      await test.step(`Switch to ${betaName}`, async () => {
+        await switcher.switchTo(betaName);
       });
 
-      await test.step("Switcher now shows Beta as active", async () => {
-        await switcher.expectActiveWorkspace("Workspace Beta");
+      await test.step(`Switcher now shows ${betaName} as active`, async () => {
+        await switcher.expectActiveWorkspace(betaName);
       });
 
-      await test.step("Switch back to Workspace Alpha", async () => {
-        await switcher.switchTo("Workspace Alpha");
+      await test.step(`Switch back to ${alphaName}`, async () => {
+        await switcher.switchTo(alphaName);
       });
 
-      await test.step("Switcher shows Alpha as active", async () => {
-        await switcher.expectActiveWorkspace("Workspace Alpha");
+      await test.step(`Switcher shows ${alphaName} as active`, async () => {
+        await switcher.expectActiveWorkspace(alphaName);
       });
     });
 
@@ -141,7 +168,7 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
       });
 
       await test.step("Verify initial workspace name is displayed", async () => {
-        await expect(settings.nameInput).toHaveValue("Workspace Alpha");
+        await expect(settings.nameInput).toHaveValue(alphaName);
       });
 
       await test.step("Save button is disabled when name unchanged", async () => {
@@ -149,18 +176,18 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
       });
 
       await test.step("Update name and save", async () => {
-        await settings.updateName("Workspace Alpha Renamed");
+        await settings.updateName(`${alphaName} Renamed`);
       });
 
       await test.step("Reload and verify name persisted", async () => {
         await page.reload();
         await expect(settings.heading).toBeVisible();
-        await expect(settings.nameInput).toHaveValue("Workspace Alpha Renamed");
+        await expect(settings.nameInput).toHaveValue(`${alphaName} Renamed`);
       });
 
       // Restore the original name
       await test.step("Restore original name", async () => {
-        await settings.updateName("Workspace Alpha");
+        await settings.updateName(alphaName);
       });
     });
 
@@ -263,7 +290,7 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
       });
 
       await test.step("Workspace name is displayed", async () => {
-        await expect(invitePage.workspaceName).toContainText("Workspace Alpha");
+        await expect(invitePage.workspaceName).toContainText(alphaName);
       });
 
       await test.step("Inviter name is shown", async () => {
@@ -352,7 +379,7 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
 
     test("should scope project creation to active workspace", async () => {
       const stamp = `${Date.now()}`;
-      await test.step("Create a project in Workspace Alpha", async () => {
+      await test.step(`Create a project in ${alphaName}`, async () => {
         const res = await apiCtx.post("/api/projects", {
           data: {
             name: `ws-alpha-project-${stamp}`,
@@ -366,7 +393,7 @@ test.describe("Workspaces Multi-Tenancy (Epic #759)", () => {
         expect([200, 201].includes(res.status())).toBe(true);
       });
 
-      await test.step("Create a project in Workspace Beta", async () => {
+      await test.step(`Create a project in ${betaName}`, async () => {
         const res = await apiCtx.post("/api/projects", {
           data: {
             name: `ws-beta-project-${stamp}`,

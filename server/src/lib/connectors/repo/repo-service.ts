@@ -350,7 +350,8 @@ export async function createRepoConnector(
  * rejects the loser's insert with P2002, and the loser is re-inserted as a
  * non-primary row. A P2002 on that retry (e.g. a racing duplicate label) is the
  * caller's to see — and so is a first-insert P2002 that names another
- * constraint (#463: a label held by a soft-deleted row), which no retry fixes.
+ * constraint (e.g. a concurrent create that won the race for a live label —
+ * the label index covers live rows only, #492), which no retry fixes.
  */
 async function insertRepoConnection(
   data: Omit<Prisma.RepoConnectionUncheckedCreateInput, "isPrimary">,
@@ -633,7 +634,12 @@ export async function deleteRepoConnector(projectId: string, id: string, actorId
   // it. The row is already deleted, so a failed removal is logged, not surfaced.
   if (existing.uploadPath) {
     await removeUploadedArchiveAt(id, existing.uploadPath);
-    await cleanupExtraction(id);
+    await cleanupExtraction(id).catch((err: unknown) => {
+      log.warn("Failed to remove a deleted upload connector's extraction", {
+        connectorId: id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
   audit({
     actor: { id: actorId },

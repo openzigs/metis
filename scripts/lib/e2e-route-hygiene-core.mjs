@@ -28,6 +28,15 @@
  * deliberately no allowlist or comment-based bypass: even a teardown `unroute`
  * can strand a request, and keeping the route and disarming it is the only fix.
  *
+ * #539 — `getByRole("heading", { name: "<literal>" })` without `exact: true`
+ * matches any heading that merely CONTAINS the literal, case-insensitively. It
+ * passes until the page also renders a heading such as "Unlinked connections"
+ * next to "Connections", and from then on it resolves to two elements or to
+ * whichever renders first: the #306 flake. `nonExactHeadingNames` finds every
+ * literal-named heading locator that is not exact. A regex or computed name is
+ * left alone: a regex states its own anchoring, and a computed name is not a
+ * literal the scanner can reason about.
+ *
  * The source is parsed with the TypeScript compiler, not scanned by hand: a
  * character loop that blanks strings and comments cannot tell a regex literal
  * from a division, so one quote inside `/.../` hid every later call in the file.
@@ -110,4 +119,50 @@ const REMOVERS = new Set(["unroute", "unrouteAll"]);
  */
 export function unrouteCalls(src, fileName = "spec.ts") {
   return methodCallLines(src, fileName, (call) => REMOVERS.has(call.expression.name.text));
+}
+
+/**
+ * The initializer of the property called `key` in an object literal, whether
+ * written `key: v` or `"key": v`; undefined when absent or not a plain assignment.
+ *
+ * @param {ts.ObjectLiteralExpression} obj
+ * @param {string} key
+ * @returns {ts.Expression | undefined}
+ */
+function propertyValue(obj, key) {
+  for (const p of obj.properties) {
+    if (
+      ts.isPropertyAssignment(p) &&
+      (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
+      p.name.text === key
+    ) {
+      return p.initializer;
+    }
+  }
+  return undefined;
+}
+
+/** @param {ts.Node | undefined} node */
+const isStringLiteralLike = (node) =>
+  node !== undefined && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node));
+
+/**
+ * 1-based line numbers of every `x.getByRole("heading", { name: "<literal>" })`
+ * in `src` whose options do not set `exact: true`.
+ *
+ * @param {string} src
+ * @param {string} [fileName] only its extension matters (`.tsx` enables JSX).
+ * @returns {number[]}
+ */
+export function nonExactHeadingNames(src, fileName = "spec.ts") {
+  return methodCallLines(src, fileName, (call) => {
+    const [role, options] = call.arguments;
+    if (call.expression.name.text !== "getByRole") return false;
+    if (!isStringLiteralLike(role) || /** @type {ts.StringLiteral} */ (role).text !== "heading") {
+      return false;
+    }
+    if (options === undefined || !ts.isObjectLiteralExpression(options)) return false;
+    if (!isStringLiteralLike(propertyValue(options, "name"))) return false;
+    return propertyValue(options, "exact")?.kind !== ts.SyntaxKind.TrueKeyword;
+  });
 }

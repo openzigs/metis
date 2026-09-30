@@ -50,6 +50,16 @@ describe("RecordingProvider", () => {
     expect(p.offline).toBe(false);
   });
 
+  it("forwards the inner provider's answer on router tier ids (#512)", () => {
+    const serves = vi.fn((id: string) => id === "tier-a");
+    const p = new RecordingProvider({ inner: inner({ servesRouterModel: serves }), store });
+    expect(p.servesRouterModel("tier-a")).toBe(true);
+    expect(p.servesRouterModel("tier-b")).toBe(false);
+    expect(new RecordingProvider({ inner: inner(), store }).servesRouterModel("tier-a")).toBe(
+      false,
+    );
+  });
+
   it("passes chat through and captures the response to a fixture", async () => {
     const i = inner();
     const p = new RecordingProvider({ inner: i, store });

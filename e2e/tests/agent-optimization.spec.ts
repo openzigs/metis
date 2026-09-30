@@ -194,7 +194,7 @@ test.describe("Epic #596 — Agent & Skill Token Optimization", () => {
       await test.step("Verify agent step breakdown section renders", async () => {
         await expect(usagePage.agentStepBreakdown).toBeVisible();
         await expect(
-          page.getByRole("heading", { name: "Token Usage by Agent Step" }),
+          page.getByRole("heading", { name: "Token Usage by Agent Step", exact: true }),
         ).toBeVisible();
       });
     });
@@ -251,7 +251,7 @@ test.describe("Epic #596 — Agent & Skill Token Optimization", () => {
         await usagePage.selectRange("30d");
         await expect(usagePage.agentStepBreakdown).toBeVisible();
         await expect(
-          page.getByRole("heading", { name: "Token Usage by Agent Step" }),
+          page.getByRole("heading", { name: "Token Usage by Agent Step", exact: true }),
         ).toBeVisible();
       });
     });

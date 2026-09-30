@@ -27,7 +27,7 @@ export class ProjectsPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Projects" });
+    this.heading = page.getByRole("heading", { name: "Projects", exact: true });
     this.newProjectButton = page.getByTestId("new-project-button");
     this.nameInput = page.getByTestId("project-name-input");
     this.slugInput = page.getByTestId("project-slug-input");

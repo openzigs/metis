@@ -164,7 +164,7 @@ function makeVault() {
     }),
     read: vi.fn(async (id: string) => {
       const rec = secrets.get(id);
-      if (!rec || rec.deletedAt) throw new Error(`unknown secret ${id}`);
+      if (!rec || rec.deletedAt) throw new SecretNotFoundError(id);
       return { plaintext: rec.plaintext };
     }),
     delete: vi.fn(async (id: string) => {
@@ -483,6 +483,46 @@ describe("updateTestManagementConnection", () => {
       deps,
     );
     expect(updated.status).toBe("untested");
+  });
+
+  describe("#504 — a failed read of the bound secret", () => {
+    const zephyr = async (deps: ReturnType<typeof depsFor>["deps"]) =>
+      createTestManagementConnection(
+        PROJECT,
+        {
+          label: "read-fail",
+          kind: "zephyr",
+          baseUrl: ZEPHYR_BASE,
+          auth: { kind: "zephyr", bearerToken: "tok" },
+        },
+        ACTOR,
+        deps,
+      );
+
+    it("is 409 VAULT_BINDING_STALE only when the secret is gone", async () => {
+      const { deps, vault, secrets } = depsFor();
+      const created = await zephyr(deps);
+      for (const id of secrets.keys()) await vault.delete(id);
+      await expect(
+        loadResolvedTestManagementConnection(created.id, undefined, deps),
+      ).rejects.toMatchObject({ status: 409, code: "VAULT_BINDING_STALE" });
+    });
+
+    it("rethrows any other failure (DB outage, decryption) unchanged", async () => {
+      const { deps, vault } = depsFor();
+      const created = await zephyr(deps);
+      for (const failure of [
+        new Error("Can't reach database server"),
+        Object.assign(new Error("Unsupported state or unable to authenticate data"), {
+          code: "ERR_CRYPTO_INVALID_AUTH_TAG",
+        }),
+      ]) {
+        vi.mocked(vault.read).mockRejectedValueOnce(failure);
+        await expect(
+          loadResolvedTestManagementConnection(created.id, undefined, deps),
+        ).rejects.toBe(failure);
+      }
+    });
   });
 
   it("rotates auth credentials IN PLACE — same secret, new value (#258)", async () => {

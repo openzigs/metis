@@ -52,7 +52,7 @@ test.describe("Agent Runs (#158) — list + review drill-in", () => {
 
     await test.step("the page renders its scaffold + table-or-empty", async () => {
       await expect(page.getByTestId("runs-page")).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Agent Runs" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Agent Runs", exact: true })).toBeVisible();
       // Project-ID filter input is part of the working list surface.
       await expect(page.getByLabel("Project ID")).toBeVisible();
 
@@ -74,7 +74,7 @@ test.describe("Agent Runs (#158) — list + review drill-in", () => {
     await page.goto("/runs/run_e2e_nonexistent/review", { waitUntil: "load" });
 
     await expect(page.getByTestId("run-review-page")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "PR Review" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "PR Review", exact: true })).toBeVisible();
 
     const empty = page.getByTestId("run-review-empty");
     const error = page.getByTestId("run-review-error");

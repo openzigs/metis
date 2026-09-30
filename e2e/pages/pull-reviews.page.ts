@@ -16,7 +16,7 @@ export class PullReviewsListPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "PR reviews" });
+    this.heading = page.getByRole("heading", { name: "PR reviews", exact: true });
     this.subtitle = page.getByText("History of automated PR reviews", { exact: false });
   }
 

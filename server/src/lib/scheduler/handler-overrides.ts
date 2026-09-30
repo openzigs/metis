@@ -222,13 +222,16 @@ export function buildSchedulerHandlerOverrides(
       opts.publishBatch ??
       (async (batchId, signal) => {
         abortGuard(signal);
-        // Republish runs in dry-run=false mode and pulls its own secrets via
-        // vault refs configured on the batch's PublishTarget.
+        // #504 — a scheduled republish is handed NO credential: `runBatch`
+        // does not read the batch's `metadata.secretRef` / `metadata.secretId`
+        // (#480), and there is no per-target secret to fall back to. So the
+        // live publish step fails with `TOKEN_REQUIRED` rather than using the
+        // secret bound by whoever created the batch, on behalf of whoever
+        // scheduled the task. Re-running a batch with its bound secret goes
+        // through `executeBatch` (the batch execute route).
         const result = await runBatch({
           batchId,
           dryRun: false,
-          // Vault ref is resolved inside the publisher via batch metadata;
-          // null here forces it to consult the configured target.
           secretRef: null,
         });
         return { batchId, status: result.status };

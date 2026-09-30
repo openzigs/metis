@@ -53,7 +53,7 @@ export class DocumentationPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Documentation" });
+    this.heading = page.getByRole("heading", { name: "Documentation", exact: true });
     this.generateButton = page.getByTestId("generate-docs-btn");
     this.generationSummary = page.getByText("Generation", { exact: true });
     this.indexingSummary = page.getByTestId("doc-indexing-summary");

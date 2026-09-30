@@ -230,12 +230,7 @@ import { computeRequirementEscalations } from "./escalation-context.js";
 import { splitEscalationBudget, type EscalationPolicyConfig } from "./escalation-policy.js";
 import type { RequirementEscalation } from "@metis/shared";
 import { TaskProfiler } from "../ai/task-profiler.js";
-import {
-  ModelRouter,
-  type ModelPreferences,
-  HAIKU_MODEL_ID,
-  SONNET_MODEL_ID,
-} from "../ai/model-router.js";
+import { ModelRouter, type ModelPreferences } from "../ai/model-router.js";
 
 const log = createChildLogger("analysis-orchestrator");
 
@@ -618,11 +613,9 @@ export class AnalysisOrchestrator {
       },
     });
 
-    // Resolve model override strings to actual model IDs so the provider
-    // receives a valid Bedrock identifier.
-    const resolvedOpts = { ...opts };
-    if (opts.model === "force-sonnet") resolvedOpts.model = SONNET_MODEL_ID;
-    else if (opts.model === "force-haiku") resolvedOpts.model = HAIKU_MODEL_ID;
+    // Resolve a `force-*` override to the model the provider will run — the
+    // same resolution the Model card reports (#512).
+    const resolvedOpts = { ...opts, model: this.resolveRunModel(opts.model) };
 
     // Run pipeline in the background. Errors are recorded against the
     // Analysis row \u2014 they never bubble up to the caller.
@@ -697,7 +690,9 @@ export class AnalysisOrchestrator {
     const documentIds = Array.isArray(metadata.documentIds)
       ? (metadata.documentIds as string[])
       : undefined;
-    const model = typeof metadata.model === "string" ? metadata.model : undefined;
+    const model = this.resolveRunModel(
+      typeof metadata.model === "string" ? metadata.model : undefined,
+    );
     const extraInstructions =
       typeof metadata.extraInstructions === "string" ? metadata.extraInstructions : undefined;
     const controller = new AbortController();
@@ -906,9 +901,9 @@ export class AnalysisOrchestrator {
         const metadata = analysis.metadata
           ? safeParse<Record<string, unknown>>(analysis.metadata)
           : {};
-        let model = typeof metadata.model === "string" ? metadata.model : undefined;
-        if (model === "force-sonnet") model = SONNET_MODEL_ID;
-        else if (model === "force-haiku") model = HAIKU_MODEL_ID;
+        const model = this.resolveRunModel(
+          typeof metadata.model === "string" ? metadata.model : undefined,
+        );
         const extraInstructions =
           typeof metadata.extraInstructions === "string" ? metadata.extraInstructions : undefined;
 
@@ -3941,6 +3936,14 @@ export class AnalysisOrchestrator {
   }
 
   /**
+   * #512 — the model a run started with `model` sends: a `force-*` override
+   * resolved through the ModelRouter with the active provider attached.
+   */
+  private resolveRunModel(model: string | undefined): string | undefined {
+    return new ModelRouter({ provider: this.deps.provider }).resolveRunModel(model);
+  }
+
+  /**
    * Epic #593 / #601 — Select the optimal model for a specialist agent by
    * profiling the retrieved context and consulting project preferences.
    */
@@ -3971,7 +3974,13 @@ export class AnalysisOrchestrator {
           }
         : undefined;
 
-      const router = new ModelRouter({ preferences, currentMonthTokens });
+      // #512 — tier ids only on a provider that serves them; elsewhere the
+      // selection is the provider's own configured model.
+      const router = new ModelRouter({
+        preferences,
+        currentMonthTokens,
+        provider: this.deps.provider,
+      });
 
       const selection = router.select(profile);
       log.info("Model selected for agent", {

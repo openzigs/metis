@@ -575,6 +575,16 @@ export interface AIProvider {
    * {@link capabilities} and then to "supports nothing".
    */
   capabilitiesFor?(model: string): ProviderCapabilities;
+  /**
+   * #512 — whether this adapter runs `modelId`, one of the ModelRouter's Claude
+   * tier ids (`us.anthropic.claude-*`), as that model. Anthropic and the Bedrock
+   * gateway do; DeepSeek's Anthropic-compatible endpoint and every other
+   * OpenAI-compatible endpoint (OpenAI, Azure, a local runtime) do not, even
+   * with a `modelProfileMap` entry — that map holds Bedrock profile ARNs.
+   * Optional: an adapter that does not implement it is treated as `false`, so
+   * auto-mode runs on its configured model rather than a guessed Claude id.
+   */
+  servesRouterModel?(modelId: string): boolean;
 
   chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResponse>;
   stream(messages: ChatMessage[], opts?: ChatOptions): AsyncGenerator<ChatChunk>;

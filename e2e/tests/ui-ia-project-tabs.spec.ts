@@ -175,7 +175,9 @@ test.describe("Project navigation follows the pipeline (#28, #29)", () => {
     await expect(root).toBeVisible({ timeout: 30_000 });
 
     const checklist = page.getByTestId("first-run-checklist");
-    await expect(checklist.getByRole("heading", { name: "Get started" })).toBeVisible();
+    await expect(
+      checklist.getByRole("heading", { name: "Get started", exact: true }),
+    ).toBeVisible();
     await expect(checklist.getByRole("listitem")).toHaveCount(5);
 
     await test.step("no settings controls on the Overview", async () => {
@@ -212,7 +214,9 @@ test.describe("Project navigation follows the pipeline (#28, #29)", () => {
 
     await tabs.primaryLink("Settings").click();
     await expect(page).toHaveURL((url) => url.pathname === `/projects/${projectId}/settings`);
-    await expect(page.getByRole("heading", { name: "Project settings", level: 1 })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Project settings", exact: true, level: 1 }),
+    ).toBeVisible();
     await expect(page.getByTestId("ai-provider-picker")).toBeVisible({ timeout: 15_000 });
     await expect(page.getByTestId("autopilot-settings-card")).toBeVisible();
 

@@ -77,8 +77,8 @@ function readCapability(): AnalysisCapability | null {
   return parsed.capability ?? null;
 }
 
-function makeOrch() {
-  const orch = new AnalysisOrchestrator({ provider: {} as never });
+function makeOrch(provider: object = {}) {
+  const orch = new AnalysisOrchestrator({ provider: provider as never });
   // Heavy / provider-backed collaborators — spied so the resume orchestration is
   // isolated. `runAgenticCodeAgent` returns canned usage; the append-merge it
   // performs is proven separately in resume-persistence.test.ts.
@@ -159,6 +159,27 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     // Tokens committed atomically as an increment delta (2 × 15 = 30 total).
     const finalize = state.updates.find((u) => u.status === "completed");
     expect(finalize?.totalTokens).toEqual({ increment: 30 });
+  });
+
+  // Review of PR #523 (#512) — a resumed forced-tier run sends the model the
+  // Model card named: the provider's configured model on a non-Claude provider.
+  it("resolves a persisted force-* override through the router with the provider attached", async () => {
+    const withModel = JSON.parse(capabilityMeta([{ connectorId: "c2", label: "worker" }])) as {
+      model?: string;
+    };
+    withModel.model = "force-sonnet";
+    state.metadata = JSON.stringify(withModel);
+    state.connectors = [{ id: "c2", label: "worker" }];
+    const { orch, runAgenticCodeAgent } = makeOrch({
+      key: "openai",
+      model: "gpt-4.1",
+      servesRouterModel: () => false,
+    });
+
+    await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
+
+    expect(runAgenticCodeAgent).toHaveBeenCalledTimes(1);
+    expect((runAgenticCodeAgent.mock.calls[0]![0] as { model?: string }).model).toBe("gpt-4.1");
   });
 
   it("re-caps an oversized skipped set and persists the still-remaining repos (loop guard)", async () => {
