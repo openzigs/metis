@@ -424,4 +424,57 @@ describe("flattenGroups", () => {
     );
     expect(summary(onlyUploads)).toEqual(["# Uploaded", "x.md [uploads]"]);
   });
+
+  // #526 review — the panel mounts only the rows in view, so the hierarchy and
+  // each level's full size must travel on the rows themselves.
+  it("gives every row its tree level, and its place among ALL its siblings", () => {
+    const tree = groupEntries(
+      toPanelEntries(
+        [
+          doc("u1", "A.md"),
+          doc("u2", "B.md"),
+          repo("r1", "src/b.ts"),
+          repo("r2", "README.md"),
+          repo("r3", "src/a.ts"),
+          repo("o1", "x.md", OTHER),
+        ],
+        { [CONN]: "wms-core" },
+      ),
+    );
+    const position = (r: PanelRow) =>
+      `${r.type === "heading" ? r.label : r.type === "folder" ? `${r.folder.name}/` : r.entry.name} L${r.level} ${r.posInSet}/${r.setSize}`;
+
+    expect(flattenGroups(tree, () => true).map(position)).toEqual([
+      "Uploaded L1 1/2",
+      "A.md L2 1/2",
+      "B.md L2 2/2",
+      "Repositories L1 2/2",
+      "Unnamed repository/ L2 1/2",
+      "x.md L3 1/1",
+      "wms-core/ L2 2/2",
+      // A folder's sub-folders and files are one sibling set, folders first.
+      "src/ L3 1/2",
+      "a.ts L4 1/2",
+      "b.ts L4 2/2",
+      "README.md L3 2/2",
+    ]);
+    // Collapsed, a folder keeps its own place; its children are simply absent.
+    expect(flattenGroups(tree, () => false).map(position)).toEqual([
+      "Uploaded L1 1/2",
+      "A.md L2 1/2",
+      "B.md L2 2/2",
+      "Repositories L1 2/2",
+      "Unnamed repository/ L2 1/2",
+      "wms-core/ L2 2/2",
+    ]);
+  });
+
+  it("numbers all three groups when each has documents", () => {
+    const headings = flattenGroups(groups, () => false).filter((r) => r.type === "heading");
+    expect(headings.map((r) => [r.label, r.level, r.posInSet, r.setSize])).toEqual([
+      ["Uploaded", 1, 1, 3],
+      ["Repositories", 1, 2, 3],
+      ["Other sources", 1, 3, 3],
+    ]);
+  });
 });

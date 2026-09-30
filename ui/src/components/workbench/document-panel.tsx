@@ -40,6 +40,13 @@ export function estimateRowSize(row: PanelRow): number {
   return 32;
 }
 
+/** #526 — a tree item's accessible name: the group, folder or document it stands for. */
+export function treeItemLabel(row: PanelRow): string {
+  if (row.type === "heading") return row.label;
+  if (row.type === "folder") return row.folder.name;
+  return row.entry.name;
+}
+
 export interface DocumentPanelProps {
   /** Every loaded document, parsed once by the page (`toPanelEntries`). */
   entries: readonly PanelEntry[];
@@ -184,7 +191,12 @@ export function DocumentPanel({
         className="min-h-0 flex-1 overflow-y-auto text-sm"
         data-testid="workbench-doc-scroll"
       >
+        {/* #526 — a flat, virtualised tree: the hierarchy and each level's full
+            size reach assistive technology through aria-level / -setsize /
+            -posinset, since only the rows in view are mounted. Each group's
+            heading is a level-1 item named for the group. */}
         <ul
+          role="tree"
           aria-label="Documents"
           className="relative w-full"
           style={{ height: virtualizer.getTotalSize() }}
@@ -194,6 +206,19 @@ export function DocumentPanel({
             return (
               <li
                 key={item.key}
+                role="treeitem"
+                aria-label={treeItemLabel(row)}
+                aria-level={row.level}
+                aria-setsize={row.setSize}
+                aria-posinset={row.posInSet}
+                // A group always shows its rows; a folder only when open.
+                aria-expanded={
+                  row.type === "heading"
+                    ? true
+                    : row.type === "folder"
+                      ? searching || expanded.has(row.folder.key)
+                      : undefined
+                }
                 data-index={item.index}
                 data-group={row.group}
                 ref={virtualizer.measureElement}

@@ -327,11 +327,29 @@ export function groupEntries(entries: readonly PanelEntry[]): DocumentGroups {
 
 export type PanelGroup = "uploads" | "repos" | "sources";
 
+/**
+ * #526 — where a row sits in the tree, for `aria-level`, `aria-setsize` and
+ * `aria-posinset`. The panel mounts only the rows in view, so a screen reader
+ * learns the hierarchy and each level's full size from these, not from the DOM.
+ */
+export interface TreePosition {
+  /** 1 for a group heading; 2 for a group's documents and root folders; +1 per folder. */
+  level: number;
+  /** How many siblings the row has, itself included, mounted or not. */
+  setSize: number;
+  /** The row's 1-based place among those siblings. */
+  posInSet: number;
+}
+
 /** #526 — one row of the virtualised panel: a group heading, a folder, or a file. */
-export type PanelRow =
-  | { type: "heading"; key: string; group: PanelGroup; label: string }
-  | { type: "folder"; key: string; group: PanelGroup; depth: number; folder: FolderNode }
-  | { type: "file"; key: string; group: PanelGroup; depth: number; entry: PanelEntry };
+export type PanelRow = TreePosition &
+  (
+    | { type: "heading"; key: string; group: PanelGroup; label: string }
+    | { type: "folder"; key: string; group: PanelGroup; depth: number; folder: FolderNode }
+    | { type: "file"; key: string; group: PanelGroup; depth: number; entry: PanelEntry }
+  );
+
+const GROUP_ORDER: readonly PanelGroup[] = ["uploads", "repos", "sources"];
 
 const GROUP_LABELS: Record<PanelGroup, string> = {
   uploads: "Uploaded",
@@ -343,37 +361,50 @@ const GROUP_LABELS: Record<PanelGroup, string> = {
  * #526 — the rows the panel shows, in order: each non-empty group's heading,
  * then its rows. A folder's children follow it only when `isOpen(folder.key)`,
  * so a collapsed repository of thousands of files is one row. Linear in the
- * rows returned plus the folders walked.
+ * rows returned plus the folders walked. Each row carries its {@link TreePosition}.
  */
 export function flattenGroups(
   groups: DocumentGroups,
   isOpen: (key: string) => boolean,
 ): PanelRow[] {
   const rows: PanelRow[] = [];
-  const file = (group: PanelGroup, entry: PanelEntry, depth: number): PanelRow => ({
-    type: "file",
-    key: `file:${entry.doc.id}`,
-    group,
-    depth,
-    entry,
+  // Depth 0 (a group's document or root folder) is tree level 2, under its heading.
+  const at = (depth: number, setSize: number, posInSet: number): TreePosition => ({
+    level: depth + 2,
+    setSize,
+    posInSet,
   });
-  const walk = (group: PanelGroup, folder: FolderNode, depth: number) => {
-    rows.push({ type: "folder", key: folder.key, group, depth, folder });
+  const file = (group: PanelGroup, entry: PanelEntry, depth: number, pos: TreePosition) =>
+    rows.push({ type: "file", key: `file:${entry.doc.id}`, group, depth, entry, ...pos });
+  const walk = (group: PanelGroup, folder: FolderNode, depth: number, pos: TreePosition) => {
+    rows.push({ type: "folder", key: folder.key, group, depth, folder, ...pos });
     if (!isOpen(folder.key)) return;
-    for (const child of folder.folders) walk(group, child, depth + 1);
-    for (const entry of folder.files) rows.push(file(group, entry, depth + 1));
+    // Sub-folders, then files: one set of siblings.
+    const size = folder.folders.length + folder.files.length;
+    const inner = depth + 1;
+    folder.folders.forEach((child, i) => walk(group, child, inner, at(inner, size, i + 1)));
+    const offset = folder.folders.length;
+    folder.files.forEach((entry, i) => file(group, entry, inner, at(inner, size, offset + i + 1)));
   };
-  const heading = (group: PanelGroup) =>
-    rows.push({ type: "heading", key: `heading:${group}`, group, label: GROUP_LABELS[group] });
 
-  if (groups.uploads.length > 0) {
-    heading("uploads");
-    for (const entry of groups.uploads) rows.push(file("uploads", entry, 0));
-  }
-  for (const group of ["repos", "sources"] as const) {
-    if (groups[group].length === 0) continue;
-    heading(group);
-    for (const root of groups[group]) walk(group, root, 0);
-  }
+  const present = GROUP_ORDER.filter((group) => groups[group].length > 0);
+  present.forEach((group, i) => {
+    rows.push({
+      type: "heading",
+      key: `heading:${group}`,
+      group,
+      label: GROUP_LABELS[group],
+      level: 1,
+      setSize: present.length,
+      posInSet: i + 1,
+    });
+    if (group === "uploads") {
+      const size = groups.uploads.length;
+      groups.uploads.forEach((entry, j) => file(group, entry, 0, at(0, size, j + 1)));
+    } else {
+      const roots = groups[group];
+      roots.forEach((root, j) => walk(group, root, 0, at(0, roots.length, j + 1)));
+    }
+  });
   return rows;
 }

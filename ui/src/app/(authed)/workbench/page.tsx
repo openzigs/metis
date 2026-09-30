@@ -60,6 +60,10 @@ interface DisplayMessage extends ChatMessage {
 
 export default function WorkbenchPage() {
   const [layout, setLayout] = useState<WorkbenchLayout>(() => loadLayout());
+  // #526 — the side-pane widths while a separator is being dragged, before commit.
+  const [paneDraft, setPaneDraft] = useState<Pick<WorkbenchLayout, "leftPct" | "rightPct"> | null>(
+    null,
+  );
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [session, setSession] = useState<AISession | null>(null);
@@ -326,8 +330,14 @@ export default function WorkbenchPage() {
     }
   }
 
-  const leftPct = layout.leftPct;
-  const rightPct = layout.rightPct;
+  // #526 — a drag in progress moves the panes through `paneDraft` only; the
+  // persisted `layout` (and so localStorage) changes once, when it is committed.
+  const leftPct = paneDraft?.leftPct ?? layout.leftPct;
+  const rightPct = paneDraft?.rightPct ?? layout.rightPct;
+  function commitPane(side: "leftPct" | "rightPct", pct: number) {
+    setPaneDraft(null);
+    setLayout((prev) => ({ ...prev, [side]: pct }));
+  }
   const gridStyle: CSSProperties = {
     ["--wb-left" as string]: `${leftPct}%`,
     ["--wb-right" as string]: `${rightPct}%`,
@@ -436,11 +446,12 @@ export default function WorkbenchPage() {
           ariaLabel="Resize documents panel"
           controls="workbench-left-panel"
           side="left"
-          value={layout.leftPct}
+          value={leftPct}
           min={MIN_PCT}
           max={MAX_PCT}
           container={gridRef}
-          onChange={(v) => setLayout((prev) => ({ ...prev, leftPct: v }))}
+          onChange={(v) => setPaneDraft({ leftPct: v, rightPct })}
+          onCommit={(v) => commitPane("leftPct", v)}
         />
 
         {/* CENTER — chat */}
@@ -567,11 +578,12 @@ export default function WorkbenchPage() {
           ariaLabel="Resize recent panel"
           controls="workbench-right-panel"
           side="right"
-          value={layout.rightPct}
+          value={rightPct}
           min={MIN_PCT}
           max={MAX_PCT}
           container={gridRef}
-          onChange={(v) => setLayout((prev) => ({ ...prev, rightPct: v }))}
+          onChange={(v) => setPaneDraft({ leftPct, rightPct: v })}
+          onCommit={(v) => commitPane("rightPct", v)}
         />
 
         {/* RIGHT — recent + skills + tasks */}

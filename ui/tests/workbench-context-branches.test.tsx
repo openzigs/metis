@@ -240,4 +240,33 @@ describe("WorkbenchPage — composeWithContext branches", () => {
     fireEvent.pointerMove(window, { clientX: 500 });
     expect(left).toHaveAttribute("aria-valuenow", "32");
   });
+
+  // #526 review — the panes follow every move, but the layout is written to
+  // localStorage once, when the drag ends, not synchronously per pointermove.
+  it("moves the panes live during a drag and saves the layout once, at its end", async () => {
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(<WorkbenchPage />, { wrapper: Wrapper });
+    const left = await screen.findByRole("separator", { name: "Resize documents panel" });
+    const grid = left.parentElement as HTMLElement;
+    vi.spyOn(grid, "getBoundingClientRect").mockReturnValue({ width: 1000 } as DOMRect);
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const layoutWrites = () =>
+      setItem.mock.calls.filter(([key]) => key === "metis.workbench.layout").length;
+
+    fireEvent.pointerDown(left, { button: 0, clientX: 220 });
+    for (let x = 221; x <= 320; x++) fireEvent.pointerMove(window, { clientX: x });
+    // The pane followed the pointer…
+    expect(grid.style.getPropertyValue("--wb-left")).toBe("32%");
+    expect(left).toHaveAttribute("aria-valuenow", "32");
+    // …without a single write for the hundred moves.
+    expect(layoutWrites()).toBe(0);
+
+    fireEvent.pointerUp(window, { clientX: 320 });
+    expect(layoutWrites()).toBe(1);
+    expect(JSON.parse(window.localStorage.getItem("metis.workbench.layout") ?? "{}")).toMatchObject(
+      { leftPct: 32, rightPct: 26 },
+    );
+    expect(grid.style.getPropertyValue("--wb-left")).toBe("32%");
+    setItem.mockRestore();
+  });
 });

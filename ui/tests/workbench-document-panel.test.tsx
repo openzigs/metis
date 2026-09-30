@@ -7,7 +7,7 @@
  * the stub in `virtualizer-stub.ts`, which windows rows by their estimated size.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { DocumentRow } from "@/lib/projects-api";
 import {
@@ -257,7 +257,7 @@ describe("DocumentPanel", () => {
     expect(mounted.length).toBeGreaterThan(5);
     expect(mounted.length).toBeLessThan(15);
     // The list is as tall as every row, so the scrollbar spans all 5,000 files.
-    expect(screen.getByRole("list", { name: "Documents" })).toHaveStyle({
+    expect(screen.getByRole("tree", { name: "Documents" })).toHaveStyle({
       height: `${28 + 32 + 5000 * 32}px`,
     });
     // Each mounted row is placed at its own offset.
@@ -286,6 +286,39 @@ describe("DocumentPanel", () => {
     // Sorted by name with numeric collation: the 4,001st file is file4000.ts.
     expect(ids[0]).toBe("workbench-doc-m4000");
     expect(screen.queryByTestId("workbench-doc-m0")).toBeNull();
+    // A screen reader still hears the row's place among ALL 5,000, mounted or not.
+    const item = screen.getByRole("treeitem", { name: "file4000.ts" });
+    expect(item).toHaveAttribute("aria-posinset", "4001");
+    expect(item).toHaveAttribute("aria-setsize", "5000");
+    expect(item).toHaveAttribute("aria-level", "3");
+  });
+
+  // #526 review — the flat list must still read as a tree: three labelled
+  // groups, then each folder and document at its level, with its sibling count.
+  it("exposes the hierarchy as a tree with levels, set sizes and positions", async () => {
+    const user = userEvent.setup();
+    renderPanel({ documents: [...docs, doc("j1", "jira:WMS-1")] });
+    const tree = screen.getByRole("tree", { name: "Documents" });
+    const item = (name: string) => within(tree).getByRole("treeitem", { name });
+    const aria = (el: HTMLElement) =>
+      ["aria-level", "aria-posinset", "aria-setsize", "aria-expanded"].map((a) =>
+        el.getAttribute(a),
+      );
+
+    // The three groups: labelled, level 1, and numbered among themselves.
+    expect(aria(item("Uploaded"))).toEqual(["1", "1", "3", "true"]);
+    expect(aria(item("Repositories"))).toEqual(["1", "2", "3", "true"]);
+    expect(aria(item("Other sources"))).toEqual(["1", "3", "3", "true"]);
+    // A document is a leaf: no aria-expanded.
+    expect(aria(item("Requirements.docx"))).toEqual(["2", "1", "1", null]);
+    expect(aria(item("wms-core"))).toEqual(["2", "1", "1", "false"]);
+
+    await user.click(screen.getByRole("button", { name: /wms-core/ }));
+    expect(aria(item("wms-core"))).toEqual(["2", "1", "1", "true"]);
+    // src/, tests/ then README.md: one set of three siblings, folders first.
+    expect(aria(item("src"))).toEqual(["3", "1", "3", "false"]);
+    expect(aria(item("tests"))).toEqual(["3", "2", "3", "false"]);
+    expect(aria(item("README.md"))).toEqual(["3", "3", "3", null]);
   });
 
   it("indents a row by its depth in the tree", async () => {
@@ -299,9 +332,10 @@ describe("DocumentPanel", () => {
 
 describe("estimateRowSize", () => {
   const [entry] = toPanelEntries([doc("u1", "a.md")]);
+  const pos = { level: 1, setSize: 1, posInSet: 1 };
   it("sizes headings, folders and files, and a file with a second line taller", () => {
     expect(
-      estimateRowSize({ type: "heading", key: "h", group: "uploads", label: "Uploaded" }),
+      estimateRowSize({ type: "heading", key: "h", group: "uploads", label: "Uploaded", ...pos }),
     ).toBe(28);
     const folder: PanelRow = {
       type: "folder",
@@ -309,9 +343,12 @@ describe("estimateRowSize", () => {
       group: "repos",
       depth: 0,
       folder: { key: "f", name: "src", folders: [], files: [], fileCount: 0 },
+      ...pos,
     };
     expect(estimateRowSize(folder)).toBe(32);
-    expect(estimateRowSize({ type: "file", key: "x", group: "uploads", depth: 0, entry })).toBe(32);
+    expect(
+      estimateRowSize({ type: "file", key: "x", group: "uploads", depth: 0, entry, ...pos }),
+    ).toBe(32);
     expect(
       estimateRowSize({
         type: "file",
@@ -319,6 +356,7 @@ describe("estimateRowSize", () => {
         group: "uploads",
         depth: 0,
         entry: { ...entry, secondary: "1/2/2026" },
+        ...pos,
       }),
     ).toBe(48);
   });

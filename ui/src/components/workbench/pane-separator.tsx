@@ -6,10 +6,14 @@
  * `value` is the width of the pane it resizes, as a percentage of `container`'s
  * width. `side` says which pane that is: dragging right widens a `left` pane
  * and narrows a `right` one.
+ *
+ * `onChange` follows the pointer on every move, for the live resize;
+ * `onCommit` fires once when a change is finished — on pointer release, or on
+ * each key press — so a caller persists the width once per drag, not per move.
  */
 "use client";
 
-import type { KeyboardEvent, PointerEvent, RefObject } from "react";
+import { useEffect, useRef, type KeyboardEvent, type PointerEvent, type RefObject } from "react";
 
 export interface PaneSeparatorProps {
   ariaLabel: string;
@@ -21,7 +25,10 @@ export interface PaneSeparatorProps {
   max: number;
   /** The element whose width 100% refers to. */
   container: RefObject<HTMLElement | null>;
+  /** Every step of a drag or key press: the live width. */
   onChange: (pct: number) => void;
+  /** The end of a change: pointer released (or cancelled) after a drag, or a key press. */
+  onCommit: (pct: number) => void;
 }
 
 const STEP = 1;
@@ -36,7 +43,13 @@ export function PaneSeparator({
   max,
   container,
   onChange,
+  onCommit,
 }: PaneSeparatorProps) {
+  // Detaches the window listeners of a drag in progress; also run on unmount,
+  // so a separator removed mid-drag leaves nothing listening on the window.
+  const endDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => endDrag.current?.(), []);
+
   const clamp = (n: number) => Math.min(max, Math.max(min, Math.round(n * 10) / 10));
   // Moving the pointer or pressing → by `delta` widens a left pane, narrows a right one.
   const direction = side === "left" ? 1 : -1;
@@ -47,14 +60,23 @@ export function PaneSeparator({
     e.preventDefault();
     const startX = e.clientX;
     const startValue = value;
+    let last: number | null = null;
     const move = (ev: globalThis.PointerEvent) => {
-      onChange(clamp(startValue + (direction * (ev.clientX - startX) * 100) / width));
+      last = clamp(startValue + (direction * (ev.clientX - startX) * 100) / width);
+      onChange(last);
     };
-    const stop = () => {
+    const detach = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
+      endDrag.current = null;
     };
+    const stop = () => {
+      detach();
+      if (last !== null) onCommit(last);
+    };
+    endDrag.current?.();
+    endDrag.current = detach;
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
     window.addEventListener("pointercancel", stop);
@@ -69,7 +91,9 @@ export function PaneSeparator({
     else if (e.key === "End") next = max;
     else return;
     e.preventDefault();
-    onChange(clamp(next));
+    const pct = clamp(next);
+    onChange(pct);
+    onCommit(pct);
   }
 
   return (

@@ -212,7 +212,7 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
 
     const folder = await screen.findByRole("button", { name: /wms-core/ });
     expect(folder.closest("li")).toHaveAttribute("data-group", "repos");
-    expect(screen.getByRole("list", { name: "Documents" }).textContent).not.toContain("acmerp");
+    expect(screen.getByRole("tree", { name: "Documents" }).textContent).not.toContain("acmerp");
   });
 
   it("reaches a document past the first page — the panel is no longer capped at 50 (#32)", async () => {
