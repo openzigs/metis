@@ -246,9 +246,12 @@ export default function WorkbenchPage() {
     setInput("");
     const controller = new AbortController();
     abortRef.current = controller;
-    // #390/#422 — whether the server accepted the turn. A refused send (a 4xx
-    // on the first send) stored no turn; an accepted one did, even if it is
-    // aborted or dropped before the first frame arrives.
+    // #390/#422 — whether the server accepted the turn: it answered 2xx, so the
+    // send was not refused (every refusal comes before the stream headers). A
+    // refused send stores no turn. An accepted one normally does, even if it is
+    // aborted or dropped before the first frame, but /ai/stream stores the
+    // question only after flushing headers, so a disconnect in that window can
+    // put a session in Recent with no stored turn (PR #453 review).
     let accepted = false;
     try {
       // #136 — only the new message goes up; the server holds the history.
