@@ -36,6 +36,7 @@ import type {
   ResolvedTlsConfig,
   TestManagementAuthConfigRefs,
 } from "./types.js";
+import { isUniqueViolation } from "../../db/prisma-errors.js";
 
 const log = createChildLogger("testmgmt-service");
 
@@ -265,11 +266,6 @@ async function persistTlsConfig(
   };
 }
 
-/** Prisma's unique-index violation (`P2002`), matched on its code alone. */
-function isUniqueConstraintError(err: unknown): boolean {
-  return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2002";
-}
-
 function labelTaken(label: string): ConnectorError {
   return new ConnectorError(
     409,
@@ -440,7 +436,7 @@ export async function createTestManagementConnection(
   } catch (err) {
     // A concurrent create took the label after the check above: 409, and the
     // secrets just written belong to no connection, so they are withdrawn.
-    if (!isUniqueConstraintError(err)) throw err;
+    if (!isUniqueViolation(err)) throw err;
     const written = [...Object.values(refs), tls?.caCertRef].map((r) =>
       typeof r === "string" ? refId(r) : null,
     );
@@ -545,7 +541,7 @@ export async function updateTestManagementConnection(
   try {
     row = await db.testManagementConnection.update({ where: { id }, data });
   } catch (err) {
-    if (isUniqueConstraintError(err) && typeof data.label === "string") {
+    if (isUniqueViolation(err) && typeof data.label === "string") {
       throw labelTaken(data.label);
     }
     throw err;

@@ -21,6 +21,7 @@ import type {
   DriftEventRow,
   DriftResolutionAction,
 } from "@metis/shared";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 
 const log = createChildLogger("sync-reconcile");
 
@@ -148,7 +149,7 @@ export async function reconcileIssueChange(
     return { handled: true, driftEventId: driftEvent.id };
   } catch (err: unknown) {
     // Unique constraint violation on deliveryId = duplicate webhook
-    if (isPrismaUniqueConstraintError(err)) {
+    if (isUniqueViolation(err)) {
       log.debug("sync.reconcile.duplicate", { deliveryId: event.deliveryId });
       return { handled: false, reason: "DUPLICATE" };
     }
@@ -310,15 +311,6 @@ function safeJsonArray(val: string | null | undefined): string[] {
   } catch {
     return [];
   }
-}
-
-function isPrismaUniqueConstraintError(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    (err as { code: string }).code === "P2002"
-  );
 }
 
 function toDriftEventRow(row: {

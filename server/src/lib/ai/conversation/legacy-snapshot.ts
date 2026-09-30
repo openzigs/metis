@@ -18,6 +18,7 @@ import { createChildLogger } from "../../logger.js";
 import { prisma } from "../../prisma.js";
 import { countMessages, messageRowData } from "./transcript-store.js";
 import { DEFAULT_CHARS_PER_TOKEN } from "./token-estimator.js";
+import { isUniqueViolation } from "../../db/prisma-errors.js";
 
 const log = createChildLogger("legacy-snapshot");
 
@@ -63,7 +64,7 @@ export async function importLegacySnapshot(
     });
   } catch (err) {
     // Another request imported (or appended) first; its rows stand.
-    if ((err as { code?: unknown }).code === "P2002") return 0;
+    if (isUniqueViolation(err)) return 0;
     throw err;
   }
   log.info("Imported a pre-transcript session snapshot", { sessionId, messages: turns.length });

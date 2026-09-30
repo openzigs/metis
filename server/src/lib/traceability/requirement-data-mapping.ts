@@ -25,6 +25,7 @@ import type {
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 
 type MappingDelegate = PrismaClient["requirementDataMapping"];
 type RequirementDelegate = Pick<PrismaClient["requirement"], "findFirst">;
@@ -114,11 +115,6 @@ async function assertConnectorInProject(
       "database connector not found in this project",
     );
   }
-}
-
-/** Prisma's unique-constraint violation code. */
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as { code?: string }).code === "P2002";
 }
 
 /**

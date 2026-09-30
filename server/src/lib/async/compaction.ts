@@ -43,6 +43,7 @@ import {
   type TokenRatio,
 } from "../ai/conversation/token-estimator.js";
 import type { ResolvedContextWindow } from "../analysis/context-watermark.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 
 const log = createChildLogger("compaction");
 
@@ -459,7 +460,7 @@ export async function compactTranscript(
         });
         return null;
       }
-      if ((err as { code?: unknown }).code !== "P2002") throw err;
+      if (!isUniqueViolation(err)) throw err;
     }
   }
   throw new CompactionError("Could not allocate a transcript position for the summary.");
