@@ -211,6 +211,7 @@ import { synthesizeHolisticDocument } from "../../src/lib/docs-gen/holistic-synt
 import { synthesizeDbSchemaDocument } from "../../src/lib/docs-gen/db-schema-synthesizer.js";
 import { runDomainWebResearch } from "../../src/lib/docs-gen/grounding/domain-web-research.js";
 import { jobEvents } from "../../src/lib/socket/job-events.js";
+import { generatedDocOutboxId } from "../../src/lib/docs-gen/generated-doc-outbox.js";
 import {
   GENERATED_DOC_PUBLICATION_CANCELLED,
   INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE,
@@ -1141,8 +1142,44 @@ describe("generated-docs routes", () => {
       const res = await request(app).get("/projects/proj-1/docs");
 
       expect(res.status).toBe(200);
+      // #489 — the badge reads `state`: it says cancelled, like the message.
+      expect(res.body.data[0].indexing.state).toBe("cancelled");
+      expect(res.body.data[0].indexing.status).toBe("cancelled");
       expect(res.body.data[0].indexing.errorMessage).toBe(INDEXING_PUBLICATION_CANCELLED_MESSAGE);
       expect(JSON.stringify(res.body)).not.toContain("cancelled by user");
+    });
+
+    it("#489 — lists a cancelled publication task with no Document row as cancelled", async () => {
+      vi.mocked(prisma.generatedDocument.findMany).mockResolvedValue([
+        {
+          id: "doc-1",
+          title: "Doc 1",
+          status: "ready",
+          versions: [{ id: "v2", version: 2, revisionId: "revision-2", createdAt: new Date(0) }],
+        },
+      ] as never);
+      vi.mocked(prisma.task.findMany).mockResolvedValueOnce([
+        {
+          id: generatedDocOutboxId({
+            projectId: "proj-1",
+            generatedDocumentId: "doc-1",
+            version: 2,
+            revisionId: "revision-2",
+          }),
+          status: "cancelled",
+          errorMessage: "cancelled by user",
+        },
+      ] as never);
+      vi.mocked(prisma.document.findMany).mockResolvedValue([] as never);
+
+      const res = await request(app).get("/projects/proj-1/docs");
+
+      expect(res.status).toBe(200);
+      expect(res.body.data[0].indexing).toMatchObject({
+        state: "cancelled",
+        status: "cancelled",
+        errorMessage: INDEXING_PUBLICATION_CANCELLED_MESSAGE,
+      });
     });
   });
 
@@ -1236,6 +1273,9 @@ describe("generated-docs routes", () => {
       const res = await request(app).get("/projects/proj-1/docs/doc-1");
 
       expect(res.status).toBe(200);
+      // #489 — the row's `indexState` is still `pending`; the badge must not say so.
+      expect(res.body.data.indexing.state).toBe("cancelled");
+      expect(res.body.data.indexing.status).toBe("cancelled");
       expect(res.body.data.indexing.errorMessage).toBe(INDEXING_PUBLICATION_CANCELLED_MESSAGE);
       expect(JSON.stringify(res.body)).not.toContain("cancelled by user");
       expectNoIndexingLeak(JSON.stringify(res.body));
@@ -1265,7 +1305,9 @@ describe("generated-docs routes", () => {
       const res = await request(app).get("/projects/proj-1/docs/doc-1");
 
       expect(res.status).toBe(200);
-      expect(res.body.data.indexing.state).toBe("failed");
+      // #489 — `cancelled`, not `failed`, so the badge matches the message.
+      expect(res.body.data.indexing.state).toBe("cancelled");
+      expect(res.body.data.indexing.status).toBe("cancelled");
       expect(res.body.data.indexing.errorMessage).toBe(INDEXING_PUBLICATION_CANCELLED_MESSAGE);
       expect(JSON.stringify(res.body)).not.toContain("cancelled by user");
     });

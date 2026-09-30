@@ -113,4 +113,51 @@ describe("DocumentationPage — indexing state", () => {
     expect(screen.getAllByTestId("doc-indexing-badge")[0]).toHaveTextContent("pending");
     expect(screen.getByTestId("markdown-previewer")).toHaveTextContent("Architecture");
   });
+
+  // #489 — a cancelled publication's badge says "cancelled", in the neutral
+  // tone, beside the cancelled message — not "failed" in the destructive one.
+  it("renders a cancelled publication's badge as cancelled, not failed", async () => {
+    const cancelledMessage =
+      "Publishing this revision was cancelled before it finished, so it was not indexed.";
+    const indexing = {
+      state: "cancelled",
+      status: "cancelled",
+      chunkCount: 0,
+      errorMessage: cancelledMessage,
+      processedAt: null,
+    };
+    const doc = {
+      id: "doc_1",
+      title: "Architecture Overview",
+      scope: "full",
+      status: "ready",
+      indexing,
+      autoUpdate: false,
+      generatedAt: "2026-06-01T00:00:00.000Z",
+      createdAt: "2026-06-01T00:00:00.000Z",
+    };
+    mockApiFetch.mockImplementation(async (path: string) => {
+      if (typeof path === "string" && path.endsWith("/docs/doc_1")) {
+        return { ...doc, content: "# Architecture", versions: [] };
+      }
+      if (typeof path === "string" && path.endsWith("/docs")) return [doc];
+      return [];
+    });
+
+    renderPage();
+
+    const card = await screen.findByTestId("doc-card-doc_1");
+    const listBadge = card.querySelector('[data-testid="doc-indexing-badge"]');
+    expect(listBadge).toHaveTextContent(/^cancelled$/);
+    expect(listBadge).not.toHaveClass("text-destructive");
+    expect(listBadge).toHaveClass("text-muted-foreground");
+
+    fireEvent.click(card);
+
+    expect(await screen.findByTestId("doc-indexing-summary")).toHaveTextContent(cancelledMessage);
+    for (const badge of screen.getAllByTestId("doc-indexing-badge")) {
+      expect(badge).toHaveTextContent(/^cancelled$/);
+      expect(badge).not.toHaveClass("text-destructive");
+    }
+  });
 });
