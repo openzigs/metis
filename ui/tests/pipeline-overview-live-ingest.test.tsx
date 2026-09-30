@@ -16,12 +16,21 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 type Handler = (data: unknown) => void;
-const handlers = new Map<string, Handler>();
+// Several hooks listen for the same event (#430: `useActiveJobs` and
+// `useFollowJobs` both hear `job:lifecycle`), so keep every listener.
+const handlers = new Map<string, Set<Handler>>();
+const dispatcher = (event: string): Handler | undefined => {
+  const set = handlers.get(event);
+  return set?.size ? (data) => set.forEach((fn) => fn(data)) : undefined;
+};
 const socket = {
   connected: true,
   emit: vi.fn(),
-  on: vi.fn((event: string, fn: Handler) => handlers.set(event, fn)),
-  off: vi.fn((event: string) => handlers.delete(event)),
+  on: vi.fn((event: string, fn: Handler) => {
+    if (!handlers.has(event)) handlers.set(event, new Set());
+    handlers.get(event)!.add(fn);
+  }),
+  off: vi.fn((event: string, fn: Handler) => handlers.get(event)?.delete(fn)),
 };
 vi.mock("@/lib/socket-client", async (orig) => ({
   ...(await orig<typeof import("@/lib/socket-client")>()),
@@ -53,7 +62,11 @@ vi.mock("@/lib/auth-context", async (orig) => ({
 }));
 
 import { ProjectPipelineOverview } from "@/components/projects/pipeline-overview";
-import { __resetActiveJobsForTests, applyJobLifecycleEvent } from "@/hooks/use-active-jobs";
+import {
+  REPLAY_WAIT_MS,
+  __resetActiveJobsForTests,
+  applyJobLifecycleEvent,
+} from "@/hooks/use-active-jobs";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 
 function renderOverview() {
@@ -66,7 +79,7 @@ function renderOverview() {
 
 /** Deliver one `connector:progress` event, as `socket-emitter.ts` shapes it. */
 function emit(event: Record<string, unknown>) {
-  const fn = handlers.get("connector:progress");
+  const fn = dispatcher("connector:progress");
   if (!fn) throw new Error("the overview is not listening for connector:progress");
   act(() => fn({ connectorId: "c1", projectId: "p1", kind: "repo", ts: Date.now(), ...event }));
 }
@@ -144,7 +157,7 @@ describe("Ingest stage with a repo-ingest job started elsewhere (#273)", () => {
     });
 
   function lifecycle(status: "progress" | "completed" | "failed") {
-    const fn = handlers.get("job:lifecycle");
+    const fn = dispatcher("job:lifecycle");
     if (!fn) throw new Error("the overview is not listening for job:lifecycle");
     act(() => fn({ kind: "repo-ingest", jobId: "job-1", projectId: "p1", status, ts: 2 }));
   }
@@ -166,6 +179,32 @@ describe("Ingest stage with a repo-ingest job started elsewhere (#273)", () => {
     lifecycle("completed");
     expect(ingestStatus()).toBe("Nothing ingested yet");
     await vi.waitFor(() => expect(reposList.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  // #430 — the API restarted, or the job fell out of the 500-job replay cache:
+  // no replay ever comes, and the stage used to read "Ingesting…" until reload.
+  it("stops reading 'Ingesting…' when the replay never comes", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    started();
+    renderOverview();
+    await screen.findByTestId("pipeline-status-ingest");
+    expect(ingestStatus()).toBe("Ingesting…");
+    act(() => {
+      vi.advanceTimersByTime(REPLAY_WAIT_MS);
+    });
+    expect(ingestStatus()).toBe("Nothing ingested yet");
+  });
+
+  it("keeps reading 'Ingesting…' when the replay says the job still runs", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    started();
+    renderOverview();
+    await screen.findByTestId("pipeline-status-ingest");
+    lifecycle("progress");
+    act(() => {
+      vi.advanceTimersByTime(REPLAY_WAIT_MS);
+    });
+    expect(ingestStatus()).toBe("Ingesting…");
   });
 
   it("ignores a repo ingest running in another project", async () => {

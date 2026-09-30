@@ -30,6 +30,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { JobLifecycleEvent } from "@metis/shared";
 import { useSocket } from "@/lib/socket-client";
+import { joinJobRoom } from "@/lib/job-rooms";
 import { fireTerminalToast, isTerminalJobStatus, terminalToastText } from "@/lib/terminal-toast";
 
 // Re-exported from the canonical terminal-toast module (#425) so existing
@@ -86,7 +87,7 @@ export function useJobToast(
     // Reset when switching jobs so a previous job's progress never leaks.
     setEvent(null);
     sideEffectFiredRef.current = null;
-    socket.emit("subscribe:job", { jobId });
+    const leave = joinJobRoom(socket, jobId);
 
     const onLifecycle = (data: JobLifecycleEvent) => {
       if (data.jobId !== jobId) return;
@@ -109,12 +110,14 @@ export function useJobToast(
     // server then replays the job's last transition, so a terminal event sent
     // while we were disconnected is not lost (PR #393 review — a ~50-minute
     // Deep Ingest otherwise stayed on "Ingesting…" after an hourly refresh).
+    // A re-join, not a new follower: it goes straight to the socket and leaves
+    // the `joinJobRoom` count alone (#430).
     const onConnect = () => socket.emit("subscribe:job", { jobId });
 
     socket.on("job:lifecycle" as never, onLifecycle as never);
     socket.on("connect" as never, onConnect as never);
     return () => {
-      socket.emit("unsubscribe:job", { jobId });
+      leave();
       socket.off("job:lifecycle" as never, onLifecycle as never);
       socket.off("connect" as never, onConnect as never);
     };
