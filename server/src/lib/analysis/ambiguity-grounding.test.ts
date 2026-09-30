@@ -13,6 +13,7 @@ import {
   type GroundingRetriever,
 } from "./ambiguity-grounding.js";
 import type { AIProvider, ChatMessage, ChatResponse } from "../ai/types.js";
+import { HAIKU_MODEL_ID } from "../ai/model-router.js";
 import type { ClarifyingQuestion } from "./types/requirements.js";
 
 const QUESTION: ClarifyingQuestion = {
@@ -409,5 +410,36 @@ describe("AmbiguityGrounding.groundQuestions", () => {
     // d. CONCURRENCY: never more than GROUNDING_CONCURRENCY in flight.
     expect(peak).toBeGreaterThan(1); // proves it actually ran concurrently
     expect(peak).toBeLessThanOrEqual(GROUNDING_CONCURRENCY);
+  });
+});
+
+/**
+ * #532 — the grounding pass's default Haiku tier id is sent only to a provider
+ * that serves Claude tier ids; any other provider runs its configured model.
+ */
+describe("AmbiguityGrounding — model on the active provider (#532)", () => {
+  const grounded = JSON.stringify({ status: "grounded", answer: "OAuth2", citationIndexes: [1] });
+
+  async function modelSent(servesRouterModel?: (id: string) => boolean): Promise<unknown> {
+    const { provider, chat } = makeProvider({ content: grounded });
+    if (servesRouterModel) Object.assign(provider, { servesRouterModel });
+    const { retriever } = makeRetriever([makeHit("auth.ts", "OAuth2 bearer tokens.")]);
+    await new AmbiguityGrounding({ provider, retriever }).groundQuestion("proj-1", QUESTION);
+    expect(chat).toHaveBeenCalledTimes(1);
+    return (chat.mock.calls[0] as unknown[])[1] as { model?: string };
+  }
+
+  it("sends the provider's configured model when it cannot serve the Haiku tier id", async () => {
+    expect(await modelSent(() => false)).toMatchObject({ model: "test-model" });
+  });
+
+  it("sends the provider's configured model when it cannot answer at all", async () => {
+    expect(await modelSent()).toMatchObject({ model: "test-model" });
+  });
+
+  it("sends the Haiku tier id to a provider that serves it", async () => {
+    expect(await modelSent((id) => id === HAIKU_MODEL_ID)).toMatchObject({
+      model: HAIKU_MODEL_ID,
+    });
   });
 });

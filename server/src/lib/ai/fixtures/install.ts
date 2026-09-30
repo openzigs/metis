@@ -70,6 +70,7 @@ export function maybeWrapProviderForFixtures(
       fallbackProvider: opts.fallbackProvider ?? new OfflineStubProvider(),
       key: provider.key,
       model: provider.model,
+      servesRouterModel: provider.servesRouterModel?.bind(provider),
     });
   }
 

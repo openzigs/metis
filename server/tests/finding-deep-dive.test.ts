@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../src/lib/ai/types.js";
 import { deepDiveFinding } from "../src/lib/analysis/finding-deep-dive.js";
+import { HAIKU_MODEL_ID } from "../src/lib/ai/model-router.js";
 import type { Citation } from "@metis/shared";
 
 const VALID_DRAFT = {
@@ -110,9 +111,11 @@ describe("deepDiveFinding", () => {
       model: opts?.model ?? "unknown",
       provider: "offline-stub",
     }));
+    // #532 — the Haiku default applies on a provider that serves Claude tier ids.
+    Object.assign(provider, { servesRouterModel: () => true });
 
     await deepDiveFinding(provider, baseInput());
-    expect(chat.mock.calls[0][1]?.model).toContain("haiku");
+    expect(chat.mock.calls[0][1]?.model).toBe(HAIKU_MODEL_ID);
 
     await deepDiveFinding(provider, baseInput({ model: "us.anthropic.claude-sonnet-4-6" }));
     expect(chat.mock.calls[1][1]?.model).toBe("us.anthropic.claude-sonnet-4-6");
@@ -197,5 +200,45 @@ describe("deepDiveFinding", () => {
 
     const result = await deepDiveFinding(provider, baseInput());
     expect(result.usage.totalTokens).toBe(0);
+  });
+});
+
+/**
+ * #532 — the deep-dive's default Haiku tier id is sent only to a provider that
+ * serves Claude tier ids; any other provider runs its configured model.
+ */
+describe("deepDiveFinding — model on the active provider (#532)", () => {
+  const reply = (): ChatResponse => ({
+    content: JSON.stringify(VALID_DRAFT),
+    usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    model: "m",
+    provider: "p",
+  });
+
+  it("sends the provider's configured model when it cannot serve the Haiku tier id", async () => {
+    const { provider, chat } = makeProvider(reply);
+    Object.assign(provider, { servesRouterModel: () => false });
+    await deepDiveFinding(provider, baseInput());
+    expect(chat.mock.calls[0]![1]!.model).toBe("stub-model");
+  });
+
+  it("sends the provider's configured model when it cannot answer at all", async () => {
+    const { provider, chat } = makeProvider(reply);
+    await deepDiveFinding(provider, baseInput());
+    expect(chat.mock.calls[0]![1]!.model).toBe("stub-model");
+  });
+
+  it("sends the Haiku tier id to a provider that serves it", async () => {
+    const { provider, chat } = makeProvider(reply);
+    Object.assign(provider, { servesRouterModel: (id: string) => id === HAIKU_MODEL_ID });
+    await deepDiveFinding(provider, baseInput());
+    expect(chat.mock.calls[0]![1]!.model).toBe(HAIKU_MODEL_ID);
+  });
+
+  it("an explicit model is sent unchanged", async () => {
+    const { provider, chat } = makeProvider(reply);
+    Object.assign(provider, { servesRouterModel: () => false });
+    await deepDiveFinding(provider, baseInput({ model: "explicit-model" }));
+    expect(chat.mock.calls[0]![1]!.model).toBe("explicit-model");
   });
 });

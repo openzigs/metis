@@ -15,7 +15,7 @@
  * NEVER returned without at least one valid citation.
  */
 import type { AIProvider, ChatMessage } from "../ai/types.js";
-import { HAIKU_MODEL_ID } from "../ai/model-router.js";
+import { HAIKU_MODEL_ID, tierModelFor } from "../ai/model-router.js";
 import { createChildLogger } from "../logger.js";
 import type { ClarifyingQuestion, GroundingCitation } from "./types/requirements.js";
 
@@ -147,7 +147,7 @@ export class AmbiguityGrounding {
   constructor(deps: AmbiguityGroundingDeps) {
     this.provider = deps.provider;
     this.retriever = deps.retriever;
-    this.model = deps.model ?? HAIKU_MODEL_ID;
+    this.model = deps.model ?? tierModelFor(deps.provider, HAIKU_MODEL_ID);
   }
 
   /**

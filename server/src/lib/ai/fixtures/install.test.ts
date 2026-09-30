@@ -78,6 +78,22 @@ describe("maybeWrapProviderForFixtures", () => {
     expect(wrapped.model).toBe("real");
   });
 
+  it("replay answers servesRouterModel as the wrapped provider does (#532)", () => {
+    const claude = { ...base(), servesRouterModel: (id: string) => id === "tier-a" };
+    const wrapped = maybeWrapProviderForFixtures(claude as AIProvider, {
+      env: { AI_REPLAY: "1" },
+      fixtureDir: dir,
+    });
+    expect(wrapped.servesRouterModel?.("tier-a")).toBe(true);
+    expect(wrapped.servesRouterModel?.("tier-b")).toBe(false);
+
+    const plain = maybeWrapProviderForFixtures(base(), {
+      env: { AI_REPLAY: "1" },
+      fixtureDir: dir,
+    });
+    expect(plain.servesRouterModel?.("tier-a")).toBe(false);
+  });
+
   it("replay end-to-end: a recorded fixture replays via the wrapped provider", async () => {
     const store = new FixtureStore(dir);
     await store.write(fixtureKey(msgs), msgs, {}, resp("recorded!"));
