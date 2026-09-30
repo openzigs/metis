@@ -147,14 +147,15 @@ export default function InviteAcceptPage() {
         <Card className="w-full max-w-md">
           <CardHeader className="text-center">
             <Clock className="mx-auto h-12 w-12 text-warning" />
-            {/* Used before expired: an invite that is both was already accepted, and
-                the accept route checks `consumedAt` first too (#597). */}
+            {/* Used before expired, as the accept route checks `consumedAt` first (#597).
+                `consumedAt` is set by an accept *or* by a newer invite to the same email
+                superseding this one, so the copy must not claim it was accepted. */}
             <CardTitle className="mt-3">
-              {invite.consumed ? "Invitation Used" : "Invitation Expired"}
+              {invite.consumed ? "Invitation No Longer Valid" : "Invitation Expired"}
             </CardTitle>
             <CardDescription>
               {invite.consumed
-                ? "This invitation has already been accepted."
+                ? "This invitation has already been used or replaced by a newer one. Please ask the workspace admin if you still need access."
                 : "This invitation has expired. Please ask the workspace admin for a new one."}
             </CardDescription>
           </CardHeader>

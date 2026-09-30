@@ -61,7 +61,7 @@ describe("InviteAcceptPage — deleted-workspace, expired and used invites (#579
     expect(await screen.findByText("Workspace No Longer Exists")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /accept invitation/i })).toBeNull();
     // Not the expired/used card, which would misstate the reason.
-    expect(screen.queryByText("Invitation Used")).toBeNull();
+    expect(screen.queryByText("Invitation No Longer Valid")).toBeNull();
     expect(fetchMock).toHaveBeenCalledWith("/api/workspaces/invites/tok-579");
   });
 
@@ -82,14 +82,19 @@ describe("InviteAcceptPage — deleted-workspace, expired and used invites (#579
 
   it.each([
     ["an expired", { expired: true, consumed: false }, "Invitation Expired", /has expired/],
-    ["a used", { expired: false, consumed: true }, "Invitation Used", /already been accepted/],
+    [
+      "a used",
+      { expired: false, consumed: true },
+      "Invitation No Longer Valid",
+      /used or replaced by a newer one/,
+    ],
     // Used wins over expired, as in `POST /invites/:token/accept`, which checks
     // `consumedAt` first and answers "already been used".
     [
       "an expired and used",
       { expired: true, consumed: true },
-      "Invitation Used",
-      /already been accepted/,
+      "Invitation No Longer Valid",
+      /used or replaced by a newer one/,
     ],
   ] as const)(
     "#597 — explains %s invite with everything but the reason withheld",
@@ -105,7 +110,11 @@ describe("InviteAcceptPage — deleted-workspace, expired and used invites (#579
       expect(await screen.findByText(title)).toBeInTheDocument();
       expect(screen.getByText(description)).toBeInTheDocument();
       expect(
-        screen.queryByText(title === "Invitation Used" ? "Invitation Expired" : "Invitation Used"),
+        screen.queryByText(
+          title === "Invitation No Longer Valid"
+            ? "Invitation Expired"
+            : "Invitation No Longer Valid",
+        ),
       ).toBeNull();
       expect(screen.queryByRole("button", { name: /accept invitation/i })).toBeNull();
       expect(screen.queryByText(/invited you to join/)).toBeNull();
