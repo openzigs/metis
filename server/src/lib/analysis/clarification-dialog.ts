@@ -7,7 +7,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
-import { HAIKU_MODEL_ID, SONNET_MODEL_ID } from "../ai/model-router.js";
+import { HAIKU_MODEL_ID, SONNET_MODEL_ID, tierModelFor } from "../ai/model-router.js";
 import { createChildLogger } from "../logger.js";
 import { AmbiguityGrounding, type GroundingRetriever } from "./ambiguity-grounding.js";
 import {
@@ -321,13 +321,14 @@ export class ClarificationDialog {
   }
 
   /**
-   * Get the model to use, considering Sonnet escalation.
+   * Get the model to use, considering Sonnet escalation. The Claude tier ids
+   * are sent only to a provider that serves them (#532).
    */
   private getModel(state: ClarificationState): string | undefined {
     if (state.escalatedToSonnet) {
-      return SONNET_MODEL_ID;
+      return tierModelFor(this.provider, SONNET_MODEL_ID);
     }
-    return this.model ?? HAIKU_MODEL_ID;
+    return this.model ?? tierModelFor(this.provider, HAIKU_MODEL_ID);
   }
 
   /**

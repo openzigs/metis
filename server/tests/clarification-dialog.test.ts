@@ -28,6 +28,7 @@ import {
   _setDialogState,
 } from "../src/lib/analysis/clarification-dialog.js";
 import type { AIProvider, ChatResponse } from "../src/lib/ai/types.js";
+import { HAIKU_MODEL_ID, SONNET_MODEL_ID } from "../src/lib/ai/model-router.js";
 import type {
   StructuredRequirements,
   ClarificationState,
@@ -467,6 +468,83 @@ describe("ClarificationDialog", () => {
         makeRequirements(),
       );
       expect(result.state.resolvedAmbiguities).toContain("req-1:field-0");
+    });
+  });
+});
+
+/**
+ * #532 — the dialog's Haiku default (and its Sonnet escalation) are Claude tier
+ * ids, sent only to a provider that serves them; any other provider runs its
+ * configured model.
+ */
+describe("ClarificationDialog — model on the active provider (#532)", () => {
+  const questionsJson = JSON.stringify({
+    questions: [
+      { requirementId: "req-1", ambiguityField: "field-0", question: "Q?", context: "c" },
+    ],
+  });
+
+  beforeEach(() => fakeStore.clear());
+  afterEach(async () => {
+    await clearDialogState("test-532");
+  });
+
+  async function modelSent(
+    servesRouterModel: ((id: string) => boolean) | undefined,
+    escalatedToSonnet = false,
+  ): Promise<unknown> {
+    const provider = mockProvider(questionsJson);
+    if (servesRouterModel) Object.assign(provider, { servesRouterModel });
+    if (escalatedToSonnet) {
+      await _setDialogState("test-532", {
+        analysisId: "test-532",
+        currentRound: 2,
+        maxRounds: 3,
+        rounds: [{ round: 1, questions: [], answers: [] }],
+        resolvedAmbiguities: [],
+        escalatedToSonnet: true,
+        completed: false,
+      });
+    }
+    await new ClarificationDialog({ provider }).startOrContinue("test-532", makeRequirements());
+    const chat = provider.chat as ReturnType<typeof vi.fn>;
+    expect(chat).toHaveBeenCalled();
+    return (chat.mock.calls[0] as unknown[])[1];
+  }
+
+  it("sends the provider's configured model when it cannot serve the Haiku tier id", async () => {
+    expect(await modelSent(() => false)).toMatchObject({ model: "test-model" });
+  });
+
+  it("sends the provider's configured model when it cannot answer at all", async () => {
+    expect(await modelSent(undefined)).toMatchObject({ model: "test-model" });
+  });
+
+  it("sends the Haiku tier id to a provider that serves it", async () => {
+    expect(await modelSent((id) => id === HAIKU_MODEL_ID)).toMatchObject({
+      model: HAIKU_MODEL_ID,
+    });
+  });
+
+  it("an escalated dialog sends the configured model to a provider that cannot serve Sonnet", async () => {
+    expect(await modelSent(() => false, true)).toMatchObject({ model: "test-model" });
+  });
+
+  it("an escalated dialog sends the Sonnet tier id to a provider that serves it", async () => {
+    expect(await modelSent((id) => id === SONNET_MODEL_ID, true)).toMatchObject({
+      model: SONNET_MODEL_ID,
+    });
+  });
+
+  it("an explicit model is sent unchanged", async () => {
+    const provider = mockProvider(questionsJson);
+    Object.assign(provider, { servesRouterModel: () => false });
+    await new ClarificationDialog({ provider, model: "explicit" }).startOrContinue(
+      "test-532",
+      makeRequirements(),
+    );
+    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toMatchObject({
+      model: "explicit",
     });
   });
 });
