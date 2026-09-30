@@ -22,10 +22,12 @@
  * refusal says so rather than claiming the secret is unbound (PR #494 review).
  *
  * #502 — the confirm is tied to what the admin was shown. The request must
- * carry `confirmedBindingIds`, the ids listed in the 409; if the live set
- * differs (the owner re-pointed, added or removed a binding in between) the
- * route refuses with 409 {@link VAULT_ROTATE_BINDINGS_CHANGED} and the fresh
- * list, and the `vault.rotate` audit row records the ids that were confirmed.
+ * carry `confirmedBindings`, the `{type, id, destination}` of every binding
+ * listed in the 409; if the live set differs (the owner re-pointed a binding at
+ * a new destination under the same id, added one or removed one in between)
+ * the route refuses with 409 {@link VAULT_ROTATE_BINDINGS_CHANGED} and the
+ * fresh list, and the `vault.rotate` audit row records the bindings, with
+ * their destinations, that were confirmed.
  * A confirmed rotation also transfers ownership (`createdById`) to the admin,
  * so the previous owner can no longer bind the secret, now holding the
  * admin's value, to a new destination (rule 1 of `secret-binding.ts`); their
@@ -215,8 +217,8 @@ function whereBound(details: ForeignOwnerDetails): string {
 }
 
 const TO_CONFIRM =
-  "To rotate it anyway, set confirmForeignOwner and send the ids of the bindings listed " +
-  "here as confirmedBindingIds; the secret then becomes yours, so they can no longer " +
+  "To rotate it anyway, set confirmForeignOwner and send the type, id and destination of " +
+  "every binding listed here as confirmedBindings; the secret then becomes yours, so they can no longer " +
   "bind it anywhere new.";
 
 /** A one-line, human-readable refusal naming the owner and where the secret is bound. */
@@ -235,9 +237,31 @@ export function bindingsChangedMessage(details: ForeignOwnerDetails): string {
   );
 }
 
-/** #502 — do the live bindings differ from the ids the admin confirmed? */
-export function bindingsDiffer(details: ForeignOwnerDetails, confirmedIds: string[]): boolean {
-  const live = new Set(details.bindings.map((b) => b.id));
-  const confirmed = new Set(confirmedIds);
-  return live.size !== confirmed.size || [...live].some((id) => !confirmed.has(id));
+/** #502 — one binding as the admin confirmed it: what it is and where it sends. */
+export type ConfirmedBinding = Pick<SecretBindingView, "type" | "id" | "destination">;
+
+function bindingKey(b: ConfirmedBinding): string {
+  return JSON.stringify([b.type, b.id, b.destination]);
+}
+
+/** #502 — the confirmed bindings, deduplicated and in a stable order, for the audit row. */
+export function canonicalBindings(bindings: ConfirmedBinding[]): ConfirmedBinding[] {
+  const byKey = new Map(
+    bindings.map((b) => [bindingKey(b), { type: b.type, id: b.id, destination: b.destination }]),
+  );
+  return [...byKey.keys()].sort().map((k) => byKey.get(k)!);
+}
+
+/**
+ * #502 — do the live bindings differ from the ones the admin confirmed? A
+ * binding matches only on type, id AND destination, so one re-pointed at a new
+ * host under the same id counts as changed.
+ */
+export function bindingsDiffer(
+  details: ForeignOwnerDetails,
+  confirmed: ConfirmedBinding[],
+): boolean {
+  const live = new Set(details.bindings.map(bindingKey));
+  const shown = new Set(confirmed.map(bindingKey));
+  return live.size !== shown.size || [...live].some((k) => !shown.has(k));
 }

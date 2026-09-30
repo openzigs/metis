@@ -331,7 +331,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const res = await rotate(id, {
         value: ADMIN_VALUE,
         confirmForeignOwner: true,
-        confirmedBindingIds: [],
+        confirmedBindings: [],
       });
       expect(res.status).toBe(200);
       expect(res.body.data.id).toBe(id);
@@ -343,7 +343,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const meta = JSON.parse(rows[0]!.metadata ?? "{}") as Record<string, unknown>;
       expect(meta.foreignOwnerConfirmed).toBe(true);
       expect(meta.ownerId).toBe("u-coord");
-      expect(meta.confirmedBindingIds).toEqual([]);
+      expect(meta.confirmedBindings).toEqual([]);
       expect(JSON.stringify(rows[0])).not.toContain(ADMIN_VALUE);
     });
 
@@ -352,8 +352,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       db.databaseConnection.create({
         data: { id, projectId: "proj-1", label: id, driver: "postgres", host, secretId },
       });
+    type Shown = { type: string; id: string; destination: string | null };
+    /** What the admin echoes back: the type, id and destination of each binding shown. */
+    const shownIn = (res: request.Response): Shown[] =>
+      (res.body.error.details.bindings as Shown[]).map(({ type, id, destination }) => ({
+        type,
+        id,
+        destination,
+      }));
+    const pg = (id: string, host: string): Shown => ({
+      type: "db_connector",
+      id,
+      destination: `postgres://${host}`,
+    });
 
-    it("#502: a confirm without the binding ids it was shown is refused and writes nothing", async () => {
+    it("#502: a confirm without the bindings it was shown is refused and writes nothing", async () => {
       const id = await newSecret("u-coord");
       await bindDb("db-502-a", id, "a.coord.example");
       const res = await rotate(id, { value: ADMIN_VALUE, confirmForeignOwner: true });
@@ -366,20 +379,48 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await rotateAudit(id)).toHaveLength(0);
     });
 
+    it("#502: a binding re-pointed at a new host under the same id refuses the confirm", async () => {
+      const id = await newSecret("u-coord");
+      await bindDb("db-502-r", id, "r.coord.example");
+      const first = await rotate(id, { value: ADMIN_VALUE });
+      expect(first.status).toBe(409);
+      const shown = shownIn(first);
+      expect(shown).toEqual([pg("db-502-r", "r.coord.example")]);
+
+      // The owner re-points the SAME connector at a new host before "Rotate anyway".
+      await db.databaseConnection.update({
+        where: { id: "db-502-r" },
+        data: { host: "evil.coord.example" },
+      });
+      const res = await rotate(id, {
+        value: ADMIN_VALUE,
+        confirmForeignOwner: true,
+        confirmedBindings: shown,
+      });
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("VAULT_ROTATE_BINDINGS_CHANGED");
+      expect(res.body.error.message).toContain("evil.coord.example");
+      expect(shownIn(res)).toEqual([pg("db-502-r", "evil.coord.example")]);
+      expect(await plaintextOf(id)).toBe(OWNER_VALUE);
+      expect(await rotateAudit(id)).toHaveLength(0);
+      const row = await db.secret.findUniqueOrThrow({ where: { id } });
+      expect(row.createdById).toBe("u-coord");
+    });
+
     it("#502: a binding added after the 409 refuses the confirm with the live list", async () => {
       const id = await newSecret("u-coord");
       await bindDb("db-502-b", id, "b.coord.example");
       const first = await rotate(id, { value: ADMIN_VALUE });
       expect(first.status).toBe(409);
-      const shown = (first.body.error.details.bindings as Array<{ id: string }>).map((b) => b.id);
-      expect(shown).toEqual(["db-502-b"]);
+      const shown = shownIn(first);
+      expect(shown).toEqual([pg("db-502-b", "b.coord.example")]);
 
-      // The owner re-points the secret at a new host before "Rotate anyway".
+      // The owner adds a second binding, to a new host, before "Rotate anyway".
       await bindDb("db-502-b2", id, "evil.coord.example");
       const res = await rotate(id, {
         value: ADMIN_VALUE,
         confirmForeignOwner: true,
-        confirmedBindingIds: shown,
+        confirmedBindings: shown,
       });
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe("VAULT_ROTATE_BINDINGS_CHANGED");
@@ -401,7 +442,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const res = await rotate(id, {
         value: ADMIN_VALUE,
         confirmForeignOwner: true,
-        confirmedBindingIds: ["db-502-c"],
+        confirmedBindings: [pg("db-502-c", "c.coord.example")],
       });
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe("VAULT_ROTATE_BINDINGS_CHANGED");
@@ -409,14 +450,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await plaintextOf(id)).toBe(OWNER_VALUE);
     });
 
-    it("#502: the exact bindings shown (any order) rotate, record the ids, and transfer ownership", async () => {
+    it("#502: the exact bindings shown (any order) rotate, record them with destinations, and transfer ownership", async () => {
       const id = await newSecret("u-coord");
       await bindDb("db-502-d1", id, "d1.coord.example");
       await bindDb("db-502-d2", id, "d2.coord.example");
       const res = await rotate(id, {
         value: ADMIN_VALUE,
         confirmForeignOwner: true,
-        confirmedBindingIds: ["db-502-d2", "db-502-d1"],
+        confirmedBindings: [
+          pg("db-502-d2", "d2.coord.example"),
+          pg("db-502-d1", "d1.coord.example"),
+        ],
       });
       expect(res.status).toBe(200);
       expect(await plaintextOf(id)).toBe(ADMIN_VALUE);
@@ -424,7 +468,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const rows = await rotateAudit(id);
       expect(rows).toHaveLength(1);
       const meta = JSON.parse(rows[0]!.metadata ?? "{}") as Record<string, unknown>;
-      expect(meta.confirmedBindingIds).toEqual(["db-502-d1", "db-502-d2"]);
+      // The audit row keeps where the admin agreed the value would go.
+      expect(meta.confirmedBindings).toEqual([
+        pg("db-502-d1", "d1.coord.example"),
+        pg("db-502-d2", "d2.coord.example"),
+      ]);
       expect(meta.ownerId).toBe("u-coord");
       expect(meta.ownershipTransferredTo).toBe("u-admin");
 
@@ -455,7 +503,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const res = await rotate(id, {
         value: ADMIN_VALUE,
         confirmForeignOwner: true,
-        confirmedBindingIds: ["db-502-e"],
+        confirmedBindings: [pg("db-502-e", "e.coord.example")],
       });
       expect(res.status).toBe(200);
 
@@ -487,13 +535,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ).resolves.toBeUndefined();
     });
 
-    it("#502: rejects a malformed confirmedBindingIds as an invalid body", async () => {
+    it("#502: rejects a malformed confirmedBindings as an invalid body", async () => {
       const id = await newSecret("u-coord");
-      for (const confirmedBindingIds of ["db-1", [1], Array.from({ length: 1001 }, () => "x")]) {
+      for (const confirmedBindings of [
+        "db-1",
+        ["db-1"],
+        [{ type: "db_connector", id: "db-1" }],
+        [{ type: "nope", id: "db-1", destination: null }],
+        [{ type: "db_connector", id: "", destination: null }],
+        [{ type: "db_connector", id: "db-1", destination: null, extra: 1 }],
+        Array.from({ length: 1001 }, () => pg("x", "h")),
+      ]) {
         const res = await rotate(id, {
           value: ADMIN_VALUE,
           confirmForeignOwner: true,
-          confirmedBindingIds,
+          confirmedBindings,
         });
         expect(res.status).toBe(400);
       }

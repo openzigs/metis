@@ -60,17 +60,18 @@ describe("vaultApi", () => {
     });
   });
 
-  it("#502 — a confirmed rotate() sends the binding ids it was shown", async () => {
-    await vaultApi.rotate("sec_1", "fresh", {
-      confirmForeignOwner: true,
-      confirmedBindingIds: ["db1", "m1"],
-    });
+  it("#502 — a confirmed rotate() sends the bindings it was shown", async () => {
+    const confirmedBindings = [
+      { type: "db_connector", id: "db1", destination: "postgres://h" },
+      { type: "mcp_server", id: "m1", destination: null },
+    ];
+    await vaultApi.rotate("sec_1", "fresh", { confirmForeignOwner: true, confirmedBindings });
     expect(apiFetchMock).toHaveBeenLastCalledWith("/vault/sec_1/rotate", {
       method: "POST",
-      body: { value: "fresh", confirmForeignOwner: true, confirmedBindingIds: ["db1", "m1"] },
+      body: { value: "fresh", confirmForeignOwner: true, confirmedBindings },
     });
-    // Ids are never sent without the confirm they belong to.
-    await vaultApi.rotate("sec_1", "fresh", { confirmedBindingIds: ["db1"] });
+    // Bindings are never sent without the confirm they belong to.
+    await vaultApi.rotate("sec_1", "fresh", { confirmedBindings });
     expect(apiFetchMock).toHaveBeenLastCalledWith("/vault/sec_1/rotate", {
       method: "POST",
       body: { value: "fresh" },

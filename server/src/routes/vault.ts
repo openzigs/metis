@@ -11,7 +11,7 @@
  *   POST   /                create entry  (vault.write)
  *   POST   /:id/rotate      rotate value  (vault.write; another user's secret
  *                            needs `confirmForeignOwner: true` and the
- *                            `confirmedBindingIds` it was shown, else 409 —
+ *                            `confirmedBindings` it was shown, else 409 —
  *                            #482/#502; the admin then owns it)
  *   GET    /:id/reveal      decrypt one (vault.reveal — admin only, audited, #324)
  *   DELETE /:id             soft-delete   (vault.write)
@@ -36,6 +36,8 @@ import { prisma } from "../lib/prisma.js";
 import {
   bindingsChangedMessage,
   bindingsDiffer,
+  canonicalBindings,
+  type ConfirmedBinding,
   describeForeignOwner,
   foreignOwnerMessage,
   secretOwnerOf,
@@ -75,8 +77,28 @@ const rotateSchema = z.object({
     .max(64 * 1024),
   /** #482 — required to rotate a secret another user owns. */
   confirmForeignOwner: z.boolean().optional(),
-  /** #502 — the binding ids the 409 listed; must match the live set. */
-  confirmedBindingIds: z.array(z.string().min(1).max(200)).max(1000).optional(),
+  /**
+   * #502 — the `{type, id, destination}` of every binding the 409 listed; must
+   * match the live set, destinations included, so a same-id re-point refuses.
+   */
+  confirmedBindings: z
+    .array(
+      z
+        .object({
+          type: z.enum([
+            "db_connector",
+            "repo_connector",
+            "import_source",
+            "mcp_server",
+            "jira_connection",
+          ]),
+          id: z.string().min(1).max(200),
+          destination: z.string().max(8192).nullable(),
+        })
+        .strict(),
+    )
+    .max(1000)
+    .optional(),
 });
 
 function summaryToView(s: SecretSummary): {
@@ -163,14 +185,14 @@ export function vaultRouter(): Router {
     const secret = await secretOwnerOf(id);
     const foreignOwnerId =
       secret?.createdById && secret.createdById !== aId ? secret.createdById : null;
-    let confirmedBindingIds: string[] | null = null;
+    let confirmedBindings: ConfirmedBinding[] | null = null;
     if (secret && foreignOwnerId) {
       const details = await describeForeignOwner({
         id,
         name: secret.name,
         createdById: foreignOwnerId,
       });
-      const confirmed = parsed.data.confirmedBindingIds;
+      const confirmed = parsed.data.confirmedBindings;
       if (parsed.data.confirmForeignOwner !== true || confirmed === undefined) {
         throw new AppError(
           409,
@@ -187,7 +209,7 @@ export function vaultRouter(): Router {
           details as unknown as Record<string, unknown>,
         );
       }
-      confirmedBindingIds = [...new Set(confirmed)].sort();
+      confirmedBindings = canonicalBindings(confirmed);
     }
     let summary: SecretSummary;
     try {
@@ -227,7 +249,7 @@ export function vaultRouter(): Router {
           ? {
               foreignOwnerConfirmed: true,
               ownerId: foreignOwnerId,
-              confirmedBindingIds,
+              confirmedBindings,
               ownershipTransferredTo: aId,
             }
           : {}),

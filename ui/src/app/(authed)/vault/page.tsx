@@ -33,6 +33,7 @@ import {
   VAULT_ROTATE_FOREIGN_OWNER,
   type VaultEntry,
   type VaultAuditEntry,
+  type VaultConfirmedBinding,
   type VaultForeignOwner,
 } from "@/lib/vault-api";
 import { useTransientFlag } from "@/hooks/use-transient-toast";
@@ -311,10 +312,10 @@ function EntryDetail({
   });
 
   const rotate = useMutation({
-    // #502 — a confirm carries the binding ids the admin was shown.
-    mutationFn: (confirmedBindingIds: string[] | null) =>
-      confirmedBindingIds
-        ? vaultApi.rotate(entry.id, rotateValue, { confirmForeignOwner: true, confirmedBindingIds })
+    // #502 — a confirm carries the bindings (type, id, destination) the admin was shown.
+    mutationFn: (confirmedBindings: VaultConfirmedBinding[] | null) =>
+      confirmedBindings
+        ? vaultApi.rotate(entry.id, rotateValue, { confirmForeignOwner: true, confirmedBindings })
         : vaultApi.rotate(entry.id, rotateValue),
     onSuccess: () => {
       setRotateValue("");
@@ -493,7 +494,15 @@ function EntryDetail({
               <Button
                 size="sm"
                 variant="destructive"
-                onClick={() => rotate.mutate(foreignOwner.bindings.map((b) => b.id))}
+                onClick={() =>
+                  rotate.mutate(
+                    foreignOwner.bindings.map(({ type, id, destination }) => ({
+                      type,
+                      id,
+                      destination,
+                    })),
+                  )
+                }
                 disabled={rotate.isPending}
                 data-testid="vault-entry-rotate-confirm"
               >

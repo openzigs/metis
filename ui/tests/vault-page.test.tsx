@@ -245,7 +245,11 @@ describe("<VaultPage />", () => {
       await waitFor(() =>
         expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
           confirmForeignOwner: true,
-          confirmedBindingIds: ["db1", "m1"],
+          // #502 — type, id and destination, not the id alone; no label or projectId.
+          confirmedBindings: [
+            { type: "db_connector", id: "db1", destination: "postgres://db.coord.example:5432" },
+            { type: "mcp_server", id: "m1", destination: null },
+          ],
         }),
       );
       await waitFor(() =>
@@ -324,7 +328,11 @@ describe("<VaultPage />", () => {
       await waitFor(() =>
         expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
           confirmForeignOwner: true,
-          confirmedBindingIds: ["db1", "m1", "db2"],
+          confirmedBindings: [
+            { type: "db_connector", id: "db1", destination: "postgres://db.coord.example:5432" },
+            { type: "mcp_server", id: "m1", destination: null },
+            { type: "db_connector", id: "db2", destination: "postgres://evil.example" },
+          ],
         }),
       );
       await waitFor(() =>

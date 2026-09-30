@@ -2824,11 +2824,12 @@ The `/vault` page is split into two panels:
      list and asks you to confirm again. Through the API the request is
      refused with `409 VAULT_ROTATE_FOREIGN_OWNER` (owner and bindings in
      `error.details`) unless it sets `confirmForeignOwner: true` and
-     `confirmedBindingIds` (the `id` of every binding listed); if those ids
-     no longer match the live bindings it is refused with
+     `confirmedBindings` (the `type`, `id` and `destination` of every
+     binding listed); if those no longer match the live bindings — including
+     a binding re-pointed at a new host under the same id — it is refused with
      `409 VAULT_ROTATE_BINDINGS_CHANGED` and the current list. The
      `vault.rotate` audit row records `foreignOwnerConfirmed`, `ownerId`,
-     `confirmedBindingIds` and `ownershipTransferredTo`.
+     `confirmedBindings` and `ownershipTransferredTo`.
    - **Audit** — lists the recent `vault.{reveal,read,rotate,delete,write}`
      rows for the entry.
    - **Delete** — soft-removes the entry (terminal — restoring requires a

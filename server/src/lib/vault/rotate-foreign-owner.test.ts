@@ -18,6 +18,7 @@ vi.mock("../prisma.js", () => ({ prisma: db }));
 const {
   bindingsChangedMessage,
   bindingsDiffer,
+  canonicalBindings,
   describeForeignOwner,
   foreignOwnerMessage,
   UNBOUND_NOTE,
@@ -179,7 +180,7 @@ describe("foreignOwnerMessage", () => {
     expect(msg).toContain("bound to DB (pg://h), MCP.");
     expect(msg).toContain("confirmForeignOwner");
     // #502 — the API text says what a confirm needs and what it does.
-    expect(msg).toContain("confirmedBindingIds");
+    expect(msg).toContain("confirmedBindings");
     expect(msg).toContain("becomes yours");
   });
 });
@@ -198,18 +199,34 @@ describe("#502 — bindingsDiffer / bindingsChangedMessage", () => {
     bindings: ids.map(binding),
   });
 
-  it("is false only for the same set of ids, in any order and with duplicates", () => {
+  // What the 409 showed: type, id and destination of each binding.
+  const shown = (...ids: string[]) =>
+    ids.map((id) => ({ type: "db_connector" as const, id, destination: `pg://${id}` }));
+
+  it("is false only for the same set of bindings, in any order and with duplicates", () => {
     expect(bindingsDiffer(details(), [])).toBe(false);
-    expect(bindingsDiffer(details("a", "b"), ["b", "a"])).toBe(false);
-    expect(bindingsDiffer(details("a", "b"), ["a", "b", "a"])).toBe(false);
+    expect(bindingsDiffer(details("a", "b"), shown("b", "a"))).toBe(false);
+    expect(bindingsDiffer(details("a", "b"), shown("a", "b", "a"))).toBe(false);
   });
 
   it("is true when a binding was added, removed or swapped", () => {
-    expect(bindingsDiffer(details("a", "b"), ["a"])).toBe(true);
-    expect(bindingsDiffer(details("a"), ["a", "b"])).toBe(true);
-    expect(bindingsDiffer(details("a", "c"), ["a", "b"])).toBe(true);
+    expect(bindingsDiffer(details("a", "b"), shown("a"))).toBe(true);
+    expect(bindingsDiffer(details("a"), shown("a", "b"))).toBe(true);
+    expect(bindingsDiffer(details("a", "c"), shown("a", "b"))).toBe(true);
     expect(bindingsDiffer(details("a"), [])).toBe(true);
-    expect(bindingsDiffer(details(), ["a"])).toBe(true);
+    expect(bindingsDiffer(details(), shown("a"))).toBe(true);
+  });
+
+  it("is true when a binding keeps its id but was re-pointed (PR #544 review)", () => {
+    const [a] = shown("a");
+    expect(bindingsDiffer(details("a"), [{ ...a!, destination: "pg://evil" }])).toBe(true);
+    expect(bindingsDiffer(details("a"), [{ ...a!, destination: null }])).toBe(true);
+    expect(bindingsDiffer(details("a"), [{ ...a!, type: "mcp_server" }])).toBe(true);
+  });
+
+  it("canonicalBindings dedupes, orders and drops anything but type, id, destination", () => {
+    const extra = { type: "db_connector" as const, id: "a", destination: "pg://a", label: "x" };
+    expect(canonicalBindings([...shown("b"), extra, ...shown("a")])).toEqual(shown("a", "b"));
   });
 
   it("says the bindings changed and lists the live ones", () => {
@@ -217,7 +234,7 @@ describe("#502 — bindingsDiffer / bindingsChangedMessage", () => {
     expect(msg).toContain("owned by cora");
     expect(msg).toContain("changed since you confirmed");
     expect(msg).toContain("bound to A (pg://a), B (pg://b).");
-    expect(msg).toContain("confirmedBindingIds");
+    expect(msg).toContain("confirmedBindings");
     expect(bindingsChangedMessage(details())).toContain(UNBOUND_NOTE);
   });
 });
