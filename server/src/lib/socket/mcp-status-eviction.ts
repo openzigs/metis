@@ -28,10 +28,10 @@ export function evictWorkspaceMcpStatusRoom(workspaceId: string): void {
   try {
     getSocketServer()?.socketsLeave(mcpStatusWorkspaceRoom(workspaceId));
   } catch (err) {
-    log.warn(
-      { err, workspaceId },
-      "could not evict sockets from a deleted workspace's MCP status room",
-    );
+    log.warn("could not evict sockets from a deleted workspace's MCP status room", {
+      workspaceId,
+      error: (err as Error).message,
+    });
   }
 }
 
@@ -43,9 +43,10 @@ export function evictMemberMcpStatusRoom(userId: string, workspaceId: string): v
   try {
     getSocketServer()?.in(`user:${userId}`).socketsLeave(mcpStatusWorkspaceRoom(workspaceId));
   } catch (err) {
-    log.warn(
-      { err, userId, workspaceId },
-      "could not evict a removed member's sockets from an MCP status room",
-    );
+    log.warn("could not evict a removed member's sockets from an MCP status room", {
+      userId,
+      workspaceId,
+      error: (err as Error).message,
+    });
   }
 }
