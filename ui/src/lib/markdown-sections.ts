@@ -27,6 +27,15 @@
  * re-parse a bracketed heading beside the document's definitions of the labels
  * it names ({@link SplitDocument.definitions}); the id no longer depends on
  * which section a definition happens to sit in.
+ *
+ * #228 — the same holds for a section's BODY. A section is rendered with the
+ * source of every definition it names prepended ({@link withDefinitions}), so
+ * `[text][ref]` and `[^1]` resolve wherever their definition sits. Footnotes
+ * get ONE document-level list, as a whole-document render gives them: each
+ * section drops the list remark-rehype would give it and renumbers its
+ * references document-wide ({@link rehypeSectionFootnotes}), and the list is
+ * rendered once, after every section ({@link footnoteListMarkdown}), so no
+ * `#footnote-label` or `fn-*` id is repeated.
  */
 import GithubSlugger from "github-slugger";
 import remarkGfm from "remark-gfm";
@@ -49,6 +58,8 @@ export interface MarkdownSection {
   headingIds: string[];
   /** Slug occurrence counts of every heading BEFORE this section. */
   slugOccurrences: Readonly<Record<string, number>>;
+  /** Footnote key → references to it BEFORE this section (#228). */
+  footnotesBefore: Readonly<Record<string, number>>;
 }
 
 export interface TocEntry extends MarkdownHeading {
@@ -59,15 +70,26 @@ export interface SplitDocument {
   sections: MarkdownSection[];
   /** H1–H3 headings, for the table of contents. */
   toc: TocEntry[];
-  /** Every heading id (all levels) → the section that contains it. */
+  /**
+   * Every heading id (all levels) and every footnote reference id
+   * (`user-content-fnref-*`, #228) → the section that contains it.
+   */
   sectionOfId: Map<string, number>;
-  /** Every definition in the document, for {@link headingText}. */
+  /** Every definition in the document, for {@link headingText} and {@link withDefinitions}. */
   definitions: Definitions;
+  /** The document's footnote references to defined footnotes (#228). */
+  footnotes: {
+    /** Footnote key → its number: the order of its first reference in the document. */
+    order: ReadonlyMap<string, number>;
+    /** Every reference's label (`^1`), in document order. */
+    references: readonly string[];
+  };
 }
 
 /**
- * Normalized label (`spec`, `^1`) → a synthetic definition of it, for every
- * link-reference and footnote label defined anywhere in a document.
+ * Normalized label (`SPEC`, `^1`) → the markdown source of its FIRST
+ * definition (the one a markdown parser uses), for every link-reference and
+ * footnote label defined anywhere in a document.
  */
 export type Definitions = ReadonlyMap<string, string>;
 
@@ -75,8 +97,18 @@ const HEADING = /^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/;
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 /** A link-reference (`[label]: url`) or footnote (`[^label]: text`) definition line. */
 const DEFINITION = /^ {0,3}\[((?:[^\\[\]]|\\.)+)\]:(?:[ \t]|$)/;
-/** A bracketed run in a heading: a candidate reference or footnote label. */
+/** A bracketed run: a candidate reference or footnote label. */
 const BRACKETED = /\[([^[\]]+)\]/g;
+/** A footnote reference: GFM footnote labels hold no whitespace. */
+const FOOTNOTE_REFERENCE = /\[\^([^\]\s]+)\]/g;
+/** An inline code span, where nothing is a reference. */
+const CODE_SPAN = /(`+)[^`]*?\1/g;
+/** A line holding only a link-definition title. */
+const TITLE_LINE = /^[ \t]*("[^"]*"|'[^']*'|\([^()]*\))[ \t]*$/;
+/** Content indented into a footnote definition. */
+const INDENTED = /^(?: {4}|\t)/;
+/** A line that starts a block, so it cannot continue a footnote's paragraph. */
+const BLOCK_START = /^ {0,3}(?:>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|(?:[-*_][ \t]*){3,}$|<)/;
 
 /** A label as the markdown parser matches it: whitespace collapsed, case folded. */
 function normalizeLabel(label: string): string {
@@ -118,31 +150,98 @@ function fenceTracker(): (line: string) => boolean {
 }
 
 /**
- * Every definition label in the document. A definition cannot interrupt a
- * paragraph, so a definition-shaped line counts only where a block may start:
- * after a blank line, a heading, a fence or a link definition. A footnote
- * definition's text is a paragraph, so after one only another footnote
- * definition starts; a link definition there is continuation.
+ * Where the footnote definition starting at line `start` ends (exclusive): its
+ * text continues through lazy continuation lines and, past blank lines,
+ * through lines indented into it.
  */
-function collectDefinitions(markdown: string): Definitions {
+function footnoteEnd(lines: string[], fenced: boolean[], start: number): number {
+  let end = start + 1;
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === "") continue;
+    const lazy =
+      i === end &&
+      !fenced[i] &&
+      !HEADING.test(line) &&
+      !BLOCK_START.test(line) &&
+      !DEFINITION.exec(line)?.[1].startsWith("^");
+    if (!lazy && !INDENTED.test(line)) break;
+    end = i + 1;
+  }
+  return end;
+}
+
+/** Where the link definition starting at line `start` ends (exclusive). */
+function linkDefinitionEnd(lines: string[], start: number): number {
+  let end = start + 1;
+  // `[label]:` with its destination on the next line.
+  if (/\]:[ \t]*$/.test(lines[start]) && end < lines.length) end++;
+  // A title on a line of its own.
+  if (end < lines.length && TITLE_LINE.test(lines[end])) end++;
+  return end;
+}
+
+/**
+ * Every definition in the document, and the lines they occupy. A definition
+ * cannot interrupt a paragraph, so a definition-shaped line counts only where
+ * a block may start: after a blank line, a heading, a fence or another
+ * definition. A footnote definition's text is a paragraph, so a
+ * definition-shaped line continuing it is part of it, unless it is another
+ * footnote definition.
+ */
+function collectDefinitions(lines: string[]): {
+  definitions: Definitions;
+  definitionLines: Set<number>;
+} {
   const definitions = new Map<string, string>();
+  const definitionLines = new Set<number>();
   const inFence = fenceTracker();
-  let after: "block" | "footnote" | "text" = "block";
-  for (const line of markdown.split("\n")) {
-    if (inFence(line)) {
-      after = "block";
+  const fenced = lines.map((line) => inFence(line));
+  let atBlock = true;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (fenced[i]) {
+      atBlock = true;
       continue;
     }
     const label = DEFINITION.exec(line)?.[1];
-    const footnote = label?.startsWith("^") ?? false;
-    if (label && (after === "block" || (after === "footnote" && footnote))) {
-      definitions.set(normalizeLabel(label), `[${label}]: x`);
-      after = footnote ? "footnote" : "block";
+    if (label && atBlock) {
+      const end = label.startsWith("^")
+        ? footnoteEnd(lines, fenced, i)
+        : linkDefinitionEnd(lines, i);
+      const key = normalizeLabel(label);
+      if (!definitions.has(key)) definitions.set(key, lines.slice(i, end).join("\n"));
+      for (let j = i; j < end; j++) definitionLines.add(j);
+      i = end - 1;
+      atBlock = true;
     } else {
-      after = line.trim() === "" || HEADING.test(line) ? "block" : "text";
+      atBlock = line.trim() === "" || HEADING.test(line);
     }
   }
-  return definitions;
+  return { definitions, definitionLines };
+}
+
+/**
+ * The source of every definition `markdown` names, prepended to it, so a
+ * reference resolves when it is parsed alone. A supplied footnote's own
+ * references are supplied too. Definitions render nothing, and each label's
+ * source is its document-first definition, so it wins over any later one in
+ * `markdown`, as it does in a whole-document parse.
+ */
+export function withDefinitions(markdown: string, definitions: Definitions): string {
+  const supplied = new Set<string>();
+  const pending = [markdown];
+  for (let text = pending.pop(); text !== undefined; text = pending.pop()) {
+    for (const [, label] of text.matchAll(BRACKETED)) {
+      const definition = definitions.get(normalizeLabel(label));
+      if (definition && !supplied.has(definition)) {
+        supplied.add(definition);
+        pending.push(definition);
+      }
+    }
+  }
+  // Blank-line separated, so no definition reads as continuing another.
+  return supplied.size > 0 ? `${[...supplied].join("\n\n")}\n\n${markdown}` : markdown;
 }
 
 /** A markdown AST node, as far as slugging needs one. */
@@ -206,12 +305,17 @@ export function splitMarkdownSections(markdown: string): SplitDocument {
   const sections: MarkdownSection[] = [];
   const toc: TocEntry[] = [];
   const sectionOfId = new Map<string, number>();
-  const definitions = collectDefinitions(markdown);
+  const source = markdown.split("\n");
+  const { definitions, definitionLines } = collectDefinitions(source);
+  const footnoteCounts: Record<string, number> = {};
+  const order = new Map<string, number>();
+  const references: string[] = [];
 
   let lines: string[] = [];
   let current: Omit<MarkdownSection, "markdown" | "index"> = {
     headingIds: [],
     slugOccurrences: {},
+    footnotesBefore: {},
   };
   const flush = () => {
     const text = lines.join("\n");
@@ -222,7 +326,7 @@ export function splitMarkdownSections(markdown: string): SplitDocument {
   };
 
   const inFence = fenceTracker();
-  for (const line of markdown.split("\n")) {
+  for (const [index, line] of source.entries()) {
     if (inFence(line)) {
       lines.push(line);
       continue;
@@ -234,7 +338,11 @@ export function splitMarkdownSections(markdown: string): SplitDocument {
       const text = headingText(parsed, line, definitions);
       if (level === 2 || level === 3) {
         flush();
-        current = { headingIds: [], slugOccurrences: { ...slugger.occurrences } };
+        current = {
+          headingIds: [],
+          slugOccurrences: { ...slugger.occurrences },
+          footnotesBefore: { ...footnoteCounts },
+        };
       }
       const id = slugger.slug(text);
       const heading = { id, text, level };
@@ -244,9 +352,24 @@ export function splitMarkdownSections(markdown: string): SplitDocument {
       if (level <= 3) toc.push({ ...heading, sectionIndex: sections.length });
     }
     lines.push(line);
+    // A footnote definition's own references are numbered after the body's,
+    // by the footnote list, exactly as a whole-document render numbers them.
+    if (definitionLines.has(index)) continue;
+    for (const [, label] of line.replace(CODE_SPAN, "").matchAll(FOOTNOTE_REFERENCE)) {
+      const key = normalizeLabel(`^${label}`);
+      if (!definitions.has(key)) continue; // an undefined reference is literal text
+      if (!order.has(key)) order.set(key, order.size + 1);
+      const count = (footnoteCounts[key] ?? 0) + 1;
+      footnoteCounts[key] = count;
+      references.push(`^${label}`);
+      // The footnote list's back-link lands here, so reaching the list first
+      // must still be able to render this section (#228).
+      const id = footnoteReferenceId(key, count);
+      if (!sectionOfId.has(id)) sectionOfId.set(id, sections.length);
+    }
   }
   flush();
-  return { sections, toc, sectionOfId, definitions };
+  return { sections, toc, sectionOfId, definitions, footnotes: { order, references } };
 }
 
 /**
@@ -292,5 +415,139 @@ export function remarkSectionSlugs(options: {
       node.children?.forEach(visit);
     };
     visit(tree);
+  };
+}
+
+/** A hast node, as far as footnote rewriting needs one. */
+export interface HastNode {
+  type: string;
+  tagName?: string;
+  value?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+}
+
+/** remark-rehype's default `clobberPrefix` on footnote ids. */
+const FOOTNOTE_HREF = "#user-content-fn-";
+
+/**
+ * micromark's `normalizeUri`, which mdast-util-to-hast applies to a footnote
+ * identifier to make its ids (`micromark-util-sanitize-uri`, not a direct
+ * dependency of this package): percent-encode everything but URL-safe ASCII,
+ * keeping any valid `%XX` escape as it is.
+ */
+function normalizeUri(value: string): string {
+  const alphanumeric = (code: number) =>
+    (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+  let result = "";
+  let start = 0;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    let replace = "";
+    let skip = 0;
+    if (
+      code === 37 &&
+      alphanumeric(value.charCodeAt(index + 1)) &&
+      alphanumeric(value.charCodeAt(index + 2))
+    ) {
+      skip = 2;
+    } else if (code < 128) {
+      if (!/[!#$&-;=?-Z_a-z~]/.test(String.fromCharCode(code))) replace = String.fromCharCode(code);
+    } else if (code > 55_295 && code < 57_344) {
+      const next = value.charCodeAt(index + 1);
+      if (code < 56_320 && next > 56_319 && next < 57_344) {
+        replace = String.fromCharCode(code, next);
+        skip = 1;
+      } else {
+        replace = "\uFFFD";
+      }
+    } else {
+      replace = String.fromCharCode(code);
+    }
+    if (replace) {
+      result += value.slice(start, index) + encodeURIComponent(replace);
+      start = index + skip + 1;
+    }
+    index += skip;
+  }
+  return result + value.slice(start);
+}
+
+/**
+ * The id of the `count`-th reference to footnote `key` (`^LABEL`) in a
+ * whole-document render: what {@link rehypeSectionFootnotes} gives it and the
+ * footnote list's back-link points at.
+ */
+export function footnoteReferenceId(key: string, count: number): string {
+  // mdast-util-to-hast's case round trip on the identifier, exactly.
+  const safeId = normalizeUri(key.slice(1).toLowerCase().toUpperCase().toLowerCase());
+  return `user-content-fnref-${safeId}${count > 1 ? `-${count}` : ""}`;
+}
+
+/** A footnote list remark-rehype appended to a render. */
+function isFootnoteList(node: HastNode): boolean {
+  return node.type === "element" && node.properties?.dataFootnotes === true;
+}
+
+/**
+ * A rehype plugin for one section's render: drops the footnote list
+ * remark-rehype gives the section (the document's list is rendered once,
+ * from {@link footnoteListMarkdown}), and gives each footnote reference its
+ * document-wide number and a reference id that continues counting from
+ * `before`, so a note cited in two sections keeps distinct backlink targets.
+ */
+export function rehypeSectionFootnotes(options: {
+  /** {@link SplitDocument.footnotes}' `order`. */
+  order: ReadonlyMap<string, number>;
+  /** The section's {@link MarkdownSection.footnotesBefore}. */
+  before: Readonly<Record<string, number>>;
+}) {
+  return (tree: HastNode) => {
+    const seen: Record<string, number> = { ...options.before };
+    const visit = (node: HastNode) => {
+      if (!node.children) return;
+      node.children = node.children.filter((child) => !isFootnoteList(child));
+      for (const child of node.children) {
+        const properties = child.properties;
+        const href = properties?.dataFootnoteRef ? String(properties.href ?? "") : "";
+        if (!properties || !href.startsWith(FOOTNOTE_HREF)) {
+          visit(child);
+          continue;
+        }
+        const safeId = href.slice(FOOTNOTE_HREF.length);
+        let label = safeId;
+        try {
+          label = decodeURIComponent(safeId);
+        } catch {
+          // Not percent-encoding after all: the id is the label.
+        }
+        const key = normalizeLabel(`^${label}`);
+        const count = (seen[key] ?? 0) + 1;
+        seen[key] = count;
+        properties.id = `user-content-fnref-${safeId}${count > 1 ? `-${count}` : ""}`;
+        const number = options.order.get(key);
+        if (number !== undefined) child.children = [{ type: "text", value: String(number) }];
+      }
+    };
+    visit(tree);
+  };
+}
+
+/**
+ * The markdown whose render (with {@link rehypeFootnoteList}) is the
+ * document's footnote list: every footnote reference in document order, so
+ * numbering and backlinks match a whole-document render, beside the
+ * definitions they need. `null` when the document references no footnote.
+ */
+export function footnoteListMarkdown(doc: SplitDocument): string | null {
+  const { references } = doc.footnotes;
+  if (references.length === 0) return null;
+  return withDefinitions(references.map((label) => `[${label}]`).join(" "), doc.definitions);
+}
+
+/** A rehype plugin that keeps only the footnote list of a render. */
+export function rehypeFootnoteList() {
+  return (tree: HastNode) => {
+    tree.children = (tree.children ?? []).filter(isFootnoteList);
   };
 }

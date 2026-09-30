@@ -10,7 +10,15 @@ import rehypeSlug from "rehype-slug";
 import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
-import { remarkSectionSlugs, splitMarkdownSections, type MdastNode } from "@/lib/markdown-sections";
+import {
+  footnoteListMarkdown,
+  rehypeFootnoteList,
+  rehypeSectionFootnotes,
+  remarkSectionSlugs,
+  splitMarkdownSections,
+  withDefinitions,
+  type MdastNode,
+} from "@/lib/markdown-sections";
 
 function headingIds(html: string): string[] {
   return [...html.matchAll(/<h[1-6] id="([^"]*)"/g)].map((m) => m[1]);
@@ -341,5 +349,247 @@ describe("remarkSectionSlugs source text", () => {
       value: new TextEncoder().encode(markdown),
     });
     expect(tree.children?.[1].data?.hProperties?.id).toBe("see-the-spec");
+  });
+});
+
+/**
+ * #228 — the BODY of a section, not just its heading id. A reference link or a
+ * footnote reference whose definition sits in another section used to render
+ * as literal text, and every section holding footnote definitions rendered its
+ * own "Footnotes" list with its own `#footnote-label` and restarted numbering.
+ */
+describe("reference links and footnotes in the body across sections (#228)", () => {
+  /**
+   * The whole document in ONE react-markdown pass. Heading ids come from
+   * remarkSectionSlugs on both sides (they are #227's subject, and it drops a
+   * footnote number from an id where rehype-slug would keep it); everything
+   * else is react-markdown's own rendering.
+   */
+  function wholeDocumentHtml(markdown: string): string {
+    const { definitions } = splitMarkdownSections(markdown);
+    return renderToStaticMarkup(
+      createElement(
+        ReactMarkdown,
+        { remarkPlugins: [remarkGfm, [remarkSectionSlugs, { occurrences: {}, definitions }]] },
+        markdown,
+      ),
+    );
+  }
+
+  /** Every section rendered on its own, then the document's footnote list. */
+  function sectionedHtml(markdown: string): string {
+    const doc = splitMarkdownSections(markdown);
+    const bodies = doc.sections.map((section) =>
+      renderToStaticMarkup(
+        createElement(
+          ReactMarkdown,
+          {
+            remarkPlugins: [
+              remarkGfm,
+              [
+                remarkSectionSlugs,
+                { occurrences: section.slugOccurrences, definitions: doc.definitions },
+              ],
+            ],
+            rehypePlugins: [
+              [
+                rehypeSectionFootnotes,
+                { order: doc.footnotes.order, before: section.footnotesBefore },
+              ],
+            ],
+          },
+          withDefinitions(section.markdown, doc.definitions),
+        ),
+      ),
+    );
+    const list = footnoteListMarkdown(doc);
+    if (list !== null) {
+      bodies.push(
+        renderToStaticMarkup(
+          createElement(
+            ReactMarkdown,
+            { remarkPlugins: [remarkGfm], rehypePlugins: [rehypeFootnoteList] },
+            list,
+          ),
+        ),
+      );
+    }
+    return bodies.join("");
+  }
+
+  /** Whitespace between tags is layout, not content. */
+  const normalize = (html: string) => html.replace(/>\s+</g, "><").trim();
+
+  const ISSUE = [
+    "## One",
+    "See [the spec][spec] and a note.[^1]",
+    "## Two",
+    "Another note.[^2]",
+    "",
+    "[^2]: Two.",
+    "## Three",
+    "",
+    "[spec]: https://example.com/spec",
+    "",
+    "[^1]: One.",
+  ].join("\n");
+
+  it("the issue's document: the link and both footnotes resolve", () => {
+    const html = sectionedHtml(ISSUE);
+    expect(html).toContain('<a href="https://example.com/spec">the spec</a>');
+    expect(html).not.toContain("[the spec][spec]");
+    expect(html).not.toContain("[^1]");
+    expect(html).not.toContain("[^2]");
+  });
+
+  const DOCUMENTS: Array<[string, string]> = [
+    ["the issue's document", ISSUE],
+    [
+      "footnotes defined in two sections, referenced repeatedly and out of order",
+      [
+        "# Doc",
+        "Intro.[^b]",
+        "## A",
+        "First [^a] and again [^b].",
+        "",
+        "[^a]: Alpha, citing [the spec][spec].",
+        "## B",
+        "More [^a] and [^c] and [^a].",
+        "",
+        "[^b]: Beta.",
+        "    Indented continuation.",
+        "",
+        "    A second paragraph.",
+        "## C",
+        "Unknown [^zz] stays literal; [ref][nowhere] too; [spec] resolves.",
+        "",
+        "[spec]: https://example.com/spec 'Title'",
+        "[^c]: Gamma",
+        "lazy continuation.",
+      ].join("\n"),
+    ],
+    [
+      "a heading carrying a footnote and a link defined later",
+      [
+        "## Rules[^1] and [the spec][spec]",
+        "Body.[^1]",
+        "## Definitions",
+        "[spec]:",
+        "  https://example.com/spec",
+        '  "Spec title"',
+        "",
+        "[^1]: One.",
+      ].join("\n"),
+    ],
+    [
+      "the first of two definitions of a label wins",
+      [
+        "## A",
+        "[x][dup] and note[^d]",
+        "## B",
+        "[dup]: https://example.com/first",
+        "[^d]: First.",
+        "## C",
+        "[dup]: https://example.com/second",
+        "",
+        "[^d]: Second.",
+      ].join("\n"),
+    ],
+    [
+      "a footnote reference inside inline code or a fence, or to no definition, is not a reference",
+      [
+        "## A",
+        "Undefined [^nope] first. Code `[^1]` then a real one[^1].",
+        "```",
+        "[^1]",
+        "```",
+        "## B",
+        "[^1]: One.",
+      ].join("\n"),
+    ],
+  ];
+
+  it.each(DOCUMENTS)("%s renders exactly as a whole-document render", (_, markdown) => {
+    expect(normalize(sectionedHtml(markdown))).toBe(normalize(wholeDocumentHtml(markdown)));
+  });
+
+  it.each(DOCUMENTS)("%s: every element id is unique", (_, markdown) => {
+    const ids = [...sectionedHtml(markdown).matchAll(/\sid="([^"]*)"/g)].map((m) => m[1]);
+    expect(ids.length).toBeGreaterThan(0);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("a document without footnote references has no footnote list", () => {
+    const doc = splitMarkdownSections(
+      "## A\n[x][y]\n## B\n[y]: https://example.com\n[^1]: Unused.",
+    );
+    expect(footnoteListMarkdown(doc)).toBeNull();
+    expect(doc.footnotes.order.size).toBe(0);
+  });
+
+  it("a section is given only the definitions it names, and none when it names none", () => {
+    const { definitions } = splitMarkdownSections(
+      "## A\n[a]: https://example.com/a\n[b]: https://example.com/b\n[^n]: Note [a].",
+    );
+    expect(withDefinitions("plain text", definitions)).toBe("plain text");
+    // A footnote's own references are supplied too (to a fixed point).
+    expect(withDefinitions("x[^n]", definitions)).toBe(
+      "[^n]: Note [a].\n\n[a]: https://example.com/a\n\nx[^n]",
+    );
+  });
+
+  it("a footnote reference whose href is not percent-decodable keeps its own number", () => {
+    const tree = {
+      type: "root",
+      children: [
+        {
+          type: "element",
+          tagName: "a",
+          properties: { href: "#user-content-fn-%E0%A4%A", dataFootnoteRef: true },
+          children: [{ type: "text", value: "1" }],
+        },
+      ],
+    };
+    rehypeSectionFootnotes({ order: new Map(), before: {} })(tree);
+    const [ref] = tree.children;
+    expect(ref.properties).toMatchObject({ id: "user-content-fnref-%E0%A4%A" });
+    expect(ref.children).toEqual([{ type: "text", value: "1" }]);
+  });
+});
+
+describe("footnote reference ids in sectionOfId (#228)", () => {
+  const doc = [
+    "## A",
+    "Cite.[^1] Again.[^Note]",
+    "## B",
+    "Cite again.[^1] Accented.[^é] Encoded.[^a%41] Undefined.[^nope] `code [^1]`",
+    "",
+    "[^1]: One, citing.[^é]",
+    "",
+    "[^NOTE]: Two.",
+    "",
+    "[^é]: Three.",
+    "",
+    "[^a%41]: Four.",
+  ].join("\n");
+
+  it("maps every body reference's whole-document id to the section citing it", () => {
+    const { sectionOfId } = splitMarkdownSections(doc);
+    const fnrefs = [...sectionOfId].filter(([id]) => id.startsWith("user-content-fnref-"));
+    expect(fnrefs).toEqual([
+      ["user-content-fnref-1", 0],
+      ["user-content-fnref-note", 0],
+      ["user-content-fnref-1-2", 1],
+      ["user-content-fnref-%C3%A9", 1],
+      ["user-content-fnref-a%41", 1],
+    ]);
+    // Exactly the ids a whole-document render gives its body references.
+    const html = renderToStaticMarkup(
+      createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, doc),
+    );
+    const rendered = [...html.matchAll(/<a[^>]* id="(user-content-fnref-[^"]*)"/g)].map(
+      (m) => m[1],
+    );
+    expect(rendered.slice(0, fnrefs.length)).toEqual(fnrefs.map(([id]) => id));
   });
 });

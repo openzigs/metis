@@ -4,7 +4,7 @@
  * resolving to exactly one heading, and unrendered text still in the page.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 
 vi.mock("mermaid", () => ({
   default: { initialize: vi.fn(), render: vi.fn().mockResolvedValue({ svg: "<svg/>" }) },
@@ -349,5 +349,114 @@ describe("MarkdownPreviewer — progressive rendering (#190)", () => {
         expect(scrollIntoView.mock.contexts).toContain(target);
       },
     );
+  });
+
+  describe("reference links and footnotes in the body across sections (#228)", () => {
+    const issue = [
+      "## One",
+      "See [the spec][spec] and a note.[^1]",
+      "## Two",
+      "Another note.[^2]",
+      "",
+      "[^2]: Two.",
+      "## Three",
+      "",
+      "[spec]: https://example.com/spec",
+      "",
+      "[^1]: One.",
+    ].join("\n");
+
+    it("resolves a reference or footnote defined in another section, with one footnote list", () => {
+      const { container } = render(<MarkdownPreviewer content={issue} />);
+      const content = container.querySelector('[data-testid="markdown-content"]')!;
+      expect(rendered(container)).toHaveLength(3);
+      expect(content.textContent).not.toContain("[the spec][spec]");
+      expect(content.textContent).not.toContain("[^1]");
+      const link = content.querySelector('a[href="https://example.com/spec"]');
+      expect(link?.textContent).toBe("the spec");
+      // Document-wide numbering, each reference pointing at its own list item.
+      const refs = [...content.querySelectorAll("a[data-footnote-ref]")];
+      expect(refs.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
+        ["1", "#user-content-fn-1"],
+        ["2", "#user-content-fn-2"],
+      ]);
+      // One footnote list, after every section, holding both notes in order.
+      const lists = content.querySelectorAll("section[data-footnotes]");
+      expect(lists).toHaveLength(1);
+      expect(content.querySelectorAll("#footnote-label")).toHaveLength(1);
+      expect([...lists[0].querySelectorAll("li")].map((li) => li.id)).toEqual([
+        "user-content-fn-1",
+        "user-content-fn-2",
+      ]);
+      expect(lists[0].closest("[data-section-rendered]")).toBeNull();
+      const ids = [...content.querySelectorAll("[id]")].map((el) => el.id);
+      expect(new Set(ids).size).toBe(ids.length);
+    });
+
+    describe("the footnote list's back-links into unrendered sections", () => {
+      // Seven sections: every citation sits past INITIAL_RENDERED_SECTIONS.
+      const late = [
+        "## S0",
+        "Intro.",
+        "## S1",
+        "One.",
+        "## S2",
+        "Two.",
+        "## S3",
+        "Three.",
+        "## S4",
+        "First citation.[^1]",
+        "## S5",
+        "Second citation.[^1] And a unicode one.[^é]",
+        "## S6",
+        "",
+        "[^1]: The note.",
+        "",
+        "[^é]: Accented.",
+      ].join("\n");
+      const sectionOf = (el: Element | null) =>
+        el?.closest("[data-section-rendered]")?.getAttribute("data-section-rendered");
+
+      it("a back-link click renders the citing section and scrolls to the reference", async () => {
+        expect(INITIAL_RENDERED_SECTIONS).toBeLessThan(4);
+        const { container } = render(<MarkdownPreviewer content={late} />);
+        await act(async () => {});
+        // The list is always rendered; the citing section is not.
+        expect(container.querySelector("#user-content-fnref-1")).toBeNull();
+        expect(container.querySelector('[data-section-pending="4"]')).not.toBeNull();
+        const backLink = container.querySelector(
+          'section[data-footnotes] a[data-footnote-backref][href="#user-content-fnref-1"]',
+        )!;
+        expect(backLink).not.toBeNull();
+        // A real click: the browser moves the hash, and hashchange reveals.
+        fireEvent.click(backLink);
+        await waitFor(() =>
+          expect(container.querySelector("#user-content-fnref-1")).not.toBeNull(),
+        );
+        const target = container.querySelector("#user-content-fnref-1");
+        expect(sectionOf(target)).toBe("4");
+        expect(scrollIntoView.mock.contexts).toContain(target);
+      });
+
+      it.each([
+        ["#user-content-fnref-1-2", "user-content-fnref-1-2"],
+        // A footnote id is percent-encoded: the hash names it as written.
+        ["#user-content-fnref-%C3%A9", "user-content-fnref-%C3%A9"],
+      ])("opens a deep link to a footnote reference on load (%s)", async (hash, id) => {
+        window.location.hash = hash;
+        const { container } = render(<MarkdownPreviewer content={late} />);
+        await act(async () => {});
+        const target = container.querySelector(`[id="${id}"]`);
+        expect(target).not.toBeNull();
+        expect(sectionOf(target)).toBe("5");
+        expect(scrollIntoView.mock.contexts).toContain(target);
+      });
+    });
+
+    it("a document without footnote references renders no footnote list", () => {
+      const { container } = render(<MarkdownPreviewer content={"## A\n[x][y]\n## B\n[y]: /y"} />);
+      expect(container.querySelector("section[data-footnotes]")).toBeNull();
+      expect(container.querySelector('a[href="/y"]')?.textContent).toBe("x");
+    });
   });
 });
