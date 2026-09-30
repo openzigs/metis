@@ -81,8 +81,11 @@ export function MarkdownPreviewer({
 }: MarkdownPreviewerProps): React.ReactElement {
   const contentRef = useRef<HTMLDivElement>(null);
   const [activeHeading, setActiveHeading] = useState<string>("");
-  // Heading id to scroll to once its section has rendered.
+  // Heading id to scroll to once its section has rendered. Each reveal also
+  // bumps `scrollRequest`, so the scroll effect runs even when the section is
+  // already rendered and no other state changes (#524).
   const pendingScrollId = useRef<string | null>(null);
+  const [scrollRequest, setScrollRequest] = useState(0);
 
   // Repair malformed code fences in content before rendering.
   // LLMs sometimes forget to close mermaid blocks or produce incomplete
@@ -117,24 +120,23 @@ export function MarkdownPreviewer({
       const index = sectionOfId.get(id);
       if (index === undefined) return false;
       pendingScrollId.current = id;
+      setScrollRequest((n) => n + 1);
       renderSections([index]);
       return true;
     },
     [sectionOfId, renderSections],
   );
 
-  // Scroll to a revealed heading once its section is in the DOM.
+  // Scroll to a revealed heading once its section is in the DOM. The request
+  // is consumed either way, so a later unrelated render never scrolls (#524).
   useEffect(() => {
     const id = pendingScrollId.current;
     if (!id) return;
     const index = sectionOfId.get(id);
     if (index !== undefined && !rendered.has(index)) return;
-    const el = document.getElementById(id);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-      pendingScrollId.current = null;
-    }
-  }, [rendered, sectionOfId]);
+    pendingScrollId.current = null;
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [scrollRequest, rendered, sectionOfId]);
 
   // Deep links: honour the URL hash on load and when it changes.
   useEffect(() => {
