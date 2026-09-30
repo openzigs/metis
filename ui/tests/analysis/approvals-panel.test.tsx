@@ -159,6 +159,38 @@ describe("ApprovalsPanel", () => {
     expect(screen.getByText("How long must audit logs be retained?")).toBeInTheDocument();
   });
 
+  // Issue #403 — a structured requirement stored without an `ambiguities` array
+  // (#382) must still render its title, with no open-questions list.
+  it.each([
+    ["missing", undefined],
+    ["null", null],
+  ])("renders a requirement whose ambiguities are %s", async (_label, ambiguities) => {
+    const itemId = "req-legacy";
+    renderPanel(
+      [approval({ type: "requirement", itemId })],
+      { allowed: false, pendingCount: 1, rejectedCount: 0 },
+      {
+        structuredRequirements: {
+          requirements: [
+            {
+              id: itemId,
+              title: "Legacy requirement",
+              description: "Stored before ambiguities were extracted.",
+              ambiguities,
+              evidenceNeeds: [],
+            },
+          ],
+          totalAmbiguities: 0,
+          totalEvidenceNeeds: 0,
+        },
+      },
+    );
+
+    expect(await screen.findByText("Legacy requirement")).toBeInTheDocument();
+    expect(screen.getByText("Stored before ambiguities were extracted.")).toBeInTheDocument();
+    expect(screen.queryByText(/Open questions/)).not.toBeInTheDocument();
+  });
+
   it("falls back to the itemId when no structured requirement matches", async () => {
     renderPanel(
       [approval({ type: "requirement", itemId: "unmatched-uuid" })],

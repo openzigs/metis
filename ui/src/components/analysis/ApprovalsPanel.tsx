@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PromotionBlockedEvent } from "@metis/shared";
 import {
+  ambiguitiesOf,
   analysisApi,
   readEnhancementMetadata,
   type ApprovalRequestPayload,
@@ -162,6 +163,8 @@ function ApprovalCard({
   const qc = useQueryClient();
   const [note, setNote] = useState("");
   const isResolved = approval.status !== "pending";
+  // #403 — older stored requirements carry no `ambiguities` array.
+  const ambiguities = requirement ? ambiguitiesOf(requirement) : [];
 
   const reviewMutation = useMutation({
     mutationFn: (decision: "approved" | "rejected") =>
@@ -213,13 +216,13 @@ function ApprovalCard({
           {requirement.description && (
             <p className="text-xs text-muted-foreground">{requirement.description}</p>
           )}
-          {requirement.ambiguities.length > 0 && (
+          {ambiguities.length > 0 && (
             <div className="space-y-1">
               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Open questions ({requirement.ambiguities.length})
+                Open questions ({ambiguities.length})
               </p>
               <ul className="space-y-1">
-                {requirement.ambiguities.map((amb) => (
+                {ambiguities.map((amb) => (
                   <li key={amb.field} className="text-xs text-warning">
                     {amb.suggestedQuestion || amb.description}
                   </li>

@@ -82,6 +82,7 @@ import {
 // Issue #743 — diff-style current-vs-proposed view for changed requirements.
 import { getRequirementDiff } from "../lib/change-analysis/requirement-diff-service.js";
 import type { StructuredRequirements } from "../lib/analysis/types/requirements.js";
+import { clarifyRequestSchema } from "../lib/analysis/clarify-request-schema.js";
 // Issue #1116 — carry the submitted answers into the persisted requirement rows
 // (and therefore into the drafts/issues they become), not just the metadata the
 // approval view reads.
@@ -549,16 +550,15 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // submit-answers branches.
       await ensureAnalysisVisible(analysisId, projectId);
 
-      const body = req.body as
-        | {
-            requirements?: {
-              requirements: unknown[];
-              totalAmbiguities: number;
-              totalEvidenceNeeds: number;
-            };
-            answers?: Array<{ questionId: string; answer: string }>;
-          }
-        | undefined;
+      // Issue #403 — validate at the trust boundary so malformed input is a
+      // 400, not a 500 thrown from inside the dialog.
+      const parsed = clarifyRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid clarification payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      const body = parsed.data;
 
       const config = loadAIConfig();
       const provider = buildProvider({ config });
@@ -577,11 +577,13 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // passing `requirements` in the body, but it no longer has to reconstruct
       // them. Falls back to the request body when nothing was persisted.
       const requirements =
-        (body?.requirements as StructuredRequirements | undefined) ??
+        // The schema checks every field the dialog reads; the remaining
+        // `StructuredRequirement` fields are carried through untouched.
+        (body.requirements as StructuredRequirements | undefined) ??
         (await getStructuredRequirements(analysisId)) ??
         undefined;
 
-      if (body?.answers && body.answers.length > 0) {
+      if (body.answers && body.answers.length > 0) {
         // Submitting answers for the current round
         const state = await getDialogState(analysisId);
         if (!state) {

@@ -140,109 +140,83 @@ test.describe("API: Clarification Dialog (#624)", () => {
     await api.dispose();
   });
 
+  // Issue #403 — the current `StructuredRequirements` shape. The previous
+  // payload (`body` / `ambiguityFields`) predated the type and the assertions
+  // accepted a 500, which hid #382 in CI.
+  const clarifyRequirements = (id: string, fields: string[]) => ({
+    requirements: [
+      {
+        id,
+        title: "Search functionality",
+        description: "Users should be able to search",
+        type: "functional",
+        stakeholders: [],
+        priority: "should-have",
+        ambiguities: fields.map((field) => ({
+          field,
+          description: `The ${field} is not specified.`,
+          suggestedQuestion: `What is the ${field}?`,
+        })),
+        evidenceNeeds: [],
+        rawSource: "e2e",
+      },
+    ],
+    totalAmbiguities: fields.length,
+    totalEvidenceNeeds: 0,
+  });
+
   // AC: POST /api/projects/:projectId/analysis/:analysisId/clarify
   test("should start clarification dialog with requirements payload", async () => {
     const api = await authedApi(token);
     const res = await api.post(`/api/projects/${projectId}/analyses/${analysisId}/clarify`, {
-      data: {
-        requirements: {
-          requirements: [
-            {
-              id: "req-1",
-              type: "feature",
-              title: "User login",
-              body: "Users should be able to log in",
-              priority: "high",
-              ambiguityScore: 0.8,
-              ambiguityFields: ["authentication-method"],
-              evidenceNeeds: [],
-            },
-          ],
-          totalAmbiguities: 1,
-          totalEvidenceNeeds: 0,
-        },
-      },
+      data: { requirements: clarifyRequirements("req-1", ["authentication-method"]) },
     });
-    // Accept 200 (success) or 400/404 (offline-stub limitations)
-    if (res.ok()) {
-      const body = await res.json();
-      const data = body.data ?? body;
-      expect(data).toHaveProperty("analysisId");
-      expect(data).toHaveProperty("currentRound");
-      expect(data).toHaveProperty("maxRounds");
-      expect(data).toHaveProperty("rounds");
-      expect(data).toHaveProperty("completed");
-    } else {
-      // Offline-stub may not support full clarification flow —
-      // verify the endpoint exists and returns a structured error
-      expect([400, 404, 500]).toContain(res.status());
-    }
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    const data = body.data ?? body;
+    expect(data.analysisId).toBe(analysisId);
+    expect(data).toHaveProperty("currentRound");
+    expect(data).toHaveProperty("maxRounds");
+    expect(data.completed).toBe(false);
+    expect(data.rounds).toHaveLength(1);
     await api.dispose();
   });
 
   // AC: Multi-turn dialog flow — submit answers
   test("should accept answer submissions", async () => {
     const api = await authedApi(token);
-    // First, start a dialog
+    const requirements = clarifyRequirements("req-mt-1", ["search-scope", "result-format"]);
     const startRes = await api.post(`/api/projects/${projectId}/analyses/${analysisId}/clarify`, {
+      data: { requirements },
+    });
+    expect(startRes.status()).toBe(200);
+    const state = (await startRes.json()).data;
+    expect(state.rounds).toHaveLength(1);
+
+    // The offline stub may generate no questions; the submit contract is the
+    // same either way, so answer the first real question when there is one.
+    const questionId: string = state.rounds[0].questions[0]?.id ?? "q-offline";
+    const answerRes = await api.post(`/api/projects/${projectId}/analyses/${analysisId}/clarify`, {
       data: {
-        requirements: {
-          requirements: [
-            {
-              id: "req-mt-1",
-              type: "feature",
-              title: "Search functionality",
-              body: "Users should be able to search",
-              priority: "medium",
-              ambiguityScore: 0.9,
-              ambiguityFields: ["search-scope", "result-format"],
-              evidenceNeeds: [],
-            },
-          ],
-          totalAmbiguities: 2,
-          totalEvidenceNeeds: 0,
-        },
+        answers: [{ questionId, answer: "Full-text search across all documents" }],
+        requirements,
       },
     });
+    expect(answerRes.status()).toBe(200);
+    const result = (await answerRes.json()).data;
+    expect(result.state.analysisId).toBe(analysisId);
+    expect(result.updatedRequirements.requirements[0].id).toBe("req-mt-1");
+    await api.dispose();
+  });
 
-    if (startRes.ok()) {
-      const startBody = await startRes.json();
-      const state = startBody.data ?? startBody;
-      if (state.rounds?.length > 0 && state.rounds[0].questions?.length > 0) {
-        const questionId = state.rounds[0].questions[0].id;
-        const answerRes = await api.post(
-          `/api/projects/${projectId}/analyses/${analysisId}/clarify`,
-          {
-            data: {
-              answers: [{ questionId, answer: "Full-text search across all documents" }],
-              requirements: {
-                requirements: [
-                  {
-                    id: "req-mt-1",
-                    type: "feature",
-                    title: "Search functionality",
-                    body: "Users should be able to search",
-                    priority: "medium",
-                    ambiguityScore: 0.9,
-                    ambiguityFields: ["search-scope", "result-format"],
-                    evidenceNeeds: [],
-                  },
-                ],
-                totalAmbiguities: 2,
-                totalEvidenceNeeds: 0,
-              },
-            },
-          },
-        );
-        if (answerRes.ok()) {
-          const answerBody = await answerRes.json();
-          const result = answerBody.data ?? answerBody;
-          expect(result).toHaveProperty("analysisId");
-        }
-      }
-    }
-    // Endpoint exists and responds without crashing
-    expect([200, 400, 404, 500]).toContain(startRes.status());
+  // Issue #403 — malformed input is a client error, never a 500.
+  test("should reject a malformed requirements payload with 400", async () => {
+    const api = await authedApi(token);
+    const res = await api.post(`/api/projects/${projectId}/analyses/${analysisId}/clarify`, {
+      data: { requirements: { requirements: [null] } },
+    });
+    expect(res.status()).toBe(400);
+    expect((await res.json()).error.code).toBe("VALIDATION_ERROR");
     await api.dispose();
   });
 

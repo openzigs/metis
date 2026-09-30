@@ -978,6 +978,106 @@ describe("POST /api/projects/:projectId/analyses/:id/clarify (Epic #922)", () =>
       expect(res.body.data.state.completed).toBe(true);
       expect(res.body.data.updatedRequirements.requirements[0].ambiguities).toEqual([]);
     });
+
+    it("start: a requirement with `ambiguities: null` is treated as having none", async () => {
+      const aId = seedAnalysis({ agentKeys: ["document"] });
+      const res = await request(app)
+        .post(`/api/projects/proj-abcdefghij/analyses/${aId}/clarify`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({
+          requirements: {
+            requirements: [{ ...legacyRequirement, ambiguities: null }],
+            totalAmbiguities: 0,
+            totalEvidenceNeeds: 0,
+          },
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.data.completed).toBe(true);
+    });
+  });
+
+  // Issue #403 — the body is validated at the trust boundary: malformed input
+  // is a client error (400), never a 500 thrown from inside the dialog.
+  describe("request body validation (#403)", () => {
+    const post = (aId: string, body: unknown) =>
+      request(app)
+        .post(`/api/projects/proj-abcdefghij/analyses/${aId}/clarify`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send(body as object);
+
+    it.each([
+      ["requirements is an empty object", { requirements: {} }],
+      ["requirements.requirements is not an array", { requirements: { requirements: "x" } }],
+      ["a requirement entry is null", { requirements: { requirements: [null] } }],
+      ["a requirement has no id", { requirements: { requirements: [{ title: "t" }] } }],
+      [
+        "an ambiguity has no field",
+        { requirements: { requirements: [{ id: "r", ambiguities: [{ description: "d" }] }] } },
+      ],
+      [
+        "ambiguities is not an array",
+        { requirements: { requirements: [{ id: "r", ambiguities: "nope" }] } },
+      ],
+      ["answers is not an array", { answers: "30 days" }],
+      ["an answer has no questionId", { answers: [{ answer: "30 days" }] }],
+      ["the body is an array", [1, 2]],
+    ])("returns 400 VALIDATION_ERROR when %s", async (_label, body) => {
+      const aId = seedAnalysis({ agentKeys: ["document"] });
+      const res = await post(aId, body);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("VALIDATION_ERROR");
+      // Only the schema produces this message: the pre-#403 route already
+      // answered an array body with a different VALIDATION_ERROR (PR #435 review).
+      expect(res.body.error.message).toBe("Invalid clarification payload");
+      // Nothing reached the dialog: no durable state was written.
+      expect(dialogStateStore.has(aId)).toBe(false);
+    });
+
+    it("preserves requirement fields the dialog does not read when persisting", async () => {
+      const aId = seedAnalysis({ agentKeys: ["document"] });
+      const requirementsBody = {
+        requirements: [
+          {
+            id: "req-1",
+            title: "Audit logging",
+            description: "Retain logs",
+            type: "non-functional",
+            priority: "must-have",
+            stakeholders: ["ops"],
+            ambiguities: [{ field: "retention", description: "how long?" }],
+            evidenceNeeds: [],
+            rawSource: "raw",
+          },
+        ],
+        totalAmbiguities: 1,
+        totalEvidenceNeeds: 0,
+      };
+      dialogStateStore.set(
+        aId,
+        JSON.stringify({
+          analysisId: aId,
+          currentRound: 1,
+          maxRounds: 3,
+          rounds: [{ round: 1, questions: [], answers: [] }],
+          resolvedAmbiguities: [],
+          escalatedToSonnet: false,
+          completed: false,
+        }),
+      );
+      const res = await post(aId, {
+        requirements: requirementsBody,
+        answers: [{ questionId: "q-unknown", answer: "30 days" }],
+      });
+      expect(res.status).toBe(200);
+      const meta = JSON.parse(analyses.get(aId)!.metadata as string) as {
+        structuredRequirements: { requirements: Array<Record<string, unknown>> };
+      };
+      expect(meta.structuredRequirements.requirements[0]).toMatchObject({
+        stakeholders: ["ops"],
+        priority: "must-have",
+        rawSource: "raw",
+      });
+    });
   });
 });
 
