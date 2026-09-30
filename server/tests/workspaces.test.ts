@@ -354,6 +354,33 @@ describe("Workspace Routes", () => {
       expect(res.status).toBe(410);
     });
 
+    it("rejects an invite to a soft-deleted workspace without creating membership (#563)", async () => {
+      const app = createApp();
+      vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue({
+        id: "inv-1",
+        workspaceId: "ws-1",
+        email: "user@test.com",
+        role: "member",
+        token: "deleted-ws-token",
+        consumedAt: null,
+        expiresAt: new Date(Date.now() + 86400000),
+        invitedById: "inviter-1",
+        workspace: { id: "ws-1", name: "Test", slug: "test", deletedAt: new Date() },
+        invitedBy: { displayName: "Inviter" },
+        createdAt: new Date(),
+      } as never);
+      vi.mocked(prisma.user.findUnique).mockResolvedValue({
+        id: "user-2",
+        email: "user@test.com",
+      } as never);
+      vi.mocked(prisma.workspaceMember.findUnique).mockResolvedValue(null);
+
+      const res = await request(app).post("/workspaces/invites/deleted-ws-token/accept");
+      expect(res.status).toBe(410);
+      expect(prisma.workspaceMember.create).not.toHaveBeenCalled();
+      expect(prisma.workspaceInvite.update).not.toHaveBeenCalled();
+    });
+
     it("rejects invalid token", async () => {
       const app = createApp();
       vi.mocked(prisma.workspaceInvite.findUnique).mockResolvedValue(null);
