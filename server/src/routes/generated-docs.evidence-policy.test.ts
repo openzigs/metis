@@ -58,7 +58,10 @@ beforeEach(() => {
     permissions: getPermissionsForRole("coordinator"),
     workspaces: ["w1"],
   };
-  vi.mocked(prisma.project.findUnique).mockResolvedValue({ workspaceId: "w1" } as never);
+  vi.mocked(prisma.project.findUnique).mockResolvedValue({
+    workspaceId: "w1",
+    workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+  } as never);
   vi.mocked(prisma.project.findFirst).mockResolvedValue({ id: "p1" } as never);
   vi.mocked(prisma.codeGraph.findFirst).mockResolvedValue(null);
 });

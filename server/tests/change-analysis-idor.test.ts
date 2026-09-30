@@ -159,7 +159,11 @@ const { prismaMock, state } = vi.hoisted(() => {
     state: { analyses, changeAnalyses, requirementChanges, projectWorkspaces },
     prismaMock: {
       $queryRawUnsafe: vi.fn(async () => 1),
-      workspaceMember: { findMany: vi.fn(async () => [{ workspaceId: "ws_b" }]) },
+      workspaceMember: {
+        findMany: vi.fn(async () => [
+          { workspaceId: "ws_b", workspace: { deletedAt: null, members: [{ id: "member-row" }] } },
+        ]),
+      },
       user: {
         upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => ({
           id: "user_1",
@@ -171,7 +175,12 @@ const { prismaMock, state } = vi.hoisted(() => {
       project: {
         findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
           projectWorkspaces.has(where.id)
-            ? { id: where.id, workspaceId: projectWorkspaces.get(where.id) ?? null }
+            ? {
+                id: where.id,
+                workspaceId: projectWorkspaces.get(where.id) ?? null,
+                // #561 — the caller's membership row; the claim picks the workspace.
+                workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+              }
             : null,
         ),
       },
@@ -279,7 +288,9 @@ beforeEach(() => {
     status: "completed",
   } as never);
 
-  prismaMock.workspaceMember.findMany.mockResolvedValue([{ workspaceId: "ws_b" }]);
+  prismaMock.workspaceMember.findMany.mockResolvedValue([
+    { workspaceId: "ws_b", workspace: { deletedAt: null, members: [{ id: "member-row" }] } },
+  ]);
 });
 
 afterEach(() => vi.clearAllMocks());

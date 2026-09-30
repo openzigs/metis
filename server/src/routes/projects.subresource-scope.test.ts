@@ -86,7 +86,10 @@ describe("projects.ts /:id/* sub-resources — workspace scope (#674)", () => {
   it("404s a role-permitted caller outside the workspace on GET /:id/review-gate — no oracle", async () => {
     // Chokepoint resolves the project's workspace (ws-b) and denies before the
     // handler's own findUnique runs.
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-b" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app).get("/api/projects/project-b01/review-gate");
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("NOT_FOUND");
@@ -96,7 +99,10 @@ describe("projects.ts /:id/* sub-resources — workspace scope (#674)", () => {
 
   it("serves the sub-resource for an in-tenant caller", async () => {
     projectFindUnique
-      .mockResolvedValueOnce({ workspaceId: "ws-a" }) // chokepoint
+      .mockResolvedValueOnce({
+        workspaceId: "ws-a",
+        workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+      }) // chokepoint
       .mockResolvedValueOnce({ requireApprovedReview: true }); // handler
     const res = await request(app).get("/api/projects/project-a01/review-gate");
     expect(res.status).toBe(200);

@@ -55,17 +55,44 @@ describe("requireProjectAccess", () => {
   });
 
   it("404s (not 403) for a caller outside the project's workspace — no oracle", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-b" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const { err } = await run(requireProjectAccess(), mkReq({ projectId: "p-b" }, CALLER));
     expect((err as InstanceType<typeof AppError>).statusCode).toBe(404);
     expect((err as InstanceType<typeof AppError>).code).toBe("NOT_FOUND");
   });
 
   it("calls next() with no error for an in-tenant caller", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-a" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const { err, called } = await run(requireProjectAccess(), mkReq({ projectId: "p-a" }, CALLER));
     expect(called).toBe(true);
     expect(err).toBeNull();
+  });
+
+  it("#561 — 404s when the claim names the workspace but the membership row is gone", async () => {
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [] },
+    });
+    const { err } = await run(requireProjectAccess(), mkReq({ projectId: "p-a" }, CALLER));
+    expect((err as InstanceType<typeof AppError>).statusCode).toBe(404);
+    // The row is looked up for THIS caller, not for any member.
+    expect(projectFindUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          workspace: {
+            select: expect.objectContaining({
+              members: { where: { userId: "user-1" }, select: { id: true }, take: 1 },
+            }),
+          },
+        }),
+      }),
+    );
   });
 
   it("lets a system admin bypass the workspace scope", async () => {
@@ -85,7 +112,10 @@ describe("requireProjectAccess", () => {
   });
 
   it("reads a custom param name (`id`) for the projects.ts subtree", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-b" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const { err } = await run(requireProjectAccess("id"), mkReq({ id: "p-b" }, CALLER));
     expect((err as InstanceType<typeof AppError>).statusCode).toBe(404);
     expect(projectFindUnique).toHaveBeenCalledWith(
@@ -94,7 +124,10 @@ describe("requireProjectAccess", () => {
   });
 
   it("unwraps an array-valued param (wildcard `.use` mount)", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-a" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const { called } = await run(
       requireProjectAccess(),
       mkReq({ projectId: ["p-a", "p-a"] }, CALLER),

@@ -193,7 +193,18 @@ export async function getProject(projectId: string) {
 }
 
 export async function listProjects(
-  opts: { status?: ProjectStatus; limit?: number; offset?: number; workspaceIds?: string[] } = {},
+  opts: {
+    status?: ProjectStatus;
+    limit?: number;
+    offset?: number;
+    workspaceIds?: string[];
+    /**
+     * #561 — when set, a workspace's projects are listed only while this user
+     * still holds a membership row in it, so ids taken from a token claim that
+     * outlived a removal grant nothing. Omitted for an admin's filter.
+     */
+    memberUserId?: string;
+  } = {},
 ) {
   const limit = Math.min(Math.max(opts.limit ?? 25, 1), 100);
   const offset = Math.max(opts.offset ?? 0, 0);
@@ -208,7 +219,15 @@ export async function listProjects(
     // filter asks for a live workspace's projects. Admins still reach them via
     // the unfiltered list and by id (assertProjectAccess admin bypass).
     where.OR = [
-      { workspaceId: { in: opts.workspaceIds }, workspace: { deletedAt: null } },
+      {
+        workspaceId: { in: opts.workspaceIds },
+        workspace: {
+          deletedAt: null,
+          ...(opts.memberUserId !== undefined
+            ? { members: { some: { userId: opts.memberUserId } } }
+            : {}),
+        },
+      },
       { workspaceId: null },
     ];
   }

@@ -81,7 +81,10 @@ describe("POST /sessions/:id/messages", () => {
     // `loadAuthorizedSession` (#305): an owned session whose project is in the
     // caller's workspace.
     mockPrisma.aISession.findFirst.mockResolvedValue(owned());
-    mockPrisma.project.findUnique.mockResolvedValue({ workspaceId: "ws-1" });
+    mockPrisma.project.findUnique.mockResolvedValue({
+      workspaceId: "ws-1",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     mockSubmit.mockResolvedValue({ id: "run-1" });
   });
 
@@ -132,7 +135,10 @@ describe("POST /sessions/:id/messages", () => {
   it("#305 — returns 404 and submits nothing when the session's project is out of reach", async () => {
     // The caller still OWNS the session, but its project is now in a workspace
     // they are not a member of: no background run may be bound to it.
-    mockPrisma.project.findUnique.mockResolvedValue({ workspaceId: "ws-other" });
+    mockPrisma.project.findUnique.mockResolvedValue({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app).post("/sessions/sess-1/messages").send({ content: "hello" });
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("AI_SESSION_NOT_FOUND");

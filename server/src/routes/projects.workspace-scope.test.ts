@@ -125,7 +125,10 @@ describe("GET /api/projects/:id — workspace scope (#673)", () => {
 
   it("404s for a caller whose workspaces do not include the project's workspace", async () => {
     // Caller is in ws-a; project belongs to ws-b.
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-b" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app).get("/api/projects/project-b01");
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("NOT_FOUND");
@@ -134,7 +137,10 @@ describe("GET /api/projects/:id — workspace scope (#673)", () => {
   });
 
   it("returns the project for an in-tenant caller", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-a" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     projectFindFirst.mockResolvedValueOnce(PROJECT_WS_A);
     const res = await request(app).get("/api/projects/project-a01");
     expect(res.status).toBe(200);
@@ -162,7 +168,10 @@ describe("PATCH /api/projects/:id — workspace scope (#673)", () => {
   it("404s a role-permitted-but-wrong-workspace coordinator (cross-tenant mutate blocked)", async () => {
     // Coordinator in ws-a trying to mutate a ws-b project — the coordinator
     // short-circuit in assertCanMutate must NOT be reachable cross-tenant.
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-b" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app).patch("/api/projects/project-b01").send({ name: "hijacked" });
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("NOT_FOUND");
@@ -172,7 +181,10 @@ describe("PATCH /api/projects/:id — workspace scope (#673)", () => {
   });
 
   it("allows an in-tenant coordinator to mutate", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-a" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     projectFindFirst.mockResolvedValueOnce(PROJECT_WS_A); // getProjectOrThrow
     projectUpdate.mockResolvedValueOnce({ ...PROJECT_WS_A, name: "renamed" });
     const res = await request(app).patch("/api/projects/project-a01").send({ name: "renamed" });
@@ -203,7 +215,10 @@ describe("POST /api/projects/:id/archive — workspace scope (#673)", () => {
     // Caller is in ws-a; the project exists in ws-b. Without the scope guard the
     // by-PK write reaches assertCanArchive and leaks a 403 (owner-or-admin),
     // revealing the id exists — the exact oracle #673 eliminates for GET/PATCH.
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-b" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     projectFindFirst.mockResolvedValueOnce(PROJECT_WS_B); // getProjectOrThrow (would 403)
     const res = await request(app).post("/api/projects/project-b01/archive");
     expect(res.status).toBe(404);
@@ -214,7 +229,10 @@ describe("POST /api/projects/:id/archive — workspace scope (#673)", () => {
   });
 
   it("archives for an in-tenant owner", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-a" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     projectFindFirst.mockResolvedValueOnce(PROJECT_WS_A_OWNED); // getProjectOrThrow
     projectUpdate.mockResolvedValueOnce({ ...PROJECT_WS_A_OWNED, status: "archived" });
     const res = await request(app).post("/api/projects/project-a01/archive");
@@ -244,7 +262,10 @@ describe("DELETE /api/projects/:id — workspace scope (#673)", () => {
   it("404s (not 403) for a caller outside the project's workspace — no existence oracle", async () => {
     // The project exists in ws-b; the delete path would otherwise reach
     // assertCanArchive and leak a 403, revealing the id exists.
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-b" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     projectFindFirst.mockResolvedValueOnce(PROJECT_WS_B); // getProjectOrThrow (would 403)
     const res = await request(app).delete("/api/projects/project-b01");
     expect(res.status).toBe(404);
@@ -255,7 +276,10 @@ describe("DELETE /api/projects/:id — workspace scope (#673)", () => {
   });
 
   it("deletes for an in-tenant owner", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-a" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     projectFindFirst.mockResolvedValueOnce(PROJECT_WS_A_OWNED); // getProjectOrThrow
     projectUpdate.mockResolvedValueOnce({ ...PROJECT_WS_A_OWNED, deletedAt: new Date() });
     const res = await request(app).delete("/api/projects/project-a01");

@@ -155,8 +155,10 @@ const projectFindMany = vi.fn(async ({ where }: { where: W }) => {
   });
 });
 
+// The caller's membership row (#561) is present; the claim decides the workspace.
 const projectFindUnique = vi.fn(async ({ where }: { where: { id: string } }) => {
-  return projects.find((p) => p.id === where.id) ?? null;
+  const row = projects.find((p) => p.id === where.id);
+  return row ? { ...row, workspace: { deletedAt: null, members: [{ id: "member-row" }] } } : null;
 });
 
 const prisma = {

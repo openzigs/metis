@@ -44,7 +44,11 @@ const { prismaMock } = vi.hoisted(() => ({
     $queryRawUnsafe: vi.fn(async () => 1),
     $transaction: vi.fn(async (cb: (tx: unknown) => unknown) => cb(null)),
     // The caller belongs to workspace B.
-    workspaceMember: { findMany: vi.fn(async () => [{ workspaceId: "ws_b" }]) },
+    workspaceMember: {
+      findMany: vi.fn(async () => [
+        { workspaceId: "ws_b", workspace: { deletedAt: null, members: [{ id: "member-row" }] } },
+      ]),
+    },
     user: {
       upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => ({
         id: "user_1",
@@ -56,7 +60,11 @@ const { prismaMock } = vi.hoisted(() => ({
     // The requirement under test is owned by a workspace-A project.
     project: {
       findUnique: vi.fn(
-        async () => ({ workspaceId: "ws_a" }) as { workspaceId: string | null } | null,
+        async () =>
+          ({
+            workspaceId: "ws_a",
+            workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+          }) as { workspaceId: string | null } | null,
       ),
     },
     requirement: {
@@ -219,8 +227,13 @@ beforeAll(() => {
 beforeEach(() => {
   app = createApp();
   vi.clearAllMocks();
-  prismaMock.workspaceMember.findMany.mockResolvedValue([{ workspaceId: "ws_b" }]);
-  prismaMock.project.findUnique.mockResolvedValue({ workspaceId: "ws_a" });
+  prismaMock.workspaceMember.findMany.mockResolvedValue([
+    { workspaceId: "ws_b", workspace: { deletedAt: null, members: [{ id: "member-row" }] } },
+  ]);
+  prismaMock.project.findUnique.mockResolvedValue({
+    workspaceId: "ws_a",
+    workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+  });
   prismaMock.requirement.findUnique.mockResolvedValue({ ...REQUIREMENT_ROW });
   prismaMock.assignment.findUnique.mockResolvedValue({ id: "assign_1" });
 });
@@ -286,7 +299,10 @@ describe("cross-tenant access to a requirement by id (coordinator, not admin)", 
 
 describe("same-workspace access still works", () => {
   beforeEach(() => {
-    prismaMock.project.findUnique.mockResolvedValue({ workspaceId: "ws_b" });
+    prismaMock.project.findUnique.mockResolvedValue({
+      workspaceId: "ws_b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
   });
 
   for (const route of idRoutes) {
@@ -388,7 +404,10 @@ describe("assertRequirementAccessible (direct)", () => {
   });
 
   it("returns the owning projectId for a member of the workspace", async () => {
-    prismaMock.project.findUnique.mockResolvedValue({ workspaceId: "ws_b" });
+    prismaMock.project.findUnique.mockResolvedValue({
+      workspaceId: "ws_b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     await expect(assertRequirementAccessible(coordinator, "req_1")).resolves.toBe("proj_a");
   });
 });

@@ -75,7 +75,10 @@ describe("generated-docs subtree — workspace scope (#674)", () => {
   });
 
   it("404s a role-permitted caller outside the project's workspace on GET — no oracle", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-b" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app).get("/api/projects/project-b01/docs/doc-9");
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("NOT_FOUND");
@@ -83,7 +86,10 @@ describe("generated-docs subtree — workspace scope (#674)", () => {
   });
 
   it("404s a cross-tenant generate before a document row is created", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-b" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app)
       .post("/api/projects/project-b01/docs/generate")
       .send({ title: "Steal", scope: "full" });
@@ -92,7 +98,10 @@ describe("generated-docs subtree — workspace scope (#674)", () => {
   });
 
   it("serves the document for an in-tenant caller", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-a" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     generatedDocumentFindFirst.mockResolvedValueOnce({ id: "doc-9", content: "", versions: [] });
     const res = await request(app).get("/api/projects/project-a01/docs/doc-9");
     expect(res.status).toBe(200);

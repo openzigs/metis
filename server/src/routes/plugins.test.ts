@@ -103,7 +103,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   currentUser = { userId: "user-1", role: "coordinator", workspaces: ["ws-1"] };
   // Default: the target project lives in a workspace the caller belongs to.
-  projectFindUnique.mockResolvedValue({ id: "proj-1", workspaceId: "ws-1" });
+  projectFindUnique.mockResolvedValue({
+    id: "proj-1",
+    workspaceId: "ws-1",
+    workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+  });
   skillCreate.mockResolvedValue({});
   app = createApp();
 });
@@ -112,7 +116,11 @@ describe("POST /api/plugins/import — object-level scope (assertProjectAccess)"
   it("404s a permitted caller who is not a member of the target workspace", async () => {
     // coordinator carries mcp.manage (passes the role layer) but belongs only to
     // ws-1; the target project lives in ws-other → object layer 404, no oracle.
-    projectFindUnique.mockResolvedValue({ id: "proj-victim", workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValue({
+      id: "proj-victim",
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app)
       .post("/api/plugins/import")
       .send({ projectId: "proj-victim", envelope: envelope() });
@@ -126,7 +134,11 @@ describe("POST /api/plugins/import — authorization runs before envelope parsin
   it("404s a non-member even when the envelope is absent (never a 400 that leaks existence first)", async () => {
     // zod 4 rejects an absent `z.unknown()` key at the schema; zod 3 did not, so
     // the object layer ran first. `envelope: z.unknown().optional()` keeps it so.
-    projectFindUnique.mockResolvedValue({ id: "proj-victim", workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValue({
+      id: "proj-victim",
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app).post("/api/plugins/import").send({ projectId: "proj-victim" });
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("NOT_FOUND");

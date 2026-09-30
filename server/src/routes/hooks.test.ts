@@ -80,20 +80,29 @@ beforeEach(() => {
   vi.clearAllMocks();
   currentUser = { userId: "user-1", role: "coordinator", workspaces: ["ws-1"] };
   // Default: the path project lives in a workspace the caller belongs to.
-  projectFindUnique.mockResolvedValue({ workspaceId: "ws-1" });
+  projectFindUnique.mockResolvedValue({
+    workspaceId: "ws-1",
+    workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+  });
   app = createApp();
 });
 
 describe("object-level scope (requireProjectAccess) — 404 for cross-tenant", () => {
   it("404s a non-member listing another tenant's project hooks", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app).get("/api/projects/proj-victim/hooks");
     expect(res.status).toBe(404);
     expect(hookFindMany).not.toHaveBeenCalled();
   });
 
   it("404s a non-member PATCHing a hook by id in another tenant's project", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app)
       .patch("/api/projects/proj-victim/hooks/hook-1")
       .send({ enabled: false });
@@ -102,7 +111,10 @@ describe("object-level scope (requireProjectAccess) — 404 for cross-tenant", (
   });
 
   it("404s a non-member creating a hook on another tenant's project", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-other" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-other",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app)
       .post("/api/projects/proj-victim/hooks")
       .send({ event: "sessionEnd", handlerKind: "webhook", config: { url: "https://x.test/h" } });

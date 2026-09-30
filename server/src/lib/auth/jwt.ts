@@ -17,6 +17,7 @@ import { ulid } from "ulid";
 import type { AuthPayload, PermissionKey, RoleKey } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { revocationStore, type RevocationStore } from "./revocation-store.js";
+import { readLiveWorkspaceIds } from "./live-workspace-ids.js";
 
 const log = createChildLogger("jwt");
 
@@ -364,19 +365,31 @@ export async function pruneExpiredRevocations(): Promise<number> {
   return store.pruneExpired();
 }
 
-/** Convenience: rotate a refresh token, returning a new pair. */
-export async function refreshAccessToken(refreshToken: string): Promise<TokenPair> {
+/**
+ * Rotate a refresh token, returning a new pair.
+ *
+ * #561 — the `workspaces` claim is RE-READ from the membership rows, never
+ * carried forward from the old token: a member removed from a workspace (or a
+ * workspace soft-deleted, #549) would otherwise keep it in scope until the
+ * refresh token expired. `resolveWorkspaces` is injectable for tests.
+ */
+export async function refreshAccessToken(
+  refreshToken: string,
+  resolveWorkspaces: (userId: string) => Promise<string[]> = readLiveWorkspaceIds,
+): Promise<TokenPair> {
   const decoded = await verifyRefreshToken(refreshToken);
   const expiresAt =
     decoded.exp !== undefined
       ? new Date(decoded.exp * 1000)
       : new Date(Date.now() + refreshTtlSeconds() * 1000);
+  // Read before revoking, so a failed read leaves the presented token usable.
+  const workspaces = await resolveWorkspaces(decoded.userId);
   await revokeRefreshToken(decoded.tokenId, decoded.userId, expiresAt);
   return issueTokens({
     userId: decoded.userId,
     username: decoded.username,
     role: decoded.role,
     permissions: decoded.permissions,
-    ...(decoded.workspaces?.length ? { workspaces: decoded.workspaces } : {}),
+    ...(workspaces.length ? { workspaces } : {}),
   });
 }

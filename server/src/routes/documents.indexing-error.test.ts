@@ -117,11 +117,17 @@ describe("documents routes — indexing errorMessage (#98)", () => {
   const app = createApp();
   beforeEach(() => {
     vi.clearAllMocks();
-    projectFindUnique.mockResolvedValue({ workspaceId: "ws-a" });
+    projectFindUnique.mockResolvedValue({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
   });
 
   it("still 404s a caller outside the project's workspace before any row is read", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-b" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app).get("/api/projects/p-b/documents/doc-1");
     expect(res.status).toBe(404);
     expect(document.findFirst).not.toHaveBeenCalled();
@@ -290,7 +296,10 @@ describe("documents routes — approve/reject 409 bodies (#108)", () => {
     "/srv/metis/server/data/lancedb/knowledge.lance/_versions/12.manifest: sk-live-4f9a8b7c6d5e4f3a2b1c";
   beforeEach(() => {
     vi.clearAllMocks();
-    projectFindUnique.mockResolvedValue({ workspaceId: "ws-a" });
+    projectFindUnique.mockResolvedValue({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     document.findFirst.mockResolvedValue(row({ status: "ready", errorMessage: null }));
   });
 

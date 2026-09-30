@@ -100,7 +100,10 @@ describe("POST /api/projects/:id/code-search (#423)", () => {
     vi.clearAllMocks();
     deniedPermissions.clear();
     currentUser = { userId: "user-1", username: "u1", role: "coordinator", workspaces: ["ws-a"] };
-    projectFindUnique.mockResolvedValue({ workspaceId: "ws-a" }); // chokepoint
+    projectFindUnique.mockResolvedValue({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    }); // chokepoint
     projectFindFirst.mockResolvedValue({ id: "project-a01" });
     search.mockResolvedValue([HIT]);
     app = createApp();
@@ -166,7 +169,10 @@ describe("POST /api/projects/:id/code-search (#423)", () => {
   });
 
   it("404s a caller outside the project's workspace without searching", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-b" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app)
       .post("/api/projects/project-b01/code-search")
       .send({ query: "add" });

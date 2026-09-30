@@ -62,7 +62,14 @@ vi.mock("../../src/lib/prisma.js", () => ({
     project: {
       findUnique: async ({ where }: { where: { id: string } }) => {
         const row = projectRows.value.get(where.id);
-        return row ? { id: where.id, workspaceId: row.workspaceId } : null;
+        // #561 — the caller's membership row; the claim picks the workspace.
+        return row
+          ? {
+              id: where.id,
+              workspaceId: row.workspaceId,
+              workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+            }
+          : null;
       },
       findFirst: async ({ where }: { where: { id: string; deletedAt: null } }) => {
         const row = projectRows.value.get(where.id);

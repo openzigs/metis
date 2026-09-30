@@ -74,7 +74,10 @@ describe("connectors subtree — workspace scope (#674)", () => {
   });
 
   it("404s a role-permitted caller whose workspace excludes the project — no oracle", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-b" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app).get("/api/projects/project-b01/connectors/repos/repo-9");
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("NOT_FOUND");
@@ -84,7 +87,10 @@ describe("connectors subtree — workspace scope (#674)", () => {
   });
 
   it("serves the connector for an in-tenant caller", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-a" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     getRepoConnector.mockResolvedValueOnce({ id: "repo-9", label: "app" });
     const res = await request(app).get("/api/projects/project-a01/connectors/repos/repo-9");
     expect(res.status).toBe(200);

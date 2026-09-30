@@ -48,10 +48,21 @@
  * unification; check the import path before assuming which one you have.
  */
 
-/** Minimal actor shape the visibility rule reads: role + workspace ids. */
+/** Minimal actor shape the visibility rule reads: id, role + workspace ids. */
 export interface ProjectScopeActor {
+  /** #561 — the membership ROW is matched on this, not only the claim. */
+  userId: string;
   role: string;
   workspaces?: string[] | null;
+}
+
+/**
+ * The "mine" clause's condition on the workspace row: live (#549) and still
+ * holding the actor's membership (#561).
+ */
+export interface LiveMembershipWhere {
+  deletedAt: null;
+  members: { some: { userId: string } };
 }
 
 /**
@@ -62,7 +73,7 @@ export type WorkspaceScopeWhere =
   | Record<string, never>
   | {
       OR: Array<
-        { workspaceId: null } | { workspaceId: { in: string[] }; workspace: { deletedAt: null } }
+        { workspaceId: null } | { workspaceId: { in: string[] }; workspace: LiveMembershipWhere }
       >;
     };
 
@@ -81,12 +92,16 @@ export function workspaceScopeWhere(actor: ProjectScopeActor): WorkspaceScopeWhe
   if (actor.role === "admin") return {};
 
   const workspaces = actor.workspaces ?? [];
-  // #549 — the claim can outlive a workspace's soft delete (it is carried across
-  // token refresh), so a deleted workspace is excluded here, not only at login.
+  // The claim is minted at login and lives as long as the access token, so it
+  // can name a workspace soft-deleted since (#549) or one the actor has since
+  // been removed from (#561). Both are checked against the row, not the claim.
   return {
     OR: [
       { workspaceId: null },
-      { workspaceId: { in: workspaces }, workspace: { deletedAt: null } },
+      {
+        workspaceId: { in: workspaces },
+        workspace: { deletedAt: null, members: { some: { userId: actor.userId } } },
+      },
     ],
   };
 }

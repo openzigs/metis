@@ -98,7 +98,14 @@ vi.mock("../src/lib/prisma.js", async () => {
   const { withRouteAuth } = await import("./helpers/route-auth-prisma.js");
   const prisma = withRouteAuth({
     $queryRawUnsafe: vi.fn(async () => 1),
-    workspaceMember: { findMany: vi.fn(async () => [{ workspaceId: "ws_caller" }]) },
+    workspaceMember: {
+      findMany: vi.fn(async () => [
+        {
+          workspaceId: "ws_caller",
+          workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+        },
+      ]),
+    },
     user: {
       upsert: vi.fn(async ({ create }: { create: { username: string } }) => ({
         id: `user_${create.username}`,
@@ -110,6 +117,8 @@ vi.mock("../src/lib/prisma.js", async () => {
     project: {
       findUnique: vi.fn(async () => ({
         workspaceId: "ws_caller",
+        // #561 — the caller's membership row; the claim picks the workspace.
+        workspace: { deletedAt: null, members: [{ id: "member-row" }] },
         publishDestination: "github",
         jiraConnectionId: null,
         jiraProjectKey: null,

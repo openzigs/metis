@@ -39,7 +39,10 @@ beforeEach(() => {
     workspaceMemberships: [{ workspaceId: "w1" }],
   } as never);
   vi.mocked(prisma.project.findFirst).mockResolvedValue({ id: "p1" } as never);
-  vi.mocked(prisma.project.findUnique).mockResolvedValue({ workspaceId: "w1" } as never);
+  vi.mocked(prisma.project.findUnique).mockResolvedValue({
+    workspaceId: "w1",
+    workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+  } as never);
   vi.mocked(prisma.codeGraph.findFirst).mockResolvedValue({ id: "graph-a" } as never);
   record.evidencePolicy = createEvidencePolicy(auth, {
     sharedDocumentIds: ["ref1"],
@@ -170,7 +173,10 @@ describe("trusted generation evidence policy #1353", () => {
     ).rejects.toThrow("Generation authorization unavailable");
   });
   it("rejects removed project membership", async () => {
-    vi.mocked(prisma.project.findUnique).mockResolvedValue({ workspaceId: "foreign" } as never);
+    vi.mocked(prisma.project.findUnique).mockResolvedValue({
+      workspaceId: "foreign",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    } as never);
     await expect(resolveEvidencePolicy(record)).rejects.toThrow();
   });
   it("rejects a deleted project even for an admin", async () => {

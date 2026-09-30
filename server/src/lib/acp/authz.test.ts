@@ -122,7 +122,10 @@ describe("accessibleProjectWhere / listAccessibleProjectIds", () => {
       deletedAt: null,
       OR: [
         { workspaceId: null },
-        { workspaceId: { in: ["ws-a"] }, workspace: { deletedAt: null } },
+        {
+          workspaceId: { in: ["ws-a"] },
+          workspace: { deletedAt: null, members: { some: { userId: "u" } } },
+        },
       ],
     });
   });

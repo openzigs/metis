@@ -428,7 +428,11 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
         workspaceMemberships: [{ workspaceId: "w1" }],
       });
       mockPrisma.project.findFirst.mockResolvedValue({ id: "p1", name: "Proj", description: null });
-      mockPrisma.project.findUnique.mockResolvedValue({ name: "Proj", workspaceId: "w1" });
+      mockPrisma.project.findUnique.mockResolvedValue({
+        name: "Proj",
+        workspaceId: "w1",
+        workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+      });
       mockPrisma.codeGraph.findFirst.mockResolvedValue({ id: "graph-a" });
       mockPrisma.knowledgeChunk.findMany.mockImplementation(
         async ({ where }: { where: { id?: { in: string[] } } }) => {
@@ -603,7 +607,10 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
           workspaceMemberships: [],
         });
       if (reason === "lost-membership")
-        mockPrisma.project.findUnique.mockResolvedValue({ workspaceId: "foreign" });
+        mockPrisma.project.findUnique.mockResolvedValue({
+          workspaceId: "foreign",
+          workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+        });
       if (reason === "legacy-policy")
         current = {
           ...current,

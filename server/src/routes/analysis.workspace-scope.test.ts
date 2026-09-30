@@ -99,7 +99,10 @@ describe("analysis project-scoped subtree — workspace scope (#674)", () => {
   });
 
   it("404s a role-permitted caller outside the project's workspace — no oracle", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-b" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-b",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     const res = await request(app).get("/api/projects/project-b01/analyses");
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("NOT_FOUND");
@@ -107,7 +110,10 @@ describe("analysis project-scoped subtree — workspace scope (#674)", () => {
   });
 
   it("lists analyses for an in-tenant caller", async () => {
-    projectFindUnique.mockResolvedValueOnce({ workspaceId: "ws-a" });
+    projectFindUnique.mockResolvedValueOnce({
+      workspaceId: "ws-a",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
     projectFindFirst.mockResolvedValueOnce({ id: "project-a01", deletedAt: null });
     listAnalysesForProject.mockResolvedValueOnce([{ id: "an-1" }]);
     const res = await request(app).get("/api/projects/project-a01/analyses");
