@@ -24,6 +24,17 @@ export const CONCURRENT_UPDATE_MESSAGE =
 export const concurrentUpdateError = (): ConnectorError =>
   new ConnectorError(409, CONCURRENT_UPDATE, CONCURRENT_UPDATE_MESSAGE);
 
+/**
+ * #495 — whether a row the service just read still carries the `updatedAt` the
+ * binding guard checked. `undefined` means no guard ran (nothing to compare).
+ * Checked BEFORE any vault work, so a request that has already lost the race
+ * writes no secret; the conditional write still catches a later move.
+ */
+export function rowUnchangedSince(current: Date, expected: Date | null | undefined): boolean {
+  if (expected === undefined) return true;
+  return expected !== null && current.getTime() === expected.getTime();
+}
+
 export interface ConnectorEmitter {
   status(event: {
     connectorId: string;

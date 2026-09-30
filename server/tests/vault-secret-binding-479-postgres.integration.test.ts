@@ -1,19 +1,23 @@
 /**
- * #479 / #495 — binding-guarded updates are conditional on the checked row, and
- * a PATCH that loses that race leaves no vault secret behind. SQLite run; the
- * body is shared with the Postgres twin
- * (`vault-secret-binding-479-postgres.integration.test.ts`) — see
- * `helpers/conditional-binding-update-suite.ts` for what is proved and how the
- * interleavings are forced.
+ * #495 — the Postgres twin of `vault-secret-binding-479.sqlite.test.ts`.
+ *
+ * #479's conditional write (`updateMany where { id, updatedAt }`) and #495's
+ * no-orphaned-secret guarantee, proved on the production database: `updatedAt`
+ * is `TIMESTAMP(3)` there, so the equality the write depends on is Postgres's,
+ * not SQLite's. The body is shared — see
+ * `helpers/conditional-binding-update-suite.ts`.
+ *
+ * Gated like the other `*-postgres.integration.test.ts` suites: runs only when
+ * `RUN_INTEGRATION_TESTS=1` AND `DATABASE_URL` is Postgres-shaped (CI's
+ * `postgres-adapter` job).
  */
-import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { vi } from "vitest";
-import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
-import {
-  createMigratedSqlite,
-  MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
-} from "./helpers/sqlite-migrated-db.js";
+
+const databaseUrl = process.env.DATABASE_URL ?? "";
+const isPostgres = databaseUrl.startsWith("postgres://") || databaseUrl.startsWith("postgresql://");
+const enabled = process.env.RUN_INTEGRATION_TESTS === "1" && isPostgres;
 
 const state = vi.hoisted(() => {
   process.env.RATE_LIMIT_MAX = "100000";
@@ -24,13 +28,13 @@ const state = vi.hoisted(() => {
     afterVaultCreate: null as null | (() => Promise<void>),
   };
 });
-vi.mock("../src/lib/prisma.js", async () => {
-  const { Prisma } = await import("@prisma/client");
+vi.mock("../src/lib/prisma.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/prisma.js")>();
   return {
+    ...actual,
     get prisma() {
       return state.db;
     },
-    Prisma,
   };
 });
 vi.mock("../src/lib/connectors/network-allowlist.js", async (importOriginal) => {
@@ -54,18 +58,17 @@ vi.mock("../src/lib/mcp/secret-binding.js", async (importOriginal) => {
   return interleaved(await importOriginal<Record<string, unknown>>(), state);
 });
 
+const { selectPrismaAdapter } = await import("../src/lib/prisma.js");
 const { describeConditionalBindingUpdates } =
   await import("./helpers/conditional-binding-update-suite.js");
 
 describeConditionalBindingUpdates({
-  title: "#479/#495 — binding-guarded updates are conditional on the checked row (SQLite)",
-  enabled: readGeneratedClientProvider() === "sqlite",
+  title: "#479/#495 — binding-guarded updates are conditional on the checked row (Postgres)",
+  enabled,
   state,
-  suffix: "sqlite",
-  hookTimeoutMs: MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
-  connect: async () => {
-    const sqlite = createMigratedSqlite("479-conditional-update");
-    const db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
-    return { db, cleanup: () => sqlite.cleanup() };
-  },
+  suffix: randomUUID().slice(0, 8),
+  connect: async () => ({
+    db: new PrismaClient({ adapter: selectPrismaAdapter(databaseUrl) }),
+    cleanup: () => undefined,
+  }),
 });

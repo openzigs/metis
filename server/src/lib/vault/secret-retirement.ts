@@ -13,7 +13,8 @@
  * EXISTING secret of their choosing: repo / DB connector `secretId`, MCP server
  * env / headers / env-secret pointer, a publish batch's `secretRef`, a chat
  * session's BYOK `providerSecretRef` (#305), a scheduled job's payload (the
- * http-webhook `authHeader`, resolved with `vault.read`), and the Jira and
+ * http-webhook `authHeader`, resolved with `vault.read`) and any not-yet-completed
+ * Task's copy of it (#495), and the Jira and
  * test-management connections themselves. Stores that only ever hold
  * a secret they created under their own system label (Slack, Teams, PagerDuty,
  * import sources, suggested-connector passwords) cannot name a connector's
@@ -61,6 +62,10 @@ export async function isSecretReferenced(id: string, name: string): Promise<bool
     prisma.publishBatch.count({ where: { OR: containsAny("metadata") } }),
     prisma.aISession.count({ where: { OR: containsAny("providerSecretRef") } }),
     prisma.scheduledJob.count({ where: { OR: containsAny("payload") } }),
+    // #495 — a Task holds its own copy of the job payload, which a retry
+    // re-runs (automatic retries go back to `pending`; POST /tasks/:id/retry
+    // re-enqueues a failed or cancelled one). Only a completed Task never runs again.
+    prisma.task.count({ where: { status: { not: "completed" }, OR: containsAny("payload") } }),
   ]);
   return counts.some((n) => n > 0);
 }

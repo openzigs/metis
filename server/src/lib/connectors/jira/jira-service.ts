@@ -21,7 +21,7 @@ import { rotateOrCreate } from "../../vault/secret-rotation.js";
 import { retireReplacedSecret } from "../../vault/secret-retirement.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
-import { ConnectorError, concurrentUpdateError } from "../types.js";
+import { ConnectorError, concurrentUpdateError, rowUnchangedSince } from "../types.js";
 import { assertConnectorHostAllowed } from "../network-allowlist.js";
 import { createJiraClient, type JiraClient } from "./jira-client.js";
 import type { JiraRawResource } from "./raw-fetch.js";
@@ -249,6 +249,7 @@ export async function updateJiraConnection(
   expectedUpdatedAt?: Date | null,
 ): Promise<JiraConnectionDetail> {
   const existing = await findOrThrow(id, projectId);
+  if (!rowUnchangedSince(existing.updatedAt, expectedUpdatedAt)) throw concurrentUpdateError();
   const data: Record<string, unknown> = {};
 
   if (input.label !== undefined) {
@@ -343,6 +344,16 @@ export async function updateJiraConnection(
       row = await prisma.jiraConnection.findUniqueOrThrow({ where: { id } });
     }
   } catch (err) {
+    // #495 — the secrets this request created belong to no connection now, so
+    // they are withdrawn (as the create path does). One rotated in place is the
+    // row's own and stays.
+    for (const created of [data.secretId, data.tlsCaSecretId]) {
+      if (typeof created === "string") {
+        await getVaultService()
+          .delete(created)
+          .catch(() => undefined);
+      }
+    }
     if (isUniqueViolation(err) && typeof data.label === "string") {
       throw labelTaken(data.label);
     }

@@ -387,6 +387,34 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ],
     ];
 
+    /** #495 — a Task's materialised copy of an http-webhook payload. */
+    const webhookTask = (id: string, status: string) =>
+      db.task.create({
+        data: {
+          type: "http-webhook",
+          status,
+          payload: JSON.stringify({
+            url: "https://hook.example.test",
+            authHeader: `\${vault:${id}}`,
+          }),
+        },
+      });
+
+    it.each(["pending", "running", "failed", "cancelled"])(
+      "#495 — a %s http-webhook Task's payload counts (a retry re-runs it)",
+      async (status) => {
+        const s = await freshSecret();
+        await webhookTask(s.id, status);
+        expect(await isSecretReferenced(s.id, s.name)).toBe(true);
+      },
+    );
+
+    it("#495 — a completed Task's payload does not count (it can never run again)", async () => {
+      const s = await freshSecret();
+      await webhookTask(s.id, "completed");
+      expect(await isSecretReferenced(s.id, s.name)).toBe(false);
+    });
+
     it("an unreferenced secret reads as unreferenced", async () => {
       const s = await freshSecret();
       expect(await isSecretReferenced(s.id, s.name)).toBe(false);
