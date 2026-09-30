@@ -421,7 +421,12 @@ overrides:
   # return zero vulns on api.osv.dev, so the next age-clearing bump is safe too.
   mysql2@<3.23.1: ^3.23.1
 
-  engine.io@6: 6.6.7
+  # GHSA-2gc4-cqfq-p2gv (CVSS 7.5, Engine.IO protocol revision mismatch DoS,
+  # published 2026-09-29) covers >=6.6.0 <6.6.10, which included the 6.6.7 this
+  # line used to pin (#425). 6.6.10 is the first patched release, published
+  # 2026-09-03 and clear of minimumReleaseAge; 6.6.11 (2026-09-24) was still
+  # inside it. Verified against api.osv.dev on 2026-09-29: 6.6.10 has zero vulns.
+  engine.io@6: 6.6.10
   # next, TWO CRITICALS, both published 2026-09-08 and both fixed in 16.3.3
   # (#1363) — the only Criticals in this file:
   #   GHSA-2xp9-vwfh-vxw4  CVSS 9.5  unauthenticated RCE in the Image
