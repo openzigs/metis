@@ -226,7 +226,11 @@ describe("formatSourceLabel — source classification (#573)", () => {
     expect(formatSourceLabel(name, { c1: "wms" }).label).toBe("NOTES.md — wms");
   });
 
-  it("still labels a live-schema id whatever the source", () => {
-    expect(formatSourceLabel("live-schema:p1", undefined, "upload").label).toBe("Live schema");
+  it("labels the synthetic live-schema id, which has no row and so no source", () => {
+    expect(formatSourceLabel("live-schema:p1").label).toBe("Live schema");
+  });
+
+  it("does not label a stored upload named live-schema: as the live schema", () => {
+    expect(formatSourceLabel("live-schema:p1", undefined, "upload").label).toBe("live-schema:p1");
   });
 });

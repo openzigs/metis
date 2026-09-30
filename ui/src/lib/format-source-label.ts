@@ -101,7 +101,9 @@ export function formatSourceLabel(
   }
 
   // Issue #732 — live-schema citations get a friendly label, raw id in tooltip.
-  if (raw.startsWith(LIVE_SCHEMA_PREFIX)) {
+  // #573 — the genuine one is a synthetic id with no Document row, so it never
+  // carries a source; a stored row named `live-schema:` (a legacy upload) is not it.
+  if (raw.startsWith(LIVE_SCHEMA_PREFIX) && source === undefined) {
     return { label: "Live schema", rawId: raw, basename: "Live schema", isConnector: false };
   }
 
