@@ -383,6 +383,80 @@ describe("generateDrafts", () => {
       }
     });
 
+    // #490 — a re-run: fresh ids, every feature draft unlinked, twin sorted first.
+    async function rerunSwapped(edit: (r: (typeof requirements)[number]) => void = () => {}) {
+      for (const d of drafts.values()) d.requirementId = null;
+      const order = [...requirements];
+      const saved = requirements.map((r) => [r, r.id, r.body] as const);
+      requirements.splice(requirements.indexOf(twin), 1);
+      requirements.unshift(twin);
+      requirements.forEach((r) => {
+        r.id = `${r.id}_v2`;
+        edit(r);
+      });
+      try {
+        await generateDrafts(opts);
+      } finally {
+        for (const [r, id, body] of saved) Object.assign(r, { id, body });
+        requirements.splice(0, requirements.length, ...order);
+      }
+    }
+
+    it("matches a re-run's twins to their own drafts by content, whatever their order (#490)", async () => {
+      await generateDrafts(opts);
+      const firstId = featureFor("req_1").id;
+      await rerunSwapped();
+      expect(featureFor("req_1_v2").id).toBe(firstId);
+      expect(featureFor("req_1_v2").body).not.toContain("passkey");
+      expect(featureFor("req_twin_v2").body).toContain("passkey");
+      expect(drafts.size).toBe(4);
+    });
+
+    it("keeps a changed twin off the draft its unchanged sibling will claim (#490)", async () => {
+      await generateDrafts(opts);
+      const firstId = featureFor("req_1").id;
+      await rerunSwapped((r) => {
+        if (r === twin) r.body = `${r.body} — reworded`;
+      });
+      expect(featureFor("req_1_v2").id).toBe(firstId);
+      expect(featureFor("req_twin_v2").body).toContain("reworded");
+      expect(featureFor("req_1_v2").body).not.toContain("passkey");
+    });
+
+    it("refreshes an unapproved draft re-linked to changed content (#490)", async () => {
+      await generateDrafts(opts);
+      await rerunSwapped((r) => {
+        r.body = `${r.body} — reworded`;
+      });
+      for (const d of drafts.values()) {
+        if (d.draftType !== "epic") expect(d.body).toContain("reworded");
+      }
+    });
+
+    it("keeps a signed-off draft's body when it is re-linked to changed content (#490)", async () => {
+      await generateDrafts(opts);
+      const signedOff = [...drafts.values()].filter((d) => d.draftType !== "epic");
+      const before = new Map(signedOff.map((d) => [d.id, d.body]));
+      signedOff[0].status = "approved";
+      signedOff[1].status = "published";
+      // A draft generated before #490 carries no requirementKey at all.
+      signedOff[2].status = "publishing";
+      signedOff[2].metadata = JSON.stringify({ analysisId: "analysis_1" });
+      await rerunSwapped((r) => {
+        r.body = `${r.body} — reworded`;
+      });
+      for (const d of signedOff) {
+        const now = drafts.get(d.id)!;
+        expect(now.body).toBe(before.get(d.id));
+        expect(now.requirementId).toMatch(/_v2$/);
+        expect(now.status).toBe(d.status);
+        expect(JSON.parse(now.metadata ?? "{}").requirementId).toBe(now.requirementId);
+      }
+      expect(JSON.parse(drafts.get(signedOff[2].id)!.metadata ?? "{}").requirementKey).toBe(
+        undefined,
+      );
+    });
+
     it("never hands a draft linked to another requirement of the same analysis to this one", async () => {
       await generateDrafts(opts);
       const firstId = featureFor("req_1").id;

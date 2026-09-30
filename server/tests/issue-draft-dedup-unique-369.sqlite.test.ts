@@ -234,6 +234,92 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(after[1].body).toContain("Passkey body");
     });
 
+    // #490 — a re-run whose synthesis emits the same-titled twins in the other
+    // order must not swap their drafts: each published issue keeps its own text.
+    describe("#490 — same-titled twins re-run in swapped order", () => {
+      const opts = { projectId: "p1", targetOwner: "acme", targetRepo: "metis" };
+      const setUp = async (analysisId: string, title: string) => {
+        await db.analysis.create({ data: { id: analysisId, projectId: "p1", startedById: "u1" } });
+        const createRequirements = async (
+          suffix: string,
+          rows: Array<{ key: string; body: string; at: string }>,
+        ) => {
+          for (const r of rows) {
+            await db.requirement.create({
+              data: {
+                id: `${analysisId}_${r.key}${suffix}`,
+                projectId: "p1",
+                analysisId,
+                title,
+                body: r.body,
+                createdAt: new Date(r.at),
+              },
+            });
+          }
+        };
+        const features = () =>
+          db.issueDraft.findMany({
+            where: {
+              projectId: "p1",
+              title: { startsWith: `[Feature] ${title}` },
+              deletedAt: null,
+            },
+            orderBy: { title: "asc" },
+          });
+        await createRequirements("", [
+          { key: "one", body: "Password body", at: T0 },
+          { key: "two", body: "Passkey body", at: T1 },
+        ]);
+        await generateDrafts({ ...opts, analysisId });
+        const first = await features();
+        expect(first.map((d) => d.requirementId)).toEqual([
+          `${analysisId}_one`,
+          `${analysisId}_two`,
+        ]);
+        await db.issueDraft.updateMany({
+          where: { id: { in: first.map((d) => d.id) } },
+          data: { status: "published" },
+        });
+        // What persistRequirements does on a re-run.
+        await db.requirement.deleteMany({ where: { analysisId } });
+        return { first, features, createRequirements };
+      };
+
+      it("keeps each published draft's text and re-links it to its own requirement", async () => {
+        const { first, features, createRequirements } = await setUp("an_swap", "Enrol");
+        // The re-run emits the twins in the other order.
+        await createRequirements("_v2", [
+          { key: "one", body: "Password body", at: T1 },
+          { key: "two", body: "Passkey body", at: T0 },
+        ]);
+        const rerun = await generateDrafts({ ...opts, analysisId: "an_swap" });
+        expect(rerun.upserted).toBe(0);
+
+        const after = await features();
+        expect(after.map((d) => d.id)).toEqual(first.map((d) => d.id));
+        expect(after.map((d) => d.requirementId)).toEqual(["an_swap_one_v2", "an_swap_two_v2"]);
+        expect(after[0].body).toContain("Password body");
+        expect(after[0].body).not.toContain("Passkey body");
+        expect(after[1].body).toContain("Passkey body");
+        expect(after.map((d) => d.status)).toEqual(["published", "published"]);
+      });
+
+      it("never rewrites a published draft's body when the twins' text changed too", async () => {
+        const { first, features, createRequirements } = await setUp("an_edit", "Recover");
+        await createRequirements("_v2", [
+          { key: "one", body: "Password body, reworded", at: T1 },
+          { key: "two", body: "Passkey body, reworded", at: T0 },
+        ]);
+        await generateDrafts({ ...opts, analysisId: "an_edit" });
+
+        const after = await features();
+        expect(after.map((d) => d.id)).toEqual(first.map((d) => d.id));
+        expect(after.map((d) => d.body)).toEqual(first.map((d) => d.body));
+        expect(after.every((d) => d.requirementId !== null)).toBe(true);
+        expect(new Set(after.map((d) => d.requirementId)).size).toBe(2);
+      });
+    });
+
     it("lets a test-coverage export be retried after createBatch refused the first attempt", async () => {
       const suggestion = (id: string) => ({
         id,
