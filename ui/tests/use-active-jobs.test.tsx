@@ -11,7 +11,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import type { JobKind, JobLifecycleEvent } from "@metis/shared";
-import { useJobLifecycle } from "@/hooks/use-job-events";
+import { useDocSectionProgress, useJobLifecycle } from "@/hooks/use-job-events";
+import { useJobToast } from "@/hooks/use-job-toast";
 import {
   useActiveJobs,
   useFollowJobs,
@@ -42,6 +43,9 @@ function makeFakeSocket() {
 }
 
 let fake = makeFakeSocket();
+
+// useJobToast imports sonner; nothing here reaches a terminal toast.
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 vi.mock("@/lib/socket-client", () => ({
   useSocket: () => fake.socket,
@@ -233,9 +237,81 @@ describe("useFollowJobs", () => {
     act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS * 2));
     expect(result.current).toHaveLength(1);
     act(() => fake.fire("connect", undefined));
-    act(() => fake.fire("connect", undefined)); // a second connect does not restart it
+    // The emits made before the first connect were buffered and reach the
+    // server on it, so the first connect joins nothing again.
+    expect(fake.socket.emit.mock.calls.filter(([name]) => name === "subscribe:job")).toHaveLength(
+      1,
+    );
     act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS));
     expect(result.current).toHaveLength(0);
+  });
+
+  // #465 — a reconnect drops this socket's rooms on the server.
+  describe("after a disconnect and reconnect", () => {
+    const reconnect = () => {
+      fake.socket.connected = false;
+      act(() => fake.fire("disconnect", "transport close"));
+      fake.socket.connected = true;
+      act(() => fake.fire("connect", undefined));
+    };
+
+    it("re-subscribes to each followed job's room", () => {
+      applyJobLifecycleEvent(lifecycle({ jobId: "a", ts: 1 }));
+      applyJobLifecycleEvent(lifecycle({ jobId: "b", ts: 2 }));
+      follow(["a", "b"]);
+      fake.socket.emit.mockClear();
+      reconnect();
+      expect(fake.socket.emit).toHaveBeenCalledWith("subscribe:job", { jobId: "a" });
+      expect(fake.socket.emit).toHaveBeenCalledWith("subscribe:job", { jobId: "b" });
+    });
+
+    it("does not forget a still-running job while the socket is down", () => {
+      applyJobLifecycleEvent(lifecycle({ kind: "repo-ingest" }));
+      const { result } = follow(["job-1"]);
+      act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS - 1_000));
+      fake.socket.connected = false;
+      act(() => fake.fire("disconnect", "transport close"));
+      // Offline well past the original deadline: nothing could have arrived.
+      act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS * 4));
+      expect(result.current.map((j) => j.jobId)).toEqual(["job-1"]);
+      fake.socket.connected = true;
+      act(() => fake.fire("connect", undefined));
+      act(() => fake.fire("job:lifecycle", lifecycle({ kind: "repo-ingest", status: "progress" })));
+      act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS * 2));
+      expect(result.current.map((j) => j.jobId)).toEqual(["job-1"]);
+    });
+
+    it("waits a full REPLAY_WAIT_MS again from the reconnect", () => {
+      applyJobLifecycleEvent(lifecycle({ kind: "repo-ingest" }));
+      const { result } = follow(["job-1"]);
+      act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS - 1_000));
+      reconnect();
+      act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS - 1));
+      expect(result.current).toHaveLength(1);
+      act(() => vi.advanceTimersByTime(1));
+      expect(result.current).toHaveLength(0);
+    });
+
+    it("needs a fresh replay: a job heard before the drop is forgotten if the server lost it", () => {
+      applyJobLifecycleEvent(lifecycle({ kind: "repo-ingest" }));
+      const { result } = follow(["job-1"]);
+      act(() => fake.fire("job:lifecycle", lifecycle({ kind: "repo-ingest", status: "progress" })));
+      act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS));
+      expect(result.current).toHaveLength(1);
+      // e.g. the API restarted: the reconnect brings no replay for the job.
+      reconnect();
+      act(() => vi.advanceTimersByTime(REPLAY_WAIT_MS));
+      expect(result.current).toHaveLength(0);
+    });
+
+    it("stops listening for connect/disconnect on unmount", () => {
+      applyJobLifecycleEvent(lifecycle({ kind: "repo-ingest" }));
+      const { unmount } = follow(["job-1"]);
+      unmount();
+      fake.socket.emit.mockClear();
+      reconnect();
+      expect(fake.socket.emit).not.toHaveBeenCalled();
+    });
   });
 
   it("does nothing, and forgets nothing, with no jobs to follow", () => {
@@ -262,6 +338,22 @@ describe("useFollowJobs", () => {
     unmount();
     expect(fake.socket.emit).not.toHaveBeenCalledWith("unsubscribe:job", expect.anything());
     other.unmount();
+    expect(fake.socket.emit).toHaveBeenCalledWith("unsubscribe:job", { jobId: "job-1" });
+  });
+
+  // #465 — the mirror case, once per hook: the OTHER follower unmounts while
+  // useFollowJobs stays mounted. Each fails if that hook's cleanup emits
+  // `unsubscribe:job` itself instead of releasing through `joinJobRoom`.
+  it.each<[string, () => unknown]>([
+    ["useJobLifecycle", () => useJobLifecycle("job-1")],
+    ["useDocSectionProgress", () => useDocSectionProgress("job-1")],
+    ["useJobToast", () => useJobToast("job-1")],
+  ])("keeps useFollowJobs in the room when %s unmounts first", (_name, hook) => {
+    const followed = follow(["job-1"]);
+    const other = renderHook(hook);
+    other.unmount();
+    expect(fake.socket.emit).not.toHaveBeenCalledWith("unsubscribe:job", expect.anything());
+    followed.unmount();
     expect(fake.socket.emit).toHaveBeenCalledWith("unsubscribe:job", { jobId: "job-1" });
   });
 });

@@ -175,6 +175,10 @@ export function useActiveJobs(): ActiveJob[] {
  * followed job's replay. The server remembers only the last 500 jobs and only in
  * memory, so an API restart or an eviction means no replay ever comes; without a
  * bound the stale `started` entry read as running until a page reload.
+ *
+ * Known trade-off (#465): the replay cache is bounded by `LAST_EVENT_CAP` (500),
+ * so a job evicted from it is forgotten here too, even though it has not ended.
+ * It comes back with its next `started`/`progress` event.
  */
 export const REPLAY_WAIT_MS = 15_000;
 
@@ -196,6 +200,11 @@ export function forgetActiveJob(jobId: string): void {
  * connected is forgotten: the server has no record of it, so nothing would ever
  * end it. Rooms are joined through `joinJobRoom`, so unmounting here leaves
  * other followers of the same job on this socket in the room.
+ *
+ * #465 — a reconnect loses the socket's rooms on the server, so each connect
+ * after the first re-subscribes and restarts the wait, and the clock is stopped
+ * while the socket is down: nothing can be heard then, and a running job must
+ * not be forgotten for it.
  */
 export function useFollowJobs(jobIds: readonly string[]): void {
   const socket = useSocket();
@@ -212,20 +221,35 @@ export function useFollowJobs(jobIds: readonly string[]): void {
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const startClock = () => {
-      if (timer !== undefined) return;
+      clearTimeout(timer);
+      // Only a replay heard on this connection accounts for a job.
+      heard.clear();
       timer = setTimeout(() => {
         for (const jobId of ids) if (!heard.has(jobId)) forgetActiveJob(jobId);
       }, REPLAY_WAIT_MS);
     };
-    // Emits made before the socket connects are buffered, so the replay cannot
-    // arrive until it has; start the clock then, not on mount.
+    const stopClock = () => clearTimeout(timer);
+
+    // Emits made before the socket connects are buffered and reach the server on
+    // the first connect, so the replay cannot arrive until then; start the clock
+    // on connect, not on mount. A later connect is a reconnect: the server has
+    // dropped this socket's rooms, so re-join them. A re-join, not a new
+    // follower — it leaves the `joinJobRoom` count alone, as in `useJobToast`.
+    let joined = socket.connected;
+    const onConnect = () => {
+      if (joined) for (const jobId of ids) socket.emit("subscribe:job", { jobId });
+      joined = true;
+      startClock();
+    };
     if (socket.connected) startClock();
-    else socket.on("connect" as never, startClock as never);
+    socket.on("connect" as never, onConnect as never);
+    socket.on("disconnect" as never, stopClock as never);
 
     return () => {
-      clearTimeout(timer);
+      stopClock();
       socket.off("job:lifecycle" as never, onLifecycle as never);
-      socket.off("connect" as never, startClock as never);
+      socket.off("connect" as never, onConnect as never);
+      socket.off("disconnect" as never, stopClock as never);
       for (const leave of leaves) leave();
     };
   }, [socket, key]);
