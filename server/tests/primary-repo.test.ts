@@ -193,6 +193,26 @@ describe("setPrimaryRepo", () => {
     expect(result.id).toBe("r1");
   });
 
+  it("answers a concurrent set-primary that loses the index race with 409, not 500 (#457)", async () => {
+    rows.set("r1", makeRow({ id: "r1", projectId: "p1", isPrimary: false }));
+    const { prisma } = await import("../src/lib/prisma.js");
+    vi.mocked(prisma.$transaction).mockRejectedValueOnce(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" }),
+    );
+    await expect(setPrimaryRepo("p1", "r1", "user1")).rejects.toMatchObject({
+      status: 409,
+      code: "REPO_PRIMARY_CONFLICT",
+    });
+  });
+
+  it("passes a non-unique transaction failure through unchanged (#457)", async () => {
+    rows.set("r1", makeRow({ id: "r1", projectId: "p1", isPrimary: false }));
+    const { prisma } = await import("../src/lib/prisma.js");
+    const boom = new Error("connection reset");
+    vi.mocked(prisma.$transaction).mockRejectedValueOnce(boom);
+    await expect(setPrimaryRepo("p1", "r1", "user1")).rejects.toBe(boom);
+  });
+
   it("throws 404 when connector not found", async () => {
     await expect(setPrimaryRepo("p1", "nonexistent", "user1")).rejects.toThrow("not found");
   });

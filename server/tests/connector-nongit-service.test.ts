@@ -178,6 +178,25 @@ describe("createUploadRepoConnector + resolveNonGitIngestRoot", () => {
     expect([...rows.values()].length).toBe(0);
   });
 
+  it("#457 — writes isPrimary with the insert, never with a separate update", async () => {
+    // A separate isPrimary update after the row exists could throw and leave an
+    // upload connector behind while the caller is told the create failed.
+    const { prisma } = await import("../src/lib/prisma.js");
+    const first = await createUploadRepoConnector("proj_1", "one", await zipBuf(), "user_1");
+    const second = await createUploadRepoConnector("proj_1", "two", await zipBuf(), "user_1");
+
+    const creates = vi.mocked(prisma.repoConnection.create).mock.calls;
+    expect(creates.map(([arg]) => arg.data.isPrimary)).toEqual([true, false]);
+    for (const [arg] of vi.mocked(prisma.repoConnection.update).mock.calls) {
+      expect(arg.data).not.toHaveProperty("isPrimary");
+    }
+    expect(first.isPrimary).toBe(true);
+    expect(second.isPrimary).toBe(false);
+    // Read back through the store, not the returned object.
+    expect(rows.get(first.id)?.isPrimary).toBe(true);
+    expect(rows.get(second.id)?.isPrimary).toBe(false);
+  });
+
   it("resolveNonGitIngestRoot for a local connector returns realpath + boundary", async () => {
     const created = await createRepoConnector(
       "proj_1",
