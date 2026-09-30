@@ -282,6 +282,26 @@ describe("publicIndexingErrorMessage", () => {
   });
 });
 
+describe("isGeneratedDocPublicationCancelled (#489)", () => {
+  const C = m.GENERATED_DOC_PUBLICATION_CANCELLED;
+
+  it("matches the bare prefix and the prefix followed by a reason", () => {
+    expect(m.isGeneratedDocPublicationCancelled(C)).toBe(true);
+    expect(m.isGeneratedDocPublicationCancelled(`${C}: cancelled by user`)).toBe(true);
+    expect(m.isGeneratedDocPublicationCancelled(`${C}:`)).toBe(true);
+  });
+
+  it("does not match a longer word, a quoted prefix, a failure, or no message", () => {
+    expect(m.isGeneratedDocPublicationCancelled(`${C}ish: x`)).toBe(false);
+    expect(m.isGeneratedDocPublicationCancelled(`${C} later`)).toBe(false);
+    expect(m.isGeneratedDocPublicationCancelled(`while ${C}: x`)).toBe(false);
+    expect(m.isGeneratedDocPublicationCancelled("generated-doc publication failed: x")).toBe(false);
+    expect(m.isGeneratedDocPublicationCancelled("")).toBe(false);
+    expect(m.isGeneratedDocPublicationCancelled(null)).toBe(false);
+    expect(m.isGeneratedDocPublicationCancelled(undefined)).toBe(false);
+  });
+});
+
 describe("approvalFailureMessage (#108)", () => {
   it("keeps each of quarantine.ts's own refusals, without the document id", () => {
     const cases: Array<[string, string]> = [

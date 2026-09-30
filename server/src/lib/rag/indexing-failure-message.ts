@@ -130,8 +130,17 @@ const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   DELETED_MARKER,
 ]);
 
-/** Anchored, like the parser refusals: a quoted prefix is not a cancellation. */
-const PUBLICATION_CANCELLED = new RegExp(`^${GENERATED_DOC_PUBLICATION_CANCELLED}(?::|$)`);
+/**
+ * #489 — whether stored text is a cancelled publication's. Anchored, like the
+ * parser refusals: a quoted prefix is not a cancellation. A plain string
+ * comparison, so the constant is never read as a pattern.
+ */
+export function isGeneratedDocPublicationCancelled(message: string | null | undefined): boolean {
+  return (
+    message === GENERATED_DOC_PUBLICATION_CANCELLED ||
+    (message?.startsWith(`${GENERATED_DOC_PUBLICATION_CANCELLED}:`) ?? false)
+  );
+}
 
 /**
  * The parser's refusal codes (`lib/documents/parsers.ts`), anchored at the start
@@ -178,7 +187,7 @@ export function indexingFailureMessage(err: unknown): string {
   }
   if (/^storage read failed\b/i.test(message)) return INDEXING_STORAGE_MESSAGE;
   if (message === "rejected") return INDEXING_REJECTED_MESSAGE;
-  if (PUBLICATION_CANCELLED.test(message)) return INDEXING_PUBLICATION_CANCELLED_MESSAGE;
+  if (isGeneratedDocPublicationCancelled(message)) return INDEXING_PUBLICATION_CANCELLED_MESSAGE;
 
   // #165 — embedding calls are not streamed, so a reset under `fetch failed`
   // came before any response, not while one was arriving.

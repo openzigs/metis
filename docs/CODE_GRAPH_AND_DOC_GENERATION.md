@@ -731,10 +731,15 @@ Generation health is separate from indexing: `pending` means publication is queu
 or running (the accompanying processing status can be `processing`), `quarantined`
 means approval is required, `reconciling` means an approval has selected chunks but
 index cleanup is incomplete, and `indexed` is reported only after successful
-indexing and cleanup. `rejected` reflects rejection; a failed or explicitly cancelled
-publication task without a synthetic document is exposed as indexing `failed`, with
-its error message. Cancellation is not a separate indexing badge and is not
-automatically revived. Readable `ready`/`degraded` generation is not proof of indexing.
+indexing and cleanup. `rejected` reflects rejection; a failed publication task without
+a synthetic document is exposed as indexing `failed`, with its error message. An
+explicitly cancelled publication is exposed as indexing `cancelled` (both `state` and
+`status`) with a fixed cancellation message, whether or not a synthetic document exists
+(#489). Only a `pending` or `quarantined` synthetic row is reported as cancelled; its
+stored `Document.status` stays `failed` and its `indexState` is unchanged, so for these
+rows the API's `indexing.status` no longer mirrors the stored row status. Cancellation
+is not automatically revived. Readable `ready`/`degraded` generation is not proof of
+indexing.
 
 For documents with a selected approval journal, the project's
 **Quarantine** panel keeps `reconciling` rows visible after reload, displays the saved
