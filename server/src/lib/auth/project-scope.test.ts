@@ -49,7 +49,10 @@ describe("workspaceScopeWhere", () => {
   it("a member sees workspace-less open projects PLUS their own workspaces", () => {
     const where = workspaceScopeWhere({ role: "developer", workspaces: ["ws-1"] });
     expect(where).toEqual({
-      OR: [{ workspaceId: null }, { workspaceId: { in: ["ws-1"] } }],
+      OR: [
+        { workspaceId: null },
+        { workspaceId: { in: ["ws-1"] }, workspace: { deletedAt: null } },
+      ],
     });
     // The regression #1066 guards: open projects must NOT disappear for a user
     // who happens to have joined a workspace.
@@ -69,7 +72,9 @@ describe("workspaceScopeWhere", () => {
 
   it("treats a missing `workspaces` array as no memberships", () => {
     const where = workspaceScopeWhere({ role: "developer" });
-    expect(where).toEqual({ OR: [{ workspaceId: null }, { workspaceId: { in: [] } }] });
+    expect(where).toEqual({
+      OR: [{ workspaceId: null }, { workspaceId: { in: [] }, workspace: { deletedAt: null } }],
+    });
     expect(visible(where)).toEqual(["legacy-open"]);
   });
 
@@ -88,7 +93,9 @@ describe("the Prisma semantics the old #1066 comment got wrong", () => {
   });
 
   it("`{ workspaceId: { in: [] } }` is the fragment that really matches nothing", () => {
-    const denyAll = { OR: [{ workspaceId: { in: [] } }] } satisfies WorkspaceScopeWhere;
+    const denyAll = {
+      OR: [{ workspaceId: { in: [] }, workspace: { deletedAt: null } }],
+    } satisfies WorkspaceScopeWhere;
     expect(visible(denyAll)).toEqual([]);
   });
 });

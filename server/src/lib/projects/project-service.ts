@@ -203,7 +203,14 @@ export async function listProjects(
     // Scope to the caller's workspaces, but always include legacy projects
     // that were never assigned a workspace (workspaceId = null) so they don't
     // silently disappear before the backfill runs.
-    where.OR = [{ workspaceId: { in: opts.workspaceIds } }, { workspaceId: null }];
+    // #549 — a soft-deleted workspace's projects leave the list. This applies
+    // to an admin's `?workspaceId=<deleted>` filter too, deliberately: the
+    // filter asks for a live workspace's projects. Admins still reach them via
+    // the unfiltered list and by id (assertProjectAccess admin bypass).
+    where.OR = [
+      { workspaceId: { in: opts.workspaceIds }, workspace: { deletedAt: null } },
+      { workspaceId: null },
+    ];
   }
   const [items, total] = await Promise.all([
     prisma.project.findMany({

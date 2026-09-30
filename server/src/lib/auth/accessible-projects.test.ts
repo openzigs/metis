@@ -56,13 +56,16 @@ describe("getUserAccessibleProjects", () => {
       expect.objectContaining({ where: { userId: "user-b" } }),
     );
     expect(mockMemberships).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { userId: "user-b" } }),
+      expect.objectContaining({ where: { userId: "user-b", workspace: { deletedAt: null } } }),
     );
     expect(mockFindMany).toHaveBeenCalledWith({
       where: {
         deletedAt: null,
         status: { not: "archived" },
-        OR: [{ workspaceId: null }, { workspaceId: { in: ["ws-b"] } }],
+        OR: [
+          { workspaceId: null },
+          { workspaceId: { in: ["ws-b"] }, workspace: { deletedAt: null } },
+        ],
       },
       select: { id: true, name: true },
       orderBy: { updatedAt: "desc" },
@@ -79,7 +82,7 @@ describe("getUserAccessibleProjects", () => {
     expect(mockFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [{ workspaceId: null }, { workspaceId: { in: [] } }],
+          OR: [{ workspaceId: null }, { workspaceId: { in: [] }, workspace: { deletedAt: null } }],
         }),
       }),
     );
@@ -113,7 +116,10 @@ describe("getUserAccessibleProjects", () => {
     expect(mockFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [{ workspaceId: null }, { workspaceId: { in: ["ws-b"] } }],
+          OR: [
+            { workspaceId: null },
+            { workspaceId: { in: ["ws-b"] }, workspace: { deletedAt: null } },
+          ],
         }),
       }),
     );

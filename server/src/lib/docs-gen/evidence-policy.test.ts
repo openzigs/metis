@@ -63,6 +63,19 @@ describe("trusted generation evidence policy #1353", () => {
       );
     },
   );
+  it("#549 — reads only memberships of workspaces that are not soft-deleted", async () => {
+    await resolveEvidencePolicy(record);
+    expect(prisma.user.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          workspaceMemberships: {
+            where: { workspace: { deletedAt: null } },
+            select: { workspaceId: true },
+          },
+        }),
+      }),
+    );
+  });
   it("rejects blank repository identifiers without querying graphs", async () => {
     await expect(requireRepositoryGraph("p1", "  ")).rejects.toThrow(
       "Requested repository graph is unavailable",
@@ -217,8 +230,7 @@ describe("trusted generation evidence policy #1353", () => {
       vi.mocked(prisma.codeGraph.findFirst).mockImplementation(async (args) => {
         const where = args?.where;
         const connection = where?.repoConnection as
-          | { projectId?: string; deletedAt?: null }
-          | undefined;
+          { projectId?: string; deletedAt?: null } | undefined;
         return (
           (graphs.find(
             (g) =>
