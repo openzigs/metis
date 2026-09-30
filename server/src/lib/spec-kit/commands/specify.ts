@@ -6,6 +6,7 @@ import type { SpecKitArtifactDto } from "@metis/shared";
 import { writeArtifact, SpecKitArtifactError } from "../artifacts.js";
 import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
 import { buildSpecKitRagContext, type SpecKitKnowledgeService } from "../rag-context.js";
+import { describeGrounding, PINNED_REQUIREMENT_DOCUMENTS } from "../grounding.js";
 
 /**
  * Exported for the structural-contract tests (#376): the prompt is part of
@@ -60,6 +61,18 @@ export const SPECIFY_SYSTEM_PROMPT = [
   "  `## Non-functional requirements` constraint with its rationale — not as a",
   "  design decision.",
   "",
+  "SCOPE RECONCILIATION — REQUIRED when project documents were retrieved (#20):",
+  "  - Requirements in the retrieved documents that the brief refers to",
+  "    (numbered items such as `FR-1`, or MUST/SHALL statements) define scope.",
+  "  - Every such requirement MUST appear in `## In scope`, citing its id or",
+  "    source, e.g. `(FR-2)`.",
+  "  - Put a retrieved requirement in `## Out of scope` ONLY when the brief",
+  "    explicitly excludes it, and cite both the requirement id and that",
+  "    exclusion. Never silently drop or exclude a requirement.",
+  "  - Before finishing, check each `## In scope` and `## Out of scope` item",
+  "    against the retrieved requirements; resolve any contradiction in favour",
+  "    of the requirement and note it.",
+  "",
   "Be concise and unambiguous.",
 ].join("\n");
 
@@ -96,13 +109,14 @@ export async function runSpecify(input: SpecifyInput): Promise<SpecifyResult> {
   }
   const project = await loadProjectContext(input.projectId);
 
-  // #374 — ground the spec on project RAG. The retrieval query is the
-  // operator brief combined with the project name/description so the returned
-  // chunks describe the real system. Empty/failed retrieval ⇒ "" (ungrounded);
-  // never throws (see buildSpecKitRagContext).
-  const ragQuery = [project.name, project.description, trimmed].filter(Boolean).join("\n");
-  const rag = await buildSpecKitRagContext(input.projectId, ragQuery, {
+  // #374 / #20 — ground the spec on project RAG. The retrieval query is the
+  // operator brief alone: prepending the project name/description drowned the
+  // ask. The top requirements documents are pinned whole so scope can be
+  // reconciled against every requirement, not only the chunk top-k happened to
+  // return. Empty/failed retrieval ⇒ "" (ungrounded); never throws.
+  const rag = await buildSpecKitRagContext(input.projectId, trimmed, {
     knowledgeService: input.knowledgeService,
+    expandDocuments: PINNED_REQUIREMENT_DOCUMENTS,
   });
 
   const userPrompt = [
@@ -134,14 +148,9 @@ export async function runSpecify(input: SpecifyInput): Promise<SpecifyResult> {
     actorId: input.actorId ?? null,
   });
 
-  const grounding =
-    rag.usedChunks > 0
-      ? `grounded on ${rag.usedChunks} retrieved chunk${rag.usedChunks === 1 ? "" : "s"}`
-      : "ungrounded (no project knowledge retrieved)";
-
   return {
     artifact,
     tokensUsed: run.tokensUsed,
-    message: `Generated spec.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${grounding}.`,
+    message: `Generated spec.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.`,
   };
 }

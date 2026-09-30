@@ -255,7 +255,8 @@ describe("/specify", () => {
       knowledgeService: ks,
       deps: { provider: new EchoSystemProvider() },
     });
-    expect(ks.search).toHaveBeenCalledOnce();
+    // Top-k first; the second call pins the rest of the retrieved document (#20).
+    expect(ks.search.mock.calls[0][2]).toEqual({ k: 8 });
     // RAG context threaded into the agent system prompt.
     expect(r.artifact.content).toContain("Retrieved Project Knowledge");
     expect(r.artifact.content).toContain("server/src/billing/ledger.ts#L10-L40");
@@ -321,7 +322,8 @@ describe("/plan", () => {
       knowledgeService: ks,
       deps: { provider: new EchoSystemProvider() },
     });
-    expect(ks.search).toHaveBeenCalledOnce();
+    // Top-k first; the second call pins the rest of the retrieved document (#20).
+    expect(ks.search.mock.calls[0][2]).toEqual({ k: 8 });
     expect(r.artifact.content).toContain("Retrieved Project Knowledge");
     expect(r.artifact.content).toContain("server/src/server.ts#L1-L80");
     const ok = auditCalls.find((c) => c.action === "spec_kit.command.plan");
@@ -344,6 +346,203 @@ describe("/plan", () => {
     // 409 needs-spec guard still enforced when no spec exists.
     const ok = auditCalls.find((c) => c.action === "spec_kit.command.plan");
     expect(ok?.metadata?.ragChunksUsed).toBe(0);
+  });
+});
+
+describe("grounding in the codebase (#20)", () => {
+  const noCode = {
+    searcher: { search: vi.fn(async () => []) },
+    lineLookup: { resolve: vi.fn(async () => new Map()) },
+  };
+
+  it("/specify retrieves on the operator brief alone and pins requirement documents", async () => {
+    const ks = fakeKnowledgeService([ragChunk({ filename: "req.md", documentId: "req" })]);
+    await runSpecify({
+      projectId: "p1",
+      prompt: "recover malformed tool-call markup",
+      knowledgeService: ks,
+      deps: { provider: new FakeProvider("# Spec\nok") },
+    });
+    expect(ks.search.mock.calls[0][1]).toBe("recover malformed tool-call markup");
+    expect(ks.search).toHaveBeenCalledWith("p1", "recover malformed tool-call markup", {
+      k: 8,
+      documentIds: ["req"],
+    });
+  });
+
+  it("/plan retrieves on the spec's requirement text and always queries the code graph", async () => {
+    await writeArtifact({
+      projectId: "p1",
+      name: "spec.md",
+      content: "# Spec\nRepair tool calls.\n## Stakeholders\n- ops\n## In scope\n- JSON repair",
+    });
+    const ks = fakeKnowledgeService([]);
+    const fusedCode = {
+      searcher: {
+        search: vi.fn(async () => [
+          { symbolId: "s1", filePath: "x", name: "parseToolCalls", kind: "function", score: 1 },
+        ]),
+      },
+      lineLookup: {
+        resolve: vi.fn(
+          async () =>
+            new Map([
+              [
+                "s1",
+                {
+                  filePath: "server/src/lib/analysis/agent-loop.ts",
+                  startLine: 1030,
+                  endLine: 1088,
+                },
+              ],
+            ]),
+        ),
+      },
+    };
+    const r = await runPlan({
+      projectId: "p1",
+      knowledgeService: ks,
+      fusedCode,
+      pathLookup: { hasCodeGraph: async () => false, findExisting: async () => [] },
+      deps: { provider: new EchoSystemProvider() },
+    });
+    const query = ks.search.mock.calls[0][1] as string;
+    expect(query).toBe("Repair tool calls.\n- JSON repair");
+    expect(query).not.toContain("Demo");
+    expect(query).not.toMatch(/architecture components modules/);
+    expect(fusedCode.searcher.search).toHaveBeenCalledOnce();
+    expect(r.artifact.content).toContain("server/src/lib/analysis/agent-loop.ts:1030-1088");
+    expect(r.message).toMatch(/grounded on 1 code symbol\./);
+  });
+
+  it("/plan reports backticked paths the code graph does not contain", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
+    const r = await runPlan({
+      projectId: "p1",
+      knowledgeService: fakeKnowledgeService([]),
+      fusedCode: noCode,
+      pathLookup: {
+        hasCodeGraph: async () => true,
+        findExisting: async () => ["server/src/lib/analysis/agent-loop.ts"],
+      },
+      deps: {
+        provider: new FakeProvider(
+          "# Plan\nExtend `server/src/lib/analysis/agent-loop.ts`; add `server/src/lib/MultiTurnToolCallNormalizer.ts`.",
+        ),
+      },
+    });
+    expect(r.message).toMatch(
+      /1 referenced path is not in the project's code graph \(expected only for new files\): `server\/src\/lib\/MultiTurnToolCallNormalizer\.ts`\.$/,
+    );
+    expect(r.message).not.toContain("agent-loop.ts");
+  });
+
+  it("/plan adds no path note when every referenced path exists", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
+    const r = await runPlan({
+      projectId: "p1",
+      knowledgeService: fakeKnowledgeService([]),
+      fusedCode: noCode,
+      pathLookup: {
+        hasCodeGraph: async () => true,
+        findExisting: async () => ["a/b.ts", "c/d.ts"],
+      },
+      deps: { provider: new FakeProvider("# Plan\n`a/b.ts` and `c/d.ts`") },
+    });
+    expect(r.message).toMatch(/ungrounded \(no project knowledge retrieved\)\.$/);
+  });
+
+  it("/plan pluralises the path note", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
+    const r = await runPlan({
+      projectId: "p1",
+      knowledgeService: fakeKnowledgeService([]),
+      fusedCode: noCode,
+      pathLookup: { hasCodeGraph: async () => true, findExisting: async () => [] },
+      deps: { provider: new FakeProvider("# Plan\n`a/b.ts` and `c/d.ts`") },
+    });
+    expect(r.message).toContain(
+      "2 referenced paths are not in the project's code graph (expected only for new files): `a/b.ts`, `c/d.ts`.",
+    );
+    // …and none of them exists, which is the #20 failure itself.
+    expect(r.message).toContain("The plan names no existing file");
+  });
+
+  // PR #419 review — the exact #20 report: a plan that names no file at all.
+  it("/plan warns when a plan names no existing file", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
+    const r = await runPlan({
+      projectId: "p1",
+      knowledgeService: fakeKnowledgeService([]),
+      fusedCode: noCode,
+      pathLookup: { hasCodeGraph: async () => true, findExisting: async () => [] },
+      deps: { provider: new FakeProvider("# Plan\nAdd a MultiTurnToolCallNormalizer component.") },
+    });
+    expect(r.message).toContain("The plan names no existing file");
+  });
+
+  // PR #419 review — /plan's document pinning had no test of its own.
+  it("/plan pins the retrieved requirements document with a second, expanding search", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
+    const ks = fakeKnowledgeService([
+      ragChunk({ filename: "requirements.md", position: "0", text: "FR-1 recover calls" }),
+    ]);
+    await runPlan({
+      projectId: "p1",
+      knowledgeService: ks,
+      fusedCode: noCode,
+      pathLookup: { hasCodeGraph: async () => false, findExisting: async () => [] },
+      deps: { provider: new FakeProvider("# Plan") },
+    });
+    expect(ks.search.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("/tasks reports test tasks that trail the implementation they cover", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "s" });
+    await writeArtifact({ projectId: "p1", name: "plan.md", content: "p" });
+    const r = await runTasks({
+      projectId: "p1",
+      deps: {
+        provider: new FakeProvider(
+          [
+            "## Tasks",
+            "- [ ] T01 — Implement JSON repair (satisfies: AC-1) depends-on: none",
+            "- [ ] T02 — Implement gate (satisfies: AC-2) depends-on: none",
+            "- [ ] T03 — Unit tests for JSON repair (satisfies: AC-1) depends-on: T01",
+            "- [ ] T04 — Unit tests for gate (satisfies: AC-2) depends-on: T02",
+          ].join("\n"),
+        ),
+      },
+    });
+    expect(r.message).toMatch(/Test tasks T03, T04 come after the implementation they cover\.$/);
+  });
+
+  it("/tasks uses the singular form for one late test task", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "s" });
+    await writeArtifact({ projectId: "p1", name: "plan.md", content: "p" });
+    const r = await runTasks({
+      projectId: "p1",
+      deps: {
+        provider: new FakeProvider(
+          "- [ ] T01 — Implement repair (satisfies: AC-1)\n- [ ] T02 — Tests for repair (satisfies: AC-1)",
+        ),
+      },
+    });
+    expect(r.message).toMatch(/Test task T02 comes after the implementation it covers\.$/);
+  });
+
+  it("/tasks adds no note when tests come first", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "s" });
+    await writeArtifact({ projectId: "p1", name: "plan.md", content: "p" });
+    const r = await runTasks({
+      projectId: "p1",
+      deps: {
+        provider: new FakeProvider(
+          "- [ ] T01 — Failing tests for repair (satisfies: AC-1)\n- [ ] T02 — Implement repair (satisfies: AC-1) depends-on: T01",
+        ),
+      },
+    });
+    expect(r.message).toMatch(/tokens\.$/);
   });
 });
 
