@@ -604,6 +604,8 @@ describe("Workspace Routes", () => {
 
       const res = await request(app).get("/workspaces/invites/valid-token");
       expect(res.status).toBe(200);
+      // #579 — the SQLite live control is skipped on postgres-adapter; pin validity here too.
+      expect(res.body.data).toMatchObject({ valid: true, workspaceDeleted: false });
       expect(res.body.data.workspace.name).toBe("Test");
     });
 
@@ -651,7 +653,7 @@ describe("Workspace Routes", () => {
         expiresAt: new Date(Date.now() + 86400000),
         invitedById: "inviter-1",
         workspace: { id: "ws-1", name: "Secret Name", slug: "test", deletedAt: new Date() },
-        invitedBy: { displayName: "Inviter" },
+        invitedBy: { displayName: "Ottoline Inviter-579" },
         createdAt: new Date(),
       } as never);
 
@@ -666,6 +668,7 @@ describe("Workspace Routes", () => {
         invitedBy: null,
       });
       expect(JSON.stringify(res.body)).not.toContain("Secret Name");
+      expect(JSON.stringify(res.body)).not.toContain("Ottoline Inviter-579");
     });
   });
 
