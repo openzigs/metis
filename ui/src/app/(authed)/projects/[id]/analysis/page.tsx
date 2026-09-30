@@ -219,9 +219,13 @@ export default function AnalysisPage(): React.ReactElement {
   const pathname = usePathname() ?? "";
   const requestedTab = searchParams?.get("tab") ?? null;
   const [tab, setTab] = useState<AnalysisTab>(() => parseAnalysisTab(requestedTab));
-  useEffect(() => {
+  // Issue #487 — resync on a soft navigation during render, as the filters do
+  // below: an effect rendered the old tab against the new URL for one frame.
+  const [syncedTab, setSyncedTab] = useState(requestedTab);
+  if (requestedTab !== syncedTab) {
+    setSyncedTab(requestedTab);
     setTab(parseAnalysisTab(requestedTab));
-  }, [requestedTab]);
+  }
   // Issue #406 — an anchor to scroll to once its target mounts: the URL's own
   // `#approvals` (the Publish page's link) or one a tab switch intercepted.
   // The browser's fragment scroll runs before the panel's queries resolve.
@@ -398,6 +402,24 @@ export default function AnalysisPage(): React.ReactElement {
   // Epic #726 (#736) — filter the requirement list by coverage classification.
   // `null` = show all; otherwise show only requirements with that coverage.
   const [coverageFilter, setCoverageFilter] = useState<RequirementCoverage | null>(null);
+  // Issue #487 — a soft navigation to a link naming a different run switches
+  // the run, as the filters and tab already follow the URL. Keyed on the
+  // param's CHANGE, not on a difference from the shown run: after a pick, the
+  // page's own `router.replace` lands a render later, and a stale URL in
+  // between must not send the reader back. The auto-select effect above still
+  // owns the first pick; a foreign id (not in this project's list) is ignored.
+  // Filters need no reset here: they come from the same URL, resynced above.
+  const [syncedAnalysisId, setSyncedAnalysisId] = useState(requestedAnalysisId);
+  if (requestedAnalysisId !== syncedAnalysisId) {
+    setSyncedAnalysisId(requestedAnalysisId);
+    const known = list.data?.items?.some((item) => item.id === requestedAnalysisId);
+    if (known && requestedAnalysisId !== selectedAnalysisId) {
+      setSelectedAnalysisId(requestedAnalysisId);
+      setFindingsPage(0);
+      setRequirementsPage(0);
+      setCoverageFilter(null);
+    }
+  }
   // Epic #34 — collaboration state.
   const { user } = useAuth();
   const [commentsReqId, setCommentsReqId] = useState<string | null>(null);
