@@ -573,16 +573,30 @@ export async function setPrimaryRepo(projectId: string, id: string, actorId: str
   if (existing.isPrimary) return toApi(existing);
 
   // Atomic swap: clear old primary, set new one
-  await prisma.$transaction([
-    prisma.repoConnection.updateMany({
-      where: { projectId, isPrimary: true, deletedAt: null },
-      data: { isPrimary: false },
-    }),
-    prisma.repoConnection.update({
-      where: { id },
-      data: { isPrimary: true },
-    }),
-  ]);
+  try {
+    await prisma.$transaction([
+      prisma.repoConnection.updateMany({
+        where: { projectId, isPrimary: true, deletedAt: null },
+        data: { isPrimary: false },
+      }),
+      prisma.repoConnection.update({
+        where: { id },
+        data: { isPrimary: true },
+      }),
+    ]);
+  } catch (err) {
+    // #457 / PR #460 review: under READ COMMITTED a concurrent set-primary can
+    // commit a different primary between our clear and our set; the one-live-
+    // primary index then rejects ours. That is a conflict, not a server error.
+    if (isUniqueViolation(err)) {
+      throw new ConnectorError(
+        409,
+        "REPO_PRIMARY_CONFLICT",
+        "Another repository was made primary at the same time. Reload and try again.",
+      );
+    }
+    throw err;
+  }
   const updated = await prisma.repoConnection.findUniqueOrThrow({ where: { id } });
   audit({
     actor: { id: actorId },
