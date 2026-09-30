@@ -19,11 +19,33 @@
  */
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import type { Socket } from "socket.io-client";
 import type { DocSectionProgressEvent, JobKind, JobLifecycleEvent } from "@metis/shared";
 import { useSocket } from "@/lib/socket-client";
 import { joinJobRoom } from "@/lib/job-rooms";
 import { queryKeys } from "@/lib/query-keys";
 import { impactAnalysisKeys } from "@/lib/impact-analysis-hooks";
+
+/**
+ * #473 — a reconnect (network blip, or the #414 token-refresh disconnect+connect)
+ * drops this socket's rooms on the server, so re-join `job:{jobId}` on every
+ * connect after the first; the server then replays the job's last transition.
+ * The first connect needs nothing: emits made before it were buffered and reach
+ * the server on it. A re-join, not a new follower — it goes straight to the
+ * socket and leaves the `joinJobRoom` count alone, as in `useFollowJobs`.
+ * Returns the cleanup that removes the listener.
+ */
+function rejoinOnReconnect(socket: Socket, jobId: string): () => void {
+  let joined = socket.connected;
+  const onConnect = () => {
+    if (joined) socket.emit("subscribe:job", { jobId });
+    joined = true;
+  };
+  socket.on("connect", onConnect);
+  return () => {
+    socket.off("connect", onConnect);
+  };
+}
 
 /**
  * Subscribe to a single job's lifecycle and return its latest event. Used by the
@@ -36,11 +58,13 @@ export function useJobLifecycle(jobId: string | null | undefined): JobLifecycleE
   useEffect(() => {
     if (!socket || !jobId) return;
     const leave = joinJobRoom(socket, jobId);
+    const stopRejoin = rejoinOnReconnect(socket, jobId);
     const onLifecycle = (data: JobLifecycleEvent) => {
       if (data.jobId === jobId) setEvent(data);
     };
     socket.on("job:lifecycle" as never, onLifecycle as never);
     return () => {
+      stopRejoin();
       leave();
       socket.off("job:lifecycle" as never, onLifecycle as never);
     };
@@ -62,12 +86,14 @@ export function useDocSectionProgress(
       return;
     }
     const leave = joinJobRoom(socket, jobId);
+    const stopRejoin = rejoinOnReconnect(socket, jobId);
     const onSection = (data: DocSectionProgressEvent) => {
       if (data.jobId !== jobId) return;
       setSections((prev) => ({ ...prev, [data.section]: data }));
     };
     socket.on("job:doc-section" as never, onSection as never);
     return () => {
+      stopRejoin();
       leave();
       socket.off("job:doc-section" as never, onSection as never);
     };

@@ -205,6 +205,12 @@ export function forgetActiveJob(jobId: string): void {
  * after the first re-subscribes and restarts the wait, and the clock is stopped
  * while the socket is down: nothing can be heard then, and a running job must
  * not be forgotten for it.
+ *
+ * #473 — intended consequence: after a deliberate `socket.disconnect()` with no
+ * reconnect (a logout outside the renewal path), the clock stays stopped, so a
+ * job the server lost stays listed until reload rather than being forgotten
+ * after `REPLAY_WAIT_MS`. Keeping a finished job listed is the lesser mistake
+ * than dropping one that may still be running.
  */
 export function useFollowJobs(jobIds: readonly string[]): void {
   const socket = useSocket();
