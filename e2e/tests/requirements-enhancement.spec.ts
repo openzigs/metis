@@ -193,7 +193,10 @@ test.describe("API: Clarification Dialog (#624)", () => {
     // Issue #438 — no fallback id: answer the round's real question, so a round
     // with no questions fails here instead of submitting to nothing.
     const questionId: string | undefined = state.rounds[0].questions[0]?.id;
-    expect(questionId, "round 1 generated no clarifying question").toBeTruthy();
+    expect(
+      questionId,
+      "round 1 generated no clarifying question — these specs need AI_REPLAY on (the default and CI), which serves the committed fixture",
+    ).toBeTruthy();
     const answerRes = await api.post(`/api/projects/${projectId}/analyses/${analysisId}/clarify`, {
       data: { answers: [buildAnswer(questionId!)], requirements },
     });
