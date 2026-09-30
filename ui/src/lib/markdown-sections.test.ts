@@ -691,6 +691,39 @@ describe("reference links and footnotes in the body across sections (#228)", () 
         "[x]: https://example.com/x",
       ].join("\n"),
     ],
+    // #575 — micromark trims only ASCII whitespace from a label, so an NBSP at
+    // a label edge is part of the label: `[x\u00a0]` and `[x]` are two labels,
+    // and the second definition must not be shadowed as a duplicate of the first.
+    [
+      "a label with an NBSP at its edge is distinct from the same label without it",
+      [
+        "## A",
+        "See [x] and [\u00a0y] and [^n].",
+        "## B",
+        "[x\u00a0]: /nbsp-x",
+        "[x]: /x",
+        "[y]: /y",
+        "[\u00a0y]: /nbsp-y",
+        "",
+        "[^n\u00a0]: NBSP note.",
+        "",
+        "[^n]: Note.",
+      ].join("\n"),
+    ],
+    // …while the ASCII space at either edge is trimmed, as micromark does.
+    [
+      "a label with a space or line ending at its edge matches the label without it",
+      [
+        "## A",
+        "See [ z] and [w ] and [\nv\n] and [^u ].",
+        "## B",
+        "[z]: /z",
+        "[w]: /w",
+        "[v]: /v",
+        "",
+        "[^u]: Note.",
+      ].join("\n"),
+    ],
   ];
 
   it.each(DOCUMENTS)("%s renders exactly as a whole-document render", (_, markdown) => {

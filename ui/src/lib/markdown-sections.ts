@@ -124,10 +124,12 @@ const headingParser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).
 /** A label as the markdown parser matches it: whitespace collapsed, case folded. */
 function normalizeLabel(label: string): string {
   // Lower then upper, exactly as micromark's normalizeIdentifier does: some
-  // characters (e.g. `ẞ`) only fold together through both steps.
+  // characters (e.g. `ẞ`) only fold together through both steps. Trim only the
+  // collapsed space, as it does — not `trim()`, which also strips U+00A0 and
+  // other Unicode space from a label's edges (#575).
   return label
     .replace(/[\t\n\r ]+/g, " ")
-    .trim()
+    .replace(/^ | $/g, "")
     .toLowerCase()
     .toUpperCase();
 }
