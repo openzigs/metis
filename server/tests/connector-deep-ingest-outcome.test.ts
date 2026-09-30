@@ -10,6 +10,7 @@ import {
   deepIngestCompletionMessage,
   deepIngestFailureCount,
   deepIngestReportedFailureCount,
+  syncFailureWarning,
   type DeepIngestOutcome,
 } from "../src/lib/connectors/repo/deep-ingest-outcome.js";
 
@@ -101,5 +102,31 @@ describe("a scheduling warning (#449)", () => {
     expect(deepIngestFailureCount(outcome)).toBe(0);
     expect(deepIngestReportedFailureCount(outcome)).toBe(1);
     expect(deepIngestReportedFailureCount(clean)).toBe(0);
+  });
+});
+
+describe("syncFailureWarning (#498)", () => {
+  const none = { source: { failures: 0 }, metadata: { failures: 0, stepFailed: false } };
+
+  it("has no warning for a Sync with no ingest failures", () => {
+    expect(syncFailureWarning(none)).toBeNull();
+  });
+
+  it("names every failure and says regeneration was skipped", () => {
+    const warning = syncFailureWarning({
+      source: { failures: 2 },
+      metadata: { failures: 1, stepFailed: false },
+    });
+    expect(warning).toBe(
+      "Sync completed with 3 failures: 2 source files could not be ingested; " +
+        "1 repository metadata document could not be ingested. " +
+        "Automatic document regeneration was skipped; run Sync again to retry.",
+    );
+  });
+
+  it("counts a failed metadata step as one failure", () => {
+    expect(syncFailureWarning({ ...none, metadata: { failures: 0, stepFailed: true } })).toMatch(
+      /^Sync completed with 1 failure: repository metadata could not be fetched or ingested\./,
+    );
   });
 });

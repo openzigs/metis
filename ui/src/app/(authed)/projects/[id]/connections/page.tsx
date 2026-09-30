@@ -354,7 +354,9 @@ export default function ConnectionsPage() {
       deepIngest.clearOutcome();
       qc.invalidateQueries({ queryKey: repoKeys.list(projectId) });
       qc.invalidateQueries({ queryKey: suggestedKeys.list(projectId) });
-      // #449 — the sync landed but scheduling regeneration failed: a 200 with a warning.
+      // #449 / #498 — a 200 with a warning: part of the ingest failed, or it
+      // landed but scheduling regeneration failed. The toast is the one
+      // announcement; the inline copy below is deliberately not a live region.
       if (data.warning) toast.warning(data.warning);
       else toast.success("Sync complete");
     },
@@ -977,17 +979,30 @@ export default function ConnectionsPage() {
           ) : null}
           <DeepIngestOutcomeBanner outcome={deepIngest.outcome} />
           {refreshIngestResult ? (
-            <div className="rounded border border-info/40 bg-info-muted p-3 text-sm">
-              <div className="mb-1 font-medium text-info">
-                Sync complete &mdash;{" "}
+            <div
+              className={
+                refreshIngestResult.summary.warning
+                  ? "rounded border border-warning/40 bg-warning-muted p-3 text-sm"
+                  : "rounded border border-info/40 bg-info-muted p-3 text-sm"
+              }
+            >
+              <div
+                className={
+                  refreshIngestResult.summary.warning
+                    ? "mb-1 font-medium text-warning"
+                    : "mb-1 font-medium text-info"
+                }
+              >
+                {refreshIngestResult.summary.warning
+                  ? "Sync finished with a warning"
+                  : "Sync complete"}{" "}
+                &mdash;{" "}
                 {refreshIngestResult.summary.pulled
                   ? `pulled ${refreshIngestResult.summary.filesChanged} changed file${refreshIngestResult.summary.filesChanged === 1 ? "" : "s"}`
                   : "fresh clone (pull failed)"}
               </div>
               {refreshIngestResult.summary.warning ? (
-                <p role="alert" className="mb-1 text-warning">
-                  {refreshIngestResult.summary.warning}
-                </p>
+                <p className="mb-1 text-warning">{refreshIngestResult.summary.warning}</p>
               ) : null}
               <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono text-xs text-foreground">
                 <span>Files re-parsed</span>

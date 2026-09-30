@@ -13,6 +13,7 @@ import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSchedulerBootstrap } from "../scheduler/index.js";
 import { readTaskRecord } from "../scheduler/task-store.js";
+import { tryAcquireConnectorIngest } from "../connectors/ingest-guard.js";
 import { checkIncrementalRegeneration } from "./incremental.js";
 
 const log = createChildLogger("docs-gen-regeneration-scheduling");
@@ -147,6 +148,13 @@ export async function scheduleIncrementalRegeneration(
  * propagate so the task queue retries with backoff. The connector must belong
  * to the task's project — the payload never widens scope — and a connector
  * deleted since leaves nothing to schedule, which is not worth a retry.
+ *
+ * #498 — the step runs under the connector's ingest lease, so a retry woken by
+ * backoff never captures a partial input snapshot in the middle of a later
+ * ingest. While an ingest holds the lease the retry stands down rather than
+ * throwing: that ingest schedules regeneration itself when it lands, or reports
+ * its failure and asks for another run. Throwing instead would spend the few
+ * backoff attempts (seconds apart) against an ingest that runs for minutes.
  */
 export async function retryRegenerationScheduling(
   projectId: string,
@@ -163,5 +171,17 @@ export async function retryRegenerationScheduling(
     });
     return;
   }
-  await checkIncrementalRegeneration(projectId, repoConnectorId);
+  const lease = tryAcquireConnectorIngest(repoConnectorId, SCHEDULE_REGENERATION_TASK);
+  if (!lease) {
+    log.info("Skipping the regeneration scheduling retry: an ingest is running and schedules it", {
+      projectId,
+      connectorId: repoConnectorId,
+    });
+    return;
+  }
+  try {
+    await checkIncrementalRegeneration(projectId, repoConnectorId);
+  } finally {
+    lease.release();
+  }
 }

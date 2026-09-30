@@ -43,8 +43,14 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+/** The failure signals shared by Deep Ingest and Sync (refresh-ingest, #498). */
+export interface IngestFailures {
+  source: { failures: number };
+  metadata: DeepIngestOutcome["metadata"];
+}
+
 /** The ingest failures a run had; non-zero means regeneration was skipped. */
-export function deepIngestFailureCount(outcome: DeepIngestOutcome): number {
+export function deepIngestFailureCount(outcome: IngestFailures): number {
   return (
     outcome.source.failures + outcome.metadata.failures + (outcome.metadata.stepFailed ? 1 : 0)
   );
@@ -71,6 +77,15 @@ export function deepIngestCompletionMessage(outcome: DeepIngestOutcome): string 
     return `Deep ingest completed with a warning: ${outcome.schedulingWarning} ${totals.join(", ")}.`;
   if (failureCount === 0) return `Deep ingest complete: ${totals.join(", ")}.`;
 
+  return (
+    `Deep ingest completed with ${plural(failureCount, "failure")}: ` +
+    `${describeFailures({ source, metadata })}. ` +
+    `Automatic document regeneration was skipped; run the ingest again to retry. ` +
+    `${totals.join(", ")}.`
+  );
+}
+
+function describeFailures({ source, metadata }: IngestFailures): string {
   const failures: string[] = [];
   if (source.failures > 0)
     failures.push(`${plural(source.failures, "source file")} could not be ingested`);
@@ -79,10 +94,18 @@ export function deepIngestCompletionMessage(outcome: DeepIngestOutcome): string 
       `${plural(metadata.failures, "repository metadata document")} could not be ingested`,
     );
   if (metadata.stepFailed) failures.push("repository metadata could not be fetched or ingested");
+  return failures.join("; ");
+}
 
+/**
+ * #498 — the warning a Sync (refresh-ingest) returns when its ingest partly
+ * failed, or `null` for a clean one. Counts only, as for Deep Ingest (#114).
+ */
+export function syncFailureWarning(failures: IngestFailures): string | null {
+  const failureCount = deepIngestFailureCount(failures);
+  if (failureCount === 0) return null;
   return (
-    `Deep ingest completed with ${plural(failureCount, "failure")}: ${failures.join("; ")}. ` +
-    `Automatic document regeneration was skipped; run the ingest again to retry. ` +
-    `${totals.join(", ")}.`
+    `Sync completed with ${plural(failureCount, "failure")}: ${describeFailures(failures)}. ` +
+    `Automatic document regeneration was skipped; run Sync again to retry.`
   );
 }

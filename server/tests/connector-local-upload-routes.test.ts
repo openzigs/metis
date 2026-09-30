@@ -904,7 +904,32 @@ describe("manual connector regeneration callers (#1356)", () => {
         expect(prisma.task.upsert).not.toHaveBeenCalled();
         expect(h.tasks.size).toBe(0);
         expect(scheduler.queue.snapshot().queueDepth).toBe(0);
+        if (caller === "refresh-ingest") {
+          // #498 — a partly failed Sync carries its failure count and a warning,
+          // so the page never reads it as "Sync complete".
+          expect(response.body.data).toMatchObject({
+            regenerationScheduled: false,
+            failureCount: 1,
+            warning: expect.stringMatching(
+              /^Sync completed with 1 failure: .*Automatic document regeneration was skipped/,
+            ),
+          });
+          // #114 — counts only; the exception text stays in the server log.
+          expect(JSON.stringify(response.body)).not.toMatch(/unavailable/i);
+        }
       });
+
+      if (caller === "refresh-ingest") {
+        it("reports no failures and no warning on a clean Sync (#498)", async () => {
+          const response = await ingest();
+          expect(response.status).toBe(200);
+          expect(response.body.data).toMatchObject({
+            regenerationScheduled: true,
+            failureCount: 0,
+          });
+          expect(response.body.data).not.toHaveProperty("warning");
+        });
+      }
 
       it("does not schedule on a rejected source ingestion and allows a successful replay", async () => {
         vi.mocked(ingestSourceAsKnowledge).mockRejectedValueOnce(
@@ -959,6 +984,7 @@ describe("manual connector regeneration callers (#1356)", () => {
           expect(response.body.data).toMatchObject({
             filesChanged: expect.any(Number),
             regenerationScheduled: false,
+            failureCount: 1,
             warning,
           });
         }
