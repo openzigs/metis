@@ -170,4 +170,18 @@ describe("POST /api/projects/:id/code-search (#423)", () => {
     expect(res.status).toBe(200);
     expect(search).toHaveBeenCalledWith("add", "project-a01", { limit: CODE_SEARCH_MAX_LIMIT });
   });
+
+  it("rate-limits per IP ahead of the auth chokepoint", async () => {
+    process.env.CODE_SEARCH_PREAUTH_RATE_LIMIT_MAX = "1";
+    try {
+      await request(app).post("/api/projects/project-a01/code-search").send({ query: "add" });
+      const limited = await request(app)
+        .post("/api/projects/project-a01/code-search")
+        .send({ query: "add" });
+      expect(limited.status).toBe(429);
+      expect(limited.body.error.code).toBe("CODE_SEARCH_RATE_LIMITED");
+    } finally {
+      delete process.env.CODE_SEARCH_PREAUTH_RATE_LIMIT_MAX;
+    }
+  });
 });

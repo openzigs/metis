@@ -64,7 +64,10 @@ import {
 import { PublishError } from "../lib/publishing/types.js";
 import { generateOverview, OverviewError } from "../lib/code-graph/overview.js";
 import { createDefaultCodeSearcher } from "../lib/code-graph/project-code-searcher.js";
-import { codeSearchRateLimiter } from "../middleware/code-search-rate-limit.js";
+import {
+  codeSearchPreAuthRateLimiter,
+  codeSearchRateLimiter,
+} from "../middleware/code-search-rate-limit.js";
 import { jobEvents, genericFailureMessage } from "../lib/socket/job-events.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -103,6 +106,9 @@ export function projectsRouter(): Router {
   // matches `/:id/<sub>...` but NOT the single-segment base `/:id` routes, so it
   // is purely additive — no double-check on the #673-scoped verbs. Non-members
   // of the project's workspace get a 404 (no existence oracle); admins bypass.
+  // #423 — per-IP ceiling for code search, mounted AHEAD of the chokepoint
+  // below so it runs before authentication (CodeQL js/missing-rate-limiting).
+  r.use("/:id/code-search", codeSearchPreAuthRateLimiter);
   r.use("/:id/:sub", requireAuth, requireProjectAccess("id"));
 
   // ── List ────────────────────────────────────────────────────────────────

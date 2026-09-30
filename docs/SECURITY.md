@@ -61,7 +61,7 @@
 | Connector mutations | 30 / 5min / user | `CONNECTOR_RATE_LIMIT_*` |
 | Document upload | 10 / 1min / user | `UPLOAD_RATE_LIMIT_*` |
 | Scheduler `runNow` | 10 / 5min / user | `SCHEDULER_RUN_RATE_LIMIT_*` |
-| Project code search | 300 / 15min / user | `CODE_SEARCH_RATE_LIMIT_*` |
+| Project code search | 300 / 15min / user, plus 1,200 / 15min / IP before auth | `CODE_SEARCH_RATE_LIMIT_*`, `CODE_SEARCH_PREAUTH_RATE_LIMIT_MAX` |
 
 The `/api/auth/*` credential-stuffing limiter exempts two unauthenticated,
 read-only, side-effect-free `GET` endpoints that the `/login` page polls before
