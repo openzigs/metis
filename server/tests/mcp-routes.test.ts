@@ -580,6 +580,12 @@ describe("/api/mcp", () => {
         .set("Authorization", `Bearer ${reader}`)
         .send({ env: { GITHUB_TOKEN: "ghp_X" } });
       expect(patch.status).toBe(403);
+      // #537 panel: the re-bind route carries the same gate.
+      const rebind = await request(app)
+        .post("/api/mcp/mcp_1/rebind-secrets")
+        .set("Authorization", `Bearer ${reader}`)
+        .send({});
+      expect(rebind.status).toBe(403);
       expect(secretRows).toHaveLength(0);
     });
   });
