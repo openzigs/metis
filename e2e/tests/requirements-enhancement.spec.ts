@@ -20,6 +20,13 @@ import { test, expect, request, type APIRequestContext } from "@playwright/test"
 import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user.js";
 import { apiBase } from "../fixtures/api-base.js";
 import { seedCompletedAnalysis } from "../fixtures/review-helpers.js";
+import {
+  ANSWER_TEXT,
+  CLARIFYING_QUESTION,
+  REQUIREMENT_ID,
+  START_REQUIREMENTS,
+  buildAnswer,
+} from "../fixtures/clarify-loop.js";
 import { LoginPage } from "../pages/login.page.js";
 import { AnalysisEnhancementPage } from "../pages/analysis-enhancement.page.js";
 
@@ -140,36 +147,18 @@ test.describe("API: Clarification Dialog (#624)", () => {
     await api.dispose();
   });
 
-  // Issue #403 — the current `StructuredRequirements` shape. The previous
-  // payload (`body` / `ambiguityFields`) predated the type and the assertions
-  // accepted a 500, which hid #382 in CI.
-  const clarifyRequirements = (id: string, fields: string[]) => ({
-    requirements: [
-      {
-        id,
-        title: "Search functionality",
-        description: "Users should be able to search",
-        type: "functional",
-        stakeholders: [],
-        priority: "should-have",
-        ambiguities: fields.map((field) => ({
-          field,
-          description: `The ${field} is not specified.`,
-          suggestedQuestion: `What is the ${field}?`,
-        })),
-        evidenceNeeds: [],
-        rawSource: "e2e",
-      },
-    ],
-    totalAmbiguities: fields.length,
-    totalEvidenceNeeds: 0,
-  });
-
+  // Issue #438 — both specs drive the committed record/replay requirement
+  // (`START_REQUIREMENTS`, #235). Its question-generation call is served by a
+  // replay fixture keyed on this exact payload, so round 1 MUST carry the
+  // fixture's question. A hand-built payload keyed nothing, fell through to the
+  // offline stub's prose, and produced an empty round — which the old
+  // assertions accepted, so a regression to "no questions generated" stayed
+  // green. (The payload is the current `StructuredRequirements` shape, #403.)
   // AC: POST /api/projects/:projectId/analysis/:analysisId/clarify
   test("should start clarification dialog with requirements payload", async () => {
     const api = await authedApi(token);
     const res = await api.post(`/api/projects/${projectId}/analyses/${analysisId}/clarify`, {
-      data: { requirements: clarifyRequirements("req-1", ["authentication-method"]) },
+      data: { requirements: START_REQUIREMENTS },
     });
     expect(res.status()).toBe(200);
     const body = await res.json();
@@ -179,33 +168,48 @@ test.describe("API: Clarification Dialog (#624)", () => {
     expect(data).toHaveProperty("maxRounds");
     expect(data.completed).toBe(false);
     expect(data.rounds).toHaveLength(1);
+    expect(data.rounds[0].questions).toEqual([
+      expect.objectContaining({
+        requirementId: CLARIFYING_QUESTION.requirementId,
+        ambiguityField: CLARIFYING_QUESTION.ambiguityField,
+        question: CLARIFYING_QUESTION.question,
+      }),
+    ]);
     await api.dispose();
   });
 
   // AC: Multi-turn dialog flow — submit answers
   test("should accept answer submissions", async () => {
     const api = await authedApi(token);
-    const requirements = clarifyRequirements("req-mt-1", ["search-scope", "result-format"]);
+    const requirements = START_REQUIREMENTS;
     const startRes = await api.post(`/api/projects/${projectId}/analyses/${analysisId}/clarify`, {
       data: { requirements },
     });
     expect(startRes.status()).toBe(200);
-    const state = (await startRes.json()).data;
+    const startBody = await startRes.json();
+    const state = startBody.data ?? startBody;
     expect(state.rounds).toHaveLength(1);
 
-    // The offline stub may generate no questions; the submit contract is the
-    // same either way, so answer the first real question when there is one.
-    const questionId: string = state.rounds[0].questions[0]?.id ?? "q-offline";
+    // Issue #438 — no fallback id: answer the round's real question, so a round
+    // with no questions fails here instead of submitting to nothing.
+    const questionId: string | undefined = state.rounds[0].questions[0]?.id;
+    expect(
+      questionId,
+      "round 1 generated no clarifying question — these specs need AI_REPLAY on (the default and CI), which serves the committed fixture",
+    ).toBeTruthy();
     const answerRes = await api.post(`/api/projects/${projectId}/analyses/${analysisId}/clarify`, {
-      data: {
-        answers: [{ questionId, answer: "Full-text search across all documents" }],
-        requirements,
-      },
+      data: { answers: [buildAnswer(questionId!)], requirements },
     });
     expect(answerRes.status()).toBe(200);
-    const result = (await answerRes.json()).data;
+    const answerBody = await answerRes.json();
+    const result = answerBody.data ?? answerBody;
     expect(result.state.analysisId).toBe(analysisId);
-    expect(result.updatedRequirements.requirements[0].id).toBe("req-mt-1");
+    // The answer is stamped onto the question it answered (#1104).
+    expect(result.state.rounds[0].questions[0]).toMatchObject({
+      id: questionId,
+      answer: ANSWER_TEXT,
+    });
+    expect(result.updatedRequirements.requirements[0].id).toBe(REQUIREMENT_ID);
     await api.dispose();
   });
 

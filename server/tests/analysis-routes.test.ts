@@ -1033,6 +1033,78 @@ describe("POST /api/projects/:projectId/analyses/:id/clarify (Epic #922)", () =>
       expect(dialogStateStore.has(aId)).toBe(false);
     });
 
+    // Issue #438 — `title`, `description` and the ambiguity text are optional
+    // on the wire (the extractor itself emits `title: ""` for a description-only
+    // requirement), but the dialog interpolates them straight into its prompts.
+    // They default to "" at the boundary, so a sparse body never reaches the
+    // model — or `Analysis.metadata` — as the literal text "undefined".
+    const promptText = (): string =>
+      (providerChat.mock.calls as unknown as Array<[Array<{ content: string }>]>)
+        .flatMap(([messages]) => messages.map((m) => m.content))
+        .join("\n");
+
+    it("defaults a missing title and ambiguity description before the question prompt", async () => {
+      const aId = seedAnalysis({ agentKeys: ["document"] });
+      providerChat.mockClear();
+      const res = await post(aId, {
+        requirements: { requirements: [{ id: "req-bare", ambiguities: [{ field: "scope" }] }] },
+      });
+      expect(res.status).toBe(200);
+      expect(providerChat).toHaveBeenCalled();
+      const prompt = promptText();
+      expect(prompt).toContain('Requirement "" (id: req-bare)');
+      expect(prompt).toContain("  - scope: ");
+      expect(prompt).not.toContain("undefined");
+    });
+
+    it("defaults a missing title and description before the resolution prompt and persist", async () => {
+      const aId = seedAnalysis({ agentKeys: ["document"] });
+      dialogStateStore.set(
+        aId,
+        JSON.stringify({
+          analysisId: aId,
+          currentRound: 1,
+          maxRounds: 3,
+          rounds: [
+            {
+              round: 1,
+              questions: [
+                {
+                  id: "q-1",
+                  requirementId: "req-bare",
+                  ambiguityField: "scope",
+                  question: "What is in scope?",
+                  context: "",
+                },
+              ],
+              answers: [],
+            },
+          ],
+          resolvedAmbiguities: [],
+          escalatedToSonnet: false,
+          completed: false,
+        }),
+      );
+      providerChat.mockClear();
+      const res = await post(aId, {
+        requirements: { requirements: [{ id: "req-bare", ambiguities: [{ field: "scope" }] }] },
+        answers: [{ questionId: "q-1", answer: "Everything" }],
+      });
+      expect(res.status).toBe(200);
+      const prompt = promptText();
+      expect(prompt).toContain("Requirement: \nDescription: \n");
+      expect(prompt).not.toContain("undefined");
+      const meta = JSON.parse(analyses.get(aId)!.metadata as string) as {
+        structuredRequirements: { requirements: Array<Record<string, unknown>> };
+      };
+      expect(meta.structuredRequirements.requirements[0]).toMatchObject({
+        id: "req-bare",
+        title: "",
+        description: "",
+        ambiguities: [{ field: "scope", description: "", suggestedQuestion: "" }],
+      });
+    });
+
     it("preserves requirement fields the dialog does not read when persisting", async () => {
       const aId = seedAnalysis({ agentKeys: ["document"] });
       const requirementsBody = {
