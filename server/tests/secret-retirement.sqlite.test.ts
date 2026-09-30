@@ -758,16 +758,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("#591 — one run re-checks at most batchSize secrets, oldest mark first", async () => {
       const now = new Date();
-      const ids: string[] = [];
-      for (const ageDays of [60, 59, 58]) {
+      // Created newest-first, so insertion order (what SQLite scans without an
+      // ORDER BY) is the opposite of mark age: dropping `orderBy` picks the wrong two.
+      const byAge = new Map<number, string>();
+      for (const ageDays of [58, 59, 60]) {
         const s = await freshSecret();
         await db.secret.update({
           where: { id: s.id },
           data: { replacedKeptAt: new Date(now.getTime() - ageDays * DAY) },
         });
-        ids.push(s.id);
+        byAge.set(ageDays, s.id);
       }
-      const [oldest, middle, newest] = ids;
+      const [oldest, middle, newest] = [byAge.get(60)!, byAge.get(59)!, byAge.get(58)!];
 
       const result = await sweepReplacedSecrets(now, { batchSize: 2 });
 
