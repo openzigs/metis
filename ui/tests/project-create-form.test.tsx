@@ -14,6 +14,7 @@ import userEvent from "@testing-library/user-event";
 import { ProjectCreateForm } from "@/components/projects/project-create-form";
 import { ApiError } from "@/lib/api-client";
 import { makeWrapper } from "./test-utils";
+import { useRouter } from "next/navigation";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -28,6 +29,7 @@ const create = projectsApi.create as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   create.mockReset();
+  vi.mocked(useRouter()).push.mockClear();
   vi.mocked(toast.success).mockReset();
   vi.mocked(toast.error).mockReset();
 });
@@ -295,5 +297,29 @@ describe("ProjectCreateForm", () => {
         }),
       ),
     );
+  });
+
+  // #370 — a successful Create lands on the new project's Overview, which is
+  // what makes it the active project in the breadcrumb and switcher.
+  it("navigates to the new project's Overview after a successful create (#370)", async () => {
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    create.mockResolvedValueOnce({ id: "p-new", name: "Acme", slug: "acme" });
+    renderForm(onCreated);
+    await user.type(screen.getByTestId("project-name-input"), "Acme");
+    await user.click(screen.getByTestId("project-create-submit"));
+    await waitFor(() => expect(useRouter().push).toHaveBeenCalledWith("/projects/p-new"));
+    expect(useRouter().push).toHaveBeenCalledTimes(1);
+    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "p-new" }));
+  });
+
+  it("stays put when the create fails (#370)", async () => {
+    const user = userEvent.setup();
+    create.mockRejectedValueOnce(new ApiError(500, "boom", "INTERNAL_ERROR"));
+    renderForm();
+    await user.type(screen.getByTestId("project-name-input"), "Acme");
+    await user.click(screen.getByTestId("project-create-submit"));
+    await waitFor(() => expect(screen.getByText(/Failed to create project/i)).toBeInTheDocument());
+    expect(useRouter().push).not.toHaveBeenCalled();
   });
 });
