@@ -4,7 +4,7 @@ section: Fixed
 ---
 
 - On a provider that cannot run Claude tier models (DeepSeek, OpenAI, Azure or a
-  local runtime without a model-profile mapping for the tier), auto-mode agents
+  local runtime, even with a leftover Bedrock profile setting), auto-mode agents
   and the analysis form's Model card now use the provider's configured model
   instead of a Claude model id, and a forced tier resolves the same way on the
   run as on the card; Force Fable and Force Opus send their Claude model id.

@@ -257,15 +257,15 @@ describe("ModelRouter — active provider (#512)", () => {
     expect(result.wasDowngraded).toBe(false);
   });
 
-  it("asks the provider per model id: a mapped tier id is kept, an unmapped one falls back", () => {
+  it("asks the provider per model id: a served tier id is kept, an unserved one falls back", () => {
     const partial = {
-      key: "openai",
-      model: "gpt-4.1",
+      key: "stub-adapter",
+      model: "stub-model",
       servesRouterModel: (id: string) => id === HAIKU_MODEL_ID,
     };
     const router = new ModelRouter({ provider: partial });
     expect(router.select(simpleProfile).modelId).toBe(HAIKU_MODEL_ID);
-    expect(router.select(complexProfile).modelId).toBe("gpt-4.1");
+    expect(router.select(complexProfile).modelId).toBe("stub-model");
   });
 
   it("treats a provider that cannot answer (no servesRouterModel) as non-Claude", () => {

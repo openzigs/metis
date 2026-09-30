@@ -6,7 +6,8 @@
 import { describe, expect, it } from "vitest";
 import { AnthropicProvider } from "./anthropic-provider.js";
 import { BedrockDirectProvider } from "./bedrock-direct-provider.js";
-import { HAIKU_MODEL_ID, SONNET_MODEL_ID } from "../model-router.js";
+import { HAIKU_MODEL_ID, ModelRouter, SONNET_MODEL_ID } from "../model-router.js";
+import type { TaskProfile } from "../types.js";
 import { ConfigService } from "../../config/config-service.js";
 
 /** A ConfigService reading only the given env — no DB, no vault, no process.env. */
@@ -91,13 +92,45 @@ describe("servesRouterModel (#512)", () => {
     expect(direct("bedrock-gateway").servesRouterModel(SONNET_MODEL_ID)).toBe(true);
   });
 
-  it.each(["openai", "azure", "local-gemma"])("%s does not serve an unmapped tier id", (key) => {
+  it.each(["openai", "azure", "local-gemma"])("%s does not serve a Claude tier id", (key) => {
     expect(direct(key).servesRouterModel(SONNET_MODEL_ID)).toBe(false);
   });
 
-  it("an OpenAI-compatible provider serves a tier id its modelProfileMap maps", () => {
-    const p = direct("openai", { [HAIKU_MODEL_ID]: "gpt-4.1-mini" });
-    expect(p.servesRouterModel(HAIKU_MODEL_ID)).toBe(true);
-    expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(false);
+  // Adversarial panel round 2 on PR #523 — modelProfileMap is built for every
+  // provider, but only from the BEDROCK_*_PROFILE settings, so its values are
+  // Bedrock inference-profile ARNs. A leftover entry must not make OpenAI,
+  // Azure or a local runtime claim a Claude tier id.
+  describe("a leftover Bedrock profile mapping", () => {
+    const ARN = "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.sonnet";
+    const leftover = { [SONNET_MODEL_ID]: ARN, [HAIKU_MODEL_ID]: `${ARN}-haiku` };
+    const complex: TaskProfile = {
+      tokenEstimate: 10_000,
+      reasoningDepth: "complex",
+      latencySLA: "background",
+      taskType: "synthesis",
+    };
+
+    it.each(["openai", "azure", "local-gemma"])("does not make %s serve the tier id", (key) => {
+      const p = direct(key, leftover);
+      expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(false);
+      expect(p.servesRouterModel(HAIKU_MODEL_ID)).toBe(false);
+    });
+
+    it("the Model card and the run use openai's configured model, not the ARN", () => {
+      const router = new ModelRouter({ provider: direct("openai", leftover) });
+      const card = router.select(complex);
+      expect(card.modelId).toBe("configured-model");
+      expect(card.estimatedCost).toBeNull();
+      expect(router.resolveRunModel("force-sonnet")).toBe("configured-model");
+      expect(JSON.stringify(card)).not.toContain("arn:aws:bedrock");
+    });
+
+    it("the Bedrock gateway still serves the mapped tier id", () => {
+      const gateway = direct("bedrock-gateway", leftover);
+      expect(gateway.servesRouterModel(SONNET_MODEL_ID)).toBe(true);
+      const router = new ModelRouter({ provider: gateway });
+      expect(router.select(complex).modelId).toBe(SONNET_MODEL_ID);
+      expect(router.resolveRunModel("force-sonnet")).toBe(SONNET_MODEL_ID);
+    });
   });
 });

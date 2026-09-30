@@ -968,13 +968,16 @@ export class OpenAICompatibleProvider implements AIProvider {
   }
 
   /**
-   * #512 — the Bedrock gateway serves the router's Claude tier ids; any other
-   * OpenAI-compatible endpoint (OpenAI, Azure, a local runtime, DeepSeek) only
-   * when `modelProfileMap` maps the id onto something it does serve —
-   * {@link resolveModel} otherwise sends the Claude id verbatim.
+   * #512 — only the Bedrock gateway serves the router's Claude tier ids. Any
+   * other OpenAI-compatible endpoint (OpenAI, Azure, a local runtime) does not,
+   * whatever `modelProfileMap` holds: that map is built for every provider, but
+   * only from the `BEDROCK_*_PROFILE` / `BEDROCK_MODEL_PROFILES` settings, so
+   * its values are Bedrock inference-profile ARNs. A leftover entry on OpenAI
+   * or Azure would otherwise keep the Claude tier and send an ARN to a
+   * non-Bedrock endpoint. The router then uses the configured model.
    */
-  servesRouterModel(modelId: string): boolean {
-    return this.key === "bedrock-gateway" || this.modelProfileMap[modelId] !== undefined;
+  servesRouterModel(_modelId: string): boolean {
+    return this.key === "bedrock-gateway";
   }
 
   /**
