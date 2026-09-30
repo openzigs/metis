@@ -452,7 +452,7 @@ export function workspacesRouter(): Router {
     const invite = await prisma.workspaceInvite.findUnique({
       where: { token },
       include: {
-        workspace: { select: { id: true, name: true, slug: true } },
+        workspace: { select: { id: true, name: true, slug: true, deletedAt: true } },
         invitedBy: { select: { displayName: true } },
       },
     });
@@ -463,14 +463,19 @@ export function workspacesRouter(): Router {
 
     const expired = invite.expiresAt < new Date();
     const consumed = !!invite.consumedAt;
+    // A soft-deleted workspace keeps its invites (#563): report the invite as not
+    // valid, and withhold the workspace and inviter a token holder can no longer join (#579).
+    const workspaceDeleted = !!invite.workspace.deletedAt;
+    const { deletedAt: _deletedAt, ...workspace } = invite.workspace;
 
     res.json(
       ok({
-        valid: !expired && !consumed,
+        valid: !expired && !consumed && !workspaceDeleted,
         expired,
         consumed,
-        workspace: invite.workspace,
-        invitedBy: invite.invitedBy.displayName,
+        workspaceDeleted,
+        workspace: workspaceDeleted ? null : workspace,
+        invitedBy: workspaceDeleted ? null : invite.invitedBy.displayName,
         email: invite.email,
         role: invite.role,
         expiresAt: invite.expiresAt,
