@@ -5,7 +5,8 @@ section: Added
 
 - A read-only report, `pnpm --filter @metis/server publishing:dedup-leftovers`, lists what the
   issue-draft duplicate cleanup left for you to decide: duplicate drafts it retired that had
-  already been published (with the GitHub or Jira issue to close if you do not want it), and
+  already been published (with the GitHub or Jira issue to close if you do not want it, and its
+  status, so an issue left behind by a publish marked failed is listed and labelled too), and
   drafts whose parent epic was retired. Retirees are grouped by deletion time and archived
   projects are marked. It changes nothing; add `-- --json` for machine-readable output. Retired
   drafts keep their link to the issue they published, so that issue is still attributed to the

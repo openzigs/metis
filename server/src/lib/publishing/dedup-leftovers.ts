@@ -47,6 +47,13 @@ export interface PublishedRetiree {
     issueNumber: number;
     htmlUrl: string;
     batchId: string;
+    /**
+     * The published_issues status. "failed" still means a live remote issue:
+     * since #1091 the GitHub publisher records the real issue on a row whose
+     * create succeeded and a later step failed, and rollback closes it only
+     * when more than half the batch failed.
+     */
+    status: string;
   }>;
 }
 
@@ -126,9 +133,25 @@ export async function findDedupLeftovers(prisma: DedupLeftoversPrisma): Promise<
     .map(([at, count]) => ({ deletedAt: new Date(at).toISOString(), count }));
   const retireeIds = [...retirees.keys()];
 
+  // A failed row counts only if it still points at a real remote issue
+  // (#1091). A failure before the remote write stores 0/"" (Jira stores an
+  // empty key and URL), so those stay out.
   const issues = await prisma.publishedIssue.findMany({
-    where: { draftId: { in: retireeIds }, status: { in: ["created", "updated"] } },
-    select: { draftId: true, destination: true, issueNumber: true, htmlUrl: true, batchId: true },
+    where: {
+      draftId: { in: retireeIds },
+      OR: [
+        { status: { in: ["created", "updated"] } },
+        { status: "failed", OR: [{ issueNumber: { gt: 0 } }, { htmlUrl: { not: "" } }] },
+      ],
+    },
+    select: {
+      draftId: true,
+      destination: true,
+      issueNumber: true,
+      htmlUrl: true,
+      batchId: true,
+      status: true,
+    },
     orderBy: [{ draftId: "asc" }, { issueNumber: "asc" }],
   });
   const publishedRetirees: PublishedRetiree[] = [];
@@ -151,6 +174,7 @@ export async function findDedupLeftovers(prisma: DedupLeftoversPrisma): Promise<
       issueNumber: issue.issueNumber,
       htmlUrl: issue.htmlUrl,
       batchId: issue.batchId,
+      status: issue.status,
     });
   }
 
@@ -207,7 +231,10 @@ export function formatDedupLeftovers(report: DedupLeftovers): string {
       `  ${project(r.projectId, r.projectArchived)}: draft ${t(r.retiredDraftId)} (kept: ${t(r.survivorDraftId)}) "${t(r.title)}"`,
     );
     for (const i of r.issues) {
-      lines.push(`    ${t(i.destination)} #${t(i.issueNumber)} ${t(i.htmlUrl)}`);
+      const note = i.status === "failed" ? " (publish marked failed; remote issue exists)" : "";
+      lines.push(
+        `    ${t(i.destination)} #${t(i.issueNumber)} ${t(i.htmlUrl)} [${t(i.status)}]${note}`,
+      );
     }
   }
   lines.push(

@@ -37,8 +37,13 @@ const ISSUES: Array<[string, string, string, number, string, string]> = [
   // which must never be named as its survivor (pinned deterministically by the
   // edge-case suite below, which does not depend on row order).
   ["pi_b", "b2", "d_b", 12, "updated", "github"],
-  // A failed publish left no remote issue.
+  // A publish that failed before the remote write stored 0 and an empty URL:
+  // no remote issue exists, so it is not a leftover.
   ["pi_a", "b2", "d_a", 0, "failed", "github"],
+  // #1091: the remote create succeeded and a later step failed, so the row is
+  // "failed" but carries the real issue, which still exists (rollback closes
+  // it only when more than half the batch failed). It IS a leftover.
+  ["pi_e", "b1", "d_e", 14, "failed", "github"],
   // A live draft's issue is not a leftover.
   ["pi_c", "b1", "d_c", 13, "created", "github"],
 ];
@@ -50,7 +55,31 @@ const EXPECTED_PUBLISHED: DedupLeftovers["publishedRetirees"] = [
     survivorDraftId: "d_c",
     title: "T",
     projectArchived: false,
-    issues: [{ destination: "github", issueNumber: 12, htmlUrl: "https://gh/12", batchId: "b2" }],
+    issues: [
+      {
+        destination: "github",
+        issueNumber: 12,
+        htmlUrl: "https://gh/12",
+        batchId: "b2",
+        status: "updated",
+      },
+    ],
+  },
+  {
+    projectId: "p1",
+    retiredDraftId: "d_e",
+    survivorDraftId: "d_d",
+    title: "T",
+    projectArchived: false,
+    issues: [
+      {
+        destination: "github",
+        issueNumber: 14,
+        htmlUrl: "https://gh/14",
+        batchId: "b1",
+        status: "failed",
+      },
+    ],
   },
   {
     projectId: "p1",
@@ -59,8 +88,20 @@ const EXPECTED_PUBLISHED: DedupLeftovers["publishedRetirees"] = [
     title: "T",
     projectArchived: false,
     issues: [
-      { destination: "jira", issueNumber: 7, htmlUrl: "https://gh/7", batchId: "b2" },
-      { destination: "github", issueNumber: 11, htmlUrl: "https://gh/11", batchId: "b1" },
+      {
+        destination: "jira",
+        issueNumber: 7,
+        htmlUrl: "https://gh/7",
+        batchId: "b2",
+        status: "updated",
+      },
+      {
+        destination: "github",
+        issueNumber: 11,
+        htmlUrl: "https://gh/11",
+        batchId: "b1",
+        status: "created",
+      },
     ],
   },
 ];
@@ -123,7 +164,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             draftId,
             n,
             `node_${id}`,
-            `https://gh/${n}`,
+            n > 0 ? `https://gh/${n}` : "",
             status,
             destination,
             SEED_TIME,
@@ -151,6 +192,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(r.retiredByDeletedAt[1].count).toBe(6);
       expect(r.retiredByDeletedAt[1].deletedAt > r.retiredByDeletedAt[0].deletedAt).toBe(true);
       expect(r.publishedRetirees).toEqual(EXPECTED_PUBLISHED);
+      // The failed row that left no remote issue (d_a, #0) is not listed.
+      expect(r.publishedRetirees.map((p) => p.retiredDraftId)).not.toContain("d_a");
       expect(r.orphanedChildren).toEqual([
         {
           projectId: "p1",
@@ -328,7 +371,7 @@ describe("#396 — formatDedupLeftovers", () => {
         { deletedAt: "2026-09-01T00:00:00.000Z", count: 1 },
         { deletedAt: "2026-10-01T12:00:00.000Z", count: 2 },
       ],
-      publishedRetirees: [EXPECTED_PUBLISHED[1]],
+      publishedRetirees: [EXPECTED_PUBLISHED[1], EXPECTED_PUBLISHED[2]],
       orphanedChildren: [
         {
           projectId: "p1",
@@ -352,10 +395,12 @@ describe("#396 — formatDedupLeftovers", () => {
       "3 soft-deleted draft(s) have a live twin, by deletedAt (#369 retired its duplicates at one timestamp; any other is a separate soft-delete):",
       "  2026-09-01T00:00:00.000Z: 1",
       "  2026-10-01T12:00:00.000Z: 2",
-      "1 retired draft(s) still have a published issue (close the duplicate if it is unwanted):",
+      "2 retired draft(s) still have a published issue (close the duplicate if it is unwanted):",
+      '  project p1: draft d_e (kept: d_d) "T"',
+      "    github #14 https://gh/14 [failed] (publish marked failed; remote issue exists)",
       '  project p1: draft d_p2 (kept: d_p1) "T"',
-      "    jira #7 https://gh/7",
-      "    github #11 https://gh/11",
+      "    jira #7 https://gh/7 [updated]",
+      "    github #11 https://gh/11 [created]",
       "2 live draft(s) name a retired parent:",
       "  project p1: draft c_live -> d_e (apply migration #402 to repoint to d_d)",
       "  project p1: draft d_s2 -> d_s1 (it is the kept draft; shown as parentless)",
@@ -381,6 +426,7 @@ describe("#396 — formatDedupLeftovers never passes control characters to the t
             issueNumber: 1,
             htmlUrl: `https://x/\r\nINJECTED`,
             batchId: "b",
+            status: `created\u001b[2J`,
           },
         ],
       },
