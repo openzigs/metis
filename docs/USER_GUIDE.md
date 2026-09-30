@@ -2811,6 +2811,14 @@ The `/vault` page is split into two panels:
      place of the button. Every attempt is audited.
    - **Rotate** — submits a new value via `POST /api/vault/:id/rotate`,
      bumps the key version, and clears any previously revealed plaintext.
+     If another user created the secret, the page first shows who owns it
+     and the connectors, MCP servers and Jira connections it is bound to;
+     it rotates only after **Rotate anyway**, because the owner's resources
+     will send your value to the hosts they chose. Through the API the
+     request is refused with `409 VAULT_ROTATE_FOREIGN_OWNER` (owner and
+     bindings in `error.details`) unless it sets `confirmForeignOwner: true`;
+     the `vault.rotate` audit row then records `foreignOwnerConfirmed` and
+     `ownerId`.
    - **Audit** — lists the recent `vault.{reveal,read,rotate,delete,write}`
      rows for the entry.
    - **Delete** — soft-removes the entry (terminal — restoring requires a

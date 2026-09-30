@@ -47,6 +47,19 @@ describe("vaultApi", () => {
     });
   });
 
+  it("#482 — rotate() sends confirmForeignOwner only when asked to", async () => {
+    await vaultApi.rotate("sec_1", "fresh", { confirmForeignOwner: true });
+    expect(apiFetchMock).toHaveBeenLastCalledWith("/vault/sec_1/rotate", {
+      method: "POST",
+      body: { value: "fresh", confirmForeignOwner: true },
+    });
+    await vaultApi.rotate("sec_1", "fresh", { confirmForeignOwner: false });
+    expect(apiFetchMock).toHaveBeenLastCalledWith("/vault/sec_1/rotate", {
+      method: "POST",
+      body: { value: "fresh" },
+    });
+  });
+
   it("reveal() hits the canonical reveal path", async () => {
     await vaultApi.reveal("sec_1");
     expect(apiFetchMock).toHaveBeenCalledWith("/vault/sec_1/reveal");

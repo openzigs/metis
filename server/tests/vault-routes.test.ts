@@ -87,6 +87,8 @@ vi.mock("../src/lib/prisma.js", async () => {
       ),
     },
     userRole: {},
+    // #482 — the rotate route reads the owner first; no row = not a foreign secret.
+    secret: { findFirst: vi.fn(async () => null) },
     auditLog: {
       create: vi.fn(async () => ({})),
       findMany: vi.fn(async () => [

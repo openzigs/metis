@@ -29,6 +29,7 @@ function asRole(role: Role) {
 }
 
 vi.mock("@/lib/vault-api", () => ({
+  VAULT_ROTATE_FOREIGN_OWNER: "VAULT_ROTATE_FOREIGN_OWNER",
   vaultApi: {
     list: vi.fn(),
     create: vi.fn(),
@@ -196,6 +197,94 @@ describe("<VaultPage />", () => {
     });
     fireEvent.click(screen.getByTestId("vault-entry-rotate-submit"));
     await waitFor(() => expect(rotateMock).toHaveBeenCalledWith("sec_1", "ghp_new"));
+  });
+
+  describe("#482 — rotating another user's secret", () => {
+    const foreign = {
+      secretId: "sec_1",
+      owner: { id: "u-coord", username: "cora", displayName: "Cora Coordinator" },
+      bindings: [
+        {
+          type: "db_connector",
+          id: "db1",
+          label: "Coord DB",
+          projectId: "p1",
+          destination: "postgres://db.coord.example:5432",
+        },
+        { type: "mcp_server", id: "m1", label: "Coord MCP", projectId: null, destination: null },
+      ],
+    };
+    const refuse = (details: unknown = foreign) =>
+      new ApiError(
+        409,
+        "This secret belongs to Cora Coordinator.",
+        "VAULT_ROTATE_FOREIGN_OWNER",
+        details,
+      );
+
+    async function submitRotate(value = "ghp_admin") {
+      renderPage();
+      await waitFor(() => expect(screen.getByTestId("vault-list")).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId("vault-row-open-sec_1"));
+      fireEvent.change(screen.getByTestId("vault-entry-rotate-input"), { target: { value } });
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-submit"));
+    }
+
+    it("shows the owner and bindings, and Rotate anyway resends with the confirm flag", async () => {
+      rotateMock.mockRejectedValueOnce(refuse()).mockResolvedValueOnce(entry({ keyVersion: 2 }));
+      await submitRotate();
+      const panel = await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      expect(within(panel).getByText("Cora Coordinator")).toBeInTheDocument();
+      const bindings = within(panel).getByTestId("vault-entry-rotate-bindings");
+      expect(bindings).toHaveTextContent("Coord DB — postgres://db.coord.example:5432");
+      expect(bindings).toHaveTextContent("Coord MCP");
+      expect(screen.getByTestId("vault-entry-rotate-submit")).toBeDisabled();
+
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-confirm"));
+      await waitFor(() =>
+        expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
+          confirmForeignOwner: true,
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument(),
+      );
+      expect(rotateMock).toHaveBeenNthCalledWith(1, "sec_1", "ghp_admin");
+    });
+
+    it("says so when the secret is not bound anywhere, and Cancel dismisses without rotating", async () => {
+      rotateMock.mockRejectedValueOnce(refuse({ ...foreign, bindings: [] }));
+      await submitRotate();
+      const panel = await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      expect(panel).toHaveTextContent("not bound to any connector or server");
+      fireEvent.click(screen.getByTestId("vault-entry-rotate-cancel"));
+      expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument();
+      expect(rotateMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("editing the value dismisses the confirmation", async () => {
+      rotateMock.mockRejectedValueOnce(refuse());
+      await submitRotate();
+      await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      fireEvent.change(screen.getByTestId("vault-entry-rotate-input"), { target: { value: "x" } });
+      expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument();
+    });
+
+    it("falls back to the username when the owner has no display name", async () => {
+      rotateMock.mockRejectedValueOnce(
+        refuse({ ...foreign, owner: { id: "u-coord", username: "cora", displayName: null } }),
+      );
+      await submitRotate();
+      const panel = await screen.findByTestId("vault-entry-rotate-foreign-owner");
+      expect(within(panel).getByText("cora")).toBeInTheDocument();
+    });
+
+    it("any other rotate error is shown as a plain message", async () => {
+      rotateMock.mockRejectedValueOnce(new ApiError(404, "Secret not found", "SECRET_NOT_FOUND"));
+      await submitRotate();
+      expect(await screen.findByText("Secret not found")).toBeInTheDocument();
+      expect(screen.queryByTestId("vault-entry-rotate-foreign-owner")).not.toBeInTheDocument();
+    });
   });
 
   it("renders audit events for the open entry", async () => {

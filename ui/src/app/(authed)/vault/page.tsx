@@ -4,7 +4,8 @@
  * Surfaces the four operations promised in USER_GUIDE §17:
  *   • list — entries with label, scope, last-rotated, key-version
  *   • create — new entry; plaintext sent over TLS, never stored client-side
- *   • rotate — replace plaintext under the same id
+ *   • rotate — replace plaintext under the same id; another user's secret
+ *     shows its owner and bindings and needs an explicit "Rotate anyway" (#482)
  *   • audit — per-entry audit trail (read/write/rotate/delete)
  *
  * Permissions: requires `vault.read` (server enforces). Roles without it see a
@@ -25,7 +26,13 @@ import { Label } from "@/components/ui/label";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
-import { vaultApi, type VaultEntry, type VaultAuditEntry } from "@/lib/vault-api";
+import {
+  vaultApi,
+  VAULT_ROTATE_FOREIGN_OWNER,
+  type VaultEntry,
+  type VaultAuditEntry,
+  type VaultForeignOwner,
+} from "@/lib/vault-api";
 import { useTransientFlag } from "@/hooks/use-transient-toast";
 import { PageHeader } from "@/components/ui/page-header";
 
@@ -281,6 +288,7 @@ function EntryDetail({
   const { active: copied, show: showCopied } = useTransientFlag(1500);
   const [rotateValue, setRotateValue] = useState("");
   const [rotateError, setRotateError] = useState<string | null>(null);
+  const [foreignOwner, setForeignOwner] = useState<VaultForeignOwner | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const auditQuery = useQuery({
@@ -300,15 +308,29 @@ function EntryDetail({
   });
 
   const rotate = useMutation({
-    mutationFn: () => vaultApi.rotate(entry.id, rotateValue),
+    mutationFn: (confirmForeignOwner: boolean) =>
+      confirmForeignOwner
+        ? vaultApi.rotate(entry.id, rotateValue, { confirmForeignOwner: true })
+        : vaultApi.rotate(entry.id, rotateValue),
     onSuccess: () => {
       setRotateValue("");
       setRotateError(null);
+      setForeignOwner(null);
       setRevealed(null);
       onChanged();
       void qc.invalidateQueries({ queryKey: ["vault", "audit", entry.id] });
     },
-    onError: (err: ApiError) => setRotateError(err.message),
+    onError: (err: ApiError) => {
+      // #482 — another user's secret: show who owns it and where it is bound,
+      // and let the admin confirm rather than failing outright.
+      if (err.code === VAULT_ROTATE_FOREIGN_OWNER && err.details) {
+        setRotateError(null);
+        setForeignOwner(err.details as VaultForeignOwner);
+        return;
+      }
+      setForeignOwner(null);
+      setRotateError(err.message);
+    },
   });
 
   const remove = useMutation({
@@ -400,20 +422,73 @@ function EntryDetail({
           <Input
             type="password"
             value={rotateValue}
-            onChange={(e) => setRotateValue(e.target.value)}
+            onChange={(e) => {
+              setRotateValue(e.target.value);
+              setForeignOwner(null);
+            }}
             placeholder="New plaintext value"
             autoComplete="off"
             data-testid="vault-entry-rotate-input"
           />
           <Button
             size="sm"
-            onClick={() => rotate.mutate()}
-            disabled={rotate.isPending || rotateValue.length === 0}
+            onClick={() => rotate.mutate(false)}
+            disabled={rotate.isPending || rotateValue.length === 0 || foreignOwner !== null}
             data-testid="vault-entry-rotate-submit"
           >
             {rotate.isPending ? "Rotating…" : "Rotate"}
           </Button>
         </div>
+        {foreignOwner ? (
+          <div
+            role="alert"
+            className="space-y-2 rounded border border-destructive/50 p-3 text-xs"
+            data-testid="vault-entry-rotate-foreign-owner"
+          >
+            <p>
+              This secret belongs to{" "}
+              <strong>
+                {foreignOwner.owner.displayName ??
+                  foreignOwner.owner.username ??
+                  foreignOwner.owner.id}
+              </strong>
+              . Rotating it sends your value wherever they have bound it.
+            </p>
+            {foreignOwner.bindings.length === 0 ? (
+              <p>It is not bound to any connector or server.</p>
+            ) : (
+              <ul className="list-disc pl-4" data-testid="vault-entry-rotate-bindings">
+                {foreignOwner.bindings.map((b) => (
+                  <li key={`${b.type}:${b.id}`}>
+                    {b.label}
+                    {b.destination ? (
+                      <span className="text-muted-foreground"> — {b.destination}</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => rotate.mutate(true)}
+                disabled={rotate.isPending}
+                data-testid="vault-entry-rotate-confirm"
+              >
+                Rotate anyway
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setForeignOwner(null)}
+                data-testid="vault-entry-rotate-cancel"
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : null}
         {rotateError ? (
           <p role="alert" className="text-xs text-destructive">
             {rotateError}
