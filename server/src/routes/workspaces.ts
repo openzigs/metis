@@ -13,6 +13,10 @@ import { requireWorkspaceRole } from "../middleware/require-workspace-role.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { audit } from "../lib/audit/audit-service.js";
+import {
+  evictMemberMcpStatusRoom,
+  evictWorkspaceMcpStatusRoom,
+} from "../lib/socket/mcp-status-eviction.js";
 
 // Express 5 widened ParamsDictionary to Record<string, string | string[]>.
 // Route parameters resolved from URL patterns are always single strings;
@@ -177,6 +181,8 @@ export function workspacesRouter(): Router {
       where: { id: workspaceId },
       data: { deletedAt: new Date() },
     });
+    // #588 — sockets already in its mcp:status room stop getting its events.
+    evictWorkspaceMcpStatusRoom(workspaceId);
 
     audit({
       actor: { id: actorId(req) },
@@ -304,6 +310,8 @@ export function workspacesRouter(): Router {
       }
 
       await prisma.workspaceMember.delete({ where: { id: req.params.memberId } });
+      // #588 — the removed user's open sockets leave this workspace's mcp:status room.
+      evictMemberMcpStatusRoom(member.userId, member.workspaceId);
       res.json(ok({ removed: true }));
     },
   );

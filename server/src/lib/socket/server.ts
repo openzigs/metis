@@ -240,7 +240,13 @@ function attachHandlers(
         });
       }
       if (attempt !== mcpSubscription) return;
-      await socket.join(mcpStatusRoomsFor(user, liveWorkspaceIds));
+      // #588 — a repeat subscribe also LEAVES rooms no longer in the live set
+      // (a workspace deleted or left since the last one), not only joins.
+      const rooms = mcpStatusRoomsFor(user, liveWorkspaceIds);
+      for (const room of [...socket.rooms]) {
+        if (isMcpStatusRoom(room) && !rooms.includes(room)) void socket.leave(room);
+      }
+      await socket.join(rooms);
     })();
   });
   socket.on("unsubscribe:mcp", () => {
