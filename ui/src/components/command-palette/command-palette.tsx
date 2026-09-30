@@ -111,6 +111,8 @@ export function CommandPalette() {
   });
 
   const items = useMemo<CommandItem[]>(() => {
+    // Pass PALETTE_DESTINATIONS explicitly: a test's vi.mock of that export does
+    // not reach the default parameter inside navigation.ts (PR #509 review).
     const navItems: CommandItem[] = paletteDestinations(isAdmin, PALETTE_DESTINATIONS).map((n) => ({
       id: `nav:${n.href}`,
       label: n.label,
