@@ -316,12 +316,17 @@ export function ClarificationDialogPanel({
           const grounded = q.groundingStatus === "grounded";
           const partial = q.groundingStatus === "partial";
           const isSelfResolved = grounded || partial;
-          // #573 — one entry per cited name, labelled on its stored source.
+          // #573 — one entry per (cited name, stored source), labelled on that
+          // source: a legacy upload and a repo row sharing a name are two
+          // different documents and must not collapse into one label.
           const sources = [
             ...new Map(
               (q.groundingCitations ?? [])
                 .filter((c) => c.source)
-                .map((c) => [c.source, formatSourceLabel(c.source, undefined, c.documentSource)]),
+                .map((c) => [
+                  `${c.documentSource ?? ""}\u0000${c.source}`,
+                  formatSourceLabel(c.source, undefined, c.documentSource),
+                ]),
             ).values(),
           ];
 

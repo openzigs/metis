@@ -74,6 +74,13 @@ let uploadedDocs: string[] = [];
 let repoSourceExists = false;
 // Issue #733 — repo connectors returned by prisma.repoConnection.findMany.
 let repoConnectors: Array<{ id: string; label: string }> = [];
+// #573 — raw quarantine chunks served to the orchestrator's quarantine fallback.
+let quarantineRows: Array<{
+  documentId: string;
+  ord: number;
+  text: string;
+  document: { filename: string; source: string };
+}> = [];
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
@@ -261,6 +268,11 @@ vi.mock("../src/lib/prisma.js", () => ({
     },
     repoConnection: {
       findMany: vi.fn(async () => repoConnectors),
+    },
+    quarantineChunk: {
+      findMany: vi.fn(async ({ where }: { where: { documentId: { in: string[] } } }) =>
+        quarantineRows.filter((r) => where.documentId.in.includes(r.documentId)),
+      ),
     },
     approvalRequest: {
       create: vi.fn(async ({ data }: { data: Partial<ApprovalRow> }) => {
@@ -606,6 +618,7 @@ beforeEach(() => {
   codeGraphExists = false;
   uploadedDocs = [];
   repoSourceExists = false;
+  quarantineRows = [];
   repoConnectors = [];
   projects.set("proj-abcdefghij", {
     id: "proj-abcdefghij",
@@ -2985,6 +2998,54 @@ describe("AnalysisOrchestrator fused code-graph context (#729)", () => {
         signal: new AbortController().signal,
       });
       expect(userPrompts.some((p) => p.includes("src/lib/auth/login.ts:12-48"))).toBe(kept);
+    },
+  );
+
+  // #573 (review) — on the single-shot path, a selected document with no
+  // approved chunks is read from quarantine. That fallback must carry the row's
+  // `documents.source` too, or a repo chunk reached through it never covers its
+  // symbol and the symbol is duplicated into the prompt.
+  it.each([
+    { source: "upload", kept: true },
+    { source: "repo", kept: false },
+  ])(
+    "QUARANTINE FALLBACK (#573): a $source quarantine chunk sharing the symbol's repo path → symbol kept=$kept",
+    async ({ source, kept }) => {
+      vi.stubEnv("ANALYSIS_FUSED_CODE_RETRIEVAL", "true");
+      __resetConfigSingleton();
+      quarantineRows = [
+        {
+          documentId: "doc-quarantined1",
+          ord: 0,
+          text: "quarantined shared-path chunk",
+          document: { filename: "connector:repo:conn1:src/src/lib/auth/login.ts", source },
+        },
+      ];
+      const emptyKnowledge = {
+        search: vi.fn(async () => ({ hits: [], embeddingModel: "stub", elapsedMs: 1 })),
+      } as unknown as import("../src/lib/rag/knowledge-service.js").KnowledgeService;
+      const orch = new AnalysisOrchestrator({
+        provider: makeProvider({}),
+        knowledge: emptyKnowledge,
+        fusedCode: { searcher: fusedSearcher(), lineLookup: fusedLineLookup() },
+      });
+      const chunks = await (
+        orch as unknown as {
+          retrieveContext: (input: {
+            projectId: string;
+            agentKey: "code";
+            documentIds?: string[];
+          }) => Promise<import("../src/lib/analysis/agent-runner.js").RetrievalContextChunk[]>;
+        }
+      ).retrieveContext({
+        projectId: "proj-abcdefghij",
+        agentKey: "code",
+        documentIds: ["doc-quarantined1"],
+      });
+      // The fallback actually ran: the quarantine chunk is in the context.
+      expect(chunks.some((c) => c.documentId === "doc-quarantined1")).toBe(true);
+      expect(chunks.some((c) => c.documentId === "code-graph:sym-login")).toBe(kept);
+      expect(chunks.find((c) => c.documentId === "doc-quarantined1")?.source).toBe(source);
     },
   );
 });

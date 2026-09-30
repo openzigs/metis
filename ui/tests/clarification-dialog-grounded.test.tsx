@@ -138,6 +138,32 @@ describe("ClarificationDialogPanel self-resolution", () => {
     expect(source).toHaveAttribute("title", `${legacy}, ${repo}`);
   });
 
+  // #573 (review) — the dedupe is keyed by name AND stored source: a legacy
+  // upload and a repo row that share one name are two documents, so both labels
+  // survive; a true repeat (same name, same source) still collapses.
+  it("keeps same-named citations with different stored sources apart (#573)", () => {
+    const state = buildState();
+    const shared = "connector:repo:cmexample0000000000acmerp:src/Auth.java";
+    state.rounds[0]!.questions[0]!.groundingCitations = [
+      { source: shared, documentSource: "upload", snippet: "…" },
+      { source: shared, documentSource: "repo", snippet: "…" },
+      { source: shared, documentSource: "repo", snippet: "repeat" },
+    ];
+
+    render(
+      <ClarificationDialogPanel
+        projectId="proj-1"
+        analysisId="ana-1"
+        state={state}
+        onComplete={() => {}}
+      />,
+    );
+
+    const source = screen.getByTestId("suggested-answer-source");
+    expect(source).toHaveTextContent(`Suggested answer (from ${shared}, Auth.java — acmerp)`);
+    expect(source).toHaveAttribute("title", `${shared}, ${shared}`);
+  });
+
   it("renders an open question with a blank input and no suggested-answer affordance", () => {
     render(
       <ClarificationDialogPanel
