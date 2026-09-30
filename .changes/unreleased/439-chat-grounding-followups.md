@@ -4,7 +4,7 @@ section: Changed
 ---
 
 - A chat reply that read the project through its code-search tools is now
-  labelled as grounded ("Grounded in Payments · 1 code lookup"), live and
+  labelled as grounded ("Grounded in Payments · 1 project lookup"), live and
   after a reload. Before, a reply that found its answer through those tools
   still said no excerpts were retrieved.
 - The source count on a grounded reply now counts each code symbol in the

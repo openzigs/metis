@@ -37,9 +37,10 @@ export type TranscriptRole = "user" | "assistant" | "system";
  * bound to one project, so a reply is either:
  * - `grounded`: project content reached the model — automatic retrieval put
  *   excerpts in the prompt (`sources`), and/or the model read the project
- *   through its project-scoped code tools (`toolReads`, #439);
+ *   through its project-scoped tools — code search (#439) or the project's
+ *   knowledge search, `search-knowledge` (#464) — (`toolReads`);
  * - `no-context`: the session is bound to a project, but neither automatic
- *   retrieval nor a code tool returned any of it (nothing ingested, retrieval
+ *   retrieval nor a project-scoped tool returned any of it (nothing ingested, retrieval
  *   failed, or no tool found anything). This does NOT mean the answer came from
  *   general knowledge: the model may still have called other tools, such as an
  *   MCP server, whose content is not known to be the project's (PR #437 review);
@@ -52,8 +53,9 @@ export type TranscriptRole = "user" | "assistant" | "system";
  * `sources` (#439) counts the excerpts automatic retrieval SUPPLIED — one per
  * knowledge-base chunk plus one per code symbol in the fused code block (#714).
  * It is not a count of relevant excerpts: the knowledge search returns its top
- * hits with no score threshold. `toolReads` counts the successful code-tool
- * calls that returned at least one result; it is absent when there were none.
+ * hits with no score threshold. `toolReads` counts the successful
+ * project-scoped tool calls (code search, `search-knowledge`) that returned at
+ * least one result; it is absent when there were none.
  *
  * `projectName` is the project's name when the reply was answered, and stays
  * so after a rename (#439, deliberate): the label records what the reply was

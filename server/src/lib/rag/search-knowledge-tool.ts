@@ -56,6 +56,7 @@ export function buildSearchKnowledgeTool(
       return {
         text: hits.length === 0 ? `${header}(no matches)` : `${header}${lines.join("\n\n---\n\n")}`,
         data: { hits, coverageWarning },
+        resultCount: hits.length,
       };
     },
   };

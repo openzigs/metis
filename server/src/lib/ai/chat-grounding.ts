@@ -51,6 +51,8 @@ export async function describeGrounding(
 
 /** What {@link countProjectToolReads} needs to know about one tool call. */
 export interface GroundingToolCall {
+  /** Canonical tool name (the executor records the canonical, not the wire, name). */
+  tool?: string;
   source?: ToolSource;
   executed: boolean;
   isError?: boolean;
@@ -58,16 +60,32 @@ export interface GroundingToolCall {
 }
 
 /**
+ * #464 — METIS registry tools that read only the session's project. The
+ * project-scoped `search-knowledge` refuses (`isError`) any project other than
+ * the session's, so a successful call with hits read this project's knowledge
+ * base. Its cross-project sibling `search-knowledge-global` is deliberately
+ * absent (and is not offered to a scoped chat — `CHAT_EXCLUDED_TOOLS`).
+ */
+const PROJECT_READ_METIS_TOOLS: ReadonlySet<string> = new Set(["search-knowledge"]);
+
+function readsProject(c: GroundingToolCall): boolean {
+  if (c.source === "code") return true;
+  return c.source === "metis" && c.tool !== undefined && PROJECT_READ_METIS_TOOLS.has(c.tool);
+}
+
+/**
  * #439 — how many of a turn's tool calls read the project: a curated code tool
  * (`source: "code"` — read-only, and scoped to the session's project by the
- * server, never by the model) that ran, did not fail, and returned at least one
- * result. MCP, METIS and sub-agent tools are not counted: what they return is
- * not known to be the project's content.
+ * server, never by the model) or a project-scoped METIS read tool (#464,
+ * `search-knowledge`) that ran, did not fail, and returned at least one result.
+ * MCP, sub-agent and other METIS tools are not counted: what they return is not
+ * known to be the project's content. In an unscoped session the count is
+ * ignored ({@link withToolReads}), since no call there is bound to a project.
  */
 export function countProjectToolReads(calls: readonly GroundingToolCall[]): number {
   return calls.filter(
     (c) =>
-      c.source === "code" &&
+      readsProject(c) &&
       c.executed &&
       !c.isError &&
       typeof c.resultCount === "number" &&

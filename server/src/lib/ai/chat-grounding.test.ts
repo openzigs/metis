@@ -82,6 +82,31 @@ describe("countProjectToolReads (#439)", () => {
   ])("does not count %s", (_label, call) => {
     expect(countProjectToolReads([call])).toBe(0);
   });
+
+  describe("#464 — the project-scoped knowledge search", () => {
+    const knowledge = {
+      tool: "search-knowledge",
+      source: "metis" as const,
+      executed: true,
+      resultCount: 3,
+    };
+
+    it("counts a search-knowledge call that ran, succeeded and returned hits", () => {
+      expect(countProjectToolReads([knowledge, read])).toBe(2);
+    });
+
+    it.each([
+      ["no hits", { ...knowledge, resultCount: 0 }],
+      ["no result count", { ...knowledge, resultCount: undefined }],
+      ["a failed call (e.g. a cross-project request)", { ...knowledge, isError: true }],
+      ["a call that never ran", { ...knowledge, executed: false }],
+      ["the cross-project global search", { ...knowledge, tool: "search-knowledge-global" }],
+      ["another METIS tool", { ...knowledge, tool: "query_database" }],
+      ["an MCP tool that borrows the name", { ...knowledge, source: "mcp" as const }],
+    ])("does not count %s", (_label, call) => {
+      expect(countProjectToolReads([call])).toBe(0);
+    });
+  });
 });
 
 describe("withToolReads (#439)", () => {

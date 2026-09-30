@@ -187,7 +187,12 @@ function registryRuntimeTool(
       if (r.isError && r.text.startsWith("[Tool Error]")) {
         throw new Error(r.text.slice("[Tool Error]".length).trim());
       }
-      return { text: r.text, ...(r.isError ? { isError: true } : {}) };
+      return {
+        text: r.text,
+        ...(r.isError ? { isError: true } : {}),
+        // #464 — chat grounding counts a project-scoped read by this.
+        ...(typeof r.resultCount === "number" ? { resultCount: r.resultCount } : {}),
+      };
     },
   };
 }

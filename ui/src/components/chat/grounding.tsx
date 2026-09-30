@@ -18,11 +18,12 @@ export function groundingText(g: ChatGrounding): string {
   switch (g.status) {
     case "grounded": {
       // #439 — `sources` are the excerpts auto-retrieval supplied (a fused code
-      // symbol counts as one each); `toolReads` the code lookups that returned
-      // some of the project. Either may be the only one present.
+      // symbol counts as one each); `toolReads` the tool lookups (code search,
+      // and #464 the project's knowledge search) that returned some of the
+      // project. Either may be the only one present.
       const parts: string[] = [];
       if (g.sources > 0) parts.push(plural(g.sources, "source", "sources"));
-      if (g.toolReads) parts.push(plural(g.toolReads, "code lookup", "code lookups"));
+      if (g.toolReads) parts.push(plural(g.toolReads, "project lookup", "project lookups"));
       return [`Grounded in ${g.projectName}`, ...parts].join(" · ");
     }
     case "no-context":

@@ -527,6 +527,11 @@ export interface ToolResult {
   /** Optional structured payload preserved for the caller. */
   data?: unknown;
   isError?: boolean;
+  /**
+   * #464 — how many results a read tool returned (`0` = a well-formed empty
+   * result). Chat grounding counts a project read only when this is positive.
+   */
+  resultCount?: number;
 }
 
 /** Provider implementations live in `providers/`. */
