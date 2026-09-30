@@ -54,11 +54,11 @@ export default function SettingsApiKeysPage({
         title="Configuration"
         description={
           <>
-            Provider preferences, security evaluations, and runtime configuration. Plaintext
-            credentials live in the encrypted Vault — see{" "}
-            <a href="/vault" className="underline">
-              /vault
-            </a>
+            Provider preferences, security evaluations, and runtime configuration. Connector, MCP
+            and publishing credentials live in the encrypted{" "}
+            <Link href="/vault" className="underline">
+              Vault
+            </Link>
             .
           </>
         }
@@ -163,8 +163,8 @@ function ConfigTabBody() {
           .
         </p>
         <p className="mb-2 text-xs text-muted-foreground">
-          Vault-backed values. Save rotates the secret; Clear removes the override and falls back to
-          the env value.
+          Stored encrypted on the server. Save rotates the value; Clear removes the override and
+          falls back to the env value.
         </p>
         <div data-testid="settings-secrets">
           {secrets.map((view) => (
