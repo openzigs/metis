@@ -25,7 +25,7 @@ export class AgentChatPage {
     await this.page.goto(`/chat?projectId=${encodeURIComponent(projectId)}`, {
       waitUntil: "load",
     });
-    await expect(this.page.getByRole("heading", { name: "Chat" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Chat", exact: true })).toBeVisible();
   }
 
   /**

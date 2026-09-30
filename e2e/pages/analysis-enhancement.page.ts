@@ -57,10 +57,11 @@ export class AnalysisEnhancementPage {
 
     // Clarification dialog
     this.clarificationPanel = page.locator("div").filter({
-      has: page.getByRole("heading", { name: "Clarifying Questions" }),
+      has: page.getByRole("heading", { name: "Clarifying Questions", exact: true }),
     });
     this.clarificationHeading = page.getByRole("heading", {
       name: "Clarifying Questions",
+      exact: true,
     });
     this.roundIndicator = page.getByText(/Round \d+ \/ \d+/);
     this.submitAnswersButton = page.getByRole("button", { name: "Submit Answers" });
@@ -69,6 +70,7 @@ export class AnalysisEnhancementPage {
     // Evidence review
     this.evidenceReviewHeading = page.getByRole("heading", {
       name: "Evidence Review",
+      exact: true,
     });
     this.evidenceEmptyMessage = page.getByText("No web research evidence to review.");
   }

@@ -32,7 +32,7 @@ export class MergeConflictPage {
   constructor(page: Page) {
     this.page = page;
     this.modal = page.getByRole("dialog").filter({ hasText: "Merge Conflict" });
-    this.heading = this.modal.getByRole("heading", { name: "Merge Conflict" });
+    this.heading = this.modal.getByRole("heading", { name: "Merge Conflict", exact: true });
     // Per-field diff labels — only rendered when at least one field differs.
     // One label pair PER conflicting field, so narrow to the first.
     this.yourVersionLabel = this.modal.getByText("Your version").first();

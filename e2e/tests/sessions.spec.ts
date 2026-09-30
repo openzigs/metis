@@ -57,7 +57,7 @@ test.describe("Sessions page — no /api/api/ double prefix (#122)", () => {
 
     await test.step("the page renders its list or the legitimate empty state", async () => {
       await expect(page.getByTestId("sessions-root")).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Sessions" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Sessions", exact: true })).toBeVisible();
       // Either at least one session row OR the empty-state copy that the page
       // shows when the 200 returns an empty array.
       const rows = page.locator('[data-testid^="sess-row-"]');

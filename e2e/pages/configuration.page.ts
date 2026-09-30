@@ -19,7 +19,7 @@ export class ConfigurationPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Configuration", level: 1 });
+    this.heading = page.getByRole("heading", { name: "Configuration", exact: true, level: 1 });
     this.secretsTab = page.getByTestId("settings-tab-secrets");
     this.auditTab = page.getByTestId("settings-tab-audit");
   }
