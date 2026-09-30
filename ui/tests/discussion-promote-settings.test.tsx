@@ -9,7 +9,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient } from "@tanstack/react-query";
 import { makeWrapper } from "./test-utils";
+import { queryKeys } from "@/lib/query-keys";
 
 vi.mock("@/lib/discussions-api", async (orig) => {
   const actual = await orig<typeof import("@/lib/discussions-api")>();
@@ -183,7 +185,33 @@ describe("PromoteToRequirementDialog", () => {
     expect(link).toHaveAttribute("href", expect.stringContaining("requirementId=req-9"));
     // PR #416 review — the Analysis page opens on Summary, which shows no requirements.
     expect(link).toHaveAttribute("href", expect.stringContaining("tab=requirements"));
+    // Issue #424 — and the run that holds it: without it the page opens the latest run.
+    expect(link).toHaveAttribute("href", expect.stringContaining("analysisId=a1"));
     expect(toastSuccess).toHaveBeenCalled();
+  });
+
+  // PR #470 review: the promote appends to a run whose detail is usually still
+  // cached (and fresh), so "View requirement" would open a snapshot without it.
+  it("invalidates the run's cached detail so the link finds the new requirement", async () => {
+    promoteMock.mockResolvedValue({ requirementId: "req-9", analysisId: "a1" });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    const Wrapper = makeWrapper({ queryClient });
+    render(
+      <Wrapper>
+        <PromoteToRequirementDialog
+          open
+          onOpenChange={vi.fn()}
+          threadId="t1"
+          messageId="m1"
+          projectId="p1"
+          messageBody="We must support SSO login"
+        />
+      </Wrapper>,
+    );
+    await userEvent.setup().click(screen.getByRole("button", { name: /^promote$/i }));
+    await screen.findByTestId("promote-success");
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.analyses.detail("a1") });
   });
 
   it("surfaces an error toast when promote fails", async () => {
