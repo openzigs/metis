@@ -413,25 +413,42 @@ export function workspacesRouter(): Router {
       );
     }
 
-    // Check if already a member
-    const existing = await prisma.workspaceMember.findUnique({
-      where: { workspaceId_userId: { workspaceId: invite.workspaceId, userId: user.id } },
-    });
-
-    if (!existing) {
-      await prisma.workspaceMember.create({
-        data: {
-          workspaceId: invite.workspaceId,
-          userId: user.id,
-          role: invite.role,
+    // Consume the invite conditionally, in one transaction with the membership
+    // write (#580). The checks above read a snapshot; a workspace DELETE or a
+    // second accept of the same token can commit after it. The guarded
+    // updateMany re-applies every check at write time, so exactly one accept
+    // wins and a just-deleted workspace gains no member.
+    await prisma.$transaction(async (tx) => {
+      const now = new Date();
+      const { count } = await tx.workspaceInvite.updateMany({
+        where: {
+          id: invite.id,
+          consumedAt: null,
+          expiresAt: { gt: now },
+          workspace: { deletedAt: null },
         },
+        data: { consumedAt: now },
       });
-    }
-
-    // Mark invite as consumed
-    await prisma.workspaceInvite.update({
-      where: { id: invite.id },
-      data: { consumedAt: new Date() },
+      if (count !== 1) {
+        const current = await tx.workspaceInvite.findUnique({
+          where: { id: invite.id },
+          select: { consumedAt: true, workspace: { select: { deletedAt: true } } },
+        });
+        if (!current) throw new AppError(404, "NOT_FOUND", "Invalid invitation token");
+        if (current.consumedAt) {
+          throw new AppError(410, "GONE", "Invitation has already been used");
+        }
+        if (current.workspace.deletedAt) {
+          throw new AppError(410, "GONE", "This workspace no longer exists");
+        }
+        throw new AppError(410, "GONE", "Invitation has expired");
+      }
+      // An existing membership keeps its role, as before.
+      await tx.workspaceMember.upsert({
+        where: { workspaceId_userId: { workspaceId: invite.workspaceId, userId: user.id } },
+        create: { workspaceId: invite.workspaceId, userId: user.id, role: invite.role },
+        update: {},
+      });
     });
 
     audit({
