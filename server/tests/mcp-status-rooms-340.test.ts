@@ -15,12 +15,46 @@ import http from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { io as ioClient, type Socket as ClientSocket } from "socket.io-client";
 
+// #562 — holds u-slow's membership lookup open until the race test releases
+// it. The race test creates the gate per attempt, never here: server vitest
+// has `retry: 2`, and a module-scoped one-shot gate would already be open on a
+// retry, so the retry would no longer exercise the race.
+const slowMembership = vi.hoisted(() => ({
+  gate: null as { promise: Promise<void>; release: () => void } | null,
+}));
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     $queryRawUnsafe: vi.fn(async () => 1),
     user: { upsert: vi.fn() },
     userRole: { findFirst: vi.fn(async () => null) },
     auditLog: { create: vi.fn(async () => ({})) },
+    // #562 — memberships as the database holds them, which the `mcp:status`
+    // workspace rooms are joined from (not the token's `workspaces` claim).
+    // `ws-deleted` is soft-deleted; the mock honours the live-workspace filter,
+    // so a query that drops it would hand back the deleted workspace.
+    workspaceMember: {
+      findMany: vi.fn(
+        async ({ where }: { where: { userId: string; workspace?: { deletedAt: null } } }) => {
+          if (where.userId === "u-db-down") throw new Error("db down");
+          if (where.userId === "u-slow") {
+            if (!slowMembership.gate) throw new Error("u-slow lookup without a gate");
+            await slowMembership.gate.promise;
+            return [{ workspaceId: "ws1" }];
+          }
+          const rows = [
+            { userId: "u-member", workspaceId: "ws1", deleted: false },
+            { userId: "u-outsider", workspaceId: "ws2", deleted: false },
+            { userId: "u-stale", workspaceId: "ws-deleted", deleted: true },
+            { userId: "u-late", workspaceId: "ws1", deleted: false },
+          ];
+          return rows
+            .filter((r) => r.userId === where.userId)
+            .filter((r) => !(where.workspace?.deletedAt === null && r.deleted))
+            .map((r) => ({ workspaceId: r.workspaceId }));
+        },
+      ),
+    },
     project: {
       findMany: vi.fn(async () => []),
       // #353 fixtures: p-ws1 lives in ws1, p-legacy has no workspace, anything
@@ -28,6 +62,8 @@ vi.mock("../src/lib/prisma.js", () => ({
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
         if (where.id === "p-boom") throw new Error("db down");
         if (where.id === "p-ws1") return { workspaceId: "ws1" };
+        if (where.id === "p-wsdel") return { workspaceId: "ws-deleted" };
+        if (where.id === "p-ws2") return { workspaceId: "ws2" };
         if (where.id === "p-legacy") return { workspaceId: null };
         return null;
       }),
@@ -35,6 +71,7 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
+import { prisma } from "../src/lib/prisma.js";
 import { createSocketServer, type MetisIOServer } from "../src/lib/socket/server.js";
 import { issueTokens } from "../src/lib/auth/jwt.js";
 import { bootstrapMCP, type MCPBootstrap } from "../src/lib/mcp/index.js";
@@ -90,6 +127,11 @@ afterEach(() => {
 
 const roomHas = (room: string, sid: string) =>
   io.sockets.adapter.rooms.get(room)?.has(sid) ?? false;
+
+/** A server socket as seen by a test that adds an acked event of its own. */
+interface BarrierSocket {
+  on(event: string, listener: (ack: () => void) => void): void;
+}
 
 async function subscribe(
   userId: string,
@@ -270,10 +312,8 @@ describe("#353 mcp:status — project-scope events reach only users who can acce
     ]);
   });
 
-  it("puts a subscriber in one room per JWT workspace", () => {
-    expect(
-      mcpStatusRoomsFor({ userId: "u1", role: "coordinator", workspaces: ["a", "b"] }),
-    ).toEqual([
+  it("puts a subscriber in one room per live workspace", () => {
+    expect(mcpStatusRoomsFor({ userId: "u1", role: "coordinator" }, ["a", "b"])).toEqual([
       MCP_STATUS_ROOM,
       mcpStatusOwnerRoom("u1"),
       mcpStatusWorkspaceRoom("a"),
@@ -502,6 +542,111 @@ describe("#353 mcp:status — project-scope events reach only users who can acce
         expect(emitted).toEqual([`p@${MCP_STATUS_ADMIN_ROOM}`]);
         vi.useRealTimers();
       }
+    });
+  });
+});
+
+describe("#562 mcp:status — workspace rooms come from live memberships, not the token claim", () => {
+  it("a stale claim to a deleted workspace or a workspace the user left joins no room", async () => {
+    // Token issued while u-stale was in ws-deleted (since soft-deleted) and in
+    // ws2 (since removed from: no membership row).
+    const stale = await subscribe("u-stale", "coordinator", ["ws-deleted", "ws2"]);
+    const admin = await subscribe("u-admin562", "admin");
+    await vi.waitFor(() => expect(roomHas(MCP_STATUS_ADMIN_ROOM, admin.sid)).toBe(true));
+
+    expect(roomHas(mcpStatusWorkspaceRoom("ws-deleted"), stale.sid)).toBe(false);
+    expect(roomHas(mcpStatusWorkspaceRoom("ws2"), stale.sid)).toBe(false);
+
+    await mcp.lifecycle.start(
+      config({ id: "pd", label: "deleted-ws-srv", scope: "project", projectId: "p-wsdel" }),
+    );
+    await mcp.lifecycle.start(
+      config({ id: "p2", label: "left-ws-srv", scope: "project", projectId: "p-ws2" }),
+    );
+    await mcp.lifecycle.start(config({ id: "z562", label: "sentinel-562" }));
+    await vi.waitFor(() => {
+      for (const s of [stale, admin]) expect(s.labels).toContain("sentinel-562");
+    });
+
+    expect(stale.labels).not.toContain("deleted-ws-srv");
+    expect(stale.labels).not.toContain("left-ws-srv");
+    expect(admin.labels).toContain("deleted-ws-srv");
+    expect(admin.labels).toContain("left-ws-srv");
+  });
+
+  it("a live membership the token predates still joins its workspace room", async () => {
+    const late = await subscribe("u-late", "coordinator", []);
+    await vi.waitFor(() => expect(roomHas(mcpStatusWorkspaceRoom("ws1"), late.sid)).toBe(true));
+  });
+
+  it("a failed membership lookup joins no workspace room (fail closed)", async () => {
+    const down = await subscribe("u-db-down", "coordinator", ["ws1"]);
+    await vi.waitFor(() => expect(roomHas(mcpStatusOwnerRoom("u-db-down"), down.sid)).toBe(true));
+    expect(roomHas(mcpStatusWorkspaceRoom("ws1"), down.sid)).toBe(false);
+  });
+
+  it("an unsubscribe that lands while the membership lookup is pending wins", async () => {
+    // A fresh gate per attempt, so a retry re-runs the race rather than
+    // meeting a lookup that has already resolved.
+    let release!: () => void;
+    const gate = { promise: new Promise<void>((r) => (release = r)), release: () => release() };
+    slowMembership.gate = gate;
+    const findMany = vi.mocked(prisma.workspaceMember.findMany);
+    const slowLookups = () =>
+      findMany.mock.calls.filter(([args]) => args?.where?.userId === "u-slow").length;
+    const slowLookupsBefore = slowLookups();
+
+    const { accessToken } = issueTokens({
+      userId: "u-slow",
+      username: "u-slow",
+      role: "coordinator",
+      permissions: [],
+      workspaces: [],
+    });
+    const socket = ioClient(`http://127.0.0.1:${port}`, {
+      auth: { token: accessToken },
+      transports: ["websocket"],
+      reconnection: false,
+      timeout: 2000,
+    });
+    open.push(socket);
+    await new Promise<void>((resolve, reject) => {
+      socket.on("auth:ok", () => resolve());
+      socket.on("connect_error", reject);
+    });
+    const sid = socket.id!;
+    // A test-only acked event on this socket's SERVER side. Socket.IO delivers
+    // one connection's packets in order (never across connections), so its ack
+    // proves the server has run the subscribe:mcp and unsubscribe:mcp handlers
+    // sent before it on the same socket.
+    const serverSocket = io.sockets.sockets.get(sid);
+    expect(serverSocket).toBeDefined();
+    (serverSocket as unknown as BarrierSocket).on("test:barrier", (ack) => ack());
+
+    socket.emit("subscribe:mcp");
+    socket.emit("unsubscribe:mcp");
+    await socket.timeout(2000).emitWithAck("test:barrier");
+
+    // The subscribe's lookup is in flight and held open: the race is set up.
+    expect(slowLookups()).toBe(slowLookupsBefore + 1);
+    expect(roomHas(MCP_STATUS_ROOM, sid)).toBe(false);
+
+    gate.release();
+    // From the lookup resolving to a join is microtasks only (the in-memory
+    // adapter joins synchronously), so after one macrotask turn a stale
+    // subscribe would already have joined.
+    await new Promise<void>((r) => setImmediate(r));
+    expect(roomHas(MCP_STATUS_ROOM, sid)).toBe(false);
+    expect(roomHas(mcpStatusWorkspaceRoom("ws1"), sid)).toBe(false);
+  });
+
+  it("unsubscribe:mcp leaves the workspace rooms it joined", async () => {
+    const member = await subscribe("u-member", "coordinator", ["ws1"]);
+    await vi.waitFor(() => expect(roomHas(mcpStatusWorkspaceRoom("ws1"), member.sid)).toBe(true));
+    member.socket.emit("unsubscribe:mcp");
+    await vi.waitFor(() => {
+      expect(roomHas(mcpStatusWorkspaceRoom("ws1"), member.sid)).toBe(false);
+      expect(roomHas(MCP_STATUS_ROOM, member.sid)).toBe(false);
     });
   });
 });

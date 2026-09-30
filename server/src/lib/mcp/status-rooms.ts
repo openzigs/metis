@@ -8,9 +8,10 @@
  *   room. A user server with no owner on record reaches admins only.
  * - A `scope: "project"` server (#353) follows `assertProjectAccess`
  *   (`lib/custom-agents/authz.ts`): its events go to the room of the project's
- *   workspace — joined only by subscribers whose verified JWT lists that
- *   workspace — and to the admins' room. A legacy project with no workspace is
- *   open to every authenticated user, so its events go to the shared room. An
+ *   workspace — joined only by subscribers with a live membership of that
+ *   workspace, read at subscribe time (#562) — and to the admins' room. A
+ *   legacy project with no workspace is open to every authenticated user, so
+ *   its events go to the shared room. An
  *   unknown project, a project server with no project id, or a failed lookup
  *   reaches admins only (fail closed).
  *
@@ -25,7 +26,11 @@ export const MCP_STATUS_ROOM = "mcp:status";
 export const MCP_STATUS_ADMIN_ROOM = "mcp:status:admin";
 /** One owner's user-scope server events. The id is always the verified JWT's. */
 export const mcpStatusOwnerRoom = (userId: string): string => `mcp:status:user:${userId}`;
-/** One workspace's project-scope server events. Ids come from the verified JWT. */
+/**
+ * One workspace's project-scope server events. Ids come from the subscriber's
+ * live, non-deleted memberships — never the token's `workspaces` claim, which
+ * outlives a workspace deletion or the user's removal (#562).
+ */
 export const mcpStatusWorkspaceRoom = (workspaceId: string): string =>
   `mcp:status:workspace:${workspaceId}`;
 
@@ -57,17 +62,25 @@ export function mcpStatusRooms(
   return [MCP_STATUS_ROOM];
 }
 
-/** The rooms a subscriber that passed the `mcp.manage` gate joins. */
-export function mcpStatusRoomsFor(user: {
-  userId: string;
-  role: string;
-  workspaces?: string[];
-}): string[] {
+/**
+ * The rooms a subscriber that passed the `mcp.manage` gate joins.
+ * `liveWorkspaceIds` must come from `readLiveWorkspaceIds`, not from the token
+ * (#562); it is a separate argument so the verified payload, which carries the
+ * stale `workspaces` claim, cannot supply it by being passed whole.
+ */
+export function mcpStatusRoomsFor(
+  user: { userId: string; role: string },
+  liveWorkspaceIds: readonly string[] = [],
+): string[] {
   const rooms = [MCP_STATUS_ROOM, mcpStatusOwnerRoom(user.userId)];
-  for (const ws of user.workspaces ?? []) rooms.push(mcpStatusWorkspaceRoom(ws));
+  for (const ws of liveWorkspaceIds) rooms.push(mcpStatusWorkspaceRoom(ws));
   if (user.role === "admin") rooms.push(MCP_STATUS_ADMIN_ROOM);
   return rooms;
 }
+
+/** True for every room `mcpStatusRoomsFor` can produce. */
+export const isMcpStatusRoom = (room: string): boolean =>
+  room === MCP_STATUS_ROOM || room.startsWith(`${MCP_STATUS_ROOM}:`);
 
 /** The slice of a Socket.IO server the emitter needs. */
 export interface MCPStatusSink {
