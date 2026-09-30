@@ -35,6 +35,7 @@ import {
 import { audit } from "../lib/audit/audit-service.js";
 import { buildProvider, loadAIConfig, type AIProvider } from "../lib/ai/index.js";
 import type { RoleKey } from "@metis/shared";
+import { createChildLogger } from "../lib/logger.js";
 
 // ---- AI provider seam (#484) ------------------------------------------------
 // Mirrors the ai.ts pattern: construct from config by default; tests inject a
@@ -49,6 +50,8 @@ export function setDiscussionProviderForTests(p: AIProvider | null): void {
 }
 
 // ---- Constants --------------------------------------------------------------
+
+const log = createChildLogger("discussions-routes");
 
 const MAX_BODY_LEN = 10_000;
 const DEFAULT_PAGE_SIZE = 50;
@@ -414,8 +417,23 @@ export function discussionsRouter(): Router {
     const ac = new AbortController();
     req.on("aborted", () => ac.abort());
     res.on("close", () => ac.abort());
+    // #541 — the same defence as /api/ai/stream (#521): an `error` emitted on
+    // the response with no listener is an uncaught exception that takes the
+    // process down. A write after end emits one on the next tick WITHOUT
+    // destroying the response, so this listener only records it.
+    res.on("error", (err: Error) => {
+      log.warn("Discussion AI stream response emitted an error", {
+        threadId,
+        userId: actor.id,
+        error: err.message,
+      });
+    });
 
+    // #541 — a chunk that arrives after the response has ended (a late
+    // provider callback, or the `done` frame after an early end) is dropped:
+    // Node does not throw a write after end, it emits it as an `error`.
     const send = (chunk: ResponderChunk): void => {
+      if (res.writableEnded) return;
       res.write(`event: ${chunk.type}\n`);
       res.write(`data: ${JSON.stringify(chunk)}\n\n`);
       // Integration seam (#486): fan the AI reply out to the `thread:{id}` room
