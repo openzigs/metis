@@ -128,6 +128,11 @@ describe("splitMarkdownSections", () => {
     expect(sections[0].heading).toBeUndefined();
   });
 
+  it("drops a preamble of only a CR, which is a line ending rather than content", () => {
+    const { sections } = splitMarkdownSections("\r\n## A\nText.");
+    expect(sections.map((s) => s.heading?.text)).toEqual(["A"]);
+  });
+
   it("does not open a fence on a backtick line that carries a backtick in its info", () => {
     const { sections } = splitMarkdownSections("## A\n```inline ` tick\n## B");
     expect(sections.map((s) => s.heading?.text)).toEqual(["A", "B"]);
@@ -637,6 +642,55 @@ describe("reference links and footnotes in the body across sections (#228)", () 
         "\n",
       ),
     ],
+    // #564 — a line holding only U+00A0 is not blank to CommonMark (only
+    // spaces and tabs are), so it neither ends a definition's run nor starts a block.
+    [
+      "a link definition whose multi-line title holds an NBSP-only line",
+      ["## A", "See [a].", "## B", "[a]: /x", "(title", " ", "more)"].join("\n"),
+    ],
+    [
+      "a definition-shaped line after an NBSP-only line continuing a paragraph",
+      ["## A", "See [b].", "## B", "para", " ", "[b]: /y"].join("\n"),
+    ],
+    [
+      "a footnote definition whose paragraph continues past an NBSP-only line",
+      ["## A", "Cited.[^1]", "## B", "[^1]: One", " ", "more"].join("\n"),
+    ],
+    [
+      "a fence line followed by an NBSP, which does not close the fence",
+      ["## A", "```", "code", "``` ", "## Not a heading", "```", "## B", "Text."].join("\n"),
+    ],
+    ["a preamble holding only an NBSP", [" ", "## A", "Text."].join("\n")],
+    // PR #569 review — a CR before the LF is a line ending, not content, so a
+    // CRLF blank line in a mixed-ending document is still blank.
+    [
+      "a definition-shaped line after a CRLF blank line ends a paragraph",
+      "## A\nSee [b].\n## B\npara\r\n\r\n[b]: /y",
+    ],
+    ["a preamble holding only a CR", ["\r", "## A", "Text."].join("\n")],
+    // The longest dash run that still leaves room for the closing label's one
+    // extra dash inside CommonMark's 999-character label limit, and the first
+    // that does not (PR #569 review).
+    ...[977, 978].map((dashes): [string, string] => [
+      `a document that spells the closing label with a ${dashes}-dash run`,
+      [
+        "## A",
+        `See [x] metis-definitions-end${"-".repeat(dashes)}.`,
+        "## B",
+        "[x]: https://example.com/x",
+      ].join("\n"),
+    ]),
+    [
+      // Past CommonMark's 999-character label limit a longer dash run would
+      // parse as a paragraph and render as text.
+      "a document that spells the closing label with a 1000-dash run",
+      [
+        "## A",
+        `See [x] metis-definitions-end${"-".repeat(1000)} and [metis-definitions-end-1].`,
+        "## B",
+        "[x]: https://example.com/x",
+      ].join("\n"),
+    ],
   ];
 
   it.each(DOCUMENTS)("%s renders exactly as a whole-document render", (_, markdown) => {
@@ -672,18 +726,33 @@ describe("reference links and footnotes in the body across sections (#228)", () 
     // PR #556 panel: the label is found in one scan, not by growing it a dash at
     // a time and rescanning (quadratic in a long hostile dash run).
     const { definitions } = splitMarkdownSections("## A\n[x]: https://example.com/x");
-    const run = "-".repeat(5000);
+    const run = "-".repeat(977);
+    expect(withDefinitions(`[x] metis-definitions-end${run}`, definitions)).toContain(
+      `[metis-definitions-end${run}-]: #`,
+    );
     // Every label normalisation lower-cases; the one-scan picker normalises a
     // constant number of times, the grow-and-rescan loop once per dash.
     const lower = vi.spyOn(String.prototype, "toLowerCase");
     try {
-      const out = withDefinitions(`[x] metis-definitions-end${run}`, definitions);
-      expect(out).toContain(`[metis-definitions-end${run}-]: #`);
+      const out = withDefinitions(`[x] metis-definitions-end${"-".repeat(5000)}`, definitions);
+      // Past CommonMark's 999-character label limit it is numbered instead (#564).
+      expect(out).toContain("[metis-definitions-end-1]: #");
       expect(lower).toHaveBeenCalled();
       expect(lower.mock.calls.length).toBeLessThan(50);
     } finally {
       lower.mockRestore();
     }
+  });
+
+  it("numbers an over-long closing label past every number the text begins", () => {
+    const { definitions } = splitMarkdownSections("## A\n[x]: https://example.com/x");
+    const long = `metis-definitions-end${"-".repeat(1000)}`;
+    // `-12` takes 1 and 12; `-3x` takes 3; `--4` takes nothing.
+    const text = `[x] ${long} METIS-DEFINITIONS-END-12 metis-definitions-end-3x metis-definitions-end--4`;
+    const out = withDefinitions(text, definitions);
+    expect(out).toContain("\n\n[metis-definitions-end-2]: #\n\n");
+    const taken = `${text} metis-definitions-end-2`;
+    expect(withDefinitions(taken, definitions)).toContain("[metis-definitions-end-4]: #");
   });
 
   it("a footnote reference whose href is not percent-decodable keeps its own number", () => {
