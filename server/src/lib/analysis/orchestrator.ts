@@ -45,6 +45,7 @@ import {
 import { audit } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
+import { CONNECTOR_CODE_SOURCES } from "../documents/document-source.js";
 import type { AIProvider, TokenUsage } from "../ai/types.js";
 import { getKnowledgeService, type KnowledgeService } from "../rag/knowledge-service.js";
 import type { MetisIOServer } from "../socket/server.js";
@@ -524,6 +525,25 @@ export interface ResumeSkippedReposResult {
   remaining: AnalysisSkippedRepo[];
   /** True when there was nothing to resume — an idempotent no-op. */
   noop: boolean;
+}
+
+/**
+ * The documents an analysis reads when the user selected none (#913): every
+ * ready, live document except the repository and database connectors' rows.
+ * Classified on the stored `source` (#525) — an upload may be named
+ * `connector:repo:…`, and it is still the user's document.
+ */
+export async function defaultAnalysisDocumentIds(projectId: string): Promise<string[]> {
+  const rows = await prisma.document.findMany({
+    where: {
+      projectId,
+      deletedAt: null,
+      status: "ready",
+      source: { notIn: [...CONNECTOR_CODE_SOURCES] },
+    },
+    select: { id: true },
+  });
+  return rows.map((d) => d.id);
 }
 
 export class AnalysisOrchestrator {
@@ -2689,16 +2709,7 @@ export class AnalysisOrchestrator {
         // user-uploaded (non-connector) docs when nothing is selected.
         let documentIds = input.documentIds ?? [];
         if (documentIds.length === 0) {
-          const uploadedDocs = await prisma.document.findMany({
-            where: {
-              projectId: input.projectId,
-              deletedAt: null,
-              status: "ready",
-              filename: { not: { startsWith: "connector:" } },
-            },
-            select: { id: true },
-          });
-          documentIds = uploadedDocs.map((d) => d.id);
+          documentIds = await defaultAnalysisDocumentIds(input.projectId);
         }
 
         // Per-requirement retrieval — bounded fan-out, concurrency-capped.
@@ -3393,16 +3404,7 @@ export class AnalysisOrchestrator {
       // fall back to ALL ready, user-uploaded (non-connector) documents.
       let requirementDocIds = input.documentIds ?? [];
       if (requirementDocIds.length === 0) {
-        const uploadedDocs = await prisma.document.findMany({
-          where: {
-            projectId: input.projectId,
-            deletedAt: null,
-            status: "ready",
-            filename: { not: { startsWith: "connector:" } },
-          },
-          select: { id: true },
-        });
-        requirementDocIds = uploadedDocs.map((d) => d.id);
+        requirementDocIds = await defaultAnalysisDocumentIds(input.projectId);
       }
 
       // Requirements half — query derived from project metadata + operator

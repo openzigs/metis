@@ -42,6 +42,15 @@ export function validateUpload(input: UploadCandidate): UploadValidation {
   if (filename.length === 0) {
     return { ok: false, status: 400, code: "INVALID_FILENAME", message: "Invalid filename" };
   }
+  const reserved = reservedFilenamePrefix(filename);
+  if (reserved) {
+    return {
+      ok: false,
+      status: 400,
+      code: "RESERVED_FILENAME",
+      message: `Filenames starting with '${reserved}' are reserved for connector and generated documents; rename the file and upload it again`,
+    };
+  }
   const allow = UPLOAD_MIME_ALLOWLIST as readonly string[];
   let mime = (input.mimeType ?? "").toLowerCase();
   if (!allow.includes(mime)) {
@@ -68,6 +77,32 @@ export function validateUpload(input: UploadCandidate): UploadValidation {
     };
   }
   return { ok: true, mimeType: mime, filename };
+}
+
+/**
+ * Issue #525 — filename prefixes that connector and generated-document writers
+ * use. Readers that only have a search hit's filename (grounding, evidence
+ * labels, schema mappings, the UI's source labels) classify on these, so an
+ * upload may not carry one. Matched case-insensitively: a reader's pattern may
+ * be (`doc-label.ts` matches `generated-doc-` with `/i`).
+ *
+ * - `connector:`     repository and database connectors (`connector-ingest.ts`)
+ * - `repo:`          the legacy repository shape (`fused-code-context.ts`)
+ * - `jira:`, `confluence:` the Atlassian connector (`atlassian.ts`)
+ * - `generated-doc-` a published generated document (`generated-doc-publication.ts`)
+ */
+export const RESERVED_FILENAME_PREFIXES = [
+  "connector:",
+  "repo:",
+  "jira:",
+  "confluence:",
+  "generated-doc-",
+] as const;
+
+/** The reserved prefix `filename` starts with, or null. */
+export function reservedFilenamePrefix(filename: string): string | null {
+  const lower = filename.toLowerCase();
+  return RESERVED_FILENAME_PREFIXES.find((prefix) => lower.startsWith(prefix)) ?? null;
 }
 
 /**

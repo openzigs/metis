@@ -248,10 +248,10 @@ vi.mock("../src/lib/prisma.js", () => ({
     document: {
       // `filename` is non-null on the real row; #303's citation-id repair reads it.
       findMany: vi.fn(async () => uploadedDocs.map((id) => ({ id, filename: `${id}.md` }))),
-      // Issue #733 — repo-source detection: a `connector:repo:*` document exists
+      // Issue #733 — repo-source detection: a `source: "repo"` document (#525) exists
       // only when the test toggles `repoSourceExists`.
-      findFirst: vi.fn(async ({ where }: { where: { filename?: { startsWith?: string } } }) => {
-        const wantsRepoSource = where.filename?.startsWith === "connector:repo:";
+      findFirst: vi.fn(async ({ where }: { where: { source?: string } }) => {
+        const wantsRepoSource = where.source === "repo";
         if (wantsRepoSource) return repoSourceExists ? { id: "repo-doc-1" } : null;
         return null;
       }),

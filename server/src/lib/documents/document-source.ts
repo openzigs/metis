@@ -9,3 +9,10 @@
  * - `confluence`, `jira` the Atlassian connector (`connectors/atlassian.ts`)
  */
 export type DocumentSource = "upload" | "generated" | "repo" | "db" | "confluence" | "jira";
+
+/**
+ * Issue #525 — the repository and database connectors' sources: the rows an
+ * analysis's default document set leaves out (formerly every `connector:`
+ * filename, which an upload could also carry).
+ */
+export const CONNECTOR_CODE_SOURCES: readonly DocumentSource[] = ["repo", "db"];

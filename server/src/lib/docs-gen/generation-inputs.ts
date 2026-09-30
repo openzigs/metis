@@ -97,7 +97,10 @@ export async function captureGenerationInputs(
           ...(policy.repoConnectorId
             ? {
                 OR: [
-                  { filename: { startsWith: `connector:repo:${policy.repoConnectorId}:` } },
+                  {
+                    source: "repo",
+                    filename: { startsWith: `connector:repo:${policy.repoConnectorId}:` },
+                  },
                   { id: { in: [...policy.sharedDocumentIds] } },
                 ],
               }
