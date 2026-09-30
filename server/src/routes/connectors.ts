@@ -98,6 +98,7 @@ import {
   deepIngestCompletionMessage,
   deepIngestFailureCount,
   deepIngestReportedFailureCount,
+  syncFailureWarning,
   type DeepIngestOutcome,
 } from "../lib/connectors/repo/deep-ingest-outcome.js";
 import { scheduleIncrementalRegeneration } from "../lib/docs-gen/regeneration-scheduling.js";
@@ -770,14 +771,14 @@ export function connectorsRouter(): Router {
           lease,
         });
         // Step 4: refresh metadata (README, head SHA, etc.) — github only
-        let metadataSucceeded = true;
+        const metadata = { failures: 0, stepFailed: false };
         if (!isNonGit) {
           try {
             const meta = await fetchRepoMetadata(projectId, id, a);
             const summary = await ingestRepoMetadata(projectId, id, a, meta);
-            metadataSucceeded = summary.failures === 0;
+            metadata.failures = summary.failures;
           } catch (metaErr) {
-            metadataSucceeded = false;
+            metadata.stepFailed = true;
             logger.warn(
               "fetchRepoMetadata failed — skipping metadata ingest, core ingest continues",
               { err: metaErr, projectId, connectorId: id },
@@ -796,13 +797,18 @@ export function connectorsRouter(): Router {
             connectionsFound: discovery.connectionsFound,
           });
         }
+        // #498 — a partly failed ingest skips regeneration and says so, with
+        // its failure count, as Deep Ingest does; never a bare "Sync complete".
+        const ingestFailures = { source: srcSummary, metadata };
+        const ingestWarning = syncFailureWarning(ingestFailures);
         // #449 — the refresh landed, so a scheduling failure still answers 200:
         // the summary says regeneration was not scheduled and carries the
         // warning, and the scheduling step alone is retried.
         const scheduling =
-          srcSummary.failures === 0 && metadataSucceeded
-            ? await scheduleIncrementalRegeneration(projectId, id)
-            : null;
+          ingestWarning === null ? await scheduleIncrementalRegeneration(projectId, id) : null;
+        const warning =
+          ingestWarning ??
+          (scheduling && !scheduling.regenerationScheduled ? scheduling.warning : null);
         res.json(
           ok({
             pulled: clone.pulled,
@@ -827,9 +833,11 @@ export function connectorsRouter(): Router {
             },
             cloneSizeBytes: clone.sizeBytes,
             regenerationScheduled: scheduling?.regenerationScheduled ?? false,
-            ...(scheduling && !scheduling.regenerationScheduled
-              ? { warning: scheduling.warning }
-              : {}),
+            // Ingest failures, plus one for a scheduling warning (as Deep Ingest reports).
+            failureCount:
+              deepIngestFailureCount(ingestFailures) +
+              (scheduling && !scheduling.regenerationScheduled ? 1 : 0),
+            ...(warning ? { warning } : {}),
           }),
         );
       } catch (err) {
