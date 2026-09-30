@@ -109,6 +109,14 @@ const INDENTED = /^(?: {4}|\t)/;
 /** A line that starts a block, so it cannot continue a footnote's paragraph. */
 const BLOCK_START = /^ {0,3}(?:>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|(?:[-*_][ \t]*){3,}$|<)/;
 
+/**
+ * A blank line as CommonMark reads one: nothing but spaces and tabs. Not
+ * `trim()`, which also empties a line of U+00A0 or other Unicode space (#564).
+ */
+function isBlank(line: string): boolean {
+  return /^[ \t]*$/.test(line);
+}
+
 /** Parses markdown with the same grammar extensions the previewer renders with. */
 const headingParser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).freeze();
 
@@ -137,7 +145,7 @@ function fenceTracker(): (line: string) => boolean {
         fenceMatch &&
         fenceMatch[1][0] === fence.char &&
         fenceMatch[1].length >= fence.length &&
-        fenceMatch[2].trim() === ""
+        isBlank(fenceMatch[2])
       ) {
         fence = null;
       }
@@ -160,7 +168,7 @@ function footnoteEnd(lines: string[], fenced: boolean[], start: number): number 
   let end = start + 1;
   for (let i = start + 1; i < lines.length; i++) {
     const line = lines[i];
-    if (line.trim() === "") continue;
+    if (isBlank(line)) continue;
     const lazy =
       i === end &&
       !fenced[i] &&
@@ -192,7 +200,7 @@ function linkDefinitionEnd(
 ): number | undefined {
   if (!ends.has(start)) {
     let stop = start + 1;
-    while (stop < lines.length && lines[stop].trim() !== "") stop++;
+    while (stop < lines.length && !isBlank(lines[stop])) stop++;
     const tree = headingParser.parse(lines.slice(start, stop).join("\n")) as MdastNode;
     for (const node of tree.children ?? []) {
       if (node.type === "definition" && node.position?.start?.line && node.position.end?.line) {
@@ -237,7 +245,7 @@ function collectDefinitions(lines: string[]): Definitions {
       i = end - 1;
       atBlock = true;
     } else {
-      atBlock = line.trim() === "" || HEADING.test(line);
+      atBlock = isBlank(line) || HEADING.test(line);
     }
   }
   return definitions;
@@ -270,6 +278,9 @@ export function withDefinitions(markdown: string, definitions: Definitions): str
   return `${sources}\n\n${unreferencedDefinition(`${sources}\n\n${markdown}`)}\n\n${markdown}`;
 }
 
+/** CommonMark's limit on the characters inside a link label's brackets. */
+const MAX_LABEL = 999;
+
 /**
  * A link definition that renders nothing and that no reference in `text` can
  * name: its label, normalized, occurs nowhere in `text` normalized.
@@ -287,7 +298,22 @@ function unreferencedDefinition(text: string): string {
     while (folded[at + needle.length + dashes] === "-") dashes += 1;
     if (dashes > longest) longest = dashes;
   }
-  return `[${base}${"-".repeat(longest + 1)}]: #`;
+  const label = `${base}${"-".repeat(longest + 1)}`;
+  if (label.length <= MAX_LABEL) return `[${label}]: #`;
+  // Past CommonMark's label limit the definition would render as text (#564),
+  // so number it instead: the first `base-N` no `base-<digits>` in `text`
+  // begins with. At most one N per digit before it is taken, so N stays short.
+  const taken = new Set<string>();
+  const prefix = `${needle}-`;
+  for (let at = folded.indexOf(prefix); at !== -1; at = folded.indexOf(prefix, at + 1)) {
+    const digits = /^\d{1,15}/.exec(folded.slice(at + prefix.length, at + prefix.length + 15));
+    for (let length = 1; digits && length <= digits[0].length; length++) {
+      taken.add(digits[0].slice(0, length));
+    }
+  }
+  let n = 1;
+  while (taken.has(String(n))) n += 1;
+  return `[${base}-${n}]: #`;
 }
 
 /** A markdown AST node, as far as slugging needs one. */
@@ -386,7 +412,7 @@ export function splitMarkdownSections(markdown: string): SplitDocument {
   };
   const flush = () => {
     const text = lines.join("\n");
-    if (text.trim() !== "" || current.heading) {
+    if (!/^[ \t\n]*$/.test(text) || current.heading) {
       for (const label of footnoteReferences(text, definitions)) {
         const key = normalizeLabel(`^${label}`);
         if (!order.has(key)) order.set(key, order.size + 1);
