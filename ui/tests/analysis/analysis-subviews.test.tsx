@@ -786,6 +786,112 @@ describe("findings filters in the URL", () => {
   });
 });
 
+// Issue #476 — the filters follow the URL on a soft navigation, as `tab` does.
+describe("findings filters resync from the URL while mounted", () => {
+  beforeEach(() => {
+    apiMock.get.mockResolvedValue(manyFindings());
+  });
+
+  /** Render, and return a soft navigation: new search params, same mounted page. */
+  function renderNavigable() {
+    const { rerender } = render(<AnalysisPage />, {
+      wrapper: makeWrapper({ initialUser: TEST_USER }),
+    });
+    return (query: string) => {
+      nav.search = new URLSearchParams(query);
+      rerender(<AnalysisPage />);
+    };
+  }
+
+  it("applies and shows the filters of a second link opened on the mounted page", async () => {
+    nav.search = new URLSearchParams("analysisId=an-1&tab=findings&severity=critical");
+    const navigate = renderNavigable();
+    await screen.findByTestId("findings-section");
+    await waitFor(() =>
+      expect(screen.getByTestId("findings-pager-range")).toHaveTextContent("of 21 findings"),
+    );
+
+    navigate("analysisId=an-1&tab=findings&severity=critical&category=security&agent=document");
+    await waitFor(() =>
+      expect(findingTitles()).toEqual(["Finding 60", "Finding 75", "Finding 90"]),
+    );
+    expect(screen.getByTestId("finding-filter-severity")).toHaveValue("critical");
+    expect(screen.getByTestId("finding-filter-category")).toHaveValue("security");
+    expect(screen.getByTestId("finding-filter-agent")).toHaveValue("document");
+
+    // Back to the unfiltered view.
+    navigate("analysisId=an-1&tab=findings");
+    await waitFor(() => expect(findingTitles()).toHaveLength(20));
+    expect(screen.getByTestId("finding-filter-severity")).toHaveValue("");
+    expect(screen.getByTestId("finding-filter-agent")).toHaveValue("");
+    expect(screen.getByTestId("findings-pager-range")).toHaveTextContent(
+      "Showing 1–20 of 105 findings",
+    );
+  });
+
+  it("follows the verification filter too", async () => {
+    nav.search = new URLSearchParams("tab=findings");
+    const navigate = renderNavigable();
+    await screen.findByTestId("findings-section");
+    navigate("tab=findings&verification=confirmed");
+    expect(await screen.findByTestId("findings-no-match")).toBeInTheDocument();
+    expect(screen.getByTestId("verification-filter-confirmed")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("returns to page 1 when the URL brings different filters", async () => {
+    nav.search = new URLSearchParams("tab=findings");
+    const navigate = renderNavigable();
+    await screen.findByTestId("findings-section");
+    await waitFor(() => expect(findingTitles()).toHaveLength(20));
+    await userEvent.click(
+      within(screen.getByTestId("findings-pager")).getByRole("button", { name: "Next" }),
+    );
+    expect(screen.getByTestId("findings-pager-range")).toHaveTextContent(
+      "Showing 21–40 of 105 findings",
+    );
+    navigate("tab=findings&severity=critical");
+    await waitFor(() =>
+      expect(screen.getByTestId("findings-pager-range")).toHaveTextContent(
+        "Showing 1–20 of 21 findings",
+      ),
+    );
+  });
+
+  it("does not loop or reset the page when its own filter write echoes back", async () => {
+    nav.search = new URLSearchParams("tab=findings");
+    const navigate = renderNavigable();
+    // Stand in for the router: a replace becomes the new search params.
+    let echo: string | null = null;
+    nav.replace.mockImplementation((href: string) => {
+      echo = href.split("?")[1] ?? "";
+    });
+    await screen.findByTestId("findings-section");
+    await waitFor(() => expect(findingTitles()).toHaveLength(20));
+
+    await userEvent.selectOptions(screen.getByTestId("finding-filter-severity"), "critical");
+    await userEvent.click(
+      within(screen.getByTestId("findings-pager")).getByRole("button", { name: "Next" }),
+    );
+    expect(screen.getByTestId("findings-pager-range")).toHaveTextContent(
+      "Showing 21–21 of 21 findings",
+    );
+    const writes = nav.replace.mock.calls.length;
+
+    // The router delivers the write only now, after the reader paged on.
+    navigate(echo!);
+    navigate(echo!);
+    expect(screen.getByTestId("findings-pager-range")).toHaveTextContent(
+      "Showing 21–21 of 21 findings",
+    );
+    expect(screen.getByTestId("finding-filter-severity")).toHaveValue("critical");
+    expect(nav.replace).toHaveBeenCalledTimes(writes);
+    nav.replace.mockReset();
+  });
+});
+
 // Issue #424 — `?requirementId=` (the promote dialog's link) opens the page holding it.
 describe("the requirement deep link", () => {
   beforeEach(() => {

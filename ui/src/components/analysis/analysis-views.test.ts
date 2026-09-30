@@ -15,6 +15,7 @@ import {
   parseAnalysisTab,
   parseFindingFilters,
   requirementPage,
+  sameFindingFilters,
   traceabilityPendingMessage,
   runHasQuestionsView,
   tabCountLabel,
@@ -349,5 +350,29 @@ describe("traceabilityPendingMessage", () => {
   it("says a run that did not complete has none", () => {
     expect(traceabilityPendingMessage("failed")).toMatch(/did not complete/);
     expect(traceabilityPendingMessage("cancelled")).toMatch(/did not complete/);
+  });
+});
+
+// Issue #476 — the URL's filters are compared with the shown ones, so the
+// page's own write echoing back is not mistaken for a navigation.
+describe("sameFindingFilters", () => {
+  it("is true for equal filters, whatever object holds them", () => {
+    expect(sameFindingFilters(NO_FINDING_FILTERS, { ...NO_FINDING_FILTERS })).toBe(true);
+    expect(
+      sameFindingFilters(parseFindingFilters(new URLSearchParams("severity=high&agent=code")), {
+        ...NO_FINDING_FILTERS,
+        agentKey: "code",
+        severity: "high",
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["severity", { severity: "high" }],
+    ["category", { category: "security" }],
+    ["agentKey", { agentKey: "code" }],
+    ["verification", { verification: "confirmed" as const }],
+  ])("is false when %s differs", (_facet, over) => {
+    expect(sameFindingFilters(NO_FINDING_FILTERS, { ...NO_FINDING_FILTERS, ...over })).toBe(false);
   });
 });
