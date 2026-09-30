@@ -51,6 +51,7 @@ const { assertSecretBindingAllowed } = await import("../src/lib/vault/secret-bin
 const { BINDING_WRITE_WINDOW_MS, SECRET_BINDING_WINDOW_EXPIRED, markBindingWrite } =
   await import("../src/lib/vault/binding-write-mark.js");
 const { authorizeAndBindSecretRefs } = await import("../src/lib/vault/bound-secret.js");
+const { routingDigest, routingFields } = await import("../src/lib/vault/rotate-foreign-owner.js");
 const { assertDbSecretBinding, assertRepoSecretBinding } =
   await import("../src/lib/connectors/connector-secret-binding.js");
 const { assertPublishSecretBinding } =
@@ -113,6 +114,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       type: "db_connector",
       id,
       destination: `postgres://${host}`,
+      // #557 — the digest the 409 would carry for this row.
+      routing: routingDigest(
+        "db_connector",
+        id,
+        routingFields.db_connector({
+          driver: "postgres",
+          host,
+          port: null,
+          databaseName: null,
+          options: null,
+        }),
+      ),
     });
     /** The owner binding their secret to a new connector: the guard, then the write. */
     const ownerBinds = async (secretId: string, connectorId: string, host: string) => {

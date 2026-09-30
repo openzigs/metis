@@ -211,8 +211,16 @@ describe("<VaultPage />", () => {
           label: "Coord DB",
           projectId: "p1",
           destination: "postgres://db.coord.example:5432",
+          routing: "rt-db1",
         },
-        { type: "mcp_server", id: "m1", label: "Coord MCP", projectId: null, destination: null },
+        {
+          type: "mcp_server",
+          id: "m1",
+          label: "Coord MCP",
+          projectId: null,
+          destination: null,
+          routing: "rt-m1",
+        },
       ],
     };
     const refuse = (details: unknown = foreign) =>
@@ -246,9 +254,15 @@ describe("<VaultPage />", () => {
         expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
           confirmForeignOwner: true,
           // #502 — type, id and destination, not the id alone; no label or projectId.
+          // #557 — and the routing digest, echoed back untouched.
           confirmedBindings: [
-            { type: "db_connector", id: "db1", destination: "postgres://db.coord.example:5432" },
-            { type: "mcp_server", id: "m1", destination: null },
+            {
+              type: "db_connector",
+              id: "db1",
+              destination: "postgres://db.coord.example:5432",
+              routing: "rt-db1",
+            },
+            { type: "mcp_server", id: "m1", destination: null, routing: "rt-m1" },
           ],
         }),
       );
@@ -305,6 +319,7 @@ describe("<VaultPage />", () => {
             label: "New DB",
             projectId: "p1",
             destination: "postgres://evil.example",
+            routing: "rt-db2",
           },
         ],
       };
@@ -329,9 +344,19 @@ describe("<VaultPage />", () => {
         expect(rotateMock).toHaveBeenLastCalledWith("sec_1", "ghp_admin", {
           confirmForeignOwner: true,
           confirmedBindings: [
-            { type: "db_connector", id: "db1", destination: "postgres://db.coord.example:5432" },
-            { type: "mcp_server", id: "m1", destination: null },
-            { type: "db_connector", id: "db2", destination: "postgres://evil.example" },
+            {
+              type: "db_connector",
+              id: "db1",
+              destination: "postgres://db.coord.example:5432",
+              routing: "rt-db1",
+            },
+            { type: "mcp_server", id: "m1", destination: null, routing: "rt-m1" },
+            {
+              type: "db_connector",
+              id: "db2",
+              destination: "postgres://evil.example",
+              routing: "rt-db2",
+            },
           ],
         }),
       );

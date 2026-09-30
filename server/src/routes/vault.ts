@@ -74,16 +74,29 @@ const createSchema = z.object({
   description: z.string().max(500).optional(),
 });
 
+/** Longest secret value a create or rotate accepts. */
+export const SECRET_VALUE_MAX = 64 * 1024;
+export const CONFIRMED_BINDING_ID_MAX = 200;
+export const CONFIRMED_BINDING_DESTINATION_MAX = 8192;
+/**
+ * #502 — the most bindings a foreign-owner confirm may echo back. The 409 lists
+ * every live binding and the UI echoes all of them, so lowering this strands a
+ * secret with more bindings than the cap: an admin could never rotate it.
+ * A realistic confirm at this cap is well under the 10 MiB JSON limit
+ * (`JSON_LIMIT_BYTES`); a pathological one (max-length, all-escaped fields)
+ * can exceed it and gets the structured `413 PAYLOAD_TOO_LARGE`.
+ */
+export const MAX_CONFIRMED_BINDINGS = 1000;
+
 const rotateSchema = z.object({
-  value: z
-    .string()
-    .min(1)
-    .max(64 * 1024),
+  value: z.string().min(1).max(SECRET_VALUE_MAX),
   /** #482 — required to rotate a secret another user owns. */
   confirmForeignOwner: z.boolean().optional(),
   /**
    * #502 — the `{type, id, destination}` of every binding the 409 listed; must
    * match the live set, destinations included, so a same-id re-point refuses.
+   * #557 — and its `routing` digest, so a re-point the destination string does
+   * not show (new args, env or database) refuses too.
    */
   confirmedBindings: z
     .array(
@@ -96,12 +109,14 @@ const rotateSchema = z.object({
             "mcp_server",
             "jira_connection",
           ]),
-          id: z.string().min(1).max(200),
-          destination: z.string().max(8192).nullable(),
+          id: z.string().min(1).max(CONFIRMED_BINDING_ID_MAX),
+          destination: z.string().max(CONFIRMED_BINDING_DESTINATION_MAX).nullable(),
+          // #557 — exactly what `routingDigest` issues: HMAC-SHA256, lowercase hex.
+          routing: z.string().regex(/^[0-9a-f]{64}$/, "routing must be the digest the 409 issued"),
         })
         .strict(),
     )
-    .max(1000)
+    .max(MAX_CONFIRMED_BINDINGS)
     .optional(),
 });
 

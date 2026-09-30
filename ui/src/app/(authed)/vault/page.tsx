@@ -312,7 +312,7 @@ function EntryDetail({
   });
 
   const rotate = useMutation({
-    // #502 — a confirm carries the bindings (type, id, destination) the admin was shown.
+    // #502 — a confirm carries the bindings (type, id, destination; #557 routing) the admin was shown.
     mutationFn: (confirmedBindings: VaultConfirmedBinding[] | null) =>
       confirmedBindings
         ? vaultApi.rotate(entry.id, rotateValue, { confirmForeignOwner: true, confirmedBindings })
@@ -496,10 +496,11 @@ function EntryDetail({
                 variant="destructive"
                 onClick={() =>
                   rotate.mutate(
-                    foreignOwner.bindings.map(({ type, id, destination }) => ({
+                    foreignOwner.bindings.map(({ type, id, destination, routing }) => ({
                       type,
                       id,
                       destination,
+                      routing,
                     })),
                   )
                 }

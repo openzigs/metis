@@ -29,12 +29,24 @@
  * the route refuses with 409 {@link VAULT_ROTATE_BINDINGS_CHANGED} and the
  * fresh list, and the `vault.rotate` audit row records the bindings, with
  * their destinations, that were confirmed.
+ * #557 — a destination string is only a display: `driver://host:port` has no
+ * database name or driver options, `url ?? command` no args or env. So each
+ * binding also carries `routing`, a server-issued digest over EVERY field that
+ * decides where that resource sends the secret, and the confirm must echo it:
+ * the same stdio command with new args, or the same host with a new database,
+ * changes the digest and refuses the confirm. The digest is an HMAC keyed off
+ * the server's signing secret, because those fields can hold plaintext (an MCP
+ * env value, a header) that an unkeyed hash would let a caller test guesses
+ * against.
  * A confirmed rotation also transfers ownership (`createdById`) to the admin,
  * so the previous owner can no longer bind the secret, now holding the
  * admin's value, to a new destination (rule 1 of `secret-binding.ts`); their
  * existing bindings keep working where they are (rule 2).
  */
+import { createHmac, hkdfSync } from "node:crypto";
 import { prisma } from "../prisma.js";
+import { resolveJwtSecret } from "../auth/jwt.js";
+import { dbDestinationOptions } from "../connectors/destination.js";
 import { reaches, refBodiesIn } from "./secret-binding.js";
 
 export const VAULT_ROTATE_FOREIGN_OWNER = "VAULT_ROTATE_FOREIGN_OWNER";
@@ -55,6 +67,90 @@ export interface SecretBindingView {
   projectId: string | null;
   /** Where the resource sends the secret (host, base URL, command), when known. */
   destination: string | null;
+  /** #557 — opaque digest of every field that routes the secret; see {@link routingDigest}. */
+  routing: string;
+}
+
+type BindingType = SecretBindingView["type"];
+
+/**
+ * #557 — the fields that decide where each kind of resource sends the secret,
+ * in a fixed order. Wider than the destination string on purpose: a change to
+ * any of them is a new destination for the confirm, even one the binding check
+ * would not count (a non-Oracle database name), since the admin was not shown it.
+ */
+export const routingFields = {
+  db_connector: (d: {
+    driver: string;
+    host: string | null;
+    port: number | null;
+    databaseName: string | null;
+    options: string | null;
+  }): unknown[] => [d.driver, d.host, d.port, d.databaseName, dbDestinationOptions(d.options)],
+  repo_connector: (r: { provider: string; apiBaseUrl: string | null }): unknown[] => [
+    r.provider,
+    r.apiBaseUrl,
+  ],
+  import_source: (i: {
+    source: string;
+    baseUrl: string | null;
+    jiraConnectionId: string | null;
+    filter: string;
+  }): unknown[] => [i.source, i.baseUrl, i.jiraConnectionId, i.filter],
+  mcp_server: (m: {
+    transport: string;
+    runtime: string | null;
+    command: string | null;
+    args: string | null;
+    url: string | null;
+    headers: string | null;
+    envJson: string | null;
+    envSecretId: string | null;
+    egressAllowlist: string | null;
+  }): unknown[] => [
+    m.transport,
+    m.runtime,
+    m.command,
+    m.args,
+    m.url,
+    m.headers,
+    m.envJson,
+    m.envSecretId,
+    m.egressAllowlist,
+  ],
+  jira_connection: (j: {
+    baseUrl: string;
+    proxyUrl: string | null;
+    tlsRejectUnauthorized: boolean;
+    tlsCaSecretId: string | null;
+  }): unknown[] => [j.baseUrl, j.proxyUrl, j.tlsRejectUnauthorized, j.tlsCaSecretId],
+} satisfies Record<BindingType, (row: never) => unknown[]>;
+
+/**
+ * #557 — the key {@link routingDigest} signs under: derived (HKDF, own label)
+ * from the server's signing secret, so it is stable across instances and
+ * restarts. Derive it once per listing and pass it to each digest.
+ */
+export function routingKey(): Buffer {
+  return Buffer.from(
+    hkdfSync("sha256", resolveJwtSecret().secret, "", "metis:vault-rotate-routing:v1", 32),
+  );
+}
+
+/**
+ * #557 — the digest a binding's `routing` carries: HMAC-SHA256 over its type,
+ * id and routing fields, under {@link routingKey}. Always 64 lowercase hex
+ * characters, which is exactly what the rotate route's schema accepts back.
+ */
+export function routingDigest(
+  type: BindingType,
+  id: string,
+  fields: unknown[],
+  key: Buffer = routingKey(),
+): string {
+  return createHmac("sha256", key)
+    .update(JSON.stringify([type, id, ...fields]))
+    .digest("hex");
 }
 
 export interface ForeignOwnerDetails {
@@ -108,7 +204,16 @@ export async function describeForeignOwner(secret: {
     }),
     prisma.databaseConnection.findMany({
       where: { secretId: secret.id, deletedAt: null },
-      select: { id: true, label: true, projectId: true, driver: true, host: true, port: true },
+      select: {
+        id: true,
+        label: true,
+        projectId: true,
+        driver: true,
+        host: true,
+        port: true,
+        databaseName: true,
+        options: true,
+      },
     }),
     prisma.repoConnection.findMany({
       where: { secretId: secret.id, deletedAt: null },
@@ -116,7 +221,15 @@ export async function describeForeignOwner(secret: {
     }),
     prisma.importSource.findMany({
       where: { secretId: secret.id, deletedAt: null },
-      select: { id: true, label: true, projectId: true, source: true, baseUrl: true },
+      select: {
+        id: true,
+        label: true,
+        projectId: true,
+        source: true,
+        baseUrl: true,
+        jiraConnectionId: true,
+        filter: true,
+      },
     }),
     // Candidates only: servers pointing at the id, or holding any vault ref at
     // all; `reaches` then decides which refs resolve to this secret.
@@ -133,8 +246,12 @@ export async function describeForeignOwner(secret: {
         id: true,
         label: true,
         projectId: true,
-        url: true,
+        transport: true,
+        runtime: true,
         command: true,
+        args: true,
+        url: true,
+        egressAllowlist: true,
         envSecretId: true,
         envJson: true,
         headers: true,
@@ -145,10 +262,19 @@ export async function describeForeignOwner(secret: {
         deletedAt: null,
         OR: [{ secretId: secret.id }, { tlsCaSecretId: secret.id }],
       },
-      select: { id: true, label: true, projectId: true, baseUrl: true },
+      select: {
+        id: true,
+        label: true,
+        projectId: true,
+        baseUrl: true,
+        proxyUrl: true,
+        tlsRejectUnauthorized: true,
+        tlsCaSecretId: true,
+      },
     }),
   ]);
 
+  const key = routingKey();
   const bindings: SecretBindingView[] = [
     ...dbs.map((d) => ({
       type: "db_connector" as const,
@@ -156,6 +282,7 @@ export async function describeForeignOwner(secret: {
       label: d.label,
       projectId: d.projectId,
       destination: d.host ? `${d.driver}://${d.host}${d.port ? `:${d.port}` : ""}` : d.driver,
+      routing: routingDigest("db_connector", d.id, routingFields.db_connector(d), key),
     })),
     ...repos.map((r) => ({
       type: "repo_connector" as const,
@@ -163,6 +290,7 @@ export async function describeForeignOwner(secret: {
       label: r.label,
       projectId: r.projectId,
       destination: r.apiBaseUrl ?? r.provider,
+      routing: routingDigest("repo_connector", r.id, routingFields.repo_connector(r), key),
     })),
     ...imports.map((i) => ({
       type: "import_source" as const,
@@ -170,6 +298,7 @@ export async function describeForeignOwner(secret: {
       label: i.label,
       projectId: i.projectId,
       destination: i.baseUrl ?? i.source,
+      routing: routingDigest("import_source", i.id, routingFields.import_source(i), key),
     })),
     ...mcps
       .filter(
@@ -185,6 +314,7 @@ export async function describeForeignOwner(secret: {
         label: m.label,
         projectId: m.projectId,
         destination: m.url ?? m.command,
+        routing: routingDigest("mcp_server", m.id, routingFields.mcp_server(m), key),
       })),
     ...jiras.map((j) => ({
       type: "jira_connection" as const,
@@ -192,6 +322,7 @@ export async function describeForeignOwner(secret: {
       label: j.label,
       projectId: j.projectId,
       destination: j.baseUrl,
+      routing: routingDigest("jira_connection", j.id, routingFields.jira_connection(j), key),
     })),
   ];
 
@@ -227,7 +358,7 @@ function whereBound(details: ForeignOwnerDetails): string {
 }
 
 const TO_CONFIRM =
-  "To rotate it anyway, set confirmForeignOwner and send the type, id and destination of " +
+  "To rotate it anyway, set confirmForeignOwner and send the type, id, destination and routing of " +
   "every binding listed here as confirmedBindings; the secret then becomes yours, so they can no longer " +
   "bind it anywhere new.";
 
@@ -257,25 +388,32 @@ export function bindingInProgressMessage(details: ForeignOwnerDetails): string {
   );
 }
 
-/** #502 — one binding as the admin confirmed it: what it is and where it sends. */
-export type ConfirmedBinding = Pick<SecretBindingView, "type" | "id" | "destination">;
+/**
+ * #502 — one binding as the admin confirmed it: what it is and where it sends.
+ * #557 — with the `routing` digest, which covers what `destination` does not show.
+ */
+export type ConfirmedBinding = Pick<SecretBindingView, "type" | "id" | "destination" | "routing">;
 
 function bindingKey(b: ConfirmedBinding): string {
-  return JSON.stringify([b.type, b.id, b.destination]);
+  return JSON.stringify([b.type, b.id, b.destination, b.routing]);
 }
 
 /** #502 — the confirmed bindings, deduplicated and in a stable order, for the audit row. */
 export function canonicalBindings(bindings: ConfirmedBinding[]): ConfirmedBinding[] {
   const byKey = new Map(
-    bindings.map((b) => [bindingKey(b), { type: b.type, id: b.id, destination: b.destination }]),
+    bindings.map((b) => [
+      bindingKey(b),
+      { type: b.type, id: b.id, destination: b.destination, routing: b.routing },
+    ]),
   );
   return [...byKey.keys()].sort().map((k) => byKey.get(k)!);
 }
 
 /**
  * #502 — do the live bindings differ from the ones the admin confirmed? A
- * binding matches only on type, id AND destination, so one re-pointed at a new
- * host under the same id counts as changed.
+ * binding matches only on type, id, destination AND (#557) routing digest, so
+ * one re-pointed under the same id counts as changed — at a new host, and
+ * equally at new args, env or database behind the same displayed destination.
  */
 export function bindingsDiffer(
   details: ForeignOwnerDetails,
