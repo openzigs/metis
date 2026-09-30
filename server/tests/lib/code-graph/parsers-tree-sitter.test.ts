@@ -569,8 +569,8 @@ describe("web-tree-sitter parse() returning null (#310)", () => {
 
   it("finds literals when parse() yields a tree (control)", () => {
     expect(parseWithTreeSitter("a.ts", TS_SQL, "ts").unparseable).toBeFalsy();
-    expect(findStringLiterals(TS_SQL, "ts").length).toBeGreaterThan(0);
-    expect(findJavaConcatSqlCandidates(JAVA_SQL).length).toBeGreaterThan(0);
+    expect(findStringLiterals(TS_SQL, "ts", "a.ts").length).toBeGreaterThan(0);
+    expect(findJavaConcatSqlCandidates(JAVA_SQL, "Repo.java").length).toBeGreaterThan(0);
   });
 
   it("parseWithTreeSitter marks the file unparseable instead of throwing", () => {
@@ -582,12 +582,12 @@ describe("web-tree-sitter parse() returning null (#310)", () => {
 
   it("findStringLiterals returns [] instead of throwing", () => {
     vi.spyOn(Parser.prototype, "parse").mockReturnValue(null);
-    expect(findStringLiterals(TS_SQL, "ts")).toEqual([]);
+    expect(findStringLiterals(TS_SQL, "ts", "a.ts")).toEqual([]);
   });
 
   it("findJavaConcatSqlCandidates returns [] instead of throwing", () => {
     vi.spyOn(Parser.prototype, "parse").mockReturnValue(null);
-    expect(findJavaConcatSqlCandidates(JAVA_SQL)).toEqual([]);
+    expect(findJavaConcatSqlCandidates(JAVA_SQL, "Repo.java")).toEqual([]);
   });
 });
 
@@ -610,6 +610,14 @@ export default function Page() {
 }
 
 export const Card = ({ title }: { title: string }) => <section><h2>{title}</h2></section>;
+`;
+
+  const TSX_RENDER = `import { Card } from "./card";
+
+export default function Page() {
+  const title = "Hi";
+  return <main><Card title={title} /></main>;
+}
 `;
 
   const names = (r: ReturnType<typeof parseSource>) =>
@@ -655,9 +663,52 @@ export const Card = ({ title }: { title: string }) => <section><h2>{title}</h2><
     expect(names(r)).toEqual(["handler"]);
   });
 
+  it("emits a JSX render edge (`via: 'jsx'`) from a .tsx component", () => {
+    const r = parseSource("ui/src/app/page.tsx", TSX_RENDER, "ts");
+    const jsx = r.edges.filter((e) => e.kind === "references" && e.metadata?.via === "jsx");
+    expect(jsx).toEqual([
+      expect.objectContaining({
+        fromQualifiedName: expect.stringMatching(/Page$/),
+        toQualifiedName: "Card",
+        line: 5,
+      }),
+    ]);
+  });
+
   it("parses `.jsx` components with the JavaScript grammar (already JSX-aware)", () => {
     const src = `export default function Page() {\n  const onClick = () => {};\n  return <div onClick={onClick} />;\n}\nexport const Card = () => <p />;\n`;
     const r = parseSource("page.jsx", src, "js");
     expect(names(r)).toEqual(expect.arrayContaining(["Page", "Card", "onClick"]));
+  });
+});
+
+// Issue #383 — `findStringLiterals` looked the grammar up by language alone, so
+// embedded-SQL and routine-usage extraction scanned `.tsx` with the TypeScript
+// grammar. There, JSX text such as `https://…` opens a `//` comment that runs to
+// end of line, swallowing a SQL literal on the same line.
+describe("string-literal scans select the grammar per file (#383)", () => {
+  const TSX_SQL = `export function Orders() {
+  return <p>Docs: https://example.com {run("SELECT id FROM orders")}</p>;
+}
+`;
+
+  it("finds a SQL literal inside a JSX-containing .tsx component", () => {
+    const texts = findStringLiterals(TSX_SQL, "ts", "ui/src/orders.tsx").map((l) => l.text);
+    expect(texts).toEqual(["SELECT id FROM orders"]);
+  });
+
+  it("matches the .tsx extension case-insensitively", () => {
+    expect(findStringLiterals(TSX_SQL, "ts", "Legacy.TSX").map((l) => l.text)).toEqual([
+      "SELECT id FROM orders",
+    ]);
+  });
+
+  it("still scans a .ts path with the TypeScript grammar", () => {
+    // Keep the `<number>x` assertion: it is valid TypeScript but not TSX, so it
+    // is what makes this test fail if `.ts` were ever parsed with TSX.
+    const src = 'const n = <number>x;\nconst q = "SELECT id FROM orders";\n';
+    expect(findStringLiterals(src, "ts", "src/repo.ts").map((l) => l.text)).toEqual([
+      "SELECT id FROM orders",
+    ]);
   });
 });

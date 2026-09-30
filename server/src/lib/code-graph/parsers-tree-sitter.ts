@@ -147,7 +147,11 @@ export function __resetCodeGraphParsersForTests(): void {
   initPromise = null;
 }
 
-/** The grammar for a file: TSX for a `.tsx` path, else the language's own (#371). */
+/**
+ * The grammar for a file: TSX for a `.tsx` path, else the language's own (#371).
+ * Every grammar lookup goes through here (#383) — a lookup by language alone
+ * scans `.tsx` with the TypeScript grammar, where JSX is an ERROR subtree.
+ */
 function parserFor(filePath: string, language: Language): LoadedParser | undefined {
   if (language === "ts" && tsxParser && filePath.toLowerCase().endsWith(".tsx")) {
     return tsxParser;
@@ -310,13 +314,20 @@ function stripQuotes(raw: string): string {
  * interpolates). Used by the embedded-SQL extractor to find candidate SQL strings
  * in TS/JS/Python/Go before handing them to the sql-lineage sidecar.
  *
+ * `filePath` selects the grammar ({@link parserFor}): a `.tsx` file is scanned
+ * with the TSX grammar (#383).
+ *
  * Returns `[]` (never throws) when tree-sitter isn't initialized, the grammar is
  * missing, or the file fails to parse — callers degrade gracefully.
  */
-export function findStringLiterals(source: string, language: Language): StringLiteral[] {
+export function findStringLiterals(
+  source: string,
+  language: Language,
+  filePath: string,
+): StringLiteral[] {
   const types = STRING_NODE_TYPES[language];
   if (!parsers || !types) return [];
-  const loaded = parsers.get(language);
+  const loaded = parserFor(filePath, language);
   if (!loaded) return [];
   let tree: Tree | null;
   try {
@@ -451,10 +462,15 @@ function markJavaConsumed(node: SyntaxNode, consumed: Set<number>): void {
  *
  * Returns `[]` (never throws) when tree-sitter isn't initialized, the Java
  * grammar is missing, or the file fails to parse — callers degrade gracefully.
+ *
+ * `filePath` does not change the grammar today (`parserFor` only switches a
+ * `ts` file to TSX). It is required anyway so every grammar lookup goes through
+ * `parserFor` (#383): a future per-file grammar rule then applies here too,
+ * rather than being missed at one of several lookup sites.
  */
-export function findJavaConcatSqlCandidates(source: string): StringLiteral[] {
+export function findJavaConcatSqlCandidates(source: string, filePath: string): StringLiteral[] {
   if (!parsers) return [];
-  const loaded = parsers.get("java");
+  const loaded = parserFor(filePath, "java");
   if (!loaded) return [];
   let tree: Tree | null;
   try {

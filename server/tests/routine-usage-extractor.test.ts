@@ -79,6 +79,23 @@ beforeAll(async () => {
 });
 
 describe("extractRoutineUsage", () => {
+  it("finds a CALL inside a JSX-containing .tsx component (#383)", async () => {
+    const { prisma, recorded } = fakePrisma();
+    const writer = new SchemaGraphWriter(prisma, "g1", "p1");
+    const src = `export function Stock() {
+  return <p>See https://example.com {run("CALL update_inventory(5, 10)")}</p>;
+}
+`;
+    const client = stubClient(() => routineResult([{ name: "update_inventory" }]));
+
+    const res = await extractRoutineUsage(writer, "ui/src/stock.tsx", src, { client });
+
+    expect(res.edges).toBe(1);
+    expect(recorded.edges.find((e) => e.toQualifiedName === "update_inventory")?.kind).toBe(
+      "executes",
+    );
+  });
+
   it("emits an `executes` edge (code → routine) for a CALL invocation in TS", async () => {
     const { prisma, recorded } = fakePrisma();
     const writer = new SchemaGraphWriter(prisma, "g1", "p1");

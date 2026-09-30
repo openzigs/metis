@@ -100,7 +100,7 @@ export async function extractRoutineUsage(
   const language = detectLanguage(filePath);
   if (!language || !SUPPORTED_LANGUAGES.has(language)) return empty;
 
-  const candidates = findEmbeddedSqlCandidates(source, language);
+  const candidates = findEmbeddedSqlCandidates(source, language, filePath);
   if (candidates.length === 0) return empty;
 
   const dialect = opts.dialect ?? "";
