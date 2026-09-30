@@ -25,7 +25,7 @@ import { audit } from "../audit/audit-service.js";
 import { auditMcpEvent } from "../audit/mcp-audit.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
-import { expandVaultRefs } from "../vault/env-manager.js";
+import { expandVaultRefs, type VaultRefMapKind } from "../vault/env-manager.js";
 import { bindSecretRefs, parseSecretBindings } from "../vault/bound-secret.js";
 import { mcpRefs } from "./secret-binding.js";
 import { getVaultService } from "../vault/vault-service.js";
@@ -756,9 +756,10 @@ export class MCPRegistryService {
   async resolveEnv(
     env: Record<string, string>,
     secretBindings?: Record<string, string> | null,
+    kind?: VaultRefMapKind,
   ): Promise<Record<string, string>> {
     if (!env || Object.keys(env).length === 0) return {};
-    return expandVaultRefs(env, getVaultService(), secretBindings);
+    return expandVaultRefs(env, getVaultService(), secretBindings, kind);
   }
 
   toConfig(row: McpRow): MCPServerConfig {

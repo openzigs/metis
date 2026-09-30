@@ -33,36 +33,49 @@ const VAULT_REF_PATTERN = /\$\{vault:([^}]+)\}/g;
  * bound id only, and one that is unbound, or whose bound secret is no longer
  * live, throws instead of re-resolving the label. Omitted or `null` only for a
  * resource saved before #480.
+ *
+ * `kind` names what the map is in error messages — an MCP server's header
+ * values are expanded through here too (#504).
  */
+export type VaultRefMapKind = "env" | "header";
+
 export async function expandVaultRefs(
   env: Record<string, string>,
   vault: VaultService,
   secretBindings?: Record<string, string> | null,
+  kind: VaultRefMapKind = "env",
 ): Promise<Record<string, string>> {
   const expanded: Record<string, string> = {};
   for (const [key, raw] of Object.entries(env)) {
-    expanded[key] = await expandValue(key, raw, vault, secretBindings ?? null);
+    expanded[key] = await expandValue(`${kind} ${key}`, raw, vault, secretBindings ?? null);
   }
   return expanded;
 }
 
 async function expandValue(
-  envKey: string,
+  /** `env KEY` or `header Name`, for messages. */
+  where: string,
   value: string,
   vault: VaultService,
   secretBindings: Record<string, string> | null,
 ): Promise<string> {
   if (!value.includes("${vault:")) return value;
+  // #504 — a header goes to a remote URL: never resolve one by label.
+  if (secretBindings === null && where.startsWith("header ")) {
+    throw new Error(
+      `${where} references the vault but this server has no secret bindings yet; save the server again`,
+    );
+  }
 
   const matches = [...value.matchAll(VAULT_REF_PATTERN)];
   let result = value;
   for (const match of matches) {
     const ref = match[1].trim();
     const plaintext = secretBindings
-      ? await readBound(envKey, ref, secretBindings, vault)
+      ? await readBound(where, ref, secretBindings, vault)
       : await resolveRef(ref, vault);
     if (plaintext == null) {
-      throw new Error(`Vault reference \${vault:${ref}} (env ${envKey}) could not be resolved`);
+      throw new Error(`Vault reference \${vault:${ref}} (${where}) could not be resolved`);
     }
     result = result.replace(match[0], plaintext);
   }
@@ -71,7 +84,7 @@ async function expandValue(
 
 /** #480 — a bound reference, by its stored id only; never by label. */
 async function readBound(
-  envKey: string,
+  where: string,
   ref: string,
   secretBindings: Record<string, string>,
   vault: VaultService,
@@ -79,7 +92,7 @@ async function readBound(
   const secretId = Object.hasOwn(secretBindings, ref) ? secretBindings[ref] : undefined;
   if (!secretId) {
     throw new Error(
-      `Vault reference \${vault:${ref}} (env ${envKey}) is not bound to a secret; save the server again`,
+      `Vault reference \${vault:${ref}} (${where}) is not bound to a secret; save the server again`,
     );
   }
   try {
@@ -88,7 +101,7 @@ async function readBound(
   } catch {
     log.warn("Bound vault secret not live", { ref, secretId });
     throw new Error(
-      `Vault reference \${vault:${ref}} (env ${envKey}): the secret it was bound to has been deleted; select a secret again`,
+      `Vault reference \${vault:${ref}} (${where}): the secret it was bound to has been deleted; select a secret again`,
     );
   }
 }

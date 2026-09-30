@@ -28,7 +28,7 @@ import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { ConnectorError, concurrentUpdateError } from "../types.js";
 import { assertConnectorHostAllowed, type ConnectorKind } from "../network-allowlist.js";
-import { asVaultRef, resolveVaultRef } from "../vault-resolver.js";
+import { asVaultRef, VAULT_BINDING_STALE } from "../vault-resolver.js";
 import { authenticateXray, buildBasicAuthHeader, buildBearerHeader } from "./auth.js";
 import type {
   PersistedProxyConfig,
@@ -320,45 +320,62 @@ async function releaseDeletedLabel(
 
 // ---- Vault → resolved plaintext (in-process only) -------------------------
 
+/**
+ * #504 — read a stored credential by the secret id its ref names, and nothing
+ * else. Every ref this service writes is `${vault:<secret id>}` (`writeSecret`),
+ * so the id IS the binding. `resolveVaultRef` would fall back to a label lookup
+ * once that secret was deleted, picking up a secret someone created with a label
+ * equal to the id; `vault.read` is by id and live rows only. This mirrors
+ * `readBoundSecret` (#480) against the injected vault rather than the global
+ * Prisma client.
+ *
+ * @throws ConnectorError 409 VAULT_BINDING_STALE when the bound secret is gone
+ *   (`vault.read` reports `SECRET_NOT_FOUND`). Any other failure — a database
+ *   outage, a decryption error — is rethrown unchanged: it says nothing about
+ *   the binding, and "enter the credential again" would be the wrong advice.
+ */
+async function readBound(vault: VaultService, ref: string | null | undefined): Promise<string> {
+  const id = refId(ref);
+  if (!id) {
+    throw new ConnectorError(
+      500,
+      "TESTMGMT_AUTH_UNRESOLVED",
+      "stored credential reference is missing or malformed",
+    );
+  }
+  try {
+    const { plaintext } = await vault.read(id);
+    return plaintext;
+  } catch (err) {
+    if ((err as { code?: unknown }).code !== "SECRET_NOT_FOUND") throw err;
+    log.warn("Bound test-management secret not live", { secretId: id });
+    throw new ConnectorError(
+      409,
+      VAULT_BINDING_STALE,
+      "the vault secret this connection was bound to has been deleted; enter the credential again",
+    );
+  }
+}
+
 async function resolveAuthConfig(
   vault: VaultService,
   refs: TestManagementAuthConfigRefs,
 ): Promise<ResolvedAuthConfig> {
   switch (refs.kind) {
-    case "xray": {
-      const clientId = await resolveVaultRef(refs.clientIdRef, vault);
-      const clientSecret = await resolveVaultRef(refs.clientSecretRef, vault);
-      if (!clientId || !clientSecret) {
-        throw new ConnectorError(
-          500,
-          "TESTMGMT_AUTH_UNRESOLVED",
-          "xray credentials could not be resolved from vault",
-        );
-      }
-      return { kind: "xray", clientId, clientSecret };
-    }
-    case "zephyr": {
-      const bearerToken = await resolveVaultRef(refs.bearerTokenRef, vault);
-      if (!bearerToken) {
-        throw new ConnectorError(
-          500,
-          "TESTMGMT_AUTH_UNRESOLVED",
-          "zephyr bearer token could not be resolved from vault",
-        );
-      }
-      return { kind: "zephyr", bearerToken };
-    }
-    case "testrail": {
-      const apiKey = await resolveVaultRef(refs.apiKeyRef, vault);
-      if (!apiKey) {
-        throw new ConnectorError(
-          500,
-          "TESTMGMT_AUTH_UNRESOLVED",
-          "testrail api key could not be resolved from vault",
-        );
-      }
-      return { kind: "testrail", email: refs.email, apiKey };
-    }
+    case "xray":
+      return {
+        kind: "xray",
+        clientId: await readBound(vault, refs.clientIdRef),
+        clientSecret: await readBound(vault, refs.clientSecretRef),
+      };
+    case "zephyr":
+      return { kind: "zephyr", bearerToken: await readBound(vault, refs.bearerTokenRef) };
+    case "testrail":
+      return {
+        kind: "testrail",
+        email: refs.email,
+        apiKey: await readBound(vault, refs.apiKeyRef),
+      };
   }
 }
 
@@ -369,7 +386,7 @@ async function resolveTlsConfig(
   if (!tls) return null;
   let caCert: string | null = null;
   if (tls.caCertRef) {
-    caCert = await resolveVaultRef(tls.caCertRef, vault);
+    caCert = await readBound(vault, tls.caCertRef);
   }
   return {
     rejectUnauthorized: tls.rejectUnauthorized ?? true,

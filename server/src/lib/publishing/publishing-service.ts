@@ -153,6 +153,31 @@ export function assertValidSecretRef(secretRef: string | undefined, dryRun: bool
   }
 }
 
+/** The credential fields a batch's `metadata` carries (#480, #504). */
+export interface BatchSecretMeta {
+  secretRef?: string;
+  secretId?: string | null;
+  /** #504 — set by the backfill when a pre-#480 reference could not be bound. */
+  secretBindingFlag?: string;
+}
+
+/**
+ * #504 — the token source a batch's execute/archive may use. A batch the
+ * backfill flagged (its pre-#480 reference was ambiguous or reached nothing)
+ * gets no reference at all, so it can never resolve by label: the live run and
+ * an issue-closing archive fail with `TOKEN_REQUIRED` instead. Exported for
+ * unit testing.
+ */
+export function batchTokenSource(meta: BatchSecretMeta): {
+  secretRef: string | null;
+  boundSecretId: string | null;
+} {
+  return {
+    secretRef: meta.secretBindingFlag ? null : (meta.secretRef ?? null),
+    boundSecretId: meta.secretId ?? null,
+  };
+}
+
 export async function createBatch(opts: CreateBatchOptions): Promise<SharedPublishBatch> {
   const { input, actorId } = opts;
   // #1092/#1094 — reject a malformed/missing credential ref before the batch
@@ -400,14 +425,9 @@ async function executeBatchInner(opts: {
   if (batch.status === "completed" || batch.status === "failed" || batch.status === "cancelled") {
     return { status: batch.status };
   }
-  const meta = batch.metadata
-    ? (JSON.parse(batch.metadata) as {
-        secretRef?: string;
-        secretId?: string | null;
-        draftIds?: string[];
-      })
+  const meta: BatchSecretMeta & { draftIds?: string[] } = batch.metadata
+    ? JSON.parse(batch.metadata)
     : {};
-  const secretRef = meta.secretRef ?? null;
 
   // Determine publish destination from the project settings. Looked up
   // BEFORE the gate: Jira-bound destinations gate a different draft set
@@ -468,8 +488,7 @@ async function executeBatchInner(opts: {
     githubResult = await runBatch({
       batchId: opts.batchId,
       dryRun: batch.dryRun,
-      secretRef,
-      boundSecretId: meta.secretId ?? null,
+      ...batchTokenSource(meta),
     });
   }
 
@@ -571,16 +590,13 @@ export async function archiveBatch(opts: {
       "only the batch owner or an admin may archive/rollback this batch",
     );
   }
-  const meta = batch.metadata
-    ? (JSON.parse(batch.metadata) as { secretRef?: string; secretId?: string | null })
-    : {};
+  const meta: BatchSecretMeta = batch.metadata ? JSON.parse(batch.metadata) : {};
   await archiveBatchImpl({
     batchId: opts.batchId,
     reason: opts.input.reason,
     closeIssues: opts.input.closeIssues,
     actorId: opts.actorId,
-    secretRef: meta.secretRef ?? null,
-    boundSecretId: meta.secretId ?? null,
+    ...batchTokenSource(meta),
   });
   const refreshed = await prisma.publishBatch.findUnique({ where: { id: opts.batchId } });
   return toBatchApi(refreshed!);
