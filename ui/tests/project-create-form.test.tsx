@@ -16,7 +16,7 @@ import { ApiError } from "@/lib/api-client";
 import { makeWrapper } from "./test-utils";
 import { useRouter } from "next/navigation";
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
 
 vi.mock("@/lib/projects-api", () => ({
   projectsApi: { create: vi.fn() },
@@ -32,6 +32,7 @@ beforeEach(() => {
   vi.mocked(useRouter()).push.mockClear();
   vi.mocked(toast.success).mockReset();
   vi.mocked(toast.error).mockReset();
+  vi.mocked(toast.warning).mockReset();
 });
 
 function renderForm(onCreated?: (...args: unknown[]) => void) {
@@ -297,6 +298,57 @@ describe("ProjectCreateForm", () => {
         }),
       ),
     );
+  });
+
+  // #428 — the route creates the project even when the repo link fails; the
+  // form used to report plain "Project created" and drop the reason.
+  it("warns, with the reason, when the repository was not linked (#428)", async () => {
+    const user = userEvent.setup();
+    create.mockResolvedValueOnce({
+      id: "p-new",
+      name: "Acme",
+      slug: "acme",
+      primaryRepo: null,
+      primaryRepoError: {
+        code: "INSECURE_BASE_URL",
+        message: "apiBaseUrl must use HTTPS: http://ghe.example.com",
+      },
+    });
+    renderForm();
+    await user.type(screen.getByTestId("project-name-input"), "Acme");
+    await user.click(screen.getByTestId("toggle-repo-section"));
+    await user.type(screen.getByTestId("repo-owner-input"), "acme-corp");
+    await user.type(screen.getByTestId("repo-name-input"), "my-app");
+    await user.click(screen.getByTestId("project-create-submit"));
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledTimes(1));
+    expect(toast.success).not.toHaveBeenCalled();
+    const [title, opts] = vi.mocked(toast.warning).mock.calls[0] as [
+      string,
+      { description: string; action: { label: string; onClick: () => void } },
+    ];
+    expect(title).toMatch(/repository was not linked/i);
+    expect(opts.description).toContain("apiBaseUrl must use HTTPS: http://ghe.example.com");
+    expect(opts.description).toMatch(/Connections/);
+    // The action points at the new project's Connections page.
+    vi.mocked(useRouter()).push.mockClear();
+    opts.action.onClick();
+    expect(useRouter().push).toHaveBeenCalledWith("/projects/p-new/connections");
+  });
+
+  it("reports plain success when the repository was linked (#428)", async () => {
+    const user = userEvent.setup();
+    create.mockResolvedValueOnce({
+      id: "p-new",
+      name: "Acme",
+      slug: "acme",
+      primaryRepo: { id: "repo_1" },
+      primaryRepoError: null,
+    });
+    renderForm();
+    await user.type(screen.getByTestId("project-name-input"), "Acme");
+    await user.click(screen.getByTestId("project-create-submit"));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Project created"));
+    expect(toast.warning).not.toHaveBeenCalled();
   });
 
   // #370 — a successful Create lands on the new project's Overview, which is
