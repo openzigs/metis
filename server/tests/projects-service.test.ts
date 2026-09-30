@@ -26,12 +26,40 @@ let nextId = 0;
 
 function reset(): void {
   projects.clear();
+  workspaces.clear();
   nextId = 0;
 }
+
+/** #560 — the `workspace.findFirst` gate: the where clause decides. */
+interface MockWorkspace {
+  id: string;
+  deletedAt: Date | null;
+  memberIds: string[];
+}
+const workspaces = new Map<string, MockWorkspace>();
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     auditLog: { create: vi.fn(async () => ({})) },
+    workspace: {
+      findFirst: vi.fn(
+        async ({
+          where,
+        }: {
+          where: {
+            id: string;
+            deletedAt?: null;
+            members?: { some: { userId: string } };
+          };
+        }) => {
+          const ws = workspaces.get(where.id);
+          if (!ws) return null;
+          if (where.deletedAt === null && ws.deletedAt) return null;
+          if (where.members && !ws.memberIds.includes(where.members.some.userId)) return null;
+          return { id: ws.id };
+        },
+      ),
+    },
     project: {
       findUnique: vi.fn(async ({ where }: { where: { slug?: string; id?: string } }) => {
         if (where.slug) {
@@ -128,6 +156,47 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+});
+
+describe("createProject — workspace assignment (#560)", () => {
+  const withWs = (workspaceId: string) =>
+    ({ name: "W", slug: `w-${workspaceId}`, workspaceId }) as Parameters<typeof createProject>[0];
+
+  beforeEach(() => {
+    workspaces.set("ws-mine", { id: "ws-mine", deletedAt: null, memberIds: [owner.id] });
+    workspaces.set("ws-other", { id: "ws-other", deletedAt: null, memberIds: [] });
+    workspaces.set("ws-dead", { id: "ws-dead", deletedAt: new Date(), memberIds: [owner.id] });
+  });
+
+  it("persists a live workspace the actor is a member of", async () => {
+    const p = await createProject(withWs("ws-mine"), owner);
+    expect(projects.get(p.id)).toMatchObject({ workspaceId: "ws-mine" });
+  });
+
+  it.each([
+    ["a workspace the actor is not a member of", "ws-other", owner],
+    ["a soft-deleted workspace the actor is a member of", "ws-dead", owner],
+    ["an unknown workspace", "ws-missing", owner],
+    ["a soft-deleted workspace, even for an admin", "ws-dead", admin],
+  ])("refuses %s with 404 and writes nothing", async (_label, workspaceId, actor) => {
+    await expect(createProject(withWs(workspaceId), actor)).rejects.toMatchObject({
+      status: 404,
+      code: "WORKSPACE_NOT_FOUND",
+    });
+    expect(projects.size).toBe(0);
+  });
+
+  it("lets an admin use a live workspace they are not a member of", async () => {
+    const p = await createProject(withWs("ws-other"), admin);
+    expect(projects.get(p.id)).toMatchObject({ workspaceId: "ws-other" });
+  });
+
+  it("leaves a project without workspaceId unassigned and skips the lookup", async () => {
+    const { prisma } = await import("../src/lib/prisma.js");
+    const p = await createProject({ name: "U", slug: "u" }, owner);
+    expect(projects.get(p.id)).toMatchObject({ workspaceId: null });
+    expect(prisma.workspace.findFirst).not.toHaveBeenCalled();
+  });
 });
 
 describe("createProject", () => {
