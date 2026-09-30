@@ -1213,6 +1213,8 @@ function formatIndexingSummary(indexing?: GeneratedDoc["indexing"]): string {
       return "Awaiting approval before indexing.";
     case "rejected":
       return indexing.errorMessage?.trim() || "Indexing was rejected.";
+    case "cancelled":
+      return indexing.errorMessage?.trim() || "Publishing was cancelled.";
     default:
       return indexing.errorMessage?.trim() || "Queued for indexing.";
   }

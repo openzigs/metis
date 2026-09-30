@@ -157,8 +157,11 @@ function syntheticIndex(document: SyntheticIndexRow) {
   };
   // #489 — a cancelled row keeps its `pending`/`quarantined` indexState, so the
   // badge said "pending" beside a "cancelled" message. The row carries the
-  // prefixed text #201 writes; the classifier reads the same predicate.
-  return isGeneratedDocPublicationCancelled(document.errorMessage)
+  // prefixed text #201 writes; the classifier reads the same predicate. Only
+  // those two states can be a cancelled publication: the recovery write has no
+  // indexState filter, so a stale prefix must not relabel an indexed row.
+  const cancellable = document.indexState === "pending" || document.indexState === "quarantined";
+  return cancellable && isGeneratedDocPublicationCancelled(document.errorMessage)
     ? { ...index, ...CANCELLED_INDEX }
     : index;
 }

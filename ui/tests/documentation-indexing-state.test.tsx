@@ -160,4 +160,38 @@ describe("DocumentationPage — indexing state", () => {
       expect(badge).not.toHaveClass("text-destructive");
     }
   });
+  // #489 — a cancelled publication with no message must not read as queued.
+  it("summarises a cancelled publication with no message as cancelled, not queued", async () => {
+    const doc = {
+      id: "doc_1",
+      title: "Architecture Overview",
+      scope: "full",
+      status: "ready",
+      indexing: {
+        state: "cancelled",
+        status: "cancelled",
+        chunkCount: 0,
+        errorMessage: null,
+        processedAt: null,
+      },
+      autoUpdate: false,
+      generatedAt: "2026-06-01T00:00:00.000Z",
+      createdAt: "2026-06-01T00:00:00.000Z",
+    };
+    mockApiFetch.mockImplementation(async (path: string) => {
+      if (typeof path === "string" && path.endsWith("/docs/doc_1")) {
+        return { ...doc, content: "# Architecture", versions: [] };
+      }
+      if (typeof path === "string" && path.endsWith("/docs")) return [doc];
+      return [];
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("doc-card-doc_1"));
+
+    const summary = await screen.findByTestId("doc-indexing-summary");
+    expect(summary).toHaveTextContent("Publishing was cancelled.");
+    expect(summary).not.toHaveTextContent("Queued for indexing.");
+  });
 });

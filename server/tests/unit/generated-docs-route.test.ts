@@ -1281,6 +1281,40 @@ describe("generated-docs routes", () => {
       expectNoIndexingLeak(JSON.stringify(res.body));
     });
 
+    it("#489 — a stale cancellation prefix on an indexed row does not relabel it cancelled", async () => {
+      vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
+        id: "doc-1",
+        content: "",
+        versions: [
+          {
+            id: "v1",
+            documentId: "doc-1",
+            version: 1,
+            revisionId: null,
+            provenanceManifest: null,
+            createdAt: new Date(0),
+          },
+        ],
+      } as never);
+      vi.mocked(prisma.document.findFirst).mockResolvedValue({
+        indexState: "indexed",
+        status: "indexed",
+        chunkCount: 4,
+        errorMessage: `${GENERATED_DOC_PUBLICATION_CANCELLED}: cancelled by user /srv/metis`,
+        processedAt: null,
+      } as never);
+
+      const res = await request(app).get("/projects/proj-1/docs/doc-1");
+
+      expect(res.status).toBe(200);
+      // Only a pending/quarantined row can be a cancelled publication; the
+      // recovery write has no indexState filter, so a stale prefix must not win.
+      expect(res.body.data.indexing.state).toBe("indexed");
+      expect(res.body.data.indexing.status).toBe("indexed");
+      expect(res.body.data.indexing.chunkCount).toBe(4);
+      expect(JSON.stringify(res.body)).not.toContain("cancelled by user");
+    });
+
     it("#232 — a cancelled publication task with no Document row reads as cancelled", async () => {
       vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
         id: "doc-1",
