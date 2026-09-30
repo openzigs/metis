@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import type { DocumentRow } from "@/lib/projects-api";
 import {
+  UNNAMED_DATABASE,
   UNNAMED_REPOSITORY,
   filterEntries,
   groupEntries,
@@ -157,5 +158,61 @@ describe("groupEntries", () => {
     expect(groups.repos[0].fileCount).toBe(5000);
     expect(groups.repos[0].folders).toHaveLength(10);
     expect(groups.repos[0].folders.reduce((n, f) => n + f.fileCount, 0)).toBe(5000);
+  });
+});
+
+// Review of PR #436 — the server writes three more filename shapes than
+// `connector:repo:` (connector-ingest.ts, atlassian.ts). None was uploaded, and
+// the database one carries the connector's cuid.
+describe("documents from other connectors", () => {
+  const DB = "cmexampledbconn0000dbzz99";
+  const others = [
+    doc("d0", `connector:db:${DB}:OVERVIEW.md`),
+    doc("d1", `connector:db:${DB}:public.orders.md`),
+    doc("c1", "confluence:ENG:123456"),
+    doc("j1", "jira:WMS-42"),
+    doc("u1", "Spec.docx"),
+  ];
+
+  it("keeps them out of the Uploaded group, each under its own source", () => {
+    const groups = groupEntries(toPanelEntries(others));
+    expect(groups.uploads.map((e) => e.doc.id)).toEqual(["u1"]);
+    expect(groups.repos).toEqual([]);
+    expect(groups.sources.map((s) => s.name)).toEqual(["Confluence ENG", UNNAMED_DATABASE, "Jira"]);
+    const db = groups.sources[1];
+    expect(db.fileCount).toBe(2);
+    expect(db.files.map((f) => f.name)).toEqual(["Overview", "public.orders"]);
+    expect(groups.sources[0].files.map((f) => f.name)).toEqual(["Page 123456"]);
+    expect(groups.sources[2].files.map((f) => f.name)).toEqual(["WMS-42"]);
+  });
+
+  it("never shows the database connector's id in a label or matches it in the filter", () => {
+    const entries = toPanelEntries(others);
+    const labels = entries.flatMap((e) => [e.name, e.title, e.repoName ?? "", e.secondary ?? ""]);
+    expect(labels.join(" ")).not.toMatch(/dbzz99|connector:db|confluence:|jira:/);
+    expect(filterEntries(entries, "dbzz99")).toEqual([]);
+    expect(filterEntries(entries, "orders").map((e) => e.doc.id)).toEqual(["d1"]);
+    expect(filterEntries(entries, "jira").map((e) => e.doc.id)).toEqual(["j1"]);
+  });
+
+  it("names a database by its connector name when one is known", () => {
+    const groups = groupEntries(toPanelEntries(others.slice(0, 2), { [DB]: "warehouse-db" }));
+    expect(groups.sources.map((s) => s.name)).toEqual(["warehouse-db"]);
+  });
+});
+
+describe("unknown connectors", () => {
+  it("numbers two unnamed repositories so they can be told apart, without an id", () => {
+    const groups = groupEntries(toPanelEntries([repo("a", "x.ts"), repo("b", "y.ts", OTHER)], {}));
+    expect(groups.repos.map((r) => r.name)).toEqual([
+      UNNAMED_REPOSITORY,
+      `${UNNAMED_REPOSITORY} 2`,
+    ]);
+    // Stable: ordinal follows the connector id, not the listing order.
+    const again = groupEntries(toPanelEntries([repo("b", "y.ts", OTHER), repo("a", "x.ts")], {}));
+    expect(again.repos.map((r) => [r.connectorId, r.name])).toEqual([
+      [CONN, UNNAMED_REPOSITORY],
+      [OTHER, `${UNNAMED_REPOSITORY} 2`],
+    ]);
   });
 });

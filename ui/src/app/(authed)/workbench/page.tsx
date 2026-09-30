@@ -375,6 +375,12 @@ export default function WorkbenchPage() {
               />
             ) : documents.isLoading ? (
               <p className="text-xs text-muted-foreground">Loading…</p>
+            ) : documents.isError ? (
+              // #32 — a failed page fails the whole read; say so rather than
+              // reporting an empty project with an Upload prompt.
+              <p role="alert" className="px-2 text-xs text-destructive">
+                Couldn’t load this project’s documents. Reload the page to try again.
+              </p>
             ) : (documents.data?.items ?? []).length === 0 ? (
               <EmptyState
                 title="No documents yet"

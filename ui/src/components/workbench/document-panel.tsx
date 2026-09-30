@@ -1,11 +1,12 @@
 /**
  * Issue #32 — the Workbench Documents panel: a filter box, uploaded documents
  * first in their own group, then each repository as a folder tree that starts
- * collapsed.
+ * collapsed, then documents from other connectors (database schemas,
+ * Confluence, Jira), one collapsed group per source.
  *
  * Collapsed folders render no children, so a repository of thousands of files
  * costs one row until it is opened. While filtering, every folder on a match's
- * path is shown open, and at most {@link SEARCH_RENDER_LIMIT} matches render —
+ * path is shown open (and the folder toggles are disabled), and at most {@link SEARCH_RENDER_LIMIT} matches render —
  * the count says how many more there are.
  */
 "use client";
@@ -15,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { DocumentRow } from "@/lib/projects-api";
 import type { RepoNameMap } from "@/hooks/use-repo-names";
+import { MAX_PANEL_DOCUMENTS } from "@/lib/list-all-documents";
 import {
   filterEntries,
   groupEntries,
@@ -105,6 +107,9 @@ export function DocumentPanel({
           type="button"
           className="flex w-full items-center gap-1 rounded px-2 py-1 text-left hover:bg-accent/50"
           aria-expanded={open}
+          // While filtering every folder on a match's path is open; a toggle
+          // would change nothing visible, so it is disabled until the filter clears.
+          disabled={searching}
           onClick={() => toggle(folder.key)}
           data-testid="workbench-folder"
         >
@@ -125,7 +130,9 @@ export function DocumentPanel({
   }
 
   const hidden = searching ? matches.length - shown.length : 0;
-  const unloaded = total !== undefined ? total - documents.length : 0;
+  // Only the load ceiling leaves documents out; a row lost to offset drift
+  // mid-read is not a reason to claim the list was cut short.
+  const truncated = total !== undefined && total > MAX_PANEL_DOCUMENTS;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
@@ -159,12 +166,20 @@ export function DocumentPanel({
             <ul>{groups.repos.map((repo) => renderFolder(repo, 0))}</ul>
           </section>
         ) : null}
+        {groups.sources.length > 0 ? (
+          <section aria-label="Other sources" className="mt-2" data-testid="workbench-sources">
+            <h3 className="px-2 pb-1 text-xs font-semibold uppercase text-muted-foreground">
+              Other sources
+            </h3>
+            <ul>{groups.sources.map((source) => renderFolder(source, 0))}</ul>
+          </section>
+        ) : null}
         {hidden > 0 ? (
           <p role="status" className="px-2 pt-2 text-xs text-muted-foreground">
             Showing {shown.length} of {matches.length} matches — keep typing to narrow.
           </p>
         ) : null}
-        {unloaded > 0 ? (
+        {truncated ? (
           <p role="status" className="px-2 pt-2 text-xs text-muted-foreground">
             Showing the first {documents.length} of {total} documents.
           </p>

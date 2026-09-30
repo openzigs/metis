@@ -233,6 +233,14 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     expect(within(chips).getByText(/upload-149\.md/)).toBeInTheDocument();
   });
 
+  it("says the documents failed to load rather than showing an empty project (#32)", async () => {
+    documentsListMock.mockRejectedValue(new Error("boom"));
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(<WorkbenchPage />, { wrapper: Wrapper });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t load");
+    expect(screen.queryByText("No documents yet")).toBeNull();
+  });
+
   // PR #367 panel — the context chip is a second render site for the label, and
   // reverting it alone left every Workbench test green.
   it("labels an attached context chip with the repository's name (#23)", async () => {

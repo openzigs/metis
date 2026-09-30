@@ -161,6 +161,45 @@ describe("DocumentPanel", () => {
     );
   });
 
+  it("keeps connector documents out of Uploaded, under Other sources (review of #436)", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <DocumentPanel
+        documents={[
+          doc("u1", "Requirements.docx"),
+          doc("d1", "connector:db:cmexampledbconn0000dbzz99:public.orders.md"),
+          doc("j1", "jira:WMS-42"),
+        ]}
+        repoNames={{}}
+        attachedIds={[]}
+        onAttach={vi.fn()}
+        onDetach={vi.fn()}
+      />,
+    );
+    const uploads = screen.getByTestId("workbench-uploads");
+    expect(within(uploads).getAllByRole("listitem")).toHaveLength(1);
+    const sources = screen.getByTestId("workbench-sources");
+    await user.click(within(sources).getByRole("button", { name: /Database schema/ }));
+    expect(within(sources).getByTestId("workbench-doc-d1")).toHaveTextContent("public.orders");
+    expect(container.textContent).not.toMatch(/dbzz99|connector:db|jira:/);
+  });
+
+  it("disables folder toggles while filtering, when every match's folder is open", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await user.type(screen.getByTestId("workbench-doc-filter"), "invoice");
+    const root = screen.getByRole("button", { name: /wms-core/ });
+    expect(root).toBeDisabled();
+    await user.clear(screen.getByTestId("workbench-doc-filter"));
+    expect(root).toBeEnabled();
+  });
+
+  it("does not claim a cut-short list when a row went missing under the ceiling", () => {
+    // One more in `total` than loaded — e.g. a delete during the paged read.
+    renderPanel({ total: docs.length + 1 });
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   it("says when the project holds more documents than were loaded", () => {
     renderPanel({ total: 12000 });
     expect(screen.getByRole("status")).toHaveTextContent("Showing the first 4 of 12000 documents");
