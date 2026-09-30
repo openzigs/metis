@@ -26,6 +26,12 @@
 -- an operator decision. Both cases need the pre-#369 generator race to have
 -- happened.
 --
+-- Also left alone: when a retired epic's child sits in the SAME dedup group as
+-- the retired epic (e.g. d_s2 -> d_s1), repointing would make the survivor its
+-- own parent, so the guard skips it and the child keeps a parentDraftId that
+-- names a soft-deleted row (PR #414 review). Readers filter deletedAt, so it
+-- renders as parentless; like the case above it needs the pre-#369 race.
+--
 -- Written in a separate migration rather than folded into #369's, because a
 -- database that already applied #369 would never re-run an edited file.
 -- Idempotent: once repointed, nothing names a retired row.

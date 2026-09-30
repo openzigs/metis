@@ -133,8 +133,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
+    // PR #414 review — read the ids the migration actually stored on the batch,
+    // not the fixture's expectation, or the test cannot fail on the migration.
     it("leaves every repointed draftId loadable by createBatch's own query", async () => {
-      const ids = DRAFT_IDS_AFTER_402.b_running;
+      const batch = await db.publishBatch.findUnique({
+        where: { id: "b_running" },
+        select: { metadata: true },
+      });
+      const ids = (JSON.parse(batch?.metadata ?? "{}") as { draftIds?: string[] }).draftIds ?? [];
+      expect(ids.length).toBeGreaterThan(0);
       // Mirrors publishing-service.ts createBatch: a short count is DRAFT_MISMATCH.
       const found = await db.issueDraft.findMany({
         where: { id: { in: ids }, projectId: "p1", deletedAt: null },
