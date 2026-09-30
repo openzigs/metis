@@ -483,6 +483,11 @@ describe("buildPublisherPorts.createGitHubIssue", () => {
     });
     expect(issue.externalId).toBe("7");
     expect(issue.externalUrl).toBe("https://github.com/o/r/issues/7");
+    // #480 — the token comes from the connector's bound id, never a label
+    // lookup (PR #499 panel: both mocks returned the same value before).
+    const { readBoundSecret, resolveVaultRef } = await import("../connectors/vault-resolver.js");
+    expect(readBoundSecret).toHaveBeenCalledWith("sec-1", expect.anything());
+    expect(resolveVaultRef).not.toHaveBeenCalled();
   });
 
   it("throws when the repo connection is missing", async () => {

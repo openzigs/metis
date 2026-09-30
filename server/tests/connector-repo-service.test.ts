@@ -654,6 +654,28 @@ describe("Repo connector service — update + auth/clone", () => {
   });
 });
 
+describe("Repo connector service — #480 keep a re-sent bound reference", () => {
+  it("does not re-bind a re-sent ${vault:<bound id>} (PR #499 panel)", async () => {
+    const { bindSecretRef } = await import("../src/lib/vault/bound-secret.js");
+    const c = await createRepoConnector(
+      "proj_1",
+      { label: "keep", ownerOrOrg: "o", repoName: "r", secretRef: "${vault:sec-bound}" },
+      "user_1",
+    );
+    vi.mocked(bindSecretRef).mockClear();
+    // The UI re-sends the connector's own ref on an unrelated edit. Re-binding it
+    // would re-resolve the id (or a label) — exactly the re-bind #480 closes.
+    const updated = await updateRepoConnector(
+      "proj_1",
+      c.id,
+      { defaultBranch: "develop", secretRef: "${vault:sec-bound}" },
+      "user_1",
+    );
+    expect(bindSecretRef).not.toHaveBeenCalled();
+    expect(updated.secretRef).toBe("${vault:sec-bound}");
+  });
+});
+
 describe("Repo connector service — extractRefBody validation", () => {
   it("rejects malformed secretRef on create", async () => {
     await expect(
