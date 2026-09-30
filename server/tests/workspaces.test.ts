@@ -201,9 +201,21 @@ describe("Workspace Routes", () => {
         deletedAt: null,
       } as never);
       vi.mocked(prisma.workspace.update).mockResolvedValue({} as never);
+      // #601 — the soft delete and the invite void run in one interactive transaction.
+      vi.mocked(prisma.$transaction).mockImplementation(((fn: (tx: unknown) => unknown) =>
+        fn(prisma)) as never);
 
       const res = await request(app).delete("/workspaces/ws-1");
       expect(res.status).toBe(200);
+      const { data } = vi.mocked(prisma.workspace.update).mock.calls[0]![0] as {
+        data: { deletedAt: Date };
+      };
+      expect(data.deletedAt).toBeInstanceOf(Date);
+      // Outstanding invites of THIS workspace only, stamped with the delete's instant.
+      expect(prisma.workspaceInvite.updateMany).toHaveBeenCalledWith({
+        where: { workspaceId: "ws-1", consumedAt: null },
+        data: { consumedAt: data.deletedAt },
+      });
     });
 
     it("prevents deleting the default workspace", async () => {

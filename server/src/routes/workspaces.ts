@@ -177,9 +177,23 @@ export function workspacesRouter(): Router {
       throw new AppError(400, "BAD_REQUEST", "Cannot delete the default workspace");
     }
 
-    await prisma.workspace.update({
-      where: { id: workspaceId },
-      data: { deletedAt: new Date() },
+    // #601 — void the outstanding invites in the same transaction as the soft
+    // delete. The accept's guarded consume re-checks only the invite row it
+    // locks (on Postgres READ COMMITTED its `workspace.deletedAt` condition is
+    // read from the statement snapshot), so a delete committing mid-accept was
+    // invisible to it. Writing the invite rows makes the two conflict on the
+    // row the accept does re-check: an accept that has not consumed first
+    // waits for this commit and then finds the invite spent.
+    await prisma.$transaction(async (tx) => {
+      const now = new Date();
+      await tx.workspace.update({
+        where: { id: workspaceId },
+        data: { deletedAt: now },
+      });
+      await tx.workspaceInvite.updateMany({
+        where: { workspaceId, consumedAt: null },
+        data: { consumedAt: now },
+      });
     });
     // #588 — sockets already in its mcp:status room stop getting its events.
     evictWorkspaceMcpStatusRoom(workspaceId);
@@ -398,15 +412,17 @@ export function workspacesRouter(): Router {
     if (!invite) {
       throw new AppError(404, "NOT_FOUND", "Invalid invitation token");
     }
+    // Workspace DELETE is a soft delete (#563) that also voids its outstanding
+    // invites (#601), so a deleted workspace's invite reads as consumed: check
+    // the workspace first, or the reason given is "already used".
+    if (invite.workspace.deletedAt) {
+      throw new AppError(410, "GONE", "This workspace no longer exists");
+    }
     if (invite.consumedAt) {
       throw new AppError(410, "GONE", "Invitation has already been used");
     }
     if (invite.expiresAt < new Date()) {
       throw new AppError(410, "GONE", "Invitation has expired");
-    }
-    // Workspace DELETE is a soft delete that leaves outstanding invites in place (#563).
-    if (invite.workspace.deletedAt) {
-      throw new AppError(410, "GONE", "This workspace no longer exists");
     }
 
     // Find user by email (must be registered)
@@ -443,11 +459,12 @@ export function workspacesRouter(): Router {
           select: { consumedAt: true, workspace: { select: { deletedAt: true } } },
         });
         if (!current) throw new AppError(404, "NOT_FOUND", "Invalid invitation token");
-        if (current.consumedAt) {
-          throw new AppError(410, "GONE", "Invitation has already been used");
-        }
+        // Workspace first: the DELETE that beat this accept also consumed the invite (#601).
         if (current.workspace.deletedAt) {
           throw new AppError(410, "GONE", "This workspace no longer exists");
+        }
+        if (current.consumedAt) {
+          throw new AppError(410, "GONE", "Invitation has already been used");
         }
         throw new AppError(410, "GONE", "Invitation has expired");
       }

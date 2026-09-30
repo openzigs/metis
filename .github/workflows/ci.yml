@@ -803,6 +803,14 @@ jobs:
         working-directory: server
         run: pnpm test:integration vault-rotate-binding-race-552-postgres
 
+      # Issue #601 — on READ COMMITTED the invite accept's guarded consume re-checks
+      # only the invite row it locks, so a workspace DELETE committing mid-accept
+      # was invisible to it. The DELETE voids the invites in its own transaction;
+      # prove an accept blocked behind it gets 410 and adds no member.
+      - name: Prove a workspace delete committing mid-accept blocks the invite on real Postgres
+        working-directory: server
+        run: pnpm test:integration invite-accept-workspace-delete-race-601-postgres
+
       # Issue #543 (Epic #518) — prove the pgvector-backed RAG vector store gives
       # retrieval parity AND multi-replica read/write safety against the same real
       # Postgres: two separately-constructed store instances (= two pods) sharing
