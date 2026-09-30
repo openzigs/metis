@@ -24,6 +24,7 @@ function row(id = "a") {
     aclSubjects: "[]",
     document: {
       filename: `connector:repo:${id}:src/same.ts`,
+      source: "repo",
       storagePath: "blob",
       aclSubjects: "[]",
     },
@@ -125,6 +126,18 @@ describe("SQL-authoritative primary evidence #1353", () => {
     expect(await filter([shared])).toHaveLength(1);
     expect(await filter([shared], { sharedDocumentIds: [] })).toEqual([]);
     expect(await filter([row("b")], { sharedDocumentIds: ["doc-b"] })).toEqual([]);
+  });
+
+  it("an upload named like repository source is not that repository's evidence (#525)", async () => {
+    const upload = {
+      ...row("a"),
+      documentId: "doc-upload",
+      document: { ...row("a").document, source: "upload" },
+    };
+    // Scoped to repository `a`: the upload is not shared, so it is dropped ...
+    expect(await filter([upload])).toEqual([]);
+    // ... and admitted only through the shared-reference allowlist, like any upload.
+    expect(await filter([upload], { sharedDocumentIds: ["doc-upload"] })).toHaveLength(1);
   });
 
   it.each(["chunk", "document"])(

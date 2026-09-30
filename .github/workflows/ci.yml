@@ -774,6 +774,12 @@ jobs:
         working-directory: server
         run: pnpm test:integration document-source-postgres
 
+      # Issue #525 — generated rows reclassified by their `gendoc-` id: runs the
+      # Postgres migration.sql verbatim over seeded rows (scratch schema).
+      - name: Prove the generated-document source correction on real Postgres
+        working-directory: server
+        run: pnpm test:integration generated-source-by-id-postgres
+
       # Issue #492 — the partial (live-rows-only) repo label index on real
       # Postgres: delete-then-re-add under one label succeeds, a rename onto a
       # live label is a 409 through the real router, including a lost race.

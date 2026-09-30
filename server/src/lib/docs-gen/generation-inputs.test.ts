@@ -357,7 +357,11 @@ describe("captureGenerationInputs", () => {
     expect(mocks.chunks.mock.calls[0][0].where.document).toEqual({
       deletedAt: null,
       indexState: "indexed",
-      OR: [{ filename: { startsWith: "connector:repo:a:" } }, { id: { in: ["shared"] } }],
+      // #525: an upload named `connector:repo:a:…` is not repository evidence.
+      OR: [
+        { source: "repo", filename: { startsWith: "connector:repo:a:" } },
+        { id: { in: ["shared"] } },
+      ],
     });
   });
 

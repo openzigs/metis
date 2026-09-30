@@ -42,6 +42,15 @@ export function validateUpload(input: UploadCandidate): UploadValidation {
   if (filename.length === 0) {
     return { ok: false, status: 400, code: "INVALID_FILENAME", message: "Invalid filename" };
   }
+  const reserved = reservedFilenamePrefix(filename);
+  if (reserved) {
+    return {
+      ok: false,
+      status: 400,
+      code: "RESERVED_FILENAME",
+      message: `Filenames starting with '${reserved}' are reserved for connector and generated documents; rename the file and upload it again`,
+    };
+  }
   const allow = UPLOAD_MIME_ALLOWLIST as readonly string[];
   let mime = (input.mimeType ?? "").toLowerCase();
   if (!allow.includes(mime)) {
@@ -68,6 +77,47 @@ export function validateUpload(input: UploadCandidate): UploadValidation {
     };
   }
   return { ok: true, mimeType: mime, filename };
+}
+
+/**
+ * Issue #525 — filename prefixes that connector and generated-document writers
+ * use. Readers that only have a search hit's filename (grounding, evidence
+ * labels, schema mappings, the UI's source labels) classify on these, so an
+ * upload may not carry one. Each prefix is matched the way its readers match
+ * it: case-sensitively, except `generated-doc-`, which `doc-label.ts` matches
+ * with `/i` (see {@link CASE_INSENSITIVE_RESERVED_PREFIXES}). A pasted title
+ * such as `Jira: sprint 12 retro.md` reaches no reader's pattern, so it stays
+ * an ordinary upload.
+ *
+ * - `connector:`     repository and database connectors (`connector-ingest.ts`)
+ * - `repo:`          the legacy repository shape (`fused-code-context.ts`)
+ * - `jira:`, `confluence:` the Atlassian connector (`atlassian.ts`)
+ * - `generated-doc-` a published generated document (`generated-doc-publication.ts`)
+ * - `live-schema:`   the analysis database agent's schema citation
+ *                    (`analysis/schema-context.ts`); the UI labels it "Live schema"
+ */
+export const RESERVED_FILENAME_PREFIXES = [
+  "connector:",
+  "repo:",
+  "jira:",
+  "confluence:",
+  "generated-doc-",
+  "live-schema:",
+] as const;
+
+/** Reserved prefixes some reader matches case-insensitively. */
+const CASE_INSENSITIVE_RESERVED_PREFIXES: ReadonlySet<string> = new Set(["generated-doc-"]);
+
+/** The reserved prefix `filename` starts with, or null. */
+export function reservedFilenamePrefix(filename: string): string | null {
+  const lower = filename.toLowerCase();
+  return (
+    RESERVED_FILENAME_PREFIXES.find((prefix) =>
+      CASE_INSENSITIVE_RESERVED_PREFIXES.has(prefix)
+        ? lower.startsWith(prefix)
+        : filename.startsWith(prefix),
+    ) ?? null
+  );
 }
 
 /**

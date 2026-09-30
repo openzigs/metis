@@ -26,9 +26,6 @@ import {
 import { prisma } from "../prisma.js";
 import { getConfigService } from "../config/config-service.js";
 
-/** Document filename prefix for repo source ingested as knowledge (see connector-ingest.ts). */
-const REPO_SOURCE_PREFIX = "connector:repo:";
-
 /**
  * Project-level facts knowable before (and independent of) a run: whether a
  * code graph exists, whether repo source was ingested as knowledge, and the two
@@ -45,7 +42,7 @@ export async function detectStaticCapability(
       orderBy: { lastIndexedAt: "desc" },
     }),
     prisma.document.findFirst({
-      where: { projectId, deletedAt: null, filename: { startsWith: REPO_SOURCE_PREFIX } },
+      where: { projectId, deletedAt: null, source: "repo" },
       select: { id: true },
     }),
   ]);

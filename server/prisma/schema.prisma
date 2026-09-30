@@ -858,8 +858,9 @@ model Document {
   /// Issue #474 — which path wrote this row: `upload` (file, URL or text
   /// ingest), `generated`, `repo`, `db`, `confluence` or `jira`. Classify on
   /// this, not the filename: an upload may be named `jira:ABC-1`
-  /// (`lib/documents/document-source.ts`). Some readers still use the
-  /// filename prefix until #525.
+  /// (`lib/documents/document-source.ts`). Readers that see only a search
+  /// hit's filename still classify on its prefix (`grounding-retrieval.ts`,
+  /// `suggest-mappings.ts`, the UI's source labels) until #547.
   source             String    @default("upload")
   /// Issue #474 — a display title the source supplied (a Confluence page's
   /// title). Null when the source has none; the filename is the fallback.

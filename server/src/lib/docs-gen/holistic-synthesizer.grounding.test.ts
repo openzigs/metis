@@ -128,8 +128,8 @@ let judgeChatResponse: {
 // fixture assert a claim is entailed ONLY when a relevant source (e.g. a web
 // digest) is present in the grounding shown to the judge.
 let judgeVerdictFn:
-  | ((judgePrompt: string) => { claim: string; supported: boolean; sourceIds: string[] }[])
-  | null = null;
+  ((judgePrompt: string) => { claim: string; supported: boolean; sourceIds: string[] }[]) | null =
+  null;
 // When set, the claim-decomposition chat call throws (simulates an LLM error).
 let claimChatThrows = false;
 
@@ -447,7 +447,12 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
             metadata: "{}",
             chunkerIdentity: null,
             aclSubjects: "[]",
-            document: { filename: r.filename, storagePath: "blob", aclSubjects: r.acl },
+            document: {
+              filename: r.filename,
+              source: r.filename.startsWith("connector:repo:") ? "repo" : "upload",
+              storagePath: "blob",
+              aclSubjects: r.acl,
+            },
           }));
         },
       );

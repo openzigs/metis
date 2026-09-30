@@ -14,8 +14,8 @@ vi.mock("../prisma.js", () => ({
   prisma: {
     codeGraph: { findFirst: vi.fn(async () => codeGraphRow) },
     document: {
-      findFirst: vi.fn(async ({ where }: { where: { filename?: { startsWith?: string } } }) =>
-        where.filename?.startsWith === "connector:repo:" ? repoSourceRow : null,
+      findFirst: vi.fn(async ({ where }: { where: { source?: string } }) =>
+        where.source === "repo" ? repoSourceRow : null,
       ),
     },
   },
