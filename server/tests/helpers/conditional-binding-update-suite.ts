@@ -202,6 +202,31 @@ export function describeConditionalBindingUpdates(opts: {
         where: { action: "vault.delete", targetType: "secret", targetId: { in: secretIds } },
       });
     };
+    /**
+     * #593 — the `vault.rotate` audit rows an undo records against `secretIds`
+     * (`source: update_not_applied`), as distinct from the rotation's own.
+     */
+    const restoreAudits = async (secretIds: string[]) => {
+      await vi.waitFor(() => expect(getAuditService().inFlight).toBe(0));
+      const rows = await db.auditLog.findMany({
+        where: { action: "vault.rotate", targetType: "secret", targetId: { in: secretIds } },
+      });
+      return rows.filter(
+        (r) =>
+          (JSON.parse(r.metadata ?? "{}") as { source?: string }).source === "update_not_applied",
+      );
+    };
+    /**
+     * #593 — watch the vault's in-place rotation and creation for one request,
+     * so a test can assert the PATCH really rotated the row's own secret.
+     */
+    const watchVaultWrites = () => {
+      const vault = getVaultService();
+      const rotateSpy = vi.spyOn(vault, "rotateUndoable");
+      const createSpy = vi.mocked(vault.create);
+      createSpy.mockClear();
+      return { rotateSpy, createSpy };
+    };
     /** #495 — every audit row names `reason: concurrent_update` and the actor. */
     const expectConcurrentWithdrawals = async (secretIds: string[]) => {
       expect(secretIds.length, "the losing PATCH created no secret").toBeGreaterThan(0);
@@ -488,6 +513,33 @@ export function describeConditionalBindingUpdates(opts: {
         expect(await withdrawalAudits([after.secretId, after.tlsCaSecretId!])).toEqual([]);
       });
 
+      it("#593 — a failure after the write has landed keeps the owner's in-place rotation", async () => {
+        // Seeded and PATCHed by the same owner, so the token and CA cert are
+        // rotated in place (same ids) rather than replaced. The conditional
+        // write lands and only the read after it fails: the row's credential
+        // has changed, so its new value must stay — no undo, no restore audit.
+        const id = await create();
+        const before = await row(id);
+        const { rotateSpy, createSpy } = watchVaultWrites();
+        const label = `landed-${next()}`;
+        const res = await failingReadAfterWrite("jiraConnection", () =>
+          call("patch", url(id), ADMIN, { ...newCredentials, label }),
+        );
+        expect(res.status, JSON.stringify(res.body)).toBe(500);
+        expect(rotateSpy, "the owner's PATCH did not rotate in place").toHaveBeenCalledTimes(2);
+        expect(createSpy, "the owner's PATCH created a secret instead").not.toHaveBeenCalled();
+        const after = await row(id);
+        expect(after.label, "the write did not land").toBe(label);
+        expect(after.secretId).toBe(before.secretId);
+        expect(after.tlsCaSecretId).toBe(before.tlsCaSecretId);
+        const vault = getVaultService();
+        expect((await vault.read(after.secretId)).plaintext).toBe(newCredentials.apiToken);
+        expect((await vault.read(after.tlsCaSecretId!)).plaintext).toBe(newCredentials.tlsCaCert);
+        const ids = [after.secretId, after.tlsCaSecretId!];
+        expect(await restoreAudits(ids)).toEqual([]);
+        expect(await withdrawalAudits(ids)).toEqual([]);
+      });
+
       it("#495 — the same PATCH without a concurrent change keeps its new secrets", async () => {
         const id = await create();
         const secretsBefore = await liveCoordSecrets();
@@ -629,6 +681,41 @@ export function describeConditionalBindingUpdates(opts: {
         expect(after.authConfigJson).toContain(made[0]);
         expect((await getVaultService().read(made[0])).plaintext).toBe(newAuth.auth.bearerToken);
         expect(await withdrawalAudits(made)).toEqual([]);
+      });
+
+      it("#593 — a failure after the write has landed keeps the owner's in-place rotation", async () => {
+        // Seeded and PATCHed by the same owner, so the bearer token is rotated
+        // in place (the row keeps naming the same secret). The conditional
+        // write lands and only the read after it fails: the new value must
+        // stay — no undo, no restore audit.
+        const id = await create();
+        const before = await row(id);
+        const ownRef = (JSON.parse(before.authConfigJson ?? "{}") as { bearerTokenRef?: string })
+          .bearerTokenRef;
+        expect(ownRef, "the seeded row names no bearer-token secret").toBeTruthy();
+        const secretId = ownRef!.replace(/^\$\{vault:(.+)\}$/, "$1");
+        const { rotateSpy, createSpy } = watchVaultWrites();
+        const rotatedValue = "admin-rotated-landed-593";
+        const label = `landed-${next()}`;
+        const res = await failingReadAfterWrite("testManagementConnection", () =>
+          call("patch", url(id), ADMIN, {
+            label,
+            auth: { kind: "zephyr", bearerToken: rotatedValue },
+          }),
+        );
+        expect(res.status, JSON.stringify(res.body)).toBe(500);
+        expect(rotateSpy, "the owner's PATCH did not rotate in place").toHaveBeenCalledTimes(1);
+        expect(createSpy, "the owner's PATCH created a secret instead").not.toHaveBeenCalled();
+        const after = await row(id);
+        expect(after.label, "the write did not land").toBe(label);
+        expect(
+          (JSON.parse(after.authConfigJson ?? "{}") as { bearerTokenRef?: string }).bearerTokenRef,
+        ).toBe(ownRef);
+        const secret = await db.secret.findUniqueOrThrow({ where: { id: secretId } });
+        expect(secret.deletedAt).toBeNull();
+        expect((await getVaultService().read(secretId)).plaintext).toBe(rotatedValue);
+        expect(await restoreAudits([secretId])).toEqual([]);
+        expect(await withdrawalAudits([secretId])).toEqual([]);
       });
 
       it("the service refuses a write whose guard saw no row", async () => {
