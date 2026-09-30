@@ -130,3 +130,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
   },
 );
+
+describe("formatReservedPrefixUploads — terminal sanitiser (#547)", () => {
+  it("neutralises bidi overrides and zero-width characters in a filename", () => {
+    const bidiAndZw = [
+      "‪",
+      "‫",
+      "‬",
+      "‭",
+      "‮",
+      "⁦",
+      "⁧",
+      "⁨",
+      "⁩",
+      "‎",
+      "‏",
+      "؜",
+      "​",
+      "‌",
+      "‍",
+      "⁠",
+      "﻿",
+    ];
+    const text = formatReservedPrefixUploads([
+      {
+        documentId: "d1",
+        projectId: "p1",
+        projectArchived: false,
+        filename: `jira:invoice‮fdp.exe${bidiAndZw.join("")}`,
+        reservedPrefix: "jira:",
+      },
+    ]);
+    for (const ch of bidiAndZw) expect(text).not.toContain(ch);
+    expect(text).toContain(
+      `project p1: d1 [jira:] jira:invoice?fdp.exe${"?".repeat(bidiAndZw.length)}`,
+    );
+  });
+});

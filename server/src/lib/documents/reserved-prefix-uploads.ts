@@ -70,9 +70,12 @@ export async function findReservedPrefixUploads(
 /**
  * Filenames are user input bound for an operator's terminal. Replace each C0/C1
  * control character, ESC, CR and LF included, so a name can neither inject an
- * escape sequence nor add a line.
+ * escape sequence nor add a line; and each Unicode bidi control (U+061C,
+ * U+200E/F, U+202A-E, U+2066-9) and zero-width character (U+200B-D, U+2060,
+ * U+FEFF), so a name cannot visually reorder or hide part of the line.
  */
-const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g;
+const CONTROL =
+  /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
 const t = (value: string): string => value.replace(CONTROL, "?");
 
 export function formatReservedPrefixUploads(rows: ReservedPrefixUpload[]): string {

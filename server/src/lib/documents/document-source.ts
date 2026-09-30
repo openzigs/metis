@@ -8,7 +8,20 @@
  * - `repo`, `db` the repository and database connectors (`connectors/connector-ingest.ts`)
  * - `confluence`, `jira` the Atlassian connector (`connectors/atlassian.ts`)
  */
-export type DocumentSource = "upload" | "generated" | "repo" | "db" | "confluence" | "jira";
+import { type DocumentSource, documentSourceSchema } from "@metis/shared";
+
+// #547 — the closed set is defined once, in `@metis/shared`.
+export type { DocumentSource };
+
+/**
+ * #547 — narrow a stored `documents.source` (a plain string column) to the
+ * closed set. An unrecognised value reads as `upload`, which no reader treats
+ * as a connector, so a bad row can never be promoted to repository code.
+ */
+export function asDocumentSource(value: string): DocumentSource {
+  const parsed = documentSourceSchema.safeParse(value);
+  return parsed.success ? parsed.data : "upload";
+}
 
 /**
  * Issue #525 — the repository and database connectors' sources: the rows an

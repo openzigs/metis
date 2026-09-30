@@ -49,6 +49,7 @@ import {
   type VectorStore,
 } from "./vector-store.js";
 import { CONTENT_TYPE_MISMATCH, parseDocument } from "../documents/parsers.js";
+import { asDocumentSource, type DocumentSource } from "../documents/document-source.js";
 import { embedInBoundedBatches } from "./embed-batched.js";
 import { getDocumentStorage, type StorageBackend } from "../documents/storage.js";
 import { onArchive } from "../projects/project-service.js";
@@ -717,13 +718,14 @@ export class KnowledgeService {
 
     // #547 — the same live-row read carries each hit's `documents.source`, so
     // a reader classifies on the row rather than on the vector store's filename.
-    const sourceByChunk = new Map<string, string>();
+    const sourceByChunk = new Map<string, DocumentSource>();
     if (chosen.length > 0) {
       const liveChunkRows = await prisma.knowledgeChunk.findMany({
         where: { id: { in: chosen.map((c) => c.chunkId) }, projectId },
         select: { id: true, document: { select: { source: true } } },
       });
-      for (const row of liveChunkRows) sourceByChunk.set(row.id, row.document.source);
+      for (const row of liveChunkRows)
+        sourceByChunk.set(row.id, asDocumentSource(row.document.source));
       chosen = chosen.filter((chunk) => sourceByChunk.has(chunk.chunkId));
     }
 

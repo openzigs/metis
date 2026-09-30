@@ -95,6 +95,21 @@ describe("buildSpecKitRagContext — flag ON", () => {
     expect(res.context).not.toContain("[1] Doc (class)");
   });
 
+  it("#547 — an upload sharing a repo path does not suppress the code symbol", async () => {
+    const deps = fused([{ symbolId: "s1", filePath: "x", name: "Doc", kind: "class", score: 2 }], {
+      s1: { filePath: "main/java/Doc.java", startLine: 1, endLine: 9 },
+    });
+    const upload: RetrievedChunk = { ...docHit, chunkId: "u1", documentId: "u1", source: "upload" };
+    const res = await buildSpecKitRagContext("p1", "doc", {
+      knowledgeService: knowledgeService([upload]),
+      fusedCode: deps,
+    });
+
+    expect(res.context).toContain("## Retrieved Code Symbols (project-scoped code graph)");
+    expect(res.context).toContain("main/java/Doc.java:1-9");
+    expect(res.usedSymbols).toBe(1);
+  });
+
   it("returns a code-only block when doc RAG is empty", async () => {
     const deps = fused(
       [{ symbolId: "s2", filePath: "y", name: "Validator", kind: "class", score: 1 }],

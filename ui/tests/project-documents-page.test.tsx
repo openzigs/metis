@@ -147,6 +147,33 @@ describe("ProjectDocumentsPage", () => {
     expect(repoList).toHaveBeenCalledWith("p1");
   });
 
+  // #547 — classify by stored source, never by filename prefix.
+  it("fetches no repository names for a legacy upload named connector:repo:", async () => {
+    const key = "connector:repo:cmumwycfx002j2c9kp7kpu2tg:src/vitest.config.ts";
+    get.mockResolvedValue({ id: "p1", name: "Proj", slug: "proj", status: "active" });
+    list.mockResolvedValue({
+      items: [
+        {
+          id: "d1",
+          filename: key,
+          source: "upload",
+          status: "ready",
+          chunkCount: 3,
+          sizeBytes: 2048,
+        },
+      ],
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <ProjectDocumentsPage />
+      </Wrapper>,
+    );
+    const row = await screen.findByTestId("document-row-d1");
+    expect(row).toHaveTextContent(key);
+    expect(repoList).not.toHaveBeenCalled();
+  });
+
   it("disables uploads for archived projects", async () => {
     get.mockResolvedValue({ id: "p1", name: "Proj", slug: "proj", status: "archived" });
     list.mockResolvedValue({ items: [] });

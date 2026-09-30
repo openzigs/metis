@@ -5,9 +5,12 @@ import {
   createKnowledgeChunkSchema,
   createProjectSchema,
   createRepoConnectionSchema,
+  DOCUMENT_SOURCES,
   documentSchema,
+  documentSourceSchema,
   knowledgeChunkSchema,
   projectSchema,
+  retrievedChunkSchema,
   updateProjectSchema,
 } from "../src/project.js";
 import { MAX_DOCUMENT_BYTES } from "../src/constants.js";
@@ -180,5 +183,29 @@ describe("project domain", () => {
         }),
       ).toThrow();
     });
+  });
+});
+
+describe("retrievedChunkSchema.source (#547)", () => {
+  const hit = {
+    chunkId: validId,
+    documentId: validId,
+    filename: "connector:repo:x:src/a.ts",
+    position: 0,
+    text: "t",
+    score: 1,
+    embeddingModel: "m",
+  };
+
+  it("accepts every source in the closed set", () => {
+    expect(DOCUMENT_SOURCES).toEqual(["upload", "generated", "repo", "db", "confluence", "jira"]);
+    for (const source of DOCUMENT_SOURCES) {
+      expect(retrievedChunkSchema.safeParse({ ...hit, source }).success).toBe(true);
+    }
+  });
+
+  it("rejects a source outside the closed set", () => {
+    expect(retrievedChunkSchema.safeParse({ ...hit, source: "connector" }).success).toBe(false);
+    expect(documentSourceSchema.safeParse("REPO").success).toBe(false);
   });
 });
