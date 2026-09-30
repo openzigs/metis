@@ -70,7 +70,7 @@ const { projectsRouter } = await import("../src/routes/projects.js");
 const { workspacesRouter } = await import("../src/routes/workspaces.js");
 const { authRouter } = await import("../src/routes/auth.js");
 const { ssoRouter } = await import("../src/routes/sso.js");
-const { requireAuth, refreshAuthenticatedUser } = await import("../src/middleware/auth.js");
+const { refreshAuthenticatedUser } = await import("../src/middleware/auth.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens, verifyAccessToken } = await import("../src/lib/auth/jwt.js");
 const { getUserAccessibleProjects } = await import("../src/lib/auth/accessible-projects.js");
@@ -112,9 +112,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use("/api/auth", ssoRouter());
       a.use("/api/projects", projectsRouter());
       a.use("/api/workspaces", workspacesRouter());
-      a.get("/whoami", requireAuth, refreshAuthenticatedUser, (req, res) => {
-        res.json({ workspaces: req.user?.workspaces });
-      });
       a.use(notFoundHandler);
       a.use(errorHandler);
       return a;
@@ -210,11 +207,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
       it("refreshAuthenticatedUser — the per-request scope leaves out the deleted workspace", async () => {
-        const res = await request(app())
-          .get("/whoami")
-          .set("Authorization", `Bearer ${staleToken("u-both", [LIVE, DEAD])}`);
-        expect(res.status).toBe(200);
-        expect(res.body.workspaces).toEqual([LIVE]);
+        // Called directly rather than mounted on a test route: the middleware
+        // replaces `req.user` from durable state, whatever the token claimed.
+        const req = { user: payload("u-both", "developer", [LIVE, DEAD]) } as express.Request;
+        const next = vi.fn();
+        await refreshAuthenticatedUser(req, {} as express.Response, next);
+        expect(next).toHaveBeenCalledWith();
+        expect(req.user?.workspaces).toEqual([LIVE]);
       });
 
       it("requireWorkspaceRole — GET /api/workspaces/:id is 404 for the deleted workspace, 200 for the live one", async () => {
