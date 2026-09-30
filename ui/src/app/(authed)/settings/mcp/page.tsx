@@ -64,18 +64,21 @@ export default function McpSettingsPage() {
           </>
         }
       />
-      {/* #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, aria-controls. */}
+      {/* #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, aria-controls.
+          #508 — the row scrolls within itself at phone width instead of widening the
+          page. The underline is an inset shadow rather than a border the triggers
+          overlap with -mb-px, which would make the scroller scroll vertically. */}
       <Tabs value={tab} onValueChange={(v) => setTab(v as TabId)}>
         <TabsList
           aria-label="MCP platform sections"
-          className="flex h-auto w-full justify-start gap-2 rounded-none border-b bg-transparent p-0"
+          className="flex h-auto w-full justify-start gap-2 overflow-x-auto rounded-none bg-transparent p-0 shadow-[inset_0_-1px_0_var(--color-border)]"
         >
           {TABS.map((t) => (
             <TabsTrigger
               key={t.id}
               value={t.id}
               data-testid={`tab-${t.id}`}
-              className="-mb-px rounded-none border-b-2 border-transparent px-4 py-2 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+              className="shrink-0 rounded-none border-b-2 border-transparent px-4 py-2 text-muted-foreground shadow-none focus-visible:ring-inset focus-visible:ring-offset-0 hover:text-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
             >
               {t.label}
             </TabsTrigger>

@@ -110,15 +110,16 @@ export function ProjectSwitcher() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
+        {/* #508 — shrink with the breadcrumb item rather than overlap the next crumb. */}
         <Button
           variant="outline"
           size="sm"
-          className="gap-2"
+          className="min-w-0 gap-2 overflow-hidden"
           aria-label={`Active project: ${label}`}
           disabled={items.length === 0}
         >
           <FolderKanban className="h-4 w-4" aria-hidden />
-          <span className="max-w-[12rem] truncate">{label}</span>
+          <span className="min-w-0 max-w-[12rem] truncate">{label}</span>
           <ChevronsUpDown className="h-3.5 w-3.5 opacity-60" aria-hidden />
         </Button>
       </DropdownMenuTrigger>

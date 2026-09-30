@@ -337,7 +337,8 @@ export default function AdminAuthPage() {
       )}
 
       <Tabs defaultValue="saml">
-        <TabsList>
+        {/* #508 — scroll within the row at phone width rather than widen the page. */}
+        <TabsList className="max-w-full justify-start overflow-x-auto">
           <TabsTrigger value="saml">SAML 2.0</TabsTrigger>
           <TabsTrigger value="oidc">OIDC</TabsTrigger>
           <TabsTrigger value="ldap">LDAP / AD</TabsTrigger>
