@@ -6,15 +6,19 @@
  * (`response.body.getReader()`) parsing SSE frames inline so we don't pull
  * a dedicated EventSource polyfill.
  */
-import type {
-  AiToolEvent,
-  CompactionEventDto,
-  ForkSessionResponse,
-  ResumeSessionResponse,
-  SubAgentRunDto,
-  TranscriptMessageDto,
-  TranscriptResponse,
+import {
+  parseChatGrounding,
+  type AiToolEvent,
+  type ChatGrounding,
+  type CompactionEventDto,
+  type ForkSessionResponse,
+  type ResumeSessionResponse,
+  type SubAgentRunDto,
+  type TranscriptMessageDto,
+  type TranscriptResponse,
 } from "@metis/shared";
+
+export type { ChatGrounding };
 import { apiFetch, ApiError, streamFetch } from "./api-client";
 import { stripToolTags } from "./strip-tool-tags";
 
@@ -53,6 +57,8 @@ export interface TokenUsage {
 
 export type StreamEvent =
   | { type: "delta"; content: string }
+  /** #18 — what this turn's reply is grounded in; sent before the answer. */
+  | { type: "grounding"; grounding: ChatGrounding }
   /** #138 — older turns were summarised before this answer (kept in the transcript). */
   | { type: "compaction"; compaction: CompactionEventDto }
   | { type: "tool_call"; name: string; arguments: unknown; risk: RiskLevel }
@@ -246,6 +252,8 @@ export interface DisplayTurn {
   tools?: string[];
   /** #142/#143 — each tool call of this reply, with its approval outcome. */
   toolCalls?: TranscriptToolCall[];
+  /** #18 — assistant replies: what the reply was grounded in (absent: not known). */
+  grounding?: ChatGrounding;
 }
 
 /** One recorded tool call as the chat page renders it (collapsed by default). */
@@ -315,6 +323,7 @@ export function transcriptToDisplay(rows: readonly TranscriptMessageDto[]): Disp
       .filter((p) => p.type === "tool_call")
       .map((p) => (p as { name: string }).name);
     const toolCalls = transcriptToolCalls(r.parts);
+    const grounding = r.role === "assistant" ? parseChatGrounding(r.grounding) : null;
     out.push({
       role: r.role,
       content: text,
@@ -323,6 +332,7 @@ export function transcriptToDisplay(rows: readonly TranscriptMessageDto[]): Disp
       ...(r.incomplete ? { incomplete: r.incomplete.message || r.incomplete.code } : {}),
       ...(tools.length > 0 ? { tools } : {}),
       ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      ...(grounding ? { grounding } : {}),
     });
   }
   return out;
@@ -658,6 +668,10 @@ export function parseSseFrame(frame: string): StreamEvent | null {
         arguments: p.arguments,
         risk: p.risk ?? "low",
       };
+    }
+    case "grounding": {
+      const grounding = parseChatGrounding((payload as { grounding?: unknown }).grounding);
+      return grounding ? { type: "grounding", grounding } : null;
     }
     case "usage":
       return { type: "usage", usage: payload as TokenUsage };

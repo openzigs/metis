@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { ProjectScopeSelector, useProjectScope } from "@/components/chat/project-scope-selector";
 import type { ProjectScope } from "@/components/chat/project-scope-selector";
 import { makeWrapper } from "./test-utils";
+import { apiFetch } from "@/lib/api-client";
 
 // Mock apiFetch so useQuery doesn't hit a real endpoint
 vi.mock("@/lib/api-client", async (importOriginal) => {
@@ -150,19 +151,28 @@ describe("ProjectScopeSelector", () => {
 });
 
 describe("useProjectScope", () => {
+  const hook = () =>
+    renderHook(() => useProjectScope(), { wrapper: makeWrapper({ withAuth: false }) });
+
   beforeEach(() => {
     localStorage.clear();
+    vi.mocked(apiFetch).mockClear();
+    vi.mocked(apiFetch).mockResolvedValue([
+      { id: "p-1", name: "Alpha" },
+      { id: "p-2", name: "Beta" },
+      { id: "p-3", name: "Gamma" },
+    ]);
   });
 
   it("returns default scope with mode 'all' when localStorage is empty", () => {
-    const { result } = renderHook(() => useProjectScope());
+    const { result } = hook();
     expect(result.current.scope).toEqual({ mode: "all", projectIds: [] });
   });
 
   it("restores scope from localStorage", () => {
     const stored: ProjectScope = { mode: "selected", projectIds: ["p-1"] };
     localStorage.setItem("metis.chat.projectScope", JSON.stringify(stored));
-    const { result, rerender } = renderHook(() => useProjectScope());
+    const { result, rerender } = hook();
     // After useEffect runs
     rerender();
     expect(result.current.scope).toEqual(stored);
@@ -173,7 +183,7 @@ describe("useProjectScope", () => {
       "metis.chat.projectScope",
       JSON.stringify({ mode: "selected", projectIds: ["p-1", "p-2"] }),
     );
-    const { result, rerender } = renderHook(() => useProjectScope());
+    const { result, rerender } = hook();
     rerender();
     expect(result.current.scope).toEqual({ mode: "selected", projectIds: ["p-1"] });
   });
@@ -189,16 +199,59 @@ describe("useProjectScope", () => {
       "metis.chat.projectScope",
       JSON.stringify({ mode: "selected", projectIds: ["p-1"] }),
     );
-    const { result, rerender } = renderHook(() => useProjectScope());
+    const { result, rerender } = hook();
     rerender();
     expect(result.current.hydrated).toBe(true);
     expect(result.current.scope).toEqual({ mode: "selected", projectIds: ["p-1"] });
   });
 
-  it("reports hydrated even when nothing is stored (#1367)", () => {
-    const { result, rerender } = renderHook(() => useProjectScope());
+  it("a stored scope wins without asking for the project list (#18)", () => {
+    localStorage.setItem(
+      "metis.chat.projectScope",
+      JSON.stringify({ mode: "all", projectIds: [] }),
+    );
+    vi.mocked(apiFetch).mockResolvedValue([{ id: "p-1", name: "Alpha" }]);
+    const { result, rerender } = hook();
     rerender();
-    // Must not stall a consumer that waits on hydration before acting.
     expect(result.current.hydrated).toBe(true);
+    expect(result.current.scope).toEqual({ mode: "all", projectIds: [] });
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
+  it("reports hydrated even when nothing is stored (#1367)", async () => {
+    const { result } = hook();
+    // Must not stall a consumer that waits on hydration before acting.
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    // Several projects: "all" stays the default — picking one would be a guess.
+    expect(result.current.scope).toEqual({ mode: "all", projectIds: [] });
+  });
+
+  /**
+   * #18 — "All projects" runs no retrieval. With a single project there is
+   * nothing to choose, so a first-time chat starts grounded in it — and only
+   * once that is known, so the page never creates a session on "all" first.
+   */
+  it("defaults to the only project when the user can reach exactly one (#18)", async () => {
+    vi.mocked(apiFetch).mockResolvedValue([{ id: "p-only", name: "Solo" }]);
+    const { result } = hook();
+    expect(result.current.hydrated).toBe(false);
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    expect(result.current.scope).toEqual({ mode: "selected", projectIds: ["p-only"] });
+    // The default is not persisted: it follows the project list until the user picks.
+    expect(localStorage.getItem("metis.chat.projectScope")).toBeNull();
+  });
+
+  it("stays on 'all' when the user has no projects (#18)", async () => {
+    vi.mocked(apiFetch).mockResolvedValue([]);
+    const { result } = hook();
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    expect(result.current.scope).toEqual({ mode: "all", projectIds: [] });
+  });
+
+  it("still hydrates on 'all' when the project list cannot be read (#18)", async () => {
+    vi.mocked(apiFetch).mockRejectedValue(new Error("offline"));
+    const { result } = hook();
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    expect(result.current.scope).toEqual({ mode: "all", projectIds: [] });
   });
 });

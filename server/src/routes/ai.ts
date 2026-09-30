@@ -113,6 +113,7 @@ import { messageText } from "../lib/ai/index.js";
 import { AIError, AIOfflineError, AIProviderError } from "../lib/ai/errors.js";
 import { getSemanticCache, shouldSkipCache } from "../lib/ai/semantic-cache.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
+import { describeGrounding } from "../lib/ai/chat-grounding.js";
 import {
   buildFusedCodeBlock,
   type FusedCodeSearcher,
@@ -1391,6 +1392,8 @@ export function aiRouter(): Router {
         undefined,
         ragCapture,
       );
+      // #18 — what this reply is grounded in, recorded on the reply row.
+      const grounding = await describeGrounding(session.projectId, ragCapture.contexts);
 
       // #136/#138 — persist the question, load the server-owned history, and
       // compact it first if the prompt has reached the watermark.
@@ -1586,9 +1589,10 @@ export function aiRouter(): Router {
         finishReason: response.finishReason ?? null,
         promptChars: calibrationPromptChars(turn, toolCalls),
         ratio: turn.ratio,
-        ...(response.model && response.model !== model
-          ? { meta: { servedModel: response.model } }
-          : {}),
+        meta: {
+          grounding,
+          ...(response.model && response.model !== model ? { servedModel: response.model } : {}),
+        },
       });
       replyRecorded = true;
       await refreshSnapshotAfterReply(session);
@@ -1663,6 +1667,7 @@ export function aiRouter(): Router {
         ok({
           response: { ...response, content: outContent },
           transcript: { userOrdinal: turn.userRow.ordinal, replyOrdinal: replyRow.ordinal },
+          grounding,
           ...(turn.compaction ? { compaction: compactionEvent(turn.compaction) } : {}),
         }),
       );
@@ -1756,6 +1761,9 @@ export function aiRouter(): Router {
       undefined,
       ragCapture,
     );
+    // #18 — what this reply is grounded in: streamed before the answer and
+    // recorded on the reply row, so the client can say so live and on reload.
+    const grounding = await describeGrounding(session.projectId, ragCapture.contexts);
 
     res.status(200);
     res.setHeader("Content-Type", "text/event-stream");
@@ -1853,6 +1861,7 @@ export function aiRouter(): Router {
       res.write(`event: ${event}\n`);
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
+    send("grounding", { type: "grounding", grounding });
     // #143 — tool lifecycle events go to this stream AND the session's socket
     // room. #142 — while a person decides, the hard ceiling is paused: time
     // spent waiting on a human is not a hung upstream.
@@ -2195,6 +2204,7 @@ export function aiRouter(): Router {
           finishReason,
           promptChars: calibrationPromptChars(turn, toolCalls),
           ratio: turn.ratio,
+          meta: { grounding },
         });
         replyRecorded = true;
         await writeDerivedSnapshot(session);
@@ -2309,6 +2319,7 @@ export function aiRouter(): Router {
           providerKey,
           model,
           toolCalls,
+          { grounding },
         );
         await writeDerivedSnapshot(session).catch(() => undefined);
       }
@@ -2336,6 +2347,7 @@ async function recordFailedTurn(
   provider: string,
   model: string,
   toolCalls: ReplyToolCall[] = [],
+  meta?: Record<string, unknown>,
 ): Promise<void> {
   const error =
     err && typeof err === "object" && "code" in err && "message" in err && !(err instanceof Error)
@@ -2361,6 +2373,7 @@ async function recordFailedTurn(
       promptChars: turn.promptChars,
       ratio: turn.ratio,
       error,
+      ...(meta ? { meta } : {}),
     });
   } catch (persistErr) {
     log.error("Failed to record a failed chat turn in the transcript", {

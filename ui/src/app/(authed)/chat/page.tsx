@@ -35,6 +35,7 @@ import { AgentPicker, loadStoredAgentKey, storeAgentKey } from "@/components/cha
 import { LoadedSkillsPanel } from "@/components/chat/loaded-skills-panel";
 import { ProjectScopeSelector, useProjectScope } from "@/components/chat/project-scope-selector";
 import { ScopeDegradationNotice } from "@/components/chat/scope-degradation-notice";
+import { GroundingBadge, UngroundedScopeNotice } from "@/components/chat/grounding";
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
 import { sanitizeAssistantText } from "@/lib/sanitize-assistant-text";
 import { recentTracker } from "@/lib/recent-tracker";
@@ -413,6 +414,13 @@ export default function ChatPage() {
           ),
         );
         break;
+      case "grounding":
+        // #18 — the reply says what it is based on while it streams; the
+        // transcript re-read after the turn carries the same, persisted.
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantMsgId ? { ...m, grounding: ev.grounding } : m)),
+        );
+        break;
       case "tool_event":
         toolApprovals.apply(ev);
         break;
@@ -490,6 +498,11 @@ export default function ChatPage() {
           }
         />
         <ScopeDegradationNotice scope={sessionScope} />
+        {/* #18 — a session with no project runs no retrieval; say so before the
+            turn. A degraded scope has its own notice (and blocks the send). */}
+        <UngroundedScopeNotice
+          show={Boolean(session) && !session?.projectId && !scopeBlocked && readOnlyReason === null}
+        />
         {agentNotice ? (
           <p role="status" data-testid="chat-agent-fallback-notice" className="text-sm">
             {agentNotice}
@@ -610,6 +623,7 @@ export default function ChatPage() {
                         {m.content || (streaming ? "…" : "")}
                       </span>
                     )}
+                    {m.role === "assistant" ? <GroundingBadge grounding={m.grounding} /> : null}
                     {m.role === "assistant" && m.toolCalls ? (
                       <TranscriptToolCalls calls={m.toolCalls} sessionId={session?.id ?? null} />
                     ) : null}

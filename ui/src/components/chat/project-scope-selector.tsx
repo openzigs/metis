@@ -46,11 +46,12 @@ export function normaliseScope(scope: ProjectScope): ProjectScope {
   return { mode: "selected", projectIds: [scope.projectIds[0]] };
 }
 
-function loadStoredScope(): ProjectScope {
-  if (typeof window === "undefined") return { mode: "all", projectIds: [] };
+/** The persisted scope, or `null` when the user has never picked one. */
+function loadStoredScope(): ProjectScope | null {
+  if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { mode: "all", projectIds: [] };
+    if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && "mode" in parsed) {
       return normaliseScope(parsed as ProjectScope);
@@ -58,7 +59,20 @@ function loadStoredScope(): ProjectScope {
   } catch {
     /* ignore corrupt localStorage */
   }
-  return { mode: "all", projectIds: [] };
+  return null;
+}
+
+/**
+ * #18 — the scope a user who has never picked one starts on. "All projects"
+ * runs no retrieval, so with exactly one project there is nothing to choose
+ * between and the chat starts grounded in it. With none or several, "All
+ * projects" stays the default (picking one of several for the user would be a
+ * guess) and the page says that answers are not grounded.
+ */
+export function defaultScope(projects: readonly AccessibleProject[]): ProjectScope {
+  return projects.length === 1
+    ? { mode: "selected", projectIds: [projects[0].id] }
+    : { mode: "all", projectIds: [] };
 }
 
 function storeScope(scope: ProjectScope): void {
@@ -217,11 +231,36 @@ export function useProjectScope() {
   // keys work off `scope` would otherwise act once on the default and again on
   // the real value. `hydrated` lets it wait for the real one.
   const [hydrated, setHydrated] = useState(false);
+  // #18 — with nothing stored, the default depends on how many projects the
+  // user can reach, so hydration waits for that list too (a session created on
+  // "all" and then again on the one project would burn the resume, #1367).
+  const [needsDefault, setNeedsDefault] = useState(false);
+  const projects = useQuery({
+    queryKey: ["search", "accessible-projects"],
+    queryFn: fetchAccessibleProjects,
+    enabled: needsDefault,
+  });
 
   useEffect(() => {
-    setScope(loadStoredScope());
-    setHydrated(true);
+    const stored = loadStoredScope();
+    if (stored) {
+      setScope(stored);
+      setHydrated(true);
+    } else {
+      setNeedsDefault(true);
+    }
   }, []);
+
+  useEffect(() => {
+    if (!needsDefault || hydrated) return;
+    if (projects.isSuccess) {
+      // Not stored: the default follows the project list until the user picks.
+      setScope(defaultScope(projects.data));
+      setHydrated(true);
+    } else if (projects.isError) {
+      setHydrated(true);
+    }
+  }, [needsDefault, hydrated, projects.isSuccess, projects.isError, projects.data]);
 
   return { scope, setScope, hydrated };
 }
