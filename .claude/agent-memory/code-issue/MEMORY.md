@@ -28,7 +28,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Verify the issue premise](project_verify-issue-premise-before-copy.md) — grep the write path and tests before copy or "no test" issues
 - [Split advisory fixes deadlock](project_split-advisory-fixes-deadlock-audit.md) — fix all new HIGHs on one branch (#431)
 - [TanStack stale data](project_tanstack-stale-data-after-failed-refetch.md) — a failed refetch keeps .data; persist on a confirmed fetch
-- [Once-mocks and retries](project_vitest-once-mocks-and-retries-hide-leaks.md) — clearAllMocks keeps once-impls; check new tests with --retry=0
+- [Once-mocks and retries](project_vitest-once-mocks-and-retries-hide-leaks.md) — retry:2 hides leaks; --retry=0; assert reason; fresh deferreds
 - [Pass-through permission mock](project_permission-mock-hides-removed-gate.md) — test the route's gate and limiter wiring (#454)
 - [CI guards parse the step](project_ci-guards-must-parse-the-step.md) — reject if:, `||`, continue-on-error (#458)
 - [Cap gendoc-sized ids](project_gendoc-ids-are-long.md) — id caps (cursor, schema, path) must fit ~94-char gendoc- ids (#469)
@@ -45,6 +45,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Import pass 1 commits](project_logical-import-pass1-commits-early.md) — sanitise untrusted fields before batch.push (#531)
 - [Workspace delete is soft](project_workspace-delete-is-soft.md) — filter deletedAt in membership scope and at sinks (#549, #561)
 - [Dependency audit flips](project_dependency-audit-flips-on-new-advisories.md) — new advisories redden all PRs; fix once, update-branch (#555)
-- [Section splitter cost](project_markdown-sections-cost-and-harness.md) — cache all covered lines; bound on chars parsed (#542/#556)
+- [Section splitter cost](project_markdown-sections-cost-and-harness.md) — cache covered lines; bound on chars parsed; mixed-CRLF rows
 - [Env helpers](project_env-helpers-read-everything-from-env.md) — read AI_FIXTURE_DIR etc. from the passed env, not process.env (#565)
 - [Stale PR deferrals](project_stale-blocked-on-pr-deferrals.md) — re-check the blocking PR's state before a deferral (#559)
