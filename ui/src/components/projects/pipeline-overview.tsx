@@ -22,6 +22,7 @@ import { publishingApi } from "@/lib/publishing-api";
 import { queryKeys } from "@/lib/query-keys";
 import { useProjectJobEvents } from "@/hooks/use-job-events";
 import { useConnectorProgress } from "@/hooks/use-connector-events";
+import { useActiveJobs, useFollowJobs } from "@/hooks/use-active-jobs";
 import { useProjectDriftCount } from "@/hooks/use-drift-count";
 import { useAuth } from "@/lib/auth-context";
 import {
@@ -30,6 +31,7 @@ import {
   isDocumentIngesting,
   isFirstRun,
   isIngestRunning,
+  isProjectRepoIngestJob,
   latestCompletedAnalysisId,
   type PipelineFacts,
   type PipelineStage,
@@ -143,7 +145,14 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
   // #78 — surfaces the pending-drift count here rather than only on /sync.
   const driftCount = useProjectDriftCount(projectId);
   const { progressMap } = useConnectorProgress(projectId);
-  const ingestInProgress = isIngestRunning(progressMap);
+  // #273 — a Deep Ingest started before this page mounted (the New-project
+  // wizard's) is known only to the shared active-jobs store.
+  const activeJobs = useActiveJobs();
+  const repoIngestJobIds = activeJobs
+    .filter((j) => isProjectRepoIngestJob(j, projectId))
+    .map((j) => j.jobId);
+  useFollowJobs(repoIngestJobIds);
+  const ingestInProgress = isIngestRunning(progressMap) || repoIngestJobIds.length > 0;
 
   const repos = useQuery({
     queryKey: ["connectors", "repos", projectId],

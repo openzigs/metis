@@ -1058,6 +1058,21 @@ Every project has:
 
 The project starts in **Draft** status.
 
+**Your first project, from Home.** While you have no projects, the **Projects**
+card on **Home** has a **New project** button that opens a three-step wizard:
+
+1. **Name** — the name (the slug fills itself in) and an optional description.
+2. **Source** — a GitHub repository (**Owner / Org**, **Repository**, and for
+   GitHub Enterprise or a private repository the **API base URL** and **Secret
+   ref**), or **Skip — add a source later**.
+3. **Ingest** — check the summary and click **Create and start ingest**.
+
+The wizard creates the project, connects the repository and starts its Deep
+Ingest, then opens the project's **Overview** with the **Ingest** stage reading
+"Ingesting…". If the repository cannot be linked or the ingest cannot start, a
+message says so and the project still opens — retry from its **Connections**
+page.
+
 ### 9.3 Viewing Projects
 
 The **Projects** page shows all your projects as a list of cards. Each card displays:

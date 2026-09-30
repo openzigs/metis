@@ -53,6 +53,8 @@ vi.mock("@/lib/auth-context", async (orig) => ({
 }));
 
 import { ProjectPipelineOverview } from "@/components/projects/pipeline-overview";
+import { __resetActiveJobsForTests, applyJobLifecycleEvent } from "@/hooks/use-active-jobs";
+import { repoConnectorsApi } from "@/lib/connectors-api";
 
 function renderOverview() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -74,6 +76,7 @@ const ingestStatus = () => screen.getByTestId("pipeline-status-ingest").textCont
 beforeEach(() => {
   handlers.clear();
   vi.clearAllMocks();
+  __resetActiveJobsForTests();
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -121,5 +124,55 @@ describe("Ingest stage with the real useConnectorProgress", () => {
     await screen.findByTestId("pipeline-status-ingest");
     emit({ phase: "ingest", step: "src/a.ts", current: 1, total: 40 });
     expect(ingestStatus()).toBe("Ingesting…");
+  });
+});
+
+/**
+ * #273 — the New-project wizard starts a Deep Ingest and navigates here. The
+ * job's `started` event went out before this browser joined the project room, so
+ * the Overview reads the job from the shared active-jobs store, and asks for the
+ * job's last transition (`subscribe:job` replays it) in case it already ended.
+ */
+describe("Ingest stage with a repo-ingest job started elsewhere (#273)", () => {
+  const started = (projectId = "p1") =>
+    applyJobLifecycleEvent({
+      kind: "repo-ingest",
+      jobId: "job-1",
+      projectId,
+      status: "started",
+      ts: 1,
+    });
+
+  function lifecycle(status: "progress" | "completed" | "failed") {
+    const fn = handlers.get("job:lifecycle");
+    if (!fn) throw new Error("the overview is not listening for job:lifecycle");
+    act(() => fn({ kind: "repo-ingest", jobId: "job-1", projectId: "p1", status, ts: 2 }));
+  }
+
+  it("reads 'Ingesting…' on arrival, before any socket event", async () => {
+    started();
+    renderOverview();
+    await screen.findByTestId("pipeline-status-ingest");
+    expect(ingestStatus()).toBe("Ingesting…");
+    expect(socket.emit).toHaveBeenCalledWith("subscribe:job", { jobId: "job-1" });
+  });
+
+  it("clears, and re-reads what the ingest wrote, when the job's end is replayed", async () => {
+    started();
+    renderOverview();
+    await screen.findByTestId("pipeline-status-ingest");
+    const reposList = vi.mocked(repoConnectorsApi.list);
+    const before = reposList.mock.calls.length;
+    lifecycle("completed");
+    expect(ingestStatus()).toBe("Nothing ingested yet");
+    await vi.waitFor(() => expect(reposList.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  it("ignores a repo ingest running in another project", async () => {
+    started("p2");
+    renderOverview();
+    await screen.findByTestId("pipeline-status-ingest");
+    expect(ingestStatus()).toBe("Nothing ingested yet");
+    expect(socket.emit).not.toHaveBeenCalledWith("subscribe:job", { jobId: "job-1" });
   });
 });

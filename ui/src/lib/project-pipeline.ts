@@ -80,6 +80,18 @@ export function isIngestRunning(progressMap: Record<string, { phase: string }>):
   return Object.values(progressMap).some((p) => INGEST_PHASES.has(p.phase));
 }
 
+/**
+ * #273 — an active-jobs store entry that is a Deep Ingest of this project. The
+ * New-project wizard puts its job there before navigating, because the job's
+ * `started` event went out before the Overview joined the project's room.
+ */
+export function isProjectRepoIngestJob(
+  job: { kind: string; projectId: string | null },
+  projectId: string,
+): boolean {
+  return job.kind === "repo-ingest" && job.projectId === projectId;
+}
+
 /** The numbered first-run checklist: connect → ingest → analyse → review → publish. */
 export const FIRST_RUN_STEPS: readonly PipelineStageId[] = [
   "sources",

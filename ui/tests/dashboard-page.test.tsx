@@ -83,6 +83,30 @@ describe("<DashboardPage />", () => {
     expect(screen.getByTestId("widget-recent-empty-cta")).toHaveAttribute("href", "/workbench");
   });
 
+  // #273 — the first-run journey starts here: the empty Projects widget opens
+  // the New-project wizard in place instead of sending the user to the list.
+  it("opens the New-project wizard from the empty Projects widget", async () => {
+    renderPage();
+    const button = await screen.findByRole("button", { name: "New project" });
+    act(() => button.click());
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("New project");
+    expect(screen.getByTestId("new-project-wizard")).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toBeInTheDocument();
+  });
+
+  it("offers no wizard once projects exist", async () => {
+    projectsListMock.mockResolvedValue({
+      items: [{ id: "p-1", name: "Alpha", slug: "alpha", status: "active" }],
+      total: 1,
+      limit: 5,
+      offset: 0,
+    } as never);
+    renderPage();
+    await screen.findByText("Alpha");
+    expect(screen.queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
+  });
+
   it("renders populated lists for each widget", async () => {
     projectsListMock.mockResolvedValue({
       items: [
