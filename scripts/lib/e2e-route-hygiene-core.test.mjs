@@ -121,27 +121,37 @@ describe("the e2e suite (#297, #327)", () => {
       return /\.tsx?$/.test(entry.name) ? [full] : [];
     });
 
+  // The spec directories plus root-level files such as global-setup.ts and
+  // playwright.config.ts, which could register a route too (PR #519 review).
+  const scannedFiles = () => [
+    ...["tests", "pages", "fixtures"].flatMap((dir) => tsFiles(path.join(e2eRoot, dir))),
+    ...fs
+      .readdirSync(e2eRoot, { withFileTypes: true })
+      .filter((e) => e.isFile() && /\.tsx?$/.test(e.name))
+      .map((e) => path.join(e2eRoot, e.name)),
+  ];
+
+  it("scans the e2e root files too", () => {
+    expect(scannedFiles().map((f) => path.relative(e2eRoot, f))).toContain("playwright.config.ts");
+  });
+
   it("scans real spec files", () => {
     expect(tsFiles(path.join(e2eRoot, "tests")).length).toBeGreaterThan(50);
   });
 
   it("has no route with a `times` option — it can strand the page's next request", () => {
-    const offenders = ["tests", "pages", "fixtures"].flatMap((dir) =>
-      tsFiles(path.join(e2eRoot, dir)).flatMap((file) =>
-        routeCallsWithTimes(fs.readFileSync(file, "utf8"), file).map(
-          (line) => `${path.relative(e2eRoot, file)}:${line}`,
-        ),
+    const offenders = scannedFiles().flatMap((file) =>
+      routeCallsWithTimes(fs.readFileSync(file, "utf8"), file).map(
+        (line) => `${path.relative(e2eRoot, file)}:${line}`,
       ),
     );
     expect(offenders).toEqual([]);
   });
 
   it("has no unroute / unrouteAll — removing the last route can strand the page's next request", () => {
-    const offenders = ["tests", "pages", "fixtures"].flatMap((dir) =>
-      tsFiles(path.join(e2eRoot, dir)).flatMap((file) =>
-        unrouteCalls(fs.readFileSync(file, "utf8"), file).map(
-          (line) => `${path.relative(e2eRoot, file)}:${line}`,
-        ),
+    const offenders = scannedFiles().flatMap((file) =>
+      unrouteCalls(fs.readFileSync(file, "utf8"), file).map(
+        (line) => `${path.relative(e2eRoot, file)}:${line}`,
       ),
     );
     expect(offenders).toEqual([]);

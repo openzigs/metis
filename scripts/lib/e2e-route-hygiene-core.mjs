@@ -22,8 +22,11 @@
  * same harness with the route left registered and disarmed by a flag
  * (`route.fallback()`): 0/200 on page and 0/200 on context. With a single
  * follow-up fetch fired as a routed one settles, `unrouteAll({ behavior:
- * "wait" })` hung 3/200. `unrouteCalls` finds both methods, so a spec keeps
- * its route registered and disarms it with a flag instead.
+ * "wait" })` hung 3/200. The host's load average was 40–70 during these runs,
+ * so treat the counts as indicative. `unrouteCalls` finds both methods, so a
+ * spec keeps its route registered and disarms it with a flag instead. There is
+ * deliberately no allowlist or comment-based bypass: even a teardown `unroute`
+ * can strand a request, and keeping the route and disarming it is the only fix.
  *
  * The source is parsed with the TypeScript compiler, not scanned by hand: a
  * character loop that blanks strings and comments cannot tell a regex literal
