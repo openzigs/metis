@@ -1026,6 +1026,9 @@ describe("POST /api/projects/:projectId/analyses/:id/clarify (Epic #922)", () =>
       const res = await post(aId, body);
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe("VALIDATION_ERROR");
+      // Only the schema produces this message: the pre-#403 route already
+      // answered an array body with a different VALIDATION_ERROR (PR #435 review).
+      expect(res.body.error.message).toBe("Invalid clarification payload");
       // Nothing reached the dialog: no durable state was written.
       expect(dialogStateStore.has(aId)).toBe(false);
     });

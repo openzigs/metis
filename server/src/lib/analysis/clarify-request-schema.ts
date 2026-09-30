@@ -14,7 +14,12 @@
  */
 import { z } from "zod";
 
-/** Caps keep a single request's parse and prompt size bounded (DoS guard). */
+/**
+ * Caps against pathological array shapes (DoS guard). They do not bound the
+ * prompt on their own: multiplied out they allow far more text than a request
+ * can carry. The express.json body limit (JSON_LIMIT in app.ts) is what bounds
+ * the total size (PR #435 review).
+ */
 export const MAX_CLARIFY_REQUIREMENTS = 1000;
 export const MAX_CLARIFY_AMBIGUITIES_PER_REQUIREMENT = 200;
 export const MAX_CLARIFY_ANSWERS = 2000;
