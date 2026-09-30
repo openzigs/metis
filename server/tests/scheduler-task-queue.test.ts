@@ -968,7 +968,8 @@ describe("TaskQueue retry()", () => {
       await new Promise((r) => setImmediate(r));
       const row = rows.get(t.id)!;
       row.status = status;
-      row.updatedAt = new Date(Date.now() - TASK_RETRY_WINDOW_MS - 60_000);
+      row.completedAt = new Date(Date.now() - TASK_RETRY_WINDOW_MS - 60_000);
+      row.updatedAt = row.completedAt;
       const before = rows.size;
       await expect(queue.retry(t.id, row)).rejects.toMatchObject({
         status: 409,
@@ -988,10 +989,47 @@ describe("TaskQueue retry()", () => {
     await new Promise((r) => setImmediate(r));
     const row = rows.get(t.id)!;
     row.status = "failed";
-    row.updatedAt = new Date(Date.now() - TASK_RETRY_WINDOW_MS + 60_000);
+    row.completedAt = new Date(Date.now() - TASK_RETRY_WINDOW_MS + 60_000);
+    row.updatedAt = row.completedAt;
     const retry = await queue.retry(t.id, row);
     expect(retry.trigger).toBe("retry");
     expect(rows.get(retry.id)).toBeDefined();
+  });
+
+  it("#574 — an unrelated write after the task ended does not extend the retry window", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    registry.register({ type: "ok", description: "", handler: async () => ({}) });
+    const { emitter } = makeEmitter();
+    const queue = new TaskQueue(store, registry, emitter, baseConfig);
+    const t = await queue.enqueue({ type: "ok" });
+    await new Promise((r) => setImmediate(r));
+    const row = rows.get(t.id)!;
+    row.status = "failed";
+    row.completedAt = new Date(Date.now() - TASK_RETRY_WINDOW_MS - 60_000);
+    // Ended long ago, but written just now — `updatedAt` is not when it ended.
+    row.updatedAt = new Date();
+    const before = rows.size;
+    await expect(queue.retry(t.id, row)).rejects.toMatchObject({
+      status: 409,
+      code: "TASK_RETRY_EXPIRED",
+    });
+    expect(rows.size).toBe(before);
+  });
+
+  it("#574 — a terminal task with no completedAt is measured from updatedAt", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    registry.register({ type: "ok", description: "", handler: async () => ({}) });
+    const { emitter } = makeEmitter();
+    const queue = new TaskQueue(store, registry, emitter, baseConfig);
+    const t = await queue.enqueue({ type: "ok" });
+    await new Promise((r) => setImmediate(r));
+    const row = rows.get(t.id)!;
+    row.status = "cancelled";
+    row.completedAt = null;
+    row.updatedAt = new Date(Date.now() - TASK_RETRY_WINDOW_MS - 60_000);
+    await expect(queue.retry(t.id, row)).rejects.toMatchObject({ code: "TASK_RETRY_EXPIRED" });
   });
 });
 

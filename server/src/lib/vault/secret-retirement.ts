@@ -52,6 +52,7 @@ function labelOf(name: string): string {
 export async function isSecretReferenced(id: string, name: string): Promise<boolean> {
   const needles = [...new Set([id, labelOf(name)])];
   const containsAny = (field: string) => needles.map((n) => ({ [field]: { contains: n } }));
+  const cutoff = retryWindowCutoff();
   const counts = await Promise.all([
     prisma.repoConnection.count({ where: { secretId: id } }),
     prisma.databaseConnection.count({ where: { secretId: id } }),
@@ -88,7 +89,9 @@ export async function isSecretReferenced(id: string, name: string): Promise<bool
           {
             OR: [
               { status: { in: [...LIVE_TASK_STATUSES] } },
-              { updatedAt: { gte: retryWindowCutoff() } },
+              // Measured from when the Task ended, not its last write (#574).
+              { completedAt: { gte: cutoff } },
+              { completedAt: null, updatedAt: { gte: cutoff } },
             ],
           },
         ],
@@ -171,7 +174,10 @@ export async function withdrawCreatedSecrets(
   ctx: WithdrawContext,
 ): Promise<void> {
   const code = (ctx.cause as { code?: unknown } | null)?.code;
-  const reason = code === CONCURRENT_UPDATE ? "concurrent_update" : "update_failed";
+  // #574 — a create that never produced a row has no resource id; its
+  // withdrawals are recorded as a create, not an update, that did not land.
+  const write = ctx.resource.id ? "update" : "create";
+  const reason = code === CONCURRENT_UPDATE ? "concurrent_update" : `${write}_failed`;
   for (const secretId of secretIds) {
     try {
       await vault.delete(secretId);
@@ -180,7 +186,7 @@ export async function withdrawCreatedSecrets(
         action: "vault.delete",
         target: { type: "secret", id: secretId },
         metadata: {
-          source: "update_not_applied",
+          source: `${write}_not_applied`,
           reason,
           resourceType: ctx.resource.type,
           ...(ctx.resource.id ? { resourceId: ctx.resource.id } : {}),
@@ -188,7 +194,7 @@ export async function withdrawCreatedSecrets(
         },
       });
     } catch (err) {
-      log.warn("Could not withdraw a secret created by an update that did not land", {
+      log.warn(`Could not withdraw a secret created by a ${write} that did not land`, {
         secretId,
         resource: ctx.resource,
         error: err instanceof Error ? err.message : String(err),

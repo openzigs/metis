@@ -171,7 +171,7 @@ export class TaskQueue {
       );
     }
     // #574 — bounded, so a terminal Task's payload does not pin a vault secret for ever.
-    if (!isWithinRetryWindow(original.updatedAt)) {
+    if (!isWithinRetryWindow(original)) {
       throw new SchedulerError(
         409,
         "TASK_RETRY_EXPIRED",

@@ -399,7 +399,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const webhookTask = (
       id: string,
       status: string,
-      opts: { updatedAt?: Date; type?: string } = {},
+      opts: { updatedAt?: Date; completedAt?: Date; type?: string } = {},
     ) =>
       db.task.create({
         data: {
@@ -410,6 +410,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             authHeader: `\${vault:${id}}`,
           }),
           ...(opts.updatedAt ? { updatedAt: opts.updatedAt } : {}),
+          ...(opts.completedAt ? { completedAt: opts.completedAt } : {}),
         },
       });
     const DAY = 86_400_000;
@@ -437,6 +438,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           t.updatedAt.getTime(),
         );
         expect(await isSecretReferenced(s.id, s.name)).toBe(false);
+      },
+    );
+
+    it.each(["failed", "cancelled"])(
+      "#574 — a %s Task that ended past the window stays unpinned after an unrelated later write",
+      async (status) => {
+        const s = await freshSecret();
+        const t = await webhookTask(s.id, status, { completedAt: expired(), updatedAt: expired() });
+        // Any write to the row resets `updatedAt` (@updatedAt); it must not reopen the window.
+        await db.task.update({ where: { id: t.id }, data: { progress: 50 } });
+        const after = await db.task.findUniqueOrThrow({ where: { id: t.id } });
+        expect(after.updatedAt.getTime()).toBeGreaterThan(recent().getTime());
+        expect(await isSecretReferenced(s.id, s.name)).toBe(false);
+      },
+    );
+
+    it.each(["failed", "cancelled"])(
+      "#574 — a %s Task that ended inside the window pins the secret",
+      async (status) => {
+        const s = await freshSecret();
+        await webhookTask(s.id, status, { completedAt: recent(), updatedAt: recent() });
+        expect(await isSecretReferenced(s.id, s.name)).toBe(true);
       },
     );
 
@@ -544,6 +567,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             reason: "update_failed",
             resourceType: "t",
             resourceId: "x",
+          },
+        },
+      ]);
+    });
+
+    it("#574 — a withdrawal after a failed create (no resource id) is audited as a create", async () => {
+      vi.mocked(audit).mockClear();
+      await withdrawCreatedSecrets({ delete: vi.fn(async () => {}) }, ["orphan"], {
+        actorId: COORD,
+        resource: { type: "jira_connection" },
+        projectId: "p1",
+        cause: new Error("CA write failed"),
+      });
+      expect(vi.mocked(audit).mock.calls.map(([e]) => e)).toEqual([
+        {
+          actor: { id: COORD },
+          action: "vault.delete",
+          target: { type: "secret", id: "orphan" },
+          metadata: {
+            source: "create_not_applied",
+            reason: "create_failed",
+            resourceType: "jira_connection",
+            projectId: "p1",
           },
         },
       ]);
