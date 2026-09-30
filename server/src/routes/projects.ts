@@ -54,6 +54,9 @@ import { summarizeUsage } from "../lib/finops/index.js";
 import { prisma } from "../lib/prisma.js";
 import { createRepoConnector } from "../lib/connectors/repo/repo-service.js";
 import { assertRepoSecretBinding } from "../lib/connectors/connector-secret-binding.js";
+import { ConnectorError } from "../lib/connectors/types.js";
+import { isDriverDetailCode, sanitizeDriverError } from "../lib/connectors/driver-error.js";
+import { createChildLogger } from "../lib/logger.js";
 import { listQuarantine } from "../lib/rag/quarantine.js";
 import { forgetEntry, getEntries, recordEntry } from "../lib/memory/chronicle.js";
 import {
@@ -66,6 +69,8 @@ import { generateOverview, OverviewError } from "../lib/code-graph/overview.js";
 import { jobEvents, genericFailureMessage } from "../lib/socket/job-events.js";
 import { randomUUID } from "node:crypto";
 
+const logger = createChildLogger("projects-routes");
+
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
 }
@@ -73,6 +78,37 @@ function ok<T>(data: T): ApiResponse<T> {
 function actorFromReq(req: Request) {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
   return { id: req.user.userId, role: req.user.role };
+}
+
+/** #428 — why `POST /projects` created the project but did not link its repo. */
+export interface PrimaryRepoLinkError {
+  code: string;
+  message: string;
+}
+
+/** Shown when the link failed for a reason that is not the caller's to fix. */
+export const PRIMARY_REPO_LINK_FAILED_MESSAGE =
+  "The repository could not be linked. Add it from the project's Connections page.";
+
+/**
+ * #428 — a `ConnectorError` from the repo service names a cause the user can act
+ * on (a non-HTTPS API base URL, a vault secret that does not exist), so it is
+ * passed through, sanitized as `routes/connectors.ts` does (#1084). Anything
+ * else is internal — a database error can carry hosts and ports — so it is
+ * logged and replaced with a generic message.
+ */
+function primaryRepoLinkError(err: unknown, projectId: string): PrimaryRepoLinkError {
+  if (err instanceof ConnectorError) {
+    const message = isDriverDetailCode(err.code)
+      ? sanitizeDriverError(err.code, err.message).errorMessage
+      : err.message;
+    return { code: err.code, message };
+  }
+  logger.warn("primary repo link failed on project create", {
+    projectId,
+    error: err instanceof Error ? err.message : String(err),
+  });
+  return { code: "PRIMARY_REPO_LINK_FAILED", message: PRIMARY_REPO_LINK_FAILED_MESSAGE };
 }
 
 function rethrow(err: unknown): never {
@@ -155,10 +191,13 @@ export function projectsRouter(): Router {
       );
 
       // Epic #640 — auto-create a primary repo connector if provided.
-      let primaryRepoConnector = null;
+      // #428 — a failed link still leaves the project created, but the answer
+      // says why in `primaryRepoError` instead of a bare `primaryRepo: null`.
+      let primaryRepoConnector: Awaited<ReturnType<typeof createRepoConnector>> | null = null;
+      let primaryRepoError: PrimaryRepoLinkError | null = null;
       if (primaryRepo) {
         try {
-          const connector = await createRepoConnector(
+          primaryRepoConnector = await createRepoConnector(
             project.id,
             {
               label: "primary",
@@ -170,14 +209,25 @@ export function projectsRouter(): Router {
             },
             actor.id,
           );
-          // Mark it as primary
+        } catch (err) {
+          primaryRepoError = primaryRepoLinkError(err, project.id);
+        }
+      }
+      if (primaryRepoConnector) {
+        // Mark it as primary. The connector already exists, so a failure here
+        // does not un-link it — it stays in Connections and is reported as linked.
+        try {
           await prisma.repoConnection.update({
-            where: { id: connector.id },
+            where: { id: primaryRepoConnector.id },
             data: { isPrimary: true },
           });
-          primaryRepoConnector = { ...connector, isPrimary: true };
-        } catch {
-          /* non-critical — project creation succeeds even if repo link fails */
+          primaryRepoConnector = { ...primaryRepoConnector, isPrimary: true };
+        } catch (err) {
+          logger.warn("primary repo linked but marking it primary failed", {
+            projectId: project.id,
+            connectorId: primaryRepoConnector.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
       }
 
@@ -191,7 +241,7 @@ export function projectsRouter(): Router {
         target: { type: "project", id: project.id },
         metadata: { slug: project.slug },
       });
-      res.status(201).json(ok({ ...project, primaryRepo: primaryRepoConnector }));
+      res.status(201).json(ok({ ...project, primaryRepo: primaryRepoConnector, primaryRepoError }));
     } catch (err) {
       rethrow(err);
     }

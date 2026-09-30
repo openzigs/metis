@@ -43,10 +43,14 @@ export interface Project {
 
 /**
  * `POST /projects` answers the project plus the primary-repo connector it linked
- * — `null` when none was requested, and also when linking it failed: the route
- * swallows that failure so the project is still created (#273).
+ * — `null` when none was requested, and also when linking it failed: the project
+ * is still created (#273). #428 — a failed link also sets `primaryRepoError`
+ * with a reason the user can act on; it is `null` otherwise.
  */
-export type CreatedProject = Project & { primaryRepo?: { id: string } | null };
+export type CreatedProject = Project & {
+  primaryRepo?: { id: string } | null;
+  primaryRepoError?: { code: string; message: string } | null;
+};
 
 export interface ProjectListPage {
   items: Project[];

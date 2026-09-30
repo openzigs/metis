@@ -202,6 +202,24 @@ vi.mock("../src/lib/prisma.js", async () => {
         },
       ),
     },
+    // #428 — the primary-repo link on POST /projects.
+    repoConnection: {
+      findFirst: vi.fn(async () => null),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        id: "repo_1",
+        isPrimary: false,
+        errorMessage: null,
+        lastTestedAt: null,
+        lastIngestAt: null,
+        lastCommitSha: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        ...data,
+      })),
+      count: vi.fn(async () => 1),
+      update: vi.fn(async () => ({})),
+    },
     knowledgeChunk: {
       create: vi.fn(async () => ({ id: "c", vectorRef: null })),
       update: vi.fn(async () => ({})),
@@ -216,6 +234,7 @@ import request from "supertest";
 import { createApp } from "../src/app.js";
 import { getDocumentStorage } from "../src/lib/documents/storage.js";
 import { prisma } from "../src/lib/prisma.js";
+import { ConnectorError } from "../src/lib/connectors/types.js";
 import { __resetArchiveHooks } from "../src/lib/projects/project-service.js";
 
 let app: ReturnType<typeof createApp>;
@@ -259,6 +278,106 @@ describe("/api/projects", () => {
       .send({ name: "Phase Five", slug: "p5" });
     expect(res.status).toBe(201);
     expect(res.body.data.slug).toBe("p5");
+  });
+
+  // #428 — a failed primary-repo link used to answer 201 with `primaryRepo: null`
+  // and no reason, so the Create form reported plain success.
+  it("POST links the primary repo and reports no link error (#428)", async () => {
+    const res = await request(app)
+      .post("/api/projects")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        name: "Linked",
+        slug: "linked",
+        primaryRepo: { ownerOrOrg: "acme", repoName: "app" },
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.data.primaryRepo).toMatchObject({ id: "repo_1", isPrimary: true });
+    expect(res.body.data.primaryRepoError).toBeNull();
+  });
+
+  it("POST still creates the project but names why the primary repo was not linked (#428)", async () => {
+    const res = await request(app)
+      .post("/api/projects")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        name: "Insecure",
+        slug: "insecure",
+        primaryRepo: {
+          ownerOrOrg: "acme",
+          repoName: "app",
+          apiBaseUrl: "http://ghe.example.com/api/v3",
+        },
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.data.slug).toBe("insecure");
+    expect(res.body.data.primaryRepo).toBeNull();
+    expect(res.body.data.primaryRepoError).toEqual({
+      code: "INSECURE_BASE_URL",
+      message: "apiBaseUrl must use HTTPS: http://ghe.example.com/api/v3",
+    });
+    // The project really exists — read it back through the API.
+    const got = await request(app)
+      .get(`/api/projects/${res.body.data.id}`)
+      .set("Authorization", `Bearer ${token}`);
+    expect(got.status).toBe(200);
+  });
+
+  it("POST answers a generic link error, not the internal one, when the store throws (#428)", async () => {
+    vi.mocked(prisma.repoConnection.create).mockRejectedValueOnce(
+      new Error("connect ECONNREFUSED 10.0.0.5:5432"),
+    );
+    const res = await request(app)
+      .post("/api/projects")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ name: "Down", slug: "down", primaryRepo: { ownerOrOrg: "acme", repoName: "app" } });
+    expect(res.status).toBe(201);
+    expect(res.body.data.primaryRepo).toBeNull();
+    expect(res.body.data.primaryRepoError.code).toBe("PRIMARY_REPO_LINK_FAILED");
+    expect(res.body.data.primaryRepoError.message).not.toMatch(/ECONNREFUSED|10\.0\.0\.5/);
+  });
+
+  it("POST sanitizes a driver-detail connector error so no host reaches the client (#428)", async () => {
+    // PR #444 review: the isDriverDetailCode branch had no test. Its message is
+    // network-derived and can carry an internal address.
+    vi.mocked(prisma.repoConnection.create).mockRejectedValueOnce(
+      new ConnectorError(400, "HOST_NOT_ALLOWED", "host 10.0.0.5 is not in the allow-list"),
+    );
+    const res = await request(app)
+      .post("/api/projects")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        name: "Blocked",
+        slug: "blocked",
+        primaryRepo: { ownerOrOrg: "acme", repoName: "app" },
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.data.primaryRepo).toBeNull();
+    expect(res.body.data.primaryRepoError.code).toBe("HOST_NOT_ALLOWED");
+    expect(res.body.data.primaryRepoError.message).not.toMatch(/10\.0\.0\.5/);
+  });
+
+  it("POST reports the connector as linked when only the isPrimary update throws (#428)", async () => {
+    vi.mocked(prisma.repoConnection.update)
+      .mockResolvedValueOnce({} as never) // repo-service's own first-repo isPrimary
+      .mockRejectedValueOnce(new Error("deadlock")); // the route's isPrimary update
+    const res = await request(app)
+      .post("/api/projects")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ name: "Half", slug: "half", primaryRepo: { ownerOrOrg: "acme", repoName: "app" } });
+    expect(res.status).toBe(201);
+    expect(res.body.data.primaryRepo).toMatchObject({ id: "repo_1" });
+    expect(res.body.data.primaryRepoError).toBeNull();
+  });
+
+  it("POST omits a link error when no primary repo was requested (#428)", async () => {
+    const res = await request(app)
+      .post("/api/projects")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ name: "Bare", slug: "bare" });
+    expect(res.status).toBe(201);
+    expect(res.body.data.primaryRepo).toBeNull();
+    expect(res.body.data.primaryRepoError).toBeNull();
   });
 
   it("POST validates payload (400)", async () => {
