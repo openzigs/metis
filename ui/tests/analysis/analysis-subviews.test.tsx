@@ -14,6 +14,15 @@ import { QueryClient } from "@tanstack/react-query";
 import { makeWrapper, TEST_USER } from "../test-utils";
 
 const nav = vi.hoisted(() => ({ search: new URLSearchParams(), replace: vi.fn() }));
+/**
+ * Issue #487 — every render of the Approvals stub: the run it was handed and
+ * the run and tab the URL named at that moment. A render whose props lag the
+ * URL is the one-frame flash of the old run or tab.
+ */
+const tabRenders = vi.hoisted(() => [] as { value: string; urlTab: string | null }[]);
+const approvalsRenders = vi.hoisted(
+  () => [] as { analysisId: string; urlRun: string | null; urlTab: string | null }[],
+);
 
 vi.mock("next/navigation", async () => {
   const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
@@ -222,6 +231,11 @@ vi.mock("@/components/analysis/ApprovalsPanel", async () => {
   return {
     ApprovalsPanel: ({ analysisId }: { analysisId: string }) => {
       const qc = useQueryClient();
+      approvalsRenders.push({
+        analysisId,
+        urlRun: nav.search.get("analysisId"),
+        urlTab: nav.search.get("tab"),
+      });
       return (
         <div id="approvals" data-testid="approvals-panel-stub">
           <button
@@ -232,6 +246,20 @@ vi.mock("@/components/analysis/ApprovalsPanel", async () => {
           </button>
         </div>
       );
+    },
+  };
+});
+// Issue #487 — the real tab bar, recording the tab it is handed against the
+// tab the URL names. (A panel stub cannot see a stale tab: Radix Presence
+// renders the outgoing content once more whichever way the page resyncs.)
+vi.mock("@/components/analysis/AnalysisResultTabs", async () => {
+  const actual = await vi.importActual<typeof import("@/components/analysis/AnalysisResultTabs")>(
+    "@/components/analysis/AnalysisResultTabs",
+  );
+  return {
+    AnalysisResultTabs: (props: Parameters<typeof actual.AnalysisResultTabs>[0]) => {
+      tabRenders.push({ value: props.value, urlTab: nav.search.get("tab") });
+      return <actual.AnalysisResultTabs {...props} />;
     },
   };
 });
@@ -340,11 +368,19 @@ beforeEach(() => {
     scrolled.push(this);
   };
   nav.search = new URLSearchParams();
+  approvalsRenders.length = 0;
+  tabRenders.length = 0;
   apiMock.get.mockResolvedValue(SNAPSHOT);
   apiMock.listApprovals.mockResolvedValue({
     items: [],
     ticketStatus: { allowed: true, pendingCount: 0, rejectedCount: 0 },
   });
+});
+
+// PR #478 review — a test that stands the router in with a `replace`
+// implementation must not leak it when an assertion fails before cleanup.
+afterEach(() => {
+  nav.replace.mockReset();
 });
 
 describe("only the active sub-view mounts", () => {
@@ -888,7 +924,152 @@ describe("findings filters resync from the URL while mounted", () => {
     );
     expect(screen.getByTestId("finding-filter-severity")).toHaveValue("critical");
     expect(nav.replace).toHaveBeenCalledTimes(writes);
-    nav.replace.mockReset();
+  });
+
+  // Issue #487 — the tab resyncs during render, as the filters do, so the old
+  // tab's panel never renders against the new URL.
+  it("switches the tab without rendering the old one against the new URL", async () => {
+    nav.search = new URLSearchParams("analysisId=an-1&tab=approvals");
+    const navigate = renderNavigable();
+    await screen.findByTestId("approvals-panel-stub");
+    navigate("analysisId=an-1&tab=findings");
+    expect(await screen.findByTestId("findings-section")).toBeInTheDocument();
+    expect(screen.queryByTestId("approvals-panel-stub")).not.toBeInTheDocument();
+    expect(tabRenders.filter((r) => r.urlTab === "findings" && r.value !== "findings")).toEqual([]);
+  });
+});
+
+// Issue #487 — a link naming a different run switches the run, not just the
+// filters and tab: `selectedAnalysisId` used to be read from the URL only
+// while it was still null.
+describe("the run resyncs from the URL while mounted", () => {
+  const RUN_A = {
+    id: "an-a",
+    status: "completed",
+    startedAt: new Date().toISOString(),
+    totalTokens: 1,
+  };
+  const RUN_B = {
+    id: "an-b",
+    status: "completed",
+    startedAt: new Date().toISOString(),
+    totalTokens: 1,
+  };
+
+  beforeEach(() => {
+    apiMock.listForProject.mockResolvedValue({ items: [RUN_A, RUN_B] });
+    // Run A: 105 "Finding N" findings and 12 requirements. Run B: one finding.
+    apiMock.get.mockImplementation(async (id: string) =>
+      id === "an-b" ? { ...SNAPSHOT, id: "an-b" } : { ...manyFindings(), id },
+    );
+  });
+  afterEach(() => {
+    apiMock.listForProject.mockResolvedValue(DEFAULT_RUNS);
+  });
+
+  function renderNavigable() {
+    const { rerender } = render(<AnalysisPage />, {
+      wrapper: makeWrapper({ initialUser: TEST_USER }),
+    });
+    return (query: string) => {
+      nav.search = new URLSearchParams(query);
+      rerender(<AnalysisPage />);
+    };
+  }
+
+  it("switches to the run a second link names, with that link's filters", async () => {
+    nav.search = new URLSearchParams("analysisId=an-a&tab=findings");
+    const navigate = renderNavigable();
+    await waitFor(() =>
+      expect(screen.getByTestId("findings-pager-range")).toHaveTextContent("of 105 findings"),
+    );
+
+    navigate("analysisId=an-b&tab=findings&severity=high");
+    expect(
+      await screen.findByText("Reconciliation manager lacks XDOCK support"),
+    ).toBeInTheDocument();
+    expect(apiMock.get).toHaveBeenCalledWith("an-b");
+    expect(findingTitles()).toEqual([]);
+    expect(screen.getByTestId("finding-filter-severity")).toHaveValue("high");
+  });
+
+  it("never renders the old run against the new URL", async () => {
+    nav.search = new URLSearchParams("analysisId=an-a&tab=approvals");
+    const navigate = renderNavigable();
+    await waitFor(() => expect(approvalsRenders.some((r) => r.analysisId === "an-a")).toBe(true));
+    navigate("analysisId=an-b&tab=approvals");
+    await waitFor(() => expect(approvalsRenders.some((r) => r.analysisId === "an-b")).toBe(true));
+    expect(approvalsRenders.filter((r) => r.urlRun === "an-b" && r.analysisId !== "an-b")).toEqual(
+      [],
+    );
+  });
+
+  it("returns the requirements to page 1 on a run switch", async () => {
+    nav.search = new URLSearchParams("analysisId=an-a&tab=requirements");
+    const navigate = renderNavigable();
+    await screen.findByText("Requirement 0");
+    await userEvent.click(
+      within(screen.getByTestId("requirements-pager")).getByRole("button", { name: "Next" }),
+    );
+    expect(screen.getByText("Requirement 5")).toBeInTheDocument();
+
+    // Run B with run A's twelve requirements, so only the page can differ.
+    apiMock.get.mockImplementation(async (id: string) => ({ ...manyFindings(), id }));
+    navigate("analysisId=an-b&tab=requirements");
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith("an-b"));
+    expect(await screen.findByText("Requirement 0")).toBeInTheDocument();
+    expect(screen.queryByText("Requirement 5")).not.toBeInTheDocument();
+  });
+
+  it("drops run A's coverage filter on a run switch (PR #496 review)", async () => {
+    nav.search = new URLSearchParams("analysisId=an-a&tab=requirements");
+    const navigate = renderNavigable();
+    await screen.findByText("Requirement 0");
+    // No fixture requirement carries coverage, so "No evidence" hides them all.
+    await userEvent.click(screen.getByTestId("coverage-filter-no_evidence"));
+    expect(screen.queryByText("Requirement 0")).not.toBeInTheDocument();
+
+    apiMock.get.mockImplementation(async (id: string) => ({ ...manyFindings(), id }));
+    navigate("analysisId=an-b&tab=requirements");
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith("an-b"));
+    // A filter carried over from run A would hide run B's requirements.
+    expect(await screen.findByText("Requirement 0")).toBeInTheDocument();
+    expect(screen.getByTestId("coverage-filter-all")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("keeps the shown run for an id that is not in this project's list", async () => {
+    nav.search = new URLSearchParams("analysisId=an-a&tab=findings");
+    const navigate = renderNavigable();
+    await waitFor(() =>
+      expect(screen.getByTestId("findings-pager-range")).toHaveTextContent("of 105 findings"),
+    );
+    navigate("analysisId=an-foreign&tab=findings");
+    expect(screen.getByTestId("findings-pager-range")).toHaveTextContent("of 105 findings");
+    expect(apiMock.get).not.toHaveBeenCalledWith("an-foreign");
+  });
+
+  it("keeps a picked run while the router has yet to deliver its write", async () => {
+    nav.search = new URLSearchParams("analysisId=an-a&tab=findings");
+    const navigate = renderNavigable();
+    let echo: string | null = null;
+    nav.replace.mockImplementation((href: string) => {
+      echo = href.split("?")[1] ?? "";
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("findings-pager-range")).toHaveTextContent("of 105 findings"),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /an-b/ }));
+    expect(
+      await screen.findByText("Reconciliation manager lacks XDOCK support"),
+    ).toBeInTheDocument();
+
+    // A re-render still carrying the old URL must not send the reader back.
+    navigate("analysisId=an-a&tab=findings");
+    expect(screen.getByText("Reconciliation manager lacks XDOCK support")).toBeInTheDocument();
+    const writes = nav.replace.mock.calls.length;
+    navigate(echo!);
+    expect(screen.getByText("Reconciliation manager lacks XDOCK support")).toBeInTheDocument();
+    expect(nav.replace).toHaveBeenCalledTimes(writes);
   });
 });
 
