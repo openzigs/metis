@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   startAlertEngine: vi.fn(),
   startChargebackScheduler: vi.fn(),
   startRevocationPruner: vi.fn(),
+  startReplacedSecretSweep: vi.fn(),
   reconcileStrandedGeneratedDocPublications: vi.fn(),
   backfillSecretBindings: vi.fn(),
   bootLog: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -61,6 +62,11 @@ vi.mock(
 vi.mock(
   "../src/lib/auth/revocation-store.js",
   partial("startRevocationPruner", mocks.startRevocationPruner),
+);
+
+vi.mock(
+  "../src/lib/vault/secret-retirement.js",
+  partial("startReplacedSecretSweep", mocks.startReplacedSecretSweep),
 );
 
 vi.mock(
@@ -219,6 +225,18 @@ describe("SingletonJobs registration", () => {
     );
     expect(mocks.startWorkspaceUsageRollup).toHaveBeenCalledTimes(1);
     jobs.stop();
+  });
+
+  it("#591 — runs the replaced-secret sweep on the leader and stops it when leadership is lost", () => {
+    const jobs = new SingletonJobs(fakeSchedulerBootstrap() as never);
+    jobs.start();
+    jobs.start();
+    expect(mocks.startReplacedSecretSweep).toHaveBeenCalledTimes(1);
+    const handle = mocks.startReplacedSecretSweep.mock.results[0].value as {
+      stop: ReturnType<typeof vi.fn>;
+    };
+    jobs.stop();
+    expect(handle.stop).toHaveBeenCalledTimes(1);
   });
 
   it("does not double-register the rollup when start() is called twice", () => {

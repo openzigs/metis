@@ -29,8 +29,13 @@ vi.mock("../src/lib/prisma.js", async () => {
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { VaultService, __resetVaultSingleton } = await import("../src/lib/vault/vault-service.js");
-const { isSecretReferenced, retireReplacedSecret, withdrawCreatedSecrets } =
-  await import("../src/lib/vault/secret-retirement.js");
+const {
+  isSecretReferenced,
+  retireReplacedSecret,
+  withdrawCreatedSecrets,
+  sweepReplacedSecrets,
+  startReplacedSecretSweep,
+} = await import("../src/lib/vault/secret-retirement.js");
 const { audit } = await import("../src/lib/audit/audit-service.js");
 const jira = await import("../src/lib/connectors/jira/jira-service.js");
 const testmgmt = await import("../src/lib/connectors/testmgmt/connection-service.js");
@@ -593,6 +598,172 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           },
         },
       ]);
+    });
+
+    // ---- #591 — the replaced-secret sweep -----------------------------------
+
+    const markOf = async (id: string) =>
+      (await db.secret.findUniqueOrThrow({ where: { id } })).replacedKeptAt;
+    const sweepAudits = () =>
+      vi
+        .mocked(audit)
+        .mock.calls.map(([e]) => e)
+        .filter((e) => e.action === "vault.delete");
+
+    it("#591 — a replaced secret that is kept is marked, and its Updated time is untouched", async () => {
+      const s = await freshSecret();
+      await db.databaseConnection.create({
+        data: { projectId: "p1", label: uniq("db"), driver: "postgres", secretId: s.id },
+      });
+      const before = await db.secret.findUniqueOrThrow({ where: { id: s.id } });
+
+      expect(await retireReplacedSecret(vault, s.id, ctx)).toBe(false);
+
+      const after = await db.secret.findUniqueOrThrow({ where: { id: s.id } });
+      expect(after.replacedKeptAt).toBeInstanceOf(Date);
+      expect(after.updatedAt.getTime()).toBe(before.updatedAt.getTime());
+      expect(after.deletedAt).toBeNull();
+    });
+
+    it("#591 — a retired replacement is not marked", async () => {
+      const s = await freshSecret();
+      expect(await retireReplacedSecret(vault, s.id, ctx)).toBe(true);
+      expect(await markOf(s.id)).toBeNull();
+    });
+
+    it("#591 — a secret kept for an in-window Task is retired by the sweep once the Task ages out", async () => {
+      const before = await ownerJira();
+      const task = await webhookTask(before.secretId, "failed", {
+        completedAt: recent(),
+        updatedAt: recent(),
+      });
+      await jira.updateJiraConnection(before.id, { apiToken: "coord-token" }, COORD);
+      // Kept at replacement time: the Task can still be retried.
+      expect(await isLive(before.secretId)).toBe(true);
+      expect(await markOf(before.secretId)).toBeInstanceOf(Date);
+
+      vi.mocked(audit).mockClear();
+      await sweepReplacedSecrets();
+      // Still inside the window: the sweep leaves it alone.
+      expect(await isLive(before.secretId)).toBe(true);
+      expect(sweepAudits()).toEqual([]);
+
+      await db.task.update({
+        where: { id: task.id },
+        data: { completedAt: expired(), updatedAt: expired() },
+      });
+      const result = await sweepReplacedSecrets();
+
+      expect(await isLive(before.secretId)).toBe(false);
+      expect(result.retired).toContain(before.secretId);
+      expect(sweepAudits()).toEqual([
+        {
+          actor: { id: "system" },
+          action: "vault.delete",
+          target: { type: "secret", id: before.secretId },
+          metadata: {
+            source: "replaced_secret_sweep",
+            reason: "replaced_no_longer_referenced",
+          },
+        },
+      ]);
+      // The connection's current secret is untouched.
+      const after = await db.jiraConnection.findUniqueOrThrow({ where: { id: before.id } });
+      expect(await isLive(after.secretId)).toBe(true);
+    });
+
+    it("#591 — the sweep keeps a replaced secret a live binding still references", async () => {
+      const before = await ownerJira();
+      await db.databaseConnection.create({
+        data: { projectId: "p1", label: uniq("db"), driver: "postgres", secretId: before.secretId },
+      });
+      await jira.updateJiraConnection(before.id, { apiToken: "coord-token" }, COORD);
+      expect(await markOf(before.secretId)).toBeInstanceOf(Date);
+
+      vi.mocked(audit).mockClear();
+      const result = await sweepReplacedSecrets();
+
+      expect(await isLive(before.secretId)).toBe(true);
+      expect(result.retired).not.toContain(before.secretId);
+      expect(sweepAudits().map((e) => e.target.id)).not.toContain(before.secretId);
+    });
+
+    it("#591 — the sweep judges the retry window at the time it is given", async () => {
+      const s = await freshSecret();
+      await webhookTask(s.id, "failed", { completedAt: recent(), updatedAt: recent() });
+      await db.secret.update({ where: { id: s.id }, data: { replacedKeptAt: new Date() } });
+      expect((await sweepReplacedSecrets()).retired).not.toContain(s.id);
+      const later = new Date(Date.now() + 2 * DAY);
+      expect((await sweepReplacedSecrets(later)).retired).toContain(s.id);
+      expect(await isLive(s.id)).toBe(false);
+    });
+
+    it("#591 — the sweep never touches an unreferenced secret that was not a kept replacement", async () => {
+      const s = await freshSecret();
+      await sweepReplacedSecrets();
+      expect(await isLive(s.id)).toBe(true);
+    });
+
+    it("#591 — the sweep leaves a marked secret alone while a binding write is in flight", async () => {
+      const s = await freshSecret();
+      const now = new Date();
+      await db.secret.update({
+        where: { id: s.id },
+        data: { replacedKeptAt: now, bindingWriteUntil: new Date(now.getTime() + 60_000) },
+      });
+      const result = await sweepReplacedSecrets(now);
+      expect(await isLive(s.id)).toBe(true);
+      expect(result.retired).not.toContain(s.id);
+
+      // Once the window has closed it goes.
+      await db.secret.update({ where: { id: s.id }, data: { bindingWriteUntil: now } });
+      expect((await sweepReplacedSecrets(now)).retired).toContain(s.id);
+      expect(await isLive(s.id)).toBe(false);
+    });
+
+    it("#591 — a failed check on one secret does not stop the sweep", async () => {
+      const bad = await freshSecret();
+      const good = await freshSecret();
+      const now = new Date();
+      for (const id of [bad.id, good.id]) {
+        await db.secret.update({ where: { id }, data: { replacedKeptAt: now } });
+      }
+      const spy = vi.spyOn(db.secret, "updateMany").mockImplementationOnce(() => {
+        // A non-Error throw is reported too.
+        throw "db locked";
+      });
+      try {
+        const result = await sweepReplacedSecrets(now);
+        expect(result.retired).toHaveLength(1);
+      } finally {
+        spy.mockRestore();
+      }
+      // Exactly one of the two went; the other is picked up next time.
+      const live = [await isLive(bad.id), await isLive(good.id)];
+      expect(live.filter(Boolean)).toHaveLength(1);
+      await sweepReplacedSecrets(now);
+      expect(await isLive(bad.id)).toBe(false);
+      expect(await isLive(good.id)).toBe(false);
+    });
+
+    it("#591 — the sweep runs on its interval until stopped, and a failed run does not kill it", async () => {
+      vi.useFakeTimers();
+      try {
+        const sweep = vi
+          .fn()
+          .mockRejectedValueOnce(new Error("db down"))
+          .mockRejectedValueOnce("db down")
+          .mockResolvedValue({ checked: 0, retired: [] });
+        const handle = startReplacedSecretSweep(1_000, sweep);
+        expect(sweep).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(3_000);
+        expect(sweep).toHaveBeenCalledTimes(3);
+        handle.stop();
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(sweep).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   },
 );
