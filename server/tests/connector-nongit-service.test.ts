@@ -77,6 +77,7 @@ vi.mock("../src/lib/vault/vault-service.js", () => ({ getVaultService: vi.fn() }
 import {
   createRepoConnector,
   createUploadRepoConnector,
+  deleteRepoConnector,
   getRepoConnector,
   resolveNonGitIngestRoot,
 } from "../src/lib/connectors/repo/repo-service.js";
@@ -229,6 +230,53 @@ describe("createUploadRepoConnector + resolveNonGitIngestRoot", () => {
     // Read back through the store, not the returned object.
     expect(rows.get(first.id)?.isPrimary).toBe(true);
     expect(rows.get(second.id)?.isPrimary).toBe(false);
+  });
+
+  it("#475 — a label clash the pre-check cannot see is a 409, and leaves no archive", async () => {
+    // `@@unique([projectId, label])` also covers soft-deleted rows, which the
+    // live-row pre-check skips; the insert's P2002 is the only signal.
+    const { prisma } = await import("../src/lib/prisma.js");
+    vi.mocked(prisma.repoConnection.create).mockRejectedValueOnce(
+      Object.assign(new Error("Unique constraint failed"), {
+        code: "P2002",
+        meta: { target: "repo_connections_projectId_label_key" },
+      }),
+    );
+    await expect(
+      createUploadRepoConnector("proj_1", "old", await zipBuf(), "user_1"),
+    ).rejects.toMatchObject({ status: 409, code: "REPO_LABEL_TAKEN" });
+    expect(prisma.repoConnection.create).toHaveBeenCalledTimes(1);
+    expect(await fs.readdir(process.env.UPLOAD_ARCHIVE_DIR!)).toEqual([]);
+  });
+
+  it("#475 — deleting an upload connector removes its stored archive", async () => {
+    const created = await createUploadRepoConnector("proj_1", "gone", await zipBuf(), "user_1");
+    const archive = rows.get(created.id)!.uploadPath!;
+    await expect(fs.access(archive)).resolves.toBeUndefined();
+
+    await deleteRepoConnector("proj_1", created.id, "user_1");
+
+    await expect(fs.access(archive)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(rows.get(created.id)?.deletedAt).toBeInstanceOf(Date);
+  });
+
+  it("#475 — deleting one upload connector leaves another's archive in place", async () => {
+    const gone = await createUploadRepoConnector("proj_1", "gone", await zipBuf(), "user_1");
+    const kept = await createUploadRepoConnector("proj_1", "kept", await zipBuf(), "user_1");
+    await deleteRepoConnector("proj_1", gone.id, "user_1");
+    expect(await fs.readdir(process.env.UPLOAD_ARCHIVE_DIR!)).toEqual([`${kept.id}.zip`]);
+  });
+
+  it("#475 — an archive that cannot be removed does not fail the delete", async () => {
+    const created = await createUploadRepoConnector("proj_1", "stuck", await zipBuf(), "user_1");
+    // A non-empty directory at the archive path makes the removal throw.
+    const archive = rows.get(created.id)!.uploadPath!;
+    await fs.rm(archive);
+    await fs.mkdir(archive);
+    await fs.writeFile(path.join(archive, "x"), "x");
+
+    await expect(deleteRepoConnector("proj_1", created.id, "user_1")).resolves.toBeUndefined();
+    expect(rows.get(created.id)?.deletedAt).toBeInstanceOf(Date);
   });
 
   it("resolveNonGitIngestRoot for a local connector returns realpath + boundary", async () => {
