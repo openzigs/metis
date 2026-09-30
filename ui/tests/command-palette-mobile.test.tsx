@@ -26,6 +26,23 @@ vi.mock("@/lib/projects-api", () => ({
   },
 }));
 
+// #368 — the palette filters admin destinations by the caller's system role.
+// The real registry has no admin-only entry today, so the test adds one.
+const authRole = vi.hoisted(() => ({ current: "user" as string }));
+vi.mock("@/lib/auth-context", () => ({
+  useAuth: () => ({ user: { id: "u1", role: authRole.current }, isLoading: false }),
+}));
+vi.mock("@/lib/navigation", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/navigation")>("@/lib/navigation");
+  return {
+    ...actual,
+    PALETTE_DESTINATIONS: [
+      ...actual.PALETTE_DESTINATIONS,
+      { href: "/settings/auth", label: "SSO & authentication" },
+    ],
+  };
+});
+
 import { CommandPalette } from "@/components/command-palette/command-palette";
 
 /** Force `matchMedia` to report a given viewport for the bottom-sheet query. */
@@ -62,6 +79,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   listProjects.mockResolvedValue({ items: [{ id: "p1", name: "Alpha Project" }] });
   setViewport(false);
+  authRole.current = "user";
 });
 
 afterEach(() => {
@@ -179,6 +197,25 @@ describe("CommandPalette — keyboard navigation", () => {
     // Enter with no active option is a no-op (does not navigate).
     fireEvent.keyDown(input, { key: "Enter" });
     expect(vi.mocked(useRouter)().push).not.toHaveBeenCalled();
+  });
+});
+
+describe("CommandPalette — admin destinations (#368)", () => {
+  it("does not list an admin-only destination to a non-admin", async () => {
+    await openPalette();
+    fireEvent.change(screen.getByRole("combobox", { name: "Search commands" }), {
+      target: { value: "SSO" },
+    });
+    expect(screen.queryByTestId("command-item-nav:/settings/auth")).toBeNull();
+  });
+
+  it("lists it to a system admin", async () => {
+    authRole.current = "admin";
+    await openPalette();
+    fireEvent.change(screen.getByRole("combobox", { name: "Search commands" }), {
+      target: { value: "SSO" },
+    });
+    expect(screen.getByTestId("command-item-nav:/settings/auth")).toBeInTheDocument();
   });
 });
 

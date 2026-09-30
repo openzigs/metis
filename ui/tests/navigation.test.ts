@@ -8,6 +8,7 @@ import {
   NAV_ITEMS,
   navItemCurrent,
   PALETTE_DESTINATIONS,
+  paletteDestinations,
   PUBLIC_PATHS,
   visibleTabs,
 } from "@/lib/navigation";
@@ -189,6 +190,32 @@ describe("PALETTE_DESTINATIONS (#366 review)", () => {
 
   it("labels /dashboard Dashboard, matching its page heading", () => {
     expect(PALETTE_DESTINATIONS.find((t) => t.href === "/dashboard")?.label).toBe("Dashboard");
+  });
+});
+
+describe("paletteDestinations (#368)", () => {
+  const withAdminEntries = [
+    ...PALETTE_DESTINATIONS,
+    { href: "/x-admin", label: "X admin", adminOnly: true },
+    { href: "/settings/auth", label: "SSO & authentication" },
+    { href: "/settings/embeddings/models", label: "Embedding models" },
+  ];
+
+  it("hides adminOnly entries and admin-only Settings sections from non-admins", () => {
+    const hrefs = paletteDestinations(false, withAdminEntries).map((t) => t.href);
+    expect(hrefs).not.toContain("/x-admin");
+    expect(hrefs).not.toContain("/settings/auth");
+    expect(hrefs).not.toContain("/settings/embeddings/models");
+    for (const t of PALETTE_DESTINATIONS) expect(hrefs).toContain(t.href);
+  });
+
+  it("shows every entry to admins", () => {
+    expect(paletteDestinations(true, withAdminEntries)).toEqual(withAdminEntries);
+  });
+
+  it("defaults to the static palette registry", () => {
+    expect(paletteDestinations(true)).toEqual(PALETTE_DESTINATIONS);
+    expect(paletteDestinations(false).length).toBeGreaterThan(0);
   });
 });
 
