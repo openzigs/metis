@@ -27,3 +27,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Grounding misses tools](project_grounding-from-auto-rag-misses-tools.md) — auto-RAG capture never sees tool retrieval (#437)
 - [Verify the issue premise](project_verify-issue-premise-before-copy.md) — grep the write path and tests before copy or "no test" issues
 - [Split advisory fixes deadlock](project_split-advisory-fixes-deadlock-audit.md) — fix all new HIGHs on one branch (#431)
+- [TanStack stale data](project_tanstack-stale-data-after-failed-refetch.md) — a failed refetch keeps .data; persist on a confirmed fetch
+- [Once-mocks and retries](project_vitest-once-mocks-and-retries-hide-leaks.md) — clearAllMocks keeps once-impls; check new tests with --retry=0
+- [Pass-through permission mock](project_permission-mock-hides-removed-gate.md) — test the route's gate and limiter wiring (#454)
+- [CI guards parse the step](project_ci-guards-must-parse-the-step.md) — reject if:, `||`, continue-on-error (#458)
