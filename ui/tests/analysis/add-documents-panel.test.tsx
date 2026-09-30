@@ -53,7 +53,8 @@ function makeDoc(id: string, filename: string, status: DocumentRow["status"]): D
     id,
     projectId: "proj-1",
     filename,
-    source: "upload",
+    // A connector-shaped row is the repository connector's, as it writes it (#547).
+    source: filename.startsWith("connector:repo:") ? "repo" : "upload",
     mimeType: "text/markdown",
     sizeBytes: 10,
     status,

@@ -14,6 +14,7 @@
  */
 import { formatDocLabel, type DocLabelKind } from "@/lib/doc-label";
 import { formatSourceLabel } from "@/lib/format-source-label";
+import type { DocumentSource } from "@/lib/projects-api";
 
 export interface DocumentName {
   /** The file path for a repository file; otherwise the scannable label. */
@@ -25,19 +26,24 @@ export interface DocumentName {
   kind: DocLabelKind;
 }
 
+/**
+ * #547 — `source` is the row's `documents.source`: only a `repo` row is read as
+ * a repository file, so an upload named `connector:repo:…` keeps its name.
+ */
 export function formatDocumentName(
   filename: string,
+  source: DocumentSource,
   repoNames?: Readonly<Record<string, string>>,
 ): DocumentName {
-  const source = formatSourceLabel(filename, repoNames);
-  if (source.isConnector && source.path) {
+  const parsed = formatSourceLabel(filename, repoNames);
+  if (source === "repo" && parsed.isConnector && parsed.path) {
     return {
-      primary: source.path,
-      ...(source.repoLabel ? { secondary: source.repoLabel } : {}),
-      rawId: source.rawId,
+      primary: parsed.path,
+      ...(parsed.repoLabel ? { secondary: parsed.repoLabel } : {}),
+      rawId: parsed.rawId,
       kind: "repo",
     };
   }
-  const label = formatDocLabel(filename);
-  return { ...label, rawId: source.rawId };
+  const label = formatDocLabel(filename, source);
+  return { ...label, rawId: parsed.rawId };
 }

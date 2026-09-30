@@ -122,7 +122,16 @@ describe("ProjectDocumentsPage", () => {
       { id: "cmumwycfx002j2c9kp7kpu2tg", repoName: "metis", label: "Metis" },
     ]);
     list.mockResolvedValue({
-      items: [{ id: "d1", filename: key, status: "ready", chunkCount: 3, sizeBytes: 2048 }],
+      items: [
+        {
+          id: "d1",
+          filename: key,
+          source: "repo",
+          status: "ready",
+          chunkCount: 3,
+          sizeBytes: 2048,
+        },
+      ],
     });
     const Wrapper = makeWrapper({});
     render(

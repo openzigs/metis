@@ -107,6 +107,21 @@ describe("KnowledgeService primary evidence before reranking #1353", () => {
     },
   );
 
+  // #547 — every hit carries its row's `documents.source`, read in SQL: the
+  // vector store's copy of the filename (connector-shaped for every record
+  // here) is not what a reader may classify on.
+  it.each(["dense", "hybrid"] as const)(
+    "%s hits carry the document row's source, not a filename-derived kind",
+    async (mode) => {
+      const { service } = fixture();
+      const result = await service.search("p1", "query", { mode, evidencePolicy: policy });
+      expect(result.hits.map((h) => [h.chunkId, h.source])).toEqual([
+        ["allowed", "repo"],
+        ["reference", "upload"],
+      ]);
+    },
+  );
+
   it("enforces the policy actor even when the generic search actor option is omitted", async () => {
     const { service } = fixture();
     const result = await service.search("p1", "query", { mode: "dense", evidencePolicy: policy });

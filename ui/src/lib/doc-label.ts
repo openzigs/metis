@@ -13,6 +13,8 @@
  * keep the full original string in a hover `title`.
  */
 
+import type { DocumentSource } from "@/lib/projects-api";
+
 export type DocLabelKind = "repo" | "generated" | "file";
 
 export interface DocLabel {
@@ -33,12 +35,16 @@ const GENERATED_DOC_RE = /^generated-doc-([a-z0-9]+)(?:\.[a-z0-9]+)?$/i;
  * Turn a raw document `filename` into a `{ primary, secondary?, kind }` label.
  * Pure and side-effect-free so it is trivially unit-testable and reusable
  * across the doc list and the context chips.
+ *
+ * #547 — `source` is the row's `documents.source`. A filename pattern is read
+ * only for the source that writes it, so an upload stored before #540 under a
+ * name like `connector:repo:…` or `generated-doc-…` is labelled as the file it is.
  */
-export function formatDocLabel(filename: string): DocLabel {
+export function formatDocLabel(filename: string, source: DocumentSource): DocLabel {
   const name = (filename ?? "").trim();
   if (!name) return { primary: "Untitled", kind: "file" };
 
-  const repo = name.match(CONNECTOR_REPO_RE);
+  const repo = source === "repo" ? name.match(CONNECTOR_REPO_RE) : null;
   if (repo) {
     const path = repo[1].trim();
     const parts = path.split("/").filter(Boolean);
@@ -47,7 +53,7 @@ export function formatDocLabel(filename: string): DocLabel {
     return { primary: base, ...(dir ? { secondary: dir } : {}), kind: "repo" };
   }
 
-  const generated = name.match(GENERATED_DOC_RE);
+  const generated = source === "generated" ? name.match(GENERATED_DOC_RE) : null;
   if (generated) {
     // The id carries no meaning to a human; surface a short tail to keep
     // multiple generated docs distinguishable in the list.

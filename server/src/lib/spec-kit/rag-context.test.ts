@@ -46,6 +46,7 @@ const docHit: RetrievedChunk = {
   text: "public class Doc {}",
   score: 0.9,
   embeddingModel: "test",
+  source: "repo",
 };
 
 describe("buildSpecKitRagContext — flag OFF", () => {
@@ -156,6 +157,7 @@ function reqChunk(id: string, position: number, documentId = "req"): RetrievedCh
     text: `${documentId} body ${position}`,
     score: 0.5,
     embeddingModel: "test",
+    source: "upload",
   };
 }
 
@@ -208,6 +210,19 @@ describe("buildSpecKitRagContext — expandDocuments (#20)", () => {
     expect(res.context).toContain("a.md#1 (pinned");
     expect(res.context).not.toContain("c.md#1");
     expect(res.usedChunks).toBe(6);
+  });
+
+  // #547 — an upload stored before #540 under a source-file name is a
+  // document like any other; its source, not its filename, says so.
+  it("expands a connector-shaped upload: only a repo-sourced chunk is source code", async () => {
+    const legacy = { ...docHit, documentId: "legacy", chunkId: "l0", source: "upload" };
+    const ks = pinningService([legacy], { legacy: [{ ...legacy, chunkId: "l1", position: 1 }] });
+    await buildSpecKitRagContext("p1", "q", {
+      knowledgeService: ks,
+      fusedCode: fused([], {}),
+      expandDocuments: expansion,
+    });
+    expect(ks.search).toHaveBeenCalledWith("p1", "q", { k: 10, documentIds: ["legacy"] });
   });
 
   it("ignores chunks from another document and keeps top-k when expansion fails", async () => {

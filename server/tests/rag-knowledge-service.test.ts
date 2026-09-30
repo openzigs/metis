@@ -29,6 +29,7 @@ interface MockDocument {
   autoApproveTrusted?: boolean;
   aclSubjects?: string;
   uploadedById?: string;
+  source?: string;
 }
 
 interface MockChunk {
@@ -150,12 +151,21 @@ vi.mock("../src/lib/prisma.js", () => ({
         }: {
           where: { id?: { in: string[] }; documentId?: string; projectId?: string };
         }) => {
-          return [...chunks.values()].filter(
-            (c) =>
-              (!where.id || where.id.in.includes(c.id)) &&
-              (!where.documentId || where.documentId === c.documentId) &&
-              (!where.projectId || where.projectId === c.projectId),
-          );
+          return [...chunks.values()]
+            .filter(
+              (c) =>
+                (!where.id || where.id.in.includes(c.id)) &&
+                (!where.documentId || where.documentId === c.documentId) &&
+                (!where.projectId || where.projectId === c.projectId),
+            )
+            .map((c) => {
+              // The chunk→document relation, as `select: { document: … }` reads it.
+              const d = documents.get(c.documentId);
+              return {
+                ...c,
+                document: d ? { filename: d.filename, source: d.source ?? "upload" } : undefined,
+              };
+            });
         },
       ),
       updateMany: vi.fn(

@@ -88,7 +88,9 @@ export default function DocumentsTopLevelPage() {
       {
         key: "filename",
         header: "Document",
-        cell: (row) => <DocumentName filename={row.filename} repoNames={repoNames} />,
+        cell: (row) => (
+          <DocumentName filename={row.filename} source={row.source} repoNames={repoNames} />
+        ),
       },
       { key: "project", header: "Project", cell: (row) => row.projectName },
       { key: "status", header: "Status", cell: (row) => row.status },

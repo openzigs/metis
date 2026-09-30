@@ -77,6 +77,8 @@ interface RagHit {
   filename: string;
   text: string;
   score: number;
+  /** #547 — `documents.source`; only a `db` hit is an ingested schema table. */
+  source: string;
 }
 interface KnowledgeSearcher {
   search(projectId: string, query: string, opts?: { k?: number }): Promise<{ hits: RagHit[] }>;
@@ -196,6 +198,8 @@ export async function suggestMappings(
     const seen = new Set<string>();
     const tables: SchemaTable[] = [];
     for (const hit of hits) {
+      // #547 — an upload may carry a `connector:db:` name; its source says what it is.
+      if (hit.source !== "db") continue;
       const parsed = parseSchemaDocFilename(hit.filename);
       if (!parsed) continue;
       const key = `${parsed.dbConnectorId}::${parsed.schemaName}::${parsed.tableName}`;

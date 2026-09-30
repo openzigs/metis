@@ -118,6 +118,7 @@ export default function ProjectDocumentsPage() {
                 <div className="min-w-0">
                   <DocumentName
                     filename={d.filename}
+                    source={d.source}
                     repoNames={repoNames}
                     className="font-medium"
                   />

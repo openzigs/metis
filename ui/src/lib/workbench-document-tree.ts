@@ -166,7 +166,7 @@ function toConnectorEntry(
 }
 
 function toUploadEntry(doc: DocumentRow): PanelEntry {
-  const label = formatDocLabel(doc.filename);
+  const label = formatDocLabel(doc.filename, doc.source);
   // A generated document's secondary is a cuid fragment: show its date instead.
   const secondary = label.kind === "generated" ? formatDate(doc.uploadedAt) : label.secondary;
   return {

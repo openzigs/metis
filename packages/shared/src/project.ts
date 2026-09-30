@@ -148,6 +148,12 @@ export const retrievedChunkSchema = z.object({
   text: z.string(),
   score: z.number(),
   embeddingModel: z.string(),
+  /**
+   * #547 — the hit's `documents.source` (`upload`, `generated`, `repo`, `db`,
+   * `confluence`, `jira`). Classify a hit on this, never on its filename
+   * prefix: an upload may be named `connector:repo:…` or `jira:ABC-1`.
+   */
+  source: z.string(),
 });
 export type RetrievedChunk = z.infer<typeof retrievedChunkSchema>;
 

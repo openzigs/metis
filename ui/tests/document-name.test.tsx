@@ -12,7 +12,7 @@ const NAMES = { cmumwycfx002j2c9kp7kpu2tg: "metis" };
 
 describe("formatDocumentName", () => {
   it("shows a repository file as its path over the repository's name", () => {
-    expect(formatDocumentName(KEY, NAMES)).toEqual({
+    expect(formatDocumentName(KEY, "repo", NAMES)).toEqual({
       primary: "src/vitest.config.ts",
       secondary: "metis",
       rawId: KEY,
@@ -21,38 +21,48 @@ describe("formatDocumentName", () => {
   });
 
   it("keeps the whole path, not just the basename", () => {
-    const name = formatDocumentName("connector:repo:c1:a/b/c/File.java", { c1: "wms" });
+    const name = formatDocumentName("connector:repo:c1:a/b/c/File.java", "repo", { c1: "wms" });
     expect(name.primary).toBe("a/b/c/File.java");
   });
 
   it("falls back to a short connector token while the repository name is unknown", () => {
-    const name = formatDocumentName(KEY);
+    const name = formatDocumentName(KEY, "repo");
     expect(name.secondary).toBe("kpu2tg");
     expect(name.primary).toBe("src/vitest.config.ts");
   });
 
   it("never puts the internal key in a visible field", () => {
-    const name = formatDocumentName(KEY, NAMES);
+    const name = formatDocumentName(KEY, "repo", NAMES);
     expect(`${name.primary} ${name.secondary}`).not.toContain("connector:repo:");
   });
 
   it("passes an uploaded filename through unchanged", () => {
-    expect(formatDocumentName("Spec v2.docx", NAMES)).toEqual({
+    expect(formatDocumentName("Spec v2.docx", "upload", NAMES)).toEqual({
       primary: "Spec v2.docx",
       rawId: "Spec v2.docx",
       kind: "file",
     });
   });
 
+  // #547 — an upload stored before #540 under a repository file's key is
+  // listed by its own name: the row's source says it is an upload.
+  it("lists a connector-shaped upload under its own name", () => {
+    expect(formatDocumentName(KEY, "upload", NAMES)).toEqual({
+      primary: KEY,
+      rawId: KEY,
+      kind: "file",
+    });
+  });
+
   it("labels a generated document readably", () => {
-    const name = formatDocumentName("generated-doc-cmqpizckr017z8ewh2unm1418.md");
+    const name = formatDocumentName("generated-doc-cmqpizckr017z8ewh2unm1418.md", "generated");
     expect(name).toMatchObject({ primary: "Generated document", kind: "generated" });
   });
 });
 
 describe("<DocumentName />", () => {
   it("renders path and repository, with the key only in the tooltip", () => {
-    const { container } = render(<DocumentName filename={KEY} repoNames={NAMES} />);
+    const { container } = render(<DocumentName filename={KEY} source="repo" repoNames={NAMES} />);
     expect(screen.getByTestId("document-name-path")).toHaveTextContent(/^src\/vitest\.config\.ts$/);
     expect(screen.getByText("metis")).toBeInTheDocument();
     expect(container.textContent).not.toContain("connector:repo:");
@@ -66,6 +76,7 @@ describe("<DocumentName />", () => {
     render(
       <DocumentName
         filename="connector:repo:cmumwycfx002j2c9kp7kpu2tg:server/src/lib/analysis/agent-loop.ts"
+        source="repo"
         repoNames={NAMES}
       />,
     );
@@ -78,8 +89,16 @@ describe("<DocumentName />", () => {
     expect(base).toHaveClass("shrink-0");
   });
 
+  it("renders a connector-shaped upload as a file", () => {
+    const { container } = render(<DocumentName filename={KEY} source="upload" repoNames={NAMES} />);
+    expect(container.firstElementChild).toHaveAttribute("data-kind", "file");
+    expect(screen.queryByText("metis")).not.toBeInTheDocument();
+  });
+
   it("renders a plain upload on one line", () => {
-    const { container } = render(<DocumentName filename="notes.md" className="font-medium" />);
+    const { container } = render(
+      <DocumentName filename="notes.md" source="upload" className="font-medium" />,
+    );
     expect(container.textContent).toBe("notes.md");
     expect(container.firstElementChild).toHaveClass("font-medium");
   });

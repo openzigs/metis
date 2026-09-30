@@ -228,7 +228,9 @@ async function expandDocuments(
   const documentIds: string[] = [];
   for (const h of hits) {
     if (documentIds.length >= expansion.maxDocuments) break;
-    if (extractRepoRelPath(h.filename) !== null || documentIds.includes(h.documentId)) continue;
+    // #547 — a source file is a `repo` row; an upload may carry the same name.
+    const sourceFile = h.source === "repo" && extractRepoRelPath(h.filename) !== null;
+    if (sourceFile || documentIds.includes(h.documentId)) continue;
     documentIds.push(h.documentId);
   }
 
