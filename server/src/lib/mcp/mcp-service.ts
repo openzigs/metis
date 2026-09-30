@@ -406,6 +406,12 @@ export class MCPRegistryService {
     input: UpdateMCPServerInput,
     actor: ActorLite,
     expectedUpdatedAt?: Date | null,
+    /**
+     * #495 — called the moment the row is written, before anything that can
+     * still throw, so a caller undoing its own pre-write work knows the row
+     * now depends on it.
+     */
+    onLanded?: () => void,
   ): Promise<MCPServerView> {
     const existing = await prisma.mCPServer.findFirst({ where: { id, deletedAt: null } });
     if (!existing) {
@@ -454,6 +460,7 @@ export class MCPRegistryService {
     let row;
     if (expectedUpdatedAt === undefined) {
       row = await prisma.mCPServer.update({ where: { id }, data });
+      onLanded?.();
     } else {
       if (expectedUpdatedAt === null) throw mcpConcurrentUpdateError();
       const { count } = await prisma.mCPServer.updateMany({
@@ -461,6 +468,7 @@ export class MCPRegistryService {
         data,
       });
       if (count === 0) throw mcpConcurrentUpdateError();
+      onLanded?.();
       row = await prisma.mCPServer.findUniqueOrThrow({ where: { id } });
     }
     auditMcpEvent("mcp.updated", {

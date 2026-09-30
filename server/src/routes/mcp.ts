@@ -30,6 +30,7 @@ import { Router, type Request } from "express";
 import { type ApiResponse, createMCPServerSchema, updateMCPServerSchema } from "@metis/shared";
 import { audit } from "../lib/audit/audit-service.js";
 import { getMCPRegistry, MCPRegistryService } from "../lib/mcp/index.js";
+import { mcpConcurrentUpdateError } from "../lib/mcp/mcp-service-error.js";
 import {
   MCPRegistryError,
   PROJECT_REQUIRED,
@@ -58,6 +59,7 @@ import { exportToCopilotMcpJson, parseCopilotMcpJson } from "../lib/mcp/mcp-json
 import { scanForHiddenChars } from "../lib/mcp/hidden-char-scanner.js";
 import { getVaultService } from "../lib/vault/vault-service.js";
 import { freshSecretLabel } from "../lib/vault/secret-rotation.js";
+import { withdrawCreatedSecrets } from "../lib/vault/secret-retirement.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -193,6 +195,8 @@ async function vaultPlaintextSecrets(
     actorId: string;
     scope: "global" | "project";
     isSecretFn: (key: string, value: string) => boolean;
+    /** #495 — receives the id of every secret created, so a failed write can withdraw it. */
+    created?: string[];
   },
 ): Promise<{ rewritten: Record<string, string> | null; refs: Record<string, string> }> {
   if (!record) return { rewritten: null, refs: {} };
@@ -229,6 +233,7 @@ async function vaultPlaintextSecrets(
         description: `Auto-vaulted ${ctx.field} from /api/mcp direct write for ${ctx.label}`,
         createdById: ctx.actorId,
       });
+      ctx.created?.push(summary.id);
       audit({
         actor: { id: ctx.actorId },
         action: "vault.write",
@@ -338,9 +343,18 @@ export function mcpRouter(): Router {
       String(req.params.id),
       parsed.data,
     );
+    /** #495 — secrets this request vaults; withdrawn if the write does not land. */
+    const created: string[] = [];
+    /** #495 — set the moment the row is written: from then on it names the new secrets. */
+    let landed = false;
     try {
       const existing = await svc().get(String(req.params.id));
       if (!existing) throw new AppError(404, "NOT_FOUND", "MCP server not found");
+      // #495 — a row that moved after the guard read it is refused before any
+      // plaintext is vaulted; the conditional write still catches a later move.
+      if (checkedAt === null || existing.updatedAt !== checkedAt.toISOString()) {
+        throw mcpConcurrentUpdateError();
+      }
       // Vault doesn't have a `user` scope yet — fold user-scoped MCPs into
       // the `global` vault namespace until per-user secrets ship.
       const scope: "global" | "project" = existing.scope === "project" ? "project" : "global";
@@ -352,6 +366,7 @@ export function mcpRouter(): Router {
             field: "env",
             actorId: actor.id,
             scope,
+            created,
             isSecretFn: (k, v) => SECRET_KEY_PATTERN.test(k) || isSecretValue(v),
           })
         : { rewritten: parsed.data.env ?? null, refs: {} as Record<string, string> };
@@ -362,6 +377,7 @@ export function mcpRouter(): Router {
             field: "header",
             actorId: actor.id,
             scope,
+            created,
             isSecretFn: (k, v) => isSecretHeaderName(k) || isSecretValue(v),
           })
         : { rewritten: parsed.data.headers ?? null, refs: {} as Record<string, string> };
@@ -383,9 +399,22 @@ export function mcpRouter(): Router {
         },
         actor,
         checkedAt,
+        () => {
+          landed = true;
+        },
       );
       res.json(ok(updated));
     } catch (err) {
+      // #495 — a write that did not land leaves the vaulted values belonging to
+      // no server, so they are withdrawn. Once it has landed the row names
+      // them, and withdrawing would leave the server's env unresolvable.
+      if (!landed) {
+        await withdrawCreatedSecrets(getVaultService(), created, {
+          actorId: actor.id,
+          resource: { type: "mcp_server", id: String(req.params.id) },
+          cause: err,
+        });
+      }
       rethrow(err);
     }
   });

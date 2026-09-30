@@ -28,7 +28,7 @@ vi.mock("../src/lib/prisma.js", async () => {
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { VaultService, __resetVaultSingleton } = await import("../src/lib/vault/vault-service.js");
-const { isSecretReferenced, retireReplacedSecret } =
+const { isSecretReferenced, retireReplacedSecret, withdrawCreatedSecrets } =
   await import("../src/lib/vault/secret-retirement.js");
 const { audit } = await import("../src/lib/audit/audit-service.js");
 const jira = await import("../src/lib/connectors/jira/jira-service.js");
@@ -387,6 +387,34 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ],
     ];
 
+    /** #495 — a Task's materialised copy of an http-webhook payload. */
+    const webhookTask = (id: string, status: string) =>
+      db.task.create({
+        data: {
+          type: "http-webhook",
+          status,
+          payload: JSON.stringify({
+            url: "https://hook.example.test",
+            authHeader: `\${vault:${id}}`,
+          }),
+        },
+      });
+
+    it.each(["pending", "running", "failed", "cancelled"])(
+      "#495 — a %s http-webhook Task's payload counts (a retry re-runs it)",
+      async (status) => {
+        const s = await freshSecret();
+        await webhookTask(s.id, status);
+        expect(await isSecretReferenced(s.id, s.name)).toBe(true);
+      },
+    );
+
+    it("#495 — a completed Task's payload does not count (it can never run again)", async () => {
+      const s = await freshSecret();
+      await webhookTask(s.id, "completed");
+      expect(await isSecretReferenced(s.id, s.name)).toBe(false);
+    });
+
     it("an unreferenced secret reads as unreferenced", async () => {
       const s = await freshSecret();
       expect(await isSecretReferenced(s.id, s.name)).toBe(false);
@@ -415,6 +443,34 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const del = vi.fn().mockRejectedValue(new Error("vault down"));
       expect(await retireReplacedSecret({ delete: del }, s.id, ctx)).toBe(false);
       expect(await isLive(s.id)).toBe(true);
+    });
+
+    // ---- withdrawCreatedSecrets (#495) --------------------------------------
+
+    it("withdrawal audits each deleted secret, and one the vault refuses is skipped, not thrown", async () => {
+      vi.mocked(audit).mockClear();
+      const del = vi.fn(async (id: string) => {
+        if (id === "refused") throw new Error("vault down");
+      });
+      await withdrawCreatedSecrets({ delete: del }, ["refused", "gone"], {
+        actorId: COORD,
+        resource: { type: "t", id: "x" },
+        cause: new Error("unique violation"),
+      });
+      expect(del).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(audit).mock.calls.map(([e]) => e)).toEqual([
+        {
+          actor: { id: COORD },
+          action: "vault.delete",
+          target: { type: "secret", id: "gone" },
+          metadata: {
+            source: "update_not_applied",
+            reason: "update_failed",
+            resourceType: "t",
+            resourceId: "x",
+          },
+        },
+      ]);
     });
   },
 );

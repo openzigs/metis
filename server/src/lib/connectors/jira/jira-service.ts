@@ -18,10 +18,10 @@ import { ulid } from "ulid";
 import { prisma } from "../../prisma.js";
 import { getVaultService } from "../../vault/vault-service.js";
 import { rotateOrCreate } from "../../vault/secret-rotation.js";
-import { retireReplacedSecret } from "../../vault/secret-retirement.js";
+import { retireReplacedSecret, withdrawCreatedSecrets } from "../../vault/secret-retirement.js";
 import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
-import { ConnectorError, concurrentUpdateError } from "../types.js";
+import { ConnectorError, concurrentUpdateError, rowUnchangedSince } from "../types.js";
 import { assertConnectorHostAllowed } from "../network-allowlist.js";
 import { createJiraClient, type JiraClient } from "./jira-client.js";
 import type { JiraRawResource } from "./raw-fetch.js";
@@ -249,6 +249,7 @@ export async function updateJiraConnection(
   expectedUpdatedAt?: Date | null,
 ): Promise<JiraConnectionDetail> {
   const existing = await findOrThrow(id, projectId);
+  if (!rowUnchangedSince(existing.updatedAt, expectedUpdatedAt)) throw concurrentUpdateError();
   const data: Record<string, unknown> = {};
 
   if (input.label !== undefined) {
@@ -330,9 +331,12 @@ export async function updateJiraConnection(
   }
 
   let row;
+  /** #495 — set the moment the row is written: from then on it names the new secrets. */
+  let landed = false;
   try {
     if (expectedUpdatedAt === undefined) {
       row = await prisma.jiraConnection.update({ where: { id }, data });
+      landed = true;
     } else {
       if (expectedUpdatedAt === null) throw concurrentUpdateError();
       const { count } = await prisma.jiraConnection.updateMany({
@@ -340,9 +344,26 @@ export async function updateJiraConnection(
         data,
       });
       if (count === 0) throw concurrentUpdateError();
+      landed = true;
       row = await prisma.jiraConnection.findUniqueOrThrow({ where: { id } });
     }
   } catch (err) {
+    // #495 — a write that did not land leaves the secrets this request created
+    // belonging to no connection, so they are withdrawn (as the create path
+    // does). One rotated in place is the row's own and stays. Once the write
+    // has landed the row names them, and withdrawing would leave it unreadable.
+    if (!landed) {
+      await withdrawCreatedSecrets(
+        getVaultService(),
+        [data.secretId, data.tlsCaSecretId].filter((s): s is string => typeof s === "string"),
+        {
+          actorId,
+          resource: { type: "jira_connection", id },
+          projectId: existing.projectId,
+          cause: err,
+        },
+      );
+    }
     if (isUniqueViolation(err) && typeof data.label === "string") {
       throw labelTaken(data.label);
     }

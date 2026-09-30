@@ -13,7 +13,8 @@
  * EXISTING secret of their choosing: repo / DB connector `secretId`, MCP server
  * env / headers / env-secret pointer, a publish batch's `secretRef`, a chat
  * session's BYOK `providerSecretRef` (#305), a scheduled job's payload (the
- * http-webhook `authHeader`, resolved with `vault.read`), and the Jira and
+ * http-webhook `authHeader`, resolved with `vault.read`) and any not-yet-completed
+ * Task's copy of it (#495), and the Jira and
  * test-management connections themselves. Stores that only ever hold
  * a secret they created under their own system label (Slack, Teams, PagerDuty,
  * import sources, suggested-connector passwords) cannot name a connector's
@@ -27,6 +28,7 @@
  */
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
+import { CONCURRENT_UPDATE } from "../connectors/types.js";
 import { createChildLogger } from "../logger.js";
 import type { VaultService } from "./vault-service.js";
 
@@ -61,6 +63,10 @@ export async function isSecretReferenced(id: string, name: string): Promise<bool
     prisma.publishBatch.count({ where: { OR: containsAny("metadata") } }),
     prisma.aISession.count({ where: { OR: containsAny("providerSecretRef") } }),
     prisma.scheduledJob.count({ where: { OR: containsAny("payload") } }),
+    // #495 — a Task holds its own copy of the job payload, which a retry
+    // re-runs (automatic retries go back to `pending`; POST /tasks/:id/retry
+    // re-enqueues a failed or cancelled one). Only a completed Task never runs again.
+    prisma.task.count({ where: { status: { not: "completed" }, OR: containsAny("payload") } }),
   ]);
   return counts.some((n) => n > 0);
 }
@@ -108,5 +114,55 @@ export async function retireReplacedSecret(
       error: err instanceof Error ? err.message : String(err),
     });
     return false;
+  }
+}
+
+export interface WithdrawContext {
+  actorId: string;
+  /** The resource whose update created the secrets, e.g. `{ type: "jira_connection", id }`. */
+  resource: { type: string; id: string };
+  projectId?: string | null;
+  /** The error that stopped the update from landing. */
+  cause: unknown;
+}
+
+/**
+ * #495 — soft-delete the secrets an update created when that update did not
+ * land, and record each withdrawal as `vault.delete` against the secret — the
+ * counterpart of the `vault.write` its creation emitted. Call ONLY when the
+ * row was not written: a committed row names these secrets.
+ *
+ * Never throws: the caller is already on its error path and rethrows its own
+ * error. A secret that cannot be withdrawn is logged and stays live.
+ */
+export async function withdrawCreatedSecrets(
+  vault: Pick<VaultService, "delete">,
+  secretIds: readonly string[],
+  ctx: WithdrawContext,
+): Promise<void> {
+  const code = (ctx.cause as { code?: unknown } | null)?.code;
+  const reason = code === CONCURRENT_UPDATE ? "concurrent_update" : "update_failed";
+  for (const secretId of secretIds) {
+    try {
+      await vault.delete(secretId);
+      audit({
+        actor: { id: ctx.actorId },
+        action: "vault.delete",
+        target: { type: "secret", id: secretId },
+        metadata: {
+          source: "update_not_applied",
+          reason,
+          resourceType: ctx.resource.type,
+          resourceId: ctx.resource.id,
+          ...(ctx.projectId ? { projectId: ctx.projectId } : {}),
+        },
+      });
+    } catch (err) {
+      log.warn("Could not withdraw a secret created by an update that did not land", {
+        secretId,
+        resource: ctx.resource,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
