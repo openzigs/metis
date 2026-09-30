@@ -8,8 +8,7 @@ import { createApp, type CreateAppOptions } from "./app.js";
 import { bootstrapMCP, type MCPBootstrap } from "./lib/mcp/index.js";
 import { createSocketServer, type MetisIOServer } from "./lib/socket/server.js";
 import { AnalysisOrchestrator, setOrchestratorForTests } from "./lib/analysis/index.js";
-import { buildProvider, loadAIConfig, maybeWrapProviderForFixtures } from "./lib/ai/index.js";
-import { BedrockDirectProvider } from "./lib/ai/providers/bedrock-direct-provider.js";
+import { buildServerProvider } from "./lib/ai/server-provider.js";
 import { configureDbConnectorService } from "./lib/connectors/db/db-service.js";
 import { configureRepoConnectorService } from "./lib/connectors/repo/repo-service.js";
 import { createSocketConnectorEmitter } from "./lib/connectors/socket-emitter.js";
@@ -280,23 +279,7 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   // analysis:agent events broadcast into the analysis:{id} rooms.
   let aiProvider: import("./lib/ai/types.js").AIProvider | undefined;
   try {
-    const config = loadAIConfig();
-    if (
-      (config.provider === "bedrock-gateway" || config.provider === "local-gemma") &&
-      config.sdkProvider
-    ) {
-      aiProvider = maybeWrapProviderForFixtures(
-        new BedrockDirectProvider({
-          baseUrl: config.sdkProvider.baseUrl,
-          apiKey: config.sdkProvider.apiKey ?? "",
-          model: config.model,
-          providerKey: config.provider,
-          modelProfileMap: config.modelProfileMap,
-        }),
-      );
-    } else {
-      aiProvider = buildProvider({ config });
-    }
+    aiProvider = buildServerProvider();
     setOrchestratorForTests(new AnalysisOrchestrator({ provider: aiProvider, io }));
   } catch {
     // Provider construction failure (missing creds in dev) is non-fatal \u2014

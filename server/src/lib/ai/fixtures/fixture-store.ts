@@ -45,10 +45,15 @@ export interface FixtureRecord {
  * Resolve the directory fixtures live in. Honours `AI_FIXTURE_DIR`; falls back
  * to {@link DEFAULT_FIXTURE_DIR}. Relative paths resolve against the supplied
  * `cwd` (defaults to `process.cwd()`), so both the server process and the e2e
- * harness can agree on the same absolute location.
+ * harness can agree on the same absolute location. `env` defaults to
+ * `process.env`; a caller building a provider from an explicit environment
+ * passes that one, so the directory and the record/replay mode agree (#558).
  */
-export function resolveFixtureDir(cwd: string = process.cwd()): string {
-  const configured = process.env.AI_FIXTURE_DIR?.trim();
+export function resolveFixtureDir(
+  cwd: string = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const configured = env.AI_FIXTURE_DIR?.trim();
   const dir = configured && configured.length > 0 ? configured : DEFAULT_FIXTURE_DIR;
   return path.isAbsolute(dir) ? dir : path.resolve(cwd, dir);
 }

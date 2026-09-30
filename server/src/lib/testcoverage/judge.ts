@@ -58,6 +58,13 @@ export interface JudgePair {
 /** Caller-supplied LLM bridge — injectable so tests do not need Bedrock. */
 export interface JudgeModelCaller {
   /**
+   * #558 — the model to send for Claude tier `tierId` on the provider behind
+   * this caller (`tierModelFor`). The judge sends it and keys its LLM cache on
+   * it. Omitted (a test stub with no provider behind it): the tier id as-is.
+   * Production wiring requires it — see {@link ProviderJudgeModelCaller}.
+   */
+  modelFor?(tierId: string): string;
+  /**
    * Returns the raw JSON string the model produced and the token usage so we
    * can record cost. Implementations should *not* parse the response.
    */
@@ -66,6 +73,16 @@ export interface JudgeModelCaller {
     systemPrompt: string;
     userPrompt: string;
   }): Promise<JudgeCallResult>;
+}
+
+/**
+ * #558 — the caller production wires (`createProviderJudgeCaller`, required by
+ * `configureTestCoverageRuntime`). `modelFor` is REQUIRED here: a production
+ * caller that omitted it would silently send the Claude tier id to a provider
+ * that may not serve it. Only test stubs use the optional form above.
+ */
+export interface ProviderJudgeModelCaller extends JudgeModelCaller {
+  modelFor(tierId: string): string;
 }
 
 /** One model call's output, usage, and what served it. */
@@ -248,6 +265,9 @@ export async function judgeAmbiguous(
   const cache = getSemanticCache();
   const tracker = getTokenTracker();
   const embedder = getEmbedder();
+  // #558 — the model the active provider can run for the Haiku tier, resolved
+  // once: it is both what is sent and what the cache is keyed on.
+  const modelId = options.caller.modelFor?.(HAIKU_MODEL_ID) ?? HAIKU_MODEL_ID;
 
   let batches = 0;
   let modelCalls = 0;
@@ -293,13 +313,13 @@ export async function judgeAmbiguous(
     let raw: string | null = null;
     let batchPromptTokens = 0;
     let batchCompletionTokens = 0;
-    const hit = await cache.lookup(cacheKey, HAIKU_MODEL_ID, SYSTEM_PROMPT_HASH, options.projectId);
+    const hit = await cache.lookup(cacheKey, modelId, SYSTEM_PROMPT_HASH, options.projectId);
     if (hit) {
       raw = hit.response;
       cacheHits += 1;
     } else {
       const out = await options.caller.call({
-        modelId: HAIKU_MODEL_ID,
+        modelId,
         systemPrompt: SYSTEM_PROMPT,
         userPrompt,
       });
@@ -308,12 +328,12 @@ export async function judgeAmbiguous(
       batchPromptTokens += out.promptTokens;
       batchCompletionTokens += out.completionTokens;
       servedBy = { provider: out.provider, model: out.model };
-      await cache.store(cacheKey, HAIKU_MODEL_ID, SYSTEM_PROMPT_HASH, raw, options.projectId);
+      await cache.store(cacheKey, modelId, SYSTEM_PROMPT_HASH, raw, options.projectId);
     }
 
     const parsed = await parseWithRetry(raw, async () => {
       const retry = await options.caller.call({
-        modelId: HAIKU_MODEL_ID,
+        modelId,
         systemPrompt: SYSTEM_PROMPT + "\n\nIMPORTANT: Reply ONLY with valid JSON, no prose.",
         userPrompt,
       });

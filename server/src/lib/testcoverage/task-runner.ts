@@ -17,7 +17,7 @@ import { CoverageCostTracker, DEFAULT_BUDGET_CENTS } from "./cost-tracker.js";
 import { TestCoverageIndexer } from "./indexer.js";
 import { finaliseCase } from "./normaliser.js";
 import { runCoverageScoring } from "./coverage-service.js";
-import type { JudgeModelCaller } from "./judge.js";
+import type { JudgeModelCaller, ProviderJudgeModelCaller } from "./judge.js";
 import type { TestCaseSource, NormalisedTestCase } from "@metis/shared";
 
 const log = createChildLogger("testcoverage/task-runner");
@@ -292,8 +292,16 @@ export async function runTestCoverageJob(
  */
 let runtimeDeps: TestCoverageRunnerDeps = {};
 
+/**
+ * #558 — the production wiring's deps: its `caller` must say which model a
+ * Claude tier maps to on its provider, so it cannot be a bare test stub.
+ */
+export type TestCoverageRuntimeDeps = Omit<TestCoverageRunnerDeps, "caller"> & {
+  caller?: ProviderJudgeModelCaller;
+};
+
 /** Wire the production caller/emitter for the background runner. */
-export function configureTestCoverageRuntime(deps: TestCoverageRunnerDeps): void {
+export function configureTestCoverageRuntime(deps: TestCoverageRuntimeDeps): void {
   runtimeDeps = { ...deps };
 }
 

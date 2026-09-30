@@ -15,6 +15,8 @@ import type { JudgeModelCaller } from "../../../src/lib/testcoverage/judge.js";
 import { __resetSemanticCacheSingleton } from "../../../src/lib/ai/semantic-cache.js";
 import { CoverageCostTracker } from "../../../src/lib/testcoverage/cost-tracker.js";
 import { HAIKU_MODEL_ID } from "../../../src/lib/ai/model-router.js";
+import { createProviderJudgeCaller } from "../../../src/lib/testcoverage/judge-caller.js";
+import type { AIProvider } from "../../../src/lib/ai/types.js";
 
 // The cost tracker's usage rows go through the Prisma singleton; keep them here.
 vi.mock("../../../src/lib/prisma.js", () => ({
@@ -442,6 +444,66 @@ describe("generateSuggestions", () => {
       const phases = record.mock.calls.map((c) => c[0].phase);
       expect(phases.filter((p) => p === "suggestion")).toHaveLength(0);
       expect(phases.filter((p) => p === "embedding")).toHaveLength(2);
+    });
+  });
+
+  // #558 — the suggestion phase wants the Haiku tier. It must send the model
+  // the ACTIVE provider can run (`tierModelFor`, via the caller) and key its LLM
+  // cache on that model, never on the Claude tier id it asked for.
+  describe("tier model resolved against the active provider (#558)", () => {
+    function provider(model: string, servesRouterModel?: (id: string) => boolean): AIProvider {
+      return {
+        key: "openai",
+        model,
+        offline: false,
+        ...(servesRouterModel ? { servesRouterModel } : {}),
+        chat: vi.fn(async (_m: unknown, opts: { model?: string } = {}) => ({
+          content: JSON.stringify({ suggestions: [sampleItem()] }),
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: opts.model ?? model,
+          provider: "openai" as const,
+        })),
+      } as unknown as AIProvider;
+    }
+
+    it.each([
+      ["a non-Claude provider", provider("gpt-4o-mini", () => false), "gpt-4o-mini"],
+      ["a provider that cannot answer", provider("local-model"), "local-model"],
+      ["a provider that serves the tier", provider("claude-x", () => true), HAIKU_MODEL_ID],
+    ])("sends %s the model it can run", async (_label, p, expected) => {
+      await generateSuggestions({
+        requirements: [req("r1", vec(1, 0, 0))],
+        caller: createProviderJudgeCaller(p),
+        sessionId: "s",
+        userId: "u",
+      });
+      expect(p.chat).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(p.chat).mock.calls[0][1]).toMatchObject({ model: expected });
+    });
+
+    it("keys the LLM cache on the resolved model, not the tier id", async () => {
+      vi.stubEnv("SEMANTIC_CACHE_ENABLED", "1");
+      __resetSemanticCacheSingleton();
+      const opts = {
+        requirements: [req("r1", vec(1, 0, 0))],
+        sessionId: "s",
+        userId: "u",
+        projectId: "p",
+      };
+
+      const a = provider("model-a", () => false);
+      await generateSuggestions({ ...opts, caller: createProviderJudgeCaller(a) });
+      // Same prompt, a different provider model: model-a's suggestions must not
+      // be served as model-b's.
+      const b = provider("model-b", () => false);
+      const onB = await generateSuggestions({ ...opts, caller: createProviderJudgeCaller(b) });
+      expect(onB.cacheHits).toBe(0);
+      expect(onB.modelCalls).toBe(1);
+      // The control: model-a again is a hit, so the miss above is the model key.
+      const again = provider("model-a", () => false);
+      const onA = await generateSuggestions({ ...opts, caller: createProviderJudgeCaller(again) });
+      expect(onA.cacheHits).toBe(1);
+      expect(again.chat).not.toHaveBeenCalled();
     });
   });
 
