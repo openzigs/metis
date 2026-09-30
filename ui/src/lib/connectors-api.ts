@@ -55,6 +55,10 @@ export interface RefreshIngestSummary {
   };
   sourceKnowledge: { documentsCreated: number; documentsUpdated: number; chunkCount: number };
   cloneSizeBytes: number;
+  /** #449 — false when the refresh landed but regeneration was not scheduled. */
+  regenerationScheduled?: boolean;
+  /** #449 — set when scheduling regeneration failed; its retry runs on its own. */
+  warning?: string;
 }
 
 type Id = string;

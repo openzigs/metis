@@ -170,6 +170,8 @@ vi.mock("../src/lib/prisma.js", () => ({
 }));
 
 import { SchedulerService } from "../src/lib/scheduler/scheduler-service.js";
+// One recovery `updateMany` per durable task type per pass (#449 added a third).
+import { DURABLE_TASK_TYPES } from "../src/lib/scheduler/durable-task-types.js";
 import { prisma } from "../src/lib/prisma.js";
 import { InMemoryTaskHandlerRegistry } from "../src/lib/scheduler/task-handlers.js";
 import { TaskQueue, type TaskStore } from "../src/lib/scheduler/task-queue.js";
@@ -379,17 +381,17 @@ describe("SchedulerService regeneration recovery (#1356)", () => {
     try {
       await svc.start();
       await svc.start();
-      expect(prisma.task.updateMany).toHaveBeenCalledTimes(4);
+      expect(prisma.task.updateMany).toHaveBeenCalledTimes(2 * DURABLE_TASK_TYPES.length);
       seed("arrived-after-start");
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(prisma.task.updateMany).toHaveBeenCalledTimes(6);
+      expect(prisma.task.updateMany).toHaveBeenCalledTimes(3 * DURABLE_TASK_TYPES.length);
       expect(resume).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ id: "arrived-after-start" }),
       );
       await svc.stop();
       await svc.stop();
       await vi.advanceTimersByTimeAsync(120_000);
-      expect(prisma.task.updateMany).toHaveBeenCalledTimes(6);
+      expect(prisma.task.updateMany).toHaveBeenCalledTimes(3 * DURABLE_TASK_TYPES.length);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       await svc.stop();
@@ -442,11 +444,11 @@ describe("SchedulerService regeneration recovery (#1356)", () => {
       expect(enqueue).toHaveBeenCalledWith(
         expect.objectContaining({ scheduledJobId: job.id, trigger: "scheduled" }),
       );
-      expect(prisma.task.updateMany).toHaveBeenCalledTimes(6);
+      expect(prisma.task.updateMany).toHaveBeenCalledTimes(3 * DURABLE_TASK_TYPES.length);
       await svc.stop();
       await vi.advanceTimersByTimeAsync(60_000);
       expect(enqueue).toHaveBeenCalledTimes(1);
-      expect(prisma.task.updateMany).toHaveBeenCalledTimes(6);
+      expect(prisma.task.updateMany).toHaveBeenCalledTimes(3 * DURABLE_TASK_TYPES.length);
       expect(svc.health().registeredJobs).toBe(0);
     } finally {
       await svc.stop();

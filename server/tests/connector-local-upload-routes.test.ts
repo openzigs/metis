@@ -210,11 +210,11 @@ import {
   fetchRepoMetadata,
   getRepoConnectorEmitter,
 } from "../src/lib/connectors/repo/repo-service.js";
+import { REPO_INGEST_FAILED_MESSAGE } from "../src/routes/connectors.js";
 import {
-  REGENERATION_SCHEDULING_FAILED,
   REGENERATION_SCHEDULING_FAILED_MESSAGE,
-  REPO_INGEST_FAILED_MESSAGE,
-} from "../src/routes/connectors.js";
+  REGENERATION_SCHEDULING_RETRY_UNAVAILABLE_MESSAGE,
+} from "../src/lib/docs-gen/regeneration-scheduling.js";
 import {
   acquireConnectorIngest,
   isConnectorIngestActive,
@@ -912,28 +912,8 @@ describe("manual connector regeneration callers (#1356)", () => {
         expectScheduled();
       });
 
-      it("surfaces a durable scheduling failure and schedules successfully on replay", async () => {
-        vi.mocked(prisma.task.upsert).mockRejectedValueOnce(new Error("Task store unavailable"));
-        const response = await ingest();
-        expect(response.status).toBe(failStatus);
-        if (caller === "deep-ingest") {
-          // #399 — the 202 alone says nothing; the job itself must end failed, and
-          // say that the ingest landed and only the regeneration scheduling failed.
-          const failed = getLastJobLifecycle(response.body.data.jobId as string);
-          expect(failed).toMatchObject({ kind: "repo-ingest", status: "failed" });
-          expect(failed!.error).toBe(REGENERATION_SCHEDULING_FAILED_MESSAGE);
-          expect(failed!.error).not.toBe(genericFailureMessage("repo-ingest"));
-          expect(JSON.stringify(failed)).not.toContain("Task store unavailable");
-        }
-        if (caller === "refresh-ingest") {
-          // #432 — the refresh landed; the response says scheduling failed, not
-          // that the refresh did, and carries no raw exception text.
-          expect(response.body.error).toMatchObject({
-            code: REGENERATION_SCHEDULING_FAILED,
-            message: REGENERATION_SCHEDULING_FAILED_MESSAGE,
-          });
-          expect(JSON.stringify(response.body)).not.toContain("Task store unavailable");
-        }
+      /** #449 — every caller: discovery was still announced, and no error progress. */
+      function expectLandedDespiteScheduling(response: request.Response) {
         if (caller !== "create") {
           // PR #418 review / #432 — discovery already ran, so its notification is
           // sent even though scheduling then failed.
@@ -945,22 +925,75 @@ describe("manual connector regeneration callers (#1356)", () => {
             );
           expect(discoveries).toHaveLength(1);
         }
-        if (caller !== "refresh-ingest") {
-          // The connector progress bar is told the same, not "ingestion failed".
-          const errors = vi
-            .mocked(getRepoConnectorEmitter)
-            .mock.results.flatMap((r) =>
-              vi
-                .mocked((r.value as { progress: (e: unknown) => void }).progress)
-                .mock.calls.map((c) => c[0] as { status?: string; errorMessage?: string }),
-            )
-            .filter((e) => e.status === "error");
-          expect(errors).toHaveLength(1);
-          expect(errors[0].errorMessage).toBe(REGENERATION_SCHEDULING_FAILED_MESSAGE);
+        // The connector progress bar is never told the ingest failed.
+        const errors = vi
+          .mocked(getRepoConnectorEmitter)
+          .mock.results.flatMap((r) =>
+            vi
+              .mocked((r.value as { progress: (e: unknown) => void }).progress)
+              .mock.calls.map((c) => c[0] as { status?: string }),
+          )
+          .filter((e) => e.status === "error");
+        expect(errors).toHaveLength(0);
+        expect(JSON.stringify(response.body)).not.toContain("Task store unavailable");
+      }
+
+      async function expectWarned(response: request.Response, warning: string) {
+        if (caller === "deep-ingest") {
+          // #449 — the job completes with a warning rather than failing.
+          const jobId = response.body.data.jobId as string;
+          await vi.waitFor(() => expect(getLastJobLifecycle(jobId)?.status).toBe("completed"));
+          const completed = getLastJobLifecycle(jobId)!;
+          expect(completed).toMatchObject({ kind: "repo-ingest", failureCount: 1 });
+          expect(completed.message).toContain(warning);
+          expect(JSON.stringify(completed)).not.toContain("Task store unavailable");
         }
-        expect(prisma.task.upsert).toHaveBeenCalledTimes(1);
+        if (caller === "refresh-ingest") {
+          // #449 — 200 with the summary, `regenerationScheduled: false` and the warning.
+          expect(response.body.data).toMatchObject({
+            filesChanged: expect.any(Number),
+            regenerationScheduled: false,
+            warning,
+          });
+        }
+      }
+
+      it("completes with a warning when scheduling fails and queues a scheduling-only retry (#449)", async () => {
+        vi.mocked(prisma.task.upsert).mockRejectedValueOnce(new Error("Task store unavailable"));
+        const response = await ingest();
+        expect(response.status).toBe(okStatus);
+        const retryId = "docs-regen-schedule:proj_1:repo_github_x";
+        await vi.waitFor(() => expect(h.tasks.has(retryId)).toBe(true));
+        await expectWarned(response, REGENERATION_SCHEDULING_FAILED_MESSAGE);
+        expectLandedDespiteScheduling(response);
+        expect(h.tasks.size).toBe(1);
+        const retry = h.tasks.get(retryId)!;
+        expect(retry).toMatchObject({
+          projectId: "proj_1",
+          type: "schedule-regeneration",
+          status: "pending",
+          maxAttempts: 5,
+        });
+        expect(JSON.parse(retry.payload)).toEqual({
+          projectId: "proj_1",
+          repoConnectorId: "repo_github_x",
+        });
+        // Handed to the queue: the scheduling step is retried on its own.
+        expect(scheduler.queue.snapshot()).toMatchObject({ queueDepth: 1, running: 0 });
+        expect(ingestSourceAsKnowledge).toHaveBeenCalledTimes(1);
+      });
+
+      it("reports that the retry could not be queued when the task store stays down (#449)", async () => {
+        vi.mocked(prisma.task.upsert)
+          .mockRejectedValueOnce(new Error("Task store unavailable"))
+          .mockRejectedValueOnce(new Error("Task store unavailable"));
+        const response = await ingest();
+        expect(response.status).toBe(okStatus);
+        await vi.waitFor(() => expect(prisma.task.upsert).toHaveBeenCalledTimes(2));
+        await expectWarned(response, REGENERATION_SCHEDULING_RETRY_UNAVAILABLE_MESSAGE);
+        expectLandedDespiteScheduling(response);
         expect(h.tasks.size).toBe(0);
-        expect(scheduler.queue.snapshot().queueDepth).toBe(0);
+        // The next ingest retries it.
         expect((await ingest()).status).toBe(okStatus);
         expectScheduled();
       });

@@ -37,13 +37,18 @@ const mocks = vi.hoisted(() => {
     ingestSourceAsKnowledge: vi.fn(async () => ({ chunkCount: 5, failures: 0 })),
     ingestCodeGraph: vi.fn(async () => ({ filesParsed: 2, symbolsUpserted: 10 })),
     logWarn: vi.fn(),
+    logError: vi.fn(),
+    taskUpsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => ({
+      status: "pending",
+      ...create,
+    })),
   };
 });
 
 vi.mock("../src/lib/logger.js", () => ({
   createChildLogger: () => ({
     info: vi.fn(),
-    error: vi.fn(),
+    error: mocks.logError,
     debug: vi.fn(),
     warn: mocks.logWarn,
   }),
@@ -52,6 +57,9 @@ vi.mock("../src/lib/logger.js", () => ({
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     workspaceMember: { findMany: vi.fn(async () => []) },
+    // #449 — the scheduling-retry outbox row. findUnique has no row, so the
+    // retry is persisted but not handed to a queue in this suite.
+    task: { upsert: mocks.taskUpsert, findUnique: vi.fn(async () => null) },
     repoConnection: {
       findUnique: vi.fn(
         async ({ where }: { where: { id: string } }) => repoConnections.get(where.id) ?? null,
@@ -125,7 +133,8 @@ vi.mock("../src/lib/docs-gen/incremental.js", () => ({
 import { buildSchedulerHandlerOverrides } from "../src/lib/scheduler/handler-overrides.js";
 import {
   REGENERATION_SCHEDULING_FAILED_MESSAGE,
-  RegenerationSchedulingError,
+  REGENERATION_SCHEDULING_RETRY_UNAVAILABLE_MESSAGE,
+  retryRegenerationScheduling,
 } from "../src/lib/docs-gen/regeneration-scheduling.js";
 import {
   INGEST_IN_PROGRESS,
@@ -268,28 +277,56 @@ describe("buildSchedulerHandlerOverrides", () => {
     expect(mocks.checkIncrementalRegeneration).not.toHaveBeenCalled();
   });
 
-  it("propagates a regeneration scheduling failure for retry, classified as scheduling (#1356, #432)", async () => {
+  it("completes with a warning and queues a scheduling-only retry when scheduling fails (#449)", async () => {
     repoConnections.set("rc1", { id: "rc1", projectId: "p-alpha" });
     const error = new Error("outbox unavailable");
     mocks.checkIncrementalRegeneration.mockRejectedValueOnce(error);
-    const rejection = await buildSchedulerHandlerOverrides().refreshRepoConnector!(
+    const out = await buildSchedulerHandlerOverrides().refreshRepoConnector!(
       "rc1",
       new AbortController().signal,
-    ).then(
-      () => null,
-      (err: unknown) => err,
     );
-    // #432 — the ingest landed; only the scheduling failed. The failed task must
-    // say so rather than read as a failed refresh, and keep the cause for the log.
-    expect(rejection).toBeInstanceOf(RegenerationSchedulingError);
-    expect((rejection as Error).message).toBe(REGENERATION_SCHEDULING_FAILED_MESSAGE);
-    expect((rejection as Error).cause).toBe(error);
-    expect((rejection as Error).message).not.toContain("outbox unavailable");
-    // #432 review — the task queue stores only the message, so the cause must be
-    // logged here or it is lost for good.
+    // The refresh landed, so it completes; a failed task would re-run the pull and ingest.
+    expect(out).toMatchObject({
+      chunksIngested: 5,
+      regenerationScheduled: false,
+      warning: REGENERATION_SCHEDULING_FAILED_MESSAGE,
+    });
+    expect(JSON.stringify(out)).not.toContain("outbox unavailable");
+    expect(mocks.taskUpsert).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        where: { id: "docs-regen-schedule:p-alpha:rc1" },
+        create: expect.objectContaining({
+          projectId: "p-alpha",
+          type: "schedule-regeneration",
+          payload: JSON.stringify({ projectId: "p-alpha", repoConnectorId: "rc1" }),
+        }),
+      }),
+    );
+    // #432 review — the cause is logged, or it is lost for good.
     expect(mocks.logWarn).toHaveBeenCalledWith(
       expect.stringContaining("scheduling regeneration failed"),
       expect.objectContaining({ err: error, projectId: "p-alpha", connectorId: "rc1" }),
+    );
+    expect(mocks.ingestSourceAsKnowledge).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails the refresh, so the task queue retries it, only when the retry cannot be queued (#449)", async () => {
+    repoConnections.set("rc1", { id: "rc1", projectId: "p-alpha" });
+    mocks.checkIncrementalRegeneration.mockRejectedValueOnce(new Error("outbox unavailable"));
+    const queueError = new Error("task store unavailable");
+    mocks.taskUpsert.mockRejectedValueOnce(queueError);
+    await expect(
+      buildSchedulerHandlerOverrides().refreshRepoConnector!("rc1", new AbortController().signal),
+    ).rejects.toThrow(REGENERATION_SCHEDULING_RETRY_UNAVAILABLE_MESSAGE);
+    expect(mocks.logError).toHaveBeenCalledWith(
+      expect.stringContaining("Could not queue"),
+      expect.objectContaining({ err: queueError, projectId: "p-alpha", connectorId: "rc1" }),
+    );
+  });
+
+  it("wires the scheduling-retry task to the scheduling step alone (#449)", () => {
+    expect(buildSchedulerHandlerOverrides().retryRegenerationScheduling).toBe(
+      retryRegenerationScheduling,
     );
   });
 
