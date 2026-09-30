@@ -62,9 +62,9 @@ export default function VaultPage() {
 
       {canSeeServerConfig ? (
         <p className="text-xs text-muted-foreground" data-testid="vault-server-config-note">
-          Vault entries are user and project secrets that connectors, MCP servers and publishing
-          reference as <code>{"${vault:…}"}</code>. Server configuration values, such as provider
-          API keys, live in{" "}
+          Connectors, MCP servers and publishing reference Vault entries as{" "}
+          <code>{"${vault:…}"}</code>. Global entries named after a server configuration key, such
+          as a provider API key, are the server&apos;s runtime secrets: rotate or clear those in{" "}
           <Link href="/settings/api-keys" className="underline underline-offset-2">
             Settings → Configuration
           </Link>

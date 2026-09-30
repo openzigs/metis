@@ -156,15 +156,16 @@ function ConfigTabBody() {
         <h3 className="mb-2 text-sm font-semibold">Runtime secrets</h3>
         <p className="mb-2 text-xs text-muted-foreground" data-testid="settings-secrets-vs-vault">
           These are server configuration values the server itself reads, such as provider API keys.
-          Connector, MCP and publishing credentials belong in the{" "}
+          Each is stored as a global-scope entry in the{" "}
           <Link href="/vault" className="underline underline-offset-2">
             Vault
-          </Link>
-          .
+          </Link>{" "}
+          under its key name; manage it here, where Clear falls back to the env value and changes
+          are audited. Connector, MCP and publishing credentials belong in the Vault directly,
+          referenced as <code>{"${vault:…}"}</code>.
         </p>
         <p className="mb-2 text-xs text-muted-foreground">
-          Stored encrypted on the server. Save rotates the value; Clear removes the override and
-          falls back to the env value.
+          Save rotates the secret; Clear removes the override and falls back to the env value.
         </p>
         <div data-testid="settings-secrets">
           {secrets.map((view) => (

@@ -182,6 +182,9 @@ describe("Runtime secrets vs the Vault (#410)", () => {
     expect(note).toHaveTextContent(
       /connector, MCP and publishing credentials belong in the Vault/i,
     );
+    // Runtime secrets ARE vault rows (ConfigService writes them at global scope), so the
+    // copy must say so rather than present two separate stores (PR #433 panel).
+    expect(note).toHaveTextContent(/global-scope entry in the Vault/i);
     const link = within(note).getByRole("link", { name: /vault/i });
     expect(link).toHaveAttribute("href", "/vault");
   });

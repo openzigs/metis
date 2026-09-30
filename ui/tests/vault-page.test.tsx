@@ -223,6 +223,8 @@ describe("Vault vs runtime secrets (#410)", () => {
     const note = await screen.findByTestId("vault-server-config-note");
     expect(note).toHaveTextContent(/connectors, MCP servers and publishing/i);
     expect(note).toHaveTextContent(/server configuration/i);
+    // The table below lists global runtime-secret rows too (PR #433 panel).
+    expect(note).toHaveTextContent(/global entries named after a server configuration key/i);
     const link = within(note).getByRole("link", { name: /configuration/i });
     expect(link).toHaveAttribute("href", "/settings/api-keys");
   });
