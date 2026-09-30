@@ -130,8 +130,8 @@ export function DocumentPanel({
   }
 
   const hidden = searching ? matches.length - shown.length : 0;
-  // Only the load ceiling leaves documents out; a row lost to offset drift
-  // mid-read is not a reason to claim the list was cut short.
+  // Only the load ceiling leaves documents out (#440: the list is read by
+  // cursor, so a concurrent insert or delete cannot drop a row).
   const truncated = total !== undefined && total > MAX_PANEL_DOCUMENTS;
 
   return (
