@@ -234,6 +234,7 @@ import request from "supertest";
 import { createApp } from "../src/app.js";
 import { getDocumentStorage } from "../src/lib/documents/storage.js";
 import { prisma } from "../src/lib/prisma.js";
+import { ConnectorError } from "../src/lib/connectors/types.js";
 import { __resetArchiveHooks } from "../src/lib/projects/project-service.js";
 
 let app: ReturnType<typeof createApp>;
@@ -334,6 +335,26 @@ describe("/api/projects", () => {
     expect(res.body.data.primaryRepo).toBeNull();
     expect(res.body.data.primaryRepoError.code).toBe("PRIMARY_REPO_LINK_FAILED");
     expect(res.body.data.primaryRepoError.message).not.toMatch(/ECONNREFUSED|10\.0\.0\.5/);
+  });
+
+  it("POST sanitizes a driver-detail connector error so no host reaches the client (#428)", async () => {
+    // PR #444 review: the isDriverDetailCode branch had no test. Its message is
+    // network-derived and can carry an internal address.
+    vi.mocked(prisma.repoConnection.create).mockRejectedValueOnce(
+      new ConnectorError(400, "HOST_NOT_ALLOWED", "host 10.0.0.5 is not in the allow-list"),
+    );
+    const res = await request(app)
+      .post("/api/projects")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        name: "Blocked",
+        slug: "blocked",
+        primaryRepo: { ownerOrOrg: "acme", repoName: "app" },
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.data.primaryRepo).toBeNull();
+    expect(res.body.data.primaryRepoError.code).toBe("HOST_NOT_ALLOWED");
+    expect(res.body.data.primaryRepoError.message).not.toMatch(/10\.0\.0\.5/);
   });
 
   it("POST reports the connector as linked when only the isPrimary update throws (#428)", async () => {
