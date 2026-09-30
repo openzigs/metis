@@ -9,6 +9,7 @@
  */
 import { parseChatGrounding, type ChatGrounding } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import type { ToolSource } from "./tool-runtime/types.js";
 
 export type { ChatGrounding };
 
@@ -24,13 +25,15 @@ const lookupProjectName: ProjectNameLookup = async (projectId) => {
 };
 
 /**
- * The grounding of one turn: `contexts` are the retrieved excerpts exactly as
- * they were handed to the model (`RagContextCapture.contexts`), so a reply is
- * `grounded` only when something actually reached the prompt.
+ * The grounding of one turn's automatic retrieval. `sources` is how many
+ * excerpts reached the prompt (`RagContextCapture.sources`: one per
+ * knowledge-base chunk plus one per fused code symbol), so a reply is
+ * `grounded` only when something actually reached the prompt. What the tools
+ * read later in the turn is folded in by {@link withToolReads}.
  */
 export async function describeGrounding(
   projectId: string | null,
-  contexts: readonly string[],
+  sources: number,
   lookup: ProjectNameLookup = lookupProjectName,
 ): Promise<ChatGrounding> {
   if (!projectId) return { status: "unscoped" };
@@ -41,9 +44,52 @@ export async function describeGrounding(
     /* the name is a label; the grounding status does not depend on it */
   }
   const name = projectName ?? "this project";
-  return contexts.length > 0
-    ? { status: "grounded", projectId, projectName: name, sources: contexts.length }
+  return sources > 0
+    ? { status: "grounded", projectId, projectName: name, sources }
     : { status: "no-context", projectId, projectName: name };
+}
+
+/** What {@link countProjectToolReads} needs to know about one tool call. */
+export interface GroundingToolCall {
+  source?: ToolSource;
+  executed: boolean;
+  isError?: boolean;
+  resultCount?: number;
+}
+
+/**
+ * #439 — how many of a turn's tool calls read the project: a curated code tool
+ * (`source: "code"` — read-only, and scoped to the session's project by the
+ * server, never by the model) that ran, did not fail, and returned at least one
+ * result. MCP, METIS and sub-agent tools are not counted: what they return is
+ * not known to be the project's content.
+ */
+export function countProjectToolReads(calls: readonly GroundingToolCall[]): number {
+  return calls.filter(
+    (c) =>
+      c.source === "code" &&
+      c.executed &&
+      !c.isError &&
+      typeof c.resultCount === "number" &&
+      c.resultCount > 0,
+  ).length;
+}
+
+/**
+ * #439 — fold a turn's project tool reads into its grounding. A `no-context`
+ * turn whose tools read the project becomes `grounded` (with `sources: 0`); an
+ * unscoped turn stays unscoped (its tools cannot reach a project).
+ */
+export function withToolReads(grounding: ChatGrounding, toolReads: number): ChatGrounding {
+  if (toolReads <= 0 || grounding.status === "unscoped") return grounding;
+  const sources = grounding.status === "grounded" ? grounding.sources : 0;
+  return {
+    status: "grounded",
+    projectId: grounding.projectId,
+    projectName: grounding.projectName,
+    sources,
+    toolReads,
+  };
 }
 
 /**

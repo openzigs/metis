@@ -8,6 +8,9 @@ describe("parseChatGrounding", () => {
       { status: "unscoped" },
       { status: "no-context", projectId: "p1", projectName: "P" },
       { status: "grounded", projectId: "p1", projectName: "P", sources: 2 },
+      // #439 — read through the code tools, with or without retrieved excerpts.
+      { status: "grounded", projectId: "p1", projectName: "P", sources: 2, toolReads: 1 },
+      { status: "grounded", projectId: "p1", projectName: "P", sources: 0, toolReads: 3 },
     ]) {
       expect(parseChatGrounding(g)).toEqual(g);
     }
@@ -44,6 +47,26 @@ describe("parseChatGrounding", () => {
     [
       "grounded with fractional sources",
       { status: "grounded", projectId: "p", projectName: "P", sources: 1.5 },
+    ],
+    [
+      "grounded with negative sources beside tool reads",
+      { status: "grounded", projectId: "p", projectName: "P", sources: -1, toolReads: 1 },
+    ],
+    [
+      "grounded with zero tool reads",
+      { status: "grounded", projectId: "p", projectName: "P", sources: 0, toolReads: 0 },
+    ],
+    [
+      "grounded with zero tool reads beside sources",
+      { status: "grounded", projectId: "p", projectName: "P", sources: 2, toolReads: 0 },
+    ],
+    [
+      "grounded with fractional tool reads",
+      { status: "grounded", projectId: "p", projectName: "P", sources: 1, toolReads: 0.5 },
+    ],
+    [
+      "grounded with string tool reads",
+      { status: "grounded", projectId: "p", projectName: "P", sources: 1, toolReads: "1" },
     ],
   ])("rejects %s", (_label, value) => {
     expect(parseChatGrounding(value)).toBeNull();

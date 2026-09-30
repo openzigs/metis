@@ -35,24 +35,49 @@ export type TranscriptRole = "user" | "assistant" | "system";
 /**
  * #18 — what a chat reply was grounded in. Retrieval runs only for a session
  * bound to one project, so a reply is either:
- * - `grounded`: excerpts from that project's knowledge base were in the prompt;
- * - `no-context`: the session is bound to a project, but automatic retrieval
- *   supplied no excerpts (nothing ingested, or retrieval failed). This does NOT
- *   mean the answer came from general knowledge: the model may still have read
- *   the project through its tools (PR #437 review);
+ * - `grounded`: project content reached the model — automatic retrieval put
+ *   excerpts in the prompt (`sources`), and/or the model read the project
+ *   through its project-scoped code tools (`toolReads`, #439);
+ * - `no-context`: the session is bound to a project, but neither automatic
+ *   retrieval nor a code tool returned any of it (nothing ingested, retrieval
+ *   failed, or no tool found anything). This does NOT mean the answer came from
+ *   general knowledge: the model may still have called other tools, such as an
+ *   MCP server, whose content is not known to be the project's (PR #437 review);
  * - `unscoped`: the session has no project ("All projects") and no retrieval ran.
  *
  * Recorded on the assistant row as the turn is answered and streamed to the
  * client as a `grounding` event, so a reply says what it was based on both
  * live and after a reload.
+ *
+ * `sources` (#439) counts the excerpts automatic retrieval SUPPLIED — one per
+ * knowledge-base chunk plus one per code symbol in the fused code block (#714).
+ * It is not a count of relevant excerpts: the knowledge search returns its top
+ * hits with no score threshold. `toolReads` counts the successful code-tool
+ * calls that returned at least one result; it is absent when there were none.
+ *
+ * `projectName` is the project's name when the reply was answered, and stays
+ * so after a rename (#439, deliberate): the label records what the reply was
+ * grounded in at the time, and it must still read after the project is
+ * deleted, when there is no current name to look up.
  */
 export type ChatGrounding =
-  | { status: "grounded"; projectId: string; projectName: string; sources: number }
+  | {
+      status: "grounded";
+      projectId: string;
+      projectName: string;
+      sources: number;
+      toolReads?: number;
+    }
   | { status: "no-context"; projectId: string; projectName: string }
   | { status: "unscoped" };
 
 function nonEmpty(v: unknown): v is string {
   return typeof v === "string" && v.length > 0;
+}
+
+/** A non-negative whole number. */
+function count(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0;
 }
 
 /**
@@ -71,19 +96,25 @@ export function parseChatGrounding(value: unknown): ChatGrounding | null {
       return nonEmpty(g.projectId) && nonEmpty(g.projectName)
         ? { status: "no-context", projectId: g.projectId, projectName: g.projectName }
         : null;
-    case "grounded":
+    case "grounded": {
+      // #439 — a present `toolReads` must be a positive count; `sources` may be
+      // zero only when the tools read the project, so a label never claims
+      // grounding that nothing supplied.
+      const hasToolReads = g.toolReads !== undefined;
+      if (hasToolReads && !(count(g.toolReads) && (g.toolReads as number) > 0)) return null;
       return nonEmpty(g.projectId) &&
         nonEmpty(g.projectName) &&
-        typeof g.sources === "number" &&
-        Number.isInteger(g.sources) &&
-        g.sources > 0
+        count(g.sources) &&
+        (g.sources > 0 || hasToolReads)
         ? {
             status: "grounded",
             projectId: g.projectId,
             projectName: g.projectName,
             sources: g.sources,
+            ...(hasToolReads ? { toolReads: g.toolReads as number } : {}),
           }
         : null;
+    }
     default:
       return null;
   }

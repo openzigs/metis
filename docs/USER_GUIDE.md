@@ -2523,8 +2523,10 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 
 - While the scope is **All projects**, a notice above the conversation says that answers are not grounded in any project.
 - Every reply carries a label underneath it:
-  - **Grounded in _Project_ · N sources** — excerpts from that project's knowledge base were given to the model.
-  - **No excerpts from _Project_ were retrieved automatically** — the chat is scoped, but automatic retrieval supplied no excerpts for this question (for example, nothing is ingested yet). The model may still have read the project through its tools, so check any file or code it names.
+  - **Grounded in _Project_ · N sources · M code lookups** — excerpts from that project's knowledge base were given to the model (N counts each excerpt supplied, and each code symbol in a fused code block; it is not a measure of how relevant they were), and/or the model found project code through its code-search tools (M counts the lookups that returned something). Either part is left out when it is zero.
+  - **No excerpts from _Project_ were retrieved automatically** — the chat is scoped, but neither automatic retrieval nor a code-search lookup returned anything for this question (for example, nothing is ingested yet). The model may still have used other tools, such as an MCP server, so check any file or code it names.
+  - A reply that failed or was stopped early shows no label; its error says what happened.
+  - The label keeps the project's name from when the reply was written, so it still reads correctly after a rename or deletion.
   - **Not grounded — no project selected** — the chat is unscoped.
 
   Replies written before this label existed show none.

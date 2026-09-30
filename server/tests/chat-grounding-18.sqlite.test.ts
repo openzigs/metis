@@ -54,6 +54,9 @@ const { aiConversationRouter } = await import("../src/routes/ai-conversation.js"
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 
+/** A scripted `chat()` reply that throws instead of answering. */
+const THROW = "__throw__";
+
 class ScriptedProvider implements AIProvider {
   readonly key = "offline-stub" as const;
   readonly model = "stub-model";
@@ -61,10 +64,14 @@ class ScriptedProvider implements AIProvider {
   prompts: ChatMessage[][] = [];
   /** Throw after the first delta: the turn ends as a failed/incomplete reply. */
   failMidStream = false;
+  /** #439 — scripted `chat()` replies, in order (the text tool protocol uses chat()). */
+  chatReplies: string[] = [];
   async chat(messages: ChatMessage[]) {
     this.prompts.push(messages);
+    const next = this.chatReplies.shift();
+    if (next === THROW) throw new Error("provider failed mid-investigation");
     return {
-      content: "chat answer",
+      content: next ?? "chat answer",
       usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
       model: "stub-model",
       provider: this.key,
@@ -141,6 +148,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.project.create({
         data: { id: PROJECT, name: "Payments", slug: "payments", createdById: ALICE },
       });
+      // #439 — a code graph the curated code tools can read.
+      await db.codeGraph.create({ data: { id: "cg-payments", projectId: PROJECT } });
+      await db.codeSymbol.create({
+        data: {
+          codeGraphId: "cg-payments",
+          projectId: PROJECT,
+          kind: "class",
+          name: "Validator",
+          qualifiedName: "src/validator.ts::Validator",
+          filePath: "src/validator.ts",
+          startLine: 1,
+          endLine: 40,
+          language: "ts",
+          contentHash: "h",
+        },
+      });
       alice = issueTokens({
         userId: ALICE,
         username: "alice",
@@ -151,12 +174,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
+      delete process.env.CHAT_CODE_SEARCH_TOOLS;
       setAIProviderForTests(null);
       await db?.$disconnect();
       sqlite?.cleanup();
     });
 
     beforeEach(() => {
+      delete process.env.CHAT_CODE_SEARCH_TOOLS;
       model = new ScriptedProvider();
       setAIProviderForTests(model);
       state.hits = [];
@@ -244,6 +269,80 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         { status: "no-context", projectId: PROJECT, projectName: "Payments" },
         { status: "grounded", projectId: PROJECT, projectName: "Payments", sources: 1 },
       ]);
+    });
+
+    describe("#439 — what the tools read of the project counts as grounding", () => {
+      const SEARCH = JSON.stringify({ tool: "search_code_graph", args: { query: "Validator" } });
+      const MISS = JSON.stringify({ tool: "search_code_graph", args: { query: "NoSuchThing" } });
+      beforeEach(() => {
+        // The stub declares no native tool calls, so the curated code tools
+        // ride the text protocol through chat().
+        process.env.CHAT_CODE_SEARCH_TOOLS = "true";
+      });
+
+      it("a streamed turn with no excerpts whose code tool read the project is grounded, live and on reload", async () => {
+        model.chatReplies = [SEARCH, "The validator lives in src/validator.ts."];
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "Where is validation?" });
+        expect(res.text).toContain("event: done");
+        const grounded = {
+          status: "grounded",
+          projectId: PROJECT,
+          projectName: "Payments",
+          sources: 0,
+          toolReads: 1,
+        };
+        // First what auto-retrieval supplied, then — after the tool read — the update.
+        expect(groundingFrames(res.text)).toEqual([
+          { status: "no-context", projectId: PROJECT, projectName: "Payments" },
+          grounded,
+        ]);
+        // The tool really returned the project's symbol to the model.
+        expect(JSON.stringify(model.prompts[1])).toContain("src/validator.ts::Validator");
+        expect(await replyGroundings(sessionId)).toEqual([grounded]);
+      });
+
+      it("a streamed turn that fails after its tool read the project records the read", async () => {
+        model.chatReplies = [SEARCH, THROW];
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "Where is validation?" });
+        expect(res.text).toContain("event: error");
+        expect(await replyGroundings(sessionId)).toEqual([
+          {
+            status: "grounded",
+            projectId: PROJECT,
+            projectName: "Payments",
+            sources: 0,
+            toolReads: 1,
+          },
+        ]);
+      });
+
+      it("a code tool that found nothing leaves the turn no-context", async () => {
+        model.chatReplies = [MISS, "I could not find it."];
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "Where is it?" });
+        const expected = { status: "no-context", projectId: PROJECT, projectName: "Payments" };
+        expect(groundingFrames(res.text)).toEqual([expected]);
+        expect(await replyGroundings(sessionId)).toEqual([expected]);
+      });
+
+      it("the /chat turn adds its tool reads to the excerpts it retrieved", async () => {
+        state.hits = [{ filename: "a.md", position: 0, score: 0.5, text: "alpha" }];
+        model.chatReplies = [SEARCH, "answer"];
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/chat", { sessionId, message: "where is validation?" });
+        expect(res.status, res.text).toBe(200);
+        const expected = {
+          status: "grounded",
+          projectId: PROJECT,
+          projectName: "Payments",
+          sources: 1,
+          toolReads: 1,
+        };
+        expect(res.body.data.grounding).toEqual(expected);
+        expect(await replyGroundings(sessionId)).toEqual([expected]);
+      });
     });
   },
 );

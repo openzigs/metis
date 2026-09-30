@@ -113,7 +113,11 @@ import { messageText } from "../lib/ai/index.js";
 import { AIError, AIOfflineError, AIProviderError } from "../lib/ai/errors.js";
 import { getSemanticCache, shouldSkipCache } from "../lib/ai/semantic-cache.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
-import { describeGrounding } from "../lib/ai/chat-grounding.js";
+import {
+  countProjectToolReads,
+  describeGrounding,
+  withToolReads,
+} from "../lib/ai/chat-grounding.js";
 import {
   buildFusedCodeBlock,
   type FusedCodeSearcher,
@@ -518,6 +522,12 @@ export interface RagContextCapture {
    * last context.
    */
   contexts: string[];
+  /**
+   * #439 — how many excerpts reached the prompt: one per doc chunk plus one per
+   * code SYMBOL in the fused block, which `contexts` holds as a single entry.
+   * The chat's grounding label counts this, not `contexts.length`.
+   */
+  sources: number;
 }
 
 export async function buildAutoRagContext(
@@ -554,7 +564,10 @@ export async function buildAutoRagContext(
       const chunkList = hits.map(
         (h, i) => `[${i + 1}] ${h.filename}#${h.position} (score=${h.score.toFixed(3)})\n${h.text}`,
       );
-      if (capture) capture.contexts.push(...chunkList);
+      if (capture) {
+        capture.contexts.push(...chunkList);
+        capture.sources += chunkList.length;
+      }
       const chunks = chunkList.join("\n\n---\n\n");
       ragBlock =
         `## Retrieved Knowledge (project-scoped RAG)\n` +
@@ -580,14 +593,20 @@ export async function buildAutoRagContext(
       lineLookup: fusedDeps.lineLookup,
     });
 
-    if (capture && fused.block) capture.contexts.push(fused.block);
+    if (capture && fused.block) {
+      capture.contexts.push(fused.block);
+      capture.sources += fused.usedSymbols;
+    }
     if (!ragBlock && !fused.block) return "";
     if (!fused.block) return ragBlock;
     if (!ragBlock) return fused.block;
     return `${ragBlock}\n\n${fused.block}`;
   } catch (err) {
     // A partially-filled capture would misrepresent what the model saw.
-    if (capture) capture.contexts.length = 0;
+    if (capture) {
+      capture.contexts.length = 0;
+      capture.sources = 0;
+    }
     log.debug("Auto-RAG retrieval failed, continuing without context", {
       projectId,
       error: (err as Error).message,
@@ -1385,15 +1404,16 @@ export function aiRouter(): Router {
       // Auto-RAG: inject relevant knowledge context for project-scoped sessions.
       // Issue #1321 — the observer needs the retrieved contexts as the model saw
       // them; the builder hands them over directly (no re-parsing of its block).
-      const ragCapture: RagContextCapture = { contexts: [] };
+      const ragCapture: RagContextCapture = { contexts: [], sources: 0 };
       const ragContext = await buildAutoRagContext(
         session.projectId,
         [{ role: "user", content: userText }],
         undefined,
         ragCapture,
       );
-      // #18 — what this reply is grounded in, recorded on the reply row.
-      const grounding = await describeGrounding(session.projectId, ragCapture.contexts);
+      // #18 — what this reply is grounded in, recorded on the reply row. #439 —
+      // what the code tools read of the project is folded in after the loop.
+      let grounding = await describeGrounding(session.projectId, ragCapture.sources);
 
       // #136/#138 — persist the question, load the server-owned history, and
       // compact it first if the prompt has reached the watermark.
@@ -1531,6 +1551,8 @@ export function aiRouter(): Router {
             onUsage: (u) => turnMeter.add(u),
           },
         );
+        // #439 — a reply that read the project through its tools is grounded.
+        grounding = withToolReads(grounding, countProjectToolReads(loop.toolResults));
         response = {
           // Every native turn's text, as /stream delivers it — not only the last.
           content: loop.replyText,
@@ -1754,7 +1776,7 @@ export function aiRouter(): Router {
       parsed.data.reasoningEffort ?? sessionReasoningEffort(session.currentReasoningEffort);
     // Auto-RAG: inject relevant knowledge context for project-scoped sessions.
     // Issue #1321 — see the /chat route: contexts come from the builder.
-    const ragCapture: RagContextCapture = { contexts: [] };
+    const ragCapture: RagContextCapture = { contexts: [], sources: 0 };
     const ragContext = await buildAutoRagContext(
       session.projectId,
       [{ role: "user", content: userText }],
@@ -1763,7 +1785,8 @@ export function aiRouter(): Router {
     );
     // #18 — what this reply is grounded in: streamed before the answer and
     // recorded on the reply row, so the client can say so live and on reload.
-    const grounding = await describeGrounding(session.projectId, ragCapture.contexts);
+    // #439 — re-sent after the tool loop when the tools read the project.
+    let grounding = await describeGrounding(session.projectId, ragCapture.sources);
 
     res.status(200);
     res.setHeader("Content-Type", "text/event-stream");
@@ -1965,6 +1988,8 @@ export function aiRouter(): Router {
     let finalAnswer = "";
     // #142 — every tool call this turn made or refused, recorded as it finished.
     const toolCalls: ReplyToolCall[] = [];
+    // #439 — how many of them read the project (see `countProjectToolReads`).
+    let projectToolReads = 0;
     let prepared: PreparedTurn | null = null;
     const providerKey: string = streamProvider.key;
     // #243 — what this turn has spent, metered even if it fails.
@@ -2100,6 +2125,7 @@ export function aiRouter(): Router {
             onToolEvent,
             onToolRecord: (rec) => {
               toolCalls.push(replyToolCall(rec));
+              projectToolReads += countProjectToolReads([rec]);
               // #713's frame, kept for existing clients: one per call, after it
               // was handled. `tool_event` (#143) is the full lifecycle.
               send("tool_call", { type: "tool_call", name: rec.tool, arguments: rec.args });
@@ -2150,6 +2176,12 @@ export function aiRouter(): Router {
           streamDelta(`${streamedText ? "\n\n" : ""}${loop.finalResponse}`);
         }
         finalAnswer = streamedText;
+        if (projectToolReads > 0) {
+          // #439 — the first frame said what auto-retrieval supplied; this one
+          // adds what the tools read, and replaces it on the client.
+          grounding = withToolReads(grounding, projectToolReads);
+          send("grounding", { type: "grounding", grounding });
+        }
         if (observeOnline) observedAnswer = loop.finalResponse;
         reportedUsage = loop.usage;
         finishReason = loop.finishReason ?? null;
@@ -2319,7 +2351,7 @@ export function aiRouter(): Router {
           providerKey,
           model,
           toolCalls,
-          { grounding },
+          { grounding: withToolReads(grounding, projectToolReads) },
         );
         await writeDerivedSnapshot(session).catch(() => undefined);
       }
